@@ -159,7 +159,7 @@ amd_cpu    = true
 
 ### `-march=native` Strategy
 
-SysForge uses per-profile CPU flags (e.g. `znver3` via `safe_globals`) rather than maintaining per-CPU package manifests. A single `packages.toml` covers all hardware configurations; CPU-specific tuning is entirely a flag concern. If a package is incompatible with native tuning (e.g. a portable binary), it matches the `bare` profile via a higher-priority rule, overriding `-march` for that package only.
+SysForge uses `-march=native` rather than hardcoding CPU-specific flags like `znver3`. Optimization becomes a compile-time concern rather than a manifest or profile concern — it works across CPU families without separate logic and justifies a single `packages.toml` rather than per-CPU manifests. If a package is incompatible with native tuning (e.g. a portable binary), it matches the `bare` profile via a higher-priority rule, overriding `-march` for that package only.
 
 ---
 
@@ -257,9 +257,9 @@ MAKEFLAGS = "-j$(nproc)"
 extends = "bare"
 
 [profiles.safe_globals.append]
-CFLAGS = "-march=znver3 -mtune=znver3 -fstack-protector-strong"
-CXXFLAGS = "-march=znver3 -mtune=znver3 -fstack-protector-strong"
-RUSTFLAGS = "-Ctarget-cpu=znver3 -Copt-level=3"
+CFLAGS = "-march=native -fstack-protector-strong"
+CXXFLAGS = "-march=native -fstack-protector-strong"
+RUSTFLAGS = "-Ctarget-cpu=native -Copt-level=3"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed -fuse-ld=mold"
 
 [profiles.lto]
