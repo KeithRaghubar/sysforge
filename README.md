@@ -12,16 +12,19 @@ SysForge is a personal system automation framework that produces a reproducible,
 2. [Distribution Model](#distribution-model)
 3. [Architecture Overview](#architecture-overview)
 4. [Directory Structure](#directory-structure)
-5. [Config Layer](#config-layer)
-6. [Pipeline Layer](#pipeline-layer)
-7. [Primitives Layer](#primitives-layer)
-8. [Flag Profile System](#flag-profile-system)
-9. [Makepkg Wrapper](#makepkg-wrapper)
-10. [Logging](#logging)
-11. [Hardware Detection](#hardware-detection)
-12. [Graphics Stack Build Order](#graphics-stack-build-order)
-13. [Release Plan](#release-plan)
-14. [Open Questions](#open-questions)
+5. [Package Manifest](#package-manifest)
+6. [Config Layer](#config-layer)
+7. [Pipeline Layer](#pipeline-layer)
+8. [Primitives Layer](#primitives-layer)
+9. [Flag Profile System](#flag-profile-system)
+10. [Makepkg Wrapper](#makepkg-wrapper)
+11. [Logging](#logging)
+12. [Hardware Detection](#hardware-detection)
+13. [Graphics Stack Build Order](#graphics-stack-build-order)
+14. [Release Plan](#release-plan)
+15. [Re-converge](#re-converge)
+16. [V2 Roadmap](#v2-roadmap)
+17. [Open Questions](#open-questions)
 
 ---
 
@@ -42,6 +45,7 @@ SysForge separates these into distinct config layers and produces a standard mut
 SysForge ships as an AUR package. The PKGBUILD points at the GitHub repo as its source.
 
 **Bootstrap path:**
+
 1. Boot vanilla Arch ISO
 2. Install SysForge from AUR
 3. Run SysForge
@@ -49,6 +53,7 @@ SysForge ships as an AUR package. The PKGBUILD points at the GitHub repo as its 
 The closest analogy is `archinstall` — a tool that lives in the Arch ecosystem and produces an Arch system.
 
 **Installed paths:**
+
 - `/etc/sysforge/` — system defaults (owned by the package)
 - `~/.config/sysforge/` — user overrides
 - `/usr/bin/sysforge` — CLI entry point
@@ -93,6 +98,7 @@ Three layers:
 │       ├── loader.py
 │       └── profiles.py
 ├── configs/
+│   ├── packages.toml
 │   ├── flag_profiles.toml
 │   └── hardware/
 │       └── zen3_rtx5070.toml
@@ -112,6 +118,48 @@ Three layers:
     flag_profiles.toml        # user overrides
 /usr/bin/sysforge
 ```
+
+---
+
+## Package Manifest
+
+`packages.toml` is the master list of packages SysForge installs. It is **separate from `flag_profiles.toml`** — package sourcing and build flag tuning are orthogonal concerns and must not be conflated.
+
+Each entry declares:
+
+- `source` — one of `repo` (pacman), `aur`, or `git` (direct PKGBUILD)
+- `pkgbuild_patch` *(optional bool)* — if `true`, the PKGBUILD patching library runs on this package before build
+- `requires_hardware` *(optional)* — hardware capability key that must be present in `hardware_profile.toml` for this package to be included; absent or false drops the package silently at pipeline time
+
+```toml
+[[package]]
+name = "nvidia-open-dkms"
+source = "repo"
+requires_hardware = "nvidia_gpu"
+
+[[package]]
+name = "mesa-git"
+source = "aur"
+pkgbuild_patch = true
+
+[[package]]
+name = "linux-zen"
+source = "aur"
+```
+
+`requires_hardware` keys are matched against those emitted by the hardware detection stage into `hardware_profile.toml`. Example:
+
+```toml
+# hardware/zen3_rtx5070.toml
+nvidia_gpu = true
+amd_cpu    = true
+```
+
+`flag_profiles.toml` has no knowledge of package sources or hardware gates — those are exclusively a `packages.toml` concern.
+
+### `-march=native` Strategy
+
+SysForge uses per-profile CPU flags (e.g. `znver3` via `safe_globals`) rather than maintaining per-CPU package manifests. A single `packages.toml` covers all hardware configurations; CPU-specific tuning is entirely a flag concern. If a package is incompatible with native tuning (e.g. a portable binary), it matches the `bare` profile via a higher-priority rule, overriding `-march` for that package only.
 
 ---
 
@@ -138,8 +186,8 @@ Hardware-specific config lives in `configs/hardware/`. The hardware detection st
 Python DAG orchestrator with checkpoint/resume. Stages run in order:
 
 1. **partition**
-2. **base_install**
-3. **hardware_detection** *(walks `lspci -k`, `lsmod`, `/sys/bus` → emits `hardware_profile.toml`)*
+2. **base\_install**
+3. **hardware\_detection** *(walks `lspci -k`, `lsmod`, `/sys/bus` → emits `hardware_profile.toml`)*
 4. **toolchain**
 5. **packages**
 6. **kernel**
@@ -167,7 +215,7 @@ Static regex parser for PKGBUILD metadata. Does **not** source or execute the PK
 
 **Not statically parseable:** computed values (`pkgver=$(...)`, conditional metadata, `depends+=()` inside functions). The wrapper falls back to `default_profile` when parsing fails.
 
-```python
+```
 import re
 
 def parse_pkgbuild(path):
@@ -198,7 +246,7 @@ See [Makepkg Wrapper](#makepkg-wrapper).
 
 Profiles are defined in `flag_profiles.toml`. Each profile is a named set of compiler flags and env vars.
 
-```toml
+```
 [profiles.bare]
 CFLAGS = "-O2 -pipe"
 CXXFLAGS = "-O2 -pipe"
@@ -237,7 +285,7 @@ Full inheritance with explicit override. The child starts as a complete copy of 
 
 Rules match packages to profiles based on package properties. All conditions within a rule are AND'd. Multiple rules are OR'd (each evaluated independently).
 
-```toml
+```
 [[rules]]
 priority = 5
 match.makedepends = ["cargo"]
@@ -262,6 +310,7 @@ profile = "safe_globals"
 ```
 
 **Match fields:**
+
 - `pkgname` — exact string match
 - `pkgname_regex` — full regex; mutually exclusive with `pkgname` per rule
 - `groups`, `depends`, `makedepends` — any-overlap (package lists any of these)
@@ -289,7 +338,7 @@ Declares which conf files a package build requires (`makepkg`, `rust`, `meson`, 
 - **Default:** auto-inferred from `makedepends` via a static inference map in system config
 - **Override:** explicit `consumes` on a profile replaces inferred value
 
-```toml
+```
 # /etc/sysforge/consumes_inference.toml
 [consumes_inference]
 cargo  = ["makepkg", "rust", "env"]
@@ -316,11 +365,21 @@ The wrapper generates only the conf files in the resolved `consumes` set, logs t
 
 Conf files only receive native keys (CFLAGS, LDFLAGS, RUSTFLAGS, etc.). Env vars from `[profiles.*.env]` travel separately and are never written into conf files.
 
+### Pre-Build Dependency Analysis
+
+Before invoking makepkg, the wrapper runs two checks against the resolved `depends` and `makedepends`:
+
+**Soname inspection** — resolves the `.so` versions each declared dependency currently exposes on the system (via `ldconfig -p` and `/usr/lib`) and compares against what the package expects to link against. Any version mismatch is flagged under `[DEP]` before the build starts rather than surfacing as a cryptic mid-build linker error.
+
+**Version constraint check** — parses version constraints from `depends` (e.g. `foo>=1.2`) and diffs against `pacman -Q` output. Unsatisfied or borderline constraints are flagged under `[DEP]` before makepkg attempts to resolve them itself.
+
+Both checks are non-fatal by default and configurable via `abi_mismatch` and `dep_unsatisfied` in `[failure_handling]`. Results feed into the failure pattern library for human-readable diagnosis.
+
 ### Failure Handling
 
 Each scenario has a configurable behaviour in `[failure_handling]`:
 
-```toml
+```
 [failure_handling]
 pkgbuild_unparseable  = "warn_and_fallback"  # fallback to bare
 no_rule_matched       = "fallback"           # use default_profile silently
@@ -328,6 +387,8 @@ profile_missing       = "abort"             # config bug, always hard stop
 profile_cycle         = "abort"             # extends loop, always hard stop
 tempfile_write_failed = "abort"             # never silently use system conf
 env_conflict          = "warn_and_fallback"  # wrapper value wins, logged
+abi_mismatch          = "warn_and_fallback"  # soname version mismatch detected pre-build
+dep_unsatisfied       = "warn_and_fallback"  # version constraint not met pre-build
 
 default_profile = "safe_globals"
 ```
@@ -340,7 +401,7 @@ New scenarios are added by registering a handler function and adding its key to 
 
 Env precedence is a first-class config table. Changing the hierarchy means changing these numbers — not tracing which file happened to win.
 
-```toml
+```
 [env_precedence]
 wrapper_profile   = 100  # TOML [profiles.*.env] overrides
 makepkg_conf      = 80   # CFLAGS/LDFLAGS/RUSTFLAGS etc.
@@ -356,26 +417,47 @@ The full precedence table is logged at startup under `[ENV]`. The wrapper constr
 
 Every log line is prefixed with exactly one structured category tag:
 
+Every line also includes the current package name as a second field, e.g. `[PROFILE][mesa-git]`. This means the log can be filtered by either dimension independently — grep for a tag to see all activity of that type, or grep for a package name to see its full build story.
+
 | Tag | Covers |
-|---|---|
+| --- | --- |
 | `[PROFILE]` | Profile resolution, rule matching, extends chain |
 | `[FLAG]` | makepkg.conf flag resolution and conflicts |
 | `[ENV]` | Env var resolution, conflicts, overrides, precedence table |
 | `[BUILD]` | makepkg invocation and exit codes |
 | `[FAILURE]` | Any failure scenario firing |
 | `[CONF]` | Config file loading, hierarchy, active consumes set |
+| `[DEP]` | Pre-build dependency analysis: soname mismatches and version constraint checks |
 
 Grepping a single tag gives the complete story for that concern across the full log.
 
 **Example pre-build output:**
+
 ```
-[ENV]    precedence: wrapper_profile=100 makepkg_conf=80 shell_passthrough=20 pkgbuild_export=10
-[PROFILE] matched rule: groups=rust-lto-broken priority=10 → no_lto
-[PROFILE] discarded: makedepends=cargo priority=5 → safe_globals (outprioritized)
-[FLAG]   CFLAGS="-O2 -pipe -march=znver3 ..." (source: safe_globals via no_lto extends)
-[ENV]    CARGO_PROFILE_RELEASE_LTO="false" (source: no_lto env override)
-[CONF]   active conf files: makepkg, rust, env
-[BUILD]  invoking makepkg -si via MAKEPKG_CONF=/tmp/sysforge_abc123.conf
+[ENV]    [sysforge]    precedence: wrapper_profile=100 makepkg_conf=80 shell_passthrough=20 pkgbuild_export=10
+[DEP]    [mesa-git]    soname ok: libLLVM-18.so → found
+[DEP]    [mesa-git]    version ok: llvm-libs>=18.0 → 18.1.8-1
+[PROFILE][mesa-git]    matched rule: groups=rust-lto-broken priority=10 → no_lto
+[PROFILE][mesa-git]    discarded: makedepends=cargo priority=5 → safe_globals (outprioritized)
+[FLAG]   [mesa-git]    CFLAGS="-O2 -pipe -march=znver3 ..." (source: safe_globals via no_lto extends)
+[ENV]    [mesa-git]    CARGO_PROFILE_RELEASE_LTO="false" (source: no_lto env override)
+[CONF]   [mesa-git]    active conf files: makepkg, rust, env
+[BUILD]  [mesa-git]    invoking makepkg -si via MAKEPKG_CONF=/tmp/sysforge_abc123.conf
+```
+
+### Dual Log Scheme
+
+SysForge maintains two logs simultaneously by default:
+
+- **Unified log** — all packages, all tags, single file for the full run
+- **Per-package log** — one file per package, split from the unified log on the package tag
+
+Both are enabled by default. Either can be disabled at invocation:
+
+```
+sysforge --no-unified-log  # per-package logs only
+sysforge --no-pkg-logs     # unified log only
+sysforge --log-dir <path>  # override output directory for per-package logs
 ```
 
 ---
@@ -383,6 +465,7 @@ Grepping a single tag gives the complete story for that concern across the full 
 ## Hardware Detection
 
 Pipeline stage between `base_install` and `kernel`. Walks:
+
 - `lspci -k`
 - `lsmod`
 - `/sys/bus`
@@ -401,9 +484,9 @@ Emits `hardware_profile.toml` which feeds kconfig automation (module → `CONFIG
 Build in this order to satisfy dependencies correctly:
 
 1. **Stage 1 — LLVM**
-   - PGO (64-bit): `llvm`, `llvm-libs`, `clang`, `lld`
-   - Non-PGO (64-bit): `polly`, `compiler-rt`, `openmp`, `spirv-llvm-translator`
-   - Non-PGO (lib32): `lib32-llvm`, `lib32-llvm-libs`, `lib32-clang`, `lib32-spirv-llvm-translator`
+   * PGO (64-bit): `llvm`, `llvm-libs`, `clang`, `lld`
+   * Non-PGO (64-bit): `polly`, `compiler-rt`, `openmp`, `spirv-llvm-translator`
+   * Non-PGO (lib32): `lib32-llvm`, `lib32-llvm-libs`, `lib32-clang`, `lib32-spirv-llvm-translator`
 2. `vulkan-headers-git`
 3. `vulkan-icd-loader-git`, `lib32-vulkan-icd-loader`
 4. `mesa-git`, `lib32-mesa-git`
@@ -421,7 +504,7 @@ Build in this order to satisfy dependencies correctly:
 
 ### AUR Publishing Process
 
-```bash
+```
 # One-time setup
 # 1. Create account at aur.archlinux.org
 # 2. Add SSH key to AUR account
@@ -443,8 +526,49 @@ git push
 
 ---
 
+## Re-converge
+
+Re-converge is a first-class SysForge feature — not an afterthought. It makes SysForge a full lifecycle manager rather than a one-shot installer.
+
+SysForge tracks build state in `/var/lib/sysforge/build_state.toml`:
+
+```toml
+[mesa-git]
+profile   = "no_lto"
+pkgver    = "24.1.0"
+built_at  = "2026-02-14T10:32:00Z"
+
+[llvm]
+profile   = "lto"
+pkgver    = "18.1.8"
+built_at  = "2026-02-10T08:15:00Z"
+```
+
+Running `sysforge converge` compares current installed state against the manifest and rebuild flags, then re-builds any package whose profile, flags, or version have drifted. A `--dry-run` flag shows what would be rebuilt without doing it.
+
+DAG stages are categorised as **bootstrap-only** (partition, base_install, toolchain) or **repeatable** (packages, configure). Only repeatable stages participate in re-converge runs.
+
+Requires root. No service user.
+
+---
+
+## V2 Roadmap
+
+V0.1 scope is the primitives and bootstrap pipeline described in this document. The long-term goal is for SysForge to become a full `yay` replacement — an AUR helper with compiler optimization as a first-class concern rather than an afterthought.
+
+V2 absorbs:
+
+- **AUR fetch** — clone and update PKGBUILDs from AUR directly
+- **PKGBUILD review** — present diffs to the user before build (standard AUR helper hygiene)
+- **Recursive AUR dep resolution** — walk the full AUR dependency tree, not just declared pacman deps
+- **Mixed pacman/AUR tree management** — unified view of repo and AUR packages
+- **Upgrade management** — `sysforge upgrade` checks AUR for new versions and rebuilds with active profiles
+
+The primitives layer built in v0.1 is the correct foundation for all of this — no teardown needed as scope expands.
+
+---
+
 ## Open Questions
 
 - **`consumes` placement:** profiles vs rules — revisit after building and testing the wrapper
-- **Re-converge mode:** post-install drift correction (pacman owns lifecycle, but a future `sysforge converge` command that re-applies profiles to a running system is an open possibility)
 - **Rule match logic:** full implementation details marked for revisit before coding begins
