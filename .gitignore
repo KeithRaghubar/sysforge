@@ -1,14 +1,19 @@
-*.tar
-*.tar.*
-*.jar
-*.exe
-*.msi
 *.deb
-*.zip
-*.tgz
+*.exe
+*.jar
 *.log
 *.log.*
+*.msi
+*.pyc
 *.sig
+*.tar
+*.tar.*
+*.tgz
+*.zip
 
+*.egg-info/
+.venv/
+__pycache__/
+dist/
 pkg/
 src/
