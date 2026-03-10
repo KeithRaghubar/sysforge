@@ -1,0 +1,55 @@
+# =============================================================================
+# Defaults
+# =============================================================================
+
+[defaults]
+profile = "standard"
+append_groups = ["sf-build"]
+
+# =============================================================================
+# Profiles
+# =============================================================================
+
+[profiles.bare]
+# Fallback profile, no flags
+
+[profiles.standard]
+extends = "bare"
+CFLAGS = "-march=native -O2 -pipe"
+CXXFLAGS = "$CFLAGS"
+LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
+
+[profiles.optimized]
+extends = "standard"
+CFLAGS = "-march=native -O3 -pipe -fno-plt"
+LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
+
+[profiles.pgo_llvm_toolchain]
+extends = "optimized"
+build_mode = "pgo_llvm_toolchain"
+pgo_store = "/var/tmp"
+
+[profiles.cosmic]
+extends = "optimized"
+build_mode = "patch_linker"
+
+# =============================================================================
+# Rules
+# =============================================================================
+
+[[rules]]
+pkgname = "htop"
+profile = "optimized"
+priority = 0
+
+[[rules]]
+groups = ["cosmic-*"]
+profile = "cosmic"
+priority = 10
+append_groups = ["cosmic-patched"]
+
+[[rules]]
+pkgnames = ["llvm", "clang", "lld"]
+profile = "pgo_llvm_toolchain"
+priority = 20
+append_groups = ["pgo"]
