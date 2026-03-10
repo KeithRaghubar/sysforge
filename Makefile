@@ -1,5 +1,8 @@
 .PHONY: dev build install clean
 
+dev-deps:
+	yay -S python-black
+
 dev:
 	source .venv/bin/activate && uv pip install -e .
 
