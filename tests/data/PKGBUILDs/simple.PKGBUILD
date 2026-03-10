@@ -1,0 +1,70 @@
+# Maintainer: Christian Hesse <mail@eworm.de>
+# Maintainer: T.J. Townsend <blakkheim@archlinux.org>
+# Contributor: Angel Velasquez <angvp@archlinux.org>
+# Contributor: Eric Belanger <eric@archlinux.org>
+# Contributor: Daniel J Griffiths <ghost1227@archlinux.us>
+
+pkgname=htop
+pkgver=3.4.1
+pkgrel=1
+pkgdesc='Interactive process viewer'
+arch=('x86_64')
+url='https://htop.dev/'
+license=('GPL')
+depends=('libcap' 'libcap.so' 'libnl' 'ncurses' 'libncursesw.so')
+makedepends=('git' 'lm_sensors')
+optdepends=('lm_sensors: show cpu temperatures'
+            'lsof: show files opened by a process'
+            'strace: attach to a running process')
+options=('!emptydirs')
+validpgpkeys=('F7ABE8761E6FE68638E6283AFE0842EE36DD8C0C'  # Nathan Scott <nathans@debian.org>
+              '0D316B6ABE022C7798D0324BF1D35CB9E8E12EAD') # Benny Baumann <BenBE@geshi.org>
+source=("git+https://github.com/htop-dev/htop.git#tag=${pkgver}")
+sha256sums=('3238b122c46571bcf2de6d788d040a665b842020effb45b3e9420346a8608460')
+
+_backports=(
+)
+
+_reverts=(
+)
+
+prepare() {
+  cd "${pkgname}"
+
+  local _c _l
+  for _c in "${_backports[@]}"; do
+    if [[ "${_c}" == *..* ]]; then _l='--reverse'; else _l='--max-count=1'; fi
+    git log --oneline "${_l}" "${_c}"
+    git cherry-pick --mainline 1 --no-commit "${_c}"
+  done
+  for _c in "${_reverts[@]}"; do
+    if [[ "${_c}" == *..* ]]; then _l='--reverse'; else _l='--max-count=1'; fi
+    git log --oneline "${_l}" "${_c}"
+    git revert --mainline 1 --no-commit "${_c}"
+  done
+
+  autoreconf -fi
+}
+
+build() {
+  cd "${pkgname}"
+
+  ./configure \
+      --prefix=/usr \
+      --sysconfdir=/etc \
+      --enable-affinity \
+      --enable-capabilities \
+      --enable-delayacct \
+      --enable-openvz \
+      --enable-sensors \
+      --enable-unicode \
+      --enable-vserver
+
+  make
+}
+
+package() {
+  cd "${pkgname}"
+
+  make DESTDIR="${pkgdir}" install
+}
