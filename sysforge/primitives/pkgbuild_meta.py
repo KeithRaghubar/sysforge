@@ -1,9 +1,29 @@
 import re
 
 
+def _extract_arrays(text):
+    """Extract array assignments with proper paren depth tracking."""
+    arrays = {}
+    pattern = re.compile(r"^(\w+)=\(", re.MULTILINE)
+    for m in pattern.finditer(text):
+        key = m.group(1)
+        j = m.end()
+        depth = 1
+        while j < len(text) and depth > 0:
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+            j += 1
+        raw = text[m.end() : j - 1]
+        arrays[key] = _parse_array_items(raw)
+    return arrays
+
+
 def _extract_functions(text):
-    """Extract function bodies with proper brace depth tracking."""
+    """Extract function bodies and return cleaned global text."""
     functions = {}
+    spans = []
     i = 0
     func_start = re.compile(r"(\w+)\s*\(\s*\)\s*\{")
     while i < len(text):
@@ -13,7 +33,6 @@ def _extract_functions(text):
             j = m.end()
             depth = 1
             while j < len(text) and depth > 0:
-                # skip ${ } variable expansions to avoid false brace counting
                 if text[j] == "$" and j + 1 < len(text) and text[j + 1] == "{":
                     j += 2
                     while j < len(text) and text[j] != "}":
@@ -24,10 +43,17 @@ def _extract_functions(text):
                     depth -= 1
                 j += 1
             functions[func_name] = text[m.end() : j - 1].strip()
+            spans.append((m.start(), j))
             i = j
         else:
             i += 1
-    return functions
+
+    # Build global text by excising function spans
+    global_text = text
+    for start, end in reversed(spans):
+        global_text = global_text[:start] + global_text[end:]
+
+    return functions, global_text
 
 
 def _parse_array_items(raw):
@@ -41,12 +67,34 @@ def _parse_array_items(raw):
     return result
 
 
+def _strip_comments(text):
+    """Strip # comments, respecting quoted strings."""
+    result = []
+    for line in text.splitlines():
+        out = []
+        in_single = False
+        in_double = False
+        i = 0
+        while i < len(line):
+            c = line[i]
+            if c == "'" and not in_double:
+                in_single = not in_single
+            elif c == '"' and not in_single:
+                in_double = not in_double
+            elif c == "#" and not in_single and not in_double:
+                break  # rest of line is a comment
+            out.append(c)
+            i += 1
+        result.append("".join(out).rstrip())
+    return "\n".join(result)
+
+
 def parse_pkgbuild(path):
-    text = open(path).read()
+    text = _strip_comments(open(path).read())
     result = {"globals": {}, "functions": {}}
 
-    result["functions"] = _extract_functions(text)
-    global_text = re.sub(r"\w+\s*\(\s*\)\s*\{[^}]*\}", "", text, flags=re.DOTALL)
+    result["functions"], global_text = _extract_functions(text)
+    result["globals"].update(_extract_arrays(global_text))
 
     # Scalars
     for m in re.finditer(
@@ -54,14 +102,7 @@ def parse_pkgbuild(path):
         global_text,
         re.MULTILINE,
     ):
-        result["globals"][m.group(1)] = m.group(2).strip()
-
-    # Arrays
-    for m in re.finditer(
-        r"^(\w+)=\(([^)]*)\)",
-        global_text,
-        re.MULTILINE | re.DOTALL,
-    ):
-        result["globals"][m.group(1)] = _parse_array_items(m.group(2))
+        if m.group(1) not in result["globals"]:
+            result["globals"][m.group(1)] = m.group(2).strip()
 
     return result
