@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import tempfile
 import subprocess
@@ -28,7 +29,64 @@ def merge_extends(profile_name, profiles, visited=None):
 
 
 def match_rules(pkgmeta, rules):
-    pass
+    """
+    Evaluate rules against parsed PKGBUILD metadata.
+    Conditions within a rule are AND'd; rules are OR'd.
+    Returns list of matched rules, preserving order.
+    """
+    globals_ = pkgmeta.get("globals", {})
+
+    # Normalize pkgname — may be a string (single) or list (split package)
+    pkgname = globals_.get("pkgname", "")
+    if isinstance(pkgname, list):
+        pkgnames = set(pkgname)
+    else:
+        pkgnames = {pkgname}
+
+    def _any_overlap(rule_key, meta_key):
+        """True if any item in the rule's list matches any item in pkgmeta."""
+        rule_vals = set(rule.get(rule_key, []))
+        meta_vals = set(globals_.get(meta_key, []))
+        return not rule_vals or bool(rule_vals & meta_vals)
+
+    def _any_overlap_not(rule_key, meta_key):
+        """True if NONE of the rule's list items appear in pkgmeta."""
+        rule_vals = set(rule.get(rule_key, []))
+        meta_vals = set(globals_.get(meta_key, []))
+        return not rule_vals or not bool(rule_vals & meta_vals)
+
+    matched = []
+    for rule in rules:
+        # pkgname and pkgname_regex are mutually exclusive
+        if "pkgname" in rule:
+            if rule["pkgname"] not in pkgnames:
+                continue
+        elif "pkgname_regex" in rule:
+            pattern = re.compile(rule["pkgname_regex"])
+            if not any(pattern.fullmatch(n) for n in pkgnames):
+                continue
+
+        if "not_pkgname" in rule:
+            if rule["not_pkgname"] in pkgnames:
+                continue
+
+        if not _any_overlap("groups", "groups"):
+            continue
+        if not _any_overlap("depends", "depends"):
+            continue
+        if not _any_overlap("makedepends", "makedepends"):
+            continue
+
+        if not _any_overlap_not("not_groups", "groups"):
+            continue
+        if not _any_overlap_not("not_depends", "depends"):
+            continue
+        if not _any_overlap_not("not_makedepends", "makedepends"):
+            continue
+
+        matched.append(rule)
+
+    return matched
 
 
 def resolve_groups(pkgmeta, matched_rules, defaults):
