@@ -40,65 +40,94 @@ def match_rules(pkgmeta, rules):
     # Normalize pkgname — may be a string (single) or list (split package)
     pkgname = globals_.get("pkgname", "")
     if isinstance(pkgname, list):
-        pkgnames = set(pkgname)
+        pkgnames = list(pkgname)
     else:
-        pkgnames = {pkgname}
+        pkgnames = [pkgname]
 
-    def _any_overlap(rule_key, meta_key):
-        """True if any item in the rule's list matches any item in pkgmeta."""
+    def _glob_any_match(patterns, values):
+        """True if ANY pattern matches ANY value."""
+        return any(fnmatch.fnmatch(val, pat) for pat in patterns for val in values)
+
+    def _glob_all_match(patterns, values):
+        """True if ALL patterns match at least one value."""
+        return all(any(fnmatch.fnmatch(val, pat) for val in values) for pat in patterns)
+
+    def _glob_all_absent(patterns, values):
+        """True if ALL patterns match NO value."""
+        return all(
+            not any(fnmatch.fnmatch(val, pat) for val in values) for pat in patterns
+        )
+
+    def _exact_any(rule_key, meta_key):
+        """True if ANY rule item appears in pkgmeta."""
         rule_vals = set(rule.get(rule_key, []))
         meta_vals = set(globals_.get(meta_key, []))
         return not rule_vals or bool(rule_vals & meta_vals)
 
-    def _any_overlap_glob(rule_key, meta_key):
-        """True if any rule glob pattern matches any meta value."""
-        rule_pats = rule.get(rule_key, [])
-        meta_vals = globals_.get(meta_key, [])
-        if not rule_pats:
-            return True
-        return any(
-            fnmatch.fnmatch(meta_val, pat)
-            for pat in rule_pats
-            for meta_val in meta_vals
-        )
+    def _exact_all(rule_key, meta_key):
+        """True if ALL rule items appear in pkgmeta."""
+        rule_vals = set(rule.get(rule_key, []))
+        meta_vals = set(globals_.get(meta_key, []))
+        return not rule_vals or rule_vals.issubset(meta_vals)
 
-    def _any_overlap_not(rule_key, meta_key):
-        """True if NONE of the rule's list items appear in pkgmeta."""
+    def _exact_all_absent(rule_key, meta_key):
+        """True if ALL rule items are absent from pkgmeta."""
         rule_vals = set(rule.get(rule_key, []))
         meta_vals = set(globals_.get(meta_key, []))
         return not rule_vals or not bool(rule_vals & meta_vals)
 
     matched = []
     for rule in rules:
-        # pkgname and pkgname_regex are mutually exclusive; pkgnames is a list variant
-        if "pkgname" in rule:
-            if rule["pkgname"] not in pkgnames:
-                continue
-        elif "pkgnames" in rule:
-            if not pkgnames & set(rule["pkgnames"]):
-                continue
-        elif "pkgname_regex" in rule:
-            pattern = re.compile(rule["pkgname_regex"])
-            if not any(pattern.fullmatch(n) for n in pkgnames):
+        # pkgnames — ANY + glob
+        if "pkgnames" in rule:
+            if not _glob_any_match(rule["pkgnames"], pkgnames):
                 continue
 
-        if "not_pkgname" in rule:
-            if rule["not_pkgname"] in pkgnames:
+        # not_pkgnames — ALL absent + glob
+        if "not_pkgnames" in rule:
+            if not _glob_all_absent(rule["not_pkgnames"], pkgnames):
                 continue
 
-        if not _any_overlap_glob("groups", "groups"):
-            continue
-        if not _any_overlap("depends", "depends"):
-            continue
-        if not _any_overlap("makedepends", "makedepends"):
-            continue
+        # groups — ALL + glob
+        if "groups" in rule:
+            meta_groups = globals_.get("groups", [])
+            if not _glob_all_match(rule["groups"], meta_groups):
+                continue
 
-        if not _any_overlap_not("not_groups", "groups"):
-            continue
-        if not _any_overlap_not("not_depends", "depends"):
-            continue
-        if not _any_overlap_not("not_makedepends", "makedepends"):
-            continue
+        # not_groups — ALL absent, no glob
+        if "not_groups" in rule:
+            if not _exact_all_absent("not_groups", "groups"):
+                continue
+
+        # depends_any — ANY exact
+        if "depends_any" in rule:
+            if not _exact_any("depends_any", "depends"):
+                continue
+
+        # depends_all — ALL exact
+        if "depends_all" in rule:
+            if not _exact_all("depends_all", "depends"):
+                continue
+
+        # not_depends — ALL absent, exact
+        if "not_depends" in rule:
+            if not _exact_all_absent("not_depends", "depends"):
+                continue
+
+        # makedepends_any — ANY exact
+        if "makedepends_any" in rule:
+            if not _exact_any("makedepends_any", "makedepends"):
+                continue
+
+        # makedepends_all — ALL exact
+        if "makedepends_all" in rule:
+            if not _exact_all("makedepends_all", "makedepends"):
+                continue
+
+        # not_makedepends — ALL absent, exact
+        if "not_makedepends" in rule:
+            if not _exact_all_absent("not_makedepends", "makedepends"):
+                continue
 
         matched.append(rule)
 

@@ -38,7 +38,7 @@ build_mode = "patch_linker"
 # =============================================================================
 
 [[rules]]
-pkgname = "htop"
+pkgnames = ["htop"]
 profile = "optimized"
 priority = 0
 

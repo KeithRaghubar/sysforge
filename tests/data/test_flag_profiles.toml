@@ -1,63 +1,132 @@
+[defaults]
+profile = "standard"
+
+[profiles.bare]
+
+[profiles.standard]
+extends = "bare"
+CFLAGS = "-march=native -O2 -pipe"
+
+[profiles.optimized]
+extends = "standard"
+CFLAGS = "-march=native -O3 -pipe"
+
+[profiles.cosmic]
+extends = "optimized"
+
+# pkgnames ANY + glob — matches htop only
 [[rules]]
-pkgname = "htop"
+pkgnames = ["htop"]
 profile = "optimized"
 priority = 0
 _expect_htop = true
 _expect_lib32 = false
 _expect_llvm = false
 
+# pkgnames ANY + glob — matches lib32-llvm* via glob
 [[rules]]
-makedepends = ["cmake"]
-profile = "standard"
-priority = 5
-_expect_htop = false
-_expect_lib32 = true
-_expect_llvm = true
-
-[[rules]]
-pkgname_regex = "lib32-llvm.*"
+pkgnames = ["lib32-*"]
 profile = "optimized"
-priority = 10
+priority = 5
 _expect_htop = false
 _expect_lib32 = true
 _expect_llvm = false
 
+# pkgnames ANY — matches llvm exactly
+[[rules]]
+pkgnames = ["llvm", "clang", "lld"]
+profile = "optimized"
+priority = 10
+_expect_htop = false
+_expect_lib32 = false
+_expect_llvm = true
+
+# not_pkgnames ALL absent + glob — skips anything matching lib32-*
+[[rules]]
+not_pkgnames = ["lib32-*"]
+profile = "standard"
+priority = 15
+_expect_htop = true
+_expect_lib32 = false
+_expect_llvm = true
+
+# groups ALL + glob — matches lib32 (has 'modified')
 [[rules]]
 groups = ["modified"]
 profile = "optimized"
-priority = 15
-_expect_htop = false
-_expect_lib32 = true
-_expect_llvm = true
-
-[[rules]]
-not_pkgname = "htop"
-profile = "standard"
 priority = 20
 _expect_htop = false
 _expect_lib32 = true
-_expect_llvm = true
+_expect_llvm = false
 
+# groups ALL + glob — matches nothing (no package has cosmic-* group)
 [[rules]]
-makedepends = ["git", "nonexistent-dep"]
-profile = "optimized"
+groups = ["cosmic-*"]
+profile = "cosmic"
 priority = 25
 _expect_htop = false
 _expect_lib32 = false
 _expect_llvm = false
 
+# not_groups ALL absent no glob — matches htop and llvm (neither has 'modified')
 [[rules]]
-pkgnames = ["llvm", "clang", "lld"]
-profile = "optimized"
+not_groups = ["modified"]
+profile = "standard"
 priority = 30
-_expect_htop = false
+_expect_htop = true
 _expect_lib32 = false
 _expect_llvm = true
 
+# makedepends_any — matches htop (has git) and llvm (has cmake... wait llvm has cmake)
 [[rules]]
-groups = ["cosmic-*"]
-profile = "cosmic"
+makedepends_any = ["git"]
+profile = "standard"
 priority = 35
-_expect_htop = false
+_expect_htop = true
 _expect_lib32 = false
 _expect_llvm = false
+
+# makedepends_all — matches lib32 and llvm (both have cmake AND ninja)
+[[rules]]
+makedepends_all = ["cmake", "ninja"]
+profile = "optimized"
+priority = 40
+_expect_htop = false
+_expect_lib32 = true
+_expect_llvm = true
+
+# not_makedepends ALL absent — matches htop (has neither cmake nor ninja)
+[[rules]]
+not_makedepends = ["cmake", "ninja"]
+profile = "standard"
+priority = 45
+_expect_htop = true
+_expect_lib32 = false
+_expect_llvm = false
+
+# depends_any — matches htop (has libcap)
+[[rules]]
+depends_any = ["libcap"]
+profile = "optimized"
+priority = 50
+_expect_htop = true
+_expect_lib32 = false
+_expect_llvm = false
+
+# depends_all — matches htop (has both libcap and ncurses)
+[[rules]]
+depends_all = ["libcap", "ncurses"]
+profile = "optimized"
+priority = 55
+_expect_htop = true
+_expect_lib32 = false
+_expect_llvm = false
+
+# not_depends ALL absent — matches lib32 and llvm (neither has libcap)
+[[rules]]
+not_depends = ["libcap"]
+profile = "standard"
+priority = 60
+_expect_htop = false
+_expect_lib32 = true
+_expect_llvm = true
