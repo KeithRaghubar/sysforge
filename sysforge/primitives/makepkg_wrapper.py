@@ -26,7 +26,31 @@ def resolve_profile(pkgmeta, config):
 
 
 def merge_extends(profile_name, profiles, visited=None):
-    pass
+    """
+    Resolve a profile's full inheritance chain via 'extends'.
+    Returns a flat dict of all keys with child values overriding parent values.
+    Raises ValueError on missing profiles or inheritance cycles.
+    """
+    if visited is None:
+        visited = []
+
+    if profile_name in visited:
+        cycle = " -> ".join(visited + [profile_name])
+        raise ValueError(f"[PROFILE] Inheritance cycle detected: {cycle}")
+
+    if profile_name not in profiles:
+        raise ValueError(f"[PROFILE] Profile not found: '{profile_name}'")
+
+    profile = dict(profiles[profile_name])
+    parent_name = profile.pop("extends", None)
+
+    if parent_name is None:
+        return profile
+
+    parent = merge_extends(parent_name, profiles, visited + [profile_name])
+
+    # Parent provides the base; child keys win
+    return {**parent, **profile}
 
 
 def match_rules(pkgmeta, rules):
