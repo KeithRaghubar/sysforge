@@ -1,5 +1,7 @@
 .PHONY: dev build install clean test
 
+all: test
+
 dev-deps:
 	yay -S python-black
 
