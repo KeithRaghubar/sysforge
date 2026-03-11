@@ -86,7 +86,7 @@ Three layers:
 ### Development (local repo)
 
 ```
-~/sysforge/
+sysforge/
 ├── sysforge/
 │   ├── __init__.py
 │   ├── cli.py
@@ -97,13 +97,11 @@ Three layers:
 │   └── config/
 │       ├── loader.py
 │       └── profiles.py
-├── configs/
-│   ├── packages.toml
-│   ├── flag_profiles.toml
-│   └── hardware/
-│       └── zen3_rtx5070.toml
 ├── tests/
-│   └── pkgbuild_samples/
+│   ├── data/
+│   │   ├── PKGBUILDs/
+│   │   └── etc/sysforge/flag_profiles.toml
+│   └── test_parser.py
 ├── PKGBUILD
 └── pyproject.toml
 ```
