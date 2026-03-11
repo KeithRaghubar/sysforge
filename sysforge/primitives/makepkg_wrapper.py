@@ -18,7 +18,97 @@ CONFIG_PATHS = [
 
 
 def load_config():
-    pass
+    """
+    Load flag_profiles.toml from CONFIG_PATHS (user, then system).
+    If the user config sets extends_system = true, deep-merge onto system config.
+    Otherwise the first found file wins outright.
+    Rule priorities must be in range 0-99. User rules are bumped by 100 on merge
+    to guarantee precedence over system rules (effective range 100-199).
+    Raises FileNotFoundError if no config is found.
+    Raises ValueError if any rule has an invalid or missing priority.
+    """
+
+    def _load(path):
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+
+    def _deep_merge(base, override):
+        """Merge override onto base, recursing into dicts."""
+        result = dict(base)
+        for key, val in override.items():
+            if (
+                key in result
+                and isinstance(result[key], dict)
+                and isinstance(val, dict)
+            ):
+                result[key] = _deep_merge(result[key], val)
+            else:
+                result[key] = val
+        return result
+
+    user_path, system_path = CONFIG_PATHS[0], CONFIG_PATHS[1]
+
+    user_config = _load(user_path) if user_path.exists() else None
+    system_config = _load(system_path) if system_path.exists() else None
+
+    if user_config is None and system_config is None:
+        raise FileNotFoundError(
+            f"[CONFIG] No flag_profiles.toml found. Searched:\n"
+            + "\n".join(f"  {p}" for p in CONFIG_PATHS)
+        )
+
+    if user_config is None:
+        print(f"[CONFIG] Loaded system config: {system_path}")
+        return system_config
+
+    if system_config is None:
+        print(f"[CONFIG] Loaded user config: {user_path}")
+        return user_config
+
+    if user_config.get("extends_system", False):
+        print(f"[CONFIG] Merging user config onto system config")
+
+        # Merge profiles and defaults normally (user wins per key)
+        merged = _deep_merge(
+            {k: v for k, v in system_config.items() if k != "rules"},
+            {
+                k: v
+                for k, v in user_config.items()
+                if k not in ("rules", "extends_system")
+            },
+        )
+
+        # Validate priority range before merging
+        VALID_RANGE = range(0, 100)
+        for source, rules in [
+            ("system", system_config.get("rules", [])),
+            ("user", user_config.get("rules", [])),
+        ]:
+            for i, rule in enumerate(rules):
+                p = rule.get("priority")
+                if p is None:
+                    raise ValueError(
+                        f"[CONFIG] {source} rule [{i}] is missing required 'priority'"
+                    )
+                if p not in VALID_RANGE:
+                    raise ValueError(
+                        f"[CONFIG] {source} rule [{i}] has invalid priority {p!r} "
+                        f"(must be 0-99)"
+                    )
+
+        # Merge rules: user rules are bumped by 100 to guarantee precedence over system rules.
+        # Valid priority range is 0-99 per config; effective range after bump is 100-199.
+        user_rules = [
+            {**r, "priority": r.get("priority", 0) + 100}
+            for r in user_config.get("rules", [])
+        ]
+        system_rules = system_config.get("rules", [])
+
+        merged["rules"] = system_rules + user_rules
+        return merged
+
+    print(f"[CONFIG] User config overrides system config: {user_path}")
+    return user_config
 
 
 def resolve_profile(pkgmeta, config):
