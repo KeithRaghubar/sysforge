@@ -9,9 +9,9 @@ from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.makepkg_wrapper import match_rules
 
 PKGBUILD_ALIASES = {
-    "htop": f"{sys.path[0]}/tests/TEST_PKGBUILD_HTOP",
-    "lib32": f"{sys.path[0]}/tests/TEST_PKGBUILD_LIB32",
-    "llvm": f"{sys.path[0]}/tests/TEST_PKGBUILD_LLVM",
+    "htop": f"{sys.path[0]}/tests/data/PKGBUILDs/htop.PKGBUILD",
+    "lib32": f"{sys.path[0]}/tests/data/PKGBUILDs/lib32-llvm.PKGBUILD",
+    "llvm": f"{sys.path[0]}/tests/data/PKGBUILDs/llvm.PKGBUILD",
 }
 EXPECT_KEYS = {
     "htop": "_expect_htop",
@@ -24,7 +24,9 @@ PKGBUILD = PKGBUILD_ALIASES.get(alias, alias)
 expect_key = EXPECT_KEYS.get(alias, None)
 
 PROFILES = (
-    sys.argv[2] if len(sys.argv) > 2 else f"{sys.path[0]}/tests/test_flag_profiles.toml"
+    sys.argv[2]
+    if len(sys.argv) > 2
+    else f"{sys.path[0]}/tests/data/test_flag_profiles.toml"
 )
 
 pkgmeta = parse_pkgbuild(PKGBUILD)
