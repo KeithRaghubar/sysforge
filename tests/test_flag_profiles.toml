@@ -1,0 +1,35 @@
+[[rules]]
+pkgname = "htop"
+profile = "optimized"
+priority = 0
+_expect = false
+
+[[rules]]
+makedepends = ["cmake"]
+profile = "standard"
+priority = 5
+_expect = true
+
+[[rules]]
+pkgname_regex = "lib32-llvm.*"
+profile = "optimized"
+priority = 10
+_expect = true
+
+[[rules]]
+groups = ["modified"]
+profile = "optimized"
+priority = 15
+_expect = true
+
+[[rules]]
+not_pkgname = "htop"
+profile = "standard"
+priority = 20
+_expect = true
+
+[[rules]]
+makedepends = ["git", "nonexistent-dep"]
+profile = "optimized"
+priority = 25
+_expect = false

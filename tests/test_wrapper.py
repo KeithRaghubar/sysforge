@@ -1,49 +1,24 @@
 #!/usr/bin/env python3
 import sys
-import pprint
+import os
+import tomllib
 
-sys.path.insert(0, "$HOME/src/sysforge")
+sys.path.insert(0, os.path.expanduser("~/src/sysforge"))
 
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.makepkg_wrapper import match_rules
 
-PKGBUILD = sys.argv[1] if len(sys.argv) > 1 else "TEST_PKGBUILD"
+PKGBUILD = sys.argv[1] if len(sys.argv) > 1 else f"{sys.path[0]}/tests/TEST_PKGBUILD"
+PROFILES = (
+    sys.argv[2] if len(sys.argv) > 2 else f"{sys.path[0]}/tests/test_flag_profiles.toml"
+)
 
 pkgmeta = parse_pkgbuild(PKGBUILD)
+with open(PROFILES, "rb") as f:
+    config = tomllib.load(f)
 
-rules = [
-    # should match htop (exact pkgname)
-    {
-        "pkgname": "htop",
-        "flags": {"CFLAGS": "-O3"},
-    },
-    # should match anything with cmake in makedepends
-    {
-        "makedepends": ["cmake"],
-        "flags": {"CFLAGS": "-O2"},
-    },
-    # should match lib32-llvm (regex)
-    {
-        "pkgname_regex": r"lib32-llvm.*",
-        "flags": {"CFLAGS": "-m32"},
-    },
-    # should match anything in group 'modified'
-    {
-        "groups": ["modified"],
-        "flags": {"CFLAGS": "-march=native"},
-    },
-    # should NOT match htop (not_makedepends excludes cmake-free packages... inverted: excludes if cmake present)
-    # actually tests not_pkgname
-    {
-        "not_pkgname": "htop",
-        "flags": {"CFLAGS": "-pipe"},
-    },
-    # should match nothing — requires both git and nonexistent-dep
-    {
-        "makedepends": ["git", "nonexistent-dep"],
-        "flags": {"CFLAGS": "-funroll-loops"},
-    },
-]
+rules = config.get("rules", [])
+clean_rules = [{k: v for k, v in r.items() if k != "_expect"} for r in rules]
 
 print(f"=== Parsing: {PKGBUILD} ===")
 print(f"pkgname:      {pkgmeta['globals'].get('pkgname')}")
@@ -52,7 +27,42 @@ print(f"makedepends:  {pkgmeta['globals'].get('makedepends', [])}")
 print(f"depends:      {pkgmeta['globals'].get('depends', [])}")
 print()
 
-matched = match_rules(pkgmeta, rules)
+matched = match_rules(pkgmeta, clean_rules)
+matched_ids = {id(r) for r in matched}
 
-print(f"=== Matched {len(matched)}/{len(rules)} rules ===")
-pprint.pprint(matched)
+print(f"=== {len(rules)} rules in {PROFILES} ===\n")
+
+passed = 0
+failed = 0
+skipped = 0
+
+for i, (rule, clean) in enumerate(zip(rules, clean_rules)):
+    did_match = id(clean) in matched_ids
+    expected = rule.get("_expect", None)
+    status = "MATCH" if did_match else "SKIP "
+
+    if expected is None:
+        verdict = ""
+        skipped += 1
+    elif did_match == expected:
+        verdict = "✓"
+        passed += 1
+    else:
+        verdict = "✗ UNEXPECTED"
+        failed += 1
+
+    print(f"  [{i}] {status} {verdict}")
+    for k, v in clean.items():
+        print(f"         {k}: {v!r}")
+    print()
+
+print("=== Summary ===")
+print(f"  Passed:  {passed}")
+print(f"  Failed:  {failed}")
+if skipped:
+    print(f"  No expectation: {skipped}")
+print()
+if failed:
+    print("FAILURES detected.")
+else:
+    print("All rules matched expectations.")
