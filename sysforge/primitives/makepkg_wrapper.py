@@ -1,4 +1,5 @@
 import os
+import fnmatch
 import re
 import sys
 import tempfile
@@ -49,6 +50,18 @@ def match_rules(pkgmeta, rules):
         meta_vals = set(globals_.get(meta_key, []))
         return not rule_vals or bool(rule_vals & meta_vals)
 
+    def _any_overlap_glob(rule_key, meta_key):
+        """True if any rule glob pattern matches any meta value."""
+        rule_pats = rule.get(rule_key, [])
+        meta_vals = globals_.get(meta_key, [])
+        if not rule_pats:
+            return True
+        return any(
+            fnmatch.fnmatch(meta_val, pat)
+            for pat in rule_pats
+            for meta_val in meta_vals
+        )
+
     def _any_overlap_not(rule_key, meta_key):
         """True if NONE of the rule's list items appear in pkgmeta."""
         rule_vals = set(rule.get(rule_key, []))
@@ -57,9 +70,12 @@ def match_rules(pkgmeta, rules):
 
     matched = []
     for rule in rules:
-        # pkgname and pkgname_regex are mutually exclusive
+        # pkgname and pkgname_regex are mutually exclusive; pkgnames is a list variant
         if "pkgname" in rule:
             if rule["pkgname"] not in pkgnames:
+                continue
+        elif "pkgnames" in rule:
+            if not pkgnames & set(rule["pkgnames"]):
                 continue
         elif "pkgname_regex" in rule:
             pattern = re.compile(rule["pkgname_regex"])
@@ -70,7 +86,7 @@ def match_rules(pkgmeta, rules):
             if rule["not_pkgname"] in pkgnames:
                 continue
 
-        if not _any_overlap("groups", "groups"):
+        if not _any_overlap_glob("groups", "groups"):
             continue
         if not _any_overlap("depends", "depends"):
             continue
