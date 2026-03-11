@@ -42,17 +42,14 @@ def _extract_functions(text):
                 elif text[j] == "}":
                     depth -= 1
                 j += 1
-            functions[func_name] = text[m.end() : j - 1].strip()
+            functions[func_name] = text[m.end() : j - 1].strip("\n")
             spans.append((m.start(), j))
             i = j
         else:
             i += 1
-
-    # Build global text by excising function spans
     global_text = text
     for start, end in reversed(spans):
         global_text = global_text[:start] + global_text[end:]
-
     return functions, global_text
 
 
@@ -88,21 +85,19 @@ def _strip_comments(text):
         result.append("".join(out).rstrip())
     return "\n".join(result)
 
-
 def parse_pkgbuild(path):
     text = _strip_comments(open(path).read())
     result = {"globals": {}, "functions": {}}
-
     result["functions"], global_text = _extract_functions(text)
     result["globals"].update(_extract_arrays(global_text))
-
     # Scalars
     for m in re.finditer(
-        r'^(\w+)=["\']?([^()\n"\']+)["\']?',
+        r"""^(\w+)=(?:"([^"]*)"|'([^']*)'|([^()\n'"]+))""",
         global_text,
         re.MULTILINE,
     ):
-        if m.group(1) not in result["globals"]:
-            result["globals"][m.group(1)] = m.group(2).strip()
-
+        key = m.group(1)
+        value = next(g for g in m.groups()[1:] if g is not None)
+        if key not in result["globals"]:
+            result["globals"][key] = value.strip()
     return result
