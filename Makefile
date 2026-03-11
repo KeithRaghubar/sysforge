@@ -1,4 +1,4 @@
-.PHONY: dev build install clean
+.PHONY: dev build install clean test
 
 dev-deps:
 	yay -S python-black
@@ -15,6 +15,9 @@ build:
 
 install:
 	makepkg -si
+
+test:
+	SYSFORGE_CONFIG_DIR=$(PWD)/tests/data python tests/test_wrapper.py
 
 clean:
 	rm -rf dist/ .venv/ __pycache__/ *.egg-info/
