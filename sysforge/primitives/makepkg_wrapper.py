@@ -22,7 +22,59 @@ def load_config():
 
 
 def resolve_profile(pkgmeta, config):
-    pass
+    """
+    Match rules against pkgmeta, select winning profile by priority,
+    resolve its extends chain, and return the flat merged profile dict.
+    Highest priority wins; ties go to first occurrence. Losers are logged.
+    Falls back to defaults.profile if no rules match.
+    """
+    profiles = config.get("profiles", {})
+    rules = config.get("rules", [])
+    defaults = config.get("defaults", {})
+    default_profile = defaults.get("profile", "bare")
+
+    pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
+    if isinstance(pkgname, list):
+        pkgname = pkgname[0]
+
+    matched = match_rules(pkgmeta, rules)
+
+    winner = None
+    discarded = []
+    for rule in matched:
+        if "profile" not in rule:
+            continue
+        if winner is None or rule.get("priority", 0) > winner.get("priority", 0):
+            if winner is not None:
+                discarded.append(winner)
+            winner = rule
+        else:
+            discarded.append(rule)
+
+    for rule in discarded:
+        print(
+            f"[PROFILE][{pkgname}] Discarded rule "
+            f"(priority {rule.get('priority', 0)}): profile={rule.get('profile')!r}"
+        )
+        if winner:
+            profile_name = winner["profile"]
+            print(
+                f"[PROFILE][{pkgname}] Matched profile {profile_name!r} "
+                f"(priority {winner.get('priority', 0)})"
+            )
+        else:
+            if matched:
+                print(
+                    f"[PROFILE][{pkgname}] Rules matched but none specified a profile, "
+                    f"using default: {default_profile!r}"
+                )
+            else:
+                print(
+                    f"[PROFILE][{pkgname}] No rules matched, using default: {default_profile!r}"
+                )
+            profile_name = default_profile
+
+    return merge_extends(profile_name, profiles)
 
 
 def merge_extends(profile_name, profiles, visited=None):
