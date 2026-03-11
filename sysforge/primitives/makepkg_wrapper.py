@@ -1,9 +1,10 @@
-import os
+import contextlib
 import fnmatch
+import os
 import re
+import subprocess
 import sys
 import tempfile
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -329,8 +330,39 @@ def resolve_groups(pkgmeta, matched_rules, defaults):
     return existing
 
 
+# Keys that are sysforge-internal and must not be written to makepkg.conf
+_SYSFORGE_KEYS = {"build_mode", "pgo_store"}
+
+
+@contextlib.contextmanager
 def emit_makepkg_conf(resolved_profile):
-    pass
+    """
+    Write makepkg-relevant keys from resolved_profile to a temp file.
+    Yields the path to the temp file for use with MAKEPKG_CONF.
+    Cleans up the temp file on exit.
+    Skips sysforge-internal keys (build_mode, pgo_store, etc.).
+    """
+    conf_lines = []
+    for key, val in resolved_profile.items():
+        if key in _SYSFORGE_KEYS:
+            continue
+        conf_lines.append(f'{key}="{val}"')
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        prefix="sysforge_makepkg_",
+        suffix=".conf",
+        delete=False,
+    ) as f:
+        f.write("\n".join(conf_lines) + "\n")
+        tmp_path = f.name
+
+    print(f"[CONF] Wrote temp makepkg.conf: {tmp_path}")
+    try:
+        yield tmp_path
+    finally:
+        os.unlink(tmp_path)
+        print(f"[CONF] Removed temp makepkg.conf: {tmp_path}")
 
 
 def invoke_makepkg(pkgbuild_path, conf_path):
