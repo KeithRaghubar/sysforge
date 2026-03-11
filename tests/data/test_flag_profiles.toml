@@ -28,7 +28,7 @@ profile = "optimized"
 priority = 15
 _expect_htop = false
 _expect_lib32 = true
-_expect_llvm = false
+_expect_llvm = true
 
 [[rules]]
 not_pkgname = "htop"
