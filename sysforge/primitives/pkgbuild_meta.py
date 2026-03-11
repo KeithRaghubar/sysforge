@@ -25,9 +25,12 @@ def _extract_functions(text):
     functions = {}
     spans = []
     i = 0
-    func_start = re.compile(r"(\w+)\s*\(\s*\)\s*\{")
+    func_start = re.compile(r"([\w][\w-]*)\s*\(\s*\)\s*\{")
     while i < len(text):
-        m = func_start.match(text, i)
+        if i == 0 or text[i - 1] == "\n":
+            m = func_start.match(text, i)
+        else:
+            m = None
         if m:
             func_name = m.group(1)
             j = m.end()
@@ -35,8 +38,14 @@ def _extract_functions(text):
             while j < len(text) and depth > 0:
                 if text[j] == "$" and j + 1 < len(text) and text[j + 1] == "{":
                     j += 2
-                    while j < len(text) and text[j] != "}":
+                    inner_depth = 1
+                    while j < len(text) and inner_depth > 0:
+                        if text[j] == "{":
+                            inner_depth += 1
+                        elif text[j] == "}":
+                            inner_depth -= 1
                         j += 1
+                    continue
                 elif text[j] == "{":
                     depth += 1
                 elif text[j] == "}":
@@ -84,6 +93,7 @@ def _strip_comments(text):
             i += 1
         result.append("".join(out).rstrip())
     return "\n".join(result)
+
 
 def parse_pkgbuild(path):
     text = _strip_comments(open(path).read())
