@@ -1,0 +1,20 @@
+# Maintainer: Test
+pkgname=llvm
+pkgver=22.1.0
+pkgrel=1
+pkgdesc='LLVM compiler infrastructure'
+arch=('x86_64')
+url='https://llvm.org/'
+license=('Apache-2.0 WITH LLVM-exception')
+makedepends=('cmake' 'ninja' 'python')
+options=('staticlibs' '!lto')
+source=()
+sha256sums=()
+
+build() {
+  cmake ..
+}
+
+package() {
+  make install
+}

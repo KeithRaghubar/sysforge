@@ -8,7 +8,21 @@ sys.path.insert(0, os.path.expanduser("~/src/sysforge"))
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.makepkg_wrapper import match_rules
 
-PKGBUILD = sys.argv[1] if len(sys.argv) > 1 else f"{sys.path[0]}/tests/TEST_PKGBUILD"
+PKGBUILD_ALIASES = {
+    "htop": f"{sys.path[0]}/tests/TEST_PKGBUILD_HTOP",
+    "lib32": f"{sys.path[0]}/tests/TEST_PKGBUILD_LIB32",
+    "llvm": f"{sys.path[0]}/tests/TEST_PKGBUILD_LLVM",
+}
+EXPECT_KEYS = {
+    "htop": "_expect_htop",
+    "lib32": "_expect_lib32",
+    "llvm": "_expect_llvm",
+}
+
+alias = sys.argv[1] if len(sys.argv) > 1 else "lib32"
+PKGBUILD = PKGBUILD_ALIASES.get(alias, alias)
+expect_key = EXPECT_KEYS.get(alias, None)
+
 PROFILES = (
     sys.argv[2] if len(sys.argv) > 2 else f"{sys.path[0]}/tests/test_flag_profiles.toml"
 )
@@ -18,7 +32,9 @@ with open(PROFILES, "rb") as f:
     config = tomllib.load(f)
 
 rules = config.get("rules", [])
-clean_rules = [{k: v for k, v in r.items() if k != "_expect"} for r in rules]
+clean_rules = [
+    {k: v for k, v in r.items() if k.startswith("_") is False} for r in rules
+]
 
 print(f"=== Parsing: {PKGBUILD} ===")
 print(f"pkgname:      {pkgmeta['globals'].get('pkgname')}")
@@ -34,16 +50,16 @@ print(f"=== {len(rules)} rules in {PROFILES} ===\n")
 
 passed = 0
 failed = 0
-skipped = 0
+no_expect = 0
 
 for i, (rule, clean) in enumerate(zip(rules, clean_rules)):
     did_match = id(clean) in matched_ids
-    expected = rule.get("_expect", None)
+    expected = rule.get(expect_key) if expect_key else None
     status = "MATCH" if did_match else "SKIP "
 
     if expected is None:
         verdict = ""
-        skipped += 1
+        no_expect += 1
     elif did_match == expected:
         verdict = "✓"
         passed += 1
@@ -59,8 +75,8 @@ for i, (rule, clean) in enumerate(zip(rules, clean_rules)):
 print("=== Summary ===")
 print(f"  Passed:  {passed}")
 print(f"  Failed:  {failed}")
-if skipped:
-    print(f"  No expectation: {skipped}")
+if no_expect:
+    print(f"  No expectation: {no_expect}")
 print()
 if failed:
     print("FAILURES detected.")
