@@ -301,7 +301,32 @@ def match_rules(pkgmeta, rules):
 
 
 def resolve_groups(pkgmeta, matched_rules, defaults):
-    pass
+    """
+    Build the final groups list for a package.
+    Starts with the PKGBUILD's own groups, then appends:
+      - defaults.append_groups (always)
+      - append_groups from each matched rule, in rule order
+    Deduplicates while preserving insertion order.
+    """
+    pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
+    if isinstance(pkgname, list):
+        pkgname = pkgname[0]
+
+    existing = list(pkgmeta.get("globals", {}).get("groups", []))
+    to_append = list(defaults.get("append_groups", []))
+
+    for rule in matched_rules:
+        to_append.extend(rule.get("append_groups", []))
+
+    # Deduplicate preserving order, existing groups take precedence
+    seen = set(existing)
+    for group in to_append:
+        if group not in seen:
+            existing.append(group)
+            seen.add(group)
+
+    print(f"[GROUPS][{pkgname}] Resolved groups: {existing}")
+    return existing
 
 
 def emit_makepkg_conf(resolved_profile):
