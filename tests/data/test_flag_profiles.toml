@@ -57,7 +57,7 @@ profile = "optimized"
 priority = 20
 _expect_htop = false
 _expect_lib32 = true
-_expect_llvm = false
+_expect_llvm = true
 
 # groups ALL + glob — matches nothing (no package has cosmic-* group)
 [[rules]]
@@ -75,7 +75,7 @@ profile = "standard"
 priority = 30
 _expect_htop = true
 _expect_lib32 = false
-_expect_llvm = true
+_expect_llvm = false
 
 # makedepends_any — matches htop (has git) and llvm (has cmake... wait llvm has cmake)
 [[rules]]
