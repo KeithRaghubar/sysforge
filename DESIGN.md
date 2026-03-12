@@ -87,7 +87,6 @@ sysforge/
 ├── sysforge/
 │   ├── __init__.py
 │   ├── cli.py
-│   ├── dag.py
 │   └── primitives/
 │       ├── pkgbuild_meta.py
 │       └── makepkg_wrapper.py
@@ -101,14 +100,16 @@ sysforge/
 │   │   │   ├── htop.PKGBUILD
 │   │   │   ├── lib32-llvm.PKGBUILD
 │   │   │   ├── llvm.PKGBUILD
-│   │   │   ├── complex.PKGBUILD
 │   │   │   ├── cosmic.PKGBUILD
-│   │   │   └── simple.PKGBUILD
+│   │   │   └── vulkan-headers-git.PKGBUILD
 │   │   ├── test_flag_profiles.toml
-│   │   └── etc/sysforge/
+│   │   ├── etc/sysforge/
+│   │   │   └── flag_profiles.toml
+│   │   └── user/.config/sysforge/
 │   │       └── flag_profiles.toml
 │   ├── test_parser.py
-│   └── test_wrapper.py
+│   ├── test_wrapper.py
+│   └── test_pipeline.py
 ├── PKGBUILD
 └── pyproject.toml
 ```
@@ -335,7 +336,7 @@ When multiple rules match a package, all matching profiles are collected and mer
 - Equal priority → first occurrence (file order) wins
 - Losers are logged with their priorities but discarded — output is always a single resolved value per key, no cross-rule concatenation
 
-The `priority` field is an integer (default `0`). Higher = wins.
+The `priority` field is a required integer (range `0–99`). Higher = wins. User rules are bumped by `100` on merge, giving an effective range of `100–199` for user rules and `0–99` for system rules.
 
 **`append` across rules:** when two matching rules both have `append` entries for the same key, this is treated as a conflict — highest priority rule's append wins, others are logged and discarded. There is no cross-rule concatenation. `append` only concatenates within a single profile's own `extends` chain.
 
@@ -389,6 +390,9 @@ Both checks are non-fatal by default and configurable via `abi_mismatch` and `de
 Each scenario has a configurable behaviour in `[failure_handling]`:
 
 ```toml
+[defaults]
+profile = "standard"        # fallback profile when no rule matches
+
 [failure_handling]
 pkgbuild_unparseable  = "warn_and_fallback"  # fallback to bare
 no_rule_matched       = "fallback"           # use default_profile silently
@@ -398,7 +402,6 @@ tempfile_write_failed = "abort"             # never silently use system conf
 env_conflict          = "warn_and_fallback"  # wrapper value wins, logged
 abi_mismatch          = "warn_and_fallback"  # soname version mismatch detected pre-build
 dep_unsatisfied       = "warn_and_fallback"  # version constraint not met pre-build
-default_profile = "bare"
 ```
 
 **Behaviours:** `abort`, `warn_and_fallback`, `fallback`, `error`
@@ -435,6 +438,8 @@ Every log line is prefixed with exactly one structured category tag. Every line 
 | `[CONF]` | Config file loading, hierarchy, active consumes set |
 | `[DEP]` | Pre-build dependency analysis: soname mismatches and version constraint checks |
 | `[CACHE]` | Cache state snapshots: ccache/sccache activity, passive monitoring of external caches |
+| `[CONFIG]` | Config file loading, hierarchy resolution, extends_system merge |
+| `[GROUPS]` | Package group resolution: existing groups, defaults.append_groups, rule append_groups |
 
 Grepping a single tag gives the complete story for that concern across the full log.
 

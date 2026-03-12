@@ -9,7 +9,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives.pkgbuild_meta import parse_pkgbuild, patch_pkgbuild_groups
 
 CONFIG_BASE = Path(os.environ.get("SYSFORGE_CONFIG_DIR", "/"))
 
