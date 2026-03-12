@@ -17,6 +17,76 @@ CONFIG_PATHS = [
     CONFIG_BASE / "etc/sysforge/flag_profiles.toml",
 ]
 
+# Keys that are sysforge-internal and must not be written to makepkg.conf
+_SYSFORGE_KEYS = {
+    "build_mode",
+    "pgo_store",
+    "failure_handling",
+    "clean_builddir",
+    "makepkg_flags",
+}
+
+# ---------------------------------------------------------------------------
+# Failure handling
+# ---------------------------------------------------------------------------
+
+# Scenarios that always abort regardless of config
+_ALWAYS_ABORT = {"profile_missing", "tempfile_write_failed"}
+
+# Default behaviours if [failure_handling] is absent or incomplete
+_FAILURE_DEFAULTS = {
+    "pkgbuild_unparseable": "warn_and_fallback",
+    "no_rule_matched": "fallback",
+    "profile_missing": "abort",
+    "profile_cycle": "abort",
+    "tempfile_write_failed": "abort",
+    "env_conflict": "warn_and_fallback",
+    "abi_mismatch": "warn_and_fallback",
+    "dep_unsatisfied": "warn_and_fallback",
+}
+
+_VALID_BEHAVIOURS = {"abort", "warn_and_fallback", "fallback", "error"}
+
+
+def handle_failure(scenario, message, config, fallback=None):
+    """
+    Handle a named failure scenario according to [failure_handling] config.
+
+    Behaviours:
+      abort          — log and raise RuntimeError immediately
+      error          — log as error, raise RuntimeError
+      warn_and_fallback — log as warning, return fallback value
+      fallback       — return fallback value silently
+
+    profile_missing and tempfile_write_failed always abort regardless of config.
+    """
+    failure_cfg = config.get("failure_handling", {})
+    behaviour = failure_cfg.get(scenario, _FAILURE_DEFAULTS.get(scenario, "abort"))
+
+    if scenario in _ALWAYS_ABORT:
+        behaviour = "abort"
+
+    if behaviour not in _VALID_BEHAVIOURS:
+        print(
+            f"[FAILURE] Unknown behaviour {behaviour!r} for scenario {scenario!r}, defaulting to abort"
+        )
+        behaviour = "abort"
+
+    if behaviour == "abort":
+        print(f"[FAILURE][{scenario}] ABORT: {message}")
+        raise RuntimeError(f"[{scenario}] {message}")
+
+    elif behaviour == "error":
+        print(f"[FAILURE][{scenario}] ERROR: {message}")
+        raise RuntimeError(f"[{scenario}] {message}")
+
+    elif behaviour == "warn_and_fallback":
+        print(f"[FAILURE][{scenario}] WARNING: {message} — falling back")
+        return fallback
+
+    elif behaviour == "fallback":
+        return fallback
+
 
 def load_config():
     """
@@ -328,16 +398,6 @@ def resolve_groups(pkgmeta, matched_rules, defaults):
     return existing
 
 
-# Keys that are sysforge-internal and must not be written to makepkg.conf
-_SYSFORGE_KEYS = {
-    "build_mode",
-    "pgo_store",
-    "failure_handling",
-    "clean_builddir",
-    "makepkg_flags",
-}
-
-
 @contextlib.contextmanager
 def emit_makepkg_conf(resolved_profile):
     """
@@ -390,7 +450,13 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile):
 
 
 def run(pkgbuild_path):
-    pkgmeta = parse_pkgbuild(pkgbuild_path)
+    try:
+        pkgmeta = parse_pkgbuild(pkgbuild_path)
+    except Exception as e:
+        config = load_config()
+        handle_failure("pkgbuild_unparseable", str(e), config)
+        pkgmeta = {"globals": {}}
+
     config = load_config()
 
     matched_rules = match_rules(pkgmeta, config.get("rules", []))
@@ -404,8 +470,11 @@ def run(pkgbuild_path):
     elif build_mode == "patch_linker":
         pass  # hand off to linker patcher
     else:
-        with emit_makepkg_conf(resolved_profile) as conf_path:
-            invoke_makepkg(pkgbuild_path, conf_path, resolved_profile)
+        try:
+            with emit_makepkg_conf(resolved_profile) as conf_path:
+                invoke_makepkg(pkgbuild_path, conf_path, resolved_profile)
+        except Exception as e:
+            handle_failure("tempfile_write_failed", str(e), config)
 
 
 if __name__ == "__main__":
