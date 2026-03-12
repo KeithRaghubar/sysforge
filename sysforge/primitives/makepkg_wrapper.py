@@ -331,7 +331,13 @@ def resolve_groups(pkgmeta, matched_rules, defaults):
 
 
 # Keys that are sysforge-internal and must not be written to makepkg.conf
-_SYSFORGE_KEYS = {"build_mode", "pgo_store"}
+_SYSFORGE_KEYS = {
+    "build_mode",
+    "pgo_store",
+    "failure_handling",
+    "clean_builddir",
+    "makepkg_flags",
+}
 
 
 @contextlib.contextmanager
@@ -365,8 +371,24 @@ def emit_makepkg_conf(resolved_profile):
         print(f"[CONF] Removed temp makepkg.conf: {tmp_path}")
 
 
-def invoke_makepkg(pkgbuild_path, conf_path):
-    pass
+def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile):
+    pkgbuild_path = Path(pkgbuild_path).resolve()
+    build_dir = pkgbuild_path.parent
+
+    env = os.environ.copy()
+    env["MAKEPKG_CONF"] = str(conf_path)
+
+    flags = resolved_profile.get("makepkg_flags", [])
+    cmd = ["makepkg"] + flags
+
+    print(
+        f"[BUILD] Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}"
+    )
+
+    result = subprocess.run(cmd, cwd=build_dir, env=env)
+
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, "makepkg")
 
 
 def run(pkgbuild_path):

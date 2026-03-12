@@ -18,6 +18,7 @@ extends = "bare"
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
+makepkg_flags = ["--noconfirm", "--syncdeps"]
 
 [profiles.optimized]
 extends = "standard"
@@ -32,6 +33,16 @@ pgo_store = "/var/tmp"
 [profiles.cosmic]
 extends = "optimized"
 build_mode = "patch_linker"
+
+[profiles.batch]
+extends = "standard"
+makepkg_flags = ["--noconfirm", "--syncdeps", "--rmdeps", "--install", "--noprogressbar", "--log", "--cleanbuild"]
+failure_handling = "warn_and_continue"
+clean_builddir = true
+
+[profiles.unattended]
+extends = "batch"
+# alias for batch
 
 # =============================================================================
 # Rules
