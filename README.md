@@ -204,7 +204,7 @@ sysforge build htop --log-dir /tmp/sf  # custom log directory
 |---|---|
 | PKGBUILD parser (`pkgbuild_meta.py`) | ✅ Done |
 | Rule matching (`match_rules`) | ✅ Done |
-| Profile extends + merge (`merge_extends`) | 🔧 In progress |
+| Profile extends + merge (`merge_extends`) | ✅ Done |
 | Makepkg wrapper (end-to-end) | 🔧 In progress |
 | Pipeline DAG | ⬜ Planned |
 | Hardware detection stage | ⬜ Planned |

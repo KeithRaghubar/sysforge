@@ -375,9 +375,28 @@ The wrapper generates only the conf files in the resolved `consumes` set, logs t
 
 Conf files only receive native keys (CFLAGS, LDFLAGS, RUSTFLAGS, etc.). Env vars from `[profiles.*.env]` travel separately and are never written into conf files.
 
-### Pre-Build Dependency Analysis
+### Batch Builds
 
-Before invoking makepkg, the wrapper runs two checks against the resolved `depends` and `makedepends`:
+The `batch` profile key (`batch = true`) switches the wrapper into unattended mode:
+
+- **Batch mode** — on build failure, abort immediately with a `[FAILURE]` log entry. No prompt.
+- **Interactive mode** (default) — on build failure, prompt the user to manually correct the PKGBUILD and retry, or type `abort` to stop.
+
+`batch = true` is the only mechanism needed to express this — it does not interact with `[failure_handling]`. The `failure_handling` key is not valid on individual profiles.
+
+```toml
+[profiles.batch]
+extends = "standard"
+batch = true
+makepkg_flags = ["--noconfirm", "--syncdeps", "--rmdeps", "--install", "--noprogressbar", "--log", "--cleanbuild"]
+clean_builddir = true
+```
+
+Build summary (packages built / failed / remaining) is deferred to V2 alongside the AUR wrapper. Per-failure logging under `[FAILURE]` is sufficient for v0.1.
+
+### Pre-Build Dependency Analysis *(planned)*
+
+Before invoking makepkg, the wrapper will run two checks against the resolved `depends` and `makedepends`:
 
 **Soname inspection** — resolves the `.so` versions each declared dependency currently exposes on the system (via `ldconfig -p` and `/usr/lib`) and compares against what the package expects to link against. Any version mismatch is flagged under `[DEP]` before the build starts rather than surfacing as a cryptic mid-build linker error.
 
@@ -420,7 +439,7 @@ shell_passthrough = 20   # inherited calling env (allowlisted vars)
 pkgbuild_export   = 10   # detected exports in PKGBUILD (best-effort)
 ```
 
-The full precedence table is logged at startup under `[ENV]`. The wrapper constructs a clean environment dict rather than inheriting the calling shell's env wholesale — an explicit allowlist of vars (PATH, HOME, USER, etc.) is passed through; everything else is blocked unless the profile explicitly includes it.
+The full precedence table is logged at startup under `[ENV]`. The wrapper will construct a clean environment dict rather than inheriting the calling shell's env wholesale — an explicit allowlist of vars (PATH, HOME, USER, etc.) will be passed through; everything else blocked unless the profile explicitly includes it. *(Clean env allowlist not yet implemented — currently inherits full shell env.)*
 
 ---
 
@@ -435,7 +454,7 @@ Every log line is prefixed with exactly one structured category tag. Every line 
 | `[ENV]` | Env var resolution, conflicts, overrides, precedence table |
 | `[BUILD]` | makepkg invocation and exit codes |
 | `[FAILURE]` | Any failure scenario firing |
-| `[CONF]` | Config file loading, hierarchy, active consumes set |
+| `[CONF]` | Temp makepkg conf file generation and cleanup, active consumes set |
 | `[DEP]` | Pre-build dependency analysis: soname mismatches and version constraint checks |
 | `[CACHE]` | Cache state snapshots: ccache/sccache activity, passive monitoring of external caches |
 | `[CONFIG]` | Config file loading, hierarchy resolution, extends_system merge |
@@ -449,11 +468,10 @@ Grepping a single tag gives the complete story for that concern across the full 
 [ENV]    [sysforge]    precedence: wrapper_profile=100 makepkg_conf=80 shell_passthrough=20 pkgbuild_export=10
 [DEP]    [mesa-git]    soname ok: libLLVM-18.so → found
 [DEP]    [mesa-git]    version ok: llvm-libs>=18.0 → 18.1.8-1
-[PROFILE][mesa-git]    matched rule: groups=rust-lto-broken priority=10 → no_lto
-[PROFILE][mesa-git]    discarded: makedepends_any=cargo priority=5 → safe_globals (outprioritized)
-[FLAG]   [mesa-git]    CFLAGS="-O2 -pipe -march=native ..." (source: safe_globals via no_lto extends)
-[ENV]    [mesa-git]    CARGO_PROFILE_RELEASE_LTO="false" (source: no_lto env override)
-[CONF]   [mesa-git]    active conf files: makepkg, rust, env
+[PROFILE][mesa-git]    matched rule: makedepends_all=cmake,ninja priority=10 → optimized
+[PROFILE][mesa-git]    discarded: pkgnames=mesa-git priority=5 → standard (outprioritized)
+[FLAG]   [mesa-git]    CFLAGS="-march=native -O3 -pipe -fno-plt" (source: optimized)
+[CONF]   [mesa-git]    active conf files: makepkg, env
 [BUILD]  [mesa-git]    invoking makepkg -si via MAKEPKG_CONF=/tmp/sysforge_abc123.conf
 ```
 
@@ -609,12 +627,12 @@ SysForge tracks build state in `/var/lib/sysforge/build_state.toml`:
 
 ```toml
 [mesa-git]
-profile   = "no_lto"
+profile   = "optimized"
 pkgver    = "24.1.0"
 built_at  = "2026-02-14T10:32:00Z"
 
 [llvm]
-profile   = "lto"
+profile   = "pgo_llvm_toolchain"
 pkgver    = "18.1.8"
 built_at  = "2026-02-10T08:15:00Z"
 ```
