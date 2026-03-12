@@ -36,6 +36,7 @@ build_mode = "patch_linker"
 
 [profiles.batch]
 extends = "standard"
+batch = true
 makepkg_flags = ["--noconfirm", "--syncdeps", "--rmdeps", "--install", "--noprogressbar", "--log", "--cleanbuild"]
 failure_handling = "warn_and_continue"
 clean_builddir = true

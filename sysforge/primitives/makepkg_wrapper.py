@@ -2,6 +2,7 @@ import contextlib
 import fnmatch
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,11 +20,12 @@ CONFIG_PATHS = [
 
 # Keys that are sysforge-internal and must not be written to makepkg.conf
 _SYSFORGE_KEYS = {
+    "batch",
     "build_mode",
-    "pgo_store",
-    "failure_handling",
     "clean_builddir",
+    "failure_handling",
     "makepkg_flags",
+    "pgo_store",
 }
 
 # ---------------------------------------------------------------------------
@@ -449,31 +451,61 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile):
         raise subprocess.CalledProcessError(result.returncode, "makepkg")
 
 
-def run(pkgbuild_path):
-    config = load_config()
-
+def _run_build(pkgbuild_path, resolved_profile, config):
+    """
+    Emit makepkg.conf and invoke makepkg, handling build failures.
+    In batch mode, aborts on failure.
+    Otherwise, prompts the user to manually correct and retry.
+    """
     try:
-        pkgmeta = parse_pkgbuild(pkgbuild_path)
+        with emit_makepkg_conf(resolved_profile) as conf_path:
+            _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile)
+    except RuntimeError:
+        raise
     except Exception as e:
-        handle_failure("pkgbuild_unparseable", str(e), config)
-        pkgmeta = {"globals": {}}
+        handle_failure("tempfile_write_failed", str(e), config)
 
-    matched_rules = match_rules(pkgmeta, config.get("rules", []))
-    resolved_profile = resolve_profile(pkgmeta, matched_rules, config)
-    groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
 
-    build_mode = resolved_profile.get("build_mode", None)
+def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile):
+    """
+    Invoke makepkg, retrying after manual correction if not in batch mode.
+    """
+    if resolved_profile.get("batch", False):
+        try:
+            invoke_makepkg(pkgbuild_path, conf_path, resolved_profile)
+        except subprocess.CalledProcessError as e:
+            print(f"[BUILD] Build failed in batch mode, aborting: {e}")
+            raise RuntimeError(f"[build_failed] {e}")
+    else:
+        while True:
+            try:
+                invoke_makepkg(pkgbuild_path, conf_path, resolved_profile)
+                break
+            except subprocess.CalledProcessError as e:
+                print(f"[BUILD] Build failed: {e}")
+                print(f"[BUILD] PKGBUILD location: {pkgbuild_path}")
+                response = (
+                    input(
+                        "[BUILD] Manually correct the PKGBUILD and press Enter to retry, "
+                        "or type 'abort' to stop: "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if response == "abort":
+                    raise RuntimeError(
+                        "[build_failed] Aborted by user after build failure"
+                    )
+                print("[BUILD] Retrying build...")
 
+
+def run(pkgbuild_path):
     if build_mode == "pgo_llvm_toolchain":
         pass  # hand off to pgo handler
     elif build_mode == "patch_linker":
         pass  # hand off to linker patcher
     else:
-        try:
-            with emit_makepkg_conf(resolved_profile) as conf_path:
-                invoke_makepkg(pkgbuild_path, conf_path, resolved_profile)
-        except Exception as e:
-            handle_failure("tempfile_write_failed", str(e), config)
+        _run_build(pkgbuild_path, resolved_profile, config)
 
 
 if __name__ == "__main__":
