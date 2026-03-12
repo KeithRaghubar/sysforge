@@ -460,6 +460,7 @@ def _run_build(pkgbuild_path, resolved_profile, config):
     In batch mode, aborts on failure.
     Otherwise, prompts the user to manually correct and retry.
     """
+    patched_path = patch_pkgbuild_groups(pkgbuild_path, groups)
     try:
         with emit_makepkg_conf(resolved_profile) as conf_path:
             _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile)
@@ -467,6 +468,10 @@ def _run_build(pkgbuild_path, resolved_profile, config):
         raise
     except Exception as e:
         handle_failure("tempfile_write_failed", str(e), config)
+    finally:
+        if patched_path.exists():
+            patched_path.unlink()
+            print(f"[BUILD] Removed patched PKGBUILD: {patched_path}")
 
 
 def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile):
@@ -508,7 +513,7 @@ def run(pkgbuild_path):
     elif build_mode == "patch_linker":
         pass  # hand off to linker patcher
     else:
-        _run_build(pkgbuild_path, resolved_profile, config)
+        _run_build(pkgbuild_path, resolved_profile, config, groups)
 
 
 if __name__ == "__main__":

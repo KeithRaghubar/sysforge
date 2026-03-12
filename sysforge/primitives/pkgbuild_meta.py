@@ -111,3 +111,38 @@ def parse_pkgbuild(path):
         if key not in result["globals"]:
             result["globals"][key] = value.strip()
     return result
+
+
+def patch_pkgbuild_groups(pkgbuild_path, groups):
+    """
+    Write a patched copy of the PKGBUILD with the resolved groups list injected.
+    If a groups=(...) array exists, it is replaced. If absent, it is inserted
+    after the pkgname line.
+    Returns the path to the patched copy (PKGBUILD.sysforge).
+    """
+    patched_path = pkgbuild_path.parent / "PKGBUILD.sysforge"
+    groups_line = "groups=(" + " ".join(f'"{g}"' for g in groups) + ")"
+
+    text = pkgbuild_path.read_text()
+
+    # Replace existing groups array if present
+    new_text, count = re.subn(
+        r"^groups=\([^)]*\)",
+        groups_line,
+        text,
+        flags=re.MULTILINE,
+    )
+
+    if count == 0:
+        # No existing groups — insert after pkgname line
+        new_text = re.sub(
+            r"^(pkgname=.*)$",
+            rf"\1\n{groups_line}",
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+
+    patched_path.write_text(new_text)
+    print(f"[BUILD] Wrote patched PKGBUILD: {patched_path}")
+    return patched_path
