@@ -18,6 +18,11 @@ CONFIG_PATHS = [
     CONFIG_BASE / "etc/sysforge/flag_profiles.toml",
 ]
 
+CONFLICT_GROUP_PATHS = [
+    Path.home() / ".config/sysforge/append_conflict_groups.toml",
+    CONFIG_BASE / "etc/sysforge/append_conflict_groups.toml",
+]
+
 # Keys that are sysforge-internal and must not be written to makepkg.conf
 _SYSFORGE_KEYS = {
     "batch",
@@ -88,6 +93,118 @@ def handle_failure(scenario, message, config, fallback=None):
 
     elif behaviour == "fallback":
         return fallback
+
+
+def load_conflict_groups(conflict_group_paths=None):
+    """
+    Load append_conflict_groups.toml from user and system paths.
+    Returns dict: { group_name: [flag, ...] }
+
+    If the user file sets extends_system = true, user groups are merged onto
+    system groups (user wins per key). Otherwise the first found file wins.
+    Returns an empty dict if no file is found (non-fatal).
+    """
+
+    def _load(path):
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+
+    paths = conflict_group_paths if conflict_group_paths is not None else CONFLICT_GROUP_PATHS
+    user_path = paths[0] if len(paths) > 0 else None
+    system_path = paths[1] if len(paths) > 1 else None
+
+    user_data = _load(user_path) if user_path and user_path.exists() else None
+    system_data = _load(system_path) if system_path and system_path.exists() else None
+
+    if user_data is None and system_data is None:
+        return {}
+
+    system_groups = system_data.get("conflict_groups", {}) if system_data else {}
+
+    if user_data is None:
+        return system_groups
+
+    user_groups = user_data.get("conflict_groups", {})
+
+    if user_data.get("extends_system", False):
+        merged = dict(system_groups)
+        merged.update(user_groups)
+        return merged
+
+    return user_groups
+
+
+def _extract_prefix(token):
+    """
+    Extract the prefix used for prefix-match replacement during append merge.
+
+    Rules (in order):
+    - Flags containing '=' (e.g. '--icf=all', '-flto=thin', '-DFOO=bar'):
+      prefix is everything up to and including '='
+    - Flags ending in a run of digits (e.g. '-O2', '-O3', '-g2'):
+      prefix is everything before those trailing digits
+    - All other flags: no prefix (returns None — no replacement)
+    """
+    eq_idx = token.find("=")
+    if eq_idx != -1:
+        return token[: eq_idx + 1]
+
+    m = re.match(r"^(.*[^\d])(\d+)$", token)
+    if m:
+        return m.group(1)
+
+    return None
+
+
+def _merge_append_value(parent_val, child_append_val, conflict_groups):
+    """
+    Merge child_append_val token list into parent_val token list.
+
+    Algorithm (per child token):
+      1. Explicit conflict group — if token is in a group, remove all group
+         members from the result list, then insert the child token.
+      2. Prefix match — if a token with the same prefix already exists,
+         replace it in-place.
+      3. Append — no match, add to end.
+
+    Returns the merged string (space-joined).
+    """
+    parent_tokens = parent_val.split() if parent_val else []
+    child_tokens = child_append_val.split() if child_append_val else []
+
+    # Build reverse index: flag → frozenset of its group members
+    flag_to_group: dict[str, list[str]] = {}
+    for members in conflict_groups.values():
+        for member in members:
+            flag_to_group[member] = members
+
+    result = list(parent_tokens)
+
+    for child_token in child_tokens:
+        # (1) Explicit conflict group
+        if child_token in flag_to_group:
+            group_members = set(flag_to_group[child_token])
+            result = [t for t in result if t not in group_members]
+            result.append(child_token)
+            continue
+
+        # (2) Prefix match
+        prefix = _extract_prefix(child_token)
+        matched_idx = None
+        if prefix is not None:
+            for i, existing in enumerate(result):
+                if _extract_prefix(existing) == prefix:
+                    matched_idx = i
+                    break
+
+        if matched_idx is not None:
+            result[matched_idx] = child_token
+            continue
+
+        # (3) Append
+        result.append(child_token)
+
+    return " ".join(result)
 
 
 def load_config(config_paths=None):
@@ -189,7 +306,7 @@ def _validate_rule_priorities(rules, source):
             )
 
 
-def resolve_profile(pkgmeta, matched_rules, config):
+def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None):
     """
     Select winning profile from matched_rules by priority, resolve its extends
     chain, and return the flat merged profile dict.
@@ -240,13 +357,19 @@ def resolve_profile(pkgmeta, matched_rules, config):
             )
         profile_name = default_profile
 
-    return merge_extends(profile_name, profiles)
+    return merge_extends(profile_name, profiles, conflict_groups=conflict_groups)
 
 
-def merge_extends(profile_name, profiles, visited=None):
+def merge_extends(profile_name, profiles, visited=None, conflict_groups=None):
     """
     Resolve a profile's full inheritance chain via 'extends'.
     Returns a flat dict of all keys with child values overriding parent values.
+
+    Direct child keys fully replace the parent value (child must restate the
+    complete value). Keys in the optional 'append' sub-dict are merged into the
+    parent value using the token-level append algorithm (_merge_append_value),
+    which handles prefix replacement and explicit conflict groups.
+
     Raises ValueError on missing profiles or inheritance cycles.
     """
     if visited is None:
@@ -261,14 +384,42 @@ def merge_extends(profile_name, profiles, visited=None):
 
     profile = dict(profiles[profile_name])
     parent_name = profile.pop("extends", None)
+    append_overrides = profile.pop("append", {})
+
+    if conflict_groups is None:
+        conflict_groups = {}
 
     if parent_name is None:
+        if append_overrides:
+            print(
+                f"[PROFILE] Warning: profile '{profile_name}' has [append] but no parent — "
+                "append section ignored"
+            )
         return profile
 
-    parent = merge_extends(parent_name, profiles, visited + [profile_name])
+    parent = merge_extends(
+        parent_name, profiles, visited + [profile_name], conflict_groups
+    )
 
-    # Parent provides the base; child keys win
-    return {**parent, **profile}
+    # Parent provides the base; direct child keys win outright
+    merged = {**parent, **profile}
+
+    # Apply token-level append merges on top of direct overrides
+    for key, child_append_val in append_overrides.items():
+        if key in profile:
+            print(
+                f"[PROFILE] Warning: key '{key}' is set both directly and in [append] "
+                f"on profile '{profile_name}' — direct value takes precedence, append ignored"
+            )
+            continue
+        parent_val = parent.get(key, "")
+        merged[key] = _merge_append_value(parent_val, child_append_val, conflict_groups)
+        print(
+            f"[PROFILE][{profile_name}] append merge {key!r}: "
+            f"{parent_val!r} + {child_append_val!r} → {merged[key]!r}"
+        )
+
+    return merged
 
 
 def match_rules(pkgmeta, rules):
@@ -511,6 +662,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile):
 
 def run(pkgbuild_path):
     config = load_config()
+    conflict_groups = load_conflict_groups()
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)
@@ -520,7 +672,7 @@ def run(pkgbuild_path):
 
     pkgbuild_path = Path(pkgbuild_path).resolve()
     matched_rules = match_rules(pkgmeta, config.get("rules", []))
-    resolved_profile = resolve_profile(pkgmeta, matched_rules, config)
+    resolved_profile = resolve_profile(pkgmeta, matched_rules, config, conflict_groups)
     groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
 
     if resolved_profile.get("clean_builddir", False):
