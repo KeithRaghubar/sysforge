@@ -1,0 +1,8 @@
+[consumes_inference]
+cargo  = ["makepkg", "rust", "env"]
+meson  = ["makepkg", "meson", "env"]
+cmake  = ["makepkg", "cmake", "env"]
+ninja  = ["makepkg", "env"]
+make   = ["makepkg", "env"]
+python = ["makepkg", "env"]
+git    = ["makepkg"]

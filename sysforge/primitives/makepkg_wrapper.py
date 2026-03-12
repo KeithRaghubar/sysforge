@@ -23,14 +23,59 @@ CONFLICT_GROUP_PATHS = [
     CONFIG_BASE / "etc/sysforge/append_conflict_groups.toml",
 ]
 
-# Keys that are sysforge-internal and must not be written to makepkg.conf
+CONSUMES_INFERENCE_PATHS = [
+    Path.home() / ".config/sysforge/consumes_inference.toml",
+    CONFIG_BASE / "etc/sysforge/consumes_inference.toml",
+]
+
+# Keys that are sysforge-internal and must not be written to any conf file
 _SYSFORGE_KEYS = {
     "batch",
     "build_mode",
     "clean_builddir",
+    "consumes",
     "failure_handling",
     "makepkg_flags",
     "pgo_store",
+}
+
+# ---------------------------------------------------------------------------
+# Consumes key map
+#
+# Maps conf file type → the set of profile keys that belong in that file.
+# Keys not in any conf type's set (and not in _SYSFORGE_KEYS) are destined
+# for explicit env var injection (future env pass).
+# ---------------------------------------------------------------------------
+
+_CONF_KEY_MAP: dict[str, set[str]] = {
+    "makepkg": {
+        # Standard makepkg.conf compiler/linker variables
+        "CC", "CXX", "AR", "NM", "RANLIB", "STRIP",
+        "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS",
+        "DEBUG_CFLAGS", "DEBUG_CXXFLAGS", "DEBUG_LDFLAGS",
+        "MAKEFLAGS",
+        # makepkg behaviour knobs written as shell vars
+        "BUILDENV", "OPTIONS", "INTEGRITY_CHECK",
+        "PKGEXT", "SRCEXT",
+    },
+    "rust": {
+        "RUSTFLAGS",
+        "CARGO_PROFILE_RELEASE_LTO",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL",
+        "CARGO_INCREMENTAL",
+        "RUSTC_WRAPPER",
+    },
+    "cmake": {
+        "CMAKE_BUILD_TYPE",
+        "CMAKE_C_FLAGS",
+        "CMAKE_CXX_FLAGS",
+        "CMAKE_EXE_LINKER_FLAGS",
+        "CMAKE_SHARED_LINKER_FLAGS",
+    },
+    "meson": {
+        "MESON_ARGS",
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -132,6 +177,104 @@ def load_conflict_groups(conflict_group_paths=None):
         return merged
 
     return user_groups
+
+
+def load_consumes_inference(paths=None):
+    """
+    Load consumes_inference.toml from system (and optionally user) paths.
+    Returns dict: { makedep_tool: [conf_type, ...] }
+
+    The inference map is system-defined and user-extendable. If the user file
+    sets extends_system = true, user entries are merged onto system entries
+    (user wins per key). Otherwise the first found file wins.
+    Returns a built-in minimal default if no file is found.
+    """
+
+    def _load(p):
+        with open(p, "rb") as f:
+            return tomllib.load(f)
+
+    _DEFAULT_INFERENCE = {
+        "cargo":  ["makepkg", "rust", "env"],
+        "meson":  ["makepkg", "meson", "env"],
+        "cmake":  ["makepkg", "cmake", "env"],
+        "ninja":  ["makepkg", "env"],
+        "make":   ["makepkg", "env"],
+        "python": ["makepkg", "env"],
+        "git":    ["makepkg"],
+    }
+
+    resolved_paths = paths if paths is not None else CONSUMES_INFERENCE_PATHS
+    user_path   = resolved_paths[0] if len(resolved_paths) > 0 else None
+    system_path = resolved_paths[1] if len(resolved_paths) > 1 else None
+
+    user_data   = _load(user_path)   if user_path   and user_path.exists()   else None
+    system_data = _load(system_path) if system_path and system_path.exists() else None
+
+    if user_data is None and system_data is None:
+        return _DEFAULT_INFERENCE
+
+    system_map = system_data.get("consumes_inference", {}) if system_data else {}
+
+    if user_data is None:
+        print(f"[CONFIG] Loaded consumes_inference: {system_path}")
+        return system_map
+
+    user_map = user_data.get("consumes_inference", {})
+
+    if user_data.get("extends_system", False):
+        merged = dict(system_map)
+        merged.update(user_map)
+        print(f"[CONFIG] Merged consumes_inference (user onto system)")
+        return merged
+
+    print(f"[CONFIG] Loaded consumes_inference (user only): {user_path}")
+    return user_map
+
+
+def resolve_consumes(resolved_profile, pkgmeta, inference_map):
+    """
+    Determine the set of conf file types required for this build.
+
+    Resolution order:
+      1. Explicit `consumes` list on the profile → use it verbatim (overrides inference)
+      2. Auto-infer: union of inference_map[dep] for each makedep that appears
+         in the inference map
+      3. Always include "makepkg" as baseline
+
+    Returns a frozenset of conf type strings, e.g. frozenset({"makepkg", "rust"}).
+    Logs the active set and its source under [CONF].
+    """
+    pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
+    if isinstance(pkgname, list):
+        pkgname = pkgname[0]
+
+    explicit = resolved_profile.get("consumes")
+    if explicit is not None:
+        active = frozenset(explicit)
+        print(f"[CONF][{pkgname}] consumes (explicit): {sorted(active)}")
+        return active
+
+    makedepends = set(pkgmeta.get("globals", {}).get("makedepends", []))
+    inferred: set[str] = {"makepkg"}
+    for dep in makedepends:
+        # Strip version constraints (e.g. "cmake>=3.25" → "cmake")
+        bare_dep = re.split(r"[><=!]", dep, maxsplit=1)[0].strip()
+        if bare_dep in inference_map:
+            inferred.update(inference_map[bare_dep])
+
+    active = frozenset(inferred)
+    matched_deps = sorted(
+        bare_dep
+        for dep in makedepends
+        for bare_dep in [re.split(r"[><=!]", dep, maxsplit=1)[0].strip()]
+        if bare_dep in inference_map
+    )
+    print(
+        f"[CONF][{pkgname}] consumes (inferred from makedepends {matched_deps}): "
+        f"{sorted(active)}"
+    )
+    return active
 
 
 def _extract_prefix(token):
@@ -557,18 +700,46 @@ def resolve_groups(pkgmeta, matched_rules, defaults):
 
 
 @contextlib.contextmanager
-def emit_makepkg_conf(resolved_profile):
+def emit_makepkg_conf(resolved_profile, active_consumes=None):
     """
     Write makepkg-relevant keys from resolved_profile to a temp file.
     Yields the path to the temp file for use with MAKEPKG_CONF.
     Cleans up the temp file on exit.
-    Skips sysforge-internal keys (build_mode, pgo_store, etc.).
+
+    Only keys belonging to conf types in active_consumes are written.
+    If active_consumes is None, falls back to writing all non-internal keys
+    (backward-compatible behaviour, used when consumes resolution is unavailable).
+
+    Keys not in any _CONF_KEY_MAP entry and not in _SYSFORGE_KEYS are silently
+    skipped — they are destined for explicit env var injection (future env pass).
     """
+    if active_consumes is None:
+        # Fallback: write everything that isn't a sysforge-internal key
+        allowed_keys = None
+    else:
+        # Union of key sets for all active conf types that we currently generate
+        # as conf files. "env" is handled separately (future pass) — skip here.
+        allowed_keys: set[str] = set()
+        for conf_type in active_consumes:
+            if conf_type in _CONF_KEY_MAP:
+                allowed_keys.update(_CONF_KEY_MAP[conf_type])
+
     conf_lines = []
+    skipped_for_env: list[str] = []
+
     for key, val in resolved_profile.items():
         if key in _SYSFORGE_KEYS:
             continue
+        if allowed_keys is not None and key not in allowed_keys:
+            skipped_for_env.append(key)
+            continue
         conf_lines.append(f'{key}="{val}"')
+
+    if skipped_for_env:
+        print(
+            f"[CONF] Skipped (env pass, not yet implemented): "
+            f"{sorted(skipped_for_env)}"
+        )
 
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -607,7 +778,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile):
         raise subprocess.CalledProcessError(result.returncode, "makepkg")
 
 
-def _run_build(pkgbuild_path, resolved_profile, config, groups):
+def _run_build(pkgbuild_path, resolved_profile, config, groups, active_consumes=None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
     In batch mode, aborts on failure.
@@ -615,7 +786,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups):
     """
     patched_path = patch_pkgbuild_groups(pkgbuild_path, groups)
     try:
-        with emit_makepkg_conf(resolved_profile) as conf_path:
+        with emit_makepkg_conf(resolved_profile, active_consumes) as conf_path:
             _invoke_with_retry(patched_path, conf_path, resolved_profile)
     except RuntimeError:
         raise
@@ -663,6 +834,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile):
 def run(pkgbuild_path):
     config = load_config()
     conflict_groups = load_conflict_groups()
+    inference_map = load_consumes_inference()
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)
@@ -673,6 +845,7 @@ def run(pkgbuild_path):
     pkgbuild_path = Path(pkgbuild_path).resolve()
     matched_rules = match_rules(pkgmeta, config.get("rules", []))
     resolved_profile = resolve_profile(pkgmeta, matched_rules, config, conflict_groups)
+    active_consumes = resolve_consumes(resolved_profile, pkgmeta, inference_map)
     groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
 
     if resolved_profile.get("clean_builddir", False):
@@ -692,7 +865,7 @@ def run(pkgbuild_path):
     elif build_mode == "patch_linker":
         pass  # hand off to linker patcher
     else:
-        _run_build(pkgbuild_path, resolved_profile, config, groups)
+        _run_build(pkgbuild_path, resolved_profile, config, groups, active_consumes)
 
 
 if __name__ == "__main__":
