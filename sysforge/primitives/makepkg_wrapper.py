@@ -456,7 +456,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile):
         raise subprocess.CalledProcessError(result.returncode, "makepkg")
 
 
-def _run_build(pkgbuild_path, resolved_profile, config):
+def _run_build(pkgbuild_path, resolved_profile, config, groups):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
     In batch mode, aborts on failure.
@@ -465,7 +465,7 @@ def _run_build(pkgbuild_path, resolved_profile, config):
     patched_path = patch_pkgbuild_groups(pkgbuild_path, groups)
     try:
         with emit_makepkg_conf(resolved_profile) as conf_path:
-            _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile)
+            _invoke_with_retry(patched_path, conf_path, resolved_profile)
     except RuntimeError:
         raise
     except Exception as e:
@@ -510,6 +510,31 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile):
 
 
 def run(pkgbuild_path):
+    config = load_config()
+
+    try:
+        pkgmeta = parse_pkgbuild(pkgbuild_path)
+    except Exception as e:
+        handle_failure("pkgbuild_unparseable", str(e), config)
+        pkgmeta = {"globals": {}}
+
+    pkgbuild_path = Path(pkgbuild_path).resolve()
+    matched_rules = match_rules(pkgmeta, config.get("rules", []))
+    resolved_profile = resolve_profile(pkgmeta, matched_rules, config)
+    groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
+
+    if resolved_profile.get("clean_builddir", False):
+        build_dir = pkgbuild_path.parent
+        for entry in build_dir.iterdir():
+            if entry.name != "PKGBUILD" and not entry.name.endswith(".PKGBUILD"):
+                if entry.is_dir():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+        print(f"[BUILD] Cleaned build dir: {build_dir}")
+
+    build_mode = resolved_profile.get("build_mode", None)
+
     if build_mode == "pgo_llvm_toolchain":
         pass  # hand off to pgo handler
     elif build_mode == "patch_linker":
