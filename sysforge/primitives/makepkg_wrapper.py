@@ -166,25 +166,6 @@ def resolve_profile(pkgmeta, matched_rules, config):
     return merge_extends(profile_name, profiles)
 
 
-def run(pkgbuild_path):
-    pkgmeta = parse_pkgbuild(pkgbuild_path)
-    config = load_config()
-
-    matched_rules = match_rules(pkgmeta, config.get("rules", []))
-    resolved_profile = resolve_profile(pkgmeta, matched_rules, config)
-    groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
-
-    build_mode = resolved_profile.get("build_mode", None)
-
-    if build_mode == "pgo_llvm_toolchain":
-        pass  # hand off to pgo handler
-    elif build_mode == "patch_linker":
-        pass  # hand off to linker patcher
-    else:
-        with emit_makepkg_conf(resolved_profile) as conf_path:
-            invoke_makepkg(pkgbuild_path, conf_path, resolved_profile)
-
-
 def merge_extends(profile_name, profiles, visited=None):
     """
     Resolve a profile's full inheritance chain via 'extends'.
