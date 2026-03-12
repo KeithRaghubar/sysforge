@@ -18,11 +18,12 @@ SysForge is a personal system automation framework that produces a reproducible,
 10. [Makepkg Wrapper](#makepkg-wrapper)
 11. [Logging](#logging)
 12. [Hardware Detection](#hardware-detection)
-13. [Graphics Stack Build Order](#graphics-stack-build-order)
-14. [Release Plan](#release-plan)
-15. [Re-converge](#re-converge)
-16. [V2 Roadmap](#v2-roadmap)
-17. [Open Questions](#open-questions)
+13. [Cache Management](#cache-management)
+14. [Graphics Stack Build Order](#graphics-stack-build-order)
+15. [Release Plan](#release-plan)
+16. [Re-converge](#re-converge)
+17. [V2 Roadmap](#v2-roadmap)
+18. [Open Questions](#open-questions)
 
 ---
 
@@ -133,6 +134,7 @@ Each entry declares:
 - `source` — one of `repo` (pacman), `aur`, or `git` (direct PKGBUILD)
 - `pkgbuild_patch` *(optional bool)* — if `true`, the PKGBUILD patching library runs on this package before build
 - `requires_hardware` *(optional)* — hardware capability key that must be present in `hardware_profile.toml` for this package to be included; absent or false drops the package silently at pipeline time
+- `cache` *(optional bool)* — overrides the profile-level cache default for this package. Set to `false` to unconditionally disable ccache/sccache for this build (required for all PGO stages)
 
 ```toml
 [[package]]
@@ -148,6 +150,11 @@ pkgbuild_patch = true
 [[package]]
 name = "linux-zen"
 source = "aur"
+
+[[package]]
+name = "llvm-pgo-stage1"
+source = "aur"
+cache = false   # instrumented objects must never be cached
 ```
 
 `requires_hardware` keys are matched against those emitted by the hardware detection stage into `hardware_profile.toml`. Example:
@@ -427,6 +434,7 @@ Every log line is prefixed with exactly one structured category tag. Every line 
 | `[FAILURE]` | Any failure scenario firing |
 | `[CONF]` | Config file loading, hierarchy, active consumes set |
 | `[DEP]` | Pre-build dependency analysis: soname mismatches and version constraint checks |
+| `[CACHE]` | Cache state snapshots: ccache/sccache activity, passive monitoring of external caches |
 
 Grepping a single tag gives the complete story for that concern across the full log.
 
@@ -458,6 +466,69 @@ sysforge --no-unified-log  # per-package logs only
 sysforge --no-pkg-logs     # unified log only
 sysforge --log-dir <path>  # override output directory for per-package logs
 ```
+
+---
+
+## Cache Management
+
+### ccache and sccache
+
+SysForge configures build caches via a `[cache]` table in `flag_profiles.toml`:
+
+```toml
+[cache]
+ccache                       = "auto"           # auto | enabled | disabled
+sccache                      = "auto"           # auto | enabled | disabled
+ccache_dir                   = "~/.cache/ccache"
+sccache_dir                  = "~/.cache/sccache"
+ccache_max_size              = "10G"
+sccache_max_size             = "10G"
+invalidate_on_toolchain_change = "warn"         # warn | purge | ignore
+```
+
+`auto` — use if installed, skip silently if not. `enabled` — require it; abort if missing (consistent with `[failure_handling]` philosophy).
+
+**Compiler invocation** uses explicit absolute paths rather than ccache's symlink shim, which interacts badly with makepkg prepending `$srcdir` to `PATH`:
+
+```
+CC="ccache /usr/bin/clang"
+CXX="ccache /usr/bin/clang++"
+```
+
+sccache wraps the Rust compiler via `RUSTC_WRAPPER=sccache` in the env block. The two caches own distinct domains and run simultaneously without conflict: **ccache owns C/C++, sccache owns Rust**.
+
+`CARGO_INCREMENTAL=0` is set globally for all Rust package builds. Cargo's incremental cache uses fingerprinting that does not reliably invalidate on env var changes (e.g. `RUSTFLAGS`), making it unsafe in a flag-managed build environment.
+
+### Per-Package Cache Override
+
+The `cache = false` field in `packages.toml` disables both ccache and sccache for a specific package, overriding the profile-level default. This is required for all PGO build stages:
+
+- **Instrumented stage** — cached instrumented objects must never be reused in a non-instrumented build; the failure would be silent and catastrophic
+- **Optimized stage** — profdata is not reliably covered by sccache's cache key, so the full PGO sequence has cache disabled by default
+
+### Toolchain Fingerprint Tracking
+
+SysForge tracks a toolchain fingerprint (hash of compiler binary path + version string) in its state dir. On mismatch — e.g. after an LLVM version bump — the `invalidate_on_toolchain_change` behavior fires:
+
+- `warn` — log a `[CACHE]` warning; leave caches intact
+- `purge` — run `ccache -C` and wipe sccache dir automatically
+- `ignore` — do nothing
+
+`purge` is destructive and opt-in. Default is `warn` to surface the mismatch without data loss.
+
+### Passive Cache Monitoring
+
+SysForge tracks but does not manage several caches that can affect build behaviour. All observations are logged under `[CACHE]`. No automated intervention is performed; management may be added later if usage reveals a need.
+
+| Cache | What SysForge tracks |
+|---|---|
+| ThinLTO cache dir | Existence, size, last-modified timestamp before each build |
+| CMake/Meson build dirs | Presence of stale `CMakeCache.txt` / `build.ninja` in `$srcdir` before build starts |
+| makepkg `SRCDEST` git cache | Git HEAD of cached VCS sources before and after fetch |
+| `ld.so` cache | Mtime of `/etc/ld.so.cache` before and after any library package install |
+| pacman package cache | Whether a cached `.pkg.tar.zst` in `/var/cache/pacman/pkg/` conflicts with a freshly built package |
+
+The `--cache-report` flag dumps a structured summary of all passive cache observations at the end of any build run.
 
 ---
 
