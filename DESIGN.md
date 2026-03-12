@@ -90,7 +90,7 @@ sysforge/
 │   └── primitives/
 │       ├── pkgbuild_meta.py
 │       └── makepkg_wrapper.py
-├── configs/
+├── configs/                    # planned — not yet in repo
 │   ├── flag_profiles.toml
 │   └── hardware/
 │       └── zen3_rtx5070.toml
@@ -282,7 +282,7 @@ build_mode = "patch_linker"
 
 ### `extends` Semantics
 
-Full inheritance with explicit override. The child starts as a complete copy of the parent's resolved values, then applies its own keys on top. The `append` subsection concatenates onto the parent's already-resolved value rather than replacing it — this means a child's appends always build correctly on top of whatever the parent resolved to, even if the parent's value changes.
+Full inheritance with explicit override. The child starts as a complete copy of the parent's resolved values, then applies its own keys on top. The `append` subsection will concatenate onto the parent's already-resolved value rather than replacing it — this means a child's appends will always build correctly on top of whatever the parent resolved to, even if the parent's value changes. *(append subsection not yet implemented — currently child keys always fully override parent.)*
 
 ### Rules
 
@@ -330,15 +330,15 @@ The old singular `pkgname`, `depends`, and `makedepends` keys are not supported 
 
 ### Multi-Rule Merge and Priority
 
-When multiple rules match a package, all matching profiles are collected and merged:
+When multiple rules match a package, the **highest-priority rule wins outright** — its profile is resolved and used in full. The inheritance system (`extends`) is how profiles compose with each other; rules are not an additional composition layer.
 
-- Each flag key takes the value from the **highest priority rule**
+- Highest priority rule → its profile is resolved via `extends` chain
 - Equal priority → first occurrence (file order) wins
-- Losers are logged with their priorities but discarded — output is always a single resolved value per key, no cross-rule concatenation
+- All non-winning rules are logged with their priorities and discarded
 
 The `priority` field is a required integer (range `0–99`). Higher = wins. User rules are bumped by `100` on merge, giving an effective range of `100–199` for user rules and `0–99` for system rules.
 
-**`append` across rules:** when two matching rules both have `append` entries for the same key, this is treated as a conflict — highest priority rule's append wins, others are logged and discarded. There is no cross-rule concatenation. `append` only concatenates within a single profile's own `extends` chain.
+**`append_groups` is additive across all matched rules**, regardless of priority. Every matched rule's `append_groups` is collected and appended to the package's final group list, deduplicated in match order. This is asymmetric by design — flag keys are winner-takes-all, groups are accumulative.
 
 ### `consumes` Field
 
@@ -357,7 +357,7 @@ cmake  = ["makepkg", "cmake", "env"]
 ninja  = ["makepkg", "env"]
 ```
 
-The wrapper generates only the conf files in the resolved `consumes` set, logs the active set under `[CONF]`. Missing conf files cause a build failure — detailed logs are sufficient to diagnose the cause.
+The wrapper will generate only the conf files in the resolved `consumes` set, logging the active set under `[CONF]`. Missing conf files will cause a build failure — detailed logs are sufficient to diagnose the cause. *(Consumes filtering not yet implemented — currently a single makepkg conf is generated from all non-internal profile keys.)*
 
 ---
 
@@ -370,10 +370,10 @@ The wrapper generates only the conf files in the resolved `consumes` set, logs t
 3. Resolve `extends` chains on each matched profile into fully flat value sets
 4. Merge across matched rules using priorities → one resolved value per key; log all discarded candidates
 5. Log full resolved values with winning sources and discarded candidates
-6. Generate temp conf files (only those in `consumes`); env overrides kept separate
-7. Run `makepkg` pointed at temp conf files via `MAKEPKG_CONF`; env vars passed as explicit env on invocation
+6. Generate temp conf files *(planned: only those in `consumes`; currently writes all non-internal keys)*
+7. Run `makepkg` pointed at temp conf files via `MAKEPKG_CONF` *(planned: env vars from `[profiles.*.env]` passed as explicit env on invocation; currently not separated)*
 
-Conf files only receive native keys (CFLAGS, LDFLAGS, RUSTFLAGS, etc.). Env vars from `[profiles.*.env]` travel separately and are never written into conf files.
+Conf files only receive native keys (CFLAGS, LDFLAGS, RUSTFLAGS, etc.). Env vars from `[profiles.*.env]` will travel separately and never be written into conf files. *(Not yet implemented.)*
 
 ### Batch Builds
 
@@ -427,9 +427,9 @@ dep_unsatisfied       = "warn_and_fallback"  # version constraint not met pre-bu
 
 New scenarios are added by registering a handler function and adding its key to `[failure_handling]`. `profile_missing` and `tempfile_write_failed` always abort regardless of config.
 
-### Env Var Precedence
+### Env Var Precedence *(planned)*
 
-Env precedence is a first-class config table. Changing the hierarchy means changing these numbers — not tracing which file happened to win.
+Env precedence will be a first-class config table. Changing the hierarchy means changing these numbers — not tracing which file happened to win.
 
 ```toml
 [env_precedence]
@@ -439,7 +439,9 @@ shell_passthrough = 20   # inherited calling env (allowlisted vars)
 pkgbuild_export   = 10   # detected exports in PKGBUILD (best-effort)
 ```
 
-The full precedence table is logged at startup under `[ENV]`. The wrapper will construct a clean environment dict rather than inheriting the calling shell's env wholesale — an explicit allowlist of vars (PATH, HOME, USER, etc.) will be passed through; everything else blocked unless the profile explicitly includes it. *(Clean env allowlist not yet implemented — currently inherits full shell env.)*
+The full precedence table will be logged at startup under `[ENV]`. *(Not yet implemented — `[env_precedence]` is not currently read.)*
+
+When implemented, the wrapper will construct a clean environment dict rather than inheriting the calling shell's env wholesale — an explicit allowlist of vars (PATH, HOME, USER, etc.) will be passed through; everything else blocked unless the profile explicitly includes it. *(Not yet implemented — currently inherits full shell env.)*
 
 ---
 
@@ -447,16 +449,18 @@ The full precedence table is logged at startup under `[ENV]`. The wrapper will c
 
 Every log line is prefixed with exactly one structured category tag. Every line also includes the current package name as a second field, e.g. `[PROFILE][mesa-git]`. This means the log can be filtered by either dimension independently — grep for a tag to see all activity of that type, or grep for a package name to see its full build story.
 
+Tags marked *(planned)* are defined but not yet emitted in v0.1.
+
 | Tag | Covers |
 | --- | --- |
 | `[PROFILE]` | Profile resolution, rule matching, extends chain |
-| `[FLAG]` | makepkg.conf flag resolution and conflicts |
-| `[ENV]` | Env var resolution, conflicts, overrides, precedence table |
+| `[FLAG]` | makepkg.conf flag resolution and conflicts *(planned)* |
+| `[ENV]` | Env var resolution, conflicts, overrides, precedence table *(planned)* |
 | `[BUILD]` | makepkg invocation and exit codes |
 | `[FAILURE]` | Any failure scenario firing |
 | `[CONF]` | Temp makepkg conf file generation and cleanup, active consumes set |
-| `[DEP]` | Pre-build dependency analysis: soname mismatches and version constraint checks |
-| `[CACHE]` | Cache state snapshots: ccache/sccache activity, passive monitoring of external caches |
+| `[DEP]` | Pre-build dependency analysis: soname mismatches and version constraint checks *(planned)* |
+| `[CACHE]` | Cache state snapshots: ccache/sccache activity, passive monitoring of external caches *(planned)* |
 | `[CONFIG]` | Config file loading, hierarchy resolution, extends_system merge |
 | `[GROUPS]` | Package group resolution: existing groups, defaults.append_groups, rule append_groups |
 
