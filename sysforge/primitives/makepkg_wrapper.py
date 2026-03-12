@@ -131,10 +131,12 @@ def load_config():
         )
 
     if user_config is None:
+        _validate_rule_priorities(system_config.get("rules", []), "system")
         print(f"[CONFIG] Loaded system config: {system_path}")
         return system_config
 
     if system_config is None:
+        _validate_rule_priorities(user_config.get("rules", []), "user")
         print(f"[CONFIG] Loaded user config: {user_path}")
         return user_config
 
@@ -151,23 +153,8 @@ def load_config():
             },
         )
 
-        # Validate priority range before merging
-        VALID_RANGE = range(0, 100)
-        for source, rules in [
-            ("system", system_config.get("rules", [])),
-            ("user", user_config.get("rules", [])),
-        ]:
-            for i, rule in enumerate(rules):
-                p = rule.get("priority")
-                if p is None:
-                    raise ValueError(
-                        f"[CONFIG] {source} rule [{i}] is missing required 'priority'"
-                    )
-                if p not in VALID_RANGE:
-                    raise ValueError(
-                        f"[CONFIG] {source} rule [{i}] has invalid priority {p!r} "
-                        f"(must be 0-99)"
-                    )
+        _validate_rule_priorities(system_config.get("rules", []), "system")
+        _validate_rule_priorities(user_config.get("rules", []), "user")
 
         # Merge rules: user rules are bumped by 100 to guarantee precedence over system rules.
         # Valid priority range is 0-99 per config; effective range after bump is 100-199.
@@ -180,8 +167,24 @@ def load_config():
         merged["rules"] = system_rules + user_rules
         return merged
 
+    _validate_rule_priorities(user_config.get("rules", []), "user")
     print(f"[CONFIG] User config overrides system config: {user_path}")
     return user_config
+
+
+def _validate_rule_priorities(rules, source):
+    VALID_RANGE = range(0, 100)
+    for i, rule in enumerate(rules):
+        p = rule.get("priority")
+        if p is None:
+            raise ValueError(
+                f"[CONFIG] {source} rule [{i}] is missing required 'priority'"
+            )
+        if p not in VALID_RANGE:
+            raise ValueError(
+                f"[CONFIG] {source} rule [{i}] has invalid priority {p!r} "
+                f"(must be 0-99)"
+            )
 
 
 def resolve_profile(pkgmeta, matched_rules, config):
