@@ -112,15 +112,14 @@ def load_config():
     return user_config
 
 
-def resolve_profile(pkgmeta, config):
+def resolve_profile(pkgmeta, matched_rules, config):
     """
-    Match rules against pkgmeta, select winning profile by priority,
-    resolve its extends chain, and return the flat merged profile dict.
+    Select winning profile from matched_rules by priority, resolve its extends
+    chain, and return the flat merged profile dict.
     Highest priority wins; ties go to first occurrence. Losers are logged.
     Falls back to defaults.profile if no rules match.
     """
     profiles = config.get("profiles", {})
-    rules = config.get("rules", [])
     defaults = config.get("defaults", {})
     default_profile = defaults.get("profile", "bare")
 
@@ -128,11 +127,9 @@ def resolve_profile(pkgmeta, config):
     if isinstance(pkgname, list):
         pkgname = pkgname[0]
 
-    matched = match_rules(pkgmeta, rules)
-
     winner = None
     discarded = []
-    for rule in matched:
+    for rule in matched_rules:
         if "profile" not in rule:
             continue
         if winner is None or rule.get("priority", 0) > winner.get("priority", 0):
@@ -147,25 +144,45 @@ def resolve_profile(pkgmeta, config):
             f"[PROFILE][{pkgname}] Discarded rule "
             f"(priority {rule.get('priority', 0)}): profile={rule.get('profile')!r}"
         )
-        if winner:
-            profile_name = winner["profile"]
+
+    if winner:
+        profile_name = winner["profile"]
+        print(
+            f"[PROFILE][{pkgname}] Matched profile {profile_name!r} "
+            f"(priority {winner.get('priority', 0)})"
+        )
+    else:
+        if matched_rules:
             print(
-                f"[PROFILE][{pkgname}] Matched profile {profile_name!r} "
-                f"(priority {winner.get('priority', 0)})"
+                f"[PROFILE][{pkgname}] Rules matched but none specified a profile, "
+                f"using default: {default_profile!r}"
             )
         else:
-            if matched:
-                print(
-                    f"[PROFILE][{pkgname}] Rules matched but none specified a profile, "
-                    f"using default: {default_profile!r}"
-                )
-            else:
-                print(
-                    f"[PROFILE][{pkgname}] No rules matched, using default: {default_profile!r}"
-                )
-            profile_name = default_profile
+            print(
+                f"[PROFILE][{pkgname}] No rules matched, using default: {default_profile!r}"
+            )
+        profile_name = default_profile
 
     return merge_extends(profile_name, profiles)
+
+
+def run(pkgbuild_path):
+    pkgmeta = parse_pkgbuild(pkgbuild_path)
+    config = load_config()
+
+    matched_rules = match_rules(pkgmeta, config.get("rules", []))
+    resolved_profile = resolve_profile(pkgmeta, matched_rules, config)
+    groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
+
+    build_mode = resolved_profile.get("build_mode", None)
+
+    if build_mode == "pgo_llvm_toolchain":
+        pass  # hand off to pgo handler
+    elif build_mode == "patch_linker":
+        pass  # hand off to linker patcher
+    else:
+        with emit_makepkg_conf(resolved_profile) as conf_path:
+            invoke_makepkg(pkgbuild_path, conf_path, resolved_profile)
 
 
 def merge_extends(profile_name, profiles, visited=None):
@@ -395,8 +412,9 @@ def run(pkgbuild_path):
     pkgmeta = parse_pkgbuild(pkgbuild_path)
     config = load_config()
 
-    resolved_profile = resolve_profile(pkgmeta, config)
-    groups = resolve_groups(pkgmeta, resolved_profile, config.get("defaults", {}))
+    matched_rules = match_rules(pkgmeta, config.get("rules", []))
+    resolved_profile = resolve_profile(pkgmeta, matched_rules, config)
+    groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
 
     build_mode = resolved_profile.get("build_mode", None)
 
@@ -406,7 +424,7 @@ def run(pkgbuild_path):
         pass  # hand off to linker patcher
     else:
         with emit_makepkg_conf(resolved_profile) as conf_path:
-            invoke_makepkg(pkgbuild_path, conf_path)
+            invoke_makepkg(pkgbuild_path, conf_path, resolved_profile)
 
 
 if __name__ == "__main__":
