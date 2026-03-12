@@ -1,0 +1,16 @@
+extends_system = true
+
+# Override an existing system profile key
+[profiles.standard]
+CFLAGS = "-march=native -O2 -pipe -fstack-protector-strong"
+
+# Add a new profile that doesn't exist in system config
+[profiles.custom]
+extends = "optimized"
+RUSTFLAGS = "-C opt-level=3"
+
+# Add a user rule — should be bumped to priority 100+ on merge
+[[rules]]
+pkgnames = ["htop"]
+profile = "custom"
+priority = 5

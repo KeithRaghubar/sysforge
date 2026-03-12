@@ -90,7 +90,7 @@ def handle_failure(scenario, message, config, fallback=None):
         return fallback
 
 
-def load_config():
+def load_config(config_paths=None):
     """
     Load flag_profiles.toml from CONFIG_PATHS (user, then system).
     If the user config sets extends_system = true, deep-merge onto system config.
@@ -119,10 +119,12 @@ def load_config():
                 result[key] = val
         return result
 
-    user_path, system_path = CONFIG_PATHS[0], CONFIG_PATHS[1]
+    paths = config_paths if config_paths is not None else CONFIG_PATHS
+    user_path = paths[0] if len(paths) > 0 else None
+    system_path = paths[1] if len(paths) > 1 else None
 
-    user_config = _load(user_path) if user_path.exists() else None
-    system_config = _load(system_path) if system_path.exists() else None
+    user_config = _load(user_path) if user_path and user_path.exists() else None
+    system_config = _load(system_path) if system_path and system_path.exists() else None
 
     if user_config is None and system_config is None:
         raise FileNotFoundError(
