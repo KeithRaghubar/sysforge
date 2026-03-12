@@ -120,8 +120,10 @@ sysforge/
 /etc/sysforge/
     flag_profiles.toml
     consumes_inference.toml
+    append_conflict_groups.toml
 ~/.config/sysforge/
     flag_profiles.toml        # user overrides
+    append_conflict_groups.toml  # user conflict group overrides (optional)
 /usr/bin/sysforge
 ```
 
@@ -282,7 +284,46 @@ build_mode = "patch_linker"
 
 ### `extends` Semantics
 
-Full inheritance with explicit override. The child starts as a complete copy of the parent's resolved values, then applies its own keys on top. The `append` subsection will concatenate onto the parent's already-resolved value rather than replacing it — this means a child's appends will always build correctly on top of whatever the parent resolved to, even if the parent's value changes. *(append subsection not yet implemented — currently child keys always fully override parent.)*
+Full inheritance with explicit override. The child starts as a complete copy of the parent's resolved values, then applies its own keys on top.
+
+**Direct keys override** — a key set directly on a child profile fully replaces the parent's value. The child must restate the complete value.
+
+**`[profiles.x.append]` subsection merges** — keys in the `append` subsection are merged into the parent's value using a token-level list merge rather than string concatenation. This handles both additive flags and conflicting ones cleanly. *(Not yet implemented — currently child keys always fully override parent.)*
+
+#### Append Merge Algorithm *(planned)*
+
+1. Tokenize parent and child values by whitespace
+2. For each child token, resolve in this order:
+   - **Explicit conflict group** — if the token belongs to a defined conflict group, remove all other group members from the accumulated token list, then insert the child token
+   - **Prefix match** — extract the token's prefix (everything up to and including `=`, or up to a trailing digit run for flags like `-O2`); if a token with the same prefix already exists, replace it
+   - **Append** — no match, add to end
+3. Reconstruct as space-joined string
+
+**Worked example:**
+```
+parent CFLAGS:        "-march=native -O2 -pipe -fstack-protector"
+append CFLAGS:        "-O3 -fno-stack-protector --icf=all"
+
+-O3                   prefix "-O" matches "-O2"            → replace
+-fno-stack-protector  conflict group "stack"               → removes "-fstack-protector", inserts
+--icf=all             no match                             → append
+
+result: "-march=native -O3 -pipe -fno-stack-protector --icf=all"
+```
+
+#### Conflict Groups *(planned)*
+
+Conflict groups define sets of mutually exclusive flags that don't share a detectable prefix. Defined in system config:
+
+```toml
+# /etc/sysforge/append_conflict_groups.toml
+[conflict_groups]
+pic   = ["-fPIC", "-fPIE", "-fpic", "-fpie", "-fno-pic", "-fno-pie"]
+lto   = ["-flto", "-flto=thin", "-flto=full", "-fno-lto"]
+stack = ["-fstack-protector", "-fstack-protector-strong", "-fno-stack-protector"]
+```
+
+User-defined groups live in `~/.config/sysforge/append_conflict_groups.toml` and follow the same `extends_system` merge model as profiles. Explicit conflict groups take precedence over prefix matching.
 
 ### Rules
 
@@ -338,7 +379,9 @@ When multiple rules match a package, the **highest-priority rule wins outright**
 
 The `priority` field is a required integer (range `0–99`). Higher = wins. User rules are bumped by `100` on merge, giving an effective range of `100–199` for user rules and `0–99` for system rules.
 
-**`append_groups` is additive across all matched rules**, regardless of priority. Every matched rule's `append_groups` is collected and appended to the package's final group list, deduplicated in match order. This is asymmetric by design — flag keys are winner-takes-all, groups are accumulative.
+**`append_groups` is additive across all matched rules**, regardless of priority. Every matched rule's `append_groups` is collected and appended to the package's final group list, deduplicated in match order. This is asymmetric by design — flag resolution is winner-takes-all (one profile wins), groups are accumulative across all matches.
+
+Note: `append_groups` on rules is unrelated to `[profiles.x.append]` — they are distinct mechanisms.
 
 ### `consumes` Field
 
