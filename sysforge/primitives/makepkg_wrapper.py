@@ -450,14 +450,13 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile):
 
 
 def run(pkgbuild_path):
+    config = load_config()
+
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)
     except Exception as e:
-        config = load_config()
         handle_failure("pkgbuild_unparseable", str(e), config)
         pkgmeta = {"globals": {}}
-
-    config = load_config()
 
     matched_rules = match_rules(pkgmeta, config.get("rules", []))
     resolved_profile = resolve_profile(pkgmeta, matched_rules, config)
