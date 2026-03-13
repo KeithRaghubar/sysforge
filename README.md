@@ -205,10 +205,16 @@ sysforge build htop --log-dir /tmp/sf  # custom log directory
 | PKGBUILD parser (`pkgbuild_meta.py`) | ✅ Done |
 | Rule matching (`match_rules`) | ✅ Done |
 | Profile extends + merge (`merge_extends`) | ✅ Done |
-| Makepkg wrapper (end-to-end) | 🔧 In progress |
+| `[profiles.x.append]` token-level merge | ✅ Done |
+| Consumes filtering (conf type routing) | ✅ Done |
+| Env pass (`RUSTC_WRAPPER`, `CCACHE_DIR`, etc.) | ✅ Done |
+| PKGBUILD flag extraction + patching | ✅ Done |
+| Makepkg wrapper (end-to-end) | ✅ Done |
+| Pytest suite (190 tests) | ✅ Done |
+| Pre-build dep analysis (`[DEP]`) | 🔧 Next |
 | Pipeline DAG | ⬜ Planned |
 | Hardware detection stage | ⬜ Planned |
-| AUR publication | ⬜ Blocked on wrapper completion |
+| AUR publication | ⬜ Blocked on pipeline completion |
 | `sysforge converge` | ⬜ Planned |
 | Full yay replacement (V2) | ⬜ Long-term |
 
