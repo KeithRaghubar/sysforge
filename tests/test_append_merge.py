@@ -11,6 +11,7 @@ Covers:
 """
 import sys
 import os
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -19,12 +20,10 @@ from sysforge.primitives.profile import (
     _merge_append_value,
     merge_extends,
 )
+from sysforge.primitives.config import load_conflict_groups
 
-CONFLICT_GROUPS = {
-    "pic":   ["-fPIC", "-fPIE", "-fpic", "-fpie", "-fno-pic", "-fno-pie"],
-    "lto":   ["-flto", "-flto=thin", "-flto=full", "-fno-lto"],
-    "stack": ["-fstack-protector", "-fstack-protector-strong", "-fno-stack-protector"],
-}
+_FIXTURE = Path(__file__).parent / "data/etc/sysforge/append_conflict_groups.toml"
+CONFLICT_GROUPS = load_conflict_groups(conflict_group_paths=[_FIXTURE])
 
 # ---------------------------------------------------------------------------
 # _extract_prefix
