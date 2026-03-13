@@ -3,16 +3,21 @@ cli.py — SysForge command-line interface
 
 Implemented commands:
     sysforge build <PKGBUILD>   Build a single package using its matched profile
+    sysforge install            Run the pipeline (stages 5-7 usable now;
+                                stages 1-4 are stubs, use --start-from packages)
 
-Stubbed commands (pipeline not yet implemented):
-    sysforge install            Full pipeline: partition → base install → toolchain → packages → kernel → configure
+Stubbed commands (not yet implemented):
     sysforge converge           Rebuild packages whose profile, flags, or version have drifted
     sysforge resolve <pkg>      Show which profile would be applied to a package and why
 """
 import argparse
 import sys
+from pathlib import Path
 
 from sysforge.primitives.makepkg_wrapper import run
+from sysforge.primitives.config import load_config
+from sysforge.pipeline.runner import run_pipeline
+from sysforge.pipeline.stages.base import RunOptions
 
 
 def _cmd_build(args):
@@ -24,18 +29,27 @@ def _cmd_build(args):
 
 
 def _cmd_install(args):
-    # TODO: full pipeline — partition, base_install, hardware_detection,
-    # toolchain, packages, kernel, configure stages.
-    # Requires: pipeline DAG, hardware detection, packages.toml manifest.
-    print("[SYSFORGE] 'install' is not yet implemented.", file=sys.stderr)
-    sys.exit(1)
+    config = load_config()
+
+    # Inject packages_file into config if passed on CLI
+    if args.packages:
+        config["packages_file"] = args.packages
+
+    options = RunOptions(
+        resume=args.resume,
+        start_from=args.start_from,
+        force_retry=args.force_retry,
+        dry_run=args.dry_run,
+        state_dir=Path(args.state_dir) if args.state_dir else None,
+    )
+
+    run_pipeline(config, options)
 
 
 def _cmd_converge(args):
     # TODO: compare installed state in /var/lib/sysforge/build_state.toml
     # against current manifest and flag profiles; rebuild drifted packages.
     # --dry-run should show what would be rebuilt without doing it.
-    # Requires: pipeline DAG, build state tracking.
     print("[SYSFORGE] 'converge' is not yet implemented.", file=sys.stderr)
     sys.exit(1)
 
@@ -44,7 +58,6 @@ def _cmd_resolve(args):
     # TODO: parse the named package's PKGBUILD (fetched from AUR or a local path),
     # run rule matching and profile resolution, and print the resolved profile.
     # --show-flags prints the full resolved flag set.
-    # Requires: AUR fetch or local PKGBUILD path resolution.
     print("[SYSFORGE] 'resolve' is not yet implemented.", file=sys.stderr)
     sys.exit(1)
 
@@ -69,12 +82,48 @@ def main():
     # install
     p_install = sub.add_parser(
         "install",
-        help="[planned] Run full install pipeline from Arch ISO.",
+        help="Run the install pipeline (stages 5-7 active; 1-4 are stubs).",
     )
     p_install.add_argument(
-        "--config",
+        "--resume",
+        action="store_true",
+        help="Resume from the last checkpoint.",
+    )
+    p_install.add_argument(
+        "--start-from",
+        metavar="STAGE",
+        dest="start_from",
+        help=(
+            "Start from this stage, marking all prior stages as skipped. "
+            "Useful for running stages 5-7 on a live system: "
+            "--start-from packages"
+        ),
+    )
+    p_install.add_argument(
+        "--force-retry",
+        action="store_true",
+        dest="force_retry",
+        help="Retry all failed packages without prompting.",
+    )
+    p_install.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Show what would run without executing anything.",
+    )
+    p_install.add_argument(
+        "--packages",
+        metavar="FILE",
+        help="Path to packages.toml (overrides config default).",
+    )
+    p_install.add_argument(
+        "--state-dir",
         metavar="DIR",
-        help="Config directory (default: ~/.config/sysforge/).",
+        dest="state_dir",
+        help=(
+            "Override state directory (default: /var/lib/sysforge or "
+            "SYSFORGE_STATE_DIR env var)."
+        ),
     )
     p_install.set_defaults(func=_cmd_install)
 

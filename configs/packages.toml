@@ -1,0 +1,109 @@
+# =============================================================================
+# SysForge package manifest — starter stub
+#
+# Fields per entry:
+#   name             required  package name
+#   source           required  "repo" (pacman) | "aur" | "git"
+#   pkgbuild_patch   optional  true = run PKGBUILD flag extraction/patching
+#   requires_hardware optional  hardware key from hardware_profile.toml
+#   cache            optional  false = disable ccache/sccache for this package
+#
+# AUR/git packages require PKGBUILDs to be pre-cloned in [build] pkgbuild_dir.
+# AUR auto-fetch is planned for V2.
+# =============================================================================
+
+[build]
+# Directory containing pre-cloned PKGBUILDs for aur/git packages.
+# Each entry should have its own subdirectory: <pkgbuild_dir>/<name>/PKGBUILD
+pkgbuild_dir = "~/builds"
+
+
+# =============================================================================
+# Toolchain
+# =============================================================================
+
+[[package]]
+name = "llvm"
+source = "aur"
+cache = false   # PGO build — never cache instrumented objects
+
+[[package]]
+name = "lld"
+source = "aur"
+
+[[package]]
+name = "clang"
+source = "aur"
+
+[[package]]
+name = "mold"
+source = "repo"
+
+
+# =============================================================================
+# Graphics stack
+# =============================================================================
+
+[[package]]
+name = "vulkan-headers-git"
+source = "aur"
+
+[[package]]
+name = "vulkan-icd-loader-git"
+source = "aur"
+
+[[package]]
+name = "mesa-git"
+source = "aur"
+pkgbuild_patch = true
+
+[[package]]
+name = "nvidia-open-dkms"
+source = "repo"
+requires_hardware = "nvidia_gpu"
+
+
+# =============================================================================
+# Desktop — COSMIC
+# =============================================================================
+
+[[package]]
+name = "cosmic-comp-git"
+source = "aur"
+pkgbuild_patch = true
+
+[[package]]
+name = "cosmic-panel-git"
+source = "aur"
+pkgbuild_patch = true
+
+[[package]]
+name = "cosmic-edit-git"
+source = "aur"
+pkgbuild_patch = true
+
+
+# =============================================================================
+# Audio
+# =============================================================================
+
+[[package]]
+name = "pipewire"
+source = "repo"
+
+[[package]]
+name = "wireplumber"
+source = "repo"
+
+
+# =============================================================================
+# System utilities
+# =============================================================================
+
+[[package]]
+name = "htop"
+source = "repo"
+
+[[package]]
+name = "neovim"
+source = "repo"

@@ -1,0 +1,59 @@
+"""
+stages/base.py — Stage base class
+
+Each pipeline stage is a Stage subclass. The runner iterates the STAGES list,
+reads .name for logging and .depends_on for ordering validation, and calls
+.run() for execution.
+
+RunOptions is the decoupled options struct passed to every stage — not tied
+to argparse so stages can be called directly in tests or from other code.
+"""
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+@dataclass
+class RunOptions:
+    """
+    Options that control pipeline execution behaviour.
+    Constructed by the CLI from parsed argparse args.
+    """
+    resume: bool = False
+    start_from: str | None = None    # start from this stage, mark prior as skipped_to
+    force_retry: bool = False        # retry failed packages without prompt
+    dry_run: bool = False            # log what would run, don't execute
+    state_dir: Path | None = None    # overrides env var and default
+
+
+class Stage:
+    """
+    Base class for all pipeline stages.
+
+    Subclasses must set class attributes `name` and `description`, and
+    implement `run()`.
+
+    `depends_on` lists stage names that must be done before this stage runs.
+    For the linear SysForge pipeline this is always the previous stage name,
+    but the runner validates it so future non-linear stages are safe to add.
+    """
+    name: str = ""
+    description: str = ""
+    depends_on: list[str] = []
+
+    def run(self, config, state, options):
+        """
+        Execute this stage.
+
+        Args:
+            config:  fully loaded SysForge config dict
+            state:   PipelineState instance
+            options: RunOptions instance
+
+        Raises RuntimeError on unrecoverable failure.
+        Stages should call state.mark_package_* methods themselves for
+        intra-stage checkpointing (packages stage only).
+        """
+        raise NotImplementedError(f"Stage {self.name!r} has not been implemented")
+
+    def __repr__(self):
+        return f"<Stage {self.name!r}>"
