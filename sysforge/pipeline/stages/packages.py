@@ -182,13 +182,13 @@ def _prompt_failed_packages(failed_names, errors, options):
 # ---------------------------------------------------------------------------
 
 def _install_repo(pkg, options):
-    """Install a repo package via pacman -S --needed."""
+    """Install a repo package via sudo pacman -S --needed."""
     name = pkg["name"]
     if options.dry_run:
-        print(f"[PACKAGES] [dry-run] pacman -S --needed {name}")
+        print(f"[PACKAGES] [dry-run] sudo pacman -S --needed {name}")
         return
     print(f"[PACKAGES] Installing from repo: {name}")
-    result = subprocess.run(["pacman", "-S", "--needed", "--noconfirm", name])
+    result = subprocess.run(["sudo", "pacman", "-S", "--needed", "--noconfirm", name])
     if result.returncode != 0:
         raise RuntimeError(f"pacman -S failed for {name!r} (exit {result.returncode})")
 
