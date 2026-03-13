@@ -29,6 +29,8 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_pkgbuild_groups,
     write_extracted_profile,
 )
+from sysforge.primitives.dep_analysis import run_dep_analysis
+from sysforge.primitives.failure import handle_failure
 from sysforge.primitives.profile import (
     _CONF_KEY_MAP,
     _SYSFORGE_KEYS,
@@ -37,63 +39,6 @@ from sysforge.primitives.profile import (
     resolve_groups,
     resolve_profile,
 )
-
-
-# ---------------------------------------------------------------------------
-# Failure handling
-# ---------------------------------------------------------------------------
-
-_ALWAYS_ABORT = {"profile_missing", "tempfile_write_failed"}
-
-_FAILURE_DEFAULTS = {
-    "pkgbuild_unparseable": "warn_and_fallback",
-    "no_rule_matched": "fallback",
-    "profile_missing": "abort",
-    "profile_cycle": "abort",
-    "tempfile_write_failed": "abort",
-    "env_conflict": "warn_and_fallback",
-    "abi_mismatch": "warn_and_fallback",
-    "dep_unsatisfied": "warn_and_fallback",
-}
-
-_VALID_BEHAVIOURS = {"abort", "warn_and_fallback", "fallback", "error"}
-
-
-def handle_failure(scenario, message, config, fallback=None):
-    """
-    Handle a named failure scenario according to [failure_handling] config.
-
-    Behaviours:
-      abort             — log and raise RuntimeError immediately
-      error             — log as error, raise RuntimeError
-      warn_and_fallback — log as warning, return fallback value
-      fallback          — return fallback value silently
-
-    profile_missing and tempfile_write_failed always abort regardless of config.
-    """
-    failure_cfg = config.get("failure_handling", {})
-    behaviour = failure_cfg.get(scenario, _FAILURE_DEFAULTS.get(scenario, "abort"))
-
-    if scenario in _ALWAYS_ABORT:
-        behaviour = "abort"
-
-    if behaviour not in _VALID_BEHAVIOURS:
-        print(
-            f"[FAILURE] Unknown behaviour {behaviour!r} for scenario {scenario!r}, defaulting to abort"
-        )
-        behaviour = "abort"
-
-    if behaviour == "abort":
-        print(f"[FAILURE][{scenario}] ABORT: {message}")
-        raise RuntimeError(f"[{scenario}] {message}")
-    elif behaviour == "error":
-        print(f"[FAILURE][{scenario}] ERROR: {message}")
-        raise RuntimeError(f"[{scenario}] {message}")
-    elif behaviour == "warn_and_fallback":
-        print(f"[FAILURE][{scenario}] WARNING: {message} — falling back")
-        return fallback
-    elif behaviour == "fallback":
-        return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +310,7 @@ def run(pkgbuild_path):
     if build_mode == "pgo_llvm_toolchain":
         pass  # hand off to pgo handler
     else:
+        run_dep_analysis(pkgmeta, config)
         _run_build(
             pkgbuild_path, resolved_profile, config, groups,
             active_consumes=active_consumes,
