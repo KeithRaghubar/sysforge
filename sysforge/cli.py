@@ -23,9 +23,30 @@ from sysforge.pipeline.runner import run_pipeline
 from sysforge.pipeline.stages.base import RunOptions
 
 
+def _expand_makepkg_flags(flags_str):
+    """
+    Split a makepkg flags string into a list of individual flags,
+    expanding combined short flags like '-sfci' into ['-s', '-f', '-c', '-i'].
+    Long flags (--noconfirm) and flags with values are passed through as-is.
+    """
+    if not flags_str:
+        return []
+    result = []
+    for token in flags_str.split():
+        if token.startswith("--"):
+            result.append(token)
+        elif token.startswith("-") and len(token) > 2:
+            # Combined short flags e.g. -sfci → -s -f -c -i
+            result.extend(f"-{ch}" for ch in token[1:])
+        else:
+            result.append(token)
+    return result
+
+
 def _cmd_build(args):
+    extra_flags = _expand_makepkg_flags(args.makepkg) if args.makepkg else None
     try:
-        run(args.pkgbuild)
+        run(args.pkgbuild, extra_flags=extra_flags)
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -79,6 +100,15 @@ def main():
         "pkgbuild",
         metavar="PKGBUILD",
         help="Path to the PKGBUILD file to build.",
+    )
+    p_build.add_argument(
+        "--makepkg", "-m",
+        metavar="FLAGS",
+        help=(
+            "Additional makepkg flags, appended after profile makepkg_flags. "
+            "Combined short flags are expanded: -sfci becomes -s -f -c -i. "
+            "Example: sysforge build PKGBUILD -m '-sfci'"
+        ),
     )
     p_build.set_defaults(func=_cmd_build)
 
