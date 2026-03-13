@@ -36,8 +36,21 @@ _SYSFORGE_KEYS = {
     "pgo_store",
 }
 
-# Maps conf file type -> profile keys that belong in that file.
-# Keys absent from all sets (and not in _SYSFORGE_KEYS) travel via env pass.
+# Maps conf file type -> profile keys that belong in that delivery channel.
+#
+# All non-"env" types are written into the single temp makepkg.conf (which
+# makepkg sources, making them available as shell variables in the build env).
+# The "rust", "cmake", and "meson" types are separate filter buckets so that
+# cargo/cmake/meson-specific keys are only included when those tools are in
+# active_consumes — not written for every package unconditionally.
+#
+# "env" keys are injected directly onto the makepkg subprocess invocation env
+# (subprocess.run env= arg) rather than written to the conf file. Use this for
+# keys that need to be set before makepkg itself runs, or that wrap the compiler
+# invocation (e.g. RUSTC_WRAPPER=sccache, CCACHE_DIR).
+#
+# Any profile key not in any type and not in _SYSFORGE_KEYS also falls through
+# to the env pass, logged under [ENV].
 _CONF_KEY_MAP: dict[str, set[str]] = {
     "makepkg": {
         "CC", "CXX", "AR", "NM", "RANLIB", "STRIP",
@@ -53,7 +66,6 @@ _CONF_KEY_MAP: dict[str, set[str]] = {
         "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
         "CARGO_PROFILE_RELEASE_OPT_LEVEL",
         "CARGO_INCREMENTAL",
-        "RUSTC_WRAPPER",
     },
     "cmake": {
         "CMAKE_BUILD_TYPE",
@@ -64,6 +76,16 @@ _CONF_KEY_MAP: dict[str, set[str]] = {
     },
     "meson": {
         "MESON_ARGS",
+    },
+    # Keys in "env" are injected via subprocess invocation env, not conf file.
+    # "env" must appear in active_consumes for these to be delivered; otherwise
+    # they fall through to the unknown-key env pass with a log.
+    "env": {
+        "RUSTC_WRAPPER",    # sccache/ccache Rust compiler wrapper
+        "CCACHE_DIR",       # ccache cache directory
+        "SCCACHE_DIR",      # sccache cache directory
+        "CARGO_HOME",       # Cargo registry/cache root
+        "PKG_CONFIG_PATH",  # pkg-config search path
     },
 }
 

@@ -103,41 +103,40 @@ def handle_failure(scenario, message, config, fallback=None):
 @contextlib.contextmanager
 def emit_makepkg_conf(resolved_profile, active_consumes=None):
     """
-    Write makepkg-relevant keys from resolved_profile to a temp file.
+    Write conf-destined keys from resolved_profile to a temp makepkg.conf.
     Yields the path to the temp file for use with MAKEPKG_CONF.
     Cleans up the temp file on exit.
 
-    Only keys belonging to conf types in active_consumes are written.
-    If active_consumes is None, falls back to writing all non-internal keys
-    (backward-compatible behaviour).
+    Keys written: those belonging to any non-"env" conf type present in
+    active_consumes. If active_consumes is None, writes all non-internal,
+    non-"env" keys (backward-compatible fallback).
 
-    Keys absent from all _CONF_KEY_MAP entries and not in _SYSFORGE_KEYS are
-    held back for the future env pass and logged as skipped.
+    "env" type keys and unknown keys are delivered separately via
+    resolve_env_vars() and injected on the makepkg subprocess invocation.
     """
+    # Build the set of all "env"-type keys so we can exclude them here
+    env_keys = _CONF_KEY_MAP.get("env", set())
+
     if active_consumes is None:
+        # Fallback: write everything that isn't sysforge-internal or env-pass
         allowed_keys = None
     else:
         allowed_keys: set[str] = set()
         for conf_type in active_consumes:
+            if conf_type == "env":
+                continue  # env keys travel separately
             if conf_type in _CONF_KEY_MAP:
                 allowed_keys.update(_CONF_KEY_MAP[conf_type])
 
     conf_lines = []
-    skipped_for_env: list[str] = []
-
     for key, val in resolved_profile.items():
         if key in _SYSFORGE_KEYS:
             continue
+        if key in env_keys:
+            continue  # delivered via env pass
         if allowed_keys is not None and key not in allowed_keys:
-            skipped_for_env.append(key)
-            continue
+            continue  # unknown key — delivered via env pass
         conf_lines.append(f'{key}="{val}"')
-
-    if skipped_for_env:
-        print(
-            f"[CONF] Skipped (env pass, not yet implemented): "
-            f"{sorted(skipped_for_env)}"
-        )
 
     with tempfile.NamedTemporaryFile(
         mode="w",
@@ -157,15 +156,72 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None):
 
 
 # ---------------------------------------------------------------------------
-# Build invocation
+# Env var resolution and build invocation
 # ---------------------------------------------------------------------------
 
-def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile):
+def resolve_env_vars(resolved_profile, active_consumes=None):
+    """
+    Extract profile keys that travel via subprocess env injection rather than
+    the makepkg.conf temp file.
+
+    Two categories are collected:
+      1. Keys in the "env" conf type — explicitly designated for env injection
+         (e.g. RUSTC_WRAPPER, CCACHE_DIR). Only collected when "env" is in
+         active_consumes or active_consumes is None (fallback mode).
+      2. Unknown keys — not in any _CONF_KEY_MAP type and not in _SYSFORGE_KEYS.
+         These are always collected and logged under [ENV] as a warning, since
+         their presence may indicate a typo or a new key that needs classifying.
+
+    Returns dict[str, str] of key -> value pairs to inject on invocation.
+    Empty dict if nothing to inject.
+    """
+    env_type_keys = _CONF_KEY_MAP.get("env", set())
+
+    # All keys that are explicitly classified into a non-env conf type
+    all_conf_keys: set[str] = set()
+    for conf_type, keys in _CONF_KEY_MAP.items():
+        if conf_type != "env":
+            all_conf_keys.update(keys)
+
+    collect_env_type = active_consumes is None or "env" in active_consumes
+
+    result: dict[str, str] = {}
+    unknown: list[str] = []
+
+    for key, val in resolved_profile.items():
+        if key in _SYSFORGE_KEYS:
+            continue
+
+        if key in env_type_keys:
+            if collect_env_type:
+                result[key] = val
+                print(f"[ENV] Injecting (env type): {key}={val!r}")
+            continue
+
+        if key not in all_conf_keys:
+            # Unknown key — not classified; env pass with warning
+            result[key] = val
+            unknown.append(key)
+
+    if unknown:
+        print(
+            f"[ENV] Unclassified profile keys injected via env (consider adding to "
+            f"_CONF_KEY_MAP): {sorted(unknown)}"
+        )
+
+    return result
+
+
+def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile, extra_env=None):
     pkgbuild_path = Path(pkgbuild_path).resolve()
     build_dir = pkgbuild_path.parent
 
     env = os.environ.copy()
     env["MAKEPKG_CONF"] = str(conf_path)
+
+    if extra_env:
+        env.update(extra_env)
+        print(f"[ENV] Injecting {len(extra_env)} env var(s): {sorted(extra_env.keys())}")
 
     flags = resolved_profile.get("makepkg_flags", [])
     cmd = ["makepkg"] + flags
@@ -180,20 +236,20 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile):
         raise subprocess.CalledProcessError(result.returncode, "makepkg")
 
 
-def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile):
+def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile, extra_env=None):
     """
     Invoke makepkg, retrying after manual correction if not in batch mode.
     """
     if resolved_profile.get("batch", False):
         try:
-            invoke_makepkg(pkgbuild_path, conf_path, resolved_profile)
+            invoke_makepkg(pkgbuild_path, conf_path, resolved_profile, extra_env)
         except subprocess.CalledProcessError as e:
             print(f"[BUILD] Build failed in batch mode, aborting: {e}")
             raise RuntimeError(f"[build_failed] {e}")
     else:
         while True:
             try:
-                invoke_makepkg(pkgbuild_path, conf_path, resolved_profile)
+                invoke_makepkg(pkgbuild_path, conf_path, resolved_profile, extra_env)
                 break
             except subprocess.CalledProcessError as e:
                 print(f"[BUILD] Build failed: {e}")
@@ -234,8 +290,9 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
     success = False
     try:
+        extra_env = resolve_env_vars(resolved_profile, active_consumes)
         with emit_makepkg_conf(resolved_profile, active_consumes) as conf_path:
-            _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile)
+            _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile, extra_env)
         success = True
     except RuntimeError:
         raise

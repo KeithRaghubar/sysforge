@@ -34,13 +34,17 @@ _EXTRACTABLE_KEYS = {
     "MAKEFLAGS",
     "BUILDENV", "OPTIONS", "INTEGRITY_CHECK",
     "PKGEXT", "SRCEXT",
-    # rust.conf
+    # rust (conf) + env pass keys
     "RUSTFLAGS",
     "CARGO_PROFILE_RELEASE_LTO",
     "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
     "CARGO_PROFILE_RELEASE_OPT_LEVEL",
     "CARGO_INCREMENTAL",
-    "RUSTC_WRAPPER",
+    "RUSTC_WRAPPER",    # env pass
+    "CCACHE_DIR",       # env pass
+    "SCCACHE_DIR",      # env pass
+    "CARGO_HOME",       # env pass
+    "PKG_CONFIG_PATH",  # env pass
     # cmake
     "CMAKE_BUILD_TYPE",
     "CMAKE_C_FLAGS",
