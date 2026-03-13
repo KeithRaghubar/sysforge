@@ -1,4 +1,35 @@
+"""
+pkgbuild_meta.py — static PKGBUILD parser
+
+Responsible for reading and parsing PKGBUILD metadata. Does not source,
+execute, or modify any PKGBUILD. All mutation lives in pkgbuild_patcher.py.
+
+Public API:
+    parse_pkgbuild(path) -> {"globals": {...}, "functions": {...}}
+"""
 import re
+
+
+def _strip_comments(text):
+    """Strip # comments, respecting quoted strings."""
+    result = []
+    for line in text.splitlines():
+        out = []
+        in_single = False
+        in_double = False
+        i = 0
+        while i < len(line):
+            c = line[i]
+            if c == "'" and not in_double:
+                in_single = not in_single
+            elif c == '"' and not in_single:
+                in_double = not in_double
+            elif c == "#" and not in_single and not in_double:
+                break
+            out.append(c)
+            i += 1
+        result.append("".join(out).rstrip())
+    return "\n".join(result)
 
 
 def _extract_arrays(text):
@@ -64,7 +95,7 @@ def _extract_functions(text):
 
 def _parse_array_items(raw):
     """Parse array contents respecting quoted strings with spaces."""
-    items = re.findall(r"'([^']*)'|\"([^\"]*)\"|(\S+)", raw)
+    items = re.findall(r"'([^']*)'|\"([^\"]*)\"|(\\S+)", raw)
     result = []
     for groups in items:
         val = next((g for g in groups if g), None)
@@ -73,34 +104,28 @@ def _parse_array_items(raw):
     return result
 
 
-def _strip_comments(text):
-    """Strip # comments, respecting quoted strings."""
-    result = []
-    for line in text.splitlines():
-        out = []
-        in_single = False
-        in_double = False
-        i = 0
-        while i < len(line):
-            c = line[i]
-            if c == "'" and not in_double:
-                in_single = not in_single
-            elif c == '"' and not in_single:
-                in_double = not in_double
-            elif c == "#" and not in_single and not in_double:
-                break  # rest of line is a comment
-            out.append(c)
-            i += 1
-        result.append("".join(out).rstrip())
-    return "\n".join(result)
-
-
 def parse_pkgbuild(path):
+    """
+    Parse a PKGBUILD statically without sourcing or executing it.
+
+    Returns:
+        {
+            "globals":   { "pkgname": ..., "makedepends": [...], ... },
+            "functions": { "build": "...", "prepare": "...", ... }
+        }
+
+    Reliably parseable: pkgname, pkgver, pkgrel, epoch, groups, depends,
+    makedepends, provides, and all standard scalar/array globals. Function
+    bodies are extracted verbatim under their function name.
+
+    Not statically parseable: computed values, conditional metadata,
+    depends+=() inside functions. The wrapper falls back to the default
+    profile when parsing fails.
+    """
     text = _strip_comments(open(path).read())
     result = {"globals": {}, "functions": {}}
     result["functions"], global_text = _extract_functions(text)
     result["globals"].update(_extract_arrays(global_text))
-    # Scalars
     for m in re.finditer(
         r"""^(\w+)=(?:"([^"]*)"|'([^']*)'|([^()\n'"]+))""",
         global_text,
@@ -111,38 +136,3 @@ def parse_pkgbuild(path):
         if key not in result["globals"]:
             result["globals"][key] = value.strip()
     return result
-
-
-def patch_pkgbuild_groups(pkgbuild_path, groups):
-    """
-    Write a patched copy of the PKGBUILD with the resolved groups list injected.
-    If a groups=(...) array exists, it is replaced. If absent, it is inserted
-    after the pkgname line.
-    Returns the path to the patched copy (PKGBUILD.sysforge).
-    """
-    patched_path = pkgbuild_path.parent / "PKGBUILD.sysforge"
-    groups_line = "groups=(" + " ".join(f'"{g}"' for g in groups) + ")"
-
-    text = pkgbuild_path.read_text()
-
-    # Replace existing groups array if present
-    new_text, count = re.subn(
-        r"^groups=\([^)]*\)",
-        groups_line,
-        text,
-        flags=re.MULTILINE,
-    )
-
-    if count == 0:
-        # No existing groups — insert after pkgname line
-        new_text = re.sub(
-            r"^(pkgname=.*)$",
-            rf"\1\n{groups_line}",
-            text,
-            count=1,
-            flags=re.MULTILINE,
-        )
-
-    patched_path.write_text(new_text)
-    print(f"[BUILD] Wrote patched PKGBUILD: {patched_path}")
-    return patched_path

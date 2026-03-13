@@ -14,7 +14,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sysforge.primitives.makepkg_wrapper import (
+from sysforge.primitives.profile import (
     _extract_prefix,
     _merge_append_value,
     merge_extends,
