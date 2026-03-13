@@ -294,10 +294,23 @@ class PackagesStage(Stage):
         # Check if any packages are still failed after the loop
         final = state.get_package_progress()
         still_failed = final.get("failed", [])
+        n_built   = len(final.get("built", []))
+        n_failed  = len(still_failed)
+        n_skipped = len(final.get("skipped", []))
+        n_total   = n_built + n_failed + n_skipped
+
+        summary = (
+            f"Total: {n_total}  |  "
+            f"Built: {n_built}  |  "
+            f"Failed: {n_failed}  |  "
+            f"Skipped: {n_skipped}"
+        )
+
         if still_failed:
             print(
-                f"\n[PACKAGES] Stage complete with {len(still_failed)} failed package(s): "
-                f"{still_failed}",
+                f"\n[PACKAGES] Stage complete with failures.\n"
+                f"[PACKAGES] {summary}\n"
+                f"[PACKAGES] Failed packages: {still_failed}",
                 file=sys.stderr,
             )
             raise RuntimeError(
@@ -305,7 +318,6 @@ class PackagesStage(Stage):
             )
 
         print(
-            f"[PACKAGES] All packages done. "
-            f"Built: {len(final.get('built', []))}, "
-            f"Skipped: {len(final.get('skipped', []))}"
+            f"\n[PACKAGES] Stage complete.\n"
+            f"[PACKAGES] {summary}"
         )
