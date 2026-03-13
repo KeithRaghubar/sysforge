@@ -218,3 +218,54 @@ def load_consumes_inference(paths=None):
 
     print(f"[CONFIG] Loaded consumes_inference (user only): {user_path}")
     return user_map
+
+
+# ---------------------------------------------------------------------------
+# System makepkg.conf parsing
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+# Matches bash variable assignments in makepkg.conf:
+#   KEY="value"   KEY='value'   KEY=bare   KEY=(array items)
+#   export KEY=...
+_MAKEPKG_ASSIGN_RE = _re.compile(
+    r"""^[ \t]*(?:export[ \t]+)?(?P<key>[A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(?P<value>.*)""",
+    _re.MULTILINE,
+)
+
+
+def parse_system_makepkg_conf(path=None):
+    """
+    Parse /etc/makepkg.conf (or the given path) into a dict of
+    {key: raw_value_string}.
+
+    raw_value_string is the verbatim value text as it appears in the file
+    (including surrounding quotes or parentheses) so it can be written back
+    into a new conf file unchanged.
+
+    Returns empty dict if the file is not found or unreadable.
+    """
+    if path is None:
+        path = Path("/etc/makepkg.conf")
+    else:
+        path = Path(path)
+
+    if not path.exists():
+        print(f"[CONFIG] System makepkg.conf not found at {path} — will use profile values only")
+        return {}
+
+    try:
+        text = path.read_text()
+    except PermissionError:
+        print(f"[CONFIG] Cannot read {path} — will use profile values only")
+        return {}
+
+    result = {}
+    for m in _MAKEPKG_ASSIGN_RE.finditer(text):
+        key = m.group("key")
+        value = m.group("value").rstrip()
+        result[key] = value
+
+    print(f"[CONFIG] Parsed {len(result)} keys from {path}")
+    return result
