@@ -141,7 +141,7 @@ def test_manifest_preserves_order():
 def test_manifest_stdout_note_to_stderr():
     _, _, err = captured_manifest(["htop"])
     assert "stdout" in err.lower()
-    assert "nothing was saved" in err.lower()
+    assert "saved" in err.lower()
 
 def test_manifest_deduplicates_names():
     result, _, _ = captured_manifest(["htop", "htop", "neovim"])

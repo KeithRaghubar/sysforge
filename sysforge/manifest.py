@@ -139,8 +139,9 @@ def generate_manifest(names, pacman_fn=None, aur_fn=None):
             lines.append("")
 
     print(
-        "[MANIFEST] Output printed to stdout — nothing was saved.\n"
-        "[MANIFEST] Redirect to a file to save:  sysforge manifest ... > packages.toml",
+        "[MANIFEST] Output written to stdout. "
+        "If you redirected to a file it has been saved.\n"
+        "[MANIFEST] Example:  sysforge manifest htop neovim > packages.toml",
         file=sys.stderr,
     )
 
