@@ -5,6 +5,7 @@ Implemented commands:
     sysforge build <PKGBUILD>   Build a single package using its matched profile
     sysforge install            Run the pipeline (stages 5-7 usable now;
                                 stages 1-4 are stubs, use --start-from packages)
+    sysforge manifest           Generate a packages.toml stub from a list of names
 
 Stubbed commands (not yet implemented):
     sysforge converge           Rebuild packages whose profile, flags, or version have drifted
@@ -13,6 +14,8 @@ Stubbed commands (not yet implemented):
 import argparse
 import sys
 from pathlib import Path
+
+from sysforge.manifest import cmd_manifest
 
 from sysforge.primitives.makepkg_wrapper import run
 from sysforge.primitives.config import load_config
@@ -126,6 +129,24 @@ def main():
         ),
     )
     p_install.set_defaults(func=_cmd_install)
+
+    # manifest
+    p_manifest = sub.add_parser(
+        "manifest",
+        help="Generate a packages.toml stub from a list of package names.",
+    )
+    p_manifest.add_argument(
+        "packages",
+        nargs="*",
+        metavar="PKG",
+        help="Package names to include.",
+    )
+    p_manifest.add_argument(
+        "--file", "-f",
+        metavar="FILE",
+        help="Text file with one package name per line (can be combined with inline names).",
+    )
+    p_manifest.set_defaults(func=cmd_manifest)
 
     # converge
     p_converge = sub.add_parser(
