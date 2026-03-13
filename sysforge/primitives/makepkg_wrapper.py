@@ -214,7 +214,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile):
 
 
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
-               active_consumes=None, extracted_profile=None):
+               active_consumes=None, extracted_profile=None, pkgmeta=None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -226,7 +226,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # patch_pkgbuild mode: use patched copy with flags stripped
         pkgbuild_path = apply_patch_pkgbuild(
             pkgbuild_path,
-            _pkgmeta_placeholder,  # pkgmeta is available in run(); see note below
+            pkgmeta or {"globals": {}},
             extracted_profile,
         )
     else:
@@ -312,6 +312,7 @@ def run(pkgbuild_path):
             pkgbuild_path, resolved_profile, config, groups,
             active_consumes=active_consumes,
             extracted_profile=extracted_profile if build_mode == "patch_pkgbuild" else None,
+            pkgmeta=pkgmeta,
         )
 
 
