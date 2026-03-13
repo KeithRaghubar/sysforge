@@ -88,30 +88,38 @@ sysforge/
 │   ├── __init__.py
 │   ├── cli.py
 │   └── primitives/
-│       ├── pkgbuild_meta.py
-│       └── makepkg_wrapper.py
-├── configs/                    # planned — not yet in repo
-│   ├── flag_profiles.toml
-│   └── hardware/
-│       └── zen3_rtx5070.toml
+│       ├── config.py              # TOML config loading, path constants
+│       ├── profile.py             # profile resolution, rule matching, consumes
+│       ├── pkgbuild_meta.py       # static PKGBUILD parser (read-only)
+│       ├── pkgbuild_patcher.py    # PKGBUILD mutation + flag extraction
+│       └── makepkg_wrapper.py     # build execution: emit conf, invoke makepkg
 ├── tests/
+│   ├── conftest.py
 │   ├── data/
 │   │   ├── PKGBUILDs/
 │   │   │   ├── htop.PKGBUILD
 │   │   │   ├── lib32-llvm.PKGBUILD
 │   │   │   ├── llvm.PKGBUILD
+│   │   │   ├── complex2.PKGBUILD
 │   │   │   ├── cosmic.PKGBUILD
 │   │   │   └── vulkan-headers-git.PKGBUILD
 │   │   ├── test_flag_profiles.toml
 │   │   ├── etc/sysforge/
-│   │   │   └── flag_profiles.toml
+│   │   │   ├── flag_profiles.toml
+│   │   │   └── consumes_inference.toml
 │   │   └── user/.config/sysforge/
 │   │       └── flag_profiles.toml
 │   ├── test_parser.py
 │   ├── test_wrapper.py
-│   └── test_pipeline.py
+│   ├── test_pipeline.py
+│   ├── test_append_merge.py
+│   ├── test_consumes.py
+│   ├── test_patcher.py
+│   └── test_env_pass.py
 ├── PKGBUILD
-└── pyproject.toml
+├── pyproject.toml
+├── Makefile
+└── DESIGN.md
 ```
 
 ### Installed
@@ -218,7 +226,20 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-Independently testable before the pipeline exists. Start here.
+Independently testable before the pipeline exists. All modules are complete and covered by 190 pytest tests (`pytest` from repo root).
+
+### `config.py`
+
+TOML config loading and path resolution. Reads `flag_profiles.toml` from the user and system paths, merges via `extends_system`, validates rule priorities, and loads auxiliary config files (`append_conflict_groups.toml`, `consumes_inference.toml`).
+
+### `profile.py`
+
+Profile resolution and rule matching. Implements:
+- `merge_extends` — resolves the full `extends` inheritance chain into a flat profile dict, applying `[profiles.x.append]` token-level merges using conflict groups
+- `match_rules` — evaluates all match fields (`pkgnames`, `groups`, `makedepends_*`, etc.) against a parsed PKGBUILD and returns the set of matching rules
+- `resolve_profile` — selects the winning rule by priority, resolves its profile chain, and optionally injects a `pkgbuild_extracted` root from the PKGBUILD patcher
+- `resolve_groups` — accumulates package groups from PKGBUILD, defaults, and all matched rules
+- `resolve_consumes` — determines which conf types the build needs, inferred from makedepends or overridden explicitly on the profile
 
 ### `pkgbuild_meta.py`
 
@@ -245,9 +266,19 @@ Returns:
 }
 ```
 
+### `pkgbuild_patcher.py`
+
+All PKGBUILD mutation. Active when `build_mode = "patch_pkgbuild"` on the resolved profile.
+
+**Flag extraction** (`extract_pkgbuild_profile`) scans all function bodies and extracts bare, `export`, and `+=` assignments to known flag variables (CFLAGS, LDFLAGS, RUSTFLAGS, CARGO_*, etc.). Strips self-references (`$CFLAGS` in CFLAGS), skips complex bash expressions (e.g. `${CFLAGS/-g /-g1 }`), expands packed `-Wl,a,b,c` tokens into individual sub-tokens. Returns a synthetic profile dict used as the implicit chain root in `merge_extends`.
+
+**Conditional block handling** (`_extract_conditional_blocks`) finds `if...fi` blocks containing extractable key assignments using depth-tracked scanning (handles nested ifs). Entire blocks are removed from the patched PKGBUILD, never partially.
+
+**Patching** (`apply_patch_pkgbuild`) writes `PKGBUILD.sysforge` with all managed flag assignments and conditional blocks removed. The original is untouched. Artifacts persist on build failure for diagnosis; `cleanup_patch_artifacts` removes them on success.
+
 ### `makepkg_wrapper.py`
 
-See [Makepkg Wrapper](#makepkg-wrapper).
+Build execution. See [Makepkg Wrapper](#makepkg-wrapper).
 
 ---
 
@@ -288,7 +319,7 @@ Full inheritance with explicit override. The child starts as a complete copy of 
 
 **Direct keys override** — a key set directly on a child profile fully replaces the parent's value. The child must restate the complete value.
 
-**`[profiles.x.append]` subsection merges** — keys in the `append` subsection are merged into the parent's value using a token-level list merge rather than string concatenation. This handles both additive flags and conflicting ones cleanly. *(Not yet implemented — currently child keys always fully override parent.)*
+**`[profiles.x.append]` subsection merges** — keys in the `append` subsection are merged into the parent's value using a token-level list merge rather than string concatenation. This handles both additive flags and conflicting ones cleanly.
 
 #### Append Merge Algorithm *(planned)*
 
@@ -400,7 +431,7 @@ cmake  = ["makepkg", "cmake", "env"]
 ninja  = ["makepkg", "env"]
 ```
 
-The wrapper will generate only the conf files in the resolved `consumes` set, logging the active set under `[CONF]`. Missing conf files will cause a build failure — detailed logs are sufficient to diagnose the cause. *(Consumes filtering not yet implemented — currently a single makepkg conf is generated from all non-internal profile keys.)*
+The wrapper generates only the conf files in the resolved `consumes` set, logging the active set under `[CONF]`. Keys in the `"env"` conf type travel via subprocess env injection rather than the conf file. Missing conf files will cause a build failure — detailed logs are sufficient to diagnose the cause.
 
 ---
 
@@ -413,10 +444,9 @@ The wrapper will generate only the conf files in the resolved `consumes` set, lo
 3. Resolve `extends` chains on each matched profile into fully flat value sets
 4. Merge across matched rules using priorities → one resolved value per key; log all discarded candidates
 5. Log full resolved values with winning sources and discarded candidates
-6. Generate temp conf files *(planned: only those in `consumes`; currently writes all non-internal keys)*
-7. Run `makepkg` pointed at temp conf files via `MAKEPKG_CONF` *(planned: env vars from `[profiles.*.env]` passed as explicit env on invocation; currently not separated)*
-
-Conf files only receive native keys (CFLAGS, LDFLAGS, RUSTFLAGS, etc.). Env vars from `[profiles.*.env]` will travel separately and never be written into conf files. *(Not yet implemented.)*
+6. Generate temp `makepkg.conf` containing only the keys in `active_consumes` (non-env types)
+7. Resolve env vars from the `"env"` conf type and any unclassified profile keys; inject on makepkg subprocess invocation
+8. Run `makepkg` pointed at the temp conf via `MAKEPKG_CONF`, with env vars merged into the subprocess env
 
 ### Batch Builds
 
@@ -470,9 +500,18 @@ dep_unsatisfied       = "warn_and_fallback"  # version constraint not met pre-bu
 
 New scenarios are added by registering a handler function and adding its key to `[failure_handling]`. `profile_missing` and `tempfile_write_failed` always abort regardless of config.
 
+### Env Var Delivery
+
+Profile keys are routed to one of two delivery channels based on their type in `_CONF_KEY_MAP`:
+
+- **Conf file** (`makepkg`, `rust`, `cmake`, `meson` types) — written to temp `makepkg.conf`, sourced by makepkg before the build. Only types in `active_consumes` are written; rust-specific keys are excluded for packages that don't build Rust code.
+- **Subprocess env** (`env` type, or any unclassified key) — injected directly onto the `makepkg` subprocess invocation via `subprocess.run(env=...)`. Used for keys like `RUSTC_WRAPPER=sccache` and `CCACHE_DIR` that need to be set before makepkg itself runs.
+
+Unclassified keys (not in any `_CONF_KEY_MAP` type) always travel via env pass and are logged under `[ENV]` as a warning, since their presence may indicate a typo or a new key that needs classifying.
+
 ### Env Var Precedence *(planned)*
 
-Env precedence will be a first-class config table. Changing the hierarchy means changing these numbers — not tracing which file happened to win.
+A first-class `[env_precedence]` config table is planned for a future iteration. Changing the hierarchy will mean changing these numbers — not tracing which file happened to win.
 
 ```toml
 [env_precedence]
@@ -482,9 +521,7 @@ shell_passthrough = 20   # inherited calling env (allowlisted vars)
 pkgbuild_export   = 10   # detected exports in PKGBUILD (best-effort)
 ```
 
-The full precedence table will be logged at startup under `[ENV]`. *(Not yet implemented — `[env_precedence]` is not currently read.)*
-
-When implemented, the wrapper will construct a clean environment dict rather than inheriting the calling shell's env wholesale — an explicit allowlist of vars (PATH, HOME, USER, etc.) will be passed through; everything else blocked unless the profile explicitly includes it. *(Not yet implemented — currently inherits full shell env.)*
+When implemented, the wrapper will construct a clean environment dict rather than inheriting the calling shell's env wholesale. *(Not yet implemented — currently inherits full shell env.)*
 
 ---
 
