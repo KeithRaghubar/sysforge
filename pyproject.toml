@@ -16,3 +16,10 @@ sysforge = "sysforge.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sysforge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# SYSFORGE_CONFIG_DIR is set in tests/conftest.py before any imports.
+# Verbose output so rule parametrize IDs are readable.
+addopts = "-v"

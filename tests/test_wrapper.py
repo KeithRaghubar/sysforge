@@ -1,86 +1,76 @@
-#!/usr/bin/env python3
-import sys
-import os
-import tomllib
+"""
+test_wrapper.py — parametrized rule matching tests driven by _expect_* keys
+in tests/data/test_flag_profiles.toml.
 
-sys.path.insert(0, os.path.expanduser("~/src/sysforge"))
+Each rule in that file carries _expect_htop, _expect_lib32, and _expect_llvm
+boolean annotations declaring whether that rule should match each PKGBUILD.
+This test file reads those annotations and asserts accordingly, so adding a
+new rule to the TOML automatically adds coverage here with no code changes.
+"""
+import tomllib
+from pathlib import Path
+
+import pytest
 
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-from sysforge.primitives.makepkg_wrapper import match_rules
+from sysforge.primitives.profile import match_rules
 
-PKGBUILD_ALIASES = {
-    "htop": f"{sys.path[0]}/tests/data/PKGBUILDs/htop.PKGBUILD",
-    "lib32": f"{sys.path[0]}/tests/data/PKGBUILDs/lib32-llvm.PKGBUILD",
-    "llvm": f"{sys.path[0]}/tests/data/PKGBUILDs/llvm.PKGBUILD",
+TESTS_DIR = Path(__file__).parent
+TEST_DATA = TESTS_DIR / "data"
+PROFILES_TOML = TEST_DATA / "test_flag_profiles.toml"
+
+PKGBUILD_PATHS = {
+    "htop":  TEST_DATA / "PKGBUILDs/htop.PKGBUILD",
+    "lib32": TEST_DATA / "PKGBUILDs/lib32-llvm.PKGBUILD",
+    "llvm":  TEST_DATA / "PKGBUILDs/llvm.PKGBUILD",
 }
-EXPECT_KEYS = {
-    "htop": "_expect_htop",
-    "lib32": "_expect_lib32",
-    "llvm": "_expect_llvm",
-}
 
-alias = sys.argv[1] if len(sys.argv) > 1 else "lib32"
-PKGBUILD = PKGBUILD_ALIASES.get(alias, alias)
-expect_key = EXPECT_KEYS.get(alias, None)
+# Load once at module level — TOML is static test data
+with open(PROFILES_TOML, "rb") as _f:
+    _config = tomllib.load(_f)
 
-PROFILES = (
-    sys.argv[2]
-    if len(sys.argv) > 2
-    else f"{sys.path[0]}/tests/data/test_flag_profiles.toml"
-)
+_raw_rules = _config.get("rules", [])
 
-pkgmeta = parse_pkgbuild(PKGBUILD)
-with open(PROFILES, "rb") as f:
-    config = tomllib.load(f)
-
-rules = config.get("rules", [])
-clean_rules = [
-    {k: v for k, v in r.items() if k.startswith("_") is False} for r in rules
+# Strip _expect_* keys out before passing rules to match_rules
+_clean_rules = [
+    {k: v for k, v in r.items() if not k.startswith("_")}
+    for r in _raw_rules
 ]
 
-print(f"=== Parsing: {PKGBUILD} ===")
-print(f"pkgname:      {pkgmeta['globals'].get('pkgname')}")
-print(f"groups:       {pkgmeta['globals'].get('groups', [])}")
-print(f"makedepends:  {pkgmeta['globals'].get('makedepends', [])}")
-print(f"depends:      {pkgmeta['globals'].get('depends', [])}")
-print()
+# Parse PKGBUILDs once
+_metas = {alias: parse_pkgbuild(path) for alias, path in PKGBUILD_PATHS.items()}
 
-matched = match_rules(pkgmeta, clean_rules)
-matched_ids = {id(r) for r in matched}
+# Pre-compute matched rule sets for each alias
+_matched_ids = {
+    alias: {id(r) for r in match_rules(_metas[alias], _clean_rules)}
+    for alias in _metas
+}
 
-print(f"=== {len(rules)} rules in {PROFILES} ===\n")
 
-passed = 0
-failed = 0
-no_expect = 0
+def _build_params():
+    """
+    Yield (rule_index, alias, expected_match) tuples for all rules that carry
+    an _expect_<alias> annotation.
+    """
+    params = []
+    for i, rule in enumerate(_raw_rules):
+        for alias in PKGBUILD_PATHS:
+            key = f"_expect_{alias}"
+            if key in rule:
+                expected = rule[key]
+                label = f"rule[{i}]({rule.get('profile','?')})__{alias}"
+                params.append(pytest.param(i, alias, expected, id=label))
+    return params
 
-for i, (rule, clean) in enumerate(zip(rules, clean_rules)):
-    did_match = id(clean) in matched_ids
-    expected = rule.get(expect_key) if expect_key else None
-    status = "MATCH" if did_match else "SKIP "
 
-    if expected is None:
-        verdict = ""
-        no_expect += 1
-    elif did_match == expected:
-        verdict = "✓"
-        passed += 1
-    else:
-        verdict = "✗ UNEXPECTED"
-        failed += 1
-
-    print(f"  [{i}] {status} {verdict}")
-    for k, v in clean.items():
-        print(f"         {k}: {v!r}")
-    print()
-
-print("=== Summary ===")
-print(f"  Passed:  {passed}")
-print(f"  Failed:  {failed}")
-if no_expect:
-    print(f"  No expectation: {no_expect}")
-print()
-if failed:
-    print("FAILURES detected.")
-else:
-    print("All rules matched expectations.")
+@pytest.mark.parametrize("rule_index,alias,expected", _build_params())
+def test_rule_match(rule_index, alias, expected):
+    """Assert that rule at rule_index matches/skips alias as annotated."""
+    clean_rule = _clean_rules[rule_index]
+    did_match = id(clean_rule) in _matched_ids[alias]
+    assert did_match == expected, (
+        f"Rule [{rule_index}] profile={_raw_rules[rule_index].get('profile')!r}: "
+        f"expected {'MATCH' if expected else 'SKIP'} for {alias!r}, "
+        f"got {'MATCH' if did_match else 'SKIP'}\n"
+        f"Rule: {clean_rule}"
+    )
