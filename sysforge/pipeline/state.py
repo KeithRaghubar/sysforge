@@ -15,6 +15,7 @@ Public API:
 """
 import os
 import tomllib
+import sysforge.log as _log
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,16 +42,16 @@ def resolve_state_dir(cli_override=None):
         sources.append(f"SYSFORGE_STATE_DIR={env_val}")
 
     if sources:
-        print(f"[CONFIG] State dir source(s) found: {', '.join(sources)}")
+        _log.info("[CONFIG]", f"State dir source(s) found: {', '.join(sources)}")
 
     if cli_override:
         chosen = Path(cli_override)
-        print(f"[CONFIG] Using state dir (--state-dir takes priority): {chosen}")
+        _log.info("[CONFIG]", f"Using state dir (--state-dir takes priority): {chosen}")
         return chosen, "--state-dir"
 
     if env_val:
         chosen = Path(env_val)
-        print(f"[CONFIG] Using state dir (SYSFORGE_STATE_DIR): {chosen}")
+        _log.info("[CONFIG]", f"Using state dir (SYSFORGE_STATE_DIR): {chosen}")
         return chosen, "SYSFORGE_STATE_DIR"
 
     return _DEFAULT_STATE_DIR, "default"

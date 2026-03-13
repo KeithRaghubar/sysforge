@@ -17,6 +17,7 @@ pkgbuild_dir. AUR fetch (auto-clone) is V2.
 """
 import subprocess
 import sys
+import sysforge.log as _log
 import tomllib
 from pathlib import Path
 
@@ -53,7 +54,7 @@ def _load_packages(config):
 
     build_cfg = data.get("build", {})
     packages = data.get("package", [])
-    print(f"[PACKAGES] Loaded {len(packages)} package(s) from {path}")
+    _log.info("[PACKAGES]", f"Loaded {len(packages)} package(s) from {path}")
     return build_cfg, packages
 
 
@@ -95,28 +96,19 @@ def _hardware_gate(pkg, config):
     hw_path = config.get("hardware_profile")
     if not hw_path:
         # No hardware profile available — skip hardware-gated packages
-        print(
-            f"[PACKAGES] Skipping {pkg['name']!r}: requires_hardware={required!r} "
-            f"but no hardware_profile configured"
-        )
+        _log.warn("[PACKAGES]", f"Skipping {pkg['name']!r}: requires_hardware={required!r} but no hardware_profile configured")
         return False
 
     hw_path = Path(hw_path).expanduser()
     if not hw_path.exists():
-        print(
-            f"[PACKAGES] Skipping {pkg['name']!r}: requires_hardware={required!r} "
-            f"but {hw_path} does not exist"
-        )
+        _log.warn("[PACKAGES]", f"Skipping {pkg['name']!r}: requires_hardware={required!r} but {hw_path} does not exist")
         return False
 
     with open(hw_path, "rb") as f:
         hw = tomllib.load(f)
 
     if not hw.get(required):
-        print(
-            f"[PACKAGES] Skipping {pkg['name']!r}: requires_hardware={required!r} "
-            f"not present in hardware profile"
-        )
+        _log.warn("[PACKAGES]", f"Skipping {pkg['name']!r}: requires_hardware={required!r} not present in hardware profile")
         return False
 
     return True
@@ -134,21 +126,15 @@ def _prompt_failed_packages(failed_names, errors, options):
     With --force-retry: retry all without prompt.
     """
     if options.force_retry:
-        print(f"[PACKAGES] --force-retry: retrying all {len(failed_names)} failed package(s)")
+        _log.info("[PACKAGES]", f"--force-retry: retrying all {len(failed_names)} failed package(s)")
         return set(failed_names), set()
 
-    print(f"\n[PACKAGES] Resuming with {len(failed_names)} failed package(s):")
+    _log.warn("[PACKAGES]", f"Resuming with {len(failed_names)} failed package(s):")
     for name in failed_names:
         err = errors.get(name, "unknown error")
-        print(f"  - {name}  ({err})")
+        _log.warn("[PACKAGES]", f"  - {name}  ({err})")
 
-    print(
-        "\nOptions:\n"
-        "  [r] Retry all failed\n"
-        "  [s] Skip all failed (mark as skipped, continue)\n"
-        "  [c] Choose per package\n"
-        "  [a] Abort\n"
-    )
+    _log.warn("[PACKAGES]", "\nOptions:\n  [r] Retry all failed\n  [s] Skip all failed\n  [c] Choose per package\n  [a] Abort")
 
     while True:
         choice = input("Choice [r/s/c/a]: ").strip().lower()
@@ -174,7 +160,7 @@ def _prompt_failed_packages(failed_names, errors, options):
                         raise RuntimeError("[PACKAGES] Aborted by user")
             return retry, skip
         else:
-            print("  Please enter r, s, c, or a.")
+            _log.warn("[PACKAGES]", "  Please enter r, s, c, or a.")
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +171,9 @@ def _install_repo(pkg, options):
     """Install a repo package via sudo pacman -S --needed."""
     name = pkg["name"]
     if options.dry_run:
-        print(f"[PACKAGES] [dry-run] sudo pacman -S --needed {name}")
+        _log.info("[PACKAGES]", f"[dry-run] sudo pacman -S --needed {name}")
         return
-    print(f"[PACKAGES] Installing from repo: {name}")
+    _log.info("[PACKAGES]", f"Installing from repo: {name}")
     result = subprocess.run(["sudo", "pacman", "-S", "--needed", "--noconfirm", name])
     if result.returncode != 0:
         raise RuntimeError(f"pacman -S failed for {name!r} (exit {result.returncode})")
@@ -198,9 +184,9 @@ def _build_aur(pkg, build_cfg, options):
     name = pkg["name"]
     pkgbuild = _pkgbuild_path(pkg, build_cfg)
     if options.dry_run:
-        print(f"[PACKAGES] [dry-run] build {name} from {pkgbuild}")
+        _log.info("[PACKAGES]", f"[dry-run] build {name} from {pkgbuild}")
         return
-    print(f"[PACKAGES] Building {name} from {pkgbuild}")
+    _log.info("[PACKAGES]", f"Building {name} from {pkgbuild}")
     makepkg_run(pkgbuild)
 
 
@@ -219,10 +205,7 @@ class PackagesStage(Stage):
         # Filter hardware-gated packages
         eligible = [p for p in packages if _hardware_gate(p, config)]
         if len(eligible) < len(packages):
-            print(
-                f"[PACKAGES] {len(packages) - len(eligible)} package(s) excluded "
-                f"by hardware gate"
-            )
+            _log.info("[PACKAGES]", f"{len(packages) - len(eligible)} package(s) excluded by hardware gate")
 
         # Build ordered name list and initialise progress (idempotent on resume)
         all_names = [p["name"] for p in eligible]
@@ -257,10 +240,10 @@ class PackagesStage(Stage):
         for name in all_names:
             progress = state.get_package_progress()
             if name in built and name not in retry_set:
-                print(f"[PACKAGES] Skipping {name} (already built)")
+                _log.info("[PACKAGES]", f"Skipping {name} (already built)")
                 continue
             if name in skipped or name in skip_set:
-                print(f"[PACKAGES] Skipping {name} (user skipped)")
+                _log.info("[PACKAGES]", f"Skipping {name} (user skipped)")
                 continue
             if name not in progress.get("remaining", []) and name not in retry_set:
                 # Was already handled (built or skipped) in a prior run
@@ -283,12 +266,12 @@ class PackagesStage(Stage):
                 state.mark_package_built(name)
                 state.save()
                 built.add(name)
-                print(f"[PACKAGES] {name}: done")
+                _log.info("[PACKAGES]", f"{name}: done")
 
             except RuntimeError as e:
                 state.mark_package_failed(name, str(e))
                 state.save()
-                print(f"[PACKAGES] {name}: FAILED — {e}", file=sys.stderr)
+                _log.error("[PACKAGES]", f"{name}: FAILED — {e}")
                 # Non-fatal: continue with remaining packages
 
         # Check if any packages are still failed after the loop
@@ -307,17 +290,9 @@ class PackagesStage(Stage):
         )
 
         if still_failed:
-            print(
-                f"\n[PACKAGES] Stage complete with failures.\n"
-                f"[PACKAGES] {summary}\n"
-                f"[PACKAGES] Failed packages: {still_failed}",
-                file=sys.stderr,
-            )
+            _log.error("[PACKAGES]", f"Stage complete with failures.\n[SYSFORGE][ERROR][PACKAGES] {summary}\n[SYSFORGE][ERROR][PACKAGES] Failed packages: {still_failed}")
             raise RuntimeError(
                 f"packages stage finished with failures: {still_failed}"
             )
 
-        print(
-            f"\n[PACKAGES] Stage complete.\n"
-            f"[PACKAGES] {summary}"
-        )
+        _log.info("[PACKAGES]", f"Stage complete.\n[SYSFORGE][INFO][PACKAGES] {summary}")

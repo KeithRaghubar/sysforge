@@ -14,3 +14,7 @@ TESTS_DIR = Path(__file__).parent
 TEST_DATA = TESTS_DIR / "data"
 
 os.environ.setdefault("SYSFORGE_CONFIG_DIR", str(TEST_DATA))
+
+# Show all log messages in tests so assertions against log output work.
+import sysforge.log as _sf_log
+_sf_log.set_verbosity(2)

@@ -31,7 +31,7 @@ Covers:
 import sys
 import os
 import io
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -48,9 +48,9 @@ from sysforge.primitives.profile import _CONF_KEY_MAP, _SYSFORGE_KEYS
 # ---------------------------------------------------------------------------
 
 def captured(fn, *args, **kwargs):
-    """Call fn and return (return_value, stdout_text)."""
+    """Call fn and return (return_value, stderr_text)."""
     buf = io.StringIO()
-    with redirect_stdout(buf):
+    with redirect_stderr(buf):
         result = fn(*args, **kwargs)
     return result, buf.getvalue()
 

@@ -16,6 +16,7 @@ import re
 import subprocess
 
 from sysforge.primitives.failure import handle_failure
+import sysforge.log as _log
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ def _default_ldconfig_fn():
         )
         return result.stdout
     except FileNotFoundError:
-        print("[DEP] ldconfig not found — skipping soname checks")
+        _log.warn("[DEP]", "ldconfig not found — skipping soname checks")
         return ""
 
 
@@ -106,20 +107,20 @@ def check_soname_deps(depends, config, pkgname="unknown", ldconfig_fn=None):
                     f"soname {expected!r} not found in ldconfig cache "
                     f"(required by depends entry {entry!r})"
                 )
-                print(f"[DEP][{pkgname}] ABI mismatch: {issue}")
+                _log.warn("[DEP]", f"[{pkgname}] ABI mismatch: {issue}")
                 handle_failure("abi_mismatch", issue, config)
                 findings.append((entry, issue))
             else:
-                print(f"[DEP][{pkgname}] soname ok: {expected} → found")
+                _log.info("[DEP]", f"[{pkgname}] soname ok: {expected} → found")
         else:
             prefix = base + "."
             if base not in available and not any(s.startswith(prefix) for s in available):
                 issue = f"soname {base!r} (any version) not found in ldconfig cache"
-                print(f"[DEP][{pkgname}] ABI mismatch: {issue}")
+                _log.warn("[DEP]", f"[{pkgname}] ABI mismatch: {issue}")
                 handle_failure("abi_mismatch", issue, config)
                 findings.append((entry, issue))
             else:
-                print(f"[DEP][{pkgname}] soname ok: {base} → found")
+                _log.info("[DEP]", f"[{pkgname}] soname ok: {base} → found")
 
     return findings
 
@@ -150,14 +151,14 @@ def run_dep_analysis(pkgmeta, config, ldconfig_fn=None):
 
     soname_entries = [e for e in depends if _SONAME_RE.match(e)]
     if not soname_entries:
-        print(f"[DEP][{pkgname}] no soname entries in depends — skipping")
+        _log.info("[DEP]", f"[{pkgname}] no soname entries in depends — skipping")
         return []
 
-    print(f"[DEP][{pkgname}] checking {len(soname_entries)} soname dep(s)")
+    _log.info("[DEP]", f"[{pkgname}] checking {len(soname_entries)} soname dep(s)")
 
     findings = check_soname_deps(depends, config, pkgname=pkgname, ldconfig_fn=ldconfig_fn)
 
     if not findings:
-        print(f"[DEP][{pkgname}] all soname checks passed")
+        _log.info("[DEP]", f"[{pkgname}] all soname checks passed")
 
     return findings

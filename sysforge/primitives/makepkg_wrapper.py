@@ -32,6 +32,7 @@ from sysforge.primitives.pkgbuild_patcher import (
 )
 from sysforge.primitives.dep_analysis import run_dep_analysis
 from sysforge.primitives.failure import handle_failure
+import sysforge.log as _log
 from sysforge.primitives.profile import (
     _CONF_KEY_MAP,
     _SYSFORGE_KEYS,
@@ -113,12 +114,12 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         f.write("\n".join(conf_lines) + "\n")
         tmp_path = f.name
 
-    print(f"[CONF] Wrote temp makepkg.conf: {tmp_path}")
+    _log.info("[CONF]", f"Wrote temp makepkg.conf: {tmp_path}")
     try:
         yield tmp_path
     finally:
         os.unlink(tmp_path)
-        print(f"[CONF] Removed temp makepkg.conf: {tmp_path}")
+        _log.info("[CONF]", f"Removed temp makepkg.conf: {tmp_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +162,7 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
         if key in env_type_keys:
             if collect_env_type:
                 result[key] = val
-                print(f"[ENV] Injecting (env type): {key}={val!r}")
+                _log.info("[ENV]", f"Injecting (env type): {key}={val!r}")
             continue
 
         if key not in all_conf_keys:
@@ -170,10 +171,7 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
             unknown.append(key)
 
     if unknown:
-        print(
-            f"[ENV] Unclassified profile keys injected via env (consider adding to "
-            f"_CONF_KEY_MAP): {sorted(unknown)}"
-        )
+        _log.warn("[ENV]", f"Unclassified profile keys injected via env (consider adding to _CONF_KEY_MAP): {sorted(unknown)}")
 
     return result
 
@@ -188,17 +186,15 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
     if extra_env:
         env.update(extra_env)
-        print(f"[ENV] Injecting {len(extra_env)} env var(s): {sorted(extra_env.keys())}")
+        _log.info("[ENV]", f"Injecting {len(extra_env)} env var(s): {sorted(extra_env.keys())}")
 
     flags = list(resolved_profile.get("makepkg_flags", []))
     if extra_flags:
         flags += extra_flags
-        print(f"[BUILD] Appending CLI flags: {extra_flags}")
+        _log.info("[BUILD]", f"Appending CLI flags: {extra_flags}")
     cmd = ["makepkg"] + flags
 
-    print(
-        f"[BUILD] Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}"
-    )
+    _log.info("[BUILD]", f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
 
     result = subprocess.run(cmd, cwd=build_dir, env=env)
 
@@ -216,7 +212,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
             invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                            extra_env, extra_flags)
         except subprocess.CalledProcessError as e:
-            print(f"[BUILD] Build failed in batch mode, aborting: {e}")
+            _log.error("[BUILD]", f"Build failed in batch mode, aborting: {e}")
             raise RuntimeError(f"[build_failed] {e}")
     else:
         while True:
@@ -225,8 +221,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                extra_env, extra_flags)
                 break
             except subprocess.CalledProcessError as e:
-                print(f"[BUILD] Build failed: {e}")
-                print(f"[BUILD] PKGBUILD location: {pkgbuild_path}")
+                _log.error("[BUILD]", f"Build failed: {e}")
+                _log.info("[BUILD]", f"PKGBUILD location: {pkgbuild_path}")
                 response = (
                     input(
                         "[BUILD] Manually correct the PKGBUILD and press Enter to retry, "
@@ -239,7 +235,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                     raise RuntimeError(
                         "[build_failed] Aborted by user after build failure"
                     )
-                print("[BUILD] Retrying build...")
+                _log.info("[BUILD]", "Retrying build...")
 
 
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
@@ -278,14 +274,11 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             if success:
                 cleanup_patch_artifacts(pkgbuild_path.parent / "PKGBUILD")
             else:
-                print(
-                    f"[PATCH] Build failed — leaving PKGBUILD.sysforge and "
-                    f"pkgbuild_extracted_profile.toml in place for diagnosis"
-                )
+                _log.warn("[PATCH]", "Build failed — leaving PKGBUILD.sysforge and pkgbuild_extracted_profile.toml in place for diagnosis")
         else:
             if pkgbuild_path.exists():
                 pkgbuild_path.unlink()
-                print(f"[BUILD] Removed patched PKGBUILD: {pkgbuild_path}")
+                _log.info("[BUILD]", f"Removed patched PKGBUILD: {pkgbuild_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +328,7 @@ def run(pkgbuild_path, extra_flags=None):
                     shutil.rmtree(entry)
                 else:
                     entry.unlink()
-        print(f"[BUILD] Cleaned build dir: {build_dir}")
+        _log.info("[BUILD]", f"Cleaned build dir: {build_dir}")
 
     if build_mode == "pgo_llvm_toolchain":
         pass  # hand off to pgo handler

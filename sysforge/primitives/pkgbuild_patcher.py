@@ -14,6 +14,7 @@ Public API:
     cleanup_patch_artifacts(pkgbuild_path)
 """
 import re
+import sysforge.log as _log
 import tomllib
 from pathlib import Path
 
@@ -114,7 +115,7 @@ def patch_pkgbuild_groups(pkgbuild_path, groups):
         )
 
     patched_path.write_text(new_text)
-    print(f"[BUILD] Wrote patched PKGBUILD: {patched_path}")
+    _log.info("[BUILD]", f"Wrote patched PKGBUILD: {patched_path}")
     return patched_path
 
 
@@ -225,10 +226,7 @@ def _extract_flag_assignments(function_body, pkgname="unknown"):
         # Skip if complex bash expression remains (e.g. ${VAR/-g /-g1 })
         if _VARREF_RE.search(stripped):
             line = m.group(0).strip()
-            print(
-                f"[PATCH][{pkgname}] Skipped (complex expression, not extractable): "
-                f"{key}{op}... — line will still be removed"
-            )
+            _log.info("[PATCH]", f"[{pkgname}] Skipped (complex expression, not extractable): {key}{op}... — line will still be removed")
             skipped_lines.append(line)
             continue
 
@@ -245,13 +243,13 @@ def _extract_flag_assignments(function_body, pkgname="unknown"):
         else:
             accumulated[key].extend(tokens)
 
-        print(f"[PATCH][{pkgname}] Extracted {key}{op} tokens: {tokens}")
+        _log.info("[PATCH]", f"[{pkgname}] Extracted {key}{op} tokens: {tokens}")
 
     # Log inline make/cmake patterns (not extracted, logged, removed)
     for pat, label in ((_INLINE_MAKE_RE, "inline make"), (_INLINE_CMAKE_RE, "inline cmake")):
         for m in pat.finditer(function_body):
             line = m.group(0).strip()
-            print(f"[PATCH][{pkgname}] Skipped ({label}): {line!r}")
+            _log.info("[PATCH]", f"[{pkgname}] Skipped ({label}): {line!r}")
             skipped_lines.append(line)
 
     result = {k: v for k, v in accumulated.items() if v}
@@ -356,10 +354,7 @@ def extract_pkgbuild_profile(pkgmeta, pkgbuild_path):
         cond_blocks = _extract_conditional_blocks(body, pkgname)
         for start, end, keys, block_text in cond_blocks:
             preview = block_text.splitlines()[0][:60]
-            print(
-                f"[PATCH][{pkgname}] Removing entire conditional block in {func_name!r} "
-                f"(contains {keys}): {preview!r}..."
-            )
+            _log.info("[PATCH]", f"[{pkgname}] Removing entire conditional block in {func_name!r} (contains {keys}): {preview!r}...")
         all_conditional_blocks.extend(
             (func_name, start, end, keys, block_text)
             for start, end, keys, block_text in cond_blocks
@@ -378,13 +373,13 @@ def extract_pkgbuild_profile(pkgmeta, pkgbuild_path):
                 accumulated[key].extend(tokens)
 
     if not accumulated:
-        print(f"[PATCH][{pkgname}] No extractable flags found in function bodies")
+        _log.info("[PATCH]", f"[{pkgname}] No extractable flags found in function bodies")
         return {}
 
     profile = {k: " ".join(v) for k, v in accumulated.items()}
 
     for key, val in profile.items():
-        print(f"[PATCH][{pkgname}] Extracted profile key: {key} = {val!r}")
+        _log.info("[PATCH]", f"[{pkgname}] Extracted profile key: {key} = {val!r}")
 
     # Carry removal metadata for apply_patch_pkgbuild
     profile["__conditional_blocks__"] = all_conditional_blocks
@@ -424,7 +419,7 @@ def write_extracted_profile(profile, pkgbuild_path):
         lines.append(f'{key} = "{escaped}"')
 
     out_path.write_text("\n".join(lines) + "\n")
-    print(f"[PATCH] Wrote extracted profile: {out_path}")
+    _log.info("[PATCH]", f"Wrote extracted profile: {out_path}")
     return out_path
 
 
@@ -444,7 +439,7 @@ def load_extracted_profile(pkgbuild_path):
         data = tomllib.load(f)
 
     profile = data.get("profiles", {}).get("pkgbuild_extracted", {})
-    print(f"[PATCH] Loaded extracted profile from: {toml_path}")
+    _log.info("[PATCH]", f"Loaded extracted profile from: {toml_path}")
     return profile
 
 
@@ -514,10 +509,7 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta, extracted_profile):
                 # Find line number for the log
                 line_no = i + 1
                 preview = lines[i].rstrip()[:60]
-                print(
-                    f"[PATCH][{pkgname}] Removing conditional block at line {line_no} "
-                    f"(keys: {sorted(keys_found)}): {preview!r}"
-                )
+                _log.info("[PATCH]", f"[{pkgname}] Removing conditional block at line {line_no} (keys: {sorted(keys_found)}): {preview!r}")
                 conditional_spans.append((block_start, block_end, sorted(keys_found)))
             i = j
         else:
@@ -537,25 +529,22 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta, extracted_profile):
     for line_no, line in enumerate(working.splitlines(keepends=True), start=1):
         m = _ASSIGNMENT_RE.match(line)
         if m and m.group("key") in _EXTRACTABLE_KEYS:
-            print(
-                f"[PATCH][{pkgname}] Removed assignment line {line_no}: "
-                f"{line.rstrip()!r}"
-            )
+            _log.info("[PATCH]", f"[{pkgname}] Removed assignment line {line_no}: {line.rstrip()!r}")
             continue  # drop this line
 
         # Inline make/cmake lines
         if _INLINE_MAKE_RE.match(line):
-            print(f"[PATCH][{pkgname}] Removed inline make line {line_no}: {line.rstrip()!r}")
+            _log.info("[PATCH]", f"[{pkgname}] Removed inline make line {line_no}: {line.rstrip()!r}")
             continue
         if _INLINE_CMAKE_RE.match(line):
-            print(f"[PATCH][{pkgname}] Removed inline cmake line {line_no}: {line.rstrip()!r}")
+            _log.info("[PATCH]", f"[{pkgname}] Removed inline cmake line {line_no}: {line.rstrip()!r}")
             continue
 
         result_lines.append(line)
 
     patched_text = "".join(result_lines)
     patched_path.write_text(patched_text)
-    print(f"[PATCH][{pkgname}] Wrote patched PKGBUILD: {patched_path}")
+    _log.info("[PATCH]", f"[{pkgname}] Wrote patched PKGBUILD: {patched_path}")
     return patched_path
 
 
@@ -577,4 +566,4 @@ def cleanup_patch_artifacts(pkgbuild_path):
         target = build_dir / name
         if target.exists():
             target.unlink()
-            print(f"[PATCH] Removed artifact: {target}")
+            _log.info("[PATCH]", f"Removed artifact: {target}")

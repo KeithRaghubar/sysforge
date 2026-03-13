@@ -14,6 +14,7 @@ Stubbed commands (not yet implemented):
 import argparse
 import sys
 from pathlib import Path
+import sysforge.log as _log
 
 from sysforge.manifest import cmd_manifest
 
@@ -90,6 +91,15 @@ def main():
     parser = argparse.ArgumentParser(
         prog="sysforge",
         description="Reproducible, performance-tuned Arch Linux installer.",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="count",
+        default=0,
+        help=(
+            "Verbosity level. Default: errors only. "
+            "-v adds warnings. -vv adds all informational messages."
+        ),
     )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True
@@ -208,4 +218,5 @@ def main():
     p_resolve.set_defaults(func=_cmd_resolve)
 
     args = parser.parse_args()
+    _log.set_verbosity(args.verbose)
     args.func(args)

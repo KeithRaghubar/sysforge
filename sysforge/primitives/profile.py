@@ -18,6 +18,7 @@ Public API:
 """
 import fnmatch
 import re
+import sysforge.log as _log
 
 
 # ---------------------------------------------------------------------------
@@ -199,10 +200,7 @@ def merge_extends(profile_name, profiles, visited=None, conflict_groups=None):
 
     if parent_name is None:
         if append_overrides:
-            print(
-                f"[PROFILE] Warning: profile '{profile_name}' has [append] but no parent — "
-                "append section ignored"
-            )
+            _log.warn("[PROFILE]", f"profile '{profile_name}' has [append] but no parent — append section ignored")
         return profile
 
     parent = merge_extends(
@@ -213,17 +211,11 @@ def merge_extends(profile_name, profiles, visited=None, conflict_groups=None):
 
     for key, child_append_val in append_overrides.items():
         if key in profile:
-            print(
-                f"[PROFILE] Warning: key '{key}' is set both directly and in [append] "
-                f"on profile '{profile_name}' — direct value takes precedence, append ignored"
-            )
+            _log.warn("[PROFILE]", f"key '{key}' set both directly and in [append] on profile '{profile_name}' — direct value wins, append ignored")
             continue
         parent_val = parent.get(key, "")
         merged[key] = _merge_append_value(parent_val, child_append_val, conflict_groups)
-        print(
-            f"[PROFILE][{profile_name}] append merge {key!r}: "
-            f"{parent_val!r} + {child_append_val!r} → {merged[key]!r}"
-        )
+        _log.info("[PROFILE]", f"[{profile_name}] append merge {key!r}: {parent_val!r} + {child_append_val!r} → {merged[key]!r}")
 
     return merged
 
@@ -263,27 +255,16 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
             discarded.append(rule)
 
     for rule in discarded:
-        print(
-            f"[PROFILE][{pkgname}] Discarded rule "
-            f"(priority {rule.get('priority', 0)}): profile={rule.get('profile')!r}"
-        )
+        _log.info("[PROFILE]", f"[{pkgname}] Discarded rule (priority {rule.get('priority', 0)}): profile={rule.get('profile')!r}")
 
     if winner:
         profile_name = winner["profile"]
-        print(
-            f"[PROFILE][{pkgname}] Matched profile {profile_name!r} "
-            f"(priority {winner.get('priority', 0)})"
-        )
+        _log.info("[PROFILE]", f"[{pkgname}] Matched profile {profile_name!r} (priority {winner.get('priority', 0)})")
     else:
         if matched_rules:
-            print(
-                f"[PROFILE][{pkgname}] Rules matched but none specified a profile, "
-                f"using default: {default_profile!r}"
-            )
+            _log.info("[PROFILE]", f"[{pkgname}] Rules matched but none specified a profile, using default: {default_profile!r}")
         else:
-            print(
-                f"[PROFILE][{pkgname}] No rules matched, using default: {default_profile!r}"
-            )
+            _log.info("[PROFILE]", f"[{pkgname}] No rules matched, using default: {default_profile!r}")
         profile_name = default_profile
 
     # Inject extracted_profile as implicit chain root if provided.
@@ -298,7 +279,7 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
         if "extends" not in bare:
             bare["extends"] = "pkgbuild_extracted"
             profiles["bare"] = bare
-        print(f"[PROFILE][{pkgname}] Injected pkgbuild_extracted as chain root")
+        _log.info("[PROFILE]", f"[{pkgname}] Injected pkgbuild_extracted as chain root")
 
     return merge_extends(profile_name, profiles, conflict_groups=conflict_groups)
 
@@ -413,7 +394,7 @@ def resolve_groups(pkgmeta, matched_rules, defaults):
             existing.append(group)
             seen.add(group)
 
-    print(f"[GROUPS][{pkgname}] Resolved groups: {existing}")
+    _log.info("[GROUPS]", f"[{pkgname}] Resolved groups: {existing}")
     return existing
 
 
@@ -439,7 +420,7 @@ def resolve_consumes(resolved_profile, pkgmeta, inference_map):
     explicit = resolved_profile.get("consumes")
     if explicit is not None:
         active = frozenset(explicit)
-        print(f"[CONF][{pkgname}] consumes (explicit): {sorted(active)}")
+        _log.info("[CONF]", f"[{pkgname}] consumes (explicit): {sorted(active)}")
         return active
 
     makedepends = set(pkgmeta.get("globals", {}).get("makedepends", []))
@@ -456,8 +437,5 @@ def resolve_consumes(resolved_profile, pkgmeta, inference_map):
         for bare_dep in [re.split(r"[><=!]", dep, maxsplit=1)[0].strip()]
         if bare_dep in inference_map
     )
-    print(
-        f"[CONF][{pkgname}] consumes (inferred from makedepends {matched_deps}): "
-        f"{sorted(active)}"
-    )
+    _log.info("[CONF]", f"[{pkgname}] consumes (inferred from makedepends {matched_deps}): {sorted(active)}")
     return active

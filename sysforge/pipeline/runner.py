@@ -19,6 +19,7 @@ Public API:
     run_pipeline(config, options, stages=None)
 """
 import sys
+import sysforge.log as _log
 from pathlib import Path
 
 from sysforge.pipeline.state import PipelineState, resolve_state_dir
@@ -75,23 +76,16 @@ def run_pipeline(config, options, stages=None):
     # Guard against accidental state clobber
     existing_state = state.path.exists()
     if existing_state and not options.resume and not options.start_from:
-        print(
-            f"\n[PIPELINE] A state file already exists at {state.path}\n"
+        _log.error("[PIPELINE]", f"A state file already exists at {state.path}\n"
             f"  Pass --resume to continue from the last checkpoint.\n"
             f"  Pass --start-from <stage> to start from a specific stage.\n"
-            f"  Delete {state.path} to start completely fresh.\n",
-            file=sys.stderr,
-        )
+            f"  Delete {state.path} to start completely fresh.")
         sys.exit(1)
 
     # Determine start index
     if options.start_from:
         if options.start_from not in stage_names:
-            print(
-                f"[PIPELINE] Unknown stage {options.start_from!r}. "
-                f"Valid stages: {stage_names}",
-                file=sys.stderr,
-            )
+            _log.error("[PIPELINE]", f"Unknown stage {options.start_from!r}. Valid stages: {stage_names}")
             sys.exit(1)
 
         start_idx = next(i for i, s in enumerate(stages) if s.name == options.start_from)
@@ -101,17 +95,17 @@ def run_pipeline(config, options, stages=None):
             for stage in stages[:start_idx]:
                 if state.stage_status(stage.name) not in ("done",):
                     state.mark_skipped_to(stage.name)
-                    print(f"[PIPELINE] Marking {stage.name} as skipped-to")
+                    _log.info("[PIPELINE]", f"Marking {stage.name} as skipped-to")
 
         state.save()
-        print(f"[PIPELINE] Starting from stage: {options.start_from}")
+        _log.info("[PIPELINE]", f"Starting from stage: {options.start_from}")
 
     elif options.resume:
         start_idx = _find_resume_index(stages, state)
         if start_idx == len(stages):
-            print("[PIPELINE] All stages already done — nothing to resume.")
+            _log.info("[PIPELINE]", "All stages already done — nothing to resume.")
             return
-        print(f"[PIPELINE] Resuming from stage: {stages[start_idx].name}")
+        _log.info("[PIPELINE]", f"Resuming from stage: {stages[start_idx].name}")
 
     else:
         start_idx = 0
@@ -125,14 +119,14 @@ def run_pipeline(config, options, stages=None):
         status = state.stage_status(stage.name)
 
         if status == "done":
-            print(f"[PIPELINE] {stage.name}: already done — skipping")
+            _log.info("[PIPELINE]", f"{stage.name}: already done — skipping")
             continue
 
         if options.dry_run:
-            print(f"[PIPELINE] [dry-run] would run stage: {stage.name} — {stage.description}")
+            _log.info("[PIPELINE]", f"[dry-run] would run stage: {stage.name} — {stage.description}")
             continue
 
-        print(f"\n[PIPELINE] ── Stage: {stage.name} ── {stage.description}")
+        _log.info("[PIPELINE]", f"── Stage: {stage.name} ── {stage.description}")
 
         state.mark_running(stage.name)
         state.save()
@@ -141,32 +135,26 @@ def run_pipeline(config, options, stages=None):
             stage.run(config, state, options)
             state.mark_done(stage.name)
             state.save()
-            print(f"[PIPELINE] {stage.name}: complete ✓")
+            _log.info("[PIPELINE]", f"{stage.name}: complete ✓")
 
         except NotImplementedError as e:
             # Stub stage — hard stop with clear guidance
             state.mark_failed(stage.name, str(e))
             state.save()
-            print(f"\n[PIPELINE] {stage.name}: NOT IMPLEMENTED", file=sys.stderr)
-            print(f"  {e}", file=sys.stderr)
-            print(
-                f"\n  To skip this stage during development:\n"
+            _log.error("[PIPELINE]", f"{stage.name}: NOT IMPLEMENTED")
+            _log.error("[PIPELINE]", f"  {e}")
+            _log.error("[PIPELINE]", f"To skip this stage during development:\n"
                 f"    sysforge install --start-from {stage.name} --resume\n"
                 f"  or jump directly to a later stage:\n"
-                f"    sysforge install --start-from packages\n",
-                file=sys.stderr,
-            )
+                f"    sysforge install --start-from packages")
             sys.exit(1)
 
         except RuntimeError as e:
             state.mark_failed(stage.name, str(e))
             state.save()
-            print(f"\n[PIPELINE] {stage.name}: FAILED — {e}", file=sys.stderr)
-            print(
-                f"  State saved. Run with --resume to continue after fixing the issue.",
-                file=sys.stderr,
-            )
+            _log.error("[PIPELINE]", f"{stage.name}: FAILED — {e}")
+            _log.error("[PIPELINE]", "State saved. Run with --resume to continue after fixing the issue.")
             sys.exit(1)
 
     if not options.dry_run:
-        print("\n[PIPELINE] Pipeline complete.")
+        _log.info("[PIPELINE]", "Pipeline complete.")

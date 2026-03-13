@@ -11,6 +11,7 @@ Public API:
 """
 import os
 import tomllib
+import sysforge.log as _log
 from pathlib import Path
 
 
@@ -76,16 +77,16 @@ def load_config(config_paths=None):
 
     if user_config is None:
         _validate_rule_priorities(system_config.get("rules", []), "system")
-        print(f"[CONFIG] Loaded system config: {system_path}")
+        _log.info("[CONFIG]", f"Loaded system config: {system_path}")
         return system_config
 
     if system_config is None:
         _validate_rule_priorities(user_config.get("rules", []), "user")
-        print(f"[CONFIG] Loaded user config: {user_path}")
+        _log.info("[CONFIG]", f"Loaded user config: {user_path}")
         return user_config
 
     if user_config.get("extends_system", False):
-        print(f"[CONFIG] Merging user config onto system config")
+        _log.info("[CONFIG]", "Merging user config onto system config")
 
         merged = _deep_merge(
             {k: v for k, v in system_config.items() if k != "rules"},
@@ -109,7 +110,7 @@ def load_config(config_paths=None):
         return merged
 
     _validate_rule_priorities(user_config.get("rules", []), "user")
-    print(f"[CONFIG] User config overrides system config: {user_path}")
+    _log.info("[CONFIG]", f"User config overrides system config: {user_path}")
     return user_config
 
 
@@ -205,7 +206,7 @@ def load_consumes_inference(paths=None):
     system_map = system_data.get("consumes_inference", {}) if system_data else {}
 
     if user_data is None:
-        print(f"[CONFIG] Loaded consumes_inference: {system_path}")
+        _log.info("[CONFIG]", f"Loaded consumes_inference: {system_path}")
         return system_map
 
     user_map = user_data.get("consumes_inference", {})
@@ -213,10 +214,10 @@ def load_consumes_inference(paths=None):
     if user_data.get("extends_system", False):
         merged = dict(system_map)
         merged.update(user_map)
-        print(f"[CONFIG] Merged consumes_inference (user onto system)")
+        _log.info("[CONFIG]", "Merged consumes_inference (user onto system)")
         return merged
 
-    print(f"[CONFIG] Loaded consumes_inference (user only): {user_path}")
+    _log.info("[CONFIG]", f"Loaded consumes_inference (user only): {user_path}")
     return user_map
 
 
@@ -252,13 +253,13 @@ def parse_system_makepkg_conf(path=None):
         path = Path(path)
 
     if not path.exists():
-        print(f"[CONFIG] System makepkg.conf not found at {path} — will use profile values only")
+        _log.warn("[CONFIG]", f"System makepkg.conf not found at {path} — will use profile values only")
         return {}
 
     try:
         text = path.read_text()
     except PermissionError:
-        print(f"[CONFIG] Cannot read {path} — will use profile values only")
+        _log.warn("[CONFIG]", f"Cannot read {path} — will use profile values only")
         return {}
 
     result = {}
@@ -267,5 +268,5 @@ def parse_system_makepkg_conf(path=None):
         value = m.group("value").rstrip()
         result[key] = value
 
-    print(f"[CONFIG] Parsed {len(result)} keys from {path}")
+    _log.info("[CONFIG]", f"Parsed {len(result)} keys from {path}")
     return result
