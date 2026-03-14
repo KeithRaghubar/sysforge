@@ -225,8 +225,16 @@ def test_conf_key_map_no_overlap_with_sysforge_keys():
 
 def test_conf_key_map_makepkg_has_standard_vars():
     mk = _CONF_KEY_MAP["makepkg"]
-    for expected in ("CFLAGS", "CXXFLAGS", "LDFLAGS", "CC", "CXX"):
+    for expected in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
         assert expected in mk
+    # CC and CXX live in "toolchain" — injected via subprocess env, not conf file
+    assert "CC" not in mk
+    assert "CXX" not in mk
+
+def test_conf_key_map_toolchain_has_cc_cxx():
+    tc = _CONF_KEY_MAP["toolchain"]
+    assert "CC" in tc
+    assert "CXX" in tc
 
 def test_conf_key_map_rust_has_rustflags():
     assert "RUSTFLAGS" in _CONF_KEY_MAP["rust"]
