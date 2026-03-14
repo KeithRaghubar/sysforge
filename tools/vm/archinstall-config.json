@@ -1,0 +1,106 @@
+{
+    "additional-repositories": [],
+    "audio_config": null,
+    "bootloader": {
+        "bootloader": "Systemd-boot"
+    },
+    "debug": false,
+    "disk_config": {
+        "config_type": "default_layout",
+        "device_modifications": [
+            {
+                "device": "/dev/vda",
+                "partitions": [
+                    {
+                        "btrfs": [],
+                        "flags": ["Boot", "ESP"],
+                        "fs_type": "fat32",
+                        "mount_options": [],
+                        "mountpoint": "/boot",
+                        "obj_id": "esp",
+                        "size": {
+                            "sector_size": {"unit": "B", "value": 512},
+                            "total_size": null,
+                            "unit": "GiB",
+                            "value": 1
+                        },
+                        "start": {
+                            "sector_size": {"unit": "B", "value": 512},
+                            "total_size": null,
+                            "unit": "MiB",
+                            "value": 1
+                        },
+                        "status": "create",
+                        "type": "primary"
+                    },
+                    {
+                        "btrfs": [],
+                        "flags": [],
+                        "fs_type": "ext4",
+                        "mount_options": [],
+                        "mountpoint": "/",
+                        "obj_id": "root",
+                        "size": {
+                            "sector_size": {"unit": "B", "value": 512},
+                            "total_size": null,
+                            "unit": "Percent",
+                            "value": 100
+                        },
+                        "start": {
+                            "sector_size": {"unit": "B", "value": 512},
+                            "total_size": null,
+                            "unit": "GiB",
+                            "value": 1
+                        },
+                        "status": "create",
+                        "type": "primary"
+                    }
+                ],
+                "wipe": true
+            }
+        ]
+    },
+    "hostname": "sysforge-vm",
+    "locale_config": {
+        "kb_layout": "us",
+        "sys_enc": "UTF-8",
+        "sys_lang": "en_US"
+    },
+    "mirror_config": {
+        "mirror_regions": {
+            "United States": []
+        }
+    },
+    "network_config": {
+        "nics": [
+            {
+                "dhcp": true,
+                "dns": null,
+                "gateway": null,
+                "iface": "ens3",
+                "ip": null,
+                "type": "NM"
+            }
+        ],
+        "type": "NM"
+    },
+    "no_pkg_lookups": false,
+    "ntp": true,
+    "packages": [
+        "base-devel",
+        "git",
+        "openssh",
+        "python",
+        "uv",
+        "vim"
+    ],
+    "profile_config": null,
+    "root_encryption_password": null,
+    "script": "guided",
+    "services": ["sshd", "NetworkManager"],
+    "silent": true,
+    "swap": false,
+    "timezone": "UTC",
+    "uki_config": null,
+    "version": "3.0.2"
+}
