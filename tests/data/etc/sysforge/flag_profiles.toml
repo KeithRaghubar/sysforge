@@ -23,7 +23,7 @@ makepkg_flags = ["--noconfirm", "--syncdeps"]
 [profiles.optimized]
 extends = "standard"
 CFLAGS = "-march=native -O3 -pipe -fno-plt"
-LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
+LDFLAGS = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
 
 [profiles.pgo_llvm_toolchain]
 extends = "optimized"
