@@ -78,6 +78,30 @@ def test_parse_reads_arrays(sys_conf_path):
     assert "BUILDENV" in result
     assert "(!distcc" in result["BUILDENV"]
 
+def test_parse_reads_multiline_arrays(tmp_path):
+    p = tmp_path / "makepkg.conf"
+    p.write_text(
+        "CFLAGS=\"-O2\"\n"
+        "VCSCLIENTS=('bzr::breezy'\n"
+        "            'git::git'\n"
+        "            'mercurial::mercurial'\n"
+        "            'subversion::subversion')\n"
+        "BUILDENV=(!distcc color)\n"
+    )
+    result = parse_system_makepkg_conf(p)
+    assert "VCSCLIENTS" in result
+    # All four entries must be captured — not just the first line
+    assert "'bzr::breezy'" in result["VCSCLIENTS"]
+    assert "'git::git'" in result["VCSCLIENTS"]
+    assert "'mercurial::mercurial'" in result["VCSCLIENTS"]
+    assert "'subversion::subversion'" in result["VCSCLIENTS"]
+    # Closing paren must be present (array is syntactically complete)
+    assert result["VCSCLIENTS"].rstrip().endswith(")")
+    # Neighbouring keys must still be parsed correctly
+    assert "-O2" in result["CFLAGS"]
+    assert "!distcc" in result["BUILDENV"]
+
+
 def test_parse_skips_comments(sys_conf_path):
     result = parse_system_makepkg_conf(sys_conf_path)
     # No key should be a comment fragment

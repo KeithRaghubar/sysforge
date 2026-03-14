@@ -266,6 +266,21 @@ def parse_system_makepkg_conf(path=None):
     for m in _MAKEPKG_ASSIGN_RE.finditer(text):
         key = m.group("key")
         value = m.group("value").rstrip()
+
+        # Multiline array: if the value opens a '(' that isn't closed on the
+        # same line, consume subsequent lines until paren depth reaches zero.
+        if value.startswith("("):
+            depth = value.count("(") - value.count(")")
+            if depth > 0:
+                rest = text[m.end():]
+                extra = []
+                for line in rest.splitlines():
+                    extra.append(line)
+                    depth += line.count("(") - line.count(")")
+                    if depth <= 0:
+                        break
+                value = value + "\n" + "\n".join(extra)
+
         result[key] = value
 
     _log.info("[CONFIG]", f"Parsed {len(result)} keys from {path}")
