@@ -105,7 +105,7 @@ sysforge/
 │           ├── __init__.py            # STAGES ordered list
 │           ├── base.py                # Stage base class, RunOptions dataclass
 │           ├── packages.py            # stage 5: real implementation
-│           ├── kernel.py              # stage 6: stub
+│           ├── kernel.py              # stage 6: full implementation
 │           ├── configure.py           # stage 7: stub
 │           ├── partition.py           # stage 1: stub
 │           ├── base_install.py        # stage 2: stub
@@ -136,6 +136,7 @@ sysforge/
 │   ├── test_pipeline.py
 │   ├── test_pipeline_runner.py
 │   ├── test_pipeline_state.py
+│   ├── test_stage_kernel.py
 │   ├── test_stage_packages.py
 │   ├── test_system_conf.py
 │   └── test_wrapper.py
@@ -248,7 +249,7 @@ Python DAG orchestrator with checkpoint/resume. Stages run in order:
 3. **hardware** — stub
 4. **toolchain** — stub
 5. **packages** — fully implemented
-6. **kernel** — stub
+6. **kernel** — fully implemented
 7. **configure** — stub
 
 Stubs raise `NotImplementedError` with `--start-from` guidance. Stages 5–7 are usable on a live system via `--start-from packages`.
@@ -283,6 +284,45 @@ remaining = ["cosmic-comp-git", "cosmic-panel-git"]
 
 On resume with failed packages, the user is prompted to retry or skip each (or `--force-retry` bypasses the prompt).
 
+### Kernel stage (stage 6)
+
+Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent, so systems using a stock pacman kernel skip it without needing `--start-from`.
+
+**`kernel.toml` structure:**
+
+```toml
+pkgname      = "linux-custom"
+pkgbuild_dir = "~/builds"        # parent dir; PKGBUILD is at <pkgbuild_dir>/<srcdir>/PKGBUILD
+srcdir       = "linux"           # source directory name if different from pkgname (optional)
+bootloader   = "systemd-boot"    # systemd-boot | grub | none  (default: systemd-boot)
+
+[[kconfig]]                      # manual kconfig overrides (optional, repeatable)
+option = "CONFIG_HZ_1000"        # must match CONFIG_[A-Z0-9_]+
+value  = "y"                     # y | m | n | non-empty string
+```
+
+`srcdir` is needed when the PKGBUILD directory name differs from `pkgname` (e.g. `pkgname = "linux-custom"` but the repo is cloned as `~/builds/linux`). Defaults to `pkgname` if omitted.
+
+**kconfig fragment:**
+
+Hardware-driven kconfig entries come from `hardware_profile.toml [kconfig]` (emitted by the hardware stage). Manual overrides from `kernel.toml [[kconfig]]` are merged on top — manual wins on conflict with a `[WARN]`. The combined result is written to `<pkgbuild_dir>/<srcdir>/sysforge.config` before `makepkg` runs. The PKGBUILD must merge this into its `.config`; a compatible PKGBUILD calls `scripts/kconfig/merge_config.sh` in `prepare()`.
+
+Manual override validation: `option` must match `CONFIG_[A-Z0-9_]+`; `value` must be non-empty (`n` to disable); duplicates within `kernel.toml` are an error.
+
+If neither source provides any kconfig entries, no fragment is written.
+
+**lsmod snapshot:**
+
+Before the build, `lsmod` output is captured to `<state_dir>/lsmod.snapshot`. This lets the PKGBUILD run `make localmodconfig` reproducibly using a fixed module set from the running system rather than whatever is loaded at build time.
+
+**Noninteractive kconfig:**
+
+Kernel builds always pass `noninteractive_kconfig=True` to `makepkg_wrapper.run()`. This triggers `patch_noninteractive_kconfig` (patcher module) on `PKGBUILD.sysforge` after normal patching, replacing interactive config targets (`oldconfig`, `nconfig`, `menuconfig`, `xconfig`, `gconfig`) with `make olddefconfig`. `olddefconfig` applies defaults for all new symbols without terminal interaction. VAR=val arguments before the target (e.g. `ARCH=x86_64`) and trailing comments are preserved. `--noconfirm` only controls makepkg's own prompts and has no effect on interactive make targets inside the PKGBUILD.
+
+**Post-install steps** (run after `makepkg` succeeds):
+1. `sudo mkinitcpio -P`
+2. Bootloader update: `bootctl update` (systemd-boot), `grub-mkconfig -o /boot/grub/grub.cfg` (grub), or skipped (`none`)
+
 ### Packages stage (stage 5)
 
 Walks `packages.toml` in order:
@@ -304,7 +344,7 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-All modules independently testable. 292 pytest tests (`pytest` from repo root).
+All modules independently testable. 348 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 
@@ -355,7 +395,11 @@ All PKGBUILD mutation. Active when `build_mode = "patch_pkgbuild"` on the resolv
 
 **Conditional block handling** (`_extract_conditional_blocks`) finds `if...fi` blocks containing extractable key assignments using depth-tracked scanning. Entire blocks are removed from the patched PKGBUILD, never partially.
 
-**Patching** (`apply_patch_pkgbuild`) writes `PKGBUILD.sysforge` with all managed flag assignments and conditional blocks removed. The original is untouched. Artifacts persist on build failure for diagnosis; `cleanup_patch_artifacts` removes them on success.
+**Patching** (`apply_patch_pkgbuild`) writes `PKGBUILD.sysforge` with all managed flag assignments and conditional blocks removed. The original is untouched. Artifacts persist on build failure for diagnosis; `cleanup_patch_artifacts` removes them on success. On failure, the warning only mentions `pkgbuild_extracted_profile.toml` if it was actually written (non-empty extraction).
+
+Inline `make VAR=val` and `cmake -DKEY=val` lines are only removed when the key is in `_EXTRACTABLE_KEYS` — keys that sysforge manages. This prevents accidental removal of kernel build commands like `make LOCALVERSION=...` or `make INSTALL_MOD_PATH=...` which are real build invocations, not flag assignments.
+
+**Noninteractive kconfig patching** (`patch_noninteractive_kconfig`) replaces interactive kconfig targets (`oldconfig`, `nconfig`, `menuconfig`, `xconfig`, `gconfig`) with `make olddefconfig` in an already-patched PKGBUILD file. Called by the kernel stage after normal patching; modifies `PKGBUILD.sysforge` in place. Preserves `VAR=val` arguments before the target and trailing comments.
 
 ### `dep_analysis.py`
 
@@ -375,7 +419,7 @@ Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_a
 
 ### `makepkg_wrapper.py`
 
-Build execution. Public API: `run(pkgbuild_path, extra_flags=None)`
+Build execution. Public API: `run(pkgbuild_path, extra_flags=None, noninteractive_kconfig=False)`
 
 High-level flow:
 1. Parse PKGBUILD via `pkgbuild_meta.py`
@@ -385,7 +429,8 @@ High-level flow:
 5. If `patch_pkgbuild` mode: extract PKGBUILD flags, write extracted profile, apply patch
 6. Emit complete temp `makepkg.conf` (merged system conf + profile overrides)
 7. Resolve env vars for subprocess injection
-8. Invoke `makepkg` with temp conf and injected env
+8. If `noninteractive_kconfig`: patch interactive kconfig targets in `PKGBUILD.sysforge` to `olddefconfig`
+9. Invoke `makepkg` with temp conf and injected env
 
 **System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
 
@@ -631,9 +676,10 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 | `[BUILD]` | makepkg invocation, exit codes, patched PKGBUILD lifecycle |
 | `[FAILURE]` | Failure scenario dispatch |
 | `[DEP]` | Soname checks |
-| `[PATCH]` | PKGBUILD flag extraction, patching, artifact lifecycle |
+| `[PATCH]` | PKGBUILD flag extraction, patching, artifact lifecycle; noninteractive kconfig target replacement |
 | `[GROUPS]` | Package group resolution |
 | `[CONFIG]` | Config file loading, state dir resolution |
+| `[KERNEL]` | Kernel stage: lsmod snapshot, kconfig fragment, build, post-install |
 | `[PACKAGES]` | Packages stage progress |
 | `[PIPELINE]` | Stage sequencing, checkpoint events |
 | `[MANIFEST]` | Manifest generation |

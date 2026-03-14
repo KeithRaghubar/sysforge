@@ -279,8 +279,8 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 5) | ✅ Done |
 | Manifest generator (`sysforge manifest`) | ✅ Done |
-| Pytest suite (292 tests) | ✅ Done |
-| Kernel stage (stage 6) | 🔧 Stub |
+| Pytest suite (348 tests) | ✅ Done |
+| Kernel stage (stage 6) | ✅ Done |
 | Configure stage (stage 7) | 🔧 Stub |
 | Stages 1–4 (partition → toolchain) | 🔧 Stub |
 | AUR RPC lookup in manifest | ⬜ Planned |
