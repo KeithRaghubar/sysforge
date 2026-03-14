@@ -12,6 +12,8 @@
 *.zip
 
 *.egg-info/
+
+.claude/
 .venv/
 __pycache__/
 dist/
