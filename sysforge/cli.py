@@ -102,6 +102,24 @@ def _cmd_resolve(args):
     sys.exit(1)
 
 
+def _hoist_verbosity_flags(argv):
+    """
+    Move any -v / -vv / --verbose flags to before the subcommand so argparse
+    sees them as global flags regardless of where the user placed them.
+
+    sysforge build PKGBUILD -vv  →  sysforge -vv build PKGBUILD
+    sysforge build PKGBUILD -v --interactive  →  sysforge -v build PKGBUILD --interactive
+    """
+    verbose_tokens = []
+    rest = []
+    for tok in argv:
+        if tok in ("-v", "-vv", "--verbose"):
+            verbose_tokens.append(tok)
+        else:
+            rest.append(tok)
+    return verbose_tokens + rest
+
+
 def _patch_makepkg_argv(argv):
     """
     Rewrite -m/-makepkg <value> to --makepkg=<value> when <value> starts with
@@ -127,7 +145,7 @@ def _patch_makepkg_argv(argv):
 
 
 def main():
-    sys.argv[1:] = _patch_makepkg_argv(sys.argv[1:])
+    sys.argv[1:] = _hoist_verbosity_flags(_patch_makepkg_argv(sys.argv[1:]))
     parser = argparse.ArgumentParser(
         prog="sysforge",
         description="Reproducible, performance-tuned Arch Linux installer.",
