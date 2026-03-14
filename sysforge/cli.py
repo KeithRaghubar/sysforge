@@ -113,7 +113,7 @@ def _hoist_verbosity_flags(argv):
     verbose_tokens = []
     rest = []
     for tok in argv:
-        if tok in ("-v", "-vv", "--verbose"):
+        if tok in ("-v", "-vv", "-vvv", "--verbose"):
             verbose_tokens.append(tok)
         else:
             rest.append(tok)
@@ -156,7 +156,8 @@ def main():
         default=0,
         help=(
             "Verbosity level. Default: errors only. "
-            "-v adds warnings. -vv adds all informational messages."
+            "-v adds warnings. -vv adds informational messages. "
+            "-vvv adds debug output (full config, profile, and conf file dumps)."
         ),
     )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")

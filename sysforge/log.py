@@ -5,6 +5,7 @@ All output goes to stderr. Verbosity controls which levels are shown on stderr:
   0 (default) — ERROR only
   1 (-v)       — ERROR + WARN
   2 (-vv)      — ERROR + WARN + INFO
+  3 (-vvv)     — ERROR + WARN + INFO + DEBUG (full config/profile/conf dumps)
 
 File logging (always full verbosity, all levels):
   Unified log — one file for the entire run, managed by the pipeline runner.
@@ -26,7 +27,7 @@ Usage:
     log.error("[FAILURE]", "aborting build")
 
     # Set once at CLI entry point:
-    log.set_verbosity(args.verbose)  # 0, 1, or 2
+    log.set_verbosity(args.verbose)  # 0, 1, 2, or 3
 
     # Pipeline runner manages the unified log:
     log.open_unified_log(path, purge=False)
@@ -146,3 +147,16 @@ def info(tag: str, message: str) -> None:
     if _VERBOSITY >= 2:
         print(line, end="", file=sys.stderr)
     _write_to_files(line)
+
+
+def debug(tag: str, message: str) -> None:
+    """
+    Printed at verbosity >= 3 (-vvv). Always written to log files.
+    Multi-line messages are split and each line is emitted with its own prefix.
+    Use for full config/profile/conf body dumps.
+    """
+    for part in (message.splitlines() or [""]):
+        entry = f"[SYSFORGE][DEBUG]{tag} {part}\n"
+        if _VERBOSITY >= 3:
+            print(entry, end="", file=sys.stderr)
+        _write_to_files(entry)

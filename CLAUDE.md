@@ -22,6 +22,13 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 3. **`_pkgmeta_placeholder`** — wiring was fixed once; history may resurface. Verify if touching metadata paths.
 4. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
 
+## Implemented: Verbosity Levels
+
+- **0** (default): `[ERROR]` only
+- **1** (`-v`): adds `[WARN]`
+- **2** (`-vv`): adds `[INFO]`
+- **3** (`-vvv`): adds `[DEBUG]` — full body dumps of loaded configs, resolved profiles, conflict groups, inference map, and temp makepkg.conf
+
 ## Implemented: Dual Log Scheme
 
 - **Unified log**: `state_dir/sysforge.log` (install subcommand only)

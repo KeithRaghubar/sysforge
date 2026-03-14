@@ -310,7 +310,7 @@ Structured logging module. Output goes to stderr (verbosity-gated) and optionall
 [SYSFORGE][LEVEL][TAG] message
 ```
 
-Three levels: `error` (always shown), `warn` (`-v`), `info` (`-vv`). Set once at CLI entry with `log.set_verbosity(args.verbose)`.
+Four levels: `error` (always shown), `warn` (`-v`), `info` (`-vv`), `debug` (`-vvv`). Set once at CLI entry with `log.set_verbosity(args.verbose)`.
 
 ### `config.py`
 
@@ -577,10 +577,11 @@ clean_builddir = true
 
 All log output goes to stderr. Format: `[SYSFORGE][LEVEL][TAG] message`
 
-Verbosity controlled by `-v`/`-vv` on the CLI:
+Verbosity controlled by `-v`/`-vv`/`-vvv` on the CLI:
 - Default: `[ERROR]` only
 - `-v`: adds `[WARN]`
 - `-vv`: adds `[INFO]`
+- `-vvv`: adds `[DEBUG]` — full body dumps of every loaded config, resolved profile, conflict groups, inference map, and temp makepkg.conf
 
 Set once at CLI entry via `log.set_verbosity(args.verbose)`. Tests run at verbosity 2 (all messages visible).
 

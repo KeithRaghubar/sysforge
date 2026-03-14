@@ -241,6 +241,7 @@ All output goes to stderr. Verbosity is controlled with `-v`/`-vv`:
 sysforge build PKGBUILD           # errors only
 sysforge -v build PKGBUILD        # + warnings (soname mismatches, skips, etc.)
 sysforge -vv build PKGBUILD       # all messages
+sysforge -vvv build PKGBUILD      # + debug: full config, profile, and conf file dumps
 ```
 
 Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making output greppable by level, tag, or package name independently:
@@ -253,7 +254,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 [SYSFORGE][ERROR][BUILD] Build failed: Command 'makepkg' returned non-zero exit status 1
 ```
 
-**Log levels:** `[ERROR]` always shown · `[WARN]` with `-v` · `[INFO]` with `-vv`
+**Log levels:** `[ERROR]` always shown · `[WARN]` with `-v` · `[INFO]` with `-vv` · `[DEBUG]` with `-vvv`
 
 **Tags:** `[PROFILE]` `[CONF]` `[ENV]` `[BUILD]` `[FAILURE]` `[DEP]` `[PATCH]` `[GROUPS]` `[CONFIG]` `[PACKAGES]` `[PIPELINE]` `[MANIFEST]` `[FLAG]`
 

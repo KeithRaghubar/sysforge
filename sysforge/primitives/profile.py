@@ -17,6 +17,7 @@ Public API:
                      inference_map)                          -> frozenset[str]
 """
 import fnmatch
+import pprint
 import re
 import sysforge.log as _log
 
@@ -290,7 +291,9 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
             profiles["bare"] = bare
         _log.info("[PROFILE]", f"[{pkgname}] Injected pkgbuild_extracted as chain root")
 
-    return merge_extends(profile_name, profiles, conflict_groups=conflict_groups)
+    result = merge_extends(profile_name, profiles, conflict_groups=conflict_groups)
+    _log.debug("[PROFILE]", f"[{pkgname}] Full resolved profile ({profile_name}):\n{pprint.pformat(result, indent=2, sort_dicts=False)}")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +374,11 @@ def match_rules(pkgmeta, rules):
             if not _exact_all_absent("not_makedepends", "makedepends"):
                 continue
         matched.append(rule)
+
+    if matched:
+        _log.debug("[PROFILE]", f"Matched {len(matched)} rule(s):")
+        for rule in matched:
+            _log.debug("[PROFILE]", pprint.pformat(rule, indent=2, sort_dicts=False))
 
     return matched
 

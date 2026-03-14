@@ -10,6 +10,7 @@ Public API:
     load_consumes_inference(paths=None)    -> dict
 """
 import os
+import pprint
 import tomllib
 import sysforge.log as _log
 from pathlib import Path
@@ -78,11 +79,13 @@ def load_config(config_paths=None):
     if user_config is None:
         _validate_rule_priorities(system_config.get("rules", []), "system")
         _log.info("[CONFIG]", f"Loaded system config: {system_path}")
+        _log.debug("[CONFIG]", f"Full flag_profiles (system):\n{pprint.pformat(system_config, indent=2, sort_dicts=False)}")
         return system_config
 
     if system_config is None:
         _validate_rule_priorities(user_config.get("rules", []), "user")
         _log.info("[CONFIG]", f"Loaded user config: {user_path}")
+        _log.debug("[CONFIG]", f"Full flag_profiles (user):\n{pprint.pformat(user_config, indent=2, sort_dicts=False)}")
         return user_config
 
     if user_config.get("extends_system", False):
@@ -107,10 +110,12 @@ def load_config(config_paths=None):
         system_rules = system_config.get("rules", [])
 
         merged["rules"] = system_rules + user_rules
+        _log.debug("[CONFIG]", f"Full flag_profiles (merged):\n{pprint.pformat(merged, indent=2, sort_dicts=False)}")
         return merged
 
     _validate_rule_priorities(user_config.get("rules", []), "user")
     _log.info("[CONFIG]", f"User config overrides system config: {user_path}")
+    _log.debug("[CONFIG]", f"Full flag_profiles (user overrides system):\n{pprint.pformat(user_config, indent=2, sort_dicts=False)}")
     return user_config
 
 
@@ -156,6 +161,7 @@ def load_conflict_groups(conflict_group_paths=None):
     system_groups = system_data.get("conflict_groups", {}) if system_data else {}
 
     if user_data is None:
+        _log.debug("[CONFIG]", f"Conflict groups (system):\n{pprint.pformat(system_groups, indent=2, sort_dicts=False)}")
         return system_groups
 
     user_groups = user_data.get("conflict_groups", {})
@@ -163,8 +169,10 @@ def load_conflict_groups(conflict_group_paths=None):
     if user_data.get("extends_system", False):
         merged = dict(system_groups)
         merged.update(user_groups)
+        _log.debug("[CONFIG]", f"Conflict groups (merged):\n{pprint.pformat(merged, indent=2, sort_dicts=False)}")
         return merged
 
+    _log.debug("[CONFIG]", f"Conflict groups (user):\n{pprint.pformat(user_groups, indent=2, sort_dicts=False)}")
     return user_groups
 
 
@@ -201,12 +209,14 @@ def load_consumes_inference(paths=None):
     system_data = _load(system_path) if system_path and system_path.exists() else None
 
     if user_data is None and system_data is None:
+        _log.debug("[CONFIG]", f"Consumes inference (built-in defaults):\n{pprint.pformat(_DEFAULT_INFERENCE, indent=2, sort_dicts=False)}")
         return _DEFAULT_INFERENCE
 
     system_map = system_data.get("consumes_inference", {}) if system_data else {}
 
     if user_data is None:
         _log.info("[CONFIG]", f"Loaded consumes_inference: {system_path}")
+        _log.debug("[CONFIG]", f"Consumes inference (system):\n{pprint.pformat(system_map, indent=2, sort_dicts=False)}")
         return system_map
 
     user_map = user_data.get("consumes_inference", {})
@@ -215,9 +225,11 @@ def load_consumes_inference(paths=None):
         merged = dict(system_map)
         merged.update(user_map)
         _log.info("[CONFIG]", "Merged consumes_inference (user onto system)")
+        _log.debug("[CONFIG]", f"Consumes inference (merged):\n{pprint.pformat(merged, indent=2, sort_dicts=False)}")
         return merged
 
     _log.info("[CONFIG]", f"Loaded consumes_inference (user only): {user_path}")
+    _log.debug("[CONFIG]", f"Consumes inference (user):\n{pprint.pformat(user_map, indent=2, sort_dicts=False)}")
     return user_map
 
 
@@ -284,4 +296,6 @@ def parse_system_makepkg_conf(path=None):
         result[key] = value
 
     _log.info("[CONFIG]", f"Parsed {len(result)} keys from {path}")
+    _log.debug("[CONFIG]", f"System makepkg.conf key=value pairs:\n" +
+               "\n".join(f"  {k}={v}" for k, v in result.items()))
     return result

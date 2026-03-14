@@ -418,6 +418,7 @@ def write_extracted_profile(profile, pkgbuild_path):
         escaped = val.replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'{key} = "{escaped}"')
 
+    _log.debug("[PATCH]", f"Extracted profile TOML:\n{chr(10).join(lines)}")
     out_path.write_text("\n".join(lines) + "\n")
     _log.info("[PATCH]", f"Wrote extracted profile: {out_path}")
     return out_path

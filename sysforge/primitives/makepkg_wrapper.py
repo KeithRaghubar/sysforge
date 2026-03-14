@@ -217,6 +217,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         tmp_path = f.name
 
     _log.info("[CONF]", f"Wrote temp makepkg.conf: {tmp_path}")
+    _log.debug("[CONF]", f"Temp makepkg.conf contents:\n{chr(10).join(conf_lines)}")
     try:
         yield tmp_path
     finally:
