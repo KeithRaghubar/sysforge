@@ -283,7 +283,7 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
     # onto it.
     if extracted_profile:
         profiles = dict(profiles)
-        profiles["pkgbuild_extracted"] = extracted_profile
+        profiles["pkgbuild_extracted"] = {k: v for k, v in extracted_profile.items() if not k.startswith("__")}
         # Rebase bare onto extracted: if bare has no extends, give it one.
         bare = dict(profiles.get("bare", {}))
         if "extends" not in bare:
