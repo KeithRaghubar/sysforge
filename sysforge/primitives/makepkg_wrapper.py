@@ -414,6 +414,41 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
 
 # ---------------------------------------------------------------------------
+# Build mode detection
+# ---------------------------------------------------------------------------
+
+def _get_build_mode(matched_rules, config):
+    """
+    Return the build_mode from the winning rule's profile chain without
+    performing a full profile resolution (and without logging).
+
+    Walks the extends chain of the winning profile looking for a build_mode
+    key. Returns None if no build_mode is found or no rules matched.
+    """
+    profiles = config.get("profiles", {})
+    defaults = config.get("defaults", {})
+
+    winner = None
+    for rule in matched_rules:
+        if "profile" not in rule:
+            continue
+        if winner is None or rule.get("priority", 0) > winner.get("priority", 0):
+            winner = rule
+
+    profile_name = winner["profile"] if winner else defaults.get("profile", "bare")
+
+    visited: set[str] = set()
+    while profile_name and profile_name not in visited:
+        visited.add(profile_name)
+        p = profiles.get(profile_name, {})
+        if "build_mode" in p:
+            return p["build_mode"]
+        profile_name = p.get("extends")
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -446,13 +481,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
     try:
         matched_rules = match_rules(pkgmeta, config.get("rules", []))
 
-        build_mode = None  # resolved below after profile
-
-        # Determine if patching is requested before full profile resolution,
-        # so we can extract and inject the pkgbuild_extracted root.
-        # We do a preliminary rule match here; full profile resolution follows.
-        _pre_profile = resolve_profile(pkgmeta, matched_rules, config, conflict_groups)
-        build_mode = _pre_profile.get("build_mode")
+        build_mode = _get_build_mode(matched_rules, config)
 
         extracted_profile = None
         if build_mode == "patch_pkgbuild":
