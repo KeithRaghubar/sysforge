@@ -11,9 +11,10 @@ If kernel.toml is absent the stage exits cleanly — systems using a stock
 kernel (installed via packages stage) skip this without needing --start-from.
 
 kernel.toml structure:
-  pkgname      = "linux-git"
+  pkgname      = "linux-custom"
   source       = "git"             # aur | git
-  pkgbuild_dir = "~/builds"        # dir containing <pkgname>/PKGBUILD
+  pkgbuild_dir = "~/builds"        # dir containing <srcdir>/PKGBUILD
+  srcdir       = "linux"           # source dir name if different from pkgname (optional)
   bootloader   = "systemd-boot"    # systemd-boot | grub | none
 
   [[kconfig]]                      # manual kconfig overrides (optional)
@@ -84,6 +85,11 @@ def _pkgbuild_path(kernel_cfg):
     """
     Resolve the PKGBUILD for the configured kernel package.
     Returns Path to the PKGBUILD file.
+
+    By default looks for <pkgbuild_dir>/<pkgname>/PKGBUILD.
+    If the source directory name differs from pkgname (e.g. pkgname=linux-custom
+    but the directory is ~/builds/linux), set srcdir in kernel.toml to the
+    directory name: srcdir = "linux"
     """
     pkgbuild_dir = kernel_cfg.get("pkgbuild_dir")
     if not pkgbuild_dir:
@@ -95,11 +101,12 @@ def _pkgbuild_path(kernel_cfg):
     if not pkgname:
         raise RuntimeError("[KERNEL] kernel.toml is missing pkgname.")
 
-    candidate = Path(pkgbuild_dir).expanduser() / pkgname / "PKGBUILD"
+    srcdir = kernel_cfg.get("srcdir") or pkgname
+    candidate = Path(pkgbuild_dir).expanduser() / srcdir / "PKGBUILD"
     if not candidate.exists():
         raise RuntimeError(
             f"[KERNEL] PKGBUILD not found: {candidate}. "
-            f"Clone {pkgname!r} into pkgbuild_dir first."
+            f"Clone the kernel source into pkgbuild_dir/{srcdir!r} first."
         )
     return candidate
 

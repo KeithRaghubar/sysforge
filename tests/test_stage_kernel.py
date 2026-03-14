@@ -231,6 +231,27 @@ def test_pkgbuild_path_returns_path(tmp_path):
     assert result.name == "PKGBUILD"
     assert result.exists()
 
+def test_pkgbuild_path_srcdir_override(tmp_path):
+    """srcdir allows pkgname != source directory name (e.g. linux-custom in dir 'linux')."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux")   # directory is 'linux', not 'linux-custom'
+    result = _pkgbuild_path({
+        "pkgbuild_dir": str(builds),
+        "pkgname": "linux-custom",
+        "srcdir": "linux",
+    })
+    assert result.name == "PKGBUILD"
+    assert result.exists()
+
+def test_pkgbuild_path_srcdir_not_found(tmp_path):
+    """Error message when srcdir directory doesn't exist."""
+    with pytest.raises(RuntimeError, match="PKGBUILD not found"):
+        _pkgbuild_path({
+            "pkgbuild_dir": str(tmp_path),
+            "pkgname": "linux-custom",
+            "srcdir": "linux",
+        })
+
 
 # ---------------------------------------------------------------------------
 # _write_kconfig_fragment

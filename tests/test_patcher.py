@@ -396,6 +396,52 @@ def test_apply_writes_sysforge_copy():
         patched = apply_patch_pkgbuild(pb, pkgmeta)
     assert patched.name == "PKGBUILD.sysforge"
 
+def test_apply_preserves_non_managed_make_invocations():
+    """make LOCALVERSION=... and make INSTALL_MOD_PATH=... must NOT be removed — they
+    are real kernel build commands, not flag assignments sysforge manages."""
+    pkgbuild = """\
+pkgbase=linux-custom
+pkgname=('linux-custom' 'linux-custom-headers')
+pkgver=6.12
+
+build() {
+  make LOCALVERSION="$(date +%Y%m%d)" all
+}
+
+package_linux-custom() {
+  make INSTALL_MOD_PATH="$pkgdir/usr" modules_install
+}
+"""
+    with tempfile.TemporaryDirectory() as d:
+        pb = _make_pkgbuild(d, pkgbuild)
+        pkgmeta = {
+            "globals": {"pkgbase": "linux-custom", "pkgname": ["linux-custom", "linux-custom-headers"]},
+            "functions": {},
+        }
+        patched = apply_patch_pkgbuild(pb, pkgmeta)
+        content = patched.read_text()
+    assert 'make LOCALVERSION=' in content
+    assert 'make INSTALL_MOD_PATH=' in content
+
+def test_apply_removes_managed_inline_make():
+    """make CFLAGS=... should still be removed (it's in _EXTRACTABLE_KEYS)."""
+    pkgbuild = """\
+pkgname=mypkg
+pkgver=1.0
+
+build() {
+  make CFLAGS="-O2" all
+  make LOCALVERSION="v1" all
+}
+"""
+    with tempfile.TemporaryDirectory() as d:
+        pb = _make_pkgbuild(d, pkgbuild)
+        pkgmeta = {"globals": {"pkgname": "mypkg"}, "functions": {}}
+        patched = apply_patch_pkgbuild(pb, pkgmeta)
+        content = patched.read_text()
+    assert 'make CFLAGS=' not in content       # managed key — removed
+    assert 'make LOCALVERSION=' in content     # unmanaged key — preserved
+
 
 # ---------------------------------------------------------------------------
 # cleanup_patch_artifacts

@@ -401,7 +401,10 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             if success:
                 cleanup_patch_artifacts(pkgbuild_path.parent / "PKGBUILD")
             else:
-                _log.warn("[PATCH]", "Build failed — leaving PKGBUILD.sysforge and pkgbuild_extracted_profile.toml in place for diagnosis")
+                artifacts = "PKGBUILD.sysforge"
+                if extracted_profile:
+                    artifacts += " and pkgbuild_extracted_profile.toml"
+                _log.warn("[PATCH]", f"Build failed — leaving {artifacts} in place for diagnosis")
         else:
             if success:
                 if pkgbuild_path.exists():

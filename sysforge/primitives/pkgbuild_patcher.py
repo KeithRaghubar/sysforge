@@ -76,10 +76,11 @@ _FI_RE = re.compile(r"^[ \t]*fi\b", re.MULTILINE)
 # -Wl,... packed linker token
 _WL_RE = re.compile(r"^-Wl,(.+)$")
 
-# Inline make/cmake invocations that carry flag-like arguments — skipped but
-# still removed from the patched PKGBUILD.
-_INLINE_MAKE_RE = re.compile(r"^\s*make\s+\w+=", re.MULTILINE)
-_INLINE_CMAKE_RE = re.compile(r"^\s*cmake\b.*-D[A-Z_]+=", re.MULTILINE)
+# Inline make/cmake invocations that carry flag-like arguments — only removed
+# when the key is in _EXTRACTABLE_KEYS (i.e. a flag we manage), so that
+# make invocations like `make LOCALVERSION=... all` are not accidentally stripped.
+_INLINE_MAKE_RE = re.compile(r"^\s*make\s+(?P<key>\w+)=", re.MULTILINE)
+_INLINE_CMAKE_RE = re.compile(r"^\s*cmake\b.*-D(?P<key>[A-Z_]+)=", re.MULTILINE)
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +328,8 @@ def extract_pkgbuild_profile(pkgmeta, pkgbuild_path):
         dict  e.g. {"CFLAGS": "-fno-stack-protector -m32", "LDFLAGS": "-Wl,--gc-sections"}
         Empty dict if no extractable flags are found.
     """
-    pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
+    globals_ = pkgmeta.get("globals", {})
+    pkgname = globals_.get("pkgbase") or globals_.get("pkgname", "unknown")
     if isinstance(pkgname, list):
         pkgname = pkgname[0]
 
@@ -440,7 +442,8 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta):
     pkgbuild_path = Path(pkgbuild_path)
     patched_path = pkgbuild_path.parent / "PKGBUILD.sysforge"
 
-    pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
+    globals_ = pkgmeta.get("globals", {})
+    pkgname = globals_.get("pkgbase") or globals_.get("pkgname", "unknown")
     if isinstance(pkgname, list):
         pkgname = pkgname[0]
 
@@ -505,11 +508,13 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta):
             _log.info("[PATCH]", f"[{pkgname}] Removed assignment line {line_no}: {line.rstrip()!r}")
             continue  # drop this line
 
-        # Inline make/cmake lines
-        if _INLINE_MAKE_RE.match(line):
+        # Inline make/cmake lines — only strip if the key is one we manage
+        m_make = _INLINE_MAKE_RE.match(line)
+        if m_make and m_make.group("key") in _EXTRACTABLE_KEYS:
             _log.info("[PATCH]", f"[{pkgname}] Removed inline make line {line_no}: {line.rstrip()!r}")
             continue
-        if _INLINE_CMAKE_RE.match(line):
+        m_cmake = _INLINE_CMAKE_RE.match(line)
+        if m_cmake and m_cmake.group("key") in _EXTRACTABLE_KEYS:
             _log.info("[PATCH]", f"[{pkgname}] Removed inline cmake line {line_no}: {line.rstrip()!r}")
             continue
 

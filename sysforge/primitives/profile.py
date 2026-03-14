@@ -250,7 +250,8 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
     defaults = config.get("defaults", {})
     default_profile = defaults.get("profile", "bare")
 
-    pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
+    globals_ = pkgmeta.get("globals", {})
+    pkgname = globals_.get("pkgbase") or globals_.get("pkgname", "unknown")
     if isinstance(pkgname, list):
         pkgname = pkgname[0]
 
@@ -397,7 +398,8 @@ def resolve_groups(pkgmeta, matched_rules, defaults):
       - append_groups from each matched rule, in rule order
     Deduplicates while preserving insertion order.
     """
-    pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
+    globals_ = pkgmeta.get("globals", {})
+    pkgname = globals_.get("pkgbase") or globals_.get("pkgname", "unknown")
     if isinstance(pkgname, list):
         pkgname = pkgname[0]
 
@@ -432,7 +434,8 @@ def resolve_consumes(resolved_profile, pkgmeta, inference_map):
 
     Returns frozenset of conf type strings.
     """
-    pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
+    globals_ = pkgmeta.get("globals", {})
+    pkgname = globals_.get("pkgbase") or globals_.get("pkgname", "unknown")
     if isinstance(pkgname, list):
         pkgname = pkgname[0]
 
