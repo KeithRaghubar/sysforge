@@ -87,7 +87,32 @@ def _cmd_resolve(args):
     sys.exit(1)
 
 
+def _patch_makepkg_argv(argv):
+    """
+    Rewrite -m/-makepkg <value> to --makepkg=<value> when <value> starts with
+    '-', so argparse doesn't misinterpret it as a new flag.
+
+    argparse cannot accept option values that start with '-' unless they are
+    expressed as --flag=value. This preprocessing step keeps the documented
+    UX (sysforge build PKGBUILD -m '-sfci') working as intended.
+    """
+    result = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok in ("-m", "--makepkg") and i + 1 < len(argv):
+            val = argv[i + 1]
+            if val.startswith("-"):
+                result.append(f"--makepkg={val}")
+                i += 2
+                continue
+        result.append(tok)
+        i += 1
+    return result
+
+
 def main():
+    sys.argv[1:] = _patch_makepkg_argv(sys.argv[1:])
     parser = argparse.ArgumentParser(
         prog="sysforge",
         description="Reproducible, performance-tuned Arch Linux installer.",
