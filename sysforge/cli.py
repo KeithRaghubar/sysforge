@@ -53,7 +53,10 @@ def _cmd_build(args):
             pkg_log=not args.no_pkg_log,
             persist_log=args.persist_log,
             log_dir=Path(args.log_dir) if args.log_dir else None,
-            profile_conf=args.profile_conf)
+            profile_conf=args.profile_conf,
+            cc_override=args.cc,
+            cxx_override=args.cxx,
+            ld_override=args.ld)
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -188,6 +191,24 @@ def main():
         metavar="FILE",
         dest="profile_conf",
         help="Path to a flag_profiles.toml to use instead of the default user/system config.",
+    )
+    p_build.add_argument(
+        "--cc",
+        metavar="COMPILER",
+        dest="cc",
+        help="Override CC (C compiler) for this build, e.g. --cc clang.",
+    )
+    p_build.add_argument(
+        "--cxx",
+        metavar="COMPILER",
+        dest="cxx",
+        help="Override CXX (C++ compiler) for this build, e.g. --cxx clang++.",
+    )
+    p_build.add_argument(
+        "--ld",
+        metavar="LINKER",
+        dest="ld",
+        help="Override linker for this build. Injects -fuse-ld=LINKER into LDFLAGS, e.g. --ld lld.",
     )
     p_build.set_defaults(func=_cmd_build)
 

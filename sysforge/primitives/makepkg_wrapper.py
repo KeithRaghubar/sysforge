@@ -47,13 +47,75 @@ from sysforge.primitives.profile import (
 # Conf file emission
 # ---------------------------------------------------------------------------
 
+# Flags that are lld-specific and must be stripped when lld is not the active linker.
+# These may appear as bare tokens in LDFLAGS or as sub-tokens inside -Wl,... sequences.
+_LLD_ONLY_FLAGS = frozenset({
+    "--icf=all",
+    "--icf=safe",
+    "--icf=none",
+})
+
+
+def _detect_linker_from_ldflags(ldflags_val):
+    """Return the linker name declared by -fuse-ld=X in LDFLAGS, or None."""
+    for token in ldflags_val.split():
+        if token.startswith("-fuse-ld="):
+            return token[len("-fuse-ld="):]
+    return None
+
+
+def _inject_linker(ldflags_val, linker_name):
+    """
+    Replace an existing -fuse-ld=X token in LDFLAGS, or prepend one if absent.
+    Returns the updated LDFLAGS string.
+    """
+    new_token = f"-fuse-ld={linker_name}"
+    tokens = ldflags_val.split() if ldflags_val else []
+    for i, t in enumerate(tokens):
+        if t.startswith("-fuse-ld="):
+            if tokens[i] != new_token:
+                _log.info("[FLAG]", f"Replaced {tokens[i]} with {new_token} (--ld override)")
+            tokens[i] = new_token
+            return " ".join(tokens)
+    _log.info("[FLAG]", f"Injected {new_token} into LDFLAGS (--ld override)")
+    return " ".join([new_token] + tokens)
+
+
+def _strip_lld_flags(ldflags_val):
+    """
+    Remove lld-specific flags from an LDFLAGS string.
+    Handles bare tokens (--icf=all) and flags embedded in -Wl,... sequences.
+    Returns (cleaned_str, list_of_stripped_tokens).
+    """
+    stripped = []
+    out_tokens = []
+    for token in ldflags_val.split():
+        if token.startswith("-Wl,"):
+            subtokens = token[4:].split(",")
+            kept = []
+            for sub in subtokens:
+                if sub in _LLD_ONLY_FLAGS:
+                    stripped.append(sub)
+                else:
+                    kept.append(sub)
+            if kept:
+                out_tokens.append("-Wl," + ",".join(kept))
+        elif token in _LLD_ONLY_FLAGS:
+            stripped.append(token)
+        else:
+            out_tokens.append(token)
+    return " ".join(out_tokens), stripped
+
+
 @contextlib.contextmanager
 def emit_makepkg_conf(resolved_profile, active_consumes=None,
-                      system_conf_path=None):
+                      system_conf_path=None,
+                      cc_override=None, cxx_override=None, ld_override=None):
     """
     Write a complete, self-contained temp makepkg.conf by merging:
       1. All keys from /etc/makepkg.conf (system baseline)
       2. Profile-managed keys from resolved_profile (override)
+      3. CLI overrides (--cc, --cxx, --ld) applied on top of profile values
 
     Keys in the system conf that sysforge doesn't manage (CARCH, CHOST,
     PKGDEST, PACKAGER, etc.) are written verbatim from the system conf.
@@ -61,6 +123,10 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     from the system conf are appended at the end.
 
     "env" type keys and sysforge-internal keys are never written to the conf.
+
+    Linker guard: if LDFLAGS declares a linker via -fuse-ld=X and that linker
+    is not found on PATH, lld-specific flags are stripped from LDFLAGS and
+    each stripped token is logged under [FLAG].
     """
     env_keys = _CONF_KEY_MAP.get("env", set())
 
@@ -87,6 +153,28 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
 
     # Load system conf baseline
     system_assignments = parse_system_makepkg_conf(system_conf_path)
+
+    # Apply CLI toolchain overrides on top of profile values
+    if cc_override is not None:
+        profile_overrides["CC"] = cc_override
+        _log.info("[FLAG]", f"CC overridden via --cc: {cc_override}")
+    if cxx_override is not None:
+        profile_overrides["CXX"] = cxx_override
+        _log.info("[FLAG]", f"CXX overridden via --cxx: {cxx_override}")
+    if ld_override is not None:
+        current_ldflags = profile_overrides.get("LDFLAGS", "")
+        profile_overrides["LDFLAGS"] = _inject_linker(current_ldflags, ld_override)
+
+    # Linker guard: if LDFLAGS declares a linker that isn't on PATH,
+    # strip lld-specific flags so the build doesn't fail at configure time.
+    if "LDFLAGS" in profile_overrides:
+        linker = _detect_linker_from_ldflags(profile_overrides["LDFLAGS"])
+        if linker and not shutil.which(linker):
+            _log.warn("[FLAG]", f"Declared linker '{linker}' not found on PATH — stripping lld-specific flags from LDFLAGS")
+            cleaned, stripped_tokens = _strip_lld_flags(profile_overrides["LDFLAGS"])
+            for tok in stripped_tokens:
+                _log.warn("[FLAG]", f"Stripped lld-only flag: {tok}")
+            profile_overrides["LDFLAGS"] = cleaned
 
     # Build output lines: system conf keys in their original raw form,
     # profile-overridden keys substituted inline, new profile keys appended.
@@ -186,6 +274,17 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     build_dir = pkgbuild_path.parent
 
     env = os.environ.copy()
+
+    # Strip all makepkg-managed keys from the inherited shell env so the
+    # temp conf is the sole authority. Without this, shell vars like CC=clang
+    # or CFLAGS=... win over what the conf sets, producing unpredictable builds.
+    _makepkg_keys = _CONF_KEY_MAP.get("makepkg", set())
+    stripped_env_keys = sorted(k for k in _makepkg_keys if k in env)
+    for k in stripped_env_keys:
+        del env[k]
+    if stripped_env_keys:
+        _log.warn("[ENV]", f"Stripped shell env vars superseded by temp conf: {stripped_env_keys}")
+
     env["MAKEPKG_CONF"] = str(conf_path)
 
     if extra_env:
@@ -247,7 +346,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
 
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
                active_consumes=None, extracted_profile=None, pkgmeta=None,
-               extra_flags=None, interactive=False):
+               extra_flags=None, interactive=False,
+               cc_override=None, cxx_override=None, ld_override=None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -268,7 +368,10 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     success = False
     try:
         extra_env = resolve_env_vars(resolved_profile, active_consumes)
-        with emit_makepkg_conf(resolved_profile, active_consumes) as conf_path:
+        with emit_makepkg_conf(resolved_profile, active_consumes,
+                               cc_override=cc_override,
+                               cxx_override=cxx_override,
+                               ld_override=ld_override) as conf_path:
             _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                extra_env, extra_flags, interactive)
         success = True
@@ -297,7 +400,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
 def run(pkgbuild_path, extra_flags=None, interactive=False,
         pkg_log: bool = True, persist_log: bool = False,
-        log_dir=None, profile_conf=None):
+        log_dir=None, profile_conf=None,
+        cc_override=None, cxx_override=None, ld_override=None):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     conflict_groups = load_conflict_groups()
@@ -365,6 +469,9 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
                 pkgmeta=pkgmeta,
                 extra_flags=extra_flags,
                 interactive=interactive,
+                cc_override=cc_override,
+                cxx_override=cxx_override,
+                ld_override=ld_override,
             )
         build_success = True
     finally:
