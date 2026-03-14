@@ -23,7 +23,6 @@ SysForge is a personal system automation framework that produces a reproducible,
 15. [Release Plan](#release-plan)
 16. [Re-converge](#re-converge)
 17. [V2 Roadmap](#v2-roadmap)
-18. [Open Questions](#open-questions)
 
 ---
 
@@ -72,7 +71,7 @@ Three layers:
 ├─────────────────────────────────────────┤
 │  Primitives                             │
 │  PKGBUILD parser, makepkg wrapper,      │
-│  thin Bash wrappers                     │
+│  dep analysis, flag extraction          │
 └─────────────────────────────────────────┘
 ```
 
@@ -86,36 +85,60 @@ Three layers:
 sysforge/
 ├── sysforge/
 │   ├── __init__.py
-│   ├── cli.py
+│   ├── cli.py                         # CLI entry point and subcommand wiring
+│   ├── log.py                         # structured logging (all output to stderr)
+│   ├── manifest.py                    # packages.toml generator
 │   └── primitives/
-│       ├── config.py              # TOML config loading, path constants
-│       ├── profile.py             # profile resolution, rule matching, consumes
-│       ├── pkgbuild_meta.py       # static PKGBUILD parser (read-only)
-│       ├── pkgbuild_patcher.py    # PKGBUILD mutation + flag extraction
-│       └── makepkg_wrapper.py     # build execution: emit conf, invoke makepkg
+│       ├── config.py                  # TOML config loading, path constants, system conf parsing
+│       ├── profile.py                 # profile resolution, rule matching, consumes
+│       ├── pkgbuild_meta.py           # static PKGBUILD parser (read-only)
+│       ├── pkgbuild_patcher.py        # PKGBUILD mutation + flag extraction
+│       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
+│       ├── dep_analysis.py            # pre-build soname dependency checks
+│       └── failure.py                 # failure scenario handling (shared)
+│   └── pipeline/
+│       ├── __init__.py
+│       ├── runner.py                  # stage sequencing, checkpoint/resume
+│       ├── state.py                   # pipeline_state.toml read/write
+│       └── stages/
+│           ├── __init__.py            # STAGES ordered list
+│           ├── base.py                # Stage base class, RunOptions dataclass
+│           ├── packages.py            # stage 5: real implementation
+│           ├── kernel.py              # stage 6: stub
+│           ├── configure.py           # stage 7: stub
+│           ├── partition.py           # stage 1: stub
+│           ├── base_install.py        # stage 2: stub
+│           ├── hardware.py            # stage 3: stub
+│           └── toolchain.py           # stage 4: stub
+├── configs/
+│   └── packages.toml                  # starter package manifest
 ├── tests/
 │   ├── conftest.py
 │   ├── data/
-│   │   ├── PKGBUILDs/
-│   │   │   ├── htop.PKGBUILD
-│   │   │   ├── lib32-llvm.PKGBUILD
-│   │   │   ├── llvm.PKGBUILD
-│   │   │   ├── complex2.PKGBUILD
-│   │   │   ├── cosmic.PKGBUILD
-│   │   │   └── vulkan-headers-git.PKGBUILD
+│   │   ├── PKGBUILDs/                 # htop, llvm, lib32-llvm, cosmic, vulkan-headers-git
+│   │   │   ├── complex.PKGBUILD  →  vulkan-headers-git.PKGBUILD  (symlink alias)
+│   │   │   ├── complex2.PKGBUILD →  lib32-llvm.PKGBUILD           (symlink alias)
+│   │   │   └── simple.PKGBUILD   →  htop.PKGBUILD                 (symlink alias)
 │   │   ├── test_flag_profiles.toml
 │   │   ├── etc/sysforge/
 │   │   │   ├── flag_profiles.toml
-│   │   │   └── consumes_inference.toml
+│   │   │   ├── consumes_inference.toml
+│   │   │   └── append_conflict_groups.toml
 │   │   └── user/.config/sysforge/
 │   │       └── flag_profiles.toml
-│   ├── test_parser.py
-│   ├── test_wrapper.py
-│   ├── test_pipeline.py
 │   ├── test_append_merge.py
 │   ├── test_consumes.py
+│   ├── test_dep_analysis.py
+│   ├── test_env_pass.py
+│   ├── test_manifest.py
+│   ├── test_parser.py
 │   ├── test_patcher.py
-│   └── test_env_pass.py
+│   ├── test_pipeline.py
+│   ├── test_pipeline_runner.py
+│   ├── test_pipeline_state.py
+│   ├── test_stage_packages.py
+│   ├── test_system_conf.py
+│   └── test_wrapper.py
 ├── PKGBUILD
 ├── pyproject.toml
 ├── Makefile
@@ -130,9 +153,11 @@ sysforge/
     consumes_inference.toml
     append_conflict_groups.toml
 ~/.config/sysforge/
-    flag_profiles.toml        # user overrides
-    append_conflict_groups.toml  # user conflict group overrides (optional)
+    flag_profiles.toml               # user overrides
+    append_conflict_groups.toml      # user conflict group overrides (optional)
 /usr/bin/sysforge
+/var/lib/sysforge/
+    pipeline_state.toml              # pipeline checkpoint state (created at runtime)
 ```
 
 ---
@@ -144,10 +169,13 @@ sysforge/
 Each entry declares:
 - `source` — one of `repo` (pacman), `aur`, or `git` (direct PKGBUILD)
 - `pkgbuild_patch` *(optional bool)* — if `true`, the PKGBUILD patching library runs on this package before build
-- `requires_hardware` *(optional)* — hardware capability key that must be present in `hardware_profile.toml` for this package to be included; absent or false drops the package silently at pipeline time
-- `cache` *(optional bool)* — overrides the profile-level cache default for this package. Set to `false` to unconditionally disable ccache/sccache for this build (required for all PGO stages)
+- `requires_hardware` *(optional)* — hardware capability key that must be present in `hardware_profile.toml`; absent packages are excluded silently at pipeline time
+- `cache` *(optional bool)* — `false` disables ccache/sccache for this package (required for PGO stages)
 
 ```toml
+[build]
+pkgbuild_dir = "~/builds"   # pre-cloned AUR PKGBUILDs live here
+
 [[package]]
 name = "nvidia-open-dkms"
 source = "repo"
@@ -159,45 +187,44 @@ source = "aur"
 pkgbuild_patch = true
 
 [[package]]
-name = "linux-zen"
+name = "llvm"
 source = "aur"
-
-[[package]]
-name = "llvm-pgo-stage1"
-source = "aur"
-cache = false   # instrumented objects must never be cached
+cache = false   # PGO build — instrumented objects must never be cached
 ```
 
-`requires_hardware` keys are matched against those emitted by the hardware detection stage into `hardware_profile.toml`. Example:
+### Manifest generation
 
-```toml
-# hardware/zen3_rtx5070.toml
-nvidia_gpu = true
-amd_cpu    = true
+`sysforge manifest` generates a `packages.toml` stub from a list of package names, classifying each as `repo` or `aur` by querying pacman sync DBs. AUR RPC lookup is currently stubbed — packages not found in repos are excluded with a warning.
+
+```bash
+sysforge manifest htop neovim mold > packages.toml
+sysforge manifest --file pkglist.txt >> packages.toml
 ```
 
-`flag_profiles.toml` has no knowledge of package sources or hardware gates — those are exclusively a `packages.toml` concern.
+### `-march=native` strategy
 
-### `-march=native` Strategy
-
-SysForge uses `-march=native` rather than hardcoding CPU-specific flags like `znver3`. Optimization becomes a compile-time concern rather than a manifest or profile concern — it works across CPU families without separate logic and justifies a single `packages.toml` rather than per-CPU manifests. If a package is incompatible with native tuning (e.g. a portable binary), it matches the `bare` profile via a higher-priority rule, overriding `-march` for that package only.
+SysForge uses `-march=native` rather than hardcoding CPU-specific flags. Optimization becomes a compile-time concern — it works across CPU families without separate logic. If a package is incompatible with native tuning, a higher-priority rule pointing to the `bare` profile overrides `-march` for that package only.
 
 ---
 
 ## Config Layer
 
-### Config File Hierarchy
+### Config file hierarchy
 
 - System default: `/etc/sysforge/flag_profiles.toml`
 - User override: `~/.config/sysforge/flag_profiles.toml`
 
-By default the user file **fully replaces** the system file. To layer the user file on top of the system file instead, add `extends_system = true` at the top of the user file — user values take priority on all conflicts.
+By default the user file **fully replaces** the system file. To layer on top instead, add `extends_system = true` at the top of the user file — user values take priority on all conflicts. User rule priorities are bumped by 100 on merge (range 100–199) to always outrank system rules (range 0–99).
 
-### Hardware Overlays
+### State directory
 
-Hardware-specific config lives in `configs/hardware/`. The hardware detection stage emits a `hardware_profile.toml` that feeds into kconfig automation. Key hardware caveats for the primary machine (Ryzen 7 5800X3D + RTX 5070):
+Pipeline state is written to `/var/lib/sysforge/` by default. Override via `SYSFORGE_STATE_DIR` environment variable or `--state-dir` CLI flag. CLI takes priority over the env var; both are logged when present.
 
-- Explicit disable of `nouveau` for the RTX 5070
+### Hardware overlays
+
+The hardware detection stage emits `hardware_profile.toml` which feeds kconfig automation and gates hardware-specific packages in `packages.toml`. Key machine-specific caveats (Ryzen 7 5800X3D + RTX 5070):
+
+- Explicit disable of `nouveau`
 - CPU-specific flags: `CONFIG_MZEN3`, `CONFIG_X86_AMD_PSTATE`
 
 ---
@@ -206,15 +233,56 @@ Hardware-specific config lives in `configs/hardware/`. The hardware detection st
 
 Python DAG orchestrator with checkpoint/resume. Stages run in order:
 
-1. **partition**
-2. **base\_install**
-3. **hardware\_detection** *(walks `lspci -k`, `lsmod`, `/sys/bus` → emits `hardware_profile.toml`)*
-4. **toolchain**
-5. **packages**
-6. **kernel**
-7. **configure**
+1. **partition** — stub
+2. **base_install** — stub
+3. **hardware** — stub
+4. **toolchain** — stub
+5. **packages** — fully implemented
+6. **kernel** — stub
+7. **configure** — stub
 
-### LLVM Bootstrap
+Stubs raise `NotImplementedError` with `--start-from` guidance. Stages 5–7 are usable on a live system via `--start-from packages`.
+
+### Runner
+
+`run_pipeline(config, options, stages)` sequences stage execution:
+- Validates `depends_on` references before running
+- Reads checkpoint state to determine start index
+- Calls `stage.run()`, marks done/failed, saves state after each stage
+- On `NotImplementedError`: prints `--start-from` guidance and exits
+- On `RuntimeError`: saves state and exits with resume instructions
+- `--dry-run`: logs what would run without calling `stage.run()`
+
+Guard against accidental state clobber: if a state file exists and neither `--resume` nor `--start-from` is passed, the runner exits with instructions rather than overwriting.
+
+### Checkpoint state
+
+`pipeline_state.toml` is the authoritative checkpoint record. Written atomically (write-then-rename) after every state transition. Human-readable TOML for manual recovery.
+
+Per-stage status: `pending` → `running` → `done` / `failed` / `skipped_to`
+
+Intra-stage package progress (packages stage only):
+
+```toml
+[stages.packages.progress]
+built     = ["llvm", "clang", "lld"]
+failed    = ["mesa-git"]
+skipped   = []
+remaining = ["cosmic-comp-git", "cosmic-panel-git"]
+```
+
+On resume with failed packages, the user is prompted to retry or skip each (or `--force-retry` bypasses the prompt).
+
+### Packages stage (stage 5)
+
+Walks `packages.toml` in order:
+- `source = "repo"` → `sudo pacman -S --needed --noconfirm`
+- `source = "aur"` / `"git"` → `makepkg_wrapper.run()` against the pre-cloned PKGBUILD
+- Hardware-gated packages skipped if `hardware_profile.toml` is absent or key is missing
+- Non-fatal per-package failures: build continues, failures recorded in state
+- Summary at end: `Total | Built | Failed | Skipped`
+
+### LLVM bootstrap
 
 Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
@@ -226,67 +294,98 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-Independently testable before the pipeline exists. All modules are complete and covered by 190 pytest tests (`pytest` from repo root).
+All modules independently testable. 290 pytest tests (`pytest` from repo root).
+
+### `log.py`
+
+Structured logging module. All output goes to stderr.
+
+```
+[SYSFORGE][LEVEL][TAG] message
+```
+
+Three levels: `error` (always shown), `warn` (`-v`), `info` (`-vv`). Set once at CLI entry with `log.set_verbosity(args.verbose)`.
 
 ### `config.py`
 
-TOML config loading and path resolution. Reads `flag_profiles.toml` from the user and system paths, merges via `extends_system`, validates rule priorities, and loads auxiliary config files (`append_conflict_groups.toml`, `consumes_inference.toml`).
+TOML config loading and path resolution. Public API:
+- `load_config(config_paths=None)` — loads `flag_profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
+- `load_conflict_groups(paths=None)` — loads `append_conflict_groups.toml`
+- `load_consumes_inference(paths=None)` — loads `consumes_inference.toml`
+- `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation
 
 ### `profile.py`
 
-Profile resolution and rule matching. Implements:
-- `merge_extends` — resolves the full `extends` inheritance chain into a flat profile dict, applying `[profiles.x.append]` token-level merges using conflict groups
-- `match_rules` — evaluates all match fields (`pkgnames`, `groups`, `makedepends_*`, etc.) against a parsed PKGBUILD and returns the set of matching rules
-- `resolve_profile` — selects the winning rule by priority, resolves its profile chain, and optionally injects a `pkgbuild_extracted` root from the PKGBUILD patcher
+Profile resolution and rule matching. Public API:
+- `merge_extends` — resolves the full `extends` chain into a flat profile dict, applying `[profiles.x.append]` token-level merges with conflict groups
+- `match_rules` — evaluates all match fields against a parsed PKGBUILD
+- `resolve_profile` — selects the winning rule by priority; optionally injects `pkgbuild_extracted` as the chain root
 - `resolve_groups` — accumulates package groups from PKGBUILD, defaults, and all matched rules
-- `resolve_consumes` — determines which conf types the build needs, inferred from makedepends or overridden explicitly on the profile
+- `resolve_consumes` — determines which conf types the build needs
 
 ### `pkgbuild_meta.py`
 
 Static parser for PKGBUILD metadata. Does **not** source or execute the PKGBUILD.
 
-**Reliably parseable fields:** `pkgname`, `pkgver`, `pkgrel`, `epoch`, `groups`, `depends`, `makedepends`, `provides`, and all standard scalar/array globals. Function bodies (`prepare`, `build`, `package`, `package_*`, and helper functions) are extracted and stored under `functions`.
+**Reliably parseable:** `pkgname`, `pkgver`, `pkgrel`, `epoch`, `groups`, `depends`, `makedepends`, `provides`, and all standard scalar/array globals. Function bodies extracted and stored under `functions`.
 
-**Not statically parseable:** computed values (`pkgver=$(...)`, conditional metadata, `depends+=()` inside functions). The wrapper falls back to `default_profile` when parsing fails.
+**Not statically parseable:** computed values (`pkgver=$(...)`, conditional metadata, `depends+=()` inside functions).
 
 **Implementation notes:**
-- Comment stripping respects quoting — `#` inside single or double quotes is not treated as a comment
-- Function extraction uses brace-depth tracking; `${}` expansions (including nested) are skipped to prevent their braces from affecting depth counts
-- Functions are matched only at line boundaries to prevent mid-line matches (e.g. `package_lib32-llvm` will not spuriously match as `llvm`)
-- Function names support hyphens (`[\w][\w-]*`) to handle split package functions like `package_lib32-llvm`
-- Array parsing respects quoted strings with internal spaces
-- Scalar regex handles single-quoted, double-quoted, and bare values as distinct branches
+- Comment stripping respects quoting
+- Function extraction uses brace-depth tracking; `${}` expansions skipped to prevent brace confusion
+- Functions matched only at line boundaries; names support hyphens for split packages like `package_lib32-llvm`
 - Known limitation: heredocs containing bare `{` or `}` will confuse the depth tracker; rare in PKGBUILDs, deferred
-
-Returns:
-```python
-{
-    "globals": { "pkgname": "htop", "makedepends": ["git", "lm_sensors"], ... },
-    "functions": { "build": "  cd ...\n  make", "prepare": "...", ... }
-}
-```
 
 ### `pkgbuild_patcher.py`
 
 All PKGBUILD mutation. Active when `build_mode = "patch_pkgbuild"` on the resolved profile.
 
-**Flag extraction** (`extract_pkgbuild_profile`) scans all function bodies and extracts bare, `export`, and `+=` assignments to known flag variables (CFLAGS, LDFLAGS, RUSTFLAGS, CARGO_*, etc.). Strips self-references (`$CFLAGS` in CFLAGS), skips complex bash expressions (e.g. `${CFLAGS/-g /-g1 }`), expands packed `-Wl,a,b,c` tokens into individual sub-tokens. Returns a synthetic profile dict used as the implicit chain root in `merge_extends`.
+**Flag extraction** (`extract_pkgbuild_profile`) scans all function bodies and extracts bare, `export`, and `+=` assignments to known flag variables. Strips self-references (`$CFLAGS` in CFLAGS), skips complex bash expressions (e.g. `${CFLAGS/-g /-g1 }`), expands packed `-Wl,a,b,c` tokens into individual sub-tokens. Returns a synthetic profile dict used as the implicit chain root in `merge_extends` — forming the chain: `pkgbuild_extracted → bare → standard → optimized`.
 
-**Conditional block handling** (`_extract_conditional_blocks`) finds `if...fi` blocks containing extractable key assignments using depth-tracked scanning (handles nested ifs). Entire blocks are removed from the patched PKGBUILD, never partially.
+**Conditional block handling** (`_extract_conditional_blocks`) finds `if...fi` blocks containing extractable key assignments using depth-tracked scanning. Entire blocks are removed from the patched PKGBUILD, never partially.
 
 **Patching** (`apply_patch_pkgbuild`) writes `PKGBUILD.sysforge` with all managed flag assignments and conditional blocks removed. The original is untouched. Artifacts persist on build failure for diagnosis; `cleanup_patch_artifacts` removes them on success.
 
+### `dep_analysis.py`
+
+Pre-build soname dependency checks. Runs before `_run_build` in `makepkg_wrapper.run()`.
+
+`check_soname_deps` filters `.so` and `.so=N` entries from `depends`, parses ldconfig -p output, and checks presence and major version. `libcap.so=2` means libcap.so.2 must be present in ldconfig's cache.
+
+Version constraint checking (pacman -Q / vercmp) was intentionally omitted — makepkg already does this and any pre-check adds false-positive risk without meaningful value.
+
+Both functions accept injectable callables for testing. Non-fatal by default; configurable via `abi_mismatch` in `[failure_handling]`.
+
+### `failure.py`
+
+Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_analysis` to avoid circular imports.
+
+`handle_failure(scenario, message, config, fallback=None)` dispatches to `abort`, `error`, `warn_and_fallback`, or `fallback` based on `[failure_handling]` config. `profile_missing` and `tempfile_write_failed` always abort regardless of config.
+
 ### `makepkg_wrapper.py`
 
-Build execution. See [Makepkg Wrapper](#makepkg-wrapper).
+Build execution. Public API: `run(pkgbuild_path, extra_flags=None)`
+
+High-level flow:
+1. Parse PKGBUILD via `pkgbuild_meta.py`
+2. Match rules, resolve profile (injecting `pkgbuild_extracted` root if patching)
+3. Resolve consumes and groups
+4. Run pre-build soname dep analysis
+5. If `patch_pkgbuild` mode: extract PKGBUILD flags, write extracted profile, apply patch
+6. Emit complete temp `makepkg.conf` (merged system conf + profile overrides)
+7. Resolve env vars for subprocess injection
+8. Invoke `makepkg` with temp conf and injected env
+
+**System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
+
+**Makepkg flag passthrough:** `extra_flags` from the CLI (`-m "-sfci"`) are appended after profile `makepkg_flags`. Combined short flags are expanded: `-sfci` → `[-s, -f, -c, -i]`.
 
 ---
 
 ## Flag Profile System
 
-### Profile Structure
-
-Profiles are defined in `flag_profiles.toml`. Each profile is a named set of compiler flags and env vars.
+### Profile structure
 
 ```toml
 [profiles.bare]
@@ -297,6 +396,7 @@ extends = "bare"
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
+makepkg_flags = ["--noconfirm", "--syncdeps"]
 
 [profiles.optimized]
 extends = "standard"
@@ -310,117 +410,82 @@ pgo_store = "/var/tmp"
 
 [profiles.cosmic]
 extends = "optimized"
-build_mode = "patch_linker"
+build_mode = "patch_pkgbuild"
 ```
 
-### `extends` Semantics
+### `extends` semantics
 
 Full inheritance with explicit override. The child starts as a complete copy of the parent's resolved values, then applies its own keys on top.
 
-**Direct keys override** — a key set directly on a child profile fully replaces the parent's value. The child must restate the complete value.
+**Direct keys** fully replace the parent's value.
 
-**`[profiles.x.append]` subsection merges** — keys in the `append` subsection are merged into the parent's value using a token-level list merge rather than string concatenation. This handles both additive flags and conflicting ones cleanly.
+**`[profiles.x.append]` subsection** — keys merged into the parent's value using token-level list merge rather than string concatenation.
 
-#### Append Merge Algorithm *(planned)*
+#### Append merge algorithm
 
 1. Tokenize parent and child values by whitespace
 2. For each child token, resolve in this order:
-   - **Explicit conflict group** — if the token belongs to a defined conflict group, remove all other group members from the accumulated token list, then insert the child token
-   - **Prefix match** — extract the token's prefix (everything up to and including `=`, or up to a trailing digit run for flags like `-O2`); if a token with the same prefix already exists, replace it
+   - **Explicit conflict group** — if the token belongs to a defined conflict group, remove all other group members from the accumulated list, insert the child token
+   - **Prefix match** — extract the token's prefix (everything up to `=`, or up to trailing digits for flags like `-O2`); if a matching prefix exists, replace in-place
    - **Append** — no match, add to end
 3. Reconstruct as space-joined string
 
 **Worked example:**
 ```
-parent CFLAGS:        "-march=native -O2 -pipe -fstack-protector"
-append CFLAGS:        "-O3 -fno-stack-protector --icf=all"
+parent CFLAGS:   "-march=native -O2 -pipe -fstack-protector"
+append CFLAGS:   "-O3 -fno-stack-protector --icf=all"
 
--O3                   prefix "-O" matches "-O2"            → replace
--fno-stack-protector  conflict group "stack"               → removes "-fstack-protector", inserts
---icf=all             no match                             → append
+-O3                   prefix "-O" matches "-O2"              → replace in-place
+-fno-stack-protector  conflict group "stack"                 → removes "-fstack-protector", inserts
+--icf=all             no match                               → append
 
 result: "-march=native -O3 -pipe -fno-stack-protector --icf=all"
 ```
 
-#### Conflict Groups *(planned)*
+#### Conflict groups
 
-Conflict groups define sets of mutually exclusive flags that don't share a detectable prefix. Defined in system config:
+Defined in `/etc/sysforge/append_conflict_groups.toml`:
 
 ```toml
-# /etc/sysforge/append_conflict_groups.toml
 [conflict_groups]
 pic   = ["-fPIC", "-fPIE", "-fpic", "-fpie", "-fno-pic", "-fno-pie"]
 lto   = ["-flto", "-flto=thin", "-flto=full", "-fno-lto"]
 stack = ["-fstack-protector", "-fstack-protector-strong", "-fno-stack-protector"]
 ```
 
-User-defined groups live in `~/.config/sysforge/append_conflict_groups.toml` and follow the same `extends_system` merge model as profiles. Explicit conflict groups take precedence over prefix matching.
+User-defined groups in `~/.config/sysforge/append_conflict_groups.toml` follow the same `extends_system` merge model. Explicit conflict groups take precedence over prefix matching.
 
-### Rules
+### Rule match field semantics
 
-Rules match packages to profiles based on package properties. All conditions within a rule are AND'd. Multiple rules are OR'd (each evaluated independently).
-
-```toml
-[[rules]]
-pkgnames = ["htop"]
-profile = "optimized"
-priority = 0
-
-[[rules]]
-groups = ["cosmic-*"]
-profile = "cosmic"
-priority = 10
-append_groups = ["cosmic-patched"]
-
-[[rules]]
-pkgnames = ["llvm", "clang", "lld"]
-profile = "pgo_llvm_toolchain"
-priority = 20
-append_groups = ["pgo"]
-```
-
-### Rule Match Field Semantics
-
-All match fields are optional. Omitting a field means it is not evaluated (passes unconditionally).
+All match fields optional. Omitting a field passes unconditionally.
 
 | Field | Semantics |
 |---|---|
-| `pkgnames` | ANY match + glob — rule matches if any pattern matches any package name |
-| `not_pkgnames` | ALL absent + glob — rule skipped if any pattern matches any package name |
-| `groups` | ALL match + glob — rule matches only if every pattern matches at least one group |
-| `not_groups` | ALL absent, exact — rule skipped if any rule item appears in package groups |
-| `depends_any` | ANY exact — rule matches if any rule item appears in depends |
-| `depends_all` | ALL exact — rule matches only if every rule item appears in depends |
-| `not_depends` | ALL absent, exact — rule skipped if any rule item appears in depends |
-| `makedepends_any` | ANY exact — rule matches if any rule item appears in makedepends |
-| `makedepends_all` | ALL exact — rule matches only if every rule item appears in makedepends |
-| `not_makedepends` | ALL absent, exact — rule skipped if any rule item appears in makedepends |
+| `pkgnames` | ANY match + glob |
+| `not_pkgnames` | ALL absent + glob |
+| `groups` | ALL match + glob |
+| `not_groups` | ALL absent, exact |
+| `depends_any` | ANY exact |
+| `depends_all` | ALL exact |
+| `not_depends` | ALL absent, exact |
+| `makedepends_any` | ANY exact |
+| `makedepends_all` | ALL exact |
+| `not_makedepends` | ALL absent, exact |
 
-`pkgnames` and `not_pkgnames` support fnmatch glob patterns (e.g. `lib32-*`). `groups` supports globs for matching but `not_groups` is exact. `depends_*` and `makedepends_*` are always exact.
+`pkgnames`/`not_pkgnames` and `groups` support fnmatch glob patterns. `depends_*` and `makedepends_*` are always exact.
 
-The old singular `pkgname`, `depends`, and `makedepends` keys are not supported — use the typed variants above.
+### Multi-rule merge and priority
 
-### Multi-Rule Merge and Priority
+Highest-priority matching rule wins outright — its profile is resolved in full via the `extends` chain. Equal priority: first occurrence wins. `priority` range: 0–99 (system), 100–199 (user, bumped on merge).
 
-When multiple rules match a package, the **highest-priority rule wins outright** — its profile is resolved and used in full. The inheritance system (`extends`) is how profiles compose with each other; rules are not an additional composition layer.
+**`append_groups` is additive across all matched rules** regardless of priority. Every matched rule's `append_groups` is collected and appended to the package's final group list. This is asymmetric by design — flag resolution is winner-takes-all, groups are accumulative.
 
-- Highest priority rule → its profile is resolved via `extends` chain
-- Equal priority → first occurrence (file order) wins
-- All non-winning rules are logged with their priorities and discarded
+### `consumes` field
 
-The `priority` field is a required integer (range `0–99`). Higher = wins. User rules are bumped by `100` on merge, giving an effective range of `100–199` for user rules and `0–99` for system rules.
+Declares which conf types a build requires (`makepkg`, `rust`, `cmake`, `meson`, `env`).
 
-**`append_groups` is additive across all matched rules**, regardless of priority. Every matched rule's `append_groups` is collected and appended to the package's final group list, deduplicated in match order. This is asymmetric by design — flag resolution is winner-takes-all (one profile wins), groups are accumulative across all matches.
-
-Note: `append_groups` on rules is unrelated to `[profiles.x.append]` — they are distinct mechanisms.
-
-### `consumes` Field
-
-Declares which conf files a package build requires (`makepkg`, `rust`, `meson`, `cmake`, `env`, etc.).
-
-- Lives on profiles *(placement to revisit after build/test)*
-- **Default:** auto-inferred from `makedepends` via a static inference map in system config
-- **Override:** explicit `consumes` on a profile replaces inferred value
+- **Default:** auto-inferred from `makedepends` via `consumes_inference.toml`
+- **Override:** explicit `consumes` on a profile replaces the inferred value
 
 ```toml
 # /etc/sysforge/consumes_inference.toml
@@ -431,31 +496,42 @@ cmake  = ["makepkg", "cmake", "env"]
 ninja  = ["makepkg", "env"]
 ```
 
-The wrapper generates only the conf files in the resolved `consumes` set, logging the active set under `[CONF]`. Keys in the `"env"` conf type travel via subprocess env injection rather than the conf file. Missing conf files will cause a build failure — detailed logs are sufficient to diagnose the cause.
+### Conf key routing
+
+Profile keys are routed to one of two delivery channels:
+
+- **Conf file** (`makepkg`, `rust`, `cmake`, `meson` types) — written into the temp `makepkg.conf`. Only types in `active_consumes` are written.
+- **Subprocess env** (`env` type, or any unclassified key) — injected via `subprocess.run(env=...)`. Used for `RUSTC_WRAPPER`, `CCACHE_DIR`, `SCCACHE_DIR`, etc.
+
+Unclassified keys travel via env pass and are logged as `[WARN][ENV]`.
 
 ---
 
 ## Makepkg Wrapper
 
-### High-Level Flow
+### Failure handling
 
-1. Parse PKGBUILD statically via `pkgbuild_meta.py`
-2. Evaluate all rules against package properties → collect matching profiles
-3. Resolve `extends` chains on each matched profile into fully flat value sets
-4. Merge across matched rules using priorities → one resolved value per key; log all discarded candidates
-5. Log full resolved values with winning sources and discarded candidates
-6. Generate temp `makepkg.conf` containing only the keys in `active_consumes` (non-env types)
-7. Resolve env vars from the `"env"` conf type and any unclassified profile keys; inject on makepkg subprocess invocation
-8. Run `makepkg` pointed at the temp conf via `MAKEPKG_CONF`, with env vars merged into the subprocess env
+Each scenario has a configurable behaviour in `[failure_handling]`:
 
-### Batch Builds
+```toml
+[failure_handling]
+pkgbuild_unparseable  = "warn_and_fallback"
+no_rule_matched       = "fallback"
+profile_missing       = "abort"
+profile_cycle         = "abort"
+tempfile_write_failed = "abort"
+env_conflict          = "warn_and_fallback"
+abi_mismatch          = "warn_and_fallback"
+dep_unsatisfied       = "warn_and_fallback"
+```
 
-The `batch` profile key (`batch = true`) switches the wrapper into unattended mode:
+**Behaviours:** `abort`, `warn_and_fallback`, `fallback`, `error`
 
-- **Batch mode** — on build failure, abort immediately with a `[FAILURE]` log entry. No prompt.
-- **Interactive mode** (default) — on build failure, prompt the user to manually correct the PKGBUILD and retry, or type `abort` to stop.
+`profile_missing` and `tempfile_write_failed` always abort regardless of config.
 
-`batch = true` is the only mechanism needed to express this — it does not interact with `[failure_handling]`. The `failure_handling` key is not valid on individual profiles.
+### Batch mode
+
+`batch = true` on a profile switches to unattended mode — build failures abort immediately rather than prompting. Intended for pipeline use.
 
 ```toml
 [profiles.batch]
@@ -465,114 +541,45 @@ makepkg_flags = ["--noconfirm", "--syncdeps", "--rmdeps", "--install", "--noprog
 clean_builddir = true
 ```
 
-Build summary (packages built / failed / remaining) is deferred to V2 alongside the AUR wrapper. Per-failure logging under `[FAILURE]` is sufficient for v0.1.
-
-### Pre-Build Dependency Analysis *(planned)*
-
-Before invoking makepkg, the wrapper will run two checks against the resolved `depends` and `makedepends`:
-
-**Soname inspection** — resolves the `.so` versions each declared dependency currently exposes on the system (via `ldconfig -p` and `/usr/lib`) and compares against what the package expects to link against. Any version mismatch is flagged under `[DEP]` before the build starts rather than surfacing as a cryptic mid-build linker error.
-
-**Version constraint check** — parses version constraints from `depends` (e.g. `foo>=1.2`) and diffs against `pacman -Q` output. Unsatisfied or borderline constraints are flagged under `[DEP]` before makepkg attempts to resolve them itself.
-
-Both checks are non-fatal by default and configurable via `abi_mismatch` and `dep_unsatisfied` in `[failure_handling]`. Results feed into the failure pattern library for human-readable diagnosis.
-
-### Failure Handling
-
-Each scenario has a configurable behaviour in `[failure_handling]`:
-
-```toml
-[defaults]
-profile = "standard"        # fallback profile when no rule matches
-
-[failure_handling]
-pkgbuild_unparseable  = "warn_and_fallback"  # fallback to bare
-no_rule_matched       = "fallback"           # use default_profile silently
-profile_missing       = "abort"             # config bug, always hard stop
-profile_cycle         = "abort"             # extends loop, always hard stop
-tempfile_write_failed = "abort"             # never silently use system conf
-env_conflict          = "warn_and_fallback"  # wrapper value wins, logged
-abi_mismatch          = "warn_and_fallback"  # soname version mismatch detected pre-build
-dep_unsatisfied       = "warn_and_fallback"  # version constraint not met pre-build
-```
-
-**Behaviours:** `abort`, `warn_and_fallback`, `fallback`, `error`
-
-New scenarios are added by registering a handler function and adding its key to `[failure_handling]`. `profile_missing` and `tempfile_write_failed` always abort regardless of config.
-
-### Env Var Delivery
-
-Profile keys are routed to one of two delivery channels based on their type in `_CONF_KEY_MAP`:
-
-- **Conf file** (`makepkg`, `rust`, `cmake`, `meson` types) — written to temp `makepkg.conf`, sourced by makepkg before the build. Only types in `active_consumes` are written; rust-specific keys are excluded for packages that don't build Rust code.
-- **Subprocess env** (`env` type, or any unclassified key) — injected directly onto the `makepkg` subprocess invocation via `subprocess.run(env=...)`. Used for keys like `RUSTC_WRAPPER=sccache` and `CCACHE_DIR` that need to be set before makepkg itself runs.
-
-Unclassified keys (not in any `_CONF_KEY_MAP` type) always travel via env pass and are logged under `[ENV]` as a warning, since their presence may indicate a typo or a new key that needs classifying.
-
-### Env Var Precedence *(planned)*
-
-A first-class `[env_precedence]` config table is planned for a future iteration. Changing the hierarchy will mean changing these numbers — not tracing which file happened to win.
-
-```toml
-[env_precedence]
-wrapper_profile   = 100  # TOML [profiles.*.env] overrides
-makepkg_conf      = 80   # CFLAGS/LDFLAGS/RUSTFLAGS etc.
-shell_passthrough = 20   # inherited calling env (allowlisted vars)
-pkgbuild_export   = 10   # detected exports in PKGBUILD (best-effort)
-```
-
-When implemented, the wrapper will construct a clean environment dict rather than inheriting the calling shell's env wholesale. *(Not yet implemented — currently inherits full shell env.)*
-
 ---
 
 ## Logging
 
-Every log line is prefixed with exactly one structured category tag. Every line also includes the current package name as a second field, e.g. `[PROFILE][mesa-git]`. This means the log can be filtered by either dimension independently — grep for a tag to see all activity of that type, or grep for a package name to see its full build story.
+All log output goes to stderr. Format: `[SYSFORGE][LEVEL][TAG] message`
 
-Tags marked *(planned)* are defined but not yet emitted in v0.1.
+Verbosity controlled by `-v`/`-vv` on the CLI:
+- Default: `[ERROR]` only
+- `-v`: adds `[WARN]`
+- `-vv`: adds `[INFO]`
+
+Set once at CLI entry via `log.set_verbosity(args.verbose)`. Tests run at verbosity 2 (all messages visible).
+
+**Tags in use:**
 
 | Tag | Covers |
-| --- | --- |
+|---|---|
 | `[PROFILE]` | Profile resolution, rule matching, extends chain |
-| `[FLAG]` | makepkg.conf flag resolution and conflicts *(planned)* |
-| `[ENV]` | Env var resolution, conflicts, overrides, precedence table *(planned)* |
-| `[BUILD]` | makepkg invocation and exit codes |
-| `[FAILURE]` | Any failure scenario firing |
-| `[CONF]` | Temp makepkg conf file generation and cleanup, active consumes set |
-| `[DEP]` | Pre-build dependency analysis: soname mismatches and version constraint checks *(planned)* |
-| `[CACHE]` | Cache state snapshots: ccache/sccache activity, passive monitoring of external caches *(planned)* |
-| `[CONFIG]` | Config file loading, hierarchy resolution, extends_system merge |
-| `[GROUPS]` | Package group resolution: existing groups, defaults.append_groups, rule append_groups |
+| `[CONF]` | Temp conf generation, active consumes set |
+| `[ENV]` | Env var routing, unclassified key warnings |
+| `[BUILD]` | makepkg invocation, exit codes, patched PKGBUILD lifecycle |
+| `[FAILURE]` | Failure scenario dispatch |
+| `[DEP]` | Soname checks |
+| `[PATCH]` | PKGBUILD flag extraction, patching, artifact lifecycle |
+| `[GROUPS]` | Package group resolution |
+| `[CONFIG]` | Config file loading, state dir resolution |
+| `[PACKAGES]` | Packages stage progress |
+| `[PIPELINE]` | Stage sequencing, checkpoint events |
+| `[MANIFEST]` | Manifest generation |
 
-Grepping a single tag gives the complete story for that concern across the full log.
+---
 
-**Example pre-build output:**
+## Hardware Detection
 
-```
-[ENV]    [sysforge]    precedence: wrapper_profile=100 makepkg_conf=80 shell_passthrough=20 pkgbuild_export=10
-[DEP]    [mesa-git]    soname ok: libLLVM-18.so → found
-[DEP]    [mesa-git]    version ok: llvm-libs>=18.0 → 18.1.8-1
-[PROFILE][mesa-git]    matched rule: makedepends_all=cmake,ninja priority=10 → optimized
-[PROFILE][mesa-git]    discarded: pkgnames=mesa-git priority=5 → standard (outprioritized)
-[FLAG]   [mesa-git]    CFLAGS="-march=native -O3 -pipe -fno-plt" (source: optimized)
-[CONF]   [mesa-git]    active conf files: makepkg, env
-[BUILD]  [mesa-git]    invoking makepkg -si via MAKEPKG_CONF=/tmp/sysforge_abc123.conf
-```
+Pipeline stage 3 (stub). When implemented, walks `lspci -k`, `lsmod`, `/sys/bus`, emits `hardware_profile.toml` feeding kconfig automation and `packages.toml` hardware gates. Wraps `make localmodconfig` with an lsmod snapshot for cross-machine reproducibility.
 
-### Dual Log Scheme
-
-SysForge maintains two logs simultaneously by default:
-
-- **Unified log** — all packages, all tags, single file for the full run
-- **Per-package log** — one file per package, split from the unified log on the package tag
-
-Both are enabled by default. Either can be disabled at invocation:
-
-```
-sysforge --no-unified-log  # per-package logs only
-sysforge --no-pkg-logs     # unified log only
-sysforge --log-dir <path>  # override output directory for per-package logs
-```
+Key machine-specific caveats (Ryzen 7 5800X3D + RTX 5070):
+- Explicit disable of `nouveau`
+- `CONFIG_MZEN3`, `CONFIG_X86_AMD_PSTATE`
 
 ---
 
@@ -580,79 +587,30 @@ sysforge --log-dir <path>  # override output directory for per-package logs
 
 ### ccache and sccache
 
-SysForge configures build caches via a `[cache]` table in `flag_profiles.toml`:
+Configured via a `[cache]` table in `flag_profiles.toml`:
 
 ```toml
 [cache]
-ccache                       = "auto"           # auto | enabled | disabled
-sccache                      = "auto"           # auto | enabled | disabled
-ccache_dir                   = "~/.cache/ccache"
-sccache_dir                  = "~/.cache/sccache"
-ccache_max_size              = "10G"
-sccache_max_size             = "10G"
-invalidate_on_toolchain_change = "warn"         # warn | purge | ignore
+ccache  = "auto"   # auto | enabled | disabled
+sccache = "auto"
 ```
 
-`auto` — use if installed, skip silently if not. `enabled` — require it; abort if missing (consistent with `[failure_handling]` philosophy).
+`auto` — use if installed, skip silently if not.
 
-**Compiler invocation** uses explicit absolute paths rather than ccache's symlink shim, which interacts badly with makepkg prepending `$srcdir` to `PATH`:
+Compiler invocation uses explicit absolute paths rather than ccache's symlink shim (incompatible with makepkg prepending `$srcdir` to `PATH`):
 
 ```
 CC="ccache /usr/bin/clang"
 CXX="ccache /usr/bin/clang++"
 ```
 
-sccache wraps the Rust compiler via `RUSTC_WRAPPER=sccache` in the env block. The two caches own distinct domains and run simultaneously without conflict: **ccache owns C/C++, sccache owns Rust**.
+sccache wraps Rust via `RUSTC_WRAPPER=sccache` (env pass). `CARGO_INCREMENTAL=0` set globally for all Rust builds — incremental fingerprinting is unreliable with managed flags.
 
-`CARGO_INCREMENTAL=0` is set globally for all Rust package builds. Cargo's incremental cache uses fingerprinting that does not reliably invalidate on env var changes (e.g. `RUSTFLAGS`), making it unsafe in a flag-managed build environment.
+`cache = false` in `packages.toml` disables both caches for a specific package. Required for all PGO stages.
 
-### Per-Package Cache Override
+### Toolchain fingerprint tracking
 
-The `cache = false` field in `packages.toml` disables both ccache and sccache for a specific package, overriding the profile-level default. This is required for all PGO build stages:
-
-- **Instrumented stage** — cached instrumented objects must never be reused in a non-instrumented build; the failure would be silent and catastrophic
-- **Optimized stage** — profdata is not reliably covered by sccache's cache key, so the full PGO sequence has cache disabled by default
-
-### Toolchain Fingerprint Tracking
-
-SysForge tracks a toolchain fingerprint (hash of compiler binary path + version string) in its state dir. On mismatch — e.g. after an LLVM version bump — the `invalidate_on_toolchain_change` behavior fires:
-
-- `warn` — log a `[CACHE]` warning; leave caches intact
-- `purge` — run `ccache -C` and wipe sccache dir automatically
-- `ignore` — do nothing
-
-`purge` is destructive and opt-in. Default is `warn` to surface the mismatch without data loss.
-
-### Passive Cache Monitoring
-
-SysForge tracks but does not manage several caches that can affect build behaviour. All observations are logged under `[CACHE]`. No automated intervention is performed; management may be added later if usage reveals a need.
-
-| Cache | What SysForge tracks |
-|---|---|
-| ThinLTO cache dir | Existence, size, last-modified timestamp before each build |
-| CMake/Meson build dirs | Presence of stale `CMakeCache.txt` / `build.ninja` in `$srcdir` before build starts |
-| makepkg `SRCDEST` git cache | Git HEAD of cached VCS sources before and after fetch |
-| `ld.so` cache | Mtime of `/etc/ld.so.cache` before and after any library package install |
-| pacman package cache | Whether a cached `.pkg.tar.zst` in `/var/cache/pacman/pkg/` conflicts with a freshly built package |
-
-The `--cache-report` flag dumps a structured summary of all passive cache observations at the end of any build run.
-
----
-
-## Hardware Detection
-
-Pipeline stage between `base_install` and `kernel`. Walks:
-
-- `lspci -k`
-- `lsmod`
-- `/sys/bus`
-
-Emits `hardware_profile.toml` which feeds kconfig automation (module → `CONFIG_*` mapping). Also wraps `make localmodconfig` with an lsmod snapshot for cross-machine reproducibility.
-
-**Always-include list** for common drivers that may not be loaded at detection time. Key machine-specific caveats:
-
-- Explicit disable of `nouveau` (RTX 5070)
-- `CONFIG_MZEN3`, `CONFIG_X86_AMD_PSTATE` for Zen 3
+SysForge tracks a toolchain fingerprint (hash of compiler path + version) in its state dir. On mismatch (e.g. after LLVM version bump), `invalidate_on_toolchain_change` fires: `warn` (default) / `purge` / `ignore`.
 
 ---
 
@@ -677,84 +635,41 @@ Build in this order to satisfy dependencies correctly:
 ## Release Plan
 
 - **GitHub:** public from day one; source of truth for all code
-- **AUR:** publish once the primitives layer is functional and the wrapper is runnable against real packages
+- **AUR:** publish once stages 5–7 are stable under real use
 
-### AUR Publishing Process
+### AUR publishing process
 
 ```bash
-# One-time setup
-# 1. Create account at aur.archlinux.org
-# 2. Add SSH key to AUR account
-# 3. Clone the (empty) AUR repo
 git clone ssh://aur@aur.archlinux.org/sysforge.git
-
-# Add PKGBUILD, generate .SRCINFO, push
 makepkg --printsrcinfo > .SRCINFO
 git add PKGBUILD .SRCINFO
 git commit -m "Initial release"
 git push
 ```
 
-### Ongoing Maintenance
-
-- Update `pkgver` and `sha256sums` on each new GitHub release
-- Respond to AUR comments for reported breakage
-- Orphan the package if abandoned so others can adopt it
-
 ---
 
 ## Re-converge
 
-Re-converge is a first-class SysForge feature — not an afterthought. It makes SysForge a full lifecycle manager rather than a one-shot installer.
-
-SysForge tracks build state in `/var/lib/sysforge/build_state.toml`:
-
-```toml
-[mesa-git]
-profile   = "optimized"
-pkgver    = "24.1.0"
-built_at  = "2026-02-14T10:32:00Z"
-
-[llvm]
-profile   = "pgo_llvm_toolchain"
-pkgver    = "18.1.8"
-built_at  = "2026-02-10T08:15:00Z"
-```
-
-Running `sysforge converge` compares current installed state against the manifest and rebuild flags, then re-builds any package whose profile, flags, or version have drifted. A `--dry-run` flag shows what would be rebuilt without doing it.
+`sysforge converge` compares current installed state in `/var/lib/sysforge/build_state.toml` against the manifest and flag profiles, then rebuilds any package whose profile, flags, or version have drifted. `--dry-run` shows what would be rebuilt.
 
 DAG stages are categorised as **bootstrap-only** (partition, base_install, toolchain) or **repeatable** (packages, configure). Only repeatable stages participate in re-converge runs.
 
-Requires root. No service user.
+Not yet implemented.
 
 ---
 
 ## V2 Roadmap
 
-V0.1 scope is the primitives and bootstrap pipeline described in this document. The long-term goal is for SysForge to become a full `yay` replacement — an AUR helper with compiler optimization as a first-class concern rather than an afterthought.
+V2 goal: full `yay` replacement — an AUR helper with compiler optimization as a first-class concern.
 
 V2 absorbs:
-
-- **AUR fetch** — clone and update PKGBUILDs from AUR directly
-- **PKGBUILD review** — present diffs to the user before build (standard AUR helper hygiene)
-- **Recursive AUR dep resolution** — walk the full AUR dependency tree, not just declared pacman deps
+- **AUR fetch** — clone and update PKGBUILDs from AUR directly (AUR RPC lookup already stubbed in `manifest.py`)
+- **PKGBUILD review** — present diffs to the user before build
+- **Recursive AUR dep resolution** — walk the full AUR dependency tree
 - **Mixed pacman/AUR tree management** — unified view of repo and AUR packages
 - **Upgrade management** — `sysforge upgrade` checks AUR for new versions and rebuilds with active profiles
 
-The primitives layer built in v0.1 is the correct foundation for all of this — no teardown needed as scope expands.
+### V1.5: Rule priority auto-calculation
 
-### V1.5: Rule Priority Auto-Calculation
-
-Currently `priority` is a manually assigned integer on each rule. A future improvement is to auto-calculate a baseline specificity score from the rule's conditions, with an optional manual `priority` override to break ties or force ordering where the auto value is wrong.
-
-The logic mirrors CSS specificity: more conditions AND'd together = more specific = higher weight. Within a single condition type, `_all` is stricter than `_any` and should score higher. Item count within a condition also contributes — `makedepends_all = ["cmake", "ninja", "python"]` is more specific than `makedepends_all = ["cmake"]`.
-
-Cross-field weighting (e.g. `pkgnames` vs `makedepends_all`) has no objectively correct answer and is where the manual override earns its keep. The auto-score provides a sensible default; the override handles intent that specificity counting can't capture.
-
-This is deferred until there are enough real rules in production use to validate whether auto-priority actually causes ordering problems in practice. The manual `priority` field is sufficient for v1.0.
-
----
-
-## Open Questions
-
-- **`consumes` placement:** profiles vs rules — revisit after building and testing the wrapper
+Currently `priority` is manually assigned. A future improvement is to auto-calculate a baseline specificity score from the rule's conditions (mirrors CSS specificity: more AND'd conditions = higher weight), with a manual `priority` override for ties. Deferred until enough real rules exist to validate whether auto-priority causes ordering problems in practice.
