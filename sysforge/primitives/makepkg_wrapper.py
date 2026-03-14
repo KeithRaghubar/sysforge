@@ -124,9 +124,9 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
 
     "env" type keys and sysforge-internal keys are never written to the conf.
 
-    Linker guard: if LDFLAGS declares a linker via -fuse-ld=X and that linker
-    is not found on PATH, lld-specific flags are stripped from LDFLAGS and
-    each stripped token is logged under [FLAG].
+    Linker guard: determines the effective linker from LDFLAGS. If no -fuse-ld=X
+    is declared, the effective linker is the system default (bfd). lld-specific
+    flags are stripped whenever the effective linker is not lld.
     """
     env_keys = _CONF_KEY_MAP.get("env", set())
 
@@ -165,16 +165,26 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         current_ldflags = profile_overrides.get("LDFLAGS", "")
         profile_overrides["LDFLAGS"] = _inject_linker(current_ldflags, ld_override)
 
-    # Linker guard: if LDFLAGS declares a linker that isn't on PATH,
-    # strip lld-specific flags so the build doesn't fail at configure time.
+    # Linker guard: determine the effective linker. If no -fuse-ld=X is declared,
+    # the effective linker is the system default (bfd). Strip lld-specific flags
+    # whenever the effective linker is not lld — not only when a linker is declared
+    # but missing, since undeclared LDFLAGS containing lld-only flags will break
+    # configure test compilations against the system linker.
     if "LDFLAGS" in profile_overrides:
-        linker = _detect_linker_from_ldflags(profile_overrides["LDFLAGS"])
-        if linker and not shutil.which(linker):
-            _log.warn("[FLAG]", f"Declared linker '{linker}' not found on PATH — stripping lld-specific flags from LDFLAGS")
+        declared_linker = _detect_linker_from_ldflags(profile_overrides["LDFLAGS"])
+        effective_linker = declared_linker or "ld"
+
+        if declared_linker and not shutil.which(declared_linker):
+            _log.warn("[FLAG]", f"Declared linker '{declared_linker}' not found on PATH — treating effective linker as 'ld'")
+            effective_linker = "ld"
+
+        if effective_linker != "lld":
             cleaned, stripped_tokens = _strip_lld_flags(profile_overrides["LDFLAGS"])
-            for tok in stripped_tokens:
-                _log.warn("[FLAG]", f"Stripped lld-only flag: {tok}")
-            profile_overrides["LDFLAGS"] = cleaned
+            if stripped_tokens:
+                _log.warn("[FLAG]", f"Effective linker is '{effective_linker}' (not lld) — stripping lld-specific flags from LDFLAGS")
+                for tok in stripped_tokens:
+                    _log.warn("[FLAG]", f"Stripped lld-only flag: {tok}")
+                profile_overrides["LDFLAGS"] = cleaned
 
     # Build output lines: system conf keys in their original raw form,
     # profile-overridden keys substituted inline, new profile keys appended.
