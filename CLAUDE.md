@@ -43,7 +43,6 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 - **`[FLAG]` tag** — makepkg.conf flag resolution/conflict logging
 - **`[CACHE]` tag** — ccache/sccache passive monitoring, ThinLTO, CMake/Meson build dirs, ld.so cache mtime, pacman cache
 - **`--cache-report` flag** — structured end-of-run summary
-- **`[env_precedence]` config table** — designed but not read yet. Priority order: wrapper=100, makepkg conf=80, shell=20, pkgbuild export=10
 
 ## Interaction Preferences
 

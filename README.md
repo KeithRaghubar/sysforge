@@ -222,7 +222,7 @@ sysforge install --resume --force-retry --state-dir ~/sf-state
 | `--resume` | Continue from the last checkpoint |
 | `--force-retry` | On resume, retry failed packages without prompting |
 | `--dry-run` | Log what would run without executing |
-| `--packages <file>` | Override default `configs/packages.toml` path |
+| `--packages <file>` | Override default `/etc/sysforge/packages.toml` path |
 | `--state-dir <dir>` | Override state file location (also: `SYSFORGE_STATE_DIR` env var) |
 | `--profile-conf <file>` | Use alternate `flag_profiles.toml` instead of default paths |
 | `--no-unified-log` | Disable the unified log for this run |

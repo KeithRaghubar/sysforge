@@ -203,10 +203,9 @@ sysforge manifest htop neovim mold > packages.toml
 sysforge manifest --file pkglist.txt >> packages.toml
 ```
 
-The packages stage resolves `packages.toml` in this order:
+The packages stage resolves `packages.toml` from:
 1. `--packages FILE` CLI flag
 2. `/etc/sysforge/packages.toml` (system default)
-3. `configs/packages.toml` relative to repo root (dev fallback)
 
 ### `-march=native` strategy
 
@@ -513,9 +512,9 @@ Profile keys are routed to one of three delivery channels:
 
 - **Toolchain env** (`toolchain` type: `CC`, `CXX`) — injected directly via subprocess env, always, regardless of `active_consumes`. makepkg does not export `CC`/`CXX` from `makepkg.conf` to child processes, so they must be present in the env that makepkg inherits at invocation time. SysForge handles this automatically — set them in a profile like any other key.
 - **Conf file** (`makepkg`, `rust`, `cmake`, `meson` types) — written into the temp `makepkg.conf`. Only types in `active_consumes` are written.
-- **Subprocess env** (`env` type, or any unclassified key) — injected via `subprocess.run(env=...)`. Used for `RUSTC_WRAPPER`, `CCACHE_DIR`, `SCCACHE_DIR`, etc. Only delivered when `"env"` is in `active_consumes`.
+- **Subprocess env** (`env` type, or any unclassified key) — injected via `subprocess.run(env=...)`. Used for `RUSTC_WRAPPER`, `CCACHE_DIR`, `SCCACHE_DIR`, `CC_LD`, `CXX_LD` (meson linker override), etc. Only delivered when `"env"` is in `active_consumes`. Keys that are present in the profile but not in `active_consumes` are logged as skipped (`[INFO][ENV]`).
 
-Unclassified keys travel via env pass and are logged as `[WARN][ENV]`.
+Unclassified keys (not in any `_CONF_KEY_MAP` type and not in `_SYSFORGE_KEYS`) travel via env pass and are logged as `[WARN][ENV]`.
 
 ---
 
@@ -523,7 +522,7 @@ Unclassified keys travel via env pass and are logged as `[WARN][ENV]`.
 
 ### Environment isolation
 
-SysForge treats the calling shell environment as untrusted for build tool vars. All keys in the `makepkg` conf type (`CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, `MAKEFLAGS`, etc.) are stripped from the inherited shell env before makepkg is invoked. The temp conf is the sole authority — shell vars set by `.zshrc`, `.bashrc`, or upstream tooling cannot bleed through and override profile settings. Each stripped key is logged under `[ENV] WARN` so unintended overrides are visible.
+SysForge treats the calling shell environment as untrusted for build tool vars. All keys in the `makepkg` and `toolchain` conf types (`CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, `MAKEFLAGS`, etc.) are stripped from the inherited shell env before makepkg is invoked. The temp conf is the sole authority — shell vars set by `.zshrc`, `.bashrc`, or upstream tooling cannot bleed through and override profile settings. Each stripped key is logged individually under `[INFO][ENV]` with its old shell value, so the full before/after state is visible in the log. If `extra_env` (the profile's env-type keys) would override a shell var that was *not* in the strip set, a `[WARN][ENV]` is emitted.
 
 SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are explicitly exempt from this rule — they are SysForge's own interface, not build tool vars.
 
@@ -628,7 +627,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 |---|---|
 | `[PROFILE]` | Profile resolution, rule matching, extends chain |
 | `[CONF]` | Temp conf generation, active consumes set |
-| `[ENV]` | Env var routing; stripped shell vars (WARN); unclassified profile key warnings |
+| `[ENV]` | Env var routing; per-key shell strip with old value (INFO); skipped env-type keys when not in active_consumes (INFO); override of non-stripped shell var by profile (WARN); unclassified profile key warnings (WARN) |
 | `[BUILD]` | makepkg invocation, exit codes, patched PKGBUILD lifecycle |
 | `[FAILURE]` | Failure scenario dispatch |
 | `[DEP]` | Soname checks |
