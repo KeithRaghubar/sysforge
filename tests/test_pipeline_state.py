@@ -137,6 +137,22 @@ def test_get_package_errors_empty(state):
     assert state.get_package_errors() == {}
 
 
+def test_package_errors_survive_roundtrip(tmp_path):
+    """Errors written by mark_package_failed must survive a save/reload cycle."""
+    state = PipelineState(tmp_path)
+    state.init_package_list(["llvm", "mesa-git"])
+    state.mark_package_building("llvm")
+    state.mark_package_failed("llvm", "makepkg exit 1: configure failed")
+    state.mark_package_building("mesa-git")
+    state.mark_package_failed("mesa-git", 'soname mismatch: libLLVM.so.19 not found')
+    state.save()
+
+    reloaded = PipelineState(tmp_path)
+    errors = reloaded.get_package_errors()
+    assert errors["llvm"] == "makepkg exit 1: configure failed"
+    assert errors["mesa-git"] == "soname mismatch: libLLVM.so.19 not found"
+
+
 # ---------------------------------------------------------------------------
 # resolve_state_dir
 # ---------------------------------------------------------------------------

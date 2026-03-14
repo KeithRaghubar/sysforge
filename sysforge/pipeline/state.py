@@ -146,6 +146,14 @@ class PipelineState:
                         lines.append(f"{key} = [{items}]")
                 lines.append("")
 
+            errors = stage_data.get("errors")
+            if errors:
+                lines.append(f"[stages.{stage_name}.errors]")
+                for pkgname, errmsg in errors.items():
+                    escaped = errmsg.replace("\\", "\\\\").replace('"', '\\"')
+                    lines.append(f'{pkgname} = "{escaped}"')
+                lines.append("")
+
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
