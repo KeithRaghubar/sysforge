@@ -22,7 +22,8 @@ SysForge is a personal system automation framework that produces a reproducible,
 14. [Graphics Stack Build Order](#graphics-stack-build-order)
 15. [Release Plan](#release-plan)
 16. [Re-converge](#re-converge)
-17. [V2 Roadmap](#v2-roadmap)
+17. [Known Gaps](#known-gaps)
+18. [V2 Roadmap](#v2-roadmap)
 
 ---
 
@@ -86,7 +87,7 @@ sysforge/
 ├── sysforge/
 │   ├── __init__.py
 │   ├── cli.py                         # CLI entry point and subcommand wiring
-│   ├── log.py                         # structured logging (all output to stderr)
+│   ├── log.py                         # structured logging (stderr + optional file output)
 │   ├── manifest.py                    # packages.toml generator
 │   └── primitives/
 │       ├── config.py                  # TOML config loading, path constants, system conf parsing
@@ -158,6 +159,7 @@ sysforge/
 /usr/bin/sysforge
 /var/lib/sysforge/
     pipeline_state.toml              # pipeline checkpoint state (created at runtime)
+    sysforge.log                     # unified log (created at runtime, cleared on success)
 ```
 
 ---
@@ -294,11 +296,11 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-All modules independently testable. 290 pytest tests (`pytest` from repo root).
+All modules independently testable. 291 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 
-Structured logging module. All output goes to stderr.
+Structured logging module. Output goes to stderr (verbosity-gated) and optionally to log files (always full verbosity). File handles are module-level globals managed by `open_unified_log`/`close_unified_log` and `open_pkg_log`/`close_pkg_log`. All file write errors are silently swallowed so file I/O can never interrupt a build.
 
 ```
 [SYSFORGE][LEVEL][TAG] message
@@ -312,7 +314,7 @@ TOML config loading and path resolution. Public API:
 - `load_config(config_paths=None)` — loads `flag_profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
 - `load_conflict_groups(paths=None)` — loads `append_conflict_groups.toml`
 - `load_consumes_inference(paths=None)` — loads `consumes_inference.toml`
-- `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation
+- `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines.
 
 ### `profile.py`
 
@@ -529,6 +531,19 @@ dep_unsatisfied       = "warn_and_fallback"
 
 `profile_missing` and `tempfile_write_failed` always abort regardless of config.
 
+### Interactive mode
+
+`--interactive` on `sysforge build` strips `--noconfirm` from the profile's `makepkg_flags` before invoking makepkg. Useful during development to review makepkg prompts without editing the profile. The flag has no effect if `--noconfirm` is not in `makepkg_flags`.
+
+### Patched PKGBUILD preservation
+
+On build failure, patched PKGBUILD files are left in place for diagnosis rather than deleted:
+
+- `patch_pkgbuild` mode: `PKGBUILD.sysforge` and `pkgbuild_extracted_profile.toml` are preserved. A `[WARN][PATCH]` line is emitted noting their location.
+- Groups-only mode (non-patch builds): `PKGBUILD.sysforge` is also preserved on failure with a `[WARN][BUILD]` message.
+
+On success, all patch artifacts are cleaned up in both modes.
+
 ### Batch mode
 
 `batch = true` on a profile switches to unattended mode — build failures abort immediately rather than prompting. Intended for pipeline use.
@@ -554,7 +569,38 @@ Verbosity controlled by `-v`/`-vv` on the CLI:
 
 Set once at CLI entry via `log.set_verbosity(args.verbose)`. Tests run at verbosity 2 (all messages visible).
 
-**Tags in use:**
+### File logging
+
+File logging runs at full verbosity regardless of the `-v` level — every `[INFO]`, `[WARN]`, and `[ERROR]` line is written to file even when the terminal shows only errors. Never let file I/O break a build: all file write errors are silently swallowed.
+
+**Unified log** — one file for the entire `sysforge install` run.
+
+- Default path: `<state_dir>/sysforge.log` (i.e. `/var/lib/sysforge/sysforge.log`)
+- Appends across runs. Cleared (truncated, not deleted) on successful pipeline completion. Consecutive failures accumulate the full log from first failure until success.
+- A `# log cleared after successful run` marker is left in the file after truncation.
+- `--log-dir <path>` overrides the directory.
+- `--purge-log` truncates before the run starts, regardless of outcome. Use when you want a clean log for a fresh attempt.
+- `--persist-log` suppresses truncation on success. Use when you want to keep the log for post-run analysis.
+- `--no-unified-log` disables the unified log entirely for this run.
+
+**Per-package log** — one file per package build, written alongside the PKGBUILD.
+
+- Path: `<pkgbuild_dir>/<pkgname>/sysforge_<pkgname>.log`
+- Same lifecycle as the unified log: appends across builds, cleared on success unless `--persist-log`.
+- Written by both `sysforge install` (via the packages stage) and `sysforge build`.
+- `--no-pkg-logs` disables per-package logs for `sysforge install`.
+
+**CLI flag summary:**
+
+| Flag | Command | Effect |
+|---|---|---|
+| `--no-unified-log` | `install` | Disable unified log for this run |
+| `--no-pkg-logs` | `install` | Disable per-package logs for this run |
+| `--log-dir <path>` | `install` | Override log file directory |
+| `--purge-log` | `install` | Truncate unified log before run |
+| `--persist-log` | `install`, `build` | Keep log files after success |
+
+### Tags in use
 
 | Tag | Covers |
 |---|---|
@@ -570,6 +616,8 @@ Set once at CLI entry via `log.set_verbosity(args.verbose)`. Tests run at verbos
 | `[PACKAGES]` | Packages stage progress |
 | `[PIPELINE]` | Stage sequencing, checkpoint events |
 | `[MANIFEST]` | Manifest generation |
+| `[FLAG]` | *(deferred)* makepkg.conf flag resolution and conflict logging |
+| `[CACHE]` | *(deferred)* ccache/sccache passive monitoring, cache dir reporting |
 
 ---
 
@@ -607,6 +655,10 @@ CXX="ccache /usr/bin/clang++"
 sccache wraps Rust via `RUSTC_WRAPPER=sccache` (env pass). `CARGO_INCREMENTAL=0` set globally for all Rust builds — incremental fingerprinting is unreliable with managed flags.
 
 `cache = false` in `packages.toml` disables both caches for a specific package. Required for all PGO stages.
+
+### Cache reporting
+
+`[CACHE]` log tag and `--cache-report` CLI flag are designed but not yet implemented. When implemented, `[CACHE]` will emit passive monitoring lines covering: ccache/sccache hit rates, ThinLTO cache dir, CMake/Meson build dirs, makepkg SRCDEST git cache, ld.so cache mtime, and pacman package cache size. `--cache-report` will print a structured summary at end of run.
 
 ### Toolchain fingerprint tracking
 
@@ -656,6 +708,22 @@ git push
 DAG stages are categorised as **bootstrap-only** (partition, base_install, toolchain) or **repeatable** (packages, configure). Only repeatable stages participate in re-converge runs.
 
 Not yet implemented.
+
+---
+
+## Known Gaps
+
+Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
+
+**`sysforge install --config` silently ignored.** The `--config` flag is accepted by the CLI parser but never wired into `_cmd_install`. `load_config()` always reads from the standard paths (`/etc/sysforge/` and `~/.config/sysforge/`). Needs threading through `RunOptions` or direct injection into `load_config()`.
+
+**AUR RPC lookup stubbed.** `_stub_aur_fn` in `manifest.py` always returns `None`. Packages not found in pacman sync DBs are excluded from manifest output with a warning rather than being classified as `aur`. The hook exists — it just needs a real AUR RPC implementation.
+
+**Per-package build errors not persisted in state file.** `PipelineState.mark_package_failed()` stores error strings in `stages.packages.errors` (a dict keyed by pkgname), but `_serialize()` does not write this dict to `pipeline_state.toml`. On any save/reload cycle the errors are lost, so `get_package_errors()` returns empty on resume and the failed-package prompt shows "unknown error" for everything. `_serialize()` needs a block to emit `[stages.packages.errors]`.
+
+**`[env_precedence]` config table not read.** A TOML table defining priority ordering for env var sources is designed but never loaded. Planned priority: wrapper profile = 100, makepkg conf = 80, shell passthrough = 20, PKGBUILD export = 10. Currently the wrapper inherits the full calling shell env wholesale via `os.environ.copy()` rather than an explicit allowlist. When implemented, source priorities would be logged at startup under `[ENV]`.
+
+**`[FLAG]` tag not emitted.** The tag is reserved for makepkg.conf flag resolution and conflict logging (e.g. which conflict group fired, which token was replaced) but nothing emits it yet. The data is available during `merge_extends` and `apply_patch_pkgbuild` — it just needs log calls added.
 
 ---
 
