@@ -220,7 +220,7 @@ By default the user file **fully replaces** the system file. To layer on top ins
 
 ### State directory
 
-Pipeline state is written to `/var/lib/sysforge/` by default. Override via `SYSFORGE_STATE_DIR` environment variable or `--state-dir` CLI flag. CLI takes priority over the env var; both are logged when present.
+Pipeline state is written to `/var/lib/sysforge/` by default. Override via the `SYSFORGE_STATE_DIR` environment variable or `--state-dir` CLI flag; CLI takes priority. Both are logged when present. `SYSFORGE_STATE_DIR` is a SysForge bootstrap var and is intentionally not subject to the build tool env isolation rule.
 
 ### Profile conf override
 
@@ -515,6 +515,16 @@ Unclassified keys travel via env pass and are logged as `[WARN][ENV]`.
 
 ## Makepkg Wrapper
 
+### Environment isolation
+
+SysForge treats the calling shell environment as untrusted for build tool vars. All keys in the `makepkg` conf type (`CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, `MAKEFLAGS`, etc.) are stripped from the inherited shell env before makepkg is invoked. The temp conf is the sole authority — shell vars set by `.zshrc`, `.bashrc`, or upstream tooling cannot bleed through and override profile settings. Each stripped key is logged under `[ENV] WARN` so unintended overrides are visible.
+
+SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are explicitly exempt from this rule — they are SysForge's own interface, not build tool vars.
+
+Any build tool override needed at invocation time should use the corresponding SysForge flag (`--cc`, `--cxx`, `--ld`), not a shell export. This applies to both `sysforge build` and `sysforge install`.
+
+> **Cancelled design:** an `[env_precedence]` TOML table with a configurable priority stack (profile = 100, makepkg.conf = 80, shell = 20, PKGBUILD export = 10) was previously planned. It is superseded by this model — shell bleed-through is not a tunable priority, it is prevented entirely.
+
 ### Failure handling
 
 Each scenario has a configurable behaviour in `[failure_handling]`:
@@ -611,7 +621,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 |---|---|
 | `[PROFILE]` | Profile resolution, rule matching, extends chain |
 | `[CONF]` | Temp conf generation, active consumes set |
-| `[ENV]` | Env var routing, unclassified key warnings |
+| `[ENV]` | Env var routing; stripped shell vars (WARN); unclassified profile key warnings |
 | `[BUILD]` | makepkg invocation, exit codes, patched PKGBUILD lifecycle |
 | `[FAILURE]` | Failure scenario dispatch |
 | `[DEP]` | Soname checks |
@@ -621,7 +631,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 | `[PACKAGES]` | Packages stage progress |
 | `[PIPELINE]` | Stage sequencing, checkpoint events |
 | `[MANIFEST]` | Manifest generation |
-| `[FLAG]` | *(deferred)* makepkg.conf flag resolution and conflict logging |
+| `[FLAG]` | CLI toolchain overrides (--cc/--cxx/--ld), linker guard: stripped lld-specific flags when declared linker not on PATH |
 | `[CACHE]` | *(deferred)* ccache/sccache passive monitoring, cache dir reporting |
 
 ---
@@ -724,7 +734,7 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 **Per-package build errors not persisted in state file.** `PipelineState.mark_package_failed()` stores error strings in `stages.packages.errors` (a dict keyed by pkgname), but `_serialize()` does not write this dict to `pipeline_state.toml`. On any save/reload cycle the errors are lost, so `get_package_errors()` returns empty on resume and the failed-package prompt shows "unknown error" for everything. `_serialize()` needs a block to emit `[stages.packages.errors]`.
 
-**`[env_precedence]` config table not read.** A TOML table defining priority ordering for env var sources is designed but never loaded. Planned priority: wrapper profile = 100, makepkg conf = 80, shell passthrough = 20, PKGBUILD export = 10. Currently the wrapper inherits the full calling shell env wholesale via `os.environ.copy()` rather than an explicit allowlist. When implemented, source priorities would be logged at startup under `[ENV]`.
+**`[env_precedence]` config table — design cancelled.** The original design proposed a priority stack (wrapper profile = 100, makepkg.conf = 80, shell passthrough = 20, PKGBUILD export = 10) and an `[env_precedence]` TOML table to configure it. This design is superseded. The current model is simpler and more predictable: build tool vars (`CC`, `CFLAGS`, `LDFLAGS`, etc.) are stripped from the inherited shell env in `invoke_makepkg` before makepkg runs — the temp conf is the sole authority for all makepkg-managed keys. Shell env bleed-through is not a configurable priority; it is prevented entirely. SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are exempt — they are SysForge's own interface, not build tool vars, and are not stripped. The `[env_precedence]` table will not be implemented.
 
 **`[FLAG]` tag not emitted.** The tag is reserved for makepkg.conf flag resolution and conflict logging (e.g. which conflict group fired, which token was replaced) but nothing emits it yet. The data is available during `merge_extends` and `apply_patch_pkgbuild` — it just needs log calls added.
 
