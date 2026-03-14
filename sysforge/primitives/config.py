@@ -33,6 +33,8 @@ CONSUMES_INFERENCE_PATHS = [
     CONFIG_BASE / "etc/sysforge/consumes_inference.toml",
 ]
 
+PACKAGES_PATH = CONFIG_BASE / "etc/sysforge/packages.toml"
+
 
 def load_config(config_paths=None):
     """

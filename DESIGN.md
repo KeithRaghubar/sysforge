@@ -111,8 +111,6 @@ sysforge/
 │           ├── base_install.py        # stage 2: stub
 │           ├── hardware.py            # stage 3: stub
 │           └── toolchain.py           # stage 4: stub
-├── configs/
-│   └── packages.toml                  # starter package manifest
 ├── tests/
 │   ├── conftest.py
 │   ├── data/
@@ -124,7 +122,8 @@ sysforge/
 │   │   ├── etc/sysforge/
 │   │   │   ├── flag_profiles.toml
 │   │   │   ├── consumes_inference.toml
-│   │   │   └── append_conflict_groups.toml
+│   │   │   ├── append_conflict_groups.toml
+│   │   │   └── packages.toml
 │   │   └── user/.config/sysforge/
 │   │       └── flag_profiles.toml
 │   ├── test_append_merge.py
@@ -153,6 +152,7 @@ sysforge/
     flag_profiles.toml
     consumes_inference.toml
     append_conflict_groups.toml
+    packages.toml                    # default package manifest
 ~/.config/sysforge/
     flag_profiles.toml               # user overrides
     append_conflict_groups.toml      # user conflict group overrides (optional)
@@ -202,6 +202,11 @@ cache = false   # PGO build — instrumented objects must never be cached
 sysforge manifest htop neovim mold > packages.toml
 sysforge manifest --file pkglist.txt >> packages.toml
 ```
+
+The packages stage resolves `packages.toml` in this order:
+1. `--packages FILE` CLI flag
+2. `/etc/sysforge/packages.toml` (system default)
+3. `configs/packages.toml` relative to repo root (dev fallback)
 
 ### `-march=native` strategy
 

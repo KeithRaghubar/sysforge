@@ -9,8 +9,9 @@ Walks packages.toml and builds/installs each entry:
 Per-package checkpointing: state is written after every outcome (built/failed).
 On resume with failed packages the user is prompted (or --force-retry bypasses).
 
-packages.toml is read from the path in config["packages_file"], or
-configs/packages.toml relative to the repo root as a fallback.
+packages.toml search order:
+  1. config["packages_file"]  (from --packages or flag_profiles.toml)
+  2. /etc/sysforge/packages.toml  (system default)
 
 AUR/git packages require PKGBUILDs to be pre-cloned in packages.toml [build]
 pkgbuild_dir. AUR fetch (auto-clone) is V2.
@@ -22,6 +23,7 @@ import tomllib
 from pathlib import Path
 
 from sysforge.pipeline.stages.base import Stage
+from sysforge.primitives.config import PACKAGES_PATH
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 
 
@@ -39,14 +41,12 @@ def _load_packages(config):
     if path:
         path = Path(path)
     else:
-        # Fallback: look relative to this file (repo layout)
-        here = Path(__file__).parent
-        path = here.parent.parent.parent / "configs" / "packages.toml"
+        path = PACKAGES_PATH
 
     if not path.exists():
         raise RuntimeError(
             f"[PACKAGES] packages.toml not found at {path}. "
-            f"Set packages_file in flag_profiles.toml or pass --packages."
+            f"Pass --packages or place packages.toml at {PACKAGES_PATH}."
         )
 
     with open(path, "rb") as f:

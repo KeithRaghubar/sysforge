@@ -266,7 +266,7 @@ def main():
     p_install.add_argument(
         "--packages",
         metavar="FILE",
-        help="Path to packages.toml (overrides config default).",
+        help="Path to packages.toml (default: /etc/sysforge/packages.toml).",
     )
     p_install.add_argument(
         "--state-dir",
