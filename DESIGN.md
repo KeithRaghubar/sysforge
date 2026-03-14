@@ -222,6 +222,10 @@ By default the user file **fully replaces** the system file. To layer on top ins
 
 Pipeline state is written to `/var/lib/sysforge/` by default. Override via `SYSFORGE_STATE_DIR` environment variable or `--state-dir` CLI flag. CLI takes priority over the env var; both are logged when present.
 
+### Profile conf override
+
+Both `sysforge build` and `sysforge install` accept `--profile-conf FILE` to substitute an alternate `flag_profiles.toml` at runtime, bypassing the default user/system search paths. Scope is intentionally limited to flag profiles — conflict groups and consumes inference are not affected (edit those files directly if needed). If the specified file sets `extends_system = true`, the standard system config is still merged underneath it via the normal `extends_system` logic.
+
 ### Hardware overlays
 
 The hardware detection stage emits `hardware_profile.toml` which feeds kconfig automation and gates hardware-specific packages in `packages.toml`. Key machine-specific caveats (Ryzen 7 5800X3D + RTX 5070):
@@ -596,7 +600,8 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 |---|---|---|
 | `--no-unified-log` | `install` | Disable unified log for this run |
 | `--no-pkg-logs` | `install` | Disable per-package logs for this run |
-| `--log-dir <path>` | `install` | Override log file directory |
+| `--no-pkg-log` | `build` | Disable the per-package log for this build |
+| `--log-dir <path>` | `install`, `build` | Override log file directory |
 | `--purge-log` | `install` | Truncate unified log before run |
 | `--persist-log` | `install`, `build` | Keep log files after success |
 
@@ -714,8 +719,6 @@ Not yet implemented.
 ## Known Gaps
 
 Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
-
-**`sysforge install --config` silently ignored.** The `--config` flag is accepted by the CLI parser but never wired into `_cmd_install`. `load_config()` always reads from the standard paths (`/etc/sysforge/` and `~/.config/sysforge/`). Needs threading through `RunOptions` or direct injection into `load_config()`.
 
 **AUR RPC lookup stubbed.** `_stub_aur_fn` in `manifest.py` always returns `None`. Packages not found in pacman sync DBs are excluded from manifest output with a warning rather than being classified as `aur`. The hook exists — it just needs a real AUR RPC implementation.
 
