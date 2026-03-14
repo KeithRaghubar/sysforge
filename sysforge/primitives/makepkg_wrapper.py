@@ -297,8 +297,9 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
 def run(pkgbuild_path, extra_flags=None, interactive=False,
         pkg_log: bool = True, persist_log: bool = False,
-        log_dir=None):
-    config = load_config()
+        log_dir=None, profile_conf=None):
+    config_paths = [Path(profile_conf)] if profile_conf is not None else None
+    config = load_config(config_paths=config_paths)
     conflict_groups = load_conflict_groups()
     inference_map = load_consumes_inference()
 

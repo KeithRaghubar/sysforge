@@ -52,14 +52,16 @@ def _cmd_build(args):
         run(args.pkgbuild, extra_flags=extra_flags, interactive=args.interactive,
             pkg_log=not args.no_pkg_log,
             persist_log=args.persist_log,
-            log_dir=Path(args.log_dir) if args.log_dir else None)
+            log_dir=Path(args.log_dir) if args.log_dir else None,
+            profile_conf=args.profile_conf)
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)
 
 
 def _cmd_install(args):
-    config = load_config()
+    config_paths = [Path(args.profile_conf)] if args.profile_conf else None
+    config = load_config(config_paths=config_paths)
 
     # Inject packages_file into config if passed on CLI
     if args.packages:
@@ -181,6 +183,12 @@ def main():
         dest="log_dir",
         help="Directory for the per-package log file (default: alongside the PKGBUILD).",
     )
+    p_build.add_argument(
+        "--profile-conf",
+        metavar="FILE",
+        dest="profile_conf",
+        help="Path to a flag_profiles.toml to use instead of the default user/system config.",
+    )
     p_build.set_defaults(func=_cmd_build)
 
     # install
@@ -258,6 +266,12 @@ def main():
         action="store_true",
         dest="persist_log",
         help="Keep log files after successful completion (default: truncate on success).",
+    )
+    p_install.add_argument(
+        "--profile-conf",
+        metavar="FILE",
+        dest="profile_conf",
+        help="Path to a flag_profiles.toml to use instead of the default user/system config.",
     )
     p_install.set_defaults(func=_cmd_install)
 
