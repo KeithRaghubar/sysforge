@@ -187,7 +187,9 @@ def _build_aur(pkg, build_cfg, options):
         _log.info("[PACKAGES]", f"[dry-run] build {name} from {pkgbuild}")
         return
     _log.info("[PACKAGES]", f"Building {name} from {pkgbuild}")
-    makepkg_run(pkgbuild)
+    makepkg_run(pkgbuild,
+                pkg_log=not options.no_pkg_logs,
+                persist_log=options.persist_log)
 
 
 # ---------------------------------------------------------------------------

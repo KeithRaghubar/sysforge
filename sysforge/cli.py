@@ -47,7 +47,8 @@ def _expand_makepkg_flags(flags_str):
 def _cmd_build(args):
     extra_flags = _expand_makepkg_flags(args.makepkg) if args.makepkg else None
     try:
-        run(args.pkgbuild, extra_flags=extra_flags, interactive=args.interactive)
+        run(args.pkgbuild, extra_flags=extra_flags, interactive=args.interactive,
+            persist_log=args.persist_log)
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -66,6 +67,11 @@ def _cmd_install(args):
         force_retry=args.force_retry,
         dry_run=args.dry_run,
         state_dir=Path(args.state_dir) if args.state_dir else None,
+        no_unified_log=args.no_unified_log,
+        no_pkg_logs=args.no_pkg_logs,
+        log_dir=Path(args.log_dir) if args.log_dir else None,
+        purge_log=args.purge_log,
+        persist_log=args.persist_log,
     )
 
     run_pipeline(config, options)
@@ -153,6 +159,12 @@ def main():
             "Useful during development to review makepkg prompts."
         ),
     )
+    p_build.add_argument(
+        "--persist-log",
+        action="store_true",
+        dest="persist_log",
+        help="Keep the per-package log file after a successful build (default: truncate on success).",
+    )
     p_build.set_defaults(func=_cmd_build)
 
     # install
@@ -200,6 +212,36 @@ def main():
             "Override state directory (default: /var/lib/sysforge or "
             "SYSFORGE_STATE_DIR env var)."
         ),
+    )
+    p_install.add_argument(
+        "--no-unified-log",
+        action="store_true",
+        dest="no_unified_log",
+        help="Disable the unified log file.",
+    )
+    p_install.add_argument(
+        "--no-pkg-logs",
+        action="store_true",
+        dest="no_pkg_logs",
+        help="Disable per-package log files.",
+    )
+    p_install.add_argument(
+        "--log-dir",
+        metavar="DIR",
+        dest="log_dir",
+        help="Directory for log files (default: state directory).",
+    )
+    p_install.add_argument(
+        "--purge-log",
+        action="store_true",
+        dest="purge_log",
+        help="Truncate the unified log before this run.",
+    )
+    p_install.add_argument(
+        "--persist-log",
+        action="store_true",
+        dest="persist_log",
+        help="Keep log files after successful completion (default: truncate on success).",
     )
     p_install.set_defaults(func=_cmd_install)
 

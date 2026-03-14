@@ -140,7 +140,7 @@ def test_packages_stage_checkpoints_after_each(tmp_path):
 
     built_order = []
 
-    def fake_run(path):
+    def fake_run(path, **kwargs):
         name = Path(path).parent.name
         built_order.append(name)
 
@@ -165,7 +165,7 @@ def test_packages_stage_continues_after_failure(tmp_path):
 
     state = PipelineState(tmp_path / "state")
 
-    def fail_llvm(path):
+    def fail_llvm(path, **kwargs):
         if "llvm" in str(path):
             raise RuntimeError("llvm build failed")
 
@@ -216,7 +216,7 @@ def test_packages_stage_skips_already_built(tmp_path):
     state.save()
 
     called = []
-    def track_run(path):
+    def track_run(path, **kwargs):
         called.append(Path(path).parent.name)
 
     with patch("sysforge.pipeline.stages.packages.makepkg_run", side_effect=track_run), \

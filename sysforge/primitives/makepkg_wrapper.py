@@ -295,7 +295,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 # Entry point
 # ---------------------------------------------------------------------------
 
-def run(pkgbuild_path, extra_flags=None, interactive=False):
+def run(pkgbuild_path, extra_flags=None, interactive=False,
+        pkg_log: bool = True, persist_log: bool = False):
     config = load_config()
     conflict_groups = load_conflict_groups()
     inference_map = load_consumes_inference()
@@ -307,51 +308,65 @@ def run(pkgbuild_path, extra_flags=None, interactive=False):
         pkgmeta = {"globals": {}}
 
     pkgbuild_path = Path(pkgbuild_path).resolve()
-    matched_rules = match_rules(pkgmeta, config.get("rules", []))
 
-    build_mode = None  # resolved below after profile
+    # Open per-package log if enabled
+    if pkg_log:
+        pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
+        log_path = pkgbuild_path.parent / f"sysforge_{pkgname}.log"
+        _log.open_pkg_log(log_path)
+        _log.info("[BUILD]", f"Per-package log: {log_path}")
 
-    # Determine if patching is requested before full profile resolution,
-    # so we can extract and inject the pkgbuild_extracted root.
-    # We do a preliminary rule match here; full profile resolution follows.
-    _pre_profile = resolve_profile(pkgmeta, matched_rules, config, conflict_groups)
-    build_mode = _pre_profile.get("build_mode")
+    build_success = False
+    try:
+        matched_rules = match_rules(pkgmeta, config.get("rules", []))
 
-    extracted_profile = None
-    if build_mode == "patch_pkgbuild":
-        extracted_profile = extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
-        if extracted_profile:
-            write_extracted_profile(extracted_profile, pkgbuild_path)
+        build_mode = None  # resolved below after profile
 
-    resolved_profile = resolve_profile(
-        pkgmeta, matched_rules, config, conflict_groups,
-        extracted_profile=extracted_profile,
-    )
-    active_consumes = resolve_consumes(resolved_profile, pkgmeta, inference_map)
-    groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
+        # Determine if patching is requested before full profile resolution,
+        # so we can extract and inject the pkgbuild_extracted root.
+        # We do a preliminary rule match here; full profile resolution follows.
+        _pre_profile = resolve_profile(pkgmeta, matched_rules, config, conflict_groups)
+        build_mode = _pre_profile.get("build_mode")
 
-    if resolved_profile.get("clean_builddir", False):
-        build_dir = pkgbuild_path.parent
-        for entry in build_dir.iterdir():
-            if entry.name != "PKGBUILD" and not entry.name.endswith(".PKGBUILD"):
-                if entry.is_dir():
-                    shutil.rmtree(entry)
-                else:
-                    entry.unlink()
-        _log.info("[BUILD]", f"Cleaned build dir: {build_dir}")
+        extracted_profile = None
+        if build_mode == "patch_pkgbuild":
+            extracted_profile = extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
+            if extracted_profile:
+                write_extracted_profile(extracted_profile, pkgbuild_path)
 
-    if build_mode == "pgo_llvm_toolchain":
-        pass  # hand off to pgo handler
-    else:
-        run_dep_analysis(pkgmeta, config)
-        _run_build(
-            pkgbuild_path, resolved_profile, config, groups,
-            active_consumes=active_consumes,
-            extracted_profile=extracted_profile if build_mode == "patch_pkgbuild" else None,
-            pkgmeta=pkgmeta,
-            extra_flags=extra_flags,
-            interactive=interactive,
+        resolved_profile = resolve_profile(
+            pkgmeta, matched_rules, config, conflict_groups,
+            extracted_profile=extracted_profile,
         )
+        active_consumes = resolve_consumes(resolved_profile, pkgmeta, inference_map)
+        groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
+
+        if resolved_profile.get("clean_builddir", False):
+            build_dir = pkgbuild_path.parent
+            for entry in build_dir.iterdir():
+                if entry.name != "PKGBUILD" and not entry.name.endswith(".PKGBUILD"):
+                    if entry.is_dir():
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink()
+            _log.info("[BUILD]", f"Cleaned build dir: {build_dir}")
+
+        if build_mode == "pgo_llvm_toolchain":
+            pass  # hand off to pgo handler
+        else:
+            run_dep_analysis(pkgmeta, config)
+            _run_build(
+                pkgbuild_path, resolved_profile, config, groups,
+                active_consumes=active_consumes,
+                extracted_profile=extracted_profile if build_mode == "patch_pkgbuild" else None,
+                pkgmeta=pkgmeta,
+                extra_flags=extra_flags,
+                interactive=interactive,
+            )
+        build_success = True
+    finally:
+        if pkg_log:
+            _log.close_pkg_log(success=build_success, persist=persist_log)
 
 
 if __name__ == "__main__":

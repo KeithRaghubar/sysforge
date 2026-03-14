@@ -114,47 +114,64 @@ def run_pipeline(config, options, stages=None):
     state.init_meta()
     state.save()
 
-    # Execute stages
-    for stage in stages[start_idx:]:
-        status = state.stage_status(stage.name)
+    # Open unified log
+    unified_log_active = not options.no_unified_log and not options.dry_run
+    if unified_log_active:
+        log_dir = options.log_dir or state_dir
+        unified_log_path = log_dir / "sysforge.log"
+        _log.open_unified_log(unified_log_path, purge=options.purge_log)
+        _log.info("[PIPELINE]", f"Unified log: {unified_log_path}")
 
-        if status == "done":
-            _log.info("[PIPELINE]", f"{stage.name}: already done — skipping")
-            continue
+    pipeline_success = False
+    try:
+        # Execute stages
+        for stage in stages[start_idx:]:
+            status = state.stage_status(stage.name)
 
-        if options.dry_run:
-            _log.info("[PIPELINE]", f"[dry-run] would run stage: {stage.name} — {stage.description}")
-            continue
+            if status == "done":
+                _log.info("[PIPELINE]", f"{stage.name}: already done — skipping")
+                continue
 
-        _log.info("[PIPELINE]", f"── Stage: {stage.name} ── {stage.description}")
+            if options.dry_run:
+                _log.info("[PIPELINE]", f"[dry-run] would run stage: {stage.name} — {stage.description}")
+                continue
 
-        state.mark_running(stage.name)
-        state.save()
+            _log.info("[PIPELINE]", f"── Stage: {stage.name} ── {stage.description}")
 
-        try:
-            stage.run(config, state, options)
-            state.mark_done(stage.name)
+            state.mark_running(stage.name)
             state.save()
-            _log.info("[PIPELINE]", f"{stage.name}: complete ✓")
 
-        except NotImplementedError as e:
-            # Stub stage — hard stop with clear guidance
-            state.mark_failed(stage.name, str(e))
-            state.save()
-            _log.error("[PIPELINE]", f"{stage.name}: NOT IMPLEMENTED")
-            _log.error("[PIPELINE]", f"  {e}")
-            _log.error("[PIPELINE]", f"To skip this stage during development:\n"
-                f"    sysforge install --start-from {stage.name} --resume\n"
-                f"  or jump directly to a later stage:\n"
-                f"    sysforge install --start-from packages")
-            sys.exit(1)
+            try:
+                stage.run(config, state, options)
+                state.mark_done(stage.name)
+                state.save()
+                _log.info("[PIPELINE]", f"{stage.name}: complete ✓")
 
-        except RuntimeError as e:
-            state.mark_failed(stage.name, str(e))
-            state.save()
-            _log.error("[PIPELINE]", f"{stage.name}: FAILED — {e}")
-            _log.error("[PIPELINE]", "State saved. Run with --resume to continue after fixing the issue.")
-            sys.exit(1)
+            except NotImplementedError as e:
+                # Stub stage — hard stop with clear guidance
+                state.mark_failed(stage.name, str(e))
+                state.save()
+                _log.error("[PIPELINE]", f"{stage.name}: NOT IMPLEMENTED")
+                _log.error("[PIPELINE]", f"  {e}")
+                _log.error("[PIPELINE]", f"To skip this stage during development:\n"
+                    f"    sysforge install --start-from {stage.name} --resume\n"
+                    f"  or jump directly to a later stage:\n"
+                    f"    sysforge install --start-from packages")
+                sys.exit(1)
 
-    if not options.dry_run:
-        _log.info("[PIPELINE]", "Pipeline complete.")
+            except RuntimeError as e:
+                state.mark_failed(stage.name, str(e))
+                state.save()
+                _log.error("[PIPELINE]", f"{stage.name}: FAILED — {e}")
+                _log.error("[PIPELINE]", "State saved. Run with --resume to continue after fixing the issue.")
+                sys.exit(1)
+
+        if not options.dry_run:
+            pipeline_success = True
+            _log.info("[PIPELINE]", "Pipeline complete.")
+
+    finally:
+        if unified_log_active:
+            _log.close_unified_log(success=pipeline_success, persist=options.persist_log)
+            if pipeline_success and not options.persist_log:
+                _log.info("[PIPELINE]", f"Unified log cleared after successful run: {unified_log_path}")
