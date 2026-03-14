@@ -53,13 +53,22 @@ _SYSFORGE_KEYS = {
 # Any profile key not in any type and not in _SYSFORGE_KEYS also falls through
 # to the env pass, logged under [ENV].
 _CONF_KEY_MAP: dict[str, set[str]] = {
+    # Written to temp makepkg.conf. makepkg sources the conf and exports most
+    # of these to the build environment, but NOT CC/CXX — those must be
+    # injected via subprocess env instead (see "toolchain" below).
     "makepkg": {
-        "CC", "CXX", "AR", "NM", "RANLIB", "STRIP",
+        "AR", "NM", "RANLIB", "STRIP",
         "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS",
         "DEBUG_CFLAGS", "DEBUG_CXXFLAGS", "DEBUG_LDFLAGS",
         "MAKEFLAGS",
         "BUILDENV", "OPTIONS", "INTEGRITY_CHECK",
         "PKGEXT", "SRCEXT",
+    },
+    # Always injected via subprocess env, regardless of active_consumes.
+    # makepkg does not export CC/CXX from makepkg.conf to child processes —
+    # they must be present in the env that makepkg inherits at invocation time.
+    "toolchain": {
+        "CC", "CXX",
     },
     "rust": {
         "RUSTFLAGS",

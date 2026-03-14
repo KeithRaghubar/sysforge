@@ -233,24 +233,25 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
     Extract profile keys that travel via subprocess env injection rather than
     the makepkg.conf temp file.
 
-    Two categories are collected:
-      1. Keys in the "env" conf type — explicitly designated for env injection
-         (e.g. RUSTC_WRAPPER, CCACHE_DIR). Only collected when "env" is in
+    Three categories are collected:
+      1. Keys in the "toolchain" conf type (CC, CXX) — always injected,
+         regardless of active_consumes. makepkg does not export CC/CXX from
+         makepkg.conf to child processes; they must be in the inherited env.
+      2. Keys in the "env" conf type — only collected when "env" is in
          active_consumes or active_consumes is None (fallback mode).
-      2. Unknown keys — not in any _CONF_KEY_MAP type and not in _SYSFORGE_KEYS.
-         These are always collected and logged under [ENV] as a warning, since
-         their presence may indicate a typo or a new key that needs classifying.
+      3. Unknown keys — not in any _CONF_KEY_MAP type and not in _SYSFORGE_KEYS.
+         Always collected and logged under [ENV] as a warning.
 
     Returns dict[str, str] of key -> value pairs to inject on invocation.
     Empty dict if nothing to inject.
     """
-    env_type_keys = _CONF_KEY_MAP.get("env", set())
+    toolchain_keys = _CONF_KEY_MAP.get("toolchain", set())
+    env_type_keys  = _CONF_KEY_MAP.get("env", set())
 
-    # All keys that are explicitly classified into a non-env conf type
+    # All keys explicitly classified into any conf type
     all_conf_keys: set[str] = set()
-    for conf_type, keys in _CONF_KEY_MAP.items():
-        if conf_type != "env":
-            all_conf_keys.update(keys)
+    for keys in _CONF_KEY_MAP.values():
+        all_conf_keys.update(keys)
 
     collect_env_type = active_consumes is None or "env" in active_consumes
 
@@ -259,6 +260,12 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
 
     for key, val in resolved_profile.items():
         if key in _SYSFORGE_KEYS:
+            continue
+
+        if key in toolchain_keys:
+            # Always delivered via env — makepkg doesn't export CC/CXX from conf
+            result[key] = val
+            _log.info("[ENV]", f"Injecting (toolchain): {key}={val!r}")
             continue
 
         if key in env_type_keys:
@@ -285,15 +292,16 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
     env = os.environ.copy()
 
-    # Strip all makepkg-managed keys from the inherited shell env so the
-    # temp conf is the sole authority. Without this, shell vars like CC=clang
-    # or CFLAGS=... win over what the conf sets, producing unpredictable builds.
-    _makepkg_keys = _CONF_KEY_MAP.get("makepkg", set())
-    stripped_env_keys = sorted(k for k in _makepkg_keys if k in env)
+    # Strip all makepkg-managed and toolchain keys from the inherited shell env
+    # so the temp conf and profile env injection are the sole authority.
+    # Without this, shell vars like CC=clang or CFLAGS=... win over what the
+    # conf/profile sets, producing unpredictable builds.
+    _strip_keys = _CONF_KEY_MAP.get("makepkg", set()) | _CONF_KEY_MAP.get("toolchain", set())
+    stripped_env_keys = sorted(k for k in _strip_keys if k in env)
     for k in stripped_env_keys:
         del env[k]
     if stripped_env_keys:
-        _log.warn("[ENV]", f"Stripped shell env vars superseded by temp conf: {stripped_env_keys}")
+        _log.warn("[ENV]", f"Stripped shell env vars superseded by profile: {stripped_env_keys}")
 
     env["MAKEPKG_CONF"] = str(conf_path)
 

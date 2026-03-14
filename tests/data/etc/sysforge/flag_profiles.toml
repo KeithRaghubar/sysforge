@@ -12,7 +12,9 @@
 #   extends = "bare"              # (optional) parent profile — inherits all parent keys;
 #                                 #   child keys override, [profiles.NAME.append] merges
 #
-#   # Compiler / linker  (delivered via temp makepkg.conf)
+#   # Compiler / linker  (CC/CXX injected via subprocess env; all others via temp makepkg.conf)
+#   # makepkg does not export CC/CXX from the conf to child processes — SysForge
+#   # handles this automatically; just set them here as normal profile keys.
 #   CC       = "clang"
 #   CXX      = "clang++"
 #   AR       = "llvm-ar"

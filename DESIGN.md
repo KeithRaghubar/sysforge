@@ -504,10 +504,11 @@ ninja  = ["makepkg", "env"]
 
 ### Conf key routing
 
-Profile keys are routed to one of two delivery channels:
+Profile keys are routed to one of three delivery channels:
 
+- **Toolchain env** (`toolchain` type: `CC`, `CXX`) — injected directly via subprocess env, always, regardless of `active_consumes`. makepkg does not export `CC`/`CXX` from `makepkg.conf` to child processes, so they must be present in the env that makepkg inherits at invocation time. SysForge handles this automatically — set them in a profile like any other key.
 - **Conf file** (`makepkg`, `rust`, `cmake`, `meson` types) — written into the temp `makepkg.conf`. Only types in `active_consumes` are written.
-- **Subprocess env** (`env` type, or any unclassified key) — injected via `subprocess.run(env=...)`. Used for `RUSTC_WRAPPER`, `CCACHE_DIR`, `SCCACHE_DIR`, etc.
+- **Subprocess env** (`env` type, or any unclassified key) — injected via `subprocess.run(env=...)`. Used for `RUSTC_WRAPPER`, `CCACHE_DIR`, `SCCACHE_DIR`, etc. Only delivered when `"env"` is in `active_consumes`.
 
 Unclassified keys travel via env pass and are logged as `[WARN][ENV]`.
 
