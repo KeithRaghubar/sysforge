@@ -283,9 +283,12 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             else:
                 _log.warn("[PATCH]", "Build failed — leaving PKGBUILD.sysforge and pkgbuild_extracted_profile.toml in place for diagnosis")
         else:
-            if pkgbuild_path.exists():
-                pkgbuild_path.unlink()
-                _log.info("[BUILD]", f"Removed patched PKGBUILD: {pkgbuild_path}")
+            if success:
+                if pkgbuild_path.exists():
+                    pkgbuild_path.unlink()
+                    _log.info("[BUILD]", f"Removed patched PKGBUILD: {pkgbuild_path}")
+            else:
+                _log.warn("[BUILD]", f"Build failed — leaving patched PKGBUILD in place: {pkgbuild_path}")
 
 
 # ---------------------------------------------------------------------------
