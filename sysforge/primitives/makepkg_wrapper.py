@@ -27,6 +27,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
     extract_pkgbuild_profile,
+    patch_noninteractive_kconfig,
     patch_pkgbuild_groups,
     write_extracted_profile,
 )
@@ -368,19 +369,27 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
                active_consumes=None, extracted_profile=None, pkgmeta=None,
                extra_flags=None, interactive=False,
-               cc_override=None, cxx_override=None, ld_override=None):
+               cc_override=None, cxx_override=None, ld_override=None,
+               noninteractive_kconfig=False):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
     If extracted_profile is provided (patch_pkgbuild mode), applies the
     patched PKGBUILD instead of the original. Cleans up patch artifacts on
     success; leaves them in place on failure for diagnosis.
+
+    If noninteractive_kconfig is True, interactive kconfig targets
+    (oldconfig, nconfig, menuconfig, xconfig, gconfig) are replaced with
+    `make olddefconfig` in the patched PKGBUILD before the build runs.
     """
     if extracted_profile is not None:
         # patch_pkgbuild mode: use patched copy with flags stripped
         pkgbuild_path = apply_patch_pkgbuild(pkgbuild_path, pkgmeta or {"globals": {}})
     else:
         pkgbuild_path = patch_pkgbuild_groups(pkgbuild_path, groups)
+
+    if noninteractive_kconfig:
+        patch_noninteractive_kconfig(pkgbuild_path)
 
     success = False
     try:
@@ -456,7 +465,8 @@ def _get_build_mode(matched_rules, config):
 def run(pkgbuild_path, extra_flags=None, interactive=False,
         pkg_log: bool = True, persist_log: bool = False,
         log_dir=None, profile_conf=None,
-        cc_override=None, cxx_override=None, ld_override=None):
+        cc_override=None, cxx_override=None, ld_override=None,
+        noninteractive_kconfig: bool = False):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     conflict_groups = load_conflict_groups()
@@ -524,6 +534,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
                 cc_override=cc_override,
                 cxx_override=cxx_override,
                 ld_override=ld_override,
+                noninteractive_kconfig=noninteractive_kconfig,
             )
         build_success = True
     finally:

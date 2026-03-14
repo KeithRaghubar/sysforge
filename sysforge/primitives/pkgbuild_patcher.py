@@ -82,6 +82,16 @@ _WL_RE = re.compile(r"^-Wl,(.+)$")
 _INLINE_MAKE_RE = re.compile(r"^\s*make\s+(?P<key>\w+)=", re.MULTILINE)
 _INLINE_CMAKE_RE = re.compile(r"^\s*cmake\b.*-D(?P<key>[A-Z_]+)=", re.MULTILINE)
 
+# Interactive kconfig targets — require terminal input or a TUI.
+# Replaced with `make olddefconfig` in noninteractive mode (kernel stage).
+# Groups: (1) leading whitespace + make + optional VAR=val args + space
+#         (2) the interactive target name
+#         (3) optional trailing whitespace / comment
+_INTERACTIVE_KCONFIG_RE = re.compile(
+    r"^(\s*make(?:\s+\w+=\S*)*\s+)(oldconfig|nconfig|menuconfig|xconfig|gconfig)(\s*(?:#.*)?)$",
+    re.MULTILINE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Group patching (moved from pkgbuild_meta.py)
@@ -524,6 +534,46 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta):
     patched_path.write_text(patched_text)
     _log.info("[PATCH]", f"[{pkgname}] Wrote patched PKGBUILD: {patched_path}")
     return patched_path
+
+
+# ---------------------------------------------------------------------------
+# Noninteractive kconfig patching
+# ---------------------------------------------------------------------------
+
+def patch_noninteractive_kconfig(patched_path):
+    """
+    Replace interactive kconfig targets in a (already-patched) PKGBUILD file
+    with `make olddefconfig`, which applies defaults non-interactively.
+
+    Handles: oldconfig, nconfig, menuconfig, xconfig, gconfig.
+    Preserves any VAR=val arguments before the target (e.g. ARCH=x86_64).
+    Logs each replacement.
+
+    Called by the kernel stage on PKGBUILD.sysforge after normal patching.
+    Does not create a new file — modifies patched_path in place.
+    """
+    patched_path = Path(patched_path)
+    text = patched_path.read_text()
+    replacements = []
+
+    def _replace(m):
+        original = m.group(0)
+        replaced = m.group(1) + "olddefconfig" + m.group(3)
+        replacements.append((m.group(2), original.strip(), replaced.strip()))
+        return replaced
+
+    new_text = _INTERACTIVE_KCONFIG_RE.sub(_replace, text)
+
+    if replacements:
+        patched_path.write_text(new_text)
+        for target, original, replaced in replacements:
+            _log.info(
+                "[PATCH]",
+                f"Replaced interactive kconfig target {target!r} with olddefconfig: "
+                f"{original!r} → {replaced!r}",
+            )
+    else:
+        _log.info("[PATCH]", "No interactive kconfig targets found — nothing replaced")
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     load_extracted_profile,
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
+    patch_noninteractive_kconfig,
 )
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
@@ -441,6 +442,77 @@ build() {
         content = patched.read_text()
     assert 'make CFLAGS=' not in content       # managed key — removed
     assert 'make LOCALVERSION=' in content     # unmanaged key — preserved
+
+
+# ---------------------------------------------------------------------------
+# patch_noninteractive_kconfig
+# ---------------------------------------------------------------------------
+
+def test_patch_noninteractive_kconfig_replaces_oldconfig(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("  make oldconfig\n")
+    patch_noninteractive_kconfig(pb)
+    assert pb.read_text() == "  make olddefconfig\n"
+
+def test_patch_noninteractive_kconfig_replaces_nconfig(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("  make nconfig\n")
+    patch_noninteractive_kconfig(pb)
+    assert "olddefconfig" in pb.read_text()
+    assert "nconfig" not in pb.read_text()
+
+def test_patch_noninteractive_kconfig_replaces_menuconfig(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("  make menuconfig\n")
+    patch_noninteractive_kconfig(pb)
+    assert "olddefconfig" in pb.read_text()
+
+def test_patch_noninteractive_kconfig_preserves_var_args(tmp_path):
+    """VAR=val arguments before the target are preserved."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("  make ARCH=x86_64 oldconfig\n")
+    patch_noninteractive_kconfig(pb)
+    content = pb.read_text()
+    assert "ARCH=x86_64" in content
+    assert "olddefconfig" in content
+    assert "oldconfig" not in content.replace("olddefconfig", "")
+
+def test_patch_noninteractive_kconfig_preserves_comment(tmp_path):
+    """Trailing comments are preserved."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("  make oldconfig # configure\n")
+    patch_noninteractive_kconfig(pb)
+    content = pb.read_text()
+    assert "# configure" in content
+    assert "olddefconfig" in content
+
+def test_patch_noninteractive_kconfig_no_match_is_noop(tmp_path):
+    """File with no interactive targets is unchanged."""
+    original = "  make olddefconfig\n  make modules_install\n"
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(original)
+    patch_noninteractive_kconfig(pb)
+    assert pb.read_text() == original
+
+def test_patch_noninteractive_kconfig_multiple_targets(tmp_path):
+    """All interactive targets in the file are replaced."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("  make oldconfig\n  make nconfig\n")
+    patch_noninteractive_kconfig(pb)
+    content = pb.read_text()
+    assert content.count("olddefconfig") == 2
+    assert "nconfig" not in content
+    assert "oldconfig" not in content.replace("olddefconfig", "")
+
+def test_patch_noninteractive_kconfig_preserves_non_kconfig_make(tmp_path):
+    """Other make invocations are untouched."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("  make oldconfig\n  make LOCALVERSION=v1 all\n  make modules_install\n")
+    patch_noninteractive_kconfig(pb)
+    content = pb.read_text()
+    assert "olddefconfig" in content
+    assert "make LOCALVERSION=v1 all" in content
+    assert "make modules_install" in content
 
 
 # ---------------------------------------------------------------------------
