@@ -38,6 +38,7 @@ Usage:
     log.close_pkg_log(success=True, persist=False)
 """
 import sys
+from datetime import datetime
 from pathlib import Path
 
 _VERBOSITY = 0
@@ -45,6 +46,12 @@ _unified_log_fh = None
 _pkg_log_fh = None
 
 _CLEARED_MARKER = "# log cleared after successful run\n"
+_SEP = "# " + "─" * 60 + "\n"
+
+
+def _session_header(label: str) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"{_SEP}# {label} — {ts}\n{_SEP}"
 
 
 def set_verbosity(level: int) -> None:
@@ -70,7 +77,7 @@ def open_unified_log(path, purge: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = "w" if purge else "a"
     _unified_log_fh = open(path, mode, buffering=1)  # line-buffered
-    _write_to_files(f"# sysforge log opened: {path}\n", raw=True)
+    _write_to_files(_session_header("sysforge install"), raw=True)
 
 
 def close_unified_log(success: bool = True, persist: bool = False) -> None:
@@ -94,7 +101,7 @@ def open_pkg_log(path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _pkg_log_fh = open(path, "a", buffering=1)
-    _write_to_files(f"# sysforge pkg log opened: {path}\n", raw=True)
+    _write_to_files(_session_header(f"sysforge build {path.parent.name}"), raw=True)
 
 
 def close_pkg_log(success: bool = True, persist: bool = False) -> None:
