@@ -181,7 +181,7 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
 
 
 def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
-                   extra_env=None, extra_flags=None):
+                   extra_env=None, extra_flags=None, interactive=False):
     pkgbuild_path = Path(pkgbuild_path).resolve()
     build_dir = pkgbuild_path.parent
 
@@ -193,6 +193,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         _log.info("[ENV]", f"Injecting {len(extra_env)} env var(s): {sorted(extra_env.keys())}")
 
     flags = list(resolved_profile.get("makepkg_flags", []))
+    if interactive:
+        flags = [f for f in flags if f != "--noconfirm"]
+        _log.info("[BUILD]", "--interactive: stripped --noconfirm from profile flags")
     if extra_flags:
         flags += extra_flags
         _log.info("[BUILD]", f"Appending CLI flags: {extra_flags}")
@@ -207,14 +210,14 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
 
 def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
-                       extra_env=None, extra_flags=None):
+                       extra_env=None, extra_flags=None, interactive=False):
     """
     Invoke makepkg, retrying after manual correction if not in batch mode.
     """
     if resolved_profile.get("batch", False):
         try:
             invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
-                           extra_env, extra_flags)
+                           extra_env, extra_flags, interactive)
         except subprocess.CalledProcessError as e:
             _log.error("[BUILD]", f"Build failed in batch mode, aborting: {e}")
             raise RuntimeError(f"[build_failed] {e}")
@@ -222,7 +225,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
         while True:
             try:
                 invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
-                               extra_env, extra_flags)
+                               extra_env, extra_flags, interactive)
                 break
             except subprocess.CalledProcessError as e:
                 _log.error("[BUILD]", f"Build failed: {e}")
@@ -244,7 +247,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
 
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
                active_consumes=None, extracted_profile=None, pkgmeta=None,
-               extra_flags=None):
+               extra_flags=None, interactive=False):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -267,7 +270,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         extra_env = resolve_env_vars(resolved_profile, active_consumes)
         with emit_makepkg_conf(resolved_profile, active_consumes) as conf_path:
             _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
-                               extra_env, extra_flags)
+                               extra_env, extra_flags, interactive)
         success = True
     except RuntimeError:
         raise
@@ -289,7 +292,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 # Entry point
 # ---------------------------------------------------------------------------
 
-def run(pkgbuild_path, extra_flags=None):
+def run(pkgbuild_path, extra_flags=None, interactive=False):
     config = load_config()
     conflict_groups = load_conflict_groups()
     inference_map = load_consumes_inference()
@@ -344,6 +347,7 @@ def run(pkgbuild_path, extra_flags=None):
             extracted_profile=extracted_profile if build_mode == "patch_pkgbuild" else None,
             pkgmeta=pkgmeta,
             extra_flags=extra_flags,
+            interactive=interactive,
         )
 
 

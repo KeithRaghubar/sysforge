@@ -47,7 +47,7 @@ def _expand_makepkg_flags(flags_str):
 def _cmd_build(args):
     extra_flags = _expand_makepkg_flags(args.makepkg) if args.makepkg else None
     try:
-        run(args.pkgbuild, extra_flags=extra_flags)
+        run(args.pkgbuild, extra_flags=extra_flags, interactive=args.interactive)
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -143,6 +143,14 @@ def main():
             "Additional makepkg flags, appended after profile makepkg_flags. "
             "Combined short flags are expanded: -sfci becomes -s -f -c -i. "
             "Example: sysforge build PKGBUILD -m '-sfci'"
+        ),
+    )
+    p_build.add_argument(
+        "--interactive",
+        action="store_true",
+        help=(
+            "Strip --noconfirm from profile makepkg_flags. "
+            "Useful during development to review makepkg prompts."
         ),
     )
     p_build.set_defaults(func=_cmd_build)
