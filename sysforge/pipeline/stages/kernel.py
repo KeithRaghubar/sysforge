@@ -124,6 +124,7 @@ def _capture_lsmod_snapshot(state_dir, dry_run):
         _log.warn("[KERNEL]", f"lsmod failed (exit {result.returncode}) — skipping snapshot")
         return
 
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path.write_text(result.stdout)
     _log.info("[KERNEL]", f"Captured lsmod snapshot: {snapshot_path}")
 
