@@ -90,13 +90,15 @@ _CONF_KEY_MAP: dict[str, set[str]] = {
     },
     # Keys in "env" are injected via subprocess invocation env, not conf file.
     # "env" must appear in active_consumes for these to be delivered; otherwise
-    # they fall through to the unknown-key env pass with a log.
+    # they are logged as skipped (see resolve_env_vars).
     "env": {
         "RUSTC_WRAPPER",    # sccache/ccache Rust compiler wrapper
         "CCACHE_DIR",       # ccache cache directory
         "SCCACHE_DIR",      # sccache cache directory
         "CARGO_HOME",       # Cargo registry/cache root
         "PKG_CONFIG_PATH",  # pkg-config search path
+        "CC_LD",            # meson: linker override for CC
+        "CXX_LD",           # meson: linker override for CXX
     },
 }
 

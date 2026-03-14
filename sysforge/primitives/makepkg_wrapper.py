@@ -273,6 +273,8 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
             if collect_env_type:
                 result[key] = val
                 _log.info("[ENV]", f"Injecting (env type): {key}={val!r}")
+            else:
+                _log.info("[ENV]", f"Skipping env-type key {key!r} (not in active_consumes)")
             continue
 
         if key not in all_conf_keys:
@@ -298,17 +300,17 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # Without this, shell vars like CC=clang or CFLAGS=... win over what the
     # conf/profile sets, producing unpredictable builds.
     _strip_keys = _CONF_KEY_MAP.get("makepkg", set()) | _CONF_KEY_MAP.get("toolchain", set())
-    stripped_env_keys = sorted(k for k in _strip_keys if k in env)
-    for k in stripped_env_keys:
-        del env[k]
-    if stripped_env_keys:
-        _log.warn("[ENV]", f"Stripped shell env vars superseded by profile: {stripped_env_keys}")
+    for k in sorted(_strip_keys):
+        if k in env:
+            _log.info("[ENV]", f"Stripped from shell env (superseded by profile): {k}={env.pop(k)!r}")
 
     env["MAKEPKG_CONF"] = str(conf_path)
 
     if extra_env:
+        for k, v in sorted(extra_env.items()):
+            if k in env:
+                _log.warn("[ENV]", f"Overriding shell {k}={env[k]!r} with profile value {v!r}")
         env.update(extra_env)
-        _log.info("[ENV]", f"Injecting {len(extra_env)} env var(s): {sorted(extra_env.keys())}")
 
     flags = list(resolved_profile.get("makepkg_flags", []))
     if interactive:
