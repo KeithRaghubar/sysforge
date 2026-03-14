@@ -2,7 +2,7 @@
 
 SysForge is a personal Arch Linux automation framework that produces a reproducible, performance-tuned system from declarative TOML configs. It is an installer and bootstrapper — not a package manager. Pacman owns the ongoing package lifecycle; SysForge gets you from a vanilla Arch ISO to a fully configured, compiler-optimized system.
 
-**Current status:** Early development. Primitives layer is functional; full pipeline is not yet complete. Not ready for general use.
+**Current status:** Active development. The primitives layer and package build pipeline are functional and usable on a live system. Stages 1–4 (partition, base install, hardware detection, toolchain) are stubbed pending dedicated testing. Not ready for general use.
 
 ---
 
@@ -10,9 +10,11 @@ SysForge is a personal Arch Linux automation framework that produces a reproduci
 
 - Declarative TOML profiles for per-package compiler flags (`-march=native`, LTO, PGO, etc.)
 - Rule-based profile matching against PKGBUILD metadata — no manual annotation of individual packages
-- Reproducible installs driven by a package manifest
-- Hardware detection stage that profiles your machine and feeds kernel config automation
+- Reproducible installs driven by a package manifest (`packages.toml`)
+- Manifest generation from a list of package names (`sysforge manifest`)
 - Checkpoint/resume across pipeline stages so a failed install can be continued, not restarted
+- Pre-build soname dependency analysis to surface ABI mismatches before the build starts
+- PKGBUILD flag extraction and patching — extracts compiler flags from PKGBUILD function bodies and manages them through the profile system instead
 
 ## What it is not
 
@@ -26,14 +28,12 @@ SysForge is a personal Arch Linux automation framework that produces a reproduci
 
 - Arch Linux (or Arch ISO for fresh installs)
 - Python 3.11+
-- `makepkg`, `pacman`
+- `makepkg`, `pacman`, `sudo`
 - An AUR helper is **not** required — SysForge handles AUR builds directly
 
 ---
 
 ## Installation
-
-SysForge is distributed as an AUR package.
 
 ```bash
 # Clone and build manually (until AUR publication)
@@ -42,18 +42,30 @@ cd sysforge
 makepkg -si
 ```
 
-Once published to AUR, installation will be:
-
-```bash
-yay -S sysforge
-# or
-paru -S sysforge
-```
-
 Installed paths:
 - `/etc/sysforge/` — system defaults
 - `~/.config/sysforge/` — user overrides (optional)
 - `/usr/bin/sysforge` — CLI
+
+---
+
+## Quick start (live system, stages 5–7)
+
+Stages 1–4 require a full install environment. To use SysForge on an existing Arch system for package builds:
+
+```bash
+# 1. Install your system config files
+sudo mkdir -p /etc/sysforge
+sudo cp /path/to/flag_profiles.toml /etc/sysforge/
+sudo chmod 644 /etc/sysforge/*.toml /etc/sysforge/
+sudo chmod 755 /etc/sysforge/
+
+# 2. Generate a packages.toml from a list of names
+sysforge manifest htop neovim mesa-git cosmic-comp-git > packages.toml
+
+# 3. Run the packages stage directly
+sysforge install --start-from packages --packages packages.toml --state-dir ~/sf-state
+```
 
 ---
 
@@ -77,7 +89,7 @@ CFLAGS = "-march=native -O3 -pipe -fno-plt -fno-stack-protector"
 
 ### Flag profiles
 
-Profiles are named sets of compiler flags. They support inheritance via `extends`:
+Profiles are named sets of compiler flags supporting inheritance via `extends`:
 
 ```toml
 [profiles.bare]
@@ -95,9 +107,16 @@ CFLAGS = "-march=native -O3 -pipe -fno-plt"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
 ```
 
+Use `[profiles.x.append]` for token-level flag merging (additive rather than full replacement):
+
+```toml
+[profiles.hardened.append]
+CFLAGS = "-fstack-protector-strong"   # replaces -fstack-protector via conflict group
+```
+
 ### Rules
 
-Rules match packages to profiles based on PKGBUILD metadata. Conditions within a rule are AND'd; multiple rules are OR'd independently. The highest-priority matching rule wins each flag key.
+Rules match packages to profiles based on PKGBUILD metadata. Conditions within a rule are AND'd; multiple rules are OR'd independently. The highest-priority matching rule wins.
 
 ```toml
 [[rules]]
@@ -114,6 +133,7 @@ priority = 5
 pkgnames = ["llvm", "clang", "lld"]
 profile = "pgo_llvm_toolchain"
 priority = 20
+append_groups = ["pgo"]
 ```
 
 **Match fields:**
@@ -121,7 +141,7 @@ priority = 20
 | Field | Matches when |
 |---|---|
 | `pkgnames` | any pattern matches any package name (glob supported) |
-| `not_pkgnames` | all patterns are absent from package names (glob supported) |
+| `not_pkgnames` | all patterns absent from package names (glob supported) |
 | `groups` | all patterns match at least one package group (glob supported) |
 | `not_groups` | all items absent from package groups (exact) |
 | `depends_any` | any item present in depends |
@@ -135,66 +155,84 @@ priority = 20
 
 ## Usage
 
-> **Note:** Full pipeline commands are not yet implemented. The following documents the intended interface.
-
-### Fresh install (from Arch ISO)
+### Generate a package manifest
 
 ```bash
-# Boot Arch ISO, install SysForge, then:
-sysforge install --config ~/.config/sysforge/
+# From inline names (queries pacman to classify repo vs AUR)
+sysforge manifest htop neovim mold pipewire > packages.toml
+
+# From a text file (one name per line)
+sysforge manifest --file my-packages.txt > packages.toml
+
+# Combined
+sysforge manifest htop --file extras.txt > packages.toml
 ```
 
-This runs the full pipeline: partition → base install → hardware detection → toolchain → packages → kernel → configure.
-
-### Re-converge an existing system
-
-```bash
-# Rebuild any package whose profile, flags, or version has drifted
-sysforge converge
-
-# Preview what would be rebuilt without doing it
-sysforge converge --dry-run
-```
+Packages found in pacman sync DBs are marked `source = "repo"`. AUR lookup is currently stubbed — unknown packages are excluded with a warning.
 
 ### Build a single package
 
 ```bash
-# Build a package using its matched profile
-sysforge build htop
+# Build using the matched profile
+sysforge build /path/to/PKGBUILD
 
-# Build against a specific profile, bypassing rule matching
-sysforge build htop --profile optimized
+# With additional makepkg flags (appended after profile makepkg_flags)
+sysforge build /path/to/PKGBUILD -m "-si"
+sysforge build /path/to/PKGBUILD -m "--noconfirm -f"
 ```
 
-### Inspect profile resolution
+### Run the install pipeline
 
 ```bash
-# Show which profile would be applied to a package and why
-sysforge resolve htop
+# Stages 1–4 are stubbed. Use --start-from to jump to packages:
+sysforge install --start-from packages --packages packages.toml --state-dir ~/sf-state
 
-# Show the full resolved flag set
-sysforge resolve htop --show-flags
+# Resume after a failure
+sysforge install --resume --state-dir ~/sf-state
+
+# Preview without executing
+sysforge install --start-from packages --dry-run --state-dir ~/sf-state
+
+# Retry failed packages without prompting
+sysforge install --resume --force-retry --state-dir ~/sf-state
 ```
+
+**Install flags:**
+
+| Flag | Effect |
+|---|---|
+| `--start-from <stage>` | Skip prior stages and begin from the named stage |
+| `--resume` | Continue from the last checkpoint |
+| `--force-retry` | On resume, retry failed packages without prompting |
+| `--dry-run` | Log what would run without executing |
+| `--packages <file>` | Override default `configs/packages.toml` path |
+| `--state-dir <dir>` | Override state file location (also: `SYSFORGE_STATE_DIR` env var) |
 
 ---
 
 ## Logging
 
-Every log line is tagged by category and package name, making logs greppable by either dimension:
-
-```
-[PROFILE][mesa-git]   matched rule: groups=modified priority=15 → optimized
-[FLAG]   [mesa-git]   CFLAGS="-march=native -O3 -pipe -fno-plt" (source: optimized)
-[BUILD]  [mesa-git]   invoking makepkg via MAKEPKG_CONF=/tmp/sysforge_abc123.conf
-```
-
-SysForge writes a unified log (all packages) and per-package logs simultaneously. Override with:
+All output goes to stderr. Verbosity is controlled with `-v`/`-vv`:
 
 ```bash
-sysforge build htop --no-unified-log   # per-package logs only
-sysforge build htop --no-pkg-logs      # unified log only
-sysforge build htop --log-dir /tmp/sf  # custom log directory
+sysforge build PKGBUILD           # errors only
+sysforge -v build PKGBUILD        # + warnings (soname mismatches, skips, etc.)
+sysforge -vv build PKGBUILD       # all messages
 ```
+
+Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making output greppable by level, tag, or package name independently:
+
+```
+[SYSFORGE][INFO][PROFILE] [htop] Matched profile 'optimized' (priority 0)
+[SYSFORGE][INFO][CONF] [htop] consumes (inferred from makedepends ['git']): ['makepkg']
+[SYSFORGE][INFO][DEP] [htop] soname ok: libcap.so → found
+[SYSFORGE][INFO][BUILD] Running makepkg --noconfirm --syncdeps in /path/to/htop
+[SYSFORGE][ERROR][BUILD] Build failed: Command 'makepkg' returned non-zero exit status 1
+```
+
+**Log levels:** `[ERROR]` always shown · `[WARN]` with `-v` · `[INFO]` with `-vv`
+
+**Tags:** `[PROFILE]` `[CONF]` `[ENV]` `[BUILD]` `[FAILURE]` `[DEP]` `[PATCH]` `[GROUPS]` `[CONFIG]` `[PACKAGES]` `[PIPELINE]` `[MANIFEST]`
 
 ---
 
@@ -202,20 +240,30 @@ sysforge build htop --log-dir /tmp/sf  # custom log directory
 
 | Milestone | Status |
 |---|---|
-| PKGBUILD parser (`pkgbuild_meta.py`) | ✅ Done |
-| Rule matching (`match_rules`) | ✅ Done |
-| Profile extends + merge (`merge_extends`) | ✅ Done |
+| PKGBUILD parser | ✅ Done |
+| Rule matching | ✅ Done |
+| Profile extends + merge | ✅ Done |
 | `[profiles.x.append]` token-level merge | ✅ Done |
+| Conflict groups | ✅ Done |
 | Consumes filtering (conf type routing) | ✅ Done |
 | Env pass (`RUSTC_WRAPPER`, `CCACHE_DIR`, etc.) | ✅ Done |
+| System makepkg.conf merge | ✅ Done |
 | PKGBUILD flag extraction + patching | ✅ Done |
+| Pre-build soname dep analysis | ✅ Done |
 | Makepkg wrapper (end-to-end) | ✅ Done |
-| Pytest suite (190 tests) | ✅ Done |
-| Pre-build dep analysis (`[DEP]`) | 🔧 Next |
-| Pipeline DAG | ⬜ Planned |
+| Structured logging (`[SYSFORGE][LEVEL][TAG]`) | ✅ Done |
+| Pipeline runner (checkpoint/resume) | ✅ Done |
+| Packages stage (stage 5) | ✅ Done |
+| Manifest generator (`sysforge manifest`) | ✅ Done |
+| Pytest suite (290 tests) | ✅ Done |
+| Kernel stage (stage 6) | 🔧 Stub |
+| Configure stage (stage 7) | 🔧 Stub |
+| Stages 1–4 (partition → toolchain) | 🔧 Stub |
+| AUR RPC lookup in manifest | ⬜ Planned |
 | Hardware detection stage | ⬜ Planned |
-| AUR publication | ⬜ Blocked on pipeline completion |
 | `sysforge converge` | ⬜ Planned |
+| `sysforge resolve` | ⬜ Planned |
+| AUR publication | ⬜ Planned |
 | Full yay replacement (V2) | ⬜ Long-term |
 
 ---
