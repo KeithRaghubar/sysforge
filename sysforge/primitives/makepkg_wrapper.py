@@ -469,7 +469,10 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
 
     # Open per-package log if enabled
     if pkg_log:
-        pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
+        globals_ = pkgmeta.get("globals", {})
+        pkgname = globals_.get("pkgbase") or globals_.get("pkgname", "unknown")
+        if isinstance(pkgname, list):
+            pkgname = pkgname[0] if pkgname else "unknown"
         log_base = Path(log_dir) if log_dir is not None else pkgbuild_path.parent
         log_path = log_base / f"sysforge_{pkgname}.log"
         _log.open_pkg_log(log_path)
