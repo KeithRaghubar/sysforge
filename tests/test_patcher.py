@@ -357,8 +357,7 @@ def test_apply_removes_flag_lines():
     with tempfile.TemporaryDirectory() as d:
         pb = _make_pkgbuild(d, SIMPLE_PKGBUILD)
         pkgmeta = {"globals": {"pkgname": "mypkg"}, "functions": {}}
-        extracted = {"CFLAGS": "-fno-stack-protector", "LDFLAGS": "-Wl,--gc-sections"}
-        patched = apply_patch_pkgbuild(pb, pkgmeta, extracted)
+        patched = apply_patch_pkgbuild(pb, pkgmeta)
         content = patched.read_text()
     assert "export CFLAGS" not in content
     assert "export LDFLAGS" not in content
@@ -368,8 +367,7 @@ def test_apply_preserves_original():
     with tempfile.TemporaryDirectory() as d:
         pb = _make_pkgbuild(d, SIMPLE_PKGBUILD)
         pkgmeta = {"globals": {"pkgname": "mypkg"}, "functions": {}}
-        extracted = {"CFLAGS": "-fno-stack-protector"}
-        apply_patch_pkgbuild(pb, pkgmeta, extracted)
+        apply_patch_pkgbuild(pb, pkgmeta)
         original_content = pb.read_text()
     assert "export CFLAGS" in original_content  # original untouched
 
@@ -377,8 +375,7 @@ def test_apply_removes_conditional_block():
     with tempfile.TemporaryDirectory() as d:
         pb = _make_pkgbuild(d, COND_PKGBUILD)
         pkgmeta = {"globals": {"pkgname": "mypkg"}, "functions": {}}
-        extracted = {"CFLAGS": "-m32"}
-        patched = apply_patch_pkgbuild(pb, pkgmeta, extracted)
+        patched = apply_patch_pkgbuild(pb, pkgmeta)
         content = patched.read_text()
     assert "if [[ $CARCH" not in content
     assert "fi" not in content
@@ -388,8 +385,7 @@ def test_apply_preserves_groups():
     with tempfile.TemporaryDirectory() as d:
         pb = _make_pkgbuild(d, SIMPLE_PKGBUILD)
         pkgmeta = {"globals": {"pkgname": "mypkg"}, "functions": {}}
-        extracted = {"CFLAGS": "-fno-stack-protector"}
-        patched = apply_patch_pkgbuild(pb, pkgmeta, extracted)
+        patched = apply_patch_pkgbuild(pb, pkgmeta)
         content = patched.read_text()
     assert "groups=('mygroup')" in content
 
@@ -397,8 +393,7 @@ def test_apply_writes_sysforge_copy():
     with tempfile.TemporaryDirectory() as d:
         pb = _make_pkgbuild(d, SIMPLE_PKGBUILD)
         pkgmeta = {"globals": {"pkgname": "mypkg"}, "functions": {}}
-        extracted = {"CFLAGS": "-fno-stack-protector"}
-        patched = apply_patch_pkgbuild(pb, pkgmeta, extracted)
+        patched = apply_patch_pkgbuild(pb, pkgmeta)
     assert patched.name == "PKGBUILD.sysforge"
 
 

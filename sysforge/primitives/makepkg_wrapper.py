@@ -376,11 +376,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     """
     if extracted_profile is not None:
         # patch_pkgbuild mode: use patched copy with flags stripped
-        pkgbuild_path = apply_patch_pkgbuild(
-            pkgbuild_path,
-            pkgmeta or {"globals": {}},
-            extracted_profile,
-        )
+        pkgbuild_path = apply_patch_pkgbuild(pkgbuild_path, pkgmeta or {"globals": {}})
     else:
         pkgbuild_path = patch_pkgbuild_groups(pkgbuild_path, groups)
 

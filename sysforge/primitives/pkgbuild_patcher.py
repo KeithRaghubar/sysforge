@@ -10,7 +10,7 @@ Public API:
     extract_pkgbuild_profile(pkgmeta, pkgbuild_path) -> dict
     write_extracted_profile(profile, pkgbuild_path) -> Path
     load_extracted_profile(pkgbuild_path) -> dict
-    apply_patch_pkgbuild(pkgbuild_path, pkgmeta, extracted_profile) -> Path
+    apply_patch_pkgbuild(pkgbuild_path, pkgmeta) -> Path
     cleanup_patch_artifacts(pkgbuild_path)
 """
 import re
@@ -194,7 +194,7 @@ def _extract_flag_assignments(function_body, pkgname="unknown"):
       - Exported assignments: export CFLAGS="..."
       - All $VAR/${...} refs stripped; skipped if any $ remains after strip
 
-    Skips and logs (does NOT extract, but records line for removal):
+    Skips and logs (does NOT extract):
       - Assignments where value contains unresolvable $-expressions
       - make VAR=... inline invocations   [PATCH] Skipped (inline make)
       - cmake -DKEY=... invocations       [PATCH] Skipped (inline cmake)
@@ -202,11 +202,8 @@ def _extract_flag_assignments(function_body, pkgname="unknown"):
     Returns:
         dict mapping key -> list of extracted flag tokens
         Keys with no extractable tokens are omitted.
-        A separate "skipped_lines" key carries line strings that should still
-        be removed from the patched PKGBUILD even though extraction failed.
     """
     accumulated: dict[str, list[str]] = {}  # key -> token list
-    skipped_lines: list[str] = []
 
     for m in _ASSIGNMENT_RE.finditer(function_body):
         key = m.group("key")
@@ -225,15 +222,12 @@ def _extract_flag_assignments(function_body, pkgname="unknown"):
 
         # Skip if complex bash expression remains (e.g. ${VAR/-g /-g1 })
         if _VARREF_RE.search(stripped):
-            line = m.group(0).strip()
             _log.info("[PATCH]", f"[{pkgname}] Skipped (complex expression, not extractable): {key}{op}... — line will still be removed")
-            skipped_lines.append(line)
             continue
 
         tokens = _tokenize_flag_value(stripped)
         if not tokens:
             # e.g. export CXXFLAGS="$CFLAGS" after stripping → empty; remove silently
-            skipped_lines.append(m.group(0).strip())
             continue
 
         if op == "=" or key not in accumulated:
@@ -245,16 +239,12 @@ def _extract_flag_assignments(function_body, pkgname="unknown"):
 
         _log.info("[PATCH]", f"[{pkgname}] Extracted {key}{op} tokens: {tokens}")
 
-    # Log inline make/cmake patterns (not extracted, logged, removed)
+    # Log inline make/cmake patterns (not extracted, logged, removed by apply_patch_pkgbuild)
     for pat, label in ((_INLINE_MAKE_RE, "inline make"), (_INLINE_CMAKE_RE, "inline cmake")):
         for m in pat.finditer(function_body):
-            line = m.group(0).strip()
-            _log.info("[PATCH]", f"[{pkgname}] Skipped ({label}): {line!r}")
-            skipped_lines.append(line)
+            _log.info("[PATCH]", f"[{pkgname}] Skipped ({label}): {m.group(0).strip()!r}")
 
-    result = {k: v for k, v in accumulated.items() if v}
-    result["__skipped_lines__"] = skipped_lines
-    return result
+    return {k: v for k, v in accumulated.items() if v}
 
 
 def _extract_conditional_blocks(function_body, pkgname="unknown"):
@@ -336,7 +326,6 @@ def extract_pkgbuild_profile(pkgmeta, pkgbuild_path):
     Returns:
         dict  e.g. {"CFLAGS": "-fno-stack-protector -m32", "LDFLAGS": "-Wl,--gc-sections"}
         Empty dict if no extractable flags are found.
-        "__conditional_blocks__" key carries removal metadata for apply_patch_pkgbuild.
     """
     pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
     if isinstance(pkgname, list):
@@ -344,29 +333,16 @@ def extract_pkgbuild_profile(pkgmeta, pkgbuild_path):
 
     functions = pkgmeta.get("functions", {})
 
-    # Global accumulation across all function bodies
     accumulated: dict[str, list[str]] = {}
-    all_skipped_lines: list[str] = []
-    all_conditional_blocks: list[tuple] = []
 
     for func_name, body in functions.items():
-        # Phase 1: find conditional blocks in this function body
-        cond_blocks = _extract_conditional_blocks(body, pkgname)
-        for start, end, keys, block_text in cond_blocks:
+        # Phase 1: log conditional blocks that will be removed by apply_patch_pkgbuild
+        for start, end, keys, block_text in _extract_conditional_blocks(body, pkgname):
             preview = block_text.splitlines()[0][:60]
             _log.info("[PATCH]", f"[{pkgname}] Removing entire conditional block in {func_name!r} (contains {keys}): {preview!r}...")
-        all_conditional_blocks.extend(
-            (func_name, start, end, keys, block_text)
-            for start, end, keys, block_text in cond_blocks
-        )
 
-        # Phase 2: extract assignments (operates on full body; apply_patch_pkgbuild
-        # handles the actual line removal, so overlap with conditional blocks is fine)
-        extracted = _extract_flag_assignments(body, pkgname)
-        skipped = extracted.pop("__skipped_lines__", [])
-        all_skipped_lines.extend(skipped)
-
-        for key, tokens in extracted.items():
+        # Phase 2: extract assignments
+        for key, tokens in _extract_flag_assignments(body, pkgname).items():
             if key not in accumulated:
                 accumulated[key] = list(tokens)
             else:
@@ -380,10 +356,6 @@ def extract_pkgbuild_profile(pkgmeta, pkgbuild_path):
 
     for key, val in profile.items():
         _log.info("[PATCH]", f"[{pkgname}] Extracted profile key: {key} = {val!r}")
-
-    # Carry removal metadata for apply_patch_pkgbuild
-    profile["__conditional_blocks__"] = all_conditional_blocks
-    profile["__skipped_lines__"] = all_skipped_lines
 
     return profile
 
@@ -448,7 +420,7 @@ def load_extracted_profile(pkgbuild_path):
 # Full patching pass
 # ---------------------------------------------------------------------------
 
-def apply_patch_pkgbuild(pkgbuild_path, pkgmeta, extracted_profile):
+def apply_patch_pkgbuild(pkgbuild_path, pkgmeta):
     """
     Write a patched copy of the PKGBUILD (PKGBUILD.sysforge) with all
     managed flag assignments and conditional blocks removed.
