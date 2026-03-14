@@ -296,7 +296,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 # ---------------------------------------------------------------------------
 
 def run(pkgbuild_path, extra_flags=None, interactive=False,
-        pkg_log: bool = True, persist_log: bool = False):
+        pkg_log: bool = True, persist_log: bool = False,
+        log_dir=None):
     config = load_config()
     conflict_groups = load_conflict_groups()
     inference_map = load_consumes_inference()
@@ -312,7 +313,8 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
     # Open per-package log if enabled
     if pkg_log:
         pkgname = pkgmeta.get("globals", {}).get("pkgname", "unknown")
-        log_path = pkgbuild_path.parent / f"sysforge_{pkgname}.log"
+        log_base = Path(log_dir) if log_dir is not None else pkgbuild_path.parent
+        log_path = log_base / f"sysforge_{pkgname}.log"
         _log.open_pkg_log(log_path)
         _log.info("[BUILD]", f"Per-package log: {log_path}")
 

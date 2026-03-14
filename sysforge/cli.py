@@ -46,9 +46,13 @@ def _expand_makepkg_flags(flags_str):
 
 def _cmd_build(args):
     extra_flags = _expand_makepkg_flags(args.makepkg) if args.makepkg else None
+    if args.no_pkg_log and args.log_dir:
+        print("[SYSFORGE] Warning: --log-dir has no effect when --no-pkg-log is set.", file=sys.stderr)
     try:
         run(args.pkgbuild, extra_flags=extra_flags, interactive=args.interactive,
-            persist_log=args.persist_log)
+            pkg_log=not args.no_pkg_log,
+            persist_log=args.persist_log,
+            log_dir=Path(args.log_dir) if args.log_dir else None)
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -164,6 +168,18 @@ def main():
         action="store_true",
         dest="persist_log",
         help="Keep the per-package log file after a successful build (default: truncate on success).",
+    )
+    p_build.add_argument(
+        "--no-pkg-log",
+        action="store_true",
+        dest="no_pkg_log",
+        help="Disable the per-package log file.",
+    )
+    p_build.add_argument(
+        "--log-dir",
+        metavar="DIR",
+        dest="log_dir",
+        help="Directory for the per-package log file (default: alongside the PKGBUILD).",
     )
     p_build.set_defaults(func=_cmd_build)
 
