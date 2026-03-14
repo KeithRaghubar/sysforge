@@ -1,4 +1,113 @@
 # =============================================================================
+# REFERENCE — all valid keys and accepted values
+# =============================================================================
+#
+# ── [defaults] ───────────────────────────────────────────────────────────────
+#
+#   profile = "standard"          # (required) fallback profile when no rule matches
+#   append_groups = ["sf-build"]  # (optional) groups added to every package
+#
+# ── [profiles.NAME] ──────────────────────────────────────────────────────────
+#
+#   extends = "bare"              # (optional) parent profile — inherits all parent keys;
+#                                 #   child keys override, [profiles.NAME.append] merges
+#
+#   # Compiler / linker  (delivered via temp makepkg.conf)
+#   CC       = "clang"
+#   CXX      = "clang++"
+#   AR       = "llvm-ar"
+#   NM       = "llvm-nm"
+#   RANLIB   = "llvm-ranlib"
+#   STRIP    = "llvm-strip"
+#   CFLAGS   = "-march=native -O3 -pipe -fno-plt"
+#   CXXFLAGS = "$CFLAGS"
+#   CPPFLAGS = "-D_FORTIFY_SOURCE=2"
+#   LDFLAGS  = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
+#             # Use -fuse-ld=lld to select lld. lld-only flags (--icf=*) are
+#             # automatically stripped by SysForge when lld is not the effective linker.
+#   DEBUG_CFLAGS   = "-g"
+#   DEBUG_CXXFLAGS = "-g"
+#   DEBUG_LDFLAGS  = ""
+#   MAKEFLAGS      = "-j$(nproc)"
+#
+#   # makepkg options  (delivered via temp makepkg.conf)
+#   BUILDENV = ["!distcc", "color", "ccache", "check", "!sign"]
+#   OPTIONS  = ["strip", "docs", "libtool", "staticlibs", "emptydirs", "!zipman", "purge", "!debug", "lto"]
+#   PKGEXT   = ".pkg.tar.zst"
+#   SRCEXT   = ".src.tar.gz"
+#   INTEGRITY_CHECK = ["sha256"]
+#
+#   # Rust  (delivered via temp makepkg.conf; only when 'rust' in consumes)
+#   RUSTFLAGS                          = "-C opt-level=3 -C target-cpu=native"
+#   CARGO_PROFILE_RELEASE_LTO          = "thin"   # "thin" | "fat" | "off"
+#   CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
+#   CARGO_PROFILE_RELEASE_OPT_LEVEL    = "3"      # "0".."3" | "s" | "z"
+#   CARGO_INCREMENTAL                  = "0"       # always 0 with managed flags
+#
+#   # CMake  (delivered via temp makepkg.conf; only when 'cmake' in consumes)
+#   CMAKE_BUILD_TYPE        = "Release"   # "Release" | "RelWithDebInfo" | "Debug"
+#   CMAKE_C_FLAGS           = "-march=native"
+#   CMAKE_CXX_FLAGS         = "-march=native"
+#   CMAKE_EXE_LINKER_FLAGS  = "-fuse-ld=lld"
+#   CMAKE_SHARED_LINKER_FLAGS = "-fuse-ld=lld"
+#
+#   # Meson  (delivered via temp makepkg.conf; only when 'meson' in consumes)
+#   MESON_ARGS = "--buildtype=release --optimization=3"
+#
+#   # Env-injected  (passed directly to makepkg subprocess env, not the conf)
+#   RUSTC_WRAPPER = "sccache"    # or "ccache"
+#   CCACHE_DIR    = "/var/cache/ccache"
+#   SCCACHE_DIR   = "/var/cache/sccache"
+#   CARGO_HOME    = "/var/cache/cargo"
+#   PKG_CONFIG_PATH = "/usr/local/lib/pkgconfig"
+#
+#   # makepkg invocation flags
+#   makepkg_flags = ["--noconfirm", "--syncdeps"]
+#                 # common flags: --noconfirm --syncdeps --rmdeps --install
+#                 #               --noprogressbar --log --cleanbuild --force
+#
+#   # SysForge behaviour keys  (not written to conf or env)
+#   build_mode    = "patch_pkgbuild"  # "patch_pkgbuild" | "pgo_llvm_toolchain"
+#                                     # omit for standard builds
+#   pgo_store     = "/var/tmp"        # (required when build_mode = "pgo_llvm_toolchain")
+#                                     # directory for PGO instrumentation data
+#   clean_builddir = true             # wipe src/ before build (default: false)
+#   batch          = true             # abort on failure without prompting (default: false)
+#   consumes       = ["makepkg", "rust", "cmake", "meson", "env"]
+#                  # override auto-inferred consumes set; controls which key
+#                  # types are delivered. omit to use inferred value from makedepends.
+#
+# ── [profiles.NAME.append] ───────────────────────────────────────────────────
+#
+#   Token-level merge into the parent's value instead of full override.
+#   Useful for adding individual flags without rewriting the whole string.
+#   Conflict groups (from append_conflict_groups.toml) are resolved during merge.
+#
+#   [profiles.optimized_lto.append]
+#   CFLAGS  = "-flto=thin"     # replaces -flto* in parent via conflict group
+#   LDFLAGS = "--icf=all"      # appended (no matching prefix or conflict group)
+#
+# ── [[rules]] ────────────────────────────────────────────────────────────────
+#
+#   profile  = "optimized"     # (required) profile to apply when this rule matches
+#   priority = 0               # (required) 0–99 (system); higher wins on conflict
+#
+#   # Match fields — all optional; omitting a field passes unconditionally
+#   pkgnames      = ["htop", "htop-*"]   # ANY match; supports fnmatch globs
+#   not_pkgnames  = ["llvm-*"]           # ALL absent; supports fnmatch globs
+#   groups        = ["cosmic-*"]         # ALL match; supports fnmatch globs
+#   not_groups    = ["multilib"]         # ALL absent; exact match
+#   depends_any   = ["libfoo.so"]        # ANY present; exact match
+#   depends_all   = ["glibc", "gcc-libs"] # ALL present; exact match
+#   not_depends   = ["qt5-base"]         # ALL absent; exact match
+#   makedepends_any = ["cargo"]          # ANY present; exact match
+#   makedepends_all = ["cmake", "ninja"] # ALL present; exact match
+#   not_makedepends = ["meson"]          # ALL absent; exact match
+#
+#   # Additive across all matched rules (not winner-takes-all like profile)
+#   append_groups = ["pgo", "lto"]
+#
+# =============================================================================
 # Defaults
 # =============================================================================
 
