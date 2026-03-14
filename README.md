@@ -179,7 +179,24 @@ sysforge build /path/to/PKGBUILD
 # With additional makepkg flags (appended after profile makepkg_flags)
 sysforge build /path/to/PKGBUILD -m "-si"
 sysforge build /path/to/PKGBUILD -m "--noconfirm -f"
+
+# Interactive — strips --noconfirm so makepkg prompts are visible
+sysforge build /path/to/PKGBUILD --interactive
 ```
+
+**Build flags:**
+
+| Flag | Effect |
+|---|---|
+| `-m / --makepkg <flags>` | Append extra makepkg flags (combined flags like `-sfi` are expanded) |
+| `--interactive` | Strip `--noconfirm` from makepkg_flags for this build |
+| `--profile-conf <file>` | Use alternate `flag_profiles.toml` instead of default paths |
+| `--cc <path>` | Override `CC` for this build |
+| `--cxx <path>` | Override `CXX` for this build |
+| `--ld <linker>` | Override linker (`lld`, `mold`, etc.) for this build |
+| `--no-pkg-log` | Disable the per-package log for this build |
+| `--log-dir <dir>` | Write per-package log to this directory instead of alongside the PKGBUILD |
+| `--persist-log` | Keep per-package log after a successful build |
 
 ### Run the install pipeline
 
@@ -207,6 +224,12 @@ sysforge install --resume --force-retry --state-dir ~/sf-state
 | `--dry-run` | Log what would run without executing |
 | `--packages <file>` | Override default `configs/packages.toml` path |
 | `--state-dir <dir>` | Override state file location (also: `SYSFORGE_STATE_DIR` env var) |
+| `--profile-conf <file>` | Use alternate `flag_profiles.toml` instead of default paths |
+| `--no-unified-log` | Disable the unified log for this run |
+| `--no-pkg-logs` | Disable per-package logs for this run |
+| `--log-dir <dir>` | Override log file directory |
+| `--purge-log` | Truncate unified log before the run starts |
+| `--persist-log` | Keep log files after a successful run |
 
 ---
 
@@ -232,7 +255,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 
 **Log levels:** `[ERROR]` always shown · `[WARN]` with `-v` · `[INFO]` with `-vv`
 
-**Tags:** `[PROFILE]` `[CONF]` `[ENV]` `[BUILD]` `[FAILURE]` `[DEP]` `[PATCH]` `[GROUPS]` `[CONFIG]` `[PACKAGES]` `[PIPELINE]` `[MANIFEST]`
+**Tags:** `[PROFILE]` `[CONF]` `[ENV]` `[BUILD]` `[FAILURE]` `[DEP]` `[PATCH]` `[GROUPS]` `[CONFIG]` `[PACKAGES]` `[PIPELINE]` `[MANIFEST]` `[FLAG]`
 
 ---
 
@@ -255,7 +278,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 5) | ✅ Done |
 | Manifest generator (`sysforge manifest`) | ✅ Done |
-| Pytest suite (290 tests) | ✅ Done |
+| Pytest suite (292 tests) | ✅ Done |
 | Kernel stage (stage 6) | 🔧 Stub |
 | Configure stage (stage 7) | 🔧 Stub |
 | Stages 1–4 (partition → toolchain) | 🔧 Stub |

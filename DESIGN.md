@@ -300,7 +300,7 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-All modules independently testable. 291 pytest tests (`pytest` from repo root).
+All modules independently testable. 292 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 

@@ -27,14 +27,9 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 - **Unified log**: `state_dir/sysforge.log` (install subcommand only)
 - **Per-package log**: written to source dir (both `build` and `install`)
 - **CLI flags on `install`**: `--no-unified-log`, `--no-pkg-logs`, `--log-dir`, `--purge-log`, `--persist-log`
-- **CLI flags on `build`**: `--persist-log` only
+- **CLI flags on `build`**: `--persist-log`, `--no-pkg-log`, `--log-dir`
 
 ## Pending Work (Queued)
-
-### Next up
-
-- `sysforge build` is missing `--no-pkg-log` flag
-- `sysforge build` is missing `--log-dir` flag
 
 ### Unimplemented features
 
