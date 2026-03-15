@@ -74,6 +74,47 @@ def test_merge_extends_missing_raises(test_profiles):
 
 
 # ---------------------------------------------------------------------------
+# match_rules — pkgbase matching
+# ---------------------------------------------------------------------------
+
+def test_match_rules_pkgbase_matches_pkgnames_rule():
+    """Rule with pkgnames matches a split-package PKGBUILD via pkgbase."""
+    # Simulates a kernel-style PKGBUILD: pkgbase=linux-custom,
+    # pkgname=("$pkgbase" "$pkgbase-headers") — unexpanded shell refs.
+    meta = {"globals": {
+        "pkgbase": "linux-custom",
+        "pkgname": ["$pkgbase", "$pkgbase-headers"],
+    }}
+    rules = [{"pkgnames": ["linux-custom"], "profile": "kernel", "priority": 20}]
+    matched = match_rules(meta, rules)
+    assert len(matched) == 1
+    assert matched[0]["profile"] == "kernel"
+
+def test_match_rules_pkgbase_not_double_counted():
+    """When pkgbase equals pkgname (single pkg), it is not duplicated."""
+    meta = {"globals": {"pkgbase": "htop", "pkgname": "htop"}}
+    rules = [{"pkgnames": ["htop"], "profile": "optimized", "priority": 0}]
+    matched = match_rules(meta, rules)
+    assert len(matched) == 1
+
+def test_match_rules_pkgbase_higher_priority_wins():
+    """pkgbase-matched kernel rule at priority 20 beats groups rule at 10."""
+    meta = {"globals": {
+        "pkgbase": "linux-custom",
+        "pkgname": ["$pkgbase", "$pkgbase-headers"],
+        "groups": ["modified"],
+    }}
+    rules = [
+        {"groups": ["modified"], "profile": "patched", "priority": 10},
+        {"pkgnames": ["linux-custom"], "profile": "kernel", "priority": 20},
+    ]
+    matched = match_rules(meta, rules)
+    assert len(matched) == 2
+    winner = max(matched, key=lambda r: r["priority"])
+    assert winner["profile"] == "kernel"
+
+
+# ---------------------------------------------------------------------------
 # load_config — system only
 # ---------------------------------------------------------------------------
 

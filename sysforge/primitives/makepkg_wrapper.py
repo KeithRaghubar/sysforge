@@ -524,6 +524,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         log_path = log_base / f"sysforge_{pkgname}.log"
         _log.open_pkg_log(log_path)
         _log.info("[BUILD]", f"Per-package log: {log_path}")
+        _log.info("[BUILD]", f"Invocation: {' '.join(sys.argv)}")
 
     build_success = False
     try:

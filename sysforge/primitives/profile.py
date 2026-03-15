@@ -332,7 +332,16 @@ def match_rules(pkgmeta, rules):
     if isinstance(pkgname, list):
         pkgnames = list(pkgname)
     else:
-        pkgnames = [pkgname]
+        pkgnames = [pkgname] if pkgname else []
+
+    # Always include pkgbase in the names set. Split packages set pkgname to an
+    # array of sub-package names (often containing unexpanded shell refs like
+    # "$pkgbase") and put the canonical name in pkgbase — rules should match on
+    # either. Single packages typically omit pkgbase; including it here is a no-op
+    # when it equals pkgname or is absent.
+    pkgbase = globals_.get("pkgbase", "")
+    if pkgbase and pkgbase not in pkgnames:
+        pkgnames.append(pkgbase)
 
     def _glob_any_match(patterns, values):
         return any(fnmatch.fnmatch(val, pat) for pat in patterns for val in values)
