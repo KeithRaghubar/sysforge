@@ -67,7 +67,7 @@
 #                 #               --noprogressbar --log --cleanbuild --force
 #
 #   # SysForge behaviour keys  (not written to conf or env)
-#   build_mode    = "patch_pkgbuild"  # "patch_pkgbuild" | "pgo_llvm_toolchain"
+#   build_mode    = "patch_pkgbuild"  # "patch_pkgbuild" | "pgo_llvm_toolchain" | "kernel"
 #                                     # omit for standard builds
 #   pgo_store     = "/var/tmp"        # (required when build_mode = "pgo_llvm_toolchain")
 #                                     # directory for PGO instrumentation data
@@ -149,6 +149,12 @@ pgo_store = "/var/tmp"
 extends = "optimized"
 build_mode = "patch_pkgbuild"
 
+[profiles.kernel]
+extends = "bare"
+build_mode = "kernel"
+batch = true
+makepkg_flags = ["--noconfirm", "--syncdeps", "-f", "-c"]
+
 [profiles.batch]
 extends = "standard"
 batch = true
@@ -179,6 +185,11 @@ pkgnames = ["cosmic-*"]
 profile = "patched"
 priority = 10
 append_groups = ["cosmic-patched"]
+
+[[rules]]
+pkgnames = ["linux-custom"]
+profile = "kernel"
+priority = 20
 
 [[rules]]
 pkgnames = ["llvm", "clang", "lld"]
