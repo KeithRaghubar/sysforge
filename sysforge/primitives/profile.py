@@ -144,16 +144,21 @@ def _merge_append_value(parent_val, child_append_val, conflict_groups):
     child_tokens = child_append_val.split() if child_append_val else []
 
     flag_to_group: dict[str, list[str]] = {}
-    for members in conflict_groups.values():
+    flag_to_group_name: dict[str, str] = {}
+    for group_name, members in conflict_groups.items():
         for member in members:
             flag_to_group[member] = members
+            flag_to_group_name[member] = group_name
 
     result = list(parent_tokens)
 
     for child_token in child_tokens:
         if child_token in flag_to_group:
             group_members = set(flag_to_group[child_token])
+            removed = [t for t in result if t in group_members]
             result = [t for t in result if t not in group_members]
+            if removed:
+                _log.info("[FLAG]", f"Conflict group '{flag_to_group_name[child_token]}': removed {removed}, inserted {child_token!r}")
             result.append(child_token)
             continue
 
@@ -166,7 +171,9 @@ def _merge_append_value(parent_val, child_append_val, conflict_groups):
                     break
 
         if matched_idx is not None:
+            old_token = result[matched_idx]
             result[matched_idx] = child_token
+            _log.info("[FLAG]", f"Prefix match: {old_token!r} → {child_token!r}")
             continue
 
         result.append(child_token)

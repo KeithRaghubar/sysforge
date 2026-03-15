@@ -40,7 +40,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 ### Unimplemented features
 
-- **`[FLAG]` tag** — makepkg.conf flag resolution/conflict logging
+- **`[FLAG]` tag** — ~~conflict group resolution and prefix-match token replacement logging~~ **done**. Remaining gap: `apply_patch_pkgbuild` (uses `[PATCH]` — intentional).
 - **`[CACHE]` tag** — ccache/sccache passive monitoring, ThinLTO, CMake/Meson build dirs, ld.so cache mtime, pacman cache
 - **`--cache-report` flag** — structured end-of-run summary
 
