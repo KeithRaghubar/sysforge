@@ -89,6 +89,7 @@ sysforge/
 │   ├── cli.py                         # CLI entry point and subcommand wiring
 │   ├── log.py                         # structured logging (stderr + optional file output)
 │   ├── manifest.py                    # packages.toml generator
+│   ├── resolve.py                     # sysforge resolve subcommand
 │   └── primitives/
 │       ├── config.py                  # TOML config loading, path constants, system conf parsing
 │       ├── profile.py                 # profile resolution, rule matching, consumes
@@ -131,12 +132,17 @@ sysforge/
 │   ├── test_consumes.py
 │   ├── test_dep_analysis.py
 │   ├── test_env_pass.py
+│   ├── test_cache_probe.py
+│   ├── test_cli.py
+│   ├── test_failure.py
+│   ├── test_log.py
 │   ├── test_manifest.py
 │   ├── test_parser.py
 │   ├── test_patcher.py
 │   ├── test_pipeline.py
 │   ├── test_pipeline_runner.py
 │   ├── test_pipeline_state.py
+│   ├── test_resolve.py
 │   ├── test_stage_kernel.py
 │   ├── test_stage_packages.py
 │   ├── test_system_conf.py
@@ -347,7 +353,7 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-All modules independently testable. 488 pytest tests (`pytest` from repo root).
+All modules independently testable. 523 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 
@@ -439,6 +445,17 @@ High-level flow:
 **System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
 
 **Makepkg flag passthrough:** `extra_flags` from the CLI (`-m "-sfci"`) are appended after profile `makepkg_flags`. Combined short flags are expanded: `-sfci` → `[-s, -f, -c, -i]`.
+
+### `resolve.py`
+
+Implements `sysforge resolve` — inspect profile matching for a PKGBUILD without building it. Output goes to stdout (same pattern as `manifest.py`).
+
+Public API: `cmd_resolve(args)`. Internal helpers:
+- `_find_pkgbuild(pkg)` — accepts a full file path or bare package name (looks for `<cwd>/<name>/PKGBUILD`); raises `FileNotFoundError` with a message showing both searched paths
+- `_get_profile_chain(profile_name, profiles)` — walks the `extends` chain and returns it root-last; stops on cycle or missing parent
+- `_find_winner(matched_rules)` — returns the highest-priority rule that specifies a `profile` key
+- `_format_conditions(rule)` — compact single-line summary of match conditions, omitting `profile`/`priority`
+- `_print_resolve(...)` — formats and prints the resolve summary: package name, PKGBUILD path, all matched rules with winner marker, profile chain (`→` separated), build mode (if set), consumes, groups; with `--show-flags` expands the full resolved flag set with sysforge-internal keys separated under a comment
 
 ---
 

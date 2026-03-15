@@ -17,6 +17,7 @@ from pathlib import Path
 import sysforge.log as _log
 
 from sysforge.manifest import cmd_manifest
+from sysforge.resolve import cmd_resolve
 
 from sysforge.primitives.makepkg_wrapper import run
 from sysforge.primitives.config import load_config
@@ -96,12 +97,6 @@ def _cmd_converge(args):
     sys.exit(1)
 
 
-def _cmd_resolve(args):
-    # TODO: parse the named package's PKGBUILD (fetched from AUR or a local path),
-    # run rule matching and profile resolution, and print the resolved profile.
-    # --show-flags prints the full resolved flag set.
-    print("[SYSFORGE] 'resolve' is not yet implemented.", file=sys.stderr)
-    sys.exit(1)
 
 
 def _hoist_verbosity_flags(argv):
@@ -362,19 +357,26 @@ def main():
     # resolve
     p_resolve = sub.add_parser(
         "resolve",
-        help="[planned] Show which profile would be applied to a package.",
+        help="Show which profile would be applied to a package and why.",
     )
     p_resolve.add_argument(
         "pkg",
         metavar="PKG",
-        help="Package name or path to PKGBUILD.",
+        help="Path to a PKGBUILD file, or bare package name (looks for <cwd>/<name>/PKGBUILD).",
     )
     p_resolve.add_argument(
         "--show-flags",
         action="store_true",
+        dest="show_flags",
         help="Print the full resolved flag set.",
     )
-    p_resolve.set_defaults(func=_cmd_resolve)
+    p_resolve.add_argument(
+        "--profile-conf",
+        metavar="FILE",
+        dest="profile_conf",
+        help="Path to a flag_profiles.toml to use instead of the default user/system config.",
+    )
+    p_resolve.set_defaults(func=cmd_resolve)
 
     args = parser.parse_args()
     _log.set_verbosity(args.verbose)
