@@ -353,7 +353,7 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-All modules independently testable. 523 pytest tests (`pytest` from repo root).
+All modules independently testable. 524 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 
@@ -371,6 +371,9 @@ TOML config loading and path resolution. Public API:
 - `load_config(config_paths=None)` — loads `flag_profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
 - `load_conflict_groups(paths=None)` — loads `append_conflict_groups.toml`
 - `load_consumes_inference(paths=None)` — loads `consumes_inference.toml`
+- `find_pkgbuild(pkg, config=None)` — resolves a bare package name or path to an absolute PKGBUILD path. Search order: direct path → `<cwd>/<name>/PKGBUILD` → `<config [paths] pkgbuild_dir>/<name>/PKGBUILD`. Used by both `sysforge build` and `sysforge resolve`.
+
+`[paths] pkgbuild_dir` in `flag_profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). When a bare name is given on the CLI, `find_pkgbuild` looks for `<pkgbuild_dir>/<name>/PKGBUILD` as the final fallback before raising `FileNotFoundError`.
 - `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines.
 
 ### `profile.py`

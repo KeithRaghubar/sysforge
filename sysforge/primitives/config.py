@@ -8,6 +8,7 @@ Public API:
     load_config(config_paths=None)         -> dict
     load_conflict_groups(paths=None)       -> dict
     load_consumes_inference(paths=None)    -> dict
+    find_pkgbuild(pkg, config=None)        -> Path
 """
 import os
 import pprint
@@ -34,6 +35,45 @@ CONSUMES_INFERENCE_PATHS = [
 ]
 
 PACKAGES_PATH = CONFIG_BASE / "etc/sysforge/packages.toml"
+
+
+def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
+    """
+    Resolve a PKGBUILD path from a pkg argument.
+
+    Search order:
+    1. pkg is an existing path → use directly.
+    2. <cwd>/<pkg>/PKGBUILD
+    3. <config [paths] pkgbuild_dir>/<pkg>/PKGBUILD  (if configured)
+
+    Raises FileNotFoundError listing all searched paths if nothing is found.
+    """
+    p = Path(pkg)
+    if p.exists():
+        return p.resolve()
+
+    searched: list[Path] = [p]
+
+    cwd_candidate = Path.cwd() / pkg / "PKGBUILD"
+    searched.append(cwd_candidate)
+    if cwd_candidate.exists():
+        return cwd_candidate.resolve()
+
+    if config:
+        raw = config.get("paths", {}).get("pkgbuild_dir")
+        if raw:
+            dir_candidate = Path(raw).expanduser() / pkg / "PKGBUILD"
+            searched.append(dir_candidate)
+            if dir_candidate.exists():
+                return dir_candidate.resolve()
+
+    searched_str = "\n".join(f"    {s}" for s in searched)
+    raise FileNotFoundError(
+        f"PKGBUILD not found for {pkg!r}.\n"
+        f"  Searched:\n{searched_str}\n"
+        f"  Pass a full path, set [paths] pkgbuild_dir in flag_profiles.toml,\n"
+        f"  or cd into the package directory and run: sysforge build/resolve <name>"
+    )
 
 
 def load_config(config_paths=None):

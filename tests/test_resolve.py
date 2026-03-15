@@ -20,8 +20,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from sysforge.primitives.config import find_pkgbuild
 from sysforge.resolve import (
-    _find_pkgbuild,
     _find_winner,
     _format_conditions,
     _get_profile_chain,
@@ -35,12 +35,12 @@ PKGBUILDS_DIR = DATA_DIR / "PKGBUILDs"
 
 
 # ---------------------------------------------------------------------------
-# _find_pkgbuild
+# find_pkgbuild
 # ---------------------------------------------------------------------------
 
 def test_find_pkgbuild_explicit_path():
     path = PKGBUILDS_DIR / "simple.PKGBUILD"
-    result = _find_pkgbuild(str(path))
+    result = find_pkgbuild(str(path))
     assert result == path.resolve()
 
 
@@ -50,21 +50,33 @@ def test_find_pkgbuild_bare_name_via_cwd(tmp_path):
     pb = pkg_dir / "PKGBUILD"
     pb.write_text("pkgname=mypkg\npkgver=1.0\npkgrel=1\narch=('any')\n")
 
-    with patch("sysforge.resolve.Path.cwd", return_value=tmp_path):
-        result = _find_pkgbuild("mypkg")
+    with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path):
+        result = find_pkgbuild("mypkg")
+    assert result == pb.resolve()
+
+
+def test_find_pkgbuild_via_pkgbuild_dir(tmp_path):
+    pkg_dir = tmp_path / "mypkg"
+    pkg_dir.mkdir()
+    pb = pkg_dir / "PKGBUILD"
+    pb.write_text("pkgname=mypkg\npkgver=1.0\npkgrel=1\narch=('any')\n")
+
+    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"):
+        result = find_pkgbuild("mypkg", config)
     assert result == pb.resolve()
 
 
 def test_find_pkgbuild_not_found_raises(tmp_path):
     with pytest.raises(FileNotFoundError, match="nonexistent"):
-        with patch("sysforge.resolve.Path.cwd", return_value=tmp_path):
-            _find_pkgbuild("nonexistent")
+        with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path):
+            find_pkgbuild("nonexistent")
 
 
 def test_find_pkgbuild_error_message_shows_both_searched(tmp_path):
     with pytest.raises(FileNotFoundError) as exc:
-        with patch("sysforge.resolve.Path.cwd", return_value=tmp_path):
-            _find_pkgbuild("mypkg")
+        with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path):
+            find_pkgbuild("mypkg")
     msg = str(exc.value)
     assert "mypkg" in msg
 
@@ -348,7 +360,7 @@ def test_cmd_resolve_show_flags_produces_flag_lines(capsys):
 
 
 def test_cmd_resolve_missing_pkgbuild_exits(tmp_path):
-    with patch("sysforge.resolve.Path.cwd", return_value=tmp_path):
+    with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path):
         with pytest.raises(SystemExit):
             cmd_resolve(_make_args("nonexistent_pkg_xyz"))
 

@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 from sysforge.primitives.config import (
+    find_pkgbuild,
     load_config,
     load_conflict_groups,
     load_consumes_inference,
@@ -560,12 +561,16 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
     emit_system_probes()
 
     try:
+        pkgbuild_path = find_pkgbuild(str(pkgbuild_path), config)
+    except FileNotFoundError as e:
+        print(f"[SYSFORGE] Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)
     except Exception as e:
         handle_failure("pkgbuild_unparseable", str(e), config)
         pkgmeta = {"globals": {}}
-
-    pkgbuild_path = Path(pkgbuild_path).resolve()
 
     # Open per-package log if enabled
     if pkg_log:

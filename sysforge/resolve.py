@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from sysforge.primitives.config import (
+    find_pkgbuild,
     load_config,
     load_conflict_groups,
     load_consumes_inference,
@@ -31,37 +32,6 @@ from sysforge.primitives.profile import (
     resolve_groups,
     resolve_profile,
 )
-
-
-# ---------------------------------------------------------------------------
-# PKGBUILD lookup
-# ---------------------------------------------------------------------------
-
-def _find_pkgbuild(pkg: str) -> Path:
-    """
-    Resolve a PKGBUILD path from the pkg argument.
-
-    - If pkg is an existing file path → use it directly.
-    - If pkg is a bare name → try <cwd>/<name>/PKGBUILD.
-    - Otherwise raise FileNotFoundError with a helpful message.
-    """
-    p = Path(pkg)
-
-    if p.exists():
-        return p.resolve()
-
-    candidate = Path.cwd() / pkg / "PKGBUILD"
-    if candidate.exists():
-        return candidate.resolve()
-
-    raise FileNotFoundError(
-        f"PKGBUILD not found for {pkg!r}.\n"
-        f"  Searched:\n"
-        f"    {p}\n"
-        f"    {candidate}\n"
-        f"  Pass a full path to a PKGBUILD file, or cd into the directory\n"
-        f"  containing the package and run: sysforge resolve <name>"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -179,16 +149,16 @@ def _print_resolve(
 
 def cmd_resolve(args) -> None:
     """Entry point for sysforge resolve."""
-    try:
-        pkgbuild_path = _find_pkgbuild(args.pkg)
-    except FileNotFoundError as e:
-        print(f"[SYSFORGE] Error: {e}", file=sys.stderr)
-        sys.exit(1)
-
     config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
     config = load_config(config_paths=config_paths)
     conflict_groups = load_conflict_groups()
     inference_map = load_consumes_inference()
+
+    try:
+        pkgbuild_path = find_pkgbuild(args.pkg, config)
+    except FileNotFoundError as e:
+        print(f"[SYSFORGE] Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)

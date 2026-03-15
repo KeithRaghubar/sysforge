@@ -2,6 +2,11 @@
 # REFERENCE — all valid keys and accepted values
 # =============================================================================
 #
+# ── [paths] ──────────────────────────────────────────────────────────────────
+#
+#   pkgbuild_dir = "~/src"    # directory searched for PKGBUILDs by bare package name
+#                             # sysforge build/resolve <name> looks for <pkgbuild_dir>/<name>/PKGBUILD
+#
 # ── [defaults] ───────────────────────────────────────────────────────────────
 #
 #   profile = "standard"          # (required) fallback profile when no rule matches
@@ -110,6 +115,9 @@
 # =============================================================================
 # Defaults
 # =============================================================================
+
+[paths]
+pkgbuild_dir = "~/src"
 
 [defaults]
 profile = "standard"

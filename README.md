@@ -279,7 +279,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 5) | ✅ Done |
 | Manifest generator (`sysforge manifest`) | ✅ Done |
-| Pytest suite (523 tests) | ✅ Done |
+| Pytest suite (524 tests) | ✅ Done |
 | Kernel stage (stage 6) | ✅ Done |
 | Configure stage (stage 7) | 🔧 Stub |
 | Stages 1–4 (partition → toolchain) | 🔧 Stub |
