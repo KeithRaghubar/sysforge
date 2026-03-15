@@ -320,7 +320,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     if extra_flags:
         flags += extra_flags
         _log.info("[BUILD]", f"Appending CLI flags: {extra_flags}")
-    cmd = ["makepkg"] + flags
+    cmd = ["makepkg", "-p", pkgbuild_path.name] + flags
 
     _log.info("[BUILD]", f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
 
