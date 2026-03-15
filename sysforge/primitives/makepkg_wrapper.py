@@ -31,6 +31,18 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_pkgbuild_groups,
     write_extracted_profile,
 )
+from sysforge.primitives.cache_probe import (
+    diff_ccache,
+    diff_sccache,
+    emit_build_stats,
+    emit_session_report,
+    emit_system_probes,
+    probe_ccache,
+    probe_sccache,
+    probe_thinlto_cache,
+    record_build_result,
+    reset_session,
+)
 from sysforge.primitives.dep_analysis import run_dep_analysis
 from sysforge.primitives.failure import handle_failure
 import sysforge.log as _log
@@ -382,6 +394,17 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                 _log.info("[BUILD]", "Retrying build...")
 
 
+def _pkgname_from_meta(pkgmeta: dict | None) -> str:
+    """Extract a display name from parsed PKGBUILD metadata."""
+    if pkgmeta is None:
+        return "unknown"
+    globals_ = pkgmeta.get("globals", {})
+    name = globals_.get("pkgbase") or globals_.get("pkgname", "unknown")
+    if isinstance(name, list):
+        name = name[0] if name else "unknown"
+    return name or "unknown"
+
+
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
                active_consumes=None, extracted_profile=None, pkgmeta=None,
                extra_flags=None, interactive=False,
@@ -411,6 +434,22 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     if kernel_build and not interactive:
         patch_noninteractive_kconfig(pkgbuild_path)
 
+    # Probe ThinLTO cache dir (informational, once per build)
+    ldflags = resolved_profile.get("LDFLAGS", "")
+    if ldflags:
+        thinlto = probe_thinlto_cache(ldflags)
+        if thinlto:
+            if thinlto["exists"]:
+                from sysforge.primitives.cache_probe import _fmt_bytes
+                _log.info("[CACHE]", f"ThinLTO cache: {_fmt_bytes(thinlto['size_bytes'])} "
+                          f"in {thinlto['files']} files ({thinlto['path']})")
+            else:
+                _log.info("[CACHE]", f"ThinLTO cache dir configured but not yet created: {thinlto['path']}")
+
+    # Snapshot cache state before build for per-build delta
+    before_cc = probe_ccache()
+    before_sc = probe_sccache()
+
     success = False
     try:
         extra_env = resolve_env_vars(resolved_profile, active_consumes)
@@ -435,6 +474,16 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                                kernel_build=kernel_build) as conf_path:
             _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                extra_env, extra_flags, interactive)
+
+        # Post-build cache delta
+        pkgname = _pkgname_from_meta(pkgmeta)
+        after_cc = probe_ccache()
+        after_sc = probe_sccache()
+        cc_delta = diff_ccache(before_cc, after_cc) if before_cc is not None and after_cc is not None else None
+        sc_delta = diff_sccache(before_sc, after_sc) if before_sc is not None and after_sc is not None else None
+        emit_build_stats(pkgname, cc_delta, sc_delta)
+        record_build_result(pkgname, cc_delta, sc_delta)
+
         success = True
     except RuntimeError:
         raise
@@ -500,11 +549,15 @@ def _get_build_mode(matched_rules, config):
 def run(pkgbuild_path, extra_flags=None, interactive=False,
         pkg_log: bool = True, persist_log: bool = False,
         log_dir=None, profile_conf=None,
-        cc_override=None, cxx_override=None, ld_override=None):
+        cc_override=None, cxx_override=None, ld_override=None,
+        cache_report: bool = False):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     conflict_groups = load_conflict_groups()
     inference_map = load_consumes_inference()
+
+    reset_session()
+    emit_system_probes()
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)
@@ -577,6 +630,9 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
     finally:
         if pkg_log:
             _log.close_pkg_log(success=build_success, persist=persist_log)
+
+    if cache_report:
+        emit_session_report()
 
 
 if __name__ == "__main__":

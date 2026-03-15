@@ -29,6 +29,8 @@ class RunOptions:
     log_dir: Path | None = None      # override log file directory (default: state_dir)
     purge_log: bool = False          # truncate unified log before run
     persist_log: bool = False        # don't clear logs on successful completion
+    # Cache reporting
+    cache_report: bool = False       # print structured cache summary at end of run
 
 
 class Stage:

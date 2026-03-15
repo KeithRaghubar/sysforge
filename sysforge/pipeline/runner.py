@@ -24,6 +24,11 @@ from pathlib import Path
 
 from sysforge.pipeline.state import PipelineState, resolve_state_dir
 from sysforge.pipeline.stages import STAGES, STAGE_NAMES
+from sysforge.primitives.cache_probe import (
+    emit_session_report,
+    emit_system_probes,
+    reset_session,
+)
 
 
 def _validate_stages(stages):
@@ -114,6 +119,10 @@ def run_pipeline(config, options, stages=None):
     state.init_meta()
     state.save()
 
+    # Reset cache session accumulator and emit system-level probes
+    reset_session()
+    emit_system_probes()
+
     # Open unified log
     unified_log_active = not options.no_unified_log and not options.dry_run
     if unified_log_active:
@@ -175,3 +184,6 @@ def run_pipeline(config, options, stages=None):
             _log.close_unified_log(success=pipeline_success, persist=options.persist_log)
             if pipeline_success and not options.persist_log:
                 _log.info("[PIPELINE]", f"Unified log cleared after successful run: {unified_log_path}")
+
+    if options.cache_report:
+        emit_session_report()

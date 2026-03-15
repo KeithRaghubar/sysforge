@@ -1,0 +1,373 @@
+"""
+cache_probe.py — passive cache monitoring for [CACHE] log tag
+
+Probes ccache/sccache stats before and after each build to compute per-build
+hit/miss deltas. Also probes system-level caches (pacman, ld.so) and ThinLTO
+cache directories for informational logging.
+
+Passive: never enables, disables, or clears any cache. Read-only.
+
+Public API:
+    probe_ccache()                      → dict | None
+    probe_sccache()                     → dict | None
+    diff_ccache(before, after)          → dict
+    diff_sccache(before, after)         → dict
+    emit_build_stats(pkgname, cc, sc)   → None
+    probe_pacman_cache(path)            → dict | None
+    probe_ldso_mtime(path)              → str | None
+    probe_thinlto_cache(ldflags)        → dict | None
+    emit_system_probes(ldflags)         → None
+
+    # Session accumulation for --cache-report:
+    reset_session()
+    record_build_result(pkgname, cc_delta, sc_delta)
+    emit_session_report()
+"""
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import sysforge.log as _log
+
+_SESSION_RECORDS: list[dict] = []
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _run_command(cmd: list[str]) -> str | None:
+    """Run a command and return stdout, or None on failure/timeout."""
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return result.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
+
+def _fmt_bytes(n: int | float) -> str:
+    """Format a byte count as a human-readable string."""
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PiB"
+
+
+# ---------------------------------------------------------------------------
+# ccache
+# ---------------------------------------------------------------------------
+
+def probe_ccache() -> dict | None:
+    """
+    Return ccache stats as a dict, or None if ccache is not installed.
+
+    Uses --print-stats --format=tab (ccache >= 4.0, standard on Arch).
+    Keys: direct_hits, preprocessed_hits, misses, files, size_bytes.
+    """
+    if not shutil.which("ccache"):
+        return None
+    out = _run_command(["ccache", "--print-stats", "--format=tab"])
+    if out is None:
+        return None
+    return _parse_ccache_tab(out)
+
+
+def _parse_ccache_tab(text: str) -> dict:
+    """Parse ccache --print-stats --format=tab output."""
+    kv: dict[str, str] = {}
+    for line in text.splitlines():
+        if "\t" in line:
+            k, _, v = line.partition("\t")
+            kv[k.strip()] = v.strip()
+
+    def _int(key: str) -> int:
+        try:
+            return int(kv.get(key, "0"))
+        except ValueError:
+            return 0
+
+    return {
+        "direct_hits": _int("direct_cache_hit"),
+        "preprocessed_hits": _int("preprocessed_cache_hit"),
+        "misses": _int("cache_miss"),
+        "files": _int("files_in_cache"),
+        "size_bytes": _int("cache_size_bytes"),
+    }
+
+
+def diff_ccache(before: dict, after: dict) -> dict:
+    """Return per-build delta between two ccache snapshots."""
+    return {
+        "direct_hits": after["direct_hits"] - before["direct_hits"],
+        "preprocessed_hits": after["preprocessed_hits"] - before["preprocessed_hits"],
+        "misses": after["misses"] - before["misses"],
+        # Post-build totals (not deltas — reflect current cache state)
+        "files": after["files"],
+        "size_bytes": after["size_bytes"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# sccache
+# ---------------------------------------------------------------------------
+
+def probe_sccache() -> dict | None:
+    """
+    Return sccache stats as a dict, or None if sccache is not installed.
+
+    Parses sccache --show-stats text output.
+    Keys: hits, misses, requests, size_str.
+    """
+    if not shutil.which("sccache"):
+        return None
+    out = _run_command(["sccache", "--show-stats"])
+    if out is None:
+        return None
+    return _parse_sccache_text(out)
+
+
+def _parse_sccache_text(text: str) -> dict:
+    """Parse sccache --show-stats text output."""
+    stats = {"hits": 0, "misses": 0, "requests": 0, "size_str": ""}
+    for line in text.splitlines():
+        s = line.strip()
+        # Skip sub-category lines like "Cache hits (C++)"
+        if s.startswith("Cache hits") and "(" not in s:
+            stats["hits"] = _extract_last_int(s)
+        elif s.startswith("Cache misses") and "(" not in s:
+            stats["misses"] = _extract_last_int(s)
+        elif s.startswith("Compile requests") and "executed" not in s:
+            stats["requests"] = _extract_last_int(s)
+        elif s.startswith("Cache size"):
+            parts = s.split()
+            if len(parts) >= 3:
+                stats["size_str"] = parts[-2] + " " + parts[-1]
+    return stats
+
+
+def _extract_last_int(line: str) -> int:
+    """Extract the last integer token from a line."""
+    for part in reversed(line.split()):
+        if part.isdigit():
+            return int(part)
+    return 0
+
+
+def diff_sccache(before: dict, after: dict) -> dict:
+    """Return per-build delta between two sccache snapshots."""
+    return {
+        "hits": after["hits"] - before["hits"],
+        "misses": after["misses"] - before["misses"],
+        "requests": after["requests"] - before["requests"],
+        "size_str": after.get("size_str", ""),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Emit per-build cache stats
+# ---------------------------------------------------------------------------
+
+def emit_build_stats(pkgname: str, cc_delta: dict | None, sc_delta: dict | None) -> None:
+    """Emit [CACHE] INFO lines for a single package build's cache usage."""
+    if cc_delta is not None:
+        hits = cc_delta["direct_hits"] + cc_delta["preprocessed_hits"]
+        misses = cc_delta["misses"]
+        total = hits + misses
+        size = _fmt_bytes(cc_delta["size_bytes"])
+        if total > 0:
+            pct = 100 * hits // total
+            _log.info("[CACHE]", f"{pkgname}: ccache hits={hits} misses={misses} "
+                      f"({pct}% hit rate) cache={size} files={cc_delta['files']}")
+        else:
+            _log.info("[CACHE]", f"{pkgname}: ccache — no compilations recorded "
+                      f"(cache={size} files={cc_delta['files']})")
+
+    if sc_delta is not None:
+        hits = sc_delta["hits"]
+        misses = sc_delta["misses"]
+        total = hits + misses
+        if total > 0:
+            pct = 100 * hits // total
+            _log.info("[CACHE]", f"{pkgname}: sccache hits={hits} misses={misses} "
+                      f"({pct}% hit rate) cache={sc_delta['size_str']}")
+        else:
+            _log.info("[CACHE]", f"{pkgname}: sccache — no compilations recorded "
+                      f"(cache={sc_delta['size_str']})")
+
+
+# ---------------------------------------------------------------------------
+# System-level probes (emit once per run)
+# ---------------------------------------------------------------------------
+
+def probe_pacman_cache(path: str = "/var/cache/pacman/pkg") -> dict | None:
+    """
+    Return pacman cache file count and total size, or None if inaccessible.
+    Only counts *.pkg.tar.* files.
+    """
+    p = Path(path)
+    if not p.is_dir():
+        return None
+    try:
+        files = list(p.glob("*.pkg.tar.*"))
+        total = sum(f.stat().st_size for f in files)
+        return {"count": len(files), "size_bytes": total, "path": str(p)}
+    except PermissionError:
+        return None
+
+
+def probe_ldso_mtime(path: str = "/etc/ld.so.cache") -> str | None:
+    """Return the mtime of ld.so.cache as a formatted string, or None if missing."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        mtime = p.stat().st_mtime
+        return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        return None
+
+
+def probe_thinlto_cache(ldflags: str) -> dict | None:
+    """
+    Extract --thinlto-cache-dir=PATH from an LDFLAGS string and report its size.
+
+    Handles both bare tokens (--thinlto-cache-dir=PATH) and -Wl,--thinlto-cache-dir=PATH.
+    Returns None if not configured. Returns dict with exists=False if configured but not
+    yet created (first build).
+    """
+    cache_dir = None
+    for token in ldflags.split():
+        inner = token[4:] if token.startswith("-Wl,") else token
+        for sub in inner.split(","):
+            if sub.startswith("--thinlto-cache-dir="):
+                cache_dir = sub[len("--thinlto-cache-dir="):]
+                break
+        if cache_dir:
+            break
+
+    if not cache_dir:
+        return None
+
+    p = Path(cache_dir)
+    if not p.is_dir():
+        return {"path": cache_dir, "exists": False, "size_bytes": 0, "files": 0}
+
+    try:
+        all_files = [f for f in p.rglob("*") if f.is_file()]
+        total = sum(f.stat().st_size for f in all_files)
+        return {"path": cache_dir, "exists": True, "size_bytes": total, "files": len(all_files)}
+    except OSError:
+        return {"path": cache_dir, "exists": True, "size_bytes": 0, "files": 0}
+
+
+def emit_system_probes(ldflags: str = "") -> None:
+    """
+    Emit [CACHE] INFO lines for system-level caches.
+    Call once per run before builds start.
+    """
+    mtime = probe_ldso_mtime()
+    if mtime:
+        _log.info("[CACHE]", f"ld.so.cache mtime: {mtime}")
+
+    pacman = probe_pacman_cache()
+    if pacman:
+        _log.info("[CACHE]", f"pacman cache: {pacman['count']} packages, "
+                  f"{_fmt_bytes(pacman['size_bytes'])} ({pacman['path']})")
+
+    if ldflags:
+        thinlto = probe_thinlto_cache(ldflags)
+        if thinlto:
+            if thinlto["exists"]:
+                _log.info("[CACHE]", f"ThinLTO cache: {_fmt_bytes(thinlto['size_bytes'])} "
+                          f"in {thinlto['files']} files ({thinlto['path']})")
+            else:
+                _log.info("[CACHE]", f"ThinLTO cache dir configured but not yet created: {thinlto['path']}")
+
+
+# ---------------------------------------------------------------------------
+# Session accumulation for --cache-report
+# ---------------------------------------------------------------------------
+
+def reset_session() -> None:
+    """Clear accumulated build records. Call at start of a new run."""
+    _SESSION_RECORDS.clear()
+
+
+def record_build_result(pkgname: str, cc_delta: dict | None, sc_delta: dict | None) -> None:
+    """Accumulate per-build cache stats for the end-of-run report."""
+    _SESSION_RECORDS.append({
+        "pkgname": pkgname,
+        "ccache": cc_delta,
+        "sccache": sc_delta,
+    })
+
+
+def emit_session_report() -> None:
+    """
+    Print a structured cache summary to stderr.
+    Always shown regardless of verbosity level.
+    Called at end of run when --cache-report is set.
+    """
+    divider = "[SYSFORGE][CACHE] " + "─" * 46
+    print(divider, file=sys.stderr)
+    print("[SYSFORGE][CACHE] Cache Report", file=sys.stderr)
+    print(divider, file=sys.stderr)
+
+    if not _SESSION_RECORDS:
+        print("[SYSFORGE][CACHE]   No cache data recorded.", file=sys.stderr)
+        print(divider, file=sys.stderr)
+        return
+
+    total_cc_hits = total_cc_misses = 0
+    total_sc_hits = total_sc_misses = 0
+    has_cc = has_sc = False
+
+    for rec in _SESSION_RECORDS:
+        pkgname = rec["pkgname"]
+        cc = rec["ccache"]
+        sc = rec["sccache"]
+
+        if cc is not None:
+            has_cc = True
+            hits = cc["direct_hits"] + cc["preprocessed_hits"]
+            misses = cc["misses"]
+            total_cc_hits += hits
+            total_cc_misses += misses
+            total = hits + misses
+            pct = f"{100 * hits // total}%" if total > 0 else "n/a"
+            size = _fmt_bytes(cc["size_bytes"])
+            print(f"[SYSFORGE][CACHE]   {pkgname}: ccache {hits}/{hits + misses} hits ({pct}) cache={size}",
+                  file=sys.stderr)
+
+        if sc is not None:
+            has_sc = True
+            hits = sc["hits"]
+            misses = sc["misses"]
+            total_sc_hits += hits
+            total_sc_misses += misses
+            total = hits + misses
+            pct = f"{100 * hits // total}%" if total > 0 else "n/a"
+            print(f"[SYSFORGE][CACHE]   {pkgname}: sccache {hits}/{hits + misses} hits ({pct}) cache={sc['size_str']}",
+                  file=sys.stderr)
+
+    print(divider, file=sys.stderr)
+
+    if has_cc:
+        total = total_cc_hits + total_cc_misses
+        pct = f"{100 * total_cc_hits // total}%" if total > 0 else "n/a"
+        print(f"[SYSFORGE][CACHE]   ccache total: {total_cc_hits}/{total} hits ({pct})", file=sys.stderr)
+
+    if has_sc:
+        total = total_sc_hits + total_sc_misses
+        pct = f"{100 * total_sc_hits // total}%" if total > 0 else "n/a"
+        print(f"[SYSFORGE][CACHE]   sccache total: {total_sc_hits}/{total} hits ({pct})", file=sys.stderr)
+
+    if not has_cc and not has_sc:
+        print("[SYSFORGE][CACHE]   ccache and sccache not installed.", file=sys.stderr)
+
+    print(divider, file=sys.stderr)

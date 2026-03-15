@@ -7,7 +7,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 - Language: Python
 - Config format: TOML
-- Test suite: 362 pytest tests
+- Test suite: 398 pytest tests
 
 ## Dev Environment
 
@@ -37,13 +37,17 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 - **CLI flags on `install`**: `--no-unified-log`, `--no-pkg-logs`, `--log-dir`, `--purge-log`, `--persist-log`
 - **CLI flags on `build`**: `--persist-log`, `--no-pkg-log`, `--log-dir`
 
+## Implemented: Cache Monitoring
+
+- **`[CACHE]` tag** — per-build ccache/sccache hit/miss delta at `[INFO]` level; system probes (ld.so mtime, pacman cache size, ThinLTO cache size) once per run
+- **`--cache-report` flag** — on both `build` and `install`; prints structured summary to stderr at end of run (always shown, bypasses verbosity gating)
+- Module: `sysforge/primitives/cache_probe.py`
+
 ## Pending Work (Queued)
 
 ### Unimplemented features
 
 - **`[FLAG]` tag** — ~~conflict group resolution and prefix-match token replacement logging~~ **done**. Remaining gap: `apply_patch_pkgbuild` (uses `[PATCH]` — intentional).
-- **`[CACHE]` tag** — ccache/sccache passive monitoring, ThinLTO, CMake/Meson build dirs, ld.so cache mtime, pacman cache
-- **`--cache-report` flag** — structured end-of-run summary
 
 ## Interaction Preferences
 

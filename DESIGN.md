@@ -693,7 +693,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 | `[PIPELINE]` | Stage sequencing, checkpoint events |
 | `[MANIFEST]` | Manifest generation |
 | `[FLAG]` | CLI toolchain overrides (--cc/--cxx/--ld), linker guard: stripped lld-specific flags when declared linker not on PATH |
-| `[CACHE]` | *(deferred)* ccache/sccache passive monitoring, cache dir reporting |
+| `[CACHE]` | ccache/sccache passive monitoring (per-build hit/miss delta, system probes) |
 
 ---
 
@@ -734,7 +734,14 @@ sccache wraps Rust via `RUSTC_WRAPPER=sccache` (env pass). `CARGO_INCREMENTAL=0`
 
 ### Cache reporting
 
-`[CACHE]` log tag and `--cache-report` CLI flag are designed but not yet implemented. When implemented, `[CACHE]` will emit passive monitoring lines covering: ccache/sccache hit rates, ThinLTO cache dir, CMake/Meson build dirs, makepkg SRCDEST git cache, ld.so cache mtime, and pacman package cache size. `--cache-report` will print a structured summary at end of run.
+`[CACHE]` log tag emits passive monitoring lines at `[INFO]` level (visible at `-vv`):
+
+- **Per-build:** ccache and sccache hit/miss deltas, bracketing each `makepkg` invocation. Hit rate % shown when compilations occur; "no compilations recorded" if delta is zero.
+- **System probes (once per run):** ld.so cache mtime, pacman cache file count + size, ThinLTO cache dir size (extracted from `--thinlto-cache-dir=` in profile LDFLAGS).
+
+`--cache-report` on both `build` and `install` subcommands prints a structured per-package and totals summary to stderr at end of run, regardless of verbosity. This is the only user-visible output that ignores verbosity gating.
+
+Cache probe uses `ccache --print-stats --format=tab` (ccache ≥ 4.0, standard on Arch) and `sccache --show-stats`. Both are skipped if the binary is absent.
 
 ### Toolchain fingerprint tracking
 

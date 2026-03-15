@@ -56,7 +56,8 @@ def _cmd_build(args):
             profile_conf=args.profile_conf,
             cc_override=args.cc,
             cxx_override=args.cxx,
-            ld_override=args.ld)
+            ld_override=args.ld,
+            cache_report=args.cache_report)
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -81,6 +82,7 @@ def _cmd_install(args):
         log_dir=Path(args.log_dir) if args.log_dir else None,
         purge_log=args.purge_log,
         persist_log=args.persist_log,
+        cache_report=args.cache_report,
     )
 
     run_pipeline(config, options)
@@ -229,6 +231,12 @@ def main():
         dest="ld",
         help="Override linker for this build. Injects -fuse-ld=LINKER into LDFLAGS, e.g. --ld lld.",
     )
+    p_build.add_argument(
+        "--cache-report",
+        action="store_true",
+        dest="cache_report",
+        help="Print a structured cache summary (ccache/sccache hit rates) after the build.",
+    )
     p_build.set_defaults(func=_cmd_build)
 
     # install
@@ -312,6 +320,12 @@ def main():
         metavar="FILE",
         dest="profile_conf",
         help="Path to a flag_profiles.toml to use instead of the default user/system config.",
+    )
+    p_install.add_argument(
+        "--cache-report",
+        action="store_true",
+        dest="cache_report",
+        help="Print a structured cache summary (ccache/sccache hit rates) after the pipeline completes.",
     )
     p_install.set_defaults(func=_cmd_install)
 
