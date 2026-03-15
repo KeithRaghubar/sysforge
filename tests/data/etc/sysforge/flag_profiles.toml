@@ -12,9 +12,7 @@
 #   extends = "bare"              # (optional) parent profile — inherits all parent keys;
 #                                 #   child keys override, [profiles.NAME.append] merges
 #
-#   # Compiler / linker  (CC/CXX injected via subprocess env; all others via temp makepkg.conf)
-#   # makepkg does not export CC/CXX from the conf to child processes — SysForge
-#   # handles this automatically; just set them here as normal profile keys.
+#   # Compiler / linker  (delivered via temp makepkg.conf)
 #   CC       = "clang"
 #   CXX      = "clang++"
 #   AR       = "llvm-ar"
@@ -126,6 +124,12 @@ append_groups = ["sf-build"]
 
 [profiles.standard]
 extends = "bare"
+CC       = "clang"
+CXX      = "clang++"
+AR       = "llvm-ar"
+NM       = "llvm-nm"
+RANLIB   = "llvm-ranlib"
+STRIP    = "llvm-strip"
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
@@ -141,9 +145,9 @@ extends = "optimized"
 build_mode = "pgo_llvm_toolchain"
 pgo_store = "/var/tmp"
 
-[profiles.cosmic]
+[profiles.patched]
 extends = "optimized"
-build_mode = "patch_linker"
+build_mode = "patch_pkgbuild"
 
 [profiles.batch]
 extends = "standard"
@@ -165,8 +169,14 @@ profile = "optimized"
 priority = 0
 
 [[rules]]
-groups = ["cosmic-*"]
-profile = "cosmic"
+groups = ["modified"]
+profile = "patched"
+priority = 10
+append_groups = ["just-testing-stuff"]
+
+[[rules]]
+pkgnames = ["cosmic-*"]
+profile = "patched"
 priority = 10
 append_groups = ["cosmic-patched"]
 
