@@ -96,7 +96,8 @@ sysforge/
 │       ├── pkgbuild_patcher.py        # PKGBUILD mutation + flag extraction
 │       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
 │       ├── dep_analysis.py            # pre-build soname dependency checks
-│       └── failure.py                 # failure scenario handling (shared)
+│       ├── failure.py                 # failure scenario handling (shared)
+│       └── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
 │   └── pipeline/
 │       ├── __init__.py
 │       ├── runner.py                  # stage sequencing, checkpoint/resume
@@ -346,7 +347,7 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-All modules independently testable. 348 pytest tests (`pytest` from repo root).
+All modules independently testable. 488 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 
