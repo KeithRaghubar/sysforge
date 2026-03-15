@@ -189,23 +189,20 @@ def test_load_hardware_kconfig_ignores_non_kconfig_keys(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_load_kernel_config_missing_returns_none(tmp_path):
-    result = _load_kernel_config({"kernel_file": str(tmp_path / "nonexistent.toml")})
+    import sysforge.pipeline.stages.kernel as _km
+    with patch.object(_km, "KERNEL_PATH", tmp_path / "nonexistent.toml"):
+        result = _load_kernel_config()
     assert result is None
 
 def test_load_kernel_config_returns_dict(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     p = make_kernel_toml(tmp_path, builds)
-    result = _load_kernel_config({"kernel_file": str(p)})
+    with patch.object(_km, "KERNEL_PATH", p):
+        result = _load_kernel_config()
     assert result["pkgname"] == "linux-git"
     assert result["bootloader"] == "systemd-boot"
-
-def test_load_kernel_config_uses_kernel_file_key(tmp_path):
-    builds = tmp_path / "builds"
-    make_pkgbuild(builds, "linux-lts")
-    p = make_kernel_toml(tmp_path, builds, pkgname="linux-lts")
-    result = _load_kernel_config({"kernel_file": str(p)})
-    assert result["pkgname"] == "linux-lts"
 
 
 # ---------------------------------------------------------------------------
@@ -389,130 +386,140 @@ def test_write_kconfig_fragment_file_has_header(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_kernel_stage_noop_when_no_kernel_toml(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
     state = PipelineState(tmp_path / "state")
-    config = {"kernel_file": str(tmp_path / "nonexistent.toml")}
 
-    with patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+    with patch.object(_km, "KERNEL_PATH", tmp_path / "nonexistent.toml"), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
-        KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
         mock_build.assert_not_called()
         mock_sub.assert_not_called()
 
 def test_kernel_stage_dry_run_calls_nothing(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
-    config = {"kernel_file": str(p)}
 
-    with patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
-        KernelStage().run(config, state, make_options(dry_run=True, state_dir=tmp_path / "state"))
+        KernelStage().run({}, state, make_options(dry_run=True, state_dir=tmp_path / "state"))
         mock_build.assert_not_called()
         mock_sub.assert_not_called()
 
 def test_kernel_stage_calls_makepkg(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
-    config = {"kernel_file": str(p)}
 
-    with patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
-        KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
 
     mock_build.assert_called_once()
     called_path = mock_build.call_args[0][0]
     assert "linux-git" in str(called_path)
 
 def test_kernel_stage_runs_mkinitcpio(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
-    config = {"kernel_file": str(p)}
 
-    with patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
-        KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
 
     cmds = [c.args[0] for c in mock_sub.call_args_list]
     assert any("mkinitcpio" in str(c) for c in cmds)
 
 def test_kernel_stage_runs_bootctl_by_default(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     p = make_kernel_toml(tmp_path, builds, bootloader="systemd-boot")
     state = PipelineState(tmp_path / "state")
-    config = {"kernel_file": str(p)}
 
-    with patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
-        KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
 
     cmds = [c.args[0] for c in mock_sub.call_args_list]
     assert any("bootctl" in str(c) for c in cmds)
 
 def test_kernel_stage_runs_grub_when_configured(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     p = make_kernel_toml(tmp_path, builds, bootloader="grub")
     state = PipelineState(tmp_path / "state")
-    config = {"kernel_file": str(p)}
 
-    with patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
-        KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
 
     cmds = [c.args[0] for c in mock_sub.call_args_list]
     assert any("grub-mkconfig" in str(c) for c in cmds)
 
 def test_kernel_stage_skips_bootloader_when_none(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     p = make_kernel_toml(tmp_path, builds, bootloader="none")
     state = PipelineState(tmp_path / "state")
-    config = {"kernel_file": str(p)}
 
-    with patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
-        KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
 
     cmds = [c.args[0] for c in mock_sub.call_args_list]
     assert not any("bootctl" in str(c) or "grub" in str(c) for c in cmds)
 
 def test_kernel_stage_mkinitcpio_failure_raises(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
-    config = {"kernel_file": str(p)}
 
     def fail_mkinitcpio(cmd, **kwargs):
         if "mkinitcpio" in cmd:
             return MagicMock(returncode=1, stdout="")
         return MagicMock(returncode=0, stdout="")
 
-    with patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run", side_effect=fail_mkinitcpio):
         with pytest.raises(RuntimeError, match="mkinitcpio"):
-            KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+            KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
 
 def test_kernel_stage_writes_kconfig_fragment_when_hw_profile_present(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     hw = make_hardware_profile(tmp_path, kconfig={"CONFIG_MZEN3": "y"})
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
-    config = {"kernel_file": str(p), "hardware_profile": str(hw)}
+    config = {"hardware_profile": str(hw)}
 
-    with patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))

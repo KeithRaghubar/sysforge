@@ -3,16 +3,13 @@ stages/kernel.py — stage 6: kernel build
 
 Builds a custom kernel from a PKGBUILD and runs post-install steps.
 
-kernel.toml search order:
-  1. config["kernel_file"]  (from --kernel-file CLI flag, not yet wired)
-  2. /etc/sysforge/kernel.toml
+kernel.toml is loaded from /etc/sysforge/kernel.toml.
 
 If kernel.toml is absent the stage exits cleanly — systems using a stock
 kernel (installed via packages stage) skip this without needing --start-from.
 
 kernel.toml structure:
   pkgname      = "linux-custom"
-  source       = "git"             # aur | git
   pkgbuild_dir = "~/builds"        # dir containing <srcdir>/PKGBUILD
   srcdir       = "linux"           # source dir name if different from pkgname (optional)
   bootloader   = "systemd-boot"    # systemd-boot | grub | none
@@ -59,16 +56,12 @@ KERNEL_PATH = CONFIG_BASE / "etc/sysforge/kernel.toml"
 # kernel.toml loading
 # ---------------------------------------------------------------------------
 
-def _load_kernel_config(config):
+def _load_kernel_config():
     """
     Load kernel.toml. Returns the parsed dict, or None if the file does not
     exist (making the stage a no-op).
     """
-    path = config.get("kernel_file")
-    if path:
-        path = Path(path)
-    else:
-        path = KERNEL_PATH
+    path = KERNEL_PATH
 
     if not path.exists():
         _log.info("[KERNEL]", f"No kernel.toml found at {path} — stage is a no-op")
@@ -326,7 +319,7 @@ class KernelStage(Stage):
     depends_on = ["packages"]
 
     def run(self, config, state, options):
-        kernel_cfg = _load_kernel_config(config)
+        kernel_cfg = _load_kernel_config()
         if kernel_cfg is None:
             return  # no kernel.toml — clean no-op
 
