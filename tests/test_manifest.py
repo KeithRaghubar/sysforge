@@ -10,7 +10,8 @@ from contextlib import redirect_stdout, redirect_stderr
 
 import pytest
 
-from sysforge.manifest import generate_manifest, _classify, _toml_entry
+from unittest.mock import patch
+from sysforge.manifest import generate_manifest, _classify, _toml_entry, _make_aur_fn
 
 
 # ---------------------------------------------------------------------------
@@ -118,14 +119,41 @@ def test_manifest_unknown_warning_to_stderr():
     assert "not found" in err
     assert "totally-unknown" in err
 
-def test_manifest_aur_stub_note_to_stderr():
+def test_manifest_aur_packages_logged():
     def aur_finds_it(name):
         return name  # pretend AUR found it
 
     _, _, err = captured_manifest(
         ["mesa-git"], pacman_fn=lambda n: False, aur_fn=aur_finds_it
     )
-    assert "stubbed" in err.lower() or "verify manually" in err.lower()
+    # AUR packages are logged at INFO level (visible in tests at verbosity 2)
+    assert "aur" in err.lower()
+
+
+def test_make_aur_fn_returns_name_if_found():
+    with patch("sysforge.manifest.aur_info", return_value={"mesa-git": {"Name": "mesa-git"}}):
+        fn = _make_aur_fn(["mesa-git", "nonexistent"])
+    assert fn("mesa-git") == "mesa-git"
+    assert fn("nonexistent") is None
+
+
+def test_make_aur_fn_empty_on_network_error():
+    with patch("sysforge.manifest.aur_info", return_value={}):
+        fn = _make_aur_fn(["mesa-git"])
+    assert fn("mesa-git") is None
+
+
+def test_generate_manifest_uses_real_aur_fn():
+    """generate_manifest with aur_fn=None calls aur_info once for all names."""
+    aur_results = {"mesa-git": {"Name": "mesa-git"}}
+    with patch("sysforge.manifest.aur_info", return_value=aur_results) as mock_aur:
+        result, _, _ = captured_manifest(
+            ["htop", "mesa-git"], pacman_fn=mock_pacman, aur_fn=None
+        )
+    # aur_info should have been called once (batch), not per-package
+    mock_aur.assert_called_once()
+    assert 'name = "mesa-git"' in result
+    assert 'source = "aur"' in result
 
 def test_manifest_empty_result_when_all_unknown():
     result, _, _ = captured_manifest(["fake1", "fake2"])

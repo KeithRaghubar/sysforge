@@ -98,7 +98,8 @@ sysforge/
 │       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
 │       ├── dep_analysis.py            # pre-build soname dependency checks
 │       ├── failure.py                 # failure scenario handling (shared)
-│       └── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
+│       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
+│       └── aur.py                     # AUR RPC v5 batch query + git clone helper
 │   └── pipeline/
 │       ├── __init__.py
 │       ├── runner.py                  # stage sequencing, checkpoint/resume
@@ -132,6 +133,7 @@ sysforge/
 │   ├── test_consumes.py
 │   ├── test_dep_analysis.py
 │   ├── test_env_pass.py
+│   ├── test_aur.py
 │   ├── test_cache_probe.py
 │   ├── test_cli.py
 │   ├── test_failure.py
@@ -204,7 +206,7 @@ cache = false   # PGO build — instrumented objects must never be cached
 
 ### Manifest generation
 
-`sysforge manifest` generates a `packages.toml` stub from a list of package names, classifying each as `repo` or `aur` by querying pacman sync DBs. AUR RPC lookup is currently stubbed — packages not found in repos are excluded with a warning.
+`sysforge manifest` generates a `packages.toml` stub from a list of package names. Classification: repo packages detected via `pacman -Si`; remaining names confirmed via AUR RPC v5 batch query (`aur.py`); anything not found in either is excluded with a warning.
 
 ```bash
 sysforge manifest htop neovim mold > packages.toml
@@ -353,7 +355,7 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-All modules independently testable. 524 pytest tests (`pytest` from repo root).
+All modules independently testable. 540 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 
@@ -448,6 +450,13 @@ High-level flow:
 **System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
 
 **Makepkg flag passthrough:** `extra_flags` from the CLI (`-m "-sfci"`) are appended after profile `makepkg_flags`. Combined short flags are expanded: `-sfci` → `[-s, -f, -c, -i]`.
+
+### `aur.py`
+
+AUR RPC queries and git clone helper. No system dependencies beyond Python stdlib (`urllib`, `json`) and `git`.
+
+- `aur_info(names)` — single batch `GET https://aur.archlinux.org/rpc/v5/info?arg[]=…` for all names; returns `{name: result_dict}`. Silent on network/JSON errors (returns `{}`). Used by `manifest.py` for classification and by `config.find_pkgbuild` to gate auto-clone.
+- `aur_clone(name, dest)` — `git clone https://aur.archlinux.org/<name>.git <dest>`; raises `RuntimeError` on failure.
 
 ### `resolve.py`
 
@@ -819,7 +828,7 @@ Not yet implemented.
 
 Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
 
-**AUR RPC lookup stubbed.** `_stub_aur_fn` in `manifest.py` always returns `None`. Packages not found in pacman sync DBs are excluded from manifest output with a warning rather than being classified as `aur`. The hook exists — it just needs a real AUR RPC implementation.
+**AUR auto-clone in install pipeline not implemented.** `sysforge build`/`sysforge resolve` auto-clone from AUR via `find_pkgbuild`. The install pipeline's `packages.py` still uses `_pkgbuild_path` which requires PKGBUILDs to be pre-cloned in `packages.toml [build] pkgbuild_dir`. Wiring `find_pkgbuild` into the pipeline is a future task.
 
 **`[env_precedence]` config table — design cancelled.** The original design proposed a priority stack (wrapper profile = 100, makepkg.conf = 80, shell passthrough = 20, PKGBUILD export = 10) and an `[env_precedence]` TOML table to configure it. This design is superseded. The current model is simpler and more predictable: build tool vars (`CC`, `CFLAGS`, `LDFLAGS`, etc.) are stripped from the inherited shell env in `invoke_makepkg` before makepkg runs — the temp conf is the sole authority for all makepkg-managed keys. Shell env bleed-through is not a configurable priority; it is prevented entirely. SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are exempt — they are SysForge's own interface, not build tool vars, and are not stripped. The `[env_precedence]` table will not be implemented.
 

@@ -81,6 +81,45 @@ def test_find_pkgbuild_error_message_shows_both_searched(tmp_path):
     assert "mypkg" in msg
 
 
+def test_find_pkgbuild_aur_clone_on_miss(tmp_path):
+    """When package is on AUR and pkgbuild_dir is configured, it gets cloned."""
+    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    clone_dest = tmp_path / "mypkg"
+
+    def fake_clone(name, dest):
+        dest.mkdir()
+        (dest / "PKGBUILD").write_text("pkgname=mypkg\npkgver=1.0\npkgrel=1\narch=('any')\n")
+
+    with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"):
+        with patch("sysforge.primitives.aur.aur_info", return_value={"mypkg": {}}):
+            with patch("sysforge.primitives.aur.aur_clone", side_effect=fake_clone):
+                result = find_pkgbuild("mypkg", config)
+
+    assert result == (clone_dest / "PKGBUILD").resolve()
+
+
+def test_find_pkgbuild_not_on_aur_raises(tmp_path):
+    """When package is not on AUR and not found locally, raises FileNotFoundError."""
+    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+
+    with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"):
+        with patch("sysforge.primitives.aur.aur_info", return_value={}):
+            with pytest.raises(FileNotFoundError, match="mypkg"):
+                find_pkgbuild("mypkg", config)
+
+
+def test_find_pkgbuild_aur_clone_failure_raises(tmp_path):
+    """RuntimeError from aur_clone propagates out of find_pkgbuild."""
+    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+
+    with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"):
+        with patch("sysforge.primitives.aur.aur_info", return_value={"mypkg": {}}):
+            with patch("sysforge.primitives.aur.aur_clone",
+                       side_effect=RuntimeError("git clone failed")):
+                with pytest.raises(RuntimeError, match="git clone failed"):
+                    find_pkgbuild("mypkg", config)
+
+
 # ---------------------------------------------------------------------------
 # _get_profile_chain
 # ---------------------------------------------------------------------------

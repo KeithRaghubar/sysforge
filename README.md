@@ -168,7 +168,7 @@ sysforge manifest --file my-packages.txt > packages.toml
 sysforge manifest htop --file extras.txt > packages.toml
 ```
 
-Packages found in pacman sync DBs are marked `source = "repo"`. AUR lookup is currently stubbed — unknown packages are excluded with a warning.
+Packages found in pacman sync DBs are marked `source = "repo"`. Others are confirmed via AUR RPC v5 batch query and marked `source = "aur"`. Packages not found anywhere are excluded with a warning.
 
 ### Build a single package
 
@@ -279,7 +279,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 5) | ✅ Done |
 | Manifest generator (`sysforge manifest`) | ✅ Done |
-| Pytest suite (524 tests) | ✅ Done |
+| Pytest suite (540 tests) | ✅ Done |
 | Kernel stage (stage 6) | ✅ Done |
 | Configure stage (stage 7) | 🔧 Stub |
 | Stages 1–4 (partition → toolchain) | 🔧 Stub |
