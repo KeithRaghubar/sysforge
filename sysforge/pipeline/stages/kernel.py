@@ -354,7 +354,6 @@ class KernelStage(Stage):
                 pkgbuild,
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
-                noninteractive_kconfig=True,
             )
 
         # Post-install

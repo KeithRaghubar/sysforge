@@ -36,6 +36,7 @@ from sysforge.primitives.failure import handle_failure
 import sysforge.log as _log
 from sysforge.primitives.profile import (
     _CONF_KEY_MAP,
+    _KERNEL_CLEAN_KEYS,
     _SYSFORGE_KEYS,
     match_rules,
     resolve_consumes,
@@ -111,7 +112,8 @@ def _strip_lld_flags(ldflags_val):
 @contextlib.contextmanager
 def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       system_conf_path=None,
-                      cc_override=None, cxx_override=None, ld_override=None):
+                      cc_override=None, cxx_override=None, ld_override=None,
+                      kernel_build: bool = False):
     """
     Write a complete, self-contained temp makepkg.conf by merging:
       1. All keys from /etc/makepkg.conf (system baseline)
@@ -128,6 +130,10 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     Linker guard: determines the effective linker from LDFLAGS. If no -fuse-ld=X
     is declared, the effective linker is the system default (bfd). lld-specific
     flags are stripped whenever the effective linker is not lld.
+
+    kernel_build: when True, _KERNEL_CLEAN_KEYS (CFLAGS, CXXFLAGS, LDFLAGS,
+    CPPFLAGS, DEBUG_*) are excluded from profile overrides and ld_override is
+    ignored. System conf values for those keys pass through verbatim.
     """
     env_keys = _CONF_KEY_MAP.get("env", set())
 
@@ -141,7 +147,8 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             if conf_type in _CONF_KEY_MAP:
                 allowed_keys.update(_CONF_KEY_MAP[conf_type])
 
-    # Profile keys to write: filter out internal, env-pass, and out-of-consumes keys
+    # Profile keys to write: filter out internal, env-pass, out-of-consumes,
+    # and (for kernel builds) compiler flag keys.
     profile_overrides = {}
     for key, val in resolved_profile.items():
         if key in _SYSFORGE_KEYS:
@@ -150,7 +157,13 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             continue
         if allowed_keys is not None and key not in allowed_keys:
             continue
+        if kernel_build and key in _KERNEL_CLEAN_KEYS:
+            continue
         profile_overrides[key] = val
+
+    if kernel_build:
+        _log.info("[KERNEL]", "Kernel build: omitting profile flag keys from makepkg.conf "
+                  "(CFLAGS/CXXFLAGS/LDFLAGS/CPPFLAGS/DEBUG_*); system conf values preserved")
 
     # Load system conf baseline
     system_assignments = parse_system_makepkg_conf(system_conf_path)
@@ -163,8 +176,11 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         profile_overrides["CXX"] = cxx_override
         _log.info("[FLAG]", f"CXX overridden via --cxx: {cxx_override}")
     if ld_override is not None:
-        current_ldflags = profile_overrides.get("LDFLAGS", "")
-        profile_overrides["LDFLAGS"] = _inject_linker(current_ldflags, ld_override)
+        if kernel_build:
+            _log.info("[KERNEL]", f"--ld={ld_override!r} ignored for kernel build (use LLVM=1 for lld)")
+        else:
+            current_ldflags = profile_overrides.get("LDFLAGS", "")
+            profile_overrides["LDFLAGS"] = _inject_linker(current_ldflags, ld_override)
 
     # Linker guard: determine the effective linker. If no -fuse-ld=X is declared,
     # the effective linker is the system default (bfd). Strip lld-specific flags
@@ -370,34 +386,53 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                active_consumes=None, extracted_profile=None, pkgmeta=None,
                extra_flags=None, interactive=False,
                cc_override=None, cxx_override=None, ld_override=None,
-               noninteractive_kconfig=False):
+               kernel_build: bool = False):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
-    If extracted_profile is provided (patch_pkgbuild mode), applies the
-    patched PKGBUILD instead of the original. Cleans up patch artifacts on
+    If extracted_profile is provided (patch_pkgbuild or kernel mode), applies
+    the patched PKGBUILD instead of the original. Cleans up patch artifacts on
     success; leaves them in place on failure for diagnosis.
 
-    If noninteractive_kconfig is True, interactive kconfig targets
-    (oldconfig, nconfig, menuconfig, xconfig, gconfig) are replaced with
-    `make olddefconfig` in the patched PKGBUILD before the build runs.
+    kernel_build: enables kernel-specific behaviour —
+      - Interactive kconfig targets are replaced with olddefconfig unless
+        interactive=True, in which case the PKGBUILD runs as-is.
+      - Compiler flag keys (CFLAGS/CXXFLAGS/LDFLAGS/etc.) are stripped from
+        the emitted makepkg.conf; system conf values pass through verbatim.
+      - If the effective CC resolves to clang, LLVM=1 and LLVM_IAS=1 are
+        injected into the build environment.
     """
     if extracted_profile is not None:
-        # patch_pkgbuild mode: use patched copy with flags stripped
+        # patch_pkgbuild / kernel mode: use patched copy with flags stripped
         pkgbuild_path = apply_patch_pkgbuild(pkgbuild_path, pkgmeta or {"globals": {}})
     else:
         pkgbuild_path = patch_pkgbuild_groups(pkgbuild_path, groups)
 
-    if noninteractive_kconfig:
+    if kernel_build and not interactive:
         patch_noninteractive_kconfig(pkgbuild_path)
 
     success = False
     try:
         extra_env = resolve_env_vars(resolved_profile, active_consumes)
+
+        if kernel_build:
+            effective_cc = (
+                cc_override
+                or resolved_profile.get("CC")
+                or os.environ.get("CC", "")
+            )
+            compiler_name = Path(effective_cc).name if effective_cc else ""
+            if compiler_name.startswith("clang"):
+                extra_env.update({"LLVM": "1", "LLVM_IAS": "1"})
+                _log.info("[KERNEL]", f"Detected clang ({effective_cc!r}): injecting LLVM=1 LLVM_IAS=1")
+            else:
+                _log.info("[KERNEL]", f"Non-clang toolchain ({effective_cc!r} → 'gcc'): GCC kernel build")
+
         with emit_makepkg_conf(resolved_profile, active_consumes,
                                cc_override=cc_override,
                                cxx_override=cxx_override,
-                               ld_override=ld_override) as conf_path:
+                               ld_override=ld_override,
+                               kernel_build=kernel_build) as conf_path:
             _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                extra_env, extra_flags, interactive)
         success = True
@@ -465,8 +500,7 @@ def _get_build_mode(matched_rules, config):
 def run(pkgbuild_path, extra_flags=None, interactive=False,
         pkg_log: bool = True, persist_log: bool = False,
         log_dir=None, profile_conf=None,
-        cc_override=None, cxx_override=None, ld_override=None,
-        noninteractive_kconfig: bool = False):
+        cc_override=None, cxx_override=None, ld_override=None):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     conflict_groups = load_conflict_groups()
@@ -497,8 +531,10 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
 
         build_mode = _get_build_mode(matched_rules, config)
 
+        kernel_build = (build_mode == "kernel")
+
         extracted_profile = None
-        if build_mode == "patch_pkgbuild":
+        if build_mode in ("patch_pkgbuild", "kernel"):
             extracted_profile = extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
             if extracted_profile:
                 write_extracted_profile(extracted_profile, pkgbuild_path)
@@ -527,14 +563,14 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             _run_build(
                 pkgbuild_path, resolved_profile, config, groups,
                 active_consumes=active_consumes,
-                extracted_profile=extracted_profile if build_mode == "patch_pkgbuild" else None,
+                extracted_profile=extracted_profile if build_mode in ("patch_pkgbuild", "kernel") else None,
                 pkgmeta=pkgmeta,
                 extra_flags=extra_flags,
                 interactive=interactive,
                 cc_override=cc_override,
                 cxx_override=cxx_override,
                 ld_override=ld_override,
-                noninteractive_kconfig=noninteractive_kconfig,
+                kernel_build=kernel_build,
             )
         build_success = True
     finally:

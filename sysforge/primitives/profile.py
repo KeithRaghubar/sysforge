@@ -102,6 +102,16 @@ _CONF_KEY_MAP: dict[str, set[str]] = {
     },
 }
 
+# Compiler flag keys stripped from the emitted makepkg.conf for kernel builds.
+# The kernel manages its own optimisation flags via Kconfig; injecting profile
+# CFLAGS/CXXFLAGS/LDFLAGS causes miscompiles and build failures.
+# System conf values for these keys are preserved verbatim (they pass through
+# unchanged when no profile override is present).
+_KERNEL_CLEAN_KEYS: frozenset[str] = frozenset({
+    "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS",
+    "DEBUG_CFLAGS", "DEBUG_CXXFLAGS", "DEBUG_LDFLAGS",
+})
+
 
 # ---------------------------------------------------------------------------
 # Append merge internals

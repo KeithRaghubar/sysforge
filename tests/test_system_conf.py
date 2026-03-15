@@ -203,3 +203,52 @@ def test_emit_consumes_filters_rust_keys(sys_conf_path):
     # consumes filtering only applies to profile keys, not system baseline
     # (system baseline is always included as-is)
     assert conf.get("CFLAGS") == "-O3"
+
+
+# ---------------------------------------------------------------------------
+# kernel_build flag
+# ---------------------------------------------------------------------------
+
+def test_emit_kernel_build_omits_profile_cflags(sys_conf_path):
+    """kernel_build=True: profile CFLAGS/LDFLAGS/etc. are not written to conf."""
+    profile = {
+        "CFLAGS": "-O3 -march=native",
+        "CXXFLAGS": "-O3 -march=native",
+        "LDFLAGS": "-Wl,-O1,--as-needed",
+        "CPPFLAGS": "-D_FORTIFY_SOURCE=2",
+        "DEBUG_CFLAGS": "-g",
+        "MAKEFLAGS": "-j8",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path,
+                           kernel_build=True) as conf_path:
+        conf = read_conf(conf_path)
+    # Profile flag keys must not override system values
+    # (system conf has CFLAGS="-march=x86-64 ... -O2 ...", not "-O3 -march=native")
+    assert conf.get("CFLAGS") != "-O3 -march=native"
+    assert "-O2" in conf.get("CFLAGS", "")   # system value preserved
+    assert conf.get("LDFLAGS") != "-Wl,-O1,--as-needed"
+    assert "CPPFLAGS" not in conf             # not in system fixture
+    assert "DEBUG_CFLAGS" not in conf
+    # MAKEFLAGS is not a flag key — profile value should still apply
+    assert conf.get("MAKEFLAGS") == "-j8"
+
+
+def test_emit_kernel_build_false_still_applies_profile_flags(sys_conf_path):
+    """kernel_build=False (default): profile CFLAGS still override system."""
+    profile = {"CFLAGS": "-O3 -march=native"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path,
+                           kernel_build=False) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf.get("CFLAGS") == "-O3 -march=native"
+
+
+def test_emit_kernel_build_ld_override_ignored(sys_conf_path):
+    """kernel_build=True: --ld override is silently ignored (no LDFLAGS injection)."""
+    profile = {}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path,
+                           ld_override="lld", kernel_build=True) as conf_path:
+        conf = read_conf(conf_path)
+    # ld_override would normally inject -fuse-ld=lld into LDFLAGS;
+    # with kernel_build the system LDFLAGS value should be unchanged
+    ldflags = conf.get("LDFLAGS", "")
+    assert "-fuse-ld=lld" not in ldflags
