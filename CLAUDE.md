@@ -7,13 +7,13 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 - Language: Python
 - Config format: TOML
-- Test suite: 348 pytest tests
+- Test suite: 362 pytest tests
 
 ## Dev Environment
 
 - Ryzen 7 5800X3D, RTX 5070, Arch Linux, COSMIC on Wayland, nvidia-open-dkms
 - `pkgbuild_dir = ~/builds`
-- `/etc/sysforge/` has test data configs
+- `/etc/sysforge/` is a live mirror of `tests/data/etc/sysforge/` — edit project files, then `sudo cp` to sync live
 
 ## Known Bugs & Gotchas
 
@@ -21,6 +21,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 2. **AUR RPC lookup** — `manifest.py` uses `_stub_aur_fn`, which always returns `None`. Real AUR lookups are not wired up.
 3. **`_pkgmeta_placeholder`** — wiring was fixed once; history may resurface. Verify if touching metadata paths.
 4. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
+5. **`match_rules` and `pkgbase`** — split-package PKGBUILDs (e.g. kernels) set `pkgbase` to the canonical name; `pkgname` is an array of unexpanded sub-package names (`"$pkgbase"`). Rules using `pkgnames` now match against `pkgbase` too. Don't regress this.
 
 ## Implemented: Verbosity Levels
 

@@ -317,7 +317,9 @@ Before the build, `lsmod` output is captured to `<state_dir>/lsmod.snapshot`. Th
 
 **Noninteractive kconfig:**
 
-Kernel builds always pass `noninteractive_kconfig=True` to `makepkg_wrapper.run()`. This triggers `patch_noninteractive_kconfig` (patcher module) on `PKGBUILD.sysforge` after normal patching, replacing interactive config targets (`oldconfig`, `nconfig`, `menuconfig`, `xconfig`, `gconfig`) with `make olddefconfig`. `olddefconfig` applies defaults for all new symbols without terminal interaction. VAR=val arguments before the target (e.g. `ARCH=x86_64`) and trailing comments are preserved. `--noconfirm` only controls makepkg's own prompts and has no effect on interactive make targets inside the PKGBUILD.
+Driven by `build_mode = "kernel"` on the resolved profile — no explicit flag needed from the kernel stage or CLI. `patch_noninteractive_kconfig` runs on `PKGBUILD.sysforge` after normal patching, replacing interactive config targets (`oldconfig`, `nconfig`, `menuconfig`, `xconfig`, `gconfig`) with `make olddefconfig`. `olddefconfig` applies defaults for all new symbols without terminal interaction. VAR=val arguments before the target (e.g. `ARCH=x86_64`) and trailing comments are preserved. `--noconfirm` only controls makepkg's own prompts and has no effect on interactive make targets inside the PKGBUILD.
+
+When `--interactive` is passed to `sysforge build`, kconfig patching is skipped entirely — the PKGBUILD's config targets run as-is, allowing interactive kernel configuration.
 
 **Post-install steps** (run after `makepkg` succeeds):
 1. `sudo mkinitcpio -P`
@@ -368,7 +370,7 @@ TOML config loading and path resolution. Public API:
 
 Profile resolution and rule matching. Public API:
 - `merge_extends` — resolves the full `extends` chain into a flat profile dict, applying `[profiles.x.append]` token-level merges with conflict groups
-- `match_rules` — evaluates all match fields against a parsed PKGBUILD
+- `match_rules` — evaluates all match fields against a parsed PKGBUILD. `pkgnames` rules match against both `pkgname` and `pkgbase` — split packages (e.g. kernels) set `pkgbase` to the canonical name and `pkgname` to an array of unexpanded sub-package names; matching on `pkgbase` ensures rules like `pkgnames = ["linux-custom"]` work correctly.
 - `resolve_profile` — selects the winning rule by priority; optionally injects `pkgbuild_extracted` as the chain root
 - `resolve_groups` — accumulates package groups from PKGBUILD, defaults, and all matched rules
 - `resolve_consumes` — determines which conf types the build needs
@@ -389,7 +391,7 @@ Static parser for PKGBUILD metadata. Does **not** source or execute the PKGBUILD
 
 ### `pkgbuild_patcher.py`
 
-All PKGBUILD mutation. Active when `build_mode = "patch_pkgbuild"` on the resolved profile.
+All PKGBUILD mutation. Active when `build_mode = "patch_pkgbuild"` or `"kernel"` on the resolved profile.
 
 **Flag extraction** (`extract_pkgbuild_profile`) scans all function bodies and extracts bare, `export`, and `+=` assignments to known flag variables. Strips self-references (`$CFLAGS` in CFLAGS), skips complex bash expressions (e.g. `${CFLAGS/-g /-g1 }`), expands packed `-Wl,a,b,c` tokens into individual sub-tokens. Returns a synthetic profile dict used as the implicit chain root in `merge_extends` — forming the chain: `pkgbuild_extracted → bare → standard → optimized`.
 
@@ -419,18 +421,19 @@ Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_a
 
 ### `makepkg_wrapper.py`
 
-Build execution. Public API: `run(pkgbuild_path, extra_flags=None, noninteractive_kconfig=False)`
+Build execution. Public API: `run(pkgbuild_path, extra_flags=None, interactive=False, ...)`
 
 High-level flow:
 1. Parse PKGBUILD via `pkgbuild_meta.py`
 2. Match rules, resolve profile (injecting `pkgbuild_extracted` root if patching)
 3. Resolve consumes and groups
 4. Run pre-build soname dep analysis
-5. If `patch_pkgbuild` mode: extract PKGBUILD flags, write extracted profile, apply patch
-6. Emit complete temp `makepkg.conf` (merged system conf + profile overrides)
-7. Resolve env vars for subprocess injection
-8. If `noninteractive_kconfig`: patch interactive kconfig targets in `PKGBUILD.sysforge` to `olddefconfig`
-9. Invoke `makepkg` with temp conf and injected env
+5. If `patch_pkgbuild` or `kernel` mode: extract PKGBUILD flags, write extracted profile, apply patch
+6. If `kernel` mode and not `interactive`: patch interactive kconfig targets in `PKGBUILD.sysforge` to `olddefconfig`
+7. If `kernel` mode: detect effective CC; if clang, inject `LLVM=1 LLVM_IAS=1` into build env
+8. Emit complete temp `makepkg.conf` (merged system conf + profile overrides; kernel mode omits `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`CPPFLAGS`/`DEBUG_*` profile overrides — system conf values preserved verbatim)
+9. Resolve env vars for subprocess injection
+10. Invoke `makepkg -p PKGBUILD.sysforge` with temp conf and injected env
 
 **System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
 
@@ -463,9 +466,15 @@ extends = "optimized"
 build_mode = "pgo_llvm_toolchain"
 pgo_store = "/var/tmp"
 
-[profiles.cosmic]
+[profiles.patched]
 extends = "optimized"
 build_mode = "patch_pkgbuild"
+
+[profiles.kernel]
+extends = "bare"
+build_mode = "kernel"
+batch = true
+makepkg_flags = ["--noconfirm", "--syncdeps", "-f", "-c"]
 ```
 
 ### `extends` semantics
