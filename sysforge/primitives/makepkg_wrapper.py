@@ -611,7 +611,9 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             _log.info("[BUILD]", f"Cleaned build dir: {build_dir}")
 
         if build_mode == "pgo_llvm_toolchain":
-            pass  # hand off to pgo handler
+            raise NotImplementedError(
+                "build_mode 'pgo_llvm_toolchain' is not yet implemented"
+            )
         else:
             run_dep_analysis(pkgmeta, config)
             _run_build(

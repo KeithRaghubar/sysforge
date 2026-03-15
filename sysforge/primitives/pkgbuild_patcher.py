@@ -54,6 +54,8 @@ _EXTRACTABLE_KEYS = {
     "CMAKE_SHARED_LINKER_FLAGS",
     # meson
     "MESON_ARGS",
+    "CC_LD",            # meson: linker override for CC
+    "CXX_LD",           # meson: linker override for CXX
 }
 
 # Bare/export assignments, including += variants.

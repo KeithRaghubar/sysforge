@@ -184,6 +184,5 @@ def run_pipeline(config, options, stages=None):
             _log.close_unified_log(success=pipeline_success, persist=options.persist_log)
             if pipeline_success and not options.persist_log:
                 _log.info("[PIPELINE]", f"Unified log cleared after successful run: {unified_log_path}")
-
-    if options.cache_report:
-        emit_session_report()
+        if options.cache_report:
+            emit_session_report()

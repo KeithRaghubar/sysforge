@@ -804,6 +804,10 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 **`[FLAG]` tag — partial coverage.** Emitted for: CLI toolchain overrides (`--cc`, `--cxx`, `--ld`), linker token replacement and injection, linker guard stripping, conflict group firing (logs group name, evicted tokens, inserted token), and prefix-match token replacement during `merge_extends`. Not emitted for: `apply_patch_pkgbuild` token changes (those use `[PATCH]`).
 
+**`--config` flag (install) — never added.** The design called for a `--config` flag on `sysforge install` for whole-directory or single-file config override. It was never wired up. `--profile-conf` (flag_profiles.toml override) is the only config override currently implemented. Do not add `--config` without settling the scope.
+
+**`[CACHE]` ThinLTO probe is per-build, not per-run.** `emit_system_probes()` (ld.so mtime, pacman cache size) runs once at the start of each pipeline or build invocation. ThinLTO cache size is probed inside `_run_build()` because it requires the resolved profile's LDFLAGS — those are per-package, not available at run start. So ThinLTO appears in `[CACHE]` lines once per package that configures `--thinlto-cache-dir=` in its LDFLAGS.
+
 ---
 
 ## V2 Roadmap

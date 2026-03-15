@@ -17,7 +17,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 ## Known Bugs & Gotchas
 
-1. **`--config` flag (install)** — accepted by the CLI but **silently ignored**. Scope is undecided: whole dir override vs single file. Needs a design decision before implementing.
+1. **`--config` flag (install)** — planned but **never added to the CLI**. `--profile-conf` exists and works as the config override. Scope for `--config` is undecided (whole dir override vs single file). Do not add it until the design is settled.
 2. **AUR RPC lookup** — `manifest.py` uses `_stub_aur_fn`, which always returns `None`. Real AUR lookups are not wired up.
 3. **`_pkgmeta_placeholder`** — wiring was fixed once; history may resurface. Verify if touching metadata paths.
 4. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
