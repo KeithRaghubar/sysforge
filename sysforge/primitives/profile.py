@@ -92,13 +92,14 @@ _CONF_KEY_MAP: dict[str, set[str]] = {
     # "env" must appear in active_consumes for these to be delivered; otherwise
     # they are logged as skipped (see resolve_env_vars).
     "env": {
-        "RUSTC_WRAPPER",    # sccache/ccache Rust compiler wrapper
-        "CCACHE_DIR",       # ccache cache directory
-        "SCCACHE_DIR",      # sccache cache directory
-        "CARGO_HOME",       # Cargo registry/cache root
-        "PKG_CONFIG_PATH",  # pkg-config search path
-        "CC_LD",            # meson: linker override for CC
-        "CXX_LD",           # meson: linker override for CXX
+        "RUSTC_WRAPPER",              # sccache/ccache Rust compiler wrapper
+        "CCACHE_DIR",                 # ccache cache directory
+        "SCCACHE_DIR",                # sccache cache directory
+        "CARGO_HOME",                 # Cargo registry/cache root
+        "CARGO_NET_GIT_FETCH_WITH_CLI",  # use git CLI for fetching (avoids SSH auth issues)
+        "PKG_CONFIG_PATH",            # pkg-config search path
+        "CC_LD",                      # meson: linker override for CC
+        "CXX_LD",                     # meson: linker override for CXX
     },
 }
 

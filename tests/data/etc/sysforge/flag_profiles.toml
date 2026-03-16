@@ -64,6 +64,7 @@
 #   CCACHE_DIR    = "/var/cache/ccache"
 #   SCCACHE_DIR   = "/var/cache/sccache"
 #   CARGO_HOME    = "/var/cache/cargo"
+#   CARGO_NET_GIT_FETCH_WITH_CLI = "true"  # use git CLI; avoids SSH auth failures in build envs
 #   PKG_CONFIG_PATH = "/usr/local/lib/pkgconfig"
 #
 #   # makepkg invocation flags
@@ -142,6 +143,7 @@ CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
 makepkg_flags = ["--noconfirm", "--syncdeps"]
+CARGO_NET_GIT_FETCH_WITH_CLI = "true"
 
 [profiles.optimized]
 extends = "standard"

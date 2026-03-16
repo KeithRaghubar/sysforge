@@ -41,11 +41,12 @@ _EXTRACTABLE_KEYS = {
     "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
     "CARGO_PROFILE_RELEASE_OPT_LEVEL",
     "CARGO_INCREMENTAL",
-    "RUSTC_WRAPPER",    # env pass
-    "CCACHE_DIR",       # env pass
-    "SCCACHE_DIR",      # env pass
-    "CARGO_HOME",       # env pass
-    "PKG_CONFIG_PATH",  # env pass
+    "RUSTC_WRAPPER",              # env pass
+    "CCACHE_DIR",                 # env pass
+    "SCCACHE_DIR",                # env pass
+    "CARGO_HOME",                 # env pass
+    "CARGO_NET_GIT_FETCH_WITH_CLI",  # env pass
+    "PKG_CONFIG_PATH",            # env pass
     # cmake
     "CMAKE_BUILD_TYPE",
     "CMAKE_C_FLAGS",
