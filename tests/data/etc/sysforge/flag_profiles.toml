@@ -145,8 +145,12 @@ LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
 makepkg_flags = ["--noconfirm", "--syncdeps"]
 CARGO_NET_GIT_FETCH_WITH_CLI = "true"
 
-[profiles.optimized]
+[profiles.clean]
 extends = "standard"
+makepkg_flags = ["--noconfirm", "--syncdeps", "--cleanbuild"]
+
+[profiles.optimized]
+extends = "clean"
 CFLAGS = "-march=native -O3 -pipe -fno-plt"
 LDFLAGS = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
 
