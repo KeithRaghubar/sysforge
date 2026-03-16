@@ -209,6 +209,7 @@ def test_pkgctl_checkout_runs_in_parent(tmp_path):
 
     cmd, kwargs = captured[0]
     assert cmd[:3] == ["pkgctl", "repo", "clone"]
+    assert "--protocol=https" in cmd
     assert "htop" in cmd
     assert kwargs.get("cwd") == str(tmp_path)
 

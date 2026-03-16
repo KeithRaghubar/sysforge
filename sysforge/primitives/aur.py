@@ -67,7 +67,7 @@ def pkgctl_checkout(name: str, dest: Path) -> None:
     """
     _log.info("[BUILD]", f"Checking out {name!r} from official repos → {dest}")
     result = subprocess.run(
-        ["pkgctl", "repo", "clone", name],
+        ["pkgctl", "repo", "clone", "--protocol=https", name],
         cwd=str(dest.parent),
         capture_output=True,
         text=True,
