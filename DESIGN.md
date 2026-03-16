@@ -107,13 +107,13 @@ sysforge/
 │       └── stages/
 │           ├── __init__.py            # STAGES ordered list
 │           ├── base.py                # Stage base class, RunOptions dataclass
-│           ├── packages.py            # stage 5: real implementation
-│           ├── kernel.py              # stage 6: full implementation
-│           ├── configure.py           # stage 7: stub
 │           ├── partition.py           # stage 1: stub
 │           ├── base_install.py        # stage 2: stub
 │           ├── hardware.py            # stage 3: stub
-│           └── toolchain.py           # stage 4: stub
+│           ├── configure.py           # stage 4: stub (config checkpoint)
+│           ├── toolchain.py           # stage 5: stub
+│           ├── packages.py            # stage 6: real implementation
+│           └── kernel.py              # stage 7: full implementation
 ├── tests/
 │   ├── conftest.py
 │   ├── data/
@@ -258,12 +258,12 @@ Python DAG orchestrator with checkpoint/resume. Stages run in order:
 1. **partition** — stub
 2. **base_install** — stub
 3. **hardware** — stub
-4. **toolchain** — stub
-5. **packages** — fully implemented
-6. **kernel** — fully implemented
-7. **configure** — stub
+4. **configure** — stub (config checkpoint: stage summary, interactive config review, editor selection)
+5. **toolchain** — stub
+6. **packages** — fully implemented
+7. **kernel** — fully implemented
 
-Stubs raise `NotImplementedError` with `--start-from` guidance. Stages 5–7 are usable on a live system via `--start-from packages`.
+Stubs raise `NotImplementedError` with `--start-from` guidance. Use `--start-from packages` to skip bootstrap stages on a live system.
 
 ### Runner
 
@@ -295,7 +295,7 @@ remaining = ["cosmic-comp-git", "cosmic-panel-git"]
 
 On resume with failed packages, the user is prompted to retry or skip each (or `--force-retry` bypasses the prompt).
 
-### Kernel stage (stage 6)
+### Kernel stage (stage 7)
 
 Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent, so systems using a stock pacman kernel skip it without needing `--start-from`.
 
@@ -336,7 +336,7 @@ When `--interactive` is passed to `sysforge build`, kconfig patching is skipped 
 1. `sudo mkinitcpio -P`
 2. Bootloader update: `bootctl update` (systemd-boot), `grub-mkconfig -o /boot/grub/grub.cfg` (grub), or skipped (`none`)
 
-### Packages stage (stage 5)
+### Packages stage (stage 6)
 
 Walks `packages.toml` in order:
 - `source = "repo"` → `sudo pacman -S --needed --noconfirm`
@@ -823,7 +823,7 @@ git push
 
 `sysforge converge` compares current installed state in `/var/lib/sysforge/build_state.toml` against the manifest and flag profiles, then rebuilds any package whose profile, flags, or version have drifted. `--dry-run` shows what would be rebuilt.
 
-DAG stages are categorised as **bootstrap-only** (partition, base_install, toolchain) or **repeatable** (packages, configure). Only repeatable stages participate in re-converge runs.
+DAG stages are categorised as **bootstrap-only** (partition, base_install, hardware, configure, toolchain) or **repeatable** (packages, kernel). Only repeatable stages participate in re-converge runs.
 
 Not yet implemented.
 

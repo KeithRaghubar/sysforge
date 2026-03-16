@@ -2,7 +2,7 @@
 
 SysForge is a personal Arch Linux automation framework that produces a reproducible, performance-tuned system from declarative TOML configs. It is an installer and bootstrapper — not a package manager. Pacman owns the ongoing package lifecycle; SysForge gets you from a vanilla Arch ISO to a fully configured, compiler-optimized system.
 
-**Current status:** Active development. The primitives layer and package build pipeline are functional and usable on a live system. Stages 1–4 (partition, base install, hardware detection, toolchain) are stubbed pending dedicated testing. Not ready for general use.
+**Current status:** Active development. The primitives layer and package build pipeline are functional and usable on a live system. Stages 1–5 (partition, base install, hardware detection, configure, toolchain) are stubbed pending dedicated testing. Not ready for general use.
 
 ---
 
@@ -49,9 +49,9 @@ Installed paths:
 
 ---
 
-## Quick start (live system, stages 5–7)
+## Quick start (live system, stages 6–7)
 
-Stages 1–4 require a full install environment. To use SysForge on an existing Arch system for package builds:
+Stages 1–5 require a full install environment. To use SysForge on an existing Arch system for package builds:
 
 ```bash
 # 1. Install your system config files
@@ -301,12 +301,12 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Makepkg wrapper (end-to-end) | ✅ Done |
 | Structured logging (`[SYSFORGE][LEVEL][TAG]`) | ✅ Done |
 | Pipeline runner (checkpoint/resume) | ✅ Done |
-| Packages stage (stage 5) | ✅ Done |
+| Packages stage (stage 6) | ✅ Done |
 | Manifest generator (`sysforge manifest`) | ✅ Done |
 | Pytest suite (561 tests) | ✅ Done |
-| Kernel stage (stage 6) | ✅ Done |
-| Configure stage (stage 7) | 🔧 Stub |
-| Stages 1–4 (partition → toolchain) | 🔧 Stub |
+| Kernel stage (stage 7) | ✅ Done |
+| Configure stage (stage 4) | 🔧 Stub |
+| Stages 1–3, 5 (partition → hardware, toolchain) | 🔧 Stub |
 | AUR RPC lookup in manifest | ✅ Done |
 | Hardware detection stage | ⬜ Planned |
 | `sysforge converge` | ⬜ Planned |

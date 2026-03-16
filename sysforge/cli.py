@@ -261,7 +261,7 @@ def main():
         dest="start_from",
         help=(
             "Start from this stage, marking all prior stages as skipped. "
-            "Useful for running stages 5-7 on a live system: "
+            "Useful for skipping bootstrap stages on a live system: "
             "--start-from packages"
         ),
     )

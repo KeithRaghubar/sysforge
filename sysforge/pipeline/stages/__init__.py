@@ -16,10 +16,10 @@ STAGES = [
     PartitionStage(),
     BaseInstallStage(),
     HardwareStage(),
+    ConfigureStage(),
     ToolchainStage(),
     PackagesStage(),
     KernelStage(),
-    ConfigureStage(),
 ]
 
 STAGE_NAMES = [s.name for s in STAGES]
