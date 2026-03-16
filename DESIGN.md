@@ -347,13 +347,50 @@ Walks `packages.toml` in order:
 - Non-fatal per-package failures: build continues, failures recorded in state
 - Summary at end: `Total | Built | Failed | Skipped`
 
-### LLVM bootstrap
+### Toolchain stage (stage 6)
 
-Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
+**Opt-in:** stage is a clean no-op if `/etc/sysforge/toolchain.toml` is absent. Systems that skip this stage use whatever compiler is already installed; packages and kernel stages proceed normally.
 
-1. Build with system LLVM
-2. Build instrumented PGO binary
-3. Build final optimized LLVM — used for all subsequent package builds
+**`toolchain.toml` structure:**
+
+```toml
+compiler = "llvm"   # "llvm" or "gcc"
+pgo = true          # only meaningful when compiler = "llvm"; ignored for gcc
+
+# Package lists — all have sane defaults, override only if needed
+[packages]
+pgo     = ["llvm", "llvm-libs", "clang", "lld"]
+non_pgo = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
+lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
+
+# Staging prefix for PGO stage 2 instrumented binary
+pgo_staging = "/var/tmp/sysforge-llvm-stage2"
+```
+
+For `compiler = "gcc"`, the default package set is `["gcc", "gcc-libs"]`.
+
+**PKGBUILD resolution:** follows `find_pkgbuild` lookup order (local `pkgbuild_dir` → `pkgctl repo clone`) for every package. At stage start, resolved paths are displayed in a table and the user is prompted to confirm or abort. On abort, the resume command is printed (`sysforge pipeline --resume --state-dir <dir>`) so they can make manual modifications and return.
+
+**LLVM PGO bootstrap (three passes, only when `pgo = true`):**
+
+1. **Pass 1** — build with system compiler. Uses the `pgo_llvm_toolchain` profile; `cache = false` on all packages (instrumented objects must not be cached).
+2. **Pass 2** — rebuild with instrumented binary (`-fprofile-generate`). Installed to the staging prefix (`pgo_staging`) rather than the live system, keeping the system compiler clean.
+3. **Pass 3** — final optimized build (`-fprofile-use`), with `CC`/`CXX` pointing at the staged binary from pass 2. Installs to the system. Staging prefix is removed on success.
+
+**`pgo = false` path:** single build pass with the `pgo_llvm_toolchain` profile. No staging prefix. Useful when custom flags (`-march=native`) are wanted without the overhead of a full PGO cycle.
+
+**GCC path (`compiler = "gcc"`):** single build pass. `pgo` field is ignored. Produces `/usr/bin/gcc` and `/usr/bin/g++`.
+
+**Compiler propagation:** on completion the toolchain stage writes the resolved compiler paths into pipeline state:
+
+```toml
+[stages.toolchain.result]
+cc  = "/usr/bin/clang"   # or "/usr/bin/gcc"
+cxx = "/usr/bin/clang++" # or "/usr/bin/g++"
+ld  = "lld"              # llvm path only; absent for gcc
+```
+
+The packages and kernel stages read these values and inject them into the build environment, overriding any profile-level `CC`/`CXX` defaults. If the toolchain stage was skipped, these keys are absent and stages fall back to the profile.
 
 ---
 

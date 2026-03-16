@@ -9,7 +9,7 @@ a range, or refer to steps by name. Defaults to all when non-interactive.
 
 Available steps:
   1  editor    Editor selection (SYSFORGE_EDITOR → sysforge.toml → $EDITOR → vi)
-  2  config    Config file review (flag_profiles, packages, kernel, hardware_profile)
+  2  config    Config file review (flag_profiles, packages, toolchain, kernel, hardware_profile)
   3  makepkg   System makepkg.conf review (MAKEFLAGS, BUILDDIR, PKGDEST, flags)
   4  sudo      User / sudo verification
   5  disk      Disk space check
@@ -64,7 +64,7 @@ _STEPS = [
     ("editor",  "Editor selection",
      "Set preferred editor; save permanently to sysforge.toml"),
     ("config",  "Config file review",
-     "Review flag_profiles.toml, packages.toml, kernel.toml, hardware_profile.toml"),
+     "Review flag_profiles.toml, packages.toml, toolchain.toml, kernel.toml, hardware_profile.toml"),
     ("makepkg", "makepkg.conf review",
      "Review /etc/makepkg.conf — MAKEFLAGS, BUILDDIR, PKGDEST, flag baselines"),
     ("sudo",    "User / sudo verification",
@@ -370,6 +370,10 @@ def _step_config(config, state, options, editor: str) -> str:
     _review_config_file(
         "packages.toml", PACKAGES_PATH, editor, options.dry_run,
     )
+
+    toolchain_path = CONFIG_BASE / "etc/sysforge/toolchain.toml"
+    if toolchain_path.exists():
+        _review_config_file("toolchain.toml", toolchain_path, editor, options.dry_run)
 
     kernel_path = CONFIG_BASE / "etc/sysforge/kernel.toml"
     if kernel_path.exists():
@@ -696,6 +700,22 @@ def _step_preview(config, state, options, editor: str) -> str:
             "  Profiles are tentative (pkgname rules only). "
             "makedepends rules resolve per-PKGBUILD at build time."
         )
+
+    toolchain_path = CONFIG_BASE / "etc/sysforge/toolchain.toml"
+    if toolchain_path.exists():
+        try:
+            with open(toolchain_path, "rb") as f:
+                tcfg = tomllib.load(f)
+            compiler = tcfg.get("compiler", "llvm")
+            pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
+            pgo_label = " + PGO (3-pass)" if pgo else ""
+            _log.info("[RECONFIGURE]",
+                f"  Toolchain: {compiler}{pgo_label}"
+            )
+        except Exception:
+            _log.info("[RECONFIGURE]", "  Toolchain: toolchain.toml present but unreadable")
+    else:
+        _log.info("[RECONFIGURE]", "  Toolchain: no toolchain.toml — toolchain stage will be a no-op")
 
     kernel_path = CONFIG_BASE / "etc/sysforge/kernel.toml"
     if kernel_path.exists():
