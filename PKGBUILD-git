@@ -1,9 +1,9 @@
 # Maintainer: Keith Raghubar <keith.raghubar@proton.me>
 
-pkgname=sysforge
-pkgver=0.1.0
+pkgname=sysforge-git
+pkgver=0.1.0.r0.g0000000  # updated dynamically by pkgver()
 pkgrel=1
-pkgdesc="Reproducible, performance-tuned Arch Linux installer"
+pkgdesc="Reproducible, performance-tuned Arch Linux installer (git)"
 arch=('any')
 url="https://github.com/KeithRaghubar/sysforge"
 license=('MIT')
@@ -23,18 +23,25 @@ optdepends=(
     'sccache: Rust compiler cache support'
     'zsh: shell completions'
 )
-conflicts=('sysforge-git')
+conflicts=('sysforge')
 provides=('sysforge')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # TODO: fill in before AUR submission
+source=("$pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$srcdir/$pkgname"
+    git describe --long --tags 2>/dev/null \
+        | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
+        || printf "r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
 
 build() {
-    cd "$srcdir/$pkgname-$pkgver"
+    cd "$srcdir/$pkgname"
     python -m build --wheel --no-isolation
 }
 
 package() {
-    cd "$srcdir/$pkgname-$pkgver"
+    cd "$srcdir/$pkgname"
     python -m installer --destdir="$pkgdir" dist/*.whl
 
     # Zsh completion
