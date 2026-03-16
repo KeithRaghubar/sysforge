@@ -10,7 +10,7 @@ from sysforge.pipeline.stages.base import Stage
 class ToolchainStage(Stage):
     name = "toolchain"
     description = "LLVM toolchain build"
-    depends_on = ["configure"]
+    depends_on = ["reconfigure"]
 
     def run(self, config, state, options):
         raise NotImplementedError(

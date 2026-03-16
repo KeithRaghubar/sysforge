@@ -2,7 +2,7 @@
 
 SysForge is an all-in-one Arch Linux helper for system setup and ongoing package management, with system-tuned build customizations. It covers the full lifecycle — from initial bootstrap off a vanilla Arch ISO to maintaining a compiler-optimized system. Pacman owns the package database; SysForge owns the build configuration and automates the human decisions on top of it.
 
-**Current status:** Active development. The primitives layer and package build pipeline are functional and usable on a live system. Stages 1–5 (partition, base install, hardware detection, configure, toolchain) are stubbed pending dedicated testing. Not ready for general use.
+**Current status:** Active development. The primitives layer and package build pipeline are functional and usable on a live system. Stages 1–4 and 6 (partition, base install, hardware detection, configure, toolchain) are stubbed pending dedicated testing. Stage 5 (reconfigure) is implemented. Not ready for general use.
 
 ---
 
@@ -49,9 +49,9 @@ Installed paths:
 
 ---
 
-## Quick start (live system, stages 6–7)
+## Quick start (live system, stages 7–8)
 
-Stages 1–5 require a full install environment. To use SysForge on an existing Arch system for package builds:
+Stages 1–4 and 6 require a full install environment. To use SysForge on an existing Arch system for package builds:
 
 ```bash
 # 1. Install your system config files
@@ -63,8 +63,10 @@ sudo chmod 755 /etc/sysforge/
 # 2. Generate a packages.toml from a list of names
 sysforge manifest htop neovim mesa-git cosmic-comp-git > packages.toml
 
-# 3. Run the packages stage directly
-sysforge pipeline --start-from packages --packages packages.toml --state-dir ~/sf-state
+# 3. Run the pre-build checkpoint, then proceed to packages
+sysforge pipeline --start-from reconfigure --packages packages.toml --state-dir ~/sf-state
+# Or skip straight to builds:
+# sysforge pipeline --start-from packages --packages packages.toml --state-dir ~/sf-state
 ```
 
 ---
@@ -205,14 +207,17 @@ sysforge build htop --interactive
 ### Run the pipeline
 
 ```bash
-# Stages 1–4 are stubbed. Use --start-from to jump to packages:
+# Stages 1–4 and 6 are stubbed. Start from reconfigure (pre-build checks) on a live system:
+sysforge pipeline --start-from reconfigure --packages packages.toml --state-dir ~/sf-state
+
+# Or skip straight to builds:
 sysforge pipeline --start-from packages --packages packages.toml --state-dir ~/sf-state
 
 # Resume after a failure
 sysforge pipeline --resume --state-dir ~/sf-state
 
 # Preview without executing
-sysforge pipeline --start-from packages --dry-run --state-dir ~/sf-state
+sysforge pipeline --start-from reconfigure --dry-run --state-dir ~/sf-state
 
 # Retry failed packages without prompting
 sysforge pipeline --resume --force-retry --state-dir ~/sf-state
@@ -301,12 +306,13 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Makepkg wrapper (end-to-end) | ✅ Done |
 | Structured logging (`[SYSFORGE][LEVEL][TAG]`) | ✅ Done |
 | Pipeline runner (checkpoint/resume) | ✅ Done |
-| Packages stage (stage 6) | ✅ Done |
+| Packages stage (stage 7) | ✅ Done |
 | Manifest generator (`sysforge manifest`) | ✅ Done |
 | Pytest suite (561 tests) | ✅ Done |
-| Kernel stage (stage 7) | ✅ Done |
+| Kernel stage (stage 8) | ✅ Done |
+| Reconfigure stage (stage 5) | ✅ Done |
 | Configure stage (stage 4) | 🔧 Stub |
-| Stages 1–3, 5 (partition → hardware, toolchain) | 🔧 Stub |
+| Stages 1–3, 6 (partition → hardware, toolchain) | 🔧 Stub |
 | AUR RPC lookup in manifest | ✅ Done |
 | Hardware detection stage | ⬜ Planned |
 | `sysforge converge` | ⬜ Planned |

@@ -38,7 +38,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 ## Implemented: Cache Monitoring
 
 - **`[CACHE]` tag** — per-build ccache/sccache hit/miss delta at `[INFO]` level; system probes (ld.so mtime, pacman cache size, ThinLTO cache size) once per run
-- **`--cache-report` flag** — on both `build` and `install`; prints structured summary to stderr at end of run (always shown, bypasses verbosity gating)
+- **`--cache-report` flag** — on both `build` and `pipeline`; prints structured summary to stderr at end of run (always shown, bypasses verbosity gating)
 - Module: `sysforge/primitives/cache_probe.py`
 
 ## Implemented (notable recent additions)

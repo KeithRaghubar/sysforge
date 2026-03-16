@@ -7,16 +7,18 @@ The runner uses this list; order here is the execution order.
 from sysforge.pipeline.stages.partition import PartitionStage
 from sysforge.pipeline.stages.base_install import BaseInstallStage
 from sysforge.pipeline.stages.hardware import HardwareStage
+from sysforge.pipeline.stages.configure import ConfigureStage
+from sysforge.pipeline.stages.reconfigure import ReconfigureStage
 from sysforge.pipeline.stages.toolchain import ToolchainStage
 from sysforge.pipeline.stages.packages import PackagesStage
 from sysforge.pipeline.stages.kernel import KernelStage
-from sysforge.pipeline.stages.configure import ConfigureStage
 
 STAGES = [
     PartitionStage(),
     BaseInstallStage(),
     HardwareStage(),
     ConfigureStage(),
+    ReconfigureStage(),
     ToolchainStage(),
     PackagesStage(),
     KernelStage(),
