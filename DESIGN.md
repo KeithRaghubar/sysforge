@@ -617,7 +617,7 @@ SysForge treats the calling shell environment as untrusted for build tool vars. 
 
 SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are explicitly exempt from this rule — they are SysForge's own interface, not build tool vars.
 
-Any build tool override needed at invocation time should use the corresponding SysForge flag (`--cc`, `--cxx`, `--ld`), not a shell export. This applies to both `sysforge build` and `sysforge install`.
+Any build tool override needed at invocation time should use the corresponding SysForge flag (`--cc`, `--cxx`, `--ld`), not a shell export. This applies to both `sysforge build` and `sysforge pipeline`.
 
 > **Cancelled design:** an `[env_precedence]` TOML table with a configurable priority stack (profile = 100, makepkg.conf = 80, shell = 20, PKGBUILD export = 10) was previously planned. It is superseded by this model — shell bleed-through is not a tunable priority, it is prevented entirely.
 
@@ -825,7 +825,7 @@ git push
 
 `sysforge converge` compares current installed state in `/var/lib/sysforge/build_state.toml` against the manifest and flag profiles, then rebuilds any package whose profile, flags, or version have drifted. `--dry-run` shows what would be rebuilt.
 
-DAG stages are categorised as **bootstrap-only** (partition, base_install, hardware, configure, toolchain) or **repeatable** (packages, kernel). Only repeatable stages participate in re-converge runs.
+DAG stages are categorised as **bootstrap-only** (partition, base_install, hardware, configure) or **repeatable** (reconfigure, toolchain, packages, kernel). Only repeatable stages participate in re-converge runs.
 
 Not yet implemented.
 

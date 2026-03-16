@@ -312,7 +312,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Kernel stage (stage 8) | ✅ Done |
 | Reconfigure stage (stage 5) | ✅ Done |
 | Configure stage (stage 4) | 🔧 Stub |
-| Stages 1–3, 6 (partition → hardware, toolchain) | 🔧 Stub |
+| Stages 1–4, 6 (partition → configure, toolchain) | 🔧 Stub |
 | AUR RPC lookup in manifest | ✅ Done |
 | Hardware detection stage | ⬜ Planned |
 | `sysforge converge` | ⬜ Planned |

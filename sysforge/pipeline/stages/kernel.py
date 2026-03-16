@@ -1,5 +1,5 @@
 """
-stages/kernel.py — stage 6: kernel build
+stages/kernel.py — stage 8: kernel build
 
 Builds a custom kernel from a PKGBUILD and runs post-install steps.
 

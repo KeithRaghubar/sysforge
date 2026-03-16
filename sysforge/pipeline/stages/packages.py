@@ -1,5 +1,5 @@
 """
-stages/packages.py — stage 5: package builds
+stages/packages.py — stage 7: package builds
 
 Walks packages.toml and builds/installs each entry:
   source = "repo"  → pacman -S --needed <name> (no build, pacman owns it)

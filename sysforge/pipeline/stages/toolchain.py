@@ -15,5 +15,5 @@ class ToolchainStage(Stage):
     def run(self, config, state, options):
         raise NotImplementedError(
             f"Stage {self.name!r} is not yet implemented. "
-            f"Use --start-from to bypass stages 1-4 during development."
+            f"Use --start-from reconfigure for pre-build checks, or --start-from packages to skip straight to builds."
         )

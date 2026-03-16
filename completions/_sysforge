@@ -73,7 +73,7 @@ _sysforge_resolve() {
 _sysforge_pipeline() {
   _arguments \
     '--resume[continue from the last checkpoint]' \
-    '--start-from[begin from this stage]:stage:(partition base_install hardware toolchain packages kernel configure)' \
+    '--start-from[begin from this stage]:stage:(partition base_install hardware configure reconfigure toolchain packages kernel)' \
     '--force-retry[retry failed packages without prompting]' \
     '--dry-run[show what would run without executing]' \
     '--packages[path to packages.toml]:file:_files' \

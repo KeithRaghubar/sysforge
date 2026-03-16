@@ -120,7 +120,7 @@ the last saved `clean` state.
 1. `make vm-snapshot` — start from clean state
 2. SSH in, clone the kernel PKGBUILD into `~/builds/`
 3. Write `/etc/sysforge/kernel.toml`
-4. `sysforge install --start-from kernel`
+4. `sysforge pipeline --start-from kernel`
 5. Verify boot, check mkinitcpio output, verify bootctl entries
 6. Exit QEMU — changes discarded
 7. Repeat from step 1 for the next iteration
