@@ -172,16 +172,20 @@ Packages found in pacman sync DBs are marked `source = "repo"`. Others are confi
 
 ### Build a single package
 
+`sysforge build` accepts a PKGBUILD path, a package directory, or a bare package name. Bare names are resolved via `[paths] pkgbuild_dir` in `flag_profiles.toml`; if not found locally, repo packages are fetched via `pkgctl repo clone` and AUR packages via `git clone`.
+
 ```bash
-# Build using the matched profile
+# By path, directory, or bare name
 sysforge build /path/to/PKGBUILD
+sysforge build /path/to/htop/
+sysforge build htop
 
 # With additional makepkg flags (appended after profile makepkg_flags)
-sysforge build /path/to/PKGBUILD -m "-si"
-sysforge build /path/to/PKGBUILD -m "--noconfirm -f"
+sysforge build htop -m "-si"
+sysforge build htop -m "--noconfirm -f"
 
 # Interactive — strips --noconfirm so makepkg prompts are visible
-sysforge build /path/to/PKGBUILD --interactive
+sysforge build htop --interactive
 ```
 
 **Build flags:**
@@ -231,6 +235,26 @@ sysforge install --resume --force-retry --state-dir ~/sf-state
 | `--purge-log` | Truncate unified log before the run starts |
 | `--persist-log` | Keep log files after a successful run |
 
+### Inspect profile matching
+
+```bash
+# Show which profile would apply and why
+sysforge resolve htop
+sysforge resolve htop --show-flags
+```
+
+### Tab completion (zsh)
+
+```bash
+# Permanent
+sudo cp completions/_sysforge /usr/share/zsh/site-functions/
+
+# Current session only (from repo root)
+fpath=($(pwd)/completions $fpath) && compinit
+```
+
+Completes subcommands, all flags, and package names (local `pkgbuild_dir` + pacman sync DB).
+
 ---
 
 ## Logging
@@ -279,7 +303,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 5) | ✅ Done |
 | Manifest generator (`sysforge manifest`) | ✅ Done |
-| Pytest suite (552 tests) | ✅ Done |
+| Pytest suite (561 tests) | ✅ Done |
 | Kernel stage (stage 6) | ✅ Done |
 | Configure stage (stage 7) | 🔧 Stub |
 | Stages 1–4 (partition → toolchain) | 🔧 Stub |
@@ -287,6 +311,11 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Hardware detection stage | ⬜ Planned |
 | `sysforge converge` | ⬜ Planned |
 | `sysforge resolve` | ✅ Done |
+| Bare package name resolution (`sysforge build htop`) | ✅ Done |
+| AUR auto-clone on miss | ✅ Done |
+| Repo package auto-checkout via pkgctl | ✅ Done |
+| GPG key auto-import (`validpgpkeys` + bundled `keys/pgp/`) | ✅ Done |
+| Zsh tab completion | ✅ Done |
 | AUR publication | ⬜ Planned |
 | Full yay replacement (V2) | ⬜ Long-term |
 

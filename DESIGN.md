@@ -99,7 +99,7 @@ sysforge/
 │       ├── dep_analysis.py            # pre-build soname dependency checks
 │       ├── failure.py                 # failure scenario handling (shared)
 │       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
-│       └── aur.py                     # AUR RPC v5 batch query + git clone helper
+│       └── aur.py                     # AUR RPC v5, git clone, pkgctl checkout, GPG key import
 │   └── pipeline/
 │       ├── __init__.py
 │       ├── runner.py                  # stage sequencing, checkpoint/resume
@@ -149,6 +149,8 @@ sysforge/
 │   ├── test_stage_packages.py
 │   ├── test_system_conf.py
 │   └── test_wrapper.py
+├── completions/
+│   └── _sysforge                      # zsh completion script
 ├── PKGBUILD
 ├── pyproject.toml
 ├── Makefile
@@ -186,7 +188,7 @@ Each entry declares:
 
 ```toml
 [build]
-pkgbuild_dir = "~/builds"   # pre-cloned AUR PKGBUILDs live here
+pkgbuild_dir = "~/builds"   # PKGBUILD root; auto-cloned if absent
 
 [[package]]
 name = "nvidia-open-dkms"
@@ -355,7 +357,7 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-All modules independently testable. 545 pytest tests (`pytest` from repo root).
+All modules independently testable. 561 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 
@@ -373,9 +375,9 @@ TOML config loading and path resolution. Public API:
 - `load_config(config_paths=None)` — loads `flag_profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
 - `load_conflict_groups(paths=None)` — loads `append_conflict_groups.toml`
 - `load_consumes_inference(paths=None)` — loads `consumes_inference.toml`
-- `find_pkgbuild(pkg, config=None)` — resolves a bare package name or path to an absolute PKGBUILD path. Search order: direct path → `<cwd>/<name>/PKGBUILD` → `<config [paths] pkgbuild_dir>/<name>/PKGBUILD`. Used by both `sysforge build` and `sysforge resolve`.
+- `find_pkgbuild(pkg, config=None)` — resolves a bare package name, directory path, or PKGBUILD path to an absolute PKGBUILD path. Search order: (1) direct path or directory (resolves `dir/PKGBUILD`), (2) `<cwd>/<name>/PKGBUILD`, (3) `<config [paths] pkgbuild_dir>/<name>/PKGBUILD`, (4) auto-clone if not found locally — repo packages via `pkgctl repo clone --protocol=https`, AUR packages via `aur_clone`. Used by `sysforge build`, `sysforge resolve`, and the packages stage.
 
-`[paths] pkgbuild_dir` in `flag_profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). When a bare name is given on the CLI, `find_pkgbuild` looks for `<pkgbuild_dir>/<name>/PKGBUILD` as the final fallback before raising `FileNotFoundError`.
+`[paths] pkgbuild_dir` in `flag_profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
 - `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines.
 
 ### `profile.py`
@@ -439,13 +441,14 @@ High-level flow:
 1. Parse PKGBUILD via `pkgbuild_meta.py`
 2. Match rules, resolve profile (injecting `pkgbuild_extracted` root if patching)
 3. Resolve consumes and groups
-4. Run pre-build soname dep analysis
-5. If `patch_pkgbuild` or `kernel` mode: extract PKGBUILD flags, write extracted profile, apply patch
-6. If `kernel` mode and not `interactive`: patch interactive kconfig targets in `PKGBUILD.sysforge` to `olddefconfig`
-7. If `kernel` mode: detect effective CC; if clang, inject `LLVM=1 LLVM_IAS=1` into build env
-8. Emit complete temp `makepkg.conf` (merged system conf + profile overrides; kernel mode omits `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`CPPFLAGS`/`DEBUG_*` profile overrides — system conf values preserved verbatim)
-9. Resolve env vars for subprocess injection
-10. Invoke `makepkg -p PKGBUILD.sysforge` with temp conf and injected env
+4. Import GPG keys via `aur.import_pgp_keys` (bundled `keys/pgp/*.asc` first, keyserver fallback)
+5. Run pre-build soname dep analysis
+6. If `patch_pkgbuild` or `kernel` mode: extract PKGBUILD flags, write extracted profile, apply patch
+7. If `kernel` mode and not `interactive`: patch interactive kconfig targets in `PKGBUILD.sysforge` to `olddefconfig`
+8. If `kernel` mode: detect effective CC; if clang, inject `LLVM=1 LLVM_IAS=1` into build env
+9. Emit complete temp `makepkg.conf` (merged system conf + profile overrides; kernel mode omits `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`CPPFLAGS`/`DEBUG_*` profile overrides — system conf values preserved verbatim)
+10. Resolve env vars for subprocess injection
+11. Invoke `makepkg -p PKGBUILD.sysforge` with temp conf and injected env
 
 **System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
 
@@ -453,17 +456,19 @@ High-level flow:
 
 ### `aur.py`
 
-AUR RPC queries and git clone helper. No system dependencies beyond Python stdlib (`urllib`, `json`) and `git`.
+AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key import.
 
-- `aur_info(names)` — single batch `GET https://aur.archlinux.org/rpc/v5/info?arg[]=…` for all names; returns `{name: result_dict}`. Silent on network/JSON errors (returns `{}`). Used by `manifest.py` for classification and by `config.find_pkgbuild` to gate auto-clone.
+- `is_repo_package(name)` — `pacman -Si <name>`; returns `True` if found in any sync DB. Used by `find_pkgbuild` to route auto-clone: repo packages → `pkgctl_checkout`, AUR → `aur_clone`. Also used by `manifest.py` for source classification.
+- `aur_info(names)` — single batch `GET https://aur.archlinux.org/rpc/v5/info?arg[]=…` for all names; returns `{name: result_dict}`. Silent on network/JSON errors (returns `{}`).
 - `aur_clone(name, dest)` — `git clone https://aur.archlinux.org/<name>.git <dest>`; raises `RuntimeError` on failure.
+- `pkgctl_checkout(name, dest)` — `pkgctl repo clone --protocol=https <name>` run in `dest.parent`; fetches official Arch packaging repo. Raises `RuntimeError` on failure.
+- `import_pgp_keys(pkgmeta, pkgbuild_path)` — ensures all `validpgpkeys` listed in the PKGBUILD are in the GPG keyring before `makepkg` runs. Strategy: (1) import any bundled `.asc` files from `keys/pgp/` alongside the PKGBUILD, (2) check which keys are still missing via `gpg --list-keys`, (3) fetch remaining via `gpg --recv-keys`. Import failures are logged as warnings — makepkg surfaces a clearer error if a key is still absent at verification time.
 
 ### `resolve.py`
 
 Implements `sysforge resolve` — inspect profile matching for a PKGBUILD without building it. Output goes to stdout (same pattern as `manifest.py`).
 
-Public API: `cmd_resolve(args)`. Internal helpers:
-- `_find_pkgbuild(pkg)` — accepts a full file path or bare package name (looks for `<cwd>/<name>/PKGBUILD`); raises `FileNotFoundError` with a message showing both searched paths
+Public API: `cmd_resolve(args)`. Uses `find_pkgbuild` from `config.py` for PKGBUILD lookup (same search order as `sysforge build`). Internal helpers:
 - `_get_profile_chain(profile_name, profiles)` — walks the `extends` chain and returns it root-last; stops on cycle or missing parent
 - `_find_winner(matched_rules)` — returns the highest-priority rule that specifies a `profile` key
 - `_format_conditions(rule)` — compact single-line summary of match conditions, omitting `profile`/`priority`
@@ -834,8 +839,6 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 **`[FLAG]` tag — partial coverage.** Emitted for: CLI toolchain overrides (`--cc`, `--cxx`, `--ld`), linker token replacement and injection, linker guard stripping, conflict group firing (logs group name, evicted tokens, inserted token), and prefix-match token replacement during `merge_extends`. Not emitted for: `apply_patch_pkgbuild` token changes (those use `[PATCH]`).
 
-**`--config` flag (install) — never added.** The design called for a `--config` flag on `sysforge install` for whole-directory or single-file config override. It was never wired up. `--profile-conf` (flag_profiles.toml override) is the only config override currently implemented. Do not add `--config` without settling the scope.
-
 **`[CACHE]` ThinLTO probe is per-build, not per-run.** `emit_system_probes()` (ld.so mtime, pacman cache size) runs once at the start of each pipeline or build invocation. ThinLTO cache size is probed inside `_run_build()` because it requires the resolved profile's LDFLAGS — those are per-package, not available at run start. So ThinLTO appears in `[CACHE]` lines once per package that configures `--thinlto-cache-dir=` in its LDFLAGS.
 
 ---
@@ -845,7 +848,7 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 V2 goal: full `yay` replacement — an AUR helper with compiler optimization as a first-class concern.
 
 V2 absorbs:
-- **AUR fetch** — clone and update PKGBUILDs from AUR directly (AUR RPC lookup already stubbed in `manifest.py`)
+- **AUR fetch** — clone and update PKGBUILDs from AUR directly (AUR RPC + auto-clone already implemented; V2 adds update/refresh)
 - **PKGBUILD review** — present diffs to the user before build
 - **Recursive AUR dep resolution** — walk the full AUR dependency tree
 - **Mixed pacman/AUR tree management** — unified view of repo and AUR packages

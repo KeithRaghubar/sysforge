@@ -7,21 +7,19 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 - Language: Python
 - Config format: TOML
-- Test suite: 545 pytest tests
+- Test suite: 561 pytest tests
 
 ## Dev Environment
 
 - Ryzen 7 5800X3D, RTX 5070, Arch Linux, COSMIC on Wayland, nvidia-open-dkms
-- `pkgbuild_dir = ~/builds`
+- `pkgbuild_dir = ~/src` (sources); builds at `~/builds`
 - `/etc/sysforge/` is a live mirror of `tests/data/etc/sysforge/` — edit project files, then `sudo cp` to sync live
 
 ## Known Bugs & Gotchas
 
-1. **`--config` flag (install)** — planned but **never added to the CLI**. `--profile-conf` exists and works as the config override. Scope for `--config` is undecided (whole dir override vs single file). Do not add it until the design is settled.
-2. **AUR RPC lookup** — `manifest.py` uses `_stub_aur_fn`, which always returns `None`. Real AUR lookups are not wired up.
-3. **`_pkgmeta_placeholder`** — wiring was fixed once; history may resurface. Verify if touching metadata paths.
-4. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
-5. **`match_rules` and `pkgbase`** — split-package PKGBUILDs (e.g. kernels) set `pkgbase` to the canonical name; `pkgname` is an array of unexpanded sub-package names (`"$pkgbase"`). Rules using `pkgnames` now match against `pkgbase` too. Don't regress this.
+1. **`_pkgmeta_placeholder`** — wiring was fixed once; history may resurface. Verify if touching metadata paths.
+2. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
+3. **`match_rules` and `pkgbase`** — split-package PKGBUILDs (e.g. kernels) set `pkgbase` to the canonical name; `pkgname` is an array of unexpanded sub-package names (`"$pkgbase"`). Rules using `pkgnames` now match against `pkgbase` too. Don't regress this.
 
 ## Implemented: Verbosity Levels
 
@@ -43,11 +41,11 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 - **`--cache-report` flag** — on both `build` and `install`; prints structured summary to stderr at end of run (always shown, bypasses verbosity gating)
 - Module: `sysforge/primitives/cache_probe.py`
 
-## Pending Work (Queued)
+## Implemented (notable recent additions)
 
-### Unimplemented features
-
-- **`[FLAG]` tag** — ~~conflict group resolution and prefix-match token replacement logging~~ **done**. Remaining gap: `apply_patch_pkgbuild` (uses `[PATCH]` — intentional).
+- **Bare package name resolution** — `sysforge build htop` / `sysforge resolve htop`. `find_pkgbuild` in `config.py` searches: direct path/dir → cwd → `[paths] pkgbuild_dir` → auto-clone. Repo packages: `pkgctl repo clone --protocol=https`. AUR packages: `git clone` from AUR.
+- **GPG key auto-import** — before each build: imports bundled `keys/pgp/*.asc` first, then `gpg --recv-keys` for any still missing `validpgpkeys`.
+- **Zsh completion** — `completions/_sysforge`. Install to `/usr/share/zsh/site-functions/`. `sysforge completions packages` subcommand outputs local pkgbuild_dir packages + pacman sync DB names.
 
 ## Interaction Preferences
 
