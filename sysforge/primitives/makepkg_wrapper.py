@@ -363,14 +363,36 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )
+        failed_stage = None
         for line in proc.stdout:
-            _log.debug("[MAKEPKG]", line.rstrip())
+            stripped = line.rstrip()
+            if "A failure occurred in prepare()." in stripped:
+                failed_stage = "prepare"
+            elif "A failure occurred in build()." in stripped:
+                failed_stage = "build"
+            elif "A failure occurred in package()." in stripped:
+                failed_stage = "package"
+            _log.debug("[MAKEPKG]", stripped)
         proc.wait()
         returncode = proc.returncode
     else:
         returncode = subprocess.run(cmd, cwd=build_dir, env=env).returncode
+        failed_stage = None
 
     if returncode != 0:
+        if failed_stage == "prepare":
+            _log.info("[BUILD]", "prepare() failed — likely an upstream issue "
+                      "(patch conflict, changed upstream state, or fetch error); "
+                      "sysforge does not modify prepare()")
+        elif failed_stage == "build":
+            _log.info("[BUILD]", "build() failed — could be upstream or a flag/toolchain "
+                      "incompatibility from the active sysforge profile")
+        elif failed_stage == "package":
+            _log.info("[BUILD]", "package() failed — likely an upstream issue; "
+                      "sysforge does not modify package()")
+        else:
+            _log.info("[BUILD]", "re-run with -vvv to capture full makepkg output "
+                      "in the log for diagnosis")
         raise subprocess.CalledProcessError(returncode, "makepkg")
 
 
