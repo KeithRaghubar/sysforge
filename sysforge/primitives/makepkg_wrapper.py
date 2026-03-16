@@ -354,10 +354,24 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
     _log.info("[BUILD]", f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
 
-    result = subprocess.run(cmd, cwd=build_dir, env=env)
+    if _log.get_verbosity() >= 3 and not interactive:
+        # Capture stdout+stderr and log each line with [MAKEPKG] tag.
+        # debug() always writes to the log file, so this fills the gap in the
+        # per-package log regardless of terminal verbosity.
+        proc = subprocess.Popen(
+            cmd, cwd=build_dir, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        for line in proc.stdout:
+            _log.debug("[MAKEPKG]", line.rstrip())
+        proc.wait()
+        returncode = proc.returncode
+    else:
+        returncode = subprocess.run(cmd, cwd=build_dir, env=env).returncode
 
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, "makepkg")
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, "makepkg")
 
 
 def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
