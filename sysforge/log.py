@@ -77,7 +77,7 @@ def open_unified_log(path, purge: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = "w" if purge else "a"
     _unified_log_fh = open(path, mode, buffering=1)  # line-buffered
-    _write_to_files(_session_header("sysforge install"), raw=True)
+    _write_to_files(_session_header("sysforge pipeline"), raw=True)
 
 
 def close_unified_log(success: bool = True, persist: bool = False) -> None:

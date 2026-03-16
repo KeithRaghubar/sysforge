@@ -14,7 +14,7 @@ _sysforge() {
       case $words[1] in
         build)    _sysforge_build    ;;
         resolve)  _sysforge_resolve  ;;
-        install)  _sysforge_install  ;;
+        pipeline) _sysforge_pipeline ;;
         manifest) _sysforge_manifest ;;
       esac
       ;;
@@ -24,9 +24,9 @@ _sysforge() {
 _sysforge_commands() {
   local commands=(
     'build:build a package from a PKGBUILD'
-    'install:run the install pipeline'
     'manifest:generate a packages.toml stub'
     'resolve:show which profile would apply to a package'
+    'pipeline:[planned] run the full install pipeline'
     'converge:[planned] rebuild packages that have drifted from their profile'
   )
   _describe 'command' commands
@@ -70,7 +70,7 @@ _sysforge_resolve() {
     '1: :_sysforge_pkg_or_file'
 }
 
-_sysforge_install() {
+_sysforge_pipeline() {
   _arguments \
     '--resume[continue from the last checkpoint]' \
     '--start-from[begin from this stage]:stage:(partition base_install hardware toolchain packages kernel configure)' \

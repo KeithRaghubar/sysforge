@@ -3,11 +3,10 @@ cli.py — SysForge command-line interface
 
 Implemented commands:
     sysforge build <PKGBUILD>   Build a single package using its matched profile
-    sysforge install            Run the pipeline (stages 5-7 usable now;
-                                stages 1-4 are stubs, use --start-from packages)
     sysforge manifest           Generate a packages.toml stub from a list of names
 
 Stubbed commands (not yet implemented):
+    sysforge pipeline           Full install pipeline (stub — not yet implemented)
     sysforge converge           Rebuild packages whose profile, flags, or version have drifted
     sysforge resolve <pkg>      Show which profile would be applied to a package and why
 """
@@ -21,8 +20,6 @@ from sysforge.resolve import cmd_resolve
 
 from sysforge.primitives.makepkg_wrapper import run
 from sysforge.primitives.config import load_config
-from sysforge.pipeline.runner import run_pipeline
-from sysforge.pipeline.stages.base import RunOptions
 
 
 def _expand_makepkg_flags(flags_str):
@@ -69,29 +66,11 @@ def _cmd_build(args):
         sys.exit(1)
 
 
-def _cmd_install(args):
-    config_paths = [Path(args.profile_conf)] if args.profile_conf else None
-    config = load_config(config_paths=config_paths)
-
-    # Inject packages_file into config if passed on CLI
-    if args.packages:
-        config["packages_file"] = args.packages
-
-    options = RunOptions(
-        resume=args.resume,
-        start_from=args.start_from,
-        force_retry=args.force_retry,
-        dry_run=args.dry_run,
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        no_unified_log=args.no_unified_log,
-        no_pkg_logs=args.no_pkg_logs,
-        log_dir=Path(args.log_dir) if args.log_dir else None,
-        purge_log=args.purge_log,
-        persist_log=args.persist_log,
-        cache_report=args.cache_report,
-    )
-
-    run_pipeline(config, options)
+def _cmd_pipeline(args):
+    # TODO: implement full pipeline stages (partition, base_install, hardware,
+    # toolchain, packages, kernel, configure).
+    print("[SYSFORGE] 'pipeline' is not yet implemented.", file=sys.stderr)
+    sys.exit(1)
 
 
 def _cmd_completions(args):
@@ -265,17 +244,18 @@ def main():
     )
     p_build.set_defaults(func=_cmd_build)
 
-    # install
-    p_install = sub.add_parser(
-        "install",
-        help="Run the install pipeline (stages 5-7 active; 1-4 are stubs).",
+    # pipeline
+    # pipeline
+    p_pipeline = sub.add_parser(
+        "pipeline",
+        help="[planned] Run the full install pipeline.",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--resume",
         action="store_true",
         help="Resume from the last checkpoint.",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--start-from",
         metavar="STAGE",
         dest="start_from",
@@ -285,24 +265,24 @@ def main():
             "--start-from packages"
         ),
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--force-retry",
         action="store_true",
         dest="force_retry",
         help="Retry all failed packages without prompting.",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--dry-run",
         action="store_true",
         dest="dry_run",
         help="Show what would run without executing anything.",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--packages",
         metavar="FILE",
         help="Path to packages.toml (default: /etc/sysforge/packages.toml).",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--state-dir",
         metavar="DIR",
         dest="state_dir",
@@ -311,49 +291,49 @@ def main():
             "SYSFORGE_STATE_DIR env var)."
         ),
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--no-unified-log",
         action="store_true",
         dest="no_unified_log",
         help="Disable the unified log file.",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--no-pkg-logs",
         action="store_true",
         dest="no_pkg_logs",
         help="Disable per-package log files.",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--log-dir",
         metavar="DIR",
         dest="log_dir",
         help="Directory for log files (default: state directory).",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--purge-log",
         action="store_true",
         dest="purge_log",
         help="Truncate the unified log before this run.",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--persist-log",
         action="store_true",
         dest="persist_log",
         help="Keep log files after successful completion (default: truncate on success).",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--profile-conf",
         metavar="FILE",
         dest="profile_conf",
         help="Path to a flag_profiles.toml to use instead of the default user/system config.",
     )
-    p_install.add_argument(
+    p_pipeline.add_argument(
         "--cache-report",
         action="store_true",
         dest="cache_report",
         help="Print a structured cache summary (ccache/sccache hit rates) after the pipeline completes.",
     )
-    p_install.set_defaults(func=_cmd_install)
+    p_pipeline.set_defaults(func=_cmd_pipeline)
 
     # manifest
     p_manifest = sub.add_parser(

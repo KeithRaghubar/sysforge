@@ -38,8 +38,8 @@ def test_hoist_v_before_subcommand():
 
 
 def test_hoist_vv_before_subcommand():
-    result = _hoist_verbosity_flags(["install", "-vv"])
-    assert result == ["-vv", "install"]
+    result = _hoist_verbosity_flags(["pipeline", "-vv"])
+    assert result == ["-vv", "pipeline"]
 
 
 def test_hoist_vvv_before_subcommand():

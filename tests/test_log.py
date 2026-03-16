@@ -197,7 +197,7 @@ def test_open_unified_log_writes_session_header(tmp_path):
     log.open_unified_log(path)
     log.close_unified_log(success=False, persist=True)
     content = path.read_text()
-    assert "sysforge install" in content
+    assert "sysforge pipeline" in content
     assert "─" in content  # separator line
 
 

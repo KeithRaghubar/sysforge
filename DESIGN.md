@@ -240,7 +240,7 @@ Pipeline state is written to `/var/lib/sysforge/` by default. Override via the `
 
 ### Profile conf override
 
-Both `sysforge build` and `sysforge install` accept `--profile-conf FILE` to substitute an alternate `flag_profiles.toml` at runtime, bypassing the default user/system search paths. Scope is intentionally limited to flag profiles — conflict groups and consumes inference are not affected (edit those files directly if needed). If the specified file sets `extends_system = true`, the standard system config is still merged underneath it via the normal `extends_system` logic.
+Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to substitute an alternate `flag_profiles.toml` at runtime, bypassing the default user/system search paths. Scope is intentionally limited to flag profiles — conflict groups and consumes inference are not affected (edit those files directly if needed). If the specified file sets `extends_system = true`, the standard system config is still merged underneath it via the normal `extends_system` logic.
 
 ### Hardware overlays
 
@@ -682,7 +682,7 @@ Set once at CLI entry via `log.set_verbosity(args.verbose)`. Tests run at verbos
 
 File logging runs at full verbosity regardless of the `-v` level — every `[INFO]`, `[WARN]`, and `[ERROR]` line is written to file even when the terminal shows only errors. Never let file I/O break a build: all file write errors are silently swallowed.
 
-**Unified log** — one file for the entire `sysforge install` run.
+**Unified log** — one file for the entire `sysforge pipeline` run.
 
 - Default path: `<state_dir>/sysforge.log` (i.e. `/var/lib/sysforge/sysforge.log`)
 - Appends across runs. Cleared (truncated, not deleted) on successful pipeline completion. Consecutive failures accumulate the full log from first failure until success.
@@ -696,19 +696,19 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 - Path: `<pkgbuild_dir>/<pkgname>/sysforge_<pkgname>.log`
 - Same lifecycle as the unified log: appends across builds, cleared on success unless `--persist-log`.
-- Written by both `sysforge install` (via the packages stage) and `sysforge build`.
-- `--no-pkg-logs` disables per-package logs for `sysforge install`.
+- Written by both `sysforge pipeline` (via the packages stage) and `sysforge build`.
+- `--no-pkg-logs` disables per-package logs for `sysforge pipeline`.
 
 **CLI flag summary:**
 
 | Flag | Command | Effect |
 |---|---|---|
-| `--no-unified-log` | `install` | Disable unified log for this run |
-| `--no-pkg-logs` | `install` | Disable per-package logs for this run |
+| `--no-unified-log` | `pipeline` | Disable unified log for this run |
+| `--no-pkg-logs` | `pipeline` | Disable per-package logs for this run |
 | `--no-pkg-log` | `build` | Disable the per-package log for this build |
-| `--log-dir <path>` | `install`, `build` | Override log file directory |
-| `--purge-log` | `install` | Truncate unified log before run |
-| `--persist-log` | `install`, `build` | Keep log files after success |
+| `--log-dir <path>` | `pipeline`, `build` | Override log file directory |
+| `--purge-log` | `pipeline` | Truncate unified log before run |
+| `--persist-log` | `pipeline`, `build` | Keep log files after success |
 
 ### Tags in use
 
@@ -774,7 +774,7 @@ sccache wraps Rust via `RUSTC_WRAPPER=sccache` (env pass). `CARGO_INCREMENTAL=0`
 - **Per-build:** ccache and sccache hit/miss deltas, bracketing each `makepkg` invocation. Hit rate % shown when compilations occur; "no compilations recorded" if delta is zero.
 - **System probes (once per run):** ld.so cache mtime, pacman cache file count + size, ThinLTO cache dir size (extracted from `--thinlto-cache-dir=` in profile LDFLAGS).
 
-`--cache-report` on both `build` and `install` subcommands prints a structured per-package and totals summary to stderr at end of run, regardless of verbosity. This is the only user-visible output that ignores verbosity gating.
+`--cache-report` on both `build` and `pipeline` subcommands prints a structured per-package and totals summary to stderr at end of run, regardless of verbosity. This is the only user-visible output that ignores verbosity gating.
 
 Cache probe uses `ccache --print-stats --format=tab` (ccache ≥ 4.0, standard on Arch) and `sccache --show-stats`. Both are skipped if the binary is absent.
 

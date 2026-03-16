@@ -163,9 +163,9 @@ def run_pipeline(config, options, stages=None):
                 _log.error("[PIPELINE]", f"{stage.name}: NOT IMPLEMENTED")
                 _log.error("[PIPELINE]", f"  {e}")
                 _log.error("[PIPELINE]", f"To skip this stage during development:\n"
-                    f"    sysforge install --start-from {stage.name} --resume\n"
+                    f"    sysforge pipeline --start-from {stage.name} --resume\n"
                     f"  or jump directly to a later stage:\n"
-                    f"    sysforge install --start-from packages")
+                    f"    sysforge pipeline --start-from packages")
                 sys.exit(1)
 
             except RuntimeError as e:

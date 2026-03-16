@@ -30,9 +30,9 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 ## Implemented: Dual Log Scheme
 
-- **Unified log**: `state_dir/sysforge.log` (install subcommand only)
-- **Per-package log**: written to source dir (both `build` and `install`)
-- **CLI flags on `install`**: `--no-unified-log`, `--no-pkg-logs`, `--log-dir`, `--purge-log`, `--persist-log`
+- **Unified log**: `state_dir/sysforge.log` (pipeline subcommand only)
+- **Per-package log**: written to source dir (both `build` and `pipeline`)
+- **CLI flags on `pipeline`**: `--no-unified-log`, `--no-pkg-logs`, `--log-dir`, `--purge-log`, `--persist-log`
 - **CLI flags on `build`**: `--persist-log`, `--no-pkg-log`, `--log-dir`
 
 ## Implemented: Cache Monitoring

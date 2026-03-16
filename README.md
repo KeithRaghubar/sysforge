@@ -64,7 +64,7 @@ sudo chmod 755 /etc/sysforge/
 sysforge manifest htop neovim mesa-git cosmic-comp-git > packages.toml
 
 # 3. Run the packages stage directly
-sysforge install --start-from packages --packages packages.toml --state-dir ~/sf-state
+sysforge pipeline --start-from packages --packages packages.toml --state-dir ~/sf-state
 ```
 
 ---
@@ -202,23 +202,23 @@ sysforge build htop --interactive
 | `--log-dir <dir>` | Write per-package log to this directory instead of alongside the PKGBUILD |
 | `--persist-log` | Keep per-package log after a successful build |
 
-### Run the install pipeline
+### Run the pipeline
 
 ```bash
 # Stages 1–4 are stubbed. Use --start-from to jump to packages:
-sysforge install --start-from packages --packages packages.toml --state-dir ~/sf-state
+sysforge pipeline --start-from packages --packages packages.toml --state-dir ~/sf-state
 
 # Resume after a failure
-sysforge install --resume --state-dir ~/sf-state
+sysforge pipeline --resume --state-dir ~/sf-state
 
 # Preview without executing
-sysforge install --start-from packages --dry-run --state-dir ~/sf-state
+sysforge pipeline --start-from packages --dry-run --state-dir ~/sf-state
 
 # Retry failed packages without prompting
-sysforge install --resume --force-retry --state-dir ~/sf-state
+sysforge pipeline --resume --force-retry --state-dir ~/sf-state
 ```
 
-**Install flags:**
+**Pipeline flags:**
 
 | Flag | Effect |
 |---|---|
