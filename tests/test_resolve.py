@@ -44,6 +44,14 @@ def test_find_pkgbuild_explicit_path():
     assert result == path.resolve()
 
 
+def test_find_pkgbuild_directory_path(tmp_path):
+    """Passing a directory path resolves to the PKGBUILD inside it."""
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("pkgname=mypkg\n")
+    result = find_pkgbuild(str(tmp_path))
+    assert result == pb.resolve()
+
+
 def test_find_pkgbuild_bare_name_via_cwd(tmp_path):
     pkg_dir = tmp_path / "mypkg"
     pkg_dir.mkdir()

@@ -57,6 +57,8 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
     from sysforge.primitives.aur import aur_clone, aur_info, is_repo_package, pkgctl_checkout
 
     p = Path(pkg)
+    if p.is_dir():
+        p = p / "PKGBUILD"
     if p.exists():
         return p.resolve()
 
