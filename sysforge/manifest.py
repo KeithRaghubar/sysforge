@@ -13,28 +13,16 @@ Public API:
     generate_manifest(names, pacman_fn=None, aur_fn=None) -> str
     cmd_manifest(args)
 """
-import subprocess
 import sysforge.log as _log
 import sys
 from typing import Callable
 
-from sysforge.primitives.aur import aur_info
+from sysforge.primitives.aur import aur_info, is_repo_package
 
 
 # ---------------------------------------------------------------------------
 # Source detection
 # ---------------------------------------------------------------------------
-
-def _default_pacman_si(name):
-    """
-    Return True if name exists in pacman sync DBs.
-    Uses pacman -Si which queries sync repos without installing anything.
-    """
-    result = subprocess.run(
-        ["pacman", "-Si", name],
-        capture_output=True,
-    )
-    return result.returncode == 0
 
 
 def _make_aur_fn(names: list[str]) -> Callable[[str], str | None]:
@@ -90,7 +78,7 @@ def generate_manifest(names, pacman_fn=None, aur_fn=None):
     Returns the TOML string (ready to write to a file).
     """
     if pacman_fn is None:
-        pacman_fn = _default_pacman_si
+        pacman_fn = is_repo_package
 
     # Deduplicate while preserving order
     seen = set()

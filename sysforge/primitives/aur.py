@@ -1,9 +1,11 @@
 """
-aur.py — AUR RPC queries and git clone helpers
+aur.py — AUR RPC queries, git clone, and pkgctl checkout helpers
 
 Public API:
-    aur_info(names)        -> dict[str, dict]   batch info query (name → result)
+    is_repo_package(name)  -> bool              True if name is in pacman sync DBs
+    aur_info(names)        -> dict[str, dict]   batch AUR RPC v5 query (name → result)
     aur_clone(name, dest)  -> None              git clone from AUR into dest
+    pkgctl_checkout(name, dest) -> None         pkgctl repo clone into dest
 """
 import json
 import subprocess
@@ -48,6 +50,32 @@ def aur_info(names: list[str]) -> dict[str, dict]:
     found = {r["Name"]: r for r in results}
     _log.info("[MANIFEST]", f"AUR RPC: {len(found)}/{len(names)} found")
     return found
+
+
+def is_repo_package(name: str) -> bool:
+    """Return True if name exists in any pacman sync DB."""
+    result = subprocess.run(["pacman", "-Si", name], capture_output=True)
+    return result.returncode == 0
+
+
+def pkgctl_checkout(name: str, dest: Path) -> None:
+    """
+    Clone the official Arch Linux packaging repo for name into dest via pkgctl.
+
+    pkgctl repo clone <name> run in dest.parent creates dest.parent/<name>/PKGBUILD.
+    Raises RuntimeError on failure.
+    """
+    _log.info("[BUILD]", f"Checking out {name!r} from official repos → {dest}")
+    result = subprocess.run(
+        ["pkgctl", "repo", "clone", name],
+        cwd=str(dest.parent),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"pkgctl checkout failed for {name!r}:\n{result.stderr.strip()}"
+        )
 
 
 def aur_clone(name: str, dest: Path) -> None:

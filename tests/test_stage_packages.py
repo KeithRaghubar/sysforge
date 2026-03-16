@@ -81,7 +81,8 @@ def test_resolve_pkgbuild_aur_clone(tmp_path):
         dest.mkdir()
         (dest / "PKGBUILD").write_text("pkgname=mesa-git\n")
 
-    with patch("sysforge.primitives.aur.aur_info", return_value={"mesa-git": {}}), \
+    with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
+         patch("sysforge.primitives.aur.aur_info", return_value={"mesa-git": {}}), \
          patch("sysforge.primitives.aur.aur_clone", side_effect=fake_clone):
         result = _resolve_pkgbuild("mesa-git", {"pkgbuild_dir": str(tmp_path)}, {})
 
@@ -89,7 +90,8 @@ def test_resolve_pkgbuild_aur_clone(tmp_path):
 
 
 def test_resolve_pkgbuild_not_found_raises(tmp_path):
-    with patch("sysforge.primitives.aur.aur_info", return_value={}):
+    with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
+         patch("sysforge.primitives.aur.aur_info", return_value={}):
         with pytest.raises(RuntimeError, match="PKGBUILD not found"):
             _resolve_pkgbuild("nonexistent", {"pkgbuild_dir": str(tmp_path)}, {})
 
@@ -284,6 +286,7 @@ def test_packages_stage_aur_auto_clone(tmp_path):
     with patch("sysforge.pipeline.stages.packages.makepkg_run", side_effect=fake_makepkg), \
          patch("sysforge.pipeline.stages.packages.subprocess.run",
                return_value=MagicMock(returncode=0)), \
+         patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
          patch("sysforge.primitives.aur.aur_info", return_value={"llvm": {}, "mesa-git": {}}), \
          patch("sysforge.primitives.aur.aur_clone", side_effect=fake_clone):
         PackagesStage().run(config, state, make_options(state_dir=tmp_path / "state"))

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sysforge.primitives.aur import aur_clone, aur_info
+from sysforge.primitives.aur import aur_clone, aur_info, is_repo_package, pkgctl_checkout
 
 
 # ---------------------------------------------------------------------------
@@ -149,3 +149,74 @@ def test_aur_clone_failure_raises():
     with patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="AUR clone failed"):
             aur_clone("nonexistent-pkg-xyz", Path("/tmp/nonexistent"))
+
+
+# ---------------------------------------------------------------------------
+# is_repo_package
+# ---------------------------------------------------------------------------
+
+def test_is_repo_package_found():
+    with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)):
+        assert is_repo_package("htop") is True
+
+
+def test_is_repo_package_not_found():
+    with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1)):
+        assert is_repo_package("totally-fake-aur-only-pkg") is False
+
+
+def test_is_repo_package_calls_pacman_si():
+    captured = []
+    def fake_run(cmd, **kwargs):
+        captured.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        is_repo_package("htop")
+
+    assert captured[0][:3] == ["pacman", "-Si", "htop"]
+
+
+# ---------------------------------------------------------------------------
+# pkgctl_checkout
+# ---------------------------------------------------------------------------
+
+def test_pkgctl_checkout_success(tmp_path):
+    pkg_dir = tmp_path / "htop"
+
+    def fake_run(cmd, **kwargs):
+        # Simulate pkgctl creating the directory with a PKGBUILD
+        pkg_dir.mkdir()
+        (pkg_dir / "PKGBUILD").write_text("pkgname=htop\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        pkgctl_checkout("htop", pkg_dir)
+
+    assert (pkg_dir / "PKGBUILD").exists()
+
+
+def test_pkgctl_checkout_runs_in_parent(tmp_path):
+    captured = []
+    pkg_dir = tmp_path / "htop"
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        pkgctl_checkout("htop", pkg_dir)
+
+    cmd, kwargs = captured[0]
+    assert cmd[:3] == ["pkgctl", "repo", "clone"]
+    assert "htop" in cmd
+    assert kwargs.get("cwd") == str(tmp_path)
+
+
+def test_pkgctl_checkout_failure_raises(tmp_path):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error: package not found")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="pkgctl checkout failed"):
+            pkgctl_checkout("nonexistent", tmp_path / "nonexistent")

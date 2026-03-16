@@ -45,15 +45,16 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
     1. pkg is an existing path → use directly.
     2. <cwd>/<pkg>/PKGBUILD
     3. <config [paths] pkgbuild_dir>/<pkg>/PKGBUILD  (if configured)
-    4. AUR clone into pkgbuild_dir if the package is found on AUR  (if pkgbuild_dir configured)
+    4. If not found locally: check pacman sync DBs (pkgctl repo clone) or AUR (aur_clone)
+       — only attempted if pkgbuild_dir is configured.
 
     Raises FileNotFoundError listing all searched paths if nothing is found.
-    Raises RuntimeError (from aur_clone) if the AUR clone fails.
+    Raises RuntimeError (from pkgctl_checkout/aur_clone) if the clone fails.
     """
     # Inline import to avoid a module-level circular dependency:
     # aur.py → log.py (fine), but keeping aur out of config's top-level
     # imports avoids pulling subprocess/urllib into every config load path.
-    from sysforge.primitives.aur import aur_clone, aur_info
+    from sysforge.primitives.aur import aur_clone, aur_info, is_repo_package, pkgctl_checkout
 
     p = Path(pkg)
     if p.exists():
@@ -75,10 +76,14 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
             if dir_candidate.exists():
                 return dir_candidate.resolve()
 
-            # Not found locally — check AUR and clone if found
-            if aur_info([pkg]):
-                clone_dest = pkgbuild_dir / pkg
-                aur_clone(pkg, clone_dest)   # raises RuntimeError on failure
+            # Not found locally — check repo first, then AUR
+            clone_dest = pkgbuild_dir / pkg
+            if is_repo_package(pkg):
+                pkgctl_checkout(pkg, clone_dest)  # raises RuntimeError on failure
+                if dir_candidate.exists():
+                    return dir_candidate.resolve()
+            elif aur_info([pkg]):
+                aur_clone(pkg, clone_dest)        # raises RuntimeError on failure
                 if dir_candidate.exists():
                     return dir_candidate.resolve()
 
