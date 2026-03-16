@@ -49,16 +49,21 @@ def _cmd_build(args):
     extra_flags = _expand_makepkg_flags(args.makepkg) if args.makepkg else None
     if args.no_pkg_log and args.log_dir:
         print("[SYSFORGE] Warning: --log-dir has no effect when --no-pkg-log is set.", file=sys.stderr)
+    packages = args.pkgbuilds
     try:
-        run(args.pkgbuild, extra_flags=extra_flags, interactive=args.interactive,
-            pkg_log=not args.no_pkg_log,
-            persist_log=args.persist_log,
-            log_dir=Path(args.log_dir) if args.log_dir else None,
-            profile_conf=args.profile_conf,
-            cc_override=args.cc,
-            cxx_override=args.cxx,
-            ld_override=args.ld,
-            cache_report=args.cache_report)
+        for i, pkg in enumerate(packages):
+            run(pkg,
+                extra_flags=extra_flags,
+                interactive=args.interactive,
+                pkg_log=not args.no_pkg_log,
+                persist_log=args.persist_log,
+                log_dir=Path(args.log_dir) if args.log_dir else None,
+                profile_conf=args.profile_conf,
+                cc_override=args.cc,
+                cxx_override=args.cxx,
+                ld_override=args.ld,
+                init_session=(i == 0),
+                cache_report=(args.cache_report and i == len(packages) - 1))
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -188,9 +193,10 @@ def main():
     # build
     p_build = sub.add_parser("build", help="Build a package from a PKGBUILD.")
     p_build.add_argument(
-        "pkgbuild",
+        "pkgbuilds",
+        nargs="+",
         metavar="PKGBUILD",
-        help="Path to the PKGBUILD file to build.",
+        help="One or more packages to build (path, directory, or bare package name).",
     )
     p_build.add_argument(
         "--makepkg", "-m",
