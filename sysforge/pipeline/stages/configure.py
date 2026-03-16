@@ -578,6 +578,126 @@ def _probe_network(config: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 4b. System makepkg.conf review
+# ---------------------------------------------------------------------------
+
+# Keys from /etc/makepkg.conf most relevant to show before a build run.
+_MAKEPKG_CONF_HIGHLIGHT = [
+    "MAKEFLAGS", "BUILDDIR", "PKGDEST", "PKGEXT",
+    "CFLAGS", "CXXFLAGS", "LDFLAGS",
+]
+
+
+def _review_makepkg_conf(editor: str, dry_run: bool) -> None:
+    _log.info("[CONFIGURE]", "─── System makepkg.conf ─────────────────────────────")
+
+    from sysforge.primitives.config import parse_system_makepkg_conf
+
+    conf_path = Path("/etc/makepkg.conf")
+    conf = parse_system_makepkg_conf()
+
+    if not conf:
+        _log.warn("[CONFIGURE]", f"  Could not read {conf_path}")
+        return
+
+    for key in _MAKEPKG_CONF_HIGHLIGHT:
+        if key in conf:
+            _log.info("[CONFIGURE]", f"  {key:<12} = {conf[key]}")
+
+    _log.info("[CONFIGURE]",
+        "  (sysforge profile overrides CFLAGS / CXXFLAGS / LDFLAGS at build time)"
+    )
+
+    # Warn if BUILDDIR doesn't exist or its mount is low on space
+    if "BUILDDIR" in conf:
+        builddir = Path(conf["BUILDDIR"].strip("\"'")).expanduser()
+        if not builddir.exists():
+            _log.warn("[CONFIGURE]",
+                f"  ⚠  BUILDDIR {str(builddir)!r} does not exist — "
+                "makepkg will create it, or fail if the parent mount is missing"
+            )
+        else:
+            try:
+                free_gb = shutil.disk_usage(builddir).free / (1024 ** 3)
+                _log.info("[CONFIGURE]", f"  BUILDDIR free: {free_gb:.1f} GB")
+            except OSError:
+                pass
+
+    if not _interactive() or dry_run:
+        return
+
+    choice = _prompt("  Edit /etc/makepkg.conf? (requires sudo) [e/↵ skip]: ")
+    if choice.lower() != "e":
+        return
+
+    result = subprocess.run(["sudo", editor, str(conf_path)])
+    if result.returncode != 0:
+        _log.warn("[CONFIGURE]", "  Editor exited non-zero — makepkg.conf may be unchanged")
+
+
+# ---------------------------------------------------------------------------
+# 8b. GPG keyring bootstrap
+# ---------------------------------------------------------------------------
+
+def _bootstrap_gpg(dry_run: bool) -> None:
+    _log.info("[CONFIGURE]", "─── GPG keyring bootstrap ───────────────────────────")
+
+    if not shutil.which("gpg"):
+        _log.warn("[CONFIGURE]", "  gpg not found — key verification will be unavailable during builds")
+        return
+
+    # Report current keyring size
+    r = subprocess.run(
+        ["gpg", "--list-keys", "--with-colons"],
+        capture_output=True, text=True,
+    )
+    key_count = r.stdout.count("\npub:") if r.returncode == 0 else 0
+    _log.info("[CONFIGURE]", f"  GPG keyring: {key_count} public key(s)")
+
+    # Import from the sysforge-managed global key store (shared across packages)
+    global_keys_dir = CONFIG_BASE / "etc/sysforge/keys/pgp"
+    if global_keys_dir.is_dir():
+        asc_files = sorted(global_keys_dir.glob("*.asc"))
+        if asc_files:
+            _log.info("[CONFIGURE]",
+                f"  Importing {len(asc_files)} key(s) from {global_keys_dir}"
+            )
+            if not dry_run:
+                r = subprocess.run(
+                    ["gpg", "--import", *[str(f) for f in asc_files]],
+                    capture_output=True, text=True,
+                )
+                if r.returncode != 0:
+                    _log.warn("[CONFIGURE]", f"  GPG import failed:\n{r.stderr.strip()}")
+                else:
+                    _log.info("[CONFIGURE]", "  GPG: global key import succeeded")
+        else:
+            _log.info("[CONFIGURE]", f"  {global_keys_dir}: no .asc files")
+    else:
+        _log.info("[CONFIGURE]",
+            f"  No global key store at {global_keys_dir} "
+            "(per-build keys are still imported by the build stage)"
+        )
+
+    if not _interactive() or dry_run:
+        return
+
+    # Offer keyserver refresh — useful before a long unattended build run
+    choice = _prompt(
+        "  Refresh all keys from keyserver? (gpg --refresh-keys) [y/N]: "
+    ).lower()
+    if choice != "y":
+        return
+
+    _log.info("[CONFIGURE]", "  Running gpg --refresh-keys...")
+    r = subprocess.run(["gpg", "--refresh-keys"], capture_output=True, text=True)
+    if r.returncode != 0:
+        _log.warn("[CONFIGURE]", f"  gpg --refresh-keys failed:\n{r.stderr.strip()}")
+    else:
+        _log.info("[CONFIGURE]", "  GPG: keyring refresh complete")
+
+
+# ---------------------------------------------------------------------------
 # 9. Build preview
 # ---------------------------------------------------------------------------
 
@@ -692,6 +812,9 @@ class ConfigureStage(Stage):
         else:
             _log.info("[CONFIGURE]", "[dry-run] Config file review skipped")
 
+        # 4b. System makepkg.conf review
+        _review_makepkg_conf(editor, options.dry_run)
+
         # 4. System identity
         _check_system_identity(options.dry_run)
 
@@ -706,6 +829,9 @@ class ConfigureStage(Stage):
 
         # 8. Network probe
         _probe_network(config)
+
+        # 8b. GPG keyring bootstrap (after network — key fetching needs connectivity)
+        _bootstrap_gpg(options.dry_run)
 
         # 9. Build preview
         _show_build_preview(config, options.dry_run)
