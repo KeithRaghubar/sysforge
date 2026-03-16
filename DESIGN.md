@@ -807,7 +807,7 @@ Build in this order to satisfy dependencies correctly:
 ## Release Plan
 
 - **GitHub:** public from day one; source of truth for all code
-- **AUR:** publish once stages 5–7 are stable under real use
+- **AUR:** publish once stages 5–8 are stable under real use
 
 ### AUR publishing process
 
