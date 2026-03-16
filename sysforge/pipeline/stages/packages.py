@@ -3,7 +3,7 @@ stages/packages.py — stage 5: package builds
 
 Walks packages.toml and builds/installs each entry:
   source = "repo"  → pacman -S --needed <name> (no build, pacman owns it)
-  source = "aur"   → find PKGBUILD in pkgbuild_dir, call makepkg_wrapper.run()
+  source = "aur"   → locate PKGBUILD via find_pkgbuild(), call makepkg_wrapper.run()
   source = "git"   → same as aur
 
 Per-package checkpointing: state is written after every outcome (built/failed).
@@ -13,17 +13,18 @@ packages.toml search order:
   1. config["packages_file"]  (from --packages or flag_profiles.toml)
   2. /etc/sysforge/packages.toml  (system default)
 
-AUR/git packages require PKGBUILDs to be pre-cloned in packages.toml [build]
-pkgbuild_dir. AUR fetch (auto-clone) is V2.
+AUR/git package PKGBUILD lookup order (via find_pkgbuild):
+  1. packages.toml [build] pkgbuild_dir/<name>/PKGBUILD  (if set)
+  2. flag_profiles.toml [paths] pkgbuild_dir/<name>/PKGBUILD  (if set)
+  3. AUR clone into pkgbuild_dir if package is found on AUR
 """
 import subprocess
-import sys
 import sysforge.log as _log
 import tomllib
 from pathlib import Path
 
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives.config import PACKAGES_PATH
+from sysforge.primitives.config import find_pkgbuild, PACKAGES_PATH
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 
 
@@ -58,25 +59,25 @@ def _load_packages(config):
     return build_cfg, packages
 
 
-def _pkgbuild_path(pkg, build_cfg):
+def _resolve_pkgbuild(name, build_cfg, config):
     """
     Resolve the PKGBUILD path for an aur/git package.
-    Returns Path or raises RuntimeError if not found.
+
+    Builds a lookup config for find_pkgbuild using packages.toml [build]
+    pkgbuild_dir first, falling back to flag_profiles [paths] pkgbuild_dir.
+    find_pkgbuild handles cwd lookup, local dir lookup, and AUR auto-clone.
+
+    Raises RuntimeError (wrapping FileNotFoundError) if nothing is found.
     """
-    pkgbuild_dir = build_cfg.get("pkgbuild_dir")
-    if not pkgbuild_dir:
-        raise RuntimeError(
-            f"[PACKAGES] packages.toml [build] pkgbuild_dir is not set. "
-            f"Cannot locate PKGBUILD for {pkg['name']!r}."
-        )
-    pkgbuild_dir = Path(pkgbuild_dir).expanduser()
-    candidate = pkgbuild_dir / pkg["name"] / "PKGBUILD"
-    if not candidate.exists():
-        raise RuntimeError(
-            f"[PACKAGES] PKGBUILD not found: {candidate}. "
-            f"Clone {pkg['name']!r} into pkgbuild_dir first."
-        )
-    return candidate
+    pkgbuild_dir = (
+        build_cfg.get("pkgbuild_dir")
+        or config.get("paths", {}).get("pkgbuild_dir")
+    )
+    lookup_config = {"paths": {"pkgbuild_dir": pkgbuild_dir}} if pkgbuild_dir else None
+    try:
+        return find_pkgbuild(name, lookup_config)
+    except FileNotFoundError as e:
+        raise RuntimeError(f"[PACKAGES] {e}") from None
 
 
 # ---------------------------------------------------------------------------
@@ -179,13 +180,18 @@ def _install_repo(pkg, options):
         raise RuntimeError(f"pacman -S failed for {name!r} (exit {result.returncode})")
 
 
-def _build_aur(pkg, build_cfg, options):
+def _build_aur(pkg, build_cfg, config, options):
     """Build an AUR/git package via makepkg_wrapper.run()."""
     name = pkg["name"]
-    pkgbuild = _pkgbuild_path(pkg, build_cfg)
     if options.dry_run:
-        _log.info("[PACKAGES]", f"[dry-run] build {name} from {pkgbuild}")
+        pkgbuild_dir = (
+            build_cfg.get("pkgbuild_dir")
+            or config.get("paths", {}).get("pkgbuild_dir", "")
+        )
+        expected = Path(pkgbuild_dir).expanduser() / name / "PKGBUILD" if pkgbuild_dir else f"<pkgbuild_dir>/{name}/PKGBUILD"
+        _log.info("[PACKAGES]", f"[dry-run] build {name} from {expected}")
         return
+    pkgbuild = _resolve_pkgbuild(name, build_cfg, config)
     _log.info("[PACKAGES]", f"Building {name} from {pkgbuild}")
     makepkg_run(pkgbuild,
                 pkg_log=not options.no_pkg_logs,
@@ -261,7 +267,7 @@ class PackagesStage(Stage):
                 if source == "repo":
                     _install_repo(pkg, options)
                 elif source in ("aur", "git"):
-                    _build_aur(pkg, build_cfg, options)
+                    _build_aur(pkg, build_cfg, config, options)
                 else:
                     raise RuntimeError(f"Unknown source type {source!r} for {name!r}")
 

@@ -7,7 +7,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 - Language: Python
 - Config format: TOML
-- Test suite: 540 pytest tests
+- Test suite: 545 pytest tests
 
 ## Dev Environment
 

@@ -338,7 +338,7 @@ When `--interactive` is passed to `sysforge build`, kconfig patching is skipped 
 
 Walks `packages.toml` in order:
 - `source = "repo"` → `sudo pacman -S --needed --noconfirm`
-- `source = "aur"` / `"git"` → `makepkg_wrapper.run()` against the pre-cloned PKGBUILD
+- `source = "aur"` / `"git"` → `_resolve_pkgbuild()` → `makepkg_wrapper.run()`. PKGBUILD lookup order: `packages.toml [build] pkgbuild_dir` → `flag_profiles [paths] pkgbuild_dir` → AUR clone.
 - Hardware-gated packages skipped if `hardware_profile.toml` is absent or key is missing
 - Non-fatal per-package failures: build continues, failures recorded in state
 - Summary at end: `Total | Built | Failed | Skipped`
@@ -355,7 +355,7 @@ Three-stage bootstrap to produce a fully PGO-optimized LLVM toolchain:
 
 ## Primitives Layer
 
-All modules independently testable. 540 pytest tests (`pytest` from repo root).
+All modules independently testable. 545 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 
@@ -828,7 +828,7 @@ Not yet implemented.
 
 Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
 
-**AUR auto-clone in install pipeline not implemented.** `sysforge build`/`sysforge resolve` auto-clone from AUR via `find_pkgbuild`. The install pipeline's `packages.py` still uses `_pkgbuild_path` which requires PKGBUILDs to be pre-cloned in `packages.toml [build] pkgbuild_dir`. Wiring `find_pkgbuild` into the pipeline is a future task.
+**`packages.toml [build] pkgbuild_dir` and `flag_profiles [paths] pkgbuild_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_dir`; falls back to `[paths] pkgbuild_dir`. They can point to different directories or the same one — there's no enforcement that they match.
 
 **`[env_precedence]` config table — design cancelled.** The original design proposed a priority stack (wrapper profile = 100, makepkg.conf = 80, shell passthrough = 20, PKGBUILD export = 10) and an `[env_precedence]` TOML table to configure it. This design is superseded. The current model is simpler and more predictable: build tool vars (`CC`, `CFLAGS`, `LDFLAGS`, etc.) are stripped from the inherited shell env in `invoke_makepkg` before makepkg runs — the temp conf is the sole authority for all makepkg-managed keys. Shell env bleed-through is not a configurable priority; it is prevented entirely. SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are exempt — they are SysForge's own interface, not build tool vars, and are not stripped. The `[env_precedence]` table will not be implemented.
 

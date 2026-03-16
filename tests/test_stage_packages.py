@@ -16,6 +16,7 @@ from sysforge.pipeline.stages.packages import (
     PackagesStage,
     _load_packages,
     _hardware_gate,
+    _resolve_pkgbuild,
 )
 from sysforge.pipeline.state import PipelineState
 from sysforge.pipeline.stages.base import RunOptions
@@ -62,6 +63,42 @@ def make_options(**kwargs):
                     dry_run=False, state_dir=None)
     defaults.update(kwargs)
     return RunOptions(**defaults)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_pkgbuild
+# ---------------------------------------------------------------------------
+
+def test_resolve_pkgbuild_finds_local(tmp_path):
+    pb = make_pkgbuild(tmp_path, "htop")
+    result = _resolve_pkgbuild("htop", {"pkgbuild_dir": str(tmp_path)}, {})
+    assert result == pb.resolve()
+
+
+def test_resolve_pkgbuild_aur_clone(tmp_path):
+    """When not found locally, _resolve_pkgbuild triggers AUR clone."""
+    def fake_clone(name, dest):
+        dest.mkdir()
+        (dest / "PKGBUILD").write_text("pkgname=mesa-git\n")
+
+    with patch("sysforge.primitives.aur.aur_info", return_value={"mesa-git": {}}), \
+         patch("sysforge.primitives.aur.aur_clone", side_effect=fake_clone):
+        result = _resolve_pkgbuild("mesa-git", {"pkgbuild_dir": str(tmp_path)}, {})
+
+    assert result == (tmp_path / "mesa-git" / "PKGBUILD").resolve()
+
+
+def test_resolve_pkgbuild_not_found_raises(tmp_path):
+    with patch("sysforge.primitives.aur.aur_info", return_value={}):
+        with pytest.raises(RuntimeError, match="PKGBUILD not found"):
+            _resolve_pkgbuild("nonexistent", {"pkgbuild_dir": str(tmp_path)}, {})
+
+
+def test_resolve_pkgbuild_falls_back_to_config_paths(tmp_path):
+    """Falls back to flag_profiles [paths] pkgbuild_dir if build_cfg has none."""
+    pb = make_pkgbuild(tmp_path, "htop")
+    result = _resolve_pkgbuild("htop", {}, {"paths": {"pkgbuild_dir": str(tmp_path)}})
+    assert result == pb.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +263,35 @@ def test_packages_stage_skips_already_built(tmp_path):
 
     assert "llvm" not in called   # was already built
     assert "mesa-git" in called
+
+def test_packages_stage_aur_auto_clone(tmp_path):
+    """AUR package missing locally is cloned then built."""
+    builds_dir = tmp_path / "builds"
+    # Only create the repo PKGBUILD; llvm and mesa-git are missing (should be cloned)
+    pkg_file = make_packages_toml(tmp_path, builds_dir)
+
+    state = PipelineState(tmp_path / "state")
+    config = {"packages_file": str(pkg_file)}
+
+    def fake_clone(name, dest):
+        dest.mkdir(parents=True)
+        (dest / "PKGBUILD").write_text(f"pkgname={name}\npkgver=1.0\npkgrel=1\n")
+
+    built = []
+    def fake_makepkg(path, **kwargs):
+        built.append(Path(path).parent.name)
+
+    with patch("sysforge.pipeline.stages.packages.makepkg_run", side_effect=fake_makepkg), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run",
+               return_value=MagicMock(returncode=0)), \
+         patch("sysforge.primitives.aur.aur_info", return_value={"llvm": {}, "mesa-git": {}}), \
+         patch("sysforge.primitives.aur.aur_clone", side_effect=fake_clone):
+        PackagesStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+
+    assert set(built) == {"llvm", "mesa-git"}
+    p = state.get_package_progress()
+    assert set(p["built"]) == {"llvm", "htop", "mesa-git"}
+
 
 def test_packages_stage_dry_run_calls_nothing(tmp_path):
     builds_dir = tmp_path / "builds"
