@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sysforge.primitives.aur import aur_clone, aur_info, is_repo_package, pkgctl_checkout
+from sysforge.primitives.aur import aur_clone, aur_info, import_pgp_keys, is_repo_package, pkgctl_checkout
 
 
 # ---------------------------------------------------------------------------
@@ -221,3 +221,144 @@ def test_pkgctl_checkout_failure_raises(tmp_path):
     with patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="pkgctl checkout failed"):
             pkgctl_checkout("nonexistent", tmp_path / "nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# import_pgp_keys
+# ---------------------------------------------------------------------------
+
+def _pkgmeta(keys):
+    return {"globals": {"validpgpkeys": keys}}
+
+
+def _fake_pkgbuild(tmp_path, asc_keys=None):
+    """Create a minimal PKGBUILD dir, optionally with keys/pgp/*.asc files."""
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("pkgname=test\n")
+    if asc_keys:
+        keys_dir = tmp_path / "keys" / "pgp"
+        keys_dir.mkdir(parents=True)
+        for name, content in asc_keys.items():
+            (keys_dir / name).write_text(content)
+    return pb
+
+
+def test_import_pgp_keys_no_keys_does_nothing(tmp_path):
+    """No subprocess calls when validpgpkeys is absent."""
+    pb = _fake_pkgbuild(tmp_path)
+    with patch("subprocess.run") as mock_run:
+        import_pgp_keys({"globals": {}}, pb)
+    mock_run.assert_not_called()
+
+
+def test_import_pgp_keys_all_present_no_recv(tmp_path):
+    """No gpg --recv-keys when all keys are already in keyring."""
+    pb = _fake_pkgbuild(tmp_path)
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        import_pgp_keys(_pkgmeta(["AABBCCDD"]), pb)
+
+    assert all("--recv-keys" not in cmd for cmd in calls)
+
+
+def test_import_pgp_keys_missing_triggers_recv(tmp_path):
+    """Missing keys trigger a single gpg --recv-keys call."""
+    pb = _fake_pkgbuild(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if "--list-keys" in cmd:
+            return subprocess.CompletedProcess(cmd, 2)  # not found
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run) as mock_run:
+        import_pgp_keys(_pkgmeta(["AABBCCDD", "11223344"]), pb)
+
+    recv_calls = [c for c in mock_run.call_args_list if "--recv-keys" in c.args[0]]
+    assert len(recv_calls) == 1
+    recv_cmd = recv_calls[0].args[0]
+    assert "AABBCCDD" in recv_cmd
+    assert "11223344" in recv_cmd
+
+
+def test_import_pgp_keys_recv_failure_warns_not_raises(tmp_path):
+    """A failing gpg --recv-keys logs a warning but does not raise."""
+    pb = _fake_pkgbuild(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if "--list-keys" in cmd:
+            return subprocess.CompletedProcess(cmd, 2)
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="keyserver timeout")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        import_pgp_keys(_pkgmeta(["AABBCCDD"]), pb)   # should not raise
+
+
+def test_import_pgp_keys_partial_missing(tmp_path):
+    """Only missing keys are sent to --recv-keys."""
+    pb = _fake_pkgbuild(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        if "--list-keys" in cmd:
+            key = cmd[-1]
+            return subprocess.CompletedProcess(cmd, 0 if key == "AABBCCDD" else 2)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run) as mock_run:
+        import_pgp_keys(_pkgmeta(["AABBCCDD", "11223344"]), pb)
+
+    recv_calls = [c for c in mock_run.call_args_list if "--recv-keys" in c.args[0]]
+    recv_cmd = recv_calls[0].args[0]
+    assert "11223344" in recv_cmd
+    assert "AABBCCDD" not in recv_cmd
+
+
+def test_import_pgp_keys_bundled_asc_imported(tmp_path):
+    """keys/pgp/*.asc files are passed to gpg --import before keyserver check."""
+    pb = _fake_pkgbuild(tmp_path, asc_keys={"AABBCCDD.asc": "fake key data"})
+
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        import_pgp_keys(_pkgmeta(["AABBCCDD"]), pb)
+
+    import_calls = [c for c in calls if "--import" in c]
+    assert len(import_calls) == 1
+    assert any("AABBCCDD.asc" in arg for arg in import_calls[0])
+
+
+def test_import_pgp_keys_bundled_satisfies_no_recv(tmp_path):
+    """When bundled import makes all keys present, --recv-keys is not called."""
+    pb = _fake_pkgbuild(tmp_path, asc_keys={"AABBCCDD.asc": "fake key data"})
+
+    def fake_run(cmd, **kwargs):
+        # --import succeeds; --list-keys finds the key after import
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run) as mock_run:
+        import_pgp_keys(_pkgmeta(["AABBCCDD"]), pb)
+
+    recv_calls = [c for c in mock_run.call_args_list if "--recv-keys" in c.args[0]]
+    assert recv_calls == []
+
+
+def test_import_pgp_keys_bundled_fails_falls_back_to_recv(tmp_path):
+    """If bundled import fails to satisfy a key, keyserver is still tried."""
+    pb = _fake_pkgbuild(tmp_path, asc_keys={"AABBCCDD.asc": "fake key data"})
+
+    def fake_run(cmd, **kwargs):
+        if "--list-keys" in cmd:
+            return subprocess.CompletedProcess(cmd, 2)  # still missing after import
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run) as mock_run:
+        import_pgp_keys(_pkgmeta(["AABBCCDD"]), pb)
+
+    recv_calls = [c for c in mock_run.call_args_list if "--recv-keys" in c.args[0]]
+    assert len(recv_calls) == 1

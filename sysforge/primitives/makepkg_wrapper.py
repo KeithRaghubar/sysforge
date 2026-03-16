@@ -44,6 +44,7 @@ from sysforge.primitives.cache_probe import (
     record_build_result,
     reset_session,
 )
+from sysforge.primitives.aur import import_pgp_keys
 from sysforge.primitives.dep_analysis import run_dep_analysis
 from sysforge.primitives.failure import handle_failure
 import sysforge.log as _log
@@ -620,6 +621,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
                 "build_mode 'pgo_llvm_toolchain' is not yet implemented"
             )
         else:
+            import_pgp_keys(pkgmeta, pkgbuild_path)
             run_dep_analysis(pkgmeta, config)
             _run_build(
                 pkgbuild_path, resolved_profile, config, groups,
