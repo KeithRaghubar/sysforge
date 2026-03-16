@@ -89,6 +89,31 @@ def _cmd_install(args):
     run_pipeline(config, options)
 
 
+def _cmd_completions(args):
+    import subprocess as _sp
+    config = load_config()
+    seen: set[str] = set()
+
+    # Local packages from pkgbuild_dir
+    raw = config.get("paths", {}).get("pkgbuild_dir")
+    if raw:
+        d = Path(raw).expanduser()
+        if d.is_dir():
+            for sub in sorted(d.iterdir()):
+                if sub.is_dir() and (sub / "PKGBUILD").exists():
+                    if sub.name not in seen:
+                        seen.add(sub.name)
+                        print(sub.name)
+
+    # Pacman sync DB packages
+    r = _sp.run(["pacman", "-Ssq"], capture_output=True, text=True)
+    if r.returncode == 0:
+        for name in r.stdout.splitlines():
+            if name and name not in seen:
+                seen.add(name)
+                print(name)
+
+
 def _cmd_converge(args):
     # TODO: compare installed state in /var/lib/sysforge/build_state.toml
     # against current manifest and flag profiles; rebuild drifted packages.
@@ -377,6 +402,14 @@ def main():
         help="Path to a flag_profiles.toml to use instead of the default user/system config.",
     )
     p_resolve.set_defaults(func=cmd_resolve)
+
+    # completions (used by shell completion scripts; not user-facing)
+    p_completions = sub.add_parser("completions", help=argparse.SUPPRESS)
+    p_completions.add_argument(
+        "resource",
+        choices=["packages"],
+    )
+    p_completions.set_defaults(func=_cmd_completions)
 
     args = parser.parse_args()
     _log.set_verbosity(args.verbose)

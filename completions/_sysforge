@@ -1,0 +1,95 @@
+#compdef sysforge
+
+_sysforge() {
+  local context state state_descr line
+  typeset -A opt_args
+
+  _arguments -C \
+    '(-v --verbose)'{-v,--verbose}'[increase verbosity (repeat for more: -vv, -vvv)]' \
+    '1: :_sysforge_commands' \
+    '*:: :->args'
+
+  case $state in
+    args)
+      case $words[1] in
+        build)    _sysforge_build    ;;
+        resolve)  _sysforge_resolve  ;;
+        install)  _sysforge_install  ;;
+        manifest) _sysforge_manifest ;;
+      esac
+      ;;
+  esac
+}
+
+_sysforge_commands() {
+  local commands=(
+    'build:build a package from a PKGBUILD'
+    'install:run the install pipeline'
+    'manifest:generate a packages.toml stub'
+    'resolve:show which profile would apply to a package'
+    'converge:[planned] rebuild packages that have drifted from their profile'
+  )
+  _describe 'command' commands
+}
+
+_sysforge_packages() {
+  local -a pkgs
+  pkgs=("${(@f)$(sysforge completions packages 2>/dev/null)}")
+  _describe 'package' pkgs
+}
+
+# Complete as a package name, or fall back to file completion when the
+# argument looks like an explicit path (starts with /, ./, ../).
+_sysforge_pkg_or_file() {
+  if [[ $words[CURRENT] == /* || $words[CURRENT] == ./* || $words[CURRENT] == ../* ]]; then
+    _files
+  else
+    _sysforge_packages
+  fi
+}
+
+_sysforge_build() {
+  _arguments \
+    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags]:flags' \
+    '--interactive[strip --noconfirm from makepkg_flags]' \
+    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '--cc[override C compiler for this build]:compiler' \
+    '--cxx[override C++ compiler for this build]:compiler' \
+    '--ld[override linker for this build]:linker:(lld mold ld bfd)' \
+    '--no-pkg-log[disable per-package log file]' \
+    '--log-dir[directory for per-package log]:directory:_files -/' \
+    '--persist-log[keep log after a successful build]' \
+    '--cache-report[print ccache/sccache summary after build]' \
+    '1: :_sysforge_pkg_or_file'
+}
+
+_sysforge_resolve() {
+  _arguments \
+    '--show-flags[print the full resolved flag set]' \
+    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '1: :_sysforge_pkg_or_file'
+}
+
+_sysforge_install() {
+  _arguments \
+    '--resume[continue from the last checkpoint]' \
+    '--start-from[begin from this stage]:stage:(partition base_install hardware toolchain packages kernel configure)' \
+    '--force-retry[retry failed packages without prompting]' \
+    '--dry-run[show what would run without executing]' \
+    '--packages[path to packages.toml]:file:_files' \
+    '--state-dir[override state directory]:directory:_files -/' \
+    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '--no-unified-log[disable unified log file]' \
+    '--no-pkg-logs[disable per-package log files]' \
+    '--log-dir[directory for log files]:directory:_files -/' \
+    '--purge-log[truncate unified log before this run]' \
+    '--persist-log[keep logs after successful run]' \
+    '--cache-report[print ccache/sccache summary after pipeline]'
+}
+
+_sysforge_manifest() {
+  _arguments \
+    '--file[text file with one package name per line]:file:_files' \
+    '*: :_sysforge_packages'
+}
+
