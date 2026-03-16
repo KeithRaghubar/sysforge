@@ -1,6 +1,6 @@
 # SysForge
 
-SysForge is a personal Arch Linux automation framework that produces a reproducible, performance-tuned system from declarative TOML configs. It is an installer and bootstrapper — not a package manager. Pacman owns the ongoing package lifecycle; SysForge gets you from a vanilla Arch ISO to a fully configured, compiler-optimized system.
+SysForge is an all-in-one Arch Linux helper for system setup and ongoing package management, with system-tuned build customizations. It covers the full lifecycle — from initial bootstrap off a vanilla Arch ISO to maintaining a compiler-optimized system. Pacman owns the package database; SysForge owns the build configuration and automates the human decisions on top of it.
 
 **Current status:** Active development. The primitives layer and package build pipeline are functional and usable on a live system. Stages 1–5 (partition, base install, hardware detection, configure, toolchain) are stubbed pending dedicated testing. Not ready for general use.
 
@@ -18,9 +18,9 @@ SysForge is a personal Arch Linux automation framework that produces a reproduci
 
 ## What it is not
 
-- A distro. Output is a standard Arch install; pacman owns it after bootstrap.
-- A replacement for pacman. SysForge builds and installs; pacman manages the result.
-- A fork of `archinstall`. It solves a different problem — compiler optimization, not just partitioning and package selection.
+- A distro. Output is a standard Arch install; pacman owns the package database.
+- A replacement for pacman. SysForge handles build configuration and automation; pacman manages the installed result.
+- A fork of `archinstall`. It solves a broader problem — compiler optimization and ongoing build management, not just initial partitioning and package selection.
 
 ---
 

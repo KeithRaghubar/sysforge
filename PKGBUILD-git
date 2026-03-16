@@ -3,7 +3,7 @@
 pkgname=sysforge-git
 pkgver=0.1.0.r0.g0000000  # updated dynamically by pkgver()
 pkgrel=1
-pkgdesc="Reproducible, performance-tuned Arch Linux installer (git)"
+pkgdesc="All-in-one Arch Linux helper for system setup and package management with compiler-optimized builds (git)"
 arch=('any')
 url="https://github.com/KeithRaghubar/sysforge"
 license=('MIT')

@@ -154,7 +154,7 @@ def main():
     sys.argv[1:] = _hoist_verbosity_flags(_patch_makepkg_argv(sys.argv[1:]))
     parser = argparse.ArgumentParser(
         prog="sysforge",
-        description="Reproducible, performance-tuned Arch Linux installer.",
+        description="All-in-one Arch Linux helper for system setup and package management with compiler-optimized builds.",
     )
     parser.add_argument(
         "-v", "--verbose",
