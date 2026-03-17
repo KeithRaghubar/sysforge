@@ -180,7 +180,24 @@ def _install_repo(pkg, options):
         raise RuntimeError(f"pacman -S failed for {name!r} (exit {result.returncode})")
 
 
-def _build_aur(pkg, build_cfg, config, options):
+def _toolchain_overrides(state):
+    """
+    Read cc/cxx/ld from the toolchain stage result in state.
+    Returns a dict with only the keys that were set (empty dict if toolchain
+    stage was not run or produced no result).
+    """
+    result = state.get_stage_result("toolchain")
+    overrides = {}
+    if result.get("cc"):
+        overrides["cc_override"] = result["cc"]
+    if result.get("cxx"):
+        overrides["cxx_override"] = result["cxx"]
+    if result.get("ld"):
+        overrides["ld_override"] = result["ld"]
+    return overrides
+
+
+def _build_aur(pkg, build_cfg, config, options, toolchain):
     """Build an AUR/git package via makepkg_wrapper.run()."""
     name = pkg["name"]
     if options.dry_run:
@@ -190,20 +207,29 @@ def _build_aur(pkg, build_cfg, config, options):
         )
         expected = Path(pkgbuild_dir).expanduser() / name / "PKGBUILD" if pkgbuild_dir else f"<pkgbuild_dir>/{name}/PKGBUILD"
         profile_override = pkg.get("profile") or None
-        suffix = f" [profile={profile_override}]" if profile_override else ""
+        parts = []
+        if profile_override:
+            parts.append(f"profile={profile_override}")
+        if toolchain.get("cc_override"):
+            parts.append("cc=" + toolchain["cc_override"])
+        suffix = f" ({', '.join(parts)})" if parts else ""
         _log.info("[PACKAGES]", f"[dry-run] build {name} from {expected}{suffix}")
         return
     pkgbuild = _resolve_pkgbuild(name, build_cfg, config)
     profile_override = pkg.get("profile") or None
+    parts = []
     if profile_override:
-        _log.info("[PACKAGES]", f"Building {name} from {pkgbuild} (profile override: {profile_override!r})")
-    else:
-        _log.info("[PACKAGES]", f"Building {name} from {pkgbuild}")
+        parts.append(f"profile={profile_override!r}")
+    if toolchain:
+        parts.append("cc=" + toolchain.get("cc_override", ""))
+    suffix = f" ({', '.join(p for p in parts if p)})" if parts else ""
+    _log.info("[PACKAGES]", f"Building {name} from {pkgbuild}{suffix}")
     makepkg_run(pkgbuild,
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
                 update=not options.no_update,
-                profile_override=profile_override)
+                profile_override=profile_override,
+                **toolchain)
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +242,10 @@ class PackagesStage(Stage):
     depends_on = ["toolchain"]
 
     def run(self, config, state, options):
+        toolchain = _toolchain_overrides(state)
+        if toolchain:
+            _log.info("[PACKAGES]", f"Toolchain override from pipeline: cc={toolchain.get('cc_override', '-')} cxx={toolchain.get('cxx_override', '-')}")
+
         build_cfg, packages = _load_packages(config)
 
         # Filter hardware-gated packages
@@ -275,7 +305,7 @@ class PackagesStage(Stage):
                 if source == "repo":
                     _install_repo(pkg, options)
                 elif source in ("aur", "git"):
-                    _build_aur(pkg, build_cfg, config, options)
+                    _build_aur(pkg, build_cfg, config, options, toolchain)
                 else:
                     raise RuntimeError(f"Unknown source type {source!r} for {name!r}")
 

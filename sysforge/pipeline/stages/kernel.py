@@ -339,6 +339,12 @@ class KernelStage(Stage):
         # Build
         pkgbuild = _pkgbuild_path(kernel_cfg)
 
+        toolchain = state.get_stage_result("toolchain")
+        cc = toolchain.get("cc") if toolchain else None
+        cxx = toolchain.get("cxx") if toolchain else None
+        if cc:
+            _log.info("[KERNEL]", f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}")
+
         if options.dry_run:
             _log.info("[KERNEL]", f"[dry-run] would build {pkgname} from {pkgbuild}")
         else:
@@ -347,6 +353,8 @@ class KernelStage(Stage):
                 pkgbuild,
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
+                cc_override=cc,
+                cxx_override=cxx,
             )
 
         # Post-install
