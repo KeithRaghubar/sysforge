@@ -67,6 +67,68 @@ def _cmd_build(args):
         sys.exit(1)
 
 
+def _cmd_packages(args):
+    from sysforge.pipeline.runner import run_stage_standalone
+    from sysforge.pipeline.stages.packages import PackagesStage
+    from sysforge.pipeline.stages.base import RunOptions
+
+    config = load_config() or {}
+    if args.packages:
+        config["packages_file"] = args.packages
+    if getattr(args, "profile_conf", None):
+        config["profile_conf"] = args.profile_conf
+
+    options = RunOptions(
+        dry_run=args.dry_run,
+        force_retry=args.force_retry,
+        no_update=args.no_update,
+        no_pkg_logs=args.no_pkg_logs,
+        persist_log=args.persist_log,
+        log_dir=Path(args.log_dir) if args.log_dir else None,
+        cache_report=args.cache_report,
+        state_dir=Path(args.state_dir) if args.state_dir else None,
+    )
+    run_stage_standalone(PackagesStage(), config, options)
+
+
+def _cmd_toolchain(args):
+    from sysforge.pipeline.runner import run_stage_standalone
+    from sysforge.pipeline.stages.toolchain import ToolchainStage
+    from sysforge.pipeline.stages.base import RunOptions
+
+    config = load_config() or {}
+
+    options = RunOptions(
+        dry_run=args.dry_run,
+        no_update=args.no_update,
+        cache_report=args.cache_report,
+        state_dir=Path(args.state_dir) if args.state_dir else None,
+        persist_log=args.persist_log,
+    )
+    run_stage_standalone(ToolchainStage(), config, options)
+
+
+def _cmd_kernel(args):
+    from sysforge.pipeline.runner import run_stage_standalone
+    from sysforge.pipeline.stages.kernel import KernelStage
+    from sysforge.pipeline.stages.base import RunOptions
+
+    config = load_config() or {}
+    if args.packages:
+        config["packages_file"] = args.packages
+
+    options = RunOptions(
+        dry_run=args.dry_run,
+        no_update=args.no_update,
+        no_pkg_logs=args.no_pkg_logs,
+        persist_log=args.persist_log,
+        log_dir=Path(args.log_dir) if args.log_dir else None,
+        cache_report=args.cache_report,
+        state_dir=Path(args.state_dir) if args.state_dir else None,
+    )
+    run_stage_standalone(KernelStage(), config, options)
+
+
 def _cmd_pipeline(args):
     # TODO: implement full pipeline stages (partition, base_install, hardware,
     # toolchain, packages, kernel, configure).
@@ -347,6 +409,121 @@ def main():
         help="Skip git pull --rebase before each build (default: update if a tracking branch exists).",
     )
     p_pipeline.set_defaults(func=_cmd_pipeline)
+
+    # packages — run PackagesStage directly
+    p_packages = sub.add_parser(
+        "packages",
+        help="Build and install non-kernel packages from packages.toml.",
+    )
+    p_packages.add_argument(
+        "--packages",
+        metavar="FILE",
+        help="Path to packages.toml (default: /etc/sysforge/packages.toml).",
+    )
+    p_packages.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="Show what would run without executing anything.",
+    )
+    p_packages.add_argument(
+        "--force-retry", action="store_true", dest="force_retry",
+        help="Retry all failed packages without prompting.",
+    )
+    p_packages.add_argument(
+        "--no-update", action="store_true", dest="no_update",
+        help="Skip git pull --rebase before each build.",
+    )
+    p_packages.add_argument(
+        "--no-pkg-logs", action="store_true", dest="no_pkg_logs",
+        help="Disable per-package log files.",
+    )
+    p_packages.add_argument(
+        "--persist-log", action="store_true", dest="persist_log",
+        help="Keep log files after successful completion.",
+    )
+    p_packages.add_argument(
+        "--log-dir", metavar="DIR", dest="log_dir",
+        help="Directory for log files.",
+    )
+    p_packages.add_argument(
+        "--cache-report", action="store_true", dest="cache_report",
+        help="Print a structured cache summary after the run.",
+    )
+    p_packages.add_argument(
+        "--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory.",
+    )
+    p_packages.add_argument(
+        "--profile-conf", metavar="FILE", dest="profile_conf",
+        help="Path to a flag_profiles.toml to use instead of the default.",
+    )
+    p_packages.set_defaults(func=_cmd_packages)
+
+    # toolchain — run ToolchainStage directly
+    p_toolchain = sub.add_parser(
+        "toolchain",
+        help="Build and install the LLVM/GCC toolchain from toolchain.toml.",
+    )
+    p_toolchain.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="Show what would run without executing anything.",
+    )
+    p_toolchain.add_argument(
+        "--no-update", action="store_true", dest="no_update",
+        help="Skip git pull --rebase before each build.",
+    )
+    p_toolchain.add_argument(
+        "--persist-log", action="store_true", dest="persist_log",
+        help="Keep log files after successful completion.",
+    )
+    p_toolchain.add_argument(
+        "--cache-report", action="store_true", dest="cache_report",
+        help="Print a structured cache summary after the run.",
+    )
+    p_toolchain.add_argument(
+        "--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory (default: /var/lib/sysforge).",
+    )
+    p_toolchain.set_defaults(func=_cmd_toolchain)
+
+    # kernel — run KernelStage directly
+    p_kernel = sub.add_parser(
+        "kernel",
+        help="Build and install the custom kernel configured in kernel.toml.",
+    )
+    p_kernel.add_argument(
+        "--packages",
+        metavar="FILE",
+        help="Path to packages.toml (default: /etc/sysforge/packages.toml).",
+    )
+    p_kernel.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="Show what would run without executing anything.",
+    )
+    p_kernel.add_argument(
+        "--no-update", action="store_true", dest="no_update",
+        help="Skip git pull --rebase before each build.",
+    )
+    p_kernel.add_argument(
+        "--no-pkg-logs", action="store_true", dest="no_pkg_logs",
+        help="Disable per-package log files.",
+    )
+    p_kernel.add_argument(
+        "--persist-log", action="store_true", dest="persist_log",
+        help="Keep log files after successful completion.",
+    )
+    p_kernel.add_argument(
+        "--log-dir", metavar="DIR", dest="log_dir",
+        help="Directory for log files.",
+    )
+    p_kernel.add_argument(
+        "--cache-report", action="store_true", dest="cache_report",
+        help="Print a structured cache summary after the run.",
+    )
+    p_kernel.add_argument(
+        "--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory.",
+    )
+    p_kernel.set_defaults(func=_cmd_kernel)
 
     # manifest
     p_manifest = sub.add_parser(

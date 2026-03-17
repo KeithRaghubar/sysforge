@@ -54,6 +54,49 @@ def _find_resume_index(stages, state):
     return len(stages)
 
 
+def run_stage_standalone(stage, config, options):
+    """
+    Run a single pipeline stage outside the full pipeline.
+
+    Used by standalone commands (sysforge packages, sysforge toolchain, etc.).
+    State is loaded from the resolved state dir so toolchain results are
+    available to the packages stage when run separately.
+
+    Raises SystemExit on failure.
+    """
+    state_dir, _ = resolve_state_dir(cli_override=options.state_dir)
+    state = PipelineState(state_dir)
+
+    reset_session()
+    emit_system_probes()
+
+    log_dir = options.log_dir or state_dir
+    unified_log_active = not options.no_unified_log and not options.dry_run
+    if unified_log_active:
+        unified_log_path = log_dir / "sysforge.log"
+        _log.open_unified_log(unified_log_path, purge=options.purge_log)
+        _log.info("[PIPELINE]", f"Unified log: {unified_log_path}")
+
+    success = False
+    try:
+        if options.dry_run:
+            _log.info("[PIPELINE]", f"[dry-run] would run stage: {stage.name} — {stage.description}")
+        else:
+            _log.info("[PIPELINE]", f"── Stage: {stage.name} ── {stage.description}")
+            stage.run(config, state, options)
+            state.save()
+            _log.info("[PIPELINE]", f"{stage.name}: complete")
+        success = True
+    except RuntimeError as e:
+        _log.error("[PIPELINE]", f"{stage.name}: FAILED — {e}")
+        sys.exit(1)
+    finally:
+        if unified_log_active:
+            _log.close_unified_log(success=success, persist=options.persist_log)
+        if options.cache_report:
+            emit_session_report()
+
+
 def run_pipeline(config, options, stages=None):
     """
     Run the pipeline.
