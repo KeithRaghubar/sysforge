@@ -1,6 +1,8 @@
 # SysForge Design Document
 
-SysForge is an all-in-one Arch Linux helper for system setup and ongoing package management, with system-tuned build customizations. It covers the full lifecycle: initial bootstrap from a vanilla Arch ISO through to maintaining a compiler-optimized system. Pacman owns the package database; SysForge owns the build configuration and automates the human decisions on top of it.
+SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles, tracks build state for update detection, and automates the full build lifecycle — from fetching PKGBUILDs to installing profiled packages. Pacman owns the package database; SysForge owns the build configuration layer above it.
+
+The v0.1.0 milestone is a functional yay replacement: install, update, and manage AUR and custom packages with system-tuned profiled builds. A full system bootstrapper (stages 1–4: partition, base install, hardware detection, configure) is scoped to v1.0.
 
 ---
 
@@ -90,6 +92,7 @@ sysforge/
 │   ├── log.py                         # structured logging (stderr + optional file output)
 │   ├── manifest.py                    # packages.toml generator
 │   ├── resolve.py                     # sysforge resolve subcommand
+│   ├── update.py                      # sysforge update subcommand
 │   └── primitives/
 │       ├── config.py                  # TOML config loading, path constants, system conf parsing
 │       ├── profile.py                 # profile resolution, rule matching, consumes
@@ -99,7 +102,9 @@ sysforge/
 │       ├── dep_analysis.py            # pre-build soname dependency checks
 │       ├── failure.py                 # failure scenario handling (shared)
 │       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
-│       └── aur.py                     # AUR RPC v5, git clone, pkgctl checkout, GPG key import
+│       ├── aur.py                     # AUR RPC v5, git clone, pkgctl checkout, GPG key import
+│       ├── build_state.py             # per-package build metadata persistence (build_state.toml)
+│       └── version.py                 # vercmp wrapper + version string formatting
 │   └── pipeline/
 │       ├── __init__.py
 │       ├── runner.py                  # stage sequencing, checkpoint/resume
@@ -149,6 +154,9 @@ sysforge/
 │   ├── test_stage_kernel.py
 │   ├── test_stage_packages.py
 │   ├── test_system_conf.py
+│   ├── test_update.py
+│   ├── test_build_state.py
+│   ├── test_version.py
 │   └── test_wrapper.py
 ├── completions/
 │   └── _sysforge                      # zsh completion script
@@ -172,6 +180,7 @@ sysforge/
 /usr/bin/sysforge
 /var/lib/sysforge/
     pipeline_state.toml              # pipeline checkpoint state (created at runtime)
+    build_state.toml                 # per-package build metadata (created at runtime, by sysforge build/update)
     sysforge.log                     # unified log (created at runtime, cleared on success)
 ```
 
@@ -256,16 +265,16 @@ The hardware detection stage emits `hardware_profile.toml` which feeds kconfig a
 
 Python DAG orchestrator with checkpoint/resume. Stages run in order:
 
-1. **partition** — stub
-2. **base_install** — stub
-3. **hardware** — stub
-4. **configure** — stub (bootstrap-only: hostname, locale, mirrorlist)
-5. **reconfigure** — implemented (pre-build checkpoint: config review, disk/network/gpg checks, build preview)
-6. **toolchain** — stub
+1. **partition** — deferred to v1.0
+2. **base_install** — deferred to v1.0
+3. **hardware** — deferred to v1.0
+4. **configure** — deferred to v1.0 (bootstrap-only: hostname, locale, mirrorlist)
+5. **reconfigure** — fully implemented (pre-build checkpoint: config review, disk/network/gpg checks, build preview)
+6. **toolchain** — fully implemented (LLVM/GCC, optional 3-pass PGO bootstrap, compiler propagation to packages/kernel)
 7. **packages** — fully implemented
 8. **kernel** — fully implemented
 
-Stubs raise `NotImplementedError` with `--start-from` guidance. Use `--start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds.
+Stages 1–4 raise `NotImplementedError` with `--start-from` guidance. Use `--start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds.
 
 ### Runner
 
@@ -396,7 +405,7 @@ The packages and kernel stages read these values and inject them into the build 
 
 ## Primitives Layer
 
-All modules independently testable. 561 pytest tests (`pytest` from repo root).
+All modules independently testable. 648 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 
@@ -503,6 +512,14 @@ AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key
 - `pkgctl_checkout(name, dest)` — `pkgctl repo clone --protocol=https <name>` run in `dest.parent`; fetches official Arch packaging repo. Raises `RuntimeError` on failure.
 - `import_pgp_keys(pkgmeta, pkgbuild_path)` — ensures all `validpgpkeys` listed in the PKGBUILD are in the GPG keyring before `makepkg` runs. Strategy: (1) import any bundled `.asc` files from `keys/pgp/` alongside the PKGBUILD, (2) check which keys are still missing via `gpg --list-keys`, (3) fetch remaining via `gpg --recv-keys`. Import failures are logged as warnings — makepkg surfaces a clearer error if a key is still absent at verification time.
 
+### `build_state.py`
+
+Build state persistence. Writes `/var/lib/sysforge/build_state.toml` after each successful build, recording `pkgver`, `pkgrel`, `epoch`, `pkgbase`, and `pkgbuild_dir` per package name. Read by `sysforge update` to determine which packages to check. Follows the same atomic write-then-rename pattern as `pipeline/state.py`. Split packages (multiple `pkgname` from one `pkgbase`) each get their own entry, all pointing at the same `pkgbuild_dir`.
+
+### `version.py`
+
+Version comparison utilities. `vercmp(a, b)` wraps the system `vercmp` binary and returns -1/0/1 (negative/zero/positive output from vercmp is clamped). `format_version(globals_)` assembles an `[epoch:]pkgver-pkgrel` string from parsed PKGBUILD globals, omitting the epoch prefix when it is `"0"` or absent.
+
 ### `resolve.py`
 
 Implements `sysforge resolve` — inspect profile matching for a PKGBUILD without building it. Output goes to stdout (same pattern as `manifest.py`).
@@ -512,6 +529,19 @@ Public API: `cmd_resolve(args)`. Uses `find_pkgbuild` from `config.py` for PKGBU
 - `_find_winner(matched_rules)` — returns the highest-priority rule that specifies a `profile` key
 - `_format_conditions(rule)` — compact single-line summary of match conditions, omitting `profile`/`priority`
 - `_print_resolve(...)` — formats and prints the resolve summary: package name, PKGBUILD path, all matched rules with winner marker, profile chain (`→` separated), build mode (if set), consumes, groups; with `--show-flags` expands the full resolved flag set with sysforge-internal keys separated under a comment
+
+### `update.py`
+
+Implements `sysforge update` — the update manager. Algorithm:
+
+1. Load `build_state.toml` to get the set of sysforge-managed packages and their last-built versions and PKGBUILD dirs.
+2. Group by `pkgbase` to deduplicate split packages.
+3. For each `pkgbase`: `git pull --rebase` the PKGBUILD dir (unless `--no-update`), parse the updated PKGBUILD, get the installed version via `pacman -Q`, compare with `vercmp`.
+4. VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) are flagged as `DEVEL` — their `pkgver` is only meaningful after running `pkgver()`, so static comparison is not possible. They are rebuilt only when `--devel` is passed.
+5. Print a summary table: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`.
+6. Rebuild `NEEDS_REBUILD` packages (and `DEVEL` if `--devel`) via `makepkg_wrapper.run()` with `update=False` (pull already done).
+
+Flags: `--dry-run`, `--devel`, `--no-update`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`.
 
 ---
 
@@ -844,7 +874,8 @@ Build in this order to satisfy dependencies correctly:
 ## Release Plan
 
 - **GitHub:** public from day one; source of truth for all code
-- **AUR:** publish once stages 5–8 are stable under real use
+- **v0.1.0:** functional yay replacement — all userspace commands stable under real use: `build`, `update`, `packages`, `toolchain`, `kernel`, `reconfigure`, `resolve`, `manifest`. Target milestone for AUR publication.
+- **v1.0:** system bootstrapper — stages 1–4 implemented (partition, base_install, hardware, configure).
 
 ### AUR publishing process
 
@@ -860,17 +891,25 @@ git push
 
 ## Re-converge
 
-`sysforge converge` compares current installed state in `/var/lib/sysforge/build_state.toml` against the manifest and flag profiles, then rebuilds any package whose profile, flags, or version have drifted. `--dry-run` shows what would be rebuilt.
+Two commands address drift in sysforge-managed packages:
+
+**`sysforge update`** (implemented) — handles **version drift**. After `git pull --rebase` on each PKGBUILD dir, it compares the new `pkgver`/`pkgrel`/`epoch` against the installed version via `vercmp`. Packages where the PKGBUILD is newer are rebuilt with the current profile. VCS packages (`-git`, etc.) require `--devel` to rebuild since their version is only known after running `pkgver()` during the build.
+
+**`sysforge converge`** (planned) — handles **profile/flag drift**. Same package version but different compiler configuration — e.g. profile changed, new flag added, or build mode switched. Compares the profile hash at last build (from `build_state.toml`) against the currently resolved profile. Not yet implemented.
+
+`build_state.toml` is the shared source of truth for both commands. Written by `makepkg_wrapper.run()` after each successful build.
 
 DAG stages are categorised as **bootstrap-only** (partition, base_install, hardware, configure) or **repeatable** (reconfigure, toolchain, packages, kernel). Only repeatable stages participate in re-converge runs.
-
-Not yet implemented.
 
 ---
 
 ## Known Gaps
 
 Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
+
+**`sysforge install` — not yet implemented.** The design question of how to handle repo packages is unresolved: pure pacman passthrough (`pacman -S`) vs. a unified dispatch that routes repo packages to pacman and AUR packages to a profiled build. Until resolved, repo packages require `pacman -S` directly and AUR packages use `sysforge build`.
+
+**`sysforge update` is scoped to sysforge-managed packages only.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. A future `sysforge update --all` could use `pacman -Qm` (foreign packages not in any sync DB) to discover AUR packages installed outside sysforge, but this is not yet implemented.
 
 **`packages.toml [build] pkgbuild_dir` and `flag_profiles [paths] pkgbuild_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_dir`; falls back to `[paths] pkgbuild_dir`. They can point to different directories or the same one — there's no enforcement that they match.
 
@@ -884,14 +923,14 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 ## V2 Roadmap
 
-V2 goal: full `yay` replacement — an AUR helper with compiler optimization as a first-class concern.
+V2 goal: advanced AUR helper features beyond the v0.1.0 yay-replacement baseline.
 
-V2 absorbs:
-- **AUR fetch** — clone and update PKGBUILDs from AUR directly (AUR RPC + auto-clone already implemented; V2 adds update/refresh)
-- **PKGBUILD review** — present diffs to the user before build
-- **Recursive AUR dep resolution** — walk the full AUR dependency tree
-- **Mixed pacman/AUR tree management** — unified view of repo and AUR packages
-- **Upgrade management** — `sysforge upgrade` checks AUR for new versions and rebuilds with active profiles
+V2 candidates:
+- **`sysforge install`** — unified install command routing repo packages to `pacman -S` and AUR packages to a profiled build. Design question (dispatch model) must be resolved first.
+- **PKGBUILD review** — present diffs to the user before building an AUR package, analogous to `yay`'s PKGBUILD diff prompt
+- **Recursive AUR dep resolution** — walk the full AUR dependency tree; currently AUR deps on other AUR packages require manual ordering
+- **`sysforge update --all` via `pacman -Qm`** — discover and update foreign packages installed outside sysforge, not just those in `build_state.toml`
+- **AUR package name cache** — fetch `packages.gz` (~80k names) into `~/.cache/sysforge/` for full tab-completion of AUR package names; refresh via `sysforge sync` or a systemd timer
 
 ### V1.5: Rule priority auto-calculation
 

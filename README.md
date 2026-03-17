@@ -1,26 +1,27 @@
 # SysForge
 
-SysForge is an all-in-one Arch Linux helper for system setup and ongoing package management, with system-tuned build customizations. It covers the full lifecycle — from initial bootstrap off a vanilla Arch ISO to maintaining a compiler-optimized system. Pacman owns the package database; SysForge owns the build configuration and automates the human decisions on top of it.
+SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — think `yay`, but every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-**Current status:** Active development. The primitives layer and package build pipeline are functional and usable on a live system. Stages 1–4 and 6 (partition, base install, hardware detection, configure, toolchain) are stubbed pending dedicated testing. Stage 5 (reconfigure) is implemented. Not ready for general use.
+**Current status:** Active development toward v0.1.0 — a functional yay replacement. All userspace commands (`build`, `update`, `packages`, `toolchain`, `kernel`, `reconfigure`, `resolve`, `manifest`) are implemented and usable on a live system. Bootstrap stages 1–4 (partition, base install, hardware detection, configure) are deferred to v1.0.
 
 ---
 
 ## What it does
 
-- Declarative TOML profiles for per-package compiler flags (`-march=native`, LTO, PGO, etc.)
+- Builds AUR and custom packages with system-tuned compiler flags (`-march=native`, LTO, PGO, etc.)
 - Rule-based profile matching against PKGBUILD metadata — no manual annotation of individual packages
+- `sysforge update` — checks all sysforge-managed AUR packages for new upstream versions and rebuilds outdated ones with active profiles; VCS packages (`-git` etc.) via `--devel`
 - Reproducible installs driven by a package manifest (`packages.toml`)
 - Manifest generation from a list of package names (`sysforge manifest`)
-- Checkpoint/resume across pipeline stages so a failed install can be continued, not restarted
+- Checkpoint/resume across pipeline stages so a failed batch install can be continued, not restarted
 - Pre-build soname dependency analysis to surface ABI mismatches before the build starts
 - PKGBUILD flag extraction and patching — extracts compiler flags from PKGBUILD function bodies and manages them through the profile system instead
 
 ## What it is not
 
 - A distro. Output is a standard Arch install; pacman owns the package database.
-- A replacement for pacman. SysForge handles build configuration and automation; pacman manages the installed result.
-- A fork of `archinstall`. It solves a broader problem — compiler optimization and ongoing build management, not just initial partitioning and package selection.
+- A replacement for pacman. SysForge handles AUR build configuration and automation; pacman manages the installed package database. Repo packages still use `pacman -S`.
+- A fork of `archinstall`. Bootstrap functionality (partitioning, base install) is planned for v1.0; the v0.1.0 scope is the AUR management layer.
 
 ---
 
@@ -49,9 +50,7 @@ Installed paths:
 
 ---
 
-## Quick start (live system, stages 7–8)
-
-Stages 1–4 and 6 require a full install environment. To use SysForge on an existing Arch system for package builds:
+## Quick start
 
 ```bash
 # 1. Install your system config files
@@ -60,13 +59,21 @@ sudo cp /path/to/flag_profiles.toml /etc/sysforge/
 sudo chmod 644 /etc/sysforge/*.toml /etc/sysforge/
 sudo chmod 755 /etc/sysforge/
 
-# 2. Generate a packages.toml from a list of names
-sysforge manifest htop neovim mesa-git cosmic-comp-git > packages.toml
+# 2. Build and install an AUR package with your active profile
+sysforge build neovim-git -m "-si"
 
-# 3. Run the pre-build checkpoint, then proceed to packages
-sysforge pipeline --start-from reconfigure --packages packages.toml --state-dir ~/sf-state
-# Or skip straight to builds:
-# sysforge pipeline --start-from packages --packages packages.toml --state-dir ~/sf-state
+# 3. Check for and rebuild any outdated sysforge-managed packages
+sysforge update
+
+# 4. Rebuild VCS packages too
+sysforge update --devel
+
+# 5. Preview what would be rebuilt without doing it
+sysforge update --dry-run
+
+# 6. Batch install from a manifest
+sysforge manifest htop neovim mesa-git cosmic-comp-git > packages.toml
+sysforge packages --packages packages.toml --state-dir ~/sf-state
 ```
 
 ---
@@ -240,6 +247,40 @@ sysforge pipeline --resume --force-retry --state-dir ~/sf-state
 | `--purge-log` | Truncate unified log before the run starts |
 | `--persist-log` | Keep log files after a successful run |
 
+### Check for and apply updates
+
+`sysforge update` checks all sysforge-managed packages recorded in `/var/lib/sysforge/build_state.toml` against the latest PKGBUILD (after `git pull --rebase`) and rebuilds any package where the upstream version is newer than what is installed.
+
+```bash
+# Check and rebuild outdated packages
+sysforge update
+
+# Include VCS packages (-git, -svn, etc.)
+sysforge update --devel
+
+# Preview without rebuilding
+sysforge update --dry-run
+
+# Skip git pull (use cached PKGBUILD)
+sysforge update --no-update
+```
+
+**Update flags:**
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | Show what would be rebuilt without doing it |
+| `--devel` | Include VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) in the rebuild |
+| `--no-update` | Skip `git pull --rebase` before checking versions |
+| `--state-dir <dir>` | Override state directory |
+| `--profile-conf <file>` | Use alternate `flag_profiles.toml` |
+| `--cache-report` | Print cache summary after the run |
+| `--no-pkg-log` | Disable per-package log files |
+| `--persist-log` | Keep log files after successful completion |
+| `--log-dir <dir>` | Override log file directory |
+
+`sysforge update` is scoped to packages sysforge has built — it reads `build_state.toml` which is written by `sysforge build` and `sysforge packages`. Repo packages (installed via `pacman -S`) are out of scope; use `pacman -Syu` for those.
+
 ### Inspect profile matching
 
 ```bash
@@ -308,22 +349,24 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 7) | ✅ Done |
 | Manifest generator (`sysforge manifest`) | ✅ Done |
-| Pytest suite (561 tests) | ✅ Done |
+| Pytest suite (648 tests) | ✅ Done |
 | Kernel stage (stage 8) | ✅ Done |
 | Reconfigure stage (stage 5) | ✅ Done |
-| Configure stage (stage 4) | 🔧 Stub |
-| Stages 1–4, 6 (partition → configure, toolchain) | 🔧 Stub |
+| Toolchain stage (stage 6, LLVM/GCC + PGO) | ✅ Done |
+| `sysforge update` (version drift detection + rebuild) | ✅ Done |
+| Build state tracking (`build_state.toml`) | ✅ Done |
 | AUR RPC lookup in manifest | ✅ Done |
-| Hardware detection stage | ⬜ Planned |
-| `sysforge converge` | ⬜ Planned |
+| `sysforge converge` (profile/flag drift detection) | ⬜ Planned |
+| `sysforge install` (unified repo+AUR install command) | ⬜ Planned |
 | `sysforge resolve` | ✅ Done |
 | Bare package name resolution (`sysforge build htop`) | ✅ Done |
 | AUR auto-clone on miss | ✅ Done |
 | Repo package auto-checkout via pkgctl | ✅ Done |
 | GPG key auto-import (`validpgpkeys` + bundled `keys/pgp/`) | ✅ Done |
 | Zsh tab completion | ✅ Done |
-| AUR publication | ⬜ Planned |
-| Full yay replacement (V2) | ⬜ Long-term |
+| Functional yay replacement (v0.1.0) | 🔧 In progress |
+| AUR publication | ⬜ After v0.1.0 |
+| Bootstrap stages 1–4 (partition → configure) | ⬜ v1.0 |
 
 ---
 
