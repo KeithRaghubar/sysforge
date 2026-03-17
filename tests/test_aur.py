@@ -2,8 +2,9 @@
 test_aur.py — unit tests for sysforge.primitives.aur
 
 Covers:
-    aur_info    — successful batch query, empty result, network error, bad JSON
-    aur_clone   — successful clone, git failure
+    aur_info         — successful batch query, empty result, network error, bad JSON
+    aur_clone        — successful clone, git failure
+    git_pull_rebase  — not-a-repo skip, no-tracking skip, success, conflict abort+raise
 """
 import json
 import subprocess
@@ -13,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sysforge.primitives.aur import aur_clone, aur_info, import_pgp_keys, is_repo_package, pkgctl_checkout
+from sysforge.primitives.aur import aur_clone, aur_info, git_pull_rebase, import_pgp_keys, is_repo_package, pkgctl_checkout
 
 
 # ---------------------------------------------------------------------------
@@ -362,3 +363,100 @@ def test_import_pgp_keys_bundled_fails_falls_back_to_recv(tmp_path):
 
     recv_calls = [c for c in mock_run.call_args_list if "--recv-keys" in c.args[0]]
     assert len(recv_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# git_pull_rebase
+# ---------------------------------------------------------------------------
+
+def test_git_pull_rebase_not_a_repo_skips(tmp_path):
+    """Plain directory with no .git — should return silently."""
+    not_repo = subprocess.CompletedProcess(["git"], 128, stdout="", stderr="not a git repo")
+    def fake_run(cmd, **kwargs):
+        if "rev-parse" in cmd and "--git-dir" in cmd:
+            return not_repo
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    with patch("subprocess.run", side_effect=fake_run):
+        git_pull_rebase(tmp_path)  # no exception
+
+
+def test_git_pull_rebase_no_tracking_skips(tmp_path):
+    """Git repo but no tracking branch — should return silently."""
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "@{u}" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="no upstream")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    with patch("subprocess.run", side_effect=fake_run):
+        git_pull_rebase(tmp_path)  # no exception
+
+
+def test_git_pull_rebase_success(tmp_path):
+    """Successful pull logs output and returns."""
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "@{u}" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
+        if "pull" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="Already up to date.", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        git_pull_rebase(tmp_path)
+
+    pull_calls = [c for c in calls if "pull" in c]
+    assert len(pull_calls) == 1
+    assert "--rebase" in pull_calls[0]
+
+
+def test_git_pull_rebase_conflict_aborts_and_raises(tmp_path):
+    """Merge conflict → git rebase --abort is called and RuntimeError raised."""
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "@{u}" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
+        if "pull" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 1,
+                stdout="CONFLICT (content): Merge conflict in PKGBUILD",
+                stderr="error: could not apply abc1234",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with pytest.raises(RuntimeError, match="git pull --rebase failed"):
+        with patch("subprocess.run", side_effect=fake_run):
+            git_pull_rebase(tmp_path)
+
+    abort_calls = [c for c in calls if "rebase" in c and "--abort" in c]
+    assert len(abort_calls) == 1, "rebase --abort must be called on conflict"
+
+
+def test_git_pull_rebase_uses_git_dash_c(tmp_path):
+    """All git invocations use git -C <dir> rather than relying on cwd."""
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "@{u}" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        git_pull_rebase(tmp_path)
+
+    for cmd in calls:
+        assert cmd[0] == "git"
+        assert cmd[1] == "-C"
+        assert cmd[2] == str(tmp_path)

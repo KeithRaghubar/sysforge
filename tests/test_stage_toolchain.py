@@ -391,7 +391,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     def fake_run(pkgbuild_path, extra_flags=None, interactive=False,
                  pkg_log=True, persist_log=False, log_dir=None, profile_conf=None,
                  cc_override=None, cxx_override=None, ld_override=None,
-                 cache_report=False, init_session=True):
+                 cache_report=False, init_session=True, update=True):
         call_log.append({"cc": cc_override, "flags": list(extra_flags or [])})
 
     fake_tar = MagicMock()

@@ -44,7 +44,7 @@ from sysforge.primitives.cache_probe import (
     record_build_result,
     reset_session,
 )
-from sysforge.primitives.aur import import_pgp_keys
+from sysforge.primitives.aur import import_pgp_keys, git_pull_rebase
 from sysforge.primitives.dep_analysis import run_dep_analysis
 from sysforge.primitives.failure import handle_failure
 import sysforge.log as _log
@@ -588,7 +588,8 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         pkg_log: bool = True, persist_log: bool = False,
         log_dir=None, profile_conf=None,
         cc_override=None, cxx_override=None, ld_override=None,
-        cache_report: bool = False, init_session: bool = True):
+        cache_report: bool = False, init_session: bool = True,
+        update: bool = True):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     conflict_groups = load_conflict_groups()
@@ -603,6 +604,13 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
     except FileNotFoundError as e:
         print(f"[SYSFORGE] Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if update:
+        try:
+            git_pull_rebase(pkgbuild_path.parent)
+        except RuntimeError as e:
+            print(f"[SYSFORGE] {e}", file=sys.stderr)
+            sys.exit(1)
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)

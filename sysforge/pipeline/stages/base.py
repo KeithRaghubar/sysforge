@@ -31,6 +31,8 @@ class RunOptions:
     persist_log: bool = False        # don't clear logs on successful completion
     # Cache reporting
     cache_report: bool = False       # print structured cache summary at end of run
+    # Source updates
+    no_update: bool = False          # skip git pull --rebase before each build
 
 
 class Stage:

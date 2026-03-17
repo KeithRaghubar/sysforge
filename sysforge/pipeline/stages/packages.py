@@ -195,7 +195,8 @@ def _build_aur(pkg, build_cfg, config, options):
     _log.info("[PACKAGES]", f"Building {name} from {pkgbuild}")
     makepkg_run(pkgbuild,
                 pkg_log=not options.no_pkg_logs,
-                persist_log=options.persist_log)
+                persist_log=options.persist_log,
+                update=not options.no_update)
 
 
 # ---------------------------------------------------------------------------

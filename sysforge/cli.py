@@ -60,7 +60,8 @@ def _cmd_build(args):
                 cxx_override=args.cxx,
                 ld_override=args.ld,
                 init_session=(i == 0),
-                cache_report=(args.cache_report and i == len(packages) - 1))
+                cache_report=(args.cache_report and i == len(packages) - 1),
+                update=not args.no_update)
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -242,6 +243,12 @@ def main():
         dest="cache_report",
         help="Print a structured cache summary (ccache/sccache hit rates) after the build.",
     )
+    p_build.add_argument(
+        "--no-update",
+        action="store_true",
+        dest="no_update",
+        help="Skip git pull --rebase before building (default: update if a tracking branch exists).",
+    )
     p_build.set_defaults(func=_cmd_build)
 
     # pipeline
@@ -332,6 +339,12 @@ def main():
         action="store_true",
         dest="cache_report",
         help="Print a structured cache summary (ccache/sccache hit rates) after the pipeline completes.",
+    )
+    p_pipeline.add_argument(
+        "--no-update",
+        action="store_true",
+        dest="no_update",
+        help="Skip git pull --rebase before each build (default: update if a tracking branch exists).",
     )
     p_pipeline.set_defaults(func=_cmd_pipeline)
 

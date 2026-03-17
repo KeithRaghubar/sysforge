@@ -7,6 +7,7 @@ Public API:
     aur_clone(name, dest)          -> None              git clone from AUR into dest
     pkgctl_checkout(name, dest)    -> None              pkgctl repo clone into dest
     import_pgp_keys(pkgmeta)       -> None              recv any missing validpgpkeys
+    git_pull_rebase(pkgbuild_dir)  -> None              git pull --rebase; abort+raise on conflict
 """
 import json
 import subprocess
@@ -129,6 +130,61 @@ def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:
         _log.warn("[BUILD]", f"GPG: keyserver fetch failed:\n{r.stderr.strip()}")
     else:
         _log.info("[BUILD]", "GPG: keyserver fetch succeeded")
+
+
+def git_pull_rebase(pkgbuild_dir: Path) -> None:
+    """
+    Attempt `git pull --rebase` in pkgbuild_dir before a build.
+
+    - Not a git repo: skips silently (plain directories are fine).
+    - No tracking branch: skips with an info log (detached HEAD, local-only repos).
+    - Success: logs output at INFO level.
+    - Conflict / failure: runs `git rebase --abort` to restore clean state,
+      then raises RuntimeError so the caller can handle it cleanly.
+    """
+    # Check if the directory is inside a git repo at all
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        return  # not a git repo — skip silently
+
+    # Check for a configured tracking branch
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse",
+         "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        _log.info("[GIT]", f"{pkgbuild_dir.name}: no tracking branch — skipping update")
+        return
+
+    tracking = r.stdout.strip()
+    _log.info("[GIT]", f"Updating {pkgbuild_dir.name} from {tracking}")
+
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "pull", "--rebase"],
+        capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        for line in r.stdout.strip().splitlines():
+            if line.strip():
+                _log.info("[GIT]", f"  {line}")
+        return
+
+    # Pull failed — abort the rebase to restore a clean state before raising
+    _log.error("[GIT]", f"git pull --rebase failed for {pkgbuild_dir.name}:")
+    for line in (r.stdout + r.stderr).strip().splitlines():
+        _log.error("[GIT]", f"  {line}")
+    subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rebase", "--abort"],
+        capture_output=True,
+    )
+    raise RuntimeError(
+        f"[GIT] git pull --rebase failed for {pkgbuild_dir.name}. "
+        "Resolve conflicts manually and re-run, or use --no-update to skip."
+    )
 
 
 def aur_clone(name: str, dest: Path) -> None:
