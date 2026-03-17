@@ -589,7 +589,8 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         log_dir=None, profile_conf=None,
         cc_override=None, cxx_override=None, ld_override=None,
         cache_report: bool = False, init_session: bool = True,
-        update: bool = True):
+        update: bool = True,
+        profile_override: str | None = None):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     conflict_groups = load_conflict_groups()
@@ -634,20 +635,34 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
     try:
         matched_rules = match_rules(pkgmeta, config.get("rules", []))
 
-        build_mode = _get_build_mode(matched_rules, config)
+        if profile_override is not None:
+            # Bypass rule matching: resolve the named profile directly.
+            from sysforge.primitives.profile import merge_extends
+            profiles = config.get("profiles", {})
+            if profile_override not in profiles:
+                raise RuntimeError(
+                    f"[BUILD] profile_override {profile_override!r} not found in loaded config"
+                )
+            resolved_profile = merge_extends(profile_override, profiles, conflict_groups=conflict_groups)
+            build_mode = resolved_profile.get("build_mode")
+            _log.info("[BUILD]", f"Profile override: {profile_override!r} (build_mode={build_mode!r})")
+        else:
+            build_mode = _get_build_mode(matched_rules, config)
+            resolved_profile = None  # resolved below after extracted_profile is known
 
         kernel_build = (build_mode == "kernel")
 
         extracted_profile = None
-        if build_mode in ("patch_pkgbuild", "kernel"):
+        if build_mode in ("patched_pkgbuild", "kernel"):
             extracted_profile = extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
             if extracted_profile:
                 write_extracted_profile(extracted_profile, pkgbuild_path)
 
-        resolved_profile = resolve_profile(
-            pkgmeta, matched_rules, config, conflict_groups,
-            extracted_profile=extracted_profile,
-        )
+        if profile_override is None:
+            resolved_profile = resolve_profile(
+                pkgmeta, matched_rules, config, conflict_groups,
+                extracted_profile=extracted_profile,
+            )
         active_consumes = resolve_consumes(resolved_profile, pkgmeta, inference_map)
         groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
 
@@ -671,7 +686,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             _run_build(
                 pkgbuild_path, resolved_profile, config, groups,
                 active_consumes=active_consumes,
-                extracted_profile=extracted_profile if build_mode in ("patch_pkgbuild", "kernel") else None,
+                extracted_profile=extracted_profile if build_mode in ("patched_pkgbuild", "kernel") else None,
                 pkgmeta=pkgmeta,
                 extra_flags=extra_flags,
                 interactive=interactive,

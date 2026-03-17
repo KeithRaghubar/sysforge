@@ -73,7 +73,7 @@
 #                 #               --noprogressbar --log --cleanbuild --force
 #
 #   # SysForge behaviour keys  (not written to conf or env)
-#   build_mode    = "patch_pkgbuild"  # "patch_pkgbuild" | "pgo_llvm_toolchain" | "kernel"
+#   build_mode    = "patched_pkgbuild"  # "patched_pkgbuild" | "pgo_llvm_toolchain" | "kernel"
 #                                     # omit for standard builds
 #   pgo_store     = "/var/tmp"        # (required when build_mode = "pgo_llvm_toolchain")
 #                                     # directory for PGO instrumentation data
@@ -161,7 +161,7 @@ pgo_store = "/var/tmp"
 
 [profiles.patched]
 extends = "optimized"
-build_mode = "patch_pkgbuild"
+build_mode = "patched_pkgbuild"
 
 [profiles.kernel]
 extends = "bare"

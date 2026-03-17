@@ -182,3 +182,110 @@ def test_manifest_all_repo_no_aur_section():
 def test_manifest_repo_section_header():
     result, _, _ = captured_manifest(["htop"])
     assert "Repo packages" in result
+
+
+# ---------------------------------------------------------------------------
+# _toml_entry — profile field
+# ---------------------------------------------------------------------------
+
+def test_toml_entry_with_profile():
+    entry = _toml_entry("mesa-git", "aur", profile="patched")
+    assert 'profile = "patched"' in entry
+
+def test_toml_entry_no_profile_omitted():
+    entry = _toml_entry("mesa-git", "aur")
+    assert "profile" not in entry
+
+def test_toml_entry_none_profile_omitted():
+    entry = _toml_entry("mesa-git", "aur", profile=None)
+    assert "profile" not in entry
+
+
+# ---------------------------------------------------------------------------
+# generate_manifest — dirty detection
+# ---------------------------------------------------------------------------
+
+AUR_PKGS = {"mesa-git", "linux-custom", "cosmic-comp-git"}
+
+def mock_aur_found(name):
+    return name if name in AUR_PKGS else None
+
+def captured_manifest_with_dirty(names, dirty_fn):
+    out = io.StringIO()
+    err = io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        result = generate_manifest(
+            names,
+            pacman_fn=lambda n: False,
+            aur_fn=mock_aur_found,
+            dirty_fn=dirty_fn,
+        )
+    return result, out.getvalue(), err.getvalue()
+
+
+def test_manifest_dirty_package_gets_profile_patched():
+    result, _, _ = captured_manifest_with_dirty(
+        ["mesa-git", "linux-custom"],
+        dirty_fn=lambda name: name == "mesa-git",
+    )
+    # mesa-git is dirty → should have profile = "patched"
+    lines = result.splitlines()
+    mesa_idx = next(i for i, l in enumerate(lines) if 'name = "mesa-git"' in l)
+    assert any('profile = "patched"' in l for l in lines[mesa_idx:mesa_idx + 5])
+
+
+def test_manifest_clean_package_has_no_profile():
+    result, _, _ = captured_manifest_with_dirty(
+        ["mesa-git", "linux-custom"],
+        dirty_fn=lambda name: name == "mesa-git",
+    )
+    lines = result.splitlines()
+    linux_idx = next(i for i, l in enumerate(lines) if 'name = "linux-custom"' in l)
+    block = lines[linux_idx:linux_idx + 5]
+    assert not any("profile" in l for l in block)
+
+
+def test_manifest_no_dirty_no_profiles():
+    result, _, _ = captured_manifest_with_dirty(
+        ["mesa-git", "linux-custom"],
+        dirty_fn=lambda name: False,
+    )
+    assert 'profile = "patched"' not in result
+
+
+def test_manifest_all_dirty():
+    result, _, _ = captured_manifest_with_dirty(
+        ["mesa-git", "linux-custom"],
+        dirty_fn=lambda name: True,
+    )
+    assert result.count('profile = "patched"') == 2
+
+
+def test_manifest_dirty_fn_none_uses_pkgbuild_dir(tmp_path):
+    """When dirty_fn is None, _make_dirty_fn is called with pkgbuild_dir."""
+    pkg_dir = tmp_path / "mesa-git"
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").touch()
+
+    # Simulate a dirty repo via git subprocess mock
+    import subprocess as sp
+    def fake_git(cmd, **kwargs):
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return sp.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "status" in cmd_str:
+            return sp.CompletedProcess(cmd, 0, stdout=" M PKGBUILD\n", stderr="")
+        return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    out = io.StringIO()
+    err = io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err), \
+         patch("subprocess.run", side_effect=fake_git):
+        result = generate_manifest(
+            ["mesa-git"],
+            pacman_fn=lambda n: False,
+            aur_fn=lambda n: n if n == "mesa-git" else None,
+            pkgbuild_dir=tmp_path,
+        )
+
+    assert 'profile = "patched"' in result

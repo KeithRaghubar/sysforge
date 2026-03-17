@@ -444,7 +444,7 @@ Static parser for PKGBUILD metadata. Does **not** source or execute the PKGBUILD
 
 ### `pkgbuild_patcher.py`
 
-All PKGBUILD mutation. Active when `build_mode = "patch_pkgbuild"` or `"kernel"` on the resolved profile.
+All PKGBUILD mutation. Active when `build_mode = "patched_pkgbuild"` or `"kernel"` on the resolved profile.
 
 **Flag extraction** (`extract_pkgbuild_profile`) scans all function bodies and extracts bare, `export`, and `+=` assignments to known flag variables. Strips self-references (`$CFLAGS` in CFLAGS), skips complex bash expressions (e.g. `${CFLAGS/-g /-g1 }`), expands packed `-Wl,a,b,c` tokens into individual sub-tokens. Returns a synthetic profile dict used as the implicit chain root in `merge_extends` — forming the chain: `pkgbuild_extracted → bare → standard → optimized`.
 
@@ -482,7 +482,7 @@ High-level flow:
 3. Resolve consumes and groups
 4. Import GPG keys via `aur.import_pgp_keys` (bundled `keys/pgp/*.asc` first, keyserver fallback)
 5. Run pre-build soname dep analysis
-6. If `patch_pkgbuild` or `kernel` mode: extract PKGBUILD flags, write extracted profile, apply patch
+6. If `patched_pkgbuild` or `kernel` mode: extract PKGBUILD flags, write extracted profile, apply patch
 7. If `kernel` mode and not `interactive`: patch interactive kconfig targets in `PKGBUILD.sysforge` to `olddefconfig`
 8. If `kernel` mode: detect effective CC; if clang, inject `LLVM=1 LLVM_IAS=1` into build env
 9. Emit complete temp `makepkg.conf` (merged system conf + profile overrides; kernel mode omits `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`CPPFLAGS`/`DEBUG_*` profile overrides — system conf values preserved verbatim)
@@ -542,7 +542,7 @@ pgo_store = "/var/tmp"
 
 [profiles.patched]
 extends = "optimized"
-build_mode = "patch_pkgbuild"
+build_mode = "patched_pkgbuild"
 
 [profiles.kernel]
 extends = "bare"
@@ -686,7 +686,7 @@ dep_unsatisfied       = "warn_and_fallback"
 
 On build failure, patched PKGBUILD files are left in place for diagnosis rather than deleted:
 
-- `patch_pkgbuild` mode: `PKGBUILD.sysforge` and `pkgbuild_extracted_profile.toml` are preserved. A `[WARN][PATCH]` line is emitted noting their location.
+- `patched_pkgbuild` mode: `PKGBUILD.sysforge` and `pkgbuild_extracted_profile.toml` are preserved. A `[WARN][PATCH]` line is emitted noting their location.
 - Groups-only mode (non-patch builds): `PKGBUILD.sysforge` is also preserved on failure with a `[WARN][BUILD]` message.
 
 On success, all patch artifacts are cleaned up in both modes.

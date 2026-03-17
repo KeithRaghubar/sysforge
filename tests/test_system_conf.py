@@ -164,7 +164,7 @@ def test_emit_new_profile_key_appended(sys_conf_path):
 
 def test_emit_no_sysforge_internal_keys(sys_conf_path):
     """build_mode and other sysforge-internal keys never appear in conf."""
-    profile = {"CFLAGS": "-O3", "build_mode": "patch_pkgbuild", "batch": True}
+    profile = {"CFLAGS": "-O3", "build_mode": "patched_pkgbuild", "batch": True}
     with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
         content = Path(conf_path).read_text()
     assert "build_mode" not in content

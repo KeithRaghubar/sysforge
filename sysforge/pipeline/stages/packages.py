@@ -189,14 +189,21 @@ def _build_aur(pkg, build_cfg, config, options):
             or config.get("paths", {}).get("pkgbuild_dir", "")
         )
         expected = Path(pkgbuild_dir).expanduser() / name / "PKGBUILD" if pkgbuild_dir else f"<pkgbuild_dir>/{name}/PKGBUILD"
-        _log.info("[PACKAGES]", f"[dry-run] build {name} from {expected}")
+        profile_override = pkg.get("profile") or None
+        suffix = f" [profile={profile_override}]" if profile_override else ""
+        _log.info("[PACKAGES]", f"[dry-run] build {name} from {expected}{suffix}")
         return
     pkgbuild = _resolve_pkgbuild(name, build_cfg, config)
-    _log.info("[PACKAGES]", f"Building {name} from {pkgbuild}")
+    profile_override = pkg.get("profile") or None
+    if profile_override:
+        _log.info("[PACKAGES]", f"Building {name} from {pkgbuild} (profile override: {profile_override!r})")
+    else:
+        _log.info("[PACKAGES]", f"Building {name} from {pkgbuild}")
     makepkg_run(pkgbuild,
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
-                update=not options.no_update)
+                update=not options.no_update,
+                profile_override=profile_override)
 
 
 # ---------------------------------------------------------------------------

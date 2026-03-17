@@ -174,7 +174,7 @@ def test_fallback_mode_writes_all_non_env_non_sysforge():
         "CFLAGS": "-O2",
         "RUSTFLAGS": "-C opt-level=3",
         "RUSTC_WRAPPER": "sccache",   # env type — must NOT appear
-        "build_mode": "patch_pkgbuild",  # sysforge key — must NOT appear
+        "build_mode": "patched_pkgbuild",  # sysforge key — must NOT appear
     }
     with emit_makepkg_conf(profile, None) as conf_path:
         conf = read_conf(conf_path)
@@ -251,7 +251,7 @@ def test_cargo_package_full_routing():
         "RUSTFLAGS": "-C target-cpu=native",
         "RUSTC_WRAPPER": "sccache",
         "CARGO_INCREMENTAL": "0",
-        "build_mode": "patch_pkgbuild",
+        "build_mode": "patched_pkgbuild",
     }
     consumes = ["makepkg", "rust", "env"]
 

@@ -8,6 +8,7 @@ Public API:
     pkgctl_checkout(name, dest)    -> None              pkgctl repo clone into dest
     import_pgp_keys(pkgmeta)       -> None              recv any missing validpgpkeys
     git_pull_rebase(pkgbuild_dir)  -> None              git pull --rebase; abort+raise on conflict
+    git_is_dirty(pkgbuild_dir)    -> bool              True if git repo has uncommitted changes
 """
 import json
 import subprocess
@@ -185,6 +186,57 @@ def git_pull_rebase(pkgbuild_dir: Path) -> None:
         f"[GIT] git pull --rebase failed for {pkgbuild_dir.name}. "
         "Resolve conflicts manually and re-run, or use --no-update to skip."
     )
+
+
+def git_is_dirty(pkgbuild_dir: Path) -> bool:
+    """
+    Return True if pkgbuild_dir is a git repo with local modifications, defined as:
+
+    1. Uncommitted changes — staged or unstaged modifications to tracked files.
+       (Untracked files such as build artifacts are intentionally ignored.)
+    2. Unpushed commits — commits that exist locally but not on the tracking branch.
+    3. No tracking branch — the repo is entirely local with no upstream to compare
+       against, so it is treated as dirty by definition.
+
+    Returns False if the directory is not a git repo or is clean and fully in sync
+    with its tracking branch.
+    """
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        return False
+
+    # Check 1: uncommitted changes (tracked files only)
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "status",
+         "--short", "--untracked-files=no"],
+        capture_output=True, text=True,
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        return True
+
+    # Check 2: verify there is a tracking branch
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse",
+         "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        # No upstream configured — treat as dirty (entirely local repo)
+        return True
+
+    # Check 3: count commits on HEAD that are not on the upstream
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-list", "--count", "@{u}..HEAD"],
+        capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        count = r.stdout.strip()
+        return count.isdigit() and int(count) > 0
+
+    return False
 
 
 def aur_clone(name: str, dest: Path) -> None:

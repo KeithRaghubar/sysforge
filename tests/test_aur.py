@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sysforge.primitives.aur import aur_clone, aur_info, git_pull_rebase, import_pgp_keys, is_repo_package, pkgctl_checkout
+from sysforge.primitives.aur import aur_clone, aur_info, git_is_dirty, git_pull_rebase, import_pgp_keys, is_repo_package, pkgctl_checkout
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +363,141 @@ def test_import_pgp_keys_bundled_fails_falls_back_to_recv(tmp_path):
 
     recv_calls = [c for c in mock_run.call_args_list if "--recv-keys" in c.args[0]]
     assert len(recv_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# git_is_dirty
+# ---------------------------------------------------------------------------
+
+def test_git_is_dirty_not_a_repo(tmp_path):
+    """Plain directory — returns False silently."""
+    not_repo = subprocess.CompletedProcess(["git"], 128, stdout="", stderr="")
+    def fake_run(cmd, **kwargs):
+        return not_repo
+    with patch("subprocess.run", side_effect=fake_run):
+        assert git_is_dirty(tmp_path) is False
+
+
+def test_git_is_dirty_clean_repo(tmp_path):
+    """Git repo with no modifications — returns False."""
+    def fake_run(cmd, **kwargs):
+        if "--git-dir" in " ".join(cmd):
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        # status --short --untracked-files=no returns empty output
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    with patch("subprocess.run", side_effect=fake_run):
+        assert git_is_dirty(tmp_path) is False
+
+
+def test_git_is_dirty_modified_files(tmp_path):
+    """Git repo with modified tracked files — returns True."""
+    def fake_run(cmd, **kwargs):
+        if "--git-dir" in " ".join(cmd):
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=" M PKGBUILD\n", stderr="")
+    with patch("subprocess.run", side_effect=fake_run):
+        assert git_is_dirty(tmp_path) is True
+
+
+def test_git_is_dirty_staged_changes(tmp_path):
+    """Git repo with staged changes — returns True."""
+    def fake_run(cmd, **kwargs):
+        if "--git-dir" in " ".join(cmd):
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="M  PKGBUILD\n", stderr="")
+    with patch("subprocess.run", side_effect=fake_run):
+        assert git_is_dirty(tmp_path) is True
+
+
+def test_git_is_dirty_ignores_untracked(tmp_path):
+    """Untracked files (e.g. build artifacts) don't count as dirty."""
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "@{u}" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
+        if "rev-list" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    with patch("subprocess.run", side_effect=fake_run):
+        assert git_is_dirty(tmp_path) is False
+    # Confirm --untracked-files=no was passed to the status call
+    status_calls = [c for c in calls if "status" in c]
+    assert any("--untracked-files=no" in c for c in status_calls)
+
+
+def test_git_is_dirty_no_tracking_branch(tmp_path):
+    """Repo with no upstream tracking branch is treated as dirty."""
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "status" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "@{u}" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="no upstream")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    with patch("subprocess.run", side_effect=fake_run):
+        assert git_is_dirty(tmp_path) is True
+
+
+def test_git_is_dirty_unpushed_commits(tmp_path):
+    """Repo with local commits not on the upstream is dirty."""
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "status" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "rev-list" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="2", stderr="")
+        if "@{u}" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    with patch("subprocess.run", side_effect=fake_run):
+        assert git_is_dirty(tmp_path) is True
+
+
+def test_git_is_dirty_clean_and_synced(tmp_path):
+    """Repo with no uncommitted changes, a tracking branch, and zero unpushed commits."""
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "status" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "rev-list" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0", stderr="")
+        if "@{u}" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    with patch("subprocess.run", side_effect=fake_run):
+        assert git_is_dirty(tmp_path) is False
+
+
+def test_git_is_dirty_checks_rev_list_after_clean_status(tmp_path):
+    """Verify rev-list is called even when status is clean."""
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "status" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "rev-list" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0", stderr="")
+        if "@{u}" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    with patch("subprocess.run", side_effect=fake_run):
+        git_is_dirty(tmp_path)
+    rev_list_calls = [c for c in calls if "rev-list" in c]
+    assert len(rev_list_calls) == 1
+    assert "@{u}..HEAD" in rev_list_calls[0]
 
 
 # ---------------------------------------------------------------------------
