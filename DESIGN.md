@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles, tracks build state for update detection, and automates the full build lifecycle — from fetching PKGBUILDs to installing profiled packages. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-The v0.1.0 milestone is a functional yay replacement: install, update, and manage AUR and custom packages with system-tuned profiled builds. A full system bootstrapper (stages 1–4: partition, base install, hardware detection, configure) is scoped to v1.0.
+The v0.1.0 milestone is a profiled AUR helper: install, update, and manage AUR and custom packages with system-tuned profiled builds. A full system bootstrapper (stages 1–4: partition, base install, hardware detection, configure) is scoped to v1.0.
 
 ---
 
@@ -31,7 +31,7 @@ The v0.1.0 milestone is a functional yay replacement: install, update, and manag
 
 ## Philosophy
 
-SysForge was motivated by Gentoo's source-level control and performance tuning, without Portage's fragility and maintenance overhead. The core insight is that Gentoo conflates several concerns that are better separated:
+SysForge was motivated by source-based distros' compile-time control and performance tuning, without their fragility and maintenance overhead. The core insight is that source-based systems conflate several concerns that are better separated:
 
 - **Hardware profiling** — what the machine has
 - **Compiler flags** — how to build for it
@@ -50,7 +50,7 @@ SysForge ships as an AUR package. The PKGBUILD points at the GitHub repo as its 
 2. Install SysForge from AUR
 3. Run SysForge
 
-The closest analogy is `archinstall` — a tool that lives in the Arch ecosystem and produces an Arch system.
+SysForge lives in the Arch ecosystem and produces a standard Arch system as output.
 
 **Installed paths:**
 - `/etc/sysforge/` — system defaults (owned by the package)
@@ -874,7 +874,7 @@ Build in this order to satisfy dependencies correctly:
 ## Release Plan
 
 - **GitHub:** public from day one; source of truth for all code
-- **v0.1.0:** functional yay replacement — all userspace commands stable under real use: `build`, `update`, `packages`, `toolchain`, `kernel`, `reconfigure`, `resolve`, `manifest`. Target milestone for AUR publication.
+- **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `update`, `packages`, `toolchain`, `kernel`, `reconfigure`, `resolve`, `manifest`. Target milestone for AUR publication.
 - **v1.0:** system bootstrapper — stages 1–4 implemented (partition, base_install, hardware, configure).
 
 ### AUR publishing process
@@ -923,11 +923,11 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 ## V2 Roadmap
 
-V2 goal: advanced AUR helper features beyond the v0.1.0 yay-replacement baseline.
+V2 goal: advanced AUR helper features beyond the v0.1.0 scope.
 
 V2 candidates:
 - **`sysforge install`** — unified install command routing repo packages to `pacman -S` and AUR packages to a profiled build. Design question (dispatch model) must be resolved first.
-- **PKGBUILD review** — present diffs to the user before building an AUR package, analogous to `yay`'s PKGBUILD diff prompt
+- **PKGBUILD review** — present diffs to the user before building an AUR package
 - **Recursive AUR dep resolution** — walk the full AUR dependency tree; currently AUR deps on other AUR packages require manual ordering
 - **`sysforge update --all` via `pacman -Qm`** — discover and update foreign packages installed outside sysforge, not just those in `build_state.toml`
 - **AUR package name cache** — fetch `packages.gz` (~80k names) into `~/.cache/sysforge/` for full tab-completion of AUR package names; refresh via `sysforge sync` or a systemd timer

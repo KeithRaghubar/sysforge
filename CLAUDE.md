@@ -2,7 +2,7 @@
 
 ## What This Is
 
-SysForge is an **Arch Linux AUR helper with profiled builds** — a functional yay replacement as the v0.1.0 target. Bootstrap stages 1–4 (partition, base install, hardware, configure) are deferred to v1.0.
+SysForge is an **Arch Linux AUR helper with profiled builds** — v0.1.0 target is a fully usable AUR helper with system-tuned builds. Bootstrap stages 1–4 (partition, base install, hardware, configure) are deferred to v1.0.
 Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 - Language: Python

@@ -1,8 +1,8 @@
 # SysForge
 
-SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — think `yay`, but every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
+SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-**Current status:** Active development toward v0.1.0 — a functional yay replacement. All userspace commands (`build`, `update`, `packages`, `toolchain`, `kernel`, `reconfigure`, `resolve`, `manifest`) are implemented and usable on a live system. Bootstrap stages 1–4 (partition, base install, hardware detection, configure) are deferred to v1.0.
+**Current status:** Active development toward v0.1.0. All userspace commands (`build`, `update`, `packages`, `toolchain`, `kernel`, `reconfigure`, `resolve`, `manifest`) are implemented and usable on a live system. Bootstrap stages 1–4 (partition, base install, hardware detection, configure) are deferred to v1.0.
 
 ---
 
@@ -21,7 +21,7 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 
 - A distro. Output is a standard Arch install; pacman owns the package database.
 - A replacement for pacman. SysForge handles AUR build configuration and automation; pacman manages the installed package database. Repo packages still use `pacman -S`.
-- A fork of `archinstall`. Bootstrap functionality (partitioning, base install) is planned for v1.0; the v0.1.0 scope is the AUR management layer.
+- A system installer. Bootstrap functionality (partitioning, base install, hardware detection) is planned for v1.0; the v0.1.0 scope is the AUR management layer.
 
 ---
 
@@ -364,7 +364,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Repo package auto-checkout via pkgctl | ✅ Done |
 | GPG key auto-import (`validpgpkeys` + bundled `keys/pgp/`) | ✅ Done |
 | Zsh tab completion | ✅ Done |
-| Functional yay replacement (v0.1.0) | 🔧 In progress |
+| Profiled AUR helper (v0.1.0) | 🔧 In progress |
 | AUR publication | ⬜ After v0.1.0 |
 | Bootstrap stages 1–4 (partition → configure) | ⬜ v1.0 |
 
