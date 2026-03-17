@@ -91,6 +91,22 @@ def _cmd_packages(args):
     run_stage_standalone(PackagesStage(), config, options)
 
 
+def _cmd_reconfigure(args):
+    from sysforge.pipeline.runner import run_stage_standalone
+    from sysforge.pipeline.stages.reconfigure import ReconfigureStage
+    from sysforge.pipeline.stages.base import RunOptions
+
+    config = load_config() or {}
+    if getattr(args, "packages", None):
+        config["packages_file"] = args.packages
+
+    options = RunOptions(
+        dry_run=args.dry_run,
+        state_dir=Path(args.state_dir) if args.state_dir else None,
+    )
+    run_stage_standalone(ReconfigureStage(), config, options)
+
+
 def _cmd_toolchain(args):
     from sysforge.pipeline.runner import run_stage_standalone
     from sysforge.pipeline.stages.toolchain import ToolchainStage
@@ -409,6 +425,25 @@ def main():
         help="Skip git pull --rebase before each build (default: update if a tracking branch exists).",
     )
     p_pipeline.set_defaults(func=_cmd_pipeline)
+
+    # reconfigure — run ReconfigureStage directly
+    p_reconfigure = sub.add_parser(
+        "reconfigure",
+        help="Interactive pre-build checkpoint: review configs, disk, network, GPG, build preview.",
+    )
+    p_reconfigure.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="Run all steps non-interactively without writing any changes.",
+    )
+    p_reconfigure.add_argument(
+        "--packages", metavar="FILE",
+        help="Path to packages.toml (used by disk and preview steps).",
+    )
+    p_reconfigure.add_argument(
+        "--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory (used for pipeline progress display).",
+    )
+    p_reconfigure.set_defaults(func=_cmd_reconfigure)
 
     # packages — run PackagesStage directly
     p_packages = sub.add_parser(

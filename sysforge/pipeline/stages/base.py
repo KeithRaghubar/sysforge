@@ -33,6 +33,8 @@ class RunOptions:
     cache_report: bool = False       # print structured cache summary at end of run
     # Source updates
     no_update: bool = False          # skip git pull --rebase before each build
+    # Execution context
+    standalone: bool = False         # True when running a single stage outside the pipeline
 
 
 class Stage:

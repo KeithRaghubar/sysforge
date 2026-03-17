@@ -64,6 +64,8 @@ def run_stage_standalone(stage, config, options):
 
     Raises SystemExit on failure.
     """
+    options.standalone = True
+
     state_dir, _ = resolve_state_dir(cli_override=options.state_dir)
     state = PipelineState(state_dir)
 

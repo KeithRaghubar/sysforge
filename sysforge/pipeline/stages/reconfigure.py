@@ -777,13 +777,14 @@ class ReconfigureStage(Stage):
 
         if _interactive() and not options.dry_run:
             _log.info("[RECONFIGURE]", "─────────────────────────────────────────────────────")
-            choice = _prompt(
-                "[RECONFIGURE] Ready to proceed to toolchain → packages → kernel? [y/N]: "
-            ).lower()
+            if options.standalone:
+                prompt = "[RECONFIGURE] Reconfigure complete. Continue? [y/N]: "
+                abort_msg = "[RECONFIGURE] Aborted by user."
+            else:
+                prompt = "[RECONFIGURE] Ready to proceed to toolchain → packages → kernel? [y/N]: "
+                abort_msg = "[RECONFIGURE] Aborted by user. Run with --resume to return to this stage."
+            choice = _prompt(prompt).lower()
             if choice != "y":
-                raise RuntimeError(
-                    "[RECONFIGURE] Aborted by user. "
-                    "Run with --resume to return to this stage."
-                )
+                raise RuntimeError(abort_msg)
 
         _log.info("[RECONFIGURE]", "Pre-build checkpoint complete.")

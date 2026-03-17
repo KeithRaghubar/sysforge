@@ -36,14 +36,10 @@ from sysforge.pipeline.stages.base import RunOptions
 # ---------------------------------------------------------------------------
 
 def make_options(**kwargs):
-    defaults = dict(
-        resume=False, start_from=None, force_retry=False,
-        dry_run=False, state_dir=None,
-        no_unified_log=False, no_pkg_logs=True, log_dir=None,
-        purge_log=False, persist_log=False, cache_report=False,
-    )
-    defaults.update(kwargs)
-    return RunOptions(**defaults)
+    opts = RunOptions(no_pkg_logs=True)
+    for k, v in kwargs.items():
+        setattr(opts, k, v)
+    return opts
 
 
 def write_toolchain_toml(path: Path, content: str) -> Path:
