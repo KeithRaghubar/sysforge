@@ -103,6 +103,8 @@ def _cmd_reconfigure(args):
     options = RunOptions(
         dry_run=args.dry_run,
         state_dir=Path(args.state_dir) if args.state_dir else None,
+        no_unified_log=True,
+        no_pkg_logs=True,
     )
     run_stage_standalone(ReconfigureStage(), config, options)
 

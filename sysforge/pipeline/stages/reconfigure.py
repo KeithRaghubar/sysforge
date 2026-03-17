@@ -168,11 +168,12 @@ def _show_stage_summary(state) -> None:
 # ---------------------------------------------------------------------------
 
 def _show_step_menu() -> None:
-    _log.info("[RECONFIGURE]", "─── Steps ───────────────────────────────────────────")
+    _log.ui("[RECONFIGURE]", "─── Steps ───────────────────────────────────────────")
+    _log.ui("[RECONFIGURE]", "  [0]  cancel     Skip all steps and exit")
     for i, (key, label, desc) in enumerate(_STEPS, 1):
-        _log.info("[RECONFIGURE]", f"  [{i}]  {key:<10}  {label}")
-        _log.info("[RECONFIGURE]", f"            {desc}")
-    _log.info("[RECONFIGURE]", "─────────────────────────────────────────────────────")
+        _log.ui("[RECONFIGURE]", f"  [{i}]  {key:<10}  {label}")
+        _log.ui("[RECONFIGURE]", f"              {desc}")
+    _log.ui("[RECONFIGURE]", "─────────────────────────────────────────────────────")
 
 
 def _parse_step_selection(raw: str) -> list[str]:
@@ -190,10 +191,14 @@ def _parse_step_selection(raw: str) -> list[str]:
     raw = raw.strip()
     if not raw or raw.lower() == "all":
         return list(_STEP_KEYS)
+    if raw == "0" or raw.lower() == "cancel":
+        return []
 
     selected: list[str] = []
 
     for token in raw.split():
+        if token == "0":
+            return []
         # Range: 2-6
         if re.match(r"^\d+-\d+$", token):
             start, end = (int(x) for x in token.split("-", 1))
@@ -228,8 +233,10 @@ def _select_steps(options) -> list[str]:
     )
     steps = _parse_step_selection(raw)
 
-    labels = ", ".join(steps)
-    _log.info("[RECONFIGURE]", f"Running steps: {labels}")
+    if steps:
+        _log.ui("[RECONFIGURE]", f"Running steps: {', '.join(steps)}")
+    else:
+        _log.ui("[RECONFIGURE]", "Cancelled.")
     return steps
 
 
@@ -244,11 +251,13 @@ def _resolve_editor() -> tuple[str, str]:
         (sysforge_cfg.get("ui", {}).get("editor"), "sysforge.toml"),
         (os.environ.get("EDITOR"), "$EDITOR"),
         (os.environ.get("VISUAL"), "$VISUAL"),
-        ("vi", "default"),
     ]
     for value, source in candidates:
         if value:
             return value, source
+    for fallback in ("vim", "nano", "vi"):
+        if shutil.which(fallback):
+            return fallback, "detected"
     return "vi", "default"
 
 
@@ -261,7 +270,7 @@ def _step_editor(config, state, options, editor: str) -> str:
     if not _interactive() or options.dry_run:
         return editor
 
-    choice = _prompt("  Change editor? [e]dit / [↵] keep: ")
+    choice = _prompt(f"  Editor: {editor} (from {source}). Change? [e]dit / [↵] keep: ")
     if choice.lower() != "e":
         return editor
 
@@ -328,7 +337,7 @@ def _review_config_file(
     if not exists or not _interactive() or dry_run:
         return
 
-    if _prompt(f"    [e]dit / [↵] skip: ").lower() != "e":
+    if _prompt(f"    {label} ({path.name}) — [e]dit / [↵] skip: ").lower() != "e":
         return
 
     if warn:
@@ -627,12 +636,12 @@ def _step_gpg(config, state, options, editor: str) -> str:
             "  Refresh all keys from keyserver? (gpg --refresh-keys) [y/N]: "
         ).lower()
         if choice == "y":
-            _log.info("[RECONFIGURE]", "  Running gpg --refresh-keys...")
-            r = subprocess.run(["gpg", "--refresh-keys"], capture_output=True, text=True)
+            _log.ui("[RECONFIGURE]", "Running gpg --refresh-keys (this may take a while)...")
+            r = subprocess.run(["gpg", "--refresh-keys"])
             if r.returncode != 0:
-                _log.warn("[RECONFIGURE]", f"  gpg --refresh-keys failed:\n{r.stderr.strip()}")
+                _log.warn("[RECONFIGURE]", "  gpg --refresh-keys failed")
             else:
-                _log.info("[RECONFIGURE]", "  GPG: keyring refresh complete")
+                _log.ui("[RECONFIGURE]", "GPG: keyring refresh complete")
 
     return editor
 
@@ -768,6 +777,7 @@ class ReconfigureStage(Stage):
     name = "reconfigure"
     description = "Pre-build checkpoint — review configs and system state"
     depends_on = ["configure"]
+    stateless = True
 
     def run(self, config, state, options):
         _show_stage_summary(state)
@@ -775,16 +785,14 @@ class ReconfigureStage(Stage):
         step_keys = _select_steps(options)
         _run_selected_steps(step_keys, config, state, options)
 
-        if _interactive() and not options.dry_run:
+        if _interactive() and not options.dry_run and not options.standalone:
             _log.info("[RECONFIGURE]", "─────────────────────────────────────────────────────")
-            if options.standalone:
-                prompt = "[RECONFIGURE] Reconfigure complete. Continue? [y/N]: "
-                abort_msg = "[RECONFIGURE] Aborted by user."
-            else:
-                prompt = "[RECONFIGURE] Ready to proceed to toolchain → packages → kernel? [y/N]: "
-                abort_msg = "[RECONFIGURE] Aborted by user. Run with --resume to return to this stage."
-            choice = _prompt(prompt).lower()
+            choice = _prompt(
+                "[RECONFIGURE] Ready to proceed to toolchain → packages → kernel? [y/N]: "
+            ).lower()
             if choice != "y":
-                raise RuntimeError(abort_msg)
+                raise RuntimeError(
+                    "[RECONFIGURE] Aborted by user. Run with --resume to return to this stage."
+                )
 
-        _log.info("[RECONFIGURE]", "Pre-build checkpoint complete.")
+        _log.ui("[RECONFIGURE]", "Pre-build checkpoint complete.")

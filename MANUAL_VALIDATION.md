@@ -3,7 +3,7 @@
 ## `sysforge reconfigure`
 
 **Step selection**
-- [ ] Enter → all 8 steps
+- [x] Enter → all 8 steps
 - [ ] Single number (`3`), multiple (`1 3 5`), range (`2-5`), named (`network gpg`), mixed (`1-3 gpg`)
 - [ ] Invalid input → falls back to all
 

@@ -86,7 +86,8 @@ def run_stage_standalone(stage, config, options):
         else:
             _log.info("[PIPELINE]", f"── Stage: {stage.name} ── {stage.description}")
             stage.run(config, state, options)
-            state.save()
+            if not stage.stateless:
+                state.save()
             _log.info("[PIPELINE]", f"{stage.name}: complete")
         success = True
     except RuntimeError as e:

@@ -133,6 +133,12 @@ def _write_to_files(line: str, raw: bool = False) -> None:
 # Log functions
 # ---------------------------------------------------------------------------
 
+def ui(tag: str, message: str) -> None:
+    """Always printed regardless of verbosity. Always written to log files. For interactive output."""
+    print(message, file=sys.stderr)
+    _write_to_files(f"[SYSFORGE][UI]{tag} {message}\n")
+
+
 def error(tag: str, message: str) -> None:
     """Always printed regardless of verbosity. Always written to log files."""
     line = f"[SYSFORGE][ERROR]{tag} {message}\n"

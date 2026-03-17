@@ -51,6 +51,7 @@ class Stage:
     name: str = ""
     description: str = ""
     depends_on: list[str] = []
+    stateless: bool = False  # True for stages that don't write pipeline state
 
     def run(self, config, state, options):
         """
