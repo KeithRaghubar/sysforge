@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-**Current status:** Active development toward v0.1.0. All userspace commands (`build`, `update`, `packages`, `toolchain`, `kernel`, `reconfigure`, `resolve`, `manifest`) are implemented and usable on a live system. Bootstrap stages 1–4 (partition, base install, hardware detection, configure) are deferred to v1.0.
+**Current status:** Active development toward v0.1.0. All userspace commands (`build`, `update`, `resolve`, `manifest`, `packages`, `run pipeline/reconfigure/toolchain/packages/kernel`) are implemented and usable on a live system. Bootstrap stages 1–4 (partition, base install, hardware detection, configure) are deferred to v1.0.
 
 ---
 
@@ -73,7 +73,13 @@ sysforge update --dry-run
 
 # 6. Batch install from a manifest
 sysforge manifest htop neovim mesa-git cosmic-comp-git > packages.toml
-sysforge packages --packages packages.toml --state-dir ~/sf-state
+sysforge run packages --packages packages.toml --state-dir ~/sf-state
+
+# 7. Manage packages.toml
+sysforge packages list
+sysforge packages add htop
+sysforge packages remove htop
+sysforge packages sync --dry-run
 ```
 
 ---
@@ -214,23 +220,23 @@ sysforge build htop --interactive
 ### Run the pipeline
 
 ```bash
-# Stages 1–4 and 6 are stubbed. Start from reconfigure (pre-build checks) on a live system:
-sysforge pipeline --start-from reconfigure --packages packages.toml --state-dir ~/sf-state
+# Stages 1–4 are stubbed. Start from reconfigure (pre-build checks) on a live system:
+sysforge run pipeline --start-from reconfigure --packages packages.toml --state-dir ~/sf-state
 
 # Or skip straight to builds:
-sysforge pipeline --start-from packages --packages packages.toml --state-dir ~/sf-state
+sysforge run pipeline --start-from packages --packages packages.toml --state-dir ~/sf-state
 
 # Resume after a failure
-sysforge pipeline --resume --state-dir ~/sf-state
+sysforge run pipeline --resume --state-dir ~/sf-state
 
 # Preview without executing
-sysforge pipeline --start-from reconfigure --dry-run --state-dir ~/sf-state
+sysforge run pipeline --start-from reconfigure --dry-run --state-dir ~/sf-state
 
 # Retry failed packages without prompting
-sysforge pipeline --resume --force-retry --state-dir ~/sf-state
+sysforge run pipeline --resume --force-retry --state-dir ~/sf-state
 ```
 
-**Pipeline flags:**
+**`run pipeline` flags:**
 
 | Flag | Effect |
 |---|---|
@@ -246,6 +252,15 @@ sysforge pipeline --resume --force-retry --state-dir ~/sf-state
 | `--log-dir <dir>` | Override log file directory |
 | `--purge-log` | Truncate unified log before the run starts |
 | `--persist-log` | Keep log files after a successful run |
+
+Individual stages can also be run standalone outside the pipeline:
+
+```bash
+sysforge run reconfigure --state-dir ~/sf-state
+sysforge run toolchain --dry-run
+sysforge run packages --packages packages.toml --state-dir ~/sf-state
+sysforge run kernel --state-dir ~/sf-state
+```
 
 ### Check for and apply updates
 
@@ -279,7 +294,32 @@ sysforge update --no-update
 | `--persist-log` | Keep log files after successful completion |
 | `--log-dir <dir>` | Override log file directory |
 
-`sysforge update` is scoped to packages sysforge has built — it reads `build_state.toml` which is written by `sysforge build` and `sysforge packages`. Repo packages (installed via `pacman -S`) are out of scope; use `pacman -Syu` for those.
+`sysforge update` is scoped to packages sysforge has built — it reads `build_state.toml` which is written by `sysforge build` and `sysforge run packages`. Repo packages (installed via `pacman -S`) are out of scope; use `pacman -Syu` for those.
+
+### Manage packages.toml
+
+`sysforge packages` is a namespace for managing an existing `packages.toml`. Without a subcommand it defaults to `list`.
+
+```bash
+# Show all entries (name, source, optional fields)
+sysforge packages list
+sysforge packages list --packages ~/my-packages.toml
+
+# Add a package: auto-classifies source (repo vs AUR), infers pkgbuild_patch
+sysforge packages add htop
+sysforge packages add mesa-git --packages ~/my-packages.toml
+
+# Remove a package entry
+sysforge packages remove htop
+
+# Re-validate inferable fields (source, pkgbuild_patch) for all entries
+sysforge packages sync
+sysforge packages sync --dry-run   # preview without writing
+```
+
+`packages add` classifies the package by querying pacman sync DBs and the AUR. For AUR packages, if the PKGBUILD is already cloned in `[build] pkgbuild_dir`, it runs flag extraction to infer `pkgbuild_patch = true` automatically.
+
+`packages sync` re-validates `source` and `pkgbuild_patch` for all entries and rewrites the file. Manual fields (`cache`, `requires_hardware`, `profile`) are preserved verbatim. Note: sync does not preserve comments.
 
 ### Inspect profile matching
 
@@ -364,6 +404,8 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Repo package auto-checkout via pkgctl | ✅ Done |
 | GPG key auto-import (`validpgpkeys` + bundled `keys/pgp/`) | ✅ Done |
 | Zsh tab completion | ✅ Done |
+| CLI restructure (`packages` namespace, `run` namespace) | ✅ Done |
+| `packages list/add/remove/sync` | ✅ Done |
 | Profiled AUR helper (v0.1.0) | 🔧 In progress |
 | AUR publication | ⬜ After v0.1.0 |
 | Bootstrap stages 1–4 (partition → configure) | ⬜ v1.0 |

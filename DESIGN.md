@@ -90,9 +90,10 @@ sysforge/
 │   ├── __init__.py
 │   ├── cli.py                         # CLI entry point and subcommand wiring
 │   ├── log.py                         # structured logging (stderr + optional file output)
-│   ├── manifest.py                    # packages.toml generator
+│   ├── manifest.py                    # packages.toml generator (sysforge manifest)
 │   ├── resolve.py                     # sysforge resolve subcommand
 │   ├── update.py                      # sysforge update subcommand
+│   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove/sync)
 │   └── primitives/
 │       ├── config.py                  # TOML config loading, path constants, system conf parsing
 │       ├── profile.py                 # profile resolution, rule matching, consumes
@@ -229,6 +230,17 @@ The packages stage resolves `packages.toml` from:
 1. `--packages FILE` CLI flag
 2. `/etc/sysforge/packages.toml` (system default)
 
+### Manifest lifecycle commands
+
+`sysforge packages` is a namespace for managing an existing `packages.toml`:
+
+- **`packages list`** (default when no subcommand) — tabulates all entries: name, source, and any optional fields set.
+- **`packages add <pkg>`** — classifies the package (repo vs AUR via pacman/AUR RPC), infers `pkgbuild_patch` by running `extract_pkgbuild_profile()` on the local PKGBUILD if one exists, and appends the entry. Uses `[build] pkgbuild_dir` from the existing file first, falls back to `[paths] pkgbuild_dir` from `flag_profiles.toml`.
+- **`packages remove <pkg>`** — removes the `[[package]]` block for the named entry using line-level manipulation; preserves all surrounding comments and section headers.
+- **`packages sync`** — re-classifies each entry's `source` and re-checks `pkgbuild_patch` (if the local PKGBUILD is available). Non-destructive: manual fields (`cache`, `requires_hardware`, `profile`) are preserved verbatim. Note: `sync` rewrites the file from scratch, losing comments. `--dry-run` shows what would change without writing.
+
+All subcommands accept `--packages FILE` to target a specific file (default: `/etc/sysforge/packages.toml`).
+
 ### `-march=native` strategy
 
 SysForge uses `-march=native` rather than hardcoding CPU-specific flags. Optimization becomes a compile-time concern — it works across CPU families without separate logic. If a package is incompatible with native tuning, a higher-priority rule pointing to the `bare` profile overrides `-march` for that package only.
@@ -274,7 +286,7 @@ Python DAG orchestrator with checkpoint/resume. Stages run in order:
 7. **packages** — fully implemented
 8. **kernel** — fully implemented
 
-Stages 1–4 raise `NotImplementedError` with `--start-from` guidance. Use `--start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds.
+Stages 1–4 raise `NotImplementedError` with `--start-from` guidance. Use `sysforge run pipeline --start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds. Stages 5–8 are also available as standalone `sysforge run <stage>` commands for repeated, out-of-pipeline use (e.g. `sysforge run toolchain`, `sysforge run packages`).
 
 ### Runner
 
@@ -286,7 +298,7 @@ Stages 1–4 raise `NotImplementedError` with `--start-from` guidance. Use `--st
 - On `RuntimeError`: saves state and exits with resume instructions
 - `--dry-run`: logs what would run without calling `stage.run()`
 
-Guard against accidental state clobber: if a state file exists and neither `--resume` nor `--start-from` is passed, the runner exits with instructions rather than overwriting.
+Guard against accidental state clobber: if a state file exists and neither `--resume` nor `--start-from` is passed, the runner exits with instructions rather than overwriting. Both flags are supported on `sysforge run pipeline`.
 
 ### Checkpoint state
 
@@ -772,12 +784,12 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 | Flag | Command | Effect |
 |---|---|---|
-| `--no-unified-log` | `pipeline` | Disable unified log for this run |
-| `--no-pkg-logs` | `pipeline` | Disable per-package logs for this run |
+| `--no-unified-log` | `run pipeline` | Disable unified log for this run |
+| `--no-pkg-logs` | `run pipeline`, `run packages`, `run kernel` | Disable per-package logs for this run |
 | `--no-pkg-log` | `build` | Disable the per-package log for this build |
-| `--log-dir <path>` | `pipeline`, `build` | Override log file directory |
-| `--purge-log` | `pipeline` | Truncate unified log before run |
-| `--persist-log` | `pipeline`, `build` | Keep log files after success |
+| `--log-dir <path>` | `run pipeline`, `run packages`, `run kernel`, `build` | Override log file directory |
+| `--purge-log` | `run pipeline` | Truncate unified log before run |
+| `--persist-log` | `run pipeline`, `run toolchain`, `run packages`, `run kernel`, `build` | Keep log files after success |
 
 ### Tags in use
 
@@ -874,7 +886,7 @@ Build in this order to satisfy dependencies correctly:
 ## Release Plan
 
 - **GitHub:** public from day one; source of truth for all code
-- **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `update`, `packages`, `toolchain`, `kernel`, `reconfigure`, `resolve`, `manifest`. Target milestone for AUR publication.
+- **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `update`, `resolve`, `manifest`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
 - **v1.0:** system bootstrapper — stages 1–4 implemented (partition, base_install, hardware, configure).
 
 ### AUR publishing process
