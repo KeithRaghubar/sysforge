@@ -154,6 +154,16 @@ class PipelineState:
                     lines.append(f'{pkgname} = "{escaped}"')
                 lines.append("")
 
+            result = stage_data.get("result")
+            if result:
+                lines.append(f"[stages.{stage_name}.result]")
+                for key, val in result.items():
+                    if isinstance(val, str):
+                        lines.append(f'{key} = "{val}"')
+                    else:
+                        lines.append(f"{key} = {val!r}")
+                lines.append("")
+
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -270,4 +280,23 @@ class PipelineState:
             self._data.get("stages", {})
             .get("packages", {})
             .get("errors", {})
+        )
+
+    # ------------------------------------------------------------------
+    # Stage result (toolchain compiler propagation)
+    # ------------------------------------------------------------------
+
+    def set_stage_result(self, stage_name: str, result: dict):
+        """Write result key/value data for a stage (e.g. toolchain compiler paths)."""
+        stages = self._data.setdefault("stages", {})
+        stage = stages.setdefault(stage_name, {})
+        stage["result"] = dict(result)
+        self.touch()
+
+    def get_stage_result(self, stage_name: str) -> dict:
+        """Read result data for a stage. Returns empty dict if not set."""
+        return dict(
+            self._data.get("stages", {})
+            .get(stage_name, {})
+            .get("result", {})
         )
