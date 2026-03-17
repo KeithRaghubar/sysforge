@@ -145,7 +145,7 @@ def _prompt(msg: str, default: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 def _show_stage_summary(state) -> None:
-    _log.info("[RECONFIGURE]", "─── Pipeline progress ───────────────────────────────")
+    _log.ui("[RECONFIGURE]", "─── Pipeline progress ───────────────────────────────")
     _symbols = {
         "done":       "✓",
         "skipped_to": "↷",
@@ -159,8 +159,8 @@ def _show_stage_summary(state) -> None:
         else:
             symbol = _symbols.get(status, "·")
             label  = status or "pending"
-        _log.info("[RECONFIGURE]", f"  {symbol}  {name:<16}  {label}")
-    _log.info("[RECONFIGURE]", "─────────────────────────────────────────────────────")
+        _log.ui("[RECONFIGURE]", f"  {symbol}  {name:<16}  {label}")
+    _log.ui("[RECONFIGURE]", "─────────────────────────────────────────────────────")
 
 
 # ---------------------------------------------------------------------------
@@ -202,8 +202,8 @@ def _parse_step_selection(raw: str) -> list[str]:
         # Range: 2-6
         if re.match(r"^\d+-\d+$", token):
             start, end = (int(x) for x in token.split("-", 1))
-            for i in range(start, end + 1):
-                if 1 <= i <= len(_STEP_KEYS):
+            if 1 <= start <= end <= len(_STEP_KEYS):
+                for i in range(start, end + 1):
                     key = _STEP_KEYS[i - 1]
                     if key not in selected:
                         selected.append(key)
@@ -264,8 +264,7 @@ def _resolve_editor() -> tuple[str, str]:
 def _step_editor(config, state, options, editor: str) -> str:
     """Show current editor, offer to change. Returns editor to use."""
     editor, source = _resolve_editor()
-    _log.info("[RECONFIGURE]", f"─── Editor selection ────────────────────────────────")
-    _log.info("[RECONFIGURE]", f"  Editor: {editor}  (from {source})")
+    _log.ui("[RECONFIGURE]", f"─── Editor selection ────────────────────────────────")
 
     if not _interactive() or options.dry_run:
         return editor
@@ -282,7 +281,7 @@ def _step_editor(config, state, options, editor: str) -> str:
     if save == "y":
         try:
             _save_sysforge_toml_ui("editor", new_editor)
-            _log.info("[RECONFIGURE]", f"  Saved to {SYSFORGE_TOML_PATH}")
+            _log.ui("[RECONFIGURE]", f"  Saved to {SYSFORGE_TOML_PATH}")
         except OSError as e:
             _log.warn("[RECONFIGURE]", f"  Could not save preference: {e}")
 
@@ -331,7 +330,7 @@ def _review_config_file(
     warn: str | None = None,
 ) -> None:
     exists = path.exists()
-    _log.info("[RECONFIGURE]",
+    _log.ui("[RECONFIGURE]",
         f"  {label}: {path}" if exists else f"  {label}: {path}  (not found — skipping)"
     )
     if not exists or not _interactive() or dry_run:
@@ -349,10 +348,10 @@ def _review_config_file(
         _open_in_editor(path, editor)
         if validate_fn is None:
             break
-        _log.info("[RECONFIGURE]", f"    Validating {label}...")
+        _log.ui("[RECONFIGURE]", f"    Validating {label}...")
         ok, msg = validate_fn(path)
         if ok:
-            _log.info("[RECONFIGURE]", f"    ✓ {msg}")
+            _log.ui("[RECONFIGURE]", f"    ✓ {msg}")
             break
         _log.warn("[RECONFIGURE]", f"    ✗ {msg}")
         action = _prompt(
@@ -368,7 +367,7 @@ def _review_config_file(
 
 
 def _step_config(config, state, options, editor: str) -> str:
-    _log.info("[RECONFIGURE]", "─── Config file review ──────────────────────────────")
+    _log.ui("[RECONFIGURE]", "─── Config file review ──────────────────────────────")
 
     _review_config_file(
         "flag_profiles.toml",
@@ -404,7 +403,7 @@ def _step_config(config, state, options, editor: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _step_makepkg(config, state, options, editor: str) -> str:
-    _log.info("[RECONFIGURE]", "─── System makepkg.conf ─────────────────────────────")
+    _log.ui("[RECONFIGURE]", "─── System makepkg.conf ─────────────────────────────")
 
     from sysforge.primitives.config import parse_system_makepkg_conf
 
@@ -417,9 +416,9 @@ def _step_makepkg(config, state, options, editor: str) -> str:
 
     for key in _MAKEPKG_CONF_HIGHLIGHT:
         if key in conf:
-            _log.info("[RECONFIGURE]", f"  {key:<12} = {conf[key]}")
+            _log.ui("[RECONFIGURE]", f"  {key:<12} = {conf[key]}")
 
-    _log.info("[RECONFIGURE]",
+    _log.ui("[RECONFIGURE]",
         "  (sysforge profile overrides CFLAGS / CXXFLAGS / LDFLAGS at build time)"
     )
 
@@ -432,7 +431,7 @@ def _step_makepkg(config, state, options, editor: str) -> str:
         else:
             try:
                 free_gb = shutil.disk_usage(builddir).free / (1024 ** 3)
-                _log.info("[RECONFIGURE]", f"  BUILDDIR free: {free_gb:.1f} GB")
+                _log.ui("[RECONFIGURE]", f"  BUILDDIR free: {free_gb:.1f} GB")
             except OSError:
                 pass
 
@@ -450,10 +449,10 @@ def _step_makepkg(config, state, options, editor: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _step_sudo(config, state, options, editor: str) -> str:
-    _log.info("[RECONFIGURE]", "─── User / sudo verification ────────────────────────")
+    _log.ui("[RECONFIGURE]", "─── User / sudo verification ────────────────────────")
 
     user = os.environ.get("SUDO_USER") or os.environ.get("USER") or "(unknown)"
-    _log.info("[RECONFIGURE]", f"  Running as: {user}")
+    _log.ui("[RECONFIGURE]", f"  Running as: {user}")
 
     if os.geteuid() == 0:
         _log.warn("[RECONFIGURE]",
@@ -463,13 +462,13 @@ def _step_sudo(config, state, options, editor: str) -> str:
 
     result = subprocess.run(["sudo", "-n", "true"], capture_output=True)
     if result.returncode == 0:
-        _log.info("[RECONFIGURE]", "  sudo: OK (passwordless)")
+        _log.ui("[RECONFIGURE]", "  sudo: OK (passwordless)")
         return editor
 
     result2 = subprocess.run(["id", "-Gn", user], capture_output=True, text=True)
     groups = result2.stdout.strip().split() if result2.returncode == 0 else []
     if "wheel" in groups or "sudo" in groups:
-        _log.info("[RECONFIGURE]", "  sudo: requires password (user is in wheel/sudo — OK)")
+        _log.ui("[RECONFIGURE]", "  sudo: requires password (user is in wheel/sudo — OK)")
     else:
         _log.warn("[RECONFIGURE]",
             f"  sudo: user {user!r} is not in wheel or sudo group. "
@@ -483,7 +482,7 @@ def _step_sudo(config, state, options, editor: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _step_disk(config, state, options, editor: str) -> str:
-    _log.info("[RECONFIGURE]", "─── Disk space ──────────────────────────────────────")
+    _log.ui("[RECONFIGURE]", "─── Disk space ──────────────────────────────────────")
 
     build_dir = Path(
         config.get("paths", {}).get("pkgbuild_dir", "~")
@@ -516,11 +515,11 @@ def _step_disk(config, state, options, editor: str) -> str:
         pass
 
     est_gb = n_aur * _DISK_PER_PKG_GB
-    _log.info("[RECONFIGURE]",
+    _log.ui("[RECONFIGURE]",
         f"  Build dir: {build_dir}  ({free_gb:.1f} GB free of {total_gb:.1f} GB)"
     )
     if n_aur:
-        _log.info("[RECONFIGURE]",
+        _log.ui("[RECONFIGURE]",
             f"  Estimated build space: ~{est_gb} GB  "
             f"({n_aur} AUR/git packages × {_DISK_PER_PKG_GB} GB each)"
         )
@@ -536,7 +535,7 @@ def _step_disk(config, state, options, editor: str) -> str:
             f"available space ({free_gb:.1f} GB)"
         )
     else:
-        _log.info("[RECONFIGURE]", "  Disk space: OK")
+        _log.ui("[RECONFIGURE]", "  Disk space: OK")
 
     return editor
 
@@ -554,7 +553,7 @@ def _probe_host(host: str, port: int = 443, timeout: int = 5) -> bool:
 
 
 def _step_network(config, state, options, editor: str) -> str:
-    _log.info("[RECONFIGURE]", "─── Network connectivity ────────────────────────────")
+    _log.ui("[RECONFIGURE]", "─── Network connectivity ────────────────────────────")
 
     endpoints = [
         ("AUR",        "aur.archlinux.org", 443),
@@ -577,7 +576,7 @@ def _step_network(config, state, options, editor: str) -> str:
         ok = _probe_host(host, port)
         sym = "✓" if ok else "✗"
         if ok:
-            _log.info("[RECONFIGURE]", f"  {sym}  {label} ({host})")
+            _log.ui("[RECONFIGURE]", f"  {sym}  {label} ({host})")
         else:
             _log.warn("[RECONFIGURE]", f"  {sym}  {label} ({host}) — unreachable")
             all_ok = False
@@ -594,7 +593,7 @@ def _step_network(config, state, options, editor: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _step_gpg(config, state, options, editor: str) -> str:
-    _log.info("[RECONFIGURE]", "─── GPG keyring bootstrap ───────────────────────────")
+    _log.ui("[RECONFIGURE]", "─── GPG keyring bootstrap ───────────────────────────")
 
     if not shutil.which("gpg"):
         _log.warn("[RECONFIGURE]", "  gpg not found — key verification unavailable")
@@ -605,13 +604,13 @@ def _step_gpg(config, state, options, editor: str) -> str:
         capture_output=True, text=True,
     )
     key_count = r.stdout.count("\npub:") if r.returncode == 0 else 0
-    _log.info("[RECONFIGURE]", f"  GPG keyring: {key_count} public key(s)")
+    _log.ui("[RECONFIGURE]", f"  GPG keyring: {key_count} public key(s)")
 
     global_keys_dir = CONFIG_BASE / "etc/sysforge/keys/pgp"
     if global_keys_dir.is_dir():
         asc_files = sorted(global_keys_dir.glob("*.asc"))
         if asc_files:
-            _log.info("[RECONFIGURE]",
+            _log.ui("[RECONFIGURE]",
                 f"  Importing {len(asc_files)} key(s) from {global_keys_dir}"
             )
             if not options.dry_run:
@@ -622,11 +621,11 @@ def _step_gpg(config, state, options, editor: str) -> str:
                 if r.returncode != 0:
                     _log.warn("[RECONFIGURE]", f"  GPG import failed:\n{r.stderr.strip()}")
                 else:
-                    _log.info("[RECONFIGURE]", "  GPG: global key import succeeded")
+                    _log.ui("[RECONFIGURE]", "  GPG: global key import succeeded")
         else:
-            _log.info("[RECONFIGURE]", f"  {global_keys_dir}: no .asc files")
+            _log.ui("[RECONFIGURE]", f"  {global_keys_dir}: no .asc files")
     else:
-        _log.info("[RECONFIGURE]",
+        _log.ui("[RECONFIGURE]",
             f"  No global key store at {global_keys_dir} "
             "(per-build keys still imported by the build stage)"
         )
@@ -651,11 +650,11 @@ def _step_gpg(config, state, options, editor: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _step_preview(config, state, options, editor: str) -> str:
-    _log.info("[RECONFIGURE]", "─── Build preview ───────────────────────────────────")
+    _log.ui("[RECONFIGURE]", "─── Build preview ───────────────────────────────────")
 
     pkg_path = Path(config.get("packages_file") or PACKAGES_PATH)
     if not pkg_path.exists():
-        _log.info("[RECONFIGURE]", f"  packages.toml not found at {pkg_path} — skipping")
+        _log.ui("[RECONFIGURE]", f"  packages.toml not found at {pkg_path} — skipping")
         return editor
 
     try:
@@ -666,7 +665,7 @@ def _step_preview(config, state, options, editor: str) -> str:
         return editor
 
     if not packages:
-        _log.info("[RECONFIGURE]", "  No packages defined in packages.toml")
+        _log.ui("[RECONFIGURE]", "  No packages defined in packages.toml")
         return editor
 
     _match_rules = None
@@ -677,8 +676,8 @@ def _step_preview(config, state, options, editor: str) -> str:
     except Exception:
         rules, can_match = [], False
 
-    _log.info("[RECONFIGURE]", f"  {'Package':<30}  {'Source':<6}  {'Action'}")
-    _log.info("[RECONFIGURE]", f"  {'─'*30}  {'─'*6}  {'─'*30}")
+    _log.ui("[RECONFIGURE]", f"  {'Package':<30}  {'Source':<6}  {'Action'}")
+    _log.ui("[RECONFIGURE]", f"  {'─'*30}  {'─'*6}  {'─'*30}")
 
     repo_count = build_count = 0
     for pkg in packages:
@@ -699,13 +698,13 @@ def _step_preview(config, state, options, editor: str) -> str:
                     action = f"build  [{config.get('defaults', {}).get('profile', 'standard')}] (default)"
             else:
                 action = "build"
-        _log.info("[RECONFIGURE]", f"  {name:<30}  {source:<6}  {action}")
+        _log.ui("[RECONFIGURE]", f"  {name:<30}  {source:<6}  {action}")
 
-    _log.info("[RECONFIGURE]",
+    _log.ui("[RECONFIGURE]",
         f"  Total: {len(packages)}  |  Repo: {repo_count}  |  Builds: {build_count}"
     )
     if can_match:
-        _log.info("[RECONFIGURE]",
+        _log.ui("[RECONFIGURE]",
             "  Profiles are tentative (pkgname rules only). "
             "makedepends rules resolve per-PKGBUILD at build time."
         )
@@ -718,27 +717,25 @@ def _step_preview(config, state, options, editor: str) -> str:
             compiler = tcfg.get("compiler", "llvm")
             pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
             pgo_label = " + PGO (3-pass)" if pgo else ""
-            _log.info("[RECONFIGURE]",
-                f"  Toolchain: {compiler}{pgo_label}"
-            )
+            _log.ui("[RECONFIGURE]", f"  Toolchain: {compiler}{pgo_label}")
         except Exception:
-            _log.info("[RECONFIGURE]", "  Toolchain: toolchain.toml present but unreadable")
+            _log.ui("[RECONFIGURE]", "  Toolchain: toolchain.toml present but unreadable")
     else:
-        _log.info("[RECONFIGURE]", "  Toolchain: no toolchain.toml — toolchain stage will be a no-op")
+        _log.ui("[RECONFIGURE]", "  Toolchain: no toolchain.toml — toolchain stage will be a no-op")
 
     kernel_path = CONFIG_BASE / "etc/sysforge/kernel.toml"
     if kernel_path.exists():
         try:
             with open(kernel_path, "rb") as f:
                 kcfg = tomllib.load(f)
-            _log.info("[RECONFIGURE]",
+            _log.ui("[RECONFIGURE]",
                 f"  Kernel: {kcfg.get('pkgname', '?')}  "
                 f"(bootloader: {kcfg.get('bootloader', 'systemd-boot')})"
             )
         except Exception:
-            _log.info("[RECONFIGURE]", "  Kernel: kernel.toml present but unreadable")
+            _log.ui("[RECONFIGURE]", "  Kernel: kernel.toml present but unreadable")
     else:
-        _log.info("[RECONFIGURE]", "  Kernel: no kernel.toml — kernel stage will be a no-op")
+        _log.ui("[RECONFIGURE]", "  Kernel: no kernel.toml — kernel stage will be a no-op")
 
     return editor
 
@@ -786,7 +783,7 @@ class ReconfigureStage(Stage):
         _run_selected_steps(step_keys, config, state, options)
 
         if _interactive() and not options.dry_run and not options.standalone:
-            _log.info("[RECONFIGURE]", "─────────────────────────────────────────────────────")
+            _log.ui("[RECONFIGURE]", "─────────────────────────────────────────────────────")
             choice = _prompt(
                 "[RECONFIGURE] Ready to proceed to toolchain → packages → kernel? [y/N]: "
             ).lower()
