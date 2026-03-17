@@ -12,14 +12,13 @@ _sysforge() {
   case $state in
     args)
       case $words[1] in
-        build)       _sysforge_build       ;;
-        resolve)     _sysforge_resolve     ;;
-        pipeline)    _sysforge_pipeline    ;;
-        reconfigure) _sysforge_reconfigure ;;
-        packages)    _sysforge_packages_cmd ;;
-        toolchain)   _sysforge_toolchain   ;;
-        kernel)      _sysforge_kernel      ;;
-        manifest)    _sysforge_manifest    ;;
+        build)    _sysforge_build    ;;
+        update)   _sysforge_update   ;;
+        resolve)  _sysforge_resolve  ;;
+        manifest) _sysforge_manifest ;;
+        converge) _sysforge_converge ;;
+        packages) _sysforge_packages ;;
+        run)      _sysforge_run      ;;
       esac
       ;;
   esac
@@ -28,18 +27,17 @@ _sysforge() {
 _sysforge_commands() {
   local commands=(
     'build:build a package from a PKGBUILD'
+    'update:check for and rebuild outdated sysforge-managed packages'
     'resolve:show which profile would apply to a package'
-    'reconfigure:interactive pre-build checkpoint'
-    'packages:build and install packages from packages.toml'
-    'toolchain:build and install the LLVM/GCC toolchain'
-    'kernel:build and install the custom kernel'
-    'pipeline:run the full install pipeline'
     'manifest:generate a packages.toml stub'
+    'converge:[planned] rebuild packages that have drifted from their profile'
+    'packages:manage packages.toml (list, add, remove, sync)'
+    'run:execute a pipeline stage'
   )
   _describe 'command' commands
 }
 
-_sysforge_packages() {
+_sysforge_pkg_names() {
   local -a pkgs
   pkgs=("${(@f)$(sysforge completions packages 2>/dev/null)}")
   _describe 'package' pkgs
@@ -51,7 +49,7 @@ _sysforge_pkg_or_file() {
   if [[ $words[CURRENT] == /* || $words[CURRENT] == ./* || $words[CURRENT] == ../* ]]; then
     _files
   else
-    _sysforge_packages
+    _sysforge_pkg_names
   fi
 }
 
@@ -67,7 +65,22 @@ _sysforge_build() {
     '--log-dir[directory for per-package log]:directory:_files -/' \
     '--persist-log[keep log after a successful build]' \
     '--cache-report[print ccache/sccache summary after build]' \
-    '1: :_sysforge_pkg_or_file'
+    '--no-update[skip git pull --rebase before building]' \
+    '--state-dir[override state directory]:directory:_files -/' \
+    '*: :_sysforge_pkg_or_file'
+}
+
+_sysforge_update() {
+  _arguments \
+    '--dry-run[show what would be rebuilt without doing it]' \
+    '--devel[include VCS packages (-git, -svn, -hg, -bzr)]' \
+    '--no-update[skip git pull --rebase before checking versions]' \
+    '--state-dir[override state directory]:directory:_files -/' \
+    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '--cache-report[print ccache/sccache summary after run]' \
+    '--no-pkg-log[disable per-package log files]' \
+    '--persist-log[keep log files after successful completion]' \
+    '--log-dir[directory for per-package log files]:directory:_files -/'
 }
 
 _sysforge_resolve() {
@@ -77,10 +90,107 @@ _sysforge_resolve() {
     '1: :_sysforge_pkg_or_file'
 }
 
-_sysforge_pipeline() {
+_sysforge_manifest() {
+  _arguments \
+    '--file[text file with one package name per line]:file:_files' \
+    '*: :_sysforge_pkg_names'
+}
+
+_sysforge_converge() {
+  _arguments \
+    '--dry-run[show what would be rebuilt without doing it]'
+}
+
+_sysforge_packages() {
+  local context state state_descr line
+  typeset -A opt_args
+
+  _arguments -C \
+    '--packages[path to packages.toml]:file:_files' \
+    '1: :_sysforge_packages_subcommands' \
+    '*:: :->args'
+
+  case $state in
+    args)
+      case $words[1] in
+        list)   _sysforge_packages_list   ;;
+        add)    _sysforge_packages_add    ;;
+        remove) _sysforge_packages_remove ;;
+        sync)   _sysforge_packages_sync   ;;
+      esac
+      ;;
+  esac
+}
+
+_sysforge_packages_subcommands() {
+  local subcommands=(
+    'list:show packages in packages.toml'
+    'add:add a package entry'
+    'remove:remove a package entry'
+    'sync:re-validate inferable fields (source, pkgbuild_patch)'
+  )
+  _describe 'subcommand' subcommands
+}
+
+_sysforge_packages_list() {
+  _arguments \
+    '--packages[path to packages.toml]:file:_files'
+}
+
+_sysforge_packages_add() {
+  _arguments \
+    '--packages[path to packages.toml]:file:_files' \
+    '1: :_sysforge_pkg_names'
+}
+
+_sysforge_packages_remove() {
+  _arguments \
+    '--packages[path to packages.toml]:file:_files' \
+    '1: :_sysforge_pkg_names'
+}
+
+_sysforge_packages_sync() {
+  _arguments \
+    '--packages[path to packages.toml]:file:_files' \
+    '--dry-run[show what would change without writing]'
+}
+
+_sysforge_run() {
+  local context state state_descr line
+  typeset -A opt_args
+
+  _arguments -C \
+    '1: :_sysforge_run_stages' \
+    '*:: :->args'
+
+  case $state in
+    args)
+      case $words[1] in
+        pipeline)    _sysforge_run_pipeline    ;;
+        reconfigure) _sysforge_run_reconfigure ;;
+        toolchain)   _sysforge_run_toolchain   ;;
+        packages)    _sysforge_run_packages    ;;
+        kernel)      _sysforge_run_kernel      ;;
+      esac
+      ;;
+  esac
+}
+
+_sysforge_run_stages() {
+  local stages=(
+    'pipeline:run the full install pipeline (stages 1-8)'
+    'reconfigure:pre-build checkpoint'
+    'toolchain:build and install the LLVM/GCC toolchain'
+    'packages:build and install packages from packages.toml'
+    'kernel:build and install the custom kernel'
+  )
+  _describe 'stage' stages
+}
+
+_sysforge_run_pipeline() {
   _arguments \
     '--resume[continue from the last checkpoint]' \
-    '--start-from[begin from this stage]:stage:(partition base_install hardware configure reconfigure toolchain packages kernel)' \
+    '--start-from[begin from this stage]:stage:(reconfigure toolchain packages kernel)' \
     '--force-retry[retry failed packages without prompting]' \
     '--dry-run[show what would run without executing]' \
     '--packages[path to packages.toml]:file:_files' \
@@ -91,17 +201,27 @@ _sysforge_pipeline() {
     '--log-dir[directory for log files]:directory:_files -/' \
     '--purge-log[truncate unified log before this run]' \
     '--persist-log[keep logs after successful run]' \
-    '--cache-report[print ccache/sccache summary after pipeline]'
+    '--cache-report[print ccache/sccache summary after pipeline]' \
+    '--no-update[skip git pull --rebase before each build]'
 }
 
-_sysforge_reconfigure() {
+_sysforge_run_reconfigure() {
   _arguments \
     '--dry-run[run all steps non-interactively without writing changes]' \
     '--packages[path to packages.toml]:file:_files' \
     '--state-dir[override state directory]:directory:_files -/'
 }
 
-_sysforge_packages_cmd() {
+_sysforge_run_toolchain() {
+  _arguments \
+    '--dry-run[show what would run without executing]' \
+    '--no-update[skip git pull --rebase before each build]' \
+    '--persist-log[keep logs after successful run]' \
+    '--cache-report[print ccache/sccache summary after run]' \
+    '--state-dir[override state directory]:directory:_files -/'
+}
+
+_sysforge_run_packages() {
   _arguments \
     '--packages[path to packages.toml]:file:_files' \
     '--dry-run[show what would run without executing]' \
@@ -115,16 +235,7 @@ _sysforge_packages_cmd() {
     '--profile-conf[alternate flag_profiles.toml]:file:_files'
 }
 
-_sysforge_toolchain() {
-  _arguments \
-    '--dry-run[show what would run without executing]' \
-    '--no-update[skip git pull --rebase before each build]' \
-    '--persist-log[keep logs after successful run]' \
-    '--cache-report[print ccache/sccache summary after run]' \
-    '--state-dir[override state directory]:directory:_files -/'
-}
-
-_sysforge_kernel() {
+_sysforge_run_kernel() {
   _arguments \
     '--packages[path to packages.toml]:file:_files' \
     '--dry-run[show what would run without executing]' \
@@ -135,10 +246,3 @@ _sysforge_kernel() {
     '--cache-report[print ccache/sccache summary after run]' \
     '--state-dir[override state directory]:directory:_files -/'
 }
-
-_sysforge_manifest() {
-  _arguments \
-    '--file[text file with one package name per line]:file:_files' \
-    '*: :_sysforge_packages'
-}
-

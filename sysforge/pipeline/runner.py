@@ -58,7 +58,7 @@ def run_stage_standalone(stage, config, options):
     """
     Run a single pipeline stage outside the full pipeline.
 
-    Used by standalone commands (sysforge packages, sysforge toolchain, etc.).
+    Used by standalone commands (sysforge run packages, sysforge run toolchain, etc.).
     State is loaded from the resolved state dir so toolchain results are
     available to the packages stage when run separately.
 
@@ -216,9 +216,9 @@ def run_pipeline(config, options, stages=None):
                 _log.error("[PIPELINE]", f"{stage.name}: NOT IMPLEMENTED")
                 _log.error("[PIPELINE]", f"  {e}")
                 _log.error("[PIPELINE]", f"To skip this stage during development:\n"
-                    f"    sysforge pipeline --start-from {stage.name} --resume\n"
+                    f"    sysforge run pipeline --start-from {stage.name} --resume\n"
                     f"  or jump directly to a later stage:\n"
-                    f"    sysforge pipeline --start-from packages")
+                    f"    sysforge run pipeline --start-from packages")
                 sys.exit(1)
 
             except RuntimeError as e:

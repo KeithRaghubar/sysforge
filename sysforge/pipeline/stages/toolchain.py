@@ -126,7 +126,7 @@ def _confirm_or_abort(state_dir) -> None:
     if choice not in ("y", "yes"):
         dir_str = str(state_dir) if state_dir else "/var/lib/sysforge"
         print(
-            f"\n  Resume command: sysforge pipeline --resume --state-dir {dir_str}\n",
+            f"\n  Resume command: sysforge run pipeline --resume --state-dir {dir_str}\n",
             file=sys.stderr,
         )
         raise RuntimeError(
