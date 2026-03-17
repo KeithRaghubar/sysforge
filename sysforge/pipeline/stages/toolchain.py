@@ -110,10 +110,10 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
 
 
 def _show_resolution_table(pkgbuild_map: dict[str, Path]) -> None:
-    _log.info("[TOOLCHAIN]", "─── PKGBUILD resolution ─────────────────────────────")
+    _log.ui("[TOOLCHAIN]", "─── PKGBUILD resolution ─────────────────────────────")
     for name, path in pkgbuild_map.items():
-        _log.info("[TOOLCHAIN]", f"  {name:<42}  {path}")
-    _log.info("[TOOLCHAIN]", "─────────────────────────────────────────────────────")
+        _log.ui("[TOOLCHAIN]", f"  {name:<42}  {path}")
+    _log.ui("[TOOLCHAIN]", "─────────────────────────────────────────────────────")
 
 
 def _confirm_or_abort(state_dir) -> None:
@@ -145,7 +145,7 @@ def _build_pkg(name: str, pkgbuild_path: Path, options,
     """Build one package via makepkg_wrapper.run()."""
     if options.dry_run:
         cc_label = f" CC={cc}" if cc else ""
-        _log.info("[TOOLCHAIN]", f"[dry-run] would build {name}{cc_label}")
+        _log.ui("[TOOLCHAIN]", f"[dry-run] would build {name}{cc_label}")
         return
     makepkg_run(
         pkgbuild_path,
@@ -164,10 +164,10 @@ def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
                 install: bool = True) -> None:
     """Build all packages in pkgbuild_map for one pass."""
     extra = ["--install"] if install else []
-    _log.info("[TOOLCHAIN]", f"─── {label} ──────────────────────────────────────────")
+    _log.ui("[TOOLCHAIN]", f"─── {label} ──────────────────────────────────────────")
     first = True
     for name, pkgbuild_path in pkgbuild_map.items():
-        _log.info("[TOOLCHAIN]", f"  {name}")
+        _log.ui("[TOOLCHAIN]", f"  {name}")
         _build_pkg(name, pkgbuild_path, options, cc=cc, cxx=cxx,
                    extra_flags=extra, init_session=first)
         first = False
@@ -180,7 +180,7 @@ def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
 def _extract_pkg_to_staging(pkg_file: Path, staging: Path) -> None:
     """Extract a .pkg.tar.* file to the staging directory."""
     staging.mkdir(parents=True, exist_ok=True)
-    _log.info("[TOOLCHAIN]", f"  Extracting {pkg_file.name} → {staging}")
+    _log.ui("[TOOLCHAIN]", f"  Extracting {pkg_file.name} → {staging}")
     result = subprocess.run(
         ["tar", "--warning=no-unknown-keyword", "-xf", str(pkg_file), "-C", str(staging)],
         capture_output=True,
@@ -199,10 +199,10 @@ def _extract_pass2_to_staging(pkgbuild_map: dict[str, Path],
     extract to staging prefix. The staged binaries are used as CC/CXX in Pass 3.
     """
     if dry_run:
-        _log.info("[TOOLCHAIN]", f"[dry-run] would extract pass-2 packages to {staging}")
+        _log.ui("[TOOLCHAIN]", f"[dry-run] would extract pass-2 packages to {staging}")
         return
 
-    _log.info("[TOOLCHAIN]", f"─── Pass 2: staging extraction → {staging} ────────")
+    _log.ui("[TOOLCHAIN]", f"─── Pass 2: staging extraction → {staging} ────────")
     for name, pkgbuild_path in pkgbuild_map.items():
         build_dir = pkgbuild_path.parent
         pkgs = sorted(build_dir.glob(f"{name}-*.pkg.tar.*"))
@@ -213,13 +213,13 @@ def _extract_pass2_to_staging(pkgbuild_map: dict[str, Path],
             )
         for pkg_file in pkgs:
             _extract_pkg_to_staging(pkg_file, staging)
-        _log.info("[TOOLCHAIN]", f"  {name}: staged")
+        _log.ui("[TOOLCHAIN]", f"  {name}: staged")
 
 
 def _remove_staging(staging: Path) -> None:
     import shutil
     if staging.exists():
-        _log.info("[TOOLCHAIN]", f"Removing staging prefix: {staging}")
+        _log.ui("[TOOLCHAIN]", f"Removing staging prefix: {staging}")
         shutil.rmtree(staging)
 
 
@@ -294,7 +294,7 @@ class ToolchainStage(Stage):
     def run(self, config, state, options):
         tcfg = _load_toolchain_config()
         if tcfg is None:
-            _log.info("[TOOLCHAIN]", "toolchain.toml absent — stage is a no-op")
+            _log.ui("[TOOLCHAIN]", "toolchain.toml absent — stage is a no-op")
             return
 
         compiler = tcfg.get("compiler", "llvm")
@@ -303,7 +303,7 @@ class ToolchainStage(Stage):
 
         pgo_pkgs, non_pgo_pkgs, lib32_pkgs = _package_lists(tcfg)
 
-        _log.info("[TOOLCHAIN]",
+        _log.ui("[TOOLCHAIN]",
             f"Compiler: {compiler}  |  PGO: {pgo}  |  "
             f"Packages: {len(pgo_pkgs)} pgo / {len(non_pgo_pkgs)} non-pgo / {len(lib32_pkgs)} lib32"
         )
@@ -339,9 +339,12 @@ class ToolchainStage(Stage):
         if ld is not None:
             result["ld"] = ld
         state.set_stage_result("toolchain", result)
-        state.save()
+        try:
+            state.save()
+        except PermissionError:
+            _log.warn("[TOOLCHAIN]", "Cannot write state — toolchain results will not be checkpointed")
 
-        _log.info("[TOOLCHAIN]",
+        _log.ui("[TOOLCHAIN]",
             f"Toolchain stage complete. cc={cc}  cxx={cxx}" +
             (f"  ld={ld}" if ld else "")
         )

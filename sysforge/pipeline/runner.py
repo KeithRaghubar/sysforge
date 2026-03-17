@@ -76,8 +76,12 @@ def run_stage_standalone(stage, config, options):
     unified_log_active = not options.no_unified_log and not options.dry_run
     if unified_log_active:
         unified_log_path = log_dir / "sysforge.log"
-        _log.open_unified_log(unified_log_path, purge=options.purge_log)
-        _log.info("[PIPELINE]", f"Unified log: {unified_log_path}")
+        try:
+            _log.open_unified_log(unified_log_path, purge=options.purge_log)
+            _log.info("[PIPELINE]", f"Unified log: {unified_log_path}")
+        except PermissionError:
+            unified_log_active = False
+            _log.warn("[PIPELINE]", f"Cannot write unified log to {unified_log_path} — logging to terminal only")
 
     success = False
     try:
@@ -87,7 +91,10 @@ def run_stage_standalone(stage, config, options):
             _log.info("[PIPELINE]", f"── Stage: {stage.name} ── {stage.description}")
             stage.run(config, state, options)
             if not stage.stateless:
-                state.save()
+                try:
+                    state.save()
+                except PermissionError:
+                    _log.warn("[PIPELINE]", f"Cannot write state to {state_dir} — progress will not be checkpointed")
             _log.info("[PIPELINE]", f"{stage.name}: complete")
         success = True
     except RuntimeError as e:

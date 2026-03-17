@@ -55,7 +55,7 @@ def _load_packages(config):
 
     build_cfg = data.get("build", {})
     packages = data.get("package", [])
-    _log.info("[PACKAGES]", f"Loaded {len(packages)} package(s) from {path}")
+    _log.ui("[PACKAGES]", f"Loaded {len(packages)} package(s) from {path}")
     return build_cfg, packages
 
 
@@ -127,7 +127,7 @@ def _prompt_failed_packages(failed_names, errors, options):
     With --force-retry: retry all without prompt.
     """
     if options.force_retry:
-        _log.info("[PACKAGES]", f"--force-retry: retrying all {len(failed_names)} failed package(s)")
+        _log.ui("[PACKAGES]", f"--force-retry: retrying all {len(failed_names)} failed package(s)")
         return set(failed_names), set()
 
     _log.warn("[PACKAGES]", f"Resuming with {len(failed_names)} failed package(s):")
@@ -172,9 +172,9 @@ def _install_repo(pkg, options):
     """Install a repo package via sudo pacman -S --needed."""
     name = pkg["name"]
     if options.dry_run:
-        _log.info("[PACKAGES]", f"[dry-run] sudo pacman -S --needed {name}")
+        _log.ui("[PACKAGES]", f"[dry-run] sudo pacman -S --needed {name}")
         return
-    _log.info("[PACKAGES]", f"Installing from repo: {name}")
+    _log.ui("[PACKAGES]", f"Installing from repo: {name}")
     result = subprocess.run(["sudo", "pacman", "-S", "--needed", "--noconfirm", name])
     if result.returncode != 0:
         raise RuntimeError(f"pacman -S failed for {name!r} (exit {result.returncode})")
@@ -213,7 +213,7 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
         if toolchain.get("cc_override"):
             parts.append("cc=" + toolchain["cc_override"])
         suffix = f" ({', '.join(parts)})" if parts else ""
-        _log.info("[PACKAGES]", f"[dry-run] build {name} from {expected}{suffix}")
+        _log.ui("[PACKAGES]", f"[dry-run] build {name} from {expected}{suffix}")
         return
     pkgbuild = _resolve_pkgbuild(name, build_cfg, config)
     profile_override = pkg.get("profile") or None
@@ -223,7 +223,7 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
     if toolchain:
         parts.append("cc=" + toolchain.get("cc_override", ""))
     suffix = f" ({', '.join(p for p in parts if p)})" if parts else ""
-    _log.info("[PACKAGES]", f"Building {name} from {pkgbuild}{suffix}")
+    _log.ui("[PACKAGES]", f"Building {name} from {pkgbuild}{suffix}")
     makepkg_run(pkgbuild,
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
@@ -244,14 +244,14 @@ class PackagesStage(Stage):
     def run(self, config, state, options):
         toolchain = _toolchain_overrides(state)
         if toolchain:
-            _log.info("[PACKAGES]", f"Toolchain override from pipeline: cc={toolchain.get('cc_override', '-')} cxx={toolchain.get('cxx_override', '-')}")
+            _log.ui("[PACKAGES]", f"Toolchain override from pipeline: cc={toolchain.get('cc_override', '-')} cxx={toolchain.get('cxx_override', '-')}")
 
         build_cfg, packages = _load_packages(config)
 
         # Filter hardware-gated packages
         eligible = [p for p in packages if _hardware_gate(p, config)]
         if len(eligible) < len(packages):
-            _log.info("[PACKAGES]", f"{len(packages) - len(eligible)} package(s) excluded by hardware gate")
+            _log.ui("[PACKAGES]", f"{len(packages) - len(eligible)} package(s) excluded by hardware gate")
 
         # Build ordered name list and initialise progress (idempotent on resume)
         all_names = [p["name"] for p in eligible]
@@ -286,10 +286,10 @@ class PackagesStage(Stage):
         for name in all_names:
             progress = state.get_package_progress()
             if name in built and name not in retry_set:
-                _log.info("[PACKAGES]", f"Skipping {name} (already built)")
+                _log.ui("[PACKAGES]", f"Skipping {name} (already built)")
                 continue
             if name in skipped or name in skip_set:
-                _log.info("[PACKAGES]", f"Skipping {name} (user skipped)")
+                _log.ui("[PACKAGES]", f"Skipping {name} (user skipped)")
                 continue
             if name not in progress.get("remaining", []) and name not in retry_set:
                 # Was already handled (built or skipped) in a prior run
@@ -312,7 +312,7 @@ class PackagesStage(Stage):
                 state.mark_package_built(name)
                 state.save()
                 built.add(name)
-                _log.info("[PACKAGES]", f"{name}: done")
+                _log.ui("[PACKAGES]", f"{name}: done")
 
             except RuntimeError as e:
                 state.mark_package_failed(name, str(e))
@@ -341,4 +341,4 @@ class PackagesStage(Stage):
                 f"packages stage finished with failures: {still_failed}"
             )
 
-        _log.info("[PACKAGES]", f"Stage complete.\n[SYSFORGE][INFO][PACKAGES] {summary}")
+        _log.ui("[PACKAGES]", f"Stage complete.\n[SYSFORGE][INFO][PACKAGES] {summary}")

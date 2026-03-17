@@ -28,14 +28,14 @@
 **Final prompt** — `y` → clean exit; `n` → "Aborted by user." (standalone wording); non-interactive → no prompt
 
 **Flags**
-- [ ] `--packages` → disk + preview use that file
-- [ ] `--state-dir` → pipeline progress display uses custom state
+- [x] `--packages` → disk + preview use that file
+- [x] `--state-dir` → pipeline progress display uses custom state
 
 ---
 
 ## `sysforge toolchain`
 
-- [ ] No toolchain.toml → clean no-op
+- [x] No toolchain.toml → clean no-op
 - [ ] GCC: builds, installs, state has `cc=/usr/bin/gcc cxx=/usr/bin/g++`
 - [ ] LLVM pgo=false: single pass, state has `cc=…/clang cxx=…/clang++ ld=lld`
 - [ ] LLVM pgo=true: pass 1 (system CC, install) → pass 2 (instrumented, extract to staging) → pass 3 (staged CC, install, staging removed); state result correct
