@@ -4,6 +4,7 @@ cli.py — SysForge command-line interface
 Implemented commands:
     sysforge build <PKGBUILD>   Build a single package using its matched profile
     sysforge manifest           Generate a packages.toml stub from a list of names
+    sysforge update             Check for and rebuild outdated sysforge-managed packages
 
 Stubbed commands (not yet implemented):
     sysforge pipeline           Full install pipeline (stub — not yet implemented)
@@ -17,6 +18,7 @@ import sysforge.log as _log
 
 from sysforge.manifest import cmd_manifest
 from sysforge.resolve import cmd_resolve
+from sysforge.update import cmd_update
 
 from sysforge.primitives.makepkg_wrapper import run
 from sysforge.primitives.config import load_config
@@ -61,7 +63,8 @@ def _cmd_build(args):
                 ld_override=args.ld,
                 init_session=(i == 0),
                 cache_report=(args.cache_report and i == len(packages) - 1),
-                update=not args.no_update)
+                update=not args.no_update,
+                state_dir=Path(args.state_dir) if args.state_dir else None)
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)
@@ -185,6 +188,14 @@ def _cmd_converge(args):
     # --dry-run should show what would be rebuilt without doing it.
     print("[SYSFORGE] 'converge' is not yet implemented.", file=sys.stderr)
     sys.exit(1)
+
+
+def _cmd_update(args):
+    try:
+        cmd_update(args)
+    except RuntimeError as e:
+        print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 
@@ -328,6 +339,15 @@ def main():
         action="store_true",
         dest="no_update",
         help="Skip git pull --rebase before building (default: update if a tracking branch exists).",
+    )
+    p_build.add_argument(
+        "--state-dir",
+        metavar="DIR",
+        dest="state_dir",
+        help=(
+            "Override state directory for build_state.toml "
+            "(default: /var/lib/sysforge or SYSFORGE_STATE_DIR env var)."
+        ),
     )
     p_build.set_defaults(func=_cmd_build)
 
@@ -579,6 +599,70 @@ def main():
         help="Text file with one package name per line (can be combined with inline names).",
     )
     p_manifest.set_defaults(func=cmd_manifest)
+
+    # update
+    p_update = sub.add_parser(
+        "update",
+        help="Check for and rebuild outdated sysforge-managed packages.",
+    )
+    p_update.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Show what would be rebuilt without doing it.",
+    )
+    p_update.add_argument(
+        "--devel",
+        action="store_true",
+        dest="devel",
+        help="Include VCS packages (-git, -svn, -hg, -bzr) in the rebuild.",
+    )
+    p_update.add_argument(
+        "--no-update",
+        action="store_true",
+        dest="no_update",
+        help="Skip git pull --rebase before checking versions.",
+    )
+    p_update.add_argument(
+        "--state-dir",
+        metavar="DIR",
+        dest="state_dir",
+        help=(
+            "Override state directory (default: /var/lib/sysforge or "
+            "SYSFORGE_STATE_DIR env var)."
+        ),
+    )
+    p_update.add_argument(
+        "--profile-conf",
+        metavar="FILE",
+        dest="profile_conf",
+        help="Path to a flag_profiles.toml to use instead of the default user/system config.",
+    )
+    p_update.add_argument(
+        "--cache-report",
+        action="store_true",
+        dest="cache_report",
+        help="Print a structured cache summary (ccache/sccache hit rates) after the run.",
+    )
+    p_update.add_argument(
+        "--no-pkg-log",
+        action="store_true",
+        dest="no_pkg_log",
+        help="Disable per-package log files.",
+    )
+    p_update.add_argument(
+        "--persist-log",
+        action="store_true",
+        dest="persist_log",
+        help="Keep log files after successful completion.",
+    )
+    p_update.add_argument(
+        "--log-dir",
+        metavar="DIR",
+        dest="log_dir",
+        help="Directory for per-package log files.",
+    )
+    p_update.set_defaults(func=_cmd_update)
 
     # converge
     p_converge = sub.add_parser(

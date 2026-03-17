@@ -590,7 +590,8 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         cc_override=None, cxx_override=None, ld_override=None,
         cache_report: bool = False, init_session: bool = True,
         update: bool = True,
-        profile_override: str | None = None):
+        profile_override: str | None = None,
+        state_dir=None):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     conflict_groups = load_conflict_groups()
@@ -696,6 +697,32 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
                 kernel_build=kernel_build,
             )
         build_success = True
+
+        # Record build metadata for `sysforge update` (non-fatal)
+        try:
+            from sysforge.primitives.build_state import BuildState
+            from sysforge.pipeline.state import resolve_state_dir
+            _state_dir, _ = resolve_state_dir(state_dir)
+            bs = BuildState(_state_dir)
+            globals_ = pkgmeta.get("globals", {})
+            pkgnames = globals_.get("pkgname", [])
+            if isinstance(pkgnames, str):
+                pkgnames = [pkgnames]
+            pkgbase = globals_.get("pkgbase") or (pkgnames[0] if pkgnames else "unknown")
+            for name in pkgnames:
+                bs.record(
+                    pkgname=name,
+                    pkgver=globals_.get("pkgver", ""),
+                    pkgrel=globals_.get("pkgrel", "1"),
+                    epoch=globals_.get("epoch", "0"),
+                    pkgbase=pkgbase,
+                    pkgbuild_dir=pkgbuild_path.parent,
+                )
+            bs.save()
+            _log.info("[BUILD]", f"Recorded build state for {pkgbase!r}")
+        except Exception as e:
+            _log.warn("[BUILD]", f"Failed to record build state: {e}")
+
     finally:
         if pkg_log:
             _log.close_pkg_log(success=build_success, persist=persist_log)
