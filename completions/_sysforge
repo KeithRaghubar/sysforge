@@ -15,7 +15,6 @@ _sysforge() {
         build)    _sysforge_build    ;;
         update)   _sysforge_update   ;;
         resolve)  _sysforge_resolve  ;;
-        manifest) _sysforge_manifest ;;
         converge) _sysforge_converge ;;
         packages) _sysforge_packages ;;
         run)      _sysforge_run      ;;
@@ -29,8 +28,7 @@ _sysforge_commands() {
     'build:build a package from a PKGBUILD'
     'update:check for and rebuild outdated sysforge-managed packages'
     'resolve:show which profile would apply to a package'
-    'manifest:generate a packages.toml stub'
-    'converge:[planned] rebuild packages that have drifted from their profile'
+    'converge:rebuild packages that have drifted from their profile'
     'packages:manage packages.toml (list, add, remove, sync)'
     'run:execute a pipeline stage'
   )
@@ -86,11 +84,6 @@ _sysforge_resolve() {
     '1: :_sysforge_pkg_or_file'
 }
 
-_sysforge_manifest() {
-  _arguments \
-    '--file[text file with one package name per line]:file:_files' \
-    '*: :_sysforge_pkg_names'
-}
 
 _sysforge_converge() {
   _arguments \

@@ -90,7 +90,6 @@ sysforge/
 │   ├── __init__.py
 │   ├── cli.py                         # CLI entry point and subcommand wiring
 │   ├── log.py                         # structured logging (stderr + optional file output)
-│   ├── manifest.py                    # packages.toml generator (sysforge manifest)
 │   ├── resolve.py                     # sysforge resolve subcommand
 │   ├── update.py                      # sysforge update subcommand
 │   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove/sync)
@@ -145,7 +144,6 @@ sysforge/
 │   ├── test_cli.py
 │   ├── test_failure.py
 │   ├── test_log.py
-│   ├── test_manifest.py
 │   ├── test_parser.py
 │   ├── test_patcher.py
 │   ├── test_pipeline.py
@@ -194,17 +192,11 @@ sysforge/
 Each entry declares:
 - `source` — one of `repo` (pacman), `aur`, or `git` (direct PKGBUILD)
 - `pkgbuild_patch` *(optional bool)* — if `true`, the PKGBUILD patching library runs on this package before build
-- `requires_hardware` *(optional)* — hardware capability key that must be present in `hardware_profile.toml`; absent packages are excluded silently at pipeline time
 - `cache` *(optional bool)* — `false` disables ccache/sccache for this package (required for PGO stages)
 
 ```toml
 [build]
 pkgbuild_dir = "~/builds"   # PKGBUILD root; auto-cloned if absent
-
-[[package]]
-name = "nvidia-open-dkms"
-source = "repo"
-requires_hardware = "nvidia_gpu"
 
 [[package]]
 name = "mesa-git"
@@ -217,27 +209,14 @@ source = "aur"
 cache = false   # PGO build — instrumented objects must never be cached
 ```
 
-### Manifest generation
-
-`sysforge manifest` generates a `packages.toml` stub from a list of package names. Classification: repo packages detected via `pacman -Si`; remaining names confirmed via AUR RPC v5 batch query (`aur.py`); anything not found in either is excluded with a warning.
-
-```bash
-sysforge manifest htop neovim mold > packages.toml
-sysforge manifest --file pkglist.txt >> packages.toml
-```
-
-The packages stage resolves `packages.toml` from:
-1. `--packages FILE` CLI flag
-2. `/etc/sysforge/packages.toml` (system default)
-
 ### Manifest lifecycle commands
 
 `sysforge packages` is a namespace for managing an existing `packages.toml`:
 
 - **`packages list`** (default when no subcommand) — tabulates all entries: name, source, and any optional fields set.
-- **`packages add <pkg>`** — classifies the package (repo vs AUR via pacman/AUR RPC), infers `pkgbuild_patch` by running `extract_pkgbuild_profile()` on the local PKGBUILD if one exists, and appends the entry. Uses `[build] pkgbuild_dir` from the existing file first, falls back to `[paths] pkgbuild_dir` from `flag_profiles.toml`.
+- **`packages add <pkg> [<pkg>...]`** — classifies each package (repo vs AUR via pacman/AUR RPC), infers `pkgbuild_patch` by running `extract_pkgbuild_profile()` on the local PKGBUILD if one exists, and appends the entry. Uses `[build] pkgbuild_dir` from the existing file first, falls back to `[paths] pkgbuild_dir` from `flag_profiles.toml`.
 - **`packages remove <pkg>`** — removes the `[[package]]` block for the named entry using line-level manipulation; preserves all surrounding comments and section headers.
-- **`packages sync`** — re-classifies each entry's `source` and re-checks `pkgbuild_patch` (if the local PKGBUILD is available). Non-destructive: manual fields (`cache`, `requires_hardware`, `profile`) are preserved verbatim. Note: `sync` rewrites the file from scratch, losing comments. `--dry-run` shows what would change without writing.
+- **`packages sync`** — re-classifies each entry's `source` and re-checks `pkgbuild_patch` (if the local PKGBUILD is available). Non-destructive: manual fields (`cache`) are preserved verbatim. Comments are preserved. `--dry-run` shows what would change without writing.
 
 All subcommands accept `--packages FILE` to target a specific file (default: `/etc/sysforge/packages.toml`).
 
@@ -518,7 +497,7 @@ High-level flow:
 
 AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key import.
 
-- `is_repo_package(name)` — `pacman -Si <name>`; returns `True` if found in any sync DB. Used by `find_pkgbuild` to route auto-clone: repo packages → `pkgctl_checkout`, AUR → `aur_clone`. Also used by `manifest.py` for source classification.
+- `is_repo_package(name)` — `pacman -Si <name>`; returns `True` if found in any sync DB. Used by `find_pkgbuild` to route auto-clone: repo packages → `pkgctl_checkout`, AUR → `aur_clone`.
 - `aur_info(names)` — single batch `GET https://aur.archlinux.org/rpc/v5/info?arg[]=…` for all names; returns `{name: result_dict}`. Silent on network/JSON errors (returns `{}`).
 - `aur_clone(name, dest)` — `git clone https://aur.archlinux.org/<name>.git <dest>`; raises `RuntimeError` on failure.
 - `pkgctl_checkout(name, dest)` — `pkgctl repo clone --protocol=https <name>` run in `dest.parent`; fetches official Arch packaging repo. Raises `RuntimeError` on failure.
@@ -534,7 +513,7 @@ Version comparison utilities. `vercmp(a, b)` wraps the system `vercmp` binary an
 
 ### `resolve.py`
 
-Implements `sysforge resolve` — inspect profile matching for a PKGBUILD without building it. Output goes to stdout (same pattern as `manifest.py`).
+Implements `sysforge resolve` — inspect profile matching for a PKGBUILD without building it. Output goes to stdout.
 
 Public API: `cmd_resolve(args)`. Uses `find_pkgbuild` from `config.py` for PKGBUILD lookup (same search order as `sysforge build`). Internal helpers:
 - `_get_profile_chain(profile_name, profiles)` — walks the `extends` chain and returns it root-last; stops on cycle or missing parent
@@ -807,7 +786,6 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 | `[KERNEL]` | Kernel stage: lsmod snapshot, kconfig fragment, build, post-install |
 | `[PACKAGES]` | Packages stage progress |
 | `[PIPELINE]` | Stage sequencing, checkpoint events |
-| `[MANIFEST]` | Manifest generation |
 | `[FLAG]` | CLI toolchain overrides (--cc/--cxx/--ld), linker guard: stripped lld-specific flags when declared linker not on PATH |
 | `[CACHE]` | ccache/sccache passive monitoring (per-build hit/miss delta, system probes) |
 
@@ -886,7 +864,7 @@ Build in this order to satisfy dependencies correctly:
 ## Release Plan
 
 - **GitHub:** public from day one; source of truth for all code
-- **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `update`, `resolve`, `manifest`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
+- **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `update`, `resolve`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
 - **v1.0:** system bootstrapper — stages 1–4 implemented (partition, base_install, hardware, configure).
 
 ### AUR publishing process
@@ -907,7 +885,7 @@ Two commands address drift in sysforge-managed packages:
 
 **`sysforge update`** (implemented) — handles **version drift**. After `git pull --rebase` on each PKGBUILD dir, it compares the new `pkgver`/`pkgrel`/`epoch` against the installed version via `vercmp`. Packages where the PKGBUILD is newer are rebuilt with the current profile. VCS packages (`-git`, etc.) require `--devel` to rebuild since their version is only known after running `pkgver()` during the build.
 
-**`sysforge converge`** (planned) — handles **profile/flag drift**. Same package version but different compiler configuration — e.g. profile changed, new flag added, or build mode switched. Compares the profile hash at last build (from `build_state.toml`) against the currently resolved profile. Not yet implemented.
+**`sysforge converge`** (planned, v0.1.0) — handles **profile/flag drift**. Same package version but different compiler configuration — e.g. profile changed, new flag added, or build mode switched. At build time, `makepkg_wrapper.run()` stores the resolved flags string per package in `build_state.toml`. `converge` re-resolves the current profile for each package and diffs the result against the stored flags string; packages where the flags have changed are reported with a flag diff. `--apply` rebuilds affected packages; `--dry-run` shows the diff without rebuilding.
 
 `build_state.toml` is the shared source of truth for both commands. Written by `makepkg_wrapper.run()` after each successful build.
 
@@ -919,9 +897,7 @@ DAG stages are categorised as **bootstrap-only** (partition, base_install, hardw
 
 Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
 
-**`sysforge install` — not yet implemented.** The design question of how to handle repo packages is unresolved: pure pacman passthrough (`pacman -S`) vs. a unified dispatch that routes repo packages to pacman and AUR packages to a profiled build. Until resolved, repo packages require `pacman -S` directly and AUR packages use `sysforge build`.
-
-**`sysforge update` is scoped to sysforge-managed packages only.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. A future `sysforge update --all` could use `pacman -Qm` (foreign packages not in any sync DB) to discover AUR packages installed outside sysforge, but this is not yet implemented.
+**`sysforge update` is scoped to sysforge-managed packages only.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. `sysforge update --all` via `pacman -Qm` (to discover and update foreign packages installed outside sysforge) is planned for v0.1.0.
 
 **`packages.toml [build] pkgbuild_dir` and `flag_profiles [paths] pkgbuild_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_dir`; falls back to `[paths] pkgbuild_dir`. They can point to different directories or the same one — there's no enforcement that they match.
 
@@ -938,11 +914,8 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 V2 goal: advanced AUR helper features beyond the v0.1.0 scope.
 
 V2 candidates:
-- **`sysforge install`** — unified install command routing repo packages to `pacman -S` and AUR packages to a profiled build. Design question (dispatch model) must be resolved first.
 - **PKGBUILD review** — present diffs to the user before building an AUR package
 - **Recursive AUR dep resolution** — walk the full AUR dependency tree; currently AUR deps on other AUR packages require manual ordering
-- **`sysforge update --all` via `pacman -Qm`** — discover and update foreign packages installed outside sysforge, not just those in `build_state.toml`
-- **AUR package name cache** — fetch `packages.gz` (~80k names) into `~/.cache/sysforge/` for full tab-completion of AUR package names; refresh via `sysforge sync` or a systemd timer
 
 ### V1.5: Rule priority auto-calculation
 

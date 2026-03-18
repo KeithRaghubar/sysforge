@@ -5,8 +5,7 @@ Top-level commands:
     sysforge build <pkg>    Build a package using its matched profile
     sysforge update         Check for and rebuild outdated sysforge-managed packages
     sysforge resolve <pkg>  Show which profile would be applied to a package
-    sysforge manifest       Generate a packages.toml stub from a list of names
-    sysforge converge       [planned] Rebuild packages that have drifted from their profile
+    sysforge converge       Rebuild packages that have drifted from their profile
 
 Namespaces:
     sysforge packages       Manage packages.toml (list / add / remove / sync)
@@ -17,7 +16,6 @@ import sys
 from pathlib import Path
 import sysforge.log as _log
 
-from sysforge.manifest import cmd_manifest
 from sysforge.resolve import cmd_resolve
 from sysforge.update import cmd_update
 from sysforge.packages_cmd import (
@@ -350,15 +348,6 @@ def _add_resolve_parser(sub):
     p.set_defaults(func=cmd_resolve)
 
 
-def _add_manifest_parser(sub):
-    p = sub.add_parser("manifest",
-        help="Generate a packages.toml stub from a list of package names.")
-    p.add_argument("packages", nargs="*", metavar="PKG",
-        help="Package names to include.")
-    p.add_argument("--file", "-f", metavar="FILE",
-        help="Text file with one package name per line.")
-    p.set_defaults(func=cmd_manifest)
-
 
 def _add_converge_parser(sub):
     p = sub.add_parser("converge",
@@ -551,7 +540,6 @@ def main():
     _add_build_parser(sub)
     _add_update_parser(sub)
     _add_resolve_parser(sub)
-    _add_manifest_parser(sub)
     _add_converge_parser(sub)
     _add_packages_parser(sub)
     _add_run_parser(sub)

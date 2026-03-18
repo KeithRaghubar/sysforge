@@ -45,7 +45,7 @@ def _load_toml(path: Path) -> dict:
 def _entry_toml_block(entry: dict) -> str:
     """Serialise a package entry dict to a TOML [[package]] block string."""
     lines = ["[[package]]", f'name = "{entry["name"]}"', f'source = "{entry["source"]}"']
-    for field in ("profile", "pkgbuild_patch", "cache", "requires_hardware"):
+    for field in ("pkgbuild_patch", "cache"):
         if field not in entry:
             continue
         val = entry[field]
@@ -89,10 +89,6 @@ def cmd_packages_list(args):
             flags.append("pkgbuild_patch")
         if e.get("cache") is False:
             flags.append("cache=false")
-        if e.get("requires_hardware"):
-            flags.append(f"requires_hardware={e['requires_hardware']}")
-        if e.get("profile"):
-            flags.append(f"profile={e['profile']}")
         flag_str = ", ".join(flags)
         print(f"  {name:<{max_name}}  {source:<{max_src}}  {flag_str}")
 

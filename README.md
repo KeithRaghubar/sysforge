@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-**Current status:** Active development toward v0.1.0. All userspace commands (`build`, `update`, `resolve`, `manifest`, `packages`, `run pipeline/reconfigure/toolchain/packages/kernel`) are implemented and usable on a live system. Bootstrap stages 1–4 (partition, base install, hardware detection, configure) are deferred to v1.0.
+**Current status:** Active development toward v0.1.0. All userspace commands (`build`, `update`, `resolve`, `packages`, `run pipeline/reconfigure/toolchain/packages/kernel`) are implemented and usable on a live system. Bootstrap stages 1–4 (partition, base install, hardware detection, configure) are deferred to v1.0.
 
 ---
 
@@ -12,7 +12,6 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 - Rule-based profile matching against PKGBUILD metadata — no manual annotation of individual packages
 - `sysforge update` — checks all sysforge-managed AUR packages for new upstream versions and rebuilds outdated ones with active profiles; VCS packages (`-git` etc.) via `--devel`
 - Reproducible installs driven by a package manifest (`packages.toml`)
-- Manifest generation from a list of package names (`sysforge manifest`)
 - Checkpoint/resume across pipeline stages so a failed batch install can be continued, not restarted
 - Pre-build soname dependency analysis to surface ABI mismatches before the build starts
 - PKGBUILD flag extraction and patching — extracts compiler flags from PKGBUILD function bodies and manages them through the profile system instead
@@ -20,7 +19,7 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 ## What it is not
 
 - A distro. Output is a standard Arch install; pacman owns the package database.
-- A replacement for pacman. SysForge handles AUR build configuration and automation; pacman manages the installed package database. Repo packages still use `pacman -S`.
+- A replacement for pacman. SysForge handles AUR build configuration and automation; pacman manages the installed package database. Repo packages default to `pacman -S`; this is configurable via `[build] repo_mode` in `flag_profiles.toml`.
 - A system installer. Bootstrap functionality (partitioning, base install, hardware detection) is planned for v1.0; the v0.1.0 scope is the AUR management layer.
 
 ---
@@ -71,13 +70,9 @@ sysforge update --devel
 # 5. Preview what would be rebuilt without doing it
 sysforge update --dry-run
 
-# 6. Batch install from a manifest
-sysforge manifest htop neovim mesa-git cosmic-comp-git > packages.toml
-sysforge run packages --packages packages.toml --state-dir ~/sf-state
-
-# 7. Manage packages.toml
+# 6. Manage packages.toml
 sysforge packages list
-sysforge packages add htop
+sysforge packages add htop neovim
 sysforge packages remove htop
 sysforge packages sync --dry-run
 ```
@@ -169,21 +164,6 @@ append_groups = ["pgo"]
 ---
 
 ## Usage
-
-### Generate a package manifest
-
-```bash
-# From inline names (queries pacman to classify repo vs AUR)
-sysforge manifest htop neovim mold pipewire > packages.toml
-
-# From a text file (one name per line)
-sysforge manifest --file my-packages.txt > packages.toml
-
-# Combined
-sysforge manifest htop --file extras.txt > packages.toml
-```
-
-Packages found in pacman sync DBs are marked `source = "repo"`. Others are confirmed via AUR RPC v5 batch query and marked `source = "aur"`. Packages not found anywhere are excluded with a warning.
 
 ### Build a single package
 
@@ -306,7 +286,7 @@ sysforge packages list
 sysforge packages list --packages ~/my-packages.toml
 
 # Add a package: auto-classifies source (repo vs AUR), infers pkgbuild_patch
-sysforge packages add htop
+sysforge packages add htop neovim
 sysforge packages add mesa-git --packages ~/my-packages.toml
 
 # Remove a package entry
@@ -319,7 +299,7 @@ sysforge packages sync --dry-run   # preview without writing
 
 `packages add` classifies the package by querying pacman sync DBs and the AUR. For AUR packages, if the PKGBUILD is already cloned in `[build] pkgbuild_dir`, it runs flag extraction to infer `pkgbuild_patch = true` automatically.
 
-`packages sync` re-validates `source` and `pkgbuild_patch` for all entries and rewrites the file. Manual fields (`cache`, `requires_hardware`, `profile`) are preserved verbatim. Note: sync does not preserve comments.
+`packages sync` re-validates `source` and `pkgbuild_patch` for all entries and rewrites the file. Manual fields (`cache`, `requires_hardware`, `profile`) are preserved verbatim.
 
 ### Inspect profile matching
 
@@ -339,7 +319,7 @@ sudo cp completions/_sysforge /usr/share/zsh/site-functions/
 fpath=($(pwd)/completions $fpath) && compinit
 ```
 
-Completes subcommands, all flags, and package names (local `pkgbuild_dir` + pacman sync DB).
+Completes subcommands, all flags, and package names (local `pkgbuild_dir` + pacman sync DB + AUR cache if present at `~/.cache/sysforge/aur-packages.txt`).
 
 ---
 
@@ -388,16 +368,16 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Structured logging (`[SYSFORGE][LEVEL][TAG]`) | ✅ Done |
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 7) | ✅ Done |
-| Manifest generator (`sysforge manifest`) | ✅ Done |
 | Pytest suite (648 tests) | ✅ Done |
 | Kernel stage (stage 8) | ✅ Done |
 | Reconfigure stage (stage 5) | ✅ Done |
 | Toolchain stage (stage 6, LLVM/GCC + PGO) | ✅ Done |
 | `sysforge update` (version drift detection + rebuild) | ✅ Done |
 | Build state tracking (`build_state.toml`) | ✅ Done |
-| AUR RPC lookup in manifest | ✅ Done |
-| `sysforge converge` (profile/flag drift detection) | ⬜ Planned |
-| `sysforge install` (unified repo+AUR install command) | ⬜ Planned |
+| `sysforge converge` (profile/flag drift detection) | 🔧 v0.1.0 |
+| `sysforge update --all (pacman -Qm foreign packages)` | 🔧 v0.1.0 |
+| AUR name cache (packages.gz → ~/.cache/sysforge/) | 🔧 v0.1.0 |
+| `repo_mode` config (pacman passthrough vs profiled build) | 🔧 v0.1.0 |
 | `sysforge resolve` | ✅ Done |
 | Bare package name resolution (`sysforge build htop`) | ✅ Done |
 | AUR auto-clone on miss | ✅ Done |
