@@ -317,12 +317,17 @@ def _add_build_parser(sub):
 def _add_update_parser(sub):
     p = sub.add_parser("update",
         help="Check for and rebuild outdated sysforge-managed packages.")
+    p.add_argument("--all", action="store_true", dest="all",
+        help="Also discover foreign packages (pacman -Qm) not yet tracked; "
+             "add to packages.toml and rebuild if outdated.")
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show what would be rebuilt without doing it.")
     p.add_argument("--devel", action="store_true", dest="devel",
         help="Include VCS packages (-git, -svn, -hg, -bzr) in the rebuild.")
     p.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase before checking versions.")
+    p.add_argument("--packages", metavar="FILE", dest="packages",
+        help="Path to packages.toml for --all discovery (default: /etc/sysforge/packages.toml).")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",

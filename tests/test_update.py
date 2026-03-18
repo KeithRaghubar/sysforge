@@ -12,7 +12,11 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sysforge.update import _get_installed_version, _is_vcs, cmd_update
+from sysforge.update import (
+    _get_installed_version, _is_vcs, cmd_update,
+    _get_foreign_packages, _load_packages_toml_names,
+    _append_to_packages_toml, _discover_and_add, _DiscoveredResult,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +77,8 @@ def _make_args(**kwargs):
         log_dir=None,
         profile_conf=None,
         cache_report=False,
+        all=False,
+        packages=None,
     )
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -392,3 +398,289 @@ def test_pull_failure_continues_to_next_package(tmp_path):
     actions = {r.pkgbase: r.action for r in results}
     assert actions.get("htop") == "PULL_FAILED"
     assert actions.get("neovim") == "UP_TO_DATE"
+
+
+# ---------------------------------------------------------------------------
+# _get_foreign_packages
+# ---------------------------------------------------------------------------
+
+def _mock_pacman_qm(stdout, returncode=0):
+    m = MagicMock()
+    m.stdout = stdout
+    m.returncode = returncode
+    return m
+
+
+def test_get_foreign_packages_returns_dict():
+    output = "yay 12.3.3-1\nneovim-git r1234.gabcdef-1\n"
+    with patch("subprocess.run", return_value=_mock_pacman_qm(output)):
+        result = _get_foreign_packages()
+    assert result == {"yay": "12.3.3-1", "neovim-git": "r1234.gabcdef-1"}
+
+
+def test_get_foreign_packages_empty_on_failure():
+    with patch("subprocess.run", return_value=_mock_pacman_qm("", returncode=1)):
+        result = _get_foreign_packages()
+    assert result == {}
+
+
+def test_get_foreign_packages_empty_output():
+    with patch("subprocess.run", return_value=_mock_pacman_qm("")):
+        result = _get_foreign_packages()
+    assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# _load_packages_toml_names
+# ---------------------------------------------------------------------------
+
+def test_load_packages_toml_names_reads_names(tmp_path):
+    toml = (tmp_path / "packages.toml")
+    toml.write_text(
+        "[build]\npkgbuild_dir = \"~/builds\"\n\n"
+        "[[package]]\nname = \"htop\"\nsource = \"repo\"\n\n"
+        "[[package]]\nname = \"yay\"\nsource = \"aur\"\n"
+    )
+    result = _load_packages_toml_names(toml)
+    assert result == {"htop", "yay"}
+
+
+def test_load_packages_toml_names_missing_file(tmp_path):
+    result = _load_packages_toml_names(tmp_path / "nonexistent.toml")
+    assert result == set()
+
+
+def test_load_packages_toml_names_empty_file(tmp_path):
+    toml = tmp_path / "packages.toml"
+    toml.write_text("[build]\npkgbuild_dir = \"~/builds\"\n")
+    result = _load_packages_toml_names(toml)
+    assert result == set()
+
+
+# ---------------------------------------------------------------------------
+# _append_to_packages_toml
+# ---------------------------------------------------------------------------
+
+def test_append_to_packages_toml_creates_file(tmp_path):
+    path = tmp_path / "packages.toml"
+    entries = [{"name": "yay", "source": "aur"}]
+    with patch("sysforge.packages_cmd._entry_toml_block",
+               side_effect=lambda e: f'[[package]]\nname = "{e["name"]}"\n'):
+        _append_to_packages_toml(path, entries)
+    assert path.exists()
+    content = path.read_text()
+    assert "yay" in content
+
+
+def test_append_to_packages_toml_appends_to_existing(tmp_path):
+    path = tmp_path / "packages.toml"
+    path.write_text("[build]\npkgbuild_dir = \"~/builds\"\n\n[[package]]\nname = \"htop\"\n")
+    entries = [{"name": "yay", "source": "aur"}]
+    with patch("sysforge.packages_cmd._entry_toml_block",
+               side_effect=lambda e: f'[[package]]\nname = "{e["name"]}"\n'):
+        _append_to_packages_toml(path, entries)
+    content = path.read_text()
+    assert "htop" in content
+    assert "yay" in content
+
+
+# ---------------------------------------------------------------------------
+# _discover_and_add
+# ---------------------------------------------------------------------------
+
+def _make_discover_args(**kwargs):
+    defaults = dict(dry_run=False, devel=False, packages=None, profile_conf=None)
+    defaults.update(kwargs)
+    return SimpleNamespace(**defaults)
+
+
+def test_discover_no_foreign_packages():
+    bs = MagicMock()
+    bs.all_packages.return_value = {}
+    with patch("sysforge.update._get_foreign_packages", return_value={}):
+        results = _discover_and_add(_make_discover_args(), bs, {})
+    assert results == []
+
+
+def test_discover_all_already_tracked():
+    bs = MagicMock()
+    bs.all_packages.return_value = {"yay": {"pkgbase": "yay", "pkgver": "12.0"}}
+    with patch("sysforge.update._get_foreign_packages", return_value={"yay": "12.0-1"}), \
+         patch("sysforge.update._load_packages_toml_names", return_value=set()):
+        results = _discover_and_add(_make_discover_args(), bs, {})
+    assert results == []
+
+
+def test_discover_not_in_aur(tmp_path):
+    bs = MagicMock()
+    bs.all_packages.return_value = {}
+    with patch("sysforge.update._get_foreign_packages", return_value={"localonly": "1.0-1"}), \
+         patch("sysforge.update._load_packages_toml_names", return_value=set()), \
+         patch("sysforge.primitives.aur.aur_info", return_value={}), \
+         patch("sysforge.update._append_to_packages_toml"):
+        results = _discover_and_add(_make_discover_args(), bs, {})
+    assert len(results) == 1
+    assert results[0].action == "NOT_FOUND"
+    assert results[0].pkgname == "localonly"
+
+
+def test_discover_adds_aur_package(tmp_path):
+    bs = MagicMock()
+    bs.all_packages.return_value = {}
+    pkg_dir = tmp_path / "yay"
+    pkg_dir.mkdir()
+    pkgbuild = pkg_dir / "PKGBUILD"
+    pkgbuild.write_text("pkgname=yay\npkgver=12.3.3\npkgrel=1\n")
+
+    with patch("sysforge.update._get_foreign_packages", return_value={"yay": "12.0.0-1"}), \
+         patch("sysforge.update._load_packages_toml_names", return_value=set()), \
+         patch("sysforge.primitives.aur.aur_info", return_value={"yay": {"Name": "yay"}}), \
+         patch("sysforge.primitives.config.find_pkgbuild", return_value=pkgbuild), \
+         patch("sysforge.update.parse_pkgbuild",
+               return_value={"globals": {"pkgname": "yay", "pkgver": "12.3.3", "pkgrel": "1", "epoch": "0"}}), \
+         patch("sysforge.update.vercmp", return_value=1), \
+         patch("sysforge.update._append_to_packages_toml") as mock_append:
+        results = _discover_and_add(_make_discover_args(), bs, {})
+
+    assert len(results) == 1
+    assert results[0].action == "OUTDATED"
+    assert results[0].pkgname == "yay"
+    mock_append.assert_called_once()
+
+
+def test_discover_dry_run_no_write(tmp_path):
+    bs = MagicMock()
+    bs.all_packages.return_value = {}
+
+    with patch("sysforge.update._get_foreign_packages", return_value={"yay": "12.0.0-1"}), \
+         patch("sysforge.update._load_packages_toml_names", return_value=set()), \
+         patch("sysforge.primitives.aur.aur_info", return_value={"yay": {"Name": "yay"}}), \
+         patch("sysforge.update._append_to_packages_toml") as mock_append:
+        results = _discover_and_add(_make_discover_args(dry_run=True), bs, {})
+
+    # In dry_run, no PKGBUILD is fetched, entry still added to results but not written
+    mock_append.assert_not_called()
+    assert len(results) == 1
+
+
+def test_discover_vcs_package_flagged_as_devel():
+    bs = MagicMock()
+    bs.all_packages.return_value = {}
+
+    with patch("sysforge.update._get_foreign_packages", return_value={"neovim-git": "r1234.gabcdef-1"}), \
+         patch("sysforge.update._load_packages_toml_names", return_value=set()), \
+         patch("sysforge.primitives.aur.aur_info", return_value={"neovim-git": {"Name": "neovim-git"}}), \
+         patch("sysforge.primitives.config.find_pkgbuild", return_value=None), \
+         patch("sysforge.update._append_to_packages_toml"):
+        results = _discover_and_add(_make_discover_args(), bs, {})
+
+    assert any(r.pkgname == "neovim-git" and r.action == "DEVEL" for r in results)
+
+
+# ---------------------------------------------------------------------------
+# cmd_update --all integration
+# ---------------------------------------------------------------------------
+
+def test_cmd_update_all_with_empty_build_state(tmp_path, capsys):
+    """--all with empty build_state should not exit early."""
+    args = _make_args(all=True)
+
+    with patch("sysforge.update.BuildState") as MockBS, \
+         patch("sysforge.update._discover_and_add", return_value=[]) as mock_discover, \
+         patch("sysforge.update.load_config", return_value={}), \
+         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")):
+        MockBS.return_value.all_packages.return_value = {}
+        cmd_update(args)
+
+    mock_discover.assert_called_once()
+    captured = capsys.readouterr()
+    assert "No packages recorded" in captured.err
+
+
+def test_cmd_update_all_discovered_printed(tmp_path, capsys):
+    """Discovery results are printed when --all is set."""
+    discovered = [
+        _DiscoveredResult(pkgname="yay", action="ADDED", installed_ver="12.0-1"),
+    ]
+    args = _make_args(all=True)
+
+    with patch("sysforge.update.BuildState") as MockBS, \
+         patch("sysforge.update._discover_and_add", return_value=discovered), \
+         patch("sysforge.update.load_config", return_value={}), \
+         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")):
+        MockBS.return_value.all_packages.return_value = {}
+        cmd_update(args)
+
+    captured = capsys.readouterr()
+    assert "yay" in captured.out
+    assert "ADDED" in captured.out
+
+
+def test_cmd_update_all_outdated_is_built(tmp_path):
+    """Discovered OUTDATED packages are built when not dry_run."""
+    pkg_dir = tmp_path / "yay"
+    pkg_dir.mkdir()
+    pkgbuild = pkg_dir / "PKGBUILD"
+    pkgbuild.write_text("pkgname=yay\n")
+
+    discovered = [
+        _DiscoveredResult(
+            pkgname="yay", action="OUTDATED",
+            installed_ver="12.0-1", pkgbuild_ver="12.3.3-1",
+            pkgbuild_path=pkgbuild,
+        )
+    ]
+    args = _make_args(all=True)
+
+    build_calls = []
+    def fake_build(path, **kwargs):
+        build_calls.append(path)
+
+    with patch("sysforge.update.BuildState") as MockBS, \
+         patch("sysforge.update._discover_and_add", return_value=discovered), \
+         patch("sysforge.update.load_config", return_value={}), \
+         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")), \
+         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build), \
+         patch("sysforge.primitives.cache_probe.reset_session"):
+        MockBS.return_value.all_packages.return_value = {}
+        cmd_update(args)
+
+    assert len(build_calls) == 1
+    assert build_calls[0] == pkgbuild
+
+
+def test_cmd_update_all_dry_run_no_build(tmp_path):
+    """--all --dry-run prints discovery but does not build."""
+    pkg_dir = tmp_path / "yay"
+    pkg_dir.mkdir()
+    pkgbuild = pkg_dir / "PKGBUILD"
+    pkgbuild.write_text("pkgname=yay\n")
+
+    discovered = [
+        _DiscoveredResult(
+            pkgname="yay", action="OUTDATED",
+            installed_ver="12.0-1", pkgbuild_ver="12.3.3-1",
+            pkgbuild_path=pkgbuild,
+        )
+    ]
+    args = _make_args(all=True, dry_run=True)
+
+    import sysforge.primitives.makepkg_wrapper as mw
+    build_calls = []
+    mw_run_orig = mw.run
+
+    def fake_build(*a, **kw):
+        build_calls.append(1)
+
+    mw.run = fake_build
+    try:
+        with patch("sysforge.update.BuildState") as MockBS, \
+             patch("sysforge.update._discover_and_add", return_value=discovered), \
+             patch("sysforge.update.load_config", return_value={}), \
+             patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")):
+            MockBS.return_value.all_packages.return_value = {}
+            cmd_update(args)
+    finally:
+        mw.run = mw_run_orig
+
+    assert build_calls == []
