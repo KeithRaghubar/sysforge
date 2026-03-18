@@ -579,4 +579,6 @@ def main():
 
     args = parser.parse_args()
     _log.set_verbosity(args.verbose)
+    if getattr(args, "dry_run", False):
+        _log.set_dry_run_mode()
     args.func(args)

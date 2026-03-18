@@ -1,6 +1,6 @@
 # Manual Validation Checklist — Standalone Phase Commands
 
-## `sysforge reconfigure`
+## `sysforge run reconfigure`
 
 **Step selection**
 - [x] Enter → all 8 steps
@@ -33,19 +33,19 @@
 
 ---
 
-## `sysforge toolchain`
+## `sysforge run toolchain`
 
 - [x] No toolchain.toml → clean no-op
 - [ ] GCC: builds, installs, state has `cc=/usr/bin/gcc cxx=/usr/bin/g++`
 - [ ] LLVM pgo=false: single pass, state has `cc=…/clang cxx=…/clang++ ld=lld`
 - [ ] LLVM pgo=true: pass 1 (system CC, install) → pass 2 (instrumented, extract to staging) → pass 3 (staged CC, install, staging removed); state result correct
-- [ ] `--dry-run` → logs passes, no build, no state written
+- [x] `--dry-run` → logs passes, no build, no state written
 - [ ] `--no-update` → no git pull
 - [ ] `--state-dir` → result written to custom dir
 
 ---
 
-## `sysforge packages`
+## `sysforge run packages`
 
 **Happy path**
 - [ ] Repo packages → `pacman -S --needed`
@@ -74,7 +74,7 @@
 
 ---
 
-## `sysforge kernel`
+## `sysforge run kernel`
 
 - [ ] No kernel.toml → clean no-op
 
@@ -134,5 +134,5 @@
 
 ## Cross-stage
 
-- [ ] `sysforge toolchain && sysforge packages` → CC/CXX injected into package builds
-- [ ] `sysforge toolchain && sysforge kernel` → CC/CXX injected into kernel build
+- [ ] `sysforge run toolchain && sysforge run packages` → CC/CXX injected into package builds
+- [ ] `sysforge run toolchain && sysforge run kernel` → CC/CXX injected into kernel build

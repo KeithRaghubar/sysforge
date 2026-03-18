@@ -42,6 +42,7 @@ from datetime import datetime
 from pathlib import Path
 
 _VERBOSITY = 0
+_DRY_RUN = False
 _unified_log_fh = None
 _pkg_log_fh = None
 
@@ -59,8 +60,19 @@ def set_verbosity(level: int) -> None:
     _VERBOSITY = max(0, int(level))
 
 
+def set_dry_run_mode() -> None:
+    """Force max verbosity and redirect all output to stdout for dry-run mode."""
+    global _VERBOSITY, _DRY_RUN
+    _VERBOSITY = 3
+    _DRY_RUN = True
+
+
 def get_verbosity() -> int:
     return _VERBOSITY
+
+
+def _out():
+    return sys.stdout if _DRY_RUN else sys.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -135,14 +147,14 @@ def _write_to_files(line: str, raw: bool = False) -> None:
 
 def ui(tag: str, message: str) -> None:
     """Always printed regardless of verbosity. Always written to log files. For interactive output."""
-    print(message, file=sys.stderr)
+    print(message, file=_out())
     _write_to_files(f"[SYSFORGE][UI]{tag} {message}\n")
 
 
 def error(tag: str, message: str) -> None:
     """Always printed regardless of verbosity. Always written to log files."""
     line = f"[SYSFORGE][ERROR]{tag} {message}\n"
-    print(line, end="", file=sys.stderr)
+    print(line, end="", file=_out())
     _write_to_files(line)
 
 
@@ -150,7 +162,7 @@ def warn(tag: str, message: str) -> None:
     """Printed at verbosity >= 1 (-v). Always written to log files."""
     line = f"[SYSFORGE][WARN]{tag} {message}\n"
     if _VERBOSITY >= 1:
-        print(line, end="", file=sys.stderr)
+        print(line, end="", file=_out())
     _write_to_files(line)
 
 
@@ -158,7 +170,7 @@ def info(tag: str, message: str) -> None:
     """Printed at verbosity >= 2 (-vv). Always written to log files."""
     line = f"[SYSFORGE][INFO]{tag} {message}\n"
     if _VERBOSITY >= 2:
-        print(line, end="", file=sys.stderr)
+        print(line, end="", file=_out())
     _write_to_files(line)
 
 
@@ -171,5 +183,5 @@ def debug(tag: str, message: str) -> None:
     for part in (message.splitlines() or [""]):
         entry = f"[SYSFORGE][DEBUG]{tag} {part}\n"
         if _VERBOSITY >= 3:
-            print(entry, end="", file=sys.stderr)
+            print(entry, end="", file=_out())
         _write_to_files(entry)
