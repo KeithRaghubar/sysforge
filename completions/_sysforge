@@ -43,14 +43,10 @@ _sysforge_pkg_names() {
   _describe 'package' pkgs
 }
 
-# Complete as a package name, or fall back to file completion when the
-# argument looks like an explicit path (starts with /, ./, ../).
 _sysforge_pkg_or_file() {
-  if [[ $words[CURRENT] == /* || $words[CURRENT] == ./* || $words[CURRENT] == ../* ]]; then
-    _files
-  else
-    _sysforge_pkg_names
-  fi
+  _alternative \
+    'files:file:_files' \
+    'packages:package:_sysforge_pkg_names'
 }
 
 _sysforge_build() {
@@ -140,7 +136,7 @@ _sysforge_packages_list() {
 _sysforge_packages_add() {
   _arguments \
     '--packages[path to packages.toml]:file:_files' \
-    '1: :_sysforge_pkg_names'
+    '*: :_sysforge_pkg_names'
 }
 
 _sysforge_packages_remove() {

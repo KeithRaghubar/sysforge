@@ -389,7 +389,7 @@ def _add_packages_parser(sub):
     # add
     p_add = pkg_sub.add_parser("add",
         help="Add a package: classify source, infer pkgbuild_patch, append entry.")
-    p_add.add_argument("pkg", metavar="PKG", help="Package name to add.")
+    p_add.add_argument("pkgs", nargs="+", metavar="PKG", help="One or more package names to add.")
     p_add.add_argument("--packages", metavar="FILE", dest="packages",
         help="Path to packages.toml.")
     p_add.set_defaults(func=cmd_packages_add)

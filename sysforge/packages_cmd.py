@@ -13,6 +13,7 @@ Public API:
     cmd_packages_remove(args)
     cmd_packages_sync(args)
 """
+import re as _re
 import sys
 import tomllib
 from pathlib import Path
@@ -56,24 +57,6 @@ def _entry_toml_block(entry: dict) -> str:
             lines.append(f"{field} = {val!r}")
     return "\n".join(lines)
 
-
-def _write_packages_toml(path: Path, build: dict, entries: list[dict]) -> None:
-    """Atomically rewrite packages.toml from a build section and entry list."""
-    lines = ["# Managed by sysforge packages", ""]
-    if build:
-        lines.append("[build]")
-        for k, v in build.items():
-            if isinstance(v, str):
-                lines.append(f'{k} = "{v}"')
-            else:
-                lines.append(f"{k} = {v!r}")
-        lines.append("")
-    for entry in entries:
-        lines.append(_entry_toml_block(entry))
-        lines.append("")
-    tmp = path.with_suffix(".toml.tmp")
-    tmp.write_text("\n".join(lines))
-    tmp.rename(path)
 
 
 # ---------------------------------------------------------------------------
@@ -119,38 +102,56 @@ def cmd_packages_list(args):
 # ---------------------------------------------------------------------------
 
 def cmd_packages_add(args):
-    pkg = args.pkg
+    pkgs = args.pkgs
     path = _resolve_packages_file(getattr(args, "packages", None))
 
-    # Check for duplicate
     existing_entries: list[dict] = []
     build_section: dict = {}
     if path.exists():
         data = _load_toml(path)
         existing_entries = data.get("package", [])
         build_section = data.get("build", {})
-        if any(e.get("name") == pkg for e in existing_entries):
+
+    existing_names = {e.get("name") for e in existing_entries}
+    had_error = False
+    to_process = []
+    for pkg in pkgs:
+        if pkg in existing_names:
             print(f"[SYSFORGE] {pkg} is already in {path}", file=sys.stderr)
-            sys.exit(1)
-
-    # Classify
-    from sysforge.primitives.aur import is_repo_package, aur_info
-    if is_repo_package(pkg):
-        source = "repo"
-    else:
-        found = aur_info([pkg])
-        if pkg in found:
-            source = "aur"
+            had_error = True
         else:
-            print(f"[SYSFORGE] {pkg} not found in pacman repos or AUR", file=sys.stderr)
-            sys.exit(1)
+            to_process.append(pkg)
 
-    # Infer pkgbuild_patch from PKGBUILD (AUR only)
-    pkgbuild_patch = False
-    if source == "aur":
-        config = load_config() or {}
-        raw_dir = build_section.get("pkgbuild_dir") or config.get("paths", {}).get("pkgbuild_dir")
-        if raw_dir:
+    if not to_process:
+        sys.exit(1)
+
+    # Classify — batch AUR lookup for non-repo packages
+    from sysforge.primitives.aur import is_repo_package, aur_info
+    aur_candidates = [p for p in to_process if not is_repo_package(p)]
+    repo_pkgs = set(to_process) - set(aur_candidates)
+    aur_found = set(aur_info(aur_candidates).keys()) if aur_candidates else set()
+
+    sources: dict[str, str] = {p: "repo" for p in repo_pkgs}
+    for p in aur_candidates:
+        if p in aur_found:
+            sources[p] = "aur"
+        else:
+            print(f"[SYSFORGE] {p} not found in pacman repos or AUR", file=sys.stderr)
+            had_error = True
+
+    to_add = [p for p in to_process if p in sources]
+    if not to_add:
+        sys.exit(1)
+
+    # Infer pkgbuild_patch for AUR packages
+    config = load_config() or {}
+    raw_dir = build_section.get("pkgbuild_dir") or config.get("paths", {}).get("pkgbuild_dir")
+
+    entries_to_write: list[dict] = []
+    for pkg in to_add:
+        source = sources[pkg]
+        pkgbuild_patch = False
+        if source == "aur" and raw_dir:
             pkgbuild = Path(raw_dir).expanduser() / pkg / "PKGBUILD"
             if pkgbuild.exists():
                 try:
@@ -161,17 +162,15 @@ def cmd_packages_add(args):
                     pkgbuild_patch = bool(profile_data)
                 except Exception as e:
                     _log.warn("[PACKAGES]", f"Could not infer pkgbuild_patch for {pkg}: {e}")
+        entry: dict = {"name": pkg, "source": source}
+        if pkgbuild_patch:
+            entry["pkgbuild_patch"] = True
+        entries_to_write.append(entry)
 
-    # Build entry
-    entry: dict = {"name": pkg, "source": source}
-    if pkgbuild_patch:
-        entry["pkgbuild_patch"] = True
-
-    block = "\n" + _entry_toml_block(entry) + "\n"
-
+    blocks_text = "".join("\n" + _entry_toml_block(e) + "\n" for e in entries_to_write)
     if path.exists():
         with open(path, "a") as f:
-            f.write(block)
+            f.write(blocks_text)
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
         header = (
@@ -179,12 +178,16 @@ def cmd_packages_add(args):
             "\n[build]\n"
             'pkgbuild_dir = "~/builds"\n'
         )
-        path.write_text(header + block)
+        path.write_text(header + blocks_text)
 
-    msg = f"Added {pkg} ({source})"
-    if pkgbuild_patch:
-        msg += " [pkgbuild_patch=true]"
-    print(msg)
+    for entry in entries_to_write:
+        msg = f"Added {entry['name']} ({entry['source']})"
+        if entry.get("pkgbuild_patch"):
+            msg += " [pkgbuild_patch=true]"
+        print(msg)
+
+    if had_error:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +236,60 @@ def cmd_packages_remove(args):
 # packages sync
 # ---------------------------------------------------------------------------
 
+def _sync_toml_inplace(path: Path, changes_by_name: dict) -> None:
+    """Apply field-level updates to [[package]] blocks without touching comments.
+
+    changes_by_name: {pkg_name: {field: new_value}}
+        new_value=None means remove the field line.
+    """
+    lines = path.read_text().splitlines(keepends=True)
+
+    def _find_block(name):
+        starts = [i for i, l in enumerate(lines) if l.strip() == "[[package]]"]
+        for idx, start in enumerate(starts):
+            end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+            for l in lines[start:end]:
+                m = _re.match(r'\s*name\s*=\s*"([^"]+)"', l)
+                if m and m.group(1) == name:
+                    return start, end
+        return None, None
+
+    for pkg_name, field_changes in changes_by_name.items():
+        for field, new_val in field_changes.items():
+            start, end = _find_block(pkg_name)
+            if start is None:
+                continue
+            field_abs = None
+            for j, l in enumerate(lines[start:end]):
+                if _re.match(rf'\s*{_re.escape(field)}\s*=', l):
+                    field_abs = start + j
+                    break
+            if new_val is None:
+                if field_abs is not None:
+                    lines.pop(field_abs)
+            elif field_abs is not None:
+                if isinstance(new_val, bool):
+                    lines[field_abs] = f'{field} = {"true" if new_val else "false"}\n'
+                else:
+                    lines[field_abs] = f'{field} = "{new_val}"\n'
+            else:
+                # Insert after last non-blank line in block
+                start2, end2 = _find_block(pkg_name)
+                if start2 is None or end2 is None:
+                    continue
+                last_content = start2
+                for j in range(start2, end2):
+                    if lines[j].strip():
+                        last_content = j
+                if isinstance(new_val, bool):
+                    new_line = f'{field} = {"true" if new_val else "false"}\n'
+                else:
+                    new_line = f'{field} = "{new_val}"\n'
+                lines.insert(last_content + 1, new_line)
+
+    path.write_text("".join(lines))
+
+
 def cmd_packages_sync(args):
     path = _resolve_packages_file(getattr(args, "packages", None))
     dry_run = getattr(args, "dry_run", False)
@@ -261,12 +318,12 @@ def cmd_packages_sync(args):
     raw_dir = build_section.get("pkgbuild_dir") or config.get("paths", {}).get("pkgbuild_dir")
     pkgbuild_dir = Path(raw_dir).expanduser() if raw_dir else None
 
-    changes: list[str] = []
-    new_entries: list[dict] = []
+    change_display: list[str] = []
+    changes_by_name: dict[str, dict] = {}
 
     for entry in entries:
         name = entry["name"]
-        new_entry = dict(entry)
+        entry_changes: dict = {}
 
         # Re-classify source
         if is_repo_package(name):
@@ -278,8 +335,8 @@ def cmd_packages_sync(args):
             new_source = entry.get("source", "unknown")
 
         if new_source != entry.get("source"):
-            changes.append(f"  {name}: source {entry.get('source')!r} → {new_source!r}")
-        new_entry["source"] = new_source
+            change_display.append(f"  {name}: source {entry.get('source')!r} → {new_source!r}")
+            entry_changes["source"] = new_source
 
         # Re-check pkgbuild_patch (AUR only, only when PKGBUILD is present)
         if new_source == "aur" and pkgbuild_dir:
@@ -293,27 +350,25 @@ def cmd_packages_sync(args):
                     new_patch = bool(profile_data)
                     old_patch = entry.get("pkgbuild_patch", False)
                     if new_patch != old_patch:
-                        changes.append(f"  {name}: pkgbuild_patch {old_patch!r} → {new_patch!r}")
-                    if new_patch:
-                        new_entry["pkgbuild_patch"] = True
-                    else:
-                        new_entry.pop("pkgbuild_patch", None)
+                        change_display.append(f"  {name}: pkgbuild_patch {old_patch!r} → {new_patch!r}")
+                        # None signals removal of the field line
+                        entry_changes["pkgbuild_patch"] = True if new_patch else None
                 except Exception as e:
                     _log.warn("[PACKAGES]", f"Could not check pkgbuild_patch for {name}: {e}")
 
-        new_entries.append(new_entry)
+        if entry_changes:
+            changes_by_name[name] = entry_changes
 
-    if not changes:
+    if not change_display:
         print("All entries up to date.")
         return
 
     print("Changes:" if not dry_run else "Would change:")
-    for c in changes:
+    for c in change_display:
         print(c)
 
     if dry_run:
         return
 
-    _write_packages_toml(path, build_section, new_entries)
+    _sync_toml_inplace(path, changes_by_name)
     print(f"\nUpdated {path}")
-    print("Note: comments and section headers in the original file were not preserved.")
