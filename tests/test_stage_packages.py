@@ -296,6 +296,89 @@ def test_packages_stage_aur_auto_clone(tmp_path):
     assert set(p["built"]) == {"llvm", "htop", "mesa-git"}
 
 
+# ---------------------------------------------------------------------------
+# repo_mode routing
+# ---------------------------------------------------------------------------
+
+PACKAGES_TOML_REPO_MODE = """
+[build]
+pkgbuild_dir = "{pkgbuild_dir}"
+repo_mode = "profiled"
+
+[[package]]
+name = "htop"
+source = "repo"
+
+[[package]]
+name = "mesa-git"
+source = "aur"
+"""
+
+PACKAGES_TOML_PKGBUILD_PATCH_OVERRIDE = """
+[build]
+pkgbuild_dir = "{pkgbuild_dir}"
+
+[[package]]
+name = "htop"
+source = "repo"
+pkgbuild_patch = true
+
+[[package]]
+name = "neovim"
+source = "repo"
+"""
+
+
+def test_repo_mode_profiled_builds_repo_pkg_from_source(tmp_path):
+    """repo_mode=profiled: repo packages are built via makepkg, not pacman."""
+    builds_dir = tmp_path / "builds"
+    make_pkgbuild(builds_dir, "htop")
+    make_pkgbuild(builds_dir, "mesa-git")
+    pkg_file = tmp_path / "packages.toml"
+    pkg_file.write_text(PACKAGES_TOML_REPO_MODE.format(pkgbuild_dir=builds_dir))
+
+    state = PipelineState(tmp_path / "state")
+
+    built = []
+    with patch("sysforge.pipeline.stages.packages.makepkg_run",
+               side_effect=lambda path, **kw: built.append(Path(path).parent.name)), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run") as mock_pacman:
+        PackagesStage().run({"packages_file": str(pkg_file)}, state, make_options())
+
+    assert "htop" in built       # repo pkg routed to profiled build
+    assert "mesa-git" in built   # aur pkg always built
+    mock_pacman.assert_not_called()
+
+
+def test_pkgbuild_patch_overrides_pacman_repo_mode(tmp_path):
+    """pkgbuild_patch=true on a repo pkg forces profiled build regardless of global repo_mode."""
+    builds_dir = tmp_path / "builds"
+    make_pkgbuild(builds_dir, "htop")
+    pkg_file = tmp_path / "packages.toml"
+    pkg_file.write_text(PACKAGES_TOML_PKGBUILD_PATCH_OVERRIDE.format(pkgbuild_dir=builds_dir))
+
+    state = PipelineState(tmp_path / "state")
+
+    built = []
+    pacman_installed = []
+    with patch("sysforge.pipeline.stages.packages.makepkg_run",
+               side_effect=lambda path, **kw: built.append(Path(path).parent.name)), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run",
+               side_effect=lambda cmd, **kw: pacman_installed.append(cmd[-1]) or MagicMock(returncode=0)):
+        PackagesStage().run({"packages_file": str(pkg_file)}, state, make_options())
+
+    assert "htop" in built             # pkgbuild_patch → profiled
+    assert "neovim" in pacman_installed  # no pkgbuild_patch → pacman
+
+
+def test_repo_mode_invalid_raises(tmp_path):
+    """Invalid repo_mode value raises a clear error at load time."""
+    pkg_file = tmp_path / "packages.toml"
+    pkg_file.write_text('[build]\nrepo_mode = "hybrid"\n\n[[package]]\nname = "htop"\nsource = "repo"\n')
+    with pytest.raises(ValueError, match="Invalid.*repo_mode"):
+        _load_packages({"packages_file": str(pkg_file)})
+
+
 def test_packages_stage_dry_run_calls_nothing(tmp_path):
     builds_dir = tmp_path / "builds"
     make_pkgbuild(builds_dir, "llvm")

@@ -8,14 +8,15 @@ Presents a menu of available checks. The user can run all, a numbered subset,
 a range, or refer to steps by name. Defaults to all when non-interactive.
 
 Available steps:
-  1  editor    Editor selection (SYSFORGE_EDITOR → sysforge.toml → $EDITOR → vi)
-  2  config    Config file review (flag_profiles, packages, toolchain, kernel, hardware_profile)
-  3  makepkg   System makepkg.conf review (MAKEFLAGS, BUILDDIR, PKGDEST, flags)
-  4  sudo      User / sudo verification
-  5  disk      Disk space check
-  6  network   Network connectivity probe (AUR, GitHub, mirrors)
-  7  gpg       GPG keyring bootstrap (global key store import, refresh option)
-  8  preview   Build preview (tentative profiles for all packages.toml entries)
+  1  editor      Editor selection (SYSFORGE_EDITOR → sysforge.toml → $EDITOR → vi)
+  2  config      Config file review (flag_profiles, packages, toolchain, kernel, hardware_profile)
+  3  build_mode  View/set packages.toml repo_mode (pacman | profiled)
+  4  makepkg     System makepkg.conf review (MAKEFLAGS, BUILDDIR, PKGDEST, flags)
+  5  sudo        User / sudo verification
+  6  disk        Disk space check
+  7  network     Network connectivity probe (AUR, GitHub, mirrors)
+  8  gpg         GPG keyring bootstrap (global key store import, refresh option)
+  9  preview     Build preview (tentative profiles for all packages.toml entries)
 
 Non-interactive / dry_run:
   All steps run without prompting. dry_run additionally skips writes
@@ -61,21 +62,23 @@ _PIPELINE_STAGES = [
 
 # Ordered step definitions: (key, short_label, description)
 _STEPS = [
-    ("editor",  "Editor selection",
+    ("editor",     "Editor selection",
      "Set preferred editor; save permanently to sysforge.toml"),
-    ("config",  "Config file review",
+    ("config",     "Config file review",
      "Review flag_profiles.toml, packages.toml, toolchain.toml, kernel.toml, hardware_profile.toml"),
-    ("makepkg", "makepkg.conf review",
+    ("build_mode", "Build mode",
+     "View/set packages.toml repo_mode (pacman | profiled); show per-package pkgbuild_patch overrides"),
+    ("makepkg",    "makepkg.conf review",
      "Review /etc/makepkg.conf — MAKEFLAGS, BUILDDIR, PKGDEST, flag baselines"),
-    ("sudo",    "User / sudo verification",
+    ("sudo",       "User / sudo verification",
      "Confirm build user and sudoers are correctly configured for makepkg -si"),
-    ("disk",    "Disk space check",
+    ("disk",       "Disk space check",
      "Estimate required build space and warn if free space is low"),
-    ("network", "Network probe",
+    ("network",    "Network probe",
      "Verify AUR, GitHub, Arch Linux, and pacman mirrors are reachable"),
-    ("gpg",     "GPG keyring bootstrap",
+    ("gpg",        "GPG keyring bootstrap",
      "Import global key store, report keyring status, offer keyserver refresh"),
-    ("preview", "Build preview",
+    ("preview",    "Build preview",
      "Show what packages + kernel stages will build, with tentative profiles"),
 ]
 
@@ -399,6 +402,107 @@ def _step_config(config, state, options, editor: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Step: build mode (repo_mode)
+# ---------------------------------------------------------------------------
+
+def _set_repo_mode(pkg_path: Path, mode: str) -> None:
+    """
+    Write repo_mode to the [build] section of packages.toml in-place,
+    preserving all other content and comments.
+
+    Search order:
+    1. Replace existing repo_mode = "..." line.
+    2. Insert after [build] header if not found.
+    3. Append a new [build] section if none exists.
+    """
+    text = pkg_path.read_text()
+
+    new_text, n = re.subn(
+        r'^(repo_mode\s*=\s*)"[^"]*"',
+        f'\\1"{mode}"',
+        text,
+        flags=re.MULTILINE,
+    )
+    if n:
+        pkg_path.write_text(new_text)
+        return
+
+    # Insert immediately after [build] header
+    new_text = re.sub(
+        r'(\[build\][^\n]*\n)',
+        f'\\1repo_mode = "{mode}"\n',
+        text,
+        count=1,
+    )
+    if new_text != text:
+        pkg_path.write_text(new_text)
+        return
+
+    # No [build] section — append one
+    pkg_path.write_text(text.rstrip("\n") + f'\n\n[build]\nrepo_mode = "{mode}"\n')
+
+
+def _step_build_mode(config, state, options, editor: str) -> str:
+    _log.ui("[RECONFIGURE]", "─── Build mode ──────────────────────────────────────")
+
+    pkg_path = Path(config.get("packages_file") or PACKAGES_PATH)
+    if not pkg_path.exists():
+        _log.ui("[RECONFIGURE]", f"  packages.toml not found at {pkg_path} — skipping")
+        return editor
+
+    try:
+        with open(pkg_path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception as e:
+        _log.warn("[RECONFIGURE]", f"  Could not load packages.toml: {e}")
+        return editor
+
+    build_cfg = data.get("build", {})
+    repo_mode = build_cfg.get("repo_mode", "pacman")
+    packages  = data.get("package", [])
+    patched   = [p["name"] for p in packages if p.get("pkgbuild_patch")]
+
+    _log.ui("[RECONFIGURE]", f"  File:       {pkg_path}")
+    _log.ui("[RECONFIGURE]", f"  repo_mode:  {repo_mode}")
+    _log.ui("[RECONFIGURE]", "  pacman    — repo packages installed via pacman (no profiled flags)")
+    _log.ui("[RECONFIGURE]", "  profiled  — repo packages cloned and built from source with profile flags")
+
+    if patched:
+        _log.ui("[RECONFIGURE]",
+            f"  Per-package pkgbuild_patch overrides ({len(patched)}): "
+            + ", ".join(patched)
+        )
+    else:
+        _log.ui("[RECONFIGURE]", "  No per-package pkgbuild_patch overrides.")
+
+    if not _interactive() or options.dry_run:
+        return editor
+
+    choice = _prompt(
+        f"  Change repo_mode from {repo_mode!r}? [p]acman / [r]profiled / [↵] keep: "
+    ).lower()
+
+    if choice == "p":
+        new_mode = "pacman"
+    elif choice in ("r", "profiled"):
+        new_mode = "profiled"
+    else:
+        return editor
+
+    if new_mode == repo_mode:
+        _log.ui("[RECONFIGURE]", f"  Already {repo_mode!r} — no change.")
+        return editor
+
+    try:
+        _set_repo_mode(pkg_path, new_mode)
+        _log.ui("[RECONFIGURE]", f"  repo_mode set to {new_mode!r} in {pkg_path}")
+    except OSError as e:
+        _log.warn("[RECONFIGURE]", f"  Could not write {pkg_path}: {e}")
+
+    return editor
+
+
+# ---------------------------------------------------------------------------
 # Step: makepkg.conf review
 # ---------------------------------------------------------------------------
 
@@ -659,7 +763,9 @@ def _step_preview(config, state, options, editor: str) -> str:
 
     try:
         with open(pkg_path, "rb") as f:
-            packages = tomllib.load(f).get("package", [])
+            pkg_data = tomllib.load(f)
+        packages  = pkg_data.get("package", [])
+        build_cfg = pkg_data.get("build", {})
     except Exception as e:
         _log.warn("[RECONFIGURE]", f"  Could not load packages.toml: {e}")
         return editor
@@ -667,6 +773,8 @@ def _step_preview(config, state, options, editor: str) -> str:
     if not packages:
         _log.ui("[RECONFIGURE]", "  No packages defined in packages.toml")
         return editor
+
+    repo_mode = build_cfg.get("repo_mode", "pacman")
 
     _match_rules = None
     try:
@@ -683,7 +791,13 @@ def _step_preview(config, state, options, editor: str) -> str:
     for pkg in packages:
         name   = pkg.get("name", "?")
         source = pkg.get("source", "aur")
-        if source == "repo":
+        effective_mode = "profiled" if pkg.get("pkgbuild_patch") else repo_mode
+
+        if source == "repo" and effective_mode == "profiled":
+            patch_note = " (pkgbuild_patch)" if pkg.get("pkgbuild_patch") else " (repo_mode)"
+            action = f"build  [profiled]{patch_note}"
+            build_count += 1
+        elif source == "repo":
             action = "pacman -S --needed"
             repo_count += 1
         else:
@@ -701,7 +815,8 @@ def _step_preview(config, state, options, editor: str) -> str:
         _log.ui("[RECONFIGURE]", f"  {name:<30}  {source:<6}  {action}")
 
     _log.ui("[RECONFIGURE]",
-        f"  Total: {len(packages)}  |  Repo: {repo_count}  |  Builds: {build_count}"
+        f"  Total: {len(packages)}  |  repo_mode: {repo_mode}  |  "
+        f"Repo (pacman): {repo_count}  |  Builds: {build_count}"
     )
     if can_match:
         _log.ui("[RECONFIGURE]",
@@ -745,14 +860,15 @@ def _step_preview(config, state, options, editor: str) -> str:
 # ---------------------------------------------------------------------------
 
 _STEP_FNS = {
-    "editor":  _step_editor,
-    "config":  _step_config,
-    "makepkg": _step_makepkg,
-    "sudo":    _step_sudo,
-    "disk":    _step_disk,
-    "network": _step_network,
-    "gpg":     _step_gpg,
-    "preview": _step_preview,
+    "editor":     _step_editor,
+    "config":     _step_config,
+    "build_mode": _step_build_mode,
+    "makepkg":    _step_makepkg,
+    "sudo":       _step_sudo,
+    "disk":       _step_disk,
+    "network":    _step_network,
+    "gpg":        _step_gpg,
+    "preview":    _step_preview,
 }
 
 

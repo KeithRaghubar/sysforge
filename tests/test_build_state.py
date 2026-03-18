@@ -18,11 +18,12 @@ from sysforge.primitives.build_state import BuildState
 # ---------------------------------------------------------------------------
 
 def _record(bs, pkgname="htop", pkgver="3.4.1", pkgrel="1", epoch="0",
-            pkgbase="htop", pkgbuild_dir=None):
+            pkgbase="htop", pkgbuild_dir=None, build_mode=None):
     if pkgbuild_dir is None:
         pkgbuild_dir = Path("/home/user/src/htop")
     bs.record(pkgname=pkgname, pkgver=pkgver, pkgrel=pkgrel,
-              epoch=epoch, pkgbase=pkgbase, pkgbuild_dir=pkgbuild_dir)
+              epoch=epoch, pkgbase=pkgbase, pkgbuild_dir=pkgbuild_dir,
+              build_mode=build_mode)
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +116,44 @@ def test_split_package_records(tmp_path):
     assert bs2.get("llvm-libs") is not None
     assert bs2.get("llvm")["pkgbase"] == "llvm"
     assert bs2.get("llvm-libs")["pkgbase"] == "llvm"
+
+
+# ---------------------------------------------------------------------------
+# build_mode field
+# ---------------------------------------------------------------------------
+
+def test_record_with_build_mode(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs, build_mode="profiled")
+    entry = bs.get("htop")
+    assert entry["build_mode"] == "profiled"
+
+
+def test_record_without_build_mode_omits_field(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs)
+    entry = bs.get("htop")
+    assert "build_mode" not in entry
+
+
+def test_build_mode_persisted_and_reloaded(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs, pkgname="mesa", pkgbase="mesa", build_mode="profiled")
+    _record(bs, pkgname="htop", pkgbase="htop")
+    bs.save()
+
+    bs2 = BuildState(tmp_path)
+    assert bs2.get("mesa")["build_mode"] == "profiled"
+    assert "build_mode" not in bs2.get("htop")
+
+
+def test_build_mode_in_serialized_toml(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs, build_mode="profiled")
+    bs.save()
+    with open(bs.path, "rb") as f:
+        data = tomllib.load(f)
+    assert data["htop"]["build_mode"] == "profiled"
 
 
 # ---------------------------------------------------------------------------

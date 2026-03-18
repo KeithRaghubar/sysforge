@@ -717,6 +717,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
                     epoch=globals_.get("epoch", "0"),
                     pkgbase=pkgbase,
                     pkgbuild_dir=pkgbuild_path.parent,
+                    build_mode="profiled",
                 )
             bs.save()
             _log.info("[BUILD]", f"Recorded build state for {pkgbase!r}")

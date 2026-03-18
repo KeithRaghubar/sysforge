@@ -2,9 +2,14 @@
 stages/packages.py — stage 7: package builds
 
 Walks packages.toml and builds/installs each entry:
-  source = "repo"  → pacman -S --needed <name> (no build, pacman owns it)
-  source = "aur"   → locate PKGBUILD via find_pkgbuild(), call makepkg_wrapper.run()
-  source = "git"   → same as aur
+  source = "repo", effective_mode = "pacman"   → pacman -S --needed <name>
+  source = "repo", effective_mode = "profiled" → locate PKGBUILD, build like AUR
+  source = "aur"                               → locate PKGBUILD via find_pkgbuild(), call makepkg_wrapper.run()
+  source = "git"                               → same as aur
+
+Effective build mode for repo packages:
+  global [build] repo_mode = "pacman" | "profiled"  (default "pacman")
+  per-package pkgbuild_patch = true  →  forces "profiled" regardless of global
 
 Per-package checkpointing: state is written after every outcome (built/failed).
 On resume with failed packages the user is prompted (or --force-retry bypasses).
@@ -55,6 +60,14 @@ def _load_packages(config):
 
     build_cfg = data.get("build", {})
     packages = data.get("package", [])
+
+    repo_mode = build_cfg.get("repo_mode", "pacman")
+    if repo_mode not in ("pacman", "profiled"):
+        raise ValueError(
+            f"[PACKAGES] Invalid [build] repo_mode={repo_mode!r} in {path}. "
+            f"Must be 'pacman' or 'profiled'."
+        )
+
     _log.ui("[PACKAGES]", f"Loaded {len(packages)} package(s) from {path}")
     return build_cfg, packages
 
@@ -298,11 +311,19 @@ class PackagesStage(Stage):
             pkg = pkg_map[name]
             source = pkg.get("source", "aur")
 
+            # Effective build mode for repo packages:
+            # global repo_mode default, overridden by per-package pkgbuild_patch.
+            repo_mode = build_cfg.get("repo_mode", "pacman")
+            effective_mode = "profiled" if pkg.get("pkgbuild_patch") else repo_mode
+
             state.mark_package_building(name)
             state.save()
 
             try:
-                if source == "repo":
+                if source == "repo" and effective_mode == "profiled":
+                    _log.ui("[PACKAGES]", f"{name}: repo source with profiled build mode — building from source")
+                    _build_aur(pkg, build_cfg, config, options, toolchain)
+                elif source == "repo":
                     _install_repo(pkg, options)
                 elif source in ("aur", "git"):
                     _build_aur(pkg, build_cfg, config, options, toolchain)

@@ -40,9 +40,10 @@ class BuildState:
             return tomllib.load(f)
 
     def record(self, pkgname: str, pkgver: str, pkgrel: str,
-               epoch: str, pkgbase: str, pkgbuild_dir: Path) -> None:
+               epoch: str, pkgbase: str, pkgbuild_dir: Path,
+               build_mode: str | None = None) -> None:
         """Record build metadata for a single package name."""
-        self._data[pkgname] = {
+        entry = {
             "pkgver": pkgver,
             "pkgrel": pkgrel,
             "epoch": epoch,
@@ -50,6 +51,9 @@ class BuildState:
             "pkgbuild_dir": str(pkgbuild_dir),
             "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        if build_mode is not None:
+            entry["build_mode"] = build_mode
+        self._data[pkgname] = entry
 
     def get(self, pkgname: str) -> dict | None:
         """Return build record for pkgname, or None if not recorded."""
@@ -75,7 +79,7 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "built_at"):
+            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "built_at"):
                 if key in entry:
                     val = str(entry[key]).replace("\\", "\\\\").replace('"', '\\"')
                     lines.append(f'{key} = "{val}"')
