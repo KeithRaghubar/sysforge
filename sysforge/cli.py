@@ -116,6 +116,15 @@ def _cmd_completions(args):
                 seen.add(name)
                 print(name)
 
+    # AUR name cache (populated by `sysforge update` as a side effect)
+    from sysforge.primitives.aur import AUR_CACHE_PATH
+    aur_cache = AUR_CACHE_PATH.expanduser()
+    if aur_cache.exists():
+        for name in aur_cache.read_text().splitlines():
+            if name and name not in seen:
+                seen.add(name)
+                print(name)
+
 
 # ---------------------------------------------------------------------------
 # run namespace handlers

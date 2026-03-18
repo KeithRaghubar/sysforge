@@ -32,7 +32,7 @@ import sysforge.log as _log
 from sysforge.primitives.build_state import BuildState
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-from sysforge.primitives.aur import git_pull_rebase
+from sysforge.primitives.aur import git_pull_rebase, fetch_aur_name_cache
 from sysforge.primitives.config import PACKAGES_PATH, load_config
 from sysforge.pipeline.state import resolve_state_dir
 
@@ -253,6 +253,9 @@ def _print_discovery_summary(results: list[_DiscoveredResult], args) -> None:
 
 def cmd_update(args) -> None:
     """Entry point for `sysforge update`."""
+    # Refresh the AUR name cache as a side effect; failures are non-fatal
+    fetch_aur_name_cache()
+
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
     bs = BuildState(state_dir)
 

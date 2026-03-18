@@ -9,9 +9,12 @@ Public API:
     import_pgp_keys(pkgmeta)       -> None              recv any missing validpgpkeys
     git_pull_rebase(pkgbuild_dir)  -> None              git pull --rebase; abort+raise on conflict
     git_is_dirty(pkgbuild_dir)    -> bool              True if git repo has uncommitted changes
+    fetch_aur_name_cache()         -> Path | None       refresh ~/.cache/sysforge/aur-packages.txt
 """
+import gzip
 import json
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,8 +23,11 @@ from pathlib import Path
 import sysforge.log as _log
 
 
-AUR_RPC_URL  = "https://aur.archlinux.org/rpc/v5/info"
-AUR_GIT_BASE = "https://aur.archlinux.org"
+AUR_RPC_URL       = "https://aur.archlinux.org/rpc/v5/info"
+AUR_GIT_BASE      = "https://aur.archlinux.org"
+AUR_PACKAGES_URL  = "https://aur.archlinux.org/packages.gz"
+AUR_CACHE_PATH    = Path("~/.cache/sysforge/aur-packages.txt")
+AUR_CACHE_MAX_AGE = 86400   # 1 day in seconds
 
 _REQUEST_TIMEOUT = 10   # seconds
 
@@ -53,6 +59,36 @@ def aur_info(names: list[str]) -> dict[str, dict]:
     found = {r["Name"]: r for r in results}
     _log.info("[MANIFEST]", f"AUR RPC: {len(found)}/{len(names)} found")
     return found
+
+
+def fetch_aur_name_cache(force: bool = False) -> Path | None:
+    """
+    Download the AUR package name list (packages.gz) to ~/.cache/sysforge/aur-packages.txt.
+
+    Skips the download if the cache file is less than AUR_CACHE_MAX_AGE seconds old,
+    unless force=True.  Returns the cache path on success, None on failure.
+    Network errors are logged as warnings and do not propagate.
+    """
+    cache = AUR_CACHE_PATH.expanduser()
+
+    if not force and cache.exists():
+        age = time.time() - cache.stat().st_mtime
+        if age < AUR_CACHE_MAX_AGE:
+            _log.info("[AUR]", f"name cache is fresh ({int(age)}s old) — skipping refresh")
+            return cache
+
+    _log.info("[AUR]", f"refreshing AUR name cache → {cache}")
+    try:
+        with urllib.request.urlopen(AUR_PACKAGES_URL, timeout=_REQUEST_TIMEOUT) as resp:
+            raw = resp.read()
+        names = gzip.decompress(raw).decode().splitlines()
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text("\n".join(n for n in names if n) + "\n")
+        _log.info("[AUR]", f"AUR name cache updated: {len(names)} packages")
+        return cache
+    except (urllib.error.URLError, OSError, EOFError) as e:
+        _log.warn("[AUR]", f"failed to refresh AUR name cache: {e}")
+        return None
 
 
 def is_repo_package(name: str) -> bool:

@@ -2,19 +2,22 @@
 test_aur.py — unit tests for sysforge.primitives.aur
 
 Covers:
-    aur_info         — successful batch query, empty result, network error, bad JSON
-    aur_clone        — successful clone, git failure
-    git_pull_rebase  — not-a-repo skip, no-tracking skip, success, conflict abort+raise
+    aur_info              — successful batch query, empty result, network error, bad JSON
+    aur_clone             — successful clone, git failure
+    git_pull_rebase       — not-a-repo skip, no-tracking skip, success, conflict abort+raise
+    fetch_aur_name_cache  — fresh cache skip, download + write, network failure, force refresh
 """
+import gzip
 import json
 import subprocess
+import time
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sysforge.primitives.aur import aur_clone, aur_info, git_is_dirty, git_pull_rebase, import_pgp_keys, is_repo_package, pkgctl_checkout
+from sysforge.primitives.aur import aur_clone, aur_info, fetch_aur_name_cache, git_is_dirty, git_pull_rebase, import_pgp_keys, is_repo_package, pkgctl_checkout
 
 
 # ---------------------------------------------------------------------------
@@ -595,3 +598,103 @@ def test_git_pull_rebase_uses_git_dash_c(tmp_path):
         assert cmd[0] == "git"
         assert cmd[1] == "-C"
         assert cmd[2] == str(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# fetch_aur_name_cache
+# ---------------------------------------------------------------------------
+
+def _gz_names(names: list[str]) -> bytes:
+    return gzip.compress("\n".join(names).encode())
+
+
+def _mock_aur_packages_response(names: list[str]):
+    body = _gz_names(names)
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+def test_fetch_aur_name_cache_downloads_and_writes(tmp_path):
+    cache = tmp_path / "aur-packages.txt"
+    names = ["yay", "paru", "trizen"]
+
+    with patch("sysforge.primitives.aur.AUR_CACHE_PATH", cache), \
+         patch("urllib.request.urlopen", return_value=_mock_aur_packages_response(names)):
+        result = fetch_aur_name_cache()
+
+    assert result == cache
+    written = cache.read_text().splitlines()
+    assert "yay" in written
+    assert "paru" in written
+    assert "trizen" in written
+
+
+def test_fetch_aur_name_cache_skips_if_fresh(tmp_path):
+    cache = tmp_path / "aur-packages.txt"
+    cache.write_text("yay\nparu\n")
+
+    with patch("sysforge.primitives.aur.AUR_CACHE_PATH", cache), \
+         patch("sysforge.primitives.aur.AUR_CACHE_MAX_AGE", 86400), \
+         patch("sysforge.primitives.aur.time") as mock_time, \
+         patch("urllib.request.urlopen") as mock_urlopen:
+        mock_time.time.return_value = cache.stat().st_mtime + 3600  # 1 hour old
+        result = fetch_aur_name_cache()
+
+    mock_urlopen.assert_not_called()
+    assert result == cache
+
+
+def test_fetch_aur_name_cache_refreshes_if_stale(tmp_path):
+    cache = tmp_path / "aur-packages.txt"
+    cache.write_text("oldpkg\n")
+    names = ["newpkg"]
+
+    with patch("sysforge.primitives.aur.AUR_CACHE_PATH", cache), \
+         patch("sysforge.primitives.aur.AUR_CACHE_MAX_AGE", 86400), \
+         patch("sysforge.primitives.aur.time") as mock_time, \
+         patch("urllib.request.urlopen", return_value=_mock_aur_packages_response(names)):
+        mock_time.time.return_value = cache.stat().st_mtime + 90000  # >1 day old
+        result = fetch_aur_name_cache()
+
+    assert result == cache
+    assert "newpkg" in cache.read_text()
+
+
+def test_fetch_aur_name_cache_force_bypasses_freshness(tmp_path):
+    cache = tmp_path / "aur-packages.txt"
+    cache.write_text("oldpkg\n")
+    names = ["forced-pkg"]
+
+    with patch("sysforge.primitives.aur.AUR_CACHE_PATH", cache), \
+         patch("urllib.request.urlopen", return_value=_mock_aur_packages_response(names)):
+        result = fetch_aur_name_cache(force=True)
+
+    assert result == cache
+    assert "forced-pkg" in cache.read_text()
+
+
+def test_fetch_aur_name_cache_network_error_returns_none(tmp_path):
+    import urllib.error
+    cache = tmp_path / "aur-packages.txt"
+
+    with patch("sysforge.primitives.aur.AUR_CACHE_PATH", cache), \
+         patch("urllib.request.urlopen", side_effect=urllib.error.URLError("timeout")):
+        result = fetch_aur_name_cache()
+
+    assert result is None
+    assert not cache.exists()
+
+
+def test_fetch_aur_name_cache_creates_parent_dirs(tmp_path):
+    cache = tmp_path / "nested" / "dir" / "aur-packages.txt"
+    names = ["yay"]
+
+    with patch("sysforge.primitives.aur.AUR_CACHE_PATH", cache), \
+         patch("urllib.request.urlopen", return_value=_mock_aur_packages_response(names)):
+        result = fetch_aur_name_cache()
+
+    assert result == cache
+    assert cache.exists()
