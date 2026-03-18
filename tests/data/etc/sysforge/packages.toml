@@ -107,3 +107,99 @@ source = "repo"
 [[package]]
 name = "neovim"
 source = "repo"
+
+[[package]]
+name = "cosmic-app-library-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-applet-arch"
+source = "aur"
+
+[[package]]
+name = "cosmic-applets-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-bg-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-ext-applet-minimon-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-ext-tweaks-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-files-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-greeter-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-icons-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-idle-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-launcher-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-notifications-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-osd-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-player-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-randr-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-screenshot-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-session-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-settings-daemon-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-settings-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-store-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-term-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-wallpapers-git"
+source = "aur"
+
+[[package]]
+name = "cosmic-workspaces-git"
+source = "aur"
+
+[[package]]
+name = "xdg-desktop-portal-cosmic-git"
+source = "aur"
