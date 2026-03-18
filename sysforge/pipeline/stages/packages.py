@@ -24,8 +24,8 @@ AUR/git package PKGBUILD lookup order (via find_pkgbuild):
   3. AUR clone into pkgbuild_dir if package is found on AUR
 """
 import subprocess
-import sysforge.log as _log
 import tomllib
+import sysforge.log as _log
 from pathlib import Path
 
 from sysforge.pipeline.stages.base import Stage
@@ -91,41 +91,6 @@ def _resolve_pkgbuild(name, build_cfg, config):
         return find_pkgbuild(name, lookup_config)
     except FileNotFoundError as e:
         raise RuntimeError(f"[PACKAGES] {e}") from None
-
-
-# ---------------------------------------------------------------------------
-# Hardware gate
-# ---------------------------------------------------------------------------
-
-def _hardware_gate(pkg, config):
-    """
-    Return True if the package should be built on this machine.
-    Checks requires_hardware against hardware_profile.toml if present.
-    Missing hardware_profile means all packages without requires_hardware pass.
-    """
-    required = pkg.get("requires_hardware")
-    if not required:
-        return True
-
-    hw_path = config.get("hardware_profile")
-    if not hw_path:
-        # No hardware profile available — skip hardware-gated packages
-        _log.warn("[PACKAGES]", f"Skipping {pkg['name']!r}: requires_hardware={required!r} but no hardware_profile configured")
-        return False
-
-    hw_path = Path(hw_path).expanduser()
-    if not hw_path.exists():
-        _log.warn("[PACKAGES]", f"Skipping {pkg['name']!r}: requires_hardware={required!r} but {hw_path} does not exist")
-        return False
-
-    with open(hw_path, "rb") as f:
-        hw = tomllib.load(f)
-
-    if not hw.get(required):
-        _log.warn("[PACKAGES]", f"Skipping {pkg['name']!r}: requires_hardware={required!r} not present in hardware profile")
-        return False
-
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -219,20 +184,14 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
             or config.get("paths", {}).get("pkgbuild_dir", "")
         )
         expected = Path(pkgbuild_dir).expanduser() / name / "PKGBUILD" if pkgbuild_dir else f"<pkgbuild_dir>/{name}/PKGBUILD"
-        profile_override = pkg.get("profile") or None
         parts = []
-        if profile_override:
-            parts.append(f"profile={profile_override}")
         if toolchain.get("cc_override"):
             parts.append("cc=" + toolchain["cc_override"])
         suffix = f" ({', '.join(parts)})" if parts else ""
         _log.ui("[PACKAGES]", f"[dry-run] build {name} from {expected}{suffix}")
         return
     pkgbuild = _resolve_pkgbuild(name, build_cfg, config)
-    profile_override = pkg.get("profile") or None
     parts = []
-    if profile_override:
-        parts.append(f"profile={profile_override!r}")
     if toolchain:
         parts.append("cc=" + toolchain.get("cc_override", ""))
     suffix = f" ({', '.join(p for p in parts if p)})" if parts else ""
@@ -241,7 +200,6 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
                 update=not options.no_update,
-                profile_override=profile_override,
                 **toolchain)
 
 
@@ -261,14 +219,9 @@ class PackagesStage(Stage):
 
         build_cfg, packages = _load_packages(config)
 
-        # Filter hardware-gated packages
-        eligible = [p for p in packages if _hardware_gate(p, config)]
-        if len(eligible) < len(packages):
-            _log.ui("[PACKAGES]", f"{len(packages) - len(eligible)} package(s) excluded by hardware gate")
-
         # Build ordered name list and initialise progress (idempotent on resume)
-        all_names = [p["name"] for p in eligible]
-        pkg_map = {p["name"]: p for p in eligible}
+        all_names = [p["name"] for p in packages]
+        pkg_map = {p["name"]: p for p in packages}
         state.init_package_list(all_names)
         state.save()
 

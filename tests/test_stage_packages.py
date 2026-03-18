@@ -15,7 +15,6 @@ import pytest
 from sysforge.pipeline.stages.packages import (
     PackagesStage,
     _load_packages,
-    _hardware_gate,
     _resolve_pkgbuild,
 )
 from sysforge.pipeline.state import PipelineState
@@ -117,32 +116,6 @@ def test_load_packages_reads_toml(tmp_path):
 def test_load_packages_missing_raises(tmp_path):
     with pytest.raises(RuntimeError, match="packages.toml not found"):
         _load_packages({"packages_file": str(tmp_path / "nonexistent.toml")})
-
-
-# ---------------------------------------------------------------------------
-# _hardware_gate
-# ---------------------------------------------------------------------------
-
-def test_hardware_gate_no_requirement_passes():
-    assert _hardware_gate({"name": "htop"}, {}) is True
-
-def test_hardware_gate_no_profile_skips(tmp_path):
-    pkg = {"name": "nvidia-open-dkms", "requires_hardware": "nvidia_gpu"}
-    assert _hardware_gate(pkg, {}) is False
-
-def test_hardware_gate_present_passes(tmp_path):
-    hw_path = tmp_path / "hardware_profile.toml"
-    hw_path.write_text('nvidia_gpu = true\n')
-    pkg = {"name": "nvidia-open-dkms", "requires_hardware": "nvidia_gpu"}
-    result = _hardware_gate(pkg, {"hardware_profile": str(hw_path)})
-    assert result is True
-
-def test_hardware_gate_absent_skips(tmp_path):
-    hw_path = tmp_path / "hardware_profile.toml"
-    hw_path.write_text('amd_cpu = true\n')
-    pkg = {"name": "nvidia-open-dkms", "requires_hardware": "nvidia_gpu"}
-    result = _hardware_gate(pkg, {"hardware_profile": str(hw_path)})
-    assert result is False
 
 
 # ---------------------------------------------------------------------------
