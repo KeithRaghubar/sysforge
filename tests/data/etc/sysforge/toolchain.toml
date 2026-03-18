@@ -9,10 +9,10 @@
 # pipeline state: packages and kernel will use CC/CXX from this result.
 # =============================================================================
 
-enabled = false
+enabled = true
 
-# compiler = "llvm"    # "llvm" or "gcc"
-# pgo     = true       # LLVM only: enable 3-pass PGO bootstrap (ignored for gcc)
+ compiler = "gcc"    # "llvm" or "gcc"
+ pgo     = false       # LLVM only: enable 3-pass PGO bootstrap (ignored for gcc)
 
 # Path where the instrumented pass-2 binaries are extracted before pass 3.
 # Must be on the same filesystem as /usr and have ~2 GB free.

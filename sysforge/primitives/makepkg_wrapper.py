@@ -612,7 +612,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         try:
             git_pull_rebase(pkgbuild_path.parent)
         except RuntimeError as e:
-            print(f"[SYSFORGE] {e}", file=sys.stderr)
+            _log.error("[GIT]", str(e))
             sys.exit(1)
 
     try:

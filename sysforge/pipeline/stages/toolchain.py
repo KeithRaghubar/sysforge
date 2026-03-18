@@ -93,15 +93,67 @@ def _package_lists(tcfg: dict) -> tuple[list[str], list[str], list[str]]:
 def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
     """
     Resolve PKGBUILD paths for all package names.
+
+    Three-pass strategy to handle split packages (e.g. llvm-libs comes from the
+    llvm PKGBUILD and has no standalone clone target):
+      1. Local direct: check pkgbuild_dir/<name>/PKGBUILD without cloning.
+      2. Split scan: parse already-found PKGBUILDs for their pkgname arrays;
+         reuse the path if a match is found.
+      3. Full resolve: fall back to find_pkgbuild() which may clone from AUR/repo.
+
     Returns {name: pkgbuild_path}. Raises RuntimeError on any miss.
     """
-    resolved = {}
-    errors = []
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    resolved: dict[str, Path] = {}
+
+    pkgbuild_dir: Path | None = None
+    if config:
+        raw = config.get("paths", {}).get("pkgbuild_dir")
+        if raw:
+            pkgbuild_dir = Path(raw).expanduser()
+
+    # Pass 1 — local direct (no clone)
+    remaining = []
     for name in names:
+        if pkgbuild_dir:
+            candidate = pkgbuild_dir / name / "PKGBUILD"
+            if candidate.exists():
+                resolved[name] = candidate.resolve()
+                continue
+        remaining.append(name)
+
+    # Pass 2 — split-package scan: check pkgname arrays of already-resolved PKGBUILDs
+    if remaining and resolved:
+        coverage: dict[Path, set] = {}
+        for path in set(resolved.values()):
+            try:
+                meta = parse_pkgbuild(path)
+                pkgnames = meta.get("globals", {}).get("pkgname", [])
+                if isinstance(pkgnames, str):
+                    pkgnames = [pkgnames]
+                coverage[path] = set(pkgnames)
+            except Exception:
+                coverage[path] = set()
+
+        still_remaining = []
+        for name in remaining:
+            matched = next((p for p, provides in coverage.items() if name in provides), None)
+            if matched:
+                resolved[name] = matched
+                _log.info("[TOOLCHAIN]", f"  {name} → split package in {matched.parent.name}/")
+            else:
+                still_remaining.append(name)
+        remaining = still_remaining
+
+    # Pass 3 — full resolution with potential clone
+    errors = []
+    for name in remaining:
         try:
             resolved[name] = find_pkgbuild(name, config)
         except FileNotFoundError as e:
             errors.append(str(e))
+
     if errors:
         raise RuntimeError(
             "[TOOLCHAIN] Could not resolve PKGBUILDs:\n  " + "\n  ".join(errors)
@@ -162,11 +214,21 @@ def _build_pkg(name: str, pkgbuild_path: Path, options,
 def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
                 cc: str | None = None, cxx: str | None = None,
                 install: bool = True) -> None:
-    """Build all packages in pkgbuild_map for one pass."""
+    """Build all packages in pkgbuild_map for one pass.
+
+    Deduplicates by PKGBUILD directory: split packages that share a directory
+    (e.g. llvm, llvm-libs, clang from the same PKGBUILD) are only built once.
+    """
     extra = ["--install"] if install else []
     _log.ui("[TOOLCHAIN]", f"─── {label} ──────────────────────────────────────────")
+    seen_dirs: set[Path] = set()
     first = True
     for name, pkgbuild_path in pkgbuild_map.items():
+        pkg_dir = pkgbuild_path.parent
+        if pkg_dir in seen_dirs:
+            _log.ui("[TOOLCHAIN]", f"  {name} (split — built with {pkg_dir.name})")
+            continue
+        seen_dirs.add(pkg_dir)
         _log.ui("[TOOLCHAIN]", f"  {name}")
         _build_pkg(name, pkgbuild_path, options, cc=cc, cxx=cxx,
                    extra_flags=extra, init_session=first)

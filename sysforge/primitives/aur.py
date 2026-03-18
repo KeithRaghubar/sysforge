@@ -219,7 +219,7 @@ def git_pull_rebase(pkgbuild_dir: Path) -> None:
         capture_output=True,
     )
     raise RuntimeError(
-        f"[GIT] git pull --rebase failed for {pkgbuild_dir.name}. "
+        f"git pull --rebase failed for {pkgbuild_dir.name}. "
         "Resolve conflicts manually and re-run, or use --no-update to skip."
     )
 
