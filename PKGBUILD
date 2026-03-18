@@ -41,6 +41,12 @@ package() {
     install -Dm644 completions/_sysforge \
         "$pkgdir/usr/share/zsh/site-functions/_sysforge"
 
-    # TODO: ship a default /etc/sysforge/flag_profiles.toml
-    # Needs a canonical example config path in the repo (not tests/data/).
+    # Default config files
+    local _conf="$pkgdir/etc/sysforge"
+    install -Dm644 etc/sysforge/flag_profiles.toml     "$_conf/flag_profiles.toml"
+    install -Dm644 etc/sysforge/packages.toml          "$_conf/packages.toml"
+    install -Dm644 etc/sysforge/kernel.toml            "$_conf/kernel.toml"
+    install -Dm644 etc/sysforge/toolchain.toml         "$_conf/toolchain.toml"
+    install -Dm644 etc/sysforge/append_conflict_groups.toml "$_conf/append_conflict_groups.toml"
+    install -Dm644 etc/sysforge/consumes_inference.toml     "$_conf/consumes_inference.toml"
 }

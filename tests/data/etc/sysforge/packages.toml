@@ -2,14 +2,13 @@
 # SysForge package manifest — starter stub
 #
 # Fields per entry:
-#   name             required  package name
-#   source           required  "repo" (pacman) | "aur" | "git"
-#   pkgbuild_patch   optional  true = run PKGBUILD flag extraction/patching
-#   requires_hardware optional  hardware key from hardware_profile.toml
-#   cache            optional  false = disable ccache/sccache for this package
+#   name           required  package name
+#   source         required  "repo" (pacman -S) | "aur" (AUR build)
+#   pkgbuild_patch optional  true = extract and patch PKGBUILD flags before build
+#   cache          optional  false = disable ccache/sccache for this package
 #
-# AUR/git packages require PKGBUILDs to be pre-cloned in [build] pkgbuild_dir.
-# AUR auto-fetch is planned for V2.
+# AUR packages are resolved via [paths] pkgbuild_dir in flag_profiles.toml.
+# Missing AUR packages are auto-cloned from the AUR.
 # =============================================================================
 
 [build]
@@ -60,7 +59,6 @@ pkgbuild_patch = true
 [[package]]
 name = "nvidia-open-dkms"
 source = "repo"
-requires_hardware = "nvidia_gpu"
 
 
 # =============================================================================

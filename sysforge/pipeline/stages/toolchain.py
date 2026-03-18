@@ -293,8 +293,8 @@ class ToolchainStage(Stage):
 
     def run(self, config, state, options):
         tcfg = _load_toolchain_config()
-        if tcfg is None:
-            _log.ui("[TOOLCHAIN]", "toolchain.toml absent — stage is a no-op")
+        if tcfg is None or not tcfg.get("enabled", False):
+            _log.ui("[TOOLCHAIN]", "toolchain.toml absent or disabled — stage is a no-op")
             return
 
         compiler = tcfg.get("compiler", "llvm")

@@ -1,0 +1,31 @@
+# =============================================================================
+# toolchain.toml — custom LLVM or GCC toolchain build (stage 6 / sysforge run toolchain)
+#
+# This stage is disabled by default. Set enabled = true and configure the
+# fields below to build and install a custom compiler before the packages
+# and kernel stages run.
+#
+# The built compiler is automatically propagated to subsequent stages via
+# pipeline state: packages and kernel will use CC/CXX from this result.
+# =============================================================================
+
+enabled = false
+
+# compiler = "llvm"    # "llvm" or "gcc"
+# pgo     = true       # LLVM only: enable 3-pass PGO bootstrap (ignored for gcc)
+
+# Path where instrumented pass-2 binaries are extracted before pass 3.
+# Must be on the same filesystem as /usr and have ~2 GB free.
+# pgo_staging = "/var/tmp/sysforge-llvm-stage2"
+
+# ---------------------------------------------------------------------------
+# Package lists — override built-in defaults if needed
+#
+# [packages]
+# pgo     = ["llvm", "llvm-libs", "clang", "lld"]
+# non_pgo = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
+# lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
+#
+# For GCC, only non_pgo is used:
+# non_pgo = ["gcc", "gcc-libs"]
+# ---------------------------------------------------------------------------

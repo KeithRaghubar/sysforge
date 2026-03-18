@@ -64,7 +64,6 @@ def _load_kernel_config():
     path = KERNEL_PATH
 
     if not path.exists():
-        _log.ui("[KERNEL]", f"No kernel.toml found at {path} — stage is a no-op")
         return None
 
     with open(path, "rb") as f:
@@ -320,8 +319,9 @@ class KernelStage(Stage):
 
     def run(self, config, state, options):
         kernel_cfg = _load_kernel_config()
-        if kernel_cfg is None:
-            return  # no kernel.toml — clean no-op
+        if kernel_cfg is None or not kernel_cfg.get("enabled", False):
+            _log.ui("[KERNEL]", "kernel.toml absent or disabled — stage is a no-op")
+            return
 
         pkgname    = kernel_cfg.get("pkgname", "unknown")
         bootloader = kernel_cfg.get("bootloader", "systemd-boot")

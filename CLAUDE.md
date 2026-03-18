@@ -13,7 +13,9 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 - Ryzen 7 5800X3D, RTX 5070, Arch Linux, COSMIC on Wayland, nvidia-open-dkms
 - `pkgbuild_dir = ~/src` (sources); builds at `~/builds`
-- `/etc/sysforge/` is a live mirror of `tests/data/etc/sysforge/` — edit project files, then `sudo cp` to sync live
+- `etc/sysforge/` — canonical shipped defaults (installed by PKGBUILD to `/etc/sysforge/`)
+- `tests/data/etc/sysforge/` — test fixtures (may differ from shipped defaults)
+- Live `/etc/sysforge/` mirrors `etc/sysforge/` — edit project files, then `sudo cp` to sync live
 
 ## Known Bugs & Gotchas
 

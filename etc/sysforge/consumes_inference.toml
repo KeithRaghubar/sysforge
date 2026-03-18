@@ -1,0 +1,28 @@
+# =============================================================================
+# consumes_inference.toml — makedepends → conf type routing
+#
+# Maps a makedepends token to the set of conf types SysForge delivers for
+# that build system. When a package's PKGBUILD lists a tool in makedepends,
+# the corresponding conf types are included in the package's "consumes" set,
+# which controls which profile keys (CFLAGS, RUSTFLAGS, CMAKE_*, MESON_ARGS,
+# etc.) are written to the temp makepkg.conf or injected into the build env.
+#
+# The union of all matched tools forms the consumes set. Per-profile
+# `consumes = [...]` overrides this inference entirely if set.
+#
+# Conf types:
+#   makepkg  — CFLAGS / CXXFLAGS / LDFLAGS / BUILDENV / OPTIONS / etc.
+#   rust     — RUSTFLAGS / CARGO_* keys
+#   cmake    — CMAKE_* keys
+#   meson    — MESON_ARGS
+#   env      — env-injected keys (RUSTC_WRAPPER, CCACHE_DIR, CARGO_HOME, etc.)
+# =============================================================================
+
+[consumes_inference]
+cargo  = ["makepkg", "rust", "env"]
+meson  = ["makepkg", "meson", "env"]
+cmake  = ["makepkg", "cmake", "env"]
+ninja  = ["makepkg", "env"]
+make   = ["makepkg", "env"]
+python = ["makepkg", "env"]
+git    = ["makepkg"]

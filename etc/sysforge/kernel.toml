@@ -1,0 +1,42 @@
+# =============================================================================
+# kernel.toml — custom kernel build (stage 8 / sysforge run kernel)
+#
+# This stage is disabled by default. Set enabled = true and fill in the
+# required fields below to build and install a custom kernel.
+#
+# The kernel PKGBUILD must already be cloned under [paths] pkgbuild_dir in
+# flag_profiles.toml. A [[rules]] entry with profile = "kernel" is also
+# expected (provided in the default flag_profiles.toml).
+# =============================================================================
+
+enabled = false
+
+# ---------------------------------------------------------------------------
+# Required fields
+# ---------------------------------------------------------------------------
+
+# pkgname = "linux-custom"      # base package name (must match the PKGBUILD pkgbase)
+# srcdir  = "linux"             # subdirectory inside pkgbuild_dir containing the PKGBUILD
+
+# ---------------------------------------------------------------------------
+# Optional fields
+# ---------------------------------------------------------------------------
+
+# bootloader = "systemd-boot"   # "systemd-boot" | "grub" | "none"
+#                               # controls post-install bootloader update step
+#                               # default: "systemd-boot"
+
+# pkgbuild_dir = "~/src"        # override the global pkgbuild_dir for this kernel only
+
+# ---------------------------------------------------------------------------
+# kconfig — kernel config fragment
+#
+# Entries are written to a sysforge.config fragment and applied via
+# scripts/config before the build. Manual entries override hardware_profile
+# entries on conflict (with a warning).
+#
+# [kconfig]
+# CONFIG_HZ_1000 = "y"
+# CONFIG_NO_HZ_FULL = "y"
+# CONFIG_PREEMPT = "y"
+# ---------------------------------------------------------------------------

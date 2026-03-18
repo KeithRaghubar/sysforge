@@ -294,7 +294,7 @@ def test_toolchain_stage_noop_when_absent(tmp_path):
 
 def test_toolchain_stage_gcc_dry_run(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
-    toml_path.write_text('compiler = "gcc"\n')
+    toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
 
     pkgbuild_dir = tmp_path / "builds"
     for name in _DEFAULT_GCC:
@@ -319,7 +319,7 @@ def test_toolchain_stage_gcc_dry_run(tmp_path):
 
 def test_toolchain_stage_llvm_no_pgo_dry_run(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
-    toml_path.write_text('compiler = "llvm"\npgo = false\n')
+    toml_path.write_text('enabled = true\ncompiler = "llvm"\npgo = false\n')
 
     pkgbuild_dir = tmp_path / "builds"
     for name in _DEFAULT_LLVM_PGO + _DEFAULT_LLVM_NON_PGO + _DEFAULT_LLVM_LIB32:
@@ -346,7 +346,7 @@ def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
     staging = tmp_path / "staging"
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text(
-        f'compiler = "llvm"\npgo = true\npgo_staging = "{staging}"\n'
+        f'enabled = true\ncompiler = "llvm"\npgo = true\npgo_staging = "{staging}"\n'
     )
 
     pkgbuild_dir = tmp_path / "builds"
@@ -372,7 +372,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
     # Use a minimal 1-package set to keep the count predictable
     toml_path.write_text(
-        f'compiler = "llvm"\npgo = true\npgo_staging = "{staging}"\n'
+        f'enabled = true\ncompiler = "llvm"\npgo = true\npgo_staging = "{staging}"\n'
         '[packages]\npgo = ["llvm"]\nnon_pgo = []\nlib32 = []\n'
     )
 
@@ -422,7 +422,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
 def test_toolchain_stage_custom_packages(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text(
-        'compiler = "llvm"\npgo = false\n'
+        'enabled = true\ncompiler = "llvm"\npgo = false\n'
         '[packages]\npgo = ["llvm", "clang"]\nnon_pgo = []\nlib32 = []\n'
     )
 
@@ -447,7 +447,7 @@ def test_toolchain_stage_custom_packages(tmp_path):
 
 def test_toolchain_stage_missing_pkgbuild_raises(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
-    toml_path.write_text('compiler = "gcc"\n')
+    toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
 
     state = PipelineState(tmp_path / "state")
     config = {"paths": {"pkgbuild_dir": str(tmp_path / "empty")}}

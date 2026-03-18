@@ -49,6 +49,7 @@ def make_pkgbuild(pkgbuild_dir, pkgname):
 def make_kernel_toml(tmp_path, pkgbuild_dir, pkgname="linux-git",
                      bootloader="systemd-boot", kconfig=None):
     lines = [
+        'enabled = true',
         f'pkgname = "{pkgname}"',
         f'source = "git"',
         f'pkgbuild_dir = "{pkgbuild_dir}"',
