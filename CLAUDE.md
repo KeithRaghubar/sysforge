@@ -57,7 +57,7 @@ Valid per-entry fields: `name`, `source` (`"repo"` | `"aur"`), `pkgbuild_patch` 
 - **`repo_mode`** — `[build] repo_mode = "pacman" | "profiled"` (default `"pacman"`) global config. `pkgbuild_patch` at package level overrides.
 - **`build_state.toml` schema** — add `build_mode` (`"pacman"` | `"profiled"`) and resolved flags string per entry. Written by `makepkg_wrapper.run()`.
 - **`converge`** — flag drift: re-resolve current profile per package, diff against stored flags. `--dry-run` shows diff, `--apply` rebuilds.
-- **`update --all`** — additive to `update`: also checks `pacman -Qm` foreign packages. Needs `build_mode` field.
+- **`update --all`** — additive to `update`: discovers foreign packages via `pacman -Qm`, adds them to `packages.toml` (classify source, infer pkgbuild_patch), rebuilds any that are outdated. Needs `build_mode` field.
 - **AUR name cache** — `sysforge update` fetches `packages.gz` → `~/.cache/sysforge/aur-packages.txt`.
 
 ## Implemented: Dual Log Scheme

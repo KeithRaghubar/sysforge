@@ -897,7 +897,7 @@ DAG stages are categorised as **bootstrap-only** (partition, base_install, hardw
 
 Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
 
-**`sysforge update` is scoped to sysforge-managed packages only.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. `sysforge update --all` via `pacman -Qm` (to discover and update foreign packages installed outside sysforge) is planned for v0.1.0.
+**`sysforge update` is scoped to sysforge-managed packages only.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. `sysforge update --all` is planned for v0.1.0: discovers foreign packages via `pacman -Qm`, adds them to `packages.toml` (classifying source, inferring pkgbuild_patch), and rebuilds any that are outdated.
 
 **`packages.toml [build] pkgbuild_dir` and `flag_profiles [paths] pkgbuild_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_dir`; falls back to `[paths] pkgbuild_dir`. They can point to different directories or the same one — there's no enforcement that they match.
 
