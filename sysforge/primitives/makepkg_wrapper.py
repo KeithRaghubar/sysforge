@@ -56,6 +56,7 @@ from sysforge.primitives.profile import (
     resolve_consumes,
     resolve_groups,
     resolve_profile,
+    serialize_flags,
 )
 
 
@@ -709,6 +710,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             if isinstance(pkgnames, str):
                 pkgnames = [pkgnames]
             pkgbase = globals_.get("pkgbase") or (pkgnames[0] if pkgnames else "unknown")
+            fs = serialize_flags(resolved_profile) if resolved_profile is not None else None
             for name in pkgnames:
                 bs.record(
                     pkgname=name,
@@ -718,6 +720,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
                     pkgbase=pkgbase,
                     pkgbuild_dir=pkgbuild_path.parent,
                     build_mode="profiled",
+                    flags_string=fs,
                 )
             bs.save()
             _log.info("[BUILD]", f"Recorded build state for {pkgbase!r}")

@@ -15,6 +15,7 @@ Public API:
     resolve_groups(pkgmeta, matched_rules, defaults)         -> list[str]
     resolve_consumes(resolved_profile, pkgmeta,
                      inference_map)                          -> frozenset[str]
+    serialize_flags(resolved_profile)                        -> str
 """
 import fnmatch
 import pprint
@@ -488,3 +489,23 @@ def resolve_consumes(resolved_profile, pkgmeta, inference_map):
     )
     _log.info("[CONF]", f"[{pkgname}] consumes (inferred from makedepends {matched_deps}): {sorted(active)}")
     return active
+
+
+def serialize_flags(resolved_profile: dict) -> str:
+    """
+    Serialize a resolved profile to a stable, line-oriented string for drift detection.
+
+    Format: sorted KEY=value lines, one per key, excluding sysforge-internal keys.
+    Lists are joined with a single space. Used by build_state.toml flags_string
+    and by converge to detect when a profile change affects a package's flags.
+    """
+    parts = []
+    for key in sorted(resolved_profile):
+        if key in _SYSFORGE_KEYS:
+            continue
+        val = resolved_profile[key]
+        if isinstance(val, list):
+            parts.append(f"{key}={' '.join(str(v) for v in val)}")
+        else:
+            parts.append(f"{key}={val}")
+    return "\n".join(parts)

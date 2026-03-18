@@ -84,10 +84,12 @@ def _cmd_update(args):
 
 
 def _cmd_converge(args):
-    # TODO: compare installed state in /var/lib/sysforge/build_state.toml
-    # against current manifest and flag profiles; rebuild drifted packages.
-    print("[SYSFORGE] 'converge' is not yet implemented.", file=sys.stderr)
-    sys.exit(1)
+    from sysforge.converge import cmd_converge
+    try:
+        cmd_converge(args)
+    except RuntimeError as e:
+        print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _cmd_completions(args):
@@ -351,9 +353,21 @@ def _add_resolve_parser(sub):
 
 def _add_converge_parser(sub):
     p = sub.add_parser("converge",
-        help="[planned] Rebuild packages that have drifted from their profile.")
-    p.add_argument("--dry-run", action="store_true",
-        help="Show what would be rebuilt without doing it.")
+        help="Detect and repair packages whose build flags have drifted from the current profile.")
+    p.add_argument("--apply", action="store_true",
+        help="Rebuild all DRIFTED packages with the current profile.")
+    p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory for build_state.toml.")
+    p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
+        help="Path to a flag_profiles.toml to use instead of the default.")
+    p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
+        help="Disable per-package log files (only relevant with --apply).")
+    p.add_argument("--persist-log", action="store_true", dest="persist_log",
+        help="Keep log files after successful completion (only relevant with --apply).")
+    p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
+        help="Directory for per-package log files (only relevant with --apply).")
+    p.add_argument("--cache-report", action="store_true", dest="cache_report",
+        help="Print a structured cache summary after --apply runs.")
     p.set_defaults(func=_cmd_converge)
 
 

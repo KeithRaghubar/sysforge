@@ -41,7 +41,8 @@ class BuildState:
 
     def record(self, pkgname: str, pkgver: str, pkgrel: str,
                epoch: str, pkgbase: str, pkgbuild_dir: Path,
-               build_mode: str | None = None) -> None:
+               build_mode: str | None = None,
+               flags_string: str | None = None) -> None:
         """Record build metadata for a single package name."""
         entry = {
             "pkgver": pkgver,
@@ -53,6 +54,8 @@ class BuildState:
         }
         if build_mode is not None:
             entry["build_mode"] = build_mode
+        if flags_string is not None:
+            entry["flags_string"] = flags_string
         self._data[pkgname] = entry
 
     def get(self, pkgname: str) -> dict | None:
@@ -79,9 +82,15 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "built_at"):
+            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at"):
                 if key in entry:
-                    val = str(entry[key]).replace("\\", "\\\\").replace('"', '\\"')
+                    val = (
+                        str(entry[key])
+                        .replace("\\", "\\\\")
+                        .replace('"', '\\"')
+                        .replace("\n", "\\n")
+                        .replace("\r", "\\r")
+                    )
                     lines.append(f'{key} = "{val}"')
             lines.append("")
         return "\n".join(lines)
