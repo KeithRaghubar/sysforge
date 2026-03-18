@@ -92,6 +92,7 @@ sysforge/
 │   ├── log.py                         # structured logging (stderr + optional file output)
 │   ├── resolve.py                     # sysforge resolve subcommand
 │   ├── update.py                      # sysforge update subcommand
+│   ├── converge.py                    # sysforge converge subcommand (flag drift detection)
 │   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove/sync)
 │   └── primitives/
 │       ├── config.py                  # TOML config loading, path constants, system conf parsing
@@ -149,12 +150,14 @@ sysforge/
 │   ├── test_pipeline.py
 │   ├── test_pipeline_runner.py
 │   ├── test_pipeline_state.py
+│   ├── test_reconfigure.py
 │   ├── test_resolve.py
 │   ├── test_stage_kernel.py
 │   ├── test_stage_packages.py
 │   ├── test_system_conf.py
 │   ├── test_update.py
 │   ├── test_build_state.py
+│   ├── test_converge.py
 │   ├── test_version.py
 │   └── test_wrapper.py
 ├── completions/
@@ -502,10 +505,11 @@ AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key
 - `aur_clone(name, dest)` — `git clone https://aur.archlinux.org/<name>.git <dest>`; raises `RuntimeError` on failure.
 - `pkgctl_checkout(name, dest)` — `pkgctl repo clone --protocol=https <name>` run in `dest.parent`; fetches official Arch packaging repo. Raises `RuntimeError` on failure.
 - `import_pgp_keys(pkgmeta, pkgbuild_path)` — ensures all `validpgpkeys` listed in the PKGBUILD are in the GPG keyring before `makepkg` runs. Strategy: (1) import any bundled `.asc` files from `keys/pgp/` alongside the PKGBUILD, (2) check which keys are still missing via `gpg --list-keys`, (3) fetch remaining via `gpg --recv-keys`. Import failures are logged as warnings — makepkg surfaces a clearer error if a key is still absent at verification time.
+- `fetch_aur_name_cache(force=False)` — downloads `https://aur.archlinux.org/packages.gz` and extracts it to `~/.cache/sysforge/aur-packages.txt`. Skips the download if the cache is less than 24 hours old unless `force=True`. Called as a side effect of `sysforge update`; read by `sysforge completions packages` to provide AUR package name completion.
 
 ### `build_state.py`
 
-Build state persistence. Writes `/var/lib/sysforge/build_state.toml` after each successful build, recording `pkgver`, `pkgrel`, `epoch`, `pkgbase`, and `pkgbuild_dir` per package name. Read by `sysforge update` to determine which packages to check. Follows the same atomic write-then-rename pattern as `pipeline/state.py`. Split packages (multiple `pkgname` from one `pkgbase`) each get their own entry, all pointing at the same `pkgbuild_dir`.
+Build state persistence. Writes `/var/lib/sysforge/build_state.toml` after each successful build. Per-package fields: `pkgver`, `pkgrel`, `epoch`, `pkgbase`, `pkgbuild_dir`, `build_mode` (`"pacman"` | `"profiled"`), `flags_string` (serialized resolved compiler flags, newline-separated `KEY=value` lines), `built_at` (ISO 8601 UTC timestamp). Read by `sysforge update` for version drift detection and by `sysforge converge` for flag drift detection. Follows the same atomic write-then-rename pattern as `pipeline/state.py`. Split packages (multiple `pkgname` from one `pkgbase`) each get their own entry, all pointing at the same `pkgbuild_dir`.
 
 ### `version.py`
 
@@ -525,14 +529,28 @@ Public API: `cmd_resolve(args)`. Uses `find_pkgbuild` from `config.py` for PKGBU
 
 Implements `sysforge update` — the update manager. Algorithm:
 
-1. Load `build_state.toml` to get the set of sysforge-managed packages and their last-built versions and PKGBUILD dirs.
-2. Group by `pkgbase` to deduplicate split packages.
-3. For each `pkgbase`: `git pull --rebase` the PKGBUILD dir (unless `--no-update`), parse the updated PKGBUILD, get the installed version via `pacman -Q`, compare with `vercmp`.
-4. VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) are flagged as `DEVEL` — their `pkgver` is only meaningful after running `pkgver()`, so static comparison is not possible. They are rebuilt only when `--devel` is passed.
-5. Print a summary table: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`.
-6. Rebuild `NEEDS_REBUILD` packages (and `DEVEL` if `--devel`) via `makepkg_wrapper.run()` with `update=False` (pull already done).
+1. Refresh the AUR name cache as a side effect (`fetch_aur_name_cache()`).
+2. If `--all`: run `_discover_and_add()` — find all foreign (non-repo) packages via `pacman -Qm` that are not already tracked in `build_state.toml` or `packages.toml`; classify each as AUR, infer `pkgbuild_patch`, append to `packages.toml`, compare versions. Discovered outdated packages are queued for a separate build loop with `update=True`.
+3. Load `build_state.toml` to get the set of sysforge-managed packages.
+4. Group by `pkgbase` to deduplicate split packages.
+5. For each `pkgbase`: `git pull --rebase` the PKGBUILD dir (unless `--no-update`), parse the updated PKGBUILD, get the installed version via `pacman -Q`, compare with `vercmp`.
+6. VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) are flagged as `DEVEL` — their `pkgver` is only meaningful after running `pkgver()`, so static comparison is not possible. They are rebuilt only when `--devel` is passed.
+7. Print a summary table: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`.
+8. Rebuild `NEEDS_REBUILD` packages (and `DEVEL` if `--devel`) via `makepkg_wrapper.run()` with `update=False` (pull already done).
 
-Flags: `--dry-run`, `--devel`, `--no-update`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`.
+Flags: `--all`, `--packages`, `--dry-run`, `--devel`, `--no-update`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`.
+
+### `converge.py`
+
+Implements `sysforge converge` — the flag drift detector. Algorithm:
+
+1. Load `build_state.toml`. Group by `pkgbase`.
+2. For each profiled package (`build_mode = "profiled"`): re-resolve the current profile via `parse_pkgbuild` → `match_rules` → `resolve_profile` → `serialize_flags`.
+3. Diff the stored `flags_string` against the freshly resolved flags. Packages where the flags differ are `DRIFTED`; identical are `IN_SYNC`. Packages without a stored `flags_string` (built before this feature) are `NO_FLAGS`. Missing PKGBUILD → `NO_PKGBUILD`. Non-profiled packages are silently omitted.
+4. Print a per-package summary with flag diffs for `DRIFTED` entries.
+5. With `--apply`: rebuild all `DRIFTED` packages via `makepkg_wrapper.run()` with `update=False`.
+
+Without `--apply`, the command is read-only — it reports drift but does not rebuild. Flags: `--apply`, `--state-dir`, `--profile-conf`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--cache-report`.
 
 ---
 
@@ -885,7 +903,7 @@ Two commands address drift in sysforge-managed packages:
 
 **`sysforge update`** (implemented) — handles **version drift**. After `git pull --rebase` on each PKGBUILD dir, it compares the new `pkgver`/`pkgrel`/`epoch` against the installed version via `vercmp`. Packages where the PKGBUILD is newer are rebuilt with the current profile. VCS packages (`-git`, etc.) require `--devel` to rebuild since their version is only known after running `pkgver()` during the build.
 
-**`sysforge converge`** (planned, v0.1.0) — handles **profile/flag drift**. Same package version but different compiler configuration — e.g. profile changed, new flag added, or build mode switched. At build time, `makepkg_wrapper.run()` stores the resolved flags string per package in `build_state.toml`. `converge` re-resolves the current profile for each package and diffs the result against the stored flags string; packages where the flags have changed are reported with a flag diff. `--apply` rebuilds affected packages; `--dry-run` shows the diff without rebuilding.
+**`sysforge converge`** (implemented) — handles **profile/flag drift**. Same package version but different compiler configuration — e.g. profile changed, new flag added, or build mode switched. At build time, `makepkg_wrapper.run()` stores the resolved flags string per package in `build_state.toml`. `converge` re-resolves the current profile for each package and diffs the result against the stored flags string; packages where the flags have changed are reported with a flag diff. Without `--apply` the command is read-only; `--apply` rebuilds all drifted packages.
 
 `build_state.toml` is the shared source of truth for both commands. Written by `makepkg_wrapper.run()` after each successful build.
 
@@ -897,7 +915,7 @@ DAG stages are categorised as **bootstrap-only** (partition, base_install, hardw
 
 Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
 
-**`sysforge update` is scoped to sysforge-managed packages only.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. `sysforge update --all` is planned for v0.1.0: discovers foreign packages via `pacman -Qm`, adds them to `packages.toml` (classifying source, inferring pkgbuild_patch), and rebuilds any that are outdated.
+**`sysforge update` is scoped to sysforge-managed packages by default.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. `sysforge update --all` extends this: it discovers all foreign (non-repo) packages via `pacman -Qm` that are not yet in `build_state.toml` or `packages.toml`, classifies each, appends to `packages.toml`, and rebuilds any that are outdated.
 
 **`packages.toml [build] pkgbuild_dir` and `flag_profiles [paths] pkgbuild_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_dir`; falls back to `[paths] pkgbuild_dir`. They can point to different directories or the same one — there's no enforcement that they match.
 

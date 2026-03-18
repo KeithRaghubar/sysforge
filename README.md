@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-**Current status:** Active development toward v0.1.0. All userspace commands (`build`, `update`, `resolve`, `packages`, `run pipeline/reconfigure/toolchain/packages/kernel`) are implemented and usable on a live system. Bootstrap stages 1–4 (partition, base install, hardware detection, configure) are deferred to v1.0.
+**Current status:** v0.1.0 complete. All userspace commands (`build`, `update`, `resolve`, `converge`, `packages`, `run pipeline/reconfigure/toolchain/packages/kernel`) are implemented and usable on a live system. Bootstrap stages 1–4 (partition, base install, hardware detection, configure) are deferred to v1.0.
 
 ---
 
@@ -258,12 +258,17 @@ sysforge update --dry-run
 
 # Skip git pull (use cached PKGBUILD)
 sysforge update --no-update
+
+# Discover and add all foreign packages not yet tracked
+sysforge update --all
 ```
 
 **Update flags:**
 
 | Flag | Effect |
 |---|---|
+| `--all` | Also discover foreign packages (`pacman -Qm`) not yet tracked; add to `packages.toml` and rebuild if outdated |
+| `--packages <file>` | Path to `packages.toml` for `--all` discovery (default: `/etc/sysforge/packages.toml`) |
 | `--dry-run` | Show what would be rebuilt without doing it |
 | `--devel` | Include VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) in the rebuild |
 | `--no-update` | Skip `git pull --rebase` before checking versions |
@@ -274,7 +279,7 @@ sysforge update --no-update
 | `--persist-log` | Keep log files after successful completion |
 | `--log-dir <dir>` | Override log file directory |
 
-`sysforge update` is scoped to packages sysforge has built — it reads `build_state.toml` which is written by `sysforge build` and `sysforge run packages`. Repo packages (installed via `pacman -S`) are out of scope; use `pacman -Syu` for those.
+`sysforge update` is scoped to packages sysforge has built by default — it reads `build_state.toml` which is written by `sysforge build` and `sysforge run packages`. Use `--all` to also pick up foreign packages not yet tracked. Repo packages (installed via `pacman -S`) are out of scope; use `pacman -Syu` for those.
 
 ### Manage packages.toml
 
@@ -299,7 +304,7 @@ sysforge packages sync --dry-run   # preview without writing
 
 `packages add` classifies the package by querying pacman sync DBs and the AUR. For AUR packages, if the PKGBUILD is already cloned in `[build] pkgbuild_dir`, it runs flag extraction to infer `pkgbuild_patch = true` automatically.
 
-`packages sync` re-validates `source` and `pkgbuild_patch` for all entries and rewrites the file. Manual fields (`cache`, `requires_hardware`, `profile`) are preserved verbatim.
+`packages sync` re-validates `source` and `pkgbuild_patch` for all entries and rewrites the file. The `cache` field is preserved verbatim.
 
 ### Inspect profile matching
 
@@ -368,16 +373,16 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Structured logging (`[SYSFORGE][LEVEL][TAG]`) | ✅ Done |
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 7) | ✅ Done |
-| Pytest suite (648 tests) | ✅ Done |
+| Pytest suite (688 tests) | ✅ Done |
 | Kernel stage (stage 8) | ✅ Done |
 | Reconfigure stage (stage 5) | ✅ Done |
 | Toolchain stage (stage 6, LLVM/GCC + PGO) | ✅ Done |
 | `sysforge update` (version drift detection + rebuild) | ✅ Done |
 | Build state tracking (`build_state.toml`) | ✅ Done |
-| `sysforge converge` (profile/flag drift detection) | 🔧 v0.1.0 |
-| `sysforge update --all (pacman -Qm foreign packages)` | 🔧 v0.1.0 |
-| AUR name cache (packages.gz → ~/.cache/sysforge/) | 🔧 v0.1.0 |
-| `repo_mode` config (pacman passthrough vs profiled build) | 🔧 v0.1.0 |
+| `sysforge converge` (profile/flag drift detection) | ✅ Done |
+| `sysforge update --all` (pacman -Qm foreign packages) | ✅ Done |
+| AUR name cache (packages.gz → ~/.cache/sysforge/) | ✅ Done |
+| `repo_mode` config (pacman passthrough vs profiled build) | ✅ Done |
 | `sysforge resolve` | ✅ Done |
 | Bare package name resolution (`sysforge build htop`) | ✅ Done |
 | AUR auto-clone on miss | ✅ Done |
@@ -386,7 +391,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Zsh tab completion | ✅ Done |
 | CLI restructure (`packages` namespace, `run` namespace) | ✅ Done |
 | `packages list/add/remove/sync` | ✅ Done |
-| Profiled AUR helper (v0.1.0) | 🔧 In progress |
+| Profiled AUR helper (v0.1.0) | ✅ Done |
 | AUR publication | ⬜ After v0.1.0 |
 | Bootstrap stages 1–4 (partition → configure) | ⬜ v1.0 |
 

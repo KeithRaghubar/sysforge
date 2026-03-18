@@ -60,13 +60,6 @@
 - [ ] `r` retry all / `s` skip all / `c` per-package / `a` abort
 - [ ] `--force-retry` → retries all without prompt
 
-**Hardware gate**
-- [ ] `requires_hardware`, no hardware_profile → skipped + warn
-- [ ] `requires_hardware`, profile present + field set → built
-- [ ] `requires_hardware`, profile present + field absent → skipped
-
-**Profile override** — `profile = "patched"` → patched_pkgbuild build mode applied
-
 **Toolchain injection**
 - [ ] Run `sysforge toolchain` first (same state dir) → CC/CXX logged + injected per build
 - [ ] No toolchain result → no injection, no log line
@@ -108,6 +101,34 @@
 **Flags**
 - [ ] `--no-update` → no git pull
 - [ ] `--state-dir` → lsmod + toolchain result from custom dir
+
+---
+
+## `sysforge update --all`
+
+- [ ] No foreign packages (`pacman -Qm` empty) → no-op, no crash
+- [ ] All foreign packages already in build_state or packages.toml → "all tracked" message, no write
+- [ ] New AUR package → classified, appended to packages.toml, rebuilt if outdated
+- [ ] New non-AUR package (locally installed) → `NOT_FOUND`, skipped
+- [ ] VCS package (`-git`) → classified `DEVEL`, appended; `--devel` triggers rebuild
+- [ ] `--dry-run` → no write to packages.toml, no build
+- [ ] `--packages` → discovery writes to the specified file
+
+---
+
+## `sysforge converge`
+
+- [ ] All packages in sync → `IN_SYNC` for all, no rebuild
+- [ ] Package with changed flag → `DRIFTED`, diff shown
+- [ ] Package with no `flags_string` (pre-feature build) → `NO_FLAGS`
+- [ ] Package with missing PKGBUILD → `NO_PKGBUILD`
+- [ ] Non-profiled package → omitted from output
+- [ ] Empty build state → "No packages" on stderr, clean exit
+- [ ] Summary counts: `In sync: N  |  Drifted: N`
+- [ ] `--apply` → drifted packages rebuilt, in-sync skipped
+- [ ] `--apply` with no drifted packages → "Nothing to rebuild."
+- [ ] `--state-dir` → reads from custom state dir
+- [ ] `--profile-conf` → uses alternate profiles when re-resolving
 
 ---
 

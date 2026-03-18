@@ -7,7 +7,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 - Language: Python
 - Config format: TOML
-- Test suite: 619 pytest tests
+- Test suite: 688 pytest tests
 
 ## Dev Environment
 
@@ -30,7 +30,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 ## CLI Structure
 
-**Top-level commands:** `build`, `update`, `resolve`, `converge` (v0.1.0)
+**Top-level commands:** `build`, `update`, `resolve`, `converge`
 
 **`packages` namespace** — manifest management:
 - `packages list` (default when no subcommand)
@@ -52,13 +52,9 @@ Stages 1–4 (bootstrap) only accessible via `run pipeline`, NOT as individual `
 Valid per-entry fields: `name`, `source` (`"repo"` | `"aur"`), `pkgbuild_patch` (bool), `cache` (bool).
 `profile` and `requires_hardware` are **removed** — do not add them.
 
-## Pending v0.1.0 Work
+## v0.1.0 Status: Complete
 
-- **`repo_mode`** — `[build] repo_mode = "pacman" | "profiled"` (default `"pacman"`) global config. `pkgbuild_patch` at package level overrides.
-- **`build_state.toml` schema** — add `build_mode` (`"pacman"` | `"profiled"`) and resolved flags string per entry. Written by `makepkg_wrapper.run()`.
-- **`converge`** — flag drift: re-resolve current profile per package, diff against stored flags. `--dry-run` shows diff, `--apply` rebuilds.
-- **`update --all`** — additive to `update`: discovers foreign packages via `pacman -Qm`, adds them to `packages.toml` (classify source, infer pkgbuild_patch), rebuilds any that are outdated. Needs `build_mode` field.
-- **AUR name cache** — `sysforge update` fetches `packages.gz` → `~/.cache/sysforge/aur-packages.txt`.
+All userspace components are implemented. Bootstrap stages 1–4 deferred to v1.0.
 
 ## Implemented: Dual Log Scheme
 
@@ -78,8 +74,9 @@ Valid per-entry fields: `name`, `source` (`"repo"` | `"aur"`), `pkgbuild_patch` 
 - **Bare package name resolution** — `sysforge build htop` / `sysforge resolve htop`. `find_pkgbuild` in `config.py` searches: direct path/dir → cwd → `[paths] pkgbuild_dir` → auto-clone. Repo packages: `pkgctl repo clone --protocol=https`. AUR packages: `git clone` from AUR.
 - **GPG key auto-import** — before each build: imports bundled `keys/pgp/*.asc` first, then `gpg --recv-keys` for any still missing `validpgpkeys`.
 - **Zsh completion** — `completions/_sysforge`. Install to `/usr/share/zsh/site-functions/`. `sysforge completions packages` outputs local pkgbuild_dir packages + pacman sync DB names + AUR cache if present. Completes `packages` and `run` subcommands and their flags. `build` and `resolve` complete both package names and local file paths simultaneously via `_alternative`.
-- **`sysforge update`** — `sysforge/update.py`. Loads `build_state.toml`, `git pull --rebase` each PKGBUILD dir, compares versions via `vercmp`, rebuilds outdated packages. VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) require `--devel`. `--dry-run` shows what would rebuild.
-- **Build state tracking** — `sysforge/primitives/build_state.py`. `makepkg_wrapper.run()` writes per-package metadata to `/var/lib/sysforge/build_state.toml` after each successful build. Fields: `pkgver`, `pkgrel`, `epoch`, `pkgbase`, `pkgbuild_dir`. Pending v0.1.0: add `build_mode` and resolved flags string.
+- **`sysforge update`** — `sysforge/update.py`. Loads `build_state.toml`, `git pull --rebase` each PKGBUILD dir, compares versions via `vercmp`, rebuilds outdated packages. VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) require `--devel`. `--dry-run` shows what would rebuild. `--all` discovers foreign packages via `pacman -Qm`, adds them to `packages.toml`, rebuilds if outdated. Side effect: refreshes `~/.cache/sysforge/aur-packages.txt` (packages.gz).
+- **`sysforge converge`** — `sysforge/converge.py`. Re-resolves the current compiler flag profile for each profiled package and diffs against the `flags_string` stored in `build_state.toml`. Reports `DRIFTED`/`IN_SYNC`/`NO_FLAGS`/`NO_PKGBUILD` per package. `--apply` rebuilds all drifted packages.
+- **Build state tracking** — `sysforge/primitives/build_state.py`. `makepkg_wrapper.run()` writes per-package metadata to `/var/lib/sysforge/build_state.toml` after each successful build. Fields: `pkgver`, `pkgrel`, `epoch`, `pkgbase`, `pkgbuild_dir`, `build_mode` (`"pacman"` | `"profiled"`), `flags_string` (serialized resolved flags), `built_at`.
 - **`sysforge/primitives/version.py`** — `vercmp(a, b)` wraps the system binary; `format_version(globals_)` assembles `[epoch:]pkgver-pkgrel`.
 - **`packages list/add/remove/sync`** — `sysforge/packages_cmd.py`. `add` accepts multiple args, classifies via pacman/AUR, infers `pkgbuild_patch`. `remove` is line-level (preserves comments). `sync` does in-place field edits (comments preserved).
 

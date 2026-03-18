@@ -66,6 +66,8 @@ _sysforge_build() {
 
 _sysforge_update() {
   _arguments \
+    '--all[discover foreign packages (pacman -Qm) and add to packages.toml]' \
+    '--packages[path to packages.toml for --all discovery]:file:_files' \
     '--dry-run[show what would be rebuilt without doing it]' \
     '--devel[include VCS packages (-git, -svn, -hg, -bzr)]' \
     '--no-update[skip git pull --rebase before checking versions]' \
@@ -87,7 +89,13 @@ _sysforge_resolve() {
 
 _sysforge_converge() {
   _arguments \
-    '--dry-run[show what would be rebuilt without doing it]'
+    '--apply[rebuild all packages whose flags have drifted from the current profile]' \
+    '--state-dir[override state directory]:directory:_files -/' \
+    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '--no-pkg-log[disable per-package log files (only relevant with --apply)]' \
+    '--persist-log[keep log files after completion (only relevant with --apply)]' \
+    '--log-dir[directory for per-package log files]:directory:_files -/' \
+    '--cache-report[print ccache/sccache summary after --apply]'
 }
 
 _sysforge_packages() {
