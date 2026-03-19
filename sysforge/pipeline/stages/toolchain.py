@@ -427,13 +427,14 @@ class ToolchainStage(Stage):
 
         pgo_pkgs, non_pgo_pkgs, lib32_pkgs = _package_lists(tcfg)
 
-        _log.ui("[TOOLCHAIN]",
-            f"Compiler: {compiler}  |  PGO: {pgo}  |  "
-            f"Packages: {len(pgo_pkgs)} pgo / {len(non_pgo_pkgs)} non-pgo / {len(lib32_pkgs)} lib32"
-        )
+        all_names = pgo_pkgs + non_pgo_pkgs + lib32_pkgs
+        if pgo:
+            pkg_summary = f"{len(pgo_pkgs)} pgo / {len(non_pgo_pkgs)} non-pgo / {len(lib32_pkgs)} lib32"
+        else:
+            pkg_summary = f"{len(all_names)} total"
+        _log.ui("[TOOLCHAIN]", f"Compiler: {compiler}  |  PGO: {pgo}  |  Packages: {pkg_summary}")
 
         # Resolve PKGBUILDs for all packages
-        all_names = pgo_pkgs + non_pgo_pkgs + lib32_pkgs
         pkgbuild_map = _resolve_all_pkgbuilds(all_names, config)
 
         pgo_map     = {n: pkgbuild_map[n] for n in pgo_pkgs}
