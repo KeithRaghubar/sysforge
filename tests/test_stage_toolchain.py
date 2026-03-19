@@ -153,6 +153,33 @@ def test_resolve_all_pkgbuilds_partial_miss_reports_all(tmp_path):
             _resolve_all_pkgbuilds(["llvm", "clang", "lld"], config)
 
 
+def test_resolve_all_pkgbuilds_split_found_after_pass3_clone(tmp_path):
+    """gcc-libs must be resolved via split-package scan after gcc is cloned in Pass 3,
+    not attempted as a standalone pkgctl clone (which would require auth)."""
+    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+
+    # gcc PKGBUILD declares both gcc and gcc-libs in pkgname
+    gcc_dir = tmp_path / "gcc"
+    gcc_dir.mkdir()
+    (gcc_dir / "PKGBUILD").write_text(
+        "pkgbase=gcc\npkgname=('gcc' 'gcc-libs')\npkgver=14.0\npkgrel=1\n"
+    )
+
+    def fake_pkgctl_checkout(name, dest):
+        # Simulate pkgctl cloning gcc (copies our prepared dir)
+        import shutil
+        shutil.copytree(gcc_dir, dest)
+
+    with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
+         patch("sysforge.primitives.aur.pkgctl_checkout", side_effect=fake_pkgctl_checkout):
+        result = _resolve_all_pkgbuilds(["gcc", "gcc-libs"], config)
+
+    assert "gcc" in result
+    assert "gcc-libs" in result
+    # Both must resolve to the same PKGBUILD — not two separate clones
+    assert result["gcc"].parent == result["gcc-libs"].parent
+
+
 # ---------------------------------------------------------------------------
 # _extract_pass2_to_staging
 # ---------------------------------------------------------------------------

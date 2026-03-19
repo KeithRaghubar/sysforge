@@ -146,13 +146,38 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
                 still_remaining.append(name)
         remaining = still_remaining
 
-    # Pass 3 — full resolution with potential clone
+    # Pass 3 — full resolution with potential clone; re-scan for split packages after each success
     errors = []
-    for name in remaining:
+    remaining = list(remaining)
+    i = 0
+    while i < len(remaining):
+        name = remaining[i]
         try:
-            resolved[name] = find_pkgbuild(name, config)
+            path = find_pkgbuild(name, config)
+            resolved[name] = path
+            # Re-run split scan: the freshly cloned PKGBUILD may cover other remaining names
+            try:
+                meta = parse_pkgbuild(path)
+                pkgnames = meta.get("globals", {}).get("pkgname", [])
+                if isinstance(pkgnames, str):
+                    pkgnames = [pkgnames]
+                pkgbase = meta.get("globals", {}).get("pkgbase")
+                covered = set(pkgnames)
+                if pkgbase:
+                    covered.add(pkgbase)
+                satisfied = []
+                for r in remaining[i + 1:]:
+                    if r in covered:
+                        resolved[r] = path
+                        satisfied.append(r)
+                        _log.info("[TOOLCHAIN]", f"  {r} → split package in {path.parent.name}/")
+                for r in satisfied:
+                    remaining.remove(r)
+            except Exception:
+                pass
         except FileNotFoundError as e:
             errors.append(str(e))
+        i += 1
 
     if errors:
         raise RuntimeError(
