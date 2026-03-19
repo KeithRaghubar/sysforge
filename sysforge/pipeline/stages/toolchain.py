@@ -370,6 +370,17 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
 
 
 # ---------------------------------------------------------------------------
+# Compiler path lookup (no build)
+# ---------------------------------------------------------------------------
+
+def _compiler_paths(compiler: str) -> tuple[str, str, str | None]:
+    """Return (cc, cxx, ld) for a named compiler without building anything."""
+    if compiler == "gcc":
+        return "/usr/bin/gcc", "/usr/bin/g++", None
+    return "/usr/bin/clang", "/usr/bin/clang++", "lld"
+
+
+# ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
 
@@ -387,6 +398,32 @@ class ToolchainStage(Stage):
         compiler = tcfg.get("compiler", "llvm")
         pgo      = tcfg.get("pgo", True) if compiler == "llvm" else False
         staging  = Path(tcfg.get("pgo_staging", _DEFAULT_STAGING))
+
+        # skip_build: register compiler paths without building anything
+        if tcfg.get("skip_build", False):
+            cc, cxx, ld = _compiler_paths(compiler)
+            _log.ui("[TOOLCHAIN]", f"skip_build=true — skipping build, registering {compiler}: cc={cc}  cxx={cxx}")
+            result = {"cc": cc, "cxx": cxx}
+            if ld is not None:
+                result["ld"] = ld
+            state.set_stage_result("toolchain", result)
+            try:
+                state.save()
+            except PermissionError:
+                _log.warn("[TOOLCHAIN]", "Cannot write state — toolchain results will not be checkpointed")
+            return
+
+        if compiler == "gcc" and not options.dry_run:
+            _log.warn("[TOOLCHAIN]",
+                "Building GCC from source is error-prone and yields no meaningful performance gains. "
+                "Set skip_build = true in toolchain.toml to use the system GCC instead."
+            )
+            try:
+                choice = input("[SYSFORGE][WARN][TOOLCHAIN] Proceed with GCC build anyway? [y/N]: ").strip().lower()
+            except (EOFError, OSError):
+                choice = "y"
+            if choice not in ("y", "yes"):
+                raise RuntimeError("[TOOLCHAIN] GCC build aborted. Set skip_build = true in toolchain.toml to use the system GCC.")
 
         pgo_pkgs, non_pgo_pkgs, lib32_pkgs = _package_lists(tcfg)
 

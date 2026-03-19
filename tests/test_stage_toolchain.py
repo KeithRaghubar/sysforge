@@ -470,6 +470,40 @@ def test_toolchain_stage_custom_packages(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# ToolchainStage.run() — skip_build
+# ---------------------------------------------------------------------------
+
+def test_toolchain_skip_build_gcc(tmp_path):
+    """skip_build=true registers gcc paths in state without building anything."""
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = true\ncompiler = "gcc"\nskip_build = true\n')
+    state = PipelineState(tmp_path / "state")
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run({}, state, make_options())
+
+    result = state.get_stage_result("toolchain")
+    assert result["cc"] == "/usr/bin/gcc"
+    assert result["cxx"] == "/usr/bin/g++"
+    assert "ld" not in result
+
+
+def test_toolchain_skip_build_llvm(tmp_path):
+    """skip_build=true registers clang paths in state without building anything."""
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = true\ncompiler = "llvm"\nskip_build = true\n')
+    state = PipelineState(tmp_path / "state")
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run({}, state, make_options())
+
+    result = state.get_stage_result("toolchain")
+    assert result["cc"] == "/usr/bin/clang"
+    assert result["cxx"] == "/usr/bin/clang++"
+    assert result["ld"] == "lld"
+
+
+# ---------------------------------------------------------------------------
 # ToolchainStage.run() — PKGBUILD resolution error
 # ---------------------------------------------------------------------------
 

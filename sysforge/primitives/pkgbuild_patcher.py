@@ -104,7 +104,7 @@ def patch_pkgbuild_groups(pkgbuild_path, groups):
     """
     Write a patched copy of the PKGBUILD with the resolved groups list injected.
     If a groups=(...) array exists it is replaced; if absent it is inserted
-    after the pkgname line.
+    after the pkgname assignment (which may span multiple lines).
     Returns the path to the patched copy (PKGBUILD.sysforge).
     """
     patched_path = pkgbuild_path.parent / "PKGBUILD.sysforge"
@@ -112,6 +112,7 @@ def patch_pkgbuild_groups(pkgbuild_path, groups):
 
     text = pkgbuild_path.read_text()
 
+    # Replace existing groups=(...) — [^)]* matches across newlines in char classes
     new_text, count = re.subn(
         r"^groups=\([^)]*\)",
         groups_line,
@@ -120,13 +121,25 @@ def patch_pkgbuild_groups(pkgbuild_path, groups):
     )
 
     if count == 0:
-        new_text = re.sub(
-            r"^(pkgname=.*)$",
-            rf"\1\n{groups_line}",
-            text,
-            count=1,
-            flags=re.MULTILINE,
-        )
+        # Insert after the complete pkgname assignment, tracking paren depth
+        # so multi-line pkgname=(\n  pkg1\n  pkg2\n) is handled correctly.
+        lines = text.splitlines(keepends=True)
+        result = []
+        inserted = False
+        j = 0
+        while j < len(lines):
+            line = lines[j]
+            result.append(line)
+            if not inserted and re.match(r"^pkgname=", line):
+                depth = line.count("(") - line.count(")")
+                while depth > 0 and j + 1 < len(lines):
+                    j += 1
+                    result.append(lines[j])
+                    depth += lines[j].count("(") - lines[j].count(")")
+                result.append(groups_line + "\n")
+                inserted = True
+            j += 1
+        new_text = "".join(result)
 
     patched_path.write_text(new_text)
     _log.info("[BUILD]", f"Wrote patched PKGBUILD: {patched_path}")

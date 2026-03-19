@@ -36,6 +36,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
     patch_noninteractive_kconfig,
+    patch_pkgbuild_groups,
 )
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
@@ -471,6 +472,48 @@ def test_patch_noninteractive_kconfig_preserves_non_kconfig_make(tmp_path):
     assert "olddefconfig" in content
     assert "make LOCALVERSION=v1 all" in content
     assert "make modules_install" in content
+
+
+# ---------------------------------------------------------------------------
+# patch_pkgbuild_groups
+# ---------------------------------------------------------------------------
+
+def test_patch_groups_inline_pkgname():
+    """Single-line pkgname=foo — groups inserted on the line immediately after."""
+    with tempfile.TemporaryDirectory() as d:
+        pb = Path(d) / "PKGBUILD"
+        pb.write_text("pkgname=htop\npkgver=1.0\n")
+        result = patch_pkgbuild_groups(pb, ["sf-build"])
+        lines = result.read_text().splitlines()
+    assert lines[0] == "pkgname=htop"
+    assert lines[1] == 'groups=("sf-build")'
+    assert lines[2] == "pkgver=1.0"
+
+
+def test_patch_groups_multiline_pkgname():
+    """Multi-line pkgname=(\n  ...\n) — groups must appear AFTER the closing ), not inside."""
+    with tempfile.TemporaryDirectory() as d:
+        pb = Path(d) / "PKGBUILD"
+        pb.write_text("pkgname=(\n  gcc\n  gcc-libs\n)\npkgver=14.0\n")
+        result = patch_pkgbuild_groups(pb, ["sf-build"])
+        text = result.read_text()
+    # groups must not appear inside the pkgname array
+    assert "(\n  gcc\n  gcc-libs\n)\n" in text
+    groups_pos = text.index("groups=")
+    close_paren_pos = text.index(")\n")
+    assert groups_pos > close_paren_pos, "groups= must come after the closing ) of pkgname"
+
+
+def test_patch_groups_replaces_existing():
+    """Existing groups=(...) is replaced, not duplicated."""
+    with tempfile.TemporaryDirectory() as d:
+        pb = Path(d) / "PKGBUILD"
+        pb.write_text('pkgname=htop\ngroups=("old-group")\npkgver=1.0\n')
+        result = patch_pkgbuild_groups(pb, ["sf-build"])
+        text = result.read_text()
+    assert text.count("groups=") == 1
+    assert 'groups=("sf-build")' in text
+    assert "old-group" not in text
 
 
 # ---------------------------------------------------------------------------
