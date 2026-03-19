@@ -1,5 +1,5 @@
-.PHONY: dev build install clean test lint \
-        vm-deps vm-image vm-boot vm-snapshot vm-clean
+.PHONY: dev build install clean test test-v test-x lint \
+        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-clean
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
 VM_DISK = $(VM_DIR)/arch-sysforge.qcow2
@@ -12,17 +12,16 @@ all: test
 # ---------------------------------------------------------------------------
 
 dev-deps:
-	yay -S python-black python-pytest
+	sudo pacman -S --needed python-pytest ruff
 
 dev:
-	source .venv/bin/activate && uv pip install -e .
+	uv pip install -e .
 
 venv:
 	uv venv
-	source .venv/bin/activate
 
 build:
-	python -m build --wheel --no-isolation
+	uv build
 
 install:
 	makepkg -si
@@ -32,6 +31,12 @@ test:
 
 test-v:
 	pytest -v
+
+test-x:
+	pytest -x
+
+lint:
+	ruff check sysforge/
 
 clean:
 	rm -rf dist/ .venv/ __pycache__/ *.egg-info/ .pytest_cache/
