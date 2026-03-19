@@ -71,14 +71,14 @@ def _load_toolchain_config() -> dict | None:
 def _package_lists(tcfg: dict) -> tuple[list[str], list[str], list[str]]:
     """
     Return (pgo_pkgs, non_pgo_pkgs, lib32_pkgs) from toolchain config.
-    For GCC, pgo_pkgs = gcc packages, others = [].
+    For GCC, non_pgo_pkgs = gcc packages, pgo_pkgs and lib32_pkgs = [].
     """
     compiler = tcfg.get("compiler", "llvm")
     pkgs_cfg = tcfg.get("packages", {})
 
     if compiler == "gcc":
         gcc_pkgs = pkgs_cfg.get("non_pgo", _DEFAULT_GCC)
-        return gcc_pkgs, [], []
+        return [], gcc_pkgs, []
 
     pgo_pkgs    = pkgs_cfg.get("pgo",     _DEFAULT_LLVM_PGO)
     non_pgo_pkgs = pkgs_cfg.get("non_pgo", _DEFAULT_LLVM_NON_PGO)
@@ -415,7 +415,7 @@ class ToolchainStage(Stage):
 
         # Dispatch to build path
         if compiler == "gcc":
-            cc, cxx, ld = _build_gcc(pgo_map, options)
+            cc, cxx, ld = _build_gcc(non_pgo_map, options)
         elif pgo:
             cc, cxx, ld = _build_llvm_pgo(pgo_map, non_pgo_map, lib32_map, staging, options)
         else:

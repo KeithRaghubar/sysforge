@@ -95,8 +95,8 @@ def test_package_lists_llvm_defaults():
 
 def test_package_lists_gcc():
     pgo, non_pgo, lib32 = _package_lists({"compiler": "gcc"})
-    assert pgo == _DEFAULT_GCC
-    assert non_pgo == []
+    assert pgo == []
+    assert non_pgo == _DEFAULT_GCC
     assert lib32 == []
 
 
@@ -119,7 +119,8 @@ def test_package_lists_custom_override():
 def test_package_lists_gcc_custom():
     tcfg = {"compiler": "gcc", "packages": {"non_pgo": ["gcc", "gcc-libs", "binutils"]}}
     pgo, non_pgo, lib32 = _package_lists(tcfg)
-    assert pgo == ["gcc", "gcc-libs", "binutils"]
+    assert pgo == []
+    assert non_pgo == ["gcc", "gcc-libs", "binutils"]
 
 
 # ---------------------------------------------------------------------------

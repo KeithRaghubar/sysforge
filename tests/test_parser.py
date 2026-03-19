@@ -64,3 +64,14 @@ def test_complex2_split_pkgname():
 def test_cosmic_makedepends_has_cargo():
     result = parse_pkgbuild(PKGBUILDS_DIR / "cosmic.PKGBUILD")
     assert "cargo" in result["globals"].get("makedepends", [])
+
+
+def test_unquoted_array_items_parsed():
+    """PKGBUILDs like gcc use unquoted items on separate lines — all must be captured."""
+    result = parse_pkgbuild(PKGBUILDS_DIR / "gcc-split.PKGBUILD")
+    pkgname = result["globals"]["pkgname"]
+    assert isinstance(pkgname, list)
+    assert "gcc" in pkgname
+    assert "gcc-libs" in pkgname
+    assert "gcc-fortran" in pkgname
+    assert "gcc-ada" in pkgname

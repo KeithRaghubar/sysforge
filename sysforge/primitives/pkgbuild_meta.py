@@ -95,7 +95,7 @@ def _extract_functions(text):
 
 def _parse_array_items(raw):
     """Parse array contents respecting quoted strings with spaces."""
-    items = re.findall(r"'([^']*)'|\"([^\"]*)\"|(\\S+)", raw)
+    items = re.findall(r"'([^']*)'|\"([^\"]*)\"|(\S+)", raw)
     result = []
     for groups in items:
         val = next((g for g in groups if g), None)
