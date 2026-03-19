@@ -4,7 +4,6 @@ the merged conf emission in emit_makepkg_conf.
 
 Uses a synthetic makepkg.conf fixture rather than the real /etc/makepkg.conf.
 """
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -12,38 +11,17 @@ import pytest
 from sysforge.primitives.config import parse_system_makepkg_conf
 from sysforge.primitives.makepkg_wrapper import emit_makepkg_conf
 
+_FIXTURE_CONF = Path(__file__).parent / "data" / "etc" / "sysforge" / "system_makepkg.conf"
+
 
 # ---------------------------------------------------------------------------
 # Fixture
 # ---------------------------------------------------------------------------
 
-SYSTEM_CONF = """\
-# makepkg.conf — synthetic fixture for tests
-
-CARCH="x86_64"
-CHOST="x86_64-pc-linux-gnu"
-
-CFLAGS="-march=x86-64 -mtune=generic -O2 -pipe -fno-plt"
-CXXFLAGS="$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"
-LDFLAGS="-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
-RUSTFLAGS="-C opt-level=2"
-
-BUILDENV=(!distcc color !ccache check !sign)
-OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge !debug lto)
-INTEGRITY_CHECK=(sha256)
-
-PKGEXT='.pkg.tar.zst'
-SRCEXT='.src.tar.gz'
-
-PACKAGER="Arch Linux <archlinux@archlinux.org>"
-COMPRESSXZ=(xz -c -z - --threads=0)
-"""
-
-
 @pytest.fixture
 def sys_conf_path(tmp_path):
     p = tmp_path / "makepkg.conf"
-    p.write_text(SYSTEM_CONF)
+    p.write_text(_FIXTURE_CONF.read_text())
     return p
 
 

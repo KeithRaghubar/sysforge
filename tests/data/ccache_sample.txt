@@ -1,0 +1,6 @@
+cache_dir	/home/user/.ccache
+direct_cache_hit	10
+preprocessed_cache_hit	2
+cache_miss	5
+files_in_cache	173
+cache_size_bytes	536870912

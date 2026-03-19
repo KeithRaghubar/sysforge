@@ -323,31 +323,9 @@ def test_write_excludes_metadata_keys():
 # apply_patch_pkgbuild
 # ---------------------------------------------------------------------------
 
-SIMPLE_PKGBUILD = """\
-pkgname=mypkg
-pkgver=1.0
-pkgrel=1
-groups=('mygroup')
-
-build() {
-  export CFLAGS+=" -fno-stack-protector"
-  export LDFLAGS+=" -Wl,--gc-sections"
-  make
-}
-"""
-
-COND_PKGBUILD = """\
-pkgname=mypkg
-pkgver=1.0
-pkgrel=1
-
-build() {
-  if [[ $CARCH == x86_64 ]]; then
-    CFLAGS+=" -m32"
-  fi
-  make
-}
-"""
+_PKGBUILD_DATA = Path(__file__).parent / "data" / "PKGBUILDs"
+SIMPLE_PKGBUILD = (_PKGBUILD_DATA / "patcher-simple.PKGBUILD").read_text()
+COND_PKGBUILD = (_PKGBUILD_DATA / "conditional.PKGBUILD").read_text()
 
 def _make_pkgbuild(d, content):
     p = Path(d) / "PKGBUILD"
@@ -400,19 +378,7 @@ def test_apply_writes_sysforge_copy():
 def test_apply_preserves_non_managed_make_invocations():
     """make LOCALVERSION=... and make INSTALL_MOD_PATH=... must NOT be removed — they
     are real kernel build commands, not flag assignments sysforge manages."""
-    pkgbuild = """\
-pkgbase=linux-custom
-pkgname=('linux-custom' 'linux-custom-headers')
-pkgver=6.12
-
-build() {
-  make LOCALVERSION="$(date +%Y%m%d)" all
-}
-
-package_linux-custom() {
-  make INSTALL_MOD_PATH="$pkgdir/usr" modules_install
-}
-"""
+    pkgbuild = (_PKGBUILD_DATA / "kernel-make.PKGBUILD").read_text()
     with tempfile.TemporaryDirectory() as d:
         pb = _make_pkgbuild(d, pkgbuild)
         pkgmeta = {
@@ -426,15 +392,7 @@ package_linux-custom() {
 
 def test_apply_removes_managed_inline_make():
     """make CFLAGS=... should still be removed (it's in _EXTRACTABLE_KEYS)."""
-    pkgbuild = """\
-pkgname=mypkg
-pkgver=1.0
-
-build() {
-  make CFLAGS="-O2" all
-  make LOCALVERSION="v1" all
-}
-"""
+    pkgbuild = (_PKGBUILD_DATA / "make-cflags.PKGBUILD").read_text()
     with tempfile.TemporaryDirectory() as d:
         pb = _make_pkgbuild(d, pkgbuild)
         pkgmeta = {"globals": {"pkgname": "mypkg"}, "functions": {}}

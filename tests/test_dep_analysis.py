@@ -20,6 +20,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+_DATA = Path(__file__).parent / "data"
+
 from sysforge.primitives.dep_analysis import (
     _parse_ldconfig,
     check_soname_deps,
@@ -31,13 +33,7 @@ from sysforge.primitives.dep_analysis import (
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
-LDCONFIG_SAMPLE = """\
-\tlibcap.so.2 (libc6,x86-64) => /usr/lib/libcap.so.2
-\tlibcap.so.2.69 (libc6,x86-64) => /usr/lib/libcap.so.2.69
-\tlibncursesw.so.6 (libc6,x86-64) => /usr/lib/libncursesw.so.6
-\tlibz.so.1 (libc6,x86-64) => /usr/lib/libz.so.1
-\tlibc.so.6 (libc6,x86-64) => /usr/lib/libc.so.6
-"""
+LDCONFIG_SAMPLE = (_DATA / "ldconfig_sample.txt").read_text()
 
 def mock_ldconfig():
     return LDCONFIG_SAMPLE

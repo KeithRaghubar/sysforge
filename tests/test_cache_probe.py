@@ -30,6 +30,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+_DATA = Path(__file__).parent / "data"
+
 from sysforge.primitives.cache_probe import (
     _fmt_bytes,
     _parse_ccache_tab,
@@ -51,14 +53,7 @@ from sysforge.primitives.cache_probe import (
 # _parse_ccache_tab
 # ---------------------------------------------------------------------------
 
-CCACHE_TAB_SAMPLE = """\
-cache_dir\t/home/user/.ccache
-direct_cache_hit\t10
-preprocessed_cache_hit\t2
-cache_miss\t5
-files_in_cache\t173
-cache_size_bytes\t536870912
-"""
+CCACHE_TAB_SAMPLE = (_DATA / "ccache_sample.txt").read_text()
 
 
 def test_parse_ccache_tab_full():
@@ -91,20 +86,7 @@ def test_parse_ccache_tab_empty():
 # _parse_sccache_text
 # ---------------------------------------------------------------------------
 
-SCCACHE_SAMPLE = """\
-Compile requests          20
-Compile requests executed  18
-Cache hits                 12
-Cache hits (C++)            8
-Cache hits (C)              4
-Cache misses                6
-Cache misses (C++)          4
-Cache misses (C)            2
-Non-cacheable compilations  2
-Cache location            Local
-Cache size                500 MiB
-Max cache size            10 GiB
-"""
+SCCACHE_SAMPLE = (_DATA / "sccache_sample.txt").read_text()
 
 
 def test_parse_sccache_text_full():
