@@ -679,25 +679,20 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
                         entry.unlink()
             _log.info("[BUILD]", f"Cleaned build dir: {build_dir}")
 
-        if build_mode == "pgo_llvm_toolchain":
-            raise NotImplementedError(
-                "build_mode 'pgo_llvm_toolchain' is not yet implemented"
-            )
-        else:
-            import_pgp_keys(pkgmeta, pkgbuild_path)
-            run_dep_analysis(pkgmeta, config)
-            _run_build(
-                pkgbuild_path, resolved_profile, config, groups,
-                active_consumes=active_consumes,
-                extracted_profile=extracted_profile if build_mode in ("patched_pkgbuild", "kernel") else None,
-                pkgmeta=pkgmeta,
-                extra_flags=extra_flags,
-                interactive=interactive,
-                cc_override=cc_override,
-                cxx_override=cxx_override,
-                ld_override=ld_override,
-                kernel_build=kernel_build,
-            )
+        import_pgp_keys(pkgmeta, pkgbuild_path)
+        run_dep_analysis(pkgmeta, config)
+        _run_build(
+            pkgbuild_path, resolved_profile, config, groups,
+            active_consumes=active_consumes,
+            extracted_profile=extracted_profile if build_mode in ("patched_pkgbuild", "kernel") else None,
+            pkgmeta=pkgmeta,
+            extra_flags=extra_flags,
+            interactive=interactive,
+            cc_override=cc_override,
+            cxx_override=cxx_override,
+            ld_override=ld_override,
+            kernel_build=kernel_build,
+        )
         build_success = True
 
         # Record build metadata for `sysforge update` (non-fatal)
