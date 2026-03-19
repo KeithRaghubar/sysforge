@@ -420,7 +420,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                 _log.info("[BUILD]", f"PKGBUILD location: {pkgbuild_path}")
                 response = (
                     input(
-                        "[BUILD] Manually correct the PKGBUILD and press Enter to retry, "
+                        _log.prompt_prefix("UI", "[BUILD]") +
+                        "Manually correct the PKGBUILD and press Enter to retry, "
                         "or type 'abort' to stop: "
                     )
                     .strip()

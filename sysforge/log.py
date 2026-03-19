@@ -145,6 +145,11 @@ def _write_to_files(line: str, raw: bool = False) -> None:
 # Log functions
 # ---------------------------------------------------------------------------
 
+def prompt_prefix(level: str, tag: str) -> str:
+    """Return a formatted '[SYSFORGE][LEVEL][TAG] ' prefix for use in input() prompts."""
+    return f"[SYSFORGE][{level}]{tag} "
+
+
 def ui(tag: str, message: str) -> None:
     """Always printed regardless of verbosity. Always written to log files. For interactive output."""
     print(message, file=_out())

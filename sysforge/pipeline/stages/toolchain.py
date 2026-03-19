@@ -196,7 +196,7 @@ def _show_resolution_table(pkgbuild_map: dict[str, Path]) -> None:
 def _confirm_or_abort(state_dir) -> None:
     """Prompt user to confirm. On abort, print resume command and raise."""
     try:
-        choice = input("[TOOLCHAIN] Proceed with toolchain build? [y/N]: ").strip().lower()
+        choice = input(_log.prompt_prefix("UI", "[TOOLCHAIN]") + "Proceed with toolchain build? [y/N]: ").strip().lower()
     except EOFError:
         # Non-interactive: proceed without prompt
         return
@@ -419,7 +419,7 @@ class ToolchainStage(Stage):
                 "Set skip_build = true in toolchain.toml to use the system GCC instead."
             )
             try:
-                choice = input("[SYSFORGE][WARN][TOOLCHAIN] Proceed with GCC build anyway? [y/N]: ").strip().lower()
+                choice = input(_log.prompt_prefix("WARN", "[TOOLCHAIN]") + "Proceed with GCC build anyway? [y/N]: ").strip().lower()
             except (EOFError, OSError):
                 choice = "y"
             if choice not in ("y", "yes"):
