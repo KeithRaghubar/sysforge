@@ -11,6 +11,11 @@
 #   pkgbuild_dir = "~/src"    # directory searched for PKGBUILDs by bare package name
 #                             # sysforge build/resolve <name> looks here first
 #
+# ── [defaults] profile keys (also valid in any [profiles.NAME]) ──────────────
+#
+#   BUILDDIR = "~/builds"     # overrides system makepkg.conf BUILDDIR (where src/pkg go)
+#                             # set this if your system BUILDDIR points to tmpfs (/tmp)
+#
 # ── [defaults] ───────────────────────────────────────────────────────────────
 #
 #   profile = "standard"          # (required) fallback when no rule matches

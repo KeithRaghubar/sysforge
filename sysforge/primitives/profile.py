@@ -65,6 +65,7 @@ _CONF_KEY_MAP: dict[str, set[str]] = {
         "MAKEFLAGS",
         "BUILDENV", "OPTIONS", "INTEGRITY_CHECK",
         "PKGEXT", "SRCEXT",
+        "BUILDDIR",
     },
     # Always injected via subprocess env, regardless of active_consumes.
     # makepkg does not export CC/CXX from makepkg.conf to child processes —
