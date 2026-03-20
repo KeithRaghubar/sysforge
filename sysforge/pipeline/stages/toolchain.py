@@ -532,6 +532,13 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     staged_cc  = str(staging / "usr/bin/clang")
     staged_cxx = str(staging / "usr/bin/clang++")
 
+    n_pgo   = len(set(pgo_map.values()))
+    n_total = len(set({**pgo_map, **non_pgo_map, **lib32_map}.values()))
+    _log.ui("[TOOLCHAIN]",
+            f"[PGO] Starting 3-pass LLVM PGO build  "
+            f"({n_pgo} pgo PKGBUILD(s), {n_total} total across all passes)  "
+            f"pgo_store={pgo_store}")
+
     if not options.dry_run:
         import shutil as _shutil
         if pgo_store.exists():
@@ -543,9 +550,10 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     # The system compiler must be clang: -fprofile-generate produces LLVM-format
     # .profraw files (consumed by llvm-profdata); GCC would produce GCOV format.
     # On a running Arch system with LLVM installed this is always clang.
-    _build_pass("Pass 1: instrumented build → install pgo packages", pgo_map, options,
+    _build_pass("Pass 1/3 [PGO] instrumented build → install pgo packages", pgo_map, options,
                 cc=None, cxx=None, install=True, pgo_build=True,
                 compiler_flags_extra=f"-fprofile-generate={pgo_store}/")
+    _log.ui("[TOOLCHAIN]", "[PGO] Pass 1/3 complete")
 
     # Purge any profraw accumulated during Pass 1. CMake feature-test programs
     # compiled with -fprofile-generate run during configuration and deposit
@@ -576,7 +584,7 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     if not options.dry_run:
         monitor.start()
     try:
-        _build_pass("Pass 2: training run → profraw generation (no system install)",
+        _build_pass("Pass 2/3 [PGO] training run → profraw generation (no system install)",
                     pgo_map, options,
                     cc="/usr/bin/clang", cxx="/usr/bin/clang++", install=False,
                     pgo_build=True)
@@ -584,19 +592,22 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
         stop_event.set()
         if not options.dry_run:
             monitor.join()
+    _log.ui("[TOOLCHAIN]", "[PGO] Pass 2/3 complete")
 
     # Final sweep: merge any profraw not yet handled by the daemon
     profdata_path = _merge_profraw(pgo_store, options.dry_run)
+    _log.ui("[TOOLCHAIN]", f"[PGO] Profile data ready: {profdata_path}")
     _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
 
     # Pass 3 — PGO-optimized build; -fprofile-use matches -fprofile-generate (IR PGO)
     all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
-    _build_pass("Pass 3: PGO-optimized build → install all", all_pass3, options,
+    _build_pass("Pass 3/3 [PGO] optimized build → install all", all_pass3, options,
                 cc=staged_cc, cxx=staged_cxx, install=True,
                 compiler_flags_extra=(
                     f"-fprofile-use={profdata_path} -fprofile-correction"
                 ),
                 pgo_build=True)
+    _log.ui("[TOOLCHAIN]", "[PGO] Pass 3/3 complete — PGO build finished")
 
     if not options.dry_run:
         try:
