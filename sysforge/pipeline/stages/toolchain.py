@@ -308,6 +308,7 @@ def _build_pkg(name: str, pkgbuild_path: Path, options,
         cxx_override=cxx,
         init_session=init_session,
         update=not options.no_update,
+        strip_full_lto=pgo_build,
     )
 
 

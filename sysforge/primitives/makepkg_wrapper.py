@@ -74,6 +74,10 @@ _LLD_ONLY_FLAGS = frozenset({
     "--icf=none",
 })
 
+# Full LTO flags incompatible with clang IR PGO. ThinLTO (-flto=thin) is
+# compatible and must NOT be stripped. Bare -flto defaults to full in clang.
+_FULL_LTO_FLAGS = frozenset({"-flto", "-flto=full", "-flto=auto"})
+
 
 def _detect_linker_from_ldflags(ldflags_val):
     """Return the linker name declared by -fuse-ld=X in LDFLAGS, or None."""
@@ -98,6 +102,22 @@ def _inject_linker(ldflags_val, linker_name):
             return " ".join(tokens)
     _log.info("[FLAG]", f"Injected {new_token} into LDFLAGS (--ld override)")
     return " ".join([new_token] + tokens)
+
+
+def _strip_full_lto(flags_val: str) -> tuple[str, list[str]]:
+    """
+    Remove full-LTO flags from a compiler flag string.
+    ThinLTO (-flto=thin) is preserved — it is compatible with clang IR PGO.
+    Returns (cleaned_str, list_of_stripped_tokens).
+    """
+    stripped = []
+    kept = []
+    for token in flags_val.split():
+        if token in _FULL_LTO_FLAGS:
+            stripped.append(token)
+        else:
+            kept.append(token)
+    return " ".join(kept), stripped
 
 
 def _strip_lld_flags(ldflags_val):
@@ -131,7 +151,8 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       system_conf_path=None,
                       cc_override=None, cxx_override=None, ld_override=None,
                       kernel_build: bool = False,
-                      compiler_flags_extra: str | None = None):
+                      compiler_flags_extra: str | None = None,
+                      strip_full_lto: bool = False):
     """
     Write a complete, self-contained temp makepkg.conf by merging:
       1. All keys from /etc/makepkg.conf (system baseline)
@@ -224,6 +245,18 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 for tok in stripped_tokens:
                     _log.warn("[FLAG]", f"Stripped lld-only flag: {tok}")
                 profile_overrides["LDFLAGS"] = cleaned
+
+    # Full LTO stripping for PGO passes. -flto/-flto=full are incompatible with
+    # clang IR PGO; -flto=thin is compatible and is preserved.
+    if strip_full_lto:
+        for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
+            if key in profile_overrides:
+                cleaned, stripped_toks = _strip_full_lto(profile_overrides[key])
+                if stripped_toks:
+                    _log.warn("[PGO]",
+                              f"Stripped full-LTO flag(s) from {key} (incompatible with IR PGO): "
+                              f"{' '.join(stripped_toks)}")
+                    profile_overrides[key] = cleaned
 
     # Per-invocation compiler flag injection (e.g. PGO generate/use flags).
     # Runs after the linker guard so these flags are never treated as lld-specific.
@@ -565,7 +598,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                extra_flags=None, interactive=False,
                cc_override=None, cxx_override=None, ld_override=None,
                kernel_build: bool = False,
-               compiler_flags_extra: str | None = None):
+               compiler_flags_extra: str | None = None,
+               strip_full_lto: bool = False):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -628,7 +662,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                                cxx_override=cxx_override,
                                ld_override=ld_override,
                                kernel_build=kernel_build,
-                               compiler_flags_extra=compiler_flags_extra) as conf_path:
+                               compiler_flags_extra=compiler_flags_extra,
+                               strip_full_lto=strip_full_lto) as conf_path:
             _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                extra_env, extra_flags, interactive)
 
@@ -711,6 +746,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         update: bool = True,
         profile_override: str | None = None,
         compiler_flags_extra: str | None = None,
+        strip_full_lto: bool = False,
         state_dir=None):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
@@ -812,6 +848,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             ld_override=ld_override,
             kernel_build=kernel_build,
             compiler_flags_extra=compiler_flags_extra,
+            strip_full_lto=strip_full_lto,
         )
         build_success = True
 
