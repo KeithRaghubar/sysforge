@@ -109,7 +109,7 @@ def close_unified_log(success: bool = True, persist: bool = False) -> None:
 
 def open_pkg_log(path, argv=None) -> None:
     """Open (or create) the per-package log file, appending.
-    argv, if provided, is written as the first entry after the session header."""
+    argv: if provided, written as the first line after the session header."""
     global _pkg_log_fh
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

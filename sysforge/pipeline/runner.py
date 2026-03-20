@@ -22,6 +22,8 @@ import sys
 import sysforge.log as _log
 from pathlib import Path
 
+_INVOCATION = " ".join(sys.argv)
+
 from sysforge.pipeline.state import PipelineState, resolve_state_dir
 from sysforge.pipeline.stages import STAGES, STAGE_NAMES
 from sysforge.primitives.cache_probe import (
@@ -83,6 +85,7 @@ def run_stage_standalone(stage, config, options):
             unified_log_active = False
             _log.warn("[PIPELINE]", f"Cannot write unified log to {unified_log_path} — logging to terminal only")
 
+    _log.info("[PIPELINE]", f"Invocation: {_INVOCATION}")
     success = False
     try:
         if options.dry_run:
@@ -183,6 +186,8 @@ def run_pipeline(config, options, stages=None):
         unified_log_path = log_dir / "sysforge.log"
         _log.open_unified_log(unified_log_path, purge=options.purge_log)
         _log.info("[PIPELINE]", f"Unified log: {unified_log_path}")
+
+    _log.info("[PIPELINE]", f"Invocation: {_INVOCATION}")
 
     pipeline_success = False
     try:

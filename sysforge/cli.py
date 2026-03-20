@@ -53,6 +53,7 @@ def _cmd_build(args):
     extra_flags = _expand_makepkg_flags(args.makepkg) if args.makepkg else None
     if args.no_pkg_log and args.log_dir:
         print("[SYSFORGE] Warning: --log-dir has no effect when --no-pkg-log is set.", file=sys.stderr)
+    _log.info("[BUILD]", f"Invocation: {' '.join(sys.argv)}")
     packages = args.pkgbuilds
     try:
         for i, pkg in enumerate(packages):

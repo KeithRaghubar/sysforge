@@ -186,10 +186,12 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
     return resolved
 
 
-def _show_resolution_table(pkgbuild_map: dict[str, Path]) -> None:
+def _show_resolution_table(pkgbuild_map: dict[str, Path],
+                           role_map: dict[str, str] | None = None) -> None:
     _log.ui("[TOOLCHAIN]", "─── PKGBUILD resolution ─────────────────────────────")
     for name, path in pkgbuild_map.items():
-        _log.ui("[TOOLCHAIN]", f"  {name:<42}  {path}")
+        role = f"  [{role_map[name]}]" if role_map and name in role_map else ""
+        _log.ui("[TOOLCHAIN]", f"  {name:<36}  {path}{role}")
     _log.ui("[TOOLCHAIN]", "─────────────────────────────────────────────────────")
 
 
@@ -428,13 +430,14 @@ class ToolchainStage(Stage):
         pgo_pkgs, non_pgo_pkgs, lib32_pkgs = _package_lists(tcfg)
 
         all_names = pgo_pkgs + non_pgo_pkgs + lib32_pkgs
-        core_count = len(pgo_pkgs) + len(non_pgo_pkgs)
+        total = len(all_names)
         if pgo:
-            pkg_summary = f"{len(pgo_pkgs)} pgo / {len(non_pgo_pkgs)} non-pgo"
+            parts = [f"{len(pgo_pkgs)} pgo", f"{len(non_pgo_pkgs)} non-pgo"]
         else:
-            pkg_summary = f"{core_count} total"
+            parts = [f"{len(pgo_pkgs) + len(non_pgo_pkgs)} packages"]
         if lib32_pkgs:
-            pkg_summary += f" | {len(lib32_pkgs)} lib32"
+            parts.append(f"{len(lib32_pkgs)} lib32")
+        pkg_summary = f"{total} total  ({' / '.join(parts)})"
         _log.ui("[TOOLCHAIN]", f"Compiler: {compiler}  |  PGO: {pgo}  |  Packages: {pkg_summary}")
 
         # Resolve PKGBUILDs for all packages
@@ -444,7 +447,12 @@ class ToolchainStage(Stage):
         non_pgo_map = {n: pkgbuild_map[n] for n in non_pgo_pkgs}
         lib32_map   = {n: pkgbuild_map[n] for n in lib32_pkgs}
 
-        _show_resolution_table(pkgbuild_map)
+        role_map = (
+            {n: "pgo"     for n in pgo_pkgs}
+            | {n: "non-pgo" for n in non_pgo_pkgs}
+            | {n: "lib32"   for n in lib32_pkgs}
+        ) if pgo else {n: "lib32" for n in lib32_pkgs}
+        _show_resolution_table(pkgbuild_map, role_map=role_map or None)
 
         # Prompt for confirmation (interactive only)
         try:
