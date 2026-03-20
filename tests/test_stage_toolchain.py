@@ -5,6 +5,7 @@ Mocks makepkg_wrapper.run() and subprocess so nothing real is built.
 """
 import sys
 import tempfile
+import threading
 import tomllib
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
@@ -19,6 +20,8 @@ from sysforge.pipeline.stages.toolchain import (
     _show_resolution_table,
     _extract_pass2_to_staging,
     _build_pass,
+    _do_profraw_merge,
+    _profraw_merge_daemon,
     _merge_profraw,
     _remove_staging,
     TOOLCHAIN_PATH,
@@ -427,9 +430,6 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
             "cfe": compiler_flags_extra,
         })
 
-    fake_proc = MagicMock()
-    fake_proc.returncode = 0
-
     # Fake .pkg.tar.zst for pass-2 staging extraction
     pkg_dir = pkgbuild_dir / "llvm"
     (pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst").touch()
@@ -438,9 +438,19 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     pgo_store.mkdir()
     (pgo_store / "default_0.profraw").touch()
 
+    def fake_subprocess(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        # Create the --output file so atomic rename in _do_profraw_merge succeeds
+        if cmd and "llvm-profdata" in cmd[0]:
+            idx = cmd.index("--output")
+            Path(cmd[idx + 1]).touch()
+        return result
+
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
          patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
-         patch("subprocess.run", return_value=fake_proc), \
+         patch("subprocess.run", side_effect=fake_subprocess), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
 
@@ -466,50 +476,161 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _merge_profraw
+# Helpers shared across profraw tests
 # ---------------------------------------------------------------------------
 
-def test_merge_profraw_merges_and_deletes_raws(tmp_path):
-    """_merge_profraw calls llvm-profdata and deletes .profraw files."""
+def fake_profdata_merge(cmd, **kwargs):
+    """subprocess.run side_effect that creates the --output file."""
+    result = MagicMock()
+    result.returncode = 0
+    result.stderr = ""
+    if cmd and "llvm-profdata" in cmd[0]:
+        idx = cmd.index("--output")
+        Path(cmd[idx + 1]).touch()
+    return result
+
+
+def fake_profdata_merge_fail(cmd, **kwargs):
+    result = MagicMock()
+    result.returncode = 1
+    result.stderr = "error: bad input"
+    return result
+
+
+# ---------------------------------------------------------------------------
+# _do_profraw_merge
+# ---------------------------------------------------------------------------
+
+def test_do_profraw_merge_merges_and_deletes(tmp_path):
     (tmp_path / "a.profraw").touch()
     (tmp_path / "b.profraw").touch()
 
-    fake_proc = MagicMock()
-    fake_proc.returncode = 0
+    with patch("subprocess.run", side_effect=fake_profdata_merge) as mock_run:
+        count = _do_profraw_merge(tmp_path, "test")
 
-    with patch("subprocess.run", return_value=fake_proc) as mock_run:
-        result = _merge_profraw(tmp_path, dry_run=False)
-
-    # profdata path returned correctly
-    assert result == tmp_path / "clang.profdata"
-    # llvm-profdata was invoked
+    assert count == 2
     cmd = mock_run.call_args[0][0]
     assert cmd[0] == "llvm-profdata"
     assert "--output" in cmd
+    assert str(tmp_path / "clang.profdata.tmp") in cmd
+    assert not (tmp_path / "a.profraw").exists()
+    assert not (tmp_path / "b.profraw").exists()
+    assert (tmp_path / "clang.profdata").exists()
+
+
+def test_do_profraw_merge_no_files_returns_zero(tmp_path):
+    with patch("subprocess.run") as mock_run:
+        count = _do_profraw_merge(tmp_path, "test")
+    assert count == 0
+    mock_run.assert_not_called()
+
+
+def test_do_profraw_merge_includes_existing_profdata(tmp_path):
+    (tmp_path / "a.profraw").touch()
+    (tmp_path / "clang.profdata").touch()
+
+    with patch("subprocess.run", side_effect=fake_profdata_merge) as mock_run:
+        _do_profraw_merge(tmp_path, "test")
+
+    cmd = mock_run.call_args[0][0]
     assert str(tmp_path / "clang.profdata") in cmd
-    # .profraw files were deleted
+
+
+def test_do_profraw_merge_failure_returns_zero(tmp_path):
+    (tmp_path / "a.profraw").touch()
+
+    with patch("subprocess.run", side_effect=fake_profdata_merge_fail):
+        count = _do_profraw_merge(tmp_path, "test")
+
+    assert count == 0
+    assert (tmp_path / "a.profraw").exists()   # not deleted on failure
+
+
+# ---------------------------------------------------------------------------
+# _profraw_merge_daemon
+# ---------------------------------------------------------------------------
+
+def test_profraw_merge_daemon_merges_on_wakeup(tmp_path):
+    """Daemon merges profraw files when stop_event fires while raws exist."""
+    (tmp_path / "a.profraw").touch()
+    stop_event = threading.Event()
+
+    with patch("sysforge.pipeline.stages.toolchain._PGO_MERGE_INTERVAL", 0), \
+         patch("subprocess.run", side_effect=fake_profdata_merge):
+        t = threading.Thread(target=_profraw_merge_daemon,
+                             args=(tmp_path, stop_event), daemon=True)
+        t.start()
+        t.join(timeout=2)
+        stop_event.set()
+        t.join(timeout=2)
+
+    assert not (tmp_path / "a.profraw").exists()
+    assert (tmp_path / "clang.profdata").exists()
+
+
+def test_profraw_merge_daemon_stops_cleanly_with_no_files(tmp_path):
+    """Daemon exits cleanly when stop_event fires with no profraw present."""
+    stop_event = threading.Event()
+    stop_event.set()  # fire immediately
+
+    with patch("subprocess.run") as mock_run:
+        t = threading.Thread(target=_profraw_merge_daemon,
+                             args=(tmp_path, stop_event), daemon=True)
+        t.start()
+        t.join(timeout=2)
+
+    mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _merge_profraw (final sweep)
+# ---------------------------------------------------------------------------
+
+def test_merge_profraw_merges_and_deletes_raws(tmp_path):
+    (tmp_path / "a.profraw").touch()
+    (tmp_path / "b.profraw").touch()
+
+    with patch("subprocess.run", side_effect=fake_profdata_merge):
+        result = _merge_profraw(tmp_path, dry_run=False)
+
+    assert result == tmp_path / "clang.profdata"
+    assert (tmp_path / "clang.profdata").exists()
     assert not (tmp_path / "a.profraw").exists()
     assert not (tmp_path / "b.profraw").exists()
 
 
-def test_merge_profraw_no_files_raises(tmp_path):
-    with pytest.raises(RuntimeError, match="No .profraw files"):
+def test_merge_profraw_no_files_no_profdata_raises(tmp_path):
+    with pytest.raises(RuntimeError, match="No .profraw files and no profdata"):
         _merge_profraw(tmp_path, dry_run=False)
 
 
-def test_merge_profraw_llvm_profdata_failure_raises(tmp_path):
-    (tmp_path / "a.profraw").touch()
-    fake_proc = MagicMock()
-    fake_proc.returncode = 1
-    fake_proc.stderr = "error: bad input"
+def test_merge_profraw_existing_profdata_no_raws_returns_it(tmp_path):
+    """Daemon already merged everything — final sweep returns existing profdata."""
+    (tmp_path / "clang.profdata").touch()
 
-    with patch("subprocess.run", return_value=fake_proc):
-        with pytest.raises(RuntimeError, match="llvm-profdata merge failed"):
-            _merge_profraw(tmp_path, dry_run=False)
+    with patch("subprocess.run") as mock_run:
+        result = _merge_profraw(tmp_path, dry_run=False)
+
+    assert result == tmp_path / "clang.profdata"
+    mock_run.assert_not_called()
+
+
+def test_merge_profraw_combines_raws_with_existing_profdata(tmp_path):
+    """Final sweep merges remaining raws together with daemon's profdata."""
+    (tmp_path / "late.profraw").touch()
+    (tmp_path / "clang.profdata").touch()
+
+    with patch("subprocess.run", side_effect=fake_profdata_merge) as mock_run:
+        result = _merge_profraw(tmp_path, dry_run=False)
+
+    assert result == tmp_path / "clang.profdata"
+    cmd = mock_run.call_args[0][0]
+    # Both the existing profdata and the remaining profraw were inputs
+    assert str(tmp_path / "clang.profdata") in cmd
+    assert str(tmp_path / "late.profraw") in cmd
 
 
 def test_merge_profraw_dry_run_skips_everything(tmp_path):
-    # No profraw files — dry_run should not raise or call llvm-profdata
     with patch("subprocess.run") as mock_run:
         result = _merge_profraw(tmp_path, dry_run=True)
 

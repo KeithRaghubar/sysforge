@@ -30,6 +30,7 @@ Compiler propagation:
 """
 import subprocess
 import sys
+import threading
 import tomllib
 from pathlib import Path
 
@@ -58,6 +59,9 @@ _DEFAULT_PGO_STORE   = "/var/tmp/sysforge-llvm-pgo"
 # Only force-rebuild is safe; flags that alter build flow (e.g. --noextract,
 # --nobuild, --noprepare) would corrupt the instrumentation/use sequence.
 _PGO_ALLOWED_MAKEPKG_FLAGS = {"-f", "--force"}
+
+# Interval (seconds) between intermediate profraw merges during Pass 2.
+_PGO_MERGE_INTERVAL = 60
 
 
 # ---------------------------------------------------------------------------
@@ -384,40 +388,36 @@ def _remove_staging(staging: Path) -> None:
         shutil.rmtree(staging)
 
 
-def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
+def _do_profraw_merge(pgo_store: Path, label: str) -> int:
     """
-    Merge all .profraw files under pgo_store into a single .profdata file,
-    then delete the raws to reclaim space (intermediate merge).
+    Merge all .profraw files under pgo_store into clang.profdata using an
+    atomic tmp→rename so concurrent readers always see a complete file.
+    If clang.profdata already exists it is included as an input (incremental).
 
-    Returns the path to the merged profdata file.
-    Raises RuntimeError if no profraw files are found or the merge fails.
+    Returns the number of .profraw files merged, or 0 if none were found.
+    Logs a warning on llvm-profdata failure but does not raise (callers decide).
     """
-    profdata_path = pgo_store / "clang.profdata"
-
-    if dry_run:
-        _log.ui("[TOOLCHAIN]", f"[dry-run] would merge .profraw files → {profdata_path}")
-        return profdata_path
-
     profraw_files = list(pgo_store.glob("**/*.profraw"))
     if not profraw_files:
-        raise RuntimeError(
-            f"[TOOLCHAIN] No .profraw files found under {pgo_store} after Pass 2. "
-            "Ensure the pgo packages are built with clang and -fprofile-generate "
-            "was effective (check the build log)."
-        )
+        return 0
 
-    _log.ui("[TOOLCHAIN]",
-            f"Merging {len(profraw_files)} .profraw file(s) → {profdata_path}")
+    profdata_path = pgo_store / "clang.profdata"
+    tmp_path      = pgo_store / "clang.profdata.tmp"
+
+    inputs = ([str(profdata_path)] if profdata_path.exists() else [])
+    inputs += [str(f) for f in profraw_files]
+
     result = subprocess.run(
-        ["llvm-profdata", "merge", "--output", str(profdata_path)]
-        + [str(p) for p in profraw_files],
+        ["llvm-profdata", "merge", "--output", str(tmp_path)] + inputs,
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"[TOOLCHAIN] llvm-profdata merge failed (exit {result.returncode}): "
-            f"{result.stderr.strip()}"
-        )
+        _log.warn("[TOOLCHAIN]",
+                  f"[PGO] {label} profraw merge failed (exit {result.returncode}): "
+                  f"{result.stderr.strip()}")
+        return 0
+
+    tmp_path.replace(profdata_path)
 
     deleted = 0
     for f in profraw_files:
@@ -426,7 +426,63 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
             deleted += 1
         except OSError:
             pass
-    _log.info("[TOOLCHAIN]", f"Deleted {deleted} .profraw file(s) from {pgo_store}")
+    return deleted
+
+
+def _profraw_merge_daemon(pgo_store: Path, stop_event: threading.Event) -> None:
+    """
+    Background thread: wake every _PGO_MERGE_INTERVAL seconds during Pass 2
+    and merge accumulated .profraw files into the rolling clang.profdata.
+    Keeps peak disk usage bounded during long instrumented builds.
+    """
+    while not stop_event.wait(_PGO_MERGE_INTERVAL):
+        deleted = _do_profraw_merge(pgo_store, "intermediate")
+        if deleted:
+            _log.info("[TOOLCHAIN]",
+                      f"[PGO] Intermediate merge: {deleted} .profraw file(s) merged")
+
+
+def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
+    """
+    Final profraw sweep after Pass 2 completes (daemon already stopped).
+
+    Merges any .profraw files still on disk together with the existing
+    clang.profdata produced by intermediate merges. If the daemon consumed
+    everything there may be no remaining raws, which is fine.
+
+    Returns the path to clang.profdata.
+    Raises RuntimeError if neither raws nor an existing profdata are present
+    (indicates -fprofile-generate had no effect).
+    """
+    profdata_path = pgo_store / "clang.profdata"
+
+    if dry_run:
+        _log.ui("[TOOLCHAIN]", f"[dry-run] would finalize profraw merge → {profdata_path}")
+        return profdata_path
+
+    profraw_files  = list(pgo_store.glob("**/*.profraw"))
+    has_profdata   = profdata_path.exists()
+
+    if not profraw_files and not has_profdata:
+        raise RuntimeError(
+            f"[TOOLCHAIN] No .profraw files and no profdata in {pgo_store} after Pass 2. "
+            "Ensure the pgo packages are built with clang and -fprofile-generate "
+            "was effective (check the build log)."
+        )
+
+    if not profraw_files:
+        _log.info("[TOOLCHAIN]",
+                  "[PGO] All .profraw files already merged by background monitor")
+        return profdata_path
+
+    deleted = _do_profraw_merge(pgo_store, "final")
+    if deleted == 0:
+        raise RuntimeError(
+            "[TOOLCHAIN] Final profraw merge produced no output — "
+            "llvm-profdata may have failed (check warnings above)."
+        )
+    _log.info("[TOOLCHAIN]",
+              f"[PGO] Final merge: {deleted} remaining .profraw file(s) merged")
     return profdata_path
 
 
@@ -479,14 +535,29 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     _build_pass("Pass 1: system compiler → install pgo packages", pgo_map, options,
                 cc=None, cxx=None, install=True, pgo_build=True)
 
-    # Pass 2 — instrumented build; generates profraw data under pgo_store
-    _build_pass("Pass 2: instrumented build → profraw generation (no system install)",
-                pgo_map, options,
-                cc="/usr/bin/clang", cxx="/usr/bin/clang++", install=False,
-                compiler_flags_extra=f"-fprofile-generate={pgo_store}",
-                pgo_build=True)
+    # Pass 2 — instrumented build; background daemon merges profraw periodically
+    # to limit disk usage, final sweep runs after the build completes.
+    stop_event = threading.Event()
+    monitor = threading.Thread(
+        target=_profraw_merge_daemon,
+        args=(pgo_store, stop_event),
+        daemon=True,
+        name="sysforge-profraw-monitor",
+    )
+    if not options.dry_run:
+        monitor.start()
+    try:
+        _build_pass("Pass 2: instrumented build → profraw generation (no system install)",
+                    pgo_map, options,
+                    cc="/usr/bin/clang", cxx="/usr/bin/clang++", install=False,
+                    compiler_flags_extra=f"-fprofile-generate={pgo_store}",
+                    pgo_build=True)
+    finally:
+        stop_event.set()
+        if not options.dry_run:
+            monitor.join()
 
-    # Merge profraw → profdata, delete raws to reclaim space
+    # Final sweep: merge any profraw not yet handled by the daemon
     profdata_path = _merge_profraw(pgo_store, options.dry_run)
     _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
 
