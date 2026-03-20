@@ -554,6 +554,8 @@ def _add_run_parser(sub):
 # ---------------------------------------------------------------------------
 
 def main():
+    from sysforge.primitives.resource_guard import install as _install_resource_guard
+    _install_resource_guard()
     sys.argv[1:] = _hoist_verbosity_flags(_patch_makepkg_argv(sys.argv[1:]))
     parser = argparse.ArgumentParser(
         prog="sysforge",

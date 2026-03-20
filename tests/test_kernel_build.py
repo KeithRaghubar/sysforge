@@ -221,7 +221,8 @@ def test_invoke_retry_sudo_reauth_and_install(tmp_path):
               side_effect=[sudo_v_result, pacman_result]) as mock_run,
         patch("builtins.input", return_value="s"),
     ):
-        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", profile)
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", profile,
+                           extra_flags=["--install"])
 
     calls = mock_run.call_args_list
     assert calls[0] == call(["sudo", "-v"])
@@ -244,7 +245,7 @@ def test_invoke_retry_sudo_install_fails_then_abort(tmp_path):
         patch("builtins.input", side_effect=["s", "abort"]),
         pytest.raises(RuntimeError, match="build_failed"),
     ):
-        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {})
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {}, extra_flags=["--install"])
 
 
 def test_invoke_retry_abort_with_built_packages(tmp_path):
@@ -259,7 +260,7 @@ def test_invoke_retry_abort_with_built_packages(tmp_path):
         patch("builtins.input", return_value="abort"),
         pytest.raises(RuntimeError, match="build_failed"),
     ):
-        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {})
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {}, extra_flags=["--install"])
 
 
 def test_invoke_retry_enter_retries_build_with_packages(tmp_path):
@@ -274,7 +275,7 @@ def test_invoke_retry_enter_retries_build_with_packages(tmp_path):
         patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", invoke),
         patch("builtins.input", return_value=""),
     ):
-        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {})
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {}, extra_flags=["--install"])
 
     assert invoke.call_count == 2
 

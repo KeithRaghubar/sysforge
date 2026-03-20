@@ -16,6 +16,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from sysforge.primitives.resource_guard import lift_for_child
+
 from sysforge.primitives.config import (
     find_pkgbuild,
     load_config,
@@ -394,6 +396,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             cmd, cwd=build_dir, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
+            preexec_fn=lift_for_child,
         )
         failed_stage = None
         missing_deps: list[str] = []
@@ -411,7 +414,8 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         proc.wait()
         returncode = proc.returncode
     else:
-        returncode = subprocess.run(cmd, cwd=build_dir, env=env).returncode
+        returncode = subprocess.run(cmd, cwd=build_dir, env=env,
+                                   preexec_fn=lift_for_child).returncode
         failed_stage = None
         missing_deps = []
 
@@ -475,7 +479,13 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                 _log.error("[BUILD]", f"Build failed: {e}")
                 _log.info("[BUILD]", f"PKGBUILD location: {pkgbuild_path}")
 
-                built_pkgs = _find_built_packages(Path(pkgbuild_path).resolve().parent)
+                installing = extra_flags and any(
+                    f in ("--install", "-i") for f in extra_flags
+                )
+                built_pkgs = (
+                    _find_built_packages(Path(pkgbuild_path).resolve().parent)
+                    if installing else []
+                )
                 if built_pkgs:
                     _log.ui("[BUILD]",
                             "Built packages found — build likely succeeded but "
