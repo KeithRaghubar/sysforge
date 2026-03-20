@@ -547,6 +547,23 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
                 cc=None, cxx=None, install=True, pgo_build=True,
                 compiler_flags_extra=f"-fprofile-generate={pgo_store}/")
 
+    # Purge any profraw accumulated during Pass 1. CMake feature-test programs
+    # compiled with -fprofile-generate run during configuration and deposit
+    # spurious profraw files (and emit "Running out of static counters" warnings).
+    # Those files represent tiny probe programs, not clang doing real work — they
+    # would contaminate the training profile if kept. Pass 2 generates the real data.
+    if not options.dry_run:
+        spurious = list(pgo_store.glob("**/*.profraw"))
+        for f in spurious:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        if spurious:
+            _log.info("[TOOLCHAIN]",
+                      f"[PGO] Purged {len(spurious)} spurious profraw file(s) "
+                      f"from Pass 1 CMake probes")
+
     # Pass 2 — use the instrumented Pass-1 clang as CC; profraw is generated
     # as a side effect of running it. Background daemon merges periodically.
     stop_event = threading.Event()
