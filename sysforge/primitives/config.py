@@ -312,30 +312,14 @@ _MAKEPKG_ASSIGN_RE = _re.compile(
 )
 
 
-def parse_system_makepkg_conf(path=None):
-    """
-    Parse /etc/makepkg.conf (or the given path) into a dict of
-    {key: raw_value_string}.
-
-    raw_value_string is the verbatim value text as it appears in the file
-    (including surrounding quotes or parentheses) so it can be written back
-    into a new conf file unchanged.
-
-    Returns empty dict if the file is not found or unreadable.
-    """
-    if path is None:
-        path = Path("/etc/makepkg.conf")
-    else:
-        path = Path(path)
-
+def _parse_one_makepkg_conf(path: Path) -> dict:
+    """Parse a single makepkg.conf file into {key: raw_value_string}."""
     if not path.exists():
-        _log.warn("[CONFIG]", f"System makepkg.conf not found at {path} — will use profile values only")
         return {}
-
     try:
         text = path.read_text()
     except PermissionError:
-        _log.warn("[CONFIG]", f"Cannot read {path} — will use profile values only")
+        _log.warn("[CONFIG]", f"Cannot read {path} — skipping")
         return {}
 
     result = {}
@@ -362,4 +346,47 @@ def parse_system_makepkg_conf(path=None):
     _log.info("[CONFIG]", f"Parsed {len(result)} keys from {path}")
     _log.debug("[CONFIG]", f"System makepkg.conf key=value pairs:\n" +
                "\n".join(f"  {k}={v}" for k, v in result.items()))
+    return result
+
+
+def parse_system_makepkg_conf(path=None):
+    """
+    Parse makepkg.conf into a dict of {key: raw_value_string}.
+
+    raw_value_string is the verbatim value text as it appears in the file
+    (including surrounding quotes or parentheses) so it can be written back
+    into a new conf file unchanged.
+
+    When path is None, mirrors makepkg's own conf layering:
+      1. /etc/makepkg.conf  (system baseline)
+      2. $XDG_CONFIG_HOME/pacman/makepkg.conf  (user override, XDG path)
+      3. ~/.makepkg.conf  (user override, legacy path)
+    User conf keys override system conf keys.  An explicit path skips layering.
+
+    Returns empty dict if no conf is found or readable.
+    """
+    import os as _os
+
+    if path is not None:
+        result = _parse_one_makepkg_conf(Path(path))
+        if not result:
+            _log.warn("[CONFIG]", f"makepkg.conf not found or unreadable at {path} — will use profile values only")
+        return result
+
+    # Layer system conf then user conf(s), later entries win.
+    result = _parse_one_makepkg_conf(Path("/etc/makepkg.conf"))
+    if not result:
+        _log.warn("[CONFIG]", "System makepkg.conf not found at /etc/makepkg.conf — will use profile values only")
+
+    xdg_config = _os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    user_conf_paths = [
+        Path(xdg_config) / "pacman" / "makepkg.conf",
+        Path.home() / ".makepkg.conf",
+    ]
+    for user_path in user_conf_paths:
+        user_keys = _parse_one_makepkg_conf(user_path)
+        if user_keys:
+            _log.info("[CONFIG]", f"Merging user makepkg.conf: {user_path} ({len(user_keys)} keys)")
+            result.update(user_keys)
+
     return result
