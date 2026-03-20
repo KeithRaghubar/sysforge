@@ -189,6 +189,7 @@ def _cmd_run_toolchain(args):
         cache_report=args.cache_report,
         state_dir=Path(args.state_dir) if args.state_dir else None,
         persist_log=args.persist_log,
+        makepkg_flags=_expand_makepkg_flags(args.makepkg) if args.makepkg else [],
     )
     run_stage_standalone(ToolchainStage(), config, options)
 
@@ -488,6 +489,9 @@ def _add_run_parser(sub):
         help="Show what would run without executing anything.")
     p_toolchain.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase before each build.")
+    p_toolchain.add_argument("--makepkg", "-m", metavar="FLAGS",
+        help="Additional makepkg flags appended to each build. "
+             "Example: -m '-f' to force rebuild of already-built packages.")
     p_toolchain.add_argument("--persist-log", action="store_true", dest="persist_log",
         help="Keep log files after successful completion.")
     p_toolchain.add_argument("--cache-report", action="store_true", dest="cache_report",

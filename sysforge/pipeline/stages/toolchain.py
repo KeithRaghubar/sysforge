@@ -226,9 +226,10 @@ def _build_pkg(name: str, pkgbuild_path: Path, options,
         cc_label = f" CC={cc}" if cc else ""
         _log.ui("[TOOLCHAIN]", f"[dry-run] would build {name}{cc_label}")
         return
+    combined_flags = list(extra_flags or []) + list(getattr(options, "makepkg_flags", []))
     makepkg_run(
         pkgbuild_path,
-        extra_flags=extra_flags or [],
+        extra_flags=combined_flags,
         pkg_log=not options.no_pkg_logs,
         persist_log=options.persist_log,
         cc_override=cc,
