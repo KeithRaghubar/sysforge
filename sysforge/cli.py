@@ -491,7 +491,9 @@ def _add_run_parser(sub):
         help="Skip git pull --rebase before each build.")
     p_toolchain.add_argument("--makepkg", "-m", metavar="FLAGS",
         help="Additional makepkg flags appended to each build. "
-             "Example: -m '-f' to force rebuild of already-built packages.")
+             "Example: -m '-f' to force rebuild of already-built packages. "
+             "Install flags (-i/--install) are ignored; the toolchain controls "
+             "which passes install to the system.")
     p_toolchain.add_argument("--persist-log", action="store_true", dest="persist_log",
         help="Keep log files after successful completion.")
     p_toolchain.add_argument("--cache-report", action="store_true", dest="cache_report",

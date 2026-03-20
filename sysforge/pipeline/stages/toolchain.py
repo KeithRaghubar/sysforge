@@ -271,7 +271,10 @@ def _build_pkg(name: str, pkgbuild_path: Path, options,
         cc_label = f" CC={cc}" if cc else ""
         _log.ui("[TOOLCHAIN]", f"[dry-run] would build {name}{cc_label}")
         return
-    combined_flags = list(extra_flags or []) + list(getattr(options, "makepkg_flags", []))
+    # Strip install flags from user-supplied flags — the toolchain controls
+    # install/no-install exclusively via extra_flags per pass.
+    user_flags = [f for f in getattr(options, "makepkg_flags", []) if f not in ("-i", "--install")]
+    combined_flags = list(extra_flags or []) + user_flags
     makepkg_run(
         pkgbuild_path,
         extra_flags=combined_flags,
