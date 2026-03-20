@@ -272,6 +272,39 @@ def test_cargo_package_full_routing():
 
 
 # ---------------------------------------------------------------------------
+# compiler_flags_extra — PGO flag injection
+# ---------------------------------------------------------------------------
+
+def test_compiler_flags_extra_appended_to_profile_flags():
+    """compiler_flags_extra is appended to existing profile CFLAGS/CXXFLAGS/LDFLAGS."""
+    profile = {"CFLAGS": "-O3", "CXXFLAGS": "-O3", "LDFLAGS": "-fuse-ld=lld"}
+    extra = "-fprofile-generate=/tmp/pgo"
+    with emit_makepkg_conf(profile, None, compiler_flags_extra=extra) as conf_path:
+        conf = read_conf(conf_path)
+    assert "-O3 -fprofile-generate=/tmp/pgo" in conf["CFLAGS"]
+    assert "-O3 -fprofile-generate=/tmp/pgo" in conf["CXXFLAGS"]
+    assert "-fuse-ld=lld -fprofile-generate=/tmp/pgo" in conf["LDFLAGS"]
+
+
+def test_compiler_flags_extra_no_base_creates_entry():
+    """compiler_flags_extra with no existing value creates the key."""
+    profile = {}
+    extra = "-fprofile-instr-use=/tmp/pgo/clang.profdata -fprofile-correction"
+    with emit_makepkg_conf(profile, None, compiler_flags_extra=extra) as conf_path:
+        conf = read_conf(conf_path)
+    assert "-fprofile-instr-use=" in conf.get("CFLAGS", "")
+    assert "-fprofile-correction" in conf.get("CFLAGS", "")
+
+
+def test_compiler_flags_extra_none_leaves_flags_unchanged():
+    """compiler_flags_extra=None (default) does not modify any flags."""
+    profile = {"CFLAGS": "-O3"}
+    with emit_makepkg_conf(profile, None, compiler_flags_extra=None) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["CFLAGS"] == "-O3"
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 

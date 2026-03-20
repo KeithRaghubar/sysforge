@@ -128,7 +128,8 @@ def _strip_lld_flags(ldflags_val):
 def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       system_conf_path=None,
                       cc_override=None, cxx_override=None, ld_override=None,
-                      kernel_build: bool = False):
+                      kernel_build: bool = False,
+                      compiler_flags_extra: str | None = None):
     """
     Write a complete, self-contained temp makepkg.conf by merging:
       1. All keys from /etc/makepkg.conf (system baseline)
@@ -149,6 +150,10 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     kernel_build: when True, _KERNEL_CLEAN_KEYS (CFLAGS, CXXFLAGS, LDFLAGS,
     CPPFLAGS, DEBUG_*) are excluded from profile overrides and ld_override is
     ignored. System conf values for those keys pass through verbatim.
+
+    compiler_flags_extra: when set, appended verbatim to CFLAGS, CXXFLAGS, and
+    LDFLAGS in the emitted conf after all other processing (including the linker
+    guard). Intended for PGO generate/use flags injected by the toolchain stage.
     """
     env_keys = _CONF_KEY_MAP.get("env", set())
 
@@ -217,6 +222,20 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 for tok in stripped_tokens:
                     _log.warn("[FLAG]", f"Stripped lld-only flag: {tok}")
                 profile_overrides["LDFLAGS"] = cleaned
+
+    # Per-invocation compiler flag injection (e.g. PGO generate/use flags).
+    # Runs after the linker guard so these flags are never treated as lld-specific.
+    if compiler_flags_extra:
+        for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
+            if key in profile_overrides:
+                base = profile_overrides[key]
+            elif key in system_assignments:
+                raw = system_assignments[key].strip()
+                base = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
+            else:
+                base = ""
+            profile_overrides[key] = (base + " " + compiler_flags_extra).strip()
+        _log.info("[PGO]", f"Injecting into CFLAGS/CXXFLAGS/LDFLAGS: {compiler_flags_extra!r}")
 
     # Build output lines: system conf keys in their original raw form,
     # profile-overridden keys substituted inline, new profile keys appended.
@@ -535,7 +554,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                active_consumes=None, extracted_profile=None, pkgmeta=None,
                extra_flags=None, interactive=False,
                cc_override=None, cxx_override=None, ld_override=None,
-               kernel_build: bool = False):
+               kernel_build: bool = False,
+               compiler_flags_extra: str | None = None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -597,7 +617,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                                cc_override=cc_override,
                                cxx_override=cxx_override,
                                ld_override=ld_override,
-                               kernel_build=kernel_build) as conf_path:
+                               kernel_build=kernel_build,
+                               compiler_flags_extra=compiler_flags_extra) as conf_path:
             _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                extra_env, extra_flags, interactive)
 
@@ -679,6 +700,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         cache_report: bool = False, init_session: bool = True,
         update: bool = True,
         profile_override: str | None = None,
+        compiler_flags_extra: str | None = None,
         state_dir=None):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
@@ -779,6 +801,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             cxx_override=cxx_override,
             ld_override=ld_override,
             kernel_build=kernel_build,
+            compiler_flags_extra=compiler_flags_extra,
         )
         build_success = True
 

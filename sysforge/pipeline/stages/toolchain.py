@@ -6,20 +6,24 @@ Systems that skip this stage use whatever compiler is already installed;
 packages and kernel stages proceed normally.
 
 toolchain.toml structure:
-  compiler = "llvm"   # "llvm" or "gcc"
-  pgo = true          # only meaningful when compiler = "llvm"; ignored for gcc
+  compiler    = "llvm"   # "llvm" or "gcc"
+  pgo         = true     # only meaningful when compiler = "llvm"; ignored for gcc
+  pgo_staging = "/var/tmp/sysforge-llvm-stage2"   # staging dir for pass-2 binaries
+  pgo_store   = "/var/tmp/sysforge-llvm-pgo"      # dir for profraw/profdata files
 
   [packages]
   pgo     = ["llvm", "llvm-libs", "clang", "lld"]
   non_pgo = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
   lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", ...]
 
-  pgo_staging = "/var/tmp/sysforge-llvm-stage2"
-
 LLVM PGO bootstrap (3 passes, only when pgo = true):
-  Pass 1 — system compiler, pgo_llvm_toolchain profile, installs to system
-  Pass 2 — pgo packages only, CC=pass1 clang, no system install, extract to staging
-  Pass 3 — CC/CXX from staged binary, install to system; staging removed on success
+  Pass 1 — system compiler, standard flags; install pgo packages to system
+  Pass 2 — CC=pass-1 clang, CFLAGS += -fprofile-generate=<pgo_store>;
+            no system install; profraw merged → profdata; pass-2 binaries
+            extracted to staging
+  Pass 3 — CC=staged clang, CFLAGS += -fprofile-instr-use=<profdata>
+            -fprofile-correction; install all packages to system;
+            staging + profdata removed on success
 
 Compiler propagation:
   On completion writes cc/cxx/ld to pipeline_state.toml [stages.toolchain.result]
@@ -48,6 +52,12 @@ _DEFAULT_LLVM_LIB32  = [
 ]
 _DEFAULT_GCC         = ["gcc", "gcc-libs"]
 _DEFAULT_STAGING     = "/var/tmp/sysforge-llvm-stage2"
+_DEFAULT_PGO_STORE   = "/var/tmp/sysforge-llvm-pgo"
+
+# Makepkg flags permitted through to PGO builds from user -m input.
+# Only force-rebuild is safe; flags that alter build flow (e.g. --noextract,
+# --nobuild, --noprepare) would corrupt the instrumentation/use sequence.
+_PGO_ALLOWED_MAKEPKG_FLAGS = {"-f", "--force"}
 
 
 # ---------------------------------------------------------------------------
@@ -265,19 +275,28 @@ def _confirm_or_abort(state_dir) -> None:
 def _build_pkg(name: str, pkgbuild_path: Path, options,
                cc: str | None = None, cxx: str | None = None,
                extra_flags: list | None = None,
-               init_session: bool = False) -> None:
+               init_session: bool = False,
+               compiler_flags_extra: str | None = None,
+               pgo_build: bool = False) -> None:
     """Build one package via makepkg_wrapper.run()."""
     if options.dry_run:
         cc_label = f" CC={cc}" if cc else ""
         _log.ui("[TOOLCHAIN]", f"[dry-run] would build {name}{cc_label}")
         return
-    # Strip install flags from user-supplied flags — the toolchain controls
-    # install/no-install exclusively via extra_flags per pass.
+    # Strip install flags — toolchain controls install/no-install via extra_flags.
     user_flags = [f for f in getattr(options, "makepkg_flags", []) if f not in ("-i", "--install")]
+    if pgo_build:
+        dropped = [f for f in user_flags if f not in _PGO_ALLOWED_MAKEPKG_FLAGS]
+        user_flags = [f for f in user_flags if f in _PGO_ALLOWED_MAKEPKG_FLAGS]
+        if dropped:
+            _log.warn("[TOOLCHAIN]",
+                      f"PGO build: ignoring -m flags that could corrupt the "
+                      f"instrumentation sequence: {dropped}")
     combined_flags = list(extra_flags or []) + user_flags
     makepkg_run(
         pkgbuild_path,
         extra_flags=combined_flags,
+        compiler_flags_extra=compiler_flags_extra,
         pkg_log=not options.no_pkg_logs,
         persist_log=options.persist_log,
         cc_override=cc,
@@ -289,7 +308,9 @@ def _build_pkg(name: str, pkgbuild_path: Path, options,
 
 def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
                 cc: str | None = None, cxx: str | None = None,
-                install: bool = True) -> None:
+                install: bool = True,
+                compiler_flags_extra: str | None = None,
+                pgo_build: bool = False) -> None:
     """Build all packages in pkgbuild_map for one pass.
 
     Deduplicates by PKGBUILD directory: split packages that share a directory
@@ -307,7 +328,9 @@ def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
         seen_dirs.add(pkg_dir)
         _log.ui("[TOOLCHAIN]", f"  {name}")
         _build_pkg(name, pkgbuild_path, options, cc=cc, cxx=cxx,
-                   extra_flags=extra, init_session=first)
+                   extra_flags=extra, init_session=first,
+                   compiler_flags_extra=compiler_flags_extra,
+                   pgo_build=pgo_build)
         first = False
 
 
@@ -361,6 +384,52 @@ def _remove_staging(staging: Path) -> None:
         shutil.rmtree(staging)
 
 
+def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
+    """
+    Merge all .profraw files under pgo_store into a single .profdata file,
+    then delete the raws to reclaim space (intermediate merge).
+
+    Returns the path to the merged profdata file.
+    Raises RuntimeError if no profraw files are found or the merge fails.
+    """
+    profdata_path = pgo_store / "clang.profdata"
+
+    if dry_run:
+        _log.ui("[TOOLCHAIN]", f"[dry-run] would merge .profraw files → {profdata_path}")
+        return profdata_path
+
+    profraw_files = list(pgo_store.glob("**/*.profraw"))
+    if not profraw_files:
+        raise RuntimeError(
+            f"[TOOLCHAIN] No .profraw files found under {pgo_store} after Pass 2. "
+            "Ensure the pgo packages are built with clang and -fprofile-generate "
+            "was effective (check the build log)."
+        )
+
+    _log.ui("[TOOLCHAIN]",
+            f"Merging {len(profraw_files)} .profraw file(s) → {profdata_path}")
+    result = subprocess.run(
+        ["llvm-profdata", "merge", "--output", str(profdata_path)]
+        + [str(p) for p in profraw_files],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"[TOOLCHAIN] llvm-profdata merge failed (exit {result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
+
+    deleted = 0
+    for f in profraw_files:
+        try:
+            f.unlink()
+            deleted += 1
+        except OSError:
+            pass
+    _log.info("[TOOLCHAIN]", f"Deleted {deleted} .profraw file(s) from {pgo_store}")
+    return profdata_path
+
+
 # ---------------------------------------------------------------------------
 # Build paths
 # ---------------------------------------------------------------------------
@@ -385,36 +454,57 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
                     non_pgo_map: dict[str, Path],
                     lib32_map: dict[str, Path],
                     staging: Path,
+                    pgo_store: Path,
                     options) -> tuple[str, str, str]:
     """
     3-pass LLVM PGO build.
 
-    Pass 1: system compiler, pgo_llvm_toolchain profile, installs to system
-    Pass 2: CC=pass-1 clang, build pgo packages, no system install, extract to staging
-    Pass 3: CC=staged clang from pass 2, install pgo + non_pgo + lib32 to system
-            Remove staging prefix on success.
+    Pass 1: system compiler, standard flags; install pgo packages to system.
+    Pass 2: CC=pass-1 clang; CFLAGS/CXXFLAGS/LDFLAGS += -fprofile-generate;
+            no system install; profraw files merged → profdata (raws deleted);
+            pass-2 binaries extracted to staging.
+    Pass 3: CC=staged clang; CFLAGS/CXXFLAGS/LDFLAGS += -fprofile-instr-use
+            + -fprofile-correction; install pgo + non_pgo + lib32 to system.
+            Staging prefix and profdata removed on success.
 
     Returns (cc, cxx, ld).
     """
     staged_cc  = str(staging / "usr/bin/clang")
     staged_cxx = str(staging / "usr/bin/clang++")
 
+    if not options.dry_run:
+        pgo_store.mkdir(parents=True, exist_ok=True)
+
     # Pass 1 — build pgo packages with system compiler, install to system
     _build_pass("Pass 1: system compiler → install pgo packages", pgo_map, options,
-                cc=None, cxx=None, install=True)
+                cc=None, cxx=None, install=True, pgo_build=True)
 
-    # Pass 2 — rebuild pgo packages with instrumented Pass 1 clang, no system install,
-    #           extract to staging prefix for use as CC/CXX in Pass 3
-    _build_pass("Pass 2: instrumented build → staging (no system install)", pgo_map, options,
-                cc="/usr/bin/clang", cxx="/usr/bin/clang++", install=False)
+    # Pass 2 — instrumented build; generates profraw data under pgo_store
+    _build_pass("Pass 2: instrumented build → profraw generation (no system install)",
+                pgo_map, options,
+                cc="/usr/bin/clang", cxx="/usr/bin/clang++", install=False,
+                compiler_flags_extra=f"-fprofile-generate={pgo_store}",
+                pgo_build=True)
+
+    # Merge profraw → profdata, delete raws to reclaim space
+    profdata_path = _merge_profraw(pgo_store, options.dry_run)
     _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
 
-    # Pass 3 — final PGO-optimized build with staged binary, install pgo + all extras
+    # Pass 3 — PGO-optimized build using merged profile data, install all
     all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
     _build_pass("Pass 3: PGO-optimized build → install all", all_pass3, options,
-                cc=staged_cc, cxx=staged_cxx, install=True)
+                cc=staged_cc, cxx=staged_cxx, install=True,
+                compiler_flags_extra=(
+                    f"-fprofile-instr-use={profdata_path} -fprofile-correction"
+                ),
+                pgo_build=True)
 
     if not options.dry_run:
+        try:
+            profdata_path.unlink()
+            _log.info("[TOOLCHAIN]", f"Removed profdata: {profdata_path}")
+        except OSError:
+            pass
         _remove_staging(staging)
 
     return "/usr/bin/clang", "/usr/bin/clang++", "lld"
@@ -446,9 +536,10 @@ class ToolchainStage(Stage):
             _log.ui("[TOOLCHAIN]", "toolchain.toml absent or disabled — stage is a no-op")
             return
 
-        compiler = tcfg.get("compiler", "llvm")
-        pgo      = tcfg.get("pgo", True) if compiler == "llvm" else False
-        staging  = Path(tcfg.get("pgo_staging", _DEFAULT_STAGING))
+        compiler  = tcfg.get("compiler", "llvm")
+        pgo       = tcfg.get("pgo", True) if compiler == "llvm" else False
+        staging   = Path(tcfg.get("pgo_staging", _DEFAULT_STAGING))
+        pgo_store = Path(tcfg.get("pgo_store", _DEFAULT_PGO_STORE))
 
         # skip_build: register compiler paths without building anything
         if tcfg.get("skip_build", False):
@@ -516,7 +607,8 @@ class ToolchainStage(Stage):
         if compiler == "gcc":
             cc, cxx, ld = _build_gcc(non_pgo_map, options)
         elif pgo:
-            cc, cxx, ld = _build_llvm_pgo(pgo_map, non_pgo_map, lib32_map, staging, options)
+            cc, cxx, ld = _build_llvm_pgo(pgo_map, non_pgo_map, lib32_map,
+                                           staging, pgo_store, options)
         else:
             cc, cxx, ld = _build_llvm_single(pgo_map, non_pgo_map, lib32_map, options)
 

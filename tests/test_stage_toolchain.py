@@ -19,6 +19,7 @@ from sysforge.pipeline.stages.toolchain import (
     _show_resolution_table,
     _extract_pass2_to_staging,
     _build_pass,
+    _merge_profraw,
     _remove_staging,
     TOOLCHAIN_PATH,
     _DEFAULT_LLVM_PGO,
@@ -26,6 +27,8 @@ from sysforge.pipeline.stages.toolchain import (
     _DEFAULT_LLVM_LIB32,
     _DEFAULT_GCC,
     _DEFAULT_STAGING,
+    _DEFAULT_PGO_STORE,
+    _PGO_ALLOWED_MAKEPKG_FLAGS,
 )
 from sysforge.pipeline.state import PipelineState
 from sysforge.pipeline.stages.base import RunOptions
@@ -395,12 +398,13 @@ def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
 
 
 def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
-    """Verify makepkg_wrapper.run is called once per package per pass."""
-    staging = tmp_path / "staging"
+    """Verify makepkg_wrapper.run is called once per package per pass with correct PGO flags."""
+    staging   = tmp_path / "staging"
+    pgo_store = tmp_path / "pgo_store"
     toml_path = tmp_path / "toolchain.toml"
-    # Use a minimal 1-package set to keep the count predictable
     toml_path.write_text(
-        f'enabled = true\ncompiler = "llvm"\npgo = true\npgo_staging = "{staging}"\n'
+        f'enabled = true\ncompiler = "llvm"\npgo = true\n'
+        f'pgo_staging = "{staging}"\npgo_store = "{pgo_store}"\n'
         '[packages]\npgo = ["llvm"]\nnon_pgo = []\nlib32 = []\n'
     )
 
@@ -415,20 +419,28 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     def fake_run(pkgbuild_path, extra_flags=None, interactive=False,
                  pkg_log=True, persist_log=False, log_dir=None, profile_conf=None,
                  cc_override=None, cxx_override=None, ld_override=None,
-                 cache_report=False, init_session=True, update=True):
-        call_log.append({"cc": cc_override, "flags": list(extra_flags or [])})
+                 cache_report=False, init_session=True, update=True,
+                 compiler_flags_extra=None, profile_override=None, state_dir=None):
+        call_log.append({
+            "cc": cc_override,
+            "flags": list(extra_flags or []),
+            "cfe": compiler_flags_extra,
+        })
 
-    fake_tar = MagicMock()
-    fake_tar.returncode = 0
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
 
-    # Create a fake .pkg.tar.zst so pass 2 staging extraction works
+    # Fake .pkg.tar.zst for pass-2 staging extraction
     pkg_dir = pkgbuild_dir / "llvm"
-    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
+    (pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst").touch()
+
+    # Fake .profraw file so _merge_profraw finds something to merge
+    pgo_store.mkdir()
+    (pgo_store / "default_0.profraw").touch()
 
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
          patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
-         patch("subprocess.run", return_value=fake_tar), \
+         patch("subprocess.run", return_value=fake_proc), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
 
@@ -441,6 +453,121 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     assert "--install" in call_log[0]["flags"]
     assert "--install" not in call_log[1]["flags"]
     assert "--install" in call_log[2]["flags"]
+    # Pass 1 has no extra compiler flags
+    assert call_log[0]["cfe"] is None
+    # Pass 2 injects -fprofile-generate pointing at pgo_store
+    assert call_log[1]["cfe"] is not None
+    assert "-fprofile-generate=" in call_log[1]["cfe"]
+    assert str(pgo_store) in call_log[1]["cfe"]
+    # Pass 3 injects -fprofile-instr-use + -fprofile-correction
+    assert call_log[2]["cfe"] is not None
+    assert "-fprofile-instr-use=" in call_log[2]["cfe"]
+    assert "-fprofile-correction" in call_log[2]["cfe"]
+
+
+# ---------------------------------------------------------------------------
+# _merge_profraw
+# ---------------------------------------------------------------------------
+
+def test_merge_profraw_merges_and_deletes_raws(tmp_path):
+    """_merge_profraw calls llvm-profdata and deletes .profraw files."""
+    (tmp_path / "a.profraw").touch()
+    (tmp_path / "b.profraw").touch()
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+
+    with patch("subprocess.run", return_value=fake_proc) as mock_run:
+        result = _merge_profraw(tmp_path, dry_run=False)
+
+    # profdata path returned correctly
+    assert result == tmp_path / "clang.profdata"
+    # llvm-profdata was invoked
+    cmd = mock_run.call_args[0][0]
+    assert cmd[0] == "llvm-profdata"
+    assert "--output" in cmd
+    assert str(tmp_path / "clang.profdata") in cmd
+    # .profraw files were deleted
+    assert not (tmp_path / "a.profraw").exists()
+    assert not (tmp_path / "b.profraw").exists()
+
+
+def test_merge_profraw_no_files_raises(tmp_path):
+    with pytest.raises(RuntimeError, match="No .profraw files"):
+        _merge_profraw(tmp_path, dry_run=False)
+
+
+def test_merge_profraw_llvm_profdata_failure_raises(tmp_path):
+    (tmp_path / "a.profraw").touch()
+    fake_proc = MagicMock()
+    fake_proc.returncode = 1
+    fake_proc.stderr = "error: bad input"
+
+    with patch("subprocess.run", return_value=fake_proc):
+        with pytest.raises(RuntimeError, match="llvm-profdata merge failed"):
+            _merge_profraw(tmp_path, dry_run=False)
+
+
+def test_merge_profraw_dry_run_skips_everything(tmp_path):
+    # No profraw files — dry_run should not raise or call llvm-profdata
+    with patch("subprocess.run") as mock_run:
+        result = _merge_profraw(tmp_path, dry_run=True)
+
+    assert result == tmp_path / "clang.profdata"
+    mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# PGO makepkg flag whitelist
+# ---------------------------------------------------------------------------
+
+def test_pgo_allowed_flags_whitelist():
+    assert "-f" in _PGO_ALLOWED_MAKEPKG_FLAGS
+    assert "--force" in _PGO_ALLOWED_MAKEPKG_FLAGS
+
+
+def test_build_pass_pgo_drops_disallowed_flags(tmp_path):
+    """pgo_build=True: only -f/--force pass through from user makepkg_flags."""
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    pkgbuild_map = {"llvm": pkgbuild}
+
+    captured = []
+    def fake_run(pb, extra_flags=None, compiler_flags_extra=None, **kwargs):
+        captured.append(list(extra_flags or []))
+
+    # Simulate user passing -m '-f --noextract --noprepare'
+    options = make_options(dry_run=False,
+                           makepkg_flags=["-f", "--noextract", "--noprepare"])
+
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run):
+        _build_pass("test pass", pkgbuild_map, options,
+                    install=False, pgo_build=True)
+
+    # Only -f should survive; --noextract and --noprepare dropped
+    flags = captured[0]
+    assert "-f" in flags
+    assert "--noextract" not in flags
+    assert "--noprepare" not in flags
+
+
+def test_build_pass_non_pgo_passes_all_flags(tmp_path):
+    """pgo_build=False (default): all user flags pass through unchanged."""
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    pkgbuild_map = {"llvm": pkgbuild}
+
+    captured = []
+    def fake_run(pb, extra_flags=None, compiler_flags_extra=None, **kwargs):
+        captured.append(list(extra_flags or []))
+
+    options = make_options(dry_run=False,
+                           makepkg_flags=["-f", "--noextract"])
+
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run):
+        _build_pass("test pass", pkgbuild_map, options, install=False)
+
+    flags = captured[0]
+    assert "-f" in flags
+    assert "--noextract" in flags
 
 
 # ---------------------------------------------------------------------------
