@@ -429,14 +429,14 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
             "flags": list(extra_flags or []),
             "cfe": compiler_flags_extra,
         })
+        # Simulate Pass 2: instrumented clang running as CC writes a profraw file
+        if cc_override == "/usr/bin/clang":
+            pgo_store.mkdir(parents=True, exist_ok=True)
+            (pgo_store / "default_0.profraw").touch()
 
     # Fake .pkg.tar.zst for pass-2 staging extraction
     pkg_dir = pkgbuild_dir / "llvm"
     (pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst").touch()
-
-    # Fake .profraw file so _merge_profraw finds something to merge
-    pgo_store.mkdir()
-    (pgo_store / "default_0.profraw").touch()
 
     def fake_subprocess(cmd, **kwargs):
         result = MagicMock()

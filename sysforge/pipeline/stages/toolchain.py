@@ -533,6 +533,10 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     staged_cxx = str(staging / "usr/bin/clang++")
 
     if not options.dry_run:
+        import shutil as _shutil
+        if pgo_store.exists():
+            _log.info("[TOOLCHAIN]", f"[PGO] Purging stale pgo_store: {pgo_store}")
+            _shutil.rmtree(pgo_store)
         pgo_store.mkdir(parents=True, exist_ok=True)
 
     # Pass 1 — build pgo packages with system compiler + instrumentation flags.
