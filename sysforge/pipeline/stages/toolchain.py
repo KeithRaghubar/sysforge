@@ -17,11 +17,12 @@ toolchain.toml structure:
   lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", ...]
 
 LLVM PGO bootstrap (3 passes, only when pgo = true):
-  Pass 1 — system compiler, standard flags; install pgo packages to system
-  Pass 2 — CC=pass-1 clang, CFLAGS += -fprofile-generate=<pgo_store>;
-            no system install; profraw merged → profdata; pass-2 binaries
-            extracted to staging
-  Pass 3 — CC=staged clang, CFLAGS += -fprofile-instr-use=<profdata>
+  Pass 1 — system compiler + -fprofile-generate; install pgo packages to system;
+            the installed /usr/bin/clang is instrumented (writes profraw when run)
+  Pass 2 — CC=instrumented Pass-1 clang (no extra flags); running it as the
+            compiler generates profraw in pgo_store as a side effect;
+            no system install; pass-2 binaries extracted to staging
+  Pass 3 — CC=staged clang, CFLAGS += -fprofile-use=<profdata>
             -fprofile-correction; install all packages to system;
             staging + profdata removed on success
 
@@ -515,11 +516,14 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     """
     3-pass LLVM PGO build.
 
-    Pass 1: system compiler, standard flags; install pgo packages to system.
-    Pass 2: CC=pass-1 clang; CFLAGS/CXXFLAGS/LDFLAGS += -fprofile-generate;
-            no system install; profraw files merged → profdata (raws deleted);
-            pass-2 binaries extracted to staging.
-    Pass 3: CC=staged clang; CFLAGS/CXXFLAGS/LDFLAGS += -fprofile-instr-use
+    Pass 1: system compiler + -fprofile-generate; install pgo packages to system.
+            The resulting /usr/bin/clang is instrumented and writes profraw when run.
+    Pass 2: CC=instrumented Pass-1 clang (no extra flags); running it as the compiler
+            generates profraw in pgo_store as a side effect of compilation.
+            Background daemon merges profraw periodically to limit disk usage;
+            final sweep runs after the build completes.
+            Pass-2 binaries extracted to staging; no system install.
+    Pass 3: CC=staged clang; CFLAGS/CXXFLAGS/LDFLAGS += -fprofile-use
             + -fprofile-correction; install pgo + non_pgo + lib32 to system.
             Staging prefix and profdata removed on success.
 
@@ -531,12 +535,16 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     if not options.dry_run:
         pgo_store.mkdir(parents=True, exist_ok=True)
 
-    # Pass 1 — build pgo packages with system compiler, install to system
-    _build_pass("Pass 1: system compiler → install pgo packages", pgo_map, options,
-                cc=None, cxx=None, install=True, pgo_build=True)
+    # Pass 1 — build pgo packages with system compiler + instrumentation flags.
+    # The system compiler must be clang: -fprofile-generate produces LLVM-format
+    # .profraw files (consumed by llvm-profdata); GCC would produce GCOV format.
+    # On a running Arch system with LLVM installed this is always clang.
+    _build_pass("Pass 1: instrumented build → install pgo packages", pgo_map, options,
+                cc=None, cxx=None, install=True, pgo_build=True,
+                compiler_flags_extra=f"-fprofile-generate={pgo_store}")
 
-    # Pass 2 — instrumented build; background daemon merges profraw periodically
-    # to limit disk usage, final sweep runs after the build completes.
+    # Pass 2 — use the instrumented Pass-1 clang as CC; profraw is generated
+    # as a side effect of running it. Background daemon merges periodically.
     stop_event = threading.Event()
     monitor = threading.Thread(
         target=_profraw_merge_daemon,
@@ -547,10 +555,9 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     if not options.dry_run:
         monitor.start()
     try:
-        _build_pass("Pass 2: instrumented build → profraw generation (no system install)",
+        _build_pass("Pass 2: training run → profraw generation (no system install)",
                     pgo_map, options,
                     cc="/usr/bin/clang", cxx="/usr/bin/clang++", install=False,
-                    compiler_flags_extra=f"-fprofile-generate={pgo_store}",
                     pgo_build=True)
     finally:
         stop_event.set()
@@ -561,12 +568,12 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     profdata_path = _merge_profraw(pgo_store, options.dry_run)
     _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
 
-    # Pass 3 — PGO-optimized build using merged profile data, install all
+    # Pass 3 — PGO-optimized build; -fprofile-use matches -fprofile-generate (IR PGO)
     all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
     _build_pass("Pass 3: PGO-optimized build → install all", all_pass3, options,
                 cc=staged_cc, cxx=staged_cxx, install=True,
                 compiler_flags_extra=(
-                    f"-fprofile-instr-use={profdata_path} -fprofile-correction"
+                    f"-fprofile-use={profdata_path} -fprofile-correction"
                 ),
                 pgo_build=True)
 
