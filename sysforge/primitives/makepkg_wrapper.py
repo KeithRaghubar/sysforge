@@ -327,6 +327,18 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
     env = os.environ.copy()
 
+    # Strip Python venv from the environment so makepkg subprocesses use the
+    # system Python, not sysforge's venv. Without this, PKGBUILD build()
+    # functions that invoke `python` or `python -m build` get the venv Python,
+    # which lacks packages like `build` and produces misleading failures.
+    venv_dir = env.pop("VIRTUAL_ENV", None)
+    env.pop("PYTHONPATH", None)
+    if venv_dir:
+        venv_bin = os.path.join(venv_dir, "bin")
+        path_parts = env.get("PATH", "").split(os.pathsep)
+        env["PATH"] = os.pathsep.join(p for p in path_parts if p != venv_bin)
+        _log.info("[ENV]", f"Stripped venv from PATH/VIRTUAL_ENV: {venv_dir}")
+
     # Strip all makepkg-managed and toolchain keys from the inherited shell env
     # so the temp conf and profile env injection are the sole authority.
     # Without this, shell vars like CC=clang or CFLAGS=... win over what the
