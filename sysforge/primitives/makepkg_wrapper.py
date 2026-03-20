@@ -377,6 +377,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             text=True, bufsize=1,
         )
         failed_stage = None
+        missing_deps: list[str] = []
         for line in proc.stdout:
             stripped = line.rstrip()
             if "A failure occurred in prepare()." in stripped:
@@ -385,15 +386,28 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 failed_stage = "build"
             elif "A failure occurred in package()." in stripped:
                 failed_stage = "package"
+            elif "target not found:" in stripped:
+                missing_deps.append(stripped.strip())
             _log.debug("[MAKEPKG]", stripped)
         proc.wait()
         returncode = proc.returncode
     else:
         returncode = subprocess.run(cmd, cwd=build_dir, env=env).returncode
         failed_stage = None
+        missing_deps = []
 
     if returncode != 0:
-        if failed_stage == "prepare":
+        # Exit code 8 = E_INSTALL_FAILED (pacman failed to install deps).
+        # Also triggered when we collected explicit "target not found" lines.
+        if returncode == 8 or missing_deps:
+            _log.error("[BUILD]", "Dependency resolution failed.")
+            for dep in missing_deps:
+                _log.error("[BUILD]", f"  {dep}")
+            _log.warn("[BUILD]",
+                "This usually means related PKGBUILDs are at different versions. "
+                "Run 'git pull --rebase' in each package directory to sync them, "
+                "then retry with -m '-f' to force a rebuild.")
+        elif failed_stage == "prepare":
             _log.info("[BUILD]", "prepare() failed — likely an upstream issue "
                       "(patch conflict, changed upstream state, or fetch error); "
                       "sysforge does not modify prepare()")

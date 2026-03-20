@@ -186,6 +186,51 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
     return resolved
 
 
+def _check_pkgver_consistency(pkgbuild_map: dict[str, Path]) -> None:
+    """
+    Parse all resolved PKGBUILDs and warn if they have inconsistent pkgver values.
+
+    Toolchain packages (e.g. llvm, clang, lld) all come from the same upstream
+    release and must share the same pkgver. A mismatch causes dependency resolution
+    failures at build time (e.g. clang requires llvm=22.1.0 but llvm is 22.1.1).
+    """
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    # Parse each unique PKGBUILD directory once
+    dir_info: dict[Path, dict] = {}  # dir -> {pkgver, names}
+    for name, path in pkgbuild_map.items():
+        d = path.parent
+        if d not in dir_info:
+            try:
+                meta = parse_pkgbuild(path)
+                pkgver = meta.get("globals", {}).get("pkgver", "")
+            except Exception:
+                pkgver = ""
+            dir_info[d] = {"pkgver": pkgver, "names": []}
+        dir_info[d]["names"].append(name)
+
+    versions = {info["pkgver"] for info in dir_info.values() if info["pkgver"]}
+    if len(versions) <= 1:
+        return
+
+    # Determine the dominant (most common) version to identify stale outliers
+    from collections import Counter
+    version_counts = Counter(info["pkgver"] for info in dir_info.values() if info["pkgver"])
+    dominant = version_counts.most_common(1)[0][0]
+
+    _log.warn("[TOOLCHAIN]",
+        "PKGBUILD version mismatch detected — dependency resolution will likely fail:")
+    for d, info in dir_info.items():
+        ver = info["pkgver"] or "unknown"
+        names = ", ".join(info["names"])
+        marker = "  ← stale" if ver != dominant else ""
+        _log.warn("[TOOLCHAIN]", f"  {ver:<16}  {d}  ({names}){marker}")
+    _log.warn("[TOOLCHAIN]", "Sync stale directories before building:")
+    for d, info in dir_info.items():
+        if info["pkgver"] != dominant:
+            _log.warn("[TOOLCHAIN]", f"  git -C {d} pull --rebase")
+
+
 def _show_resolution_table(pkgbuild_map: dict[str, Path],
                            role_map: dict[str, str] | None = None) -> None:
     _log.ui("[TOOLCHAIN]", "─── PKGBUILD resolution ─────────────────────────────")
@@ -443,6 +488,7 @@ class ToolchainStage(Stage):
 
         # Resolve PKGBUILDs for all packages
         pkgbuild_map = _resolve_all_pkgbuilds(all_names, config)
+        _check_pkgver_consistency(pkgbuild_map)
 
         pgo_map     = {n: pkgbuild_map[n] for n in pgo_pkgs}
         non_pgo_map = {n: pkgbuild_map[n] for n in non_pgo_pkgs}
