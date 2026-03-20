@@ -608,18 +608,29 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         state_dir=None):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
-    conflict_groups = load_conflict_groups()
-    inference_map = load_consumes_inference()
-
-    if init_session:
-        reset_session()
-        emit_system_probes()
+    # Note: load_config() debug dumps (full flag_profiles etc.) fire here, before the
+    # pkg log is open — they go to the unified log (if open) and terminal only.
 
     try:
         pkgbuild_path = find_pkgbuild(str(pkgbuild_path), config)
     except FileNotFoundError as e:
         print(f"[SYSFORGE] Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Open per-package log as early as possible so subsequent debug output is captured.
+    # Use the PKGBUILD directory name; this matches pkgbase in all normal cases.
+    if pkg_log:
+        log_base = Path(log_dir) if log_dir is not None else pkgbuild_path.parent
+        log_path = log_base / f"sysforge_{pkgbuild_path.parent.name}.log"
+        _log.open_pkg_log(log_path, argv=sys.argv)
+        _log.info("[BUILD]", f"Per-package log: {log_path}")
+
+    conflict_groups = load_conflict_groups()
+    inference_map = load_consumes_inference()
+
+    if init_session:
+        reset_session()
+        emit_system_probes()
 
     if update:
         try:
@@ -635,17 +646,6 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
     except Exception as e:
         handle_failure("pkgbuild_unparseable", str(e), config)
         pkgmeta = {"globals": {}}
-
-    # Open per-package log if enabled
-    if pkg_log:
-        globals_ = pkgmeta.get("globals", {})
-        pkgname = globals_.get("pkgbase") or globals_.get("pkgname", "unknown")
-        if isinstance(pkgname, list):
-            pkgname = pkgname[0] if pkgname else "unknown"
-        log_base = Path(log_dir) if log_dir is not None else pkgbuild_path.parent
-        log_path = log_base / f"sysforge_{pkgname}.log"
-        _log.open_pkg_log(log_path, argv=sys.argv)
-        _log.info("[BUILD]", f"Per-package log: {log_path}")
 
     build_success = False
     try:
