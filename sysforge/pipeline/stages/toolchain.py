@@ -541,7 +541,7 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     # On a running Arch system with LLVM installed this is always clang.
     _build_pass("Pass 1: instrumented build → install pgo packages", pgo_map, options,
                 cc=None, cxx=None, install=True, pgo_build=True,
-                compiler_flags_extra=f"-fprofile-generate={pgo_store}")
+                compiler_flags_extra=f"-fprofile-generate={pgo_store}/")
 
     # Pass 2 — use the instrumented Pass-1 clang as CC; profraw is generated
     # as a side effect of running it. Background daemon merges periodically.
