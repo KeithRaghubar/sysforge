@@ -423,10 +423,21 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         raise subprocess.CalledProcessError(returncode, "makepkg")
 
 
+def _find_built_packages(build_dir: Path) -> list:
+    """Return .pkg.tar.* files in build_dir (excludes .sig files)."""
+    return [p for p in Path(build_dir).glob("*.pkg.tar.*")
+            if not p.name.endswith(".sig")]
+
+
 def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                        extra_env=None, extra_flags=None, interactive=False):
     """
     Invoke makepkg, retrying after manual correction if not in batch mode.
+
+    If makepkg fails but .pkg.tar.* files are present in the build dir, the
+    build itself likely succeeded and only the install step failed (e.g. due
+    to a sudo timeout). In that case the user is offered a sudo re-auth +
+    direct pacman -U path instead of a full rebuild.
     """
     if resolved_profile.get("batch", False):
         try:
@@ -444,20 +455,69 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
             except subprocess.CalledProcessError as e:
                 _log.error("[BUILD]", f"Build failed: {e}")
                 _log.info("[BUILD]", f"PKGBUILD location: {pkgbuild_path}")
-                response = (
-                    input(
-                        _log.prompt_prefix("UI", "[BUILD]") +
-                        "Manually correct the PKGBUILD and press Enter to retry, "
-                        "or type 'abort' to stop: "
+
+                built_pkgs = _find_built_packages(Path(pkgbuild_path).resolve().parent)
+                if built_pkgs:
+                    _log.ui("[BUILD]",
+                            "Built packages found — build likely succeeded but "
+                            "install failed (sudo timeout?):")
+                    for p in built_pkgs:
+                        _log.ui("[BUILD]", f"  {p.name}")
+                    response = (
+                        input(
+                            _log.prompt_prefix("UI", "[BUILD]") +
+                            "[s]udo re-auth and install, fix PKGBUILD and press "
+                            "Enter to retry, or type 'abort' to stop: "
+                        )
+                        .strip()
+                        .lower()
                     )
-                    .strip()
-                    .lower()
-                )
-                if response == "abort":
-                    raise RuntimeError(
-                        "[build_failed] Aborted by user after build failure"
+                    if response == "s":
+                        while True:
+                            _log.ui("[BUILD]", "Refreshing sudo credentials...")
+                            subprocess.run(["sudo", "-v"])
+                            result = subprocess.run(
+                                ["sudo", "pacman", "-U", "--noconfirm"]
+                                + [str(p) for p in built_pkgs]
+                            )
+                            if result.returncode == 0:
+                                _log.ui("[BUILD]", "Install succeeded.")
+                                return
+                            _log.error("[BUILD]",
+                                       f"pacman -U failed (exit {result.returncode})")
+                            retry = (
+                                input(
+                                    _log.prompt_prefix("UI", "[BUILD]") +
+                                    "Retry install? [s]udo re-auth again, or 'abort': "
+                                )
+                                .strip()
+                                .lower()
+                            )
+                            if retry != "s":
+                                raise RuntimeError(
+                                    "[build_failed] Aborted by user after install failure"
+                                )
+                    elif response == "abort":
+                        raise RuntimeError(
+                            "[build_failed] Aborted by user after build failure"
+                        )
+                    # anything else: fall through to retry the full build
+                    _log.info("[BUILD]", "Retrying build...")
+                else:
+                    response = (
+                        input(
+                            _log.prompt_prefix("UI", "[BUILD]") +
+                            "Manually correct the PKGBUILD and press Enter to retry, "
+                            "or type 'abort' to stop: "
+                        )
+                        .strip()
+                        .lower()
                     )
-                _log.info("[BUILD]", "Retrying build...")
+                    if response == "abort":
+                        raise RuntimeError(
+                            "[build_failed] Aborted by user after build failure"
+                        )
+                    _log.info("[BUILD]", "Retrying build...")
 
 
 def _pkgname_from_meta(pkgmeta: dict | None) -> str:

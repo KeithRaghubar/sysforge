@@ -3,15 +3,17 @@ test_kernel_build.py — unit tests for kernel build mode behaviours:
   - emit_makepkg_conf flag key stripping (covered in test_system_conf.py)
   - LLVM env detection and injection via _run_build
   - kconfig patching toggled by interactive flag
+  - _invoke_with_retry sudo timeout recovery
 """
+import subprocess
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from sysforge.primitives.makepkg_wrapper import _run_build
+from sysforge.primitives.makepkg_wrapper import _find_built_packages, _invoke_with_retry, _run_build
 
 
 # ---------------------------------------------------------------------------
@@ -158,3 +160,152 @@ def test_non_kernel_build_never_patches_kconfig(tmp_path):
                    extracted_profile=None, pkgmeta=_minimal_pkgmeta(),
                    kernel_build=False)
     mock_patch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _find_built_packages
+# ---------------------------------------------------------------------------
+
+def test_find_built_packages_empty(tmp_path):
+    assert _find_built_packages(tmp_path) == []
+
+
+def test_find_built_packages_finds_pkg_files(tmp_path):
+    (tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst").touch()
+    (tmp_path / "foo-debug-1.0-1-x86_64.pkg.tar.zst").touch()
+    result = _find_built_packages(tmp_path)
+    names = {p.name for p in result}
+    assert "foo-1.0-1-x86_64.pkg.tar.zst" in names
+    assert "foo-debug-1.0-1-x86_64.pkg.tar.zst" in names
+
+
+def test_find_built_packages_excludes_sig(tmp_path):
+    (tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst").touch()
+    (tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst.sig").touch()
+    result = _find_built_packages(tmp_path)
+    assert len(result) == 1
+    assert result[0].name == "foo-1.0-1-x86_64.pkg.tar.zst"
+
+
+def test_find_built_packages_ignores_unrelated(tmp_path):
+    (tmp_path / "PKGBUILD").touch()
+    (tmp_path / "src").mkdir()
+    result = _find_built_packages(tmp_path)
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _invoke_with_retry — sudo timeout recovery
+# ---------------------------------------------------------------------------
+
+def _make_pkgbuild(tmp_path):
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=foo\npkgver=1\npkgrel=1\n")
+    return pkgbuild
+
+
+def test_invoke_retry_sudo_reauth_and_install(tmp_path):
+    """'s' response with built packages → sudo -v + pacman -U, no rebuild."""
+    pkgbuild = _make_pkgbuild(tmp_path)
+    pkg_file = tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst"
+    pkg_file.touch()
+
+    profile = {}
+    fail = subprocess.CalledProcessError(1, "makepkg")
+    sudo_v_result = MagicMock(returncode=0)
+    pacman_result = MagicMock(returncode=0)
+
+    with (
+        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", side_effect=fail),
+        patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
+              side_effect=[sudo_v_result, pacman_result]) as mock_run,
+        patch("builtins.input", return_value="s"),
+    ):
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", profile)
+
+    calls = mock_run.call_args_list
+    assert calls[0] == call(["sudo", "-v"])
+    assert calls[1][0][0][0:3] == ["sudo", "pacman", "-U"]
+    assert str(pkg_file) in calls[1][0][0]
+
+
+def test_invoke_retry_sudo_install_fails_then_abort(tmp_path):
+    """pacman -U fails → inner loop prompts; 'abort' raises RuntimeError."""
+    pkgbuild = _make_pkgbuild(tmp_path)
+    (tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst").touch()
+
+    fail = subprocess.CalledProcessError(1, "makepkg")
+    pacman_fail = MagicMock(returncode=1)
+
+    with (
+        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", side_effect=fail),
+        patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
+              side_effect=[MagicMock(returncode=0), pacman_fail]),
+        patch("builtins.input", side_effect=["s", "abort"]),
+        pytest.raises(RuntimeError, match="build_failed"),
+    ):
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {})
+
+
+def test_invoke_retry_abort_with_built_packages(tmp_path):
+    """'abort' response when packages are present → RuntimeError."""
+    pkgbuild = _make_pkgbuild(tmp_path)
+    (tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst").touch()
+
+    fail = subprocess.CalledProcessError(1, "makepkg")
+
+    with (
+        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", side_effect=fail),
+        patch("builtins.input", return_value="abort"),
+        pytest.raises(RuntimeError, match="build_failed"),
+    ):
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {})
+
+
+def test_invoke_retry_enter_retries_build_with_packages(tmp_path):
+    """Enter (empty) with built packages → full rebuild retry."""
+    pkgbuild = _make_pkgbuild(tmp_path)
+    (tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst").touch()
+
+    fail = subprocess.CalledProcessError(1, "makepkg")
+    invoke = MagicMock(side_effect=[fail, None])
+
+    with (
+        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", invoke),
+        patch("builtins.input", return_value=""),
+    ):
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {})
+
+    assert invoke.call_count == 2
+
+
+def test_invoke_retry_no_packages_prompts_fix_pkgbuild(tmp_path):
+    """No built packages → existing 'fix PKGBUILD' prompt, no sudo option."""
+    pkgbuild = _make_pkgbuild(tmp_path)
+
+    fail = subprocess.CalledProcessError(1, "makepkg")
+    invoke = MagicMock(side_effect=[fail, None])
+
+    with (
+        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", invoke),
+        patch("builtins.input", return_value="") as mock_input,
+    ):
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {})
+
+    assert invoke.call_count == 2
+    prompt_text = mock_input.call_args[0][0]
+    assert "sudo" not in prompt_text.lower() or "PKGBUILD" in prompt_text
+
+
+def test_invoke_retry_batch_mode_ignores_packages(tmp_path):
+    """batch=True → fails immediately even with built packages present."""
+    pkgbuild = _make_pkgbuild(tmp_path)
+    (tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst").touch()
+
+    fail = subprocess.CalledProcessError(1, "makepkg")
+
+    with (
+        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", side_effect=fail),
+        pytest.raises(RuntimeError, match="build_failed"),
+    ):
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {"batch": True})
