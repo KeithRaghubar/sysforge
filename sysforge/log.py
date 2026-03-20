@@ -107,13 +107,16 @@ def close_unified_log(success: bool = True, persist: bool = False) -> None:
     _unified_log_fh = None
 
 
-def open_pkg_log(path) -> None:
-    """Open (or create) the per-package log file, appending."""
+def open_pkg_log(path, argv=None) -> None:
+    """Open (or create) the per-package log file, appending.
+    argv, if provided, is written as the first entry after the session header."""
     global _pkg_log_fh
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _pkg_log_fh = open(path, "a", buffering=1)
     _write_to_files(_session_header(f"sysforge build {path.parent.name}"), raw=True)
+    if argv:
+        _write_to_files(f"# invocation: {' '.join(str(a) for a in argv)}\n", raw=True)
 
 
 def close_pkg_log(success: bool = True, persist: bool = False) -> None:

@@ -627,6 +627,8 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         except RuntimeError as e:
             _log.error("[GIT]", str(e))
             sys.exit(1)
+    else:
+        _log.info("[BUILD]", "--no-update: skipping git pull --rebase")
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)
@@ -642,9 +644,8 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             pkgname = pkgname[0] if pkgname else "unknown"
         log_base = Path(log_dir) if log_dir is not None else pkgbuild_path.parent
         log_path = log_base / f"sysforge_{pkgname}.log"
-        _log.open_pkg_log(log_path)
+        _log.open_pkg_log(log_path, argv=sys.argv)
         _log.info("[BUILD]", f"Per-package log: {log_path}")
-        _log.info("[BUILD]", f"Invocation: {' '.join(sys.argv)}")
 
     build_success = False
     try:

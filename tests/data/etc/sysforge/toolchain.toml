@@ -12,7 +12,7 @@
 enabled = true
 
  compiler = "llvm"    # "llvm" or "gcc"
- pgo     = false       # LLVM only: enable 3-pass PGO bootstrap (ignored for gcc)
+ pgo     = true       # LLVM only: enable 3-pass PGO bootstrap (ignored for gcc)
  skip_build=false
 
 # Path where the instrumented pass-2 binaries are extracted before pass 3.
