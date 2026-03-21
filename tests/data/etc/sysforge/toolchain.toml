@@ -1,5 +1,5 @@
 # =============================================================================
-# toolchain.toml — custom LLVM or GCC toolchain build (stage 6)
+# toolchain.toml — custom LLVM or GCC toolchain build (stage 6 / sysforge run toolchain)
 #
 # This stage is disabled by default. Set enabled = true and configure the
 # fields below to build and install a custom compiler before the packages
@@ -9,18 +9,22 @@
 # pipeline state: packages and kernel will use CC/CXX from this result.
 # =============================================================================
 
-enabled = true
+enabled    = true
+compiler   = "llvm"    # "llvm" or "gcc"
+pgo        = true      # LLVM only: enable 3-pass PGO bootstrap (ignored for gcc)
+skip_build = false
 
- compiler = "llvm"    # "llvm" or "gcc"
- pgo     = true       # LLVM only: enable 3-pass PGO bootstrap (ignored for gcc)
- skip_build=false
-
-# Path where the instrumented pass-2 binaries are extracted before pass 3.
+# Path where pass-2 binaries are extracted for use as CC/CXX in pass 3.
 # Must be on the same filesystem as /usr and have ~2 GB free.
 # pgo_staging = "/var/tmp/sysforge-llvm-stage2"
 
+# Path where profraw files are written during pass 2 and merged to profdata.
+# Profraw files are deleted after merging; profdata is deleted after pass 3.
+# Needs ~500 MB free during pass 2; space reclaimed once pass 3 completes.
+# pgo_store = "/var/tmp/sysforge-llvm-pgo"
+
 # ---------------------------------------------------------------------------
-# Package lists — override the built-in defaults if needed
+# Package lists — override built-in defaults if needed
 #
 # [packages]
 # pgo     = ["llvm", "llvm-libs", "clang", "lld"]

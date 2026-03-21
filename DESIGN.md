@@ -118,7 +118,7 @@ sysforge/
 │           ├── hardware.py            # stage 3: stub
 │           ├── configure.py           # stage 4: stub (bootstrap-only: hostname, locale, mirrorlist)
 │           ├── reconfigure.py         # stage 5: pre-build checkpoint (implemented)
-│           ├── toolchain.py           # stage 6: stub
+│           ├── toolchain.py           # stage 6: LLVM/GCC toolchain build (optional 3-pass PGO)
 │           ├── packages.py            # stage 7: real implementation
 │           └── kernel.py              # stage 8: full implementation
 ├── tests/
@@ -133,7 +133,9 @@ sysforge/
 │   │   │   ├── flag_profiles.toml
 │   │   │   ├── consumes_inference.toml
 │   │   │   ├── append_conflict_groups.toml
-│   │   │   └── packages.toml
+│   │   │   ├── packages.toml
+│   │   │   ├── toolchain.toml
+│   │   │   └── kernel.toml
 │   │   └── user/.config/sysforge/
 │   │       └── flag_profiles.toml
 │   ├── test_append_merge.py
@@ -352,35 +354,46 @@ Walks `packages.toml` in order:
 
 ### Toolchain stage (stage 6)
 
-**Opt-in:** stage is a clean no-op if `/etc/sysforge/toolchain.toml` is absent. Systems that skip this stage use whatever compiler is already installed; packages and kernel stages proceed normally.
+**Opt-in:** stage is a clean no-op if `/etc/sysforge/toolchain.toml` is absent or has `enabled = false`. Systems that skip this stage use whatever compiler is already installed; packages and kernel stages proceed normally.
 
 **`toolchain.toml` structure:**
 
 ```toml
-compiler = "llvm"   # "llvm" or "gcc"
-pgo = true          # only meaningful when compiler = "llvm"; ignored for gcc
+enabled     = true   # must be true to activate the stage
+compiler    = "llvm" # "llvm" or "gcc"
+pgo         = true   # only meaningful when compiler = "llvm"; ignored for gcc
+skip_build  = false  # skip build; just register compiler paths in pipeline state
+
+# Staging prefix: Pass 2 binaries extracted here and used as CC/CXX in Pass 3
+pgo_staging = "/var/tmp/sysforge-llvm-stage2"
+
+# PGO data dir: profraw files written here during Pass 2, merged to clang.profdata
+pgo_store   = "/var/tmp/sysforge-llvm-pgo"
 
 # Package lists — all have sane defaults, override only if needed
 [packages]
 pgo     = ["llvm", "llvm-libs", "clang", "lld"]
 non_pgo = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
 lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
-
-# Staging prefix for PGO stage 2 instrumented binary
-pgo_staging = "/var/tmp/sysforge-llvm-stage2"
 ```
 
 For `compiler = "gcc"`, the default package set is `["gcc", "gcc-libs"]`.
+
+**`skip_build = true`:** registers the system compiler paths in pipeline state without building anything. Downstream stages (packages, kernel) will use the system compiler. Useful when the system compiler is already optimized and no rebuild is needed.
 
 **PKGBUILD resolution:** follows `find_pkgbuild` lookup order (local `pkgbuild_dir` → `pkgctl repo clone`) for every package. At stage start, resolved paths are displayed in a table and the user is prompted to confirm or abort. On abort, the resume command is printed (`sysforge pipeline --resume --state-dir <dir>`) so they can make manual modifications and return.
 
 **LLVM PGO bootstrap (three passes, only when `pgo = true`):**
 
-1. **Pass 1** — build with system compiler. Uses the `pgo_llvm_toolchain` profile; `cache = false` on all packages (instrumented objects must not be cached).
-2. **Pass 2** — rebuild with instrumented binary (`-fprofile-generate`). Installed to the staging prefix (`pgo_staging`) rather than the live system, keeping the system compiler clean.
-3. **Pass 3** — final optimized build (`-fprofile-use`), with `CC`/`CXX` pointing at the staged binary from pass 2. Installs to the system. Staging prefix is removed on success.
+Every pass runs makepkg with `--cleanbuild`. `makepkg` is invoked without `--install`; a direct `sudo pacman -U` call (from sysforge) installs each pass's output. A sudo keepalive thread refreshes credentials every 60 seconds throughout the sequence. `llvm-profdata` is invoked with `RLIMIT_AS` lifted (`resource_guard.lift_for_child`) so it is not constrained by the sysforge controller's 2 GiB virtual address space cap.
 
-**`pgo = false` path:** single build pass with the `pgo_llvm_toolchain` profile. No staging prefix. Useful when custom flags (`-march=native`) are wanted without the overhead of a full PGO cycle.
+1. **Pass 1** — build pgo packages with the system compiler + `-fprofile-generate=<pgo_store>/`. Install to the live system via `sudo pacman -U`. The installed `/usr/bin/clang` is now instrumented and writes `.profraw` files on use. Spurious profraw from CMake feature probes is purged before Pass 2 begins.
+
+2. **Pass 2** — build pgo packages with `CC=/usr/bin/clang` (the instrumented Pass-1 binary; no extra flags). `LLVM_PROFILE_FILE` uses `%m_%p` (per-module-hash + per-PID) so parallel `make -j` clang processes each write their own `.profraw` file rather than contending on one. A background daemon merges profraw into `clang.profdata` every 15 seconds using adaptive batch sizing (starts at 128 files; halves on OOM; minimum batch 8). No system install. After the build, Pass 2 binaries are extracted to `pgo_staging`.
+
+3. **Pass 3** — build all packages (pgo + non_pgo + lib32) with `CC=<pgo_staging>/usr/bin/clang` + `-fprofile-use=<clang.profdata> -fprofile-correction`. Install all packages to the system. Staging prefix and profdata are removed on success.
+
+**`pgo = false` path:** single build pass, all packages built and installed together. No profdata, no staging, no daemon.
 
 **GCC path (`compiler = "gcc"`):** single build pass. `pgo` field is ignored. Produces `/usr/bin/gcc` and `/usr/bin/g++`.
 
@@ -390,7 +403,7 @@ For `compiler = "gcc"`, the default package set is `["gcc", "gcc-libs"]`.
 [stages.toolchain.result]
 cc  = "/usr/bin/clang"   # or "/usr/bin/gcc"
 cxx = "/usr/bin/clang++" # or "/usr/bin/g++"
-ld  = "lld"              # llvm path only; absent for gcc
+ld  = "lld"              # llvm only; absent for gcc
 ```
 
 The packages and kernel stages read these values and inject them into the build environment, overriding any profile-level `CC`/`CXX` defaults. If the toolchain stage was skipped, these keys are absent and stages fall back to the profile.
@@ -399,7 +412,7 @@ The packages and kernel stages read these values and inject them into the build 
 
 ## Primitives Layer
 
-All modules independently testable. 648 pytest tests (`pytest` from repo root).
+All modules independently testable. 758 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 

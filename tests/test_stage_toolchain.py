@@ -36,6 +36,7 @@ from sysforge.pipeline.stages.toolchain import (
     _PGO_ALLOWED_MAKEPKG_FLAGS,
     _PROFRAW_MERGE_BATCH_MAX,
     _PROFRAW_MERGE_BATCH_MIN,
+    _PROFRAW_SETTLE_SECS,
     _collect_pgo_packages,
     _pgo_install,
     _sudo_keepalive_daemon,
@@ -922,6 +923,34 @@ def test_merge_profraw_dry_run_skips_everything(tmp_path):
 
     assert result == tmp_path / "clang.profdata"
     mock_run.assert_not_called()
+
+
+def test_merge_profraw_fresh_raws_with_profdata_warns_and_returns(tmp_path):
+    """Fresh profraw (< _PROFRAW_SETTLE_SECS old) + existing profdata → warn, return profdata."""
+    # Fresh profraw: use default touch() mtime (now)
+    (tmp_path / "fresh.profraw").touch()
+    (tmp_path / "clang.profdata").touch()
+
+    # _do_profraw_merge returns 0 because all profraw is too fresh to merge;
+    # _merge_profraw should warn and return the existing profdata rather than raising
+    with patch("subprocess.run") as mock_run:
+        result = _merge_profraw(tmp_path, dry_run=False)
+
+    assert result == tmp_path / "clang.profdata"
+    mock_run.assert_not_called()  # llvm-profdata not invoked
+
+
+def test_merge_profraw_fresh_raws_no_profdata_raises(tmp_path):
+    """Fresh profraw + no profdata → error (no usable data at all)."""
+    (tmp_path / "fresh.profraw").touch()
+
+    with patch("subprocess.run"):
+        with pytest.raises(RuntimeError, match="too fresh"):
+            _merge_profraw(tmp_path, dry_run=False)
+
+
+def test_settle_secs_constant_is_positive():
+    assert _PROFRAW_SETTLE_SECS > 0
 
 
 # ---------------------------------------------------------------------------

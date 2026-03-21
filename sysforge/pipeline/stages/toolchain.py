@@ -1,13 +1,15 @@
 """
 stages/toolchain.py — stage 6: LLVM/GCC toolchain build
 
-Opt-in: stage is a clean no-op if /etc/sysforge/toolchain.toml is absent.
-Systems that skip this stage use whatever compiler is already installed;
-packages and kernel stages proceed normally.
+Opt-in: stage is a clean no-op if /etc/sysforge/toolchain.toml is absent or
+has enabled = false.  Systems that skip this stage use whatever compiler is
+already installed; packages and kernel stages proceed normally.
 
 toolchain.toml structure:
+  enabled     = true     # must be true to activate the stage
   compiler    = "llvm"   # "llvm" or "gcc"
   pgo         = true     # only meaningful when compiler = "llvm"; ignored for gcc
+  skip_build  = false    # if true: skip build, just register compiler paths in state
   pgo_staging = "/var/tmp/sysforge-llvm-stage2"   # staging dir for pass-2 binaries
   pgo_store   = "/var/tmp/sysforge-llvm-pgo"      # dir for profraw/profdata files
 
@@ -17,14 +19,26 @@ toolchain.toml structure:
   lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", ...]
 
 LLVM PGO bootstrap (3 passes, only when pgo = true):
-  Pass 1 — system compiler + -fprofile-generate; install pgo packages to system;
-            the installed /usr/bin/clang is instrumented (writes profraw when run)
-  Pass 2 — CC=instrumented Pass-1 clang (no extra flags); running it as the
-            compiler generates profraw in pgo_store as a side effect;
-            no system install; pass-2 binaries extracted to staging
+  Pass 1 — system compiler + -fprofile-generate=<pgo_store>/; makepkg runs
+            without --install; _pgo_install() calls sudo pacman -U directly so
+            the sudo keepalive's timestamp entry applies.  The installed
+            /usr/bin/clang is instrumented (writes profraw when run as compiler).
+            Spurious profraw from CMake feature probes purged before Pass 2.
+  Pass 2 — CC=/usr/bin/clang (the Pass-1 instrumented binary, no extra flags);
+            LLVM_PROFILE_FILE uses %m_%p (per-module-hash + per-PID) so parallel
+            make -j clang processes each write their own profraw without
+            contending on one file.  Background daemon merges profraw every
+            _PGO_MERGE_INTERVAL seconds with adaptive batch sizing
+            (_PROFRAW_MERGE_BATCH_MAX → _PROFRAW_MERGE_BATCH_MIN on OOM).
+            llvm-profdata invoked with RLIMIT_AS lifted (lift_for_child) so it
+            is not constrained by the sysforge controller's 2 GiB cap.
+            No system install; pass-2 binaries extracted to staging.
   Pass 3 — CC=staged clang, CFLAGS += -fprofile-use=<profdata>
-            -fprofile-correction; install all packages to system;
-            staging + profdata removed on success
+            -fprofile-correction; install all packages (pgo + non_pgo + lib32)
+            to system via _pgo_install(); staging + profdata removed on success.
+
+  A sudo keepalive thread refreshes credentials every _SUDO_KEEPALIVE_INTERVAL
+  seconds throughout all three passes.
 
 Compiler propagation:
   On completion writes cc/cxx/ld to pipeline_state.toml [stages.toolchain.result]
@@ -81,6 +95,11 @@ _SUDO_KEEPALIVE_INTERVAL = 60
 # below _PROFRAW_MERGE_BATCH_MIN and logs a warning.
 _PROFRAW_MERGE_BATCH_MAX = 128
 _PROFRAW_MERGE_BATCH_MIN = 8
+
+# Profraw files modified more recently than this (seconds) are skipped during
+# merges — they may still be actively written by a clang process, and merging
+# a partial write causes SIGBUS in llvm-profdata.
+_PROFRAW_SETTLE_SECS = 10
 
 
 # ---------------------------------------------------------------------------
@@ -498,9 +517,9 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
     atomic tmp→rename so concurrent readers always see a complete file.
     If clang.profdata already exists it is included as an input (incremental).
 
-    Only merges files that have not been modified in the last 10 seconds.
-    Files with a very recent mtime are likely still being written by an
-    instrumented clang process; merging them would cause SIGBUS crashes and
+    Only merges files that have not been modified in the last _PROFRAW_SETTLE_SECS
+    seconds.  Files with a very recent mtime are likely still being written by
+    an instrumented clang process; merging them would cause SIGBUS crashes and
     truncated-profile errors in llvm-profdata.
 
     Returns the number of .profraw files merged, or 0 if none were found.
@@ -509,10 +528,9 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
     import time
 
     now = time.time()
-    _SETTLE_SECS = 10
     all_profraw = list(pgo_store.glob("**/*.profraw"))
     profraw_files = [
-        f for f in all_profraw if (now - f.stat().st_mtime) >= _SETTLE_SECS
+        f for f in all_profraw if (now - f.stat().st_mtime) >= _PROFRAW_SETTLE_SECS
     ]
     if not profraw_files:
         return 0
@@ -671,10 +689,19 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
     clang.profdata produced by intermediate merges. If the daemon consumed
     everything there may be no remaining raws, which is fine.
 
+    Fresh-file handling: if all remaining profraw files are younger than
+    _PROFRAW_SETTLE_SECS (written in the very last seconds of the build),
+    _do_profraw_merge skips them and returns 0.  When the background daemon
+    already produced a profdata those files represent only the trailing tail
+    of compilation data — we warn and proceed rather than aborting.
+
     Returns the path to clang.profdata.
     Raises RuntimeError if neither raws nor an existing profdata are present
-    (indicates -fprofile-generate had no effect).
+    (indicates -fprofile-generate had no effect), or if settled profraw exists
+    but llvm-profdata failed to merge it.
     """
+    import time
+
     profdata_path = pgo_store / "clang.profdata"
 
     if dry_run:
@@ -702,9 +729,28 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
 
     deleted = _do_profraw_merge(pgo_store, "final")
     if deleted == 0:
+        # Distinguish between llvm-profdata failure and settle-filter exclusion.
+        now = time.time()
+        fresh = [
+            f for f in profraw_files
+            if (now - f.stat().st_mtime) < _PROFRAW_SETTLE_SECS
+        ]
+        if fresh and has_profdata:
+            _log.warn(
+                "[TOOLCHAIN]",
+                f"[PGO] {len(fresh)} fresh .profraw file(s) skipped (written "
+                f"< {_PROFRAW_SETTLE_SECS}s ago at end of Pass 2); "
+                "profile data from background merges is complete enough to proceed.",
+            )
+            return profdata_path
         raise RuntimeError(
             "[TOOLCHAIN] Final profraw merge produced no output — "
-            "llvm-profdata may have failed (check warnings above)."
+            + (
+                f"{len(fresh)} profraw file(s) too fresh to merge safely and no "
+                "profdata from background merges; Pass 2 may have produced no profile data"
+                if fresh
+                else "llvm-profdata may have failed (check warnings above)"
+            )
         )
     _log.info(
         "[TOOLCHAIN]", f"[PGO] Final merge: {deleted} remaining .profraw file(s) merged"
