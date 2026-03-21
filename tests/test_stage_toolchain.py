@@ -673,8 +673,9 @@ def test_sudo_keepalive_daemon_stops_immediately():
 
 
 def test_sudo_keepalive_interval_under_sudoers_default():
-    """Keepalive interval must be well under the 15-minute sudoers default."""
-    assert _SUDO_KEEPALIVE_INTERVAL < 15 * 60
+    """Keepalive interval must be well under the minimum reasonable sudoers
+    timestamp_timeout (5 minutes on some Arch configurations)."""
+    assert _SUDO_KEEPALIVE_INTERVAL < 5 * 60
 
 
 # ---------------------------------------------------------------------------

@@ -68,8 +68,9 @@ _PGO_ALLOWED_MAKEPKG_FLAGS = {"-f", "--force"}
 _PGO_MERGE_INTERVAL = 15
 
 # How often (seconds) to refresh sudo credentials during long PGO passes.
-# Must be well under the sudoers timestamp_timeout (default: 15 min).
-_SUDO_KEEPALIVE_INTERVAL = 300
+# Arch's timestamp_timeout can be as low as 5 minutes; 60 s keeps us well
+# inside any reasonable sudoers configuration.
+_SUDO_KEEPALIVE_INTERVAL = 60
 
 # Maximum number of .profraw files fed to a single llvm-profdata invocation.
 # Each profraw file for a full LLVM build can be 10–50 MB; merging hundreds
@@ -561,7 +562,15 @@ def _sudo_keepalive_daemon(stop_event: threading.Event) -> None:
     undefined state (Pass 2 then runs with the wrong compiler).
     """
     while not stop_event.wait(_SUDO_KEEPALIVE_INTERVAL):
-        subprocess.run(["sudo", "-v"], capture_output=True)
+        # Do NOT use capture_output=True: if credentials have somehow expired,
+        # sudo must be able to reach the terminal to prompt for a password.
+        # With capture_output=True, the prompt is swallowed, sudo fails silently,
+        # and credentials stay expired until makepkg --install runs (too late).
+        result = subprocess.run(["sudo", "-v"])
+        if result.returncode != 0:
+            _log.warn("[TOOLCHAIN]",
+                      "[PGO] sudo keepalive failed — install step may prompt "
+                      "for a password")
 
 
 def _profraw_merge_daemon(pgo_store: Path, stop_event: threading.Event) -> None:
@@ -696,27 +705,29 @@ def _build_llvm_pgo(
             _shutil.rmtree(pgo_store)
         pgo_store.mkdir(parents=True, exist_ok=True)
 
-    # Pass 1 — build pgo packages with system compiler + instrumentation flags.
-    # The system compiler must be clang: -fprofile-generate produces LLVM-format
-    # .profraw files (consumed by llvm-profdata); GCC would produce GCOV format.
-    # On a running Arch system with LLVM installed this is always clang.
-    #
-    # Sudo keepalive: LLVM takes 30–60 min to compile; the default sudoers
-    # timestamp_timeout is 15 min. Without a keepalive, the `sudo pacman -U`
-    # at the end of makepkg --install prompts for a password that nobody answers,
-    # makepkg exits non-zero, and Pass 2 runs with the wrong (uninstrumented) CC.
+    # Sudo keepalive for the entire 3-pass sequence.
+    # Each pass (including Pass 2 training run) can take 30–60 min; all three
+    # together can exceed 2 hours. Passes 1 and 3 install packages via
+    # `sudo pacman -U`. A single keepalive thread covering all three passes
+    # ensures credentials never expire between the initial auth and the final
+    # install, regardless of how long Pass 2 takes.
     if not options.dry_run:
-        subprocess.run(["sudo", "-v"], capture_output=True)
-    p1_stop = threading.Event()
-    p1_keepalive = threading.Thread(
+        subprocess.run(["sudo", "-v"])
+    sudo_stop = threading.Event()
+    sudo_keepalive = threading.Thread(
         target=_sudo_keepalive_daemon,
-        args=(p1_stop,),
+        args=(sudo_stop,),
         daemon=True,
-        name="sysforge-sudo-keepalive-p1",
+        name="sysforge-sudo-keepalive",
     )
     if not options.dry_run:
-        p1_keepalive.start()
+        sudo_keepalive.start()
+
     try:
+        # Pass 1 — build pgo packages with system compiler + instrumentation flags.
+        # The system compiler must be clang: -fprofile-generate produces LLVM-format
+        # .profraw files (consumed by llvm-profdata); GCC would produce GCOV format.
+        # On a running Arch system with LLVM installed this is always clang.
         _build_pass(
             "Pass 1/3 [PGO] instrumented build → install pgo packages",
             pgo_map,
@@ -727,89 +738,73 @@ def _build_llvm_pgo(
             pgo_build=True,
             compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
         )
-    finally:
-        p1_stop.set()
+        _log.ui("[TOOLCHAIN]", "[PGO] Pass 1/3 complete")
+
+        # Purge any profraw accumulated during Pass 1. CMake feature-test programs
+        # compiled with -fprofile-generate run during configuration and deposit
+        # spurious profraw files (and emit "Running out of static counters" warnings).
+        # Those files represent tiny probe programs, not clang doing real work — they
+        # would contaminate the training profile if kept. Pass 2 generates the real data.
         if not options.dry_run:
-            p1_keepalive.join()
-    _log.ui("[TOOLCHAIN]", "[PGO] Pass 1/3 complete")
+            spurious = list(pgo_store.glob("**/*.profraw"))
+            for f in spurious:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+            if spurious:
+                _log.info(
+                    "[TOOLCHAIN]",
+                    f"[PGO] Purged {len(spurious)} spurious profraw file(s) "
+                    f"from Pass 1 CMake probes",
+                )
 
-    # Purge any profraw accumulated during Pass 1. CMake feature-test programs
-    # compiled with -fprofile-generate run during configuration and deposit
-    # spurious profraw files (and emit "Running out of static counters" warnings).
-    # Those files represent tiny probe programs, not clang doing real work — they
-    # would contaminate the training profile if kept. Pass 2 generates the real data.
-    if not options.dry_run:
-        spurious = list(pgo_store.glob("**/*.profraw"))
-        for f in spurious:
-            try:
-                f.unlink()
-            except OSError:
-                pass
-        if spurious:
-            _log.info(
-                "[TOOLCHAIN]",
-                f"[PGO] Purged {len(spurious)} spurious profraw file(s) "
-                f"from Pass 1 CMake probes",
-            )
-
-    # Pass 2 — use the instrumented Pass-1 clang as CC; profraw is generated
-    # as a side effect of running it. Background daemon merges periodically.
-    #
-    # LLVM_PROFILE_FILE uses %m_%p so each parallel clang process writes to its
-    # own file (module-hash + PID) instead of all contending on default_%m.profraw.
-    # Without this, N parallel `make -j` clang invocations corrupt each other's
-    # profraw via concurrent writes, causing SIGBUS crashes in llvm-profdata.
-    pass2_env = {"LLVM_PROFILE_FILE": f"{pgo_store}/default_%m_%p.profraw"}
-    _log.info(
-        "[TOOLCHAIN]",
-        f"[PGO] Pass 2: LLVM_PROFILE_FILE={pass2_env['LLVM_PROFILE_FILE']}",
-    )
-
-    stop_event = threading.Event()
-    monitor = threading.Thread(
-        target=_profraw_merge_daemon,
-        args=(pgo_store, stop_event),
-        daemon=True,
-        name="sysforge-profraw-monitor",
-    )
-    if not options.dry_run:
-        monitor.start()
-    try:
-        _build_pass(
-            "Pass 2/3 [PGO] training run → profraw generation (no system install)",
-            pgo_map,
-            options,
-            cc="/usr/bin/clang",
-            cxx="/usr/bin/clang++",
-            install=False,
-            pgo_build=True,
-            pgo_env=pass2_env,
+        # Pass 2 — use the instrumented Pass-1 clang as CC; profraw is generated
+        # as a side effect of running it. Background daemon merges periodically.
+        #
+        # LLVM_PROFILE_FILE uses %m_%p so each parallel clang process writes to its
+        # own file (module-hash + PID) instead of all contending on default_%m.profraw.
+        # Without this, N parallel `make -j` clang invocations corrupt each other's
+        # profraw via concurrent writes, causing SIGBUS crashes in llvm-profdata.
+        pass2_env = {"LLVM_PROFILE_FILE": f"{pgo_store}/default_%m_%p.profraw"}
+        _log.info(
+            "[TOOLCHAIN]",
+            f"[PGO] Pass 2: LLVM_PROFILE_FILE={pass2_env['LLVM_PROFILE_FILE']}",
         )
-    finally:
-        stop_event.set()
+
+        stop_event = threading.Event()
+        monitor = threading.Thread(
+            target=_profraw_merge_daemon,
+            args=(pgo_store, stop_event),
+            daemon=True,
+            name="sysforge-profraw-monitor",
+        )
         if not options.dry_run:
-            monitor.join()
-    _log.ui("[TOOLCHAIN]", "[PGO] Pass 2/3 complete")
+            monitor.start()
+        try:
+            _build_pass(
+                "Pass 2/3 [PGO] training run → profraw generation (no system install)",
+                pgo_map,
+                options,
+                cc="/usr/bin/clang",
+                cxx="/usr/bin/clang++",
+                install=False,
+                pgo_build=True,
+                pgo_env=pass2_env,
+            )
+        finally:
+            stop_event.set()
+            if not options.dry_run:
+                monitor.join()
+        _log.ui("[TOOLCHAIN]", "[PGO] Pass 2/3 complete")
 
-    # Final sweep: merge any profraw not yet handled by the daemon
-    profdata_path = _merge_profraw(pgo_store, options.dry_run)
-    _log.ui("[TOOLCHAIN]", f"[PGO] Profile data ready: {profdata_path}")
-    _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
+        # Final sweep: merge any profraw not yet handled by the daemon
+        profdata_path = _merge_profraw(pgo_store, options.dry_run)
+        _log.ui("[TOOLCHAIN]", f"[PGO] Profile data ready: {profdata_path}")
+        _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
 
-    # Pass 3 — PGO-optimized build; -fprofile-use matches -fprofile-generate (IR PGO)
-    all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
-    if not options.dry_run:
-        subprocess.run(["sudo", "-v"], capture_output=True)
-    p3_stop = threading.Event()
-    p3_keepalive = threading.Thread(
-        target=_sudo_keepalive_daemon,
-        args=(p3_stop,),
-        daemon=True,
-        name="sysforge-sudo-keepalive-p3",
-    )
-    if not options.dry_run:
-        p3_keepalive.start()
-    try:
+        # Pass 3 — PGO-optimized build; -fprofile-use matches -fprofile-generate (IR PGO)
+        all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
         _build_pass(
             "Pass 3/3 [PGO] optimized build → install all",
             all_pass3,
@@ -820,11 +815,12 @@ def _build_llvm_pgo(
             compiler_flags_extra=(f"-fprofile-use={profdata_path} -fprofile-correction"),
             pgo_build=True,
         )
+        _log.ui("[TOOLCHAIN]", "[PGO] Pass 3/3 complete — PGO build finished")
+
     finally:
-        p3_stop.set()
+        sudo_stop.set()
         if not options.dry_run:
-            p3_keepalive.join()
-    _log.ui("[TOOLCHAIN]", "[PGO] Pass 3/3 complete — PGO build finished")
+            sudo_keepalive.join()
 
     if not options.dry_run:
         try:
