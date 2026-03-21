@@ -152,6 +152,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       cc_override=None, cxx_override=None, ld_override=None,
                       kernel_build: bool = False,
                       compiler_flags_extra: str | None = None,
+                      linker_flags_extra: str | None = None,
                       strip_full_lto: bool = False):
     """
     Write a complete, self-contained temp makepkg.conf by merging:
@@ -271,6 +272,21 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 base = ""
             profile_overrides[key] = (base + " " + compiler_flags_extra).strip()
         _log.info("[PGO]", f"Injecting into CFLAGS/CXXFLAGS/LDFLAGS: {compiler_flags_extra!r}")
+
+    # Linker-only flag injection (e.g. profile runtime library for PGO Pass 2).
+    # Unlike compiler_flags_extra, these flags only go to LDFLAGS — adding -l/-L
+    # flags to CFLAGS/CXXFLAGS is harmless but noisy.
+    if linker_flags_extra:
+        key = "LDFLAGS"
+        if key in profile_overrides:
+            base = profile_overrides[key]
+        elif key in system_assignments:
+            raw = system_assignments[key].strip()
+            base = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
+        else:
+            base = ""
+        profile_overrides[key] = (base + " " + linker_flags_extra).strip()
+        _log.info("[PGO]", f"Injecting into LDFLAGS: {linker_flags_extra!r}")
 
     # Build output lines: system conf keys in their original raw form,
     # profile-overridden keys substituted inline, new profile keys appended.
@@ -599,6 +615,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                cc_override=None, cxx_override=None, ld_override=None,
                kernel_build: bool = False,
                compiler_flags_extra: str | None = None,
+               linker_flags_extra: str | None = None,
                strip_full_lto: bool = False,
                injected_env: dict | None = None):
     """
@@ -666,6 +683,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                                ld_override=ld_override,
                                kernel_build=kernel_build,
                                compiler_flags_extra=compiler_flags_extra,
+                               linker_flags_extra=linker_flags_extra,
                                strip_full_lto=strip_full_lto) as conf_path:
             _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                extra_env, extra_flags, interactive)
@@ -749,6 +767,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         update: bool = True,
         profile_override: str | None = None,
         compiler_flags_extra: str | None = None,
+        linker_flags_extra: str | None = None,
         strip_full_lto: bool = False,
         extra_env: dict | None = None,
         state_dir=None):
@@ -852,6 +871,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             ld_override=ld_override,
             kernel_build=kernel_build,
             compiler_flags_extra=compiler_flags_extra,
+            linker_flags_extra=linker_flags_extra,
             strip_full_lto=strip_full_lto,
             injected_env=extra_env,
         )

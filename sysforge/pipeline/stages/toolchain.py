@@ -353,6 +353,7 @@ def _build_pkg(
     extra_flags: list | None = None,
     init_session: bool = False,
     compiler_flags_extra: str | None = None,
+    linker_flags_extra: str | None = None,
     pgo_build: bool = False,
     pgo_env: dict | None = None,
 ) -> None:
@@ -379,6 +380,7 @@ def _build_pkg(
         pkgbuild_path,
         extra_flags=combined_flags,
         compiler_flags_extra=compiler_flags_extra,
+        linker_flags_extra=linker_flags_extra,
         pkg_log=not options.no_pkg_logs,
         persist_log=options.persist_log,
         cc_override=cc,
@@ -398,6 +400,7 @@ def _build_pass(
     cxx: str | None = None,
     install: bool = True,
     compiler_flags_extra: str | None = None,
+    linker_flags_extra: str | None = None,
     pgo_build: bool = False,
     pgo_env: dict | None = None,
 ) -> None:
@@ -428,6 +431,7 @@ def _build_pass(
             extra_flags=extra,
             init_session=first,
             compiler_flags_extra=compiler_flags_extra,
+            linker_flags_extra=linker_flags_extra,
             pgo_build=pgo_build,
             pgo_env=pgo_env,
         )
@@ -749,6 +753,68 @@ def _pgo_pass1_install(pkgbuild_map: dict[str, Path], dry_run: bool) -> None:
         )
 
 
+def _system_llvm_is_instrumented() -> bool:
+    """Return True if the system libLLVMSupport.a contains PGO instrumentation symbols.
+
+    Used before Pass 2 to detect whether a previous Pass 1 install left instrumented
+    LLVM static libs on the system.  If so, packages that call find_package(LLVM) and
+    link against those libs (e.g. a separate clang PKGBUILD) will need the profile
+    runtime in LDFLAGS to satisfy the linker.
+    """
+    llvm_support = Path("/usr/lib/libLLVMSupport.a")
+    if not llvm_support.exists():
+        return False
+    result = subprocess.run(
+        ["nm", "--defined-only", str(llvm_support)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return "__llvm_profile_" in result.stdout
+
+
+def _profile_runtime_ldflag() -> str | None:
+    """Return '-L<runtime_dir> -lclang_rt.profile-<arch>' if the profile runtime exists.
+
+    Returns None if the runtime library cannot be located, with a log warning.
+    This flag is added to LDFLAGS in Pass 2 when the system LLVM is instrumented,
+    so that packages linking against instrumented LLVM static libs can resolve
+    __llvm_profile_* symbols without needing -fprofile-generate in their own flags.
+    """
+    rt_result = subprocess.run(
+        ["/usr/bin/clang", "--print-runtime-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if rt_result.returncode != 0 or not rt_result.stdout.strip():
+        _log.warn(
+            "[TOOLCHAIN]",
+            "[PGO] Could not determine clang runtime dir (clang --print-runtime-dir failed); "
+            "Pass 2 may fail with undefined __llvm_profile_* symbols. "
+            "Run: sudo pacman -S llvm  to restore an uninstrumented system LLVM.",
+        )
+        return None
+
+    arch_result = subprocess.run(
+        ["uname", "-m"], capture_output=True, text=True, check=False
+    )
+    arch = arch_result.stdout.strip()
+    runtime_dir = rt_result.stdout.strip()
+    profile_lib = Path(runtime_dir) / f"libclang_rt.profile-{arch}.a"
+
+    if not profile_lib.exists():
+        _log.warn(
+            "[TOOLCHAIN]",
+            f"[PGO] Profile runtime not found at {profile_lib}; "
+            "Pass 2 may fail with undefined __llvm_profile_* symbols. "
+            "Install compiler-rt or run: sudo pacman -S llvm",
+        )
+        return None
+
+    return f"-L{runtime_dir} -lclang_rt.profile-{arch}"
+
+
 def _profraw_merge_daemon(pgo_store: Path, stop_event: threading.Event) -> None:
     """
     Background thread: wake every _PGO_MERGE_INTERVAL seconds during Pass 2
@@ -979,6 +1045,20 @@ def _build_llvm_pgo(
             f"[PGO] Pass 2: LLVM_PROFILE_FILE={pass2_env['LLVM_PROFILE_FILE']}",
         )
 
+        # Safety net: if system LLVM static libs are still instrumented (from a
+        # prior Pass 1 run before _pgo_pass1_install excluded cmake-config packages),
+        # packages that call find_package(LLVM) in Pass 2 would link against them
+        # and fail to resolve __llvm_profile_* symbols.  Inject the profile runtime
+        # into LDFLAGS so the linker can satisfy those references.
+        pass2_linker_flags: str | None = None
+        if not options.dry_run and _system_llvm_is_instrumented():
+            _log.info(
+                "[TOOLCHAIN]",
+                "[PGO] System libLLVMSupport.a is instrumented (residual from a prior "
+                "Pass 1 install). Injecting profile runtime into Pass 2 LDFLAGS.",
+            )
+            pass2_linker_flags = _profile_runtime_ldflag()
+
         stop_event = threading.Event()
         monitor = threading.Thread(
             target=_profraw_merge_daemon,
@@ -996,6 +1076,7 @@ def _build_llvm_pgo(
                 cc="/usr/bin/clang",
                 cxx="/usr/bin/clang++",
                 install=False,
+                linker_flags_extra=pass2_linker_flags,
                 pgo_build=True,
                 pgo_env=pass2_env,
             )

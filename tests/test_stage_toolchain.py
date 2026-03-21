@@ -41,6 +41,8 @@ from sysforge.pipeline.stages.toolchain import (
     _has_llvm_cmake_config,
     _pgo_install,
     _pgo_pass1_install,
+    _system_llvm_is_instrumented,
+    _profile_runtime_ldflag,
     _sudo_keepalive_daemon,
     _SUDO_KEEPALIVE_INTERVAL,
 )
@@ -437,7 +439,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
                  pkg_log=True, persist_log=False, log_dir=None, profile_conf=None,
                  cc_override=None, cxx_override=None, ld_override=None,
                  cache_report=False, init_session=True, update=True,
-                 compiler_flags_extra=None, strip_full_lto=False,
+                 compiler_flags_extra=None, linker_flags_extra=None, strip_full_lto=False,
                  profile_override=None, state_dir=None, extra_env=None):
         call_log.append({
             "cc": cc_override,
@@ -950,6 +952,91 @@ def test_pgo_pass1_install_raises_when_no_packages(tmp_path):
     with patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="No built packages"):
             _pgo_pass1_install(pkgbuild_map, dry_run=False)
+
+
+# ---------------------------------------------------------------------------
+# _system_llvm_is_instrumented / _profile_runtime_ldflag
+# ---------------------------------------------------------------------------
+
+
+def test_system_llvm_is_instrumented_true(tmp_path):
+    """Returns True when nm output contains __llvm_profile_ symbols."""
+    fake_lib = tmp_path / "libLLVMSupport.a"
+    fake_lib.touch()
+    nm_output = "0000 T __llvm_profile_instrument_target\n0000 T __llvm_profile_instrument_memop\n"
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=nm_output, stderr="")
+        result = _system_llvm_is_instrumented()
+    assert result is True
+
+
+def test_system_llvm_is_instrumented_false(tmp_path):
+    """Returns False when nm output has no profile symbols."""
+    nm_output = "0000 T some_other_symbol\n"
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=nm_output, stderr="")
+        result = _system_llvm_is_instrumented()
+    assert result is False
+
+
+def test_system_llvm_is_instrumented_missing_lib():
+    """Returns False when libLLVMSupport.a does not exist."""
+    with patch("pathlib.Path.exists", return_value=False):
+        result = _system_llvm_is_instrumented()
+    assert result is False
+
+
+def test_profile_runtime_ldflag_returns_flag(tmp_path):
+    """Returns the -L/-l flag string when the profile runtime lib exists."""
+    runtime_dir = tmp_path / "clang" / "lib" / "linux"
+    runtime_dir.mkdir(parents=True)
+    profile_lib = runtime_dir / "libclang_rt.profile-x86_64.a"
+    profile_lib.touch()
+
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        if "--print-runtime-dir" in cmd:
+            result.stdout = str(runtime_dir) + "\n"
+        elif "uname" in cmd:
+            result.stdout = "x86_64\n"
+        else:
+            result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        flag = _profile_runtime_ldflag()
+
+    assert flag is not None
+    assert str(runtime_dir) in flag
+    assert "clang_rt.profile-x86_64" in flag
+
+
+def test_profile_runtime_ldflag_missing_lib_returns_none(tmp_path):
+    """Returns None when the profile runtime lib does not exist."""
+    runtime_dir = tmp_path / "clang" / "lib" / "linux"
+    runtime_dir.mkdir(parents=True)
+    # No .a file created
+
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        if "--print-runtime-dir" in cmd:
+            result.stdout = str(runtime_dir) + "\n"
+        elif "uname" in cmd:
+            result.stdout = "x86_64\n"
+        else:
+            result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        flag = _profile_runtime_ldflag()
+
+    assert flag is None
 
 
 # ---------------------------------------------------------------------------
