@@ -18,6 +18,7 @@ import sysforge.log as _log
 
 from sysforge.resolve import cmd_resolve
 from sysforge.update import cmd_update
+from sysforge.setup_cmd import cmd_setup
 from sysforge.packages_cmd import (
     cmd_packages_list,
     cmd_packages_add,
@@ -430,6 +431,14 @@ def _add_packages_parser(sub):
     p_sync.set_defaults(func=cmd_packages_sync)
 
 
+def _add_setup_parser(sub):
+    p = sub.add_parser("setup",
+        help="Configure system integration (pacman IgnoreGroup for sf-build).")
+    p.add_argument("--pacman-conf", metavar="FILE", dest="pacman_conf",
+        help="Path to pacman.conf (default: /etc/pacman.conf).")
+    p.set_defaults(func=cmd_setup)
+
+
 def _add_run_parser(sub):
     """run namespace: pipeline / reconfigure / toolchain / packages / kernel"""
     p = sub.add_parser("run",
@@ -580,6 +589,7 @@ def main():
     _add_converge_parser(sub)
     _add_packages_parser(sub)
     _add_run_parser(sub)
+    _add_setup_parser(sub)
 
     # completions (used by shell completion scripts; not user-facing)
     p_completions = sub.add_parser("completions", help=argparse.SUPPRESS)

@@ -125,6 +125,7 @@ pkgbuild_dir = "~/src"
 
 [defaults]
 profile = "standard"
+append_groups = ["sf-build"]
 
 # =============================================================================
 # Profiles
