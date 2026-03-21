@@ -466,6 +466,10 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     assert call_log[0]["cc"] is None                        # pass 1: system
     assert call_log[1]["cc"] == "/usr/bin/clang"            # pass 2: pass-1 clang
     assert call_log[2]["cc"].endswith("/usr/bin/clang")     # pass 3: staged clang
+    # All PGO passes force a clean build
+    assert "--cleanbuild" in call_log[0]["flags"]
+    assert "--cleanbuild" in call_log[1]["flags"]
+    assert "--cleanbuild" in call_log[2]["flags"]
     # Pass 1 and 3 install; pass 2 does not
     assert "--install" in call_log[0]["flags"]
     assert "--install" not in call_log[1]["flags"]

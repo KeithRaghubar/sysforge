@@ -326,6 +326,8 @@ def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
     (e.g. llvm, llvm-libs, clang from the same PKGBUILD) are only built once.
     """
     extra = ["--install"] if install else []
+    if pgo_build:
+        extra = ["--cleanbuild"] + extra
     _log.ui("[TOOLCHAIN]", f"─── {label} ──────────────────────────────────────────")
     seen_dirs: set[Path] = set()
     first = True
