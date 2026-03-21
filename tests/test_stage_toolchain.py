@@ -3,9 +3,11 @@ test_stage_toolchain.py — tests for the toolchain stage.
 
 Mocks makepkg_wrapper.run() and subprocess so nothing real is built.
 """
+import os
 import sys
 import tempfile
 import threading
+import time
 import tomllib
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
@@ -205,8 +207,9 @@ def test_extract_pass2_no_pkg_raises(tmp_path):
     (pkg_dir / "PKGBUILD").touch()
     staging = tmp_path / "staging"
     pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-    with pytest.raises(RuntimeError, match="No .pkg.tar"):
-        _extract_pass2_to_staging(pkgbuild_map, staging, dry_run=False)
+    with patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}):
+        with pytest.raises(RuntimeError, match="No .pkg.tar"):
+            _extract_pass2_to_staging(pkgbuild_map, staging, dry_run=False)
 
 
 def test_extract_pass2_calls_tar(tmp_path):
@@ -220,7 +223,8 @@ def test_extract_pass2_calls_tar(tmp_path):
 
     fake_result = MagicMock()
     fake_result.returncode = 0
-    with patch("subprocess.run", return_value=fake_result) as mock_run:
+    with patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
+         patch("subprocess.run", return_value=fake_result) as mock_run:
         _extract_pass2_to_staging(pkgbuild_map, staging, dry_run=False)
 
     assert mock_run.called
@@ -241,7 +245,8 @@ def test_extract_pass2_tar_failure_raises(tmp_path):
     fake_result = MagicMock()
     fake_result.returncode = 1
     fake_result.stderr = b"extraction failed"
-    with patch("subprocess.run", return_value=fake_result):
+    with patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
+         patch("subprocess.run", return_value=fake_result):
         with pytest.raises(RuntimeError, match="tar extraction failed"):
             _extract_pass2_to_staging(pkgbuild_map, staging, dry_run=False)
 
@@ -424,7 +429,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
                  cc_override=None, cxx_override=None, ld_override=None,
                  cache_report=False, init_session=True, update=True,
                  compiler_flags_extra=None, strip_full_lto=False,
-                 profile_override=None, state_dir=None):
+                 profile_override=None, state_dir=None, extra_env=None):
         call_log.append({
             "cc": cc_override,
             "flags": list(extra_flags or []),
@@ -433,7 +438,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
         # Simulate Pass 2: instrumented clang running as CC writes a profraw file
         if cc_override == "/usr/bin/clang":
             pgo_store.mkdir(parents=True, exist_ok=True)
-            (pgo_store / "default_0.profraw").touch()
+            _make_old_profraw(pgo_store / "default_0.profraw")
 
     # Fake .pkg.tar.zst for pass-2 staging extraction
     pkg_dir = pkgbuild_dir / "llvm"
@@ -451,6 +456,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
 
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
          patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
+         patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
          patch("subprocess.run", side_effect=fake_subprocess), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
@@ -480,6 +486,14 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
 # Helpers shared across profraw tests
 # ---------------------------------------------------------------------------
 
+def _make_old_profraw(path: Path) -> Path:
+    """Touch a profraw file and backdate its mtime by 30 seconds so it passes the settle filter."""
+    path.touch()
+    past = time.time() - 30
+    os.utime(path, (past, past))
+    return path
+
+
 def fake_profdata_merge(cmd, **kwargs):
     """subprocess.run side_effect that creates the --output file."""
     result = MagicMock()
@@ -503,8 +517,8 @@ def fake_profdata_merge_fail(cmd, **kwargs):
 # ---------------------------------------------------------------------------
 
 def test_do_profraw_merge_merges_and_deletes(tmp_path):
-    (tmp_path / "a.profraw").touch()
-    (tmp_path / "b.profraw").touch()
+    _make_old_profraw(tmp_path / "a.profraw")
+    _make_old_profraw(tmp_path / "b.profraw")
 
     with patch("subprocess.run", side_effect=fake_profdata_merge) as mock_run:
         count = _do_profraw_merge(tmp_path, "test")
@@ -527,7 +541,7 @@ def test_do_profraw_merge_no_files_returns_zero(tmp_path):
 
 
 def test_do_profraw_merge_includes_existing_profdata(tmp_path):
-    (tmp_path / "a.profraw").touch()
+    _make_old_profraw(tmp_path / "a.profraw")
     (tmp_path / "clang.profdata").touch()
 
     with patch("subprocess.run", side_effect=fake_profdata_merge) as mock_run:
@@ -538,7 +552,7 @@ def test_do_profraw_merge_includes_existing_profdata(tmp_path):
 
 
 def test_do_profraw_merge_failure_returns_zero(tmp_path):
-    (tmp_path / "a.profraw").touch()
+    _make_old_profraw(tmp_path / "a.profraw")
 
     with patch("subprocess.run", side_effect=fake_profdata_merge_fail):
         count = _do_profraw_merge(tmp_path, "test")
@@ -553,7 +567,7 @@ def test_do_profraw_merge_failure_returns_zero(tmp_path):
 
 def test_profraw_merge_daemon_merges_on_wakeup(tmp_path):
     """Daemon merges profraw files when stop_event fires while raws exist."""
-    (tmp_path / "a.profraw").touch()
+    _make_old_profraw(tmp_path / "a.profraw")
     stop_event = threading.Event()
 
     with patch("sysforge.pipeline.stages.toolchain._PGO_MERGE_INTERVAL", 0), \
@@ -588,8 +602,8 @@ def test_profraw_merge_daemon_stops_cleanly_with_no_files(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_merge_profraw_merges_and_deletes_raws(tmp_path):
-    (tmp_path / "a.profraw").touch()
-    (tmp_path / "b.profraw").touch()
+    _make_old_profraw(tmp_path / "a.profraw")
+    _make_old_profraw(tmp_path / "b.profraw")
 
     with patch("subprocess.run", side_effect=fake_profdata_merge):
         result = _merge_profraw(tmp_path, dry_run=False)
@@ -618,7 +632,7 @@ def test_merge_profraw_existing_profdata_no_raws_returns_it(tmp_path):
 
 def test_merge_profraw_combines_raws_with_existing_profdata(tmp_path):
     """Final sweep merges remaining raws together with daemon's profdata."""
-    (tmp_path / "late.profraw").touch()
+    _make_old_profraw(tmp_path / "late.profraw")
     (tmp_path / "clang.profdata").touch()
 
     with patch("subprocess.run", side_effect=fake_profdata_merge) as mock_run:

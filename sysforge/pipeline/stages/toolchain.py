@@ -282,7 +282,8 @@ def _build_pkg(name: str, pkgbuild_path: Path, options,
                extra_flags: list | None = None,
                init_session: bool = False,
                compiler_flags_extra: str | None = None,
-               pgo_build: bool = False) -> None:
+               pgo_build: bool = False,
+               pgo_env: dict | None = None) -> None:
     """Build one package via makepkg_wrapper.run()."""
     if options.dry_run:
         cc_label = f" CC={cc}" if cc else ""
@@ -309,6 +310,7 @@ def _build_pkg(name: str, pkgbuild_path: Path, options,
         init_session=init_session,
         update=not options.no_update,
         strip_full_lto=pgo_build,
+        extra_env=pgo_env,
     )
 
 
@@ -316,7 +318,8 @@ def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
                 cc: str | None = None, cxx: str | None = None,
                 install: bool = True,
                 compiler_flags_extra: str | None = None,
-                pgo_build: bool = False) -> None:
+                pgo_build: bool = False,
+                pgo_env: dict | None = None) -> None:
     """Build all packages in pkgbuild_map for one pass.
 
     Deduplicates by PKGBUILD directory: split packages that share a directory
@@ -336,7 +339,7 @@ def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
         _build_pkg(name, pkgbuild_path, options, cc=cc, cxx=cxx,
                    extra_flags=extra, init_session=first,
                    compiler_flags_extra=compiler_flags_extra,
-                   pgo_build=pgo_build)
+                   pgo_build=pgo_build, pgo_env=pgo_env)
         first = False
 
 
@@ -362,21 +365,39 @@ def _extract_pkg_to_staging(pkg_file: Path, staging: Path) -> None:
 def _extract_pass2_to_staging(pkgbuild_map: dict[str, Path],
                                staging: Path, dry_run: bool) -> None:
     """
-    After Pass 2 build (no install), find .pkg.tar.* in each build dir and
-    extract to staging prefix. The staged binaries are used as CC/CXX in Pass 3.
+    After Pass 2 build (no install), find .pkg.tar* in each build dir (or
+    PKGDEST if set in the system makepkg.conf) and extract to staging prefix.
+    The staged binaries are used as CC/CXX in Pass 3.
     """
     if dry_run:
         _log.ui("[TOOLCHAIN]", f"[dry-run] would extract pass-2 packages to {staging}")
         return
 
+    from sysforge.primitives.config import parse_system_makepkg_conf
+    sys_conf = parse_system_makepkg_conf()
+    pkgdest_raw = sys_conf.get("PKGDEST")
+    pkgdest = Path(pkgdest_raw).expanduser() if pkgdest_raw else None
+    if pkgdest:
+        _log.info("[TOOLCHAIN]", f"[PGO] PKGDEST={pkgdest} — searching there for Pass 2 packages")
+
     _log.ui("[TOOLCHAIN]", f"─── Pass 2: staging extraction → {staging} ────────")
     for name, pkgbuild_path in pkgbuild_map.items():
         build_dir = pkgbuild_path.parent
-        pkgs = sorted(build_dir.glob(f"{name}-*.pkg.tar.*"))
+        # PKGDEST takes precedence; fall back to PKGBUILD directory.
+        search_dirs = [pkgdest] if pkgdest and pkgdest.is_dir() else []
+        search_dirs.append(build_dir)
+        pkgs: list[Path] = []
+        for d in search_dirs:
+            # *.pkg.tar* matches both compressed (.pkg.tar.zst) and
+            # uncompressed (.pkg.tar) packages (PKGEXT='.pkg.tar').
+            pkgs = sorted(d.glob(f"{name}-*.pkg.tar*"))
+            if pkgs:
+                break
         if not pkgs:
+            searched = ", ".join(str(d) for d in search_dirs)
             raise RuntimeError(
-                f"[TOOLCHAIN] No .pkg.tar.* found in {build_dir} for {name}. "
-                "Pass 2 build may have failed or PKGDEST redirected output."
+                f"[TOOLCHAIN] No .pkg.tar* found for {name!r} in: {searched}. "
+                "Pass 2 build may have failed."
             )
         for pkg_file in pkgs:
             _extract_pkg_to_staging(pkg_file, staging)
@@ -396,10 +417,20 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
     atomic tmp→rename so concurrent readers always see a complete file.
     If clang.profdata already exists it is included as an input (incremental).
 
+    Only merges files that have not been modified in the last 10 seconds.
+    Files with a very recent mtime are likely still being written by an
+    instrumented clang process; merging them would cause SIGBUS crashes and
+    truncated-profile errors in llvm-profdata.
+
     Returns the number of .profraw files merged, or 0 if none were found.
     Logs a warning on llvm-profdata failure but does not raise (callers decide).
     """
-    profraw_files = list(pgo_store.glob("**/*.profraw"))
+    import time
+    now = time.time()
+    _SETTLE_SECS = 10
+    all_profraw = list(pgo_store.glob("**/*.profraw"))
+    profraw_files = [f for f in all_profraw
+                     if (now - f.stat().st_mtime) >= _SETTLE_SECS]
     if not profraw_files:
         return 0
 
@@ -576,6 +607,15 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
 
     # Pass 2 — use the instrumented Pass-1 clang as CC; profraw is generated
     # as a side effect of running it. Background daemon merges periodically.
+    #
+    # LLVM_PROFILE_FILE uses %m_%p so each parallel clang process writes to its
+    # own file (module-hash + PID) instead of all contending on default_%m.profraw.
+    # Without this, N parallel `make -j` clang invocations corrupt each other's
+    # profraw via concurrent writes, causing SIGBUS crashes in llvm-profdata.
+    pass2_env = {"LLVM_PROFILE_FILE": f"{pgo_store}/default_%m_%p.profraw"}
+    _log.info("[TOOLCHAIN]",
+              f"[PGO] Pass 2: LLVM_PROFILE_FILE={pass2_env['LLVM_PROFILE_FILE']}")
+
     stop_event = threading.Event()
     monitor = threading.Thread(
         target=_profraw_merge_daemon,
@@ -589,7 +629,7 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
         _build_pass("Pass 2/3 [PGO] training run → profraw generation (no system install)",
                     pgo_map, options,
                     cc="/usr/bin/clang", cxx="/usr/bin/clang++", install=False,
-                    pgo_build=True)
+                    pgo_build=True, pgo_env=pass2_env)
     finally:
         stop_event.set()
         if not options.dry_run:

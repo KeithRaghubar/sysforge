@@ -599,7 +599,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                cc_override=None, cxx_override=None, ld_override=None,
                kernel_build: bool = False,
                compiler_flags_extra: str | None = None,
-               strip_full_lto: bool = False):
+               strip_full_lto: bool = False,
+               injected_env: dict | None = None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -643,6 +644,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     success = False
     try:
         extra_env = resolve_env_vars(resolved_profile, active_consumes)
+        if injected_env:
+            extra_env.update(injected_env)
 
         if kernel_build:
             effective_cc = (
@@ -747,6 +750,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         profile_override: str | None = None,
         compiler_flags_extra: str | None = None,
         strip_full_lto: bool = False,
+        extra_env: dict | None = None,
         state_dir=None):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
@@ -849,6 +853,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             kernel_build=kernel_build,
             compiler_flags_extra=compiler_flags_extra,
             strip_full_lto=strip_full_lto,
+            injected_env=extra_env,
         )
         build_success = True
 
