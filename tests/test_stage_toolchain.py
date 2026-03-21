@@ -35,6 +35,8 @@ from sysforge.pipeline.stages.toolchain import (
     _DEFAULT_PGO_STORE,
     _PGO_ALLOWED_MAKEPKG_FLAGS,
     _PROFRAW_MERGE_BATCH,
+    _collect_pgo_packages,
+    _pgo_install,
     _sudo_keepalive_daemon,
     _SUDO_KEEPALIVE_INTERVAL,
 )
@@ -460,6 +462,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
          patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
          patch("subprocess.run", side_effect=fake_subprocess), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
@@ -469,14 +472,13 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     assert call_log[0]["cc"] is None                        # pass 1: system
     assert call_log[1]["cc"] == "/usr/bin/clang"            # pass 2: pass-1 clang
     assert call_log[2]["cc"].endswith("/usr/bin/clang")     # pass 3: staged clang
-    # All PGO passes force a clean build
+    # All PGO passes force a clean build; none pass --install (install is via _pgo_install)
     assert "--cleanbuild" in call_log[0]["flags"]
     assert "--cleanbuild" in call_log[1]["flags"]
     assert "--cleanbuild" in call_log[2]["flags"]
-    # Pass 1 and 3 install; pass 2 does not
-    assert "--install" in call_log[0]["flags"]
+    assert "--install" not in call_log[0]["flags"]
     assert "--install" not in call_log[1]["flags"]
-    assert "--install" in call_log[2]["flags"]
+    assert "--install" not in call_log[2]["flags"]
     # Pass 1 injects -fprofile-generate so the installed clang is instrumented
     assert call_log[0]["cfe"] is not None
     assert "-fprofile-generate=" in call_log[0]["cfe"]
@@ -634,6 +636,148 @@ def test_profraw_merge_daemon_stops_cleanly_with_no_files(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# _collect_pgo_packages / _pgo_install
+# ---------------------------------------------------------------------------
+
+def test_collect_pgo_packages_uses_makepkg_packagelist(tmp_path):
+    """_collect_pgo_packages calls 'makepkg --packagelist' and returns existing paths."""
+    pkg_dir = tmp_path / "llvm"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
+
+    def fake_packagelist(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = str(fake_pkg)
+        result.stderr = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_packagelist):
+        pkgs = _collect_pgo_packages(pkgbuild_map)
+
+    assert pkgs == [fake_pkg]
+
+
+def test_collect_pgo_packages_deduplicates_by_dir(tmp_path):
+    """Split packages sharing a PKGBUILD dir are only queried once."""
+    pkg_dir = tmp_path / "llvm"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    pkgbuild_map = {
+        "llvm":      pkg_dir / "PKGBUILD",
+        "llvm-libs": pkg_dir / "PKGBUILD",
+    }
+
+    call_count = []
+    def fake_packagelist(cmd, **kwargs):
+        call_count.append(1)
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = str(fake_pkg)
+        result.stderr = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_packagelist):
+        _collect_pgo_packages(pkgbuild_map)
+
+    assert len(call_count) == 1
+
+
+def test_collect_pgo_packages_excludes_missing_and_sig(tmp_path):
+    """Non-existent paths and .sig files are filtered out."""
+    pkg_dir = tmp_path / "llvm"
+    pkg_dir.mkdir()
+    real_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
+    real_pkg.touch()
+    missing = pkg_dir / "llvm-missing-1-x86_64.pkg.tar.zst"
+    sig = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst.sig"
+    sig.touch()
+    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
+
+    def fake_packagelist(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = "\n".join([str(real_pkg), str(missing), str(sig)])
+        result.stderr = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_packagelist):
+        pkgs = _collect_pgo_packages(pkgbuild_map)
+
+    assert pkgs == [real_pkg]
+
+
+def test_pgo_install_calls_pacman_u(tmp_path):
+    pkg_dir = tmp_path / "llvm"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
+
+    pacman_calls = []
+    def fake_run(cmd, **kwargs):
+        pacman_calls.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = str(fake_pkg)
+        result.stderr = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        _pgo_install("test", pkgbuild_map, dry_run=False)
+
+    assert any("pacman" in c and "-U" in c for c in pacman_calls)
+
+
+def test_pgo_install_dry_run_skips_pacman(tmp_path):
+    pkgbuild_map = {"llvm": tmp_path / "llvm" / "PKGBUILD"}
+    with patch("subprocess.run") as mock_run:
+        _pgo_install("test", pkgbuild_map, dry_run=True)
+    mock_run.assert_not_called()
+
+
+def test_pgo_install_raises_when_no_packages(tmp_path):
+    pkg_dir = tmp_path / "llvm"
+    pkg_dir.mkdir()
+    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
+
+    def fake_packagelist(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_packagelist):
+        with pytest.raises(RuntimeError, match="No built packages"):
+            _pgo_install("test", pkgbuild_map, dry_run=False)
+
+
+def test_pgo_install_raises_on_pacman_failure(tmp_path):
+    pkg_dir = tmp_path / "llvm"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
+
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = str(fake_pkg)
+        result.stderr = ""
+        if "pacman" in cmd:
+            result.returncode = 1
+        return result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="pacman -U failed"):
+            _pgo_install("test", pkgbuild_map, dry_run=False)
+
+
+# ---------------------------------------------------------------------------
 # _sudo_keepalive_daemon
 # ---------------------------------------------------------------------------
 
@@ -673,8 +817,7 @@ def test_sudo_keepalive_daemon_stops_immediately():
 
 
 def test_sudo_keepalive_interval_under_sudoers_default():
-    """Keepalive interval must be well under the minimum reasonable sudoers
-    timestamp_timeout (5 minutes on some Arch configurations)."""
+    """Keepalive interval must be under 5 minutes (minimum reasonable sudoers timeout)."""
     assert _SUDO_KEEPALIVE_INTERVAL < 5 * 60
 
 

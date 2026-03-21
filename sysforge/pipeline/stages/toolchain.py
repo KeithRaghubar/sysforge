@@ -67,9 +67,10 @@ _PGO_ALLOWED_MAKEPKG_FLAGS = {"-f", "--force"}
 # Interval (seconds) between intermediate profraw merges during Pass 2.
 _PGO_MERGE_INTERVAL = 15
 
-# How often (seconds) to refresh sudo credentials during long PGO passes.
-# Arch's timestamp_timeout can be as low as 5 minutes; 60 s keeps us well
-# inside any reasonable sudoers configuration.
+# How often (seconds) to refresh sudo credentials during the PGO build sequence.
+# The 3-pass build can run for 2+ hours unattended. The keepalive calls sudo
+# from the sysforge process, and _pgo_install also calls sudo from the same
+# process, so they share the same timestamp entry regardless of timestamp_type.
 _SUDO_KEEPALIVE_INTERVAL = 60
 
 # Maximum number of .profraw files fed to a single llvm-profdata invocation.
@@ -553,24 +554,84 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
 def _sudo_keepalive_daemon(stop_event: threading.Event) -> None:
     """
     Background thread: refresh sudo credentials every _SUDO_KEEPALIVE_INTERVAL
-    seconds during long PGO passes that install packages.
+    seconds throughout the 3-pass PGO build sequence.
 
-    LLVM builds take 30–60 minutes, easily outlasting the 15-minute default
-    sudoers timestamp_timeout. Without this, the install step at the end of
-    Pass 1 or Pass 3 fails with a sudo password prompt that no one answers,
-    causing makepkg to exit non-zero and leaving the PGO sequence in an
-    undefined state (Pass 2 then runs with the wrong compiler).
+    The 3-pass build can run unattended for 2+ hours. _pgo_install() calls
+    sudo directly from the sysforge process, so its timestamp entry is the
+    same one the keepalive refreshes — credential caching works correctly
+    regardless of the sudoers timestamp_type setting.
     """
     while not stop_event.wait(_SUDO_KEEPALIVE_INTERVAL):
-        # Do NOT use capture_output=True: if credentials have somehow expired,
-        # sudo must be able to reach the terminal to prompt for a password.
-        # With capture_output=True, the prompt is swallowed, sudo fails silently,
-        # and credentials stay expired until makepkg --install runs (too late).
         result = subprocess.run(["sudo", "-v"])
         if result.returncode != 0:
             _log.warn("[TOOLCHAIN]",
                       "[PGO] sudo keepalive failed — install step may prompt "
                       "for a password")
+
+
+def _collect_pgo_packages(pkgbuild_map: dict[str, Path]) -> list[Path]:
+    """
+    Use 'makepkg --packagelist' to discover the paths of packages built by
+    each unique PKGBUILD in pkgbuild_map.  Returns only paths that exist on
+    disk (i.e. packages that were actually produced) and excludes .sig files.
+    """
+    seen_dirs: set[Path] = set()
+    packages: list[Path] = []
+    for pkgbuild_path in pkgbuild_map.values():
+        build_dir = pkgbuild_path.parent
+        if build_dir in seen_dirs:
+            continue
+        seen_dirs.add(build_dir)
+        result = subprocess.run(
+            ["makepkg", "--packagelist"],
+            cwd=build_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            _log.warn(
+                "[TOOLCHAIN]",
+                f"[PGO] makepkg --packagelist failed in {build_dir}: "
+                f"{result.stderr.strip()}",
+            )
+            continue
+        for line in result.stdout.splitlines():
+            p = Path(line.strip())
+            if p.exists() and not p.name.endswith(".sig"):
+                packages.append(p)
+    return packages
+
+
+def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> None:
+    """
+    Install packages built by a PGO pass via a direct 'sudo pacman -U' call.
+
+    makepkg is run WITHOUT --install for PGO passes so that the sudo credential
+    prompt (if any) occurs here — immediately after the build — rather than
+    buried inside a multi-hour makepkg run.  The build may have outlasted the
+    sudoers timestamp_timeout, and keepalive approaches are unreliable across
+    sudo timestamp_type configurations (tty, ppid, global).  By issuing the
+    sudo call here we guarantee it happens at a clean, predictable point.
+    """
+    if dry_run:
+        _log.ui("[TOOLCHAIN]", f"[dry-run] would install packages from {label}")
+        return
+    pkgs = _collect_pgo_packages(pkgbuild_map)
+    if not pkgs:
+        raise RuntimeError(
+            f"[TOOLCHAIN] No built packages found for {label} — "
+            "check that the build completed successfully"
+        )
+    _log.ui("[TOOLCHAIN]", f"[PGO] Installing {len(pkgs)} package(s) ({label}):")
+    for p in pkgs:
+        _log.ui("[TOOLCHAIN]", f"  {p.name}")
+    result = subprocess.run(
+        ["sudo", "pacman", "-U", "--noconfirm"] + [str(p) for p in pkgs]
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"[TOOLCHAIN] pacman -U failed (exit {result.returncode}) for {label}"
+        )
 
 
 def _profraw_merge_daemon(pgo_store: Path, stop_event: threading.Event) -> None:
@@ -705,12 +766,9 @@ def _build_llvm_pgo(
             _shutil.rmtree(pgo_store)
         pgo_store.mkdir(parents=True, exist_ok=True)
 
-    # Sudo keepalive for the entire 3-pass sequence.
-    # Each pass (including Pass 2 training run) can take 30–60 min; all three
-    # together can exceed 2 hours. Passes 1 and 3 install packages via
-    # `sudo pacman -U`. A single keepalive thread covering all three passes
-    # ensures credentials never expire between the initial auth and the final
-    # install, regardless of how long Pass 2 takes.
+    # Sudo keepalive for the entire 3-pass sequence. _pgo_install() calls sudo
+    # directly from sysforge, so the keepalive's `sudo -v` refreshes the correct
+    # timestamp entry (same parent PID) for all three passes.
     if not options.dry_run:
         subprocess.run(["sudo", "-v"])
     sudo_stop = threading.Event()
@@ -728,16 +786,19 @@ def _build_llvm_pgo(
         # The system compiler must be clang: -fprofile-generate produces LLVM-format
         # .profraw files (consumed by llvm-profdata); GCC would produce GCOV format.
         # On a running Arch system with LLVM installed this is always clang.
+        # makepkg runs WITHOUT --install; _pgo_install() issues `sudo pacman -U`
+        # directly from sysforge so the keepalive's timestamp entry applies.
         _build_pass(
-            "Pass 1/3 [PGO] instrumented build → install pgo packages",
+            "Pass 1/3 [PGO] instrumented build → pgo packages",
             pgo_map,
             options,
             cc=None,
             cxx=None,
-            install=True,
+            install=False,
             pgo_build=True,
             compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
         )
+        _pgo_install("Pass 1", pgo_map, options.dry_run)
         _log.ui("[TOOLCHAIN]", "[PGO] Pass 1/3 complete")
 
         # Purge any profraw accumulated during Pass 1. CMake feature-test programs
@@ -806,15 +867,16 @@ def _build_llvm_pgo(
         # Pass 3 — PGO-optimized build; -fprofile-use matches -fprofile-generate (IR PGO)
         all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
         _build_pass(
-            "Pass 3/3 [PGO] optimized build → install all",
+            "Pass 3/3 [PGO] optimized build → all packages",
             all_pass3,
             options,
             cc=staged_cc,
             cxx=staged_cxx,
-            install=True,
+            install=False,
             compiler_flags_extra=(f"-fprofile-use={profdata_path} -fprofile-correction"),
             pgo_build=True,
         )
+        _pgo_install("Pass 3", all_pass3, options.dry_run)
         _log.ui("[TOOLCHAIN]", "[PGO] Pass 3/3 complete — PGO build finished")
 
     finally:
