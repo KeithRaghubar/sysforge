@@ -39,7 +39,7 @@ LLVM PGO bootstrap (3 passes, only when pgo = true):
             is not constrained by the sysforge controller's 2 GiB cap.
             No system install; pass-2 binaries extracted to staging.
   Pass 3 — CC=staged clang, CFLAGS += -fprofile-use=<profdata>
-            -fprofile-correction; install all packages (pgo + non_pgo + lib32)
+            install all packages (pgo + non_pgo + lib32)
             to system via _pgo_install(); staging + profdata removed on success.
 
   A sudo keepalive thread refreshes credentials every _SUDO_KEEPALIVE_INTERVAL
@@ -952,8 +952,8 @@ def _build_llvm_pgo(
             Background daemon merges profraw periodically to limit disk usage;
             final sweep runs after the build completes.
             Pass-2 binaries extracted to staging; no system install.
-    Pass 3: CC=staged clang; CFLAGS/CXXFLAGS/LDFLAGS += -fprofile-use
-            + -fprofile-correction; install pgo + non_pgo + lib32 to system.
+    Pass 3: CC=staged clang; CFLAGS/CXXFLAGS/LDFLAGS += -fprofile-use;
+            install pgo + non_pgo + lib32 to system.
             Staging prefix and profdata removed on success.
 
     Returns (cc, cxx, ld).
@@ -1100,7 +1100,7 @@ def _build_llvm_pgo(
             cc=staged_cc,
             cxx=staged_cxx,
             install=False,
-            compiler_flags_extra=(f"-fprofile-use={profdata_path} -fprofile-correction"),
+            compiler_flags_extra=f"-fprofile-use={profdata_path}",
             pgo_build=True,
         )
         _pgo_install("Pass 3", all_pass3, options.dry_run)
