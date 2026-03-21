@@ -40,6 +40,7 @@ import sysforge.log as _log
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import CONFIG_BASE, find_pkgbuild
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
+from sysforge.primitives.resource_guard import lift_for_child
 
 # ---------------------------------------------------------------------------
 # Constants / defaults
@@ -73,11 +74,13 @@ _PGO_MERGE_INTERVAL = 15
 # process, so they share the same timestamp entry regardless of timestamp_type.
 _SUDO_KEEPALIVE_INTERVAL = 60
 
-# Maximum number of .profraw files fed to a single llvm-profdata invocation.
-# Each profraw file for a full LLVM build can be 10–50 MB; merging hundreds
-# at once causes OOM. Batching keeps per-invocation memory bounded while the
-# growing profdata carries the cumulative state across batches.
-_PROFRAW_MERGE_BATCH = 64
+# Adaptive batch sizing for llvm-profdata merge. Each invocation starts at
+# _PROFRAW_MERGE_BATCH_MAX files; on failure the batch is halved and retried
+# at the same position. Shrinkage persists for the remainder of that merge
+# call (next daemon wakeup resets to max). Gives up when batch_size falls
+# below _PROFRAW_MERGE_BATCH_MIN and logs a warning.
+_PROFRAW_MERGE_BATCH_MAX = 128
+_PROFRAW_MERGE_BATCH_MIN = 8
 
 
 # ---------------------------------------------------------------------------
@@ -514,15 +517,14 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
     if not profraw_files:
         return 0
 
-    # Merge in batches to bound per-invocation memory. Each LLVM profraw can be
-    # 10–50 MB; merging all at once OOMs. The growing profdata carries cumulative
-    # state so each batch only needs to load _PROFRAW_MERGE_BATCH files at a time.
     profdata_path = pgo_store / "clang.profdata"
-    tmp_path = pgo_store / "clang.profdata.tmp"
+    tmp_path      = pgo_store / "clang.profdata.tmp"
 
-    deleted = 0
-    for i in range(0, len(profraw_files), _PROFRAW_MERGE_BATCH):
-        batch = profraw_files[i : i + _PROFRAW_MERGE_BATCH]
+    deleted    = 0
+    batch_size = _PROFRAW_MERGE_BATCH_MAX
+    i          = 0
+    while i < len(profraw_files):
+        batch  = profraw_files[i : i + batch_size]
         inputs = [str(profdata_path)] if profdata_path.exists() else []
         inputs += [str(f) for f in batch]
 
@@ -530,23 +532,34 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
             ["llvm-profdata", "merge", "--output", str(tmp_path)] + inputs,
             capture_output=True,
             text=True,
+            preexec_fn=lift_for_child,
         )
         if result.returncode != 0:
+            if batch_size > _PROFRAW_MERGE_BATCH_MIN:
+                new_size = batch_size // 2
+                _log.info(
+                    "[TOOLCHAIN]",
+                    f"[PGO] {label} merge failed at batch={batch_size} "
+                    f"(exit {result.returncode}), retrying with batch={new_size}",
+                )
+                batch_size = new_size
+                continue  # retry same position with smaller batch
             _log.warn(
                 "[TOOLCHAIN]",
-                f"[PGO] {label} profraw merge failed (exit {result.returncode}): "
+                f"[PGO] {label} profraw merge failed at minimum batch size "
+                f"({batch_size}) (exit {result.returncode}): "
                 f"{result.stderr.strip()}",
             )
             return deleted
 
         tmp_path.replace(profdata_path)
-
         for f in batch:
             try:
                 f.unlink()
                 deleted += 1
             except OSError:
                 pass
+        i += batch_size
 
     return deleted
 

@@ -34,7 +34,8 @@ from sysforge.pipeline.stages.toolchain import (
     _DEFAULT_STAGING,
     _DEFAULT_PGO_STORE,
     _PGO_ALLOWED_MAKEPKG_FLAGS,
-    _PROFRAW_MERGE_BATCH,
+    _PROFRAW_MERGE_BATCH_MAX,
+    _PROFRAW_MERGE_BATCH_MIN,
     _collect_pgo_packages,
     _pgo_install,
     _sudo_keepalive_daemon,
@@ -571,20 +572,18 @@ def test_do_profraw_merge_failure_returns_zero(tmp_path):
 
 
 def test_do_profraw_merge_batches_large_sets(tmp_path):
-    """With N > _PROFRAW_MERGE_BATCH settled files, llvm-profdata is called
-    in multiple batches (each <= batch size) rather than once with all files."""
-    n = _PROFRAW_MERGE_BATCH + 3
+    """With N > _PROFRAW_MERGE_BATCH_MAX settled files, llvm-profdata is called
+    in multiple batches rather than once with all files."""
+    n = _PROFRAW_MERGE_BATCH_MAX + 3
     for i in range(n):
         _make_old_profraw(tmp_path / f"p{i}.profraw")
 
     call_counts = []
     def counting_merge(cmd, **kwargs):
-        # Count how many .profraw inputs this invocation received
         raws = [a for a in cmd if a.endswith(".profraw")]
         call_counts.append(len(raws))
         result = MagicMock()
         result.returncode = 0
-        # Write the output profdata so subsequent batches see it
         out_idx = cmd.index("--output")
         Path(cmd[out_idx + 1]).touch()
         return result
@@ -593,10 +592,58 @@ def test_do_profraw_merge_batches_large_sets(tmp_path):
         count = _do_profraw_merge(tmp_path, "test")
 
     assert count == n
-    assert len(call_counts) == 2                           # two batches
-    assert call_counts[0] == _PROFRAW_MERGE_BATCH          # first batch full
-    assert call_counts[1] == 3                             # remainder
-    assert all(c <= _PROFRAW_MERGE_BATCH for c in call_counts)
+    assert len(call_counts) == 2
+    assert call_counts[0] == _PROFRAW_MERGE_BATCH_MAX
+    assert call_counts[1] == 3
+    assert all(c <= _PROFRAW_MERGE_BATCH_MAX for c in call_counts)
+
+
+def test_do_profraw_merge_adaptive_shrink_on_failure(tmp_path):
+    """On merge failure, batch size halves and retries the same position."""
+    for i in range(4):
+        _make_old_profraw(tmp_path / f"p{i}.profraw")
+
+    attempts = []
+    call_n = [0]
+    def fail_first_only(cmd, **kwargs):
+        call_n[0] += 1
+        raws = [a for a in cmd if a.endswith(".profraw")]
+        attempts.append(len(raws))
+        result = MagicMock()
+        result.stderr = "OOM"
+        result.returncode = 1 if call_n[0] == 1 else 0  # first call fails
+        if result.returncode == 0:
+            out_idx = cmd.index("--output")
+            Path(cmd[out_idx + 1]).touch()
+        return result
+
+    with patch("sysforge.pipeline.stages.toolchain._PROFRAW_MERGE_BATCH_MAX", 4), \
+         patch("sysforge.pipeline.stages.toolchain._PROFRAW_MERGE_BATCH_MIN", 1), \
+         patch("subprocess.run", side_effect=fail_first_only):
+        count = _do_profraw_merge(tmp_path, "test")
+
+    # First attempt: batch=4 (max) → fails
+    # Second attempt: batch=2 → succeeds, then another batch=2 → succeeds
+    assert attempts[0] == 4   # first try at max batch
+    assert attempts[1] == 2   # retry at half
+    assert count == 4
+
+
+def test_do_profraw_merge_gives_up_at_min_batch(tmp_path):
+    """If merge keeps failing down to min batch size, returns partial count."""
+    for i in range(_PROFRAW_MERGE_BATCH_MIN):
+        _make_old_profraw(tmp_path / f"p{i}.profraw")
+
+    def always_fail(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 1
+        result.stderr = "OOM"
+        return result
+
+    with patch("subprocess.run", side_effect=always_fail):
+        count = _do_profraw_merge(tmp_path, "test")
+
+    assert count == 0  # nothing merged, gives up at min batch
 
 
 # ---------------------------------------------------------------------------
