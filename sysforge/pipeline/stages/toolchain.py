@@ -67,6 +67,10 @@ _PGO_ALLOWED_MAKEPKG_FLAGS = {"-f", "--force"}
 # Interval (seconds) between intermediate profraw merges during Pass 2.
 _PGO_MERGE_INTERVAL = 15
 
+# How often (seconds) to refresh sudo credentials during long PGO passes.
+# Must be well under the sudoers timestamp_timeout (default: 15 min).
+_SUDO_KEEPALIVE_INTERVAL = 300
+
 # Maximum number of .profraw files fed to a single llvm-profdata invocation.
 # Each profraw file for a full LLVM build can be 10–50 MB; merging hundreds
 # at once causes OOM. Batching keeps per-invocation memory bounded while the
@@ -545,6 +549,21 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
     return deleted
 
 
+def _sudo_keepalive_daemon(stop_event: threading.Event) -> None:
+    """
+    Background thread: refresh sudo credentials every _SUDO_KEEPALIVE_INTERVAL
+    seconds during long PGO passes that install packages.
+
+    LLVM builds take 30–60 minutes, easily outlasting the 15-minute default
+    sudoers timestamp_timeout. Without this, the install step at the end of
+    Pass 1 or Pass 3 fails with a sudo password prompt that no one answers,
+    causing makepkg to exit non-zero and leaving the PGO sequence in an
+    undefined state (Pass 2 then runs with the wrong compiler).
+    """
+    while not stop_event.wait(_SUDO_KEEPALIVE_INTERVAL):
+        subprocess.run(["sudo", "-v"], capture_output=True)
+
+
 def _profraw_merge_daemon(pgo_store: Path, stop_event: threading.Event) -> None:
     """
     Background thread: wake every _PGO_MERGE_INTERVAL seconds during Pass 2
@@ -681,16 +700,37 @@ def _build_llvm_pgo(
     # The system compiler must be clang: -fprofile-generate produces LLVM-format
     # .profraw files (consumed by llvm-profdata); GCC would produce GCOV format.
     # On a running Arch system with LLVM installed this is always clang.
-    _build_pass(
-        "Pass 1/3 [PGO] instrumented build → install pgo packages",
-        pgo_map,
-        options,
-        cc=None,
-        cxx=None,
-        install=True,
-        pgo_build=True,
-        compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
+    #
+    # Sudo keepalive: LLVM takes 30–60 min to compile; the default sudoers
+    # timestamp_timeout is 15 min. Without a keepalive, the `sudo pacman -U`
+    # at the end of makepkg --install prompts for a password that nobody answers,
+    # makepkg exits non-zero, and Pass 2 runs with the wrong (uninstrumented) CC.
+    if not options.dry_run:
+        subprocess.run(["sudo", "-v"], capture_output=True)
+    p1_stop = threading.Event()
+    p1_keepalive = threading.Thread(
+        target=_sudo_keepalive_daemon,
+        args=(p1_stop,),
+        daemon=True,
+        name="sysforge-sudo-keepalive-p1",
     )
+    if not options.dry_run:
+        p1_keepalive.start()
+    try:
+        _build_pass(
+            "Pass 1/3 [PGO] instrumented build → install pgo packages",
+            pgo_map,
+            options,
+            cc=None,
+            cxx=None,
+            install=True,
+            pgo_build=True,
+            compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
+        )
+    finally:
+        p1_stop.set()
+        if not options.dry_run:
+            p1_keepalive.join()
     _log.ui("[TOOLCHAIN]", "[PGO] Pass 1/3 complete")
 
     # Purge any profraw accumulated during Pass 1. CMake feature-test programs
@@ -758,16 +798,32 @@ def _build_llvm_pgo(
 
     # Pass 3 — PGO-optimized build; -fprofile-use matches -fprofile-generate (IR PGO)
     all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
-    _build_pass(
-        "Pass 3/3 [PGO] optimized build → install all",
-        all_pass3,
-        options,
-        cc=staged_cc,
-        cxx=staged_cxx,
-        install=True,
-        compiler_flags_extra=(f"-fprofile-use={profdata_path} -fprofile-correction"),
-        pgo_build=True,
+    if not options.dry_run:
+        subprocess.run(["sudo", "-v"], capture_output=True)
+    p3_stop = threading.Event()
+    p3_keepalive = threading.Thread(
+        target=_sudo_keepalive_daemon,
+        args=(p3_stop,),
+        daemon=True,
+        name="sysforge-sudo-keepalive-p3",
     )
+    if not options.dry_run:
+        p3_keepalive.start()
+    try:
+        _build_pass(
+            "Pass 3/3 [PGO] optimized build → install all",
+            all_pass3,
+            options,
+            cc=staged_cc,
+            cxx=staged_cxx,
+            install=True,
+            compiler_flags_extra=(f"-fprofile-use={profdata_path} -fprofile-correction"),
+            pgo_build=True,
+        )
+    finally:
+        p3_stop.set()
+        if not options.dry_run:
+            p3_keepalive.join()
     _log.ui("[TOOLCHAIN]", "[PGO] Pass 3/3 complete — PGO build finished")
 
     if not options.dry_run:

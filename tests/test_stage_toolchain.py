@@ -35,6 +35,8 @@ from sysforge.pipeline.stages.toolchain import (
     _DEFAULT_PGO_STORE,
     _PGO_ALLOWED_MAKEPKG_FLAGS,
     _PROFRAW_MERGE_BATCH,
+    _sudo_keepalive_daemon,
+    _SUDO_KEEPALIVE_INTERVAL,
 )
 from sysforge.pipeline.state import PipelineState
 from sysforge.pipeline.stages.base import RunOptions
@@ -629,6 +631,50 @@ def test_profraw_merge_daemon_stops_cleanly_with_no_files(tmp_path):
         t.join(timeout=2)
 
     mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _sudo_keepalive_daemon
+# ---------------------------------------------------------------------------
+
+def test_sudo_keepalive_daemon_calls_sudo_v():
+    """Daemon calls 'sudo -v' at least once before stop_event fires."""
+    stop_event = threading.Event()
+    sudo_calls = []
+
+    def fake_run(cmd, **kwargs):
+        sudo_calls.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    with patch("sysforge.pipeline.stages.toolchain._SUDO_KEEPALIVE_INTERVAL", 0), \
+         patch("subprocess.run", side_effect=fake_run):
+        t = threading.Thread(target=_sudo_keepalive_daemon, args=(stop_event,), daemon=True)
+        t.start()
+        t.join(timeout=1)
+        stop_event.set()
+        t.join(timeout=1)
+
+    assert any(cmd == ["sudo", "-v"] for cmd in sudo_calls)
+
+
+def test_sudo_keepalive_daemon_stops_immediately():
+    """If stop_event is pre-set, daemon exits without calling sudo."""
+    stop_event = threading.Event()
+    stop_event.set()
+
+    with patch("subprocess.run") as mock_run:
+        t = threading.Thread(target=_sudo_keepalive_daemon, args=(stop_event,), daemon=True)
+        t.start()
+        t.join(timeout=2)
+
+    mock_run.assert_not_called()
+
+
+def test_sudo_keepalive_interval_under_sudoers_default():
+    """Keepalive interval must be well under the 15-minute sudoers default."""
+    assert _SUDO_KEEPALIVE_INTERVAL < 15 * 60
 
 
 # ---------------------------------------------------------------------------
