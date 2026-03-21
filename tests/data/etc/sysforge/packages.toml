@@ -15,6 +15,10 @@
 # Directory containing pre-cloned PKGBUILDs for aur/git packages.
 # Each entry should have its own subdirectory: <pkgbuild_dir>/<name>/PKGBUILD
 pkgbuild_dir = "~/builds"
+repo_mode = "profiled"  # "pacman" (default) | "profiled" — how repo-source packages are built
+#                       # "pacman"   → install via pacman -S --needed (no build step)
+#                       # "profiled" → build from PKGBUILD with sysforge flag profiles
+#                       # per-package pkgbuild_patch = true overrides to "profiled" regardless
 
 
 # =============================================================================

@@ -17,6 +17,10 @@
 
 # [build]
 # pkgbuild_dir = "~/src"   # override the path from flag_profiles.toml for this manifest
+# repo_mode    = "pacman"  # "pacman" (default) | "profiled" — how repo-source packages are built
+#                          # "pacman"   → install via pacman -S --needed (no build step)
+#                          # "profiled" → build from PKGBUILD with sysforge flag profiles
+#                          # per-package pkgbuild_patch = true overrides to "profiled" regardless
 
 # =============================================================================
 # Add your packages below

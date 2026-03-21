@@ -13,8 +13,8 @@
 #
 # ── [defaults] profile keys (also valid in any [profiles.NAME]) ──────────────
 #
-#   BUILDDIR = "~/builds"     # overrides system makepkg.conf BUILDDIR (where src/pkg go)
-#                             # set this if your system BUILDDIR points to tmpfs (/tmp)
+#   BUILDDIR = "$HOME/builds" # overrides system makepkg.conf BUILDDIR (where src/pkg go)
+#                             # set in [profiles.bare] so all profiles inherit it
 #
 # ── [defaults] ───────────────────────────────────────────────────────────────
 #
@@ -132,6 +132,7 @@ profile = "standard"
 
 [profiles.bare]
 # Fallback — no flags injected
+BUILDDIR = "$HOME/builds"
 
 [profiles.standard]
 extends = "bare"

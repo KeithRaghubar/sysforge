@@ -440,6 +440,7 @@ def _profraw_merge_daemon(pgo_store: Path, stop_event: threading.Event) -> None:
     while not stop_event.wait(_PGO_MERGE_INTERVAL):
         deleted = _do_profraw_merge(pgo_store, "intermediate")
         if deleted:
+            _log.newline()
             _log.info("[TOOLCHAIN]",
                       f"[PGO] Intermediate merge: {deleted} .profraw file(s) merged")
 

@@ -130,6 +130,7 @@ append_groups = ["sf-build"]
 
 [profiles.bare]
 # Fallback profile, no flags
+BUILDDIR = "$HOME/builds"
 
 [profiles.standard]
 extends = "bare"

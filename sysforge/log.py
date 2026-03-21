@@ -153,6 +153,11 @@ def prompt_prefix(level: str, tag: str) -> str:
     return f"[SYSFORGE][{level}]{tag} "
 
 
+def newline() -> None:
+    """Emit a blank line to the output stream. Use before async log messages to avoid mid-line appends."""
+    print("", file=_out())
+
+
 def ui(tag: str, message: str) -> None:
     """Always printed regardless of verbosity. Always written to log files. For interactive output."""
     print(message, file=_out())
