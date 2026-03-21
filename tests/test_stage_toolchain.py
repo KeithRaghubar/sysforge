@@ -34,6 +34,7 @@ from sysforge.pipeline.stages.toolchain import (
     _DEFAULT_STAGING,
     _DEFAULT_PGO_STORE,
     _PGO_ALLOWED_MAKEPKG_FLAGS,
+    _PROFRAW_MERGE_BATCH,
 )
 from sysforge.pipeline.state import PipelineState
 from sysforge.pipeline.stages.base import RunOptions
@@ -563,6 +564,35 @@ def test_do_profraw_merge_failure_returns_zero(tmp_path):
 
     assert count == 0
     assert (tmp_path / "a.profraw").exists()   # not deleted on failure
+
+
+def test_do_profraw_merge_batches_large_sets(tmp_path):
+    """With N > _PROFRAW_MERGE_BATCH settled files, llvm-profdata is called
+    in multiple batches (each <= batch size) rather than once with all files."""
+    n = _PROFRAW_MERGE_BATCH + 3
+    for i in range(n):
+        _make_old_profraw(tmp_path / f"p{i}.profraw")
+
+    call_counts = []
+    def counting_merge(cmd, **kwargs):
+        # Count how many .profraw inputs this invocation received
+        raws = [a for a in cmd if a.endswith(".profraw")]
+        call_counts.append(len(raws))
+        result = MagicMock()
+        result.returncode = 0
+        # Write the output profdata so subsequent batches see it
+        out_idx = cmd.index("--output")
+        Path(cmd[out_idx + 1]).touch()
+        return result
+
+    with patch("subprocess.run", side_effect=counting_merge):
+        count = _do_profraw_merge(tmp_path, "test")
+
+    assert count == n
+    assert len(call_counts) == 2                           # two batches
+    assert call_counts[0] == _PROFRAW_MERGE_BATCH          # first batch full
+    assert call_counts[1] == 3                             # remainder
+    assert all(c <= _PROFRAW_MERGE_BATCH for c in call_counts)
 
 
 # ---------------------------------------------------------------------------

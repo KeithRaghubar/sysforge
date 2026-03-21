@@ -29,6 +29,7 @@ LLVM PGO bootstrap (3 passes, only when pgo = true):
 Compiler propagation:
   On completion writes cc/cxx/ld to pipeline_state.toml [stages.toolchain.result]
 """
+
 import subprocess
 import sys
 import threading
@@ -40,21 +41,23 @@ from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import CONFIG_BASE, find_pkgbuild
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 
-
 # ---------------------------------------------------------------------------
 # Constants / defaults
 # ---------------------------------------------------------------------------
 
 TOOLCHAIN_PATH = CONFIG_BASE / "etc/sysforge/toolchain.toml"
 
-_DEFAULT_LLVM_PGO    = ["llvm", "llvm-libs", "clang", "lld"]
+_DEFAULT_LLVM_PGO = ["llvm", "llvm-libs", "clang", "lld"]
 _DEFAULT_LLVM_NON_PGO = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
-_DEFAULT_LLVM_LIB32  = [
-    "lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"
+_DEFAULT_LLVM_LIB32 = [
+    "lib32-llvm",
+    "lib32-llvm-libs",
+    "lib32-clang",
+    "lib32-spirv-llvm-translator",
 ]
-_DEFAULT_GCC         = ["gcc", "gcc-libs"]
-_DEFAULT_STAGING     = "/var/tmp/sysforge-llvm-stage2"
-_DEFAULT_PGO_STORE   = "/var/tmp/sysforge-llvm-pgo"
+_DEFAULT_GCC = ["gcc", "gcc-libs"]
+_DEFAULT_STAGING = "/var/tmp/sysforge-llvm-stage2"
+_DEFAULT_PGO_STORE = "/var/tmp/sysforge-llvm-pgo"
 
 # Makepkg flags permitted through to PGO builds from user -m input.
 # Only force-rebuild is safe; flags that alter build flow (e.g. --noextract,
@@ -62,12 +65,19 @@ _DEFAULT_PGO_STORE   = "/var/tmp/sysforge-llvm-pgo"
 _PGO_ALLOWED_MAKEPKG_FLAGS = {"-f", "--force"}
 
 # Interval (seconds) between intermediate profraw merges during Pass 2.
-_PGO_MERGE_INTERVAL = 60
+_PGO_MERGE_INTERVAL = 15
+
+# Maximum number of .profraw files fed to a single llvm-profdata invocation.
+# Each profraw file for a full LLVM build can be 10–50 MB; merging hundreds
+# at once causes OOM. Batching keeps per-invocation memory bounded while the
+# growing profdata carries the cumulative state across batches.
+_PROFRAW_MERGE_BATCH = 64
 
 
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
+
 
 def _load_toolchain_config() -> dict | None:
     """
@@ -80,7 +90,9 @@ def _load_toolchain_config() -> dict | None:
         with open(TOOLCHAIN_PATH, "rb") as f:
             return tomllib.load(f)
     except Exception as e:
-        raise RuntimeError(f"[TOOLCHAIN] Failed to parse {TOOLCHAIN_PATH}: {e}") from None
+        raise RuntimeError(
+            f"[TOOLCHAIN] Failed to parse {TOOLCHAIN_PATH}: {e}"
+        ) from None
 
 
 def _package_lists(tcfg: dict) -> tuple[list[str], list[str], list[str]]:
@@ -95,15 +107,16 @@ def _package_lists(tcfg: dict) -> tuple[list[str], list[str], list[str]]:
         gcc_pkgs = pkgs_cfg.get("non_pgo", _DEFAULT_GCC)
         return [], gcc_pkgs, []
 
-    pgo_pkgs    = pkgs_cfg.get("pgo",     _DEFAULT_LLVM_PGO)
+    pgo_pkgs = pkgs_cfg.get("pgo", _DEFAULT_LLVM_PGO)
     non_pgo_pkgs = pkgs_cfg.get("non_pgo", _DEFAULT_LLVM_NON_PGO)
-    lib32_pkgs  = pkgs_cfg.get("lib32",   _DEFAULT_LLVM_LIB32)
+    lib32_pkgs = pkgs_cfg.get("lib32", _DEFAULT_LLVM_LIB32)
     return pgo_pkgs, non_pgo_pkgs, lib32_pkgs
 
 
 # ---------------------------------------------------------------------------
 # PKGBUILD resolution
 # ---------------------------------------------------------------------------
+
 
 def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
     """
@@ -153,10 +166,14 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
 
         still_remaining = []
         for name in remaining:
-            matched = next((p for p, provides in coverage.items() if name in provides), None)
+            matched = next(
+                (p for p, provides in coverage.items() if name in provides), None
+            )
             if matched:
                 resolved[name] = matched
-                _log.info("[TOOLCHAIN]", f"  {name} → split package in {matched.parent.name}/")
+                _log.info(
+                    "[TOOLCHAIN]", f"  {name} → split package in {matched.parent.name}/"
+                )
             else:
                 still_remaining.append(name)
         remaining = still_remaining
@@ -181,11 +198,14 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
                 if pkgbase:
                     covered.add(pkgbase)
                 satisfied = []
-                for r in remaining[i + 1:]:
+                for r in remaining[i + 1 :]:
                     if r in covered:
                         resolved[r] = path
                         satisfied.append(r)
-                        _log.info("[TOOLCHAIN]", f"  {r} → split package in {path.parent.name}/")
+                        _log.info(
+                            "[TOOLCHAIN]",
+                            f"  {r} → split package in {path.parent.name}/",
+                        )
                 for r in satisfied:
                     remaining.remove(r)
             except Exception:
@@ -230,11 +250,16 @@ def _check_pkgver_consistency(pkgbuild_map: dict[str, Path]) -> None:
 
     # Determine the dominant (most common) version to identify stale outliers
     from collections import Counter
-    version_counts = Counter(info["pkgver"] for info in dir_info.values() if info["pkgver"])
+
+    version_counts = Counter(
+        info["pkgver"] for info in dir_info.values() if info["pkgver"]
+    )
     dominant = version_counts.most_common(1)[0][0]
 
-    _log.warn("[TOOLCHAIN]",
-        "PKGBUILD version mismatch detected — dependency resolution will likely fail:")
+    _log.warn(
+        "[TOOLCHAIN]",
+        "PKGBUILD version mismatch detected — dependency resolution will likely fail:",
+    )
     for d, info in dir_info.items():
         ver = info["pkgver"] or "unknown"
         names = ", ".join(info["names"])
@@ -246,8 +271,9 @@ def _check_pkgver_consistency(pkgbuild_map: dict[str, Path]) -> None:
             _log.warn("[TOOLCHAIN]", f"  git -C {d} pull --rebase")
 
 
-def _show_resolution_table(pkgbuild_map: dict[str, Path],
-                           role_map: dict[str, str] | None = None) -> None:
+def _show_resolution_table(
+    pkgbuild_map: dict[str, Path], role_map: dict[str, str] | None = None
+) -> None:
     _log.ui("[TOOLCHAIN]", "─── PKGBUILD resolution ─────────────────────────────")
     for name, path in pkgbuild_map.items():
         role = f"  [{role_map[name]}]" if role_map and name in role_map else ""
@@ -258,7 +284,14 @@ def _show_resolution_table(pkgbuild_map: dict[str, Path],
 def _confirm_or_abort(state_dir) -> None:
     """Prompt user to confirm. On abort, print resume command and raise."""
     try:
-        choice = input(_log.prompt_prefix("UI", "[TOOLCHAIN]") + "Proceed with toolchain build? [y/N]: ").strip().lower()
+        choice = (
+            input(
+                _log.prompt_prefix("UI", "[TOOLCHAIN]")
+                + "Proceed with toolchain build? [y/N]: "
+            )
+            .strip()
+            .lower()
+        )
     except EOFError:
         # Non-interactive: proceed without prompt
         return
@@ -277,27 +310,37 @@ def _confirm_or_abort(state_dir) -> None:
 # Single-package build helpers
 # ---------------------------------------------------------------------------
 
-def _build_pkg(name: str, pkgbuild_path: Path, options,
-               cc: str | None = None, cxx: str | None = None,
-               extra_flags: list | None = None,
-               init_session: bool = False,
-               compiler_flags_extra: str | None = None,
-               pgo_build: bool = False,
-               pgo_env: dict | None = None) -> None:
+
+def _build_pkg(
+    name: str,
+    pkgbuild_path: Path,
+    options,
+    cc: str | None = None,
+    cxx: str | None = None,
+    extra_flags: list | None = None,
+    init_session: bool = False,
+    compiler_flags_extra: str | None = None,
+    pgo_build: bool = False,
+    pgo_env: dict | None = None,
+) -> None:
     """Build one package via makepkg_wrapper.run()."""
     if options.dry_run:
         cc_label = f" CC={cc}" if cc else ""
         _log.ui("[TOOLCHAIN]", f"[dry-run] would build {name}{cc_label}")
         return
     # Strip install flags — toolchain controls install/no-install via extra_flags.
-    user_flags = [f for f in getattr(options, "makepkg_flags", []) if f not in ("-i", "--install")]
+    user_flags = [
+        f for f in getattr(options, "makepkg_flags", []) if f not in ("-i", "--install")
+    ]
     if pgo_build:
         dropped = [f for f in user_flags if f not in _PGO_ALLOWED_MAKEPKG_FLAGS]
         user_flags = [f for f in user_flags if f in _PGO_ALLOWED_MAKEPKG_FLAGS]
         if dropped:
-            _log.warn("[TOOLCHAIN]",
-                      f"PGO build: ignoring -m flags that could corrupt the "
-                      f"instrumentation sequence: {dropped}")
+            _log.warn(
+                "[TOOLCHAIN]",
+                f"PGO build: ignoring -m flags that could corrupt the "
+                f"instrumentation sequence: {dropped}",
+            )
     combined_flags = list(extra_flags or []) + user_flags
     makepkg_run(
         pkgbuild_path,
@@ -314,12 +357,17 @@ def _build_pkg(name: str, pkgbuild_path: Path, options,
     )
 
 
-def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
-                cc: str | None = None, cxx: str | None = None,
-                install: bool = True,
-                compiler_flags_extra: str | None = None,
-                pgo_build: bool = False,
-                pgo_env: dict | None = None) -> None:
+def _build_pass(
+    label: str,
+    pkgbuild_map: dict[str, Path],
+    options,
+    cc: str | None = None,
+    cxx: str | None = None,
+    install: bool = True,
+    compiler_flags_extra: str | None = None,
+    pgo_build: bool = False,
+    pgo_env: dict | None = None,
+) -> None:
     """Build all packages in pkgbuild_map for one pass.
 
     Deduplicates by PKGBUILD directory: split packages that share a directory
@@ -338,10 +386,18 @@ def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
             continue
         seen_dirs.add(pkg_dir)
         _log.ui("[TOOLCHAIN]", f"  {name}")
-        _build_pkg(name, pkgbuild_path, options, cc=cc, cxx=cxx,
-                   extra_flags=extra, init_session=first,
-                   compiler_flags_extra=compiler_flags_extra,
-                   pgo_build=pgo_build, pgo_env=pgo_env)
+        _build_pkg(
+            name,
+            pkgbuild_path,
+            options,
+            cc=cc,
+            cxx=cxx,
+            extra_flags=extra,
+            init_session=first,
+            compiler_flags_extra=compiler_flags_extra,
+            pgo_build=pgo_build,
+            pgo_env=pgo_env,
+        )
         first = False
 
 
@@ -349,12 +405,20 @@ def _build_pass(label: str, pkgbuild_map: dict[str, Path], options,
 # PGO staging extraction
 # ---------------------------------------------------------------------------
 
+
 def _extract_pkg_to_staging(pkg_file: Path, staging: Path) -> None:
     """Extract a .pkg.tar.* file to the staging directory."""
     staging.mkdir(parents=True, exist_ok=True)
     _log.ui("[TOOLCHAIN]", f"  Extracting {pkg_file.name} → {staging}")
     result = subprocess.run(
-        ["tar", "--warning=no-unknown-keyword", "-xf", str(pkg_file), "-C", str(staging)],
+        [
+            "tar",
+            "--warning=no-unknown-keyword",
+            "-xf",
+            str(pkg_file),
+            "-C",
+            str(staging),
+        ],
         capture_output=True,
     )
     if result.returncode != 0:
@@ -364,8 +428,9 @@ def _extract_pkg_to_staging(pkg_file: Path, staging: Path) -> None:
         )
 
 
-def _extract_pass2_to_staging(pkgbuild_map: dict[str, Path],
-                               staging: Path, dry_run: bool) -> None:
+def _extract_pass2_to_staging(
+    pkgbuild_map: dict[str, Path], staging: Path, dry_run: bool
+) -> None:
     """
     After Pass 2 build (no install), find .pkg.tar* in each build dir (or
     PKGDEST if set in the system makepkg.conf) and extract to staging prefix.
@@ -376,11 +441,15 @@ def _extract_pass2_to_staging(pkgbuild_map: dict[str, Path],
         return
 
     from sysforge.primitives.config import parse_system_makepkg_conf
+
     sys_conf = parse_system_makepkg_conf()
     pkgdest_raw = sys_conf.get("PKGDEST")
     pkgdest = Path(pkgdest_raw).expanduser() if pkgdest_raw else None
     if pkgdest:
-        _log.info("[TOOLCHAIN]", f"[PGO] PKGDEST={pkgdest} — searching there for Pass 2 packages")
+        _log.info(
+            "[TOOLCHAIN]",
+            f"[PGO] PKGDEST={pkgdest} — searching there for Pass 2 packages",
+        )
 
     _log.ui("[TOOLCHAIN]", f"─── Pass 2: staging extraction → {staging} ────────")
     for name, pkgbuild_path in pkgbuild_map.items():
@@ -408,6 +477,7 @@ def _extract_pass2_to_staging(pkgbuild_map: dict[str, Path],
 
 def _remove_staging(staging: Path) -> None:
     import shutil
+
     if staging.exists():
         _log.ui("[TOOLCHAIN]", f"Removing staging prefix: {staging}")
         shutil.rmtree(staging)
@@ -428,39 +498,50 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
     Logs a warning on llvm-profdata failure but does not raise (callers decide).
     """
     import time
+
     now = time.time()
     _SETTLE_SECS = 10
     all_profraw = list(pgo_store.glob("**/*.profraw"))
-    profraw_files = [f for f in all_profraw
-                     if (now - f.stat().st_mtime) >= _SETTLE_SECS]
+    profraw_files = [
+        f for f in all_profraw if (now - f.stat().st_mtime) >= _SETTLE_SECS
+    ]
     if not profraw_files:
         return 0
 
+    # Merge in batches to bound per-invocation memory. Each LLVM profraw can be
+    # 10–50 MB; merging all at once OOMs. The growing profdata carries cumulative
+    # state so each batch only needs to load _PROFRAW_MERGE_BATCH files at a time.
     profdata_path = pgo_store / "clang.profdata"
-    tmp_path      = pgo_store / "clang.profdata.tmp"
-
-    inputs = ([str(profdata_path)] if profdata_path.exists() else [])
-    inputs += [str(f) for f in profraw_files]
-
-    result = subprocess.run(
-        ["llvm-profdata", "merge", "--output", str(tmp_path)] + inputs,
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        _log.warn("[TOOLCHAIN]",
-                  f"[PGO] {label} profraw merge failed (exit {result.returncode}): "
-                  f"{result.stderr.strip()}")
-        return 0
-
-    tmp_path.replace(profdata_path)
+    tmp_path = pgo_store / "clang.profdata.tmp"
 
     deleted = 0
-    for f in profraw_files:
-        try:
-            f.unlink()
-            deleted += 1
-        except OSError:
-            pass
+    for i in range(0, len(profraw_files), _PROFRAW_MERGE_BATCH):
+        batch = profraw_files[i : i + _PROFRAW_MERGE_BATCH]
+        inputs = [str(profdata_path)] if profdata_path.exists() else []
+        inputs += [str(f) for f in batch]
+
+        result = subprocess.run(
+            ["llvm-profdata", "merge", "--output", str(tmp_path)] + inputs,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            _log.warn(
+                "[TOOLCHAIN]",
+                f"[PGO] {label} profraw merge failed (exit {result.returncode}): "
+                f"{result.stderr.strip()}",
+            )
+            return deleted
+
+        tmp_path.replace(profdata_path)
+
+        for f in batch:
+            try:
+                f.unlink()
+                deleted += 1
+            except OSError:
+                pass
+
     return deleted
 
 
@@ -474,8 +555,10 @@ def _profraw_merge_daemon(pgo_store: Path, stop_event: threading.Event) -> None:
         deleted = _do_profraw_merge(pgo_store, "intermediate")
         if deleted:
             _log.newline()
-            _log.info("[TOOLCHAIN]",
-                      f"[PGO] Intermediate merge: {deleted} .profraw file(s) merged")
+            _log.info(
+                "[TOOLCHAIN]",
+                f"[PGO] Intermediate merge: {deleted} .profraw file(s) merged",
+            )
 
 
 def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
@@ -493,11 +576,13 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
     profdata_path = pgo_store / "clang.profdata"
 
     if dry_run:
-        _log.ui("[TOOLCHAIN]", f"[dry-run] would finalize profraw merge → {profdata_path}")
+        _log.ui(
+            "[TOOLCHAIN]", f"[dry-run] would finalize profraw merge → {profdata_path}"
+        )
         return profdata_path
 
-    profraw_files  = list(pgo_store.glob("**/*.profraw"))
-    has_profdata   = profdata_path.exists()
+    profraw_files = list(pgo_store.glob("**/*.profraw"))
+    has_profdata = profdata_path.exists()
 
     if not profraw_files and not has_profdata:
         raise RuntimeError(
@@ -507,8 +592,10 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
         )
 
     if not profraw_files:
-        _log.info("[TOOLCHAIN]",
-                  "[PGO] All .profraw files already merged by background monitor")
+        _log.info(
+            "[TOOLCHAIN]",
+            "[PGO] All .profraw files already merged by background monitor",
+        )
         return profdata_path
 
     deleted = _do_profraw_merge(pgo_store, "final")
@@ -517,8 +604,9 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
             "[TOOLCHAIN] Final profraw merge produced no output — "
             "llvm-profdata may have failed (check warnings above)."
         )
-    _log.info("[TOOLCHAIN]",
-              f"[PGO] Final merge: {deleted} remaining .profraw file(s) merged")
+    _log.info(
+        "[TOOLCHAIN]", f"[PGO] Final merge: {deleted} remaining .profraw file(s) merged"
+    )
     return profdata_path
 
 
@@ -526,28 +614,33 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
 # Build paths
 # ---------------------------------------------------------------------------
 
+
 def _build_gcc(pkgbuild_map: dict[str, Path], options) -> tuple[str, str, None]:
     """Single-pass GCC build. Returns (cc, cxx, ld=None)."""
     _build_pass("GCC build (single pass)", pkgbuild_map, options, install=True)
     return "/usr/bin/gcc", "/usr/bin/g++", None
 
 
-def _build_llvm_single(pkgbuild_map: dict[str, Path],
-                       non_pgo_map: dict[str, Path],
-                       lib32_map: dict[str, Path],
-                       options) -> tuple[str, str, str]:
+def _build_llvm_single(
+    pkgbuild_map: dict[str, Path],
+    non_pgo_map: dict[str, Path],
+    lib32_map: dict[str, Path],
+    options,
+) -> tuple[str, str, str]:
     """Single-pass LLVM build (pgo = false). Returns (cc, cxx, ld)."""
     all_pkgs = {**pkgbuild_map, **non_pgo_map, **lib32_map}
     _build_pass("LLVM build (single pass, no PGO)", all_pkgs, options, install=True)
     return "/usr/bin/clang", "/usr/bin/clang++", "lld"
 
 
-def _build_llvm_pgo(pgo_map: dict[str, Path],
-                    non_pgo_map: dict[str, Path],
-                    lib32_map: dict[str, Path],
-                    staging: Path,
-                    pgo_store: Path,
-                    options) -> tuple[str, str, str]:
+def _build_llvm_pgo(
+    pgo_map: dict[str, Path],
+    non_pgo_map: dict[str, Path],
+    lib32_map: dict[str, Path],
+    staging: Path,
+    pgo_store: Path,
+    options,
+) -> tuple[str, str, str]:
     """
     3-pass LLVM PGO build.
 
@@ -564,18 +657,21 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
 
     Returns (cc, cxx, ld).
     """
-    staged_cc  = str(staging / "usr/bin/clang")
+    staged_cc = str(staging / "usr/bin/clang")
     staged_cxx = str(staging / "usr/bin/clang++")
 
-    n_pgo   = len(set(pgo_map.values()))
+    n_pgo = len(set(pgo_map.values()))
     n_total = len(set({**pgo_map, **non_pgo_map, **lib32_map}.values()))
-    _log.ui("[TOOLCHAIN]",
-            f"[PGO] Starting 3-pass LLVM PGO build  "
-            f"({n_pgo} pgo PKGBUILD(s), {n_total} total across all passes)  "
-            f"pgo_store={pgo_store}")
+    _log.ui(
+        "[TOOLCHAIN]",
+        f"[PGO] Starting 3-pass LLVM PGO build  "
+        f"({n_pgo} pgo PKGBUILD(s), {n_total} total across all passes)  "
+        f"pgo_store={pgo_store}",
+    )
 
     if not options.dry_run:
         import shutil as _shutil
+
         if pgo_store.exists():
             _log.info("[TOOLCHAIN]", f"[PGO] Purging stale pgo_store: {pgo_store}")
             _shutil.rmtree(pgo_store)
@@ -585,9 +681,16 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     # The system compiler must be clang: -fprofile-generate produces LLVM-format
     # .profraw files (consumed by llvm-profdata); GCC would produce GCOV format.
     # On a running Arch system with LLVM installed this is always clang.
-    _build_pass("Pass 1/3 [PGO] instrumented build → install pgo packages", pgo_map, options,
-                cc=None, cxx=None, install=True, pgo_build=True,
-                compiler_flags_extra=f"-fprofile-generate={pgo_store}/")
+    _build_pass(
+        "Pass 1/3 [PGO] instrumented build → install pgo packages",
+        pgo_map,
+        options,
+        cc=None,
+        cxx=None,
+        install=True,
+        pgo_build=True,
+        compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
+    )
     _log.ui("[TOOLCHAIN]", "[PGO] Pass 1/3 complete")
 
     # Purge any profraw accumulated during Pass 1. CMake feature-test programs
@@ -603,9 +706,11 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
             except OSError:
                 pass
         if spurious:
-            _log.info("[TOOLCHAIN]",
-                      f"[PGO] Purged {len(spurious)} spurious profraw file(s) "
-                      f"from Pass 1 CMake probes")
+            _log.info(
+                "[TOOLCHAIN]",
+                f"[PGO] Purged {len(spurious)} spurious profraw file(s) "
+                f"from Pass 1 CMake probes",
+            )
 
     # Pass 2 — use the instrumented Pass-1 clang as CC; profraw is generated
     # as a side effect of running it. Background daemon merges periodically.
@@ -615,8 +720,10 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     # Without this, N parallel `make -j` clang invocations corrupt each other's
     # profraw via concurrent writes, causing SIGBUS crashes in llvm-profdata.
     pass2_env = {"LLVM_PROFILE_FILE": f"{pgo_store}/default_%m_%p.profraw"}
-    _log.info("[TOOLCHAIN]",
-              f"[PGO] Pass 2: LLVM_PROFILE_FILE={pass2_env['LLVM_PROFILE_FILE']}")
+    _log.info(
+        "[TOOLCHAIN]",
+        f"[PGO] Pass 2: LLVM_PROFILE_FILE={pass2_env['LLVM_PROFILE_FILE']}",
+    )
 
     stop_event = threading.Event()
     monitor = threading.Thread(
@@ -628,10 +735,16 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
     if not options.dry_run:
         monitor.start()
     try:
-        _build_pass("Pass 2/3 [PGO] training run → profraw generation (no system install)",
-                    pgo_map, options,
-                    cc="/usr/bin/clang", cxx="/usr/bin/clang++", install=False,
-                    pgo_build=True, pgo_env=pass2_env)
+        _build_pass(
+            "Pass 2/3 [PGO] training run → profraw generation (no system install)",
+            pgo_map,
+            options,
+            cc="/usr/bin/clang",
+            cxx="/usr/bin/clang++",
+            install=False,
+            pgo_build=True,
+            pgo_env=pass2_env,
+        )
     finally:
         stop_event.set()
         if not options.dry_run:
@@ -645,12 +758,16 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
 
     # Pass 3 — PGO-optimized build; -fprofile-use matches -fprofile-generate (IR PGO)
     all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
-    _build_pass("Pass 3/3 [PGO] optimized build → install all", all_pass3, options,
-                cc=staged_cc, cxx=staged_cxx, install=True,
-                compiler_flags_extra=(
-                    f"-fprofile-use={profdata_path} -fprofile-correction"
-                ),
-                pgo_build=True)
+    _build_pass(
+        "Pass 3/3 [PGO] optimized build → install all",
+        all_pass3,
+        options,
+        cc=staged_cc,
+        cxx=staged_cxx,
+        install=True,
+        compiler_flags_extra=(f"-fprofile-use={profdata_path} -fprofile-correction"),
+        pgo_build=True,
+    )
     _log.ui("[TOOLCHAIN]", "[PGO] Pass 3/3 complete — PGO build finished")
 
     if not options.dry_run:
@@ -668,6 +785,7 @@ def _build_llvm_pgo(pgo_map: dict[str, Path],
 # Compiler path lookup (no build)
 # ---------------------------------------------------------------------------
 
+
 def _compiler_paths(compiler: str) -> tuple[str, str, str | None]:
     """Return (cc, cxx, ld) for a named compiler without building anything."""
     if compiler == "gcc":
@@ -679,6 +797,7 @@ def _compiler_paths(compiler: str) -> tuple[str, str, str | None]:
 # Stage
 # ---------------------------------------------------------------------------
 
+
 class ToolchainStage(Stage):
     name = "toolchain"
     description = "LLVM/GCC toolchain build"
@@ -687,18 +806,23 @@ class ToolchainStage(Stage):
     def run(self, config, state, options):
         tcfg = _load_toolchain_config()
         if tcfg is None or not tcfg.get("enabled", False):
-            _log.ui("[TOOLCHAIN]", "toolchain.toml absent or disabled — stage is a no-op")
+            _log.ui(
+                "[TOOLCHAIN]", "toolchain.toml absent or disabled — stage is a no-op"
+            )
             return
 
-        compiler  = tcfg.get("compiler", "llvm")
-        pgo       = tcfg.get("pgo", True) if compiler == "llvm" else False
-        staging   = Path(tcfg.get("pgo_staging", _DEFAULT_STAGING))
+        compiler = tcfg.get("compiler", "llvm")
+        pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
+        staging = Path(tcfg.get("pgo_staging", _DEFAULT_STAGING))
         pgo_store = Path(tcfg.get("pgo_store", _DEFAULT_PGO_STORE))
 
         # skip_build: register compiler paths without building anything
         if tcfg.get("skip_build", False):
             cc, cxx, ld = _compiler_paths(compiler)
-            _log.ui("[TOOLCHAIN]", f"skip_build=true — skipping build, registering {compiler}: cc={cc}  cxx={cxx}")
+            _log.ui(
+                "[TOOLCHAIN]",
+                f"skip_build=true — skipping build, registering {compiler}: cc={cc}  cxx={cxx}",
+            )
             result = {"cc": cc, "cxx": cxx}
             if ld is not None:
                 result["ld"] = ld
@@ -706,20 +830,33 @@ class ToolchainStage(Stage):
             try:
                 state.save()
             except PermissionError:
-                _log.warn("[TOOLCHAIN]", "Cannot write state — toolchain results will not be checkpointed")
+                _log.warn(
+                    "[TOOLCHAIN]",
+                    "Cannot write state — toolchain results will not be checkpointed",
+                )
             return
 
         if compiler == "gcc" and not options.dry_run:
-            _log.warn("[TOOLCHAIN]",
+            _log.warn(
+                "[TOOLCHAIN]",
                 "Building GCC from source is error-prone and yields no meaningful performance gains. "
-                "Set skip_build = true in toolchain.toml to use the system GCC instead."
+                "Set skip_build = true in toolchain.toml to use the system GCC instead.",
             )
             try:
-                choice = input(_log.prompt_prefix("WARN", "[TOOLCHAIN]") + "Proceed with GCC build anyway? [y/N]: ").strip().lower()
+                choice = (
+                    input(
+                        _log.prompt_prefix("WARN", "[TOOLCHAIN]")
+                        + "Proceed with GCC build anyway? [y/N]: "
+                    )
+                    .strip()
+                    .lower()
+                )
             except (EOFError, OSError):
                 choice = "y"
             if choice not in ("y", "yes"):
-                raise RuntimeError("[TOOLCHAIN] GCC build aborted. Set skip_build = true in toolchain.toml to use the system GCC.")
+                raise RuntimeError(
+                    "[TOOLCHAIN] GCC build aborted. Set skip_build = true in toolchain.toml to use the system GCC."
+                )
 
         pgo_pkgs, non_pgo_pkgs, lib32_pkgs = _package_lists(tcfg)
 
@@ -732,26 +869,34 @@ class ToolchainStage(Stage):
         if lib32_pkgs:
             parts.append(f"{len(lib32_pkgs)} lib32")
         pkg_summary = f"{total} total  ({' / '.join(parts)})"
-        _log.ui("[TOOLCHAIN]", f"Compiler: {compiler}  |  PGO: {pgo}  |  Packages: {pkg_summary}")
+        _log.ui(
+            "[TOOLCHAIN]",
+            f"Compiler: {compiler}  |  PGO: {pgo}  |  Packages: {pkg_summary}",
+        )
 
         # Resolve PKGBUILDs for all packages
         pkgbuild_map = _resolve_all_pkgbuilds(all_names, config)
         _check_pkgver_consistency(pkgbuild_map)
 
-        pgo_map     = {n: pkgbuild_map[n] for n in pgo_pkgs}
+        pgo_map = {n: pkgbuild_map[n] for n in pgo_pkgs}
         non_pgo_map = {n: pkgbuild_map[n] for n in non_pgo_pkgs}
-        lib32_map   = {n: pkgbuild_map[n] for n in lib32_pkgs}
+        lib32_map = {n: pkgbuild_map[n] for n in lib32_pkgs}
 
         role_map = (
-            {n: "pgo"     for n in pgo_pkgs}
-            | {n: "non-pgo" for n in non_pgo_pkgs}
-            | {n: "lib32"   for n in lib32_pkgs}
-        ) if pgo else {n: "lib32" for n in lib32_pkgs}
+            (
+                {n: "pgo" for n in pgo_pkgs}
+                | {n: "non-pgo" for n in non_pgo_pkgs}
+                | {n: "lib32" for n in lib32_pkgs}
+            )
+            if pgo
+            else {n: "lib32" for n in lib32_pkgs}
+        )
         _show_resolution_table(pkgbuild_map, role_map=role_map or None)
 
         # Prompt for confirmation (interactive only)
         try:
             import sys as _sys
+
             if _sys.stdin.isatty() and not options.dry_run:
                 _confirm_or_abort(options.state_dir)
         except RuntimeError:
@@ -761,8 +906,9 @@ class ToolchainStage(Stage):
         if compiler == "gcc":
             cc, cxx, ld = _build_gcc(non_pgo_map, options)
         elif pgo:
-            cc, cxx, ld = _build_llvm_pgo(pgo_map, non_pgo_map, lib32_map,
-                                           staging, pgo_store, options)
+            cc, cxx, ld = _build_llvm_pgo(
+                pgo_map, non_pgo_map, lib32_map, staging, pgo_store, options
+            )
         else:
             cc, cxx, ld = _build_llvm_single(pgo_map, non_pgo_map, lib32_map, options)
 
@@ -774,9 +920,13 @@ class ToolchainStage(Stage):
         try:
             state.save()
         except PermissionError:
-            _log.warn("[TOOLCHAIN]", "Cannot write state — toolchain results will not be checkpointed")
+            _log.warn(
+                "[TOOLCHAIN]",
+                "Cannot write state — toolchain results will not be checkpointed",
+            )
 
-        _log.ui("[TOOLCHAIN]",
-            f"Toolchain stage complete. cc={cc}  cxx={cxx}" +
-            (f"  ld={ld}" if ld else "")
+        _log.ui(
+            "[TOOLCHAIN]",
+            f"Toolchain stage complete. cc={cc}  cxx={cxx}"
+            + (f"  ld={ld}" if ld else ""),
         )
