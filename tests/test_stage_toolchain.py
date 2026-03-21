@@ -38,7 +38,9 @@ from sysforge.pipeline.stages.toolchain import (
     _PROFRAW_MERGE_BATCH_MIN,
     _PROFRAW_SETTLE_SECS,
     _collect_pgo_packages,
+    _has_llvm_cmake_config,
     _pgo_install,
+    _pgo_pass1_install,
     _sudo_keepalive_daemon,
     _SUDO_KEEPALIVE_INTERVAL,
 )
@@ -464,6 +466,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
          patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_install"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
          patch("subprocess.run", side_effect=fake_subprocess), \
          patch("sys.stdin.isatty", return_value=False):
@@ -823,6 +826,130 @@ def test_pgo_install_raises_on_pacman_failure(tmp_path):
     with patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="pacman -U failed"):
             _pgo_install("test", pkgbuild_map, dry_run=False)
+
+
+# ---------------------------------------------------------------------------
+# _has_llvm_cmake_config / _pgo_pass1_install
+# ---------------------------------------------------------------------------
+
+
+def test_has_llvm_cmake_config_true(tmp_path):
+    """Returns True when tar listing contains cmake/llvm."""
+    pkg = tmp_path / "llvm-18.pkg.tar.zst"
+    pkg.touch()
+    listing = (
+        "./usr/lib/cmake/llvm/LLVMConfig.cmake\n"
+        "./usr/lib/libLLVMSupport.a\n"
+    )
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=listing, stderr="")
+        assert _has_llvm_cmake_config(pkg) is True
+    mock_run.assert_called_once()
+    assert "tar" in mock_run.call_args[0][0]
+
+
+def test_has_llvm_cmake_config_false(tmp_path):
+    """Returns False for packages that have no cmake/llvm entries (e.g. llvm-libs)."""
+    pkg = tmp_path / "llvm-libs-18.pkg.tar.zst"
+    pkg.touch()
+    listing = "./usr/lib/libLLVM-18.so.1\n./usr/lib/libLLVM-18.so\n"
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=listing, stderr="")
+        assert _has_llvm_cmake_config(pkg) is False
+
+
+def test_pgo_pass1_install_excludes_cmake_pkg(tmp_path):
+    """cmake-config package (llvm) is excluded; shared-lib package (llvm-libs) is installed."""
+    pkg_dir = tmp_path / "llvm"
+    pkg_dir.mkdir()
+    llvm_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
+    llvm_libs_pkg = pkg_dir / "llvm-libs-18.0.0-1-x86_64.pkg.tar.zst"
+    llvm_pkg.touch()
+    llvm_libs_pkg.touch()
+    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD", "llvm-libs": pkg_dir / "PKGBUILD"}
+
+    cmake_listing = "./usr/lib/cmake/llvm/LLVMConfig.cmake\n./usr/lib/libLLVMSupport.a\n"
+    libs_listing = "./usr/lib/libLLVM-18.so.1\n"
+
+    pacman_args = []
+
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        if "makepkg" in cmd:
+            result.stdout = f"{llvm_pkg}\n{llvm_libs_pkg}\n"
+        elif "tar" in cmd and str(llvm_pkg) in cmd:
+            result.stdout = cmake_listing
+        elif "tar" in cmd and str(llvm_libs_pkg) in cmd:
+            result.stdout = libs_listing
+        elif "pacman" in cmd:
+            pacman_args.extend(cmd)
+            result.stdout = ""
+        else:
+            result.stdout = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        _pgo_pass1_install(pkgbuild_map, dry_run=False)
+
+    assert any("pacman" in str(a) for a in pacman_args)
+    assert str(llvm_libs_pkg) in pacman_args
+    assert str(llvm_pkg) not in pacman_args
+
+
+def test_pgo_pass1_install_dry_run(tmp_path):
+    pkgbuild_map = {"llvm": tmp_path / "llvm" / "PKGBUILD"}
+    with patch("subprocess.run") as mock_run:
+        _pgo_pass1_install(pkgbuild_map, dry_run=True)
+    mock_run.assert_not_called()
+
+
+def test_pgo_pass1_install_all_excluded_warns_and_returns(tmp_path):
+    """When all packages have cmake/llvm, warn and return without calling pacman."""
+    pkg_dir = tmp_path / "llvm"
+    pkg_dir.mkdir()
+    llvm_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
+    llvm_pkg.touch()
+    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
+    cmake_listing = "./usr/lib/cmake/llvm/LLVMConfig.cmake\n"
+    pacman_called = []
+
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        if "makepkg" in cmd:
+            result.stdout = str(llvm_pkg)
+        elif "tar" in cmd:
+            result.stdout = cmake_listing
+        else:
+            if "pacman" in cmd:
+                pacman_called.append(True)
+            result.stdout = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        _pgo_pass1_install(pkgbuild_map, dry_run=False)
+
+    assert not pacman_called, "pacman should not be called when all packages are excluded"
+
+
+def test_pgo_pass1_install_raises_when_no_packages(tmp_path):
+    pkg_dir = tmp_path / "llvm"
+    pkg_dir.mkdir()
+    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
+
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="No built packages"):
+            _pgo_pass1_install(pkgbuild_map, dry_run=False)
 
 
 # ---------------------------------------------------------------------------

@@ -387,7 +387,7 @@ For `compiler = "gcc"`, the default package set is `["gcc", "gcc-libs"]`.
 
 Every pass runs makepkg with `--cleanbuild`. `makepkg` is invoked without `--install`; a direct `sudo pacman -U` call (from sysforge) installs each pass's output. A sudo keepalive thread refreshes credentials every 60 seconds throughout the sequence. `llvm-profdata` is invoked with `RLIMIT_AS` lifted (`resource_guard.lift_for_child`) so it is not constrained by the sysforge controller's 2 GiB virtual address space cap.
 
-1. **Pass 1** — build pgo packages with the system compiler + `-fprofile-generate=<pgo_store>/`. Install to the live system via `sudo pacman -U`. The installed `/usr/bin/clang` is now instrumented and writes `.profraw` files on use. Spurious profraw from CMake feature probes is purged before Pass 2 begins.
+1. **Pass 1** — build pgo packages with the system compiler + `-fprofile-generate=<pgo_store>/`. Selectively install to the live system via `sudo pacman -U`: shared-lib and binary packages (e.g. `llvm-libs`, `clang`, `lld`) are installed; cmake-config packages (e.g. `llvm`, which contains instrumented `.a` archives) are intentionally excluded. This prevents a separate `clang` PKGBUILD's `find_package(LLVM)` in Pass 2 from linking against instrumented static libs and failing to resolve `__llvm_profile_*` symbols. The installed `/usr/bin/clang` is instrumented and writes `.profraw` files on use. Spurious profraw from CMake feature probes is purged before Pass 2 begins.
 
 2. **Pass 2** — build pgo packages with `CC=/usr/bin/clang` (the instrumented Pass-1 binary; no extra flags). `LLVM_PROFILE_FILE` uses `%m_%p` (per-module-hash + per-PID) so parallel `make -j` clang processes each write their own `.profraw` file rather than contending on one. A background daemon merges profraw into `clang.profdata` every 15 seconds using adaptive batch sizing (starts at 128 files; halves on OOM; minimum batch 8). No system install. After the build, Pass 2 binaries are extracted to `pgo_staging`.
 
@@ -412,7 +412,7 @@ The packages and kernel stages read these values and inject them into the build 
 
 ## Primitives Layer
 
-All modules independently testable. 758 pytest tests (`pytest` from repo root).
+All modules independently testable. 764 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 

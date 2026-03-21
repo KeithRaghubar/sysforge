@@ -20,9 +20,14 @@ toolchain.toml structure:
 
 LLVM PGO bootstrap (3 passes, only when pgo = true):
   Pass 1 — system compiler + -fprofile-generate=<pgo_store>/; makepkg runs
-            without --install; _pgo_install() calls sudo pacman -U directly so
-            the sudo keepalive's timestamp entry applies.  The installed
-            /usr/bin/clang is instrumented (writes profraw when run as compiler).
+            without --install; _pgo_pass1_install() calls sudo pacman -U directly
+            so the sudo keepalive's timestamp entry applies.  Only shared-lib and
+            binary packages (e.g. llvm-libs, clang, lld) are installed to system;
+            cmake-config packages (e.g. llvm, which contains instrumented .a
+            archives) are intentionally excluded so that a separate clang PKGBUILD's
+            find_package(LLVM) in Pass 2 still finds the pre-PGO uninstrumented
+            system llvm and links without needing the profile runtime.
+            /usr/bin/clang is the instrumented binary (writes profraw when run).
             Spurious profraw from CMake feature probes purged before Pass 2.
   Pass 2 — CC=/usr/bin/clang (the Pass-1 instrumented binary, no extra flags);
             LLVM_PROFILE_FILE uses %m_%p (per-module-hash + per-PID) so parallel
@@ -665,6 +670,85 @@ def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> No
         )
 
 
+def _has_llvm_cmake_config(pkg_file: Path) -> bool:
+    """Return True if pkg_file contains LLVM cmake config files (usr/lib/cmake/llvm/).
+
+    Used by _pgo_pass1_install to identify the static-lib / cmake-config package
+    (typically named 'llvm') so it can be excluded from the Pass 1 system install.
+    """
+    result = subprocess.run(
+        ["tar", "--list", "--file", str(pkg_file)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return any("cmake/llvm" in line for line in result.stdout.splitlines())
+
+
+def _pgo_pass1_install(pkgbuild_map: dict[str, Path], dry_run: bool) -> None:
+    """Install Pass 1 packages to system, excluding packages that provide LLVM cmake config.
+
+    The cmake-config package (typically named 'llvm') contains instrumented static
+    archives from the -fprofile-generate Pass 1 build.  If installed to system,
+    subsequent cmake builds that call find_package(LLVM) — such as a separate 'clang'
+    PKGBUILD — would link against those instrumented .a files and fail to resolve
+    __llvm_profile_* symbols (the profile runtime is only linked automatically when
+    -fprofile-generate is in the caller's compiler flags).
+
+    By leaving the pre-Pass-1 system 'llvm' package in place, find_package(LLVM) finds
+    uninstrumented static libs and links cleanly.  Packages providing shared libraries
+    (llvm-libs) and compiler binaries (clang, lld) are installed normally so that
+    libLLVM.so is available at runtime and /usr/bin/clang is the instrumented binary
+    used as CC in Pass 2.
+    """
+    if dry_run:
+        _log.ui("[TOOLCHAIN]", "[dry-run] would install Pass 1 packages (excluding static/cmake)")
+        return
+
+    all_pkgs = _collect_pgo_packages(pkgbuild_map)
+    if not all_pkgs:
+        raise RuntimeError(
+            "[TOOLCHAIN] No built packages found for Pass 1 — "
+            "check that the build completed successfully"
+        )
+
+    install_pkgs = []
+    excluded = []
+    for pkg_file in all_pkgs:
+        if _has_llvm_cmake_config(pkg_file):
+            excluded.append(pkg_file.name)
+        else:
+            install_pkgs.append(pkg_file)
+
+    if excluded:
+        _log.info(
+            "[TOOLCHAIN]",
+            f"[PGO] Pass 1: excluding {len(excluded)} static/cmake package(s) from "
+            "system install (instrumented .a archives would break Pass 2 "
+            f"find_package(LLVM)): {', '.join(excluded)}",
+        )
+
+    if not install_pkgs:
+        _log.warn(
+            "[TOOLCHAIN]",
+            "[PGO] Pass 1: all packages excluded from system install — "
+            "no shared-lib or binary packages found; Pass 2 will use the "
+            "pre-PGO system compiler and may produce no profraw",
+        )
+        return
+
+    _log.ui("[TOOLCHAIN]", f"[PGO] Installing {len(install_pkgs)} package(s) (Pass 1):")
+    for p in install_pkgs:
+        _log.ui("[TOOLCHAIN]", f"  {p.name}")
+    result = subprocess.run(
+        ["sudo", "pacman", "-U", "--noconfirm"] + [str(p) for p in install_pkgs]
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"[TOOLCHAIN] pacman -U failed (exit {result.returncode}) for Pass 1"
+        )
+
+
 def _profraw_merge_daemon(pgo_store: Path, stop_event: threading.Event) -> None:
     """
     Background thread: wake every _PGO_MERGE_INTERVAL seconds during Pass 2
@@ -792,8 +876,11 @@ def _build_llvm_pgo(
     """
     3-pass LLVM PGO build.
 
-    Pass 1: system compiler + -fprofile-generate; install pgo packages to system.
-            The resulting /usr/bin/clang is instrumented and writes profraw when run.
+    Pass 1: system compiler + -fprofile-generate; _pgo_pass1_install() installs
+            shared-lib and binary packages (llvm-libs, clang, lld) to system but
+            intentionally skips cmake-config packages (llvm) whose instrumented .a
+            archives would break a separate clang PKGBUILD's find_package(LLVM) in
+            Pass 2.  The resulting /usr/bin/clang is instrumented; writes profraw.
     Pass 2: CC=instrumented Pass-1 clang (no extra flags); running it as the compiler
             generates profraw in pgo_store as a side effect of compilation.
             Background daemon merges profraw periodically to limit disk usage;
@@ -857,7 +944,7 @@ def _build_llvm_pgo(
             pgo_build=True,
             compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
         )
-        _pgo_install("Pass 1", pgo_map, options.dry_run)
+        _pgo_pass1_install(pgo_map, options.dry_run)
         _log.ui("[TOOLCHAIN]", "[PGO] Pass 1/3 complete")
 
         # Purge any profraw accumulated during Pass 1. CMake feature-test programs
