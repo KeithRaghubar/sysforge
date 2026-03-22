@@ -839,6 +839,9 @@ def _validate_pgo_environment(dry_run: bool) -> None:
 
     Checks:
       • /usr/bin/clang present          — hard requirement for Pass 1 (system CC)
+      • clang --version succeeds        — catches mismatched/broken shared libs
+                                          (e.g. symbol lookup errors in libclang-cpp.so
+                                          from packages installed by different aborted runs)
       • lld present                     — hard requirement for all passes
       • libLLVM-*.so instrumented       — warns; causes profraw noise during Pass 1
       • libLLVMSupport.a instrumented   — warns; handled by profile runtime LDFLAGS
@@ -856,6 +859,24 @@ def _validate_pgo_environment(dry_run: bool) -> None:
             "[TOOLCHAIN] /usr/bin/clang not found — "
             "install clang before running the PGO build: sudo pacman -S clang"
         )
+
+    # Smoke-test clang by running --version.  A successful exit means the dynamic
+    # linker can load all of clang's shared library dependencies consistently.
+    # Failure (non-zero exit or output on stderr containing "symbol lookup error")
+    # indicates mismatched packages — e.g. clang and libclang-cpp.so installed from
+    # different aborted PGO passes with incompatible versioned symbols.
+    clang_probe = subprocess.run(
+        [str(clang_path), "--version"],
+        capture_output=True, text=True, check=False,
+    )
+    if clang_probe.returncode != 0 or "symbol lookup error" in clang_probe.stderr:
+        detail = (clang_probe.stderr.strip() or clang_probe.stdout.strip())[:300]
+        raise RuntimeError(
+            f"[TOOLCHAIN] /usr/bin/clang is not functional — likely mismatched "
+            f"packages from a prior aborted PGO run:\n  {detail}\n"
+            "Restore a consistent set: sudo pacman -S llvm llvm-libs clang lld compiler-rt"
+        )
+
     if not _shutil.which("lld"):
         raise RuntimeError(
             "[TOOLCHAIN] lld not found — "

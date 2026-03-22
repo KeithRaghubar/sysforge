@@ -1656,12 +1656,73 @@ def test_validate_pgo_environment_raises_if_clang_missing(tmp_path):
             _validate_pgo_environment(dry_run=False)
 
 
+def test_validate_pgo_environment_raises_if_clang_broken():
+    """Raises RuntimeError when clang --version fails (e.g. symbol lookup error
+    in libclang-cpp.so due to mismatched packages from prior aborted PGO runs)."""
+    broken_stderr = (
+        "/usr/bin/clang: symbol lookup error: /usr/lib/libclang-cpp.so.22.1: "
+        "undefined symbol: _ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE"
+        "9_M_assignERKS4_, version LLVM_22.1"
+    )
+
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        if "--version" in cmd:
+            result.returncode = 127
+            result.stdout = ""
+            result.stderr = broken_stderr
+        else:
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+        return result
+
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("shutil.which", return_value="/usr/bin/lld"), \
+         patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="not functional"):
+            _validate_pgo_environment(dry_run=False)
+
+
+def test_validate_pgo_environment_raises_if_clang_exits_nonzero():
+    """Raises RuntimeError when clang --version exits non-zero for any reason."""
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 1 if "--version" in cmd else 0
+        result.stdout = ""
+        result.stderr = "some internal error"
+        return result
+
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("shutil.which", return_value="/usr/bin/lld"), \
+         patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="not functional"):
+            _validate_pgo_environment(dry_run=False)
+
+
 def test_validate_pgo_environment_raises_if_lld_missing():
     """Raises RuntimeError when lld cannot be found on PATH."""
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = "clang version 22.1.1"
+        result.stderr = ""
+        return result
+
     with patch("pathlib.Path.exists", return_value=True), \
-         patch("shutil.which", return_value=None):
+         patch("shutil.which", return_value=None), \
+         patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="lld not found"):
             _validate_pgo_environment(dry_run=False)
+
+
+def _fake_healthy_clang(cmd, **kwargs):
+    """subprocess.run side_effect: clang --version succeeds, everything else no-ops."""
+    result = MagicMock()
+    result.returncode = 0
+    result.stdout = "clang version 22.1.1" if "--version" in cmd else ""
+    result.stderr = ""
+    return result
 
 
 def test_validate_pgo_environment_clean_logs_info():
@@ -1670,6 +1731,7 @@ def test_validate_pgo_environment_clean_logs_info():
     with patch("pathlib.Path.exists", return_value=True), \
          patch("shutil.which", return_value="/usr/bin/lld"), \
          patch("pathlib.Path.glob", return_value=[]), \
+         patch("subprocess.run", side_effect=_fake_healthy_clang), \
          patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
                return_value=False), \
          patch("sysforge.log.info", side_effect=lambda *a: info_calls.append(a)):
@@ -1690,7 +1752,15 @@ def test_validate_pgo_environment_instrumented_shared_lib_warns_then_prompts(tmp
     def fake_subprocess(cmd, **kwargs):
         result = MagicMock()
         result.returncode = 0
-        result.stdout = "0000000 T __llvm_profile_instrument_target\n" if "nm" in cmd else ""
+        if "--version" in cmd:
+            result.stdout = "clang version 22.1.1"
+            result.stderr = ""
+        elif "nm" in cmd:
+            result.stdout = "0000000 T __llvm_profile_instrument_target\n"
+            result.stderr = ""
+        else:
+            result.stdout = ""
+            result.stderr = ""
         return result
 
     with patch("pathlib.Path.exists", return_value=True), \
@@ -1716,6 +1786,7 @@ def test_validate_pgo_environment_instrumented_static_libs_warns_then_prompts():
     with patch("pathlib.Path.exists", return_value=True), \
          patch("shutil.which", return_value="/usr/bin/lld"), \
          patch("pathlib.Path.glob", return_value=[]), \
+         patch("subprocess.run", side_effect=_fake_healthy_clang), \
          patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
                return_value=True), \
          patch("sys.stdin.isatty", return_value=True), \
@@ -1732,6 +1803,7 @@ def test_validate_pgo_environment_instrumented_tty_decline_raises():
     with patch("pathlib.Path.exists", return_value=True), \
          patch("shutil.which", return_value="/usr/bin/lld"), \
          patch("pathlib.Path.glob", return_value=[]), \
+         patch("subprocess.run", side_effect=_fake_healthy_clang), \
          patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
                return_value=True), \
          patch("sys.stdin.isatty", return_value=True), \
@@ -1746,6 +1818,7 @@ def test_validate_pgo_environment_instrumented_non_tty_raises():
     with patch("pathlib.Path.exists", return_value=True), \
          patch("shutil.which", return_value="/usr/bin/lld"), \
          patch("pathlib.Path.glob", return_value=[]), \
+         patch("subprocess.run", side_effect=_fake_healthy_clang), \
          patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
                return_value=True), \
          patch("sys.stdin.isatty", return_value=False):
@@ -1758,14 +1831,14 @@ def test_validate_pgo_environment_runs_before_pass1(tmp_path):
     Pre-flight validation must fire before Pass 1 starts.
     If it raises (e.g. missing lld), no makepkg_run calls should occur.
     """
-    toml_path, pkgbuild_dir, staging, pgo_store, state, config, options = \
+    toml_path, _, _, _, state, config, options = \
         _pgo_setup(tmp_path, pgo_pkgs=["llvm"])
 
     makepkg_calls = []
 
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
          patch("sysforge.pipeline.stages.toolchain.makepkg_run",
-               side_effect=lambda *a, **k: makepkg_calls.append(a)), \
+               side_effect=lambda *a, **_: makepkg_calls.append(a)), \
          patch("sysforge.pipeline.stages.toolchain._validate_pgo_environment",
                side_effect=RuntimeError("lld not found")):
         with pytest.raises(RuntimeError, match="lld not found"):
