@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 from sysforge.primitives.resource_guard import lift_for_child
@@ -77,6 +78,34 @@ _LLD_ONLY_FLAGS = frozenset({
 # Full LTO flags incompatible with clang IR PGO. ThinLTO (-flto=thin) is
 # compatible and must NOT be stripped. Bare -flto defaults to full in clang.
 _FULL_LTO_FLAGS = frozenset({"-flto", "-flto=full", "-flto=auto"})
+
+# makepkg flags that cause it to invoke sudo (pacman -S for deps, pacman -U for install).
+# When any of these are present, a background keepalive thread calls `sudo -v` periodically
+# so a long build doesn't expire the credential cache before the sudo step runs.
+_SUDO_FLAGS = frozenset({"--syncdeps", "-s", "--install", "-i"})
+_SUDO_KEEPALIVE_INTERVAL = 60  # seconds
+
+
+@contextlib.contextmanager
+def _sudo_keepalive_ctx():
+    """Context manager: prime sudo then keep credentials alive while the block runs."""
+    subprocess.run(["sudo", "-v"], check=False)
+    stop = threading.Event()
+
+    def _daemon():
+        while not stop.wait(_SUDO_KEEPALIVE_INTERVAL):
+            result = subprocess.run(["sudo", "-v"], check=False)
+            if result.returncode != 0:
+                _log.warn("[BUILD]",
+                          "sudo keepalive failed — dependency/install step may prompt for a password")
+
+    t = threading.Thread(target=_daemon, daemon=True, name="sysforge-sudo-keepalive")
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(timeout=2)
 
 
 def _detect_linker_from_ldflags(ldflags_val):
@@ -879,22 +908,29 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
 
         import_pgp_keys(pkgmeta, pkgbuild_path)
         run_dep_analysis(pkgmeta, config)
-        _run_build(
-            pkgbuild_path, resolved_profile, config, groups,
-            active_consumes=active_consumes,
-            extracted_profile=extracted_profile if build_mode in ("patched_pkgbuild", "kernel") else None,
-            pkgmeta=pkgmeta,
-            extra_flags=extra_flags,
-            interactive=interactive,
-            cc_override=cc_override,
-            cxx_override=cxx_override,
-            ld_override=ld_override,
-            kernel_build=kernel_build,
-            compiler_flags_extra=compiler_flags_extra,
-            linker_flags_extra=linker_flags_extra,
-            strip_full_lto=strip_full_lto,
-            injected_env=extra_env,
-        )
+
+        # Start a sudo keepalive when makepkg will invoke sudo (--syncdeps / --install).
+        all_flags = list(resolved_profile.get("makepkg_flags", [])) + list(extra_flags or [])
+        _needs_sudo = any(f in _SUDO_FLAGS for f in all_flags)
+        _keepalive = _sudo_keepalive_ctx() if _needs_sudo else contextlib.nullcontext()
+
+        with _keepalive:
+            _run_build(
+                pkgbuild_path, resolved_profile, config, groups,
+                active_consumes=active_consumes,
+                extracted_profile=extracted_profile if build_mode in ("patched_pkgbuild", "kernel") else None,
+                pkgmeta=pkgmeta,
+                extra_flags=extra_flags,
+                interactive=interactive,
+                cc_override=cc_override,
+                cxx_override=cxx_override,
+                ld_override=ld_override,
+                kernel_build=kernel_build,
+                compiler_flags_extra=compiler_flags_extra,
+                linker_flags_extra=linker_flags_extra,
+                strip_full_lto=strip_full_lto,
+                injected_env=extra_env,
+            )
         build_success = True
 
         # Post-build ABI check (non-fatal)
