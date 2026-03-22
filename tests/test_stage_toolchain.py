@@ -43,6 +43,7 @@ from sysforge.pipeline.stages.toolchain import (
     _pgo_pass1_install,
     _system_llvm_is_instrumented,
     _profile_runtime_ldflag,
+    _validate_pgo_environment,
     _sudo_keepalive_daemon,
     _SUDO_KEEPALIVE_INTERVAL,
     _PGO_PROFDATA_MIN_BYTES,
@@ -1408,6 +1409,7 @@ def _run_pgo(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None,
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
          patch("subprocess.run", side_effect=_fake_subprocess_factory(profdata_size)), \
          patch("sys.stdin.isatty", return_value=False), \
+         patch("sysforge.pipeline.stages.toolchain._validate_pgo_environment"), \
          patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
                return_value=instrumented), \
          patch("sysforge.pipeline.stages.toolchain._profile_runtime_ldflag",
@@ -1632,3 +1634,141 @@ def test_pgo_stale_staging_purged_at_run_start(tmp_path):
 
     assert not stale_marker.exists(), \
         "Stale staging sentinel must be removed before Pass 1 starts"
+
+
+# ---------------------------------------------------------------------------
+# _validate_pgo_environment — pre-flight checks
+# ---------------------------------------------------------------------------
+
+
+def test_validate_pgo_environment_dry_run_skips_all_checks():
+    """dry_run=True must skip all checks — no subprocess calls."""
+    with patch("subprocess.run") as mock_run:
+        _validate_pgo_environment(dry_run=True)
+    mock_run.assert_not_called()
+
+
+def test_validate_pgo_environment_raises_if_clang_missing(tmp_path):
+    """Raises RuntimeError immediately when /usr/bin/clang does not exist."""
+    with patch("pathlib.Path.exists", return_value=False), \
+         patch("shutil.which", return_value="/usr/bin/lld"):
+        with pytest.raises(RuntimeError, match="clang not found"):
+            _validate_pgo_environment(dry_run=False)
+
+
+def test_validate_pgo_environment_raises_if_lld_missing():
+    """Raises RuntimeError when lld cannot be found on PATH."""
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("shutil.which", return_value=None):
+        with pytest.raises(RuntimeError, match="lld not found"):
+            _validate_pgo_environment(dry_run=False)
+
+
+def test_validate_pgo_environment_clean_logs_info():
+    """Logs a clean-environment info message when no instrumentation is detected."""
+    info_calls = []
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("shutil.which", return_value="/usr/bin/lld"), \
+         patch("pathlib.Path.glob", return_value=[]), \
+         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
+               return_value=False), \
+         patch("sysforge.log.info", side_effect=lambda *a: info_calls.append(a)):
+        _validate_pgo_environment(dry_run=False)
+
+    assert any("clean" in str(a) for a in info_calls), \
+        "Expected 'clean' confirmation in info log"
+
+
+def test_validate_pgo_environment_instrumented_shared_lib_warns_then_prompts(tmp_path):
+    """When libLLVM-*.so is instrumented and stdin is a TTY, emits a warning
+    then prompts the user.  Answering 'y' allows the build to continue."""
+    fake_so = tmp_path / "libLLVM-22.so"
+    fake_so.touch()
+
+    warn_calls = []
+
+    def fake_subprocess(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = "0000000 T __llvm_profile_instrument_target\n" if "nm" in cmd else ""
+        return result
+
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("shutil.which", return_value="/usr/bin/lld"), \
+         patch("pathlib.Path.glob", return_value=[fake_so]), \
+         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
+               return_value=False), \
+         patch("subprocess.run", side_effect=fake_subprocess), \
+         patch("sys.stdin.isatty", return_value=True), \
+         patch("builtins.input", return_value="y"), \
+         patch("sysforge.log.warn", side_effect=lambda *a: warn_calls.append(a)):
+        _validate_pgo_environment(dry_run=False)   # must not raise
+
+    assert warn_calls, "Expected a warning for instrumented shared lib"
+    assert any("libLLVM-22.so" in str(a) for a in warn_calls)
+
+
+def test_validate_pgo_environment_instrumented_static_libs_warns_then_prompts():
+    """When libLLVMSupport.a is instrumented and stdin is a TTY, emits a warning
+    then prompts.  Answering 'y' allows the build to continue."""
+    warn_calls = []
+
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("shutil.which", return_value="/usr/bin/lld"), \
+         patch("pathlib.Path.glob", return_value=[]), \
+         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
+               return_value=True), \
+         patch("sys.stdin.isatty", return_value=True), \
+         patch("builtins.input", return_value="y"), \
+         patch("sysforge.log.warn", side_effect=lambda *a: warn_calls.append(a)):
+        _validate_pgo_environment(dry_run=False)   # must not raise
+
+    assert warn_calls
+    assert any("libLLVMSupport.a" in str(a) for a in warn_calls)
+
+
+def test_validate_pgo_environment_instrumented_tty_decline_raises():
+    """User declines the dirty-env prompt → RuntimeError before any build starts."""
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("shutil.which", return_value="/usr/bin/lld"), \
+         patch("pathlib.Path.glob", return_value=[]), \
+         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
+               return_value=True), \
+         patch("sys.stdin.isatty", return_value=True), \
+         patch("builtins.input", return_value="n"):
+        with pytest.raises(RuntimeError, match="Aborted"):
+            _validate_pgo_environment(dry_run=False)
+
+
+def test_validate_pgo_environment_instrumented_non_tty_raises():
+    """In non-interactive mode, residual instrumentation is a hard failure —
+    an unattended build must not silently proceed with a degraded environment."""
+    with patch("pathlib.Path.exists", return_value=True), \
+         patch("shutil.which", return_value="/usr/bin/lld"), \
+         patch("pathlib.Path.glob", return_value=[]), \
+         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
+               return_value=True), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError, match="Aborting unattended"):
+            _validate_pgo_environment(dry_run=False)
+
+
+def test_validate_pgo_environment_runs_before_pass1(tmp_path):
+    """
+    Pre-flight validation must fire before Pass 1 starts.
+    If it raises (e.g. missing lld), no makepkg_run calls should occur.
+    """
+    toml_path, pkgbuild_dir, staging, pgo_store, state, config, options = \
+        _pgo_setup(tmp_path, pgo_pkgs=["llvm"])
+
+    makepkg_calls = []
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=lambda *a, **k: makepkg_calls.append(a)), \
+         patch("sysforge.pipeline.stages.toolchain._validate_pgo_environment",
+               side_effect=RuntimeError("lld not found")):
+        with pytest.raises(RuntimeError, match="lld not found"):
+            ToolchainStage().run(config, state, options)
+
+    assert not makepkg_calls, "No builds should run when pre-flight check fails"

@@ -829,6 +829,99 @@ def _profile_runtime_ldflag() -> str | None:
     return f"-L{runtime_dir} -lclang_rt.profile-{arch}"
 
 
+def _validate_pgo_environment(dry_run: bool) -> None:
+    """Pre-flight check for the LLVM PGO build sequence.
+
+    Raises RuntimeError for conditions that will definitely cause a build
+    failure.  Emits [WARN] for recoverable degraded states (residual
+    instrumentation from a prior aborted Pass 1) so the user has a complete
+    picture up front rather than discovering issues an hour into the build.
+
+    Checks:
+      • /usr/bin/clang present          — hard requirement for Pass 1 (system CC)
+      • lld present                     — hard requirement for all passes
+      • libLLVM-*.so instrumented       — warns; causes profraw noise during Pass 1
+      • libLLVMSupport.a instrumented   — warns; handled by profile runtime LDFLAGS
+                                          injection, but a clean install is preferred
+    """
+    if dry_run:
+        _log.info("[TOOLCHAIN]", "[PGO] Pre-flight: skipping environment check (dry-run)")
+        return
+
+    import shutil as _shutil
+
+    clang_path = Path("/usr/bin/clang")
+    if not clang_path.exists():
+        raise RuntimeError(
+            "[TOOLCHAIN] /usr/bin/clang not found — "
+            "install clang before running the PGO build: sudo pacman -S clang"
+        )
+    if not _shutil.which("lld"):
+        raise RuntimeError(
+            "[TOOLCHAIN] lld not found — "
+            "install lld before running the PGO build: sudo pacman -S lld"
+        )
+
+    stale: list[str] = []
+
+    # Instrumented shared lib: written by the dynamic linker whenever clang runs,
+    # so it produces spurious profraw files throughout Pass 1 compilation.
+    llvm_sos = sorted(Path("/usr/lib").glob("libLLVM-*.so"))
+    if llvm_sos:
+        nm_so = subprocess.run(
+            ["nm", "-D", str(llvm_sos[0])],
+            capture_output=True, text=True, check=False,
+        )
+        if "__llvm_profile_" in nm_so.stdout:
+            stale.append(
+                f"{llvm_sos[0].name} is instrumented — spurious profraw will be "
+                "written during Pass 1 compilation"
+            )
+
+    # Instrumented static libs: causes undefined __llvm_profile_* linker errors
+    # in Pass 2/3 for packages that call find_package(LLVM).  The build injects
+    # the profile runtime into LDFLAGS to compensate, but a clean install avoids
+    # the complexity entirely.
+    if _system_llvm_is_instrumented():
+        stale.append(
+            "libLLVMSupport.a is instrumented — profile runtime will be injected "
+            "into LDFLAGS for Pass 2 and Pass 3 automatically"
+        )
+
+    if stale:
+        _log.warn(
+            "[TOOLCHAIN]",
+            "[PGO] Pre-flight: system LLVM packages have residual instrumentation "
+            "from a prior aborted Pass 1 install. "
+            "For a clean build: sudo pacman -S llvm llvm-libs clang lld\n"
+            + "\n".join(f"  • {s}" for s in stale),
+        )
+        import sys as _sys
+
+        if _sys.stdin.isatty():
+            try:
+                answer = input(
+                    _log.prompt_prefix("WARN", "[TOOLCHAIN]")
+                    + "Continue with residual instrumentation? [y/N]: "
+                ).strip().lower()
+            except EOFError:
+                answer = ""
+            if answer not in ("y", "yes"):
+                raise RuntimeError(
+                    "[TOOLCHAIN] Aborted — restore clean packages before retrying: "
+                    "sudo pacman -S llvm llvm-libs clang lld"
+                )
+        else:
+            raise RuntimeError(
+                "[TOOLCHAIN] Aborting unattended PGO build: system LLVM packages "
+                "have residual instrumentation from a prior aborted Pass 1 install. "
+                "Restore clean packages before retrying: "
+                "sudo pacman -S llvm llvm-libs clang lld"
+            )
+    else:
+        _log.info("[TOOLCHAIN]", "[PGO] Pre-flight: system LLVM environment is clean")
+
+
 def _profraw_merge_daemon(pgo_store: Path, stop_event: threading.Event) -> None:
     """
     Background thread: wake every _PGO_MERGE_INTERVAL seconds during Pass 2
@@ -986,6 +1079,8 @@ def _build_llvm_pgo(
         f"({n_pgo} pgo PKGBUILD(s), {n_total} total across all passes)  "
         f"pgo_store={pgo_store}",
     )
+
+    _validate_pgo_environment(options.dry_run)
 
     if not options.dry_run:
         import shutil as _shutil
