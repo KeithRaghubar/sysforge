@@ -45,6 +45,7 @@ from sysforge.pipeline.stages.toolchain import (
     _profile_runtime_ldflag,
     _sudo_keepalive_daemon,
     _SUDO_KEEPALIVE_INTERVAL,
+    _PGO_PROFDATA_MIN_BYTES,
 )
 from sysforge.pipeline.state import PipelineState
 from sysforge.pipeline.stages.base import RunOptions
@@ -1297,3 +1298,301 @@ def test_toolchain_stage_missing_pkgbuild_raises(tmp_path):
          patch("sysforge.primitives.aur.aur_info", return_value={}):
         with pytest.raises(RuntimeError, match="Could not resolve PKGBUILDs"):
             ToolchainStage().run(config, state, options)
+
+
+# ---------------------------------------------------------------------------
+# PGO flow integration helpers
+#
+# These helpers back tests that validate the real failure modes we've hit:
+#   - ccache/sccache bypassing the instrumented compiler in Pass 2
+#   - residual instrumented system LLVM static libs breaking Pass 2 or Pass 3
+#   - non_pgo packages absent from the Pass 2 training run
+#   - silently inadequate profdata going undetected
+#
+# Each test drives ToolchainStage().run() end-to-end with makepkg and
+# subprocess mocked, so no real builds execute but the full control-flow
+# (including env dict assembly and linker flag injection) runs for real.
+# ---------------------------------------------------------------------------
+
+
+def _pgo_setup(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None):
+    """
+    Prepare filesystem and objects for a full PGO ToolchainStage run.
+
+    Returns (toml_path, pkgbuild_dir, staging, pgo_store, state, config, options).
+    Each package in every list gets a PKGBUILD directory and a fake .pkg.tar.zst
+    so staging extraction does not error.
+    """
+    import json as _json
+    non_pgo_pkgs = non_pgo_pkgs or []
+    lib32_pkgs   = lib32_pkgs   or []
+
+    staging   = tmp_path / "staging"
+    pgo_store = tmp_path / "pgo_store"
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text(
+        f'enabled = true\ncompiler = "llvm"\npgo = true\n'
+        f'pgo_staging = "{staging}"\npgo_store = "{pgo_store}"\n'
+        f"[packages]\n"
+        f"pgo = {_json.dumps(pgo_pkgs)}\n"
+        f"non_pgo = {_json.dumps(non_pgo_pkgs)}\n"
+        f"lib32 = {_json.dumps(lib32_pkgs)}\n"
+    )
+
+    pkgbuild_dir = tmp_path / "builds"
+    for name in pgo_pkgs + non_pgo_pkgs + lib32_pkgs:
+        pb = make_pkgbuild(pkgbuild_dir, name)
+        (pb.parent / f"{name}-18.0.0-1-x86_64.pkg.tar.zst").touch()
+
+    state   = PipelineState(tmp_path / "state")
+    config  = {"paths": {"pkgbuild_dir": str(pkgbuild_dir)}}
+    options = make_options(dry_run=False)
+    return toml_path, pkgbuild_dir, staging, pgo_store, state, config, options
+
+
+def _pgo_fake_run_factory(pgo_store, call_log):
+    """
+    Return a fake makepkg_wrapper.run() that records every invocation and
+    writes a settled profraw file when Pass 2 runs (cc_override == instrumented clang).
+    """
+    def fake_run(pkgbuild_path, extra_flags=None, cc_override=None,
+                 compiler_flags_extra=None, linker_flags_extra=None,
+                 extra_env=None, **kwargs):
+        call_log.append({
+            "cc":      cc_override,
+            "pkgbuild": str(pkgbuild_path),
+            "cfe":     compiler_flags_extra,
+            "lfe":     linker_flags_extra,
+            "env":     dict(extra_env or {}),
+        })
+        if cc_override == "/usr/bin/clang":
+            pgo_store.mkdir(parents=True, exist_ok=True)
+            _make_old_profraw(pgo_store / f"p{len(call_log)}.profraw")
+    return fake_run
+
+
+def _fake_subprocess_factory(profdata_size=100 * 1024 * 1024):
+    """
+    Return a subprocess.run side_effect that handles llvm-profdata by writing
+    profdata_size bytes to the --output path, and returns success for everything else.
+    """
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr     = ""
+        result.stdout     = ""
+        if cmd and "llvm-profdata" in cmd[0]:
+            idx = cmd.index("--output")
+            Path(cmd[idx + 1]).write_bytes(b"\x00" * profdata_size)
+        return result
+    return fake_run
+
+
+def _run_pgo(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None,
+             instrumented=False, runtime_flag="-L/fake -lclang_rt.profile-x86_64",
+             profdata_size=100 * 1024 * 1024):
+    """
+    Run a full PGO ToolchainStage with standard mocking.  Returns call_log.
+    instrumented=True simulates a prior aborted Pass 1 leaving the system
+    LLVM static libs in an instrumented state.
+    """
+    toml_path, pkgbuild_dir, staging, pgo_store, state, config, options = \
+        _pgo_setup(tmp_path, pgo_pkgs, non_pgo_pkgs, lib32_pkgs)
+
+    call_log = []
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=_pgo_fake_run_factory(pgo_store, call_log)), \
+         patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_install"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("subprocess.run", side_effect=_fake_subprocess_factory(profdata_size)), \
+         patch("sys.stdin.isatty", return_value=False), \
+         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
+               return_value=instrumented), \
+         patch("sysforge.pipeline.stages.toolchain._profile_runtime_ldflag",
+               return_value=runtime_flag):
+        ToolchainStage().run(config, state, options)
+
+    return call_log
+
+
+def _pass1(call_log):
+    return [c for c in call_log if c["cc"] is None]
+
+
+def _pass2(call_log):
+    return [c for c in call_log if c["cc"] == "/usr/bin/clang"]
+
+
+def _pass3(call_log):
+    return [c for c in call_log
+            if c["cc"] is not None and c["cc"] != "/usr/bin/clang"]
+
+
+# ---------------------------------------------------------------------------
+# CCACHE_DISABLE / SCCACHE_DISABLE in Pass 2
+# ---------------------------------------------------------------------------
+
+
+def test_pgo_pass2_disables_ccache_and_sccache(tmp_path):
+    """
+    Pass 2 must inject CCACHE_DISABLE=1 and SCCACHE_DISABLE=1 into the build
+    environment.  If either cache tool intercepts a compilation it bypasses the
+    instrumented compiler entirely, producing no profraw data and silently
+    degrading the PGO profile.
+    """
+    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"])
+    p2 = _pass2(call_log)
+    assert p2, "Pass 2 must have run"
+    for call in p2:
+        assert call["env"].get("CCACHE_DISABLE") == "1", \
+            "CCACHE_DISABLE=1 missing from Pass 2 env"
+        assert call["env"].get("SCCACHE_DISABLE") == "1", \
+            "SCCACHE_DISABLE=1 missing from Pass 2 env"
+
+
+def test_pgo_pass1_and_pass3_do_not_disable_cache_tools(tmp_path):
+    """
+    CCACHE/SCCACHE_DISABLE must only be set in Pass 2 (the training run).
+    Passes 1 and 3 use distinct compiler flags (-fprofile-generate /
+    -fprofile-use) that already produce cache misses naturally; disabling
+    cache tools there would throw away legitimate cache benefit on reruns.
+    """
+    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"])
+    for call in _pass1(call_log) + _pass3(call_log):
+        assert "CCACHE_DISABLE" not in call["env"], \
+            f"CCACHE_DISABLE must not be set in Pass {1 if call['cc'] is None else 3}"
+        assert "SCCACHE_DISABLE" not in call["env"], \
+            f"SCCACHE_DISABLE must not be set in Pass {1 if call['cc'] is None else 3}"
+
+
+# ---------------------------------------------------------------------------
+# Pass 2 training coverage: non_pgo packages included
+# ---------------------------------------------------------------------------
+
+
+def test_pgo_pass2_includes_non_pgo_packages(tmp_path):
+    """
+    Pass 2 must build pgo + non_pgo packages (not just pgo) so the training
+    run exercises additional clang code paths: OpenMP pragmas, compiler-rt
+    intrinsics, Polly polyhedral analysis.
+    """
+    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"])
+
+    p2_pkgbuilds = {c["pkgbuild"] for c in _pass2(call_log)}
+    # Both pgo and non_pgo packages must appear in Pass 2
+    assert any("llvm" in pb          for pb in p2_pkgbuilds), "pgo pkg missing from Pass 2"
+    assert any("compiler-rt" in pb   for pb in p2_pkgbuilds), "non_pgo pkg missing from Pass 2"
+
+
+def test_pgo_pass1_does_not_include_non_pgo_packages(tmp_path):
+    """
+    Pass 1 builds only pgo packages with -fprofile-generate; non_pgo packages
+    must not be included there (they don't need instrumentation, and building
+    them against the instrumented static libs would fail at link time).
+    """
+    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"])
+
+    p1_pkgbuilds = {c["pkgbuild"] for c in _pass1(call_log)}
+    assert not any("compiler-rt" in pb for pb in p1_pkgbuilds), \
+        "non_pgo package must not be built in Pass 1"
+
+
+def test_pgo_pass3_includes_non_pgo_and_lib32(tmp_path):
+    """Pass 3 must build all package groups: pgo, non_pgo, and lib32."""
+    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"],
+                        non_pgo_pkgs=["compiler-rt"], lib32_pkgs=["lib32-llvm"])
+
+    p3_pkgbuilds = {c["pkgbuild"] for c in _pass3(call_log)}
+    assert any("llvm" in pb          for pb in p3_pkgbuilds)
+    assert any("compiler-rt" in pb   for pb in p3_pkgbuilds)
+    assert any("lib32-llvm" in pb    for pb in p3_pkgbuilds)
+
+
+# ---------------------------------------------------------------------------
+# Residual instrumented LLVM static libs → linker flag injection
+# ---------------------------------------------------------------------------
+
+
+def test_pgo_residual_instrumented_llvm_injects_runtime_into_pass2_and_pass3(tmp_path):
+    """
+    When system LLVM static libs are still instrumented (left by a prior aborted
+    Pass 1 install), packages that call find_package(LLVM) in Pass 2 or Pass 3
+    link against them and fail with undefined __llvm_profile_* symbols unless the
+    profile runtime is added to LDFLAGS.
+
+    Regression test: the linker flag was previously injected into Pass 2 only.
+    Pass 3 was missing it, causing clang-tblgen link failures in production.
+    """
+    fake_rt_flag = "-L/usr/lib/clang/18/lib/linux -lclang_rt.profile-x86_64"
+    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"],
+                        instrumented=True, runtime_flag=fake_rt_flag)
+
+    p2 = _pass2(call_log)
+    p3 = _pass3(call_log)
+    assert p2, "Pass 2 must have run"
+    assert p3, "Pass 3 must have run"
+
+    for call in p2:
+        assert call["lfe"] == fake_rt_flag, \
+            "Profile runtime must be injected into Pass 2 LDFLAGS when system LLVM is instrumented"
+    for call in p3:
+        assert call["lfe"] == fake_rt_flag, \
+            "Profile runtime must be injected into Pass 3 LDFLAGS when system LLVM is instrumented " \
+            "(regression: clang-tblgen undefined __llvm_profile_* link failure)"
+
+
+def test_pgo_uninstrumented_llvm_no_linker_flags(tmp_path):
+    """When system LLVM is clean, no profile runtime linker flag is injected."""
+    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"], instrumented=False)
+
+    for call in call_log:
+        assert call["lfe"] is None, \
+            f"No linker flags expected when LLVM is uninstrumented (cc={call['cc']})"
+
+
+def test_pgo_instrumented_llvm_pass1_not_affected(tmp_path):
+    """
+    Pass 1 runs before the instrumented clang is even installed; the residual
+    linker flag guard is checked after Pass 1 completes, so Pass 1 itself must
+    never receive a linker_flags_extra injection.
+    """
+    fake_rt_flag = "-L/fake -lclang_rt.profile-x86_64"
+    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"],
+                        instrumented=True, runtime_flag=fake_rt_flag)
+
+    for call in _pass1(call_log):
+        assert call["lfe"] is None, \
+            "Pass 1 must not receive the residual-instrumentation linker flag"
+
+
+# ---------------------------------------------------------------------------
+# Profdata size quality check
+# ---------------------------------------------------------------------------
+
+
+def test_pgo_warns_when_profdata_suspiciously_small(tmp_path):
+    """
+    A warn is emitted when merged profdata is smaller than _PGO_PROFDATA_MIN_BYTES.
+    This is the canary for cache bypass: if ccache/sccache slipped through, clang
+    never ran, no profraw was generated, and the profdata will be tiny or empty.
+    """
+    warn_calls = []
+    with patch("sysforge.log.warn", side_effect=lambda *a: warn_calls.append(a)):
+        _run_pgo(tmp_path, pgo_pkgs=["llvm"],
+                 profdata_size=_PGO_PROFDATA_MIN_BYTES - 1)
+
+    assert any("unexpectedly small" in str(a) for a in warn_calls), \
+        "Expected a warning about suspiciously small profdata"
+
+
+def test_pgo_no_size_warning_when_profdata_adequate(tmp_path):
+    """No profdata size warning when profdata is large enough to represent real training."""
+    warn_calls = []
+    with patch("sysforge.log.warn", side_effect=lambda *a: warn_calls.append(a)):
+        _run_pgo(tmp_path, pgo_pkgs=["llvm"],
+                 profdata_size=_PGO_PROFDATA_MIN_BYTES + 1)
+
+    assert not any("unexpectedly small" in str(a) for a in warn_calls), \
+        "Unexpected profdata size warning for adequate profdata"
