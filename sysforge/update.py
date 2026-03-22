@@ -402,7 +402,10 @@ def cmd_update(args) -> None:
 
     from sysforge.primitives.makepkg_wrapper import run as build_run
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
+    from sysforge.cli import _expand_makepkg_flags
     reset_session()
+
+    extra_flags = _expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else None
 
     built = failed = 0
     for result in to_build:
@@ -417,6 +420,7 @@ def cmd_update(args) -> None:
                 init_session=(built + failed == 0),
                 update=False,  # git pull already done above
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
+                extra_flags=extra_flags,
             )
             built += 1
         except (RuntimeError, SystemExit) as e:
@@ -435,6 +439,7 @@ def cmd_update(args) -> None:
                 init_session=(built + failed == 0),
                 update=not getattr(args, "no_update", False),
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
+                extra_flags=extra_flags,
             )
             built += 1
         except (RuntimeError, SystemExit) as e:

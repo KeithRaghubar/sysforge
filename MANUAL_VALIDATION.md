@@ -108,10 +108,10 @@
 
 - [ ] No foreign packages (`pacman -Qm` empty) → no-op, no crash
 - [ ] All foreign packages already in build_state or packages.toml → "all tracked" message, no write
-- [ ] New AUR package → classified, appended to packages.toml, rebuilt if outdated
-- [ ] New non-AUR package (locally installed) → `NOT_FOUND`, skipped
+- [x] New AUR package → classified, appended to packages.toml, rebuilt if outdated
+- [x] New non-AUR package (locally installed) → `NOT_FOUND`, skipped
 - [ ] VCS package (`-git`) → classified `DEVEL`, appended; `--devel` triggers rebuild
-- [ ] `--dry-run` → no write to packages.toml, no build
+- [x] `--dry-run` → no write to packages.toml, no build
 - [ ] `--packages` → discovery writes to the specified file
 
 ---

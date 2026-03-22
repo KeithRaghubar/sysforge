@@ -359,6 +359,9 @@ def _add_update_parser(sub):
         help="Keep log files after successful completion.")
     p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
         help="Directory for per-package log files.")
+    p.add_argument("--makepkg", "-m", metavar="FLAGS",
+        help="Extra flags passed verbatim to makepkg (e.g. -m '-f' to force rebuild). "
+             "Combined short flags are expanded: -sfci becomes -s -f -c -i.")
     p.set_defaults(func=_cmd_update)
 
 
