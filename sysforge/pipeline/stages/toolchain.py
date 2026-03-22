@@ -55,9 +55,10 @@ LLVM PGO bootstrap (3 passes, only when pgo = true):
             No system install; pgo-package binaries extracted to staging.
             Merged profdata size logged at [INFO]; warns if below
             _PGO_PROFDATA_MIN_BYTES (likely indicates bypassed compilation).
-  Pass 3 — CC=staged clang, CFLAGS += -fprofile-use=<profdata>
-            install all packages (pgo + non_pgo + lib32)
-            to system via _pgo_install(); staging + profdata removed on success.
+  Pass 3 — CC=staged clang if available (clang in pgo list), else system clang.
+            CFLAGS += -fprofile-use=<profdata>; install all packages
+            (pgo + non_pgo + lib32) via _pgo_install(); staging + profdata
+            removed on success.
 
   A sudo keepalive thread refreshes credentials every _SUDO_KEEPALIVE_INTERVAL
   seconds throughout all three passes.
@@ -522,8 +523,12 @@ def _extract_pass2_to_staging(
         for d in search_dirs:
             # *.pkg.tar* matches both compressed (.pkg.tar.zst) and
             # uncompressed (.pkg.tar) packages (PKGEXT='.pkg.tar').
-            pkgs = sorted(d.glob(f"{name}-*.pkg.tar*"))
-            if pkgs:
+            # Sort by mtime descending and take only the newest to avoid
+            # extracting stale packages from previous runs in PKGDEST.
+            candidates = [p for p in d.glob(f"{name}-*.pkg.tar*")
+                          if not p.name.endswith(".sig")]
+            if candidates:
+                pkgs = [max(candidates, key=lambda p: p.stat().st_mtime)]
                 break
         if not pkgs:
             searched = ", ".join(str(d) for d in search_dirs)
@@ -1103,9 +1108,10 @@ def _build_llvm_pgo(
             daemon merges profraw periodically; final sweep after build.
             Profdata size checked; warns if suspiciously small.
             Pgo-package binaries extracted to staging; no system install.
-    Pass 3: CC=staged clang; CFLAGS/LDFLAGS += -fprofile-use; LTO disabled via
-            LTOFLAGS="" (ThinLTO + IR PGO causes non-PIC vtable relocations in
-            lld's ThinLTO codegen for libLLVM.so); install pgo + non_pgo + lib32.
+    Pass 3: CC=staged clang (if clang in pgo list) else system clang.
+            CFLAGS/LDFLAGS += -fprofile-use; LTO disabled via LTOFLAGS=""
+            (ThinLTO + IR PGO causes non-PIC vtable relocations in lld's
+            ThinLTO codegen for libLLVM.so); install pgo + non_pgo + lib32.
             Staging prefix and profdata removed on success.
 
     Returns (cc, cxx, ld).
@@ -1282,14 +1288,28 @@ def _build_llvm_pgo(
         _log.ui("[TOOLCHAIN]", f"[PGO] Profile data ready: {profdata_path}")
         _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
 
+        # Use staged clang if it was extracted (clang in pgo list).
+        # When clang is in non_pgo only llvm/llvm-libs land in staging — fall back
+        # to system clang which was compiled without -fprofile-generate and therefore
+        # does not have the _M_assign@LLVM_N versioned-symbol ABI issue.
+        if not options.dry_run and not Path(staged_cc).exists():
+            _log.info(
+                "[TOOLCHAIN]",
+                f"[PGO] staged clang not found at {staged_cc} "
+                "(clang is non-pgo) — using system clang for Pass 3",
+            )
+            pass3_cc, pass3_cxx = "/usr/bin/clang", "/usr/bin/clang++"
+        else:
+            pass3_cc, pass3_cxx = staged_cc, staged_cxx
+
         # Pass 3 — PGO-optimized build; -fprofile-use matches -fprofile-generate (IR PGO)
         all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
         _build_pass(
             "Pass 3/3 [PGO] optimized build → all packages",
             all_pass3,
             options,
-            cc=staged_cc,
-            cxx=staged_cxx,
+            cc=pass3_cc,
+            cxx=pass3_cxx,
             install=False,
             compiler_flags_extra=f"-fprofile-use={profdata_path}",
             linker_flags_extra=residual_linker_flags,

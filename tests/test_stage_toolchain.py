@@ -1354,19 +1354,22 @@ def _pgo_setup(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None):
 def _pgo_fake_run_factory(pgo_store, call_log):
     """
     Return a fake makepkg_wrapper.run() that records every invocation and
-    writes a settled profraw file when Pass 2 runs (cc_override == instrumented clang).
+    writes a settled profraw file when Pass 2 runs (identified by CCACHE_DISABLE
+    in extra_env, which is only injected during the training pass).
     """
     def fake_run(pkgbuild_path, extra_flags=None, cc_override=None,
                  compiler_flags_extra=None, linker_flags_extra=None,
-                 extra_env=None, **kwargs):
+                 extra_env=None, **_kw):
+        env = dict(extra_env or {})
         call_log.append({
             "cc":      cc_override,
             "pkgbuild": str(pkgbuild_path),
             "cfe":     compiler_flags_extra,
             "lfe":     linker_flags_extra,
-            "env":     dict(extra_env or {}),
+            "env":     env,
         })
-        if cc_override == "/usr/bin/clang":
+        # Pass 2 is the training run: it injects CCACHE_DISABLE into extra_env.
+        if env.get("CCACHE_DISABLE") == "1":
             pgo_store.mkdir(parents=True, exist_ok=True)
             _make_old_profraw(pgo_store / f"p{len(call_log)}.profraw")
     return fake_run
@@ -1420,16 +1423,15 @@ def _run_pgo(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None,
 
 
 def _pass1(call_log):
-    return [c for c in call_log if c["cc"] is None]
+    return [c for c in call_log if "-fprofile-generate" in (c["cfe"] or "")]
 
 
 def _pass2(call_log):
-    return [c for c in call_log if c["cc"] == "/usr/bin/clang"]
+    return [c for c in call_log if c["env"].get("CCACHE_DISABLE") == "1"]
 
 
 def _pass3(call_log):
-    return [c for c in call_log
-            if c["cc"] is not None and c["cc"] != "/usr/bin/clang"]
+    return [c for c in call_log if "-fprofile-use" in (c["cfe"] or "")]
 
 
 # ---------------------------------------------------------------------------
