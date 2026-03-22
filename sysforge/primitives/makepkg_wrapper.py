@@ -86,20 +86,49 @@ _SUDO_FLAGS = frozenset({"--syncdeps", "-s", "--install", "-i"})
 _SUDO_KEEPALIVE_INTERVAL = 60  # seconds
 
 
+def _sudo_creds_cached() -> bool:
+    """
+    Return True if sudo credentials are currently cached, by inspecting the
+    timestamp directory directly — without calling sudo at all.
+
+    Avoids any PAM interaction; safe to call from background threads.
+    """
+    import pwd
+    import time
+    try:
+        username = pwd.getpwuid(os.getuid()).pw_name
+        for ts_dir in (
+            f"/run/sudo/ts/{username}",   # Linux (systemd)
+            f"/var/db/sudo/ts/{username}", # some BSD-derived layouts
+        ):
+            p = Path(ts_dir)
+            if p.exists():
+                age = time.time() - p.stat().st_mtime
+                # sudo default timestamp_timeout is 15 minutes; treat as cached
+                # if the file was touched within the last 14 minutes.
+                return age < 840
+    except Exception:
+        pass
+    return False
+
+
 @contextlib.contextmanager
 def _sudo_keepalive_ctx():
-    """Context manager: prime sudo then keep credentials alive while the block runs."""
-    subprocess.run(["sudo", "-v"], check=False)
+    """
+    Context manager: refresh cached sudo credentials while the block runs.
+
+    Only calls sudo when credentials are already known to be cached (detected
+    via the timestamp file, without touching PAM). This avoids pam_faillock
+    increments from failed non-interactive sudo calls before the user has
+    entered their password.
+    """
     stop = threading.Event()
 
     def _daemon():
         while not stop.wait(_SUDO_KEEPALIVE_INTERVAL):
-            # -n: non-interactive — never prompt. If credentials have expired,
-            # fail silently rather than producing a password prompt from a background thread.
-            result = subprocess.run(["sudo", "-vn"], check=False)
-            if result.returncode != 0:
-                _log.warn("[BUILD]",
-                          "sudo keepalive failed — dependency/install step may prompt for a password")
+            if _sudo_creds_cached():
+                subprocess.run(["sudo", "-vn"], check=False,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     t = threading.Thread(target=_daemon, daemon=True, name="sysforge-sudo-keepalive")
     t.start()
