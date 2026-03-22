@@ -801,7 +801,8 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         extra_env: dict | None = None,
         state_dir=None,
         abi_check: bool = False,
-        strip_flags=None):
+        strip_flags=None,
+        force_batch: bool = False):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     # Note: load_config() debug dumps (full flag_profiles etc.) fire here, before the
@@ -875,6 +876,9 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
                 pkgmeta, matched_rules, config, conflict_groups,
                 extracted_profile=extracted_profile,
             )
+        if force_batch and not resolved_profile.get("batch", False):
+            resolved_profile = dict(resolved_profile)
+            resolved_profile["batch"] = True
         active_consumes = resolve_consumes(resolved_profile, pkgmeta, inference_map)
         groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
 

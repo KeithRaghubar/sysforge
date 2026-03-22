@@ -553,6 +553,7 @@ def cmd_update(args) -> None:
 
     # Where do built packages land? PKGDEST overrides the pkgbuild dir.
     pkgdest = _get_pkgdest()
+    interactive = getattr(args, "interactive", False)
 
     # --- Phase 2: build all packages (no syncdeps, no install per-package) ---
     built_pkg_files: list = []
@@ -574,6 +575,8 @@ def cmd_update(args) -> None:
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
                 extra_flags=extra_flags,
                 strip_flags=_BATCH_STRIP_FLAGS,
+                interactive=interactive,
+                force_batch=not interactive,
             )
             new_pkgs = sorted(_snapshot_pkg_dir(search_dir) - before)
             built_pkg_files.extend(new_pkgs)
@@ -598,6 +601,8 @@ def cmd_update(args) -> None:
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
                 extra_flags=extra_flags,
                 strip_flags=_BATCH_STRIP_FLAGS,
+                interactive=interactive,
+                force_batch=not interactive,
             )
             new_pkgs = sorted(_snapshot_pkg_dir(search_dir) - before)
             built_pkg_files.extend(new_pkgs)
