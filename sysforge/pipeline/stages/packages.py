@@ -200,6 +200,7 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
                 update=not options.no_update,
+                abi_check=options.abi_check,
                 **toolchain)
 
 

@@ -442,7 +442,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
                  cc_override=None, cxx_override=None, ld_override=None,
                  cache_report=False, init_session=True, update=True,
                  compiler_flags_extra=None, linker_flags_extra=None, strip_full_lto=False,
-                 profile_override=None, state_dir=None, extra_env=None):
+                 profile_override=None, state_dir=None, extra_env=None, **_kw):
         call_log.append({
             "cc": cc_override,
             "flags": list(extra_flags or []),
@@ -1753,8 +1753,9 @@ def test_validate_pgo_environment_instrumented_shared_lib_warns_then_prompts(tmp
     def fake_subprocess(cmd, **kwargs):
         result = MagicMock()
         result.returncode = 0
-        if "nm" in cmd:
-            result.stdout = "0000000 T __llvm_profile_instrument_target\n"
+        if "readelf" in cmd:
+            # Simulate instrumented shared lib with __llvm_prf_* sections
+            result.stdout = "  [11] __llvm_prf_names  PROGBITS\n  [12] __llvm_prf_cnts  PROGBITS\n"
             result.stderr = ""
         else:
             result.stdout = ""

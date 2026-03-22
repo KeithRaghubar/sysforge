@@ -71,6 +71,7 @@ def _cmd_build(args):
                 init_session=(i == 0),
                 cache_report=(args.cache_report and i == len(packages) - 1),
                 update=not args.no_update,
+                abi_check=args.abi_check,
                 state_dir=Path(args.state_dir) if args.state_dir else None)
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
@@ -154,6 +155,7 @@ def _cmd_run_pipeline(args):
         purge_log=args.purge_log,
         persist_log=args.persist_log,
         cache_report=args.cache_report,
+        abi_check=args.abi_check,
         no_update=args.no_update,
     )
     run_pipeline(config, options)
@@ -188,6 +190,7 @@ def _cmd_run_toolchain(args):
         dry_run=args.dry_run,
         no_update=args.no_update,
         cache_report=args.cache_report,
+        abi_check=args.abi_check,
         state_dir=Path(args.state_dir) if args.state_dir else None,
         persist_log=args.persist_log,
         makepkg_flags=_expand_makepkg_flags(args.makepkg) if args.makepkg else [],
@@ -214,6 +217,7 @@ def _cmd_run_packages(args):
         persist_log=args.persist_log,
         log_dir=Path(args.log_dir) if args.log_dir else None,
         cache_report=args.cache_report,
+        abi_check=args.abi_check,
         state_dir=Path(args.state_dir) if args.state_dir else None,
     )
     run_stage_standalone(PackagesStage(), config, options)
@@ -235,6 +239,7 @@ def _cmd_run_kernel(args):
         persist_log=args.persist_log,
         log_dir=Path(args.log_dir) if args.log_dir else None,
         cache_report=args.cache_report,
+        abi_check=args.abi_check,
         state_dir=Path(args.state_dir) if args.state_dir else None,
     )
     run_stage_standalone(KernelStage(), config, options)
@@ -319,6 +324,8 @@ def _add_build_parser(sub):
         help="Override linker for this build, e.g. --ld lld.")
     p.add_argument("--cache-report", action="store_true", dest="cache_report",
         help="Print a structured cache summary (ccache/sccache hit rates) after the build.")
+    p.add_argument("--abi-check", action="store_true", dest="abi_check",
+        help="Run a post-build ABI compatibility check on built shared libraries.")
     p.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase before building.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
@@ -476,6 +483,8 @@ def _add_run_parser(sub):
         help="Path to a flag_profiles.toml to use instead of the default.")
     p_pipeline.add_argument("--cache-report", action="store_true", dest="cache_report",
         help="Print a structured cache summary after the pipeline completes.")
+    p_pipeline.add_argument("--abi-check", action="store_true", dest="abi_check",
+        help="Run a post-build ABI compatibility check on built shared libraries.")
     p_pipeline.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase before each build.")
     p_pipeline.set_defaults(func=_cmd_run_pipeline)
@@ -507,6 +516,8 @@ def _add_run_parser(sub):
         help="Keep log files after successful completion.")
     p_toolchain.add_argument("--cache-report", action="store_true", dest="cache_report",
         help="Print a structured cache summary after the run.")
+    p_toolchain.add_argument("--abi-check", action="store_true", dest="abi_check",
+        help="Run a post-build ABI compatibility check on built shared libraries.")
     p_toolchain.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p_toolchain.set_defaults(func=_cmd_run_toolchain)
@@ -530,6 +541,8 @@ def _add_run_parser(sub):
         help="Directory for log files.")
     p_pkgs.add_argument("--cache-report", action="store_true", dest="cache_report",
         help="Print a structured cache summary after the run.")
+    p_pkgs.add_argument("--abi-check", action="store_true", dest="abi_check",
+        help="Run a post-build ABI compatibility check on built shared libraries.")
     p_pkgs.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p_pkgs.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
@@ -553,6 +566,8 @@ def _add_run_parser(sub):
         help="Directory for log files.")
     p_kernel.add_argument("--cache-report", action="store_true", dest="cache_report",
         help="Print a structured cache summary after the run.")
+    p_kernel.add_argument("--abi-check", action="store_true", dest="abi_check",
+        help="Run a post-build ABI compatibility check on built shared libraries.")
     p_kernel.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p_kernel.set_defaults(func=_cmd_run_kernel)

@@ -789,7 +789,8 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         linker_flags_extra: str | None = None,
         strip_full_lto: bool = False,
         extra_env: dict | None = None,
-        state_dir=None):
+        state_dir=None,
+        abi_check: bool = False):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     # Note: load_config() debug dumps (full flag_profiles etc.) fire here, before the
@@ -895,6 +896,23 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             injected_env=extra_env,
         )
         build_success = True
+
+        # Post-build ABI check (non-fatal)
+        if abi_check:
+            try:
+                from sysforge.primitives.abi_check import check_package_abi
+                built_pkgs = _find_built_packages(pkgbuild_path.resolve().parent)
+                if not built_pkgs:
+                    _log.info("[ABI]", "No built packages found for ABI check")
+                for pkg in built_pkgs:
+                    issues = check_package_abi(pkg)
+                    if issues:
+                        for issue in issues:
+                            _log.warn("[ABI]", issue)
+                    else:
+                        _log.info("[ABI]", f"{pkg.name}: OK")
+            except Exception as e:
+                _log.warn("[ABI]", f"ABI check failed: {e}")
 
         # Record build metadata for `sysforge update` (non-fatal)
         try:

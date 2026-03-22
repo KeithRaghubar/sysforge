@@ -14,26 +14,35 @@ toolchain.toml structure:
   pgo_store   = "/var/tmp/sysforge-llvm-pgo"      # dir for profraw/profdata files
 
   [packages]
-  pgo     = ["llvm", "llvm-libs", "clang", "lld"]
-  non_pgo = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
+  pgo     = ["llvm", "llvm-libs"]
+  non_pgo = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
   lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", ...]
 
 LLVM PGO bootstrap (3 passes, only when pgo = true):
-  Pass 1 — system compiler + -fprofile-generate=<pgo_store>/; makepkg runs
-            without --install; _pgo_pass1_install() calls sudo pacman -U directly
-            so the sudo keepalive's timestamp entry applies.  Only shared-lib and
-            binary packages (e.g. llvm-libs, clang, lld) are installed to system;
-            cmake-config packages (e.g. llvm, which contains instrumented .a
-            archives) are intentionally excluded so that a separate clang PKGBUILD's
-            find_package(LLVM) in Pass 2 still finds the pre-PGO uninstrumented
-            system llvm and links without needing the profile runtime.
-            /usr/bin/clang is the instrumented binary (writes profraw when run).
+  Pass 1 — system compiler + -fprofile-generate=<pgo_store>/; builds ONLY the
+            llvm/llvm-libs PKGBUILD (pgo list).  clang and lld are NOT built with
+            instrumentation here — they link against the official libLLVM.so at
+            build time, so the resulting libclang-cpp.so would embed a versioned
+            dependency on _M_assign@LLVM_22.1 (a weak symbol the official libLLVM.so
+            exports via its version script by inlining std::string::_M_assign).
+            The instrumented libLLVM.so does not export that symbol (inlining is
+            suppressed by -fprofile-generate), so loading the instrumented
+            libclang-cpp.so against the instrumented libLLVM.so causes a symbol
+            lookup error at runtime.  Keeping clang/lld in non_pgo avoids this.
+            makepkg runs without --install; _pgo_pass1_install() calls sudo pacman -U
+            directly so the sudo keepalive's timestamp entry applies.  Only the
+            shared-lib package (llvm-libs) is installed; cmake-config/static-lib
+            packages (llvm, which contains instrumented .a archives) are excluded so
+            that subsequent find_package(LLVM) calls still use the uninstrumented
+            cmake config and don't link instrumented static libs.
             Spurious profraw from CMake feature probes purged before Pass 2.
-  Pass 2 — CC=/usr/bin/clang (the Pass-1 instrumented binary, no extra flags);
-            builds pgo + non_pgo packages (lib32 excluded).  Non-pgo packages
-            (compiler-rt, openmp, polly, spirv-llvm-translator) exercise OpenMP
-            structured blocks, compiler-rt intrinsics, and polyhedral analysis
-            paths absent from LLVM self-compilation alone.
+  Pass 2 — CC=/usr/bin/clang (the system, non-instrumented binary); builds
+            pgo + non_pgo packages (lib32 excluded).  clang/lld/compiler-rt/openmp/
+            polly/spirv-llvm-translator exercise clang frontend, linker, OpenMP
+            structured blocks, compiler-rt intrinsics, and polyhedral analysis.
+            The system clang calls into the instrumented libLLVM.so (installed in
+            Pass 1), generating profraw from LLVM's core optimization and codegen
+            work — the most performance-critical hot paths for a compiler.
             CCACHE_DISABLE=1 / SCCACHE_DISABLE=1 injected so cache tools cannot
             bypass the instrumented compiler and silently produce no profraw.
             LLVM_PROFILE_FILE uses %m_%p (per-module-hash + per-PID) so parallel
@@ -75,8 +84,8 @@ from sysforge.primitives.resource_guard import lift_for_child
 
 TOOLCHAIN_PATH = CONFIG_BASE / "etc/sysforge/toolchain.toml"
 
-_DEFAULT_LLVM_PGO = ["llvm", "llvm-libs", "clang", "lld"]
-_DEFAULT_LLVM_NON_PGO = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
+_DEFAULT_LLVM_PGO = ["llvm", "llvm-libs"]
+_DEFAULT_LLVM_NON_PGO = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
 _DEFAULT_LLVM_LIB32 = [
     "lib32-llvm",
     "lib32-llvm-libs",
@@ -403,6 +412,7 @@ def _build_pkg(
         update=not options.no_update,
         strip_full_lto=pgo_build,
         extra_env=pgo_env,
+        abi_check=getattr(options, "abi_check", False),
     )
 
 
@@ -706,18 +716,19 @@ def _has_llvm_cmake_config(pkg_file: Path) -> bool:
 def _pgo_pass1_install(pkgbuild_map: dict[str, Path], dry_run: bool) -> None:
     """Install Pass 1 packages to system, excluding packages that provide LLVM cmake config.
 
-    The cmake-config package (typically named 'llvm') contains instrumented static
-    archives from the -fprofile-generate Pass 1 build.  If installed to system,
-    subsequent cmake builds that call find_package(LLVM) — such as a separate 'clang'
-    PKGBUILD — would link against those instrumented .a files and fail to resolve
-    __llvm_profile_* symbols (the profile runtime is only linked automatically when
-    -fprofile-generate is in the caller's compiler flags).
+    The pgo list should only contain the llvm/llvm-libs PKGBUILD (not clang or lld).
+    clang and lld use a separate PKGBUILD that calls find_package(LLVM) and links
+    against libLLVM.so.  When built with -fprofile-generate, they pick up a versioned
+    symbol dependency on _M_assign@LLVM_22.1 (a weak inlined symbol that the official
+    libLLVM.so exports via its version script).  The instrumented libLLVM.so does not
+    export this symbol (inlining is suppressed by -fprofile-generate) so loading the
+    instrumented libclang-cpp.so at Pass 2 runtime causes a symbol lookup crash.
 
-    By leaving the pre-Pass-1 system 'llvm' package in place, find_package(LLVM) finds
-    uninstrumented static libs and links cleanly.  Packages providing shared libraries
-    (llvm-libs) and compiler binaries (clang, lld) are installed normally so that
-    libLLVM.so is available at runtime and /usr/bin/clang is the instrumented binary
-    used as CC in Pass 2.
+    Within the llvm/llvm-libs PKGBUILD, the cmake-config package ('llvm') is excluded:
+    it contains instrumented static archives that would cause __llvm_profile_* link
+    errors in any package that calls find_package(LLVM) and uses component targets.
+    Only the shared-lib package ('llvm-libs') is installed, making the instrumented
+    libLLVM.so available at runtime without exposing the instrumented .a files.
     """
     if dry_run:
         _log.ui("[TOOLCHAIN]", "[dry-run] would install Pass 1 packages (excluding static/cmake)")
@@ -875,7 +886,9 @@ def _validate_pgo_environment(dry_run: bool) -> None:
         raise RuntimeError(
             f"[TOOLCHAIN] /usr/bin/clang is not functional — likely mismatched "
             f"packages from a prior aborted PGO run:\n  {detail}\n"
-            "Restore a consistent set: sudo pacman -S llvm llvm-libs clang lld compiler-rt"
+            "Restore a consistent set: sudo pacman -S llvm llvm-libs clang lld compiler-rt\n"
+            "(Note: sysforge no longer installs clang/lld in Pass 1, so a mismatch\n"
+            " here means the packages were already mixed before this run.)"
         )
 
     if not _shutil.which("lld"):
@@ -886,18 +899,19 @@ def _validate_pgo_environment(dry_run: bool) -> None:
 
     stale: list[str] = []
 
-    # Instrumented shared lib: written by the dynamic linker whenever clang runs,
-    # so it produces spurious profraw files throughout Pass 1 compilation.
+    # Instrumented shared lib: libLLVM.so installed by a prior Pass 1 does not
+    # export __llvm_profile_* in its DYNAMIC symbol table (stripped), but does
+    # contain __llvm_prf_* ELF sections.  Use readelf -S to detect these.
     llvm_sos = sorted(Path("/usr/lib").glob("libLLVM-*.so"))
     if llvm_sos:
-        nm_so = subprocess.run(
-            ["nm", "-D", str(llvm_sos[0])],
+        readelf_so = subprocess.run(
+            ["readelf", "-S", str(llvm_sos[0])],
             capture_output=True, text=True, check=False,
         )
-        if "__llvm_profile_" in nm_so.stdout:
+        if "__llvm_prf_" in readelf_so.stdout:
             stale.append(
-                f"{llvm_sos[0].name} is instrumented — spurious profraw will be "
-                "written during Pass 1 compilation"
+                f"{llvm_sos[0].name} is instrumented (has __llvm_prf_* sections) — "
+                "from a prior Pass 1 install; restore with: sudo pacman -S llvm llvm-libs"
             )
 
     # Instrumented static libs: causes undefined __llvm_profile_* linker errors
@@ -915,7 +929,7 @@ def _validate_pgo_environment(dry_run: bool) -> None:
             "[TOOLCHAIN]",
             "[PGO] Pre-flight: system LLVM packages have residual instrumentation "
             "from a prior aborted Pass 1 install. "
-            "For a clean build: sudo pacman -S llvm llvm-libs clang lld\n"
+            "For a clean build: sudo pacman -S llvm llvm-libs\n"
             + "\n".join(f"  • {s}" for s in stale),
         )
         import sys as _sys
@@ -931,14 +945,14 @@ def _validate_pgo_environment(dry_run: bool) -> None:
             if answer not in ("y", "yes"):
                 raise RuntimeError(
                     "[TOOLCHAIN] Aborted — restore clean packages before retrying: "
-                    "sudo pacman -S llvm llvm-libs clang lld"
+                    "sudo pacman -S llvm llvm-libs"
                 )
         else:
             raise RuntimeError(
                 "[TOOLCHAIN] Aborting unattended PGO build: system LLVM packages "
                 "have residual instrumentation from a prior aborted Pass 1 install. "
                 "Restore clean packages before retrying: "
-                "sudo pacman -S llvm llvm-libs clang lld"
+                "sudo pacman -S llvm llvm-libs"
             )
     else:
         _log.info("[TOOLCHAIN]", "[PGO] Pre-flight: system LLVM environment is clean")
@@ -1071,13 +1085,19 @@ def _build_llvm_pgo(
     """
     3-pass LLVM PGO build.
 
-    Pass 1: system compiler + -fprofile-generate; _pgo_pass1_install() installs
-            shared-lib and binary packages (llvm-libs, clang, lld) to system but
-            intentionally skips cmake-config packages (llvm) whose instrumented .a
-            archives would break a separate clang PKGBUILD's find_package(LLVM) in
-            Pass 2.  The resulting /usr/bin/clang is instrumented; writes profraw.
-    Pass 2: CC=instrumented Pass-1 clang; builds pgo + non_pgo packages (lib32
-            excluded) to maximise training coverage.  CCACHE_DISABLE=1 and
+    Pass 1: system compiler + -fprofile-generate; builds ONLY llvm/llvm-libs
+            (pgo list).  clang and lld live in non_pgo to avoid a versioned-symbol
+            ABI issue: building them with -fprofile-generate against the official
+            libLLVM.so embeds a runtime dependency on _M_assign@LLVM_22.1 (a weak
+            symbol only the official build exports via inlining).  The instrumented
+            libLLVM.so does not export it → symbol lookup crash in Pass 2.
+            _pgo_pass1_install() installs llvm-libs (shared lib) but skips the
+            llvm package (cmake-config + instrumented .a archives) so that
+            subsequent find_package(LLVM) calls still resolve the uninstrumented
+            cmake config and avoid linking instrumented static libs.
+    Pass 2: CC=/usr/bin/clang (system, non-instrumented); builds pgo + non_pgo
+            packages (lib32 excluded).  The system clang calls into the instrumented
+            libLLVM.so, generating profraw from LLVM core hot paths.  CCACHE_DISABLE=1 and
             SCCACHE_DISABLE=1 injected so cache tools cannot bypass the
             instrumented compiler and silently produce no profraw.  Background
             daemon merges profraw periodically; final sweep after build.

@@ -27,8 +27,8 @@ enabled = false
 # Package lists — override built-in defaults if needed
 #
 # [packages]
-# pgo     = ["llvm", "llvm-libs", "clang", "lld"]
-# non_pgo = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
+# pgo     = ["llvm", "llvm-libs"]
+# non_pgo = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
 # lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
 #
 # For GCC, only non_pgo is used:

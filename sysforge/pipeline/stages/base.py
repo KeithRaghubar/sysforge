@@ -31,6 +31,8 @@ class RunOptions:
     persist_log: bool = False        # don't clear logs on successful completion
     # Cache reporting
     cache_report: bool = False       # print structured cache summary at end of run
+    # ABI checking
+    abi_check: bool = False          # run post-build ABI compatibility check on .so files
     # Source updates
     no_update: bool = False          # skip git pull --rebase before each build
     # Extra makepkg flags (appended after profile makepkg_flags)

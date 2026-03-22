@@ -355,6 +355,7 @@ class KernelStage(Stage):
                 persist_log=options.persist_log,
                 cc_override=cc,
                 cxx_override=cxx,
+                abi_check=options.abi_check,
             )
 
         # Post-install
