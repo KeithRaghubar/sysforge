@@ -1596,3 +1596,39 @@ def test_pgo_no_size_warning_when_profdata_adequate(tmp_path):
 
     assert not any("unexpectedly small" in str(a) for a in warn_calls), \
         "Unexpected profdata size warning for adequate profdata"
+
+
+# ---------------------------------------------------------------------------
+# Staging directory clean-up on run start
+# ---------------------------------------------------------------------------
+
+
+def test_pgo_stale_staging_purged_at_run_start(tmp_path):
+    """
+    A staging directory left by a prior failed run must be purged at the
+    start of the next run, not accumulated on top of.  Stale Pass 2 binaries
+    from an aborted build could otherwise shadow freshly extracted ones.
+    """
+    toml_path, pkgbuild_dir, staging, pgo_store, state, config, options = \
+        _pgo_setup(tmp_path, pgo_pkgs=["llvm"])
+
+    # Simulate a stale staging dir left by a prior aborted Pass 2
+    staging.mkdir(parents=True)
+    stale_marker = staging / "stale_sentinel"
+    stale_marker.touch()
+
+    call_log = []
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=_pgo_fake_run_factory(pgo_store, call_log)), \
+         patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_install"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("subprocess.run", side_effect=_fake_subprocess_factory()), \
+         patch("sys.stdin.isatty", return_value=False), \
+         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
+               return_value=False):
+        ToolchainStage().run(config, state, options)
+
+    assert not stale_marker.exists(), \
+        "Stale staging sentinel must be removed before Pass 1 starts"

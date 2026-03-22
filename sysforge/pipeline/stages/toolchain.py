@@ -990,6 +990,9 @@ def _build_llvm_pgo(
     if not options.dry_run:
         import shutil as _shutil
 
+        if staging.exists():
+            _log.info("[TOOLCHAIN]", f"[PGO] Purging stale staging: {staging}")
+            _shutil.rmtree(staging)
         if pgo_store.exists():
             _log.info("[TOOLCHAIN]", f"[PGO] Purging stale pgo_store: {pgo_store}")
             _shutil.rmtree(pgo_store)
