@@ -952,8 +952,9 @@ def _build_llvm_pgo(
             Background daemon merges profraw periodically to limit disk usage;
             final sweep runs after the build completes.
             Pass-2 binaries extracted to staging; no system install.
-    Pass 3: CC=staged clang; CFLAGS/CXXFLAGS/LDFLAGS += -fprofile-use;
-            install pgo + non_pgo + lib32 to system.
+    Pass 3: CC=staged clang; CFLAGS/LDFLAGS += -fprofile-use; LTO disabled via
+            LTOFLAGS="" (ThinLTO + IR PGO causes non-PIC vtable relocations in
+            lld's ThinLTO codegen for libLLVM.so); install pgo + non_pgo + lib32.
             Staging prefix and profdata removed on success.
 
     Returns (cc, cxx, ld).

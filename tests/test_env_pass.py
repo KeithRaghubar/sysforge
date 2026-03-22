@@ -286,6 +286,30 @@ def test_compiler_flags_extra_appended_to_profile_flags():
     assert "-fuse-ld=lld -fprofile-generate=/tmp/pgo" in conf["LDFLAGS"]
 
 
+def test_compiler_flags_extra_skips_cxxflags_when_delegates_to_cflags():
+    """When CXXFLAGS references $CFLAGS, compiler_flags_extra is not injected into
+    CXXFLAGS separately — the CFLAGS injection is inherited through shell expansion."""
+    profile = {"CFLAGS": "-O3", "CXXFLAGS": "$CFLAGS", "LDFLAGS": "-fuse-ld=lld"}
+    extra = "-fprofile-use=/tmp/pgo/clang.profdata"
+    with emit_makepkg_conf(profile, None, compiler_flags_extra=extra) as conf_path:
+        conf = read_conf(conf_path)
+    # CFLAGS and LDFLAGS must have the extra flag
+    assert "-fprofile-use=" in conf["CFLAGS"]
+    assert "-fprofile-use=" in conf["LDFLAGS"]
+    # CXXFLAGS must NOT have the extra flag injected directly (keeps $CFLAGS reference)
+    assert "-fprofile-use=" not in conf["CXXFLAGS"]
+    assert "$CFLAGS" in conf["CXXFLAGS"]
+
+
+def test_strip_full_lto_clears_ltoflags():
+    """strip_full_lto=True sets LTOFLAGS to empty to prevent makepkg's lto option
+    from re-injecting ThinLTO flags at build time."""
+    profile = {"CFLAGS": "-O3"}
+    with emit_makepkg_conf(profile, None, strip_full_lto=True) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf.get("LTOFLAGS") == ""
+
+
 def test_compiler_flags_extra_no_base_creates_entry():
     """compiler_flags_extra with no existing value creates the key."""
     profile = {}

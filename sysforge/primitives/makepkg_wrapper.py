@@ -175,9 +175,16 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     CPPFLAGS, DEBUG_*) are excluded from profile overrides and ld_override is
     ignored. System conf values for those keys pass through verbatim.
 
-    compiler_flags_extra: when set, appended verbatim to CFLAGS, CXXFLAGS, and
-    LDFLAGS in the emitted conf after all other processing (including the linker
-    guard). Intended for PGO generate/use flags injected by the toolchain stage.
+    compiler_flags_extra: when set, appended verbatim to CFLAGS and LDFLAGS in
+    the emitted conf after all other processing (including the linker guard).
+    CXXFLAGS is skipped when it references $CFLAGS (flags are inherited via shell
+    expansion; injecting separately would cause duplication). Intended for PGO
+    generate/use flags injected by the toolchain stage.
+
+    strip_full_lto: when True, strips -flto/-flto=full from CFLAGS/CXXFLAGS/LDFLAGS
+    and clears LTOFLAGS so makepkg's lto option cannot re-inject ThinLTO flags at
+    build time. Disables LTO entirely for PGO passes — ThinLTO link-time codegen
+    combined with IR PGO causes non-PIC vtable relocations in shared library builds.
     """
     env_keys = _CONF_KEY_MAP.get("env", set())
 
@@ -248,7 +255,9 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 profile_overrides["LDFLAGS"] = cleaned
 
     # Full LTO stripping for PGO passes. -flto/-flto=full are incompatible with
-    # clang IR PGO; -flto=thin is compatible and is preserved.
+    # clang IR PGO. -flto=thin is nominally compatible but triggers non-PIC
+    # ThinLTO codegen for shared libraries (R_X86_64_PC32 vtable relocations in
+    # lld's ThinLTO backend when PGO profile data is applied). Disable entirely.
     if strip_full_lto:
         for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
             if key in profile_overrides:
@@ -258,6 +267,11 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                               f"Stripped full-LTO flag(s) from {key} (incompatible with IR PGO): "
                               f"{' '.join(stripped_toks)}")
                     profile_overrides[key] = cleaned
+        # Clear LTOFLAGS so makepkg's lto option doesn't re-inject -flto=thin at
+        # build time (LTOFLAGS is appended to CFLAGS/CXXFLAGS/LDFLAGS by makepkg
+        # when OPTIONS contains lto, bypassing the stripping above).
+        profile_overrides["LTOFLAGS"] = ""
+        _log.info("[PGO]", "Cleared LTOFLAGS for PGO pass (LTO disabled)")
 
     # Per-invocation compiler flag injection (e.g. PGO generate/use flags).
     # Runs after the linker guard so these flags are never treated as lld-specific.
@@ -270,6 +284,11 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 base = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
             else:
                 base = ""
+            # Skip CXXFLAGS if it delegates to $CFLAGS. Injecting into both
+            # causes the flags to appear twice after shell expansion ($CFLAGS
+            # already carries the injected flags; CXXFLAGS inherits them).
+            if key == "CXXFLAGS" and "$CFLAGS" in base:
+                continue
             profile_overrides[key] = (base + " " + compiler_flags_extra).strip()
         _log.info("[PGO]", f"Injecting into CFLAGS/CXXFLAGS/LDFLAGS: {compiler_flags_extra!r}")
 
