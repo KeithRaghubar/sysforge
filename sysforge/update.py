@@ -83,6 +83,19 @@ class _DiscoveredResult:
     pkgbuild_path: Path | None = None
 
 
+def _get_all_installed_packages() -> dict[str, str]:
+    """Run `pacman -Q` and return {pkgname: installed_version} for all installed packages."""
+    result = subprocess.run(["pacman", "-Q"], capture_output=True, text=True)
+    if result.returncode != 0:
+        return {}
+    packages = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            packages[parts[0]] = parts[1]
+    return packages
+
+
 def _get_foreign_packages() -> dict[str, str]:
     """
     Run `pacman -Qm` and return {pkgname: installed_version} for all
@@ -153,18 +166,22 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
     packages_path = Path(config.get("packages_file") or PACKAGES_PATH)
 
     foreign = _get_foreign_packages()
-    if not foreign:
-        _log.info("[UPDATE]", "--all: no foreign packages found via pacman -Qm")
+    all_installed = _get_all_installed_packages()
+
+    if not foreign and not all_installed:
+        _log.info("[UPDATE]", "--all: no installed packages found")
         return []
 
     tracked = set(bs.all_packages().keys())
     in_manifest = _load_packages_toml_names(packages_path)
 
+    # Phase 1: foreign packages not yet in packages.toml (discovery)
     new_foreign = {k: v for k, v in foreign.items() if k not in tracked and k not in in_manifest}
-    unrecorded = {k: v for k, v in foreign.items() if k in in_manifest and k not in tracked}
+    # Phase 2: packages in packages.toml that are installed (AUR or repo) but have no build record
+    unrecorded = {k: v for k, v in all_installed.items() if k in in_manifest and k not in tracked}
 
     if not new_foreign and not unrecorded:
-        _log.info("[UPDATE]", "--all: all foreign packages are already tracked")
+        _log.info("[UPDATE]", "--all: all manifest packages are already tracked")
         return []
 
     results: list[_DiscoveredResult] = []
@@ -262,6 +279,13 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
                     except Exception as e:
                         _log.warn("[UPDATE]", f"--all: {pkgname!r}: failed to parse PKGBUILD: {e}")
 
+            # If pkgbuild_ver contains unexpanded bash (e.g. ${_ver/[a-z]/...}),
+            # treat it as unparseable so we fall through to the "can't compare" case.
+            if pkgbuild_ver and ('$' in pkgbuild_ver or '{' in pkgbuild_ver):
+                _log.warn("[UPDATE]", f"--all: {pkgname!r}: pkgver contains unexpanded bash "
+                          f"({pkgbuild_ver!r}), treating as unresolvable")
+                pkgbuild_ver = None
+
             if _is_vcs(pkgname):
                 action = "DEVEL"
             elif pkgbuild_ver is not None:
@@ -286,18 +310,29 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
 def _print_discovery_summary(results: list[_DiscoveredResult], args) -> None:
     if not results:
         return
-    print("\n  — Discovered foreign packages —")
-    for r in results:
-        ver = f": {r.installed_ver}" if r.installed_ver else ""
-        if r.action == "ADDED":
-            print(f"  [ADDED]          {r.pkgname}{ver} (added to packages.toml)")
-        elif r.action == "OUTDATED":
-            print(f"  [OUTDATED]       {r.pkgname}: {r.installed_ver} → {r.pkgbuild_ver} (added, will rebuild)")
-        elif r.action == "DEVEL":
-            flag = "(--devel to rebuild)" if not getattr(args, "devel", False) else "(will rebuild)"
-            print(f"  [DEVEL]          {r.pkgname}{ver} (added, {flag})")
-        elif r.action == "NOT_FOUND":
-            print(f"  [NOT_FOUND]      {r.pkgname}{ver} (not in AUR — skipped)")
+
+    outdated  = [r for r in results if r.action == "OUTDATED"]
+    devel     = [r for r in results if r.action == "DEVEL"]
+    not_found = [r for r in results if r.action == "NOT_FOUND"]
+    added     = [r for r in results if r.action == "ADDED"]
+
+    print("\n  — --all discovery summary —")
+
+    for r in outdated:
+        ver_str = f"{r.installed_ver} → {r.pkgbuild_ver}" if r.pkgbuild_ver else r.installed_ver
+        print(f"  [OUTDATED]       {r.pkgname}: {ver_str}")
+
+    for r in not_found:
+        print(f"  [NOT_FOUND]      {r.pkgname}: {r.installed_ver} (not in AUR — skipped)")
+
+    if devel:
+        flag = "will rebuild" if getattr(args, "devel", False) else "use --devel to rebuild"
+        print(f"  [DEVEL]          {len(devel)} VCS package(s) skipped ({flag})")
+
+    if added:
+        print(f"  [UP_TO_DATE]     {len(added)} package(s) already current")
+
+    print()
 
 
 # Flags stripped from each per-package makepkg call during batch update.

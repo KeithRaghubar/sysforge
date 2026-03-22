@@ -497,7 +497,8 @@ def _make_discover_args(**kwargs):
 def test_discover_no_foreign_packages():
     bs = MagicMock()
     bs.all_packages.return_value = {}
-    with patch("sysforge.update._get_foreign_packages", return_value={}):
+    with patch("sysforge.update._get_foreign_packages", return_value={}), \
+         patch("sysforge.update._get_all_installed_packages", return_value={}):
         results = _discover_and_add(_make_discover_args(), bs, {})
     assert results == []
 
@@ -506,6 +507,7 @@ def test_discover_all_already_tracked():
     bs = MagicMock()
     bs.all_packages.return_value = {"yay": {"pkgbase": "yay", "pkgver": "12.0"}}
     with patch("sysforge.update._get_foreign_packages", return_value={"yay": "12.0-1"}), \
+         patch("sysforge.update._get_all_installed_packages", return_value={"yay": "12.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()):
         results = _discover_and_add(_make_discover_args(), bs, {})
     assert results == []
@@ -515,6 +517,7 @@ def test_discover_not_in_aur(tmp_path):
     bs = MagicMock()
     bs.all_packages.return_value = {}
     with patch("sysforge.update._get_foreign_packages", return_value={"localonly": "1.0-1"}), \
+         patch("sysforge.update._get_all_installed_packages", return_value={"localonly": "1.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={}), \
          patch("sysforge.update._append_to_packages_toml"):
@@ -533,6 +536,7 @@ def test_discover_adds_aur_package(tmp_path):
     pkgbuild.write_text("pkgname=yay\npkgver=12.3.3\npkgrel=1\n")
 
     with patch("sysforge.update._get_foreign_packages", return_value={"yay": "12.0.0-1"}), \
+         patch("sysforge.update._get_all_installed_packages", return_value={"yay": "12.0.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={"yay": {"Name": "yay"}}), \
          patch("sysforge.primitives.config.find_pkgbuild", return_value=pkgbuild), \
@@ -553,6 +557,7 @@ def test_discover_dry_run_no_write(tmp_path):
     bs.all_packages.return_value = {}
 
     with patch("sysforge.update._get_foreign_packages", return_value={"yay": "12.0.0-1"}), \
+         patch("sysforge.update._get_all_installed_packages", return_value={"yay": "12.0.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={"yay": {"Name": "yay"}}), \
          patch("sysforge.update._append_to_packages_toml") as mock_append:
@@ -568,6 +573,7 @@ def test_discover_vcs_package_flagged_as_devel():
     bs.all_packages.return_value = {}
 
     with patch("sysforge.update._get_foreign_packages", return_value={"neovim-git": "r1234.gabcdef-1"}), \
+         patch("sysforge.update._get_all_installed_packages", return_value={"neovim-git": "r1234.gabcdef-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={"neovim-git": {"Name": "neovim-git"}}), \
          patch("sysforge.primitives.config.find_pkgbuild", return_value=None), \
@@ -612,8 +618,8 @@ def test_cmd_update_all_discovered_printed(tmp_path, capsys):
         cmd_update(args)
 
     captured = capsys.readouterr()
-    assert "yay" in captured.out
-    assert "ADDED" in captured.out
+    # ADDED packages are now summarised as a count, not listed individually.
+    assert "UP_TO_DATE" in captured.out or "already current" in captured.out
 
 
 def test_cmd_update_all_outdated_is_built(tmp_path):
