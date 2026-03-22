@@ -46,7 +46,7 @@ def _mock_build_context(tmp_path, profile=None, extra_env_out=None):
     def fake_emit(*args, **kwargs):
         yield "/tmp/fake_makepkg.conf"
 
-    def fake_invoke(pb, conf, rp, extra_env, extra_flags, interactive):
+    def fake_invoke(pb, conf, rp, extra_env, extra_flags, interactive, strip_flags=None):
         captured["extra_env"] = dict(extra_env or {})
 
     with (

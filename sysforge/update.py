@@ -293,6 +293,83 @@ def _print_discovery_summary(results: list[_DiscoveredResult], args) -> None:
             print(f"  [NOT_FOUND]      {r.pkgname}{ver} (not in AUR — skipped)")
 
 
+# Flags stripped from each per-package makepkg call during batch update.
+# Deps are pre-installed in one shot; packages are installed in one shot at the end.
+_BATCH_STRIP_FLAGS = frozenset({"--syncdeps", "-s", "--install", "-i"})
+
+
+def _get_pkgdest() -> Path | None:
+    """Return PKGDEST from the layered system makepkg.conf, or None if unset."""
+    try:
+        from sysforge.primitives.config import parse_system_makepkg_conf
+        sys_conf = parse_system_makepkg_conf()
+        raw = sys_conf.get("PKGDEST", "").strip().strip("\"'")
+        if raw:
+            return Path(raw).expanduser()
+    except Exception:
+        pass
+    return None
+
+
+def _collect_makedeps(pkgbuild_paths: list) -> list:
+    """Parse PKGBUILDs and return a sorted unique list of their makedepends."""
+    deps: set = set()
+    for path in pkgbuild_paths:
+        try:
+            pkgmeta = parse_pkgbuild(path)
+            raw = pkgmeta.get("globals", {}).get("makedepends", [])
+            if isinstance(raw, str):
+                raw = [raw]
+            # Strip version constraints (e.g. "cmake>=3.16" → "cmake")
+            for dep in raw:
+                deps.add(dep.split(">=")[0].split("<=")[0].split("=")[0].split(">")[0].split("<")[0])
+        except Exception as e:
+            _log.warn("[UPDATE]", f"makedeps parse error ({Path(path).parent.name}): {e}")
+    return sorted(deps)
+
+
+def _filter_missing(deps: list) -> list:
+    """Return the subset of deps not satisfiable by current pacman packages."""
+    if not deps:
+        return []
+    result = subprocess.run(
+        ["pacman", "-T"] + deps,
+        capture_output=True,
+        text=True,
+    )
+    # pacman -T exits 0 if all satisfied, 127 if any are missing.
+    # The missing deps are printed to stdout.
+    return result.stdout.split()
+
+
+def _batch_install_makedeps(deps: list) -> None:
+    _log.info("[UPDATE]", f"Batch-installing {len(deps)} missing makedep(s): {deps}")
+    result = subprocess.run(
+        ["sudo", "pacman", "-S", "--needed", "--noconfirm"] + deps
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"makedep install failed (exit {result.returncode})")
+
+
+def _snapshot_pkg_dir(directory: Path) -> frozenset:
+    """Return frozenset of .pkg.tar.* paths (not .sig) in directory."""
+    if not directory.exists():
+        return frozenset()
+    return frozenset(
+        p for p in directory.glob("*.pkg.tar.*")
+        if not p.name.endswith(".sig")
+    )
+
+
+def _batch_install_pkgs(pkg_paths: list) -> bool:
+    """Install all built packages in one sudo pacman -U call. Returns True on success."""
+    _log.info("[UPDATE]", f"Batch-installing {len(pkg_paths)} built package file(s)")
+    result = subprocess.run(
+        ["sudo", "pacman", "-U", "--noconfirm"] + [str(p) for p in pkg_paths]
+    )
+    return result.returncode == 0
+
+
 def cmd_update(args) -> None:
     """Entry point for `sysforge update`."""
     # Refresh the AUR name cache as a side effect; failures are non-fatal
@@ -442,7 +519,7 @@ def cmd_update(args) -> None:
         print("[SYSFORGE] Nothing to rebuild.")
         return
 
-    from sysforge.primitives.makepkg_wrapper import run as build_run, _sudo_keepalive_ctx
+    from sysforge.primitives.makepkg_wrapper import run as build_run
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
     from sysforge.cli import _expand_makepkg_flags
     reset_session()
@@ -460,45 +537,83 @@ def cmd_update(args) -> None:
             unified_log_active = False
             _log.warn("[UPDATE]", f"Cannot write unified log to {unified_log_path}: {e} — logging to terminal only")
 
-    built = failed = 0
-    with _sudo_keepalive_ctx():
-        for result in to_build:
-            try:
-                build_run(
-                    result.pkgbuild_path,
-                    pkg_log=not getattr(args, "no_pkg_log", False),
-                    persist_log=getattr(args, "persist_log", False),
-                    log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
-                    profile_conf=getattr(args, "profile_conf", None),
-                    cache_report=False,
-                    init_session=(built + failed == 0),
-                    update=False,  # git pull already done above
-                    state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-                    extra_flags=extra_flags,
-                )
-                built += 1
-            except (RuntimeError, SystemExit) as e:
-                _log.error("[UPDATE]", f"Build failed for {result.pkgbase!r}: {e}")
-                failed += 1
+    # --- Phase 1: batch pre-install all makedepends (one sudo call) ---
+    all_pkgbuild_paths = (
+        [r.pkgbuild_path for r in to_build if r.pkgbuild_path]
+        + [d.pkgbuild_path for d in discovered_to_build if d.pkgbuild_path]
+    )
+    makedeps = _collect_makedeps(all_pkgbuild_paths)
+    missing_deps = _filter_missing(makedeps)
+    if missing_deps:
+        try:
+            _batch_install_makedeps(missing_deps)
+        except RuntimeError as e:
+            _log.error("[UPDATE]", str(e))
+            print(f"[SYSFORGE] Warning: makedep pre-install failed — some builds may fail", file=sys.stderr)
 
-        for d in discovered_to_build:
-            try:
-                build_run(
-                    d.pkgbuild_path,
-                    pkg_log=not getattr(args, "no_pkg_log", False),
-                    persist_log=getattr(args, "persist_log", False),
-                    log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
-                    profile_conf=getattr(args, "profile_conf", None),
-                    cache_report=False,
-                    init_session=(built + failed == 0),
-                    update=not getattr(args, "no_update", False),
-                    state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-                    extra_flags=extra_flags,
-                )
-                built += 1
-            except (RuntimeError, SystemExit) as e:
-                _log.error("[UPDATE]", f"Build failed for {d.pkgname!r}: {e}")
-                failed += 1
+    # Where do built packages land? PKGDEST overrides the pkgbuild dir.
+    pkgdest = _get_pkgdest()
+
+    # --- Phase 2: build all packages (no syncdeps, no install per-package) ---
+    built_pkg_files: list = []
+    built = failed = 0
+
+    for result in to_build:
+        search_dir = pkgdest if pkgdest else result.pkgbuild_path.parent
+        before = _snapshot_pkg_dir(search_dir)
+        try:
+            build_run(
+                result.pkgbuild_path,
+                pkg_log=not getattr(args, "no_pkg_log", False),
+                persist_log=getattr(args, "persist_log", False),
+                log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
+                profile_conf=getattr(args, "profile_conf", None),
+                cache_report=False,
+                init_session=(built + failed == 0),
+                update=False,  # git pull already done above
+                state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
+                extra_flags=extra_flags,
+                strip_flags=_BATCH_STRIP_FLAGS,
+            )
+            new_pkgs = sorted(_snapshot_pkg_dir(search_dir) - before)
+            built_pkg_files.extend(new_pkgs)
+            built += 1
+        except (RuntimeError, SystemExit) as e:
+            _log.error("[UPDATE]", f"Build failed for {result.pkgbase!r}: {e}")
+            failed += 1
+
+    for d in discovered_to_build:
+        search_dir = pkgdest if pkgdest else d.pkgbuild_path.parent
+        before = _snapshot_pkg_dir(search_dir)
+        try:
+            build_run(
+                d.pkgbuild_path,
+                pkg_log=not getattr(args, "no_pkg_log", False),
+                persist_log=getattr(args, "persist_log", False),
+                log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
+                profile_conf=getattr(args, "profile_conf", None),
+                cache_report=False,
+                init_session=(built + failed == 0),
+                update=not getattr(args, "no_update", False),
+                state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
+                extra_flags=extra_flags,
+                strip_flags=_BATCH_STRIP_FLAGS,
+            )
+            new_pkgs = sorted(_snapshot_pkg_dir(search_dir) - before)
+            built_pkg_files.extend(new_pkgs)
+            built += 1
+        except (RuntimeError, SystemExit) as e:
+            _log.error("[UPDATE]", f"Build failed for {d.pkgname!r}: {e}")
+            failed += 1
+
+    # --- Phase 3: install all built packages in one sudo call ---
+    if built_pkg_files:
+        if not _batch_install_pkgs(built_pkg_files):
+            _log.error("[UPDATE]", "Batch package install failed")
+            print("[SYSFORGE] Error: batch install failed — packages were built but not installed.", file=sys.stderr)
+            failed += 1
+    elif built > 0:
+        _log.warn("[UPDATE]", "No .pkg.tar.* files found after builds — nothing to install")
 
     if unified_log_active:
         _log.close_unified_log(success=(failed == 0), persist=True)

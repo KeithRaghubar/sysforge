@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 from pathlib import Path
 
 from sysforge.primitives.resource_guard import lift_for_child
@@ -79,64 +78,6 @@ _LLD_ONLY_FLAGS = frozenset({
 # compatible and must NOT be stripped. Bare -flto defaults to full in clang.
 _FULL_LTO_FLAGS = frozenset({"-flto", "-flto=full", "-flto=auto"})
 
-# makepkg flags that cause it to invoke sudo (pacman -S for deps, pacman -U for install).
-# When any of these are present, a background keepalive thread calls `sudo -v` periodically
-# so a long build doesn't expire the credential cache before the sudo step runs.
-_SUDO_FLAGS = frozenset({"--syncdeps", "-s", "--install", "-i"})
-_SUDO_KEEPALIVE_INTERVAL = 60  # seconds
-
-
-def _sudo_creds_cached() -> bool:
-    """
-    Return True if sudo credentials are currently cached, by inspecting the
-    timestamp directory directly — without calling sudo at all.
-
-    Avoids any PAM interaction; safe to call from background threads.
-    """
-    import pwd
-    import time
-    try:
-        username = pwd.getpwuid(os.getuid()).pw_name
-        for ts_dir in (
-            f"/run/sudo/ts/{username}",   # Linux (systemd)
-            f"/var/db/sudo/ts/{username}", # some BSD-derived layouts
-        ):
-            p = Path(ts_dir)
-            if p.exists():
-                age = time.time() - p.stat().st_mtime
-                # sudo default timestamp_timeout is 15 minutes; treat as cached
-                # if the file was touched within the last 14 minutes.
-                return age < 840
-    except Exception:
-        pass
-    return False
-
-
-@contextlib.contextmanager
-def _sudo_keepalive_ctx():
-    """
-    Context manager: refresh cached sudo credentials while the block runs.
-
-    Only calls sudo when credentials are already known to be cached (detected
-    via the timestamp file, without touching PAM). This avoids pam_faillock
-    increments from failed non-interactive sudo calls before the user has
-    entered their password.
-    """
-    stop = threading.Event()
-
-    def _daemon():
-        while not stop.wait(_SUDO_KEEPALIVE_INTERVAL):
-            if _sudo_creds_cached():
-                subprocess.run(["sudo", "-vn"], check=False,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    t = threading.Thread(target=_daemon, daemon=True, name="sysforge-sudo-keepalive")
-    t.start()
-    try:
-        yield
-    finally:
-        stop.set()
-        t.join(timeout=2)
 
 
 def _detect_linker_from_ldflags(ldflags_val):
@@ -470,7 +411,8 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
 
 
 def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
-                   extra_env=None, extra_flags=None, interactive=False):
+                   extra_env=None, extra_flags=None, interactive=False,
+                   strip_flags=None):
     pkgbuild_path = Path(pkgbuild_path).resolve()
     build_dir = pkgbuild_path.parent
 
@@ -512,6 +454,12 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     if extra_flags:
         flags += extra_flags
         _log.info("[BUILD]", f"Appending CLI flags: {extra_flags}")
+    if strip_flags:
+        before = flags[:]
+        flags = [f for f in flags if f not in strip_flags]
+        removed = [f for f in before if f not in flags]
+        if removed:
+            _log.info("[BUILD]", f"Batch mode: stripped flags {removed}")
     cmd = ["makepkg", "-p", pkgbuild_path.name] + flags
 
     _log.info("[BUILD]", f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
@@ -581,7 +529,8 @@ def _find_built_packages(build_dir: Path) -> list:
 
 
 def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
-                       extra_env=None, extra_flags=None, interactive=False):
+                       extra_env=None, extra_flags=None, interactive=False,
+                       strip_flags=None):
     """
     Invoke makepkg, retrying after manual correction if not in batch mode.
 
@@ -593,7 +542,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
     if resolved_profile.get("batch", False):
         try:
             invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
-                           extra_env, extra_flags, interactive)
+                           extra_env, extra_flags, interactive, strip_flags)
         except subprocess.CalledProcessError as e:
             _log.error("[BUILD]", f"Build failed in batch mode, aborting: {e}")
             raise RuntimeError(f"[build_failed] {e}")
@@ -601,7 +550,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
         while True:
             try:
                 invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
-                               extra_env, extra_flags, interactive)
+                               extra_env, extra_flags, interactive, strip_flags)
                 break
             except subprocess.CalledProcessError as e:
                 _log.error("[BUILD]", f"Build failed: {e}")
@@ -696,7 +645,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                compiler_flags_extra: str | None = None,
                linker_flags_extra: str | None = None,
                strip_full_lto: bool = False,
-               injected_env: dict | None = None):
+               injected_env: dict | None = None,
+               strip_flags=None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -765,7 +715,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                                linker_flags_extra=linker_flags_extra,
                                strip_full_lto=strip_full_lto) as conf_path:
             _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
-                               extra_env, extra_flags, interactive)
+                               extra_env, extra_flags, interactive, strip_flags)
 
         # Post-build cache delta
         pkgname = _pkgname_from_meta(pkgmeta)
@@ -850,7 +800,8 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         strip_full_lto: bool = False,
         extra_env: dict | None = None,
         state_dir=None,
-        abi_check: bool = False):
+        abi_check: bool = False,
+        strip_flags=None):
     config_paths = [Path(profile_conf)] if profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     # Note: load_config() debug dumps (full flag_profiles etc.) fire here, before the
@@ -940,13 +891,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         import_pgp_keys(pkgmeta, pkgbuild_path)
         run_dep_analysis(pkgmeta, config)
 
-        # Start a sudo keepalive when makepkg will invoke sudo (--syncdeps / --install).
-        all_flags = list(resolved_profile.get("makepkg_flags", [])) + list(extra_flags or [])
-        _needs_sudo = any(f in _SUDO_FLAGS for f in all_flags)
-        _keepalive = _sudo_keepalive_ctx() if _needs_sudo else contextlib.nullcontext()
-
-        with _keepalive:
-            _run_build(
+        _run_build(
                 pkgbuild_path, resolved_profile, config, groups,
                 active_consumes=active_consumes,
                 extracted_profile=extracted_profile if build_mode in ("patched_pkgbuild", "kernel") else None,
@@ -961,6 +906,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
                 linker_flags_extra=linker_flags_extra,
                 strip_full_lto=strip_full_lto,
                 injected_env=extra_env,
+                strip_flags=strip_flags,
             )
         build_success = True
 
