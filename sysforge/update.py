@@ -449,6 +449,17 @@ def cmd_update(args) -> None:
 
     extra_flags = _expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else None
 
+    # Unified log: always persisted (update runs are long; failures need post-mortem).
+    unified_log_active = not getattr(args, "no_unified_log", False) and not getattr(args, "dry_run", False)
+    unified_log_path = (Path(args.log_dir) if getattr(args, "log_dir", None) else state_dir) / "sysforge-update.log"
+    if unified_log_active:
+        try:
+            _log.open_unified_log(unified_log_path, purge=getattr(args, "purge_log", False))
+            _log.info("[UPDATE]", f"Unified log: {unified_log_path}")
+        except OSError as e:
+            unified_log_active = False
+            _log.warn("[UPDATE]", f"Cannot write unified log to {unified_log_path}: {e} — logging to terminal only")
+
     built = failed = 0
     with _sudo_keepalive_ctx():
         for result in to_build:
@@ -488,6 +499,10 @@ def cmd_update(args) -> None:
             except (RuntimeError, SystemExit) as e:
                 _log.error("[UPDATE]", f"Build failed for {d.pkgname!r}: {e}")
                 failed += 1
+
+    if unified_log_active:
+        _log.close_unified_log(success=(failed == 0), persist=True)
+        print(f"[SYSFORGE] Unified log: {unified_log_path}")
 
     if getattr(args, "cache_report", False):
         emit_session_report()

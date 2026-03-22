@@ -362,6 +362,10 @@ def _add_update_parser(sub):
     p.add_argument("--makepkg", "-m", metavar="FLAGS",
         help="Extra flags passed verbatim to makepkg (e.g. -m '-f' to force rebuild). "
              "Combined short flags are expanded: -sfci becomes -s -f -c -i.")
+    p.add_argument("--no-unified-log", action="store_true", dest="no_unified_log",
+        help="Disable the unified log file (default: state_dir/sysforge-update.log).")
+    p.add_argument("--purge-log", action="store_true", dest="purge_log",
+        help="Truncate the unified log before this run instead of appending.")
     p.set_defaults(func=_cmd_update)
 
 
