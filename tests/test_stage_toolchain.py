@@ -1657,8 +1657,9 @@ def test_validate_pgo_environment_raises_if_clang_missing(tmp_path):
 
 
 def test_validate_pgo_environment_raises_if_clang_broken():
-    """Raises RuntimeError when clang --version fails (e.g. symbol lookup error
-    in libclang-cpp.so due to mismatched packages from prior aborted PGO runs)."""
+    """Raises RuntimeError when clang compile probe fails (e.g. symbol lookup error
+    in libclang-cpp.so due to mismatched packages from prior aborted PGO runs).
+    Note: --version is intentionally not used because it doesn't load libclang-cpp.so."""
     broken_stderr = (
         "/usr/bin/clang: symbol lookup error: /usr/lib/libclang-cpp.so.22.1: "
         "undefined symbol: _ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE"
@@ -1667,7 +1668,7 @@ def test_validate_pgo_environment_raises_if_clang_broken():
 
     def fake_run(cmd, **kwargs):
         result = MagicMock()
-        if "--version" in cmd:
+        if "/dev/null" in cmd:  # compile probe
             result.returncode = 127
             result.stdout = ""
             result.stderr = broken_stderr
@@ -1685,10 +1686,10 @@ def test_validate_pgo_environment_raises_if_clang_broken():
 
 
 def test_validate_pgo_environment_raises_if_clang_exits_nonzero():
-    """Raises RuntimeError when clang --version exits non-zero for any reason."""
+    """Raises RuntimeError when clang compile probe exits non-zero for any reason."""
     def fake_run(cmd, **kwargs):
         result = MagicMock()
-        result.returncode = 1 if "--version" in cmd else 0
+        result.returncode = 1 if "/dev/null" in cmd else 0  # compile probe fails
         result.stdout = ""
         result.stderr = "some internal error"
         return result
@@ -1716,11 +1717,11 @@ def test_validate_pgo_environment_raises_if_lld_missing():
             _validate_pgo_environment(dry_run=False)
 
 
-def _fake_healthy_clang(cmd, **kwargs):
-    """subprocess.run side_effect: clang --version succeeds, everything else no-ops."""
+def _fake_healthy_clang(_cmd, **_kwargs):
+    """subprocess.run side_effect: clang compile probe succeeds, everything else no-ops."""
     result = MagicMock()
     result.returncode = 0
-    result.stdout = "clang version 22.1.1" if "--version" in cmd else ""
+    result.stdout = ""
     result.stderr = ""
     return result
 
@@ -1752,10 +1753,7 @@ def test_validate_pgo_environment_instrumented_shared_lib_warns_then_prompts(tmp
     def fake_subprocess(cmd, **kwargs):
         result = MagicMock()
         result.returncode = 0
-        if "--version" in cmd:
-            result.stdout = "clang version 22.1.1"
-            result.stderr = ""
-        elif "nm" in cmd:
+        if "nm" in cmd:
             result.stdout = "0000000 T __llvm_profile_instrument_target\n"
             result.stderr = ""
         else:

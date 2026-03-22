@@ -860,13 +860,14 @@ def _validate_pgo_environment(dry_run: bool) -> None:
             "install clang before running the PGO build: sudo pacman -S clang"
         )
 
-    # Smoke-test clang by running --version.  A successful exit means the dynamic
-    # linker can load all of clang's shared library dependencies consistently.
-    # Failure (non-zero exit or output on stderr containing "symbol lookup error")
-    # indicates mismatched packages — e.g. clang and libclang-cpp.so installed from
-    # different aborted PGO passes with incompatible versioned symbols.
+    # Smoke-test clang by actually compiling a trivial program.  --version does not
+    # load libclang-cpp.so (it short-circuits before the compilation pipeline), so
+    # it misses symbol-version mismatches from mixed aborted PGO runs.  A real
+    # compilation fully exercises the dynamic linker and will surface errors like
+    # "symbol lookup error: libclang-cpp.so: undefined symbol ..., version LLVM_22.1".
     clang_probe = subprocess.run(
-        [str(clang_path), "--version"],
+        [str(clang_path), "-x", "c", "-", "-o", "/dev/null"],
+        input="int main(void){return 0;}\n",
         capture_output=True, text=True, check=False,
     )
     if clang_probe.returncode != 0 or "symbol lookup error" in clang_probe.stderr:
