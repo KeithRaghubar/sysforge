@@ -249,6 +249,13 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
                     _log.warn("[UPDATE]", f"--all: {pkgname!r}: {e}")
 
                 if pkgbuild_path and pkgbuild_path.exists():
+                    # Pull before comparing so we see the latest AUR version,
+                    # not the version from the last time this package was built.
+                    if not getattr(args, "no_update", False):
+                        try:
+                            git_pull_rebase(pkgbuild_path.parent)
+                        except RuntimeError as e:
+                            _log.warn("[UPDATE]", f"--all: {pkgname!r}: git pull failed: {e}")
                     try:
                         pkgmeta = parse_pkgbuild(pkgbuild_path)
                         pkgbuild_ver = format_version(pkgmeta.get("globals", {}))
@@ -377,6 +384,17 @@ def cmd_update(args) -> None:
 
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
     bs = BuildState(state_dir)
+
+    # Open the unified log early so discovery messages are captured.
+    unified_log_active = not getattr(args, "no_unified_log", False) and not getattr(args, "dry_run", False)
+    unified_log_path = (Path(args.log_dir) if getattr(args, "log_dir", None) else state_dir) / "sysforge-update.log"
+    if unified_log_active:
+        try:
+            _log.open_unified_log(unified_log_path, purge=getattr(args, "purge_log", False))
+            _log.info("[UPDATE]", f"Unified log: {unified_log_path}")
+        except OSError as e:
+            unified_log_active = False
+            _log.warn("[UPDATE]", f"Cannot write unified log to {unified_log_path}: {e} — logging to terminal only")
 
     # --all: discover and classify foreign packages before the main update loop
     discovered: list[_DiscoveredResult] = []
@@ -507,7 +525,7 @@ def cmd_update(args) -> None:
     if getattr(args, "devel", False):
         to_build += [r for r in results if r.action == "DEVEL"]
 
-    # Discovered packages to rebuild (--all mode); git pull not yet done
+    # Discovered packages to rebuild (--all mode); git pull already done in Phase 2
     discovered_to_build = [
         d for d in discovered
         if d.pkgbuild_path is not None
@@ -525,17 +543,6 @@ def cmd_update(args) -> None:
     reset_session()
 
     extra_flags = _expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else None
-
-    # Unified log: always persisted (update runs are long; failures need post-mortem).
-    unified_log_active = not getattr(args, "no_unified_log", False) and not getattr(args, "dry_run", False)
-    unified_log_path = (Path(args.log_dir) if getattr(args, "log_dir", None) else state_dir) / "sysforge-update.log"
-    if unified_log_active:
-        try:
-            _log.open_unified_log(unified_log_path, purge=getattr(args, "purge_log", False))
-            _log.info("[UPDATE]", f"Unified log: {unified_log_path}")
-        except OSError as e:
-            unified_log_active = False
-            _log.warn("[UPDATE]", f"Cannot write unified log to {unified_log_path}: {e} — logging to terminal only")
 
     # --- Phase 1: batch pre-install all makedepends (one sudo call) ---
     all_pkgbuild_paths = (
@@ -597,7 +604,7 @@ def cmd_update(args) -> None:
                 profile_conf=getattr(args, "profile_conf", None),
                 cache_report=False,
                 init_session=(built + failed == 0),
-                update=not getattr(args, "no_update", False),
+                update=False,  # git pull already done in Phase 2 discovery
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
                 extra_flags=extra_flags,
                 strip_flags=_BATCH_STRIP_FLAGS,
