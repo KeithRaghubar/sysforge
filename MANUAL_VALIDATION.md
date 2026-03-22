@@ -38,10 +38,10 @@
 - [x] No toolchain.toml → clean no-op
 - [x] GCC: builds, installs, state has `cc=/usr/bin/gcc cxx=/usr/bin/g++`
 - [x] LLVM pgo=false: single pass, state has `cc=…/clang cxx=…/clang++ ld=lld`
-- [ ] LLVM pgo=true: pass 1 (system CC, install) → pass 2 (instrumented, extract to staging) → pass 3 (staged CC, install, staging removed); state result correct
+- [x] LLVM pgo=true: pass 1 (system CC, install) → pass 2 (instrumented, extract to staging) → pass 3 (staged CC, install, staging removed); state result correct
 - [x] `--dry-run` → logs passes, no build, no state written
-- [ ] `--no-update` → no git pull
-- [ ] `--state-dir` → result written to custom dir
+- [x] `--no-update` → no git pull
+- [x] `--state-dir` → result written to custom dir
 
 ---
 

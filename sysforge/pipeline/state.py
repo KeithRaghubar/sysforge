@@ -25,6 +25,14 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 _DEFAULT_STATE_DIR = Path("/var/lib/sysforge")
+_FALLBACK_STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", "~/.local/state")).expanduser() / "sysforge"
+
+
+def _state_dir_is_writable(path: Path) -> bool:
+    """Return True if path exists and is writable, or its parent is writable (so mkdir can succeed)."""
+    if path.exists():
+        return os.access(path, os.W_OK)
+    return path.parent.exists() and os.access(path.parent, os.W_OK)
 
 
 def resolve_state_dir(cli_override=None):
@@ -32,6 +40,10 @@ def resolve_state_dir(cli_override=None):
     Resolve the state directory from CLI flag, env var, or default.
     Returns (Path, source_str) where source_str describes which was used.
     Logs both CLI and env sources whenever present.
+
+    If the system default (/var/lib/sysforge) is not writable (e.g. running
+    from source without root), falls back to ~/.local/state/sysforge and logs
+    a one-time info message so the location is transparent.
     """
     env_val = os.environ.get("SYSFORGE_STATE_DIR")
     sources = []
@@ -53,6 +65,15 @@ def resolve_state_dir(cli_override=None):
         chosen = Path(env_val)
         _log.info("[CONFIG]", f"Using state dir (SYSFORGE_STATE_DIR): {chosen}")
         return chosen, "SYSFORGE_STATE_DIR"
+
+    if not _state_dir_is_writable(_DEFAULT_STATE_DIR):
+        _log.info(
+            "[CONFIG]",
+            f"State dir {_DEFAULT_STATE_DIR} is not writable — "
+            f"falling back to {_FALLBACK_STATE_DIR} "
+            "(set SYSFORGE_STATE_DIR or install sysforge via PKGBUILD to use /var/lib/sysforge)",
+        )
+        return _FALLBACK_STATE_DIR, "xdg-fallback"
 
     return _DEFAULT_STATE_DIR, "default"
 

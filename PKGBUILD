@@ -49,4 +49,9 @@ package() {
     install -Dm644 etc/sysforge/toolchain.toml         "$_conf/toolchain.toml"
     install -Dm644 etc/sysforge/append_conflict_groups.toml "$_conf/append_conflict_groups.toml"
     install -Dm644 etc/sysforge/consumes_inference.toml     "$_conf/consumes_inference.toml"
+
+    # State directory (pipeline state, build state, logs)
+    install -Dm644 /dev/null "$pkgdir/usr/lib/tmpfiles.d/sysforge.conf"
+    printf 'd /var/lib/sysforge 0755 root root -\n' \
+        > "$pkgdir/usr/lib/tmpfiles.d/sysforge.conf"
 }

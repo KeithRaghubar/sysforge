@@ -159,6 +159,8 @@ def test_package_errors_survive_roundtrip(tmp_path):
 
 def test_resolve_default(monkeypatch):
     monkeypatch.delenv("SYSFORGE_STATE_DIR", raising=False)
+    import sysforge.pipeline.state as _state_mod
+    monkeypatch.setattr(_state_mod, "_state_dir_is_writable", lambda p: True)
     path, source = resolve_state_dir()
     assert source == "default"
     assert str(path) == "/var/lib/sysforge"
