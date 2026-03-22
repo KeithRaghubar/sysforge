@@ -791,9 +791,9 @@ def _profile_runtime_ldflag() -> str | None:
     """Return '-L<runtime_dir> -lclang_rt.profile-<arch>' if the profile runtime exists.
 
     Returns None if the runtime library cannot be located, with a log warning.
-    This flag is added to LDFLAGS in Pass 2 when the system LLVM is instrumented,
-    so that packages linking against instrumented LLVM static libs can resolve
-    __llvm_profile_* symbols without needing -fprofile-generate in their own flags.
+    Injected into LDFLAGS for both Pass 2 and Pass 3 when the system LLVM static
+    libs are instrumented (residual from a prior Pass 1), so packages linking
+    against them can resolve __llvm_profile_* symbols.
     """
     rt_result = subprocess.run(
         ["/usr/bin/clang", "--print-runtime-dir"],
@@ -805,7 +805,7 @@ def _profile_runtime_ldflag() -> str | None:
         _log.warn(
             "[TOOLCHAIN]",
             "[PGO] Could not determine clang runtime dir (clang --print-runtime-dir failed); "
-            "Pass 2 may fail with undefined __llvm_profile_* symbols. "
+            "Pass 2 and Pass 3 may fail with undefined __llvm_profile_* symbols. "
             "Run: sudo pacman -S llvm  to restore an uninstrumented system LLVM.",
         )
         return None
@@ -821,7 +821,7 @@ def _profile_runtime_ldflag() -> str | None:
         _log.warn(
             "[TOOLCHAIN]",
             f"[PGO] Profile runtime not found at {profile_lib}; "
-            "Pass 2 may fail with undefined __llvm_profile_* symbols. "
+            "Pass 2 and Pass 3 may fail with undefined __llvm_profile_* symbols. "
             "Install compiler-rt or run: sudo pacman -S llvm",
         )
         return None
@@ -1073,17 +1073,19 @@ def _build_llvm_pgo(
 
         # Safety net: if system LLVM static libs are still instrumented (from a
         # prior Pass 1 run before _pgo_pass1_install excluded cmake-config packages),
-        # packages that call find_package(LLVM) in Pass 2 would link against them
-        # and fail to resolve __llvm_profile_* symbols.  Inject the profile runtime
-        # into LDFLAGS so the linker can satisfy those references.
-        pass2_linker_flags: str | None = None
+        # packages that call find_package(LLVM) in Pass 2 or Pass 3 would link
+        # against them and fail to resolve __llvm_profile_* symbols.  Inject the
+        # profile runtime into LDFLAGS for both passes.  The check is done once
+        # here — system LLVM state does not change between Pass 2 and Pass 3
+        # (neither pass installs to the system until _pgo_install at the end).
+        residual_linker_flags: str | None = None
         if not options.dry_run and _system_llvm_is_instrumented():
             _log.info(
                 "[TOOLCHAIN]",
                 "[PGO] System libLLVMSupport.a is instrumented (residual from a prior "
-                "Pass 1 install). Injecting profile runtime into Pass 2 LDFLAGS.",
+                "Pass 1 install). Injecting profile runtime into Pass 2 and Pass 3 LDFLAGS.",
             )
-            pass2_linker_flags = _profile_runtime_ldflag()
+            residual_linker_flags = _profile_runtime_ldflag()
 
         stop_event = threading.Event()
         monitor = threading.Thread(
@@ -1109,7 +1111,7 @@ def _build_llvm_pgo(
                 cc="/usr/bin/clang",
                 cxx="/usr/bin/clang++",
                 install=False,
-                linker_flags_extra=pass2_linker_flags,
+                linker_flags_extra=residual_linker_flags,
                 pgo_build=True,
                 pgo_env=pass2_env,
             )
@@ -1150,6 +1152,7 @@ def _build_llvm_pgo(
             cxx=staged_cxx,
             install=False,
             compiler_flags_extra=f"-fprofile-use={profdata_path}",
+            linker_flags_extra=residual_linker_flags,
             pgo_build=True,
         )
         _pgo_install("Pass 3", all_pass3, options.dry_run)
