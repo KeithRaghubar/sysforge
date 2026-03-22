@@ -94,7 +94,9 @@ def _sudo_keepalive_ctx():
 
     def _daemon():
         while not stop.wait(_SUDO_KEEPALIVE_INTERVAL):
-            result = subprocess.run(["sudo", "-v"], check=False)
+            # -n: non-interactive — never prompt. If credentials have expired,
+            # fail silently rather than producing a password prompt from a background thread.
+            result = subprocess.run(["sudo", "-vn"], check=False)
             if result.returncode != 0:
                 _log.warn("[BUILD]",
                           "sudo keepalive failed — dependency/install step may prompt for a password")

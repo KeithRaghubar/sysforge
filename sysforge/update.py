@@ -134,13 +134,16 @@ def _append_to_packages_toml(path: Path, entries: list[dict]) -> None:
 
 def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredResult]:
     """
-    Discover foreign packages not yet tracked by sysforge.
+    Discover foreign packages not yet tracked by sysforge, and pick up packages
+    that are in packages.toml but have no build_state record (e.g. state was never
+    written due to a missing state directory).
 
     1. Run pacman -Qm to find all foreign packages.
-    2. Filter out packages already in build_state.toml or packages.toml.
-    3. Verify each is on AUR; classify source and infer pkgbuild_patch.
-    4. Find or clone PKGBUILD; compare versions.
-    5. Append to packages.toml (unless --dry-run).
+    2a. New packages (not in build_state or packages.toml): AUR-verify, add to
+        packages.toml, compare versions, schedule rebuild if outdated.
+    2b. Unrecorded packages (in packages.toml but not in build_state): find
+        PKGBUILD, compare versions, schedule rebuild if outdated. Not re-added
+        to packages.toml.
 
     Returns list of _DiscoveredResult for summary display.
     """
@@ -156,80 +159,119 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
 
     tracked = set(bs.all_packages().keys())
     in_manifest = _load_packages_toml_names(packages_path)
-    already_known = tracked | in_manifest
 
-    new_foreign = {k: v for k, v in foreign.items() if k not in already_known}
-    if not new_foreign:
+    new_foreign = {k: v for k, v in foreign.items() if k not in tracked and k not in in_manifest}
+    unrecorded = {k: v for k, v in foreign.items() if k in in_manifest and k not in tracked}
+
+    if not new_foreign and not unrecorded:
         _log.info("[UPDATE]", "--all: all foreign packages are already tracked")
         return []
-
-    _log.info("[UPDATE]", f"--all: {len(new_foreign)} untracked foreign package(s) found")
-
-    # Batch AUR lookup
-    aur_results = aur_info(list(new_foreign.keys()))
 
     results: list[_DiscoveredResult] = []
     entries_to_add: list[dict] = []
 
-    for pkgname in sorted(new_foreign):
-        installed_ver = new_foreign[pkgname]
+    # --- Phase 1: truly new packages (not in packages.toml) ---
+    if new_foreign:
+        _log.info("[UPDATE]", f"--all: {len(new_foreign)} untracked foreign package(s) found")
+        aur_results = aur_info(list(new_foreign.keys()))
 
-        if pkgname not in aur_results:
-            _log.warn("[UPDATE]", f"--all: {pkgname!r} not found in AUR — skipping")
-            results.append(_DiscoveredResult(
-                pkgname=pkgname, action="NOT_FOUND",
-                installed_ver=installed_ver,
-            ))
-            continue
+        for pkgname in sorted(new_foreign):
+            installed_ver = new_foreign[pkgname]
 
-        # Find or clone PKGBUILD (skipped in dry-run)
-        pkgbuild_path = None
-        pkgbuild_ver = None
-        pkgbuild_patch = False
-        pkgmeta = None
+            if pkgname not in aur_results:
+                _log.warn("[UPDATE]", f"--all: {pkgname!r} not found in AUR — skipping")
+                results.append(_DiscoveredResult(
+                    pkgname=pkgname, action="NOT_FOUND",
+                    installed_ver=installed_ver,
+                ))
+                continue
 
-        if not getattr(args, "dry_run", False):
-            try:
-                pkgbuild_path = find_pkgbuild(pkgname, config)
-            except (FileNotFoundError, RuntimeError) as e:
-                _log.warn("[UPDATE]", f"--all: {pkgname!r}: {e}")
+            pkgbuild_path = None
+            pkgbuild_ver = None
+            pkgbuild_patch = False
 
-            if pkgbuild_path and pkgbuild_path.exists():
+            if not getattr(args, "dry_run", False):
                 try:
-                    pkgmeta = parse_pkgbuild(pkgbuild_path)
-                    pkgbuild_ver = format_version(pkgmeta.get("globals", {}))
-                    from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
-                    pkgbuild_patch = bool(extract_pkgbuild_profile(pkgmeta, pkgbuild_path))
-                except Exception as e:
-                    _log.warn("[UPDATE]", f"--all: {pkgname!r}: failed to parse PKGBUILD: {e}")
+                    pkgbuild_path = find_pkgbuild(pkgname, config)
+                except (FileNotFoundError, RuntimeError) as e:
+                    _log.warn("[UPDATE]", f"--all: {pkgname!r}: {e}")
 
-        entry: dict = {"name": pkgname, "source": "aur"}
-        if pkgbuild_patch:
-            entry["pkgbuild_patch"] = True
-        entries_to_add.append(entry)
+                if pkgbuild_path and pkgbuild_path.exists():
+                    try:
+                        pkgmeta = parse_pkgbuild(pkgbuild_path)
+                        pkgbuild_ver = format_version(pkgmeta.get("globals", {}))
+                        from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
+                        pkgbuild_patch = bool(extract_pkgbuild_profile(pkgmeta, pkgbuild_path))
+                    except Exception as e:
+                        _log.warn("[UPDATE]", f"--all: {pkgname!r}: failed to parse PKGBUILD: {e}")
 
-        if _is_vcs(pkgname):
-            action = "DEVEL"
-        elif pkgbuild_ver is not None:
-            try:
-                cmp = vercmp(pkgbuild_ver, installed_ver)
-                action = "OUTDATED" if cmp > 0 else "ADDED"
-            except RuntimeError:
+            entry: dict = {"name": pkgname, "source": "aur"}
+            if pkgbuild_patch:
+                entry["pkgbuild_patch"] = True
+            entries_to_add.append(entry)
+
+            if _is_vcs(pkgname):
+                action = "DEVEL"
+            elif pkgbuild_ver is not None:
+                try:
+                    cmp = vercmp(pkgbuild_ver, installed_ver)
+                    action = "OUTDATED" if cmp > 0 else "ADDED"
+                except RuntimeError:
+                    action = "ADDED"
+            else:
                 action = "ADDED"
-        else:
-            action = "ADDED"
 
-        results.append(_DiscoveredResult(
-            pkgname=pkgname,
-            action=action,
-            installed_ver=installed_ver,
-            pkgbuild_ver=pkgbuild_ver,
-            pkgbuild_path=pkgbuild_path,
-        ))
+            results.append(_DiscoveredResult(
+                pkgname=pkgname, action=action,
+                installed_ver=installed_ver,
+                pkgbuild_ver=pkgbuild_ver,
+                pkgbuild_path=pkgbuild_path,
+            ))
 
     if entries_to_add and not getattr(args, "dry_run", False):
         _append_to_packages_toml(packages_path, entries_to_add)
         _log.info("[UPDATE]", f"--all: appended {len(entries_to_add)} package(s) to {packages_path}")
+
+    # --- Phase 2: packages in packages.toml with no build_state record ---
+    if unrecorded:
+        _log.info("[UPDATE]",
+                  f"--all: {len(unrecorded)} package(s) in packages.toml with no build record — checking versions")
+
+        for pkgname in sorted(unrecorded):
+            installed_ver = unrecorded[pkgname]
+            pkgbuild_path = None
+            pkgbuild_ver = None
+
+            if not getattr(args, "dry_run", False):
+                try:
+                    pkgbuild_path = find_pkgbuild(pkgname, config)
+                except (FileNotFoundError, RuntimeError) as e:
+                    _log.warn("[UPDATE]", f"--all: {pkgname!r}: {e}")
+
+                if pkgbuild_path and pkgbuild_path.exists():
+                    try:
+                        pkgmeta = parse_pkgbuild(pkgbuild_path)
+                        pkgbuild_ver = format_version(pkgmeta.get("globals", {}))
+                    except Exception as e:
+                        _log.warn("[UPDATE]", f"--all: {pkgname!r}: failed to parse PKGBUILD: {e}")
+
+            if _is_vcs(pkgname):
+                action = "DEVEL"
+            elif pkgbuild_ver is not None:
+                try:
+                    cmp = vercmp(pkgbuild_ver, installed_ver)
+                    action = "OUTDATED" if cmp > 0 else "ADDED"
+                except RuntimeError:
+                    action = "OUTDATED"  # no record, treat as needing a build
+            else:
+                action = "OUTDATED"  # can't compare, schedule a build to record state
+
+            results.append(_DiscoveredResult(
+                pkgname=pkgname, action=action,
+                installed_ver=installed_ver,
+                pkgbuild_ver=pkgbuild_ver,
+                pkgbuild_path=pkgbuild_path,
+            ))
 
     return results
 
@@ -400,7 +442,7 @@ def cmd_update(args) -> None:
         print("[SYSFORGE] Nothing to rebuild.")
         return
 
-    from sysforge.primitives.makepkg_wrapper import run as build_run
+    from sysforge.primitives.makepkg_wrapper import run as build_run, _sudo_keepalive_ctx
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
     from sysforge.cli import _expand_makepkg_flags
     reset_session()
@@ -408,43 +450,44 @@ def cmd_update(args) -> None:
     extra_flags = _expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else None
 
     built = failed = 0
-    for result in to_build:
-        try:
-            build_run(
-                result.pkgbuild_path,
-                pkg_log=not getattr(args, "no_pkg_log", False),
-                persist_log=getattr(args, "persist_log", False),
-                log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
-                profile_conf=getattr(args, "profile_conf", None),
-                cache_report=False,
-                init_session=(built + failed == 0),
-                update=False,  # git pull already done above
-                state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-                extra_flags=extra_flags,
-            )
-            built += 1
-        except (RuntimeError, SystemExit) as e:
-            _log.error("[UPDATE]", f"Build failed for {result.pkgbase!r}: {e}")
-            failed += 1
+    with _sudo_keepalive_ctx():
+        for result in to_build:
+            try:
+                build_run(
+                    result.pkgbuild_path,
+                    pkg_log=not getattr(args, "no_pkg_log", False),
+                    persist_log=getattr(args, "persist_log", False),
+                    log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
+                    profile_conf=getattr(args, "profile_conf", None),
+                    cache_report=False,
+                    init_session=(built + failed == 0),
+                    update=False,  # git pull already done above
+                    state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
+                    extra_flags=extra_flags,
+                )
+                built += 1
+            except (RuntimeError, SystemExit) as e:
+                _log.error("[UPDATE]", f"Build failed for {result.pkgbase!r}: {e}")
+                failed += 1
 
-    for d in discovered_to_build:
-        try:
-            build_run(
-                d.pkgbuild_path,
-                pkg_log=not getattr(args, "no_pkg_log", False),
-                persist_log=getattr(args, "persist_log", False),
-                log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
-                profile_conf=getattr(args, "profile_conf", None),
-                cache_report=False,
-                init_session=(built + failed == 0),
-                update=not getattr(args, "no_update", False),
-                state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-                extra_flags=extra_flags,
-            )
-            built += 1
-        except (RuntimeError, SystemExit) as e:
-            _log.error("[UPDATE]", f"Build failed for {d.pkgname!r}: {e}")
-            failed += 1
+        for d in discovered_to_build:
+            try:
+                build_run(
+                    d.pkgbuild_path,
+                    pkg_log=not getattr(args, "no_pkg_log", False),
+                    persist_log=getattr(args, "persist_log", False),
+                    log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
+                    profile_conf=getattr(args, "profile_conf", None),
+                    cache_report=False,
+                    init_session=(built + failed == 0),
+                    update=not getattr(args, "no_update", False),
+                    state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
+                    extra_flags=extra_flags,
+                )
+                built += 1
+            except (RuntimeError, SystemExit) as e:
+                _log.error("[UPDATE]", f"Build failed for {d.pkgname!r}: {e}")
+                failed += 1
 
     if getattr(args, "cache_report", False):
         emit_session_report()
