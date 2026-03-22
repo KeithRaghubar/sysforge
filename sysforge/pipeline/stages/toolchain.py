@@ -30,6 +30,12 @@ LLVM PGO bootstrap (3 passes, only when pgo = true):
             /usr/bin/clang is the instrumented binary (writes profraw when run).
             Spurious profraw from CMake feature probes purged before Pass 2.
   Pass 2 — CC=/usr/bin/clang (the Pass-1 instrumented binary, no extra flags);
+            builds pgo + non_pgo packages (lib32 excluded).  Non-pgo packages
+            (compiler-rt, openmp, polly, spirv-llvm-translator) exercise OpenMP
+            structured blocks, compiler-rt intrinsics, and polyhedral analysis
+            paths absent from LLVM self-compilation alone.
+            CCACHE_DISABLE=1 / SCCACHE_DISABLE=1 injected so cache tools cannot
+            bypass the instrumented compiler and silently produce no profraw.
             LLVM_PROFILE_FILE uses %m_%p (per-module-hash + per-PID) so parallel
             make -j clang processes each write their own profraw without
             contending on one file.  Background daemon merges profraw every
@@ -37,7 +43,9 @@ LLVM PGO bootstrap (3 passes, only when pgo = true):
             (_PROFRAW_MERGE_BATCH_MAX → _PROFRAW_MERGE_BATCH_MIN on OOM).
             llvm-profdata invoked with RLIMIT_AS lifted (lift_for_child) so it
             is not constrained by the sysforge controller's 2 GiB cap.
-            No system install; pass-2 binaries extracted to staging.
+            No system install; pgo-package binaries extracted to staging.
+            Merged profdata size logged at [INFO]; warns if below
+            _PGO_PROFDATA_MIN_BYTES (likely indicates bypassed compilation).
   Pass 3 — CC=staged clang, CFLAGS += -fprofile-use=<profdata>
             install all packages (pgo + non_pgo + lib32)
             to system via _pgo_install(); staging + profdata removed on success.
@@ -105,6 +113,12 @@ _PROFRAW_MERGE_BATCH_MIN = 8
 # merges — they may still be actively written by a clang process, and merging
 # a partial write causes SIGBUS in llvm-profdata.
 _PROFRAW_SETTLE_SECS = 10
+
+# Minimum expected profdata size after a real Pass 2 training run (bytes).
+# A genuine LLVM self-compilation produces hundreds of MiB of profile data.
+# Warn if the merged profdata is smaller — likely indicates compilation was
+# bypassed (e.g. by a cache tool that slipped past CCACHE/SCCACHE_DISABLE).
+_PGO_PROFDATA_MIN_BYTES = 10 * 1024 * 1024  # 10 MiB
 
 
 # ---------------------------------------------------------------------------
@@ -947,11 +961,13 @@ def _build_llvm_pgo(
             intentionally skips cmake-config packages (llvm) whose instrumented .a
             archives would break a separate clang PKGBUILD's find_package(LLVM) in
             Pass 2.  The resulting /usr/bin/clang is instrumented; writes profraw.
-    Pass 2: CC=instrumented Pass-1 clang (no extra flags); running it as the compiler
-            generates profraw in pgo_store as a side effect of compilation.
-            Background daemon merges profraw periodically to limit disk usage;
-            final sweep runs after the build completes.
-            Pass-2 binaries extracted to staging; no system install.
+    Pass 2: CC=instrumented Pass-1 clang; builds pgo + non_pgo packages (lib32
+            excluded) to maximise training coverage.  CCACHE_DISABLE=1 and
+            SCCACHE_DISABLE=1 injected so cache tools cannot bypass the
+            instrumented compiler and silently produce no profraw.  Background
+            daemon merges profraw periodically; final sweep after build.
+            Profdata size checked; warns if suspiciously small.
+            Pgo-package binaries extracted to staging; no system install.
     Pass 3: CC=staged clang; CFLAGS/LDFLAGS += -fprofile-use; LTO disabled via
             LTOFLAGS="" (ThinLTO + IR PGO causes non-PIC vtable relocations in
             lld's ThinLTO codegen for libLLVM.so); install pgo + non_pgo + lib32.
@@ -1040,7 +1056,16 @@ def _build_llvm_pgo(
         # own file (module-hash + PID) instead of all contending on default_%m.profraw.
         # Without this, N parallel `make -j` clang invocations corrupt each other's
         # profraw via concurrent writes, causing SIGBUS crashes in llvm-profdata.
-        pass2_env = {"LLVM_PROFILE_FILE": f"{pgo_store}/default_%m_%p.profraw"}
+        pass2_env = {
+            "LLVM_PROFILE_FILE": f"{pgo_store}/default_%m_%p.profraw",
+            # Prevent ccache/sccache from serving cached objects during the
+            # training run.  If either tool intercepts a compilation it skips
+            # running the instrumented clang entirely, producing no profraw.
+            # _DISABLE=1 makes each tool act as a transparent pass-through so
+            # the instrumented binary always executes and writes profraw data.
+            "CCACHE_DISABLE": "1",
+            "SCCACHE_DISABLE": "1",
+        }
         _log.info(
             "[TOOLCHAIN]",
             f"[PGO] Pass 2: LLVM_PROFILE_FILE={pass2_env['LLVM_PROFILE_FILE']}",
@@ -1069,10 +1094,17 @@ def _build_llvm_pgo(
         )
         if not options.dry_run:
             monitor.start()
+        # Include non_pgo packages (polly, compiler-rt, openmp,
+        # spirv-llvm-translator) in the training run.  They exercise different
+        # clang code paths: OpenMP structured blocks, compiler-rt intrinsics,
+        # polyhedral analysis (Polly) — all absent from LLVM self-compilation
+        # alone.  lib32 is excluded; cross-compilation paths aren't worth the
+        # extra build time here.
+        pass2_map = {**pgo_map, **non_pgo_map}
         try:
             _build_pass(
                 "Pass 2/3 [PGO] training run → profraw generation (no system install)",
-                pgo_map,
+                pass2_map,
                 options,
                 cc="/usr/bin/clang",
                 cxx="/usr/bin/clang++",
@@ -1089,6 +1121,22 @@ def _build_llvm_pgo(
 
         # Final sweep: merge any profraw not yet handled by the daemon
         profdata_path = _merge_profraw(pgo_store, options.dry_run)
+        if not options.dry_run:
+            profdata_size = profdata_path.stat().st_size
+            _log.info(
+                "[TOOLCHAIN]",
+                f"[PGO] Merged profdata size: {profdata_size // (1024 * 1024)} MiB",
+            )
+            if profdata_size < _PGO_PROFDATA_MIN_BYTES:
+                _log.warn(
+                    "[TOOLCHAIN]",
+                    f"[PGO] Profdata is unexpectedly small "
+                    f"({profdata_size // (1024 * 1024)} MiB < "
+                    f"{_PGO_PROFDATA_MIN_BYTES // (1024 * 1024)} MiB). "
+                    "Pass 2 may not have exercised enough code paths — "
+                    "check that CCACHE_DISABLE/SCCACHE_DISABLE took effect "
+                    "and compilation actually ran.",
+                )
         _log.ui("[TOOLCHAIN]", f"[PGO] Profile data ready: {profdata_path}")
         _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
 
