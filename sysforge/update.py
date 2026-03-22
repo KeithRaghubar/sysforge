@@ -254,10 +254,22 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
         _log.info("[UPDATE]",
                   f"--all: {len(unrecorded)} package(s) in packages.toml with no build record — checking versions")
 
+        pkgbuild_dir_raw = config.get("paths", {}).get("pkgbuild_dir")
+        pkgbuild_dir = Path(pkgbuild_dir_raw).expanduser() if pkgbuild_dir_raw else None
+
         for pkgname in sorted(unrecorded):
             installed_ver = unrecorded[pkgname]
             pkgbuild_path = None
             pkgbuild_ver = None
+
+            # Only look up locally-cloned PKGBUILDs — don't trigger auto-clone during update.
+            # pkgctl_checkout requires GITLAB_TOKEN and falls back to SSH, which prompts for creds.
+            if pkgbuild_dir and not (pkgbuild_dir / pkgname / "PKGBUILD").exists():
+                results.append(_DiscoveredResult(
+                    pkgname=pkgname, action="NOT_FOUND",
+                    installed_ver=installed_ver, pkgbuild_ver=None, pkgbuild_path=None,
+                ))
+                continue
 
             if not getattr(args, "dry_run", False):
                 try:

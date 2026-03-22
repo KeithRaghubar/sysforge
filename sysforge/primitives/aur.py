@@ -13,6 +13,7 @@ Public API:
 """
 import gzip
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -110,6 +111,7 @@ def pkgctl_checkout(name: str, dest: Path) -> None:
         cwd=str(dest.parent),
         capture_output=True,
         text=True,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
     )
     if result.returncode != 0:
         raise RuntimeError(
