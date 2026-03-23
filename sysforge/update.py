@@ -24,6 +24,7 @@ Public API:
 """
 import subprocess
 import sys
+import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -687,7 +688,7 @@ def cmd_update(args) -> None:
 
     for result in to_build:
         search_dir = pkgdest if pkgdest else result.pkgbuild_path.parent
-        before = _snapshot_pkg_dir(search_dir)
+        build_start = time.time()
         try:
             build_run(
                 result.pkgbuild_path,
@@ -704,7 +705,10 @@ def cmd_update(args) -> None:
                 interactive=interactive,
                 force_batch=not interactive,
             )
-            new_pkgs = sorted(_snapshot_pkg_dir(search_dir) - before)
+            new_pkgs = sorted(
+                p for p in _snapshot_pkg_dir(search_dir)
+                if p.stat().st_mtime >= build_start - 1
+            )
             built_pkg_files.extend(new_pkgs)
             built += 1
         except (RuntimeError, SystemExit) as e:
@@ -724,7 +728,7 @@ def cmd_update(args) -> None:
                 continue
 
         search_dir = pkgdest if pkgdest else pkgbuild_path.parent
-        before = _snapshot_pkg_dir(search_dir)
+        build_start = time.time()
         try:
             build_run(
                 pkgbuild_path,
@@ -741,7 +745,10 @@ def cmd_update(args) -> None:
                 interactive=interactive,
                 force_batch=not interactive,
             )
-            new_pkgs = sorted(_snapshot_pkg_dir(search_dir) - before)
+            new_pkgs = sorted(
+                p for p in _snapshot_pkg_dir(search_dir)
+                if p.stat().st_mtime >= build_start - 1
+            )
             built_pkg_files.extend(new_pkgs)
             built += 1
         except (RuntimeError, SystemExit) as e:

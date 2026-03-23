@@ -130,9 +130,3 @@
 - [ ] `--state-dir` → reads from custom state dir
 - [ ] `--profile-conf` → uses alternate profiles when re-resolving
 
----
-
-## Cross-stage
-
-- [ ] `sysforge run toolchain && sysforge run packages` → CC/CXX injected into package builds
-- [ ] `sysforge run toolchain && sysforge run kernel` → CC/CXX injected into kernel build
