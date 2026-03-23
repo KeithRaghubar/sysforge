@@ -128,6 +128,31 @@ def _load_packages_toml_names(path: Path) -> set[str]:
         return set()
 
 
+def _load_packages_toml_sources(path: Path) -> dict[str, str]:
+    """Return {name: source} for all entries in packages.toml."""
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        return {e["name"]: e.get("source", "aur") for e in data.get("package", []) if "name" in e}
+    except Exception:
+        return {}
+
+
+def _get_pacman_sync_version(pkgname: str) -> str | None:
+    """Return the version available in pacman sync databases, or None if not found."""
+    result = subprocess.run(["pacman", "-Si", "--", pkgname], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("Version"):
+            parts = line.split(":", 1)
+            if len(parts) == 2:
+                return parts[1].strip()
+    return None
+
+
 def _append_to_packages_toml(path: Path, entries: list[dict]) -> None:
     """Append [[package]] blocks to packages.toml, creating the file if needed."""
     from sysforge.packages_cmd import _entry_toml_block
@@ -256,20 +281,57 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
 
         pkgbuild_dir_raw = config.get("paths", {}).get("pkgbuild_dir")
         pkgbuild_dir = Path(pkgbuild_dir_raw).expanduser() if pkgbuild_dir_raw else None
+        manifest_sources = _load_packages_toml_sources(packages_path)
 
-        for pkgname in sorted(unrecorded):
-            installed_ver = unrecorded[pkgname]
+        # Separate packages into those with a local PKGBUILD and those needing a DB lookup.
+        # Don't auto-clone during update — pkgctl_checkout requires GITLAB_TOKEN and falls back
+        # to SSH on failure, which prompts for credentials.
+        has_local = {k: v for k, v in unrecorded.items()
+                     if pkgbuild_dir and (pkgbuild_dir / k / "PKGBUILD").exists()}
+        needs_db  = {k: v for k, v in unrecorded.items() if k not in has_local}
+
+        # Batch AUR RPC for unrecorded non-VCS AUR packages without a local PKGBUILD.
+        aur_to_check = [k for k in needs_db
+                        if manifest_sources.get(k, "aur") == "aur" and not _is_vcs(k)]
+        aur_db_versions: dict[str, str] = {}
+        if aur_to_check:
+            aur_results = aur_info(aur_to_check)
+            aur_db_versions = {name: d["Version"] for name, d in aur_results.items() if d.get("Version")}
+
+        # Process packages without a local PKGBUILD using package DB version.
+        for pkgname in sorted(needs_db):
+            installed_ver = needs_db[pkgname]
+
+            if _is_vcs(pkgname):
+                results.append(_DiscoveredResult(pkgname=pkgname, action="DEVEL",
+                    installed_ver=installed_ver, pkgbuild_ver=None, pkgbuild_path=None))
+                continue
+
+            source = manifest_sources.get(pkgname, "aur")
+            if source == "repo":
+                db_ver = _get_pacman_sync_version(pkgname)
+            else:
+                db_ver = aur_db_versions.get(pkgname)
+
+            if not db_ver:
+                results.append(_DiscoveredResult(pkgname=pkgname, action="NOT_FOUND",
+                    installed_ver=installed_ver, pkgbuild_ver=None, pkgbuild_path=None))
+                continue
+
+            try:
+                cmp = vercmp(db_ver, installed_ver)
+                action = "OUTDATED" if cmp > 0 else "ADDED"
+            except RuntimeError:
+                action = "OUTDATED"
+
+            results.append(_DiscoveredResult(pkgname=pkgname, action=action,
+                installed_ver=installed_ver, pkgbuild_ver=db_ver, pkgbuild_path=None))
+
+        # Process packages with local PKGBUILDs: git pull then compare PKGBUILD version.
+        for pkgname in sorted(has_local):
+            installed_ver = has_local[pkgname]
             pkgbuild_path = None
             pkgbuild_ver = None
-
-            # Only look up locally-cloned PKGBUILDs — don't trigger auto-clone during update.
-            # pkgctl_checkout requires GITLAB_TOKEN and falls back to SSH, which prompts for creds.
-            if pkgbuild_dir and not (pkgbuild_dir / pkgname / "PKGBUILD").exists():
-                results.append(_DiscoveredResult(
-                    pkgname=pkgname, action="NOT_FOUND",
-                    installed_ver=installed_ver, pkgbuild_ver=None, pkgbuild_path=None,
-                ))
-                continue
 
             if not getattr(args, "dry_run", False):
                 try:
@@ -349,7 +411,10 @@ def _print_discovery_summary(results: list[_DiscoveredResult], args) -> None:
 
 # Flags stripped from each per-package makepkg call during batch update.
 # Deps are pre-installed in one shot; packages are installed in one shot at the end.
-_BATCH_STRIP_FLAGS = frozenset({"--syncdeps", "-s", "--install", "-i"})
+_BATCH_STRIP_FLAGS  = frozenset({"--syncdeps", "-s", "--install", "-i"})
+# Always clean the build tree on update — prevents stale $srcdir from a previous failed run
+# causing patch-already-applied errors in prepare().
+_BATCH_EXTRA_FLAGS  = ["-C"]
 
 
 def _get_pkgdest() -> Path | None:
@@ -444,6 +509,7 @@ def cmd_update(args) -> None:
             _log.warn("[UPDATE]", f"Cannot write unified log to {unified_log_path}: {e} — logging to terminal only")
 
     # --all: discover and classify foreign packages before the main update loop
+    discover_config: dict = {}
     discovered: list[_DiscoveredResult] = []
     if getattr(args, "all", False):
         config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
@@ -575,9 +641,8 @@ def cmd_update(args) -> None:
     # Discovered packages to rebuild (--all mode); git pull already done in Phase 2
     discovered_to_build = [
         d for d in discovered
-        if d.pkgbuild_path is not None
-        and (d.action == "OUTDATED"
-             or (d.action == "DEVEL" and getattr(args, "devel", False)))
+        if d.action == "OUTDATED"
+        or (d.action == "DEVEL" and getattr(args, "devel", False))
     ]
 
     if not to_build and not discovered_to_build:
@@ -608,6 +673,9 @@ def cmd_update(args) -> None:
     # Where do built packages land? PKGDEST overrides the pkgbuild dir.
     pkgdest = _get_pkgdest()
     interactive = getattr(args, "interactive", False)
+    # Prepend cleanbuild so stale $srcdir from a previous failed run never causes
+    # patch-already-applied errors in prepare().
+    batch_flags = _BATCH_EXTRA_FLAGS + (extra_flags or [])
 
     # --- Phase 2: build all packages (no syncdeps, no install per-package) ---
     built_pkg_files: list = []
@@ -627,7 +695,7 @@ def cmd_update(args) -> None:
                 init_session=(built + failed == 0),
                 update=False,  # git pull already done above
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-                extra_flags=extra_flags,
+                extra_flags=batch_flags,
                 strip_flags=_BATCH_STRIP_FLAGS,
                 interactive=interactive,
                 force_batch=not interactive,
@@ -640,11 +708,22 @@ def cmd_update(args) -> None:
             failed += 1
 
     for d in discovered_to_build:
-        search_dir = pkgdest if pkgdest else d.pkgbuild_path.parent
+        # Packages detected via DB version check have no local PKGBUILD yet — clone on demand.
+        pkgbuild_path = d.pkgbuild_path
+        if pkgbuild_path is None:
+            from sysforge.primitives.config import find_pkgbuild
+            try:
+                pkgbuild_path = find_pkgbuild(d.pkgname, discover_config)
+            except (FileNotFoundError, RuntimeError) as e:
+                _log.error("[UPDATE]", f"Cannot find/clone PKGBUILD for {d.pkgname!r}: {e}")
+                failed += 1
+                continue
+
+        search_dir = pkgdest if pkgdest else pkgbuild_path.parent
         before = _snapshot_pkg_dir(search_dir)
         try:
             build_run(
-                d.pkgbuild_path,
+                pkgbuild_path,
                 pkg_log=not getattr(args, "no_pkg_log", False),
                 persist_log=getattr(args, "persist_log", False),
                 log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
@@ -653,7 +732,7 @@ def cmd_update(args) -> None:
                 init_session=(built + failed == 0),
                 update=False,  # git pull already done in Phase 2 discovery
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-                extra_flags=extra_flags,
+                extra_flags=batch_flags,
                 strip_flags=_BATCH_STRIP_FLAGS,
                 interactive=interactive,
                 force_batch=not interactive,

@@ -211,3 +211,16 @@ pkgnames = ["llvm", "clang", "lld"]
 profile = "pgo_llvm_toolchain"
 priority = 20
 append_groups = ["pgo"]
+
+[[rules]]
+# lib32 packages build with the 32-bit GCC toolchain; clang injection and
+# Clang-only flags (e.g. -flto=thin) break their builds.
+pkgnames = ["lib32-*"]
+profile = "bare"
+priority = 30
+
+[[rules]]
+# wine and variants require GCC for 32-bit cross-compilation; CC=clang breaks configure.
+pkgnames = ["wine", "wine-*"]
+profile = "bare"
+priority = 30
