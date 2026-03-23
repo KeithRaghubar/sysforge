@@ -539,9 +539,10 @@ def test_do_profraw_merge_merges_and_deletes(tmp_path):
     _make_old_profraw(tmp_path / "b.profraw")
 
     with patch("subprocess.run", side_effect=fake_profdata_merge) as mock_run:
-        count = _do_profraw_merge(tmp_path, "test")
+        count, n_batches = _do_profraw_merge(tmp_path, "test")
 
     assert count == 2
+    assert n_batches == 1
     cmd = mock_run.call_args[0][0]
     assert cmd[0] == "llvm-profdata"
     assert "--output" in cmd
@@ -553,8 +554,9 @@ def test_do_profraw_merge_merges_and_deletes(tmp_path):
 
 def test_do_profraw_merge_no_files_returns_zero(tmp_path):
     with patch("subprocess.run") as mock_run:
-        count = _do_profraw_merge(tmp_path, "test")
+        count, n_batches = _do_profraw_merge(tmp_path, "test")
     assert count == 0
+    assert n_batches == 0
     mock_run.assert_not_called()
 
 
@@ -573,9 +575,10 @@ def test_do_profraw_merge_failure_returns_zero(tmp_path):
     _make_old_profraw(tmp_path / "a.profraw")
 
     with patch("subprocess.run", side_effect=fake_profdata_merge_fail):
-        count = _do_profraw_merge(tmp_path, "test")
+        count, n_batches = _do_profraw_merge(tmp_path, "test")
 
     assert count == 0
+    assert n_batches == 0
     assert (tmp_path / "a.profraw").exists()   # not deleted on failure
 
 
@@ -597,9 +600,10 @@ def test_do_profraw_merge_batches_large_sets(tmp_path):
         return result
 
     with patch("subprocess.run", side_effect=counting_merge):
-        count = _do_profraw_merge(tmp_path, "test")
+        count, n_batches = _do_profraw_merge(tmp_path, "test")
 
     assert count == n
+    assert n_batches == 2
     assert len(call_counts) == 2
     assert call_counts[0] == _PROFRAW_MERGE_BATCH_MAX
     assert call_counts[1] == 3
@@ -628,13 +632,14 @@ def test_do_profraw_merge_adaptive_shrink_on_failure(tmp_path):
     with patch("sysforge.pipeline.stages.toolchain._PROFRAW_MERGE_BATCH_MAX", 4), \
          patch("sysforge.pipeline.stages.toolchain._PROFRAW_MERGE_BATCH_MIN", 1), \
          patch("subprocess.run", side_effect=fail_first_only):
-        count = _do_profraw_merge(tmp_path, "test")
+        count, n_batches = _do_profraw_merge(tmp_path, "test")
 
     # First attempt: batch=4 (max) → fails
     # Second attempt: batch=2 → succeeds, then another batch=2 → succeeds
     assert attempts[0] == 4   # first try at max batch
     assert attempts[1] == 2   # retry at half
     assert count == 4
+    assert n_batches == 2
 
 
 def test_do_profraw_merge_gives_up_at_min_batch(tmp_path):
@@ -649,9 +654,10 @@ def test_do_profraw_merge_gives_up_at_min_batch(tmp_path):
         return result
 
     with patch("subprocess.run", side_effect=always_fail):
-        count = _do_profraw_merge(tmp_path, "test")
+        count, n_batches = _do_profraw_merge(tmp_path, "test")
 
     assert count == 0  # nothing merged, gives up at min batch
+    assert n_batches == 0
 
 
 # ---------------------------------------------------------------------------

@@ -98,7 +98,7 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
     )
 
 
-def load_config(config_paths=None):
+def load_config(config_paths=None) -> dict:
     """
     Load flag_profiles.toml from CONFIG_PATHS (user, then system).
     If the user config sets extends_system = true, deep-merge onto system config.
@@ -141,6 +141,7 @@ def load_config(config_paths=None):
         )
 
     if user_config is None:
+        assert system_config is not None  # guaranteed: both-None case raised above
         _validate_rule_priorities(system_config.get("rules", []), "system")
         _log.info("[CONFIG]", f"Loaded system config: {system_path}")
         _log.debug("[CONFIG]", f"Full flag_profiles (system):\n{pprint.pformat(system_config, indent=2, sort_dicts=False)}")

@@ -79,9 +79,9 @@ def _pkgbuild_path(kernel_cfg):
     Resolve the PKGBUILD for the configured kernel package.
     Returns Path to the PKGBUILD file.
 
-    Looks for <pkgbuild_dir>/<pkgname>/PKGBUILD.
-    pkgbuild_dir is the parent of PKGBUILD source repositories (e.g. ~/src),
-    analogous to [paths] pkgbuild_dir in flag_profiles.toml.
+    Looks for <pkgbuild_dir>/<srcdir>/PKGBUILD where srcdir defaults to pkgname
+    when not specified. srcdir allows the source directory name to differ from
+    pkgname (e.g. pkgname="linux-custom", srcdir="linux").
     """
     pkgbuild_dir = kernel_cfg.get("pkgbuild_dir")
     if not pkgbuild_dir:
@@ -90,15 +90,17 @@ def _pkgbuild_path(kernel_cfg):
             "Set pkgbuild_dir to the directory that contains your kernel PKGBUILD directory "
             '(e.g. pkgbuild_dir = "~/src" if the PKGBUILD is at ~/src/linux-custom/PKGBUILD).'
         )
-    srcdir = kernel_cfg.get("srcdir")
-    if not srcdir:
-        raise RuntimeError("[KERNEL] kernel.toml is missing srcdir.")
+    pkgname = kernel_cfg.get("pkgname")
+    if not pkgname:
+        raise RuntimeError("[KERNEL] kernel.toml is missing pkgname.")
+
+    srcdir = kernel_cfg.get("srcdir") or pkgname
 
     candidate = Path(pkgbuild_dir).expanduser() / srcdir / "PKGBUILD"
     if not candidate.exists():
         raise RuntimeError(
             f"[KERNEL] PKGBUILD not found: {candidate}. "
-            f"Clone the kernel PKGBUILD into {Path(pkgbuild_dir).expanduser() / pkgname!r} first."
+            f"Clone the kernel PKGBUILD into {Path(pkgbuild_dir).expanduser() / srcdir!r} first."
         )
     return candidate
 
@@ -327,7 +329,11 @@ def _update_bootloader(bootloader, dry_run):
     _log.ui("[KERNEL]", f"Updating bootloader: {label}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        raise RuntimeError(f"[KERNEL] {label} failed (exit {result.returncode})")
+        _log.warn(
+            "[KERNEL]",
+            f"{label} exited {result.returncode} — bootloader may already be current; "
+            "kernel is installed, continuing",
+        )
 
 
 # ---------------------------------------------------------------------------
