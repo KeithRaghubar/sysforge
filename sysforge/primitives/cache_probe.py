@@ -136,10 +136,13 @@ def _parse_sccache_text(text: str) -> dict:
     stats = {"hits": 0, "misses": 0, "requests": 0, "size_str": ""}
     for line in text.splitlines():
         s = line.strip()
-        # Skip sub-category lines like "Cache hits (C++)"
-        if s.startswith("Cache hits") and "(" not in s:
+        # Skip sub-category lines like "Cache hits (C++)" and rate lines like
+        # "Cache hits rate" introduced in sccache 0.14 — the float value (e.g.
+        # "86.09 %") is not parseable by _extract_last_int and would zero out
+        # the hit count that was correctly parsed from the earlier "Cache hits" line.
+        if s.startswith("Cache hits") and "(" not in s and "rate" not in s:
             stats["hits"] = _extract_last_int(s)
-        elif s.startswith("Cache misses") and "(" not in s:
+        elif s.startswith("Cache misses") and "(" not in s and "rate" not in s:
             stats["misses"] = _extract_last_int(s)
         elif s.startswith("Compile requests") and "executed" not in s:
             stats["requests"] = _extract_last_int(s)

@@ -2,10 +2,13 @@ Compile requests          20
 Compile requests executed  18
 Cache hits                 12
 Cache hits (C++)            8
-Cache hits (C)              4
+Cache hits (Rust)           4
+Cache hits rate         66.66 %
+Cache hits rate (C++)   66.66 %
+Cache hits rate (Rust)  66.66 %
 Cache misses                6
 Cache misses (C++)          4
-Cache misses (C)            2
+Cache misses (Rust)         2
 Non-cacheable compilations  2
 Cache location            Local
 Cache size                500 MiB

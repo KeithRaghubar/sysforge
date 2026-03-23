@@ -98,9 +98,24 @@ def test_parse_sccache_text_full():
 
 
 def test_parse_sccache_text_subcategories_not_counted():
-    # "Cache hits (C++)" must not increment hits
+    # "Cache hits (C++)" and "Cache hits rate" must not corrupt the hit count
     r = _parse_sccache_text(SCCACHE_SAMPLE)
-    assert r["hits"] == 12   # only the top-level line
+    assert r["hits"] == 12   # only the top-level "Cache hits" line
+
+
+def test_parse_sccache_text_rate_lines_not_counted():
+    # sccache 0.14+ emits "Cache hits rate  86.09 %" which starts with "Cache hits"
+    # and has no "(". The float value must not zero out the previously parsed hit count.
+    text = (
+        "Cache hits                 50\n"
+        "Cache hits (Rust)          50\n"
+        "Cache hits rate         83.33 %\n"
+        "Cache hits rate (Rust)  83.33 %\n"
+        "Cache misses               10\n"
+    )
+    r = _parse_sccache_text(text)
+    assert r["hits"] == 50
+    assert r["misses"] == 10
 
 
 def test_parse_sccache_text_empty():
