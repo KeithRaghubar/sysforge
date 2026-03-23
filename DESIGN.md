@@ -543,15 +543,17 @@ Public API: `cmd_resolve(args)`. Uses `find_pkgbuild` from `config.py` for PKGBU
 Implements `sysforge update` — the update manager. Algorithm:
 
 1. Refresh the AUR name cache as a side effect (`fetch_aur_name_cache()`).
-2. If `--all`: run `_discover_and_add()` — find all foreign (non-repo) packages via `pacman -Qm` that are not already tracked in `build_state.toml` or `packages.toml`; classify each as AUR, infer `pkgbuild_patch`, append to `packages.toml`, compare versions. Discovered outdated packages are queued for a separate build loop with `update=True`.
+2. If `--all`: run `_discover_and_add()` — two phases:
+   - **Phase 1:** find foreign packages (`pacman -Qm`) not in `build_state.toml` or `packages.toml`; AUR-verify, append to `packages.toml`, compare versions against AUR RPC, queue outdated ones for rebuild.
+   - **Phase 2:** find packages in `packages.toml` that are installed but have no `build_state` record. For those with a local PKGBUILD clone: `git pull --rebase` then compare PKGBUILD version against installed. For those without a local clone: check `pacman -Si` (source=repo) or AUR RPC (source=aur, batched) to get the current version — no auto-clone during discovery. If outdated, clone on demand at build time via `find_pkgbuild`.
 3. Load `build_state.toml` to get the set of sysforge-managed packages.
 4. Group by `pkgbase` to deduplicate split packages.
 5. For each `pkgbase`: `git pull --rebase` the PKGBUILD dir (unless `--no-update`), parse the updated PKGBUILD, get the installed version via `pacman -Q`, compare with `vercmp`.
 6. VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) are flagged as `DEVEL` — their `pkgver` is only meaningful after running `pkgver()`, so static comparison is not possible. They are rebuilt only when `--devel` is passed.
 7. Print a summary table: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`.
-8. Rebuild `NEEDS_REBUILD` packages (and `DEVEL` if `--devel`) via `makepkg_wrapper.run()` with `update=False` (pull already done).
+8. Rebuild `NEEDS_REBUILD` and discovered `OUTDATED` packages (and `DEVEL` if `--devel`) via `makepkg_wrapper.run()`. All update builds default to `--cleanbuild` (`-C`) to prevent stale `$srcdir` from a previous failed run causing patch-already-applied errors in `prepare()`. `--syncdeps`/`-s` and `--install`/`-i` are stripped; packages are installed in a single `sudo pacman -U` call at the end. Without `--interactive`, build failures are logged and skipped (batch mode); with `--interactive`, failures pause for user input.
 
-Flags: `--all`, `--packages`, `--dry-run`, `--devel`, `--no-update`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`.
+Flags: `--all`, `--interactive`, `--packages`, `--dry-run`, `--devel`, `--no-update`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--makepkg`.
 
 ### `converge.py`
 
@@ -928,7 +930,9 @@ DAG stages are categorised as **bootstrap-only** (partition, base_install, hardw
 
 Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
 
-**`sysforge update` is scoped to sysforge-managed packages by default.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. `sysforge update --all` extends this: it discovers all foreign (non-repo) packages via `pacman -Qm` that are not yet in `build_state.toml` or `packages.toml`, classifies each, appends to `packages.toml`, and rebuilds any that are outdated.
+**`sysforge update` is scoped to sysforge-managed packages by default.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. `sysforge update --all` extends this: it discovers all foreign (non-repo) packages via `pacman -Qm` that are not yet in `build_state.toml` or `packages.toml`, and checks packages in `packages.toml` with no build record — using git pull for those with local PKGBUILD clones, and `pacman -Si` / AUR RPC for those without.
+
+**`repo_mode` is not yet wired to `sysforge update` or `sysforge build`.** The `[build] repo_mode = "pacman" | "profiled"` setting in `packages.toml` is parsed only by the bootstrap pipeline stages (`run packages`, `run pipeline`) which are deferred to v1.0. It has no effect on `sysforge build` or `sysforge update` in v0.1.0. Official repo packages in `packages.toml` are rebuilt when their Arch packaging git repo shows a newer version; there is no auto-discovery of official repo packages with pending updates (that would require `pacman -Sy`, which is pacman's job).
 
 **`packages.toml [build] pkgbuild_dir` and `flag_profiles [paths] pkgbuild_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_dir`; falls back to `[paths] pkgbuild_dir`. They can point to different directories or the same one — there's no enforcement that they match.
 
