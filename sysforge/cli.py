@@ -229,8 +229,6 @@ def _cmd_run_kernel(args):
     from sysforge.pipeline.stages.base import RunOptions
 
     config = load_config() or {}
-    if args.packages:
-        config["packages_file"] = args.packages
 
     options = RunOptions(
         dry_run=args.dry_run,
@@ -564,8 +562,6 @@ def _add_run_parser(sub):
     # run kernel
     p_kernel = run_sub.add_parser("kernel",
         help="Build and install the custom kernel configured in kernel.toml.")
-    p_kernel.add_argument("--packages", metavar="FILE",
-        help="Path to packages.toml.")
     p_kernel.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show what would run without executing anything.")
     p_kernel.add_argument("--no-update", action="store_true", dest="no_update",

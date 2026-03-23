@@ -246,7 +246,6 @@ _sysforge_run_packages() {
 
 _sysforge_run_kernel() {
   _arguments \
-    '--packages[path to packages.toml]:file:_files' \
     '--dry-run[show what would run without executing]' \
     '--no-update[skip git pull --rebase before each build]' \
     '--no-pkg-logs[disable per-package log files]' \

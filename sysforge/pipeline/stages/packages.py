@@ -199,6 +199,8 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
     makepkg_run(pkgbuild,
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
+                log_dir=options.log_dir,
+                profile_conf=config.get("profile_conf"),
                 update=not options.no_update,
                 abi_check=options.abi_check,
                 **toolchain)

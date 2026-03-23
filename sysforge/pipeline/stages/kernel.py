@@ -353,6 +353,8 @@ class KernelStage(Stage):
                 pkgbuild,
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
+                log_dir=options.log_dir,
+                update=not options.no_update,
                 cc_override=cc,
                 cxx_override=cxx,
                 abi_check=options.abi_check,
