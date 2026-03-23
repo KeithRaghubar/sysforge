@@ -147,6 +147,7 @@ CFLAGS   = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS  = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
 CARGO_NET_GIT_FETCH_WITH_CLI = "true"
+RUSTC_WRAPPER                = "sccache"
 makepkg_flags = ["--noconfirm", "--syncdeps"]
 
 [profiles.optimized]
