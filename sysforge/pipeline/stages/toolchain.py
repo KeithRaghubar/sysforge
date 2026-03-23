@@ -549,7 +549,7 @@ def _remove_staging(staging: Path) -> None:
         shutil.rmtree(staging)
 
 
-def _do_profraw_merge(pgo_store: Path, label: str) -> int:
+def _do_profraw_merge(pgo_store: Path, label: str) -> tuple[int, int]:
     """
     Merge all .profraw files under pgo_store into clang.profdata using an
     atomic tmp→rename so concurrent readers always see a complete file.
@@ -560,8 +560,9 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
     an instrumented clang process; merging them would cause SIGBUS crashes and
     truncated-profile errors in llvm-profdata.
 
-    Returns the number of .profraw files merged, or 0 if none were found.
-    Logs a warning on llvm-profdata failure but does not raise (callers decide).
+    Returns (files_merged, n_batches). files_merged is 0 if no settled .profraw
+    files were found. Logs a warning on llvm-profdata failure but does not raise
+    (callers decide).
     """
     import time
 
@@ -571,12 +572,13 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
         f for f in all_profraw if (now - f.stat().st_mtime) >= _PROFRAW_SETTLE_SECS
     ]
     if not profraw_files:
-        return 0
+        return 0, 0
 
     profdata_path = pgo_store / "clang.profdata"
     tmp_path      = pgo_store / "clang.profdata.tmp"
 
     deleted    = 0
+    n_batches  = 0
     batch_size = _PROFRAW_MERGE_BATCH_MAX
     i          = 0
     while i < len(profraw_files):
@@ -606,7 +608,7 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
                 f"({batch_size}) (exit {result.returncode}): "
                 f"{result.stderr.strip()}",
             )
-            return deleted
+            return deleted, n_batches
 
         tmp_path.replace(profdata_path)
         for f in batch:
@@ -615,9 +617,10 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> int:
                 deleted += 1
             except OSError:
                 pass
+        n_batches += 1
         i += batch_size
 
-    return deleted
+    return deleted, n_batches
 
 
 def _sudo_keepalive_daemon(stop_event: threading.Event) -> None:
@@ -970,12 +973,13 @@ def _profraw_merge_daemon(pgo_store: Path, stop_event: threading.Event) -> None:
     Keeps peak disk usage bounded during long instrumented builds.
     """
     while not stop_event.wait(_PGO_MERGE_INTERVAL):
-        deleted = _do_profraw_merge(pgo_store, "intermediate")
+        deleted, n_batches = _do_profraw_merge(pgo_store, "intermediate")
         if deleted:
             _log.newline()
             _log.info(
                 "[TOOLCHAIN]",
-                f"[PGO] Intermediate merge: {deleted} .profraw file(s) merged",
+                f"[PGO] Intermediate merge: {deleted} .profraw file(s) merged"
+                + (f" in {n_batches} batches" if n_batches > 1 else ""),
             )
 
 
@@ -1025,7 +1029,7 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
         )
         return profdata_path
 
-    deleted = _do_profraw_merge(pgo_store, "final")
+    deleted, n_batches = _do_profraw_merge(pgo_store, "final")
     if deleted == 0:
         # Distinguish between llvm-profdata failure and settle-filter exclusion.
         now = time.time()
@@ -1051,7 +1055,9 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
             )
         )
     _log.info(
-        "[TOOLCHAIN]", f"[PGO] Final merge: {deleted} remaining .profraw file(s) merged"
+        "[TOOLCHAIN]",
+        f"[PGO] Final merge: {deleted} remaining .profraw file(s) merged"
+        + (f" in {n_batches} batches" if n_batches > 1 else ""),
     )
     return profdata_path
 
