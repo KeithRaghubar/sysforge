@@ -215,6 +215,8 @@ def _print_summary(results: list[_ConvergeResult]) -> None:
 # ---------------------------------------------------------------------------
 
 def _apply(results: list[_ConvergeResult], args) -> None:
+    import time
+
     to_build = [r for r in results if r.status == "DRIFTED"]
     if not to_build:
         print("[SYSFORGE] Nothing to rebuild.")
@@ -222,20 +224,29 @@ def _apply(results: list[_ConvergeResult], args) -> None:
 
     from sysforge.primitives.makepkg_wrapper import run as build_run
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
+    from sysforge.update import _snapshot_pkg_dir, _batch_install_pkgs, _get_pkgdest, _BATCH_STRIP_FLAGS
     reset_session()
+
+    pkgdest = _get_pkgdest()
 
     # -f is always required: the package artifact already exists from the prior
     # build, so makepkg refuses to rebuild without --force.
+    # Strip --install/-i and --syncdeps/-s: packages are installed in one batch
+    # at the end; makedeps are already present from the prior build.
     user_flags = getattr(args, "extra_flags", [])
     extra_flags = ["-f"] + user_flags
 
+    built_pkg_files: list = []
     built = failed = 0
     for result in to_build:
+        search_dir = pkgdest if pkgdest else (result.pkgbuild_path.parent if result.pkgbuild_path else Path("."))
+        build_start = time.time()
         print(f"[SYSFORGE] Rebuilding {result.pkgbase!r}...")
         try:
             build_run(
                 result.pkgbuild_path,
                 extra_flags=extra_flags,
+                strip_flags=_BATCH_STRIP_FLAGS,
                 pkg_log=not getattr(args, "no_pkg_log", False),
                 persist_log=getattr(args, "persist_log", False),
                 log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
@@ -245,10 +256,26 @@ def _apply(results: list[_ConvergeResult], args) -> None:
                 update=False,   # converge is about flag drift, not version updates
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
             )
+            new_pkgs = sorted(
+                p for p in _snapshot_pkg_dir(search_dir)
+                if p.stat().st_mtime >= build_start
+            )
+            built_pkg_files.extend(new_pkgs)
             built += 1
         except (RuntimeError, SystemExit) as e:
             _log.error("[CONVERGE]", f"Build failed for {result.pkgbase!r}: {e}")
             failed += 1
+
+    if built_pkg_files:
+        if not _batch_install_pkgs(built_pkg_files):
+            _log.error("[CONVERGE]", "Batch install failed")
+            print(
+                "[SYSFORGE] Error: batch install failed — packages were built but not installed.",
+                file=sys.stderr,
+            )
+            failed += 1
+    elif built > 0:
+        _log.warn("[CONVERGE]", "No .pkg.tar.* files found after builds — nothing to install")
 
     if getattr(args, "cache_report", False):
         emit_session_report()
