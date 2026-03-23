@@ -19,7 +19,7 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 ## What it is not
 
 - A distro. Output is a standard Arch install; pacman owns the package database.
-- A replacement for pacman. SysForge handles AUR build configuration and automation; pacman manages the installed package database. Repo packages default to `pacman -S`; this is configurable via `[build] repo_mode` in `flag_profiles.toml`.
+- A replacement for pacman. SysForge handles AUR build configuration and automation; pacman manages the installed package database.
 - A system installer. Bootstrap functionality (partitioning, base install, hardware detection) is planned for v1.0; the v0.1.0 scope is the AUR management layer.
 
 ---
@@ -382,7 +382,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | `sysforge converge` (profile/flag drift detection) | ✅ Done |
 | `sysforge update --all` (pacman -Qm foreign packages) | ✅ Done |
 | AUR name cache (packages.gz → ~/.cache/sysforge/) | ✅ Done |
-| `repo_mode` config (pacman passthrough vs profiled build) | ✅ Done |
+| `repo_mode` config (pacman passthrough vs profiled build) | 🔜 v1.0 — currently parsed by the bootstrap pipeline stages (deferred) but has no effect on `build`/`update` |
 | `sysforge resolve` | ✅ Done |
 | Bare package name resolution (`sysforge build htop`) | ✅ Done |
 | AUR auto-clone on miss | ✅ Done |
