@@ -1,4 +1,4 @@
-.PHONY: dev build install clean test test-v test-x lint \
+.PHONY: dev build install clean test test-v test-x lint release \
         vm-deps vm-image vm-boot vm-snapshot vm-iso vm-clean
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
@@ -37,6 +37,9 @@ test-x:
 
 lint:
 	ruff check sysforge/
+
+release:
+	bash tools/release.sh
 
 clean:
 	rm -rf dist/ .venv/ __pycache__/ *.egg-info/ .pytest_cache/
