@@ -487,11 +487,25 @@ def _snapshot_pkg_dir(directory: Path) -> frozenset:
 
 def _batch_install_pkgs(pkg_paths: list) -> bool:
     """Install all built packages in one sudo pacman -U call. Returns True on success."""
+    missing = [p for p in pkg_paths if not Path(p).exists()]
+    if missing:
+        for p in missing:
+            _log.warn("[UPDATE]", f"Package file gone before install (removed by hook?): {p}")
+        pkg_paths = [p for p in pkg_paths if Path(p).exists()]
+    if not pkg_paths:
+        _log.error("[UPDATE]", "No package files remain to install after filtering missing paths")
+        return False
     _log.info("[UPDATE]", f"Batch-installing {len(pkg_paths)} built package file(s)")
     result = subprocess.run(
-        ["sudo", "pacman", "-U", "--noconfirm"] + [str(p) for p in pkg_paths]
+        ["sudo", "pacman", "-U", "--noconfirm"] + [str(p) for p in pkg_paths],
+        stderr=subprocess.PIPE, text=True,
     )
-    return result.returncode == 0
+    if result.returncode != 0:
+        if result.stderr:
+            for line in result.stderr.splitlines():
+                _log.error("[PACMAN]", line)
+        return False
+    return True
 
 
 def cmd_update(args) -> None:
@@ -679,8 +693,9 @@ def cmd_update(args) -> None:
     pkgdest = _get_pkgdest()
     interactive = getattr(args, "interactive", False)
     # Prepend cleanbuild so stale $srcdir from a previous failed run never causes
-    # patch-already-applied errors in prepare().
-    batch_flags = _BATCH_EXTRA_FLAGS + (extra_flags or [])
+    # patch-already-applied errors in prepare(). Suppressed by --no-cleanbuild.
+    cleanbuild_flags = [] if getattr(args, "no_cleanbuild", False) else _BATCH_EXTRA_FLAGS
+    batch_flags = cleanbuild_flags + (extra_flags or [])
 
     # --- Phase 2: build all packages (no syncdeps, no install per-package) ---
     built_pkg_files: list = []
@@ -707,7 +722,7 @@ def cmd_update(args) -> None:
             )
             new_pkgs = sorted(
                 p for p in _snapshot_pkg_dir(search_dir)
-                if p.stat().st_mtime >= build_start - 1
+                if p.stat().st_mtime >= build_start
             )
             built_pkg_files.extend(new_pkgs)
             built += 1
@@ -747,7 +762,7 @@ def cmd_update(args) -> None:
             )
             new_pkgs = sorted(
                 p for p in _snapshot_pkg_dir(search_dir)
-                if p.stat().st_mtime >= build_start - 1
+                if p.stat().st_mtime >= build_start
             )
             built_pkg_files.extend(new_pkgs)
             built += 1
@@ -756,6 +771,16 @@ def cmd_update(args) -> None:
             failed += 1
 
     # --- Phase 3: install all built packages in one sudo call ---
+    # Deduplicate while preserving order (a package can appear in both loops if
+    # it was discovered via --all and also has a build_state record).
+    seen: set = set()
+    deduped: list = []
+    for p in built_pkg_files:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    built_pkg_files = deduped
+
     if built_pkg_files:
         if not _batch_install_pkgs(built_pkg_files):
             _log.error("[UPDATE]", "Batch package install failed")

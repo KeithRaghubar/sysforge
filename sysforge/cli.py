@@ -368,6 +368,9 @@ def _add_update_parser(sub):
         help="Truncate the unified log before this run instead of appending.")
     p.add_argument("--interactive", action="store_true",
         help="Pause on build failures to allow manual correction (default: log failure and continue).")
+    p.add_argument("--no-cleanbuild", action="store_true", dest="no_cleanbuild",
+        help="Skip the automatic --cleanbuild (-C) added for update runs. "
+             "Useful when packages are already built and you only need to re-run the install step.")
     p.set_defaults(func=_cmd_update)
 
 
