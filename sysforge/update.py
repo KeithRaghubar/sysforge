@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -559,6 +560,30 @@ def cmd_update(args) -> None:
 
     results: list[_UpdateResult] = []
 
+    # --- Parallel git pulls ---
+    # Pull all PKGBUILD dirs concurrently before the version-check loop.
+    # git pull is network/IO-bound; ThreadPoolExecutor keeps the work parallel
+    # without adding process overhead. Errors are captured and replayed below.
+    pull_errors: dict[str, str] = {}
+    if not getattr(args, "no_update", False):
+        pull_candidates = [
+            (pkgbase, Path(pkgbase_entry[pkgbase]["pkgbuild_dir"]))
+            for pkgbase in sorted(pkgbase_map)
+            if Path(pkgbase_entry[pkgbase]["pkgbuild_dir"]).is_dir()
+            and (Path(pkgbase_entry[pkgbase]["pkgbuild_dir"]) / "PKGBUILD").exists()
+        ]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {
+                pool.submit(git_pull_rebase, pkgbuild_dir): pkgbase
+                for pkgbase, pkgbuild_dir in pull_candidates
+            }
+            for fut in as_completed(futures):
+                pkgbase_key = futures[fut]
+                try:
+                    fut.result()
+                except RuntimeError as e:
+                    pull_errors[pkgbase_key] = str(e)
+
     for pkgbase, pkgnames in sorted(pkgbase_map.items()):
         entry = pkgbase_entry[pkgbase]
         pkgbuild_dir = Path(entry["pkgbuild_dir"])
@@ -572,21 +597,18 @@ def cmd_update(args) -> None:
             _log.warn("[UPDATE]", f"{pkgbase}: PKGBUILD not found at {pkgbuild_path} — skipping")
             continue
 
-        # Pull latest PKGBUILD unless --no-update
-        if not getattr(args, "no_update", False):
-            try:
-                git_pull_rebase(pkgbuild_dir)
-            except RuntimeError as e:
-                _log.error("[UPDATE]", str(e))
-                results.append(_UpdateResult(
-                    pkgbase=pkgbase,
-                    pkgnames=pkgnames,
-                    action="PULL_FAILED",
-                    installed_ver=None,
-                    pkgbuild_ver=None,
-                    pkgbuild_path=pkgbuild_path,
-                ))
-                continue
+        # Use pre-computed pull result (parallel pulls ran above)
+        if not getattr(args, "no_update", False) and pkgbase in pull_errors:
+            _log.error("[UPDATE]", pull_errors[pkgbase])
+            results.append(_UpdateResult(
+                pkgbase=pkgbase,
+                pkgnames=pkgnames,
+                action="PULL_FAILED",
+                installed_ver=None,
+                pkgbuild_ver=None,
+                pkgbuild_path=pkgbuild_path,
+            ))
+            continue
 
         # Parse updated PKGBUILD
         try:
