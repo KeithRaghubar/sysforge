@@ -20,6 +20,7 @@
 
 [consumes_inference]
 cargo  = ["makepkg", "rust", "env"]
+rust   = ["makepkg", "rust", "env"]
 meson  = ["makepkg", "meson", "env"]
 cmake  = ["makepkg", "cmake", "env"]
 ninja  = ["makepkg", "env"]
