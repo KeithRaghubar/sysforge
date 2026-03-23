@@ -18,6 +18,7 @@ _sysforge() {
         converge) _sysforge_converge ;;
         packages) _sysforge_packages ;;
         run)      _sysforge_run      ;;
+        setup)    _sysforge_setup    ;;
       esac
       ;;
   esac
@@ -31,6 +32,7 @@ _sysforge_commands() {
     'converge:rebuild packages that have drifted from their profile'
     'packages:manage packages.toml (list, add, remove, sync)'
     'run:execute a pipeline stage'
+    'setup:configure system integration (pacman IgnoreGroup for sf-build)'
   )
   _describe 'command' commands
 }
@@ -59,6 +61,7 @@ _sysforge_build() {
     '--log-dir[directory for per-package log]:directory:_files -/' \
     '--persist-log[keep log after a successful build]' \
     '--cache-report[print ccache/sccache summary after build]' \
+    '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--no-update[skip git pull --rebase before building]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '*: :_sysforge_pkg_or_file'
@@ -71,6 +74,11 @@ _sysforge_update() {
     '--dry-run[show what would be rebuilt without doing it]' \
     '--devel[include VCS packages (-git, -svn, -hg, -bzr)]' \
     '--no-update[skip git pull --rebase before checking versions]' \
+    '--interactive[pause on build failures to allow manual correction]' \
+    '--no-cleanbuild[skip automatic --cleanbuild; useful to re-run only the install step]' \
+    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
+    '--no-unified-log[disable unified log file]' \
+    '--purge-log[truncate unified log before this run]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate flag_profiles.toml]:file:_files' \
     '--cache-report[print ccache/sccache summary after run]' \
@@ -199,6 +207,7 @@ _sysforge_run_pipeline() {
     '--purge-log[truncate unified log before this run]' \
     '--persist-log[keep logs after successful run]' \
     '--cache-report[print ccache/sccache summary after pipeline]' \
+    '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--no-update[skip git pull --rebase before each build]'
 }
 
@@ -213,8 +222,10 @@ _sysforge_run_toolchain() {
   _arguments \
     '--dry-run[show what would run without executing]' \
     '--no-update[skip git pull --rebase before each build]' \
+    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--persist-log[keep logs after successful run]' \
     '--cache-report[print ccache/sccache summary after run]' \
+    '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/'
 }
 
@@ -228,6 +239,7 @@ _sysforge_run_packages() {
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \
     '--cache-report[print ccache/sccache summary after run]' \
+    '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate flag_profiles.toml]:file:_files'
 }
@@ -241,5 +253,11 @@ _sysforge_run_kernel() {
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \
     '--cache-report[print ccache/sccache summary after run]' \
+    '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/'
+}
+
+_sysforge_setup() {
+  _arguments \
+    '--pacman-conf[path to pacman.conf]:file:_files'
 }
