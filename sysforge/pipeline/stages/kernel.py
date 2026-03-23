@@ -10,8 +10,8 @@ kernel (installed via packages stage) skip this without needing --start-from.
 
 kernel.toml structure:
   pkgname      = "linux-custom"
-  pkgbuild_dir = "~/builds"        # dir containing <srcdir>/PKGBUILD
-  srcdir       = "linux"           # source dir name if different from pkgname (optional)
+  pkgbuild_dir = "~/src"           # parent directory that contains the pkgname/ PKGBUILD dir
+                                   # PKGBUILD is expected at pkgbuild_dir/pkgname/PKGBUILD
   bootloader   = "systemd-boot"    # systemd-boot | grub | none
 
   [[kconfig]]                      # manual kconfig overrides (optional)
@@ -78,27 +78,26 @@ def _pkgbuild_path(kernel_cfg):
     Resolve the PKGBUILD for the configured kernel package.
     Returns Path to the PKGBUILD file.
 
-    By default looks for <pkgbuild_dir>/<pkgname>/PKGBUILD.
-    If the source directory name differs from pkgname (e.g. pkgname=linux-custom
-    but the directory is ~/builds/linux), set srcdir in kernel.toml to the
-    directory name: srcdir = "linux"
+    Looks for <pkgbuild_dir>/<pkgname>/PKGBUILD.
+    pkgbuild_dir is the parent of PKGBUILD source repositories (e.g. ~/src),
+    analogous to [paths] pkgbuild_dir in flag_profiles.toml.
     """
     pkgbuild_dir = kernel_cfg.get("pkgbuild_dir")
     if not pkgbuild_dir:
         raise RuntimeError(
             "[KERNEL] kernel.toml is missing pkgbuild_dir. "
-            "Set pkgbuild_dir to the directory containing your kernel PKGBUILD."
+            "Set pkgbuild_dir to the directory that contains your kernel PKGBUILD directory "
+            "(e.g. pkgbuild_dir = \"~/src\" if the PKGBUILD is at ~/src/linux-custom/PKGBUILD)."
         )
     pkgname = kernel_cfg.get("pkgname")
     if not pkgname:
         raise RuntimeError("[KERNEL] kernel.toml is missing pkgname.")
 
-    srcdir = kernel_cfg.get("srcdir") or pkgname
-    candidate = Path(pkgbuild_dir).expanduser() / srcdir / "PKGBUILD"
+    candidate = Path(pkgbuild_dir).expanduser() / pkgname / "PKGBUILD"
     if not candidate.exists():
         raise RuntimeError(
             f"[KERNEL] PKGBUILD not found: {candidate}. "
-            f"Clone the kernel source into pkgbuild_dir/{srcdir!r} first."
+            f"Clone the kernel PKGBUILD into {Path(pkgbuild_dir).expanduser() / pkgname!r} first."
         )
     return candidate
 
