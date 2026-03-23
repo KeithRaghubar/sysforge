@@ -39,6 +39,7 @@ Post-install steps (run after makepkg succeeds):
   1. sudo mkinitcpio -P   (always)
   2. Bootloader update    (configured via bootloader = ...)
 """
+
 import subprocess
 import tomllib
 from pathlib import Path
@@ -48,13 +49,13 @@ from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import CONFIG_BASE
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 
-
 KERNEL_PATH = CONFIG_BASE / "etc/sysforge/kernel.toml"
 
 
 # ---------------------------------------------------------------------------
 # kernel.toml loading
 # ---------------------------------------------------------------------------
+
 
 def _load_kernel_config():
     """
@@ -87,13 +88,13 @@ def _pkgbuild_path(kernel_cfg):
         raise RuntimeError(
             "[KERNEL] kernel.toml is missing pkgbuild_dir. "
             "Set pkgbuild_dir to the directory that contains your kernel PKGBUILD directory "
-            "(e.g. pkgbuild_dir = \"~/src\" if the PKGBUILD is at ~/src/linux-custom/PKGBUILD)."
+            '(e.g. pkgbuild_dir = "~/src" if the PKGBUILD is at ~/src/linux-custom/PKGBUILD).'
         )
-    pkgname = kernel_cfg.get("pkgname")
-    if not pkgname:
-        raise RuntimeError("[KERNEL] kernel.toml is missing pkgname.")
+    srcdir = kernel_cfg.get("srcdir")
+    if not srcdir:
+        raise RuntimeError("[KERNEL] kernel.toml is missing srcdir.")
 
-    candidate = Path(pkgbuild_dir).expanduser() / pkgname / "PKGBUILD"
+    candidate = Path(pkgbuild_dir).expanduser() / srcdir / "PKGBUILD"
     if not candidate.exists():
         raise RuntimeError(
             f"[KERNEL] PKGBUILD not found: {candidate}. "
@@ -105,6 +106,7 @@ def _pkgbuild_path(kernel_cfg):
 # ---------------------------------------------------------------------------
 # lsmod snapshot
 # ---------------------------------------------------------------------------
+
 
 def _capture_lsmod_snapshot(state_dir, dry_run):
     """
@@ -119,7 +121,9 @@ def _capture_lsmod_snapshot(state_dir, dry_run):
 
     result = subprocess.run(["lsmod"], capture_output=True, text=True)
     if result.returncode != 0:
-        _log.warn("[KERNEL]", f"lsmod failed (exit {result.returncode}) — skipping snapshot")
+        _log.warn(
+            "[KERNEL]", f"lsmod failed (exit {result.returncode}) — skipping snapshot"
+        )
         return
 
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,6 +136,7 @@ def _capture_lsmod_snapshot(state_dir, dry_run):
 # ---------------------------------------------------------------------------
 
 import re as _re
+
 _KCONFIG_OPTION_RE = _re.compile(r"^CONFIG_[A-Z0-9_]+$")
 
 
@@ -144,10 +149,12 @@ def _validate_manual_kconfig(entries):
     seen = {}
     for i, entry in enumerate(entries):
         option = entry.get("option", "").strip()
-        value  = str(entry.get("value", "")).strip()
+        value = str(entry.get("value", "")).strip()
 
         if not option:
-            raise RuntimeError(f"[KERNEL] kernel.toml [[kconfig]] entry [{i}] is missing 'option'")
+            raise RuntimeError(
+                f"[KERNEL] kernel.toml [[kconfig]] entry [{i}] is missing 'option'"
+            )
         if not _KCONFIG_OPTION_RE.match(option):
             raise RuntimeError(
                 f"[KERNEL] kernel.toml [[kconfig]] entry [{i}]: invalid option {option!r} "
@@ -176,12 +183,18 @@ def _load_hardware_kconfig(config):
     """
     hw_path = config.get("hardware_profile")
     if not hw_path:
-        _log.ui("[KERNEL]", "No hardware_profile configured — hardware kconfig entries skipped (hardware stage not run)")
+        _log.ui(
+            "[KERNEL]",
+            "No hardware_profile configured — hardware kconfig entries skipped (hardware stage not run)",
+        )
         return {}
 
     hw_path = Path(hw_path).expanduser()
     if not hw_path.exists():
-        _log.ui("[KERNEL]", f"hardware_profile.toml not found at {hw_path} — hardware kconfig entries skipped")
+        _log.ui(
+            "[KERNEL]",
+            f"hardware_profile.toml not found at {hw_path} — hardware kconfig entries skipped",
+        )
         return {}
 
     with open(hw_path, "rb") as f:
@@ -189,7 +202,10 @@ def _load_hardware_kconfig(config):
 
     kconfig = hw.get("kconfig", {})
     if kconfig:
-        _log.ui("[KERNEL]", f"Loaded {len(kconfig)} kconfig entry/entries from hardware_profile.toml")
+        _log.ui(
+            "[KERNEL]",
+            f"Loaded {len(kconfig)} kconfig entry/entries from hardware_profile.toml",
+        )
     return kconfig
 
 
@@ -216,7 +232,7 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run):
     Returns the fragment path if written, None otherwise.
     """
     # Load and validate both sources
-    hw_kconfig     = _load_hardware_kconfig(config)
+    hw_kconfig = _load_hardware_kconfig(config)
     manual_entries = kernel_cfg.get("kconfig", [])
     manual_kconfig = _validate_manual_kconfig(manual_entries) if manual_entries else {}
 
@@ -226,7 +242,7 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run):
             _log.warn(
                 "[KERNEL]",
                 f"kconfig conflict on {option}: hardware_profile={hw_kconfig[option]!r}, "
-                f"kernel.toml={manual_val!r} — manual override wins"
+                f"kernel.toml={manual_val!r} — manual override wins",
             )
 
     # Merge: hardware base, manual on top
@@ -236,7 +252,7 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run):
         _log.ui("[KERNEL]", "No kconfig entries from any source — skipping fragment")
         return None
 
-    pkgbuild      = _pkgbuild_path(kernel_cfg)
+    pkgbuild = _pkgbuild_path(kernel_cfg)
     fragment_path = pkgbuild.parent / "sysforge.config"
 
     lines = [
@@ -244,7 +260,7 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run):
         "# Merged into .config by the PKGBUILD's prepare() via merge_config.sh",
         "",
     ]
-    hw_count     = 0
+    hw_count = 0
     manual_count = 0
     for option, value in merged.items():
         source = "manual" if option in manual_kconfig else "hardware"
@@ -256,19 +272,26 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run):
             hw_count += 1
 
     if dry_run:
-        _log.ui("[KERNEL]", f"[dry-run] would write kconfig fragment ({hw_count} hardware, {manual_count} manual): {fragment_path}")
+        _log.ui(
+            "[KERNEL]",
+            f"[dry-run] would write kconfig fragment ({hw_count} hardware, {manual_count} manual): {fragment_path}",
+        )
         for line in lines:
             _log.ui("[KERNEL]", f"  {line}")
         return None
 
     fragment_path.write_text("\n".join(lines) + "\n")
-    _log.ui("[KERNEL]", f"Wrote kconfig fragment: {fragment_path} ({hw_count} hardware, {manual_count} manual)")
+    _log.ui(
+        "[KERNEL]",
+        f"Wrote kconfig fragment: {fragment_path} ({hw_count} hardware, {manual_count} manual)",
+    )
     return fragment_path
 
 
 # ---------------------------------------------------------------------------
 # Post-install steps
 # ---------------------------------------------------------------------------
+
 
 def _run_mkinitcpio(dry_run):
     """Regenerate all initramfs presets."""
@@ -311,6 +334,7 @@ def _update_bootloader(bootloader, dry_run):
 # Stage
 # ---------------------------------------------------------------------------
 
+
 class KernelStage(Stage):
     name = "kernel"
     description = "Build and install a custom kernel"
@@ -322,11 +346,12 @@ class KernelStage(Stage):
             _log.ui("[KERNEL]", "kernel.toml absent or disabled — stage is a no-op")
             return
 
-        pkgname    = kernel_cfg.get("pkgname", "unknown")
+        pkgname = kernel_cfg.get("pkgname", "unknown")
         bootloader = kernel_cfg.get("bootloader", "systemd-boot")
 
         # Resolve state_dir for lsmod snapshot
         from sysforge.pipeline.state import resolve_state_dir
+
         state_dir, _ = resolve_state_dir(options.state_dir)
 
         # lsmod snapshot — captured before build for localmodconfig reproducibility
@@ -342,7 +367,10 @@ class KernelStage(Stage):
         cc = toolchain.get("cc") if toolchain else None
         cxx = toolchain.get("cxx") if toolchain else None
         if cc:
-            _log.ui("[KERNEL]", f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}")
+            _log.ui(
+                "[KERNEL]",
+                f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}",
+            )
 
         if options.dry_run:
             _log.ui("[KERNEL]", f"[dry-run] would build {pkgname} from {pkgbuild}")

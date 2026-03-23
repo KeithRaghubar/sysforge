@@ -1,5 +1,5 @@
 enabled      = true
 pkgname      = "linux-custom"
 srcdir       = "linux"
-pkgbuild_dir = "~/builds"
+pkgbuild_dir = "~/src"
 bootloader   = "systemd-boot"
