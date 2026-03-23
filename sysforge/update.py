@@ -471,11 +471,15 @@ def _batch_install_makedeps(deps: list) -> None:
 
 
 def _snapshot_pkg_dir(directory: Path) -> frozenset:
-    """Return frozenset of .pkg.tar.* paths (not .sig) in directory."""
+    """Return frozenset of .pkg.tar* paths (not .sig) in directory.
+
+    Matches both compressed (.pkg.tar.zst, .pkg.tar.xz) and uncompressed
+    (.pkg.tar) packages — the latter is produced when PKGEXT='.pkg.tar'.
+    """
     if not directory.exists():
         return frozenset()
     return frozenset(
-        p for p in directory.glob("*.pkg.tar.*")
+        p for p in directory.glob("*.pkg.tar*")
         if not p.name.endswith(".sig")
     )
 
