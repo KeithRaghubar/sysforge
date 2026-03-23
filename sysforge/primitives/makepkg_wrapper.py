@@ -690,6 +690,14 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     success = False
     try:
         extra_env = resolve_env_vars(resolved_profile, active_consumes)
+        # CLI toolchain overrides must also land in the subprocess env directly.
+        # emit_makepkg_conf writes them to the conf file, but that only affects
+        # shells that export CC/CXX. For bare profile (no CC in inherited env),
+        # the conf assignment creates an unexported variable children cannot see.
+        if cc_override is not None:
+            extra_env["CC"] = cc_override
+        if cxx_override is not None:
+            extra_env["CXX"] = cxx_override
         if injected_env:
             extra_env.update(injected_env)
 
