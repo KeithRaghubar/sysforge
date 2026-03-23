@@ -692,10 +692,13 @@ def cmd_update(args) -> None:
     # Where do built packages land? PKGDEST overrides the pkgbuild dir.
     pkgdest = _get_pkgdest()
     interactive = getattr(args, "interactive", False)
+    no_cleanbuild = getattr(args, "no_cleanbuild", False)
     # Prepend cleanbuild so stale $srcdir from a previous failed run never causes
     # patch-already-applied errors in prepare(). Suppressed by --no-cleanbuild.
-    cleanbuild_flags = [] if getattr(args, "no_cleanbuild", False) else _BATCH_EXTRA_FLAGS
+    cleanbuild_flags = [] if no_cleanbuild else _BATCH_EXTRA_FLAGS
     batch_flags = cleanbuild_flags + (extra_flags or [])
+    # When --no-cleanbuild is set, also strip --cleanbuild/-C from profile makepkg_flags.
+    strip_flags = _BATCH_STRIP_FLAGS | {"--cleanbuild", "-C"} if no_cleanbuild else _BATCH_STRIP_FLAGS
 
     # --- Phase 2: build all packages (no syncdeps, no install per-package) ---
     built_pkg_files: list = []
@@ -716,7 +719,7 @@ def cmd_update(args) -> None:
                 update=False,  # git pull already done above
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
                 extra_flags=batch_flags,
-                strip_flags=_BATCH_STRIP_FLAGS,
+                strip_flags=strip_flags,
                 interactive=interactive,
                 force_batch=not interactive,
             )
@@ -756,7 +759,7 @@ def cmd_update(args) -> None:
                 update=False,  # git pull already done in Phase 2 discovery
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
                 extra_flags=batch_flags,
-                strip_flags=_BATCH_STRIP_FLAGS,
+                strip_flags=strip_flags,
                 interactive=interactive,
                 force_batch=not interactive,
             )
