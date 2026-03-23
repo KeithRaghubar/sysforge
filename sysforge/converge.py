@@ -24,7 +24,9 @@ import sysforge.log as _log
 from sysforge.primitives.build_state import BuildState
 from sysforge.primitives.config import load_config, load_conflict_groups
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
 from sysforge.primitives.profile import match_rules, resolve_profile, serialize_flags
+from sysforge.primitives.makepkg_wrapper import get_build_mode
 from sysforge.pipeline.state import resolve_state_dir
 
 
@@ -144,7 +146,12 @@ def cmd_converge(args) -> None:
             continue
 
         matched = match_rules(pkgmeta, config.get("rules", []))
-        resolved = resolve_profile(pkgmeta, matched, config, conflict_groups)
+        build_mode = get_build_mode(matched, config)
+        extracted_profile = None
+        if build_mode in ("patched_pkgbuild", "kernel"):
+            extracted_profile = extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
+        resolved = resolve_profile(pkgmeta, matched, config, conflict_groups,
+                                   extracted_profile=extracted_profile)
         current_flags = serialize_flags(resolved)
 
         diffs = _diff_flags(stored_flags, current_flags)

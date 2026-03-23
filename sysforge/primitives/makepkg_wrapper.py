@@ -761,7 +761,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 # Build mode detection
 # ---------------------------------------------------------------------------
 
-def _get_build_mode(matched_rules, config):
+def get_build_mode(matched_rules, config):
     """
     Return the build_mode from the winning rule's profile chain without
     performing a full profile resolution (and without logging).
@@ -868,7 +868,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             build_mode = resolved_profile.get("build_mode")
             _log.info("[BUILD]", f"Profile override: {profile_override!r} (build_mode={build_mode!r})")
         else:
-            build_mode = _get_build_mode(matched_rules, config)
+            build_mode = get_build_mode(matched_rules, config)
             resolved_profile = None  # resolved below after extracted_profile is known
 
         kernel_build = (build_mode == "kernel")
