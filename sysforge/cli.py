@@ -87,6 +87,7 @@ def _cmd_update(args):
 
 
 def _cmd_converge(args):
+    args.extra_flags = _expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else []
     from sysforge.converge import cmd_converge
     try:
         cmd_converge(args)
@@ -400,6 +401,9 @@ def _add_converge_parser(sub):
         help="Keep log files after successful completion (only relevant with --apply).")
     p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
         help="Directory for per-package log files (only relevant with --apply).")
+    p.add_argument("--makepkg", "-m", metavar="FLAGS",
+        help="Extra flags passed to makepkg during --apply rebuilds (e.g. -m '-C' to cleanbuild). "
+             "-f is always injected automatically.")
     p.add_argument("--cache-report", action="store_true", dest="cache_report",
         help="Print a structured cache summary after --apply runs.")
     p.set_defaults(func=_cmd_converge)

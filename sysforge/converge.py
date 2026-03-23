@@ -224,12 +224,18 @@ def _apply(results: list[_ConvergeResult], args) -> None:
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
     reset_session()
 
+    # -f is always required: the package artifact already exists from the prior
+    # build, so makepkg refuses to rebuild without --force.
+    user_flags = getattr(args, "extra_flags", [])
+    extra_flags = ["-f"] + user_flags
+
     built = failed = 0
     for result in to_build:
         print(f"[SYSFORGE] Rebuilding {result.pkgbase!r}...")
         try:
             build_run(
                 result.pkgbuild_path,
+                extra_flags=extra_flags,
                 pkg_log=not getattr(args, "no_pkg_log", False),
                 persist_log=getattr(args, "persist_log", False),
                 log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
