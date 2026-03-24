@@ -373,7 +373,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Structured logging (`[SYSFORGE][LEVEL][TAG]`) | ✅ Done |
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 7) | ✅ Done |
-| Pytest suite (846 tests) | ✅ Done |
+| Pytest suite (851 tests) | ✅ Done |
 | Kernel stage (stage 8) | ✅ Done |
 | Reconfigure stage (stage 5) | ✅ Done |
 | Toolchain stage (stage 6, LLVM/GCC + PGO) | ✅ Done |

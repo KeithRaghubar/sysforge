@@ -2,6 +2,8 @@
 aur.py — AUR RPC queries, git clone, pkgctl checkout, and GPG key import
 
 Public API:
+    repo_packages(names)           -> set[str]          subset of names present in pacman sync DBs
+    repo_packages(names)           -> set[str]          subset of names present in pacman sync DBs (batch)
     is_repo_package(name)          -> bool              True if name is in pacman sync DBs
     aur_info(names)                -> dict[str, dict]   batch AUR RPC v5 query (name → result)
     aur_clone(name, dest)          -> None              git clone from AUR into dest
@@ -14,6 +16,7 @@ Public API:
 import gzip
 import json
 import os
+import re as _re
 import subprocess
 import time
 import urllib.error
@@ -90,6 +93,23 @@ def fetch_aur_name_cache(force: bool = False) -> Path | None:
     except (urllib.error.URLError, OSError, EOFError) as e:
         _log.warn("[AUR]", f"failed to refresh AUR name cache: {e}")
         return None
+
+
+def repo_packages(names: list[str]) -> set[str]:
+    """Return the subset of names present in any pacman sync DB.
+
+    Runs a single pacman -Si invocation for all names — O(1) subprocesses.
+    Packages not found produce errors to stderr only; found packages appear in stdout.
+    """
+    if not names:
+        return set()
+    result = subprocess.run(["pacman", "-Si", *names], capture_output=True, text=True)
+    found: set[str] = set()
+    for line in result.stdout.splitlines():
+        m = _re.match(r"^Name\s*:\s*(\S+)", line)
+        if m:
+            found.add(m.group(1))
+    return found
 
 
 def is_repo_package(name: str) -> bool:

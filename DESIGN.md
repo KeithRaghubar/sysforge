@@ -412,7 +412,7 @@ The packages and kernel stages read these values and inject them into the build 
 
 ## Primitives Layer
 
-All modules independently testable. 846 pytest tests (`pytest` from repo root).
+All modules independently testable. 851 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 

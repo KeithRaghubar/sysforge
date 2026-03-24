@@ -121,10 +121,10 @@ def cmd_packages_add(args):
     if not to_process:
         sys.exit(1)
 
-    # Classify — batch AUR lookup for non-repo packages
-    from sysforge.primitives.aur import is_repo_package, aur_info
-    aur_candidates = [p for p in to_process if not is_repo_package(p)]
-    repo_pkgs = set(to_process) - set(aur_candidates)
+    # Classify — batch repo + AUR lookup
+    from sysforge.primitives.aur import repo_packages, aur_info
+    repo_pkgs = repo_packages(to_process)
+    aur_candidates = [p for p in to_process if p not in repo_pkgs]
     aur_found = set(aur_info(aur_candidates).keys()) if aur_candidates else set()
 
     sources: dict[str, str] = {p: "repo" for p in repo_pkgs}
@@ -302,11 +302,13 @@ def cmd_packages_sync(args):
         print("No packages to sync.")
         return
 
-    from sysforge.primitives.aur import is_repo_package, aur_info
+    from sysforge.primitives.aur import repo_packages, aur_info
     config = load_config() or {}
 
-    # Batch AUR lookup for non-repo packages
-    aur_candidates = [e["name"] for e in entries if not is_repo_package(e["name"])]
+    # Single batch repo check, then batch AUR lookup for non-repo packages
+    all_names = [e["name"] for e in entries]
+    repo_set = repo_packages(all_names)
+    aur_candidates = [n for n in all_names if n not in repo_set]
     aur_found: set[str] = set()
     if aur_candidates:
         aur_found = set(aur_info(aur_candidates).keys())
@@ -322,7 +324,7 @@ def cmd_packages_sync(args):
         entry_changes: dict = {}
 
         # Re-classify source
-        if is_repo_package(name):
+        if name in repo_set:
             new_source = "repo"
         elif name in aur_found:
             new_source = "aur"

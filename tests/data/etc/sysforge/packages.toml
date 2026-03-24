@@ -27,16 +27,16 @@ repo_mode = "profiled"  # "pacman" (default) | "profiled" — how repo-source pa
 
 [[package]]
 name = "llvm"
-source = "aur"
+source = "repo"
 cache = false   # PGO build — never cache instrumented objects
 
 [[package]]
 name = "lld"
-source = "aur"
+source = "repo"
 
 [[package]]
 name = "clang"
-source = "aur"
+source = "repo"
 
 [[package]]
 name = "mold"

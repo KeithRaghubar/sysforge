@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sysforge.primitives.aur import aur_clone, aur_info, fetch_aur_name_cache, git_is_dirty, git_pull_rebase, import_pgp_keys, is_repo_package, pkgctl_checkout
+from sysforge.primitives.aur import aur_clone, aur_info, fetch_aur_name_cache, git_is_dirty, git_pull_rebase, import_pgp_keys, is_repo_package, pkgctl_checkout, repo_packages
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +179,67 @@ def test_is_repo_package_calls_pacman_si():
         is_repo_package("htop")
 
     assert captured[0][:3] == ["pacman", "-Si", "htop"]
+
+
+# ---------------------------------------------------------------------------
+# repo_packages
+# ---------------------------------------------------------------------------
+
+_PACMAN_SI_OUTPUT = """\
+Repository      : extra
+Name            : htop
+Version         : 3.3.0-2
+
+Repository      : core
+Name            : gcc
+Version         : 14.2.1-3
+"""
+
+def test_repo_packages_all_found():
+    with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+        [], 0, stdout=_PACMAN_SI_OUTPUT, stderr=""
+    )):
+        result = repo_packages(["htop", "gcc"])
+    assert result == {"htop", "gcc"}
+
+
+def test_repo_packages_some_found():
+    # pacman exits non-zero when any name is missing; stdout still has found packages
+    with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+        [], 1, stdout=_PACMAN_SI_OUTPUT, stderr="error: package 'yay' was not found\n"
+    )):
+        result = repo_packages(["htop", "gcc", "yay"])
+    assert result == {"htop", "gcc"}
+
+
+def test_repo_packages_none_found():
+    with patch("subprocess.run", return_value=subprocess.CompletedProcess(
+        [], 1, stdout="", stderr="error: package 'yay' was not found\n"
+    )):
+        result = repo_packages(["yay"])
+    assert result == set()
+
+
+def test_repo_packages_empty():
+    with patch("subprocess.run") as mock_run:
+        result = repo_packages([])
+    mock_run.assert_not_called()
+    assert result == set()
+
+
+def test_repo_packages_single_invocation():
+    """All names are checked in one pacman -Si call."""
+    captured = []
+    def fake_run(cmd, **kwargs):
+        captured.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        repo_packages(["htop", "gcc", "vim"])
+
+    assert len(captured) == 1
+    assert captured[0][:2] == ["pacman", "-Si"]
+    assert set(captured[0][2:]) == {"htop", "gcc", "vim"}
 
 
 # ---------------------------------------------------------------------------
