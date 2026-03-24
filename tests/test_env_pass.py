@@ -8,7 +8,7 @@ Covers:
     - "env" type key NOT collected when "env" absent from active_consumes
     - "env" type key collected in fallback mode (active_consumes=None)
     - Unknown key always collected + warning logged
-    - _SYSFORGE_KEYS never collected
+    - SYSFORGE_KEYS never collected
     - known non-env conf key (CFLAGS) never collected
     - multiple env keys in one call
     - empty profile returns {}
@@ -40,7 +40,7 @@ from sysforge.primitives.makepkg_wrapper import (
     resolve_env_vars,
     emit_makepkg_conf,
 )
-from sysforge.primitives.profile import _CONF_KEY_MAP, _SYSFORGE_KEYS
+from sysforge.primitives.profile import CONF_KEY_MAP, SYSFORGE_KEYS
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ def test_unknown_key_always_collected():
     assert "Unclassified" in log
 
 def test_sysforge_keys_never_collected():
-    for key in _SYSFORGE_KEYS:
+    for key in SYSFORGE_KEYS:
         profile = {key: "something"}
         result, _ = captured(resolve_env_vars, profile, None)
         assert key not in result, f"{key} should not appear in env result"
@@ -197,7 +197,7 @@ def test_temp_file_cleaned_up():
     assert not p.exists()
 
 def test_sysforge_keys_not_in_conf():
-    for key in _SYSFORGE_KEYS:
+    for key in SYSFORGE_KEYS:
         profile = {key: "something", "CFLAGS": "-O2"}
         with emit_makepkg_conf(profile, None) as conf_path:
             conf = read_conf(conf_path)

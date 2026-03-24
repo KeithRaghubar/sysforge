@@ -22,8 +22,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.primitives.makepkg_wrapper import (
-    _CONF_KEY_MAP,
-    _SYSFORGE_KEYS,
+    CONF_KEY_MAP,
+    SYSFORGE_KEYS,
     emit_makepkg_conf,
     load_consumes_inference,
     resolve_consumes,
@@ -185,7 +185,7 @@ def test_emit_conf_sysforge_keys_always_excluded():
     active = frozenset({"makepkg", "rust"})
     with emit_makepkg_conf(PROFILE_MIXED, active) as path:
         conf = _read_conf(path)
-    for key in _SYSFORGE_KEYS:
+    for key in SYSFORGE_KEYS:
         assert key not in conf, f"Sysforge key {key!r} leaked into conf"
 
 def test_emit_conf_fallback_none_writes_all_non_internal():
@@ -212,19 +212,19 @@ def test_emit_conf_values_quoted():
 
 
 # ---------------------------------------------------------------------------
-# _CONF_KEY_MAP sanity
+# CONF_KEY_MAP sanity
 # ---------------------------------------------------------------------------
 
 def test_conf_key_map_no_overlap_with_sysforge_keys():
-    """No conf type key set should overlap with _SYSFORGE_KEYS."""
+    """No conf type key set should overlap with SYSFORGE_KEYS."""
     all_conf_keys = set()
-    for keys in _CONF_KEY_MAP.values():
+    for keys in CONF_KEY_MAP.values():
         all_conf_keys.update(keys)
-    overlap = all_conf_keys & _SYSFORGE_KEYS
-    assert not overlap, f"_CONF_KEY_MAP overlaps _SYSFORGE_KEYS: {overlap}"
+    overlap = all_conf_keys & SYSFORGE_KEYS
+    assert not overlap, f"CONF_KEY_MAP overlaps SYSFORGE_KEYS: {overlap}"
 
 def test_conf_key_map_makepkg_has_standard_vars():
-    mk = _CONF_KEY_MAP["makepkg"]
+    mk = CONF_KEY_MAP["makepkg"]
     for expected in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
         assert expected in mk
     # CC and CXX live in "toolchain" — injected via subprocess env, not conf file
@@ -232,12 +232,12 @@ def test_conf_key_map_makepkg_has_standard_vars():
     assert "CXX" not in mk
 
 def test_conf_key_map_toolchain_has_cc_cxx():
-    tc = _CONF_KEY_MAP["toolchain"]
+    tc = CONF_KEY_MAP["toolchain"]
     assert "CC" in tc
     assert "CXX" in tc
 
 def test_conf_key_map_rust_has_rustflags():
-    assert "RUSTFLAGS" in _CONF_KEY_MAP["rust"]
+    assert "RUSTFLAGS" in CONF_KEY_MAP["rust"]
 
 
 # ---------------------------------------------------------------------------

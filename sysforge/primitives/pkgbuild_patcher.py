@@ -17,47 +17,17 @@ import re
 import sysforge.log as _log
 import tomllib
 from pathlib import Path
+from sysforge.primitives.profile import CONF_KEY_MAP
 
 
 # ---------------------------------------------------------------------------
 # Target keys for flag extraction
 #
-# Union of all _CONF_KEY_MAP key sets from profile.py. Duplicated here to
-# avoid a circular import — profile.py should not depend on the patcher.
-# Keep in sync with profile._CONF_KEY_MAP.
+# Derived from the authoritative CONF_KEY_MAP in profile.py — single source
+# of truth; no manual sync required.
 # ---------------------------------------------------------------------------
 
-_EXTRACTABLE_KEYS = {
-    # makepkg.conf
-    "CC", "CXX", "AR", "NM", "RANLIB", "STRIP",
-    "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS",
-    "DEBUG_CFLAGS", "DEBUG_CXXFLAGS", "DEBUG_LDFLAGS",
-    "MAKEFLAGS",
-    "BUILDENV", "OPTIONS", "INTEGRITY_CHECK",
-    "PKGEXT", "SRCEXT",
-    # rust (conf) + env pass keys
-    "RUSTFLAGS",
-    "CARGO_PROFILE_RELEASE_LTO",
-    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
-    "CARGO_PROFILE_RELEASE_OPT_LEVEL",
-    "CARGO_INCREMENTAL",
-    "RUSTC_WRAPPER",              # env pass
-    "CCACHE_DIR",                 # env pass
-    "SCCACHE_DIR",                # env pass
-    "CARGO_HOME",                 # env pass
-    "CARGO_NET_GIT_FETCH_WITH_CLI",  # env pass
-    "PKG_CONFIG_PATH",            # env pass
-    # cmake
-    "CMAKE_BUILD_TYPE",
-    "CMAKE_C_FLAGS",
-    "CMAKE_CXX_FLAGS",
-    "CMAKE_EXE_LINKER_FLAGS",
-    "CMAKE_SHARED_LINKER_FLAGS",
-    # meson
-    "MESON_ARGS",
-    "CC_LD",            # meson: linker override for CC
-    "CXX_LD",           # meson: linker override for CXX
-}
+_EXTRACTABLE_KEYS = frozenset().union(*CONF_KEY_MAP.values())
 
 # Bare/export assignments, including += variants.
 # Groups: export (optional), key, op (= or +=), value (quoted or bare token)

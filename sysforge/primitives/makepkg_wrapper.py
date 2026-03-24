@@ -52,9 +52,9 @@ from sysforge.primitives.dep_analysis import run_dep_analysis
 from sysforge.primitives.failure import handle_failure
 import sysforge.log as _log
 from sysforge.primitives.profile import (
-    _CONF_KEY_MAP,
-    _KERNEL_CLEAN_KEYS,
-    _SYSFORGE_KEYS,
+    CONF_KEY_MAP,
+    KERNEL_CLEAN_KEYS,
+    SYSFORGE_KEYS,
     get_build_mode,
     match_rules,
     resolve_consumes,
@@ -198,7 +198,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     is declared, the effective linker is the system default (bfd). lld-specific
     flags are stripped whenever the effective linker is not lld.
 
-    kernel_build: when True, _KERNEL_CLEAN_KEYS (CFLAGS, CXXFLAGS, LDFLAGS,
+    kernel_build: when True, KERNEL_CLEAN_KEYS (CFLAGS, CXXFLAGS, LDFLAGS,
     CPPFLAGS, DEBUG_*) are excluded from profile overrides and ld_override is
     ignored. System conf values for those keys pass through verbatim.
 
@@ -213,7 +213,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     build time. Disables LTO entirely for PGO passes — ThinLTO link-time codegen
     combined with IR PGO causes non-PIC vtable relocations in shared library builds.
     """
-    env_keys = _CONF_KEY_MAP.get("env", set())
+    env_keys = CONF_KEY_MAP.get("env", set())
 
     if active_consumes is None:
         allowed_keys = None
@@ -222,20 +222,20 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         for conf_type in active_consumes:
             if conf_type == "env":
                 continue
-            if conf_type in _CONF_KEY_MAP:
-                allowed_keys.update(_CONF_KEY_MAP[conf_type])
+            if conf_type in CONF_KEY_MAP:
+                allowed_keys.update(CONF_KEY_MAP[conf_type])
 
     # Profile keys to write: filter out internal, env-pass, out-of-consumes,
     # and (for kernel builds) compiler flag keys.
     profile_overrides = {}
     for key, val in resolved_profile.items():
-        if key in _SYSFORGE_KEYS:
+        if key in SYSFORGE_KEYS:
             continue
         if key in env_keys:
             continue
         if allowed_keys is not None and key not in allowed_keys:
             continue
-        if kernel_build and key in _KERNEL_CLEAN_KEYS:
+        if kernel_build and key in KERNEL_CLEAN_KEYS:
             continue
         profile_overrides[key] = val
 
@@ -388,18 +388,18 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
          makepkg.conf to child processes; they must be in the inherited env.
       2. Keys in the "env" conf type — only collected when "env" is in
          active_consumes or active_consumes is None (fallback mode).
-      3. Unknown keys — not in any _CONF_KEY_MAP type and not in _SYSFORGE_KEYS.
+      3. Unknown keys — not in any CONF_KEY_MAP type and not in SYSFORGE_KEYS.
          Always collected and logged under [ENV] as a warning.
 
     Returns dict[str, str] of key -> value pairs to inject on invocation.
     Empty dict if nothing to inject.
     """
-    toolchain_keys = _CONF_KEY_MAP.get("toolchain", set())
-    env_type_keys  = _CONF_KEY_MAP.get("env", set())
+    toolchain_keys = CONF_KEY_MAP.get("toolchain", set())
+    env_type_keys  = CONF_KEY_MAP.get("env", set())
 
     # All keys explicitly classified into any conf type
     all_conf_keys: set[str] = set()
-    for keys in _CONF_KEY_MAP.values():
+    for keys in CONF_KEY_MAP.values():
         all_conf_keys.update(keys)
 
     collect_env_type = active_consumes is None or "env" in active_consumes
@@ -408,7 +408,7 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
     unknown: list[str] = []
 
     for key, val in resolved_profile.items():
-        if key in _SYSFORGE_KEYS:
+        if key in SYSFORGE_KEYS:
             continue
 
         if key in toolchain_keys:
@@ -431,7 +431,7 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
             unknown.append(key)
 
     if unknown:
-        _log.warn("[ENV]", f"Unclassified profile keys injected via env (consider adding to _CONF_KEY_MAP): {sorted(unknown)}")
+        _log.warn("[ENV]", f"Unclassified profile keys injected via env (consider adding to CONF_KEY_MAP): {sorted(unknown)}")
 
     return result
 
@@ -460,7 +460,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # so the temp conf and profile env injection are the sole authority.
     # Without this, shell vars like CC=clang or CFLAGS=... win over what the
     # conf/profile sets, producing unpredictable builds.
-    _strip_keys = _CONF_KEY_MAP.get("makepkg", set()) | _CONF_KEY_MAP.get("toolchain", set())
+    _strip_keys = CONF_KEY_MAP.get("makepkg", set()) | CONF_KEY_MAP.get("toolchain", set())
     for k in sorted(_strip_keys):
         if k in env:
             _log.info("[ENV]", f"Stripped from shell env (superseded by profile): {k}={env.pop(k)!r}")

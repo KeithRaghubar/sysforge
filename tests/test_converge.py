@@ -15,7 +15,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from sysforge.primitives.profile import serialize_flags, _SYSFORGE_KEYS
+from sysforge.primitives.profile import serialize_flags, SYSFORGE_KEYS
 from sysforge.primitives.build_state import BuildState
 from sysforge.converge import _diff_flags, cmd_converge
 
@@ -58,7 +58,7 @@ def test_serialize_flags_empty_profile():
 
 
 def test_serialize_flags_only_sysforge_keys():
-    profile = {k: "x" for k in _SYSFORGE_KEYS}
+    profile = {k: "x" for k in SYSFORGE_KEYS}
     assert serialize_flags(profile) == ""
 
 

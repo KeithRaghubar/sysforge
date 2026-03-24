@@ -26,7 +26,7 @@ from sysforge.primitives.config import (
 )
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.profile import (
-    _SYSFORGE_KEYS,
+    SYSFORGE_KEYS,
     match_rules,
     resolve_consumes,
     resolve_groups,
@@ -129,8 +129,8 @@ def _print_resolve(
     if show_flags:
         print()
         print("Resolved profile:")
-        normal = {k: v for k, v in resolved_profile.items() if k not in _SYSFORGE_KEYS}
-        internal = {k: v for k, v in resolved_profile.items() if k in _SYSFORGE_KEYS}
+        normal = {k: v for k, v in resolved_profile.items() if k not in SYSFORGE_KEYS}
+        internal = {k: v for k, v in resolved_profile.items() if k in SYSFORGE_KEYS}
         for k, v in sorted(normal.items()):
             print(f"  {k:<26} = {v!r}")
         if internal:
@@ -139,7 +139,7 @@ def _print_resolve(
             for k, v in sorted(internal.items()):
                 print(f"  {k:<26} = {v!r}")
     else:
-        flag_count = len([k for k in resolved_profile if k not in _SYSFORGE_KEYS])
+        flag_count = len([k for k in resolved_profile if k not in SYSFORGE_KEYS])
         print(f"\n  ({flag_count} flag key(s) — use --show-flags to expand)")
 
 

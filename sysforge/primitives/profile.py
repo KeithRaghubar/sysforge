@@ -30,7 +30,7 @@ import sysforge.log as _log
 
 # Keys that are sysforge-internal and must not be written to any conf file.
 # Kept here as the authoritative source; makepkg_wrapper.py imports this.
-_SYSFORGE_KEYS = {
+SYSFORGE_KEYS = {
     "batch",
     "build_mode",
     "clean_builddir",
@@ -53,9 +53,9 @@ _SYSFORGE_KEYS = {
 # keys that need to be set before makepkg itself runs, or that wrap the compiler
 # invocation (e.g. RUSTC_WRAPPER=sccache, CCACHE_DIR).
 #
-# Any profile key not in any type and not in _SYSFORGE_KEYS also falls through
+# Any profile key not in any type and not in SYSFORGE_KEYS also falls through
 # to the env pass, logged under [ENV].
-_CONF_KEY_MAP: dict[str, set[str]] = {
+CONF_KEY_MAP: dict[str, set[str]] = {
     # Written to temp makepkg.conf. makepkg sources the conf and exports most
     # of these to the build environment, but NOT CC/CXX — those must be
     # injected via subprocess env instead (see "toolchain" below).
@@ -111,7 +111,7 @@ _CONF_KEY_MAP: dict[str, set[str]] = {
 # CFLAGS/CXXFLAGS/LDFLAGS causes miscompiles and build failures.
 # System conf values for these keys are preserved verbatim (they pass through
 # unchanged when no profile override is present).
-_KERNEL_CLEAN_KEYS: frozenset[str] = frozenset({
+KERNEL_CLEAN_KEYS: frozenset[str] = frozenset({
     "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS",
     "DEBUG_CFLAGS", "DEBUG_CXXFLAGS", "DEBUG_LDFLAGS",
 })
@@ -503,7 +503,7 @@ def serialize_flags(resolved_profile: dict) -> str:
     """
     parts = []
     for key in sorted(resolved_profile):
-        if key in _SYSFORGE_KEYS:
+        if key in SYSFORGE_KEYS:
             continue
         val = resolved_profile[key]
         if isinstance(val, list):
