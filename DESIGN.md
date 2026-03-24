@@ -490,7 +490,7 @@ Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_a
 
 ### `makepkg_wrapper.py`
 
-Build execution. Public API: `run(pkgbuild_path, extra_flags=None, interactive=False, ...)`
+Build execution. Public API: `run(pkgbuild_path, options: BuildOptions | None = None)` where `BuildOptions` is a dataclass with all build options defaulted. Call sites construct `BuildOptions(field=value, ...)` with only what they need; adding a new option only requires a new field in `BuildOptions` and handling in `run()` — unrelated call sites don't change.
 
 High-level flow:
 1. Parse PKGBUILD via `pkgbuild_meta.py`
@@ -696,7 +696,7 @@ Profile keys are routed to one of three delivery channels:
 - **Conf file** (`makepkg`, `rust`, `cmake`, `meson` types) — written into the temp `makepkg.conf`. Only types in `active_consumes` are written.
 - **Subprocess env** (`env` type, or any unclassified key) — injected via `subprocess.run(env=...)`. Used for `RUSTC_WRAPPER`, `CCACHE_DIR`, `SCCACHE_DIR`, `CC_LD`, `CXX_LD` (meson linker override), etc. Only delivered when `"env"` is in `active_consumes`. Keys that are present in the profile but not in `active_consumes` are logged as skipped (`[INFO][ENV]`).
 
-Unclassified keys (not in any `_CONF_KEY_MAP` type and not in `_SYSFORGE_KEYS`) travel via env pass and are logged as `[WARN][ENV]`.
+Unclassified keys (not in any `CONF_KEY_MAP` type and not in `SYSFORGE_KEYS`) travel via env pass and are logged as `[WARN][ENV]`.
 
 ---
 

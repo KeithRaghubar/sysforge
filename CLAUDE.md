@@ -27,15 +27,15 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 Import direction: `cli.py` → command modules → `primitives/*`. No command module imports from another command module.
 
 **Command modules** (`sysforge/`):
-- `cli.py` — arg parsing, dispatch; imports `expand_makepkg_flags` from `makepkg_wrapper`
+- `cli.py` — arg parsing, dispatch; imports `run`, `expand_makepkg_flags`, `BuildOptions` from `makepkg_wrapper`
 - `update.py` — `sysforge update`
 - `converge.py` — `sysforge converge`
 - `packages_cmd.py` — `sysforge packages *`
 
 **Primitive modules** (`sysforge/primitives/`):
 - `pacman.py` — all pacman/batch-build shared ops: `get_pkgdest`, `snapshot_pkg_dir`, `batch_install_pkgs`, `collect_makedeps`, `filter_missing_deps`, `batch_install_makedeps`, `get_installed_version`, `get_all_installed_packages`, `get_foreign_packages`, `get_pacman_sync_version`; constants `BATCH_STRIP_FLAGS`, `BATCH_EXTRA_FLAGS`
-- `profile.py` — profile resolution: `match_rules`, `resolve_profile`, `serialize_flags`, `get_build_mode`
-- `makepkg_wrapper.py` — build execution: `run`, `expand_makepkg_flags`
+- `profile.py` — profile resolution: `match_rules`, `resolve_profile`, `serialize_flags`, `get_build_mode`; public constants `CONF_KEY_MAP`, `SYSFORGE_KEYS`, `KERNEL_CLEAN_KEYS`
+- `makepkg_wrapper.py` — build execution: `BuildOptions` (dataclass), `run(pkgbuild_path, options=None)`, `expand_makepkg_flags`
 - `build_state.py` — `BuildState`, `group_by_pkgbase`
 - `config.py` — config loading, `find_pkgbuild`
 - `pkgbuild_meta.py` — PKGBUILD parsing
