@@ -40,6 +40,11 @@ _sysforge_commands() {
 _sysforge_pkg_names() {
   local limit=200
   local -a pkgs
+  if [[ -z ${PREFIX} ]]; then
+    pkgs=("${(@f)$(sysforge completions local 2>/dev/null)}")
+    _describe 'package' pkgs
+    return
+  fi
   pkgs=("${(@f)$(sysforge completions packages 2>/dev/null | grep -m $((limit + 1)) -- "^${PREFIX}")}")
   if (( $#pkgs > limit )); then
     zle -M "${limit}+ candidates — type more characters to narrow"
@@ -57,6 +62,12 @@ _sysforge_pkg_names() {
 _sysforge_manifest_names() {
   local -a pkgs
   pkgs=("${(@f)$(sysforge completions manifest 2>/dev/null)}")
+  _describe 'package' pkgs
+}
+
+_sysforge_local_pkg_names() {
+  local -a pkgs
+  pkgs=("${(@f)$(sysforge completions local 2>/dev/null)}")
   _describe 'package' pkgs
 }
 
@@ -108,7 +119,7 @@ _sysforge_resolve() {
   _arguments \
     '--show-flags[print the full resolved flag set]' \
     '--profile-conf[alternate flag_profiles.toml]:file:_files' \
-    '1: :_sysforge_pkg_names'
+    '1: :_sysforge_local_pkg_names'
 }
 
 

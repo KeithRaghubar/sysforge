@@ -95,6 +95,17 @@ def _cmd_completions(args):
                     print(name)
         return
 
+    if args.resource == "local":
+        # Only locally-cloned packages from pkgbuild_dir — used by `resolve` completion
+        raw = config.get("paths", {}).get("pkgbuild_dir")
+        if raw:
+            d = Path(raw).expanduser()
+            if d.is_dir():
+                for sub in sorted(d.iterdir()):
+                    if sub.is_dir() and (sub / "PKGBUILD").exists():
+                        print(sub.name)
+        return
+
     seen: set[str] = set()
 
     # Local packages from pkgbuild_dir
@@ -616,7 +627,7 @@ def main():
 
     # completions (used by shell completion scripts; not user-facing)
     p_completions = sub.add_parser("completions", help=argparse.SUPPRESS)
-    p_completions.add_argument("resource", choices=["packages", "manifest"])
+    p_completions.add_argument("resource", choices=["packages", "manifest", "local"])
     p_completions.set_defaults(func=_cmd_completions)
 
     args = parser.parse_args()

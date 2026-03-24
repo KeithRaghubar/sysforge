@@ -158,6 +158,7 @@ def cmd_resolve(args) -> None:
         pkgbuild_path = find_pkgbuild(args.pkg, config)
     except FileNotFoundError as e:
         print(f"[SYSFORGE] Error: {e}", file=sys.stderr)
+        print(f"  Tip: run `sysforge build {args.pkg}` to download the PKGBUILD first.", file=sys.stderr)
         sys.exit(1)
 
     try:
