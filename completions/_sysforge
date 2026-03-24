@@ -108,7 +108,7 @@ _sysforge_resolve() {
   _arguments \
     '--show-flags[print the full resolved flag set]' \
     '--profile-conf[alternate flag_profiles.toml]:file:_files' \
-    '1: :_sysforge_pkg_or_file'
+    '1: :_sysforge_pkg_names'
 }
 
 
