@@ -38,8 +38,19 @@ _sysforge_commands() {
 }
 
 _sysforge_pkg_names() {
+  local limit=200
   local -a pkgs
-  pkgs=("${(@f)$(sysforge completions packages 2>/dev/null)}")
+  pkgs=("${(@f)$(sysforge completions packages 2>/dev/null | grep -m $((limit + 1)) -- "^${PREFIX}")}")
+  if (( $#pkgs > limit )); then
+    zle -M "${limit}+ candidates — type more characters to narrow"
+    _sysforge_clear_msg() {
+      zle -M ""
+      add-zle-hook-widget -d zle-line-pre-redraw _sysforge_clear_msg
+    }
+    autoload -Uz add-zle-hook-widget
+    add-zle-hook-widget zle-line-pre-redraw _sysforge_clear_msg
+    return
+  fi
   _describe 'package' pkgs
 }
 
