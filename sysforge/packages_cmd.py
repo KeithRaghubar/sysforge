@@ -42,7 +42,7 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def _entry_toml_block(entry: dict) -> str:
+def entry_toml_block(entry: dict) -> str:
     """Serialise a package entry dict to a TOML [[package]] block string."""
     lines = ["[[package]]", f'name = "{entry["name"]}"', f'source = "{entry["source"]}"']
     for field in ("pkgbuild_patch", "cache"):
@@ -163,7 +163,7 @@ def cmd_packages_add(args):
             entry["pkgbuild_patch"] = True
         entries_to_write.append(entry)
 
-    blocks_text = "".join("\n" + _entry_toml_block(e) + "\n" for e in entries_to_write)
+    blocks_text = "".join("\n" + entry_toml_block(e) + "\n" for e in entries_to_write)
     if path.exists():
         with open(path, "a") as f:
             f.write(blocks_text)

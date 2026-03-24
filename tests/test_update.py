@@ -13,10 +13,11 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.update import (
-    _get_installed_version, _is_vcs, cmd_update,
-    _get_foreign_packages, _load_packages_toml_names,
+    _is_vcs, cmd_update,
+    _load_packages_toml_names,
     _append_to_packages_toml, _discover_and_add, _DiscoveredResult,
 )
+from sysforge.primitives.pacman import get_installed_version, get_foreign_packages
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +43,7 @@ def test_is_vcs_false():
 
 
 # ---------------------------------------------------------------------------
-# _get_installed_version
+# get_installed_version
 # ---------------------------------------------------------------------------
 
 def _mock_pacman(stdout, returncode=0):
@@ -54,12 +55,12 @@ def _mock_pacman(stdout, returncode=0):
 
 def test_get_installed_version_found():
     with patch("subprocess.run", return_value=_mock_pacman("htop 3.3.0-1\n")):
-        assert _get_installed_version("htop") == "3.3.0-1"
+        assert get_installed_version("htop") == "3.3.0-1"
 
 
 def test_get_installed_version_not_installed():
     with patch("subprocess.run", return_value=_mock_pacman("", returncode=1)):
-        assert _get_installed_version("htop") is None
+        assert get_installed_version("htop") is None
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +143,7 @@ def _run_update_with_package(tmp_path, pkgbase, pkgver_installed, pkgver_pkgbuil
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value={"globals": parsed_globals}),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update._get_installed_version", return_value=pkgver_installed),
+        patch("sysforge.update.get_installed_version", return_value=pkgver_installed),
         patch("sysforge.update.vercmp") as mock_vercmp,
     ):
         MockBS.return_value.all_packages.return_value = state_data
@@ -194,7 +195,7 @@ def test_check_not_installed(tmp_path):
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update._get_installed_version", return_value=None),
+        patch("sysforge.update.get_installed_version", return_value=None),
     ):
         MockBS.return_value.all_packages.return_value = state_data
         (tmp_path / "htop" / "PKGBUILD").write_text("pkgname=htop\n")
@@ -255,7 +256,7 @@ def test_dry_run_no_build(tmp_path):
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update._get_installed_version", return_value="3.3.0-1"),
+        patch("sysforge.update.get_installed_version", return_value="3.3.0-1"),
         patch("sysforge.update.vercmp", return_value=1),
         patch("sysforge.primitives.makepkg_wrapper.run") as mock_build,
     ):
@@ -385,7 +386,7 @@ def test_pull_failure_continues_to_next_package(tmp_path):
         patch("sysforge.update.git_pull_rebase", side_effect=fake_pull),
         patch("sysforge.update.parse_pkgbuild", return_value=parsed_neovim),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update._get_installed_version", return_value="0.9.0-1"),
+        patch("sysforge.update.get_installed_version", return_value="0.9.0-1"),
         patch("sysforge.update.vercmp", return_value=0),
     ):
         MockBS.return_value.all_packages.return_value = state_data
@@ -401,7 +402,7 @@ def test_pull_failure_continues_to_next_package(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _get_foreign_packages
+# get_foreign_packages
 # ---------------------------------------------------------------------------
 
 def _mock_pacman_qm(stdout, returncode=0):
@@ -414,19 +415,19 @@ def _mock_pacman_qm(stdout, returncode=0):
 def test_get_foreign_packages_returns_dict():
     output = "yay 12.3.3-1\nneovim-git r1234.gabcdef-1\n"
     with patch("subprocess.run", return_value=_mock_pacman_qm(output)):
-        result = _get_foreign_packages()
+        result = get_foreign_packages()
     assert result == {"yay": "12.3.3-1", "neovim-git": "r1234.gabcdef-1"}
 
 
 def test_get_foreign_packages_empty_on_failure():
     with patch("subprocess.run", return_value=_mock_pacman_qm("", returncode=1)):
-        result = _get_foreign_packages()
+        result = get_foreign_packages()
     assert result == {}
 
 
 def test_get_foreign_packages_empty_output():
     with patch("subprocess.run", return_value=_mock_pacman_qm("")):
-        result = _get_foreign_packages()
+        result = get_foreign_packages()
     assert result == {}
 
 
@@ -464,7 +465,7 @@ def test_load_packages_toml_names_empty_file(tmp_path):
 def test_append_to_packages_toml_creates_file(tmp_path):
     path = tmp_path / "packages.toml"
     entries = [{"name": "yay", "source": "aur"}]
-    with patch("sysforge.packages_cmd._entry_toml_block",
+    with patch("sysforge.packages_cmd.entry_toml_block",
                side_effect=lambda e: f'[[package]]\nname = "{e["name"]}"\n'):
         _append_to_packages_toml(path, entries)
     assert path.exists()
@@ -476,7 +477,7 @@ def test_append_to_packages_toml_appends_to_existing(tmp_path):
     path = tmp_path / "packages.toml"
     path.write_text("[build]\npkgbuild_dir = \"~/builds\"\n\n[[package]]\nname = \"htop\"\n")
     entries = [{"name": "yay", "source": "aur"}]
-    with patch("sysforge.packages_cmd._entry_toml_block",
+    with patch("sysforge.packages_cmd.entry_toml_block",
                side_effect=lambda e: f'[[package]]\nname = "{e["name"]}"\n'):
         _append_to_packages_toml(path, entries)
     content = path.read_text()
@@ -497,8 +498,8 @@ def _make_discover_args(**kwargs):
 def test_discover_no_foreign_packages():
     bs = MagicMock()
     bs.all_packages.return_value = {}
-    with patch("sysforge.update._get_foreign_packages", return_value={}), \
-         patch("sysforge.update._get_all_installed_packages", return_value={}):
+    with patch("sysforge.update.get_foreign_packages", return_value={}), \
+         patch("sysforge.update.get_all_installed_packages", return_value={}):
         results = _discover_and_add(_make_discover_args(), bs, {})
     assert results == []
 
@@ -506,8 +507,8 @@ def test_discover_no_foreign_packages():
 def test_discover_all_already_tracked():
     bs = MagicMock()
     bs.all_packages.return_value = {"yay": {"pkgbase": "yay", "pkgver": "12.0"}}
-    with patch("sysforge.update._get_foreign_packages", return_value={"yay": "12.0-1"}), \
-         patch("sysforge.update._get_all_installed_packages", return_value={"yay": "12.0-1"}), \
+    with patch("sysforge.update.get_foreign_packages", return_value={"yay": "12.0-1"}), \
+         patch("sysforge.update.get_all_installed_packages", return_value={"yay": "12.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()):
         results = _discover_and_add(_make_discover_args(), bs, {})
     assert results == []
@@ -516,8 +517,8 @@ def test_discover_all_already_tracked():
 def test_discover_not_in_aur(tmp_path):
     bs = MagicMock()
     bs.all_packages.return_value = {}
-    with patch("sysforge.update._get_foreign_packages", return_value={"localonly": "1.0-1"}), \
-         patch("sysforge.update._get_all_installed_packages", return_value={"localonly": "1.0-1"}), \
+    with patch("sysforge.update.get_foreign_packages", return_value={"localonly": "1.0-1"}), \
+         patch("sysforge.update.get_all_installed_packages", return_value={"localonly": "1.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={}), \
          patch("sysforge.update._append_to_packages_toml"):
@@ -535,8 +536,8 @@ def test_discover_adds_aur_package(tmp_path):
     pkgbuild = pkg_dir / "PKGBUILD"
     pkgbuild.write_text("pkgname=yay\npkgver=12.3.3\npkgrel=1\n")
 
-    with patch("sysforge.update._get_foreign_packages", return_value={"yay": "12.0.0-1"}), \
-         patch("sysforge.update._get_all_installed_packages", return_value={"yay": "12.0.0-1"}), \
+    with patch("sysforge.update.get_foreign_packages", return_value={"yay": "12.0.0-1"}), \
+         patch("sysforge.update.get_all_installed_packages", return_value={"yay": "12.0.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={"yay": {"Name": "yay"}}), \
          patch("sysforge.primitives.config.find_pkgbuild", return_value=pkgbuild), \
@@ -556,8 +557,8 @@ def test_discover_dry_run_no_write(tmp_path):
     bs = MagicMock()
     bs.all_packages.return_value = {}
 
-    with patch("sysforge.update._get_foreign_packages", return_value={"yay": "12.0.0-1"}), \
-         patch("sysforge.update._get_all_installed_packages", return_value={"yay": "12.0.0-1"}), \
+    with patch("sysforge.update.get_foreign_packages", return_value={"yay": "12.0.0-1"}), \
+         patch("sysforge.update.get_all_installed_packages", return_value={"yay": "12.0.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={"yay": {"Name": "yay"}}), \
          patch("sysforge.update._append_to_packages_toml") as mock_append:
@@ -572,8 +573,8 @@ def test_discover_vcs_package_flagged_as_devel():
     bs = MagicMock()
     bs.all_packages.return_value = {}
 
-    with patch("sysforge.update._get_foreign_packages", return_value={"neovim-git": "r1234.gabcdef-1"}), \
-         patch("sysforge.update._get_all_installed_packages", return_value={"neovim-git": "r1234.gabcdef-1"}), \
+    with patch("sysforge.update.get_foreign_packages", return_value={"neovim-git": "r1234.gabcdef-1"}), \
+         patch("sysforge.update.get_all_installed_packages", return_value={"neovim-git": "r1234.gabcdef-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={"neovim-git": {"Name": "neovim-git"}}), \
          patch("sysforge.primitives.config.find_pkgbuild", return_value=None), \

@@ -6,6 +6,7 @@ and the top-level run() entry point. All config loading, profile resolution,
 and PKGBUILD parsing are delegated to their respective modules.
 
 Public API:
+    expand_makepkg_flags(flags_str)   → list
     run(pkgbuild_path)
 """
 import contextlib
@@ -54,12 +55,37 @@ from sysforge.primitives.profile import (
     _CONF_KEY_MAP,
     _KERNEL_CLEAN_KEYS,
     _SYSFORGE_KEYS,
+    get_build_mode,
     match_rules,
     resolve_consumes,
     resolve_groups,
     resolve_profile,
     serialize_flags,
 )
+
+
+# ---------------------------------------------------------------------------
+# Flag string utilities
+# ---------------------------------------------------------------------------
+
+def expand_makepkg_flags(flags_str) -> list:
+    """
+    Split a makepkg flags string into a list of individual flags,
+    expanding combined short flags like '-sfci' into ['-s', '-f', '-c', '-i'].
+    Long flags (--noconfirm) and flags with values are passed through as-is.
+    """
+    if not flags_str:
+        return []
+    result = []
+    for token in flags_str.split():
+        if token.startswith("--"):
+            result.append(token)
+        elif token.startswith("-") and len(token) > 2:
+            # Combined short flags e.g. -sfci → -s -f -c -i
+            result.extend(f"-{ch}" for ch in token[1:])
+        else:
+            result.append(token)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -755,41 +781,6 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                     _log.info("[BUILD]", f"Removed patched PKGBUILD: {pkgbuild_path}")
             else:
                 _log.warn("[BUILD]", f"Build failed — leaving patched PKGBUILD in place: {pkgbuild_path}")
-
-
-# ---------------------------------------------------------------------------
-# Build mode detection
-# ---------------------------------------------------------------------------
-
-def get_build_mode(matched_rules, config):
-    """
-    Return the build_mode from the winning rule's profile chain without
-    performing a full profile resolution (and without logging).
-
-    Walks the extends chain of the winning profile looking for a build_mode
-    key. Returns None if no build_mode is found or no rules matched.
-    """
-    profiles = config.get("profiles", {})
-    defaults = config.get("defaults", {})
-
-    winner = None
-    for rule in matched_rules:
-        if "profile" not in rule:
-            continue
-        if winner is None or rule.get("priority", 0) > winner.get("priority", 0):
-            winner = rule
-
-    profile_name = winner["profile"] if winner else defaults.get("profile", "bare")
-
-    visited: set[str] = set()
-    while profile_name and profile_name not in visited:
-        visited.add(profile_name)
-        p = profiles.get(profile_name, {})
-        if "build_mode" in p:
-            return p["build_mode"]
-        profile_name = p.get("extends")
-
-    return None
 
 
 # ---------------------------------------------------------------------------

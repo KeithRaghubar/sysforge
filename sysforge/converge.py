@@ -21,12 +21,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import sysforge.log as _log
-from sysforge.primitives.build_state import BuildState
+from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.config import load_config, load_conflict_groups
+from sysforge.primitives.pacman import (
+    BATCH_STRIP_FLAGS,
+    batch_install_pkgs,
+    get_pkgdest,
+    snapshot_pkg_dir,
+)
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
-from sysforge.primitives.profile import match_rules, resolve_profile, serialize_flags
-from sysforge.primitives.makepkg_wrapper import get_build_mode
+from sysforge.primitives.profile import get_build_mode, match_rules, resolve_profile, serialize_flags
 from sysforge.pipeline.state import resolve_state_dir
 
 
@@ -100,13 +105,7 @@ def cmd_converge(args) -> None:
     conflict_groups = load_conflict_groups()
 
     # Group by pkgbase (one PKGBUILD per pkgbase)
-    pkgbase_map: dict[str, list[str]] = {}
-    pkgbase_entry: dict[str, dict] = {}
-    for pkgname, entry in packages.items():
-        base = entry.get("pkgbase", pkgname)
-        pkgbase_map.setdefault(base, []).append(pkgname)
-        if base not in pkgbase_entry:
-            pkgbase_entry[base] = entry
+    pkgbase_map, pkgbase_entry = group_by_pkgbase(packages)
 
     results: list[_ConvergeResult] = []
 
@@ -231,10 +230,9 @@ def _apply(results: list[_ConvergeResult], args) -> None:
 
     from sysforge.primitives.makepkg_wrapper import run as build_run
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
-    from sysforge.update import _snapshot_pkg_dir, _batch_install_pkgs, _get_pkgdest, _BATCH_STRIP_FLAGS
     reset_session()
 
-    pkgdest = _get_pkgdest()
+    pkgdest = get_pkgdest()
 
     # -f is always required: the package artifact already exists from the prior
     # build, so makepkg refuses to rebuild without --force.
@@ -253,7 +251,7 @@ def _apply(results: list[_ConvergeResult], args) -> None:
             build_run(
                 result.pkgbuild_path,
                 extra_flags=extra_flags,
-                strip_flags=_BATCH_STRIP_FLAGS,
+                strip_flags=BATCH_STRIP_FLAGS,
                 pkg_log=not getattr(args, "no_pkg_log", False),
                 persist_log=getattr(args, "persist_log", False),
                 log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
@@ -264,7 +262,7 @@ def _apply(results: list[_ConvergeResult], args) -> None:
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
             )
             new_pkgs = sorted(
-                p for p in _snapshot_pkg_dir(search_dir)
+                p for p in snapshot_pkg_dir(search_dir)
                 if p.stat().st_mtime >= build_start
             )
             built_pkg_files.extend(new_pkgs)
@@ -274,7 +272,7 @@ def _apply(results: list[_ConvergeResult], args) -> None:
             failed += 1
 
     if built_pkg_files:
-        if not _batch_install_pkgs(built_pkg_files):
+        if not batch_install_pkgs(built_pkg_files):
             _log.error("[CONVERGE]", "Batch install failed")
             print(
                 "[SYSFORGE] Error: batch install failed — packages were built but not installed.",

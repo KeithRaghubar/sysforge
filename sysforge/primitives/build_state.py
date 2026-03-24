@@ -12,10 +12,29 @@ State dir resolution follows pipeline/state.py (highest priority first):
 
 Public API:
     BuildState(state_dir)
+    group_by_pkgbase(packages)
 """
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
+
+def group_by_pkgbase(packages: dict) -> tuple[dict, dict]:
+    """
+    Group {pkgname: record} from BuildState.all_packages() by pkgbase.
+
+    Returns:
+        pkgbase_map   — {pkgbase: [pkgname, ...]}
+        pkgbase_entry — {pkgbase: representative_record}  (first seen wins)
+    """
+    pkgbase_map: dict[str, list] = {}
+    pkgbase_entry: dict[str, dict] = {}
+    for pkgname, entry in packages.items():
+        base = entry.get("pkgbase", pkgname)
+        pkgbase_map.setdefault(base, []).append(pkgname)
+        if base not in pkgbase_entry:
+            pkgbase_entry[base] = entry
+    return pkgbase_map, pkgbase_entry
+
 
 class BuildState:
     """

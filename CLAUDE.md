@@ -7,7 +7,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 
 - Language: Python
 - Config format: TOML
-- Test suite: 813 pytest tests
+- Test suite: 846 pytest tests
 
 ## Dev Environment
 
@@ -21,6 +21,28 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git>
 1. **`_pkgmeta_placeholder`** — wiring was fixed once; history may resurface. Verify if touching metadata paths.
 2. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
 3. **`match_rules` and `pkgbase`** — split-package PKGBUILDs (e.g. kernels) set `pkgbase` to the canonical name; `pkgname` is an array of unexpanded sub-package names (`"$pkgbase"`). Rules using `pkgnames` now match against `pkgbase` too. Don't regress this.
+
+## Module Layout & Import Rules
+
+Import direction: `cli.py` → command modules → `primitives/*`. No command module imports from another command module.
+
+**Command modules** (`sysforge/`):
+- `cli.py` — arg parsing, dispatch; imports `expand_makepkg_flags` from `makepkg_wrapper`
+- `update.py` — `sysforge update`
+- `converge.py` — `sysforge converge`
+- `packages_cmd.py` — `sysforge packages *`
+
+**Primitive modules** (`sysforge/primitives/`):
+- `pacman.py` — all pacman/batch-build shared ops: `get_pkgdest`, `snapshot_pkg_dir`, `batch_install_pkgs`, `collect_makedeps`, `filter_missing_deps`, `batch_install_makedeps`, `get_installed_version`, `get_all_installed_packages`, `get_foreign_packages`, `get_pacman_sync_version`; constants `BATCH_STRIP_FLAGS`, `BATCH_EXTRA_FLAGS`
+- `profile.py` — profile resolution: `match_rules`, `resolve_profile`, `serialize_flags`, `get_build_mode`
+- `makepkg_wrapper.py` — build execution: `run`, `expand_makepkg_flags`
+- `build_state.py` — `BuildState`, `group_by_pkgbase`
+- `config.py` — config loading, `find_pkgbuild`
+- `pkgbuild_meta.py` — PKGBUILD parsing
+- `pkgbuild_patcher.py` — profile extraction/patching: `extract_pkgbuild_profile`
+- `version.py` — `vercmp`, `format_version`
+- `cache_probe.py` — cache hit/miss monitoring
+- `aur.py` — AUR RPC
 
 ## Implemented: Verbosity Levels
 

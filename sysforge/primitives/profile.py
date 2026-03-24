@@ -16,6 +16,7 @@ Public API:
     resolve_consumes(resolved_profile, pkgmeta,
                      inference_map)                          -> frozenset[str]
     serialize_flags(resolved_profile)                        -> str
+    get_build_mode(matched_rules, config)                    -> str | None
 """
 import fnmatch
 import pprint
@@ -510,3 +511,36 @@ def serialize_flags(resolved_profile: dict) -> str:
         else:
             parts.append(f"{key}={val}")
     return "\n".join(parts)
+
+
+def get_build_mode(matched_rules, config) -> str | None:
+    """
+    Return the build_mode from the winning rule's profile chain without
+    performing a full profile resolution (and without logging).
+
+    Walks the extends chain of the winning profile looking for a build_mode
+    key. Returns None if no build_mode is found or no rules matched.
+    Used by converge to determine whether extract_pkgbuild_profile is needed
+    for the drift check.
+    """
+    profiles = config.get("profiles", {})
+    defaults = config.get("defaults", {})
+
+    winner = None
+    for rule in matched_rules:
+        if "profile" not in rule:
+            continue
+        if winner is None or rule.get("priority", 0) > winner.get("priority", 0):
+            winner = rule
+
+    profile_name = winner["profile"] if winner else defaults.get("profile", "bare")
+
+    visited: set[str] = set()
+    while profile_name and profile_name not in visited:
+        visited.add(profile_name)
+        p = profiles.get(profile_name, {})
+        if "build_mode" in p:
+            return p["build_mode"]
+        profile_name = p.get("extends")
+
+    return None

@@ -22,7 +22,6 @@ Repo packages (installed via pacman -S) are out of scope — use pacman -Syu.
 Public API:
     cmd_update(args)
 """
-import subprocess
 import sys
 import time
 import tomllib
@@ -31,11 +30,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import sysforge.log as _log
-from sysforge.primitives.build_state import BuildState
+from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.aur import git_pull_rebase, fetch_aur_name_cache
 from sysforge.primitives.config import PACKAGES_PATH, load_config
+from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
+from sysforge.primitives.pacman import (
+    BATCH_STRIP_FLAGS,
+    BATCH_EXTRA_FLAGS,
+    get_pkgdest,
+    snapshot_pkg_dir,
+    batch_install_pkgs,
+    collect_makedeps,
+    filter_missing_deps,
+    batch_install_makedeps,
+    get_installed_version,
+    get_all_installed_packages,
+    get_foreign_packages,
+    get_pacman_sync_version,
+)
 from sysforge.pipeline.state import resolve_state_dir
 
 
@@ -51,20 +65,6 @@ class _UpdateResult:
     installed_ver: str | None
     pkgbuild_ver: str | None
     pkgbuild_path: Path | None
-
-
-def _get_installed_version(pkgname: str) -> str | None:
-    """Run `pacman -Q pkgname`, return version string or None if not installed."""
-    result = subprocess.run(
-        ["pacman", "-Q", pkgname],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return None
-    # Output format: "pkgname version\n"
-    parts = result.stdout.strip().split()
-    return parts[1] if len(parts) >= 2 else None
 
 
 def _is_vcs(pkgbase: str) -> bool:
@@ -83,39 +83,6 @@ class _DiscoveredResult:
     installed_ver: str | None = None
     pkgbuild_ver: str | None = None
     pkgbuild_path: Path | None = None
-
-
-def _get_all_installed_packages() -> dict[str, str]:
-    """Run `pacman -Q` and return {pkgname: installed_version} for all installed packages."""
-    result = subprocess.run(["pacman", "-Q"], capture_output=True, text=True)
-    if result.returncode != 0:
-        return {}
-    packages = {}
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            packages[parts[0]] = parts[1]
-    return packages
-
-
-def _get_foreign_packages() -> dict[str, str]:
-    """
-    Run `pacman -Qm` and return {pkgname: installed_version} for all
-    foreign (non-repo) packages currently installed.
-    """
-    result = subprocess.run(
-        ["pacman", "-Qm"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return {}
-    packages = {}
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            packages[parts[0]] = parts[1]
-    return packages
 
 
 def _load_packages_toml_names(path: Path) -> set[str]:
@@ -142,23 +109,10 @@ def _load_packages_toml_sources(path: Path) -> dict[str, str]:
         return {}
 
 
-def _get_pacman_sync_version(pkgname: str) -> str | None:
-    """Return the version available in pacman sync databases, or None if not found."""
-    result = subprocess.run(["pacman", "-Si", "--", pkgname], capture_output=True, text=True)
-    if result.returncode != 0:
-        return None
-    for line in result.stdout.splitlines():
-        if line.startswith("Version"):
-            parts = line.split(":", 1)
-            if len(parts) == 2:
-                return parts[1].strip()
-    return None
-
-
 def _append_to_packages_toml(path: Path, entries: list[dict]) -> None:
     """Append [[package]] blocks to packages.toml, creating the file if needed."""
-    from sysforge.packages_cmd import _entry_toml_block
-    blocks = "".join("\n" + _entry_toml_block(e) + "\n" for e in entries)
+    from sysforge.packages_cmd import entry_toml_block
+    blocks = "".join("\n" + entry_toml_block(e) + "\n" for e in entries)
     if path.exists():
         with open(path, "a") as f:
             f.write(blocks)
@@ -192,8 +146,8 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
 
     packages_path = Path(config.get("packages_file") or PACKAGES_PATH)
 
-    foreign = _get_foreign_packages()
-    all_installed = _get_all_installed_packages()
+    foreign = get_foreign_packages()
+    all_installed = get_all_installed_packages()
 
     if not foreign and not all_installed:
         _log.info("[UPDATE]", "--all: no installed packages found")
@@ -311,7 +265,7 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
 
             source = manifest_sources.get(pkgname, "aur")
             if source == "repo":
-                db_ver = _get_pacman_sync_version(pkgname)
+                db_ver = get_pacman_sync_version(pkgname)
             else:
                 db_ver = aur_db_versions.get(pkgname)
 
@@ -411,104 +365,6 @@ def _print_discovery_summary(results: list[_DiscoveredResult], args) -> None:
     print()
 
 
-# Flags stripped from each per-package makepkg call during batch update.
-# Deps are pre-installed in one shot; packages are installed in one shot at the end.
-_BATCH_STRIP_FLAGS  = frozenset({"--syncdeps", "-s", "--install", "-i"})
-# Always clean the build tree on update — prevents stale $srcdir from a previous failed run
-# causing patch-already-applied errors in prepare().
-_BATCH_EXTRA_FLAGS  = ["-C"]
-
-
-def _get_pkgdest() -> Path | None:
-    """Return PKGDEST from the layered system makepkg.conf, or None if unset."""
-    try:
-        from sysforge.primitives.config import parse_system_makepkg_conf
-        sys_conf = parse_system_makepkg_conf()
-        raw = sys_conf.get("PKGDEST", "").strip().strip("\"'")
-        if raw:
-            return Path(raw).expanduser()
-    except Exception:
-        pass
-    return None
-
-
-def _collect_makedeps(pkgbuild_paths: list) -> list:
-    """Parse PKGBUILDs and return a sorted unique list of their makedepends."""
-    deps: set = set()
-    for path in pkgbuild_paths:
-        try:
-            pkgmeta = parse_pkgbuild(path)
-            raw = pkgmeta.get("globals", {}).get("makedepends", [])
-            if isinstance(raw, str):
-                raw = [raw]
-            # Strip version constraints (e.g. "cmake>=3.16" → "cmake")
-            for dep in raw:
-                deps.add(dep.split(">=")[0].split("<=")[0].split("=")[0].split(">")[0].split("<")[0])
-        except Exception as e:
-            _log.warn("[UPDATE]", f"makedeps parse error ({Path(path).parent.name}): {e}")
-    return sorted(deps)
-
-
-def _filter_missing(deps: list) -> list:
-    """Return the subset of deps not satisfiable by current pacman packages."""
-    if not deps:
-        return []
-    result = subprocess.run(
-        ["pacman", "-T"] + deps,
-        capture_output=True,
-        text=True,
-    )
-    # pacman -T exits 0 if all satisfied, 127 if any are missing.
-    # The missing deps are printed to stdout.
-    return result.stdout.split()
-
-
-def _batch_install_makedeps(deps: list) -> None:
-    _log.info("[UPDATE]", f"Batch-installing {len(deps)} missing makedep(s): {deps}")
-    result = subprocess.run(
-        ["sudo", "pacman", "-S", "--needed", "--noconfirm"] + deps
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"makedep install failed (exit {result.returncode})")
-
-
-def _snapshot_pkg_dir(directory: Path) -> frozenset:
-    """Return frozenset of .pkg.tar* paths (not .sig) in directory.
-
-    Matches both compressed (.pkg.tar.zst, .pkg.tar.xz) and uncompressed
-    (.pkg.tar) packages — the latter is produced when PKGEXT='.pkg.tar'.
-    """
-    if not directory.exists():
-        return frozenset()
-    return frozenset(
-        p for p in directory.glob("*.pkg.tar*")
-        if not p.name.endswith(".sig")
-    )
-
-
-def _batch_install_pkgs(pkg_paths: list) -> bool:
-    """Install all built packages in one sudo pacman -U call. Returns True on success."""
-    missing = [p for p in pkg_paths if not Path(p).exists()]
-    if missing:
-        for p in missing:
-            _log.warn("[UPDATE]", f"Package file gone before install (removed by hook?): {p}")
-        pkg_paths = [p for p in pkg_paths if Path(p).exists()]
-    if not pkg_paths:
-        _log.error("[UPDATE]", "No package files remain to install after filtering missing paths")
-        return False
-    _log.info("[UPDATE]", f"Batch-installing {len(pkg_paths)} built package file(s)")
-    result = subprocess.run(
-        ["sudo", "pacman", "-U", "--noconfirm"] + [str(p) for p in pkg_paths],
-        stderr=subprocess.PIPE, text=True,
-    )
-    if result.returncode != 0:
-        if result.stderr:
-            for line in result.stderr.splitlines():
-                _log.error("[PACMAN]", line)
-        return False
-    return True
-
-
 def cmd_update(args) -> None:
     """Entry point for `sysforge update`."""
     # Refresh the AUR name cache as a side effect; failures are non-fatal
@@ -550,13 +406,7 @@ def cmd_update(args) -> None:
         return
 
     # Group by pkgbase to deduplicate split packages (one PKGBUILD per pkgbase)
-    pkgbase_map: dict[str, list[str]] = {}   # pkgbase -> [pkgnames]
-    pkgbase_entry: dict[str, dict] = {}       # pkgbase -> representative entry
-    for pkgname, entry in packages.items():
-        base = entry.get("pkgbase", pkgname)
-        pkgbase_map.setdefault(base, []).append(pkgname)
-        if base not in pkgbase_entry:
-            pkgbase_entry[base] = entry
+    pkgbase_map, pkgbase_entry = group_by_pkgbase(packages)
 
     results: list[_UpdateResult] = []
 
@@ -633,7 +483,7 @@ def cmd_update(args) -> None:
             continue
 
         # Get installed version (check primary pkgname)
-        installed_ver = _get_installed_version(pkgnames[0])
+        installed_ver = get_installed_version(pkgnames[0])
         if installed_ver is None:
             results.append(_UpdateResult(
                 pkgbase=pkgbase,
@@ -692,35 +542,34 @@ def cmd_update(args) -> None:
 
     from sysforge.primitives.makepkg_wrapper import run as build_run
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
-    from sysforge.cli import _expand_makepkg_flags
     reset_session()
 
-    extra_flags = _expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else None
+    extra_flags = expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else None
 
     # --- Phase 1: batch pre-install all makedepends (one sudo call) ---
     all_pkgbuild_paths = (
         [r.pkgbuild_path for r in to_build if r.pkgbuild_path]
         + [d.pkgbuild_path for d in discovered_to_build if d.pkgbuild_path]
     )
-    makedeps = _collect_makedeps(all_pkgbuild_paths)
-    missing_deps = _filter_missing(makedeps)
+    makedeps = collect_makedeps(all_pkgbuild_paths)
+    missing_deps = filter_missing_deps(makedeps)
     if missing_deps:
         try:
-            _batch_install_makedeps(missing_deps)
+            batch_install_makedeps(missing_deps)
         except RuntimeError as e:
             _log.error("[UPDATE]", str(e))
             print(f"[SYSFORGE] Warning: makedep pre-install failed — some builds may fail", file=sys.stderr)
 
     # Where do built packages land? PKGDEST overrides the pkgbuild dir.
-    pkgdest = _get_pkgdest()
+    pkgdest = get_pkgdest()
     interactive = getattr(args, "interactive", False)
     no_cleanbuild = getattr(args, "no_cleanbuild", False)
     # Prepend cleanbuild so stale $srcdir from a previous failed run never causes
     # patch-already-applied errors in prepare(). Suppressed by --no-cleanbuild.
-    cleanbuild_flags = [] if no_cleanbuild else _BATCH_EXTRA_FLAGS
+    cleanbuild_flags = [] if no_cleanbuild else BATCH_EXTRA_FLAGS
     batch_flags = cleanbuild_flags + (extra_flags or [])
     # When --no-cleanbuild is set, also strip --cleanbuild/-C from profile makepkg_flags.
-    strip_flags = _BATCH_STRIP_FLAGS | {"--cleanbuild", "-C"} if no_cleanbuild else _BATCH_STRIP_FLAGS
+    strip_flags = BATCH_STRIP_FLAGS | {"--cleanbuild", "-C"} if no_cleanbuild else BATCH_STRIP_FLAGS
 
     # --- Phase 2: build all packages (no syncdeps, no install per-package) ---
     built_pkg_files: list = []
@@ -746,7 +595,7 @@ def cmd_update(args) -> None:
                 force_batch=not interactive,
             )
             new_pkgs = sorted(
-                p for p in _snapshot_pkg_dir(search_dir)
+                p for p in snapshot_pkg_dir(search_dir)
                 if p.stat().st_mtime >= build_start
             )
             built_pkg_files.extend(new_pkgs)
@@ -786,7 +635,7 @@ def cmd_update(args) -> None:
                 force_batch=not interactive,
             )
             new_pkgs = sorted(
-                p for p in _snapshot_pkg_dir(search_dir)
+                p for p in snapshot_pkg_dir(search_dir)
                 if p.stat().st_mtime >= build_start
             )
             built_pkg_files.extend(new_pkgs)
@@ -807,7 +656,7 @@ def cmd_update(args) -> None:
     built_pkg_files = deduped
 
     if built_pkg_files:
-        if not _batch_install_pkgs(built_pkg_files):
+        if not batch_install_pkgs(built_pkg_files):
             _log.error("[UPDATE]", "Batch package install failed")
             print("[SYSFORGE] Error: batch install failed — packages were built but not installed.", file=sys.stderr)
             failed += 1

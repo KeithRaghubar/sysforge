@@ -11,7 +11,7 @@ Covers:
                                order, deduplicates multiple -v flags correctly
     _patch_makepkg_argv      — rewrites -m <value-starting-with-dash> to
                                --makepkg=<value>, passes through other tokens
-    _expand_makepkg_flags    — expands combined short flags, passes long flags,
+    expand_makepkg_flags     — expands combined short flags, passes long flags,
                                handles empty/None input
 """
 import os
@@ -22,10 +22,10 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.cli import (
-    _expand_makepkg_flags,
     _hoist_verbosity_flags,
     _patch_makepkg_argv,
 )
+from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
 
 
 # ---------------------------------------------------------------------------
@@ -136,23 +136,23 @@ def test_patch_makepkg_preserves_other_flags():
 
 
 # ---------------------------------------------------------------------------
-# _expand_makepkg_flags
+# expand_makepkg_flags
 # ---------------------------------------------------------------------------
 
 def test_expand_combined_short_flags():
-    assert _expand_makepkg_flags("-sfci") == ["-s", "-f", "-c", "-i"]
+    assert expand_makepkg_flags("-sfci") == ["-s", "-f", "-c", "-i"]
 
 
 def test_expand_single_short_flag():
-    assert _expand_makepkg_flags("-s") == ["-s"]
+    assert expand_makepkg_flags("-s") == ["-s"]
 
 
 def test_expand_long_flag_unchanged():
-    assert _expand_makepkg_flags("--noconfirm") == ["--noconfirm"]
+    assert expand_makepkg_flags("--noconfirm") == ["--noconfirm"]
 
 
 def test_expand_multiple_tokens():
-    result = _expand_makepkg_flags("-sf --noconfirm -i")
+    result = expand_makepkg_flags("-sf --noconfirm -i")
     assert "-s" in result
     assert "-f" in result
     assert "--noconfirm" in result
@@ -160,24 +160,24 @@ def test_expand_multiple_tokens():
 
 
 def test_expand_none_returns_empty():
-    assert _expand_makepkg_flags(None) == []
+    assert expand_makepkg_flags(None) == []
 
 
 def test_expand_empty_string_returns_empty():
-    assert _expand_makepkg_flags("") == []
+    assert expand_makepkg_flags("") == []
 
 
 def test_expand_already_separated():
-    result = _expand_makepkg_flags("-s -f -c")
+    result = expand_makepkg_flags("-s -f -c")
     assert result == ["-s", "-f", "-c"]
 
 
 def test_expand_long_flag_with_value():
     # Long flags with = should pass through intact
-    result = _expand_makepkg_flags("--key=value")
+    result = expand_makepkg_flags("--key=value")
     assert result == ["--key=value"]
 
 
 def test_expand_mixed_short_and_long():
-    result = _expand_makepkg_flags("-sf --noconfirm")
+    result = expand_makepkg_flags("-sf --noconfirm")
     assert result == ["-s", "-f", "--noconfirm"]

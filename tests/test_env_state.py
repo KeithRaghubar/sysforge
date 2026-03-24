@@ -415,14 +415,14 @@ def _run_update_capture_build_calls(args, pkgbuild_path):
                return_value=(Path("/tmp/sf-state-test"), False)), \
          patch("sysforge.update.parse_pkgbuild",
                side_effect=fake_parse_pkgbuild), \
-         patch("sysforge.update._get_installed_version",
+         patch("sysforge.update.get_installed_version",
                return_value="0.9-1"), \
          patch("sysforge.update.vercmp", return_value=1), \
-         patch("sysforge.update._collect_makedeps", return_value=[]), \
-         patch("sysforge.update._filter_missing", return_value=[]), \
-         patch("sysforge.update._get_pkgdest", return_value=None), \
-         patch("sysforge.update._snapshot_pkg_dir", return_value=[]), \
-         patch("sysforge.update._batch_install_pkgs", return_value=True), \
+         patch("sysforge.update.collect_makedeps", return_value=[]), \
+         patch("sysforge.update.filter_missing_deps", return_value=[]), \
+         patch("sysforge.update.get_pkgdest", return_value=None), \
+         patch("sysforge.update.snapshot_pkg_dir", return_value=[]), \
+         patch("sysforge.update.batch_install_pkgs", return_value=True), \
          patch("sysforge.primitives.makepkg_wrapper.run",
                side_effect=fake_build_run), \
          patch("sysforge.primitives.cache_probe.reset_session"), \

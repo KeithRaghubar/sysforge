@@ -26,32 +26,12 @@ from sysforge.packages_cmd import (
     cmd_packages_sync,
 )
 
-from sysforge.primitives.makepkg_wrapper import run
+from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags
 from sysforge.primitives.config import load_config
 
 
-def _expand_makepkg_flags(flags_str):
-    """
-    Split a makepkg flags string into a list of individual flags,
-    expanding combined short flags like '-sfci' into ['-s', '-f', '-c', '-i'].
-    Long flags (--noconfirm) and flags with values are passed through as-is.
-    """
-    if not flags_str:
-        return []
-    result = []
-    for token in flags_str.split():
-        if token.startswith("--"):
-            result.append(token)
-        elif token.startswith("-") and len(token) > 2:
-            # Combined short flags e.g. -sfci → -s -f -c -i
-            result.extend(f"-{ch}" for ch in token[1:])
-        else:
-            result.append(token)
-    return result
-
-
 def _cmd_build(args):
-    extra_flags = _expand_makepkg_flags(args.makepkg) if args.makepkg else None
+    extra_flags = expand_makepkg_flags(args.makepkg) if args.makepkg else None
     if args.no_pkg_log and args.log_dir:
         print("[SYSFORGE] Warning: --log-dir has no effect when --no-pkg-log is set.", file=sys.stderr)
     _log.info("[BUILD]", f"Invocation: {' '.join(sys.argv)}")
@@ -87,7 +67,7 @@ def _cmd_update(args):
 
 
 def _cmd_converge(args):
-    args.extra_flags = _expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else []
+    args.extra_flags = expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else []
     from sysforge.converge import cmd_converge
     try:
         cmd_converge(args)
@@ -194,7 +174,7 @@ def _cmd_run_toolchain(args):
         abi_check=args.abi_check,
         state_dir=Path(args.state_dir) if args.state_dir else None,
         persist_log=args.persist_log,
-        makepkg_flags=_expand_makepkg_flags(args.makepkg) if args.makepkg else [],
+        makepkg_flags=expand_makepkg_flags(args.makepkg) if args.makepkg else [],
     )
     run_stage_standalone(ToolchainStage(), config, options)
 
