@@ -1,22 +1,20 @@
 #!/usr/bin/env bash
-# boot.sh — launch the SysForge test VM
+# boot.sh — launch the SysForge test VM (headless)
 #
 # Usage:
 #   ./tools/vm/boot.sh              # boot normally (changes persist)
 #   ./tools/vm/boot.sh --snapshot   # boot from clean snapshot, discard changes on exit
 #   ./tools/vm/boot.sh --iso        # boot from Arch ISO for initial install
-#   ./tools/vm/boot.sh --snapshot --iso   # (unusual — probably not what you want)
 #
-# First-time setup:
-#   1. make vm-image               # create blank disk image
-#   2. ./tools/vm/boot.sh --iso    # boot from ISO, install Arch
-#   3. Inside VM: make vm-save-clean  (or: savevm clean via QEMU monitor Ctrl-Alt-2)
-#   4. ./tools/vm/boot.sh --snapshot  # subsequent test runs start from clean state
+# The VM runs headless (no window). Access it via SSH:
+#   ssh -p 10022 root@localhost
 #
-# QEMU monitor: Ctrl-Alt-2 to switch to monitor, Ctrl-Alt-1 to switch back
+# QEMU monitor (for savevm / loadvm):
+#   socat - UNIX-CONNECT:~/.local/share/sysforge-vm/qemu-monitor.sock
 #   savevm clean     — save current state as 'clean' snapshot
 #   loadvm clean     — restore to 'clean' snapshot
 #   info snapshots   — list saved snapshots
+#   quit             — stop the VM
 
 set -euo pipefail
 
@@ -85,9 +83,12 @@ QEMU_ARGS=(
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
     -device "virtio-net-pci,netdev=net0"
 
-    # Display: virtio-vga, SDL window
-    -vga virtio
-    -display sdl,gl=on
+    # Headless — no display window; use SSH to access the VM
+    -display none
+
+    # QEMU monitor via Unix socket (for savevm / loadvm)
+    # Connect with: socat - UNIX-CONNECT:"$VM_DIR/qemu-monitor.sock"
+    -monitor "unix:$VM_DIR/qemu-monitor.sock,server,nowait"
 
     # Misc
     -rtc base=localtime
@@ -109,6 +110,8 @@ if [[ $USE_ISO -eq 1 ]]; then
     echo "Booting from Arch ISO: $ISO_PATH"
 fi
 
-echo "SSH available at: ssh -p $SSH_PORT root@localhost"
-echo "QEMU monitor: Ctrl-Alt-2"
+echo "VM running headless."
+echo "  SSH:     ssh -p $SSH_PORT root@localhost"
+echo "  Monitor: socat - UNIX-CONNECT:\"$VM_DIR/qemu-monitor.sock\""
+echo "  Stop:    Ctrl-C (or 'quit' in monitor)"
 exec "${QEMU_ARGS[@]}"

@@ -1,5 +1,5 @@
 .PHONY: dev build install clean test test-v test-x lint release man \
-        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-clean
+        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-clean
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
 VM_DISK = $(VM_DIR)/arch-sysforge.qcow2
@@ -82,6 +82,9 @@ vm-snapshot:
 
 vm-iso:
 	./tools/vm/boot.sh --iso
+
+vm-monitor:
+	socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
 
 vm-clean:
 	@if [ -f "$(VM_DISK)" ]; then \
