@@ -2,8 +2,8 @@
 .SH NAME
 sysforge
 .SH SYNOPSIS
-.B sysforge
-[-h] [-v] COMMAND ...
+.B [0m[1;35msysforge[0m
+[[32m-h[0m] [[32m-v[0m] [32mCOMMAND ...[0m
 .SH DESCRIPTION
 Arch Linux AUR helper with compiler\-optimized builds.
 
@@ -35,12 +35,10 @@ Execute a pipeline stage (pipeline, reconfigure, toolchain, packages, kernel).
 Configure system integration (pacman IgnoreGroup for sf\-build).
 
 .SH COMMAND \fI\,'sysforge build'\/\fR
-usage: sysforge build [\-h] [\-\-makepkg FLAGS] [\-\-interactive] [\-\-persist\-log]
-                      [\-\-no\-pkg\-log] [\-\-log\-dir DIR] [\-\-profile\-conf FILE]
-                      [\-\-cc COMPILER] [\-\-cxx COMPILER] [\-\-ld LINKER]
-                      [\-\-cache\-report] [\-\-abi\-check] [\-\-no\-update]
-                      [\-\-state\-dir DIR]
-                      PKGBUILD [PKGBUILD ...]
+[1;34musage: [0m[1;35msysforge build[0m [[32m\-h[0m] [[36m\-\-makepkg [33mFLAGS[0m] [[36m\-\-interactive[0m] [[36m\-\-persist\-log[0m] [[36m\-\-no\-pkg\-log[0m] [[36m\-\-log\-dir [33mDIR[0m]
+                      [[36m\-\-profile\-conf [33mFILE[0m] [[36m\-\-cc [33mCOMPILER[0m] [[36m\-\-cxx [33mCOMPILER[0m] [[36m\-\-ld [33mLINKER[0m] [[36m\-\-cache\-report[0m]
+                      [[36m\-\-abi\-check[0m] [[36m\-\-no\-update[0m] [[36m\-\-state\-dir [33mDIR[0m]
+                      [32mPKGBUILD [PKGBUILD ...][0m
 
 .TP
 \fBPKGBUILD\fR
@@ -49,9 +47,8 @@ One or more packages to build (path, directory, or bare package name).
 .SH OPTIONS \fI\,'sysforge build'\/\fR
 .TP
 \fB\-\-makepkg\fR \fI\,FLAGS\/\fR, \fB\-m\fR \fI\,FLAGS\/\fR
-Additional makepkg flags, appended after profile makepkg_flags. Combined short
-flags are expanded: \-sfci becomes \-s \-f \-c \-i. Example: sysforge build
-PKGBUILD \-m '\-sfci'
+Additional makepkg flags, appended after profile makepkg_flags. Combined short flags are expanded: \-sfci becomes \-s
+\-f \-c \-i. Example: sysforge build PKGBUILD \-m '\-sfci'
 
 .TP
 \fB\-\-interactive\fR
@@ -102,7 +99,7 @@ Skip git pull \-\-rebase before building.
 Override state directory for build_state.toml.
 
 .SH COMMAND \fI\,'sysforge fetch'\/\fR
-usage: sysforge fetch [\-h] [\-\-no\-update] [\-\-profile\-conf FILE] PKG [PKG ...]
+[1;34musage: [0m[1;35msysforge fetch[0m [[32m\-h[0m] [[36m\-\-no\-update[0m] [[36m\-\-profile\-conf [33mFILE[0m] [32mPKG [PKG ...][0m
 
 .TP
 \fBPKG\fR
@@ -118,18 +115,14 @@ Skip git pull \-\-rebase for packages that are already cloned.
 Path to a flag_profiles.toml to use instead of the default.
 
 .SH COMMAND \fI\,'sysforge update'\/\fR
-usage: sysforge update [\-h] [\-\-all] [\-\-dry\-run] [\-\-devel] [\-\-no\-update]
-                       [\-\-packages FILE] [\-\-state\-dir DIR]
-                       [\-\-profile\-conf FILE] [\-\-cache\-report] [\-\-no\-pkg\-log]
-                       [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-makepkg FLAGS]
-                       [\-\-no\-unified\-log] [\-\-purge\-log] [\-\-interactive]
-                       [\-\-no\-cleanbuild]
+[1;34musage: [0m[1;35msysforge update[0m [[32m\-h[0m] [[36m\-\-all[0m] [[36m\-\-dry\-run[0m] [[36m\-\-devel[0m] [[36m\-\-no\-update[0m] [[36m\-\-packages [33mFILE[0m] [[36m\-\-state\-dir [33mDIR[0m]
+                       [[36m\-\-profile\-conf [33mFILE[0m] [[36m\-\-cache\-report[0m] [[36m\-\-no\-pkg\-log[0m] [[36m\-\-persist\-log[0m] [[36m\-\-log\-dir [33mDIR[0m]
+                       [[36m\-\-makepkg [33mFLAGS[0m] [[36m\-\-no\-unified\-log[0m] [[36m\-\-purge\-log[0m] [[36m\-\-interactive[0m] [[36m\-\-no\-cleanbuild[0m]
 
 .SH OPTIONS \fI\,'sysforge update'\/\fR
 .TP
 \fB\-\-all\fR
-Also discover foreign packages (pacman \-Qm) not yet tracked; add to
-packages.toml and rebuild if outdated.
+Also discover foreign packages (pacman \-Qm) not yet tracked; add to packages.toml and rebuild if outdated.
 
 .TP
 \fB\-\-dry\-run\fR
@@ -145,8 +138,7 @@ Skip git pull \-\-rebase before checking versions.
 
 .TP
 \fB\-\-packages\fR \fI\,FILE\/\fR
-Path to packages.toml for \-\-all discovery (default:
-/etc/sysforge/packages.toml).
+Path to packages.toml for \-\-all discovery (default: /etc/sysforge/packages.toml).
 
 .TP
 \fB\-\-state\-dir\fR \fI\,DIR\/\fR
@@ -174,8 +166,8 @@ Directory for per\-package log files.
 
 .TP
 \fB\-\-makepkg\fR \fI\,FLAGS\/\fR, \fB\-m\fR \fI\,FLAGS\/\fR
-Extra flags passed verbatim to makepkg (e.g. \-m '\-f' to force rebuild).
-Combined short flags are expanded: \-sfci becomes \-s \-f \-c \-i.
+Extra flags passed verbatim to makepkg (e.g. \-m '\-f' to force rebuild). Combined short flags are expanded: \-sfci
+becomes \-s \-f \-c \-i.
 
 .TP
 \fB\-\-no\-unified\-log\fR
@@ -187,16 +179,15 @@ Truncate the unified log before this run instead of appending.
 
 .TP
 \fB\-\-interactive\fR
-Pause on build failures to allow manual correction (default: log failure and
-continue).
+Pause on build failures to allow manual correction (default: log failure and continue).
 
 .TP
 \fB\-\-no\-cleanbuild\fR
-Skip the automatic \-\-cleanbuild (\-C) added for update runs. Useful when
-packages are already built and you only need to re\-run the install step.
+Skip the automatic \-\-cleanbuild (\-C) added for update runs. Useful when packages are already built and you only need
+to re\-run the install step.
 
 .SH COMMAND \fI\,'sysforge resolve'\/\fR
-usage: sysforge resolve [\-h] [\-\-show\-flags] [\-\-profile\-conf FILE] PKG
+[1;34musage: [0m[1;35msysforge resolve[0m [[32m\-h[0m] [[36m\-\-show\-flags[0m] [[36m\-\-profile\-conf [33mFILE[0m] [32mPKG[0m
 
 .TP
 \fBPKG\fR
@@ -212,9 +203,8 @@ Print the full resolved flag set.
 Path to a flag_profiles.toml to use instead of the default.
 
 .SH COMMAND \fI\,'sysforge converge'\/\fR
-usage: sysforge converge [\-h] [\-\-apply] [\-\-state\-dir DIR]
-                         [\-\-profile\-conf FILE] [\-\-no\-pkg\-log] [\-\-persist\-log]
-                         [\-\-log\-dir DIR] [\-\-makepkg FLAGS] [\-\-cache\-report]
+[1;34musage: [0m[1;35msysforge converge[0m [[32m\-h[0m] [[36m\-\-apply[0m] [[36m\-\-state\-dir [33mDIR[0m] [[36m\-\-profile\-conf [33mFILE[0m] [[36m\-\-no\-pkg\-log[0m] [[36m\-\-persist\-log[0m]
+                         [[36m\-\-log\-dir [33mDIR[0m] [[36m\-\-makepkg [33mFLAGS[0m] [[36m\-\-cache\-report[0m]
 
 .SH OPTIONS \fI\,'sysforge converge'\/\fR
 .TP
@@ -243,15 +233,15 @@ Directory for per\-package log files (only relevant with \-\-apply).
 
 .TP
 \fB\-\-makepkg\fR \fI\,FLAGS\/\fR, \fB\-m\fR \fI\,FLAGS\/\fR
-Extra flags passed to makepkg during \-\-apply rebuilds (e.g. \-m '\-C' to
-cleanbuild). \-f is always injected automatically.
+Extra flags passed to makepkg during \-\-apply rebuilds (e.g. \-m '\-C' to cleanbuild). \-f is always injected
+automatically.
 
 .TP
 \fB\-\-cache\-report\fR
 Print a structured cache summary after \-\-apply runs.
 
 .SH COMMAND \fI\,'sysforge packages'\/\fR
-usage: sysforge packages [\-h] [\-\-packages FILE] {list,add,remove,sync} ...
+[1;34musage: [0m[1;35msysforge packages[0m [[32m\-h[0m] [[36m\-\-packages [33mFILE[0m] [32m{list,add,remove,sync} ...[0m
 
 .SH
 POSITIONAL ARGUMENTS \fI\,'sysforge packages'\/\fR
@@ -269,7 +259,7 @@ Remove a package entry.
 Re\-validate inferable fields (source, pkgbuild_patch) for all entries.
 
 .SH COMMAND \fI\,'sysforge packages list'\/\fR
-usage: sysforge packages list [\-h] [\-\-packages FILE]
+[1;34musage: [0m[1;35msysforge packages list[0m [[32m\-h[0m] [[36m\-\-packages [33mFILE[0m]
 
 .SH OPTIONS \fI\,'sysforge packages list'\/\fR
 .TP
@@ -277,7 +267,7 @@ usage: sysforge packages list [\-h] [\-\-packages FILE]
 Path to packages.toml.
 
 .SH COMMAND \fI\,'sysforge packages add'\/\fR
-usage: sysforge packages add [\-h] [\-\-packages FILE] PKG [PKG ...]
+[1;34musage: [0m[1;35msysforge packages add[0m [[32m\-h[0m] [[36m\-\-packages [33mFILE[0m] [32mPKG [PKG ...][0m
 
 .TP
 \fBPKG\fR
@@ -289,7 +279,7 @@ One or more package names to add.
 Path to packages.toml.
 
 .SH COMMAND \fI\,'sysforge packages remove'\/\fR
-usage: sysforge packages remove [\-h] [\-\-packages FILE] PKG
+[1;34musage: [0m[1;35msysforge packages remove[0m [[32m\-h[0m] [[36m\-\-packages [33mFILE[0m] [32mPKG[0m
 
 .TP
 \fBPKG\fR
@@ -301,7 +291,7 @@ Package name to remove.
 Path to packages.toml.
 
 .SH COMMAND \fI\,'sysforge packages sync'\/\fR
-usage: sysforge packages sync [\-h] [\-\-packages FILE] [\-\-dry\-run]
+[1;34musage: [0m[1;35msysforge packages sync[0m [[32m\-h[0m] [[36m\-\-packages [33mFILE[0m] [[36m\-\-dry\-run[0m]
 
 .SH OPTIONS \fI\,'sysforge packages sync'\/\fR
 .TP
@@ -318,7 +308,7 @@ Show what would change without writing.
 Path to packages.toml (default: /etc/sysforge/packages.toml).
 
 .SH COMMAND \fI\,'sysforge run'\/\fR
-usage: sysforge run [\-h] STAGE ...
+[1;34musage: [0m[1;35msysforge run[0m [[32m\-h[0m] [32mSTAGE ...[0m
 
 .SH
 POSITIONAL ARGUMENTS \fI\,'sysforge run'\/\fR
@@ -339,12 +329,9 @@ Build and install non\-kernel packages from packages.toml.
 Build and install the custom kernel configured in kernel.toml.
 
 .SH COMMAND \fI\,'sysforge run pipeline'\/\fR
-usage: sysforge run pipeline [\-h] [\-\-resume] [\-\-start\-from STAGE]
-                             [\-\-force\-retry] [\-\-dry\-run] [\-\-packages FILE]
-                             [\-\-state\-dir DIR] [\-\-no\-unified\-log]
-                             [\-\-no\-pkg\-logs] [\-\-log\-dir DIR] [\-\-purge\-log]
-                             [\-\-persist\-log] [\-\-profile\-conf FILE]
-                             [\-\-cache\-report] [\-\-abi\-check] [\-\-no\-update]
+[1;34musage: [0m[1;35msysforge run pipeline[0m [[32m\-h[0m] [[36m\-\-resume[0m] [[36m\-\-start\-from [33mSTAGE[0m] [[36m\-\-force\-retry[0m] [[36m\-\-dry\-run[0m] [[36m\-\-packages [33mFILE[0m]
+                             [[36m\-\-state\-dir [33mDIR[0m] [[36m\-\-no\-unified\-log[0m] [[36m\-\-no\-pkg\-logs[0m] [[36m\-\-log\-dir [33mDIR[0m] [[36m\-\-purge\-log[0m]
+                             [[36m\-\-persist\-log[0m] [[36m\-\-profile\-conf [33mFILE[0m] [[36m\-\-cache\-report[0m] [[36m\-\-abi\-check[0m] [[36m\-\-no\-update[0m]
 
 .SH OPTIONS \fI\,'sysforge run pipeline'\/\fR
 .TP
@@ -353,8 +340,7 @@ Resume from the last checkpoint.
 
 .TP
 \fB\-\-start\-from\fR \fI\,STAGE\/\fR
-Start from this stage, marking all prior stages as skipped. Useful on a live
-system: \-\-start\-from reconfigure
+Start from this stage, marking all prior stages as skipped. Useful on a live system: \-\-start\-from reconfigure
 
 .TP
 \fB\-\-force\-retry\fR
@@ -409,8 +395,7 @@ Run a post\-build ABI compatibility check on built shared libraries.
 Skip git pull \-\-rebase before each build.
 
 .SH COMMAND \fI\,'sysforge run reconfigure'\/\fR
-usage: sysforge run reconfigure [\-h] [\-\-dry\-run] [\-\-packages FILE]
-                                [\-\-state\-dir DIR]
+[1;34musage: [0m[1;35msysforge run reconfigure[0m [[32m\-h[0m] [[36m\-\-dry\-run[0m] [[36m\-\-packages [33mFILE[0m] [[36m\-\-state\-dir [33mDIR[0m]
 
 .SH OPTIONS \fI\,'sysforge run reconfigure'\/\fR
 .TP
@@ -426,9 +411,8 @@ Path to packages.toml (used by disk and preview steps).
 Override state directory.
 
 .SH COMMAND \fI\,'sysforge run toolchain'\/\fR
-usage: sysforge run toolchain [\-h] [\-\-dry\-run] [\-\-no\-update] [\-\-makepkg FLAGS]
-                              [\-\-persist\-log] [\-\-cache\-report] [\-\-abi\-check]
-                              [\-\-state\-dir DIR]
+[1;34musage: [0m[1;35msysforge run toolchain[0m [[32m\-h[0m] [[36m\-\-dry\-run[0m] [[36m\-\-no\-update[0m] [[36m\-\-makepkg [33mFLAGS[0m] [[36m\-\-persist\-log[0m] [[36m\-\-cache\-report[0m]
+                              [[36m\-\-abi\-check[0m] [[36m\-\-state\-dir [33mDIR[0m]
 
 .SH OPTIONS \fI\,'sysforge run toolchain'\/\fR
 .TP
@@ -441,9 +425,8 @@ Skip git pull \-\-rebase before each build.
 
 .TP
 \fB\-\-makepkg\fR \fI\,FLAGS\/\fR, \fB\-m\fR \fI\,FLAGS\/\fR
-Additional makepkg flags appended to each build. Example: \-m '\-f' to force
-rebuild of already\-built packages. Install flags (\-i/\-\-install) are ignored;
-the toolchain controls which passes install to the system.
+Additional makepkg flags appended to each build. Example: \-m '\-f' to force rebuild of already\-built packages.
+Install flags (\-i/\-\-install) are ignored; the toolchain controls which passes install to the system.
 
 .TP
 \fB\-\-persist\-log\fR
@@ -462,11 +445,9 @@ Run a post\-build ABI compatibility check on built shared libraries.
 Override state directory.
 
 .SH COMMAND \fI\,'sysforge run packages'\/\fR
-usage: sysforge run packages [\-h] [\-\-packages FILE] [\-\-dry\-run]
-                             [\-\-force\-retry] [\-\-no\-update] [\-\-no\-pkg\-logs]
-                             [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-cache\-report]
-                             [\-\-abi\-check] [\-\-state\-dir DIR]
-                             [\-\-profile\-conf FILE]
+[1;34musage: [0m[1;35msysforge run packages[0m [[32m\-h[0m] [[36m\-\-packages [33mFILE[0m] [[36m\-\-dry\-run[0m] [[36m\-\-force\-retry[0m] [[36m\-\-no\-update[0m] [[36m\-\-no\-pkg\-logs[0m]
+                             [[36m\-\-persist\-log[0m] [[36m\-\-log\-dir [33mDIR[0m] [[36m\-\-cache\-report[0m] [[36m\-\-abi\-check[0m] [[36m\-\-state\-dir [33mDIR[0m]
+                             [[36m\-\-profile\-conf [33mFILE[0m]
 
 .SH OPTIONS \fI\,'sysforge run packages'\/\fR
 .TP
@@ -514,9 +495,8 @@ Override state directory.
 Path to a flag_profiles.toml to use instead of the default.
 
 .SH COMMAND \fI\,'sysforge run kernel'\/\fR
-usage: sysforge run kernel [\-h] [\-\-dry\-run] [\-\-no\-update] [\-\-no\-pkg\-logs]
-                           [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-cache\-report]
-                           [\-\-abi\-check] [\-\-state\-dir DIR]
+[1;34musage: [0m[1;35msysforge run kernel[0m [[32m\-h[0m] [[36m\-\-dry\-run[0m] [[36m\-\-no\-update[0m] [[36m\-\-no\-pkg\-logs[0m] [[36m\-\-persist\-log[0m] [[36m\-\-log\-dir [33mDIR[0m]
+                           [[36m\-\-cache\-report[0m] [[36m\-\-abi\-check[0m] [[36m\-\-state\-dir [33mDIR[0m]
 
 .SH OPTIONS \fI\,'sysforge run kernel'\/\fR
 .TP
@@ -552,7 +532,7 @@ Run a post\-build ABI compatibility check on built shared libraries.
 Override state directory.
 
 .SH COMMAND \fI\,'sysforge setup'\/\fR
-usage: sysforge setup [\-h] [\-\-pacman\-conf FILE]
+[1;34musage: [0m[1;35msysforge setup[0m [[32m\-h[0m] [[36m\-\-pacman\-conf [33mFILE[0m]
 
 .SH OPTIONS \fI\,'sysforge setup'\/\fR
 .TP
@@ -562,8 +542,7 @@ Path to pacman.conf (default: /etc/pacman.conf).
 .SH OPTIONS
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
-Verbosity level. Default: errors only. \-v adds warnings. \-vv adds
-informational messages. \-vvv adds debug output.
+Verbosity level. Default: errors only. \-v adds warnings. \-vv adds informational messages. \-vvv adds debug output.
 
 .SH AUTHOR
 .nf

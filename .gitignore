@@ -12,6 +12,8 @@
 *.zip
 
 *.egg-info/
+.SRCINFO
+.SRCINFO-git
 
 .claude/
 .venv/

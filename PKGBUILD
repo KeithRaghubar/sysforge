@@ -27,7 +27,7 @@ optdepends=(
 conflicts=('sysforge-git')
 provides=('sysforge')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # TODO: fill in before AUR submission
+sha256sums=('6e331ad0937a0a1acca33565079c85239a9e4a60295bc355ec4fbcd430d39a7f')
 
 build() {
     cd "$srcdir/$pkgname-$pkgver"
