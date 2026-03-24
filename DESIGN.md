@@ -78,6 +78,8 @@ Three layers:
 └─────────────────────────────────────────┘
 ```
 
+**Import direction:** `cli.py` → command modules (`update.py`, `converge.py`, `packages_cmd.py`, `resolve.py`) → `primitives/*`. No command module imports from another command module.
+
 ---
 
 ## Directory Structure
@@ -224,6 +226,8 @@ cache = false   # PGO build — instrumented objects must never be cached
 - **`packages sync`** — re-classifies each entry's `source` and re-checks `pkgbuild_patch` (if the local PKGBUILD is available). Non-destructive: manual fields (`cache`) are preserved verbatim. Comments are preserved. `--dry-run` shows what would change without writing.
 
 All subcommands accept `--packages FILE` to target a specific file (default: `/etc/sysforge/packages.toml`).
+
+Valid per-entry fields: `name`, `source`, `pkgbuild_patch`, `cache`. Fields `profile` and `requires_hardware` are **removed** from the schema — do not add them.
 
 ### `-march=native` strategy
 
@@ -435,6 +439,20 @@ TOML config loading and path resolution. Public API:
 `[paths] pkgbuild_dir` in `flag_profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
 - `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines.
 
+### `pacman.py`
+
+All pacman and batch-install shared operations. Public API:
+- `get_pkgdest()` — resolves the `PKGDEST` directory from makepkg.conf
+- `snapshot_pkg_dir(pkgdest)` — records the set of `.pkg.tar.*` files currently in pkgdest before a build
+- `batch_install_pkgs(pkgdest, pre_snapshot, ...)` — diffs the post-build pkgdest against the snapshot and installs all new packages in a single `sudo pacman -U`
+- `collect_makedeps(pkgmeta)` / `filter_missing_deps(deps)` / `batch_install_makedeps(deps)` — makedependency helpers
+- `get_installed_version(name)` — `pacman -Q <name>`; returns version string or `None`
+- `get_all_installed_packages()` — `pacman -Q`; returns `{name: version}`
+- `get_foreign_packages()` — `pacman -Qm`; returns names not from any sync DB
+- `get_pacman_sync_version(name)` — `pacman -Si <name>`; returns version from sync DB or `None`
+
+Constants: `BATCH_STRIP_FLAGS` (flags removed from per-build makepkg calls during batch install), `BATCH_EXTRA_FLAGS`.
+
 ### `profile.py`
 
 Profile resolution and rule matching. Public API:
@@ -443,6 +461,10 @@ Profile resolution and rule matching. Public API:
 - `resolve_profile` — selects the winning rule by priority; optionally injects `pkgbuild_extracted` as the chain root
 - `resolve_groups` — accumulates package groups from PKGBUILD, defaults, and all matched rules
 - `resolve_consumes` — determines which conf types the build needs
+- `serialize_flags(profile)` — serializes a resolved profile to a newline-separated `KEY=value` string for storage in `build_state.toml`
+- `get_build_mode(profile)` — extracts the `build_mode` string from a resolved profile
+
+Public constants: `CONF_KEY_MAP` (maps conf delivery channel → set of profile keys), `SYSFORGE_KEYS` (internal keys never written to any conf file), `KERNEL_CLEAN_KEYS` (flag keys stripped from makepkg.conf for kernel builds).
 
 ### `pkgbuild_meta.py`
 
@@ -513,12 +535,17 @@ High-level flow:
 
 AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key import.
 
-- `is_repo_package(name)` — `pacman -Si <name>`; returns `True` if found in any sync DB. Used by `find_pkgbuild` to route auto-clone: repo packages → `pkgctl_checkout`, AUR → `aur_clone`.
+- `repo_packages(names)` — single `pacman -Si name1 name2 ...` invocation; returns the subset of names present in any sync DB. Use for batch classification (O(1) subprocesses). Parses stdout for `Name : <pkg>` lines; packages not found produce errors to stderr only.
+- `is_repo_package(name)` — single-name wrapper around pacman -Si; returns `True` if found in any sync DB. Used by `find_pkgbuild` to route auto-clone: repo packages → `pkgctl_checkout`, AUR → `aur_clone`.
 - `aur_info(names)` — single batch `GET https://aur.archlinux.org/rpc/v5/info?arg[]=…` for all names; returns `{name: result_dict}`. Silent on network/JSON errors (returns `{}`).
 - `aur_clone(name, dest)` — `git clone https://aur.archlinux.org/<name>.git <dest>`; raises `RuntimeError` on failure.
 - `pkgctl_checkout(name, dest)` — `pkgctl repo clone --protocol=https <name>` run in `dest.parent`; fetches official Arch packaging repo. Raises `RuntimeError` on failure.
 - `import_pgp_keys(pkgmeta, pkgbuild_path)` — ensures all `validpgpkeys` listed in the PKGBUILD are in the GPG keyring before `makepkg` runs. Strategy: (1) import any bundled `.asc` files from `keys/pgp/` alongside the PKGBUILD, (2) check which keys are still missing via `gpg --list-keys`, (3) fetch remaining via `gpg --recv-keys`. Import failures are logged as warnings — makepkg surfaces a clearer error if a key is still absent at verification time.
 - `fetch_aur_name_cache(force=False)` — downloads `https://aur.archlinux.org/packages.gz` and extracts it to `~/.cache/sysforge/aur-packages.txt`. Skips the download if the cache is less than 24 hours old unless `force=True`. Called as a side effect of `sysforge update`; read by `sysforge completions packages` to provide AUR package name completion.
+
+`sysforge completions packages` — outputs local pkgbuild_dir packages + pacman sync DB names + AUR cache. Used by zsh completion for `build`, `resolve`, `packages add`. Caps output via `grep -m N "^$PREFIX"` in the completion script to avoid rendering thousands of entries; shows `zle -M` message when limit exceeded.
+
+`sysforge completions manifest` — outputs only names from the active `packages.toml`. Used by zsh completion for `packages remove` (only valid to remove what's already there).
 
 ### `build_state.py`
 
