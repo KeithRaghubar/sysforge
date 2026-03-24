@@ -1,4 +1,4 @@
-.PHONY: dev build install clean test test-v test-x lint release \
+.PHONY: dev build install clean test test-v test-x lint release man \
         vm-deps vm-image vm-boot vm-snapshot vm-iso vm-clean
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
@@ -13,6 +13,7 @@ all: test
 
 dev-deps:
 	sudo pacman -S --needed python-pytest ruff
+	uv pip install argparse-manpage
 
 dev:
 	uv pip install -e .
@@ -40,6 +41,17 @@ lint:
 
 release:
 	bash tools/release.sh
+
+man:
+	mkdir -p man
+	argparse-manpage \
+	  --module sysforge.cli \
+	  --function _build_parser \
+	  --author "Keith Raghubar" \
+	  --author-email "aur.archlinux.org.buckskin000@passmail.net" \
+	  --project-name sysforge \
+	  --url "https://github.com/KeithRaghubar/sysforge" \
+	  --output man/sysforge.1
 
 clean:
 	rm -rf dist/ .venv/ __pycache__/ *.egg-info/ .pytest_cache/

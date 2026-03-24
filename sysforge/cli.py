@@ -611,10 +611,8 @@ def _add_run_parser(sub):
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main():
-    from sysforge.primitives.resource_guard import install as _install_resource_guard
-    _install_resource_guard()
-    sys.argv[1:] = _hoist_verbosity_flags(_patch_makepkg_argv(sys.argv[1:]))
+def _build_parser() -> argparse.ArgumentParser:
+    """Return the top-level ArgumentParser. Called by main() and by argparse-manpage."""
     parser = argparse.ArgumentParser(
         prog="sysforge",
         description="Arch Linux AUR helper with compiler-optimized builds.",
@@ -646,6 +644,14 @@ def main():
     p_completions.add_argument("resource", choices=["packages", "manifest", "local"])
     p_completions.set_defaults(func=_cmd_completions)
 
+    return parser
+
+
+def main():
+    from sysforge.primitives.resource_guard import install as _install_resource_guard
+    _install_resource_guard()
+    sys.argv[1:] = _hoist_verbosity_flags(_patch_makepkg_argv(sys.argv[1:]))
+    parser = _build_parser()
     args = parser.parse_args()
     _log.set_verbosity(args.verbose)
     if getattr(args, "dry_run", False):

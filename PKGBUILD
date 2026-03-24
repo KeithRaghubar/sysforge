@@ -1,4 +1,4 @@
-# Maintainer: Keith Raghubar <keith.raghubar@proton.me>
+# Maintainer: Keith Raghubar <aur.archlinux.org.buckskin000@passmail.net>
 
 pkgname=sysforge
 pkgver=0.1.0
@@ -16,6 +16,7 @@ makedepends=(
     'python-installer'
     'python-wheel'
     'python-hatchling'
+    'python-argparse-manpage'
 )
 optdepends=(
     'uv: faster Python environment management'
@@ -31,11 +32,22 @@ sha256sums=('SKIP')  # TODO: fill in before AUR submission
 build() {
     cd "$srcdir/$pkgname-$pkgver"
     python -m build --wheel --no-isolation
+    argparse-manpage \
+        --module sysforge.cli \
+        --function _build_parser \
+        --author "Keith Raghubar" \
+        --author-email "aur.archlinux.org.buckskin000@passmail.net" \
+        --project-name "$pkgname" \
+        --url "$url" \
+        --output man/sysforge.1
 }
 
 package() {
     cd "$srcdir/$pkgname-$pkgver"
     python -m installer --destdir="$pkgdir" dist/*.whl
+
+    # Man page
+    install -Dm644 man/sysforge.1 "$pkgdir/usr/share/man/man1/sysforge.1"
 
     # Zsh completion
     install -Dm644 completions/_sysforge \

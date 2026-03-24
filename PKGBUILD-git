@@ -1,4 +1,4 @@
-# Maintainer: Keith Raghubar <keith.raghubar@proton.me>
+# Maintainer: Keith Raghubar <aur.archlinux.org.buckskin000@passmail.net>
 
 pkgname=sysforge-git
 pkgver=0.1.0.r0.g0000000  # updated dynamically by pkgver()

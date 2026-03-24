@@ -1,0 +1,579 @@
+.TH SYSFORGE "1" "2026\-03\-24" "sysforge" "Generated Python Manual"
+.SH NAME
+sysforge
+.SH SYNOPSIS
+.B sysforge
+[-h] [-v] COMMAND ...
+.SH DESCRIPTION
+Arch Linux AUR helper with compiler\-optimized builds.
+
+.SH
+POSITIONAL ARGUMENTS
+.TP
+\fBsysforge\fR \fI\,build\/\fR
+Build a package from a PKGBUILD.
+.TP
+\fBsysforge\fR \fI\,fetch\/\fR
+Download PKGBUILD(s) into pkgbuild_dir without building.
+.TP
+\fBsysforge\fR \fI\,update\/\fR
+Check for and rebuild outdated sysforge\-managed packages.
+.TP
+\fBsysforge\fR \fI\,resolve\/\fR
+Show which profile would be applied to a package and why.
+.TP
+\fBsysforge\fR \fI\,converge\/\fR
+Detect and repair packages whose build flags have drifted from the current profile.
+.TP
+\fBsysforge\fR \fI\,packages\/\fR
+Manage packages.toml (list, add, remove, sync).
+.TP
+\fBsysforge\fR \fI\,run\/\fR
+Execute a pipeline stage (pipeline, reconfigure, toolchain, packages, kernel).
+.TP
+\fBsysforge\fR \fI\,setup\/\fR
+Configure system integration (pacman IgnoreGroup for sf\-build).
+
+.SH COMMAND \fI\,'sysforge build'\/\fR
+usage: sysforge build [\-h] [\-\-makepkg FLAGS] [\-\-interactive] [\-\-persist\-log]
+                      [\-\-no\-pkg\-log] [\-\-log\-dir DIR] [\-\-profile\-conf FILE]
+                      [\-\-cc COMPILER] [\-\-cxx COMPILER] [\-\-ld LINKER]
+                      [\-\-cache\-report] [\-\-abi\-check] [\-\-no\-update]
+                      [\-\-state\-dir DIR]
+                      PKGBUILD [PKGBUILD ...]
+
+.TP
+\fBPKGBUILD\fR
+One or more packages to build (path, directory, or bare package name).
+
+.SH OPTIONS \fI\,'sysforge build'\/\fR
+.TP
+\fB\-\-makepkg\fR \fI\,FLAGS\/\fR, \fB\-m\fR \fI\,FLAGS\/\fR
+Additional makepkg flags, appended after profile makepkg_flags. Combined short
+flags are expanded: \-sfci becomes \-s \-f \-c \-i. Example: sysforge build
+PKGBUILD \-m '\-sfci'
+
+.TP
+\fB\-\-interactive\fR
+Strip \-\-noconfirm from profile makepkg_flags.
+
+.TP
+\fB\-\-persist\-log\fR
+Keep the per\-package log file after a successful build.
+
+.TP
+\fB\-\-no\-pkg\-log\fR
+Disable the per\-package log file.
+
+.TP
+\fB\-\-log\-dir\fR \fI\,DIR\/\fR
+Directory for the per\-package log file (default: alongside the PKGBUILD).
+
+.TP
+\fB\-\-profile\-conf\fR \fI\,FILE\/\fR
+Path to a flag_profiles.toml to use instead of the default.
+
+.TP
+\fB\-\-cc\fR \fI\,COMPILER\/\fR
+Override CC (C compiler) for this build, e.g. \-\-cc clang.
+
+.TP
+\fB\-\-cxx\fR \fI\,COMPILER\/\fR
+Override CXX (C++ compiler) for this build, e.g. \-\-cxx clang++.
+
+.TP
+\fB\-\-ld\fR \fI\,LINKER\/\fR
+Override linker for this build, e.g. \-\-ld lld.
+
+.TP
+\fB\-\-cache\-report\fR
+Print a structured cache summary (ccache/sccache hit rates) after the build.
+
+.TP
+\fB\-\-abi\-check\fR
+Run a post\-build ABI compatibility check on built shared libraries.
+
+.TP
+\fB\-\-no\-update\fR
+Skip git pull \-\-rebase before building.
+
+.TP
+\fB\-\-state\-dir\fR \fI\,DIR\/\fR
+Override state directory for build_state.toml.
+
+.SH COMMAND \fI\,'sysforge fetch'\/\fR
+usage: sysforge fetch [\-h] [\-\-no\-update] [\-\-profile\-conf FILE] PKG [PKG ...]
+
+.TP
+\fBPKG\fR
+One or more package names to download.
+
+.SH OPTIONS \fI\,'sysforge fetch'\/\fR
+.TP
+\fB\-\-no\-update\fR
+Skip git pull \-\-rebase for packages that are already cloned.
+
+.TP
+\fB\-\-profile\-conf\fR \fI\,FILE\/\fR
+Path to a flag_profiles.toml to use instead of the default.
+
+.SH COMMAND \fI\,'sysforge update'\/\fR
+usage: sysforge update [\-h] [\-\-all] [\-\-dry\-run] [\-\-devel] [\-\-no\-update]
+                       [\-\-packages FILE] [\-\-state\-dir DIR]
+                       [\-\-profile\-conf FILE] [\-\-cache\-report] [\-\-no\-pkg\-log]
+                       [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-makepkg FLAGS]
+                       [\-\-no\-unified\-log] [\-\-purge\-log] [\-\-interactive]
+                       [\-\-no\-cleanbuild]
+
+.SH OPTIONS \fI\,'sysforge update'\/\fR
+.TP
+\fB\-\-all\fR
+Also discover foreign packages (pacman \-Qm) not yet tracked; add to
+packages.toml and rebuild if outdated.
+
+.TP
+\fB\-\-dry\-run\fR
+Show what would be rebuilt without doing it.
+
+.TP
+\fB\-\-devel\fR
+Include VCS packages (\-git, \-svn, \-hg, \-bzr) in the rebuild.
+
+.TP
+\fB\-\-no\-update\fR
+Skip git pull \-\-rebase before checking versions.
+
+.TP
+\fB\-\-packages\fR \fI\,FILE\/\fR
+Path to packages.toml for \-\-all discovery (default:
+/etc/sysforge/packages.toml).
+
+.TP
+\fB\-\-state\-dir\fR \fI\,DIR\/\fR
+Override state directory.
+
+.TP
+\fB\-\-profile\-conf\fR \fI\,FILE\/\fR
+Path to a flag_profiles.toml to use instead of the default.
+
+.TP
+\fB\-\-cache\-report\fR
+Print a structured cache summary after the run.
+
+.TP
+\fB\-\-no\-pkg\-log\fR
+Disable per\-package log files.
+
+.TP
+\fB\-\-persist\-log\fR
+Keep log files after successful completion.
+
+.TP
+\fB\-\-log\-dir\fR \fI\,DIR\/\fR
+Directory for per\-package log files.
+
+.TP
+\fB\-\-makepkg\fR \fI\,FLAGS\/\fR, \fB\-m\fR \fI\,FLAGS\/\fR
+Extra flags passed verbatim to makepkg (e.g. \-m '\-f' to force rebuild).
+Combined short flags are expanded: \-sfci becomes \-s \-f \-c \-i.
+
+.TP
+\fB\-\-no\-unified\-log\fR
+Disable the unified log file (default: state_dir/sysforge\-update.log).
+
+.TP
+\fB\-\-purge\-log\fR
+Truncate the unified log before this run instead of appending.
+
+.TP
+\fB\-\-interactive\fR
+Pause on build failures to allow manual correction (default: log failure and
+continue).
+
+.TP
+\fB\-\-no\-cleanbuild\fR
+Skip the automatic \-\-cleanbuild (\-C) added for update runs. Useful when
+packages are already built and you only need to re\-run the install step.
+
+.SH COMMAND \fI\,'sysforge resolve'\/\fR
+usage: sysforge resolve [\-h] [\-\-show\-flags] [\-\-profile\-conf FILE] PKG
+
+.TP
+\fBPKG\fR
+Path to a PKGBUILD file, or bare package name.
+
+.SH OPTIONS \fI\,'sysforge resolve'\/\fR
+.TP
+\fB\-\-show\-flags\fR
+Print the full resolved flag set.
+
+.TP
+\fB\-\-profile\-conf\fR \fI\,FILE\/\fR
+Path to a flag_profiles.toml to use instead of the default.
+
+.SH COMMAND \fI\,'sysforge converge'\/\fR
+usage: sysforge converge [\-h] [\-\-apply] [\-\-state\-dir DIR]
+                         [\-\-profile\-conf FILE] [\-\-no\-pkg\-log] [\-\-persist\-log]
+                         [\-\-log\-dir DIR] [\-\-makepkg FLAGS] [\-\-cache\-report]
+
+.SH OPTIONS \fI\,'sysforge converge'\/\fR
+.TP
+\fB\-\-apply\fR
+Rebuild all DRIFTED packages with the current profile.
+
+.TP
+\fB\-\-state\-dir\fR \fI\,DIR\/\fR
+Override state directory for build_state.toml.
+
+.TP
+\fB\-\-profile\-conf\fR \fI\,FILE\/\fR
+Path to a flag_profiles.toml to use instead of the default.
+
+.TP
+\fB\-\-no\-pkg\-log\fR
+Disable per\-package log files (only relevant with \-\-apply).
+
+.TP
+\fB\-\-persist\-log\fR
+Keep log files after successful completion (only relevant with \-\-apply).
+
+.TP
+\fB\-\-log\-dir\fR \fI\,DIR\/\fR
+Directory for per\-package log files (only relevant with \-\-apply).
+
+.TP
+\fB\-\-makepkg\fR \fI\,FLAGS\/\fR, \fB\-m\fR \fI\,FLAGS\/\fR
+Extra flags passed to makepkg during \-\-apply rebuilds (e.g. \-m '\-C' to
+cleanbuild). \-f is always injected automatically.
+
+.TP
+\fB\-\-cache\-report\fR
+Print a structured cache summary after \-\-apply runs.
+
+.SH COMMAND \fI\,'sysforge packages'\/\fR
+usage: sysforge packages [\-h] [\-\-packages FILE] {list,add,remove,sync} ...
+
+.SH
+POSITIONAL ARGUMENTS \fI\,'sysforge packages'\/\fR
+.TP
+\fBsysforge packages\fR \fI\,list\/\fR
+Show packages in packages.toml.
+.TP
+\fBsysforge packages\fR \fI\,add\/\fR
+Add a package: classify source, infer pkgbuild_patch, append entry.
+.TP
+\fBsysforge packages\fR \fI\,remove\/\fR
+Remove a package entry.
+.TP
+\fBsysforge packages\fR \fI\,sync\/\fR
+Re\-validate inferable fields (source, pkgbuild_patch) for all entries.
+
+.SH COMMAND \fI\,'sysforge packages list'\/\fR
+usage: sysforge packages list [\-h] [\-\-packages FILE]
+
+.SH OPTIONS \fI\,'sysforge packages list'\/\fR
+.TP
+\fB\-\-packages\fR \fI\,FILE\/\fR
+Path to packages.toml.
+
+.SH COMMAND \fI\,'sysforge packages add'\/\fR
+usage: sysforge packages add [\-h] [\-\-packages FILE] PKG [PKG ...]
+
+.TP
+\fBPKG\fR
+One or more package names to add.
+
+.SH OPTIONS \fI\,'sysforge packages add'\/\fR
+.TP
+\fB\-\-packages\fR \fI\,FILE\/\fR
+Path to packages.toml.
+
+.SH COMMAND \fI\,'sysforge packages remove'\/\fR
+usage: sysforge packages remove [\-h] [\-\-packages FILE] PKG
+
+.TP
+\fBPKG\fR
+Package name to remove.
+
+.SH OPTIONS \fI\,'sysforge packages remove'\/\fR
+.TP
+\fB\-\-packages\fR \fI\,FILE\/\fR
+Path to packages.toml.
+
+.SH COMMAND \fI\,'sysforge packages sync'\/\fR
+usage: sysforge packages sync [\-h] [\-\-packages FILE] [\-\-dry\-run]
+
+.SH OPTIONS \fI\,'sysforge packages sync'\/\fR
+.TP
+\fB\-\-packages\fR \fI\,FILE\/\fR
+Path to packages.toml.
+
+.TP
+\fB\-\-dry\-run\fR
+Show what would change without writing.
+
+.SH OPTIONS \fI\,'sysforge packages'\/\fR
+.TP
+\fB\-\-packages\fR \fI\,FILE\/\fR
+Path to packages.toml (default: /etc/sysforge/packages.toml).
+
+.SH COMMAND \fI\,'sysforge run'\/\fR
+usage: sysforge run [\-h] STAGE ...
+
+.SH
+POSITIONAL ARGUMENTS \fI\,'sysforge run'\/\fR
+.TP
+\fBsysforge run\fR \fI\,pipeline\/\fR
+Run the full install pipeline (stages 1–8).
+.TP
+\fBsysforge run\fR \fI\,reconfigure\/\fR
+Pre\-build checkpoint: review configs, disk, network, GPG, build preview.
+.TP
+\fBsysforge run\fR \fI\,toolchain\/\fR
+Build and install the LLVM/GCC toolchain from toolchain.toml.
+.TP
+\fBsysforge run\fR \fI\,packages\/\fR
+Build and install non\-kernel packages from packages.toml.
+.TP
+\fBsysforge run\fR \fI\,kernel\/\fR
+Build and install the custom kernel configured in kernel.toml.
+
+.SH COMMAND \fI\,'sysforge run pipeline'\/\fR
+usage: sysforge run pipeline [\-h] [\-\-resume] [\-\-start\-from STAGE]
+                             [\-\-force\-retry] [\-\-dry\-run] [\-\-packages FILE]
+                             [\-\-state\-dir DIR] [\-\-no\-unified\-log]
+                             [\-\-no\-pkg\-logs] [\-\-log\-dir DIR] [\-\-purge\-log]
+                             [\-\-persist\-log] [\-\-profile\-conf FILE]
+                             [\-\-cache\-report] [\-\-abi\-check] [\-\-no\-update]
+
+.SH OPTIONS \fI\,'sysforge run pipeline'\/\fR
+.TP
+\fB\-\-resume\fR
+Resume from the last checkpoint.
+
+.TP
+\fB\-\-start\-from\fR \fI\,STAGE\/\fR
+Start from this stage, marking all prior stages as skipped. Useful on a live
+system: \-\-start\-from reconfigure
+
+.TP
+\fB\-\-force\-retry\fR
+Retry all failed packages without prompting.
+
+.TP
+\fB\-\-dry\-run\fR
+Show what would run without executing anything.
+
+.TP
+\fB\-\-packages\fR \fI\,FILE\/\fR
+Path to packages.toml (default: /etc/sysforge/packages.toml).
+
+.TP
+\fB\-\-state\-dir\fR \fI\,DIR\/\fR
+Override state directory.
+
+.TP
+\fB\-\-no\-unified\-log\fR
+Disable the unified log file.
+
+.TP
+\fB\-\-no\-pkg\-logs\fR
+Disable per\-package log files.
+
+.TP
+\fB\-\-log\-dir\fR \fI\,DIR\/\fR
+Directory for log files.
+
+.TP
+\fB\-\-purge\-log\fR
+Truncate the unified log before this run.
+
+.TP
+\fB\-\-persist\-log\fR
+Keep log files after successful completion.
+
+.TP
+\fB\-\-profile\-conf\fR \fI\,FILE\/\fR
+Path to a flag_profiles.toml to use instead of the default.
+
+.TP
+\fB\-\-cache\-report\fR
+Print a structured cache summary after the pipeline completes.
+
+.TP
+\fB\-\-abi\-check\fR
+Run a post\-build ABI compatibility check on built shared libraries.
+
+.TP
+\fB\-\-no\-update\fR
+Skip git pull \-\-rebase before each build.
+
+.SH COMMAND \fI\,'sysforge run reconfigure'\/\fR
+usage: sysforge run reconfigure [\-h] [\-\-dry\-run] [\-\-packages FILE]
+                                [\-\-state\-dir DIR]
+
+.SH OPTIONS \fI\,'sysforge run reconfigure'\/\fR
+.TP
+\fB\-\-dry\-run\fR
+Run all steps non\-interactively without writing any changes.
+
+.TP
+\fB\-\-packages\fR \fI\,FILE\/\fR
+Path to packages.toml (used by disk and preview steps).
+
+.TP
+\fB\-\-state\-dir\fR \fI\,DIR\/\fR
+Override state directory.
+
+.SH COMMAND \fI\,'sysforge run toolchain'\/\fR
+usage: sysforge run toolchain [\-h] [\-\-dry\-run] [\-\-no\-update] [\-\-makepkg FLAGS]
+                              [\-\-persist\-log] [\-\-cache\-report] [\-\-abi\-check]
+                              [\-\-state\-dir DIR]
+
+.SH OPTIONS \fI\,'sysforge run toolchain'\/\fR
+.TP
+\fB\-\-dry\-run\fR
+Show what would run without executing anything.
+
+.TP
+\fB\-\-no\-update\fR
+Skip git pull \-\-rebase before each build.
+
+.TP
+\fB\-\-makepkg\fR \fI\,FLAGS\/\fR, \fB\-m\fR \fI\,FLAGS\/\fR
+Additional makepkg flags appended to each build. Example: \-m '\-f' to force
+rebuild of already\-built packages. Install flags (\-i/\-\-install) are ignored;
+the toolchain controls which passes install to the system.
+
+.TP
+\fB\-\-persist\-log\fR
+Keep log files after successful completion.
+
+.TP
+\fB\-\-cache\-report\fR
+Print a structured cache summary after the run.
+
+.TP
+\fB\-\-abi\-check\fR
+Run a post\-build ABI compatibility check on built shared libraries.
+
+.TP
+\fB\-\-state\-dir\fR \fI\,DIR\/\fR
+Override state directory.
+
+.SH COMMAND \fI\,'sysforge run packages'\/\fR
+usage: sysforge run packages [\-h] [\-\-packages FILE] [\-\-dry\-run]
+                             [\-\-force\-retry] [\-\-no\-update] [\-\-no\-pkg\-logs]
+                             [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-cache\-report]
+                             [\-\-abi\-check] [\-\-state\-dir DIR]
+                             [\-\-profile\-conf FILE]
+
+.SH OPTIONS \fI\,'sysforge run packages'\/\fR
+.TP
+\fB\-\-packages\fR \fI\,FILE\/\fR
+Path to packages.toml (default: /etc/sysforge/packages.toml).
+
+.TP
+\fB\-\-dry\-run\fR
+Show what would run without executing anything.
+
+.TP
+\fB\-\-force\-retry\fR
+Retry all failed packages without prompting.
+
+.TP
+\fB\-\-no\-update\fR
+Skip git pull \-\-rebase before each build.
+
+.TP
+\fB\-\-no\-pkg\-logs\fR
+Disable per\-package log files.
+
+.TP
+\fB\-\-persist\-log\fR
+Keep log files after successful completion.
+
+.TP
+\fB\-\-log\-dir\fR \fI\,DIR\/\fR
+Directory for log files.
+
+.TP
+\fB\-\-cache\-report\fR
+Print a structured cache summary after the run.
+
+.TP
+\fB\-\-abi\-check\fR
+Run a post\-build ABI compatibility check on built shared libraries.
+
+.TP
+\fB\-\-state\-dir\fR \fI\,DIR\/\fR
+Override state directory.
+
+.TP
+\fB\-\-profile\-conf\fR \fI\,FILE\/\fR
+Path to a flag_profiles.toml to use instead of the default.
+
+.SH COMMAND \fI\,'sysforge run kernel'\/\fR
+usage: sysforge run kernel [\-h] [\-\-dry\-run] [\-\-no\-update] [\-\-no\-pkg\-logs]
+                           [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-cache\-report]
+                           [\-\-abi\-check] [\-\-state\-dir DIR]
+
+.SH OPTIONS \fI\,'sysforge run kernel'\/\fR
+.TP
+\fB\-\-dry\-run\fR
+Show what would run without executing anything.
+
+.TP
+\fB\-\-no\-update\fR
+Skip git pull \-\-rebase before each build.
+
+.TP
+\fB\-\-no\-pkg\-logs\fR
+Disable per\-package log files.
+
+.TP
+\fB\-\-persist\-log\fR
+Keep log files after successful completion.
+
+.TP
+\fB\-\-log\-dir\fR \fI\,DIR\/\fR
+Directory for log files.
+
+.TP
+\fB\-\-cache\-report\fR
+Print a structured cache summary after the run.
+
+.TP
+\fB\-\-abi\-check\fR
+Run a post\-build ABI compatibility check on built shared libraries.
+
+.TP
+\fB\-\-state\-dir\fR \fI\,DIR\/\fR
+Override state directory.
+
+.SH COMMAND \fI\,'sysforge setup'\/\fR
+usage: sysforge setup [\-h] [\-\-pacman\-conf FILE]
+
+.SH OPTIONS \fI\,'sysforge setup'\/\fR
+.TP
+\fB\-\-pacman\-conf\fR \fI\,FILE\/\fR
+Path to pacman.conf (default: /etc/pacman.conf).
+
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Verbosity level. Default: errors only. \-v adds warnings. \-vv adds
+informational messages. \-vvv adds debug output.
+
+.SH AUTHOR
+.nf
+Keith Raghubar
+.fi
+.nf
+aur.archlinux.org.buckskin000@passmail.net
+.fi
+
+.SH DISTRIBUTION
+The latest version of sysforge may be downloaded from
+.UR https://github.com/KeithRaghubar/sysforge
+.UE

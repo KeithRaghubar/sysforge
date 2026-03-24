@@ -89,6 +89,17 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Regenerate man page
+# ---------------------------------------------------------------------------
+
+echo "==> Regenerating man page"
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    make man
+else
+    echo "    [dry-run] would run: make man"
+fi
+
+# ---------------------------------------------------------------------------
 # Generate .SRCINFO for stable PKGBUILD
 # ---------------------------------------------------------------------------
 
@@ -121,6 +132,7 @@ fi
 
 echo ""
 echo "Done. Files ready:"
+echo "  man/sysforge.1 — regenerated from current CLI"
 echo "  PKGBUILD       — sha256sums updated"
 echo "  .SRCINFO       — for AUR package 'sysforge'"
 echo "  .SRCINFO-git   — for AUR package 'sysforge-git'"

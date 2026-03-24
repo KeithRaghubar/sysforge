@@ -504,6 +504,18 @@ Version constraint checking (pacman -Q / vercmp) was intentionally omitted — m
 
 Both functions accept injectable callables for testing. Non-fatal by default; configurable via `abi_mismatch` in `[failure_handling]`.
 
+**AUR dependency resolution — v0.1.0 gap, planned for v1.0:**
+
+`makepkg --syncdeps` installs missing `depends`/`makedepends` via `pacman -S`. Pacman has no AUR visibility, so any dep that is AUR-only and not already installed will cause the build to fail. Sysforge does not currently detect or pre-build AUR deps.
+
+The v1.0 fix is full recursive AUR dependency resolution:
+1. After fetching a PKGBUILD, parse its `depends` and `makedepends`.
+2. For each dep not satisfiable by pacman, query the AUR and recursively fetch + resolve its deps.
+3. Topologically sort the full dep graph and build in order, installing each before the next.
+4. Packages already in `packages.toml` should be de-duplicated rather than rebuilt.
+
+The `dep_analysis.py` soname check is orthogonal — it validates shared-library ABI for packages that *are* installed, not whether they can be installed in the first place.
+
 ### `failure.py`
 
 Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_analysis` to avoid circular imports.
@@ -859,6 +871,24 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 ---
 
+## Man Pages
+
+**v0.1.0 (current):** `argparse-manpage` generates `man/sysforge.1` from the argparse parser exposed via `_build_parser()` in `cli.py`. Generated during `make man` and during the PKGBUILD `build()` step (requires `python-argparse-manpage` makedepend). The man page is not checked into git — it is always generated from the parser at build/package time. Makefile target: `make man`.
+
+**v1.0 planned migration — scdoc hybrid:**
+
+Replace the auto-generated page with a hand-written scdoc template (`man/sysforge.1.scd.in`) covering SYNOPSIS, DESCRIPTION, FILES, EXAMPLES, and SEE ALSO, with OPTIONS sections auto-generated from the argparse parser by a small script (`tools/gen_options.py`) that walks `parser._subparsers` and emits scdoc-formatted option blocks. The Makefile combines them:
+
+```
+tools/gen_options.py → man/sysforge.1.scd.gen
+sed -f .gen .scd.in  → man/sysforge.1.scd
+scdoc               → man/sysforge.1
+```
+
+This gives hand-crafted prose with OPTIONS that stay automatically in sync with the CLI. `scdoc` becomes a makedepend; `python-argparse-manpage` is dropped.
+
+---
+
 ## Hardware Detection
 
 Pipeline stage 3 (stub). When implemented, walks `lspci -k`, `lsmod`, `/sys/bus`, emits `hardware_profile.toml` feeding kconfig automation and `packages.toml` hardware gates. Wraps `make localmodconfig` with an lsmod snapshot for cross-machine reproducibility.
@@ -932,8 +962,8 @@ Build in this order to satisfy dependencies correctly:
 ## Release Plan
 
 - **GitHub:** public from day one; source of truth for all code
-- **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `update`, `resolve`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
-- **v1.0:** system bootstrapper — stages 1–4 implemented (partition, base_install, hardware, configure).
+- **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
+- **v1.0:** system bootstrapper — stages 1–4 implemented (partition, base_install, hardware, configure). Also planned: recursive AUR dependency resolution (see `dep_analysis.py` section); man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below).
 
 ### AUR publishing process
 
@@ -985,7 +1015,6 @@ V2 goal: advanced AUR helper features beyond the v0.1.0 scope.
 
 V2 candidates:
 - **PKGBUILD review** — present diffs to the user before building an AUR package
-- **Recursive AUR dep resolution** — walk the full AUR dependency tree; currently AUR deps on other AUR packages require manual ordering
 
 ### V1.5: Rule priority auto-calculation
 
