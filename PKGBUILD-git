@@ -16,6 +16,7 @@ makedepends=(
     'python-installer'
     'python-wheel'
     'python-hatchling'
+    'python-argparse-manpage'
 )
 optdepends=(
     'uv: faster Python environment management'
@@ -38,11 +39,22 @@ pkgver() {
 build() {
     cd "$srcdir/$pkgname"
     python -m build --wheel --no-isolation
+    argparse-manpage \
+        --module sysforge.cli \
+        --function _build_parser \
+        --author "Keith Raghubar" \
+        --author-email "aur.archlinux.org.buckskin000@passmail.net" \
+        --project-name "$pkgname" \
+        --url "$url" \
+        --output man/sysforge.1
 }
 
 package() {
     cd "$srcdir/$pkgname"
     python -m installer --destdir="$pkgdir" dist/*.whl
+
+    # Man page
+    install -Dm644 man/sysforge.1 "$pkgdir/usr/share/man/man1/sysforge.1"
 
     # Zsh completion
     install -Dm644 completions/_sysforge \
