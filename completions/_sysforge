@@ -43,6 +43,12 @@ _sysforge_pkg_names() {
   _describe 'package' pkgs
 }
 
+_sysforge_manifest_names() {
+  local -a pkgs
+  pkgs=("${(@f)$(sysforge completions manifest 2>/dev/null)}")
+  _describe 'package' pkgs
+}
+
 _sysforge_pkg_or_file() {
   _alternative \
     'files:file:_files' \
@@ -151,7 +157,7 @@ _sysforge_packages_add() {
 _sysforge_packages_remove() {
   _arguments \
     '--packages[path to packages.toml]:file:_files' \
-    '1: :_sysforge_pkg_names'
+    '1: :_sysforge_manifest_names'
 }
 
 _sysforge_packages_sync() {

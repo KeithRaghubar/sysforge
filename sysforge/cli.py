@@ -80,6 +80,21 @@ def _cmd_converge(args):
 def _cmd_completions(args):
     import subprocess as _sp
     config = load_config() or {}
+
+    if args.resource == "manifest":
+        # Names already in packages.toml — used by `packages remove` completion
+        import tomllib as _tomllib
+        raw_pkg = config.get("packages_file")
+        pkg_path = Path(raw_pkg).expanduser() if raw_pkg else Path("/etc/sysforge/packages.toml")
+        if pkg_path.exists():
+            with open(pkg_path, "rb") as _f:
+                data = _tomllib.load(_f)
+            for entry in data.get("package", []):
+                name = entry.get("name")
+                if name:
+                    print(name)
+        return
+
     seen: set[str] = set()
 
     # Local packages from pkgbuild_dir
@@ -601,7 +616,7 @@ def main():
 
     # completions (used by shell completion scripts; not user-facing)
     p_completions = sub.add_parser("completions", help=argparse.SUPPRESS)
-    p_completions.add_argument("resource", choices=["packages"])
+    p_completions.add_argument("resource", choices=["packages", "manifest"])
     p_completions.set_defaults(func=_cmd_completions)
 
     args = parser.parse_args()
