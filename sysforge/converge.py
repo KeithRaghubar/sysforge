@@ -228,7 +228,7 @@ def _apply(results: list[_ConvergeResult], args) -> None:
         print("[SYSFORGE] Nothing to rebuild.")
         return
 
-    from sysforge.primitives.makepkg_wrapper import run as build_run
+    from sysforge.primitives.makepkg_wrapper import run as build_run, BuildOptions
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
     reset_session()
 
@@ -248,8 +248,7 @@ def _apply(results: list[_ConvergeResult], args) -> None:
         build_start = time.time()
         print(f"[SYSFORGE] Rebuilding {result.pkgbase!r}...")
         try:
-            build_run(
-                result.pkgbuild_path,
+            build_run(result.pkgbuild_path, options=BuildOptions(
                 extra_flags=extra_flags,
                 strip_flags=BATCH_STRIP_FLAGS,
                 pkg_log=not getattr(args, "no_pkg_log", False),
@@ -260,7 +259,7 @@ def _apply(results: list[_ConvergeResult], args) -> None:
                 init_session=(built + failed == 0),
                 update=False,   # converge is about flag drift, not version updates
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-            )
+            ))
             new_pkgs = sorted(
                 p for p in snapshot_pkg_dir(search_dir)
                 if p.stat().st_mtime >= build_start

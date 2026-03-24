@@ -47,7 +47,7 @@ from pathlib import Path
 import sysforge.log as _log
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import CONFIG_BASE
-from sysforge.primitives.makepkg_wrapper import run as makepkg_run
+from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 
 KERNEL_PATH = CONFIG_BASE / "etc/sysforge/kernel.toml"
 
@@ -382,8 +382,7 @@ class KernelStage(Stage):
             _log.ui("[KERNEL]", f"[dry-run] would build {pkgname} from {pkgbuild}")
         else:
             _log.ui("[KERNEL]", f"Building kernel: {pkgname} from {pkgbuild}")
-            makepkg_run(
-                pkgbuild,
+            makepkg_run(pkgbuild, options=BuildOptions(
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
                 log_dir=options.log_dir,
@@ -391,7 +390,7 @@ class KernelStage(Stage):
                 cc_override=cc,
                 cxx_override=cxx,
                 abi_check=options.abi_check,
-            )
+            ))
 
         # Post-install
         _run_mkinitcpio(options.dry_run)

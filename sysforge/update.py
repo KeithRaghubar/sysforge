@@ -35,7 +35,7 @@ from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.aur import git_pull_rebase, fetch_aur_name_cache
 from sysforge.primitives.config import PACKAGES_PATH, load_config
-from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
+from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
 from sysforge.primitives.pacman import (
     BATCH_STRIP_FLAGS,
     BATCH_EXTRA_FLAGS,
@@ -579,8 +579,7 @@ def cmd_update(args) -> None:
         search_dir = pkgdest if pkgdest else result.pkgbuild_path.parent
         build_start = time.time()
         try:
-            build_run(
-                result.pkgbuild_path,
+            build_run(result.pkgbuild_path, options=BuildOptions(
                 pkg_log=not getattr(args, "no_pkg_log", False),
                 persist_log=getattr(args, "persist_log", False),
                 log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
@@ -593,7 +592,7 @@ def cmd_update(args) -> None:
                 strip_flags=strip_flags,
                 interactive=interactive,
                 force_batch=not interactive,
-            )
+            ))
             new_pkgs = sorted(
                 p for p in snapshot_pkg_dir(search_dir)
                 if p.stat().st_mtime >= build_start
@@ -619,8 +618,7 @@ def cmd_update(args) -> None:
         search_dir = pkgdest if pkgdest else pkgbuild_path.parent
         build_start = time.time()
         try:
-            build_run(
-                pkgbuild_path,
+            build_run(pkgbuild_path, options=BuildOptions(
                 pkg_log=not getattr(args, "no_pkg_log", False),
                 persist_log=getattr(args, "persist_log", False),
                 log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
@@ -633,7 +631,7 @@ def cmd_update(args) -> None:
                 strip_flags=strip_flags,
                 interactive=interactive,
                 force_batch=not interactive,
-            )
+            ))
             new_pkgs = sorted(
                 p for p in snapshot_pkg_dir(search_dir)
                 if p.stat().st_mtime >= build_start

@@ -6,8 +6,9 @@ and the top-level run() entry point. All config loading, profile resolution,
 and PKGBUILD parsing are delegated to their respective modules.
 
 Public API:
+    BuildOptions                       — dataclass of run() options (all fields defaulted)
     expand_makepkg_flags(flags_str)   → list
-    run(pkgbuild_path)
+    run(pkgbuild_path, options=None)
 """
 import contextlib
 import os
@@ -15,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge.primitives.resource_guard import lift_for_child
@@ -784,25 +786,51 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
 
 # ---------------------------------------------------------------------------
+# Build options
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BuildOptions:
+    """
+    Options for a single makepkg_wrapper.run() invocation.
+
+    All fields default to their safe/do-nothing values so call sites
+    only need to specify what they actually care about. Adding a new
+    option only requires: add a field here with its default, handle it
+    in run() — no changes needed at call sites that don't use it.
+    """
+    extra_flags: list | None = None
+    interactive: bool = False
+    pkg_log: bool = True
+    persist_log: bool = False
+    log_dir: Path | None = None
+    profile_conf: str | None = None
+    cc_override: str | None = None
+    cxx_override: str | None = None
+    ld_override: str | None = None
+    cache_report: bool = False
+    init_session: bool = True
+    update: bool = True
+    profile_override: str | None = None
+    compiler_flags_extra: str | None = None
+    linker_flags_extra: str | None = None
+    strip_full_lto: bool = False
+    extra_env: dict | None = None
+    state_dir: Path | None = None
+    abi_check: bool = False
+    strip_flags: frozenset | set | None = None
+    force_batch: bool = False
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def run(pkgbuild_path, extra_flags=None, interactive=False,
-        pkg_log: bool = True, persist_log: bool = False,
-        log_dir=None, profile_conf=None,
-        cc_override=None, cxx_override=None, ld_override=None,
-        cache_report: bool = False, init_session: bool = True,
-        update: bool = True,
-        profile_override: str | None = None,
-        compiler_flags_extra: str | None = None,
-        linker_flags_extra: str | None = None,
-        strip_full_lto: bool = False,
-        extra_env: dict | None = None,
-        state_dir=None,
-        abi_check: bool = False,
-        strip_flags=None,
-        force_batch: bool = False):
-    config_paths = [Path(profile_conf)] if profile_conf is not None else None
+def run(pkgbuild_path, options: BuildOptions | None = None):
+    if options is None:
+        options = BuildOptions()
+
+    config_paths = [Path(options.profile_conf)] if options.profile_conf is not None else None
     config = load_config(config_paths=config_paths)
     # Note: load_config() debug dumps (full flag_profiles etc.) fire here, before the
     # pkg log is open — they go to the unified log (if open) and terminal only.
@@ -815,8 +843,8 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
 
     # Open per-package log as early as possible so subsequent debug output is captured.
     # Use the PKGBUILD directory name; this matches pkgbase in all normal cases.
-    if pkg_log:
-        log_base = Path(log_dir) if log_dir is not None else pkgbuild_path.parent
+    if options.pkg_log:
+        log_base = Path(options.log_dir) if options.log_dir is not None else pkgbuild_path.parent
         log_path = log_base / f"sysforge_{pkgbuild_path.parent.name}.log"
         _log.open_pkg_log(log_path, argv=sys.argv)
         _log.info("[BUILD]", f"Per-package log: {log_path}")
@@ -824,11 +852,11 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
     conflict_groups = load_conflict_groups()
     inference_map = load_consumes_inference()
 
-    if init_session:
+    if options.init_session:
         reset_session()
         emit_system_probes()
 
-    if update:
+    if options.update:
         try:
             git_pull_rebase(pkgbuild_path.parent)
         except RuntimeError as e:
@@ -847,17 +875,17 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
     try:
         matched_rules = match_rules(pkgmeta, config.get("rules", []))
 
-        if profile_override is not None:
+        if options.profile_override is not None:
             # Bypass rule matching: resolve the named profile directly.
             from sysforge.primitives.profile import merge_extends
             profiles = config.get("profiles", {})
-            if profile_override not in profiles:
+            if options.profile_override not in profiles:
                 raise RuntimeError(
-                    f"[BUILD] profile_override {profile_override!r} not found in loaded config"
+                    f"[BUILD] profile_override {options.profile_override!r} not found in loaded config"
                 )
-            resolved_profile = merge_extends(profile_override, profiles, conflict_groups=conflict_groups)
+            resolved_profile = merge_extends(options.profile_override, profiles, conflict_groups=conflict_groups)
             build_mode = resolved_profile.get("build_mode")
-            _log.info("[BUILD]", f"Profile override: {profile_override!r} (build_mode={build_mode!r})")
+            _log.info("[BUILD]", f"Profile override: {options.profile_override!r} (build_mode={build_mode!r})")
         else:
             build_mode = get_build_mode(matched_rules, config)
             resolved_profile = None  # resolved below after extracted_profile is known
@@ -870,12 +898,12 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             if extracted_profile:
                 write_extracted_profile(extracted_profile, pkgbuild_path)
 
-        if profile_override is None:
+        if options.profile_override is None:
             resolved_profile = resolve_profile(
                 pkgmeta, matched_rules, config, conflict_groups,
                 extracted_profile=extracted_profile,
             )
-        if force_batch and not resolved_profile.get("batch", False):
+        if options.force_batch and not resolved_profile.get("batch", False):
             resolved_profile = dict(resolved_profile)
             resolved_profile["batch"] = True
         active_consumes = resolve_consumes(resolved_profile, pkgmeta, inference_map)
@@ -899,22 +927,22 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
                 active_consumes=active_consumes,
                 extracted_profile=extracted_profile if build_mode in ("patched_pkgbuild", "kernel") else None,
                 pkgmeta=pkgmeta,
-                extra_flags=extra_flags,
-                interactive=interactive,
-                cc_override=cc_override,
-                cxx_override=cxx_override,
-                ld_override=ld_override,
+                extra_flags=options.extra_flags,
+                interactive=options.interactive,
+                cc_override=options.cc_override,
+                cxx_override=options.cxx_override,
+                ld_override=options.ld_override,
                 kernel_build=kernel_build,
-                compiler_flags_extra=compiler_flags_extra,
-                linker_flags_extra=linker_flags_extra,
-                strip_full_lto=strip_full_lto,
-                injected_env=extra_env,
-                strip_flags=strip_flags,
+                compiler_flags_extra=options.compiler_flags_extra,
+                linker_flags_extra=options.linker_flags_extra,
+                strip_full_lto=options.strip_full_lto,
+                injected_env=options.extra_env,
+                strip_flags=options.strip_flags,
             )
         build_success = True
 
         # Post-build ABI check (non-fatal)
-        if abi_check:
+        if options.abi_check:
             try:
                 from sysforge.primitives.abi_check import check_package_abi
                 built_pkgs = _find_built_packages(pkgbuild_path.resolve().parent)
@@ -934,7 +962,7 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
         try:
             from sysforge.primitives.build_state import BuildState
             from sysforge.pipeline.state import resolve_state_dir
-            _state_dir, _ = resolve_state_dir(state_dir)
+            _state_dir, _ = resolve_state_dir(options.state_dir)
             bs = BuildState(_state_dir)
             globals_ = pkgmeta.get("globals", {})
             pkgnames = globals_.get("pkgname", [])
@@ -959,10 +987,10 @@ def run(pkgbuild_path, extra_flags=None, interactive=False,
             _log.warn("[BUILD]", f"Failed to record build state: {e}")
 
     finally:
-        if pkg_log:
-            _log.close_pkg_log(success=build_success, persist=persist_log)
+        if options.pkg_log:
+            _log.close_pkg_log(success=build_success, persist=options.persist_log)
 
-    if cache_report:
+    if options.cache_report:
         emit_session_report()
 
 

@@ -403,8 +403,8 @@ def _run_update_capture_build_calls(args, pkgbuild_path):
         "built_at": "2026-01-01T00:00:00",
     }
 
-    def fake_build_run(_path, **kwargs):
-        build_calls.append(kwargs)
+    def fake_build_run(_path, options=None):
+        build_calls.append(vars(options) if options is not None else {})
 
     def fake_parse_pkgbuild(_path):
         return {"globals": {"pkgver": "1.0", "pkgrel": "1"}}

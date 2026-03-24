@@ -76,7 +76,7 @@ from pathlib import Path
 import sysforge.log as _log
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import CONFIG_BASE, find_pkgbuild
-from sysforge.primitives.makepkg_wrapper import run as makepkg_run
+from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 from sysforge.primitives.resource_guard import lift_for_child
 
 # ---------------------------------------------------------------------------
@@ -400,8 +400,7 @@ def _build_pkg(
                 f"instrumentation sequence: {dropped}",
             )
     combined_flags = list(extra_flags or []) + user_flags
-    makepkg_run(
-        pkgbuild_path,
+    makepkg_run(pkgbuild_path, options=BuildOptions(
         extra_flags=combined_flags,
         compiler_flags_extra=compiler_flags_extra,
         linker_flags_extra=linker_flags_extra,
@@ -414,7 +413,7 @@ def _build_pkg(
         strip_full_lto=pgo_build,
         extra_env=pgo_env,
         abi_check=getattr(options, "abi_check", False),
-    )
+    ))
 
 
 def _build_pass(

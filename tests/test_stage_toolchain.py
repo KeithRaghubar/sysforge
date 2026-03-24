@@ -437,19 +437,14 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     options = make_options(dry_run=False)
 
     call_log = []
-    def fake_run(pkgbuild_path, extra_flags=None, interactive=False,
-                 pkg_log=True, persist_log=False, log_dir=None, profile_conf=None,
-                 cc_override=None, cxx_override=None, ld_override=None,
-                 cache_report=False, init_session=True, update=True,
-                 compiler_flags_extra=None, linker_flags_extra=None, strip_full_lto=False,
-                 profile_override=None, state_dir=None, extra_env=None, **_kw):
+    def fake_run(pkgbuild_path, options=None):
         call_log.append({
-            "cc": cc_override,
-            "flags": list(extra_flags or []),
-            "cfe": compiler_flags_extra,
+            "cc": options.cc_override if options else None,
+            "flags": list(options.extra_flags or []) if options else [],
+            "cfe": options.compiler_flags_extra if options else None,
         })
         # Simulate Pass 2: instrumented clang running as CC writes a profraw file
-        if cc_override == "/usr/bin/clang":
+        if options and options.cc_override == "/usr/bin/clang":
             pgo_store.mkdir(parents=True, exist_ok=True)
             _make_old_profraw(pgo_store / "default_0.profraw")
 
@@ -1190,8 +1185,8 @@ def test_build_pass_pgo_drops_disallowed_flags(tmp_path):
     pkgbuild_map = {"llvm": pkgbuild}
 
     captured = []
-    def fake_run(pb, extra_flags=None, compiler_flags_extra=None, **kwargs):
-        captured.append(list(extra_flags or []))
+    def fake_run(pb, options=None):
+        captured.append(list(options.extra_flags or []) if options else [])
 
     # Simulate user passing -m '-f --noextract --noprepare'
     options = make_options(dry_run=False,
@@ -1214,8 +1209,8 @@ def test_build_pass_non_pgo_passes_all_flags(tmp_path):
     pkgbuild_map = {"llvm": pkgbuild}
 
     captured = []
-    def fake_run(pb, extra_flags=None, compiler_flags_extra=None, **kwargs):
-        captured.append(list(extra_flags or []))
+    def fake_run(pb, options=None):
+        captured.append(list(options.extra_flags or []) if options else [])
 
     options = make_options(dry_run=False,
                            makepkg_flags=["-f", "--noextract"])
@@ -1363,15 +1358,13 @@ def _pgo_fake_run_factory(pgo_store, call_log):
     writes a settled profraw file when Pass 2 runs (identified by CCACHE_DISABLE
     in extra_env, which is only injected during the training pass).
     """
-    def fake_run(pkgbuild_path, extra_flags=None, cc_override=None,
-                 compiler_flags_extra=None, linker_flags_extra=None,
-                 extra_env=None, **_kw):
-        env = dict(extra_env or {})
+    def fake_run(pkgbuild_path, options=None):
+        env = dict(options.extra_env or {}) if options else {}
         call_log.append({
-            "cc":      cc_override,
+            "cc":      options.cc_override if options else None,
             "pkgbuild": str(pkgbuild_path),
-            "cfe":     compiler_flags_extra,
-            "lfe":     linker_flags_extra,
+            "cfe":     options.compiler_flags_extra if options else None,
+            "lfe":     options.linker_flags_extra if options else None,
             "env":     env,
         })
         # Pass 2 is the training run: it injects CCACHE_DISABLE into extra_env.

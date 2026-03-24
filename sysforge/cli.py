@@ -26,7 +26,7 @@ from sysforge.packages_cmd import (
     cmd_packages_sync,
 )
 
-from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags
+from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags, BuildOptions
 from sysforge.primitives.config import load_config
 
 
@@ -38,7 +38,7 @@ def _cmd_build(args):
     packages = args.pkgbuilds
     try:
         for i, pkg in enumerate(packages):
-            run(pkg,
+            run(pkg, options=BuildOptions(
                 extra_flags=extra_flags,
                 interactive=args.interactive,
                 pkg_log=not args.no_pkg_log,
@@ -52,7 +52,8 @@ def _cmd_build(args):
                 cache_report=(args.cache_report and i == len(packages) - 1),
                 update=not args.no_update,
                 abi_check=args.abi_check,
-                state_dir=Path(args.state_dir) if args.state_dir else None)
+                state_dir=Path(args.state_dir) if args.state_dir else None,
+            ))
     except RuntimeError as e:
         print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
         sys.exit(1)

@@ -30,7 +30,7 @@ from pathlib import Path
 
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import find_pkgbuild, PACKAGES_PATH
-from sysforge.primitives.makepkg_wrapper import run as makepkg_run
+from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 
 
 # ---------------------------------------------------------------------------
@@ -196,14 +196,18 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
         parts.append("cc=" + toolchain.get("cc_override", ""))
     suffix = f" ({', '.join(p for p in parts if p)})" if parts else ""
     _log.ui("[PACKAGES]", f"Building {name} from {pkgbuild}{suffix}")
-    makepkg_run(pkgbuild,
-                pkg_log=not options.no_pkg_logs,
-                persist_log=options.persist_log,
-                log_dir=options.log_dir,
-                profile_conf=config.get("profile_conf"),
-                update=not options.no_update,
-                abi_check=options.abi_check,
-                **toolchain)
+    build_opts = BuildOptions(
+        pkg_log=not options.no_pkg_logs,
+        persist_log=options.persist_log,
+        log_dir=options.log_dir,
+        profile_conf=config.get("profile_conf"),
+        update=not options.no_update,
+        abi_check=options.abi_check,
+        cc_override=toolchain.get("cc_override"),
+        cxx_override=toolchain.get("cxx_override"),
+        ld_override=toolchain.get("ld_override"),
+    )
+    makepkg_run(pkgbuild, options=build_opts)
 
 
 # ---------------------------------------------------------------------------
