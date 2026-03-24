@@ -1,8 +1,9 @@
 {
     "additional-repositories": [],
-    "audio_config": null,
-    "bootloader": {
-        "bootloader": "Systemd-boot"
+    "bootloader_config": {
+        "bootloader": "Systemd-boot",
+        "uki": false,
+        "removable": true
     },
     "debug": false,
     "disk_config": {
@@ -13,6 +14,7 @@
                 "partitions": [
                     {
                         "btrfs": [],
+                        "dev_path": null,
                         "flags": ["Boot", "ESP"],
                         "fs_type": "fat32",
                         "mount_options": [],
@@ -21,8 +23,8 @@
                         "size": {
                             "sector_size": {"unit": "B", "value": 512},
                             "total_size": null,
-                            "unit": "GiB",
-                            "value": 1
+                            "unit": "MiB",
+                            "value": 1023
                         },
                         "start": {
                             "sector_size": {"unit": "B", "value": 512},
@@ -35,6 +37,7 @@
                     },
                     {
                         "btrfs": [],
+                        "dev_path": null,
                         "flags": [],
                         "fs_type": "ext4",
                         "mount_options": [],
@@ -43,8 +46,8 @@
                         "size": {
                             "sector_size": {"unit": "B", "value": 512},
                             "total_size": null,
-                            "unit": "Percent",
-                            "value": 100
+                            "unit": "GiB",
+                            "value": 36
                         },
                         "start": {
                             "sector_size": {"unit": "B", "value": 512},
@@ -72,19 +75,8 @@
         }
     },
     "network_config": {
-        "nics": [
-            {
-                "dhcp": true,
-                "dns": null,
-                "gateway": null,
-                "iface": "ens3",
-                "ip": null,
-                "type": "NM"
-            }
-        ],
-        "type": "NM"
+        "type": "nm"
     },
-    "no_pkg_lookups": false,
     "ntp": true,
     "packages": [
         "base-devel",
@@ -95,12 +87,10 @@
         "vim"
     ],
     "profile_config": null,
-    "root_encryption_password": null,
+    "!root-password": "root",
     "script": "guided",
     "services": ["sshd", "NetworkManager"],
-    "silent": true,
     "swap": false,
     "timezone": "UTC",
-    "uki_config": null,
-    "version": "3.0.2"
+    "version": "3.0.15"
 }
