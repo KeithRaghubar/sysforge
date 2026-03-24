@@ -557,6 +557,12 @@ Build state persistence. Writes `/var/lib/sysforge/build_state.toml` after each 
 
 Version comparison utilities. `vercmp(a, b)` wraps the system `vercmp` binary and returns -1/0/1 (negative/zero/positive output from vercmp is clamped). `format_version(globals_)` assembles an `[epoch:]pkgver-pkgrel` string from parsed PKGBUILD globals, omitting the epoch prefix when it is `"0"` or absent.
 
+### `fetch.py`
+
+Implements `sysforge fetch` — download one or more PKGBUILDs into `pkgbuild_dir` without building. Uses `find_pkgbuild` (auto-clones via `pkgctl_checkout` or `aur_clone` if not already present), then runs `git_pull_rebase` for packages that were already cloned (skipped with `--no-update`). Prints the resulting PKGBUILD directory path for each package. Exits 1 if any package failed.
+
+Public API: `cmd_fetch(args)`.
+
 ### `resolve.py`
 
 Implements `sysforge resolve` — inspect profile matching for a PKGBUILD without building it. Output goes to stdout.

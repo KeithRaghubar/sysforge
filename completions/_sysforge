@@ -13,6 +13,7 @@ _sysforge() {
     args)
       case $words[1] in
         build)    _sysforge_build    ;;
+        fetch)    _sysforge_fetch    ;;
         update)   _sysforge_update   ;;
         resolve)  _sysforge_resolve  ;;
         converge) _sysforge_converge ;;
@@ -27,6 +28,7 @@ _sysforge() {
 _sysforge_commands() {
   local commands=(
     'build:build a package from a PKGBUILD'
+    'fetch:download PKGBUILD(s) into pkgbuild_dir without building'
     'update:check for and rebuild outdated sysforge-managed packages'
     'resolve:show which profile would apply to a package'
     'converge:rebuild packages that have drifted from their profile'
@@ -93,6 +95,13 @@ _sysforge_build() {
     '--no-update[skip git pull --rebase before building]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '*: :_sysforge_pkg_or_file'
+}
+
+_sysforge_fetch() {
+  _arguments \
+    '--no-update[skip git pull --rebase for already-cloned packages]' \
+    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '*: :_sysforge_pkg_names'
 }
 
 _sysforge_update() {

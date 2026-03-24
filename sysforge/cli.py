@@ -17,6 +17,7 @@ from pathlib import Path
 import sysforge.log as _log
 
 from sysforge.resolve import cmd_resolve
+from sysforge.fetch import cmd_fetch
 from sysforge.update import cmd_update
 from sysforge.setup_cmd import cmd_setup
 from sysforge.packages_cmd import (
@@ -339,6 +340,20 @@ def _add_build_parser(sub):
     p.set_defaults(func=_cmd_build)
 
 
+def _add_fetch_parser(sub):
+    p = sub.add_parser("fetch",
+        help="Download PKGBUILD(s) into pkgbuild_dir without building.")
+    p.add_argument(
+        "pkgs", nargs="+", metavar="PKG",
+        help="One or more package names to download.",
+    )
+    p.add_argument("--no-update", action="store_true", dest="no_update",
+        help="Skip git pull --rebase for packages that are already cloned.")
+    p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
+        help="Path to a flag_profiles.toml to use instead of the default.")
+    p.set_defaults(func=cmd_fetch)
+
+
 def _add_update_parser(sub):
     p = sub.add_parser("update",
         help="Check for and rebuild outdated sysforge-managed packages.")
@@ -618,6 +633,7 @@ def main():
     sub.required = True
 
     _add_build_parser(sub)
+    _add_fetch_parser(sub)
     _add_update_parser(sub)
     _add_resolve_parser(sub)
     _add_converge_parser(sub)
