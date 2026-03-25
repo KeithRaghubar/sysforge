@@ -64,13 +64,21 @@ iwctl station wlan0 connect "SSID"
 
 ### 2. Install SysForge
 
+The live ISO tmpfs has limited space — skip the full AUR build and install directly from source. Build tools (`uv`, `base-devel`, `python-argparse-manpage`) are not needed here; sysforge has no runtime deps beyond Python 3.11.
+
 ```bash
-pacman -Sy --needed git base-devel uv python-pip python-argparse-manpage
-git clone https://aur.archlinux.org/sysforge.git
-cd sysforge && makepkg -si && cd ~
+pacman -Sy --needed git python-pip
+git clone https://github.com/KeithRaghubar/sysforge.git
+pip install --break-system-packages --no-deps ./sysforge
 ```
 
 ### 3. Configure bootstrap.toml
+
+The pip install doesn't place config files — copy them from the cloned repo:
+
+```bash
+sudo cp -r ~/sysforge/etc/sysforge /etc/sysforge
+```
 
 Edit `/etc/sysforge/bootstrap.toml`. The required fields are `[partition] device`, `[system] hostname`, `[system] locale`, and `[system] timezone`:
 

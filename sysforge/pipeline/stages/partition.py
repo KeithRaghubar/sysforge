@@ -52,8 +52,28 @@ def _check_device(device: str) -> None:
         )
 
 
+def _root_partition(device: str) -> str:
+    """Derive the root partition path from the block device path."""
+    if "nvme" in device or "mmcblk" in device:
+        return f"{device}p2"
+    return f"{device}2"
+
+
+def _is_already_mounted(device: str, target: str) -> bool:
+    """
+    Return True if a partition of device is already mounted at target.
+    This indicates the partition stage already ran — safe to skip on resume.
+    """
+    root_part = _root_partition(device)
+    result = subprocess.run(
+        ["findmnt", "--source", root_part, "--target", target, "--noheadings"],
+        capture_output=True, text=True,
+    )
+    return bool(result.stdout.strip())
+
+
 def _check_not_mounted(device: str, target: str) -> None:
-    """Raise if the device or target is already in use."""
+    """Raise if the device or target is already in use by a different device."""
     result = subprocess.run(
         ["findmnt", "--source", device, "--noheadings"],
         capture_output=True, text=True,
@@ -218,6 +238,11 @@ class PartitionStage(Stage):
 
         _check_tools(cfg.root_fs)
         _check_device(cfg.device)
+
+        if _is_already_mounted(cfg.device, cfg.target):
+            _log.ui("[PARTITION]", f"{cfg.device} already partitioned and mounted at {cfg.target} — skipping.")
+            return
+
         _check_not_mounted(cfg.device, cfg.target)
 
         _confirm(cfg)
