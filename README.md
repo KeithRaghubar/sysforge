@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-**Current status:** v0.1.0 complete. All userspace commands (`build`, `update`, `resolve`, `converge`, `packages`, `run pipeline/reconfigure/toolchain/packages/kernel`) are implemented and usable on a live system. Bootstrap stages 1–4 (partition, base install, hardware detection, configure) are deferred to v1.0.
+**Current status:** v0.2.0. All commands implemented and usable. Userspace AUR management (`build`, `update`, `resolve`, `converge`, `packages`, `run pipeline/reconfigure/toolchain/packages/kernel`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO.
 
 ---
 
@@ -18,9 +18,8 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 
 ## What it is not
 
-- A distro. Output is a standard Arch install; pacman owns the package database.
+- A distro or ISO. Output is a standard Arch install; pacman owns the package database throughout.
 - A replacement for pacman. SysForge handles AUR build configuration and automation; pacman manages the installed package database.
-- A system installer. Bootstrap functionality (partitioning, base install, hardware detection) is planned for v1.0; the v0.1.0 scope is the AUR management layer.
 
 ---
 
@@ -36,8 +35,8 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 ## Installation
 
 ```bash
-# Clone and build manually (until AUR publication)
-git clone https://github.com/KeithRaghubar/sysforge.git
+# From AUR
+git clone https://aur.archlinux.org/sysforge.git
 cd sysforge
 makepkg -si
 ```
@@ -46,6 +45,116 @@ Installed paths:
 - `/etc/sysforge/` — system defaults
 - `~/.config/sysforge/` — user overrides (optional)
 - `/usr/bin/sysforge` — CLI
+
+---
+
+## Fresh install from the Arch ISO
+
+This covers the full path from booting the Arch install ISO to a working system with all packages built and installed.
+
+### 1. Connect to the internet
+
+```bash
+# Wired — usually automatic
+ip link
+
+# Wireless
+iwctl station wlan0 connect "SSID"
+```
+
+### 2. Install SysForge
+
+```bash
+pacman -Sy --needed git base-devel uv python-pip python-argparse-manpage
+git clone https://aur.archlinux.org/sysforge.git
+cd sysforge && makepkg -si && cd ~
+```
+
+### 3. Configure bootstrap.toml
+
+Edit `/etc/sysforge/bootstrap.toml`. The required fields are `[partition] device`, `[system] hostname`, `[system] locale`, and `[system] timezone`:
+
+```toml
+target = "/mnt"
+
+[partition]
+device  = "/dev/sda"    # block device to wipe — ALL DATA WILL BE DESTROYED
+root_fs = "ext4"        # "ext4" | "btrfs"
+
+[system]
+hostname = "myhostname"
+locale   = "en_US.UTF-8"
+timezone = "America/Toronto"
+keymap   = "us"
+
+[mirror]
+countries = ["United States"]
+protocol  = "https"
+age       = 12
+```
+
+### 4. Configure packages.toml
+
+Edit `/etc/sysforge/packages.toml` with the packages to install. Repo packages install via pacman; AUR packages are built with your compiler flag profile. Include `sysforge` if you want it installed in the target system:
+
+```toml
+[build]
+pkgbuild_dir = "~/src"
+
+[[package]]
+name   = "sysforge"
+source = "aur"
+
+[[package]]
+name   = "neovim"
+source = "repo"
+
+[[package]]
+name   = "neovim-git"
+source = "aur"
+```
+
+### 5. Run the bootstrap pipeline
+
+```bash
+# --state-dir writes into the target so checkpoint state survives the reboot
+sysforge run pipeline --state-dir /mnt/var/lib/sysforge
+```
+
+This runs stages 1–4: partition the disk, `pacstrap` the base system, detect hardware, and configure hostname/locale/timezone/mirrorlist. The pipeline saves a checkpoint after each stage — a failure can be resumed with `--resume`.
+
+### 6. Reboot into the installed system
+
+```bash
+reboot
+```
+
+Log in and install SysForge on the new system:
+
+```bash
+pacman -Sy --needed git base-devel uv python-pip python-argparse-manpage
+git clone https://aur.archlinux.org/sysforge.git
+cd sysforge && makepkg -si && cd ~
+```
+
+### 7. Continue the pipeline
+
+```bash
+sysforge run pipeline --start-from reconfigure
+```
+
+This runs stages 5–8:
+
+- **reconfigure** — pre-build checks: disk space, network, config review
+- **toolchain** — builds LLVM/GCC toolchain with optional PGO
+- **packages** — builds and installs everything in `packages.toml` with profiled flags
+- **kernel** — builds a custom kernel (skipped cleanly if `kernel.toml` is absent)
+
+If the stage 5–8 run is interrupted, resume it:
+
+```bash
+sysforge run pipeline --resume
+```
 
 ---
 
@@ -200,10 +309,13 @@ sysforge build htop --interactive
 ### Run the pipeline
 
 ```bash
-# Stages 1–4 are stubbed. Start from reconfigure (pre-build checks) on a live system:
+# Full pipeline from the Arch ISO (stages 1–8, state dir on the target):
+sysforge run pipeline --state-dir /mnt/var/lib/sysforge
+
+# Start from reconfigure on a live system (skip bootstrap stages 1–4):
 sysforge run pipeline --start-from reconfigure --packages packages.toml --state-dir ~/sf-state
 
-# Or skip straight to builds:
+# Skip straight to builds:
 sysforge run pipeline --start-from packages --packages packages.toml --state-dir ~/sf-state
 
 # Resume after a failure
@@ -373,7 +485,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Structured logging (`[SYSFORGE][LEVEL][TAG]`) | ✅ Done |
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 7) | ✅ Done |
-| Pytest suite (851 tests) | ✅ Done |
+| Pytest suite (898 tests) | ✅ Done |
 | Kernel stage (stage 8) | ✅ Done |
 | Reconfigure stage (stage 5) | ✅ Done |
 | Toolchain stage (stage 6, LLVM/GCC + PGO) | ✅ Done |
@@ -382,7 +494,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | `sysforge converge` (profile/flag drift detection) | ✅ Done |
 | `sysforge update --all` (pacman -Qm foreign packages) | ✅ Done |
 | AUR name cache (packages.gz → ~/.cache/sysforge/) | ✅ Done |
-| `repo_mode` config (pacman passthrough vs profiled build) | 🔜 v1.0 — currently parsed by the bootstrap pipeline stages (deferred) but has no effect on `build`/`update` |
+| `repo_mode` config (pacman passthrough vs profiled build) | 🔜 v1.0 — parsed but has no effect on `build`/`update` |
 | `sysforge resolve` | ✅ Done |
 | Bare package name resolution (`sysforge build htop`) | ✅ Done |
 | AUR auto-clone on miss | ✅ Done |
@@ -392,8 +504,8 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | CLI restructure (`packages` namespace, `run` namespace) | ✅ Done |
 | `packages list/add/remove/sync` | ✅ Done |
 | Profiled AUR helper (v0.1.0) | ✅ Done |
-| AUR publication | ⬜ After v0.1.0 |
-| Bootstrap stages 1–4 (partition → configure) | ⬜ v1.0 |
+| AUR publication | ✅ Done |
+| Bootstrap stages 1–4 (partition → configure) | ✅ Done |
 
 ---
 
