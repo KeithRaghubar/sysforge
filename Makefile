@@ -97,7 +97,7 @@ vm-monitor:
 vm-clean:
 	@if [ -f "$(VM_DISK)" ]; then \
 		echo "Removing VM disk image: $(VM_DISK)"; \
-		rm -f $(VM_DISK) $(VM_DIR)/OVMF_VARS.4m.fd $(VM_DIR)/OVMF_VARS.4m.qcow2; \
+		rm -f $(VM_DISK) $(VM_DIR)/OVMF_VARS.4m.fd $(VM_DIR)/OVMF_VARS.4m.qcow2 $(VM_DIR)/known_hosts; \
 	else \
 		echo "No disk image found at $(VM_DISK)"; \
 	fi
