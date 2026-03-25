@@ -12,8 +12,8 @@ depends=(
 )
 makedepends=(
     'git'
-    'python-installer'
-    'python-hatchling'
+    'uv'
+    'python-pip'
     'python-argparse-manpage'
 )
 optdepends=(
@@ -29,7 +29,7 @@ sha256sums=('eea4194a3734cdf6a438a2a44af27e1ada074140b5527ef1724c2d9ec4ea9906')
 
 build() {
     cd "$srcdir/$pkgname-$pkgver"
-    python -m hatchling build --target wheel
+    uv build --wheel
     PYTHONPATH=. argparse-manpage \
         --module sysforge.cli \
         --function _build_parser \
@@ -42,7 +42,7 @@ build() {
 
 package() {
     cd "$srcdir/$pkgname-$pkgver"
-    python -m installer --destdir="$pkgdir" dist/*.whl
+    python -m pip install --no-deps --root="$pkgdir" dist/*.whl
 
     # Man page
     install -Dm644 man/sysforge.1 "$pkgdir/usr/share/man/man1/sysforge.1"
