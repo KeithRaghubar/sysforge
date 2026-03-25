@@ -88,10 +88,10 @@ This is your reset point. Every test run can start from here.
 
 ```bash
 make vm-snapshot   # boot from clean snapshot
-ssh -p 10022 root@localhost
+make vm-ssh
 ```
 
-Inside the VM:
+Inside the VM (`makepkg` cannot run as root):
 ```bash
 git clone https://github.com/KeithRaghubar/sysforge.git
 cd sysforge
@@ -114,7 +114,8 @@ make vm-snapshot
 make vm-boot
 
 # SSH into a running VM
-ssh -p 10022 root@localhost
+make vm-ssh        # builder user (makepkg / sysforge work)
+make vm-ssh-root   # root (admin tasks)
 
 # Open the QEMU monitor (savevm, loadvm, quit, etc.)
 make vm-monitor

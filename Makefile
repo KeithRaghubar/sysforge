@@ -1,5 +1,5 @@
 .PHONY: dev build install clean test test-v test-x lint release man \
-        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-clean
+        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-ssh vm-ssh-root vm-clean
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
 VM_DISK = $(VM_DIR)/arch-sysforge.qcow2
@@ -82,6 +82,14 @@ vm-snapshot:
 
 vm-iso:
 	./tools/vm/boot.sh --iso
+
+VM_SSH = ssh -p 10022 -o UserKnownHostsFile=$(VM_DIR)/known_hosts -o StrictHostKeyChecking=accept-new
+
+vm-ssh:
+	$(VM_SSH) builder@localhost
+
+vm-ssh-root:
+	$(VM_SSH) root@localhost
 
 vm-monitor:
 	socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
