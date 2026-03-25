@@ -27,7 +27,7 @@ VM_DIR="${SYSFORGE_VM_DIR:-$HOME/.local/share/sysforge-vm}"
 DISK_IMAGE="$VM_DIR/arch-sysforge.qcow2"
 OVMF_VARS_TEMPLATE="/usr/share/edk2/x64/OVMF_VARS.4m.fd"
 OVMF_CODE="/usr/share/edk2/x64/OVMF_CODE.4m.fd"
-OVMF_VARS="$VM_DIR/OVMF_VARS.4m.fd"  # per-VM writable copy
+OVMF_VARS="$VM_DIR/OVMF_VARS.4m.qcow2"  # per-VM writable copy (qcow2 for snapshot support)
 ISO_PATH="$VM_DIR/archlinux.iso"
 
 CPU_CORES=4
@@ -61,8 +61,8 @@ fi
 # Copy OVMF vars template on first run — QEMU writes EFI vars back to this
 # file; it must be a writable per-VM copy, not the system template.
 if [[ ! -f "$OVMF_VARS" ]]; then
-    echo "Copying OVMF vars template to $OVMF_VARS"
-    cp "$OVMF_VARS_TEMPLATE" "$OVMF_VARS"
+    echo "Converting OVMF vars template to qcow2 (required for savevm support)"
+    qemu-img convert -f raw -O qcow2 "$OVMF_VARS_TEMPLATE" "$OVMF_VARS"
 fi
 
 # Build QEMU command
@@ -77,7 +77,7 @@ QEMU_ARGS=(
 
     # UEFI firmware (no Secure Boot)
     -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE"
-    -drive "if=pflash,format=raw,file=$OVMF_VARS"
+    -drive "if=pflash,format=qcow2,file=$OVMF_VARS"
 
     # Disk
     -drive "file=$DISK_IMAGE,if=virtio,format=qcow2,discard=unmap"

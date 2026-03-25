@@ -19,7 +19,7 @@ Nothing in this directory is committed — it holds large binary files.
 ```
 ~/.local/share/sysforge-vm/
     arch-sysforge.qcow2    # disk image (created by make vm-image)
-    OVMF_VARS.4m.fd        # per-VM EFI vars (copied from system template on first boot)
+    OVMF_VARS.4m.qcow2     # per-VM EFI vars (converted from system template on first boot; qcow2 for savevm support)
     archlinux.iso          # Arch ISO (you provide this)
     qemu-monitor.sock      # QEMU monitor socket (created at runtime)
 ```
