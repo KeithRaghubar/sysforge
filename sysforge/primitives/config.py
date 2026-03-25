@@ -328,6 +328,19 @@ def _parse_one_makepkg_conf(path: Path) -> dict:
         key = m.group("key")
         value = m.group("value").rstrip()
 
+        # Backslash continuation: join lines ending with '\'
+        if value.endswith("\\"):
+            rest = text[m.end():]
+            parts = [value[:-1]]
+            for cont_line in rest.splitlines():
+                stripped = cont_line.rstrip()
+                if stripped.endswith("\\"):
+                    parts.append(stripped[:-1])
+                else:
+                    parts.append(stripped)
+                    break
+            value = "".join(parts)
+
         # Multiline array: if the value opens a '(' that isn't closed on the
         # same line, consume subsequent lines until paren depth reaches zero.
         if value.startswith("("):

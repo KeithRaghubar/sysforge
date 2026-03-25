@@ -13,6 +13,7 @@ from pathlib import Path
 _DEFAULT_PATH = Path("/etc/sysforge/bootstrap.toml")
 
 _VALID_ROOT_FS = {"ext4", "btrfs"}
+_ZONEINFO_DIR  = Path("/usr/share/zoneinfo")
 
 
 @dataclass
@@ -85,6 +86,19 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
             f"bootstrap.toml: invalid root_fs {root_fs!r}. "
             f"Supported values: {', '.join(sorted(_VALID_ROOT_FS))}."
         )
+
+    if _ZONEINFO_DIR.exists() and not (_ZONEINFO_DIR / timezone).exists():
+        raise RuntimeError(
+            f"bootstrap.toml: invalid timezone {timezone!r}. "
+            f"Check /usr/share/zoneinfo/ for valid values "
+            f"(e.g. 'America/Toronto', 'Europe/London', 'UTC')."
+        )
+
+    for country in mirror_countries:
+        if not isinstance(country, str) or not country.strip():
+            raise RuntimeError(
+                "bootstrap.toml: [mirror].countries entries must be non-empty strings."
+            )
 
     return BootstrapConfig(
         target=target,

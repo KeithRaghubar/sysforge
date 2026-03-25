@@ -110,7 +110,9 @@ def _confirm(cfg: BootstrapConfig) -> None:
     print("  ├───────┬────────────┬──────────┬──────────────────────────┤")
     print("  │  Part │ Size       │ FS       │ Mount                    │")
     print("  ├───────┼────────────┼──────────┼──────────────────────────┤")
-    print(f"  │  1    │ {cfg.esp_size_mib} MiB     │ fat32    │ {cfg.target}/boot            │")
+    _size1 = f" {cfg.esp_size_mib} MiB"
+    _boot  = f"{cfg.target}/boot"
+    print(f"  │  1    │{_size1:<12}│ fat32    │ {_boot:<25}│")
     print(f"  │  2    │ remaining  │ {cfg.root_fs:<8} │ {cfg.target:<24} │")
     print("  └───────┴────────────┴──────────┴──────────────────────────┘")
     print()

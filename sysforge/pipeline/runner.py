@@ -26,6 +26,7 @@ _INVOCATION = " ".join(sys.argv)
 
 from sysforge.pipeline.state import PipelineState, resolve_state_dir
 from sysforge.pipeline.stages import STAGES, STAGE_NAMES
+from sysforge.pipeline.stages.base import BootstrapRebootRequired
 from sysforge.primitives.cache_probe import (
     emit_session_report,
     emit_system_probes,
@@ -225,6 +226,13 @@ def run_pipeline(config, options, stages=None):
                     f"  or jump directly to a later stage:\n"
                     f"    sysforge run pipeline --start-from packages")
                 sys.exit(1)
+
+            except BootstrapRebootRequired as e:
+                state.save()
+                _log.ui("[PIPELINE]", str(e))
+                _log.ui("[PIPELINE]", "State saved. After rebooting, run:")
+                _log.ui("[PIPELINE]", "  sysforge run pipeline --resume")
+                sys.exit(0)
 
             except RuntimeError as e:
                 state.mark_failed(stage.name, str(e))

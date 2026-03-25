@@ -32,7 +32,7 @@ import tomllib
 from pathlib import Path
 
 import sysforge.log as _log
-from sysforge.pipeline.stages.base import Stage
+from sysforge.pipeline.stages.base import BootstrapRebootRequired, Stage
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.primitives.config import (
     CONFIG_BASE,
@@ -279,6 +279,27 @@ def _step_editor(config, state, options, editor: str) -> str:
     new_editor = _prompt(f"  Enter editor command [{editor}]: ") or editor
     if new_editor == editor:
         return editor
+
+    if not shutil.which(new_editor):
+        _log.warn("[RECONFIGURE]", f"  {new_editor!r} not found in PATH")
+        install = _prompt(f"  Try 'pacman -S {new_editor}'? [y/N]: ").lower()
+        if install == "y" and not options.dry_run:
+            result = subprocess.run(
+                ["sudo", "pacman", "-S", "--needed", "--noconfirm", new_editor]
+            )
+            if result.returncode != 0 or not shutil.which(new_editor):
+                _log.warn("[RECONFIGURE]",
+                    f"  Install failed — keeping {editor!r}. "
+                    f"Install {new_editor!r} manually and re-run the editor step."
+                )
+                return editor
+            _log.ui("[RECONFIGURE]", f"  {new_editor} installed")
+        else:
+            _log.warn("[RECONFIGURE]",
+                f"  Keeping {editor!r}. "
+                f"Install {new_editor!r} manually and re-run the editor step to change."
+            )
+            return editor
 
     save = _prompt("  Save as sysforge default? [y/N]: ").lower()
     if save == "y":
@@ -893,6 +914,12 @@ class ReconfigureStage(Stage):
     stateless = True
 
     def run(self, config, state, options):
+        if Path("/run/archiso").exists():
+            raise BootstrapRebootRequired(
+                "Bootstrap complete (stages 1–4 done). "
+                "Reboot into the installed system before continuing."
+            )
+
         _show_stage_summary(state)
 
         step_keys = _select_steps(options)

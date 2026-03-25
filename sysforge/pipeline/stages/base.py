@@ -41,6 +41,16 @@ class RunOptions:
     standalone: bool = False         # True when running a single stage outside the pipeline
 
 
+class BootstrapRebootRequired(Exception):
+    """
+    Raised by a stage when the bootstrap phases are complete and the machine
+    must be rebooted before pipeline execution can continue.
+
+    The runner handles this as a clean stop (not a failure), prints reboot
+    instructions, and preserves state so --resume works after rebooting.
+    """
+
+
 class Stage:
     """
     Base class for all pipeline stages.
