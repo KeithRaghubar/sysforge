@@ -62,7 +62,7 @@ clean:
 # ---------------------------------------------------------------------------
 
 vm-deps:
-	sudo pacman -S --needed qemu-desktop edk2-ovmf
+	sudo pacman -S --needed qemu-desktop edk2-ovmf gtk-vnc
 
 vm-image:
 	mkdir -p $(VM_DIR)
