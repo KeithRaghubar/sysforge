@@ -62,46 +62,21 @@ ip link
 iwctl station wlan0 connect "SSID"
 ```
 
-### 2. Install SysForge
+### 2. Install SysForge and configure bootstrap.toml
 
-The live ISO tmpfs has limited space — skip the full AUR build and install directly from source. Build tools (`uv`, `base-devel`, `python-argparse-manpage`) are not needed here; sysforge has no runtime deps beyond Python 3.11.
-
-```bash
-pacman -Sy --needed git python-pip
-git clone https://github.com/KeithRaghubar/sysforge.git
-pip install --break-system-packages --no-deps ./sysforge
-```
-
-### 3. Configure bootstrap.toml
-
-The pip install doesn't place config files — copy them from the cloned repo:
+Run the setup script directly from the repo:
 
 ```bash
-sudo cp -r ~/sysforge/etc/sysforge /etc/sysforge
+bash <(curl -sL https://raw.githubusercontent.com/KeithRaghubar/sysforge/main/tools/iso-install.sh)
 ```
 
-Edit `/etc/sysforge/bootstrap.toml`. The required fields are `[partition] device`, `[system] hostname`, `[system] locale`, and `[system] timezone`:
+The script clones the repo itself — no prior download needed.
 
-```toml
-target = "/mnt"
+The script checks connectivity, installs SysForge (lightweight — no build tools needed), copies config files to `/etc/sysforge/`, and prompts for the required bootstrap values (device, hostname, locale, timezone). It writes a complete `bootstrap.toml` and prints the next command when done.
 
-[partition]
-device  = "/dev/sda"    # block device to wipe — ALL DATA WILL BE DESTROYED
-root_fs = "ext4"        # "ext4" | "btrfs"
+To configure manually instead, see the [bootstrap.toml reference](#bootstraptoml-reference) below.
 
-[system]
-hostname = "myhostname"
-locale   = "en_US.UTF-8"
-timezone = "America/Toronto"
-keymap   = "us"
-
-[mirror]
-countries = ["United States"]
-protocol  = "https"
-age       = 12
-```
-
-### 4. Configure packages.toml
+### 3. Configure packages.toml
 
 Edit `/etc/sysforge/packages.toml` with the packages to install. Repo packages install via pacman; AUR packages are built with your compiler flag profile. Include `sysforge` if you want it installed in the target system:
 
@@ -122,7 +97,7 @@ name   = "neovim-git"
 source = "aur"
 ```
 
-### 5. Run the bootstrap pipeline
+### 4. Run the bootstrap pipeline
 
 ```bash
 # --state-dir writes into the target so checkpoint state survives the reboot
@@ -131,7 +106,7 @@ sysforge run pipeline --state-dir /mnt/var/lib/sysforge
 
 This runs stages 1–4: partition the disk, `pacstrap` the base system, detect hardware, and configure hostname/locale/timezone/mirrorlist. The pipeline saves a checkpoint after each stage — a failure can be resumed with `--resume`.
 
-### 6. Reboot into the installed system
+### 5. Reboot into the installed system
 
 ```bash
 reboot
@@ -145,7 +120,7 @@ git clone https://aur.archlinux.org/sysforge.git
 cd sysforge && makepkg -si && cd ~
 ```
 
-### 7. Continue the pipeline
+### 6. Continue the pipeline
 
 ```bash
 sysforge run pipeline --start-from reconfigure
@@ -514,6 +489,33 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Profiled AUR helper (v0.1.0) | ✅ Done |
 | AUR publication | ✅ Done |
 | Bootstrap stages 1–4 (partition → configure) | ✅ Done |
+
+---
+
+## bootstrap.toml reference
+
+Required fields for the bootstrap pipeline (stages 1–4). Place at `/etc/sysforge/bootstrap.toml`.
+
+```toml
+target = "/mnt"          # mount point for the new system
+
+[partition]
+device       = "/dev/sda"     # block device to wipe — ALL DATA WILL BE DESTROYED
+esp_size_mib = 512            # EFI System Partition size in MiB (default: 512)
+root_fs      = "ext4"         # "ext4" | "btrfs" (default: "ext4")
+
+[system]
+hostname           = "myhostname"
+locale             = "en_US.UTF-8"
+timezone           = "America/Toronto"
+keymap             = "us"           # optional (default: "us")
+parallel_downloads = 5              # pacman ParallelDownloads (default: 5)
+
+[mirror]
+countries = ["Canada"]  # reflector --country (optional — omit for all mirrors)
+protocol  = "https"
+age       = 12                 # reflector --latest N hours
+```
 
 ---
 
