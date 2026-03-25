@@ -42,6 +42,27 @@ _prompt_choice() {
     done
 }
 
+_prompt_timezone() {
+    local value
+    while true; do
+        read -r -p "  Timezone (e.g. America/Toronto, Europe/London, UTC): " value
+        [[ -z "$value" ]] && { echo "  (required — cannot be empty)" >&2; continue; }
+        [[ -e "/usr/share/zoneinfo/$value" ]] && { echo "$value"; return; }
+        echo "  Invalid timezone. Check /usr/share/zoneinfo/ for valid values." >&2
+    done
+}
+
+_prompt_password() {
+    local p1 p2
+    while true; do
+        read -r -s -p "  Root password: " p1; echo >&2
+        [[ -z "$p1" ]] && { echo "  (required — cannot be empty)" >&2; continue; }
+        read -r -s -p "  Confirm password: " p2; echo >&2
+        [[ "$p1" == "$p2" ]] && { echo "$p1"; return; }
+        echo "  Passwords do not match — try again." >&2
+    done
+}
+
 # ── 1. Check internet ─────────────────────────────────────────────────────────
 
 _header "Checking internet connectivity"
@@ -90,10 +111,10 @@ DEVICE=$(_prompt_required "Block device to install on (e.g. /dev/sda or /dev/nvm
 ROOT_FS=$(_prompt_choice   "Root filesystem [ext4/btrfs]" "ext4" "ext4" "btrfs")
 HOSTNAME=$(_prompt_required "Hostname")
 LOCALE=$(_prompt_default    "Locale" "en_US.UTF-8")
-TIMEZONE=$(_prompt_required "Timezone (e.g. America/Toronto, Europe/London)")
+TIMEZONE=$(_prompt_timezone)
 KEYMAP=$(_prompt_default    "Keymap" "us")
 COUNTRY=$(_prompt_default   "Mirror country for reflector (leave blank for all)" "")
-ROOT_PASSWORD=$(_prompt_required "Root password for the installed system")
+ROOT_PASSWORD=$(_prompt_password)
 
 # Build optional countries line
 if [[ -n "$COUNTRY" ]]; then
@@ -126,7 +147,7 @@ EOF
 
 _header "bootstrap.toml written"
 echo
-cat /etc/sysforge/bootstrap.toml
+sed 's/^\(root_password\s*=\s*\).*/\1"[hidden]"/' /etc/sysforge/bootstrap.toml
 echo
 echo "────────────────────────────────────────────────"
 echo "  To edit further:  vim /etc/sysforge/bootstrap.toml"
