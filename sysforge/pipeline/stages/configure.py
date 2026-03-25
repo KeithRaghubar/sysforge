@@ -17,6 +17,7 @@ bootstrap.toml required fields:
 bootstrap.toml optional fields:
   [system] keymap              string  vconsole keymap (default: "us")
   [system] parallel_downloads  int     pacman ParallelDownloads (default: 5)
+  [system] root_password       string  root password set via chpasswd (prompted if absent)
   [mirror] countries           list    reflector --country values
   [mirror] protocol            string  reflector --protocol (default: "https")
   [mirror] age                 int     reflector --latest N (default: 12)
@@ -163,13 +164,78 @@ def _run_reflector(cfg: BootstrapConfig) -> None:
         _log.ui("[CONFIGURE]", "Mirrorlist updated.")
 
 
+def _install_bootloader(cfg: BootstrapConfig) -> None:
+    """Install systemd-boot and write a minimal loader entry."""
+    _chroot(cfg.target, ["bootctl", "install"])
+
+    loader_conf = Path(cfg.target) / "boot/loader/loader.conf"
+    loader_conf.parent.mkdir(parents=True, exist_ok=True)
+    loader_conf.write_text("default arch.conf\ntimeout 3\nconsole-mode max\n")
+
+    entries_dir = Path(cfg.target) / "boot/loader/entries"
+    entries_dir.mkdir(parents=True, exist_ok=True)
+    (entries_dir / "arch.conf").write_text(
+        "title   Arch Linux\n"
+        "linux   /vmlinuz-linux\n"
+        "initrd  /initramfs-linux.img\n"
+        "options root=LABEL=root rw\n"
+    )
+    _log.ui("[CONFIGURE]", "Bootloader: systemd-boot installed")
+
+
+def _enable_services(cfg: BootstrapConfig) -> None:
+    """Enable NetworkManager and sshd so they start on first boot."""
+    _chroot(cfg.target, ["systemctl", "enable", "NetworkManager"])
+    _chroot(cfg.target, ["systemctl", "enable", "sshd"])
+    _log.ui("[CONFIGURE]", "Services enabled: NetworkManager, sshd")
+
+
+def _configure_sshd(cfg: BootstrapConfig) -> None:
+    """Allow root login via SSH (required for initial access)."""
+    sshd_config = Path(cfg.target) / "etc/ssh/sshd_config"
+    if not sshd_config.exists():
+        _log.warn("[CONFIGURE]", "sshd_config not found — skipping PermitRootLogin config")
+        return
+    text = sshd_config.read_text()
+    new_text, count = re.subn(
+        r"^#?\s*PermitRootLogin\s+.*$",
+        "PermitRootLogin yes",
+        text,
+        flags=re.MULTILINE,
+    )
+    if not count:
+        new_text = text + "\nPermitRootLogin yes\n"
+    if new_text != text:
+        sshd_config.write_text(new_text)
+    _log.ui("[CONFIGURE]", "sshd: PermitRootLogin yes")
+
+
+def _set_root_password(cfg: BootstrapConfig) -> None:
+    """Set the root password from bootstrap.toml, or warn if not configured."""
+    if cfg.root_password:
+        result = subprocess.run(
+            ["arch-chroot", cfg.target, "chpasswd"],
+            input=f"root:{cfg.root_password}\n",
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError("[CONFIGURE] chpasswd failed — root password not set")
+        _log.ui("[CONFIGURE]", "Root password set.")
+    else:
+        _log.warn(
+            "[CONFIGURE]",
+            "No root_password in bootstrap.toml — set it manually after reboot:\n"
+            f"  arch-chroot {cfg.target} passwd root",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
 
 class ConfigureStage(Stage):
     name = "configure"
-    description = "Bootstrap configuration — hostname, locale, timezone, mirrorlist"
+    description = "Bootstrap configuration — hostname, locale, bootloader, services"
     depends_on = ["hardware"]
 
     def run(self, config, state, options):  # noqa: ARG002
@@ -178,13 +244,20 @@ class ConfigureStage(Stage):
         _log.ui("[CONFIGURE]", f"Configuring target: {cfg.target}")
 
         if options.dry_run:
-            _log.ui("[CONFIGURE]", f"[dry-run] hostname:  {cfg.hostname}")
-            _log.ui("[CONFIGURE]", f"[dry-run] locale:    {cfg.locale}")
-            _log.ui("[CONFIGURE]", f"[dry-run] timezone:  {cfg.timezone}")
-            _log.ui("[CONFIGURE]", f"[dry-run] keymap:    {cfg.keymap}")
+            _log.ui("[CONFIGURE]", f"[dry-run] hostname:   {cfg.hostname}")
+            _log.ui("[CONFIGURE]", f"[dry-run] locale:     {cfg.locale}")
+            _log.ui("[CONFIGURE]", f"[dry-run] timezone:   {cfg.timezone}")
+            _log.ui("[CONFIGURE]", f"[dry-run] keymap:     {cfg.keymap}")
             _log.ui("[CONFIGURE]", f"[dry-run] ParallelDownloads: {cfg.parallel_downloads}")
             if cfg.mirror_countries:
                 _log.ui("[CONFIGURE]", f"[dry-run] reflector countries: {cfg.mirror_countries}")
+            _log.ui("[CONFIGURE]", "[dry-run] would install bootloader: systemd-boot")
+            _log.ui("[CONFIGURE]", "[dry-run] would enable: NetworkManager, sshd")
+            _log.ui("[CONFIGURE]", "[dry-run] would configure: PermitRootLogin yes")
+            if cfg.root_password:
+                _log.ui("[CONFIGURE]", "[dry-run] would set root password from bootstrap.toml")
+            else:
+                _log.ui("[CONFIGURE]", "[dry-run] no root_password — will warn at runtime")
             return
 
         _set_hostname(cfg)
@@ -193,5 +266,9 @@ class ConfigureStage(Stage):
         _set_keymap(cfg)
         _set_pacman_parallel_downloads(cfg)
         _run_reflector(cfg)
+        _install_bootloader(cfg)
+        _enable_services(cfg)
+        _configure_sshd(cfg)
+        _set_root_password(cfg)
 
         _log.ui("[CONFIGURE]", "Configure stage complete.")

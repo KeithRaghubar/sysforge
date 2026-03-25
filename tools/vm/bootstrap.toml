@@ -20,3 +20,4 @@ locale               = "en_US.UTF-8"
 timezone             = "UTC"
 keymap               = "us"
 parallel_downloads   = 5
+root_password        = "sysforge"

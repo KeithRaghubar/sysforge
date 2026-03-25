@@ -308,6 +308,7 @@ locale             = "en_US.UTF-8" # required
 timezone           = "UTC"          # required
 keymap             = "us"           # optional (default: "us")
 parallel_downloads = 5              # pacman ParallelDownloads (default: 5)
+root_password      = "secret"       # optional — set via chpasswd; warn if absent
 
 [mirror]
 countries = ["Canada"]  # reflector --country (optional)

@@ -93,6 +93,7 @@ LOCALE=$(_prompt_default    "Locale" "en_US.UTF-8")
 TIMEZONE=$(_prompt_required "Timezone (e.g. America/Toronto, Europe/London)")
 KEYMAP=$(_prompt_default    "Keymap" "us")
 COUNTRY=$(_prompt_default   "Mirror country for reflector (leave blank for all)" "")
+ROOT_PASSWORD=$(_prompt_required "Root password for the installed system")
 
 # Build optional countries line
 if [[ -n "$COUNTRY" ]]; then
@@ -111,10 +112,11 @@ esp_size_mib = 512
 root_fs      = "$ROOT_FS"
 
 [system]
-hostname = "$HOSTNAME"
-locale   = "$LOCALE"
-timezone = "$TIMEZONE"
-keymap   = "$KEYMAP"
+hostname      = "$HOSTNAME"
+locale        = "$LOCALE"
+timezone      = "$TIMEZONE"
+keymap        = "$KEYMAP"
+root_password = "$ROOT_PASSWORD"
 
 [mirror]
 $COUNTRIES_LINE

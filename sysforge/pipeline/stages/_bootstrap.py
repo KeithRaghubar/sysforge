@@ -30,6 +30,7 @@ class BootstrapConfig:
     mirror_countries: list[str] = field(default_factory=list)
     mirror_protocol: str = "https"
     mirror_age: int = 12
+    root_password: str | None = None
 
 
 def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
@@ -80,6 +81,7 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     mirror_countries = mirror.get("countries", [])
     mirror_protocol = mirror.get("protocol", "https")
     mirror_age = mirror.get("age", 12)
+    root_password = system.get("root_password") or None
 
     if root_fs not in _VALID_ROOT_FS:
         raise RuntimeError(
@@ -113,4 +115,5 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
         mirror_countries=mirror_countries,
         mirror_protocol=mirror_protocol,
         mirror_age=mirror_age,
+        root_password=root_password,
     )
