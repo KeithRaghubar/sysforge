@@ -113,7 +113,11 @@ HOSTNAME=$(_prompt_required "Hostname")
 LOCALE=$(_prompt_default    "Locale" "en_US.UTF-8")
 TIMEZONE=$(_prompt_timezone)
 KEYMAP=$(_prompt_default    "Keymap" "us")
-COUNTRY=$(_prompt_default   "Mirror country for reflector (leave blank for all)" "")
+COUNTRY=$(_prompt_default    "Mirror country for reflector (leave blank for all)" "")
+USERNAME=$(_prompt_default   "Primary username" "builder")
+echo "  User password:"
+USER_PASSWORD=$(_prompt_password)
+echo "  Root password:"
 ROOT_PASSWORD=$(_prompt_password)
 
 # Build optional countries line
@@ -137,6 +141,8 @@ hostname      = "$HOSTNAME"
 locale        = "$LOCALE"
 timezone      = "$TIMEZONE"
 keymap        = "$KEYMAP"
+username      = "$USERNAME"
+user_password = "$USER_PASSWORD"
 root_password = "$ROOT_PASSWORD"
 
 [mirror]
@@ -147,7 +153,7 @@ EOF
 
 _header "bootstrap.toml written"
 echo
-sed 's/^\(root_password\s*=\s*\).*/\1"[hidden]"/' /etc/sysforge/bootstrap.toml
+sed 's/^\(\(root\|user\)_password\s*=\s*\).*/\1"[hidden]"/' /etc/sysforge/bootstrap.toml
 echo
 echo "────────────────────────────────────────────────"
 echo "  To edit further:  vim /etc/sysforge/bootstrap.toml"

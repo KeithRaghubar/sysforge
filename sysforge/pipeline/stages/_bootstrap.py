@@ -31,6 +31,8 @@ class BootstrapConfig:
     mirror_protocol: str = "https"
     mirror_age: int = 12
     root_password: str | None = None
+    username: str = "builder"
+    user_password: str | None = None
 
 
 def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
@@ -82,6 +84,8 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     mirror_protocol = mirror.get("protocol", "https")
     mirror_age = mirror.get("age", 12)
     root_password = system.get("root_password") or None
+    username = system.get("username", "builder") or "builder"
+    user_password = system.get("user_password") or None
 
     if root_fs not in _VALID_ROOT_FS:
         raise RuntimeError(
@@ -116,4 +120,6 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
         mirror_protocol=mirror_protocol,
         mirror_age=mirror_age,
         root_password=root_password,
+        username=username,
+        user_password=user_password,
     )

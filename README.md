@@ -511,6 +511,8 @@ timezone           = "America/Toronto"
 keymap             = "us"           # optional (default: "us")
 parallel_downloads = 5              # pacman ParallelDownloads (default: 5)
 root_password      = "secret"       # optional — set at configure time; warn if absent
+username           = "builder"      # optional — primary user (default: "builder")
+user_password      = "secret"       # optional — user password; warn if absent
 
 [mirror]
 countries = ["Canada"]  # reflector --country (optional — omit for all mirrors)

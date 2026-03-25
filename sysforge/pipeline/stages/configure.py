@@ -210,30 +210,76 @@ def _configure_sshd(cfg: BootstrapConfig) -> None:
     _log.ui("[CONFIGURE]", "sshd: PermitRootLogin yes")
 
 
+def _create_user(cfg: BootstrapConfig) -> None:
+    """Create the primary user, add to wheel, and configure sudo."""
+    # Create user with home dir and wheel group membership
+    result = _chroot(cfg.target, ["useradd", "-m", "-G", "wheel", cfg.username], check=False)
+    if result.returncode not in (0, 9):  # 9 = already exists
+        raise RuntimeError(f"[CONFIGURE] useradd failed for {cfg.username!r} (exit {result.returncode})")
+    _log.ui("[CONFIGURE]", f"User: {cfg.username} (wheel)")
+
+    # Allow wheel group to use sudo via a sudoers drop-in
+    sudoers_d = Path(cfg.target) / "etc/sudoers.d"
+    sudoers_d.mkdir(parents=True, exist_ok=True)
+    (sudoers_d / "wheel").write_text("%wheel ALL=(ALL:ALL) ALL\n")
+    _log.ui("[CONFIGURE]", "sudo: wheel group enabled")
+
+    if cfg.user_password:
+        result = subprocess.run(
+            ["arch-chroot", cfg.target, "chpasswd"],
+            input=f"{cfg.username}:{cfg.user_password}\n",
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"[CONFIGURE] chpasswd failed for {cfg.username!r}")
+        _log.ui("[CONFIGURE]", f"Password set for {cfg.username}.")
+    else:
+        _log.warn(
+            "[CONFIGURE]",
+            f"No user_password in bootstrap.toml — set it manually after reboot:\n"
+            f"  passwd {cfg.username}",
+        )
+
+
+_BASHRC = (
+    "[[ $- != *i* ]] && return\n"
+    "\n"
+    "alias ls='ls --color=auto'\n"
+    "alias grep='grep --color=auto'\n"
+    "\n"
+)
+_ZSHRC = (
+    "alias ls='ls --color=auto'\n"
+    "alias grep='grep --color=auto'\n"
+    "\n"
+    "setopt autocd\n"
+    "\n"
+)
+
+
 def _configure_shell(cfg: BootstrapConfig) -> None:
-    """Write /root/.bashrc and /root/.zshrc with colored prompts and common aliases."""
+    """Write shell dotfiles for root and the primary user."""
+    # root: red prompt
     root_dir = Path(cfg.target) / "root"
     root_dir.mkdir(parents=True, exist_ok=True)
-
     (root_dir / ".bashrc").write_text(
-        "[[ $- != *i* ]] && return\n"
-        "\n"
-        "alias ls='ls --color=auto'\n"
-        "alias grep='grep --color=auto'\n"
-        "\n"
-        r"PS1='\[\e[1;31m\][\u@\h \W]\$\[\e[0m\] '" + "\n"
+        _BASHRC + r"PS1='\[\e[1;31m\][\u@\h \W]\$\[\e[0m\] '" + "\n"
     )
-
     (root_dir / ".zshrc").write_text(
-        "alias ls='ls --color=auto'\n"
-        "alias grep='grep --color=auto'\n"
-        "\n"
-        "setopt autocd\n"
-        "\n"
-        r"PROMPT='%B%F{red}[%n@%m %1~]%#%f%b '" + "\n"
+        _ZSHRC + r"PROMPT='%B%F{red}[%n@%m %1~]%#%f%b '" + "\n"
     )
 
-    _log.ui("[CONFIGURE]", "Shell: .bashrc and .zshrc written (colored prompts)")
+    # primary user: green prompt
+    user_dir = Path(cfg.target) / "home" / cfg.username
+    if user_dir.is_dir():
+        (user_dir / ".bashrc").write_text(
+            _BASHRC + r"PS1='\[\e[1;32m\][\u@\h \W]\$\[\e[0m\] '" + "\n"
+        )
+        (user_dir / ".zshrc").write_text(
+            _ZSHRC + r"PROMPT='%B%F{green}[%n@%m %1~]%#%f%b '" + "\n"
+        )
+
+    _log.ui("[CONFIGURE]", f"Shell: dotfiles written for root and {cfg.username}")
 
 
 def _set_root_password(cfg: BootstrapConfig) -> None:
@@ -295,6 +341,7 @@ class ConfigureStage(Stage):
         _install_bootloader(cfg)
         _enable_services(cfg)
         _configure_sshd(cfg)
+        _create_user(cfg)
         _configure_shell(cfg)
         _set_root_password(cfg)
 
