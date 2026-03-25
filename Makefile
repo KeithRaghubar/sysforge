@@ -87,10 +87,10 @@ vm-iso:
 VM_SSH = ssh -p 10022 -o UserKnownHostsFile=$(VM_DIR)/known_hosts -o StrictHostKeyChecking=accept-new
 
 vm-ssh:
-	$(VM_SSH) builder@localhost
+	ssh-keygen -R '[localhost]:10022' -f $(VM_DIR)/known_hosts 2>/dev/null; $(VM_SSH) builder@localhost
 
 vm-ssh-root:
-	$(VM_SSH) root@localhost
+	ssh-keygen -R '[localhost]:10022' -f $(VM_DIR)/known_hosts 2>/dev/null; $(VM_SSH) root@localhost
 
 vm-monitor:
 	socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
