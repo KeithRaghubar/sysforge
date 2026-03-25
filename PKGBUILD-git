@@ -39,7 +39,7 @@ pkgver() {
 build() {
     cd "$srcdir/$pkgname"
     python -m build --wheel --no-isolation
-    argparse-manpage \
+    PYTHONPATH=. argparse-manpage \
         --module sysforge.cli \
         --function _build_parser \
         --author "Keith Raghubar" \

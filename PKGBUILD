@@ -32,7 +32,7 @@ sha256sums=('6e331ad0937a0a1acca33565079c85239a9e4a60295bc355ec4fbcd430d39a7f')
 build() {
     cd "$srcdir/$pkgname-$pkgver"
     python -m build --wheel --no-isolation
-    argparse-manpage \
+    PYTHONPATH=. argparse-manpage \
         --module sysforge.cli \
         --function _build_parser \
         --author "Keith Raghubar" \
