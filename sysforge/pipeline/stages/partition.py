@@ -63,10 +63,12 @@ def _is_already_mounted(device: str, target: str) -> bool:
     """
     Return True if a partition of device is already mounted at target.
     This indicates the partition stage already ran — safe to skip on resume.
+    Uses --mountpoint for an exact match so the ISO root overlayfs is not
+    mistaken for a mount at /mnt.
     """
     root_part = _root_partition(device)
     result = subprocess.run(
-        ["findmnt", "--source", root_part, "--target", target, "--noheadings"],
+        ["findmnt", "--source", root_part, "--mountpoint", target, "--noheadings"],
         capture_output=True, text=True,
     )
     return bool(result.stdout.strip())
@@ -84,7 +86,7 @@ def _check_not_mounted(device: str, target: str) -> None:
         )
 
     result2 = subprocess.run(
-        ["findmnt", "--target", target, "--noheadings"],
+        ["findmnt", "--mountpoint", target, "--noheadings"],
         capture_output=True, text=True,
     )
     if result2.stdout.strip():
