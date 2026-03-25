@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles, tracks build state for update detection, and automates the full build lifecycle — from fetching PKGBUILDs to installing profiled packages. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-The v0.1.0 milestone is a profiled AUR helper: install, update, and manage AUR and custom packages with system-tuned profiled builds. A full system bootstrapper (stages 1–4: partition, base install, hardware detection, configure) is scoped to v1.0.
+The v0.1.0 milestone is a profiled AUR helper: install, update, and manage AUR and custom packages with system-tuned profiled builds. The full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) is implemented — a fresh Arch install is fully automated from the ISO.
 
 ---
 
@@ -119,7 +119,7 @@ sysforge/
 │           ├── partition.py           # stage 1: GPT partitioning, mkfs, mount
 │           ├── base_install.py        # stage 2: pacstrap + genfstab
 │           ├── hardware.py            # stage 3: CPU/GPU/NVMe detection → hardware_profile.toml
-│           ├── configure.py           # stage 4: hostname, locale, timezone, mirrorlist (arch-chroot)
+│           ├── configure.py           # stage 4: hostname, locale, timezone, bootloader, user, services (arch-chroot)
 │           ├── reconfigure.py         # stage 5: pre-build checkpoint (implemented)
 │           ├── toolchain.py           # stage 6: LLVM/GCC toolchain build (optional 3-pass PGO)
 │           ├── packages.py            # stage 7: real implementation
@@ -168,6 +168,11 @@ sysforge/
 │   └── test_wrapper.py
 ├── completions/
 │   └── _sysforge                      # zsh completion script
+├── tools/
+│   ├── iso-install.sh                 # bootstrap helper: installs sysforge on live ISO, writes bootstrap.toml
+│   └── vm/
+│       ├── boot.sh                    # launch QEMU VM (--iso, --snapshot modes)
+│       └── bootstrap.toml             # VM-specific bootstrap.toml for testing
 ├── PKGBUILD
 ├── pyproject.toml
 ├── Makefile
@@ -270,7 +275,7 @@ Python DAG orchestrator with checkpoint/resume. Stages run in order:
 1. **partition** — fully implemented (GPT, ESP + root, mkfs, mount)
 2. **base_install** — fully implemented (pacstrap minimal base, genfstab)
 3. **hardware** — fully implemented (CPU/GPU/NVMe detection → hardware_profile.toml)
-4. **configure** — fully implemented (hostname, locale, timezone, mirrorlist via arch-chroot)
+4. **configure** — fully implemented (hostname, locale, timezone, mirrorlist, systemd-boot, user creation + sudo, sshd config, shell dotfiles, passwords via arch-chroot)
 5. **reconfigure** — fully implemented (pre-build checkpoint: config review, disk/network/gpg checks, build preview)
 6. **toolchain** — fully implemented (LLVM/GCC, optional 3-pass PGO bootstrap, compiler propagation to packages/kernel)
 7. **packages** — fully implemented
@@ -283,14 +288,17 @@ Stages 1–4 are **bootstrap-only** — they run once from a live install enviro
 Stages 1–4 run from a live Arch install environment (booted from the install ISO). The state dir must be set to the target system so pipeline state persists across the reboot:
 
 ```bash
-# From the live environment
+# From the live environment — iso-install.sh sets this up automatically
 sysforge run pipeline --state-dir /mnt/var/lib/sysforge
 ```
 
-After the machine reboots into the installed system, continue:
+When stage 4 (configure) completes, the reconfigure stage detects it is running on the live ISO (via `/run/archiso`) and raises `BootstrapRebootRequired`. The runner catches this as a clean stop (exit 0), saves state, and prints the resume command. After rebooting into the installed system:
+
 ```bash
-sysforge run pipeline --start-from reconfigure
+sysforge run pipeline --resume
 ```
+
+**`iso-install.sh`** (`tools/iso-install.sh`) automates the live-ISO setup steps: checks connectivity, installs sysforge (lightweight pip install, no build tools), copies `/etc/sysforge/` defaults, and prompts for all required bootstrap values with validation (timezone checked against `/usr/share/zoneinfo/`, passwords entered silently with confirmation). Writes a complete `bootstrap.toml` and prints the pipeline command when done.
 
 **`bootstrap.toml`** (`/etc/sysforge/bootstrap.toml`) configures stages 1–4:
 
@@ -318,6 +326,16 @@ protocol  = "https"
 age       = 12                 # reflector --latest N hours
 ```
 
+**Configure stage (stage 4)** runs all one-time system identity steps inside `arch-chroot`:
+- Hostname (`/etc/hostname`), locale (`locale-gen`), timezone (`ln -sf /usr/share/zoneinfo/...`), keymap (`/etc/vconsole.conf`), `ParallelDownloads` in `pacman.conf`
+- Reflector mirrorlist (skipped gracefully if `reflector` absent in chroot)
+- systemd-boot: `bootctl install`, `loader.conf`, `entries/arch.conf` (uses `root=LABEL=root`)
+- `systemctl enable NetworkManager` + `systemctl enable sshd`
+- `PermitRootLogin yes` in `/etc/ssh/sshd_config`
+- `useradd -m -G wheel <username>` + `/etc/sudoers.d/wheel` drop-in
+- Shell dotfiles: `.bashrc` + `.zshrc` for root (red prompt) and primary user (green prompt)
+- Root and user passwords via `chpasswd` (warns if absent from bootstrap.toml)
+
 The hardware stage (stage 3) needs no config — it auto-detects and writes `hardware_profile.toml` to `state_dir`. After reboot the file is at its natural path (`/var/lib/sysforge/hardware_profile.toml`) and the kernel stage picks it up automatically.
 
 ### Runner
@@ -327,6 +345,7 @@ The hardware stage (stage 3) needs no config — it auto-detects and writes `har
 - Reads checkpoint state to determine start index
 - Calls `stage.run()`, marks done/failed, saves state after each stage
 - On `NotImplementedError`: prints `--start-from` guidance and exits
+- On `BootstrapRebootRequired`: saves state, prints reboot + resume instructions, exits 0 (clean stop, not failure)
 - On `RuntimeError`: saves state and exits with resume instructions
 - `--dry-run`: logs what would run without calling `stage.run()`
 
@@ -460,7 +479,7 @@ The packages and kernel stages read these values and inject them into the build 
 
 ## Primitives Layer
 
-All modules independently testable. 851 pytest tests (`pytest` from repo root).
+All modules independently testable. 898 pytest tests (`pytest` from repo root).
 
 ### `log.py`
 
@@ -481,7 +500,7 @@ TOML config loading and path resolution. Public API:
 - `find_pkgbuild(pkg, config=None)` — resolves a bare package name, directory path, or PKGBUILD path to an absolute PKGBUILD path. Search order: (1) direct path or directory (resolves `dir/PKGBUILD`), (2) `<cwd>/<name>/PKGBUILD`, (3) `<config [paths] pkgbuild_dir>/<name>/PKGBUILD`, (4) auto-clone if not found locally — repo packages via `pkgctl repo clone --protocol=https`, AUR packages via `aur_clone`. Used by `sysforge build`, `sysforge resolve`, and the packages stage.
 
 `[paths] pkgbuild_dir` in `flag_profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
-- `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines.
+- `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles backslash line continuation (e.g. `CFLAGS="... \\\n  -flag"`) and multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines. Merges user conf (`$XDG_CONFIG_HOME/pacman/makepkg.conf`, `~/.makepkg.conf`) on top of system conf.
 
 ### `pacman.py`
 
@@ -1034,7 +1053,7 @@ Build in this order to satisfy dependencies correctly:
 
 - **GitHub:** public from day one; source of truth for all code
 - **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
-- **v1.0:** system bootstrapper — stages 1–4 implemented (partition, base_install, hardware, configure). Also planned: recursive AUR dependency resolution (see `dep_analysis.py` section); man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below). Stages 1–4 are now implemented; remaining v1.0 work is AUR dep resolution and the man page migration.
+- **v1.0:** system bootstrapper — stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, and sets passwords. Remaining v1.0 work: recursive AUR dependency resolution (see `dep_analysis.py` section); man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below).
 
 ### AUR publishing process
 

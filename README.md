@@ -72,7 +72,7 @@ bash <(curl -sL https://raw.githubusercontent.com/KeithRaghubar/sysforge/main/to
 
 The script clones the repo itself — no prior download needed.
 
-The script checks connectivity, installs SysForge (lightweight — no build tools needed), copies config files to `/etc/sysforge/`, and prompts for the required bootstrap values (device, hostname, locale, timezone). It writes a complete `bootstrap.toml` and prints the next command when done.
+The script checks connectivity, installs SysForge (lightweight — no build tools needed), copies config files to `/etc/sysforge/`, and prompts for all required bootstrap values: device, filesystem, hostname, locale, timezone (validated against `/usr/share/zoneinfo/`), username, and passwords (entered silently with confirmation). It writes a complete `bootstrap.toml` and prints the next command when done.
 
 To configure manually instead, see the [bootstrap.toml reference](#bootstraptoml-reference) below.
 
@@ -104,9 +104,16 @@ source = "aur"
 sysforge run pipeline --state-dir /mnt/var/lib/sysforge
 ```
 
-This runs stages 1–4: partition the disk, `pacstrap` the base system, detect hardware, and configure hostname/locale/timezone/mirrorlist. The pipeline saves a checkpoint after each stage — a failure can be resumed with `--resume`.
+This runs stages 1–4: partition the disk, `pacstrap` the base system, detect hardware, and configure the installed system (hostname, locale, timezone, mirrorlist, systemd-boot bootloader, NetworkManager + sshd service enables, primary user with sudo, and passwords). The pipeline saves a checkpoint after each stage — a failure can be resumed with `--resume`.
 
 ### 5. Reboot into the installed system
+
+When the configure stage completes, the pipeline prints the resume command and exits cleanly:
+
+```
+State saved. After rebooting, run:
+  sysforge run pipeline --resume
+```
 
 ```bash
 reboot
@@ -123,7 +130,7 @@ cd sysforge && makepkg -si && cd ~
 ### 6. Continue the pipeline
 
 ```bash
-sysforge run pipeline --start-from reconfigure
+sysforge run pipeline --resume
 ```
 
 This runs stages 5–8:
