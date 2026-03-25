@@ -136,34 +136,25 @@ def _partition_disk(cfg: BootstrapConfig) -> tuple[str, str]:
     Returns (esp_partition, root_partition) device paths.
     """
     device = cfg.device
-    esp_end_mib = 1 + cfg.esp_size_mib  # 1 MiB gap at start of disk
 
     _log.ui("[PARTITION]", f"Partitioning {device} (GPT)")
 
-    cmds = [
-        # Wipe existing partition table and create a new GPT
-        ["sgdisk", "--zap-all", device],
-        # Partition 1: ESP
-        ["sgdisk",
-         f"--new=1:1MiB:{esp_end_mib}MiB",
-         "--typecode=1:ef00",
-         "--change-name=1:ESP",
-         device],
-        # Partition 2: root (rest of disk)
-        ["sgdisk",
-         f"--new=2:{esp_end_mib}MiB:0",
-         "--typecode=2:8300",
-         "--change-name=2:root",
-         device],
+    # Single sgdisk call: --clear replaces --zap-all, +NMiB is relative sizing
+    # (avoids ambiguous absolute-with-unit syntax), 0:0 = first-free:last-free.
+    cmd = [
+        "sgdisk",
+        "--clear",
+        f"--new=1:1MiB:+{cfg.esp_size_mib}MiB", "--typecode=1:ef00", "--change-name=1:ESP",
+        "--new=2:0:0",                            "--typecode=2:8300", "--change-name=2:root",
+        device,
     ]
 
-    for cmd in cmds:
-        _log.info("[PARTITION]", f"Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"[PARTITION] sgdisk failed (exit {result.returncode}): {' '.join(cmd)}"
-            )
+    _log.info("[PARTITION]", f"Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"[PARTITION] sgdisk failed (exit {result.returncode}): {' '.join(cmd)}"
+        )
 
     # Inform kernel of partition table changes
     subprocess.run(["partprobe", device], capture_output=True)
