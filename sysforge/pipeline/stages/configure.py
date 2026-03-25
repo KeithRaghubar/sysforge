@@ -210,6 +210,32 @@ def _configure_sshd(cfg: BootstrapConfig) -> None:
     _log.ui("[CONFIGURE]", "sshd: PermitRootLogin yes")
 
 
+def _configure_shell(cfg: BootstrapConfig) -> None:
+    """Write /root/.bashrc and /root/.zshrc with colored prompts and common aliases."""
+    root_dir = Path(cfg.target) / "root"
+    root_dir.mkdir(parents=True, exist_ok=True)
+
+    (root_dir / ".bashrc").write_text(
+        "[[ $- != *i* ]] && return\n"
+        "\n"
+        "alias ls='ls --color=auto'\n"
+        "alias grep='grep --color=auto'\n"
+        "\n"
+        r"PS1='\[\e[1;31m\][\u@\h \W]\$\[\e[0m\] '" + "\n"
+    )
+
+    (root_dir / ".zshrc").write_text(
+        "alias ls='ls --color=auto'\n"
+        "alias grep='grep --color=auto'\n"
+        "\n"
+        "setopt autocd\n"
+        "\n"
+        r"PROMPT='%B%F{red}[%n@%m %1~]%#%f%b '" + "\n"
+    )
+
+    _log.ui("[CONFIGURE]", "Shell: .bashrc and .zshrc written (colored prompts)")
+
+
 def _set_root_password(cfg: BootstrapConfig) -> None:
     """Set the root password from bootstrap.toml, or warn if not configured."""
     if cfg.root_password:
@@ -269,6 +295,7 @@ class ConfigureStage(Stage):
         _install_bootloader(cfg)
         _enable_services(cfg)
         _configure_sshd(cfg)
+        _configure_shell(cfg)
         _set_root_password(cfg)
 
         _log.ui("[CONFIGURE]", "Configure stage complete.")
