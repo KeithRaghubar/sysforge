@@ -115,10 +115,11 @@ sysforge/
 │       └── stages/
 │           ├── __init__.py            # STAGES ordered list
 │           ├── base.py                # Stage base class, RunOptions dataclass
-│           ├── partition.py           # stage 1: stub
-│           ├── base_install.py        # stage 2: stub
-│           ├── hardware.py            # stage 3: stub
-│           ├── configure.py           # stage 4: stub (bootstrap-only: hostname, locale, mirrorlist)
+│           ├── _bootstrap.py          # shared bootstrap config loader (BootstrapConfig dataclass)
+│           ├── partition.py           # stage 1: GPT partitioning, mkfs, mount
+│           ├── base_install.py        # stage 2: pacstrap + genfstab
+│           ├── hardware.py            # stage 3: CPU/GPU/NVMe detection → hardware_profile.toml
+│           ├── configure.py           # stage 4: hostname, locale, timezone, mirrorlist (arch-chroot)
 │           ├── reconfigure.py         # stage 5: pre-build checkpoint (implemented)
 │           ├── toolchain.py           # stage 6: LLVM/GCC toolchain build (optional 3-pass PGO)
 │           ├── packages.py            # stage 7: real implementation
@@ -156,6 +157,7 @@ sysforge/
 │   ├── test_pipeline_state.py
 │   ├── test_reconfigure.py
 │   ├── test_resolve.py
+│   ├── test_stage_bootstrap.py
 │   ├── test_stage_kernel.py
 │   ├── test_stage_packages.py
 │   ├── test_system_conf.py
@@ -265,16 +267,55 @@ The hardware detection stage emits `hardware_profile.toml` which feeds kconfig a
 
 Python DAG orchestrator with checkpoint/resume. Stages run in order:
 
-1. **partition** — deferred to v1.0
-2. **base_install** — deferred to v1.0
-3. **hardware** — deferred to v1.0
-4. **configure** — deferred to v1.0 (bootstrap-only: hostname, locale, mirrorlist)
+1. **partition** — fully implemented (GPT, ESP + root, mkfs, mount)
+2. **base_install** — fully implemented (pacstrap minimal base, genfstab)
+3. **hardware** — fully implemented (CPU/GPU/NVMe detection → hardware_profile.toml)
+4. **configure** — fully implemented (hostname, locale, timezone, mirrorlist via arch-chroot)
 5. **reconfigure** — fully implemented (pre-build checkpoint: config review, disk/network/gpg checks, build preview)
 6. **toolchain** — fully implemented (LLVM/GCC, optional 3-pass PGO bootstrap, compiler propagation to packages/kernel)
 7. **packages** — fully implemented
 8. **kernel** — fully implemented
 
-Stages 1–4 raise `NotImplementedError` with `--start-from` guidance. Use `sysforge run pipeline --start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds. Stages 5–8 are also available as standalone `sysforge run <stage>` commands for repeated, out-of-pipeline use (e.g. `sysforge run toolchain`, `sysforge run packages`).
+Stages 1–4 are **bootstrap-only** — they run once from a live install environment. Stages 5–8 are **repeatable** and run on the installed system. Use `sysforge run pipeline --start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds. Stages 5–8 are also available as standalone `sysforge run <stage>` commands for repeated, out-of-pipeline use (e.g. `sysforge run toolchain`, `sysforge run packages`).
+
+### Bootstrap workflow (stages 1–4)
+
+Stages 1–4 run from a live Arch install environment (booted from the install ISO). The state dir must be set to the target system so pipeline state persists across the reboot:
+
+```bash
+# From the live environment
+sysforge run pipeline --state-dir /mnt/var/lib/sysforge
+```
+
+After the machine reboots into the installed system, continue:
+```bash
+sysforge run pipeline --start-from reconfigure
+```
+
+**`bootstrap.toml`** (`/etc/sysforge/bootstrap.toml`) configures stages 1–4:
+
+```toml
+target = "/mnt"          # mount point for the new system
+
+[partition]
+device       = "/dev/sda"   # required — block device to wipe and partition
+esp_size_mib = 512          # EFI System Partition size in MiB (default: 512)
+root_fs      = "ext4"       # "ext4" | "btrfs" (default: "ext4")
+
+[system]
+hostname           = "archlinux"    # required
+locale             = "en_US.UTF-8" # required
+timezone           = "UTC"          # required
+keymap             = "us"           # optional (default: "us")
+parallel_downloads = 5              # pacman ParallelDownloads (default: 5)
+
+[mirror]
+countries = ["Canada"]  # reflector --country (optional)
+protocol  = "https"
+age       = 12                 # reflector --latest N hours
+```
+
+The hardware stage (stage 3) needs no config — it auto-detects and writes `hardware_profile.toml` to `state_dir`. After reboot the file is at its natural path (`/var/lib/sysforge/hardware_profile.toml`) and the kernel stage picks it up automatically.
 
 ### Runner
 
@@ -891,11 +932,38 @@ This gives hand-crafted prose with OPTIONS that stay automatically in sync with 
 
 ## Hardware Detection
 
-Pipeline stage 3 (stub). When implemented, walks `lspci -k`, `lsmod`, `/sys/bus`, emits `hardware_profile.toml` feeding kconfig automation and `packages.toml` hardware gates. Wraps `make localmodconfig` with an lsmod snapshot for cross-machine reproducibility.
+Pipeline stage 3. Probes the running system via `/proc/cpuinfo` and `lspci`, emits `hardware_profile.toml` to `state_dir`. The file feeds kconfig automation (kernel stage) and is shown in the reconfigure config review.
 
-Key machine-specific caveats (Ryzen 7 5800X3D + RTX 5070):
-- Explicit disable of `nouveau`
-- `CONFIG_MZEN3`, `CONFIG_X86_AMD_PSTATE`
+**Detections and kconfig output:**
+
+| Hardware | Detection | kconfig |
+|---|---|---|
+| AMD Zen 3 (family 25, model 33/80/68/24) | `/proc/cpuinfo` | `CONFIG_MZEN3 = y` |
+| AMD Zen 4 (family 25, model 97/116/117) | `/proc/cpuinfo` | `CONFIG_MZEN4 = y` |
+| AMD Zen 5 (family 26) | `/proc/cpuinfo` | `CONFIG_MZEN5 = y` |
+| AMD CPU (family ≥ 25) | `/proc/cpuinfo` | `CONFIG_X86_AMD_PSTATE = y` |
+| NVIDIA GPU | `lspci` | `CONFIG_DRM_NOUVEAU = n` |
+| NVMe storage | `lspci` | `CONFIG_BLK_DEV_NVME = y` |
+
+Unknown AMD CPU models get `CONFIG_X86_AMD_PSTATE` but no `CONFIG_MZEN*` entry — the kernel defaults to `CONFIG_GENERIC_CPU`.
+
+**`hardware_profile.toml` layout:**
+```toml
+[hardware]
+cpu_vendor  = "AuthenticAMD"
+cpu_family  = 25
+cpu_model   = 33
+gpu_vendors = ["nvidia"]
+nvme        = true
+
+[kconfig]
+CONFIG_MZEN3          = "y"
+CONFIG_X86_AMD_PSTATE = "y"
+CONFIG_DRM_NOUVEAU    = "n"
+CONFIG_BLK_DEV_NVME   = "y"
+```
+
+Written atomically (write-then-rename) to `<state_dir>/hardware_profile.toml`. The kernel stage reads `[kconfig]` from this file; its absence is non-fatal (entries skipped with an INFO log).
 
 ---
 
@@ -963,7 +1031,7 @@ Build in this order to satisfy dependencies correctly:
 
 - **GitHub:** public from day one; source of truth for all code
 - **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
-- **v1.0:** system bootstrapper — stages 1–4 implemented (partition, base_install, hardware, configure). Also planned: recursive AUR dependency resolution (see `dep_analysis.py` section); man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below).
+- **v1.0:** system bootstrapper — stages 1–4 implemented (partition, base_install, hardware, configure). Also planned: recursive AUR dependency resolution (see `dep_analysis.py` section); man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below). Stages 1–4 are now implemented; remaining v1.0 work is AUR dep resolution and the man page migration.
 
 ### AUR publishing process
 

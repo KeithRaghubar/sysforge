@@ -1,0 +1,57 @@
+# =============================================================================
+# bootstrap.toml — SysForge bootstrap configuration
+#
+# Used by the bootstrap pipeline stages (partition, base_install, hardware,
+# configure). Edit this file before running sysforge run pipeline from a live
+# Arch install environment.
+#
+# Run with a custom state dir so pipeline state persists into the installed
+# system:
+#   sysforge run pipeline --state-dir /mnt/var/lib/sysforge
+#
+# After rebooting into the installed system, continue with:
+#   sysforge run pipeline --start-from reconfigure
+# =============================================================================
+
+# Mount point for the new system during install.
+target = "/mnt"
+
+
+# =============================================================================
+# Partition configuration (stage 1)
+# =============================================================================
+
+[partition]
+# Block device to partition. CAUTION: all data will be destroyed.
+# device = "/dev/sda"
+
+# EFI System Partition size in MiB. 512 MiB is sufficient for multiple kernels.
+esp_size_mib = 512
+
+# Root filesystem type: "ext4" (default) | "btrfs"
+root_fs = "ext4"
+
+
+# =============================================================================
+# System identity (stage 4)
+# =============================================================================
+
+[system]
+# hostname   = "archlinux"
+# locale     = "en_US.UTF-8"
+# timezone   = "UTC"
+# keymap     = "us"
+
+# pacman ParallelDownloads (default: 5)
+# parallel_downloads = 5
+
+
+# =============================================================================
+# Mirrorlist (stage 4 — requires reflector in the chroot)
+# =============================================================================
+
+[mirror]
+# List of countries for reflector --country. Omit to use all mirrors.
+# countries = ["Canada"]
+protocol = "https"
+age      = 12

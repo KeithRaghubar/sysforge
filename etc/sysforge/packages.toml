@@ -1,8 +1,8 @@
 # =============================================================================
 # packages.toml — SysForge package manifest
 #
-# Lists every package SysForge should build and install. Run stages consume
-# this file; sysforge packages add/remove/sync manage it.
+# Lists packages SysForge should build and install via the packages stage.
+# Manage with: sysforge packages add/remove/list/sync
 #
 # Fields per entry:
 #   name           required  package name
@@ -12,7 +12,8 @@
 #
 # AUR packages are resolved via the PKGBUILD directory set in flag_profiles.toml
 # ([paths] pkgbuild_dir). Missing AUR packages are auto-cloned from the AUR.
-# Repo packages are installed via pacman -S --needed (no build step).
+# Repo packages are installed via pacman -S --needed (no build step) unless
+# repo_mode = "profiled" is set below.
 # =============================================================================
 
 # [build]
@@ -22,28 +23,69 @@
 #                          # "profiled" → build from PKGBUILD with sysforge flag profiles
 #                          # per-package pkgbuild_patch = true overrides to "profiled" regardless
 
+
 # =============================================================================
-# Add your packages below
+# SysForge recommended dependencies
+#
+# ccache/sccache are used automatically when configured in flag_profiles.toml
+# [cache] section (auto-detect by default). reflector is used by the configure
+# stage to set up /etc/pacman.d/mirrorlist.
 # =============================================================================
 
-# Example repo package:
-# [[package]]
-# name   = "htop"
-# source = "repo"
+[[package]]
+name = "ccache"
+source = "repo"
 
-# Example AUR package:
-# [[package]]
-# name   = "neovim-git"
-# source = "aur"
+[[package]]
+name = "sccache"
+source = "repo"
 
-# Example AUR package with PKGBUILD flag patching:
-# [[package]]
-# name           = "mesa-git"
-# source         = "aur"
-# pkgbuild_patch = true
+[[package]]
+name = "reflector"
+source = "repo"
 
-# Example AUR package with cache disabled (e.g. PGO builds):
-# [[package]]
-# name   = "llvm"
-# source = "aur"
-# cache  = false
+
+# =============================================================================
+# Shell and editor
+# =============================================================================
+
+[[package]]
+name = "zsh"
+source = "repo"
+
+[[package]]
+name = "neovim"
+source = "repo"
+
+[[package]]
+name = "man-db"
+source = "repo"
+
+[[package]]
+name = "man-pages"
+source = "repo"
+
+
+# =============================================================================
+# System utilities
+# =============================================================================
+
+[[package]]
+name = "htop"
+source = "repo"
+
+[[package]]
+name = "rsync"
+source = "repo"
+
+[[package]]
+name = "unzip"
+source = "repo"
+
+[[package]]
+name = "which"
+source = "repo"
+
+[[package]]
+name = "lsof"
+source = "repo"

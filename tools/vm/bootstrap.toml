@@ -1,0 +1,22 @@
+# bootstrap.toml for the SysForge test VM
+#
+# Usage (from the Arch ISO live environment inside the VM):
+#   1. curl http://10.0.2.2:8080/bootstrap.toml -o /etc/sysforge/bootstrap.toml
+#   2. sysforge run pipeline --state-dir /mnt/var/lib/sysforge
+#
+# After reboot into the installed system:
+#   sysforge run pipeline --start-from reconfigure
+
+target = "/mnt"
+
+[partition]
+device       = "/dev/vda"
+esp_size_mib = 512
+root_fs      = "ext4"
+
+[system]
+hostname             = "sysforge-vm"
+locale               = "en_US.UTF-8"
+timezone             = "UTC"
+keymap               = "us"
+parallel_downloads   = 5
