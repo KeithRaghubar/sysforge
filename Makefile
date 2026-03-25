@@ -81,6 +81,7 @@ vm-snapshot:
 	./tools/vm/boot.sh --snapshot
 
 vm-iso:
+	rm -f $(VM_DIR)/known_hosts
 	./tools/vm/boot.sh --iso
 
 VM_SSH = ssh -p 10022 -o UserKnownHostsFile=$(VM_DIR)/known_hosts -o StrictHostKeyChecking=accept-new
