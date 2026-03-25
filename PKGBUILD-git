@@ -12,9 +12,7 @@ depends=(
 )
 makedepends=(
     'git'
-    'python-build'
     'python-installer'
-    'python-wheel'
     'python-hatchling'
     'python-argparse-manpage'
 )
@@ -38,7 +36,7 @@ pkgver() {
 
 build() {
     cd "$srcdir/$pkgname"
-    python -m build --wheel --no-isolation
+    python -m hatchling build --target wheel
     PYTHONPATH=. argparse-manpage \
         --module sysforge.cli \
         --function _build_parser \

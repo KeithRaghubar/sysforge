@@ -12,9 +12,7 @@ depends=(
 )
 makedepends=(
     'git'
-    'python-build'
     'python-installer'
-    'python-wheel'
     'python-hatchling'
     'python-argparse-manpage'
 )
@@ -31,7 +29,7 @@ sha256sums=('eea4194a3734cdf6a438a2a44af27e1ada074140b5527ef1724c2d9ec4ea9906')
 
 build() {
     cd "$srcdir/$pkgname-$pkgver"
-    python -m build --wheel --no-isolation
+    python -m hatchling build --target wheel
     PYTHONPATH=. argparse-manpage \
         --module sysforge.cli \
         --function _build_parser \
