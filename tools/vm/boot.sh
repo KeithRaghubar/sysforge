@@ -6,8 +6,11 @@
 #   ./tools/vm/boot.sh --snapshot   # boot from clean snapshot, discard changes on exit
 #   ./tools/vm/boot.sh --iso        # boot from Arch ISO for initial install
 #
-# The VM runs headless (no window). Access it via SSH:
+# Normal boots run headless (no window). Access the installed VM via SSH:
 #   ssh -p 10022 root@localhost
+#
+# ISO mode (--iso) opens a VNC display for interactive install access:
+#   vncviewer localhost:5900
 #
 # QEMU monitor (for savevm / loadvm):
 #   socat - UNIX-CONNECT:~/.local/share/sysforge-vm/qemu-monitor.sock
@@ -99,6 +102,8 @@ if [[ $SNAPSHOT -eq 1 ]]; then
     echo "Booting from 'clean' snapshot (changes will be discarded)"
 fi
 
+VNC_PORT=5900
+
 if [[ $USE_ISO -eq 1 ]]; then
     if [[ ! -f "$ISO_PATH" ]]; then
         echo "Arch ISO not found: $ISO_PATH"
@@ -106,12 +111,20 @@ if [[ $USE_ISO -eq 1 ]]; then
         echo "Or set SYSFORGE_VM_DIR to the directory containing archlinux.iso"
         exit 1
     fi
-    QEMU_ARGS+=(-cdrom "$ISO_PATH" -boot order=dc)
+    QEMU_ARGS+=(
+        -cdrom "$ISO_PATH"
+        -boot order=dc
+        # VNC display for interactive ISO install (normal boots are headless)
+        -vga virtio
+        -display "vnc=127.0.0.1:0"
+    )
     echo "Booting from Arch ISO: $ISO_PATH"
+    echo "  Console: vncviewer localhost:$VNC_PORT  (or any VNC client)"
+    echo "  Stop:    Ctrl-C (or 'quit' in monitor)"
+else
+    echo "VM running headless."
+    echo "  SSH:     ssh -p $SSH_PORT root@localhost"
+    echo "  Monitor: socat - UNIX-CONNECT:\"$VM_DIR/qemu-monitor.sock\""
+    echo "  Stop:    Ctrl-C (or 'quit' in monitor)"
 fi
-
-echo "VM running headless."
-echo "  SSH:     ssh -p $SSH_PORT root@localhost"
-echo "  Monitor: socat - UNIX-CONNECT:\"$VM_DIR/qemu-monitor.sock\""
-echo "  Stop:    Ctrl-C (or 'quit' in monitor)"
 exec "${QEMU_ARGS[@]}"

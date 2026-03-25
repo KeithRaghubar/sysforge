@@ -47,13 +47,19 @@ Creates a 40 GiB thin-provisioned qcow2 image.
 make vm-iso
 ```
 
-The VM runs headless. Transfer the config into the live environment via HTTP:
+ISO mode opens a VNC display for interactive access. Connect with any VNC client:
+
+```bash
+vncviewer localhost:5900
+```
+
+Inside the live environment, transfer the config and run the installer:
 
 ```bash
 # On host — serve the config over HTTP
 cd tools/vm && python3 -m http.server 8080
 
-# In VM (host is reachable at 10.0.2.2 via QEMU user networking)
+# In VM console (host is reachable at 10.0.2.2 via QEMU user networking)
 curl http://10.0.2.2:8080/archinstall-config.json -o /root/archinstall-config.json
 archinstall --config /root/archinstall-config.json --silent
 ```
