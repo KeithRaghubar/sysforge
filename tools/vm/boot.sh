@@ -10,7 +10,7 @@
 #   ssh -p 10022 root@localhost
 #
 # ISO mode (--iso) opens a VNC display for interactive install access:
-#   vncviewer localhost:5900
+#   gvncviewer localhost
 #
 # QEMU monitor (for savevm / loadvm):
 #   socat - UNIX-CONNECT:~/.local/share/sysforge-vm/qemu-monitor.sock
@@ -119,7 +119,7 @@ if [[ $USE_ISO -eq 1 ]]; then
         -display "vnc=127.0.0.1:0"
     )
     echo "Booting from Arch ISO: $ISO_PATH"
-    echo "  Console: vncviewer localhost:$VNC_PORT  (or any VNC client)"
+    echo "  Console: gvncviewer localhost"
     echo "  Stop:    Ctrl-C (or 'quit' in monitor)"
 else
     echo "VM running headless."
