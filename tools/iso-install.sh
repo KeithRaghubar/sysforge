@@ -53,9 +53,9 @@ _prompt_timezone() {
 }
 
 _prompt_password() {
-    local p1 p2
+    local label="${1:-Password}" p1 p2
     while true; do
-        read -r -s -p "  Root password: " p1; echo >&2
+        read -r -s -p "  ${label}: " p1; echo >&2
         [[ -z "$p1" ]] && { echo "  (required — cannot be empty)" >&2; continue; }
         read -r -s -p "  Confirm password: " p2; echo >&2
         [[ "$p1" == "$p2" ]] && { echo "$p1"; return; }
@@ -115,10 +115,8 @@ TIMEZONE=$(_prompt_timezone)
 KEYMAP=$(_prompt_default    "Keymap" "us")
 COUNTRY=$(_prompt_default    "Mirror country for reflector (leave blank for all)" "")
 USERNAME=$(_prompt_default   "Primary username" "builder")
-echo "  User password:"
-USER_PASSWORD=$(_prompt_password)
-echo "  Root password:"
-ROOT_PASSWORD=$(_prompt_password)
+USER_PASSWORD=$(_prompt_password "User password")
+ROOT_PASSWORD=$(_prompt_password "Root password")
 
 # Build optional countries line
 if [[ -n "$COUNTRY" ]]; then
