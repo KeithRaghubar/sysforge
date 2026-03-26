@@ -491,6 +491,8 @@ Structured logging module. Output goes to stderr (verbosity-gated) and optionall
 
 Four levels: `error` (always shown), `warn` (`-v`), `info` (`-vv`), `debug` (`-vvv`). Set once at CLI entry with `log.set_verbosity(args.verbose)`.
 
+Modules obtain a bound `Logger` instance via `log.get_logger("TAG")`, which stores the tag and exposes the same `ui`/`error`/`warn`/`info`/`debug`/`newline`/`prompt_prefix` interface as the module-level functions. Modules with multiple logging subsystems (e.g. `makepkg_wrapper.py`, `profile.py`, `aur.py`) create multiple named loggers at module level (`_conf_log`, `_build_log`, etc.). Module-level helpers (`open_unified_log`, `close_unified_log`, `open_pkg_log`, `close_pkg_log`, `set_verbosity`, `set_dry_run_mode`) are called directly on the `log` module.
+
 ### `config.py`
 
 TOML config loading and path resolution. Public API:
@@ -915,22 +917,63 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 ### Tags in use
 
+**Core build subsystem** (`makepkg_wrapper.py` and related):
+
 | Tag | Covers |
 |---|---|
-| `[PROFILE]` | Profile resolution, rule matching, extends chain |
-| `[CONF]` | Temp conf generation, active consumes set |
-| `[ENV]` | Env var routing; per-key shell strip with old value (INFO); skipped env-type keys when not in active_consumes (INFO); override of non-stripped shell var by profile (WARN); unclassified profile key warnings (WARN) |
+| `[ABI]` | ABI compatibility checks — soname comparison before and after build |
 | `[BUILD]` | makepkg invocation, exit codes, patched PKGBUILD lifecycle |
-| `[FAILURE]` | Failure scenario dispatch |
-| `[DEP]` | Soname checks |
-| `[PATCH]` | PKGBUILD flag extraction, patching, artifact lifecycle; noninteractive kconfig target replacement |
-| `[GROUPS]` | Package group resolution |
-| `[CONFIG]` | Config file loading, state dir resolution |
-| `[KERNEL]` | Kernel stage: lsmod snapshot, kconfig fragment, build, post-install |
-| `[PACKAGES]` | Packages stage progress |
-| `[PIPELINE]` | Stage sequencing, checkpoint events |
-| `[FLAG]` | CLI toolchain overrides (--cc/--cxx/--ld), linker guard: stripped lld-specific flags when declared linker not on PATH |
 | `[CACHE]` | ccache/sccache passive monitoring (per-build hit/miss delta, system probes) |
+| `[CONF]` | Temp makepkg.conf generation, active consumes set |
+| `[ENV]` | Env var routing; per-key shell strip (INFO); skipped keys not in active_consumes (INFO); unclassified profile key warnings (WARN) |
+| `[FLAG]` | CLI toolchain overrides (`--cc`/`--cxx`/`--ld`), linker guard, conflict group firing, token replacement |
+| `[GIT]` | git pull/rebase status during PKGBUILD updates |
+| `[KERNEL]` | Kernel-specific flag handling in wrapper; kernel stage: lsmod snapshot, kconfig fragment, build, post-install |
+| `[MAKEPKG]` | makepkg subprocess output capture |
+| `[PATCH]` | PKGBUILD flag extraction, patching, artifact lifecycle; noninteractive kconfig target replacement |
+| `[PGO]` | PGO profiling pass operations in wrapper and toolchain stage |
+
+**Profile / config subsystem:**
+
+| Tag | Covers |
+|---|---|
+| `[CONFIG]` | Config file loading (`flag_profiles.toml`, conflict groups, consumes inference) |
+| `[GROUPS]` | Package group resolution |
+| `[PROFILE]` | Profile resolution, rule matching, extends chain |
+| `[STATE]` | Pipeline state directory resolution |
+
+**AUR / package management:**
+
+| Tag | Covers |
+|---|---|
+| `[AUR]` | AUR name cache lifecycle, clone operations |
+| `[DEP]` | Soname dependency graph checks |
+| `[FAILURE]` | Failure scenario dispatch |
+| `[MANIFEST]` | AUR RPC queries |
+| `[PACMAN]` | pacman database and install operations |
+| `[VERSION]` | Package version comparison |
+
+**Pipeline stages:**
+
+| Tag | Covers |
+|---|---|
+| `[BASE_INSTALL]` | Stage 2: pacstrap, genfstab |
+| `[CONFIGURE]` | Stage 4: hostname, locale, bootloader, user, services |
+| `[HARDWARE]` | Stage 3: CPU/GPU/NVMe detection |
+| `[PACKAGES]` | Stage 7: package build progress |
+| `[PARTITION]` | Stage 1: GPT partitioning, mkfs, mount |
+| `[PIPELINE]` | Stage sequencing, checkpoint events |
+| `[RECONFIGURE]` | Stage 5: pre-build checkpoint and config review |
+| `[TOOLCHAIN]` | Stage 6: LLVM/GCC build, PGO pass orchestration |
+
+**Commands:**
+
+| Tag | Covers |
+|---|---|
+| `[CLI]` | CLI entry point (invocation logging) |
+| `[CONVERGE]` | `sysforge converge` — drift detection and rebuild |
+| `[FETCH]` | `sysforge fetch` — PKGBUILD download/update |
+| `[UPDATE]` | `sysforge update` — version check and rebuild |
 
 ---
 

@@ -453,7 +453,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 
 **Log levels:** `[ERROR]` always shown · `[WARN]` with `-v` · `[INFO]` with `-vv` · `[DEBUG]` with `-vvv`
 
-**Tags:** `[PROFILE]` `[CONF]` `[ENV]` `[BUILD]` `[FAILURE]` `[DEP]` `[PATCH]` `[GROUPS]` `[CONFIG]` `[PACKAGES]` `[PIPELINE]` `[MANIFEST]` `[FLAG]`
+**Tags:** `[ABI]` `[AUR]` `[BASE_INSTALL]` `[BUILD]` `[CACHE]` `[CLI]` `[CONF]` `[CONFIG]` `[CONFIGURE]` `[CONVERGE]` `[DEP]` `[ENV]` `[FAILURE]` `[FETCH]` `[FLAG]` `[GIT]` `[GROUPS]` `[HARDWARE]` `[KERNEL]` `[MAKEPKG]` `[MANIFEST]` `[PACKAGES]` `[PACMAN]` `[PARTITION]` `[PATCH]` `[PGO]` `[PIPELINE]` `[PROFILE]` `[RECONFIGURE]` `[STATE]` `[TOOLCHAIN]` `[UPDATE]` `[VERSION]`
 
 ---
 
