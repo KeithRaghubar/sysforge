@@ -165,6 +165,15 @@ pgo_store = "/var/tmp"
 extends = "optimized"
 build_mode = "patched_pkgbuild"
 
+[profiles.cosmic]
+# COSMIC packages are Rust projects with C dependencies. Using CC=clang injects
+# LLVM 22 bitcode into cargo's C dependency objects; rustc's bundled LLVM 21
+# LTO plugin can't read them, causing link failures. GCC produces plain ELF
+# objects with no LLVM bitcode, so the version mismatch doesn't occur.
+extends = "patched"
+CC  = "gcc"
+CXX = "g++"
+
 [profiles.kernel]
 extends = "bare"
 build_mode = "kernel"
@@ -198,7 +207,7 @@ append_groups = ["just-testing-stuff"]
 
 [[rules]]
 pkgnames = ["cosmic-*"]
-profile = "patched"
+profile = "cosmic"
 priority = 10
 append_groups = ["cosmic-patched"]
 
