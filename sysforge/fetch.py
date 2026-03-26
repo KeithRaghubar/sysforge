@@ -11,7 +11,8 @@ Public API:
 import sys
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("FETCH")
 from sysforge.primitives.config import find_pkgbuild, load_config
 from sysforge.primitives.aur import git_pull_rebase
 
@@ -26,7 +27,7 @@ def cmd_fetch(args) -> None:
         try:
             pkgbuild_path = find_pkgbuild(pkg, config)
         except (FileNotFoundError, RuntimeError) as e:
-            _log.error("[FETCH]", str(e))
+            _log.error(str(e))
             failed += 1
             continue
 
@@ -36,7 +37,7 @@ def cmd_fetch(args) -> None:
             try:
                 git_pull_rebase(pkgbuild_dir)
             except RuntimeError as e:
-                _log.warn("[FETCH]", str(e))
+                _log.warn(str(e))
 
         print(str(pkgbuild_dir))
 

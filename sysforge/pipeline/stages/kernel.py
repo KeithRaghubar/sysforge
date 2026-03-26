@@ -44,7 +44,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("KERNEL")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import CONFIG_BASE
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
@@ -70,7 +71,7 @@ def _load_kernel_config():
     with open(path, "rb") as f:
         data = tomllib.load(f)
 
-    _log.ui("[KERNEL]", f"Loaded kernel config from {path}")
+    _log.ui(f"Loaded kernel config from {path}")
     return data
 
 
@@ -118,19 +119,19 @@ def _capture_lsmod_snapshot(state_dir, dry_run):
     """
     snapshot_path = Path(state_dir) / "lsmod.snapshot"
     if dry_run:
-        _log.ui("[KERNEL]", f"[dry-run] would capture lsmod snapshot → {snapshot_path}")
+        _log.ui(f"[dry-run] would capture lsmod snapshot → {snapshot_path}")
         return
 
     result = subprocess.run(["lsmod"], capture_output=True, text=True)
     if result.returncode != 0:
         _log.warn(
-            "[KERNEL]", f"lsmod failed (exit {result.returncode}) — skipping snapshot"
+            f"lsmod failed (exit {result.returncode}) — skipping snapshot"
         )
         return
 
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path.write_text(result.stdout)
-    _log.ui("[KERNEL]", f"Captured lsmod snapshot: {snapshot_path}")
+    _log.ui(f"Captured lsmod snapshot: {snapshot_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +187,6 @@ def _load_hardware_kconfig(config):
     hw_path = config.get("hardware_profile")
     if not hw_path:
         _log.ui(
-            "[KERNEL]",
             "No hardware_profile configured — hardware kconfig entries skipped (hardware stage not run)",
         )
         return {}
@@ -194,7 +194,6 @@ def _load_hardware_kconfig(config):
     hw_path = Path(hw_path).expanduser()
     if not hw_path.exists():
         _log.ui(
-            "[KERNEL]",
             f"hardware_profile.toml not found at {hw_path} — hardware kconfig entries skipped",
         )
         return {}
@@ -205,7 +204,6 @@ def _load_hardware_kconfig(config):
     kconfig = hw.get("kconfig", {})
     if kconfig:
         _log.ui(
-            "[KERNEL]",
             f"Loaded {len(kconfig)} kconfig entry/entries from hardware_profile.toml",
         )
     return kconfig
@@ -242,7 +240,6 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run):
     for option, manual_val in manual_kconfig.items():
         if option in hw_kconfig and hw_kconfig[option] != manual_val:
             _log.warn(
-                "[KERNEL]",
                 f"kconfig conflict on {option}: hardware_profile={hw_kconfig[option]!r}, "
                 f"kernel.toml={manual_val!r} — manual override wins",
             )
@@ -251,7 +248,7 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run):
     merged = {**hw_kconfig, **manual_kconfig}
 
     if not merged:
-        _log.ui("[KERNEL]", "No kconfig entries from any source — skipping fragment")
+        _log.ui("No kconfig entries from any source — skipping fragment")
         return None
 
     pkgbuild = _pkgbuild_path(kernel_cfg)
@@ -275,16 +272,14 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run):
 
     if dry_run:
         _log.ui(
-            "[KERNEL]",
             f"[dry-run] would write kconfig fragment ({hw_count} hardware, {manual_count} manual): {fragment_path}",
         )
         for line in lines:
-            _log.ui("[KERNEL]", f"  {line}")
+            _log.ui(f"  {line}")
         return None
 
     fragment_path.write_text("\n".join(lines) + "\n")
     _log.ui(
-        "[KERNEL]",
         f"Wrote kconfig fragment: {fragment_path} ({hw_count} hardware, {manual_count} manual)",
     )
     return fragment_path
@@ -298,9 +293,9 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run):
 def _run_mkinitcpio(dry_run):
     """Regenerate all initramfs presets."""
     if dry_run:
-        _log.ui("[KERNEL]", "[dry-run] would run: sudo mkinitcpio -P")
+        _log.ui("[dry-run] would run: sudo mkinitcpio -P")
         return
-    _log.ui("[KERNEL]", "Running mkinitcpio -P")
+    _log.ui("Running mkinitcpio -P")
     result = subprocess.run(["sudo", "mkinitcpio", "-P"])
     if result.returncode != 0:
         raise RuntimeError(f"[KERNEL] mkinitcpio -P failed (exit {result.returncode})")
@@ -309,7 +304,7 @@ def _run_mkinitcpio(dry_run):
 def _update_bootloader(bootloader, dry_run):
     """Update the bootloader config to pick up the new kernel."""
     if bootloader == "none" or not bootloader:
-        _log.ui("[KERNEL]", "Bootloader update skipped (bootloader = 'none')")
+        _log.ui("Bootloader update skipped (bootloader = 'none')")
         return
 
     if bootloader == "grub":
@@ -319,18 +314,17 @@ def _update_bootloader(bootloader, dry_run):
         cmd = ["sudo", "bootctl", "update"]
         label = "bootctl update"
     else:
-        _log.warn("[KERNEL]", f"Unknown bootloader {bootloader!r} — skipping update")
+        _log.warn(f"Unknown bootloader {bootloader!r} — skipping update")
         return
 
     if dry_run:
-        _log.ui("[KERNEL]", f"[dry-run] would run: {' '.join(cmd)}")
+        _log.ui(f"[dry-run] would run: {' '.join(cmd)}")
         return
 
-    _log.ui("[KERNEL]", f"Updating bootloader: {label}")
+    _log.ui(f"Updating bootloader: {label}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
         _log.warn(
-            "[KERNEL]",
             f"{label} exited {result.returncode} — bootloader may already be current; "
             "kernel is installed, continuing",
         )
@@ -349,7 +343,7 @@ class KernelStage(Stage):
     def run(self, config, state, options):
         kernel_cfg = _load_kernel_config()
         if kernel_cfg is None or not kernel_cfg.get("enabled", False):
-            _log.ui("[KERNEL]", "kernel.toml absent or disabled — stage is a no-op")
+            _log.ui("kernel.toml absent or disabled — stage is a no-op")
             return
 
         pkgname = kernel_cfg.get("pkgname", "unknown")
@@ -374,14 +368,13 @@ class KernelStage(Stage):
         cxx = toolchain.get("cxx") if toolchain else None
         if cc:
             _log.ui(
-                "[KERNEL]",
                 f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}",
             )
 
         if options.dry_run:
-            _log.ui("[KERNEL]", f"[dry-run] would build {pkgname} from {pkgbuild}")
+            _log.ui(f"[dry-run] would build {pkgname} from {pkgbuild}")
         else:
-            _log.ui("[KERNEL]", f"Building kernel: {pkgname} from {pkgbuild}")
+            _log.ui(f"Building kernel: {pkgname} from {pkgbuild}")
             makepkg_run(pkgbuild, options=BuildOptions(
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
@@ -396,4 +389,4 @@ class KernelStage(Stage):
         _run_mkinitcpio(options.dry_run)
         _update_bootloader(bootloader, options.dry_run)
 
-        _log.ui("[KERNEL]", f"Kernel stage complete: {pkgname}")
+        _log.ui(f"Kernel stage complete: {pkgname}")

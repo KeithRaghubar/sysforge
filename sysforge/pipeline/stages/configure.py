@@ -35,7 +35,8 @@ import re
 from importlib.metadata import distribution, PackageNotFoundError
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("CONFIGURE")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import load_bootstrap, BootstrapConfig
 
@@ -47,7 +48,7 @@ from sysforge.pipeline.stages._bootstrap import load_bootstrap, BootstrapConfig
 def _chroot(target: str, cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     """Run a command inside arch-chroot <target>."""
     full_cmd = ["arch-chroot", target] + cmd
-    _log.info("[CONFIGURE]", f"chroot: {' '.join(cmd)}")
+    _log.info(f"chroot: {' '.join(cmd)}")
     return subprocess.run(full_cmd, check=check)
 
 
@@ -58,7 +59,7 @@ def _chroot(target: str, cmd: list[str], check: bool = True) -> subprocess.Compl
 def _set_hostname(cfg: BootstrapConfig) -> None:
     hostname_file = Path(cfg.target) / "etc/hostname"
     hostname_file.write_text(cfg.hostname + "\n")
-    _log.ui("[CONFIGURE]", f"Hostname: {cfg.hostname}")
+    _log.ui(f"Hostname: {cfg.hostname}")
 
 
 def _set_locale(cfg: BootstrapConfig) -> None:
@@ -73,16 +74,16 @@ def _set_locale(cfg: BootstrapConfig) -> None:
         new_text = pattern.sub(r"\1", text)
         if new_text != text:
             locale_gen.write_text(new_text)
-            _log.info("[CONFIGURE]", f"Uncommented {cfg.locale} in /etc/locale.gen")
+            _log.info(f"Uncommented {cfg.locale} in /etc/locale.gen")
         else:
-            _log.warn("[CONFIGURE]", f"{cfg.locale} not found in /etc/locale.gen — locale-gen may fail")
+            _log.warn(f"{cfg.locale} not found in /etc/locale.gen — locale-gen may fail")
     else:
-        _log.warn("[CONFIGURE]", f"{cfg.target}/etc/locale.gen not found — skipping locale.gen edit")
+        _log.warn(f"{cfg.target}/etc/locale.gen not found — skipping locale.gen edit")
 
     # Write locale.conf
     locale_conf = Path(cfg.target) / "etc/locale.conf"
     locale_conf.write_text(f"LANG={cfg.locale}\n")
-    _log.ui("[CONFIGURE]", f"Locale: {cfg.locale}")
+    _log.ui(f"Locale: {cfg.locale}")
 
     # Run locale-gen inside chroot
     _chroot(cfg.target, ["locale-gen"])
@@ -93,24 +94,24 @@ def _set_timezone(cfg: BootstrapConfig) -> None:
     tz_path = f"/usr/share/zoneinfo/{cfg.timezone}"
     _chroot(cfg.target, ["ln", "-sf", tz_path, "/etc/localtime"])
     _chroot(cfg.target, ["hwclock", "--systohc"])
-    _log.ui("[CONFIGURE]", f"Timezone: {cfg.timezone}")
+    _log.ui(f"Timezone: {cfg.timezone}")
 
 
 def _set_keymap(cfg: BootstrapConfig) -> None:
     if not cfg.keymap or cfg.keymap == "us":
         # us is the kernel default; vconsole.conf is only needed for non-default
-        _log.info("[CONFIGURE]", "Keymap: us (default, skipping vconsole.conf)")
+        _log.info("Keymap: us (default, skipping vconsole.conf)")
         return
     vconsole = Path(cfg.target) / "etc/vconsole.conf"
     vconsole.write_text(f"KEYMAP={cfg.keymap}\n")
-    _log.ui("[CONFIGURE]", f"Keymap: {cfg.keymap}")
+    _log.ui(f"Keymap: {cfg.keymap}")
 
 
 def _set_pacman_parallel_downloads(cfg: BootstrapConfig) -> None:
     n = cfg.parallel_downloads
     pacman_conf = Path(cfg.target) / "etc/pacman.conf"
     if not pacman_conf.exists():
-        _log.warn("[CONFIGURE]", f"{pacman_conf} not found — skipping ParallelDownloads")
+        _log.warn(f"{pacman_conf} not found — skipping ParallelDownloads")
         return
 
     text = pacman_conf.read_text()
@@ -132,7 +133,7 @@ def _set_pacman_parallel_downloads(cfg: BootstrapConfig) -> None:
 
     if new_text != text:
         pacman_conf.write_text(new_text)
-        _log.ui("[CONFIGURE]", f"ParallelDownloads: {n}")
+        _log.ui(f"ParallelDownloads: {n}")
 
 
 def _run_reflector(cfg: BootstrapConfig) -> None:
@@ -156,7 +157,7 @@ def _run_reflector(cfg: BootstrapConfig) -> None:
         for country in cfg.mirror_countries:
             cmd += ["--country", country]
 
-    _log.ui("[CONFIGURE]", f"Running reflector: {' '.join(cmd[1:])}")
+    _log.ui(f"Running reflector: {' '.join(cmd[1:])}")
     result = _chroot(cfg.target, cmd, check=False)
     if result.returncode != 0:
         _log.warn(
@@ -164,7 +165,7 @@ def _run_reflector(cfg: BootstrapConfig) -> None:
             f"reflector exited {result.returncode} — mirrorlist may be unchanged",
         )
     else:
-        _log.ui("[CONFIGURE]", "Mirrorlist updated.")
+        _log.ui("Mirrorlist updated.")
 
 
 def _install_bootloader(cfg: BootstrapConfig) -> None:
@@ -183,21 +184,21 @@ def _install_bootloader(cfg: BootstrapConfig) -> None:
         "initrd  /initramfs-linux.img\n"
         "options root=LABEL=root rw\n"
     )
-    _log.ui("[CONFIGURE]", "Bootloader: systemd-boot installed")
+    _log.ui("Bootloader: systemd-boot installed")
 
 
 def _enable_services(cfg: BootstrapConfig) -> None:
     """Enable NetworkManager and sshd so they start on first boot."""
     _chroot(cfg.target, ["systemctl", "enable", "NetworkManager"])
     _chroot(cfg.target, ["systemctl", "enable", "sshd"])
-    _log.ui("[CONFIGURE]", "Services enabled: NetworkManager, sshd")
+    _log.ui("Services enabled: NetworkManager, sshd")
 
 
 def _configure_sshd(cfg: BootstrapConfig) -> None:
     """Allow root login via SSH (required for initial access)."""
     sshd_config = Path(cfg.target) / "etc/ssh/sshd_config"
     if not sshd_config.exists():
-        _log.warn("[CONFIGURE]", "sshd_config not found — skipping PermitRootLogin config")
+        _log.warn("sshd_config not found — skipping PermitRootLogin config")
         return
     text = sshd_config.read_text()
     new_text, count = re.subn(
@@ -210,7 +211,7 @@ def _configure_sshd(cfg: BootstrapConfig) -> None:
         new_text = text + "\nPermitRootLogin yes\n"
     if new_text != text:
         sshd_config.write_text(new_text)
-    _log.ui("[CONFIGURE]", "sshd: PermitRootLogin yes")
+    _log.ui("sshd: PermitRootLogin yes")
 
 
 def _create_user(cfg: BootstrapConfig) -> None:
@@ -219,13 +220,13 @@ def _create_user(cfg: BootstrapConfig) -> None:
     result = _chroot(cfg.target, ["useradd", "-m", "-G", "wheel", cfg.username], check=False)
     if result.returncode not in (0, 9):  # 9 = already exists
         raise RuntimeError(f"[CONFIGURE] useradd failed for {cfg.username!r} (exit {result.returncode})")
-    _log.ui("[CONFIGURE]", f"User: {cfg.username} (wheel)")
+    _log.ui(f"User: {cfg.username} (wheel)")
 
     # Allow wheel group to use sudo via a sudoers drop-in
     sudoers_d = Path(cfg.target) / "etc/sudoers.d"
     sudoers_d.mkdir(parents=True, exist_ok=True)
     (sudoers_d / "wheel").write_text("%wheel ALL=(ALL:ALL) ALL\n")
-    _log.ui("[CONFIGURE]", "sudo: wheel group enabled")
+    _log.ui("sudo: wheel group enabled")
 
     if cfg.user_password:
         result = subprocess.run(
@@ -235,7 +236,7 @@ def _create_user(cfg: BootstrapConfig) -> None:
         )
         if result.returncode != 0:
             raise RuntimeError(f"[CONFIGURE] chpasswd failed for {cfg.username!r}")
-        _log.ui("[CONFIGURE]", f"Password set for {cfg.username}.")
+        _log.ui(f"Password set for {cfg.username}.")
     else:
         _log.warn(
             "[CONFIGURE]",
@@ -301,10 +302,10 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
     if target_src.exists():
         shutil.rmtree(target_src)
     shutil.copytree(src, target_src)
-    _log.ui("[CONFIGURE]", f"sysforge source copied to target ({src} → /root/sysforge)")
+    _log.ui(f"sysforge source copied to target ({src} → /root/sysforge)")
 
     _chroot(cfg.target, ["uv", "pip", "install", "--system", "--no-deps", "/root/sysforge"])
-    _log.ui("[CONFIGURE]", "sysforge installed into target.")
+    _log.ui("sysforge installed into target.")
 
 
 def _copy_config_files(cfg: BootstrapConfig) -> None:
@@ -313,7 +314,7 @@ def _copy_config_files(cfg: BootstrapConfig) -> None:
     dst = Path(cfg.target) / "etc/sysforge"
     dst.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dst, dirs_exist_ok=True)
-    _log.ui("[CONFIGURE]", "Config files copied to target /etc/sysforge/")
+    _log.ui("Config files copied to target /etc/sysforge/")
 
 
 def _write_resume_reminder(cfg: BootstrapConfig) -> None:
@@ -321,7 +322,7 @@ def _write_resume_reminder(cfg: BootstrapConfig) -> None:
     dest = Path(cfg.target) / _RESUME_REMINDER_PATH
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(_RESUME_REMINDER)
-    _log.ui("[CONFIGURE]", "Resume reminder written to /etc/profile.d/sysforge-resume.sh")
+    _log.ui("Resume reminder written to /etc/profile.d/sysforge-resume.sh")
 
 
 def _configure_shell(cfg: BootstrapConfig) -> None:
@@ -346,7 +347,7 @@ def _configure_shell(cfg: BootstrapConfig) -> None:
             _ZSHRC + r"PROMPT='%B%F{green}[%n@%m %1~]%#%f%b '" + "\n"
         )
 
-    _log.ui("[CONFIGURE]", f"Shell: dotfiles written for root and {cfg.username}")
+    _log.ui(f"Shell: dotfiles written for root and {cfg.username}")
 
 
 def _set_root_password(cfg: BootstrapConfig) -> None:
@@ -359,7 +360,7 @@ def _set_root_password(cfg: BootstrapConfig) -> None:
         )
         if result.returncode != 0:
             raise RuntimeError("[CONFIGURE] chpasswd failed — root password not set")
-        _log.ui("[CONFIGURE]", "Root password set.")
+        _log.ui("Root password set.")
     else:
         _log.warn(
             "[CONFIGURE]",
@@ -380,26 +381,26 @@ class ConfigureStage(Stage):
     def run(self, config, state, options):  # noqa: ARG002
         cfg = load_bootstrap()
 
-        _log.ui("[CONFIGURE]", f"Configuring target: {cfg.target}")
+        _log.ui(f"Configuring target: {cfg.target}")
 
         if options.dry_run:
-            _log.ui("[CONFIGURE]", f"[dry-run] hostname:   {cfg.hostname}")
-            _log.ui("[CONFIGURE]", f"[dry-run] locale:     {cfg.locale}")
-            _log.ui("[CONFIGURE]", f"[dry-run] timezone:   {cfg.timezone}")
-            _log.ui("[CONFIGURE]", f"[dry-run] keymap:     {cfg.keymap}")
-            _log.ui("[CONFIGURE]", f"[dry-run] ParallelDownloads: {cfg.parallel_downloads}")
+            _log.ui(f"[dry-run] hostname:   {cfg.hostname}")
+            _log.ui(f"[dry-run] locale:     {cfg.locale}")
+            _log.ui(f"[dry-run] timezone:   {cfg.timezone}")
+            _log.ui(f"[dry-run] keymap:     {cfg.keymap}")
+            _log.ui(f"[dry-run] ParallelDownloads: {cfg.parallel_downloads}")
             if cfg.mirror_countries:
-                _log.ui("[CONFIGURE]", f"[dry-run] reflector countries: {cfg.mirror_countries}")
-            _log.ui("[CONFIGURE]", "[dry-run] would install bootloader: systemd-boot")
-            _log.ui("[CONFIGURE]", "[dry-run] would enable: NetworkManager, sshd")
-            _log.ui("[CONFIGURE]", "[dry-run] would configure: PermitRootLogin yes")
+                _log.ui(f"[dry-run] reflector countries: {cfg.mirror_countries}")
+            _log.ui("[dry-run] would install bootloader: systemd-boot")
+            _log.ui("[dry-run] would enable: NetworkManager, sshd")
+            _log.ui("[dry-run] would configure: PermitRootLogin yes")
             if cfg.root_password:
-                _log.ui("[CONFIGURE]", "[dry-run] would set root password from bootstrap.toml")
+                _log.ui("[dry-run] would set root password from bootstrap.toml")
             else:
-                _log.ui("[CONFIGURE]", "[dry-run] no root_password — will warn at runtime")
-            _log.ui("[CONFIGURE]", "[dry-run] would copy /etc/sysforge/ to target")
-            _log.ui("[CONFIGURE]", "[dry-run] would install sysforge into target via uv")
-            _log.ui("[CONFIGURE]", "[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
+                _log.ui("[dry-run] no root_password — will warn at runtime")
+            _log.ui("[dry-run] would copy /etc/sysforge/ to target")
+            _log.ui("[dry-run] would install sysforge into target via uv")
+            _log.ui("[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
             return
 
         _set_hostname(cfg)
@@ -418,4 +419,4 @@ class ConfigureStage(Stage):
         _write_resume_reminder(cfg)
         _set_root_password(cfg)
 
-        _log.ui("[CONFIGURE]", "Configure stage complete.")
+        _log.ui("Configure stage complete.")

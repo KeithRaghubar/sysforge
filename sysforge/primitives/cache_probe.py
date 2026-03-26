@@ -29,7 +29,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("CACHE")
 
 _SESSION_RECORDS: list[dict] = []
 
@@ -184,10 +185,10 @@ def emit_build_stats(pkgname: str, cc_delta: dict | None, sc_delta: dict | None)
         size = _fmt_bytes(cc_delta["size_bytes"])
         if total > 0:
             pct = 100 * hits // total
-            _log.info("[CACHE]", f"{pkgname}: ccache hits={hits} misses={misses} "
+            _log.info(f"{pkgname}: ccache hits={hits} misses={misses} "
                       f"({pct}% hit rate) cache={size} files={cc_delta['files']}")
         else:
-            _log.info("[CACHE]", f"{pkgname}: ccache — no compilations recorded "
+            _log.info(f"{pkgname}: ccache — no compilations recorded "
                       f"(cache={size} files={cc_delta['files']})")
 
     if sc_delta is not None:
@@ -196,10 +197,10 @@ def emit_build_stats(pkgname: str, cc_delta: dict | None, sc_delta: dict | None)
         total = hits + misses
         if total > 0:
             pct = 100 * hits // total
-            _log.info("[CACHE]", f"{pkgname}: sccache hits={hits} misses={misses} "
+            _log.info(f"{pkgname}: sccache hits={hits} misses={misses} "
                       f"({pct}% hit rate) cache={sc_delta['size_str']}")
         else:
-            _log.info("[CACHE]", f"{pkgname}: sccache — no compilations recorded "
+            _log.info(f"{pkgname}: sccache — no compilations recorded "
                       f"(cache={sc_delta['size_str']})")
 
 
@@ -275,21 +276,21 @@ def emit_system_probes(ldflags: str = "") -> None:
     """
     mtime = probe_ldso_mtime()
     if mtime:
-        _log.info("[CACHE]", f"ld.so.cache mtime: {mtime}")
+        _log.info(f"ld.so.cache mtime: {mtime}")
 
     pacman = probe_pacman_cache()
     if pacman:
-        _log.info("[CACHE]", f"pacman cache: {pacman['count']} packages, "
+        _log.info(f"pacman cache: {pacman['count']} packages, "
                   f"{_fmt_bytes(pacman['size_bytes'])} ({pacman['path']})")
 
     if ldflags:
         thinlto = probe_thinlto_cache(ldflags)
         if thinlto:
             if thinlto["exists"]:
-                _log.info("[CACHE]", f"ThinLTO cache: {_fmt_bytes(thinlto['size_bytes'])} "
+                _log.info(f"ThinLTO cache: {_fmt_bytes(thinlto['size_bytes'])} "
                           f"in {thinlto['files']} files ({thinlto['path']})")
             else:
-                _log.info("[CACHE]", f"ThinLTO cache dir configured but not yet created: {thinlto['path']}")
+                _log.info(f"ThinLTO cache dir configured but not yet created: {thinlto['path']}")
 
 
 # ---------------------------------------------------------------------------

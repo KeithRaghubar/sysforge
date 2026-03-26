@@ -20,7 +20,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("CONVERGE")
 from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.config import load_config, load_conflict_groups
 from sysforge.primitives.pacman import (
@@ -137,7 +138,7 @@ def cmd_converge(args) -> None:
         try:
             pkgmeta = parse_pkgbuild(pkgbuild_path)
         except Exception as e:
-            _log.warn("[CONVERGE]", f"{pkgbase}: failed to parse PKGBUILD: {e}")
+            _log.warn(f"{pkgbase}: failed to parse PKGBUILD: {e}")
             results.append(_ConvergeResult(
                 pkgbase=pkgbase, pkgnames=pkgnames, status="PARSE_ERROR",
                 pkgbuild_path=pkgbuild_path,
@@ -267,19 +268,19 @@ def _apply(results: list[_ConvergeResult], args) -> None:
             built_pkg_files.extend(new_pkgs)
             built += 1
         except (RuntimeError, SystemExit) as e:
-            _log.error("[CONVERGE]", f"Build failed for {result.pkgbase!r}: {e}")
+            _log.error(f"Build failed for {result.pkgbase!r}: {e}")
             failed += 1
 
     if built_pkg_files:
         if not batch_install_pkgs(built_pkg_files):
-            _log.error("[CONVERGE]", "Batch install failed")
+            _log.error("Batch install failed")
             print(
                 "[SYSFORGE] Error: batch install failed — packages were built but not installed.",
                 file=sys.stderr,
             )
             failed += 1
     elif built > 0:
-        _log.warn("[CONVERGE]", "No .pkg.tar.* files found after builds — nothing to install")
+        _log.warn("No .pkg.tar.* files found after builds — nothing to install")
 
     if getattr(args, "cache_report", False):
         emit_session_report()

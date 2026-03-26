@@ -15,7 +15,8 @@ Public API:
 """
 import os
 import tomllib
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("STATE")
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,21 +55,20 @@ def resolve_state_dir(cli_override=None):
         sources.append(f"SYSFORGE_STATE_DIR={env_val}")
 
     if sources:
-        _log.info("[CONFIG]", f"State dir source(s) found: {', '.join(sources)}")
+        _log.info(f"State dir source(s) found: {', '.join(sources)}")
 
     if cli_override:
         chosen = Path(cli_override)
-        _log.info("[CONFIG]", f"Using state dir (--state-dir takes priority): {chosen}")
+        _log.info(f"Using state dir (--state-dir takes priority): {chosen}")
         return chosen, "--state-dir"
 
     if env_val:
         chosen = Path(env_val)
-        _log.info("[CONFIG]", f"Using state dir (SYSFORGE_STATE_DIR): {chosen}")
+        _log.info(f"Using state dir (SYSFORGE_STATE_DIR): {chosen}")
         return chosen, "SYSFORGE_STATE_DIR"
 
     if not _state_dir_is_writable(_DEFAULT_STATE_DIR):
         _log.info(
-            "[CONFIG]",
             f"State dir {_DEFAULT_STATE_DIR} is not writable — "
             f"falling back to {_FALLBACK_STATE_DIR} "
             "(set SYSFORGE_STATE_DIR or install sysforge via PKGBUILD to use /var/lib/sysforge)",

@@ -7,7 +7,8 @@ modules that need to handle named failure scenarios from [failure_handling] conf
 Public API:
     handle_failure(scenario, message, config, fallback=None)
 """
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("FAILURE")
 
 _ALWAYS_ABORT = {"profile_missing", "tempfile_write_failed"}
 
@@ -44,17 +45,17 @@ def handle_failure(scenario, message, config, fallback=None):
         behaviour = "abort"
 
     if behaviour not in _VALID_BEHAVIOURS:
-        _log.error("[FAILURE]", f"Unknown behaviour {behaviour!r} for scenario {scenario!r} — defaulting to abort")
+        _log.error(f"Unknown behaviour {behaviour!r} for scenario {scenario!r} — defaulting to abort")
         behaviour = "abort"
 
     if behaviour == "abort":
-        _log.error("[FAILURE]", f"[{scenario}] ABORT: {message}")
+        _log.error(f"[{scenario}] ABORT: {message}")
         raise RuntimeError(f"[{scenario}] {message}")
     elif behaviour == "error":
-        _log.error("[FAILURE]", f"[{scenario}] ERROR: {message}")
+        _log.error(f"[{scenario}] ERROR: {message}")
         raise RuntimeError(f"[{scenario}] {message}")
     elif behaviour == "warn_and_fallback":
-        _log.warn("[FAILURE]", f"[{scenario}] WARNING: {message} — falling back")
+        _log.warn(f"[{scenario}] WARNING: {message} — falling back")
         return fallback
     elif behaviour == "fallback":
         return fallback

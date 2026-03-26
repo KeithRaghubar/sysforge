@@ -13,7 +13,8 @@ Public API:
 import os
 import pprint
 import tomllib
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("CONFIG")
 from pathlib import Path
 
 
@@ -143,18 +144,18 @@ def load_config(config_paths=None) -> dict:
     if user_config is None:
         assert system_config is not None  # guaranteed: both-None case raised above
         _validate_rule_priorities(system_config.get("rules", []), "system")
-        _log.info("[CONFIG]", f"Loaded system config: {system_path}")
-        _log.debug("[CONFIG]", f"Full flag_profiles (system):\n{pprint.pformat(system_config, indent=2, sort_dicts=False)}")
+        _log.info(f"Loaded system config: {system_path}")
+        _log.debug(f"Full flag_profiles (system):\n{pprint.pformat(system_config, indent=2, sort_dicts=False)}")
         return system_config
 
     if system_config is None:
         _validate_rule_priorities(user_config.get("rules", []), "user")
-        _log.info("[CONFIG]", f"Loaded user config: {user_path}")
-        _log.debug("[CONFIG]", f"Full flag_profiles (user):\n{pprint.pformat(user_config, indent=2, sort_dicts=False)}")
+        _log.info(f"Loaded user config: {user_path}")
+        _log.debug(f"Full flag_profiles (user):\n{pprint.pformat(user_config, indent=2, sort_dicts=False)}")
         return user_config
 
     if user_config.get("extends_system", False):
-        _log.info("[CONFIG]", "Merging user config onto system config")
+        _log.info("Merging user config onto system config")
 
         merged = _deep_merge(
             {k: v for k, v in system_config.items() if k != "rules"},
@@ -175,12 +176,12 @@ def load_config(config_paths=None) -> dict:
         system_rules = system_config.get("rules", [])
 
         merged["rules"] = system_rules + user_rules
-        _log.debug("[CONFIG]", f"Full flag_profiles (merged):\n{pprint.pformat(merged, indent=2, sort_dicts=False)}")
+        _log.debug(f"Full flag_profiles (merged):\n{pprint.pformat(merged, indent=2, sort_dicts=False)}")
         return merged
 
     _validate_rule_priorities(user_config.get("rules", []), "user")
-    _log.info("[CONFIG]", f"User config overrides system config: {user_path}")
-    _log.debug("[CONFIG]", f"Full flag_profiles (user overrides system):\n{pprint.pformat(user_config, indent=2, sort_dicts=False)}")
+    _log.info(f"User config overrides system config: {user_path}")
+    _log.debug(f"Full flag_profiles (user overrides system):\n{pprint.pformat(user_config, indent=2, sort_dicts=False)}")
     return user_config
 
 
@@ -226,7 +227,7 @@ def load_conflict_groups(conflict_group_paths=None):
     system_groups = system_data.get("conflict_groups", {}) if system_data else {}
 
     if user_data is None:
-        _log.debug("[CONFIG]", f"Conflict groups (system):\n{pprint.pformat(system_groups, indent=2, sort_dicts=False)}")
+        _log.debug(f"Conflict groups (system):\n{pprint.pformat(system_groups, indent=2, sort_dicts=False)}")
         return system_groups
 
     user_groups = user_data.get("conflict_groups", {})
@@ -234,10 +235,10 @@ def load_conflict_groups(conflict_group_paths=None):
     if user_data.get("extends_system", False):
         merged = dict(system_groups)
         merged.update(user_groups)
-        _log.debug("[CONFIG]", f"Conflict groups (merged):\n{pprint.pformat(merged, indent=2, sort_dicts=False)}")
+        _log.debug(f"Conflict groups (merged):\n{pprint.pformat(merged, indent=2, sort_dicts=False)}")
         return merged
 
-    _log.debug("[CONFIG]", f"Conflict groups (user):\n{pprint.pformat(user_groups, indent=2, sort_dicts=False)}")
+    _log.debug(f"Conflict groups (user):\n{pprint.pformat(user_groups, indent=2, sort_dicts=False)}")
     return user_groups
 
 
@@ -274,14 +275,14 @@ def load_consumes_inference(paths=None):
     system_data = _load(system_path) if system_path and system_path.exists() else None
 
     if user_data is None and system_data is None:
-        _log.debug("[CONFIG]", f"Consumes inference (built-in defaults):\n{pprint.pformat(_DEFAULT_INFERENCE, indent=2, sort_dicts=False)}")
+        _log.debug(f"Consumes inference (built-in defaults):\n{pprint.pformat(_DEFAULT_INFERENCE, indent=2, sort_dicts=False)}")
         return _DEFAULT_INFERENCE
 
     system_map = system_data.get("consumes_inference", {}) if system_data else {}
 
     if user_data is None:
-        _log.info("[CONFIG]", f"Loaded consumes_inference: {system_path}")
-        _log.debug("[CONFIG]", f"Consumes inference (system):\n{pprint.pformat(system_map, indent=2, sort_dicts=False)}")
+        _log.info(f"Loaded consumes_inference: {system_path}")
+        _log.debug(f"Consumes inference (system):\n{pprint.pformat(system_map, indent=2, sort_dicts=False)}")
         return system_map
 
     user_map = user_data.get("consumes_inference", {})
@@ -289,12 +290,12 @@ def load_consumes_inference(paths=None):
     if user_data.get("extends_system", False):
         merged = dict(system_map)
         merged.update(user_map)
-        _log.info("[CONFIG]", "Merged consumes_inference (user onto system)")
-        _log.debug("[CONFIG]", f"Consumes inference (merged):\n{pprint.pformat(merged, indent=2, sort_dicts=False)}")
+        _log.info("Merged consumes_inference (user onto system)")
+        _log.debug(f"Consumes inference (merged):\n{pprint.pformat(merged, indent=2, sort_dicts=False)}")
         return merged
 
-    _log.info("[CONFIG]", f"Loaded consumes_inference (user only): {user_path}")
-    _log.debug("[CONFIG]", f"Consumes inference (user):\n{pprint.pformat(user_map, indent=2, sort_dicts=False)}")
+    _log.info(f"Loaded consumes_inference (user only): {user_path}")
+    _log.debug(f"Consumes inference (user):\n{pprint.pformat(user_map, indent=2, sort_dicts=False)}")
     return user_map
 
 
@@ -320,7 +321,7 @@ def _parse_one_makepkg_conf(path: Path) -> dict:
     try:
         text = path.read_text()
     except PermissionError:
-        _log.warn("[CONFIG]", f"Cannot read {path} — skipping")
+        _log.warn(f"Cannot read {path} — skipping")
         return {}
 
     result = {}
@@ -357,8 +358,8 @@ def _parse_one_makepkg_conf(path: Path) -> dict:
 
         result[key] = value
 
-    _log.info("[CONFIG]", f"Parsed {len(result)} keys from {path}")
-    _log.debug("[CONFIG]", f"System makepkg.conf key=value pairs:\n" +
+    _log.info(f"Parsed {len(result)} keys from {path}")
+    _log.debug(f"System makepkg.conf key=value pairs:\n" +
                "\n".join(f"  {k}={v}" for k, v in result.items()))
     return result
 
@@ -384,13 +385,13 @@ def parse_system_makepkg_conf(path=None):
     if path is not None:
         result = _parse_one_makepkg_conf(Path(path))
         if not result:
-            _log.warn("[CONFIG]", f"makepkg.conf not found or unreadable at {path} — will use profile values only")
+            _log.warn(f"makepkg.conf not found or unreadable at {path} — will use profile values only")
         return result
 
     # Layer system conf then user conf(s), later entries win.
     result = _parse_one_makepkg_conf(Path("/etc/makepkg.conf"))
     if not result:
-        _log.warn("[CONFIG]", "System makepkg.conf not found at /etc/makepkg.conf — will use profile values only")
+        _log.warn("System makepkg.conf not found at /etc/makepkg.conf — will use profile values only")
 
     xdg_config = _os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     user_conf_paths = [
@@ -400,7 +401,7 @@ def parse_system_makepkg_conf(path=None):
     for user_path in user_conf_paths:
         user_keys = _parse_one_makepkg_conf(user_path)
         if user_keys:
-            _log.info("[CONFIG]", f"Merging user makepkg.conf: {user_path} ({len(user_keys)} keys)")
+            _log.info(f"Merging user makepkg.conf: {user_path} ({len(user_keys)} keys)")
             result.update(user_keys)
 
     return result

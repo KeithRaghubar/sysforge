@@ -21,7 +21,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("ABI")
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +53,7 @@ def _list_sos_in_pkg(pkg_path: Path) -> list[str]:
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        _log.warn("[ABI]", f"bsdtar list failed for {pkg_path.name}: {result.stderr.strip()}")
+        _log.warn(f"bsdtar list failed for {pkg_path.name}: {result.stderr.strip()}")
         return []
     # Match usr/lib/libfoo.so.N or usr/lib/libfoo.so.N.M etc.
     # Also plain .so symlinks are excluded — we want the actual ELF files.
@@ -73,7 +74,7 @@ def _extract_sos(pkg_path: Path, members: list[str], dest: Path) -> list[Path]:
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        _log.warn("[ABI]", f"bsdtar extract failed: {result.stderr.strip()}")
+        _log.warn(f"bsdtar extract failed: {result.stderr.strip()}")
     extracted = []
     for member in members:
         p = dest / member
@@ -185,10 +186,10 @@ def check_package_abi(pkg_path: Path) -> list[str]:
     """
     so_members = _list_sos_in_pkg(pkg_path)
     if not so_members:
-        _log.info("[ABI]", f"{pkg_path.name}: no shared libraries — skipping ABI check")
+        _log.info(f"{pkg_path.name}: no shared libraries — skipping ABI check")
         return []
 
-    _log.info("[ABI]", f"{pkg_path.name}: checking {len(so_members)} shared librar{'y' if len(so_members) == 1 else 'ies'}")
+    _log.info(f"{pkg_path.name}: checking {len(so_members)} shared librar{'y' if len(so_members) == 1 else 'ies'}")
 
     issues: list[str] = []
     ldconfig_map = _build_ldconfig_map()

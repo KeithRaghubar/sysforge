@@ -153,6 +153,45 @@ def prompt_prefix(level: str, tag: str) -> str:
     return f"[SYSFORGE][{level}]{tag} "
 
 
+# ---------------------------------------------------------------------------
+# Logger — bound logger with a fixed tag
+# ---------------------------------------------------------------------------
+
+class Logger:
+    """A logger bound to a fixed tag.  Create via get_logger()."""
+
+    __slots__ = ("_tag",)
+
+    def __init__(self, tag: str) -> None:
+        self._tag = f"[{tag}]"
+
+    def ui(self, message: str) -> None:
+        ui(self._tag, message)
+
+    def error(self, message: str) -> None:
+        error(self._tag, message)
+
+    def warn(self, message: str) -> None:
+        warn(self._tag, message)
+
+    def info(self, message: str) -> None:
+        info(self._tag, message)
+
+    def debug(self, message: str) -> None:
+        debug(self._tag, message)
+
+    def newline(self) -> None:
+        newline()
+
+    def prompt_prefix(self, level: str) -> str:
+        return prompt_prefix(level, self._tag)
+
+
+def get_logger(tag: str) -> Logger:
+    """Return a Logger bound to the given tag (e.g. get_logger("UPDATE"))."""
+    return Logger(tag)
+
+
 def newline() -> None:
     """Emit a blank line to the output stream. Use before async log messages to avoid mid-line appends."""
     print("", file=_out())

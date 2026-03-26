@@ -27,7 +27,8 @@ import re
 import subprocess
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("HARDWARE")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.state import resolve_state_dir
 
@@ -103,7 +104,6 @@ def _cpu_kconfig(cpu_info: dict) -> dict:
                 entries[opt] = "y"
             else:
                 _log.info(
-                    "[HARDWARE]",
                     f"AMD CPU family={family} model={model} — no specific kconfig mapping, "
                     "CONFIG_GENERIC_CPU will be used by default",
                 )
@@ -194,16 +194,16 @@ def _write_hardware_profile(path: Path, hw: dict, kconfig: dict, dry_run: bool) 
     content = "\n".join(lines)
 
     if dry_run:
-        _log.ui("[HARDWARE]", f"[dry-run] would write hardware_profile.toml to {path}:")
+        _log.ui(f"[dry-run] would write hardware_profile.toml to {path}:")
         for line in lines:
-            _log.ui("[HARDWARE]", f"  {line}")
+            _log.ui(f"  {line}")
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(content)
     tmp.rename(path)
-    _log.ui("[HARDWARE]", f"Wrote hardware_profile.toml: {path}")
+    _log.ui(f"Wrote hardware_profile.toml: {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +219,7 @@ class HardwareStage(Stage):
         state_dir, _ = resolve_state_dir(options.state_dir)
         output_path = state_dir / "hardware_profile.toml"
 
-        _log.ui("[HARDWARE]", "Probing hardware...")
+        _log.ui("Probing hardware...")
 
         # --- CPU ---
         try:
@@ -229,7 +229,6 @@ class HardwareStage(Stage):
 
         cpu_info = _parse_cpuinfo(cpuinfo)
         _log.ui(
-            "[HARDWARE]",
             f"CPU: vendor={cpu_info.get('cpu_vendor', '?')}  "
             f"family={cpu_info.get('cpu_family', '?')}  "
             f"model={cpu_info.get('cpu_model', '?')}",
@@ -241,7 +240,6 @@ class HardwareStage(Stage):
         )
         if lspci_result.returncode != 0:
             _log.warn(
-                "[HARDWARE]",
                 f"lspci failed (exit {lspci_result.returncode}) — GPU and NVMe detection skipped",
             )
             lspci_text = ""
@@ -252,12 +250,12 @@ class HardwareStage(Stage):
         nvme = _has_nvme(lspci_text)
 
         if gpu_vendors:
-            _log.ui("[HARDWARE]", f"GPU(s): {', '.join(gpu_vendors)}")
+            _log.ui(f"GPU(s): {', '.join(gpu_vendors)}")
         else:
-            _log.ui("[HARDWARE]", "GPU: none detected via lspci")
+            _log.ui("GPU: none detected via lspci")
 
         if nvme:
-            _log.ui("[HARDWARE]", "NVMe: present")
+            _log.ui("NVMe: present")
 
         # --- Build kconfig ---
         kconfig = {}
@@ -268,11 +266,10 @@ class HardwareStage(Stage):
 
         if kconfig:
             _log.ui(
-                "[HARDWARE]",
                 f"kconfig entries: {', '.join(f'{k}={v}' for k, v in kconfig.items())}",
             )
         else:
-            _log.ui("[HARDWARE]", "No kconfig entries generated")
+            _log.ui("No kconfig entries generated")
 
         # --- Hardware summary dict ---
         hw = {
@@ -284,4 +281,4 @@ class HardwareStage(Stage):
         # --- Write output ---
         _write_hardware_profile(output_path, hw, kconfig, options.dry_run)
 
-        _log.ui("[HARDWARE]", "Hardware detection complete.")
+        _log.ui("Hardware detection complete.")

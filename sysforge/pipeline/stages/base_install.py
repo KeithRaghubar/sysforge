@@ -14,7 +14,8 @@ Reads target from /etc/sysforge/bootstrap.toml.
 import subprocess
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("BASE_INSTALL")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import load_bootstrap
 
@@ -65,9 +66,9 @@ def _verify_target_mounted(target: str) -> None:
 
 def _run_pacstrap(target: str, packages: list[str], dry_run: bool) -> None:
     cmd = ["pacstrap", "-K", target] + packages
-    _log.ui("[BASE_INSTALL]", f"pacstrap: {' '.join(packages)}")
+    _log.ui(f"pacstrap: {' '.join(packages)}")
     if dry_run:
-        _log.ui("[BASE_INSTALL]", f"[dry-run] would run: {' '.join(cmd)}")
+        _log.ui(f"[dry-run] would run: {' '.join(cmd)}")
         return
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -75,16 +76,16 @@ def _run_pacstrap(target: str, packages: list[str], dry_run: bool) -> None:
             f"[BASE_INSTALL] pacstrap failed (exit {result.returncode}). "
             f"Check network connectivity and pacman keyring."
         )
-    _log.ui("[BASE_INSTALL]", "pacstrap complete.")
+    _log.ui("pacstrap complete.")
 
 
 def _generate_fstab(target: str, dry_run: bool) -> None:
     fstab_path = Path(target) / "etc/fstab"
     cmd = ["genfstab", "-U", target]
-    _log.ui("[BASE_INSTALL]", f"Generating fstab: {fstab_path}")
+    _log.ui(f"Generating fstab: {fstab_path}")
 
     if dry_run:
-        _log.ui("[BASE_INSTALL]", f"[dry-run] would run: {' '.join(cmd)} >> {fstab_path}")
+        _log.ui(f"[dry-run] would run: {' '.join(cmd)} >> {fstab_path}")
         return
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -97,7 +98,7 @@ def _generate_fstab(target: str, dry_run: bool) -> None:
     with open(fstab_path, "a") as f:
         f.write(result.stdout)
 
-    _log.ui("[BASE_INSTALL]", "fstab written.")
+    _log.ui("fstab written.")
 
 
 class BaseInstallStage(Stage):
@@ -108,8 +109,8 @@ class BaseInstallStage(Stage):
     def run(self, config, state, options):  # noqa: ARG002
         cfg = load_bootstrap()
 
-        _log.ui("[BASE_INSTALL]", f"Installing base system to {cfg.target}")
-        _log.ui("[BASE_INSTALL]", f"Packages: {', '.join(_BASE_PACKAGES)}")
+        _log.ui(f"Installing base system to {cfg.target}")
+        _log.ui(f"Packages: {', '.join(_BASE_PACKAGES)}")
 
         if not options.dry_run:
             _verify_target_mounted(cfg.target)
@@ -117,4 +118,4 @@ class BaseInstallStage(Stage):
         _run_pacstrap(cfg.target, _BASE_PACKAGES, options.dry_run)
         _generate_fstab(cfg.target, options.dry_run)
 
-        _log.ui("[BASE_INSTALL]", "Base install complete.")
+        _log.ui("Base install complete.")

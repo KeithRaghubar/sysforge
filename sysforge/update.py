@@ -29,7 +29,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("UPDATE")
 from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
@@ -150,7 +151,7 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
     all_installed = get_all_installed_packages()
 
     if not foreign and not all_installed:
-        _log.info("[UPDATE]", "--all: no installed packages found")
+        _log.info("--all: no installed packages found")
         return []
 
     tracked = set(bs.all_packages().keys())
@@ -162,7 +163,7 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
     unrecorded = {k: v for k, v in all_installed.items() if k in in_manifest and k not in tracked}
 
     if not new_foreign and not unrecorded:
-        _log.info("[UPDATE]", "--all: all manifest packages are already tracked")
+        _log.info("--all: all manifest packages are already tracked")
         return []
 
     results: list[_DiscoveredResult] = []
@@ -170,14 +171,14 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
 
     # --- Phase 1: truly new packages (not in packages.toml) ---
     if new_foreign:
-        _log.info("[UPDATE]", f"--all: {len(new_foreign)} untracked foreign package(s) found")
+        _log.info(f"--all: {len(new_foreign)} untracked foreign package(s) found")
         aur_results = aur_info(list(new_foreign.keys()))
 
         for pkgname in sorted(new_foreign):
             installed_ver = new_foreign[pkgname]
 
             if pkgname not in aur_results:
-                _log.warn("[UPDATE]", f"--all: {pkgname!r} not found in AUR — skipping")
+                _log.warn(f"--all: {pkgname!r} not found in AUR — skipping")
                 results.append(_DiscoveredResult(
                     pkgname=pkgname, action="NOT_FOUND",
                     installed_ver=installed_ver,
@@ -192,7 +193,7 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
                 try:
                     pkgbuild_path = find_pkgbuild(pkgname, config)
                 except (FileNotFoundError, RuntimeError) as e:
-                    _log.warn("[UPDATE]", f"--all: {pkgname!r}: {e}")
+                    _log.warn(f"--all: {pkgname!r}: {e}")
 
                 if pkgbuild_path and pkgbuild_path.exists():
                     try:
@@ -201,7 +202,7 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
                         from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
                         pkgbuild_patch = bool(extract_pkgbuild_profile(pkgmeta, pkgbuild_path))
                     except Exception as e:
-                        _log.warn("[UPDATE]", f"--all: {pkgname!r}: failed to parse PKGBUILD: {e}")
+                        _log.warn(f"--all: {pkgname!r}: failed to parse PKGBUILD: {e}")
 
             entry: dict = {"name": pkgname, "source": "aur"}
             if pkgbuild_patch:
@@ -228,11 +229,11 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
 
     if entries_to_add and not getattr(args, "dry_run", False):
         _append_to_packages_toml(packages_path, entries_to_add)
-        _log.info("[UPDATE]", f"--all: appended {len(entries_to_add)} package(s) to {packages_path}")
+        _log.info(f"--all: appended {len(entries_to_add)} package(s) to {packages_path}")
 
     # --- Phase 2: packages in packages.toml with no build_state record ---
     if unrecorded:
-        _log.info("[UPDATE]",
+        _log.info(
                   f"--all: {len(unrecorded)} package(s) in packages.toml with no build record — checking versions")
 
         pkgbuild_dir_raw = config.get("paths", {}).get("pkgbuild_dir")
@@ -293,7 +294,7 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
                 try:
                     pkgbuild_path = find_pkgbuild(pkgname, config)
                 except (FileNotFoundError, RuntimeError) as e:
-                    _log.warn("[UPDATE]", f"--all: {pkgname!r}: {e}")
+                    _log.warn(f"--all: {pkgname!r}: {e}")
 
                 if pkgbuild_path and pkgbuild_path.exists():
                     # Pull before comparing so we see the latest AUR version,
@@ -302,17 +303,17 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
                         try:
                             git_pull_rebase(pkgbuild_path.parent)
                         except RuntimeError as e:
-                            _log.warn("[UPDATE]", f"--all: {pkgname!r}: git pull failed: {e}")
+                            _log.warn(f"--all: {pkgname!r}: git pull failed: {e}")
                     try:
                         pkgmeta = parse_pkgbuild(pkgbuild_path)
                         pkgbuild_ver = format_version(pkgmeta.get("globals", {}))
                     except Exception as e:
-                        _log.warn("[UPDATE]", f"--all: {pkgname!r}: failed to parse PKGBUILD: {e}")
+                        _log.warn(f"--all: {pkgname!r}: failed to parse PKGBUILD: {e}")
 
             # If pkgbuild_ver contains unexpanded bash (e.g. ${_ver/[a-z]/...}),
             # treat it as unparseable so we fall through to the "can't compare" case.
             if pkgbuild_ver and ('$' in pkgbuild_ver or '{' in pkgbuild_ver):
-                _log.warn("[UPDATE]", f"--all: {pkgname!r}: pkgver contains unexpanded bash "
+                _log.warn(f"--all: {pkgname!r}: pkgver contains unexpanded bash "
                           f"({pkgbuild_ver!r}), treating as unresolvable")
                 pkgbuild_ver = None
 
@@ -378,11 +379,11 @@ def cmd_update(args) -> None:
     unified_log_path = (Path(args.log_dir) if getattr(args, "log_dir", None) else state_dir) / "sysforge-update.log"
     if unified_log_active:
         try:
-            _log.open_unified_log(unified_log_path, purge=getattr(args, "purge_log", False))
-            _log.info("[UPDATE]", f"Unified log: {unified_log_path}")
+            log.open_unified_log(unified_log_path, purge=getattr(args, "purge_log", False))
+            _log.info(f"Unified log: {unified_log_path}")
         except OSError as e:
             unified_log_active = False
-            _log.warn("[UPDATE]", f"Cannot write unified log to {unified_log_path}: {e} — logging to terminal only")
+            _log.warn(f"Cannot write unified log to {unified_log_path}: {e} — logging to terminal only")
 
     # --all: discover and classify foreign packages before the main update loop
     discover_config: dict = {}
@@ -439,17 +440,17 @@ def cmd_update(args) -> None:
         pkgbuild_dir = Path(entry["pkgbuild_dir"])
 
         if not pkgbuild_dir.is_dir():
-            _log.warn("[UPDATE]", f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
+            _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
             continue
 
         pkgbuild_path = pkgbuild_dir / "PKGBUILD"
         if not pkgbuild_path.exists():
-            _log.warn("[UPDATE]", f"{pkgbase}: PKGBUILD not found at {pkgbuild_path} — skipping")
+            _log.warn(f"{pkgbase}: PKGBUILD not found at {pkgbuild_path} — skipping")
             continue
 
         # Use pre-computed pull result (parallel pulls ran above)
         if not getattr(args, "no_update", False) and pkgbase in pull_errors:
-            _log.error("[UPDATE]", pull_errors[pkgbase])
+            _log.error(pull_errors[pkgbase])
             results.append(_UpdateResult(
                 pkgbase=pkgbase,
                 pkgnames=pkgnames,
@@ -464,7 +465,7 @@ def cmd_update(args) -> None:
         try:
             pkgmeta = parse_pkgbuild(pkgbuild_path)
         except Exception as e:
-            _log.warn("[UPDATE]", f"{pkgbase}: failed to parse PKGBUILD: {e} — skipping")
+            _log.warn(f"{pkgbase}: failed to parse PKGBUILD: {e} — skipping")
             continue
 
         globals_ = pkgmeta.get("globals", {})
@@ -498,7 +499,7 @@ def cmd_update(args) -> None:
         try:
             cmp = vercmp(pkgbuild_ver, installed_ver)
         except RuntimeError as e:
-            _log.warn("[UPDATE]", f"{pkgbase}: version comparison failed: {e} — skipping")
+            _log.warn(f"{pkgbase}: version comparison failed: {e} — skipping")
             continue
 
         if cmp > 0:
@@ -507,7 +508,7 @@ def cmd_update(args) -> None:
             action = "UP_TO_DATE"
         else:
             action = "DOWNGRADE"
-            _log.warn("[UPDATE]",
+            _log.warn(
                       f"{pkgbase}: PKGBUILD {pkgbuild_ver} is older than installed {installed_ver}")
 
         results.append(_UpdateResult(
@@ -557,7 +558,7 @@ def cmd_update(args) -> None:
         try:
             batch_install_makedeps(missing_deps)
         except RuntimeError as e:
-            _log.error("[UPDATE]", str(e))
+            _log.error(str(e))
             print(f"[SYSFORGE] Warning: makedep pre-install failed — some builds may fail", file=sys.stderr)
 
     # Where do built packages land? PKGDEST overrides the pkgbuild dir.
@@ -602,10 +603,10 @@ def cmd_update(args) -> None:
             built_pkg_files.extend(new_pkgs)
             built_pkgs.append(result.pkgbase)
         except PGOBuildSkipped as e:
-            _log.warn("[UPDATE]", str(e))
+            _log.warn(str(e))
             pgo_skipped_pkgs.append(result.pkgbase)
         except (RuntimeError, SystemExit) as e:
-            _log.error("[UPDATE]", f"Build failed for {result.pkgbase!r}: {e}")
+            _log.error(f"Build failed for {result.pkgbase!r}: {e}")
             failed_pkgs.append(result.pkgbase)
 
     for d in discovered_to_build:
@@ -616,7 +617,7 @@ def cmd_update(args) -> None:
             try:
                 pkgbuild_path = find_pkgbuild(d.pkgname, discover_config)
             except (FileNotFoundError, RuntimeError) as e:
-                _log.error("[UPDATE]", f"Cannot find/clone PKGBUILD for {d.pkgname!r}: {e}")
+                _log.error(f"Cannot find/clone PKGBUILD for {d.pkgname!r}: {e}")
                 failed_pkgs.append(d.pkgname)
                 continue
 
@@ -644,10 +645,10 @@ def cmd_update(args) -> None:
             built_pkg_files.extend(new_pkgs)
             built_pkgs.append(d.pkgname)
         except PGOBuildSkipped as e:
-            _log.warn("[UPDATE]", str(e))
+            _log.warn(str(e))
             pgo_skipped_pkgs.append(d.pkgname)
         except (RuntimeError, SystemExit) as e:
-            _log.error("[UPDATE]", f"Build failed for {d.pkgname!r}: {e}")
+            _log.error(f"Build failed for {d.pkgname!r}: {e}")
             failed_pkgs.append(d.pkgname)
 
     # --- Phase 3: install all built packages in one sudo call ---
@@ -664,35 +665,35 @@ def cmd_update(args) -> None:
     install_failed = False
     if built_pkg_files:
         if not batch_install_pkgs(built_pkg_files):
-            _log.error("[UPDATE]", "Batch package install failed")
-            _log.error("[UPDATE]", "packages were built but not installed")
+            _log.error("Batch package install failed")
+            _log.error("packages were built but not installed")
             install_failed = True
     elif built_pkgs:
-        _log.warn("[UPDATE]", "No .pkg.tar.* files found after builds — nothing to install")
+        _log.warn("No .pkg.tar.* files found after builds — nothing to install")
 
     if getattr(args, "cache_report", False):
         emit_session_report()
 
     skipped = len(results) - len(to_build)
-    _log.ui("[UPDATE]", (
+    _log.ui((
         f"\n[SYSFORGE] Update complete: "
         f"{len(built_pkgs)} built, {len(failed_pkgs)} failed, {skipped} skipped"
         + (f", {len(pgo_skipped_pkgs)} pgo-skipped" if pgo_skipped_pkgs else "")
         + "."
     ))
     if built_pkgs:
-        _log.ui("[UPDATE]", f"  Built:       {' '.join(built_pkgs)}")
+        _log.ui(f"  Built:       {' '.join(built_pkgs)}")
     if failed_pkgs:
-        _log.ui("[UPDATE]", f"  Failed:      {' '.join(failed_pkgs)}")
+        _log.ui(f"  Failed:      {' '.join(failed_pkgs)}")
     if pgo_skipped_pkgs:
-        _log.ui("[UPDATE]",
+        _log.ui(
             f"  PGO-skipped: {' '.join(pgo_skipped_pkgs)}"
             " (run 'sysforge run toolchain' to rebuild profdata)"
         )
 
     if unified_log_active:
-        _log.close_unified_log(success=(not failed_pkgs and not install_failed), persist=True)
-        _log.ui("[UPDATE]", f"[SYSFORGE] Unified log: {unified_log_path}")
+        log.close_unified_log(success=(not failed_pkgs and not install_failed), persist=True)
+        _log.ui(f"[SYSFORGE] Unified log: {unified_log_path}")
 
 
 def _print_summary(results: list[_UpdateResult], args) -> None:

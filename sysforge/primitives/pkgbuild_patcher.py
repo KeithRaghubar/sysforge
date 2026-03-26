@@ -14,7 +14,8 @@ Public API:
     cleanup_patch_artifacts(pkgbuild_path)
 """
 import re
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("PATCH")
 import tomllib
 from pathlib import Path
 from sysforge.primitives.profile import CONF_KEY_MAP
@@ -112,7 +113,7 @@ def patch_pkgbuild_groups(pkgbuild_path, groups):
         new_text = "".join(result)
 
     patched_path.write_text(new_text)
-    _log.info("[BUILD]", f"Wrote patched PKGBUILD: {patched_path}")
+    _log.info(f"Wrote patched PKGBUILD: {patched_path}")
     return patched_path
 
 
@@ -219,7 +220,7 @@ def _extract_flag_assignments(function_body, pkgname="unknown"):
 
         # Skip if complex bash expression remains (e.g. ${VAR/-g /-g1 })
         if _VARREF_RE.search(stripped):
-            _log.info("[PATCH]", f"[{pkgname}] Skipped (complex expression, not extractable): {key}{op}... — line will still be removed")
+            _log.info(f"[{pkgname}] Skipped (complex expression, not extractable): {key}{op}... — line will still be removed")
             continue
 
         tokens = _tokenize_flag_value(stripped)
@@ -234,12 +235,12 @@ def _extract_flag_assignments(function_body, pkgname="unknown"):
         else:
             accumulated[key].extend(tokens)
 
-        _log.info("[PATCH]", f"[{pkgname}] Extracted {key}{op} tokens: {tokens}")
+        _log.info(f"[{pkgname}] Extracted {key}{op} tokens: {tokens}")
 
     # Log inline make/cmake patterns (not extracted, logged, removed by apply_patch_pkgbuild)
     for pat, label in ((_INLINE_MAKE_RE, "inline make"), (_INLINE_CMAKE_RE, "inline cmake")):
         for m in pat.finditer(function_body):
-            _log.info("[PATCH]", f"[{pkgname}] Skipped ({label}): {m.group(0).strip()!r}")
+            _log.info(f"[{pkgname}] Skipped ({label}): {m.group(0).strip()!r}")
 
     return {k: v for k, v in accumulated.items() if v}
 
@@ -337,7 +338,7 @@ def extract_pkgbuild_profile(pkgmeta, pkgbuild_path):
         # Phase 1: log conditional blocks that will be removed by apply_patch_pkgbuild
         for start, end, keys, block_text in _extract_conditional_blocks(body, pkgname):
             preview = block_text.splitlines()[0][:60]
-            _log.info("[PATCH]", f"[{pkgname}] Removing entire conditional block in {func_name!r} (contains {keys}): {preview!r}...")
+            _log.info(f"[{pkgname}] Removing entire conditional block in {func_name!r} (contains {keys}): {preview!r}...")
 
         # Phase 2: extract assignments
         for key, tokens in _extract_flag_assignments(body, pkgname).items():
@@ -347,13 +348,13 @@ def extract_pkgbuild_profile(pkgmeta, pkgbuild_path):
                 accumulated[key].extend(tokens)
 
     if not accumulated:
-        _log.info("[PATCH]", f"[{pkgname}] No extractable flags found in function bodies")
+        _log.info(f"[{pkgname}] No extractable flags found in function bodies")
         return {}
 
     profile = {k: " ".join(v) for k, v in accumulated.items()}
 
     for key, val in profile.items():
-        _log.info("[PATCH]", f"[{pkgname}] Extracted profile key: {key} = {val!r}")
+        _log.info(f"[{pkgname}] Extracted profile key: {key} = {val!r}")
 
     return profile
 
@@ -388,9 +389,9 @@ def write_extracted_profile(profile, pkgbuild_path):
         escaped = val.replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'{key} = "{escaped}"')
 
-    _log.debug("[PATCH]", f"Extracted profile TOML:\n{chr(10).join(lines)}")
+    _log.debug(f"Extracted profile TOML:\n{chr(10).join(lines)}")
     out_path.write_text("\n".join(lines) + "\n")
-    _log.info("[PATCH]", f"Wrote extracted profile: {out_path}")
+    _log.info(f"Wrote extracted profile: {out_path}")
     return out_path
 
 
@@ -410,7 +411,7 @@ def load_extracted_profile(pkgbuild_path):
         data = tomllib.load(f)
 
     profile = data.get("profiles", {}).get("pkgbuild_extracted", {})
-    _log.info("[PATCH]", f"Loaded extracted profile from: {toml_path}")
+    _log.info(f"Loaded extracted profile from: {toml_path}")
     return profile
 
 
@@ -481,7 +482,7 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta):
                 # Find line number for the log
                 line_no = i + 1
                 preview = lines[i].rstrip()[:60]
-                _log.info("[PATCH]", f"[{pkgname}] Removing conditional block at line {line_no} (keys: {sorted(keys_found)}): {preview!r}")
+                _log.info(f"[{pkgname}] Removing conditional block at line {line_no} (keys: {sorted(keys_found)}): {preview!r}")
                 conditional_spans.append((block_start, block_end, sorted(keys_found)))
             i = j
         else:
@@ -501,24 +502,24 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta):
     for line_no, line in enumerate(working.splitlines(keepends=True), start=1):
         m = _ASSIGNMENT_RE.match(line)
         if m and m.group("key") in _EXTRACTABLE_KEYS:
-            _log.info("[PATCH]", f"[{pkgname}] Removed assignment line {line_no}: {line.rstrip()!r}")
+            _log.info(f"[{pkgname}] Removed assignment line {line_no}: {line.rstrip()!r}")
             continue  # drop this line
 
         # Inline make/cmake lines — only strip if the key is one we manage
         m_make = _INLINE_MAKE_RE.match(line)
         if m_make and m_make.group("key") in _EXTRACTABLE_KEYS:
-            _log.info("[PATCH]", f"[{pkgname}] Removed inline make line {line_no}: {line.rstrip()!r}")
+            _log.info(f"[{pkgname}] Removed inline make line {line_no}: {line.rstrip()!r}")
             continue
         m_cmake = _INLINE_CMAKE_RE.match(line)
         if m_cmake and m_cmake.group("key") in _EXTRACTABLE_KEYS:
-            _log.info("[PATCH]", f"[{pkgname}] Removed inline cmake line {line_no}: {line.rstrip()!r}")
+            _log.info(f"[{pkgname}] Removed inline cmake line {line_no}: {line.rstrip()!r}")
             continue
 
         result_lines.append(line)
 
     patched_text = "".join(result_lines)
     patched_path.write_text(patched_text)
-    _log.info("[PATCH]", f"[{pkgname}] Wrote patched PKGBUILD: {patched_path}")
+    _log.info(f"[{pkgname}] Wrote patched PKGBUILD: {patched_path}")
     return patched_path
 
 
@@ -554,12 +555,11 @@ def patch_noninteractive_kconfig(patched_path):
         patched_path.write_text(new_text)
         for target, original, replaced in replacements:
             _log.info(
-                "[PATCH]",
                 f"Replaced interactive kconfig target {target!r} with olddefconfig: "
                 f"{original!r} → {replaced!r}",
             )
     else:
-        _log.info("[PATCH]", "No interactive kconfig targets found — nothing replaced")
+        _log.info("No interactive kconfig targets found — nothing replaced")
 
 
 # ---------------------------------------------------------------------------
@@ -580,4 +580,4 @@ def cleanup_patch_artifacts(pkgbuild_path):
         target = build_dir / name
         if target.exists():
             target.unlink()
-            _log.info("[PATCH]", f"Removed artifact: {target}")
+            _log.info(f"Removed artifact: {target}")

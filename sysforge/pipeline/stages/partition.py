@@ -16,7 +16,8 @@ Requires sgdisk (gptfdisk), mkfs.fat, mkfs.ext4 / mkfs.btrfs, and mount.
 import subprocess
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("PARTITION")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import BootstrapConfig, load_bootstrap
 
@@ -139,7 +140,7 @@ def _partition_disk(cfg: BootstrapConfig) -> tuple[str, str]:
     """
     device = cfg.device
 
-    _log.ui("[PARTITION]", f"Partitioning {device} (GPT)")
+    _log.ui(f"Partitioning {device} (GPT)")
 
     # Single sgdisk call: --clear replaces --zap-all, +NMiB is relative sizing
     # (avoids ambiguous absolute-with-unit syntax), 0:0 = first-free:last-free.
@@ -151,7 +152,7 @@ def _partition_disk(cfg: BootstrapConfig) -> tuple[str, str]:
         device,
     ]
 
-    _log.info("[PARTITION]", f"Running: {' '.join(cmd)}")
+    _log.info(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
         raise RuntimeError(
@@ -170,19 +171,19 @@ def _partition_disk(cfg: BootstrapConfig) -> tuple[str, str]:
         esp_part  = f"{device}1"
         root_part = f"{device}2"
 
-    _log.ui("[PARTITION]", f"ESP:  {esp_part}")
-    _log.ui("[PARTITION]", f"Root: {root_part}")
+    _log.ui(f"ESP:  {esp_part}")
+    _log.ui(f"Root: {root_part}")
     return esp_part, root_part
 
 
 def _format_partitions(cfg: BootstrapConfig, esp_part: str, root_part: str) -> None:
     """Format ESP as fat32 and root as the configured filesystem."""
-    _log.ui("[PARTITION]", f"Formatting {esp_part} as fat32")
+    _log.ui(f"Formatting {esp_part} as fat32")
     result = subprocess.run(["mkfs.fat", "-F", "32", "-n", "ESP", esp_part])
     if result.returncode != 0:
         raise RuntimeError(f"[PARTITION] mkfs.fat failed on {esp_part}")
 
-    _log.ui("[PARTITION]", f"Formatting {root_part} as {cfg.root_fs}")
+    _log.ui(f"Formatting {root_part} as {cfg.root_fs}")
     if cfg.root_fs == "ext4":
         result = subprocess.run(["mkfs.ext4", "-L", "root", root_part])
     else:  # btrfs
@@ -199,13 +200,13 @@ def _mount_partitions(cfg: BootstrapConfig, esp_part: str, root_part: str) -> No
     target = cfg.target
     boot = f"{target}/boot"
 
-    _log.ui("[PARTITION]", f"Mounting {root_part} → {target}")
+    _log.ui(f"Mounting {root_part} → {target}")
     Path(target).mkdir(parents=True, exist_ok=True)
     result = subprocess.run(["mount", root_part, target])
     if result.returncode != 0:
         raise RuntimeError(f"[PARTITION] mount failed: {root_part} → {target}")
 
-    _log.ui("[PARTITION]", f"Mounting {esp_part} → {boot}")
+    _log.ui(f"Mounting {esp_part} → {boot}")
     Path(boot).mkdir(parents=True, exist_ok=True)
     result = subprocess.run(["mount", "--mkdir", esp_part, boot])
     if result.returncode != 0:
@@ -225,17 +226,17 @@ class PartitionStage(Stage):
         cfg = load_bootstrap()
 
         if options.dry_run:
-            _log.ui("[PARTITION]", f"[dry-run] device:      {cfg.device}")
-            _log.ui("[PARTITION]", f"[dry-run] target:      {cfg.target}")
-            _log.ui("[PARTITION]", f"[dry-run] ESP:         {cfg.esp_size_mib} MiB, fat32")
-            _log.ui("[PARTITION]", f"[dry-run] root:        remaining, {cfg.root_fs}")
+            _log.ui(f"[dry-run] device:      {cfg.device}")
+            _log.ui(f"[dry-run] target:      {cfg.target}")
+            _log.ui(f"[dry-run] ESP:         {cfg.esp_size_mib} MiB, fat32")
+            _log.ui(f"[dry-run] root:        remaining, {cfg.root_fs}")
             return
 
         _check_tools(cfg.root_fs)
         _check_device(cfg.device)
 
         if _is_already_mounted(cfg.device, cfg.target):
-            _log.ui("[PARTITION]", f"{cfg.device} already partitioned and mounted at {cfg.target} — skipping.")
+            _log.ui(f"{cfg.device} already partitioned and mounted at {cfg.target} — skipping.")
             return
 
         _check_not_mounted(cfg.device, cfg.target)
@@ -246,4 +247,4 @@ class PartitionStage(Stage):
         _format_partitions(cfg, esp_part, root_part)
         _mount_partitions(cfg, esp_part, root_part)
 
-        _log.ui("[PARTITION]", f"Disk ready. {cfg.device} mounted at {cfg.target}.")
+        _log.ui(f"Disk ready. {cfg.device} mounted at {cfg.target}.")

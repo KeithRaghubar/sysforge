@@ -24,7 +24,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_aur_log      = log.get_logger("AUR")
+_build_log    = log.get_logger("BUILD")
+_git_log      = log.get_logger("GIT")
+_manifest_log = log.get_logger("MANIFEST")
 
 
 AUR_RPC_URL       = "https://aur.archlinux.org/rpc/v5/info"
@@ -56,12 +60,12 @@ def aur_info(names: list[str]) -> dict[str, dict]:
         with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT) as resp:
             data = json.loads(resp.read().decode())
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
-        _log.warn("[MANIFEST]", f"AUR RPC query failed: {e}")
+        _manifest_log.warn(f"AUR RPC query failed: {e}")
         return {}
 
     results = data.get("results", [])
     found = {r["Name"]: r for r in results}
-    _log.info("[MANIFEST]", f"AUR RPC: {len(found)}/{len(names)} found")
+    _manifest_log.info(f"AUR RPC: {len(found)}/{len(names)} found")
     return found
 
 
@@ -78,20 +82,20 @@ def fetch_aur_name_cache(force: bool = False) -> Path | None:
     if not force and cache.exists():
         age = time.time() - cache.stat().st_mtime
         if age < AUR_CACHE_MAX_AGE:
-            _log.info("[AUR]", f"name cache is fresh ({int(age)}s old) — skipping refresh")
+            _aur_log.info(f"name cache is fresh ({int(age)}s old) — skipping refresh")
             return cache
 
-    _log.info("[AUR]", f"refreshing AUR name cache → {cache}")
+    _aur_log.info(f"refreshing AUR name cache → {cache}")
     try:
         with urllib.request.urlopen(AUR_PACKAGES_URL, timeout=_REQUEST_TIMEOUT) as resp:
             raw = resp.read()
         names = gzip.decompress(raw).decode().splitlines()
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text("\n".join(n for n in names if n) + "\n")
-        _log.info("[AUR]", f"AUR name cache updated: {len(names)} packages")
+        _aur_log.info(f"AUR name cache updated: {len(names)} packages")
         return cache
     except (urllib.error.URLError, OSError, EOFError) as e:
-        _log.warn("[AUR]", f"failed to refresh AUR name cache: {e}")
+        _aur_log.warn(f"failed to refresh AUR name cache: {e}")
         return None
 
 
@@ -125,7 +129,7 @@ def pkgctl_checkout(name: str, dest: Path) -> None:
     pkgctl repo clone <name> run in dest.parent creates dest.parent/<name>/PKGBUILD.
     Raises RuntimeError on failure.
     """
-    _log.info("[BUILD]", f"Checking out {name!r} from official repos → {dest}")
+    _build_log.info(f"Checking out {name!r} from official repos → {dest}")
     result = subprocess.run(
         ["pkgctl", "repo", "clone", "--protocol=https", name],
         cwd=str(dest.parent),
@@ -155,22 +159,22 @@ def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:
     if not keys:
         return
 
-    _log.info("[BUILD]", f"GPG: {len(keys)} validpgpkey(s) required")
+    _build_log.info(f"GPG: {len(keys)} validpgpkey(s) required")
 
     # Step 1: import bundled keys from keys/pgp/ if present
     keys_dir = pkgbuild_path.parent / "keys" / "pgp"
     if keys_dir.is_dir():
         asc_files = sorted(keys_dir.glob("*.asc"))
         if asc_files:
-            _log.info("[BUILD]", f"GPG: importing {len(asc_files)} bundled key(s) from {keys_dir}")
+            _build_log.info(f"GPG: importing {len(asc_files)} bundled key(s) from {keys_dir}")
             r = subprocess.run(
                 ["gpg", "--import", *[str(f) for f in asc_files]],
                 capture_output=True, text=True,
             )
             if r.returncode != 0:
-                _log.warn("[BUILD]", f"GPG: bundled import failed:\n{r.stderr.strip()}")
+                _build_log.warn(f"GPG: bundled import failed:\n{r.stderr.strip()}")
             else:
-                _log.info("[BUILD]", "GPG: bundled import succeeded")
+                _build_log.info("GPG: bundled import succeeded")
 
     # Step 2: check which keys are still missing
     missing = [
@@ -179,16 +183,16 @@ def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:
     ]
 
     if not missing:
-        _log.info("[BUILD]", f"GPG: all {len(keys)} key(s) present in keyring")
+        _build_log.info(f"GPG: all {len(keys)} key(s) present in keyring")
         return
 
     # Step 3: fetch remaining keys from keyserver
-    _log.info("[BUILD]", f"GPG: {len(missing)}/{len(keys)} key(s) missing, fetching via keyserver")
+    _build_log.info(f"GPG: {len(missing)}/{len(keys)} key(s) missing, fetching via keyserver")
     r = subprocess.run(["gpg", "--recv-keys", *missing], capture_output=True, text=True)
     if r.returncode != 0:
-        _log.warn("[BUILD]", f"GPG: keyserver fetch failed:\n{r.stderr.strip()}")
+        _build_log.warn(f"GPG: keyserver fetch failed:\n{r.stderr.strip()}")
     else:
-        _log.info("[BUILD]", "GPG: keyserver fetch succeeded")
+        _build_log.info("GPG: keyserver fetch succeeded")
 
 
 def git_pull_rebase(pkgbuild_dir: Path) -> None:
@@ -216,11 +220,11 @@ def git_pull_rebase(pkgbuild_dir: Path) -> None:
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        _log.info("[GIT]", f"{pkgbuild_dir.name}: no tracking branch — skipping update")
+        _git_log.info(f"{pkgbuild_dir.name}: no tracking branch — skipping update")
         return
 
     tracking = r.stdout.strip()
-    _log.info("[GIT]", f"Updating {pkgbuild_dir.name} from {tracking}")
+    _git_log.info(f"Updating {pkgbuild_dir.name} from {tracking}")
 
     r = subprocess.run(
         ["git", "-C", str(pkgbuild_dir), "pull", "--rebase"],
@@ -229,13 +233,13 @@ def git_pull_rebase(pkgbuild_dir: Path) -> None:
     if r.returncode == 0:
         for line in r.stdout.strip().splitlines():
             if line.strip():
-                _log.info("[GIT]", f"  {line}")
+                _git_log.info(f"  {line}")
         return
 
     # Pull failed — abort the rebase to restore a clean state before raising
-    _log.error("[GIT]", f"git pull --rebase failed for {pkgbuild_dir.name}:")
+    _git_log.error(f"git pull --rebase failed for {pkgbuild_dir.name}:")
     for line in (r.stdout + r.stderr).strip().splitlines():
-        _log.error("[GIT]", f"  {line}")
+        _git_log.error(f"  {line}")
     subprocess.run(
         ["git", "-C", str(pkgbuild_dir), "rebase", "--abort"],
         capture_output=True,
@@ -304,7 +308,7 @@ def aur_clone(name: str, dest: Path) -> None:
     Raises RuntimeError on clone failure.
     """
     url = f"{AUR_GIT_BASE}/{name}.git"
-    _log.info("[MANIFEST]", f"Cloning {name!r} from AUR → {dest}")
+    _manifest_log.info(f"Cloning {name!r} from AUR → {dest}")
     result = subprocess.run(
         ["git", "clone", url, str(dest)],
         capture_output=True,

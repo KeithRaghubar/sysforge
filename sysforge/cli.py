@@ -14,7 +14,8 @@ Namespaces:
 import argparse
 import sys
 from pathlib import Path
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("CLI")
 
 from sysforge.resolve import cmd_resolve
 from sysforge.fetch import cmd_fetch
@@ -35,7 +36,7 @@ def _cmd_build(args):
     extra_flags = expand_makepkg_flags(args.makepkg) if args.makepkg else None
     if args.no_pkg_log and args.log_dir:
         print("[SYSFORGE] Warning: --log-dir has no effect when --no-pkg-log is set.", file=sys.stderr)
-    _log.info("[BUILD]", f"Invocation: {' '.join(sys.argv)}")
+    _log.info(f"Invocation: {' '.join(sys.argv)}")
     packages = args.pkgbuilds
     try:
         for i, pkg in enumerate(packages):
@@ -653,7 +654,7 @@ def main():
     sys.argv[1:] = _hoist_verbosity_flags(_patch_makepkg_argv(sys.argv[1:]))
     parser = _build_parser()
     args = parser.parse_args()
-    _log.set_verbosity(args.verbose)
+    log.set_verbosity(args.verbose)
     if getattr(args, "dry_run", False):
-        _log.set_dry_run_mode()
+        log.set_dry_run_mode()
     args.func(args)

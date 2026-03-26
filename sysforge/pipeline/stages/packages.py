@@ -25,7 +25,8 @@ AUR/git package PKGBUILD lookup order (via find_pkgbuild):
 """
 import subprocess
 import tomllib
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("PACKAGES")
 from pathlib import Path
 
 from sysforge.pipeline.stages.base import Stage
@@ -68,7 +69,7 @@ def _load_packages(config):
             f"Must be 'pacman' or 'profiled'."
         )
 
-    _log.ui("[PACKAGES]", f"Loaded {len(packages)} package(s) from {path}")
+    _log.ui(f"Loaded {len(packages)} package(s) from {path}")
     return build_cfg, packages
 
 
@@ -105,15 +106,15 @@ def _prompt_failed_packages(failed_names, errors, options):
     With --force-retry: retry all without prompt.
     """
     if options.force_retry:
-        _log.ui("[PACKAGES]", f"--force-retry: retrying all {len(failed_names)} failed package(s)")
+        _log.ui(f"--force-retry: retrying all {len(failed_names)} failed package(s)")
         return set(failed_names), set()
 
-    _log.warn("[PACKAGES]", f"Resuming with {len(failed_names)} failed package(s):")
+    _log.warn(f"Resuming with {len(failed_names)} failed package(s):")
     for name in failed_names:
         err = errors.get(name, "unknown error")
-        _log.warn("[PACKAGES]", f"  - {name}  ({err})")
+        _log.warn(f"  - {name}  ({err})")
 
-    _log.warn("[PACKAGES]", "\nOptions:\n  [r] Retry all failed\n  [s] Skip all failed\n  [c] Choose per package\n  [a] Abort")
+    _log.warn("\nOptions:\n  [r] Retry all failed\n  [s] Skip all failed\n  [c] Choose per package\n  [a] Abort")
 
     while True:
         choice = input("Choice [r/s/c/a]: ").strip().lower()
@@ -139,7 +140,7 @@ def _prompt_failed_packages(failed_names, errors, options):
                         raise RuntimeError("[PACKAGES] Aborted by user")
             return retry, skip
         else:
-            _log.warn("[PACKAGES]", "  Please enter r, s, c, or a.")
+            _log.warn("  Please enter r, s, c, or a.")
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +151,9 @@ def _install_repo(pkg, options):
     """Install a repo package via sudo pacman -S --needed."""
     name = pkg["name"]
     if options.dry_run:
-        _log.ui("[PACKAGES]", f"[dry-run] sudo pacman -S --needed {name}")
+        _log.ui(f"[dry-run] sudo pacman -S --needed {name}")
         return
-    _log.ui("[PACKAGES]", f"Installing from repo: {name}")
+    _log.ui(f"Installing from repo: {name}")
     result = subprocess.run(["sudo", "pacman", "-S", "--needed", "--noconfirm", name])
     if result.returncode != 0:
         raise RuntimeError(f"pacman -S failed for {name!r} (exit {result.returncode})")
@@ -188,14 +189,14 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
         if toolchain.get("cc_override"):
             parts.append("cc=" + toolchain["cc_override"])
         suffix = f" ({', '.join(parts)})" if parts else ""
-        _log.ui("[PACKAGES]", f"[dry-run] build {name} from {expected}{suffix}")
+        _log.ui(f"[dry-run] build {name} from {expected}{suffix}")
         return
     pkgbuild = _resolve_pkgbuild(name, build_cfg, config)
     parts = []
     if toolchain:
         parts.append("cc=" + toolchain.get("cc_override", ""))
     suffix = f" ({', '.join(p for p in parts if p)})" if parts else ""
-    _log.ui("[PACKAGES]", f"Building {name} from {pkgbuild}{suffix}")
+    _log.ui(f"Building {name} from {pkgbuild}{suffix}")
     build_opts = BuildOptions(
         pkg_log=not options.no_pkg_logs,
         persist_log=options.persist_log,
@@ -222,7 +223,7 @@ class PackagesStage(Stage):
     def run(self, config, state, options):
         toolchain = _toolchain_overrides(state)
         if toolchain:
-            _log.ui("[PACKAGES]", f"Toolchain override from pipeline: cc={toolchain.get('cc_override', '-')} cxx={toolchain.get('cxx_override', '-')}")
+            _log.ui(f"Toolchain override from pipeline: cc={toolchain.get('cc_override', '-')} cxx={toolchain.get('cxx_override', '-')}")
 
         build_cfg, packages = _load_packages(config)
 
@@ -259,10 +260,10 @@ class PackagesStage(Stage):
         for name in all_names:
             progress = state.get_package_progress()
             if name in built and name not in retry_set:
-                _log.ui("[PACKAGES]", f"Skipping {name} (already built)")
+                _log.ui(f"Skipping {name} (already built)")
                 continue
             if name in skipped or name in skip_set:
-                _log.ui("[PACKAGES]", f"Skipping {name} (user skipped)")
+                _log.ui(f"Skipping {name} (user skipped)")
                 continue
             if name not in progress.get("remaining", []) and name not in retry_set:
                 # Was already handled (built or skipped) in a prior run
@@ -281,7 +282,7 @@ class PackagesStage(Stage):
 
             try:
                 if source == "repo" and effective_mode == "profiled":
-                    _log.ui("[PACKAGES]", f"{name}: repo source with profiled build mode — building from source")
+                    _log.ui(f"{name}: repo source with profiled build mode — building from source")
                     _build_aur(pkg, build_cfg, config, options, toolchain)
                 elif source == "repo":
                     _install_repo(pkg, options)
@@ -293,12 +294,12 @@ class PackagesStage(Stage):
                 state.mark_package_built(name)
                 state.save()
                 built.add(name)
-                _log.ui("[PACKAGES]", f"{name}: done")
+                _log.ui(f"{name}: done")
 
             except RuntimeError as e:
                 state.mark_package_failed(name, str(e))
                 state.save()
-                _log.error("[PACKAGES]", f"{name}: FAILED — {e}")
+                _log.error(f"{name}: FAILED — {e}")
                 # Non-fatal: continue with remaining packages
 
         # Check if any packages are still failed after the loop
@@ -317,9 +318,9 @@ class PackagesStage(Stage):
         )
 
         if still_failed:
-            _log.error("[PACKAGES]", f"Stage complete with failures.\n[SYSFORGE][ERROR][PACKAGES] {summary}\n[SYSFORGE][ERROR][PACKAGES] Failed packages: {still_failed}")
+            _log.error(f"Stage complete with failures.\n[SYSFORGE][ERROR][PACKAGES] {summary}\n[SYSFORGE][ERROR][PACKAGES] Failed packages: {still_failed}")
             raise RuntimeError(
                 f"packages stage finished with failures: {still_failed}"
             )
 
-        _log.ui("[PACKAGES]", f"Stage complete.\n[SYSFORGE][INFO][PACKAGES] {summary}")
+        _log.ui(f"Stage complete.\n[SYSFORGE][INFO][PACKAGES] {summary}")

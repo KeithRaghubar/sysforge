@@ -56,7 +56,18 @@ from sysforge.primitives.cache_probe import (
 from sysforge.primitives.aur import import_pgp_keys, git_pull_rebase
 from sysforge.primitives.dep_analysis import run_dep_analysis
 from sysforge.primitives.failure import handle_failure
-import sysforge.log as _log
+from sysforge import log
+_abi_log     = log.get_logger("ABI")
+_build_log   = log.get_logger("BUILD")
+_cache_log   = log.get_logger("CACHE")
+_conf_log    = log.get_logger("CONF")
+_env_log     = log.get_logger("ENV")
+_flag_log    = log.get_logger("FLAG")
+_git_log     = log.get_logger("GIT")
+_kernel_log  = log.get_logger("KERNEL")
+_makepkg_log = log.get_logger("MAKEPKG")
+_patch_log   = log.get_logger("PATCH")
+_pgo_log     = log.get_logger("PGO")
 from sysforge.primitives.profile import (
     CONF_KEY_MAP,
     KERNEL_CLEAN_KEYS,
@@ -130,10 +141,10 @@ def _inject_linker(ldflags_val, linker_name):
     for i, t in enumerate(tokens):
         if t.startswith("-fuse-ld="):
             if tokens[i] != new_token:
-                _log.info("[FLAG]", f"Replaced {tokens[i]} with {new_token} (--ld override)")
+                _flag_log.info(f"Replaced {tokens[i]} with {new_token} (--ld override)")
             tokens[i] = new_token
             return " ".join(tokens)
-    _log.info("[FLAG]", f"Injected {new_token} into LDFLAGS (--ld override)")
+    _flag_log.info(f"Injected {new_token} into LDFLAGS (--ld override)")
     return " ".join([new_token] + tokens)
 
 
@@ -246,7 +257,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         profile_overrides[key] = val
 
     if kernel_build:
-        _log.info("[KERNEL]", "Kernel build: omitting profile flag keys from makepkg.conf "
+        _kernel_log.info("Kernel build: omitting profile flag keys from makepkg.conf "
                   "(CFLAGS/CXXFLAGS/LDFLAGS/CPPFLAGS/DEBUG_*); system conf values preserved")
 
     # Load system conf baseline
@@ -255,13 +266,13 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     # Apply CLI toolchain overrides on top of profile values
     if cc_override is not None:
         profile_overrides["CC"] = cc_override
-        _log.info("[FLAG]", f"CC overridden via --cc: {cc_override}")
+        _flag_log.info(f"CC overridden via --cc: {cc_override}")
     if cxx_override is not None:
         profile_overrides["CXX"] = cxx_override
-        _log.info("[FLAG]", f"CXX overridden via --cxx: {cxx_override}")
+        _flag_log.info(f"CXX overridden via --cxx: {cxx_override}")
     if ld_override is not None:
         if kernel_build:
-            _log.info("[KERNEL]", f"--ld={ld_override!r} ignored for kernel build (use LLVM=1 for lld)")
+            _kernel_log.info(f"--ld={ld_override!r} ignored for kernel build (use LLVM=1 for lld)")
         else:
             current_ldflags = profile_overrides.get("LDFLAGS", "")
             profile_overrides["LDFLAGS"] = _inject_linker(current_ldflags, ld_override)
@@ -276,15 +287,15 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         effective_linker = declared_linker or "ld"
 
         if declared_linker and not shutil.which(declared_linker):
-            _log.warn("[FLAG]", f"Declared linker '{declared_linker}' not found on PATH — treating effective linker as 'ld'")
+            _flag_log.warn(f"Declared linker '{declared_linker}' not found on PATH — treating effective linker as 'ld'")
             effective_linker = "ld"
 
         if effective_linker != "lld":
             cleaned, stripped_tokens = _strip_lld_flags(profile_overrides["LDFLAGS"])
             if stripped_tokens:
-                _log.warn("[FLAG]", f"Effective linker is '{effective_linker}' (not lld) — stripping lld-specific flags from LDFLAGS")
+                _flag_log.warn(f"Effective linker is '{effective_linker}' (not lld) — stripping lld-specific flags from LDFLAGS")
                 for tok in stripped_tokens:
-                    _log.warn("[FLAG]", f"Stripped lld-only flag: {tok}")
+                    _flag_log.warn(f"Stripped lld-only flag: {tok}")
                 profile_overrides["LDFLAGS"] = cleaned
 
     # Full LTO stripping for PGO passes. -flto/-flto=full are incompatible with
@@ -296,7 +307,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             if key in profile_overrides:
                 cleaned, stripped_toks = _strip_full_lto(profile_overrides[key])
                 if stripped_toks:
-                    _log.warn("[PGO]",
+                    _pgo_log.warn(
                               f"Stripped full-LTO flag(s) from {key} (incompatible with IR PGO): "
                               f"{' '.join(stripped_toks)}")
                     profile_overrides[key] = cleaned
@@ -304,7 +315,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         # build time (LTOFLAGS is appended to CFLAGS/CXXFLAGS/LDFLAGS by makepkg
         # when OPTIONS contains lto, bypassing the stripping above).
         profile_overrides["LTOFLAGS"] = ""
-        _log.info("[PGO]", "Cleared LTOFLAGS for PGO pass (LTO disabled)")
+        _pgo_log.info("Cleared LTOFLAGS for PGO pass (LTO disabled)")
 
     # Per-invocation compiler flag injection (e.g. PGO generate/use flags).
     # Runs after the linker guard so these flags are never treated as lld-specific.
@@ -323,7 +334,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             if key == "CXXFLAGS" and "$CFLAGS" in base:
                 continue
             profile_overrides[key] = (base + " " + compiler_flags_extra).strip()
-        _log.info("[PGO]", f"Injecting into CFLAGS/CXXFLAGS/LDFLAGS: {compiler_flags_extra!r}")
+        _pgo_log.info(f"Injecting into CFLAGS/CXXFLAGS/LDFLAGS: {compiler_flags_extra!r}")
 
     # Linker-only flag injection (e.g. profile runtime library for PGO Pass 2).
     # Unlike compiler_flags_extra, these flags only go to LDFLAGS — adding -l/-L
@@ -338,7 +349,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         else:
             base = ""
         profile_overrides[key] = (base + " " + linker_flags_extra).strip()
-        _log.info("[PGO]", f"Injecting into LDFLAGS: {linker_flags_extra!r}")
+        _pgo_log.info(f"Injecting into LDFLAGS: {linker_flags_extra!r}")
 
     # Build output lines: system conf keys in their original raw form,
     # profile-overridden keys substituted inline, new profile keys appended.
@@ -370,13 +381,13 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         f.write("\n".join(conf_lines) + "\n")
         tmp_path = f.name
 
-    _log.info("[CONF]", f"Wrote temp makepkg.conf: {tmp_path}")
-    _log.debug("[CONF]", f"Temp makepkg.conf contents:\n{chr(10).join(conf_lines)}")
+    _conf_log.info(f"Wrote temp makepkg.conf: {tmp_path}")
+    _conf_log.debug(f"Temp makepkg.conf contents:\n{chr(10).join(conf_lines)}")
     try:
         yield tmp_path
     finally:
         os.unlink(tmp_path)
-        _log.info("[CONF]", f"Removed temp makepkg.conf: {tmp_path}")
+        _conf_log.info(f"Removed temp makepkg.conf: {tmp_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -420,15 +431,15 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
         if key in toolchain_keys:
             # Always delivered via env — makepkg doesn't export CC/CXX from conf
             result[key] = val
-            _log.info("[ENV]", f"Injecting (toolchain): {key}={val!r}")
+            _env_log.info(f"Injecting (toolchain): {key}={val!r}")
             continue
 
         if key in env_type_keys:
             if collect_env_type:
                 result[key] = val
-                _log.info("[ENV]", f"Injecting (env type): {key}={val!r}")
+                _env_log.info(f"Injecting (env type): {key}={val!r}")
             else:
-                _log.info("[ENV]", f"Skipping env-type key {key!r} (not in active_consumes)")
+                _env_log.info(f"Skipping env-type key {key!r} (not in active_consumes)")
             continue
 
         if key not in all_conf_keys:
@@ -437,7 +448,7 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
             unknown.append(key)
 
     if unknown:
-        _log.warn("[ENV]", f"Unclassified profile keys injected via env (consider adding to CONF_KEY_MAP): {sorted(unknown)}")
+        _env_log.warn(f"Unclassified profile keys injected via env (consider adding to CONF_KEY_MAP): {sorted(unknown)}")
 
     return result
 
@@ -460,7 +471,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         venv_bin = os.path.join(venv_dir, "bin")
         path_parts = env.get("PATH", "").split(os.pathsep)
         env["PATH"] = os.pathsep.join(p for p in path_parts if p != venv_bin)
-        _log.info("[ENV]", f"Stripped venv from PATH/VIRTUAL_ENV: {venv_dir}")
+        _env_log.info(f"Stripped venv from PATH/VIRTUAL_ENV: {venv_dir}")
 
     # Strip all makepkg-managed and toolchain keys from the inherited shell env
     # so the temp conf and profile env injection are the sole authority.
@@ -469,7 +480,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     _strip_keys = CONF_KEY_MAP.get("makepkg", set()) | CONF_KEY_MAP.get("toolchain", set())
     for k in sorted(_strip_keys):
         if k in env:
-            _log.info("[ENV]", f"Stripped from shell env (superseded by profile): {k}={env.pop(k)!r}")
+            _env_log.info(f"Stripped from shell env (superseded by profile): {k}={env.pop(k)!r}")
 
     env["MAKEPKG_CONF"] = str(conf_path)
 
@@ -482,27 +493,27 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     if extra_env:
         for k, v in sorted(extra_env.items()):
             if k in env:
-                _log.warn("[ENV]", f"Overriding shell {k}={env[k]!r} with profile value {v!r}")
+                _env_log.warn(f"Overriding shell {k}={env[k]!r} with profile value {v!r}")
         env.update(extra_env)
 
     flags = list(resolved_profile.get("makepkg_flags", []))
     if interactive:
         flags = [f for f in flags if f != "--noconfirm"]
-        _log.info("[BUILD]", "--interactive: stripped --noconfirm from profile flags")
+        _build_log.info("--interactive: stripped --noconfirm from profile flags")
     if extra_flags:
         flags += extra_flags
-        _log.info("[BUILD]", f"Appending CLI flags: {extra_flags}")
+        _build_log.info(f"Appending CLI flags: {extra_flags}")
     if strip_flags:
         before = flags[:]
         flags = [f for f in flags if f not in strip_flags]
         removed = [f for f in before if f not in flags]
         if removed:
-            _log.info("[BUILD]", f"Batch mode: stripped flags {removed}")
+            _build_log.info(f"Batch mode: stripped flags {removed}")
     cmd = ["makepkg", "-p", pkgbuild_path.name] + flags
 
-    _log.info("[BUILD]", f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
+    _build_log.info(f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
 
-    if _log.get_verbosity() >= 3 and not interactive:
+    if log.get_verbosity() >= 3 and not interactive:
         # Capture stdout+stderr and log each line with [MAKEPKG] tag.
         # debug() always writes to the log file, so this fills the gap in the
         # per-package log regardless of terminal verbosity.
@@ -524,7 +535,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 failed_stage = "package"
             elif "target not found:" in stripped:
                 missing_deps.append(stripped.strip())
-            _log.debug("[MAKEPKG]", stripped)
+            _makepkg_log.debug(stripped)
         proc.wait()
         returncode = proc.returncode
     else:
@@ -537,25 +548,25 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # Exit code 8 = E_INSTALL_FAILED (pacman failed to install deps).
         # Also triggered when we collected explicit "target not found" lines.
         if returncode == 8 or missing_deps:
-            _log.error("[BUILD]", "Dependency resolution failed.")
+            _build_log.error("Dependency resolution failed.")
             for dep in missing_deps:
-                _log.error("[BUILD]", f"  {dep}")
-            _log.warn("[BUILD]",
+                _build_log.error(f"  {dep}")
+            _build_log.warn(
                 "This usually means related PKGBUILDs are at different versions. "
                 "Run 'git pull --rebase' in each package directory to sync them, "
                 "then retry with -m '-f' to force a rebuild.")
         elif failed_stage == "prepare":
-            _log.info("[BUILD]", "prepare() failed — likely an upstream issue "
+            _build_log.info("prepare() failed — likely an upstream issue "
                       "(patch conflict, changed upstream state, or fetch error); "
                       "sysforge does not modify prepare()")
         elif failed_stage == "build":
-            _log.info("[BUILD]", "build() failed — could be upstream or a flag/toolchain "
+            _build_log.info("build() failed — could be upstream or a flag/toolchain "
                       "incompatibility from the active sysforge profile")
         elif failed_stage == "package":
-            _log.info("[BUILD]", "package() failed — likely an upstream issue; "
+            _build_log.info("package() failed — likely an upstream issue; "
                       "sysforge does not modify package()")
         else:
-            _log.info("[BUILD]", "re-run with -vvv to capture full makepkg output "
+            _build_log.info("re-run with -vvv to capture full makepkg output "
                       "in the log for diagnosis")
         raise subprocess.CalledProcessError(returncode, "makepkg")
 
@@ -582,7 +593,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
             invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                            extra_env, extra_flags, interactive, strip_flags)
         except subprocess.CalledProcessError as e:
-            _log.error("[BUILD]", f"Build failed in batch mode, aborting: {e}")
+            _build_log.error(f"Build failed in batch mode, aborting: {e}")
             raise RuntimeError(f"[build_failed] {e}")
     else:
         while True:
@@ -591,8 +602,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                extra_env, extra_flags, interactive, strip_flags)
                 break
             except subprocess.CalledProcessError as e:
-                _log.error("[BUILD]", f"Build failed: {e}")
-                _log.info("[BUILD]", f"PKGBUILD location: {pkgbuild_path}")
+                _build_log.error(f"Build failed: {e}")
+                _build_log.info(f"PKGBUILD location: {pkgbuild_path}")
 
                 installing = extra_flags and any(
                     f in ("--install", "-i") for f in extra_flags
@@ -602,14 +613,14 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                     if installing else []
                 )
                 if built_pkgs:
-                    _log.ui("[BUILD]",
+                    _build_log.ui(
                             "Built packages found — build likely succeeded but "
                             "install failed (sudo timeout?):")
                     for p in built_pkgs:
-                        _log.ui("[BUILD]", f"  {p.name}")
+                        _build_log.ui(f"  {p.name}")
                     response = (
                         input(
-                            _log.prompt_prefix("UI", "[BUILD]") +
+                            _build_log.prompt_prefix("UI") +
                             "[s]udo re-auth and install, fix PKGBUILD and press "
                             "Enter to retry, or type 'abort' to stop: "
                         )
@@ -618,20 +629,20 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                     )
                     if response == "s":
                         while True:
-                            _log.ui("[BUILD]", "Refreshing sudo credentials...")
+                            _build_log.ui("Refreshing sudo credentials...")
                             subprocess.run(["sudo", "-v"])
                             result = subprocess.run(
                                 ["sudo", "pacman", "-U", "--noconfirm"]
                                 + [str(p) for p in built_pkgs]
                             )
                             if result.returncode == 0:
-                                _log.ui("[BUILD]", "Install succeeded.")
+                                _build_log.ui("Install succeeded.")
                                 return
-                            _log.error("[BUILD]",
+                            _build_log.error(
                                        f"pacman -U failed (exit {result.returncode})")
                             retry = (
                                 input(
-                                    _log.prompt_prefix("UI", "[BUILD]") +
+                                    _build_log.prompt_prefix("UI") +
                                     "Retry install? [s]udo re-auth again, or 'abort': "
                                 )
                                 .strip()
@@ -646,11 +657,11 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                             "[build_failed] Aborted by user after build failure"
                         )
                     # anything else: fall through to retry the full build
-                    _log.info("[BUILD]", "Retrying build...")
+                    _build_log.info("Retrying build...")
                 else:
                     response = (
                         input(
-                            _log.prompt_prefix("UI", "[BUILD]") +
+                            _build_log.prompt_prefix("UI") +
                             "Manually correct the PKGBUILD and press Enter to retry, "
                             "or type 'abort' to stop: "
                         )
@@ -661,7 +672,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                         raise RuntimeError(
                             "[build_failed] Aborted by user after build failure"
                         )
-                    _log.info("[BUILD]", "Retrying build...")
+                    _build_log.info("Retrying build...")
 
 
 def _pkgname_from_meta(pkgmeta: dict | None) -> str:
@@ -716,10 +727,10 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         if thinlto:
             if thinlto["exists"]:
                 from sysforge.primitives.cache_probe import _fmt_bytes
-                _log.info("[CACHE]", f"ThinLTO cache: {_fmt_bytes(thinlto['size_bytes'])} "
+                _cache_log.info(f"ThinLTO cache: {_fmt_bytes(thinlto['size_bytes'])} "
                           f"in {thinlto['files']} files ({thinlto['path']})")
             else:
-                _log.info("[CACHE]", f"ThinLTO cache dir configured but not yet created: {thinlto['path']}")
+                _cache_log.info(f"ThinLTO cache dir configured but not yet created: {thinlto['path']}")
 
     # Snapshot cache state before build for per-build delta
     before_cc = probe_ccache()
@@ -748,9 +759,9 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             compiler_name = Path(effective_cc).name if effective_cc else ""
             if compiler_name.startswith("clang"):
                 extra_env.update({"LLVM": "1", "LLVM_IAS": "1"})
-                _log.info("[KERNEL]", f"Detected clang ({effective_cc!r}): injecting LLVM=1 LLVM_IAS=1")
+                _kernel_log.info(f"Detected clang ({effective_cc!r}): injecting LLVM=1 LLVM_IAS=1")
             else:
-                _log.info("[KERNEL]", f"Non-clang toolchain ({effective_cc!r} → 'gcc'): GCC kernel build")
+                _kernel_log.info(f"Non-clang toolchain ({effective_cc!r} → 'gcc'): GCC kernel build")
 
         with emit_makepkg_conf(resolved_profile, active_consumes,
                                cc_override=cc_override,
@@ -785,14 +796,14 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                 artifacts = "PKGBUILD.sysforge"
                 if extracted_profile:
                     artifacts += " and pkgbuild_extracted_profile.toml"
-                _log.warn("[PATCH]", f"Build failed — leaving {artifacts} in place for diagnosis")
+                _patch_log.warn(f"Build failed — leaving {artifacts} in place for diagnosis")
         else:
             if success:
                 if pkgbuild_path.exists():
                     pkgbuild_path.unlink()
-                    _log.info("[BUILD]", f"Removed patched PKGBUILD: {pkgbuild_path}")
+                    _build_log.info(f"Removed patched PKGBUILD: {pkgbuild_path}")
             else:
-                _log.warn("[BUILD]", f"Build failed — leaving patched PKGBUILD in place: {pkgbuild_path}")
+                _build_log.warn(f"Build failed — leaving patched PKGBUILD in place: {pkgbuild_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -921,8 +932,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
     if options.pkg_log:
         log_base = Path(options.log_dir) if options.log_dir is not None else pkgbuild_path.parent
         log_path = log_base / f"sysforge_{pkgbuild_path.parent.name}.log"
-        _log.open_pkg_log(log_path, argv=sys.argv)
-        _log.info("[BUILD]", f"Per-package log: {log_path}")
+        log.open_pkg_log(log_path, argv=sys.argv)
+        _build_log.info(f"Per-package log: {log_path}")
 
     conflict_groups = load_conflict_groups()
     inference_map = load_consumes_inference()
@@ -935,10 +946,10 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         try:
             git_pull_rebase(pkgbuild_path.parent)
         except RuntimeError as e:
-            _log.error("[GIT]", str(e))
+            _git_log.error(str(e))
             sys.exit(1)
     else:
-        _log.info("[BUILD]", "--no-update: skipping git pull --rebase")
+        _build_log.info("--no-update: skipping git pull --rebase")
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)
@@ -960,7 +971,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 )
             resolved_profile = merge_extends(options.profile_override, profiles, conflict_groups=conflict_groups)
             build_mode = resolved_profile.get("build_mode")
-            _log.info("[BUILD]", f"Profile override: {options.profile_override!r} (build_mode={build_mode!r})")
+            _build_log.info(f"Profile override: {options.profile_override!r} (build_mode={build_mode!r})")
         else:
             build_mode = get_build_mode(matched_rules, config)
             resolved_profile = None  # resolved below after extracted_profile is known
@@ -979,13 +990,13 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     if options.compiler_flags_extra
                     else pgo_flag
                 )
-                _log.info("[PGO]", f"Reusing profdata for PGO build: {pgo_info}")
+                _pgo_log.info(f"Reusing profdata for PGO build: {pgo_info}")
             else:
                 reason = pgo_info
                 if sys.stdin.isatty():
                     try:
                         choice = input(
-                            _log.prompt_prefix("WARN", "[PGO]")
+                            _pgo_log.prompt_prefix("WARN")
                             + f"PGO profdata unavailable ({reason})."
                             + " [p]lain build or [s]kip? [S]: "
                         ).strip().lower()
@@ -993,8 +1004,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                         choice = ""
                 else:
                     choice = ""
-                    _log.warn(
-                        "[PGO]",
+                    _pgo_log.warn(
                         f"Non-interactive: skipping pgo_llvm_toolchain build ({reason})",
                     )
                 if choice not in ("p", "plain"):
@@ -1002,7 +1012,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                         f"[PGO] Skipped {pkgbuild_path.parent.name!r}: {reason}. "
                         "Run 'sysforge run toolchain' to regenerate profdata."
                     )
-                _log.warn("[PGO]", f"Building without PGO: {reason}")
+                _pgo_log.warn(f"Building without PGO: {reason}")
 
         extracted_profile = None
         if build_mode in ("patched_pkgbuild", "kernel"):
@@ -1029,7 +1039,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                         shutil.rmtree(entry)
                     else:
                         entry.unlink()
-            _log.info("[BUILD]", f"Cleaned build dir: {build_dir}")
+            _build_log.info(f"Cleaned build dir: {build_dir}")
 
         import_pgp_keys(pkgmeta, pkgbuild_path)
         run_dep_analysis(pkgmeta, config)
@@ -1059,16 +1069,16 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 from sysforge.primitives.abi_check import check_package_abi
                 built_pkgs = _find_built_packages(pkgbuild_path.resolve().parent)
                 if not built_pkgs:
-                    _log.info("[ABI]", "No built packages found for ABI check")
+                    _abi_log.info("No built packages found for ABI check")
                 for pkg in built_pkgs:
                     issues = check_package_abi(pkg)
                     if issues:
                         for issue in issues:
-                            _log.warn("[ABI]", issue)
+                            _abi_log.warn(issue)
                     else:
-                        _log.info("[ABI]", f"{pkg.name}: OK")
+                        _abi_log.info(f"{pkg.name}: OK")
             except Exception as e:
-                _log.warn("[ABI]", f"ABI check failed: {e}")
+                _abi_log.warn(f"ABI check failed: {e}")
 
         # Record build metadata for `sysforge update` (non-fatal)
         try:
@@ -1094,13 +1104,13 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     flags_string=fs,
                 )
             bs.save()
-            _log.info("[BUILD]", f"Recorded build state for {pkgbase!r}")
+            _build_log.info(f"Recorded build state for {pkgbase!r}")
         except Exception as e:
-            _log.warn("[BUILD]", f"Failed to record build state: {e}")
+            _build_log.warn(f"Failed to record build state: {e}")
 
     finally:
         if options.pkg_log:
-            _log.close_pkg_log(success=build_success, persist=options.persist_log)
+            log.close_pkg_log(success=build_success, persist=options.persist_log)
 
     if options.cache_report:
         emit_session_report()

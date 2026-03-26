@@ -22,7 +22,8 @@ Public API:
 import subprocess
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("PACMAN")
 
 
 # ---------------------------------------------------------------------------
@@ -82,12 +83,12 @@ def batch_install_pkgs(pkg_paths: list) -> bool:
     missing = [p for p in pkg_paths if not Path(p).exists()]
     if missing:
         for p in missing:
-            _log.warn("[PACMAN]", f"Package file gone before install (removed by hook?): {p}")
+            _log.warn(f"Package file gone before install (removed by hook?): {p}")
         pkg_paths = [p for p in pkg_paths if Path(p).exists()]
     if not pkg_paths:
-        _log.error("[PACMAN]", "No package files remain to install after filtering missing paths")
+        _log.error("No package files remain to install after filtering missing paths")
         return False
-    _log.info("[PACMAN]", f"Batch-installing {len(pkg_paths)} built package file(s)")
+    _log.info(f"Batch-installing {len(pkg_paths)} built package file(s)")
     result = subprocess.run(
         ["sudo", "pacman", "-U", "--noconfirm"] + [str(p) for p in pkg_paths],
         stderr=subprocess.PIPE, text=True,
@@ -95,7 +96,7 @@ def batch_install_pkgs(pkg_paths: list) -> bool:
     if result.returncode != 0:
         if result.stderr:
             for line in result.stderr.splitlines():
-                _log.error("[PACMAN]", line)
+                _log.error(line)
         return False
     return True
 
@@ -118,7 +119,7 @@ def collect_makedeps(pkgbuild_paths: list) -> list:
             for dep in raw:
                 deps.add(dep.split(">=")[0].split("<=")[0].split("=")[0].split(">")[0].split("<")[0])
         except Exception as e:
-            _log.warn("[PACMAN]", f"makedeps parse error ({Path(path).parent.name}): {e}")
+            _log.warn(f"makedeps parse error ({Path(path).parent.name}): {e}")
     return sorted(deps)
 
 
@@ -137,7 +138,7 @@ def filter_missing_deps(deps: list) -> list:
 
 
 def batch_install_makedeps(deps: list) -> None:
-    _log.info("[PACMAN]", f"Batch-installing {len(deps)} missing makedep(s): {deps}")
+    _log.info(f"Batch-installing {len(deps)} missing makedep(s): {deps}")
     result = subprocess.run(
         ["sudo", "pacman", "-S", "--needed", "--noconfirm"] + deps
     )

@@ -18,7 +18,8 @@ import sys
 import tomllib
 from pathlib import Path
 
-import sysforge.log as _log
+from sysforge import log
+_log = log.get_logger("PACKAGES")
 from sysforge.primitives.config import load_config
 
 
@@ -157,7 +158,7 @@ def cmd_packages_add(args):
                     profile_data = extract_pkgbuild_profile(pkgmeta, pkgbuild)
                     pkgbuild_patch = bool(profile_data)
                 except Exception as e:
-                    _log.warn("[PACKAGES]", f"Could not infer pkgbuild_patch for {pkg}: {e}")
+                    _log.warn(f"Could not infer pkgbuild_patch for {pkg}: {e}")
         entry: dict = {"name": pkg, "source": source}
         if pkgbuild_patch:
             entry["pkgbuild_patch"] = True
@@ -329,7 +330,7 @@ def cmd_packages_sync(args):
         elif name in aur_found:
             new_source = "aur"
         else:
-            _log.warn("[PACKAGES]", f"{name}: not found in repos or AUR — keeping existing source")
+            _log.warn(f"{name}: not found in repos or AUR — keeping existing source")
             new_source = entry.get("source", "unknown")
 
         if new_source != entry.get("source"):
@@ -352,7 +353,7 @@ def cmd_packages_sync(args):
                         # None signals removal of the field line
                         entry_changes["pkgbuild_patch"] = True if new_patch else None
                 except Exception as e:
-                    _log.warn("[PACKAGES]", f"Could not check pkgbuild_patch for {name}: {e}")
+                    _log.warn(f"Could not check pkgbuild_patch for {name}: {e}")
 
         if entry_changes:
             changes_by_name[name] = entry_changes

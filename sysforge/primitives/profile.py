@@ -21,7 +21,11 @@ Public API:
 import fnmatch
 import pprint
 import re
-import sysforge.log as _log
+from sysforge import log
+_conf_log    = log.get_logger("CONF")
+_flag_log    = log.get_logger("FLAG")
+_groups_log  = log.get_logger("GROUPS")
+_profile_log = log.get_logger("PROFILE")
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +176,7 @@ def _merge_append_value(parent_val, child_append_val, conflict_groups):
             removed = [t for t in result if t in group_members]
             result = [t for t in result if t not in group_members]
             if removed:
-                _log.info("[FLAG]", f"Conflict group '{flag_to_group_name[child_token]}': removed {removed}, inserted {child_token!r}")
+                _flag_log.info(f"Conflict group '{flag_to_group_name[child_token]}': removed {removed}, inserted {child_token!r}")
             result.append(child_token)
             continue
 
@@ -187,7 +191,7 @@ def _merge_append_value(parent_val, child_append_val, conflict_groups):
         if matched_idx is not None:
             old_token = result[matched_idx]
             result[matched_idx] = child_token
-            _log.info("[FLAG]", f"Prefix match: {old_token!r} → {child_token!r}")
+            _flag_log.info(f"Prefix match: {old_token!r} → {child_token!r}")
             continue
 
         result.append(child_token)
@@ -233,7 +237,7 @@ def merge_extends(profile_name, profiles, visited=None, conflict_groups=None):
 
     if parent_name is None:
         if append_overrides:
-            _log.warn("[PROFILE]", f"profile '{profile_name}' has [append] but no parent — append section ignored")
+            _profile_log.warn(f"profile '{profile_name}' has [append] but no parent — append section ignored")
         return profile
 
     parent = merge_extends(
@@ -244,11 +248,11 @@ def merge_extends(profile_name, profiles, visited=None, conflict_groups=None):
 
     for key, child_append_val in append_overrides.items():
         if key in profile:
-            _log.warn("[PROFILE]", f"key '{key}' set both directly and in [append] on profile '{profile_name}' — direct value wins, append ignored")
+            _profile_log.warn(f"key '{key}' set both directly and in [append] on profile '{profile_name}' — direct value wins, append ignored")
             continue
         parent_val = parent.get(key, "")
         merged[key] = _merge_append_value(parent_val, child_append_val, conflict_groups)
-        _log.info("[PROFILE]", f"[{profile_name}] append merge {key!r}: {parent_val!r} + {child_append_val!r} → {merged[key]!r}")
+        _profile_log.info(f"[{profile_name}] append merge {key!r}: {parent_val!r} + {child_append_val!r} → {merged[key]!r}")
 
     return merged
 
@@ -289,16 +293,16 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
             discarded.append(rule)
 
     for rule in discarded:
-        _log.info("[PROFILE]", f"[{pkgname}] Discarded rule (priority {rule.get('priority', 0)}): profile={rule.get('profile')!r}")
+        _profile_log.info(f"[{pkgname}] Discarded rule (priority {rule.get('priority', 0)}): profile={rule.get('profile')!r}")
 
     if winner:
         profile_name = winner["profile"]
-        _log.info("[PROFILE]", f"[{pkgname}] Matched profile {profile_name!r} (priority {winner.get('priority', 0)})")
+        _profile_log.info(f"[{pkgname}] Matched profile {profile_name!r} (priority {winner.get('priority', 0)})")
     else:
         if matched_rules:
-            _log.info("[PROFILE]", f"[{pkgname}] Rules matched but none specified a profile, using default: {default_profile!r}")
+            _profile_log.info(f"[{pkgname}] Rules matched but none specified a profile, using default: {default_profile!r}")
         else:
-            _log.info("[PROFILE]", f"[{pkgname}] No rules matched, using default: {default_profile!r}")
+            _profile_log.info(f"[{pkgname}] No rules matched, using default: {default_profile!r}")
         profile_name = default_profile
 
     # Inject extracted_profile as implicit chain root if provided.
@@ -313,10 +317,10 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
         if "extends" not in bare:
             bare["extends"] = "pkgbuild_extracted"
             profiles["bare"] = bare
-        _log.info("[PROFILE]", f"[{pkgname}] Injected pkgbuild_extracted as chain root")
+        _profile_log.info(f"[{pkgname}] Injected pkgbuild_extracted as chain root")
 
     result = merge_extends(profile_name, profiles, conflict_groups=conflict_groups)
-    _log.debug("[PROFILE]", f"[{pkgname}] Full resolved profile ({profile_name}):\n{pprint.pformat(result, indent=2, sort_dicts=False)}")
+    _profile_log.debug(f"[{pkgname}] Full resolved profile ({profile_name}):\n{pprint.pformat(result, indent=2, sort_dicts=False)}")
     return result
 
 
@@ -409,9 +413,9 @@ def match_rules(pkgmeta, rules):
         matched.append(rule)
 
     if matched:
-        _log.debug("[PROFILE]", f"Matched {len(matched)} rule(s):")
+        _profile_log.debug(f"Matched {len(matched)} rule(s):")
         for rule in matched:
-            _log.debug("[PROFILE]", pprint.pformat(rule, indent=2, sort_dicts=False))
+            _profile_log.debug(pprint.pformat(rule, indent=2, sort_dicts=False))
 
     return matched
 
@@ -445,7 +449,7 @@ def resolve_groups(pkgmeta, matched_rules, defaults):
             existing.append(group)
             seen.add(group)
 
-    _log.info("[GROUPS]", f"[{pkgname}] Resolved groups: {existing}")
+    _groups_log.info(f"[{pkgname}] Resolved groups: {existing}")
     return existing
 
 
@@ -472,7 +476,7 @@ def resolve_consumes(resolved_profile, pkgmeta, inference_map):
     explicit = resolved_profile.get("consumes")
     if explicit is not None:
         active = frozenset(explicit)
-        _log.info("[CONF]", f"[{pkgname}] consumes (explicit): {sorted(active)}")
+        _conf_log.info(f"[{pkgname}] consumes (explicit): {sorted(active)}")
         return active
 
     makedepends = set(pkgmeta.get("globals", {}).get("makedepends", []))
@@ -489,7 +493,7 @@ def resolve_consumes(resolved_profile, pkgmeta, inference_map):
         for bare_dep in [re.split(r"[><=!]", dep, maxsplit=1)[0].strip()]
         if bare_dep in inference_map
     )
-    _log.info("[CONF]", f"[{pkgname}] consumes (inferred from makedepends {matched_deps}): {sorted(active)}")
+    _conf_log.info(f"[{pkgname}] consumes (inferred from makedepends {matched_deps}): {sorted(active)}")
     return active
 
 
