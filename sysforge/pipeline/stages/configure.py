@@ -257,6 +257,22 @@ _ZSHRC = (
 )
 
 
+_RESUME_REMINDER = """\
+# Written by sysforge bootstrap. Removed automatically when the pipeline resumes.
+[ -t 1 ] && printf '\\n  SysForge bootstrap complete. Resume the pipeline:\\n    sysforge run pipeline --resume\\n\\n'
+"""
+
+_RESUME_REMINDER_PATH = Path("etc/profile.d/sysforge-resume.sh")
+
+
+def _write_resume_reminder(cfg: BootstrapConfig) -> None:
+    """Write a login-shell reminder to resume the pipeline after reboot."""
+    dest = Path(cfg.target) / _RESUME_REMINDER_PATH
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(_RESUME_REMINDER)
+    _log.ui("[CONFIGURE]", "Resume reminder written to /etc/profile.d/sysforge-resume.sh")
+
+
 def _configure_shell(cfg: BootstrapConfig) -> None:
     """Write shell dotfiles for root and the primary user."""
     # root: red prompt
@@ -330,6 +346,7 @@ class ConfigureStage(Stage):
                 _log.ui("[CONFIGURE]", "[dry-run] would set root password from bootstrap.toml")
             else:
                 _log.ui("[CONFIGURE]", "[dry-run] no root_password — will warn at runtime")
+            _log.ui("[CONFIGURE]", "[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
             return
 
         _set_hostname(cfg)
@@ -343,6 +360,7 @@ class ConfigureStage(Stage):
         _configure_sshd(cfg)
         _create_user(cfg)
         _configure_shell(cfg)
+        _write_resume_reminder(cfg)
         _set_root_password(cfg)
 
         _log.ui("[CONFIGURE]", "Configure stage complete.")

@@ -920,6 +920,11 @@ class ReconfigureStage(Stage):
                 "Reboot into the installed system before continuing."
             )
 
+        reminder = Path("/etc/profile.d/sysforge-resume.sh")
+        if reminder.exists():
+            reminder.unlink()
+            _log.ui("[RECONFIGURE]", "Removed login reminder (/etc/profile.d/sysforge-resume.sh)")
+
         _show_stage_summary(state)
 
         step_keys = _select_steps(options)
