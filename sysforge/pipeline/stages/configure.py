@@ -28,8 +28,11 @@ Use --start-from reconfigure to skip bootstrap stages on an already-configured
 system.
 """
 
+import json
+import shutil
 import subprocess
 import re
+from importlib.metadata import distribution, PackageNotFoundError
 from pathlib import Path
 
 import sysforge.log as _log
@@ -265,6 +268,54 @@ _RESUME_REMINDER = """\
 _RESUME_REMINDER_PATH = Path("etc/profile.d/sysforge-resume.sh")
 
 
+def _find_sysforge_source() -> Path | None:
+    """
+    Return the sysforge source directory as recorded by pip's direct_url.json.
+    Returns None if the package was not installed from a local path or if the
+    path no longer exists.
+    """
+    try:
+        dist = distribution("sysforge")
+        raw = dist.read_text("direct_url.json")
+        if raw:
+            url = json.loads(raw).get("url", "")
+            if url.startswith("file://"):
+                p = Path(url[7:])
+                if p.is_dir():
+                    return p
+    except PackageNotFoundError:
+        pass
+    return None
+
+
+def _install_sysforge(cfg: BootstrapConfig) -> None:
+    """Copy the sysforge source from the live ISO into the target and install it."""
+    src = _find_sysforge_source()
+    if src is None:
+        raise RuntimeError(
+            "[CONFIGURE] Cannot locate sysforge source via pip metadata — "
+            "cannot install sysforge into target."
+        )
+
+    target_src = Path(cfg.target) / "root/sysforge"
+    if target_src.exists():
+        shutil.rmtree(target_src)
+    shutil.copytree(src, target_src)
+    _log.ui("[CONFIGURE]", f"sysforge source copied to target ({src} → /root/sysforge)")
+
+    _chroot(cfg.target, ["uv", "pip", "install", "--system", "--no-deps", "/root/sysforge"])
+    _log.ui("[CONFIGURE]", "sysforge installed into target.")
+
+
+def _copy_config_files(cfg: BootstrapConfig) -> None:
+    """Copy /etc/sysforge/ from the live ISO into the target system."""
+    src = Path("/etc/sysforge")
+    dst = Path(cfg.target) / "etc/sysforge"
+    dst.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    _log.ui("[CONFIGURE]", "Config files copied to target /etc/sysforge/")
+
+
 def _write_resume_reminder(cfg: BootstrapConfig) -> None:
     """Write a login-shell reminder to resume the pipeline after reboot."""
     dest = Path(cfg.target) / _RESUME_REMINDER_PATH
@@ -346,6 +397,8 @@ class ConfigureStage(Stage):
                 _log.ui("[CONFIGURE]", "[dry-run] would set root password from bootstrap.toml")
             else:
                 _log.ui("[CONFIGURE]", "[dry-run] no root_password — will warn at runtime")
+            _log.ui("[CONFIGURE]", "[dry-run] would copy /etc/sysforge/ to target")
+            _log.ui("[CONFIGURE]", "[dry-run] would install sysforge into target via uv")
             _log.ui("[CONFIGURE]", "[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
             return
 
@@ -360,6 +413,8 @@ class ConfigureStage(Stage):
         _configure_sshd(cfg)
         _create_user(cfg)
         _configure_shell(cfg)
+        _copy_config_files(cfg)
+        _install_sysforge(cfg)
         _write_resume_reminder(cfg)
         _set_root_password(cfg)
 
