@@ -362,3 +362,139 @@ def test_message_written_to_both_logs(tmp_path):
     log.close_pkg_log(success=False, persist=True)
     assert "bothsides" in upath.read_text()
     assert "bothsides" in ppath.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Logger class and get_logger()
+# ---------------------------------------------------------------------------
+
+def test_get_logger_returns_logger_instance():
+    logger = log.get_logger("UPDATE")
+    assert isinstance(logger, log.Logger)
+
+
+def test_get_logger_stores_tag():
+    assert log.get_logger("UPDATE")._tag == "[UPDATE]"
+
+
+def test_get_logger_two_distinct_loggers_have_distinct_tags():
+    assert log.get_logger("CONF")._tag != log.get_logger("BUILD")._tag
+
+
+# Format — each level
+
+def test_logger_error_format(capsys):
+    log.set_verbosity(0)
+    log.get_logger("UPDATE").error("something broke")
+    assert capsys.readouterr().err == "[SYSFORGE][ERROR][UPDATE] something broke\n"
+
+
+def test_logger_warn_format(capsys):
+    log.set_verbosity(1)
+    log.get_logger("UPDATE").warn("careful")
+    assert capsys.readouterr().err == "[SYSFORGE][WARN][UPDATE] careful\n"
+
+
+def test_logger_info_format(capsys):
+    log.set_verbosity(2)
+    log.get_logger("UPDATE").info("hello")
+    assert capsys.readouterr().err == "[SYSFORGE][INFO][UPDATE] hello\n"
+
+
+def test_logger_debug_format(capsys):
+    log.set_verbosity(3)
+    log.get_logger("UPDATE").debug("verbose")
+    assert capsys.readouterr().err == "[SYSFORGE][DEBUG][UPDATE] verbose\n"
+
+
+def test_logger_ui_format(capsys):
+    log.set_verbosity(0)
+    log.get_logger("UPDATE").ui("status message")
+    assert capsys.readouterr().err == "status message\n"
+
+
+# Verbosity gating via Logger
+
+def test_logger_warn_suppressed_at_v0(capsys):
+    log.set_verbosity(0)
+    log.get_logger("X").warn("msg")
+    assert capsys.readouterr().err == ""
+
+
+def test_logger_info_suppressed_at_v1(capsys):
+    log.set_verbosity(1)
+    log.get_logger("X").info("msg")
+    assert capsys.readouterr().err == ""
+
+
+def test_logger_debug_suppressed_at_v2(capsys):
+    log.set_verbosity(2)
+    log.get_logger("X").debug("msg")
+    assert capsys.readouterr().err == ""
+
+
+def test_logger_ui_always_shown_at_v0(capsys):
+    log.set_verbosity(0)
+    log.get_logger("X").ui("always")
+    assert "always" in capsys.readouterr().err
+
+
+def test_logger_error_always_shown_at_v0(capsys):
+    log.set_verbosity(0)
+    log.get_logger("X").error("err")
+    assert "[SYSFORGE][ERROR]" in capsys.readouterr().err
+
+
+# Logger writes to log files (always, regardless of verbosity)
+
+def test_logger_info_written_to_unified_log_at_v0(tmp_path):
+    path = tmp_path / "sysforge.log"
+    log.set_verbosity(0)
+    log.open_unified_log(path)
+    log.get_logger("UPDATE").info("logged at v0")
+    log.close_unified_log(success=False, persist=True)
+    content = path.read_text()
+    assert "[UPDATE]" in content
+    assert "logged at v0" in content
+
+
+def test_logger_warn_written_to_pkg_log_at_v0(tmp_path):
+    path = tmp_path / "pkg" / "sysforge_pkg.log"
+    log.set_verbosity(0)
+    log.open_pkg_log(path)
+    log.get_logger("CONF").warn("conf issue")
+    log.close_pkg_log(success=False, persist=True)
+    content = path.read_text()
+    assert "[CONF]" in content
+    assert "conf issue" in content
+
+
+# Logger.prompt_prefix
+
+def test_logger_prompt_prefix_error():
+    assert log.get_logger("UPDATE").prompt_prefix("ERROR") == "[SYSFORGE][ERROR][UPDATE] "
+
+
+def test_logger_prompt_prefix_warn():
+    assert log.get_logger("CONF").prompt_prefix("WARN") == "[SYSFORGE][WARN][CONF] "
+
+
+# Logger.debug — multiline splitting
+
+def test_logger_debug_multiline(capsys):
+    log.set_verbosity(3)
+    log.get_logger("CONF").debug("line1\nline2\nline3")
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 3
+    assert all("[SYSFORGE][DEBUG][CONF]" in ln for ln in lines)
+
+
+# Multiple loggers are independent
+
+def test_multiple_loggers_independent(capsys):
+    log.set_verbosity(2)
+    log.get_logger("CONF").info("conf msg")
+    log.get_logger("BUILD").info("build msg")
+    out = capsys.readouterr().err
+    assert "[SYSFORGE][INFO][CONF] conf msg" in out
+    assert "[SYSFORGE][INFO][BUILD] build msg" in out
