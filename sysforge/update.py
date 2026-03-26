@@ -540,7 +540,7 @@ def cmd_update(args) -> None:
         print("[SYSFORGE] Nothing to rebuild.")
         return
 
-    from sysforge.primitives.makepkg_wrapper import run as build_run
+    from sysforge.primitives.makepkg_wrapper import run as build_run, PGOBuildSkipped
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
     reset_session()
 
@@ -573,7 +573,7 @@ def cmd_update(args) -> None:
 
     # --- Phase 2: build all packages (no syncdeps, no install per-package) ---
     built_pkg_files: list = []
-    built = failed = 0
+    built = failed = pgo_skipped = 0
 
     for result in to_build:
         search_dir = pkgdest if pkgdest else result.pkgbuild_path.parent
@@ -599,6 +599,9 @@ def cmd_update(args) -> None:
             )
             built_pkg_files.extend(new_pkgs)
             built += 1
+        except PGOBuildSkipped as e:
+            _log.warn("[UPDATE]", str(e))
+            pgo_skipped += 1
         except (RuntimeError, SystemExit) as e:
             _log.error("[UPDATE]", f"Build failed for {result.pkgbase!r}: {e}")
             failed += 1
@@ -638,6 +641,9 @@ def cmd_update(args) -> None:
             )
             built_pkg_files.extend(new_pkgs)
             built += 1
+        except PGOBuildSkipped as e:
+            _log.warn("[UPDATE]", str(e))
+            pgo_skipped += 1
         except (RuntimeError, SystemExit) as e:
             _log.error("[UPDATE]", f"Build failed for {d.pkgname!r}: {e}")
             failed += 1
@@ -669,7 +675,10 @@ def cmd_update(args) -> None:
         emit_session_report()
 
     skipped = len(results) - len(to_build)
-    print(f"\n[SYSFORGE] Update complete: {built} built, {failed} failed, {skipped} skipped.")
+    summary = f"\n[SYSFORGE] Update complete: {built} built, {failed} failed, {skipped} skipped"
+    if pgo_skipped:
+        summary += f", {pgo_skipped} pgo-skipped (run 'sysforge run toolchain' to rebuild profdata)"
+    print(summary + ".")
 
 
 def _print_summary(results: list[_UpdateResult], args) -> None:

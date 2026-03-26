@@ -1061,6 +1061,37 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
     return profdata_path
 
 
+def _write_profdata_version(pgo_store: Path) -> None:
+    """
+    Write a version sidecar (clang.profdata.version) containing the installed
+    LLVM major version.  Called after a successful PGO build so that
+    sysforge update can check compatibility before reusing the profdata.
+    Failures are non-fatal — a missing sidecar just causes updates to skip
+    the profdata rather than crashing.
+    """
+    try:
+        result = subprocess.run(
+            ["pacman", "-Q", "llvm"], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            _log.warn(
+                "[TOOLCHAIN]",
+                "[PGO] Could not query LLVM version via pacman — profdata version sidecar not written",
+            )
+            return
+        # "llvm 22.1.0-1" → major "22"
+        ver_str = result.stdout.split()[1]
+        major = ver_str.split(".")[0]
+        version_path = pgo_store / "clang.profdata.version"
+        version_path.write_text(major + "\n")
+        _log.info(
+            "[TOOLCHAIN]",
+            f"[PGO] Saved profdata version sidecar: LLVM {major} → {version_path}",
+        )
+    except Exception as e:
+        _log.warn("[TOOLCHAIN]", f"[PGO] Could not write profdata version sidecar: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Build paths
 # ---------------------------------------------------------------------------
@@ -1117,7 +1148,8 @@ def _build_llvm_pgo(
             CFLAGS/LDFLAGS += -fprofile-use; LTO disabled via LTOFLAGS=""
             (ThinLTO + IR PGO causes non-PIC vtable relocations in lld's
             ThinLTO codegen for libLLVM.so); install pgo + non_pgo + lib32.
-            Staging prefix and profdata removed on success.
+            Staging prefix removed on success.  Profdata preserved with a
+            version sidecar (clang.profdata.version) for reuse by sysforge update.
 
     Returns (cc, cxx, ld).
     """
@@ -1329,11 +1361,7 @@ def _build_llvm_pgo(
             sudo_keepalive.join()
 
     if not options.dry_run:
-        try:
-            profdata_path.unlink()
-            _log.info("[TOOLCHAIN]", f"Removed profdata: {profdata_path}")
-        except OSError:
-            pass
+        _write_profdata_version(pgo_store)
         _remove_staging(staging)
 
     return "/usr/bin/clang", "/usr/bin/clang++", "lld"

@@ -7,21 +7,25 @@ and PKGBUILD parsing are delegated to their respective modules.
 
 Public API:
     BuildOptions                       — dataclass of run() options (all fields defaulted)
+    PGOBuildSkipped                    — raised when a pgo_llvm_toolchain build is skipped
     expand_makepkg_flags(flags_str)   → list
     run(pkgbuild_path, options=None)
 """
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge.primitives.resource_guard import lift_for_child
 
 from sysforge.primitives.config import (
+    CONFIG_BASE,
     find_pkgbuild,
     load_config,
     load_conflict_groups,
@@ -786,6 +790,71 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
 
 # ---------------------------------------------------------------------------
+# PGO profdata helpers
+# ---------------------------------------------------------------------------
+
+_DEFAULT_PGO_STORE = "/var/tmp/sysforge-llvm-pgo"
+
+
+class PGOBuildSkipped(Exception):
+    """
+    Raised by run() when build_mode is pgo_llvm_toolchain but profdata is
+    absent or version-incompatible and the user chose to skip (or input is
+    non-interactive).  Callers (e.g. update.py) should treat this as a
+    deliberate skip rather than a build failure.
+    """
+
+
+def _resolve_pgo_state(pkgbuild_path: Path) -> tuple[str, str]:
+    """
+    Check whether a saved clang.profdata is present and compatible with the
+    PKGBUILD being built.
+
+    Returns one of:
+      ("ready",    str(profdata_path))  — profdata exists, major version matches
+      ("mismatch", reason_str)          — profdata exists but major version differs
+      ("absent",   reason_str)          — profdata or sidecar missing / toolchain.toml absent
+    """
+    toolchain_path = CONFIG_BASE / "etc/sysforge/toolchain.toml"
+    if not toolchain_path.exists():
+        return ("absent", "toolchain.toml not found — no pgo_store configured")
+    try:
+        with open(toolchain_path, "rb") as f:
+            tcfg = tomllib.load(f)
+    except Exception as e:
+        return ("absent", f"cannot read toolchain.toml: {e}")
+
+    pgo_store = Path(tcfg.get("pgo_store", _DEFAULT_PGO_STORE))
+    profdata_path = pgo_store / "clang.profdata"
+    version_path = pgo_store / "clang.profdata.version"
+
+    if not profdata_path.exists():
+        return ("absent", f"no profdata at {profdata_path}")
+    if not version_path.exists():
+        return ("absent", f"profdata version sidecar missing at {version_path}")
+
+    saved_major = version_path.read_text().strip()
+
+    # Extract the target LLVM major version from the PKGBUILD's pkgver line.
+    try:
+        content = pkgbuild_path.read_text()
+        m = re.search(r"^pkgver=([^\s\n]+)", content, re.MULTILINE)
+        if not m:
+            return ("absent", "cannot determine pkgver from PKGBUILD")
+        target_major = m.group(1).split(".")[0]
+    except OSError as e:
+        return ("absent", f"cannot read PKGBUILD: {e}")
+
+    if saved_major != target_major:
+        return (
+            "mismatch",
+            f"profdata is from LLVM {saved_major}, building LLVM {target_major}",
+        )
+
+    return ("ready", str(profdata_path))
+
+
+# ---------------------------------------------------------------------------
 # Build options
 # ---------------------------------------------------------------------------
 
@@ -892,6 +961,43 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
 
         kernel_build = (build_mode == "kernel")
 
+        # pgo_llvm_toolchain: inject -fprofile-use if saved profdata is compatible,
+        # otherwise prompt to plain-build or skip (default: skip).
+        effective_flags_extra = options.compiler_flags_extra
+        if build_mode == "pgo_llvm_toolchain":
+            pgo_state, pgo_info = _resolve_pgo_state(pkgbuild_path)
+            if pgo_state == "ready":
+                pgo_flag = f"-fprofile-use={pgo_info}"
+                effective_flags_extra = (
+                    f"{options.compiler_flags_extra} {pgo_flag}".strip()
+                    if options.compiler_flags_extra
+                    else pgo_flag
+                )
+                _log.info("[PGO]", f"Reusing profdata for PGO build: {pgo_info}")
+            else:
+                reason = pgo_info
+                if sys.stdin.isatty():
+                    try:
+                        choice = input(
+                            _log.prompt_prefix("WARN", "[PGO]")
+                            + f"PGO profdata unavailable ({reason})."
+                            + " [p]lain build or [s]kip? [S]: "
+                        ).strip().lower()
+                    except EOFError:
+                        choice = ""
+                else:
+                    choice = ""
+                    _log.warn(
+                        "[PGO]",
+                        f"Non-interactive: skipping pgo_llvm_toolchain build ({reason})",
+                    )
+                if choice not in ("p", "plain"):
+                    raise PGOBuildSkipped(
+                        f"[PGO] Skipped {pkgbuild_path.parent.name!r}: {reason}. "
+                        "Run 'sysforge run toolchain' to regenerate profdata."
+                    )
+                _log.warn("[PGO]", f"Building without PGO: {reason}")
+
         extracted_profile = None
         if build_mode in ("patched_pkgbuild", "kernel"):
             extracted_profile = extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
@@ -933,7 +1039,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 cxx_override=options.cxx_override,
                 ld_override=options.ld_override,
                 kernel_build=kernel_build,
-                compiler_flags_extra=options.compiler_flags_extra,
+                compiler_flags_extra=effective_flags_extra,
                 linker_flags_extra=options.linker_flags_extra,
                 strip_full_lto=options.strip_full_lto,
                 injected_env=options.extra_env,
