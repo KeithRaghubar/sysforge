@@ -665,35 +665,34 @@ def cmd_update(args) -> None:
     if built_pkg_files:
         if not batch_install_pkgs(built_pkg_files):
             _log.error("[UPDATE]", "Batch package install failed")
-            print("[SYSFORGE] Error: batch install failed — packages were built but not installed.", file=sys.stderr)
+            _log.error("[UPDATE]", "packages were built but not installed")
             install_failed = True
     elif built_pkgs:
         _log.warn("[UPDATE]", "No .pkg.tar.* files found after builds — nothing to install")
-
-    if unified_log_active:
-        _log.close_unified_log(success=(not failed_pkgs and not install_failed), persist=True)
-        print(f"[SYSFORGE] Unified log: {unified_log_path}")
 
     if getattr(args, "cache_report", False):
         emit_session_report()
 
     skipped = len(results) - len(to_build)
-    lines = [
+    _log.ui("[UPDATE]", (
         f"\n[SYSFORGE] Update complete: "
         f"{len(built_pkgs)} built, {len(failed_pkgs)} failed, {skipped} skipped"
         + (f", {len(pgo_skipped_pkgs)} pgo-skipped" if pgo_skipped_pkgs else "")
         + "."
-    ]
+    ))
     if built_pkgs:
-        lines.append(f"  Built:       {' '.join(built_pkgs)}")
+        _log.ui("[UPDATE]", f"  Built:       {' '.join(built_pkgs)}")
     if failed_pkgs:
-        lines.append(f"  Failed:      {' '.join(failed_pkgs)}")
+        _log.ui("[UPDATE]", f"  Failed:      {' '.join(failed_pkgs)}")
     if pgo_skipped_pkgs:
-        lines.append(
+        _log.ui("[UPDATE]",
             f"  PGO-skipped: {' '.join(pgo_skipped_pkgs)}"
             " (run 'sysforge run toolchain' to rebuild profdata)"
         )
-    print("\n".join(lines))
+
+    if unified_log_active:
+        _log.close_unified_log(success=(not failed_pkgs and not install_failed), persist=True)
+        _log.ui("[UPDATE]", f"[SYSFORGE] Unified log: {unified_log_path}")
 
 
 def _print_summary(results: list[_UpdateResult], args) -> None:
