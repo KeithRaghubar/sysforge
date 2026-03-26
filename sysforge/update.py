@@ -573,7 +573,9 @@ def cmd_update(args) -> None:
 
     # --- Phase 2: build all packages (no syncdeps, no install per-package) ---
     built_pkg_files: list = []
-    built = failed = pgo_skipped = 0
+    built_pkgs: list[str] = []
+    failed_pkgs: list[str] = []
+    pgo_skipped_pkgs: list[str] = []
 
     for result in to_build:
         search_dir = pkgdest if pkgdest else result.pkgbuild_path.parent
@@ -585,7 +587,7 @@ def cmd_update(args) -> None:
                 log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
                 profile_conf=getattr(args, "profile_conf", None),
                 cache_report=False,
-                init_session=(built + failed == 0),
+                init_session=(not built_pkgs and not failed_pkgs),
                 update=False,  # git pull already done above
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
                 extra_flags=batch_flags,
@@ -598,13 +600,13 @@ def cmd_update(args) -> None:
                 if p.stat().st_mtime >= build_start
             )
             built_pkg_files.extend(new_pkgs)
-            built += 1
+            built_pkgs.append(result.pkgbase)
         except PGOBuildSkipped as e:
             _log.warn("[UPDATE]", str(e))
-            pgo_skipped += 1
+            pgo_skipped_pkgs.append(result.pkgbase)
         except (RuntimeError, SystemExit) as e:
             _log.error("[UPDATE]", f"Build failed for {result.pkgbase!r}: {e}")
-            failed += 1
+            failed_pkgs.append(result.pkgbase)
 
     for d in discovered_to_build:
         # Packages detected via DB version check have no local PKGBUILD yet — clone on demand.
@@ -615,7 +617,7 @@ def cmd_update(args) -> None:
                 pkgbuild_path = find_pkgbuild(d.pkgname, discover_config)
             except (FileNotFoundError, RuntimeError) as e:
                 _log.error("[UPDATE]", f"Cannot find/clone PKGBUILD for {d.pkgname!r}: {e}")
-                failed += 1
+                failed_pkgs.append(d.pkgname)
                 continue
 
         search_dir = pkgdest if pkgdest else pkgbuild_path.parent
@@ -627,7 +629,7 @@ def cmd_update(args) -> None:
                 log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
                 profile_conf=getattr(args, "profile_conf", None),
                 cache_report=False,
-                init_session=(built + failed == 0),
+                init_session=(not built_pkgs and not failed_pkgs),
                 update=False,  # git pull already done in Phase 2 discovery
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
                 extra_flags=batch_flags,
@@ -640,13 +642,13 @@ def cmd_update(args) -> None:
                 if p.stat().st_mtime >= build_start
             )
             built_pkg_files.extend(new_pkgs)
-            built += 1
+            built_pkgs.append(d.pkgname)
         except PGOBuildSkipped as e:
             _log.warn("[UPDATE]", str(e))
-            pgo_skipped += 1
+            pgo_skipped_pkgs.append(d.pkgname)
         except (RuntimeError, SystemExit) as e:
             _log.error("[UPDATE]", f"Build failed for {d.pkgname!r}: {e}")
-            failed += 1
+            failed_pkgs.append(d.pkgname)
 
     # --- Phase 3: install all built packages in one sudo call ---
     # Deduplicate while preserving order (a package can appear in both loops if
@@ -659,26 +661,39 @@ def cmd_update(args) -> None:
             deduped.append(p)
     built_pkg_files = deduped
 
+    install_failed = False
     if built_pkg_files:
         if not batch_install_pkgs(built_pkg_files):
             _log.error("[UPDATE]", "Batch package install failed")
             print("[SYSFORGE] Error: batch install failed — packages were built but not installed.", file=sys.stderr)
-            failed += 1
-    elif built > 0:
+            install_failed = True
+    elif built_pkgs:
         _log.warn("[UPDATE]", "No .pkg.tar.* files found after builds — nothing to install")
 
     if unified_log_active:
-        _log.close_unified_log(success=(failed == 0), persist=True)
+        _log.close_unified_log(success=(not failed_pkgs and not install_failed), persist=True)
         print(f"[SYSFORGE] Unified log: {unified_log_path}")
 
     if getattr(args, "cache_report", False):
         emit_session_report()
 
     skipped = len(results) - len(to_build)
-    summary = f"\n[SYSFORGE] Update complete: {built} built, {failed} failed, {skipped} skipped"
-    if pgo_skipped:
-        summary += f", {pgo_skipped} pgo-skipped (run 'sysforge run toolchain' to rebuild profdata)"
-    print(summary + ".")
+    lines = [
+        f"\n[SYSFORGE] Update complete: "
+        f"{len(built_pkgs)} built, {len(failed_pkgs)} failed, {skipped} skipped"
+        + (f", {len(pgo_skipped_pkgs)} pgo-skipped" if pgo_skipped_pkgs else "")
+        + "."
+    ]
+    if built_pkgs:
+        lines.append(f"  Built:       {' '.join(built_pkgs)}")
+    if failed_pkgs:
+        lines.append(f"  Failed:      {' '.join(failed_pkgs)}")
+    if pgo_skipped_pkgs:
+        lines.append(
+            f"  PGO-skipped: {' '.join(pgo_skipped_pkgs)}"
+            " (run 'sysforge run toolchain' to rebuild profdata)"
+        )
+    print("\n".join(lines))
 
 
 def _print_summary(results: list[_UpdateResult], args) -> None:
