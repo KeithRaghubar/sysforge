@@ -41,7 +41,7 @@ _BASE_PACKAGES = [
     "networkmanager",
     "openssh",
     "python",
-    "reflector"
+    "reflector",
     "sudo",
     "uv",
 ]
