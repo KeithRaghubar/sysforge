@@ -21,27 +21,29 @@ from sysforge.pipeline.stages._bootstrap import load_bootstrap
 
 
 # Minimal packages installed via pacstrap.
-# - base:             core userspace (glibc, bash, coreutils, systemd, pacman, ...)
 # - base-devel:       ...
-# - linux:            default Arch kernel (replaced by custom kernel stage if configured)
+# - base:             core userspace (glibc, bash, coreutils, systemd, pacman, ...)
+# - git:              required for cloning PKGBUILDs and sysforge itself
 # - linux-firmware:   hardware firmware blobs
+# - linux:            default Arch kernel (replaced by custom kernel stage if configured)
 # - networkmanager:   network management daemon (needed for post-boot connectivity)
 # - openssh:          SSH server/client (required for remote access)
-# - sudo:             privilege escalation for the build user
 # - python:           required by sysforge itself
+# - reflector         ...
+# - sudo:             privilege escalation for the build user
 # - uv:               Python package installer (required by sysforge PKGBUILD)
-# - git:              required for cloning PKGBUILDs and sysforge itself
 _BASE_PACKAGES = [
     "base",
     "base-devel",
+    "git",
     "linux",
     "linux-firmware",
     "networkmanager",
     "openssh",
-    "sudo",
     "python",
+    "reflector"
+    "sudo",
     "uv",
-    "git",
 ]
 
 
