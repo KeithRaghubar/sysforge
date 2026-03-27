@@ -22,6 +22,7 @@ from sysforge.pipeline.stages._bootstrap import load_bootstrap
 
 # Minimal packages installed via pacstrap.
 # - base:             core userspace (glibc, bash, coreutils, systemd, pacman, ...)
+# - base-devel:       ...
 # - linux:            default Arch kernel (replaced by custom kernel stage if configured)
 # - linux-firmware:   hardware firmware blobs
 # - networkmanager:   network management daemon (needed for post-boot connectivity)
@@ -32,6 +33,7 @@ from sysforge.pipeline.stages._bootstrap import load_bootstrap
 # - git:              required for cloning PKGBUILDs and sysforge itself
 _BASE_PACKAGES = [
     "base",
+    "base-devel",
     "linux",
     "linux-firmware",
     "networkmanager",
