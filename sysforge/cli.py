@@ -9,7 +9,7 @@ Top-level commands:
 
 Namespaces:
     sysforge packages       Manage packages.toml (list / add / remove / sync)
-    sysforge run            Execute pipeline stages (pipeline / reconfigure / toolchain / packages / kernel)
+    sysforge run            Execute pipeline stages (pipeline / hardware / reconfigure / toolchain / packages / kernel)
 """
 import argparse
 import sys
@@ -82,6 +82,16 @@ def _cmd_converge(args):
 def _cmd_completions(args):
     import subprocess as _sp
     config = load_config() or {}
+
+    if args.resource == "state":
+        # Names tracked in build_state.toml — used by `update` completion
+        from sysforge.primitives.build_state import BuildState
+        from sysforge.pipeline.state import resolve_state_dir
+        state_dir, _ = resolve_state_dir(None)
+        bs = BuildState(state_dir)
+        for name in sorted(bs.all_packages()):
+            print(name)
+        return
 
     if args.resource == "manifest":
         # Names already in packages.toml — used by `packages remove` completion
@@ -169,6 +179,22 @@ def _cmd_run_pipeline(args):
         no_update=args.no_update,
     )
     run_pipeline(config, options)
+
+
+def _cmd_run_hardware(args):
+    from sysforge.pipeline.runner import run_stage_standalone
+    from sysforge.pipeline.stages.hardware import HardwareStage
+    from sysforge.pipeline.stages.base import RunOptions
+
+    config = load_config() or {}
+
+    options = RunOptions(
+        dry_run=args.dry_run,
+        state_dir=Path(args.state_dir) if args.state_dir else None,
+        no_unified_log=True,
+        no_pkg_logs=True,
+    )
+    run_stage_standalone(HardwareStage(), config, options)
 
 
 def _cmd_run_reconfigure(args):
@@ -393,6 +419,8 @@ def _add_update_parser(sub):
     p.add_argument("--no-cleanbuild", action="store_true", dest="no_cleanbuild",
         help="Skip the automatic --cleanbuild (-C) added for update runs. "
              "Useful when packages are already built and you only need to re-run the install step.")
+    p.add_argument("pkgnames", metavar="PKG", nargs="*",
+        help="Limit update to these package names (default: all sysforge-managed packages).")
     p.set_defaults(func=_cmd_update)
 
 
@@ -486,7 +514,7 @@ def _add_setup_parser(sub):
 def _add_run_parser(sub):
     """run namespace: pipeline / reconfigure / toolchain / packages / kernel"""
     p = sub.add_parser("run",
-        help="Execute a pipeline stage (pipeline, reconfigure, toolchain, packages, kernel).")
+        help="Execute a pipeline stage (pipeline, hardware, reconfigure, toolchain, packages, kernel).")
     run_sub = p.add_subparsers(dest="run_stage", metavar="STAGE")
     run_sub.required = True
 
@@ -525,6 +553,15 @@ def _add_run_parser(sub):
     p_pipeline.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase before each build.")
     p_pipeline.set_defaults(func=_cmd_run_pipeline)
+
+    # run hardware
+    p_hw = run_sub.add_parser("hardware",
+        help="Re-run hardware detection and refresh hardware_profile.toml.")
+    p_hw.add_argument("--dry-run", action="store_true", dest="dry_run",
+        help="Show what would be written without writing.")
+    p_hw.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory.")
+    p_hw.set_defaults(func=_cmd_run_hardware)
 
     # run reconfigure
     p_reconf = run_sub.add_parser("reconfigure",
@@ -642,7 +679,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # completions (used by shell completion scripts; not user-facing)
     p_completions = sub.add_parser("completions", help=argparse.SUPPRESS)
-    p_completions.add_argument("resource", choices=["packages", "manifest", "local"])
+    p_completions.add_argument("resource", choices=["packages", "manifest", "local", "state"])
     p_completions.set_defaults(func=_cmd_completions)
 
     return parser

@@ -398,6 +398,15 @@ def cmd_update(args) -> None:
 
     packages = bs.all_packages()
 
+    # Filter to specific packages when names are given on the command line
+    filter_names: list[str] = getattr(args, "pkgnames", None) or []
+    if filter_names:
+        unknown = [n for n in filter_names if n not in packages]
+        if unknown:
+            for name in unknown:
+                _log.warn(f"{name}: not found in build state — skipping")
+        packages = {k: v for k, v in packages.items() if k in filter_names}
+
     if not packages and not discovered:
         print(
             "[SYSFORGE] No packages recorded in build state.\n"

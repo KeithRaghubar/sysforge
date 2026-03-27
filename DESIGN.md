@@ -658,12 +658,14 @@ Implements `sysforge update` — the update manager. Algorithm:
 2. If `--all`: run `_discover_and_add()` — two phases:
    - **Phase 1:** find foreign packages (`pacman -Qm`) not in `build_state.toml` or `packages.toml`; AUR-verify, append to `packages.toml`, compare versions against AUR RPC, queue outdated ones for rebuild.
    - **Phase 2:** find packages in `packages.toml` that are installed but have no `build_state` record. For those with a local PKGBUILD clone: `git pull --rebase` then compare PKGBUILD version against installed. For those without a local clone: check `pacman -Si` (source=repo) or AUR RPC (source=aur, batched) to get the current version — no auto-clone during discovery. If outdated, clone on demand at build time via `find_pkgbuild`.
-3. Load `build_state.toml` to get the set of sysforge-managed packages.
+3. Load `build_state.toml` to get the set of sysforge-managed packages. If positional `PKG` names were given, filter to that subset (unrecognised names are warned and skipped).
 4. Group by `pkgbase` to deduplicate split packages.
 5. For each `pkgbase`: `git pull --rebase` the PKGBUILD dir (unless `--no-update`), parse the updated PKGBUILD, get the installed version via `pacman -Q`, compare with `vercmp`.
 6. VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) are flagged as `DEVEL` — their `pkgver` is only meaningful after running `pkgver()`, so static comparison is not possible. They are rebuilt only when `--devel` is passed.
 7. Print a summary table: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`.
 8. Rebuild `NEEDS_REBUILD` and discovered `OUTDATED` packages (and `DEVEL` if `--devel`) via `makepkg_wrapper.run()`. All update builds default to `--cleanbuild` (`-C`) to prevent stale `$srcdir` from a previous failed run causing patch-already-applied errors in `prepare()`. `--syncdeps`/`-s` and `--install`/`-i` are stripped; packages are installed in a single `sudo pacman -U` call at the end. Without `--interactive`, build failures are logged and skipped (batch mode); with `--interactive`, failures pause for user input.
+
+Positional: `[PKG ...]` — optional package names to restrict the run to a subset of sysforge-managed packages.
 
 Flags: `--all`, `--interactive`, `--packages`, `--dry-run`, `--devel`, `--no-update`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--makepkg`.
 
@@ -1114,7 +1116,7 @@ git push
 
 Two commands address drift in sysforge-managed packages:
 
-**`sysforge update`** (implemented) — handles **version drift**. After `git pull --rebase` on each PKGBUILD dir, it compares the new `pkgver`/`pkgrel`/`epoch` against the installed version via `vercmp`. Packages where the PKGBUILD is newer are rebuilt with the current profile. VCS packages (`-git`, etc.) require `--devel` to rebuild since their version is only known after running `pkgver()` during the build.
+**`sysforge update [PKG ...]`** (implemented) — handles **version drift**. After `git pull --rebase` on each PKGBUILD dir, it compares the new `pkgver`/`pkgrel`/`epoch` against the installed version via `vercmp`. Packages where the PKGBUILD is newer are rebuilt with the current profile. VCS packages (`-git`, etc.) require `--devel` to rebuild since their version is only known after running `pkgver()` during the build. One or more package names may be given as positional arguments to restrict the run to a subset of sysforge-managed packages; unrecognised names are warned and skipped.
 
 **PGO toolchain packages** (`build_mode = "pgo_llvm_toolchain"`) are handled specially during update. `makepkg_wrapper.run()` reads `toolchain.toml → pgo_store`, checks for a saved `clang.profdata` and its `clang.profdata.version` sidecar, and compares the sidecar's LLVM major version against the PKGBUILD's `pkgver` major. If they match, `-fprofile-use=<profdata>` is injected and the build proceeds as a PGO-optimised build. If profdata is absent or version-mismatched (e.g. after a major LLVM bump), the user is prompted: **[p]lain build or [s]kip (default: skip)**. In non-interactive mode the build is skipped automatically. Skipped packages are counted separately in the update summary and do not count as failures. To rebuild profdata after a major version bump, run `sysforge run toolchain`.
 
@@ -1122,7 +1124,7 @@ Two commands address drift in sysforge-managed packages:
 
 `build_state.toml` is the shared source of truth for both commands. Written by `makepkg_wrapper.run()` after each successful build.
 
-DAG stages are categorised as **bootstrap-only** (partition, base_install, hardware, configure) or **repeatable** (reconfigure, toolchain, packages, kernel). Only repeatable stages participate in re-converge runs.
+DAG stages are categorised as **bootstrap-only** (partition, base_install, configure) or **repeatable** (hardware, reconfigure, toolchain, packages, kernel). Only repeatable stages participate in re-converge runs. `hardware` is repeatable because re-detecting after a hardware change (e.g. GPU swap) is safe and needs no root.
 
 ---
 

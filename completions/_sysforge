@@ -73,6 +73,12 @@ _sysforge_local_pkg_names() {
   _describe 'package' pkgs
 }
 
+_sysforge_state_names() {
+  local -a pkgs
+  pkgs=("${(@f)$(sysforge completions state 2>/dev/null)}")
+  _describe 'package' pkgs
+}
+
 _sysforge_pkg_or_file() {
   _alternative \
     'files:file:_files' \
@@ -121,7 +127,8 @@ _sysforge_update() {
     '--cache-report[print ccache/sccache summary after run]' \
     '--no-pkg-log[disable per-package log files]' \
     '--persist-log[keep log files after successful completion]' \
-    '--log-dir[directory for per-package log files]:directory:_files -/'
+    '--log-dir[directory for per-package log files]:directory:_files -/' \
+    '*: :_sysforge_state_names'
 }
 
 _sysforge_resolve() {
@@ -209,6 +216,7 @@ _sysforge_run() {
     args)
       case $words[1] in
         pipeline)    _sysforge_run_pipeline    ;;
+        hardware)    _sysforge_run_hardware    ;;
         reconfigure) _sysforge_run_reconfigure ;;
         toolchain)   _sysforge_run_toolchain   ;;
         packages)    _sysforge_run_packages    ;;
@@ -221,12 +229,19 @@ _sysforge_run() {
 _sysforge_run_stages() {
   local stages=(
     'pipeline:run the full install pipeline (stages 1-8)'
+    'hardware:re-run hardware detection and refresh hardware_profile.toml'
     'reconfigure:pre-build checkpoint'
     'toolchain:build and install the LLVM/GCC toolchain'
     'packages:build and install packages from packages.toml'
     'kernel:build and install the custom kernel'
   )
   _describe 'stage' stages
+}
+
+_sysforge_run_hardware() {
+  _arguments \
+    '--dry-run[show what would be written without writing]' \
+    '--state-dir[override state directory]:directory:_files -/'
 }
 
 _sysforge_run_pipeline() {
