@@ -10,7 +10,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_DEFAULT_PATH = Path("/etc/sysforge/bootstrap.toml")
+from sysforge.primitives.paths import BOOTSTRAP_PATH
 
 _VALID_ROOT_FS = {"ext4", "btrfs"}
 _ZONEINFO_DIR  = Path("/usr/share/zoneinfo")
@@ -42,7 +42,7 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     Raises RuntimeError on missing file, parse error, missing required
     fields, or invalid values.
     """
-    p = Path(path) if path is not None else _DEFAULT_PATH
+    p = Path(path) if path is not None else BOOTSTRAP_PATH
 
     if not p.exists():
         raise RuntimeError(

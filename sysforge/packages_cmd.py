@@ -21,6 +21,7 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("PACKAGES")
 from sysforge.primitives.config import load_config
+from sysforge.primitives.paths import resolve_packages_path
 
 
 # ---------------------------------------------------------------------------
@@ -32,10 +33,7 @@ def _resolve_packages_file(args_packages: str | None) -> Path:
     if args_packages:
         return Path(args_packages)
     config = load_config() or {}
-    raw = config.get("packages_file")
-    if raw:
-        return Path(raw).expanduser()
-    return Path("/etc/sysforge/packages.toml")
+    return resolve_packages_path(config)
 
 
 def _load_toml(path: Path) -> dict:

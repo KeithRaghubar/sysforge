@@ -25,13 +25,13 @@ from pathlib import Path
 from sysforge.primitives.resource_guard import lift_for_child
 
 from sysforge.primitives.config import (
-    CONFIG_BASE,
     find_pkgbuild,
     load_config,
     load_conflict_groups,
     load_consumes_inference,
     parse_system_makepkg_conf,
 )
+from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.pkgbuild_patcher import (
     apply_patch_pkgbuild,
@@ -832,7 +832,7 @@ def _resolve_pgo_state(pkgbuild_path: Path) -> tuple[str, str]:
       ("mismatch", reason_str)          — profdata exists but major version differs
       ("absent",   reason_str)          — profdata or sidecar missing / toolchain.toml absent
     """
-    toolchain_path = CONFIG_BASE / "etc/sysforge/toolchain.toml"
+    toolchain_path = TOOLCHAIN_PATH
     if not toolchain_path.exists():
         return ("absent", "toolchain.toml not found — no pgo_store configured")
     try:

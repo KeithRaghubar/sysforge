@@ -47,10 +47,8 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("KERNEL")
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives.config import CONFIG_BASE
+from sysforge.primitives.paths import KERNEL_PATH
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
-
-KERNEL_PATH = CONFIG_BASE / "etc/sysforge/kernel.toml"
 
 
 # ---------------------------------------------------------------------------

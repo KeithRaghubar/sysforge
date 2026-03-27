@@ -35,7 +35,8 @@ from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.aur import git_pull_rebase, fetch_aur_name_cache
-from sysforge.primitives.config import PACKAGES_PATH, load_config
+from sysforge.primitives.config import load_config
+from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
 from sysforge.primitives.pacman import (
     BATCH_STRIP_FLAGS,
@@ -145,7 +146,7 @@ def _discover_and_add(args, bs: BuildState, config: dict) -> list[_DiscoveredRes
     from sysforge.primitives.aur import aur_info
     from sysforge.primitives.config import find_pkgbuild
 
-    packages_path = Path(config.get("packages_file") or PACKAGES_PATH)
+    packages_path = resolve_packages_path(config)
 
     foreign = get_foreign_packages()
     all_installed = get_all_installed_packages()

@@ -10,32 +10,17 @@ Public API:
     load_consumes_inference(paths=None)    -> dict
     find_pkgbuild(pkg, config=None)        -> Path   (AUR clone on miss if pkgbuild_dir set)
 """
-import os
 import pprint
 import tomllib
 from sysforge import log
 _log = log.get_logger("CONFIG")
 from pathlib import Path
 
-
-CONFIG_BASE = Path(os.environ.get("SYSFORGE_CONFIG_DIR", "/"))
-
-CONFIG_PATHS = [
-    Path.home() / ".config/sysforge/flag_profiles.toml",
-    CONFIG_BASE / "etc/sysforge/flag_profiles.toml",
-]
-
-CONFLICT_GROUP_PATHS = [
-    Path.home() / ".config/sysforge/append_conflict_groups.toml",
-    CONFIG_BASE / "etc/sysforge/append_conflict_groups.toml",
-]
-
-CONSUMES_INFERENCE_PATHS = [
-    Path.home() / ".config/sysforge/consumes_inference.toml",
-    CONFIG_BASE / "etc/sysforge/consumes_inference.toml",
-]
-
-PACKAGES_PATH = CONFIG_BASE / "etc/sysforge/packages.toml"
+from sysforge.primitives.paths import (
+    CONFIG_PATHS,
+    CONFLICT_GROUP_PATHS,
+    CONSUMES_INFERENCE_PATHS,
+)
 
 
 def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:

@@ -76,15 +76,14 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("TOOLCHAIN")
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives.config import CONFIG_BASE, find_pkgbuild
+from sysforge.primitives.config import find_pkgbuild
+from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 from sysforge.primitives.resource_guard import lift_for_child
 
 # ---------------------------------------------------------------------------
 # Constants / defaults
 # ---------------------------------------------------------------------------
-
-TOOLCHAIN_PATH = CONFIG_BASE / "etc/sysforge/toolchain.toml"
 
 _DEFAULT_LLVM_PGO = ["llvm", "llvm-libs"]
 _DEFAULT_LLVM_NON_PGO = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]

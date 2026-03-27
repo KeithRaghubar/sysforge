@@ -30,7 +30,8 @@ _log = log.get_logger("PACKAGES")
 from pathlib import Path
 
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives.config import find_pkgbuild, PACKAGES_PATH
+from sysforge.primitives.config import find_pkgbuild
+from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 
 
@@ -44,11 +45,7 @@ def _load_packages(config):
     relative to the installed package configs dir.
     Returns (build_config dict, list of package dicts).
     """
-    path = config.get("packages_file")
-    if path:
-        path = Path(path)
-    else:
-        path = PACKAGES_PATH
+    path = resolve_packages_path(config)
 
     if not path.exists():
         raise RuntimeError(

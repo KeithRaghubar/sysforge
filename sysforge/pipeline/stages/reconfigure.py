@@ -36,18 +36,17 @@ _log = log.get_logger("RECONFIGURE")
 from sysforge.pipeline.stages.base import BootstrapRebootRequired, Stage
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.primitives.config import (
-    CONFIG_BASE,
-    PACKAGES_PATH,
     load_config,
     load_conflict_groups,
 )
-
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-SYSFORGE_TOML_PATH = CONFIG_BASE / "etc/sysforge/sysforge.toml"
+from sysforge.primitives.paths import (
+    CONFIG_BASE,
+    KERNEL_PATH,
+    PACKAGES_PATH,
+    SYSFORGE_TOML_PATH,
+    TOOLCHAIN_PATH,
+    resolve_packages_path,
+)
 
 # Hard-coded to avoid circular import from stages/__init__.py
 _PIPELINE_STAGES = [
@@ -404,13 +403,11 @@ def _step_config(config, state, options, editor: str) -> str:
         "packages.toml", PACKAGES_PATH, editor, options.dry_run,
     )
 
-    toolchain_path = CONFIG_BASE / "etc/sysforge/toolchain.toml"
-    if toolchain_path.exists():
-        _review_config_file("toolchain.toml", toolchain_path, editor, options.dry_run)
+    if TOOLCHAIN_PATH.exists():
+        _review_config_file("toolchain.toml", TOOLCHAIN_PATH, editor, options.dry_run)
 
-    kernel_path = CONFIG_BASE / "etc/sysforge/kernel.toml"
-    if kernel_path.exists():
-        _review_config_file("kernel.toml", kernel_path, editor, options.dry_run)
+    if KERNEL_PATH.exists():
+        _review_config_file("kernel.toml", KERNEL_PATH, editor, options.dry_run)
 
     state_dir, _ = resolve_state_dir(None)
     hw_path = Path(config.get("hardware_profile") or state_dir / "hardware_profile.toml")
@@ -467,7 +464,7 @@ def _set_repo_mode(pkg_path: Path, mode: str) -> None:
 def _step_build_mode(config, state, options, editor: str) -> str:
     _log.ui("─── Build mode ──────────────────────────────────────")
 
-    pkg_path = Path(config.get("packages_file") or PACKAGES_PATH)
+    pkg_path = resolve_packages_path(config)
     if not pkg_path.exists():
         _log.ui(f"  packages.toml not found at {pkg_path} — skipping")
         return editor
@@ -629,7 +626,7 @@ def _step_disk(config, state, options, editor: str) -> str:
     # Count AUR/git packages for estimate
     n_aur = 0
     try:
-        pkg_path = Path(config.get("packages_file") or PACKAGES_PATH)
+        pkg_path = resolve_packages_path(config)
         if pkg_path.exists():
             with open(pkg_path, "rb") as f:
                 data = tomllib.load(f)
@@ -778,7 +775,7 @@ def _step_gpg(config, state, options, editor: str) -> str:
 def _step_preview(config, state, options, editor: str) -> str:
     _log.ui("─── Build preview ───────────────────────────────────")
 
-    pkg_path = Path(config.get("packages_file") or PACKAGES_PATH)
+    pkg_path = resolve_packages_path(config)
     if not pkg_path.exists():
         _log.ui(f"  packages.toml not found at {pkg_path} — skipping")
         return editor
@@ -846,10 +843,9 @@ def _step_preview(config, state, options, editor: str) -> str:
             "makedepends rules resolve per-PKGBUILD at build time."
         )
 
-    toolchain_path = CONFIG_BASE / "etc/sysforge/toolchain.toml"
-    if toolchain_path.exists():
+    if TOOLCHAIN_PATH.exists():
         try:
-            with open(toolchain_path, "rb") as f:
+            with open(TOOLCHAIN_PATH, "rb") as f:
                 tcfg = tomllib.load(f)
             compiler = tcfg.get("compiler", "llvm")
             pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
@@ -860,10 +856,9 @@ def _step_preview(config, state, options, editor: str) -> str:
     else:
         _log.ui("  Toolchain: no toolchain.toml — toolchain stage will be a no-op")
 
-    kernel_path = CONFIG_BASE / "etc/sysforge/kernel.toml"
-    if kernel_path.exists():
+    if KERNEL_PATH.exists():
         try:
-            with open(kernel_path, "rb") as f:
+            with open(KERNEL_PATH, "rb") as f:
                 kcfg = tomllib.load(f)
             _log.ui(
                 f"  Kernel: {kcfg.get('pkgname', '?')}  "

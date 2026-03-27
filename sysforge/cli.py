@@ -30,6 +30,19 @@ from sysforge.packages_cmd import (
 
 from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags, BuildOptions
 from sysforge.primitives.config import load_config
+from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
+
+_PACKAGES_HELP = f"Path to packages.toml (default: {PACKAGES_PATH})."
+
+
+def _load_config_with_overrides(args) -> dict:
+    """Load flag_profiles config and apply CLI overrides (--packages, --profile-conf)."""
+    config = load_config() or {}
+    if getattr(args, "packages", None):
+        config["packages_file"] = args.packages
+    if getattr(args, "profile_conf", None):
+        config["profile_conf"] = args.profile_conf
+    return config
 
 
 def _cmd_build(args):
@@ -96,8 +109,7 @@ def _cmd_completions(args):
     if args.resource == "manifest":
         # Names already in packages.toml — used by `packages remove` completion
         import tomllib as _tomllib
-        raw_pkg = config.get("packages_file")
-        pkg_path = Path(raw_pkg).expanduser() if raw_pkg else Path("/etc/sysforge/packages.toml")
+        pkg_path = resolve_packages_path(config)
         if pkg_path.exists():
             with open(pkg_path, "rb") as _f:
                 data = _tomllib.load(_f)
@@ -157,11 +169,7 @@ def _cmd_run_pipeline(args):
     from sysforge.pipeline.runner import run_pipeline
     from sysforge.pipeline.stages.base import RunOptions
 
-    config = load_config() or {}
-    if args.packages:
-        config["packages_file"] = args.packages
-    if getattr(args, "profile_conf", None):
-        config["profile_conf"] = args.profile_conf
+    config = _load_config_with_overrides(args)
 
     options = RunOptions(
         resume=args.resume,
@@ -202,9 +210,7 @@ def _cmd_run_reconfigure(args):
     from sysforge.pipeline.stages.reconfigure import ReconfigureStage
     from sysforge.pipeline.stages.base import RunOptions
 
-    config = load_config() or {}
-    if getattr(args, "packages", None):
-        config["packages_file"] = args.packages
+    config = _load_config_with_overrides(args)
 
     options = RunOptions(
         dry_run=args.dry_run,
@@ -239,11 +245,7 @@ def _cmd_run_packages(args):
     from sysforge.pipeline.stages.packages import PackagesStage
     from sysforge.pipeline.stages.base import RunOptions
 
-    config = load_config() or {}
-    if args.packages:
-        config["packages_file"] = args.packages
-    if getattr(args, "profile_conf", None):
-        config["profile_conf"] = args.profile_conf
+    config = _load_config_with_overrides(args)
 
     options = RunOptions(
         dry_run=args.dry_run,
@@ -394,7 +396,7 @@ def _add_update_parser(sub):
     p.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase before checking versions.")
     p.add_argument("--packages", metavar="FILE", dest="packages",
-        help="Path to packages.toml for --all discovery (default: /etc/sysforge/packages.toml).")
+        help=f"Path to packages.toml for --all discovery (default: {PACKAGES_PATH}).")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
@@ -467,7 +469,7 @@ def _add_packages_parser(sub):
     # --packages on the parent so bare 'sysforge packages' and
     # 'sysforge packages --packages foo.toml' both work
     p.add_argument("--packages", metavar="FILE", dest="packages",
-        help="Path to packages.toml (default: /etc/sysforge/packages.toml).")
+        help=_PACKAGES_HELP)
     p.set_defaults(func=cmd_packages_list)
 
     pkg_sub = p.add_subparsers(dest="packages_cmd")
@@ -531,7 +533,7 @@ def _add_run_parser(sub):
     p_pipeline.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show what would run without executing anything.")
     p_pipeline.add_argument("--packages", metavar="FILE",
-        help="Path to packages.toml (default: /etc/sysforge/packages.toml).")
+        help=_PACKAGES_HELP)
     p_pipeline.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p_pipeline.add_argument("--no-unified-log", action="store_true", dest="no_unified_log",
@@ -600,7 +602,7 @@ def _add_run_parser(sub):
     p_pkgs = run_sub.add_parser("packages",
         help="Build and install non-kernel packages from packages.toml.")
     p_pkgs.add_argument("--packages", metavar="FILE",
-        help="Path to packages.toml (default: /etc/sysforge/packages.toml).")
+        help=_PACKAGES_HELP)
     p_pkgs.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show what would run without executing anything.")
     p_pkgs.add_argument("--force-retry", action="store_true", dest="force_retry",
