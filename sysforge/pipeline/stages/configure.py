@@ -304,7 +304,7 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
     shutil.copytree(src, target_src)
     _log.ui(f"sysforge source copied to target ({src} → /root/sysforge)")
 
-    _chroot(cfg.target, ["uv", "pip", "install", "--system", "--no-deps", "/root/sysforge"])
+    _chroot(cfg.target, ["uv", "pip", "install", "--system", "--no-deps", "--break-system-packages", "/root/sysforge"])
     _log.ui("sysforge installed into target.")
 
 
