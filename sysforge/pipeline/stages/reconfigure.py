@@ -928,8 +928,13 @@ class ReconfigureStage(Stage):
 
         reminder = Path("/etc/profile.d/sysforge-resume.sh")
         if reminder.exists():
-            reminder.unlink()
-            _log.ui("Removed login reminder (/etc/profile.d/sysforge-resume.sh)")
+            try:
+                reminder.unlink()
+                _log.ui("Removed login reminder (/etc/profile.d/sysforge-resume.sh)")
+            except PermissionError:
+                _log.warn(
+                    f"Cannot remove {reminder} — run as root or delete it manually"
+                )
 
         _show_stage_summary(state)
 
