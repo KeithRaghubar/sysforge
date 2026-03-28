@@ -44,18 +44,48 @@ def _load_toml(path: Path) -> dict:
 def entry_toml_block(entry: dict) -> str:
     """Serialise a package entry dict to a TOML [[package]] block string."""
     lines = ["[[package]]", f'name = "{entry["name"]}"', f'source = "{entry["source"]}"']
-    for field in ("pkgbuild_patch", "cache"):
-        if field not in entry:
+    for key in ("pkgbuild_patch", "cache", "reason"):
+        if key not in entry:
             continue
-        val = entry[field]
+        val = entry[key]
         if isinstance(val, bool):
-            lines.append(f"{field} = {'true' if val else 'false'}")
+            lines.append(f"{key} = {'true' if val else 'false'}")
         elif isinstance(val, str):
-            lines.append(f'{field} = "{val}"')
+            lines.append(f'{key} = "{val}"')
         else:
-            lines.append(f"{field} = {val!r}")
+            lines.append(f"{key} = {val!r}")
     return "\n".join(lines)
 
+
+def append_dependency_entries(
+    dep_names: list[str],
+    packages_file: str | None = None,
+) -> list[str]:
+    """Append AUR deps to packages.toml with reason='dependency'.
+
+    Skips entries that already exist.  Returns list of names actually added.
+    """
+    path = _resolve_packages_file(packages_file)
+
+    existing_names: set[str] = set()
+    if path.exists():
+        data = _load_toml(path)
+        existing_names = {e.get("name") for e in data.get("package", [])}
+
+    to_add = [n for n in dep_names if n not in existing_names]
+    if not to_add:
+        return []
+
+    entries = [{"name": n, "source": "aur", "reason": "dependency"} for n in to_add]
+    blocks = "".join("\n" + entry_toml_block(e) + "\n" for e in entries)
+
+    with open(path, "a") as f:
+        f.write(blocks)
+
+    for name in to_add:
+        _log.ui(f"Tracked dependency: {name} → {path}")
+
+    return to_add
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +118,8 @@ def cmd_packages_list(args):
             flags.append("pkgbuild_patch")
         if e.get("cache") is False:
             flags.append("cache=false")
+        if e.get("reason") == "dependency":
+            flags.append("dep")
         flag_str = ", ".join(flags)
         print(f"  {name:<{max_name}}  {source:<{max_src}}  {flag_str}")
 

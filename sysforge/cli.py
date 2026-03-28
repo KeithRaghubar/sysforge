@@ -29,7 +29,7 @@ from sysforge.packages_cmd import (
 )
 
 from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags, BuildOptions
-from sysforge.primitives.config import load_config
+from sysforge.primitives.config import find_pkgbuild, load_config
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 
 _PACKAGES_HELP = f"Path to packages.toml (default: {PACKAGES_PATH})."
@@ -51,9 +51,34 @@ def _cmd_build(args):
         print("[SYSFORGE] Warning: --log-dir has no effect when --no-pkg-log is set.", file=sys.stderr)
     _log.info(f"Invocation: {' '.join(sys.argv)}")
     packages = args.pkgbuilds
+    config = _load_config_with_overrides(args)
     try:
         for i, pkg in enumerate(packages):
-            run(pkg, options=BuildOptions(
+            pkgbuild = find_pkgbuild(pkg, config)
+
+            # Resolve and build AUR deps before the main package
+            from sysforge.primitives.aur_resolve import (
+                resolve_aur_deps,
+                build_resolved_deps,
+            )
+            aur_deps = resolve_aur_deps(pkgbuild, config, fetch=True)
+            if aur_deps:
+                build_resolved_deps(
+                    aur_deps,
+                    profile_conf=args.profile_conf,
+                    cc_override=args.cc,
+                    cxx_override=args.cxx,
+                    ld_override=args.ld,
+                    state_dir=Path(args.state_dir) if args.state_dir else None,
+                )
+                if args.track_deps:
+                    from sysforge.packages_cmd import append_dependency_entries
+                    append_dependency_entries(
+                        [d.name for d in aur_deps],
+                        packages_file=getattr(args, "packages", None),
+                    )
+
+            run(pkgbuild, options=BuildOptions(
                 extra_flags=extra_flags,
                 interactive=args.interactive,
                 pkg_log=not args.no_pkg_log,
@@ -63,7 +88,7 @@ def _cmd_build(args):
                 cc_override=args.cc,
                 cxx_override=args.cxx,
                 ld_override=args.ld,
-                init_session=(i == 0),
+                init_session=(i == 0 and not aur_deps),
                 cache_report=(args.cache_report and i == len(packages) - 1),
                 update=not args.no_update,
                 abi_check=args.abi_check,
@@ -390,6 +415,8 @@ def _add_build_parser(sub):
         help="Skip git pull --rebase before building.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
+    p.add_argument("--track-deps", action="store_true", dest="track_deps",
+        help="Auto-add resolved AUR dependencies to packages.toml with reason='dependency'.")
     p.set_defaults(func=_cmd_build)
 
 
@@ -457,6 +484,8 @@ def _add_resolve_parser(sub):
         help="Path to a PKGBUILD file, or bare package name.")
     p.add_argument("--show-flags", action="store_true", dest="show_flags",
         help="Print the full resolved flag set.")
+    p.add_argument("--deps", action="store_true",
+        help="Show transitive dependency tree with build order instead of profile info.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
         help="Path to a flag_profiles.toml to use instead of the default.")
     p.set_defaults(func=cmd_resolve)

@@ -147,12 +147,51 @@ def _print_resolve(
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _print_deps(pkgbuild_path: Path, pkgmeta: dict, deps: list) -> None:
+    """Print the dependency tree for --deps mode."""
+    globals_ = pkgmeta.get("globals", {})
+    pkgname = globals_.get("pkgbase") or globals_.get("pkgname", "(unknown)")
+    if isinstance(pkgname, list):
+        pkgname = pkgname[0] if pkgname else "(unknown)"
+
+    print(f"Package:   {pkgname}")
+    print(f"PKGBUILD:  {pkgbuild_path}")
+    print()
+
+    aur_deps = [d for d in deps if d.source == "aur"]
+    repo_deps = [d for d in deps if d.source == "repo"]
+    installed = [d for d in deps if d.source == "installed"]
+    unknown = [d for d in deps if d.source == "unknown"]
+
+    if aur_deps:
+        print(f"AUR dependencies ({len(aur_deps)}) — build order:")
+        for i, dep in enumerate(aur_deps, 1):
+            req = ", ".join(dep.required_by)
+            path_str = f"  {dep.pkgbuild_path}" if dep.pkgbuild_path else ""
+            print(f"  {i:>3}. {dep.name}  (depth {dep.depth}, required by {req}){path_str}")
+    else:
+        print("AUR dependencies: (none)")
+
+    if repo_deps:
+        print(f"\nRepo dependencies ({len(repo_deps)}) — installed via pacman:")
+        for dep in sorted(repo_deps, key=lambda d: d.name):
+            req = ", ".join(dep.required_by)
+            print(f"       {dep.name}  (required by {req})")
+
+    if unknown:
+        print(f"\nUnresolved ({len(unknown)}) — not found in repos or AUR:")
+        for dep in unknown:
+            req = ", ".join(dep.required_by)
+            print(f"    !  {dep.name}  (required by {req})")
+
+    print(f"\nSummary: {len(aur_deps)} AUR | {len(repo_deps)} repo | "
+          f"{len(installed)} installed | {len(unknown)} unknown")
+
+
 def cmd_resolve(args) -> None:
     """Entry point for sysforge resolve."""
     config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
     config = load_config(config_paths=config_paths)
-    conflict_groups = load_conflict_groups()
-    inference_map = load_consumes_inference()
 
     try:
         pkgbuild_path = find_pkgbuild(args.pkg, config)
@@ -166,6 +205,15 @@ def cmd_resolve(args) -> None:
     except Exception as e:
         print(f"[SYSFORGE] Error parsing PKGBUILD: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if getattr(args, "deps", False):
+        from sysforge.primitives.aur_resolve import resolve_all_deps
+        deps = resolve_all_deps(pkgbuild_path, config, fetch=False)
+        _print_deps(pkgbuild_path, pkgmeta, deps)
+        return
+
+    conflict_groups = load_conflict_groups()
+    inference_map = load_consumes_inference()
 
     matched = match_rules(pkgmeta, config.get("rules", []))
     resolved = resolve_profile(pkgmeta, matched, config, conflict_groups)

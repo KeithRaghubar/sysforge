@@ -253,6 +253,51 @@ class PackagesStage(Stage):
                 ]
             state.save()
 
+        # Resolve and build AUR deps for all AUR/profiled packages
+        from sysforge.primitives.aur_resolve import (
+            resolve_aur_deps,
+            build_resolved_deps,
+        )
+        aur_names = []
+        for name in all_names:
+            if name in built or name in skipped or name in skip_set:
+                continue
+            pkg = pkg_map[name]
+            source = pkg.get("source", "aur")
+            rm = build_cfg.get("repo_mode", "pacman")
+            effective = "profiled" if pkg.get("pkgbuild_patch") else rm
+            if source in ("aur", "git") or (source == "repo" and effective == "profiled"):
+                aur_names.append(name)
+
+        if aur_names and not options.dry_run:
+            all_aur_deps = []
+            for name in aur_names:
+                try:
+                    pkgbuild = _resolve_pkgbuild(name, build_cfg, config)
+                    deps = resolve_aur_deps(pkgbuild, config, fetch=True)
+                    # Filter out packages already in the manifest (they'll be built in order)
+                    deps = [d for d in deps if d.name not in pkg_map]
+                    all_aur_deps.extend(deps)
+                except RuntimeError as e:
+                    _log.warn(f"{name}: dep resolution failed ({e}), will attempt build anyway")
+
+            # De-duplicate by name, keeping first occurrence (topo order)
+            seen_deps: set[str] = set()
+            unique_deps = []
+            for dep in all_aur_deps:
+                if dep.name not in seen_deps:
+                    seen_deps.add(dep.name)
+                    unique_deps.append(dep)
+
+            if unique_deps:
+                build_resolved_deps(
+                    unique_deps,
+                    profile_conf=config.get("profile_conf"),
+                    cc_override=toolchain.get("cc_override"),
+                    cxx_override=toolchain.get("cxx_override"),
+                    ld_override=toolchain.get("ld_override"),
+                )
+
         # Main build loop — walk all_names in manifest order
         for name in all_names:
             progress = state.get_package_progress()

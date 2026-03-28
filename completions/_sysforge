@@ -106,6 +106,7 @@ _sysforge_build() {
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--no-update[skip git pull --rebase before building]' \
     '--state-dir[override state directory]:directory:_files -/' \
+    '--track-deps[auto-add resolved AUR deps to packages.toml]' \
     '*: :_sysforge_pkg_or_file' \
   && return
   _sysforge_makepkg_flags
@@ -144,6 +145,7 @@ _sysforge_update() {
 _sysforge_resolve() {
   _arguments \
     '--show-flags[print the full resolved flag set]' \
+    '--deps[show transitive dependency tree with build order]' \
     '--profile-conf[alternate flag_profiles.toml]:file:_files' \
     '1: :_sysforge_local_pkg_names'
 }

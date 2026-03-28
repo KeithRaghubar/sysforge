@@ -571,6 +571,22 @@ def cmd_update(args) -> None:
             _log.error(str(e))
             print(f"[SYSFORGE] Warning: makedep pre-install failed — some builds may fail", file=sys.stderr)
 
+    # --- Phase 1b: resolve and build AUR-only deps ---
+    from sysforge.primitives.aur_resolve import resolve_aur_deps_batch, build_resolved_deps
+    if all_pkgbuild_paths:
+        try:
+            config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
+            resolve_config = load_config(config_paths=config_paths) or {}
+            aur_deps = resolve_aur_deps_batch(all_pkgbuild_paths, resolve_config, fetch=True)
+            # Filter out packages we're already about to build
+            building_names = {r.pkgbase for r in to_build} | {d.pkgname for d in discovered_to_build}
+            aur_deps = [d for d in aur_deps if d.name not in building_names]
+            if aur_deps:
+                build_resolved_deps(aur_deps)
+        except RuntimeError as e:
+            _log.error(f"AUR dep resolution failed: {e}")
+            print("[SYSFORGE] Warning: AUR dep resolution failed — some builds may fail", file=sys.stderr)
+
     # Where do built packages land? PKGDEST overrides the pkgbuild dir.
     pkgdest = get_pkgdest()
     interactive = getattr(args, "interactive", False)
