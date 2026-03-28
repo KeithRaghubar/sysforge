@@ -244,7 +244,7 @@ def run_pipeline(config, options, stages=None):
 
         if not options.dry_run:
             pipeline_success = True
-            _log.info("Pipeline complete.")
+            _log.ui("Pipeline complete — all stages finished successfully.")
 
     finally:
         if unified_log_active:
