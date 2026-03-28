@@ -906,6 +906,7 @@ class BuildOptions:
     abi_check: bool = False
     strip_flags: frozenset | set | None = None
     force_batch: bool = False
+    pgo_managed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -980,8 +981,10 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
 
         # pgo_llvm_toolchain: inject -fprofile-use if saved profdata is compatible,
         # otherwise prompt to plain-build or skip (default: skip).
+        # Skip this block when pgo_managed=True — the toolchain stage controls PGO
+        # flags directly via compiler_flags_extra; we must not override or prompt.
         effective_flags_extra = options.compiler_flags_extra
-        if build_mode == "pgo_llvm_toolchain":
+        if build_mode == "pgo_llvm_toolchain" and not options.pgo_managed:
             pgo_state, pgo_info = _resolve_pgo_state(pkgbuild_path)
             if pgo_state == "ready":
                 pgo_flag = f"-fprofile-use={pgo_info}"

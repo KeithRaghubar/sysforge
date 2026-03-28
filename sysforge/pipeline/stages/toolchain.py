@@ -410,6 +410,7 @@ def _build_pkg(
         strip_full_lto=pgo_build,
         extra_env=pgo_env,
         abi_check=getattr(options, "abi_check", False),
+        pgo_managed=True,
     ))
 
 
