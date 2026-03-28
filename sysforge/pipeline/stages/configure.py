@@ -254,6 +254,8 @@ _BASHRC = (
     "\n"
 )
 _ZSHRC = (
+    "autoload -Uz compinit && compinit\n"
+    "\n"
     "alias ls='ls --color=auto'\n"
     "alias grep='grep --color=auto'\n"
     "\n"

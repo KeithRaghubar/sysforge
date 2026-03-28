@@ -35,6 +35,7 @@ from sysforge.pipeline.stages._bootstrap import load_bootstrap
 _BASE_PACKAGES = [
     "base",
     "base-devel",
+    "bash-completion",
     "git",
     "linux",
     "linux-firmware",
@@ -115,7 +116,7 @@ class BaseInstallStage(Stage):
 
         packages = list(_BASE_PACKAGES)
         if cfg.shell == "zsh":
-            packages.append("zsh")
+            packages.extend(["zsh", "zsh-completions"])
 
         _log.ui(f"Installing base system to {cfg.target}")
         _log.ui(f"Packages: {', '.join(packages)}")

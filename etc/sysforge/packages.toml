@@ -32,6 +32,10 @@
 # stage to set up /etc/pacman.d/mirrorlist.
 # =============================================================================
 
+# [[package]]
+# name = "sysforge-git"
+# source = "aur"
+
 [[package]]
 name = "ccache"
 source = "repo"

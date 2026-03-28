@@ -9,18 +9,22 @@ url="https://github.com/KeithRaghubar/sysforge"
 license=('MIT')
 depends=(
     'python>=3.11'
+    'git'
+    'sudo'
+    'gnupg'
 )
 makedepends=(
-    'git'
     'uv'
     'python-pip'
     'python-argparse-manpage'
 )
 optdepends=(
-    'uv: faster Python environment management'
+    'bash-completion: bash tab completions'
     'ccache: compiler cache support'
     'sccache: Rust compiler cache support'
-    'zsh: shell completions'
+    'uv: required for bootstrap pipeline (configure stage)'
+    'zsh: zsh shell support'
+    'zsh-completions: additional zsh completions'
 )
 conflicts=('sysforge-git')
 provides=('sysforge')
