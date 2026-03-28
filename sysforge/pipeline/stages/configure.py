@@ -143,9 +143,8 @@ def _run_reflector(cfg: BootstrapConfig) -> None:
     # (avoid using 'which' — it is not part of the Arch base install)
     if not (Path(cfg.target) / "usr/bin/reflector").exists():
         _log.warn(
-            "[CONFIGURE]",
             "reflector not found in chroot — skipping mirrorlist update. "
-            "Install reflector and re-run, or update /etc/pacman.d/mirrorlist manually.",
+            "Install reflector and re-run, or update /etc/pacman.d/mirrorlist manually."
         )
         return
 
@@ -161,10 +160,7 @@ def _run_reflector(cfg: BootstrapConfig) -> None:
     _log.ui(f"Running reflector: {' '.join(cmd[1:])}")
     result = _chroot(cfg.target, cmd, check=False)
     if result.returncode != 0:
-        _log.warn(
-            "[CONFIGURE]",
-            f"reflector exited {result.returncode} — mirrorlist may be unchanged",
-        )
+        _log.warn(f"reflector exited {result.returncode} — mirrorlist may be unchanged")
     else:
         _log.ui("Mirrorlist updated.")
 
@@ -240,9 +236,8 @@ def _create_user(cfg: BootstrapConfig) -> None:
         _log.ui(f"Password set for {cfg.username}.")
     else:
         _log.warn(
-            "[CONFIGURE]",
             f"No user_password in bootstrap.toml — set it manually after reboot:\n"
-            f"  passwd {cfg.username}",
+            f"  passwd {cfg.username}"
         )
 
 
@@ -411,9 +406,8 @@ def _set_root_password(cfg: BootstrapConfig) -> None:
         _log.ui("Root password set.")
     else:
         _log.warn(
-            "[CONFIGURE]",
             "No root_password in bootstrap.toml — set it manually after reboot:\n"
-            f"  arch-chroot {cfg.target} passwd root",
+            f"  arch-chroot {cfg.target} passwd root"
         )
 
 
