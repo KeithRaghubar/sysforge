@@ -37,6 +37,8 @@ class RunOptions:
     no_update: bool = False          # skip git pull --rebase before each build
     # Extra makepkg flags (appended after profile makepkg_flags)
     makepkg_flags: list[str] = field(default_factory=list)
+    # PGO profdata
+    rebuild_profdata: bool = False   # force full 3-pass PGO even if compatible profdata exists
     # Execution context
     standalone: bool = False         # True when running a single stage outside the pipeline
 

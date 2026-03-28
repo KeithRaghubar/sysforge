@@ -1076,6 +1076,60 @@ def _write_profdata_version(pgo_store: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Profdata reuse check
+# ---------------------------------------------------------------------------
+
+
+def _check_existing_profdata(
+    pgo_store: Path,
+    pgo_map: dict[str, Path],
+) -> tuple[str, str | Path]:
+    """
+    Check whether compatible profdata exists for reuse.
+
+    Compares the version sidecar (written by _write_profdata_version after a
+    successful PGO build) against the LLVM major version in the pgo PKGBUILDs.
+
+    Returns one of:
+      ("ready",    profdata_path)  — profdata exists and major version matches
+      ("mismatch", reason_str)     — profdata exists but major version differs
+      ("absent",   reason_str)     — profdata or sidecar missing
+    """
+    profdata_path = pgo_store / "clang.profdata"
+    version_path = pgo_store / "clang.profdata.version"
+
+    if not profdata_path.exists():
+        return ("absent", f"no profdata at {profdata_path}")
+    if not version_path.exists():
+        return ("absent", f"profdata version sidecar missing at {version_path}")
+
+    saved_major = version_path.read_text().strip()
+
+    # Extract target LLVM major version from the pgo PKGBUILDs.
+    # All pgo PKGBUILDs should share the same pkgver (enforced by
+    # _check_pkgver_consistency); use the first one.
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    for name, path in pgo_map.items():
+        try:
+            meta = parse_pkgbuild(path)
+            pkgver = meta.get("globals", {}).get("pkgver", "")
+            if pkgver:
+                target_major = pkgver.split(".")[0]
+                if saved_major != target_major:
+                    return (
+                        "mismatch",
+                        f"profdata is from LLVM {saved_major}, "
+                        f"building LLVM {target_major}",
+                    )
+                return ("ready", profdata_path)
+        except Exception:
+            continue
+
+    return ("absent", "cannot determine target LLVM version from PKGBUILDs")
+
+
+# ---------------------------------------------------------------------------
 # Build paths
 # ---------------------------------------------------------------------------
 
@@ -1141,15 +1195,43 @@ def _build_llvm_pgo(
 
     n_pgo = len(set(pgo_map.values()))
     n_total = len(set({**pgo_map, **non_pgo_map, **lib32_map}.values()))
-    _log.ui(
-        f"[PGO] Starting 3-pass LLVM PGO build  "
-        f"({n_pgo} pgo PKGBUILD(s), {n_total} total across all passes)  "
-        f"pgo_store={pgo_store}",
-    )
 
     _validate_pgo_environment(options.dry_run)
 
-    if not options.dry_run:
+    # Check for existing compatible profdata before purging.
+    # If profdata from a previous run matches the target LLVM major version,
+    # skip passes 1-2 and go straight to Pass 3 (the optimized build).
+    # --rebuild-profdata forces a full 3-pass build regardless.
+    skip_profgen = False
+    profdata_path = pgo_store / "clang.profdata"
+    if not options.rebuild_profdata and not options.dry_run:
+        pgo_state, pgo_info = _check_existing_profdata(pgo_store, pgo_map)
+        if pgo_state == "ready":
+            skip_profgen = True
+            profdata_path = Path(pgo_info)
+            _log.ui(
+                f"[PGO] Reusing existing profdata: {profdata_path}  "
+                f"(use --rebuild-profdata to force a full 3-pass build)",
+            )
+        elif pgo_state == "mismatch":
+            _log.info(f"[PGO] Existing profdata incompatible: {pgo_info}")
+        else:
+            _log.info(f"[PGO] No existing profdata: {pgo_info}")
+
+    if skip_profgen:
+        _log.ui(
+            f"[PGO] Skipping passes 1-2, building with existing profdata  "
+            f"({n_total} package(s) across {len(set({**pgo_map, **non_pgo_map, **lib32_map}.values()))} PKGBUILD(s))  "
+            f"pgo_store={pgo_store}",
+        )
+    else:
+        _log.ui(
+            f"[PGO] Starting 3-pass LLVM PGO build  "
+            f"({n_pgo} pgo PKGBUILD(s), {n_total} total across all passes)  "
+            f"pgo_store={pgo_store}",
+        )
+
+    if not skip_profgen and not options.dry_run:
         import shutil as _shutil
 
         if staging.exists():
@@ -1160,9 +1242,9 @@ def _build_llvm_pgo(
             _shutil.rmtree(pgo_store)
         pgo_store.mkdir(parents=True, exist_ok=True)
 
-    # Sudo keepalive for the entire 3-pass sequence. _pgo_install() calls sudo
+    # Sudo keepalive for the build sequence. _pgo_install() calls sudo
     # directly from sysforge, so the keepalive's `sudo -v` refreshes the correct
-    # timestamp entry (same parent PID) for all three passes.
+    # timestamp entry (same parent PID) for all passes.
     if not options.dry_run:
         subprocess.run(["sudo", "-v"])
     sudo_stop = threading.Event()
@@ -1176,149 +1258,157 @@ def _build_llvm_pgo(
         sudo_keepalive.start()
 
     try:
-        # Pass 1 — build pgo packages with system compiler + instrumentation flags.
-        # The system compiler must be clang: -fprofile-generate produces LLVM-format
-        # .profraw files (consumed by llvm-profdata); GCC would produce GCOV format.
-        # On a running Arch system with LLVM installed this is always clang.
-        # makepkg runs WITHOUT --install; _pgo_install() issues `sudo pacman -U`
-        # directly from sysforge so the keepalive's timestamp entry applies.
-        _build_pass(
-            "Pass 1/3 [PGO] instrumented build → pgo packages",
-            pgo_map,
-            options,
-            cc=None,
-            cxx=None,
-            install=False,
-            pgo_build=True,
-            compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
-        )
-        _pgo_pass1_install(pgo_map, options.dry_run)
-        _log.ui("[PGO] Pass 1/3 complete")
-
-        # Purge any profraw accumulated during Pass 1. CMake feature-test programs
-        # compiled with -fprofile-generate run during configuration and deposit
-        # spurious profraw files (and emit "Running out of static counters" warnings).
-        # Those files represent tiny probe programs, not clang doing real work — they
-        # would contaminate the training profile if kept. Pass 2 generates the real data.
-        if not options.dry_run:
-            spurious = list(pgo_store.glob("**/*.profraw"))
-            for f in spurious:
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
-            if spurious:
-                _log.info(
-                    f"[PGO] Purged {len(spurious)} spurious profraw file(s) "
-                    f"from Pass 1 CMake probes",
-                )
-
-        # Pass 2 — use the instrumented Pass-1 clang as CC; profraw is generated
-        # as a side effect of running it. Background daemon merges periodically.
-        #
-        # LLVM_PROFILE_FILE uses %m_%p so each parallel clang process writes to its
-        # own file (module-hash + PID) instead of all contending on default_%m.profraw.
-        # Without this, N parallel `make -j` clang invocations corrupt each other's
-        # profraw via concurrent writes, causing SIGBUS crashes in llvm-profdata.
-        pass2_env = {
-            "LLVM_PROFILE_FILE": f"{pgo_store}/default_%m_%p.profraw",
-            # Prevent ccache/sccache from serving cached objects during the
-            # training run.  If either tool intercepts a compilation it skips
-            # running the instrumented clang entirely, producing no profraw.
-            # _DISABLE=1 makes each tool act as a transparent pass-through so
-            # the instrumented binary always executes and writes profraw data.
-            "CCACHE_DISABLE": "1",
-            "SCCACHE_DISABLE": "1",
-        }
-        _log.info(
-            f"[PGO] Pass 2: LLVM_PROFILE_FILE={pass2_env['LLVM_PROFILE_FILE']}",
-        )
-
-        # Safety net: if system LLVM static libs are still instrumented (from a
-        # prior Pass 1 run before _pgo_pass1_install excluded cmake-config packages),
-        # packages that call find_package(LLVM) in Pass 2 or Pass 3 would link
-        # against them and fail to resolve __llvm_profile_* symbols.  Inject the
-        # profile runtime into LDFLAGS for both passes.  The check is done once
-        # here — system LLVM state does not change between Pass 2 and Pass 3
-        # (neither pass installs to the system until _pgo_install at the end).
         residual_linker_flags: str | None = None
-        if not options.dry_run and _system_llvm_is_instrumented():
-            _log.info(
-                "[PGO] System libLLVMSupport.a is instrumented (residual from a prior "
-                "Pass 1 install). Injecting profile runtime into Pass 2 and Pass 3 LDFLAGS.",
-            )
-            residual_linker_flags = _profile_runtime_ldflag()
 
-        stop_event = threading.Event()
-        monitor = threading.Thread(
-            target=_profraw_merge_daemon,
-            args=(pgo_store, stop_event),
-            daemon=True,
-            name="sysforge-profraw-monitor",
-        )
-        if not options.dry_run:
-            monitor.start()
-        # Include non_pgo packages (polly, compiler-rt, openmp,
-        # spirv-llvm-translator) in the training run.  They exercise different
-        # clang code paths: OpenMP structured blocks, compiler-rt intrinsics,
-        # polyhedral analysis (Polly) — all absent from LLVM self-compilation
-        # alone.  lib32 is excluded; cross-compilation paths aren't worth the
-        # extra build time here.
-        pass2_map = {**pgo_map, **non_pgo_map}
-        try:
+        if not skip_profgen:
+            # Pass 1 — build pgo packages with system compiler + instrumentation flags.
+            # The system compiler must be clang: -fprofile-generate produces LLVM-format
+            # .profraw files (consumed by llvm-profdata); GCC would produce GCOV format.
+            # On a running Arch system with LLVM installed this is always clang.
+            # makepkg runs WITHOUT --install; _pgo_install() issues `sudo pacman -U`
+            # directly from sysforge so the keepalive's timestamp entry applies.
             _build_pass(
-                "Pass 2/3 [PGO] training run → profraw generation (no system install)",
-                pass2_map,
+                "Pass 1/3 [PGO] instrumented build → pgo packages",
+                pgo_map,
                 options,
-                cc="/usr/bin/clang",
-                cxx="/usr/bin/clang++",
+                cc=None,
+                cxx=None,
                 install=False,
-                linker_flags_extra=residual_linker_flags,
                 pgo_build=True,
-                pgo_env=pass2_env,
+                compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
             )
-        finally:
-            stop_event.set()
+            _pgo_pass1_install(pgo_map, options.dry_run)
+            _log.ui("[PGO] Pass 1/3 complete")
+
+            # Purge any profraw accumulated during Pass 1. CMake feature-test programs
+            # compiled with -fprofile-generate run during configuration and deposit
+            # spurious profraw files (and emit "Running out of static counters" warnings).
+            # Those files represent tiny probe programs, not clang doing real work — they
+            # would contaminate the training profile if kept. Pass 2 generates the real data.
             if not options.dry_run:
-                monitor.join()
-        _log.ui("[PGO] Pass 2/3 complete")
+                spurious = list(pgo_store.glob("**/*.profraw"))
+                for f in spurious:
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+                if spurious:
+                    _log.info(
+                        f"[PGO] Purged {len(spurious)} spurious profraw file(s) "
+                        f"from Pass 1 CMake probes",
+                    )
 
-        # Final sweep: merge any profraw not yet handled by the daemon
-        profdata_path = _merge_profraw(pgo_store, options.dry_run)
-        if not options.dry_run:
-            profdata_size = profdata_path.stat().st_size
+            # Pass 2 — use the instrumented Pass-1 clang as CC; profraw is generated
+            # as a side effect of running it. Background daemon merges periodically.
+            #
+            # LLVM_PROFILE_FILE uses %m_%p so each parallel clang process writes to its
+            # own file (module-hash + PID) instead of all contending on default_%m.profraw.
+            # Without this, N parallel `make -j` clang invocations corrupt each other's
+            # profraw via concurrent writes, causing SIGBUS crashes in llvm-profdata.
+            pass2_env = {
+                "LLVM_PROFILE_FILE": f"{pgo_store}/default_%m_%p.profraw",
+                # Prevent ccache/sccache from serving cached objects during the
+                # training run.  If either tool intercepts a compilation it skips
+                # running the instrumented clang entirely, producing no profraw.
+                # _DISABLE=1 makes each tool act as a transparent pass-through so
+                # the instrumented binary always executes and writes profraw data.
+                "CCACHE_DISABLE": "1",
+                "SCCACHE_DISABLE": "1",
+            }
             _log.info(
-                f"[PGO] Merged profdata size: {profdata_size // (1024 * 1024)} MiB",
+                f"[PGO] Pass 2: LLVM_PROFILE_FILE={pass2_env['LLVM_PROFILE_FILE']}",
             )
-            if profdata_size < _PGO_PROFDATA_MIN_BYTES:
-                _log.warn(
-                    f"[PGO] Profdata is unexpectedly small "
-                    f"({profdata_size // (1024 * 1024)} MiB < "
-                    f"{_PGO_PROFDATA_MIN_BYTES // (1024 * 1024)} MiB). "
-                    "Pass 2 may not have exercised enough code paths — "
-                    "check that CCACHE_DISABLE/SCCACHE_DISABLE took effect "
-                    "and compilation actually ran.",
-                )
-        _log.ui(f"[PGO] Profile data ready: {profdata_path}")
-        _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
 
-        # Use staged clang if it was extracted (clang in pgo list).
-        # When clang is in non_pgo only llvm/llvm-libs land in staging — fall back
-        # to system clang which was compiled without -fprofile-generate and therefore
-        # does not have the _M_assign@LLVM_N versioned-symbol ABI issue.
-        if not options.dry_run and not Path(staged_cc).exists():
+            # Safety net: if system LLVM static libs are still instrumented (from a
+            # prior Pass 1 run before _pgo_pass1_install excluded cmake-config packages),
+            # packages that call find_package(LLVM) in Pass 2 or Pass 3 would link
+            # against them and fail to resolve __llvm_profile_* symbols.  Inject the
+            # profile runtime into LDFLAGS for both passes.  The check is done once
+            # here — system LLVM state does not change between Pass 2 and Pass 3
+            # (neither pass installs to the system until _pgo_install at the end).
+            if not options.dry_run and _system_llvm_is_instrumented():
+                _log.info(
+                    "[PGO] System libLLVMSupport.a is instrumented (residual from a prior "
+                    "Pass 1 install). Injecting profile runtime into Pass 2 and Pass 3 LDFLAGS.",
+                )
+                residual_linker_flags = _profile_runtime_ldflag()
+
+            stop_event = threading.Event()
+            monitor = threading.Thread(
+                target=_profraw_merge_daemon,
+                args=(pgo_store, stop_event),
+                daemon=True,
+                name="sysforge-profraw-monitor",
+            )
+            if not options.dry_run:
+                monitor.start()
+            # Include non_pgo packages (polly, compiler-rt, openmp,
+            # spirv-llvm-translator) in the training run.  They exercise different
+            # clang code paths: OpenMP structured blocks, compiler-rt intrinsics,
+            # polyhedral analysis (Polly) — all absent from LLVM self-compilation
+            # alone.  lib32 is excluded; cross-compilation paths aren't worth the
+            # extra build time here.
+            pass2_map = {**pgo_map, **non_pgo_map}
+            try:
+                _build_pass(
+                    "Pass 2/3 [PGO] training run → profraw generation (no system install)",
+                    pass2_map,
+                    options,
+                    cc="/usr/bin/clang",
+                    cxx="/usr/bin/clang++",
+                    install=False,
+                    linker_flags_extra=residual_linker_flags,
+                    pgo_build=True,
+                    pgo_env=pass2_env,
+                )
+            finally:
+                stop_event.set()
+                if not options.dry_run:
+                    monitor.join()
+            _log.ui("[PGO] Pass 2/3 complete")
+
+            # Final sweep: merge any profraw not yet handled by the daemon
+            profdata_path = _merge_profraw(pgo_store, options.dry_run)
+            if not options.dry_run:
+                profdata_size = profdata_path.stat().st_size
+                _log.info(
+                    f"[PGO] Merged profdata size: {profdata_size // (1024 * 1024)} MiB",
+                )
+                if profdata_size < _PGO_PROFDATA_MIN_BYTES:
+                    _log.warn(
+                        f"[PGO] Profdata is unexpectedly small "
+                        f"({profdata_size // (1024 * 1024)} MiB < "
+                        f"{_PGO_PROFDATA_MIN_BYTES // (1024 * 1024)} MiB). "
+                        "Pass 2 may not have exercised enough code paths — "
+                        "check that CCACHE_DISABLE/SCCACHE_DISABLE took effect "
+                        "and compilation actually ran.",
+                    )
+            _log.ui(f"[PGO] Profile data ready: {profdata_path}")
+            _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
+
+        # Pass 3 (or sole pass when reusing profdata) — PGO-optimized build.
+        # Use staged clang from Pass 2 if available; otherwise fall back to
+        # system clang (which, after a prior successful run, is already PGO-optimized).
+        if not skip_profgen and not options.dry_run and not Path(staged_cc).exists():
             _log.info(
                 f"[PGO] staged clang not found at {staged_cc} "
                 "(clang is non-pgo) — using system clang for Pass 3",
             )
             pass3_cc, pass3_cxx = "/usr/bin/clang", "/usr/bin/clang++"
+        elif skip_profgen:
+            # No staging when reusing profdata — system clang is the compiler
+            pass3_cc, pass3_cxx = "/usr/bin/clang", "/usr/bin/clang++"
         else:
             pass3_cc, pass3_cxx = staged_cc, staged_cxx
 
-        # Pass 3 — PGO-optimized build; -fprofile-use matches -fprofile-generate (IR PGO)
         all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
+        pass3_label = (
+            "[PGO] optimized build → all packages (reusing profdata)"
+            if skip_profgen
+            else "Pass 3/3 [PGO] optimized build → all packages"
+        )
         _build_pass(
-            "Pass 3/3 [PGO] optimized build → all packages",
+            pass3_label,
             all_pass3,
             options,
             cc=pass3_cc,
@@ -1328,8 +1418,11 @@ def _build_llvm_pgo(
             linker_flags_extra=residual_linker_flags,
             pgo_build=True,
         )
-        _pgo_install("Pass 3", all_pass3, options.dry_run)
-        _log.ui("[PGO] Pass 3/3 complete — PGO build finished")
+        _pgo_install(pass3_label, all_pass3, options.dry_run)
+        if skip_profgen:
+            _log.ui("[PGO] Optimized build complete (profdata reused)")
+        else:
+            _log.ui("[PGO] Pass 3/3 complete — PGO build finished")
 
     finally:
         sudo_stop.set()
@@ -1338,7 +1431,8 @@ def _build_llvm_pgo(
 
     if not options.dry_run:
         _write_profdata_version(pgo_store)
-        _remove_staging(staging)
+        if not skip_profgen:
+            _remove_staging(staging)
 
     return "/usr/bin/clang", "/usr/bin/clang++", "lld"
 

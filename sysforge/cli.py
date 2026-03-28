@@ -236,6 +236,7 @@ def _cmd_run_toolchain(args):
         state_dir=Path(args.state_dir) if args.state_dir else None,
         persist_log=args.persist_log,
         makepkg_flags=expand_makepkg_flags(args.makepkg) if args.makepkg else [],
+        rebuild_profdata=args.rebuild_profdata,
     )
     run_stage_standalone(ToolchainStage(), config, options)
 
@@ -596,6 +597,8 @@ def _add_run_parser(sub):
         help="Run a post-build ABI compatibility check on built shared libraries.")
     p_toolchain.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
+    p_toolchain.add_argument("--rebuild-profdata", action="store_true", dest="rebuild_profdata",
+        help="Force a full 3-pass PGO build even if compatible profdata already exists.")
     p_toolchain.set_defaults(func=_cmd_run_toolchain)
 
     # run packages
