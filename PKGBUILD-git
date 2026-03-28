@@ -70,6 +70,6 @@ package() {
 
     # State directory (pipeline state, build state, logs)
     install -Dm644 /dev/null "$pkgdir/usr/lib/tmpfiles.d/sysforge.conf"
-    printf 'd /var/lib/sysforge 0755 root root -\n' \
+    printf 'd /var/lib/sysforge 0777 root root -\n' \
         > "$pkgdir/usr/lib/tmpfiles.d/sysforge.conf"
 }

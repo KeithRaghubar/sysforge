@@ -308,6 +308,14 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
     _log.ui("sysforge installed into target.")
 
 
+def _create_state_dir(cfg: BootstrapConfig) -> None:
+    """Create /var/lib/sysforge with world-writable permissions in the target."""
+    state_dir = Path(cfg.target) / "var/lib/sysforge"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.chmod(0o777)
+    _log.ui("State dir: /var/lib/sysforge (mode 0777)")
+
+
 def _copy_config_files(cfg: BootstrapConfig) -> None:
     """Copy /etc/sysforge/ from the live ISO into the target system."""
     src = Path("/etc/sysforge")
@@ -399,6 +407,7 @@ class ConfigureStage(Stage):
             else:
                 _log.ui("[dry-run] no root_password — will warn at runtime")
             _log.ui("[dry-run] would copy /etc/sysforge/ to target")
+            _log.ui("[dry-run] would create /var/lib/sysforge (mode 0777)")
             _log.ui("[dry-run] would install sysforge into target via uv")
             _log.ui("[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
             return
@@ -415,6 +424,7 @@ class ConfigureStage(Stage):
         _create_user(cfg)
         _configure_shell(cfg)
         _copy_config_files(cfg)
+        _create_state_dir(cfg)
         _install_sysforge(cfg)
         _write_resume_reminder(cfg)
         _set_root_password(cfg)
