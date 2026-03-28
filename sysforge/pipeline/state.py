@@ -126,6 +126,17 @@ class PipelineState:
     def _now(self):
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    @staticmethod
+    def _escape_toml_str(s):
+        """Escape a string for use in a TOML basic (double-quoted) string."""
+        s = s.replace("\\", "\\\\").replace('"', '\\"')
+        s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        # Escape remaining control characters as \uXXXX
+        return "".join(
+            c if ord(c) >= 0x20 and ord(c) != 0x7F else f"\\u{ord(c):04x}"
+            for c in s
+        )
+
     def _serialize(self):
         """
         Serialize state dict to TOML string.
@@ -154,8 +165,7 @@ class PipelineState:
                 if key in stage_data:
                     lines.append(f'{key} = "{stage_data[key]}"')
             if "error" in stage_data:
-                escaped = stage_data["error"].replace("\\", "\\\\").replace('"', '\\"')
-                lines.append(f'error = "{escaped}"')
+                lines.append(f'error = "{self._escape_toml_str(stage_data["error"])}"')
             lines.append("")
 
             progress = stage_data.get("progress")
@@ -171,8 +181,7 @@ class PipelineState:
             if errors:
                 lines.append(f"[stages.{stage_name}.errors]")
                 for pkgname, errmsg in errors.items():
-                    escaped = errmsg.replace("\\", "\\\\").replace('"', '\\"')
-                    lines.append(f'{pkgname} = "{escaped}"')
+                    lines.append(f'{pkgname} = "{self._escape_toml_str(errmsg)}"')
                 lines.append("")
 
             result = stage_data.get("result")
@@ -180,7 +189,7 @@ class PipelineState:
                 lines.append(f"[stages.{stage_name}.result]")
                 for key, val in result.items():
                     if isinstance(val, str):
-                        lines.append(f'{key} = "{val}"')
+                        lines.append(f'{key} = "{self._escape_toml_str(val)}"')
                     else:
                         lines.append(f"{key} = {val!r}")
                 lines.append("")
