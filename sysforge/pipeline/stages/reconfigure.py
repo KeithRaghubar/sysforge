@@ -916,8 +916,11 @@ class ReconfigureStage(Stage):
             chroot_state_dir = Path(cfg.target) / "var/lib/sysforge"
             chroot_state_dir.mkdir(parents=True, exist_ok=True)
             if state.path.exists():
-                shutil.copy2(state.path, chroot_state_dir / state.path.name)
-                _log.info(f"State file copied to {chroot_state_dir / state.path.name}")
+                try:
+                    shutil.copy2(state.path, chroot_state_dir / state.path.name)
+                    _log.info(f"State file copied to {chroot_state_dir / state.path.name}")
+                except shutil.SameFileError:
+                    _log.info(f"State file already up-to-date at {chroot_state_dir / state.path.name}")
             raise BootstrapRebootRequired(
                 "Bootstrap complete (stages 1–4 done). "
                 "Reboot into the installed system before continuing."
