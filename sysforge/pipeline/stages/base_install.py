@@ -21,7 +21,7 @@ from sysforge.pipeline.stages._bootstrap import load_bootstrap
 
 
 # Minimal packages installed via pacstrap.
-# - base-devel:       ...
+# - base-devel:       build toolchain meta-package (make, gcc, fakeroot, binutils, etc.); required for makepkg
 # - base:             core userspace (glibc, bash, coreutils, systemd, pacman, ...)
 # - git:              required for cloning PKGBUILDs and sysforge itself
 # - linux-firmware:   hardware firmware blobs
@@ -29,7 +29,7 @@ from sysforge.pipeline.stages._bootstrap import load_bootstrap
 # - networkmanager:   network management daemon (needed for post-boot connectivity)
 # - openssh:          SSH server/client (required for remote access)
 # - python:           required by sysforge itself
-# - reflector         ...
+# - reflector:        mirror ranking tool; run during configure stage to select fastest pacman mirrors
 # - sudo:             privilege escalation for the build user
 # - uv:               Python package installer (required by sysforge PKGBUILD)
 _BASE_PACKAGES = [

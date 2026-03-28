@@ -138,9 +138,9 @@ def _set_pacman_parallel_downloads(cfg: BootstrapConfig) -> None:
 
 def _run_reflector(cfg: BootstrapConfig) -> None:
     """Run reflector inside the chroot to generate an optimised mirrorlist."""
-    # Check reflector is available in the chroot
-    result = _chroot(cfg.target, ["which", "reflector"], check=False)
-    if result.returncode != 0:
+    # Check reflector is available in the chroot by testing the filesystem
+    # (avoid using 'which' — it is not part of the Arch base install)
+    if not (Path(cfg.target) / "usr/bin/reflector").exists():
         _log.warn(
             "[CONFIGURE]",
             "reflector not found in chroot — skipping mirrorlist update. "

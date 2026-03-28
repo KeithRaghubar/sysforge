@@ -911,6 +911,13 @@ class ReconfigureStage(Stage):
 
     def run(self, config, state, options):
         if Path("/run/archiso").exists():
+            from sysforge.pipeline.stages._bootstrap import load_bootstrap
+            cfg = load_bootstrap()
+            chroot_state_dir = Path(cfg.target) / "var/lib/sysforge"
+            chroot_state_dir.mkdir(parents=True, exist_ok=True)
+            if state.path.exists():
+                shutil.copy2(state.path, chroot_state_dir / state.path.name)
+                _log.info(f"State file copied to {chroot_state_dir / state.path.name}")
             raise BootstrapRebootRequired(
                 "Bootstrap complete (stages 1–4 done). "
                 "Reboot into the installed system before continuing."
