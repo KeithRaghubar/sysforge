@@ -85,6 +85,12 @@ _sysforge_pkg_or_file() {
     'packages:package:_sysforge_pkg_names'
 }
 
+_sysforge_makepkg_flags() {
+  local -a flags
+  flags=("${(@f)$(sysforge completions makepkg-flags 2>/dev/null)}")
+  (( $#flags )) && _describe -t makepkg-flags 'makepkg flag' flags
+}
+
 _sysforge_build() {
   _arguments \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags]:flags' \
@@ -100,7 +106,9 @@ _sysforge_build() {
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--no-update[skip git pull --rebase before building]' \
     '--state-dir[override state directory]:directory:_files -/' \
-    '*: :_sysforge_pkg_or_file'
+    '*: :_sysforge_pkg_or_file' \
+  && return
+  _sysforge_makepkg_flags
 }
 
 _sysforge_fetch() {
@@ -128,7 +136,9 @@ _sysforge_update() {
     '--no-pkg-log[disable per-package log files]' \
     '--persist-log[keep log files after successful completion]' \
     '--log-dir[directory for per-package log files]:directory:_files -/' \
-    '*: :_sysforge_state_names'
+    '*: :_sysforge_state_names' \
+  && return
+  _sysforge_makepkg_flags
 }
 
 _sysforge_resolve() {
@@ -147,7 +157,9 @@ _sysforge_converge() {
     '--no-pkg-log[disable per-package log files (only relevant with --apply)]' \
     '--persist-log[keep log files after completion (only relevant with --apply)]' \
     '--log-dir[directory for per-package log files]:directory:_files -/' \
-    '--cache-report[print ccache/sccache summary after --apply]'
+    '--cache-report[print ccache/sccache summary after --apply]' \
+  && return
+  _sysforge_makepkg_flags
 }
 
 _sysforge_packages() {
@@ -278,7 +290,9 @@ _sysforge_run_toolchain() {
     '--persist-log[keep logs after successful run]' \
     '--cache-report[print ccache/sccache summary after run]' \
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
-    '--state-dir[override state directory]:directory:_files -/'
+    '--state-dir[override state directory]:directory:_files -/' \
+  && return
+  _sysforge_makepkg_flags
 }
 
 _sysforge_run_packages() {

@@ -96,6 +96,29 @@ def _cmd_completions(args):
     import subprocess as _sp
     config = load_config() or {}
 
+    if args.resource == "makepkg-flags":
+        # Parse makepkg --help to extract flag/description pairs for completion
+        r = _sp.run(["makepkg", "--help"], capture_output=True, text=True)
+        text = r.stdout or r.stderr or ""
+        # Flags sysforge handles itself — exclude from passthrough completions
+        _exclude = {"-h", "--help", "-V", "--version", "-p", "-m", "--nocolor"}
+        import re
+        for line in text.splitlines():
+            m = re.match(r"^\s+(-\w),\s+(--\w[\w-]*)\s+(?:<\w+>\s+)?(.*)", line)
+            if m:
+                short, long, desc = m.group(1), m.group(2), m.group(3).strip()
+                if short not in _exclude:
+                    print(f"{short}:{desc}")
+                if long not in _exclude:
+                    print(f"{long}:{desc}")
+                continue
+            m = re.match(r"^\s+(--\w[\w-]*)\s+(?:<\w+>\s+)?(.*)", line)
+            if m:
+                long, desc = m.group(1), m.group(2).strip()
+                if long not in _exclude:
+                    print(f"{long}:{desc}")
+        return
+
     if args.resource == "state":
         # Names tracked in build_state.toml — used by `update` completion
         from sysforge.primitives.build_state import BuildState
@@ -684,7 +707,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # completions (used by shell completion scripts; not user-facing)
     p_completions = sub.add_parser("completions", help=argparse.SUPPRESS)
-    p_completions.add_argument("resource", choices=["packages", "manifest", "local", "state"])
+    p_completions.add_argument("resource", choices=["packages", "manifest", "local", "state", "makepkg-flags"])
     p_completions.set_defaults(func=_cmd_completions)
 
     return parser
