@@ -102,6 +102,7 @@ sysforge/
 │       ├── pkgbuild_meta.py           # static PKGBUILD parser (read-only)
 │       ├── pkgbuild_patcher.py        # PKGBUILD mutation + flag extraction
 │       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
+│       ├── aur_resolve.py             # recursive AUR dependency resolution + topo sort
 │       ├── dep_analysis.py            # pre-build soname dependency checks
 │       ├── failure.py                 # failure scenario handling (shared)
 │       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
@@ -234,7 +235,9 @@ cache = false   # PGO build — instrumented objects must never be cached
 
 All subcommands accept `--packages FILE` to target a specific file (default: `/etc/sysforge/packages.toml`).
 
-Valid per-entry fields: `name`, `source`, `pkgbuild_patch`, `cache`. Fields `profile` and `requires_hardware` are **removed** from the schema — do not add them.
+Valid per-entry fields: `name`, `source`, `pkgbuild_patch`, `cache`, `reason`. Fields `profile` and `requires_hardware` are **removed** from the schema — do not add them.
+
+`reason` *(optional string)* — `"explicit"` (default, may be omitted) or `"dependency"`. Tracks whether the entry was added directly by the user or auto-added as a transitive AUR dependency during a build with `--track-deps`. Used for display purposes (e.g. `packages list`) and to distinguish user intent; has no effect on build behaviour.
 
 ### `-march=native` strategy
 
@@ -571,15 +574,33 @@ Version constraint checking (pacman -Q / vercmp) was intentionally omitted — m
 
 Both functions accept injectable callables for testing. Non-fatal by default; configurable via `abi_mismatch` in `[failure_handling]`.
 
-**AUR dependency resolution — v0.1.0 gap, planned for v1.0:**
+**Recursive AUR dependency resolution (v1.0):**
 
 `makepkg --syncdeps` installs missing `depends`/`makedepends` via `pacman -S`. Pacman has no AUR visibility, so any dep that is AUR-only and not already installed will cause the build to fail. Sysforge does not currently detect or pre-build AUR deps.
 
-The v1.0 fix is full recursive AUR dependency resolution:
-1. After fetching a PKGBUILD, parse its `depends` and `makedepends`.
-2. For each dep not satisfiable by pacman, query the AUR and recursively fetch + resolve its deps.
-3. Topologically sort the full dep graph and build in order, installing each before the next.
-4. Packages already in `packages.toml` should be de-duplicated rather than rebuilt.
+New module: `primitives/aur_resolve.py`. Public API:
+
+- `resolve_aur_deps(pkgbuild_path, config) -> list[ResolvedDep]` — full recursive resolution for a single package
+- `resolve_aur_deps_batch(pkgbuild_paths, config) -> list[ResolvedDep]` — batch resolution for multiple packages (de-duplicated, single topo-sorted build order)
+
+Resolution algorithm:
+1. Parse `depends` + `makedepends` from the PKGBUILD.
+2. Strip version constraints (`>=`, `<=`, `=`, `>`, `<`).
+3. Filter out already-installed packages (`pacman -T`).
+4. Filter out repo-satisfiable packages (`repo_packages()` batch check).
+5. Query AUR for the remainder (`aur_info()` batch).
+6. For each AUR dep found: fetch its PKGBUILD (`find_pkgbuild`), recurse from step 1.
+7. Deps not found in AUR or repos → warn and let makepkg fail naturally.
+8. DFS topological sort with cycle detection (error on cycles).
+9. Skip packages already installed at a satisfying version (`pacman -Q`) unless `-f`/`--force` is passed.
+
+Build execution: iterate the topo-sorted list in order. Each dep gets full profile resolution (flag profiles, PKGBUILD patching) — same as any sysforge-managed build. Each dep is installed immediately after building so subsequent deps can link against it.
+
+Integration points:
+- **`sysforge build`** — resolve before building. `--track-deps` auto-adds resolved AUR deps to `packages.toml` with `reason = "dependency"`.
+- **`run packages` stage** — resolve before building each AUR/profiled package. `--track-deps` behaves the same.
+- **Batch builds (`update`, `converge`)** — resolve after `collect_makedeps()`, before `batch_install_makedeps()`. AUR deps are built and installed first, then the main batch proceeds. No `--track-deps` for update/converge (operates on already-tracked packages only).
+- **`sysforge resolve --deps <pkg>`** — standalone dry-run inspection. Shows the full dep tree with build order, AUR vs repo classification, and which deps are already installed.
 
 The `dep_analysis.py` soname check is orthogonal — it validates shared-library ABI for packages that *are* installed, not whether they can be installed in the first place.
 
@@ -645,6 +666,10 @@ Public API: `cmd_fetch(args)`.
 ### `resolve.py`
 
 Implements `sysforge resolve` — inspect profile matching for a PKGBUILD without building it. Output goes to stdout.
+
+Two modes:
+- **Profile resolution** (default) — shows which profile and flags would apply to a package.
+- **Dependency resolution** (`--deps`) — shows the full transitive dependency tree with build order. Displays AUR vs repo classification for each dep and marks already-installed packages. Dry-run only — does not build or install anything.
 
 Public API: `cmd_resolve(args)`. Uses `find_pkgbuild` from `config.py` for PKGBUILD lookup (same search order as `sysforge build`). Internal helpers:
 - `_get_profile_chain(profile_name, profiles)` — walks the `extends` chain and returns it root-last; stops on cycle or missing parent
@@ -1101,7 +1126,8 @@ Build in this order to satisfy dependencies correctly:
 
 - **GitHub:** public from day one; source of truth for all code
 - **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
-- **v1.0:** system bootstrapper — stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, and sets passwords. Remaining v1.0 work: recursive AUR dependency resolution (see `dep_analysis.py` section); man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below).
+- **v1.0:** system bootstrapper — stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, sets passwords, and sets the configured default login shell. Remaining v1.0 work: recursive AUR dependency resolution (see `dep_analysis.py` section); `repo_mode = "profiled"` support in `sysforge update`; man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below); direct makepkg flag passthrough via `parse_known_args` (completions done, implementation pending).
+- **v1.x:** package groups (named DE sets for opt-in without enumerating every package); rule priority auto-calculation (CSS-specificity-style scoring from rule conditions); configure stage additions (btrfs snapshots, ccache/sccache init check, build time estimates); LLVM target filtering from hardware detection.
 
 ### AUR publishing process
 
@@ -1137,7 +1163,7 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 **`sysforge update` is scoped to sysforge-managed packages by default.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. `sysforge update --all` extends this: it discovers all foreign (non-repo) packages via `pacman -Qm` that are not yet in `build_state.toml` or `packages.toml`, and checks packages in `packages.toml` with no build record — using git pull for those with local PKGBUILD clones, and `pacman -Si` / AUR RPC for those without.
 
-**`repo_mode` is not yet wired to `sysforge update` or `sysforge build`.** The `[build] repo_mode = "pacman" | "profiled"` setting in `packages.toml` is parsed only by the bootstrap pipeline stages (`run packages`, `run pipeline`) which are deferred to v1.0. It has no effect on `sysforge build` or `sysforge update` in v0.1.0. Official repo packages in `packages.toml` are rebuilt when their Arch packaging git repo shows a newer version; there is no auto-discovery of official repo packages with pending updates (that would require `pacman -Sy`, which is pacman's job).
+**`repo_mode = "profiled"` is wired in the packages stage only.** The `[build] repo_mode = "pacman" | "profiled"` setting in `packages.toml` is parsed and honoured by `run packages` and `run pipeline` — repo packages with `repo_mode = "profiled"` (or per-package `pkgbuild_patch = true`) are built from source via `_build_aur()` using `find_pkgbuild` (which calls `pkgctl_checkout` for repo packages). It has no effect on `sysforge build` or `sysforge update` — those commands operate on individual packages the user explicitly targets, not on manifest-wide policy. v1.0 target: wire `repo_mode` into `sysforge update` so tracked repo packages with `repo_mode = "profiled"` are rebuilt from source when the Arch packaging repo has a newer version.
 
 **`packages.toml [build] pkgbuild_dir` and `flag_profiles [paths] pkgbuild_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_dir`; falls back to `[paths] pkgbuild_dir`. They can point to different directories or the same one — there's no enforcement that they match.
 
@@ -1149,13 +1175,20 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 ---
 
+## V1.x Roadmap
+
+Post-v1.0 enhancements that build on existing infrastructure. Not required for the v1.0 release.
+
+- **Package groups** — named DE sets (e.g. `[group.cosmic]`, `[group.gnome]`) so users can opt into a curated desktop environment without manually listing every component. Expands to constituent packages at build time.
+- **Rule priority auto-calculation** — auto-calculate a baseline specificity score from rule conditions (mirrors CSS specificity: more AND'd conditions = higher weight), with manual `priority` override for ties. Deferred until enough real rules exist to validate whether auto-priority causes ordering problems in practice.
+- **Configure stage additions** — btrfs snapshot before build runs, ccache/sccache initialisation check, estimated build time heuristic.
+- **LLVM target filtering** — restrict `LLVM_TARGETS_TO_BUILD` based on detected hardware from the hardware stage (e.g. only X86 on x86_64 systems). Currently builds all targets.
+
+---
+
 ## V2 Roadmap
 
 V2 goal: advanced AUR helper features beyond the v0.1.0 scope.
 
 V2 candidates:
 - **PKGBUILD review** — present diffs to the user before building an AUR package
-
-### V1.5: Rule priority auto-calculation
-
-Currently `priority` is manually assigned. A future improvement is to auto-calculate a baseline specificity score from the rule's conditions (mirrors CSS specificity: more AND'd conditions = higher weight), with a manual `priority` override for ties. Deferred until enough real rules exist to validate whether auto-priority causes ordering problems in practice.

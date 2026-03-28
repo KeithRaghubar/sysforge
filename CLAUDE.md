@@ -2,7 +2,7 @@
 
 Read DESIGN.md before proposing architecture or API changes. It is the source of truth for module layout, public APIs, CLI structure, feature status, and known gaps. Do not duplicate it here.
 
-Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Config: TOML, Tests: 943 pytest tests (`make test`)
+Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Config: TOML, Tests: 1049 pytest tests (`make test`)
 
 ## Dev Environment
 
@@ -12,9 +12,8 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 
 ## Known Bugs & Gotchas
 
-1. **`_pkgmeta_placeholder`** — wiring was fixed once; history may resurface. Verify if touching metadata paths.
-2. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
-3. **`match_rules` and `pkgbase`** — rules match against `pkgbase` too for split packages; don't regress this.
+1. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
+2. **`match_rules` and `pkgbase`** — rules match against `pkgbase` too for split packages; don't regress this.
 
 ## Interaction Preferences
 

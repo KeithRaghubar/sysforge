@@ -13,6 +13,7 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 - `sysforge update` — checks all sysforge-managed AUR packages for new upstream versions and rebuilds outdated ones with active profiles; VCS packages (`-git` etc.) via `--devel`
 - Reproducible installs driven by a package manifest (`packages.toml`)
 - Checkpoint/resume across pipeline stages so a failed batch install can be continued, not restarted
+- Recursive AUR dependency resolution — automatically detects, fetches, builds, and installs transitive AUR deps before the main package
 - Pre-build soname dependency analysis to surface ABI mismatches before the build starts
 - PKGBUILD flag extraction and patching — extracts compiler flags from PKGBUILD function bodies and manages them through the profile system instead
 
@@ -295,6 +296,7 @@ sysforge build htop --interactive
 | `--no-pkg-log` | Disable the per-package log for this build |
 | `--log-dir <dir>` | Write per-package log to this directory instead of alongside the PKGBUILD |
 | `--persist-log` | Keep per-package log after a successful build |
+| `--track-deps` | Auto-add resolved AUR dependencies to `packages.toml` with `reason = "dependency"` |
 
 ### Run the pipeline
 
@@ -409,12 +411,15 @@ sysforge packages sync --dry-run   # preview without writing
 
 `packages sync` re-validates `source` and `pkgbuild_patch` for all entries and rewrites the file. The `cache` field is preserved verbatim.
 
-### Inspect profile matching
+### Inspect profile matching and dependencies
 
 ```bash
 # Show which profile would apply and why
 sysforge resolve htop
 sysforge resolve htop --show-flags
+
+# Show the full transitive dependency tree with build order
+sysforge resolve mesa-git --deps
 ```
 
 ### Tab completion (zsh)
@@ -454,7 +459,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 
 **Log levels:** `[ERROR]` always shown · `[WARN]` with `-v` · `[INFO]` with `-vv` · `[DEBUG]` with `-vvv`
 
-**Tags:** `[ABI]` `[AUR]` `[BASE_INSTALL]` `[BUILD]` `[CACHE]` `[CLI]` `[CONF]` `[CONFIG]` `[CONFIGURE]` `[CONVERGE]` `[DEP]` `[ENV]` `[FAILURE]` `[FETCH]` `[FLAG]` `[GIT]` `[GROUPS]` `[HARDWARE]` `[KERNEL]` `[MAKEPKG]` `[MANIFEST]` `[PACKAGES]` `[PACMAN]` `[PARTITION]` `[PATCH]` `[PGO]` `[PIPELINE]` `[PROFILE]` `[RECONFIGURE]` `[STATE]` `[TOOLCHAIN]` `[UPDATE]` `[VERSION]`
+**Tags:** `[ABI]` `[AUR]` `[BASE_INSTALL]` `[BUILD]` `[CACHE]` `[CLI]` `[CONF]` `[CONFIG]` `[CONFIGURE]` `[CONVERGE]` `[DEP]` `[ENV]` `[FAILURE]` `[FETCH]` `[FLAG]` `[GIT]` `[GROUPS]` `[HARDWARE]` `[KERNEL]` `[MAKEPKG]` `[MANIFEST]` `[PACKAGES]` `[PACMAN]` `[PARTITION]` `[PATCH]` `[PGO]` `[PIPELINE]` `[PROFILE]` `[RECONFIGURE]` `[RESOLVE]` `[STATE]` `[TOOLCHAIN]` `[UPDATE]` `[VERSION]`
 
 ---
 
@@ -476,7 +481,7 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | Structured logging (`[SYSFORGE][LEVEL][TAG]`) | ✅ Done |
 | Pipeline runner (checkpoint/resume) | ✅ Done |
 | Packages stage (stage 7) | ✅ Done |
-| Pytest suite (898 tests) | ✅ Done |
+| Pytest suite (1049 tests) | ✅ Done |
 | Kernel stage (stage 8) | ✅ Done |
 | Reconfigure stage (stage 5) | ✅ Done |
 | Toolchain stage (stage 6, LLVM/GCC + PGO) | ✅ Done |
@@ -485,7 +490,8 @@ Every log line follows the format `[SYSFORGE][LEVEL][TAG] message`, making outpu
 | `sysforge converge` (profile/flag drift detection) | ✅ Done |
 | `sysforge update --all` (pacman -Qm foreign packages) | ✅ Done |
 | AUR name cache (packages.gz → ~/.cache/sysforge/) | ✅ Done |
-| `repo_mode` config (pacman passthrough vs profiled build) | 🔜 v1.0 — parsed but has no effect on `build`/`update` |
+| Recursive AUR dependency resolution | ✅ Done |
+| `repo_mode` config (pacman passthrough vs profiled build) | 🔜 v1.0 — wired in pipeline, pending for `update` |
 | `sysforge resolve` | ✅ Done |
 | Bare package name resolution (`sysforge build htop`) | ✅ Done |
 | AUR auto-clone on miss | ✅ Done |
@@ -518,6 +524,7 @@ locale             = "en_US.UTF-8"
 timezone           = "America/Toronto"
 keymap             = "us"           # optional (default: "us")
 parallel_downloads = 5              # pacman ParallelDownloads (default: 5)
+shell              = "bash"         # optional — default login shell: "bash" (default) or "zsh"
 root_password      = "secret"       # optional — set at configure time; warn if absent
 username           = "builder"      # optional — primary user (default: "builder")
 user_password      = "secret"       # optional — user password; warn if absent
