@@ -330,7 +330,8 @@ def _write_resume_reminder(cfg: BootstrapConfig) -> None:
     dest = Path(cfg.target) / _RESUME_REMINDER_PATH
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(_RESUME_REMINDER)
-    _log.ui("Resume reminder written to /etc/profile.d/sysforge-resume.sh")
+    dest.chmod(0o777)
+    _log.ui("Resume reminder written to /etc/profile.d/sysforge-resume.sh (mode 0777)")
 
 
 def _configure_shell(cfg: BootstrapConfig) -> None:
