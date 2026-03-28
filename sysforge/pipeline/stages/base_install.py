@@ -113,13 +113,17 @@ class BaseInstallStage(Stage):
     def run(self, config, state, options):  # noqa: ARG002
         cfg = load_bootstrap()
 
+        packages = list(_BASE_PACKAGES)
+        if cfg.shell == "zsh":
+            packages.append("zsh")
+
         _log.ui(f"Installing base system to {cfg.target}")
-        _log.ui(f"Packages: {', '.join(_BASE_PACKAGES)}")
+        _log.ui(f"Packages: {', '.join(packages)}")
 
         if not options.dry_run:
             _verify_target_mounted(cfg.target)
 
-        _run_pacstrap(cfg.target, _BASE_PACKAGES, options.dry_run)
+        _run_pacstrap(cfg.target, packages, options.dry_run)
         _generate_fstab(cfg.target, options.dry_run)
 
         _log.ui("Base install complete.")

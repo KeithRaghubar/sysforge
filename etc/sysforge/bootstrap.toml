@@ -42,6 +42,9 @@ root_fs = "ext4"
 # timezone   = "UTC"
 # keymap     = "us"
 
+# Default login shell: "bash" (default) | "zsh"
+# shell = "bash"
+
 # pacman ParallelDownloads (default: 5)
 # parallel_downloads = 5
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from sysforge.primitives.paths import BOOTSTRAP_PATH
 
 _VALID_ROOT_FS = {"ext4", "btrfs"}
+_VALID_SHELLS  = {"bash", "zsh"}
 _ZONEINFO_DIR  = Path("/usr/share/zoneinfo")
 
 
@@ -33,6 +34,7 @@ class BootstrapConfig:
     root_password: str | None = None
     username: str = "builder"
     user_password: str | None = None
+    shell: str = "bash"
 
 
 def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
@@ -86,11 +88,18 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     root_password = system.get("root_password") or None
     username = system.get("username", "builder") or "builder"
     user_password = system.get("user_password") or None
+    shell = system.get("shell", "bash")
 
     if root_fs not in _VALID_ROOT_FS:
         raise RuntimeError(
             f"bootstrap.toml: invalid root_fs {root_fs!r}. "
             f"Supported values: {', '.join(sorted(_VALID_ROOT_FS))}."
+        )
+
+    if shell not in _VALID_SHELLS:
+        raise RuntimeError(
+            f"bootstrap.toml: invalid shell {shell!r}. "
+            f"Supported values: {', '.join(sorted(_VALID_SHELLS))}."
         )
 
     if _ZONEINFO_DIR.exists() and not (_ZONEINFO_DIR / timezone).exists():
@@ -122,4 +131,5 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
         root_password=root_password,
         username=username,
         user_password=user_password,
+        shell=shell,
     )

@@ -17,6 +17,7 @@ bootstrap.toml required fields:
 bootstrap.toml optional fields:
   [system] keymap              string  vconsole keymap (default: "us")
   [system] parallel_downloads  int     pacman ParallelDownloads (default: 5)
+  [system] shell               string  default login shell: "bash" (default) or "zsh"
   [system] root_password       string  root password set via chpasswd (prompted if absent)
   [mirror] countries           list    reflector --country values
   [mirror] protocol            string  reflector --protocol (default: "https")
@@ -373,6 +374,28 @@ def _configure_shell(cfg: BootstrapConfig) -> None:
     _log.ui(f"Shell: dotfiles written for root and {cfg.username}")
 
 
+def _set_default_shell(cfg: BootstrapConfig) -> None:
+    """Set the login shell for root and the primary user."""
+    if cfg.shell == "bash":
+        _log.info("Shell: bash (default, no chsh needed)")
+        return
+
+    shell_path = f"/usr/bin/{cfg.shell}"
+
+    # Verify shell exists in the chroot
+    if not (Path(cfg.target) / shell_path.lstrip("/")).exists():
+        _log.warn(
+            f"{cfg.shell} not found at {shell_path} in chroot — "
+            f"install it first (e.g. add to pacstrap packages)"
+        )
+        return
+
+    for user in ("root", cfg.username):
+        _chroot(cfg.target, ["chsh", "-s", shell_path, user])
+
+    _log.ui(f"Default shell: {cfg.shell} (root + {cfg.username})")
+
+
 def _set_root_password(cfg: BootstrapConfig) -> None:
     """Set the root password from bootstrap.toml, or warn if not configured."""
     if cfg.root_password:
@@ -421,6 +444,8 @@ class ConfigureStage(Stage):
                 _log.ui("[dry-run] would set root password from bootstrap.toml")
             else:
                 _log.ui("[dry-run] no root_password — will warn at runtime")
+            if cfg.shell != "bash":
+                _log.ui(f"[dry-run] would set default shell: {cfg.shell}")
             _log.ui("[dry-run] would copy /etc/sysforge/ to target")
             _log.ui("[dry-run] would create /var/lib/sysforge (mode 0777)")
             _log.ui("[dry-run] would install sysforge into target via uv")
@@ -438,6 +463,7 @@ class ConfigureStage(Stage):
         _configure_sshd(cfg)
         _create_user(cfg)
         _configure_shell(cfg)
+        _set_default_shell(cfg)
         _copy_config_files(cfg)
         _create_state_dir(cfg)
         _install_sysforge(cfg)
