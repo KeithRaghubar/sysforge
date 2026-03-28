@@ -19,8 +19,10 @@ enabled = false
 # pgo_staging = "/var/tmp/sysforge-llvm-stage2"
 
 # Path where profraw files are written during pass 2 and merged to profdata.
-# Profraw files are deleted after merging; profdata is deleted after pass 3.
-# Needs ~500 MB free during pass 2; space reclaimed once pass 3 completes.
+# Profraw files are deleted after merging; profdata is preserved for reuse.
+# On subsequent runs, compatible profdata (same LLVM major) skips passes 1-2.
+# Use --rebuild-profdata to force a full 3-pass build.
+# Needs ~500 MB free during pass 2.
 # pgo_store = "/var/tmp/sysforge-llvm-pgo"
 
 # ---------------------------------------------------------------------------

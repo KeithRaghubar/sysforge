@@ -136,7 +136,7 @@ sysforge run pipeline --resume
 This runs stages 5–8:
 
 - **reconfigure** — pre-build checks: disk space, network, config review
-- **toolchain** — builds LLVM/GCC toolchain with optional PGO
+- **toolchain** — builds LLVM/GCC toolchain with optional PGO (reuses existing profdata when compatible; `--rebuild-profdata` to force full 3-pass)
 - **packages** — builds and installs everything in `packages.toml` with profiled flags
 - **kernel** — builds a custom kernel (skipped cleanly if `kernel.toml` is absent)
 
@@ -339,7 +339,8 @@ Individual stages can also be run standalone outside the pipeline:
 
 ```bash
 sysforge run reconfigure --state-dir ~/sf-state
-sysforge run toolchain --dry-run
+sysforge run toolchain                     # reuses profdata if compatible
+sysforge run toolchain --rebuild-profdata  # force full 3-pass PGO
 sysforge run packages --packages packages.toml --state-dir ~/sf-state
 sysforge run kernel --state-dir ~/sf-state
 ```
