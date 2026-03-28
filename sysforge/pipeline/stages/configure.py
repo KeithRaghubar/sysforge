@@ -271,10 +271,12 @@ _RESUME_REMINDER_PATH = Path("etc/profile.d/sysforge-resume.sh")
 
 def _find_sysforge_source() -> Path | None:
     """
-    Return the sysforge source directory as recorded by pip's direct_url.json.
-    Returns None if the package was not installed from a local path or if the
-    path no longer exists.
+    Return the sysforge source directory.
+
+    Tries pip's direct_url.json first (editable/path installs), then falls
+    back to locating the sysforge package via __file__.
     """
+    # Strategy 1: pip metadata (direct_url.json from path/editable installs)
     try:
         dist = distribution("sysforge")
         raw = dist.read_text("direct_url.json")
@@ -286,6 +288,18 @@ def _find_sysforge_source() -> Path | None:
                     return p
     except PackageNotFoundError:
         pass
+
+    # Strategy 2: walk up from sysforge/__init__.py to find the repo root
+    try:
+        import sysforge as _pkg
+        pkg_dir = Path(_pkg.__file__).resolve().parent
+        # Look for pyproject.toml to identify the repo root
+        for candidate in (pkg_dir.parent, pkg_dir.parent.parent):
+            if (candidate / "pyproject.toml").exists():
+                return candidate
+    except Exception:
+        pass
+
     return None
 
 

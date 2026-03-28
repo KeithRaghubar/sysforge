@@ -53,9 +53,14 @@ def _check_device(device: str) -> None:
         )
 
 
+def _needs_p_separator(device: str) -> bool:
+    """Return True if partition paths use a 'p' separator (e.g. nvme0n1p1)."""
+    return "nvme" in device or "mmcblk" in device or "loop" in device or "md" in device
+
+
 def _root_partition(device: str) -> str:
     """Derive the root partition path from the block device path."""
-    if "nvme" in device or "mmcblk" in device:
+    if _needs_p_separator(device):
         return f"{device}p2"
     return f"{device}2"
 
@@ -160,16 +165,29 @@ def _partition_disk(cfg: BootstrapConfig) -> tuple[str, str]:
         )
 
     # Inform kernel of partition table changes
-    subprocess.run(["partprobe", device], capture_output=True)
+    probe = subprocess.run(["partprobe", device], capture_output=True, text=True)
+    if probe.returncode != 0:
+        _log.warn(
+            f"partprobe failed (exit {probe.returncode}) — kernel may not see "
+            f"new partitions yet: {probe.stderr.strip()}"
+        )
 
     # Derive partition device paths
     # Handles both /dev/sda → /dev/sda1 and /dev/nvme0n1 → /dev/nvme0n1p1
-    if "nvme" in device or "mmcblk" in device:
+    if _needs_p_separator(device):
         esp_part  = f"{device}p1"
         root_part = f"{device}p2"
     else:
         esp_part  = f"{device}1"
         root_part = f"{device}2"
+
+    # Verify partition device nodes appeared
+    for part in (esp_part, root_part):
+        if not Path(part).exists():
+            raise RuntimeError(
+                f"[PARTITION] Expected partition device {part!r} not found after sgdisk. "
+                f"partprobe may have failed or the kernel is slow to detect new partitions."
+            )
 
     _log.ui(f"ESP:  {esp_part}")
     _log.ui(f"Root: {root_part}")

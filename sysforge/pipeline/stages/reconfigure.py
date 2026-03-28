@@ -48,17 +48,10 @@ from sysforge.primitives.paths import (
     resolve_packages_path,
 )
 
-# Hard-coded to avoid circular import from stages/__init__.py
-_PIPELINE_STAGES = [
-    ("partition",    "Disk partitioning"),
-    ("base_install", "Base system install"),
-    ("hardware",     "Hardware detection"),
-    ("configure",    "Bootstrap configuration"),
-    ("reconfigure",  "Pre-build checkpoint"),
-    ("toolchain",    "LLVM toolchain build"),
-    ("packages",     "Build and install packages"),
-    ("kernel",       "Build and install custom kernel"),
-]
+def _pipeline_stages() -> list[tuple[str, str]]:
+    """Lazy import to avoid circular import from stages/__init__.py."""
+    from sysforge.pipeline.stages import STAGES
+    return [(s.name, s.description) for s in STAGES]
 
 # Ordered step definitions: (key, short_label, description)
 _STEPS = [
@@ -102,7 +95,8 @@ def _load_sysforge_toml() -> dict:
     try:
         with open(SYSFORGE_TOML_PATH, "rb") as f:
             return tomllib.load(f)
-    except Exception:
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        _log.warn(f"Could not load {SYSFORGE_TOML_PATH}: {e}")
         return {}
 
 
@@ -155,7 +149,7 @@ def _show_stage_summary(state) -> None:
         "running":    "→",
         "failed":     "✗",
     }
-    for name, desc in _PIPELINE_STAGES:
+    for name, desc in _pipeline_stages():
         status = state.stage_status(name)
         if name == "reconfigure":
             symbol, label = "→", "running"

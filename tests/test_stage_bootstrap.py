@@ -599,8 +599,10 @@ class TestPartitionDevicePaths:
     ])
     def test_partition_names(self, device, expected_esp, expected_root):
         cfg = make_cfg(device=device)
-        with patch("sysforge.pipeline.stages.partition.subprocess.run") as mock_run:
+        with patch("sysforge.pipeline.stages.partition.subprocess.run") as mock_run, \
+             patch("sysforge.pipeline.stages.partition.Path") as mock_path:
             mock_run.return_value = MagicMock(returncode=0)
+            mock_path.return_value.exists.return_value = True
             esp, root = _partition_disk(cfg)
         assert esp  == expected_esp
         assert root == expected_root
