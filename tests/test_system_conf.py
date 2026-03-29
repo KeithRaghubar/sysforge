@@ -368,7 +368,7 @@ def test_emit_gcc_cc_override_rewrites_thin_lto(sys_conf_path):
 # ---------------------------------------------------------------------------
 
 def test_emit_gcc_lld_disables_lto(sys_conf_path):
-    """GCC + lld: LTOFLAGS cleared and -flto stripped from CFLAGS."""
+    """GCC + lld: LTOFLAGS cleared, -flto stripped, OPTIONS flipped to !lto."""
     profile = {
         "CC": "gcc",
         "LDFLAGS": "-fuse-ld=lld -Wl,-O1",
@@ -380,20 +380,24 @@ def test_emit_gcc_lld_disables_lto(sys_conf_path):
     assert conf["LTOFLAGS"] == ""
     assert "-flto" not in conf["CFLAGS"]
     assert "-O3" in conf["CFLAGS"]
+    # OPTIONS must have !lto to prevent makepkg's ${LTOFLAGS:--flto} fallback
+    assert "!lto" in conf.get("OPTIONS", "")
 
 
 def test_emit_gcc_lld_disables_lto_from_system_conf(tmp_path):
-    """GCC + lld: system conf LTOFLAGS cleared when profile doesn't override it."""
+    """GCC + lld: system conf LTOFLAGS cleared and OPTIONS flipped."""
     sys_conf = tmp_path / "makepkg.conf"
     sys_conf.write_text(
         'CARCH="x86_64"\n'
         'CFLAGS="-O2"\n'
         'LTOFLAGS="-flto=thin"\n'
+        'OPTIONS=(strip docs lto)\n'
     )
     profile = {"CC": "gcc", "LDFLAGS": "-fuse-ld=lld -Wl,-O1", "CFLAGS": "-O3"}
     with emit_makepkg_conf(profile, system_conf_path=sys_conf) as conf_path:
         conf = read_conf(conf_path)
     assert conf["LTOFLAGS"] == ""
+    assert "!lto" in conf.get("OPTIONS", "")
 
 
 def test_emit_clang_lld_keeps_lto(sys_conf_path):

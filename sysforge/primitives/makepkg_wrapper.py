@@ -380,7 +380,9 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
 
     if _is_gcc and effective_linker == "lld":
         # GCC LTO bitcode (.gnu.lto_* sections) is incompatible with lld.
-        # Disable LTO by clearing LTOFLAGS and stripping -flto* from flag keys.
+        # Disable LTO fully: clear LTOFLAGS, strip -flto* from flag keys, and
+        # flip 'lto' → '!lto' in OPTIONS so makepkg's lto buildenv hook doesn't
+        # re-inject -flto via the ${LTOFLAGS:--flto} fallback.
         profile_overrides["LTOFLAGS"] = ""
         for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
             if key in profile_overrides:
@@ -393,6 +395,15 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             cleaned, stripped = _strip_full_lto(val)
             if stripped:
                 profile_overrides[key] = cleaned
+        # Flip lto → !lto in OPTIONS (may come from profile or system conf).
+        options_raw = profile_overrides.get("OPTIONS") or system_assignments.get("OPTIONS", "")
+        if options_raw:
+            options_raw = options_raw.strip()
+            # OPTIONS is a bash array: (token token ...) — work inside the parens
+            inner = options_raw.strip("()")
+            tokens = inner.split()
+            new_tokens = ["!lto" if t == "lto" else t for t in tokens]
+            profile_overrides["OPTIONS"] = "(" + " ".join(new_tokens) + ")"
         _flag_log.warn(
             f"CC is '{effective_cc}' with linker '{effective_linker}' — "
             f"disabling LTO (GCC LTO bitcode is incompatible with lld)")
@@ -462,7 +473,12 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             # env-injected ones.
             continue
         if key in profile_overrides:
-            conf_lines.append(f'{key}="{profile_overrides[key]}"')
+            val = profile_overrides[key]
+            # Bash array values (OPTIONS, BUILDENV, etc.) must not be quoted.
+            if val.startswith("("):
+                conf_lines.append(f"{key}={val}")
+            else:
+                conf_lines.append(f'{key}="{val}"')
         else:
             conf_lines.append(f"{key}={raw_val}")
 
@@ -471,7 +487,11 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         conf_lines.append("")
         conf_lines.append("# SysForge profile additions (not in system conf)")
         for key in new_keys:
-            conf_lines.append(f'{key}="{profile_overrides[key]}"')
+            val = profile_overrides[key]
+            if val.startswith("("):
+                conf_lines.append(f"{key}={val}")
+            else:
+                conf_lines.append(f'{key}="{val}"')
 
     with tempfile.NamedTemporaryFile(
         mode="w",
