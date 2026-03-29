@@ -289,3 +289,24 @@ def test_emit_rustflags_mold_to_default_linker(sys_conf_path):
     with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
         conf = read_conf(conf_path)
     assert conf["RUSTFLAGS"] == "-C link-arg=-fuse-ld=ld"
+
+
+# ---------------------------------------------------------------------------
+# Toolchain key exclusion from conf
+# ---------------------------------------------------------------------------
+
+def test_emit_excludes_system_conf_cc_cxx(tmp_path):
+    """CC/CXX from system conf must not appear in emitted conf (they're env-injected)."""
+    sys_conf = tmp_path / "makepkg.conf"
+    sys_conf.write_text(
+        'CARCH="x86_64"\n'
+        'CC=clang\n'
+        'CXX=clang++\n'
+        'CFLAGS="-O2"\n'
+    )
+    profile = {"CFLAGS": "-O3"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf) as conf_path:
+        conf = read_conf(conf_path)
+    assert "CC" not in conf
+    assert "CXX" not in conf
+    assert conf["CFLAGS"] == "-O3"
