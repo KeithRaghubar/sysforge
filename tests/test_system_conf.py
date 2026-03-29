@@ -310,3 +310,40 @@ def test_emit_excludes_system_conf_cc_cxx(tmp_path):
     assert "CC" not in conf
     assert "CXX" not in conf
     assert conf["CFLAGS"] == "-O3"
+
+
+# ---------------------------------------------------------------------------
+# GCC thin-LTO rewrite
+# ---------------------------------------------------------------------------
+
+def test_emit_gcc_rewrites_thin_lto_in_ltoflags(sys_conf_path):
+    """-flto=thin in LTOFLAGS is rewritten to -flto when CC=gcc."""
+    profile = {"CC": "gcc", "LTOFLAGS": "-flto=thin", "CFLAGS": "-O3"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == "-flto"
+
+
+def test_emit_gcc_rewrites_thin_lto_in_cflags(sys_conf_path):
+    """-flto=thin embedded in CFLAGS is rewritten to -flto when CC=gcc."""
+    profile = {"CC": "gcc", "CFLAGS": "-O3 -flto=thin -pipe"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["CFLAGS"] == "-O3 -flto -pipe"
+
+
+def test_emit_clang_keeps_thin_lto(sys_conf_path):
+    """-flto=thin is preserved when CC=clang."""
+    profile = {"CC": "clang", "LTOFLAGS": "-flto=thin", "CFLAGS": "-O3"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == "-flto=thin"
+
+
+def test_emit_gcc_cc_override_rewrites_thin_lto(sys_conf_path):
+    """--cc=gcc override triggers thin-LTO rewrite even if profile has CC=clang."""
+    profile = {"CC": "clang", "LTOFLAGS": "-flto=thin"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path,
+                           cc_override="gcc") as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == "-flto"

@@ -352,6 +352,23 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 profile_overrides["RUSTFLAGS"] = _replace_rustflags_linker(
                     profile_overrides["RUSTFLAGS"], effective_linker)
 
+    # GCC thin-LTO guard: -flto=thin is clang-only. When the effective compiler
+    # is GCC, rewrite -flto=thin → -flto in LTOFLAGS (and in CFLAGS/CXXFLAGS/
+    # LDFLAGS if present). makepkg appends LTOFLAGS to C{,XX}FLAGS/LDFLAGS when
+    # OPTIONS contains 'lto', so both must be handled.
+    effective_cc = cc_override or resolved_profile.get("CC")
+    if effective_cc and not effective_cc.startswith("clang"):
+        _thin_lto_rewritten = False
+        for key in ("LTOFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
+            if key in profile_overrides and "-flto=thin" in profile_overrides[key]:
+                profile_overrides[key] = profile_overrides[key].replace(
+                    "-flto=thin", "-flto")
+                _thin_lto_rewritten = True
+        if _thin_lto_rewritten:
+            _flag_log.warn(
+                f"CC is '{effective_cc}' (not clang) — rewriting "
+                f"-flto=thin to -flto (GCC does not support thin LTO)")
+
     # Full LTO stripping for PGO passes. -flto/-flto=full are incompatible with
     # clang IR PGO. -flto=thin is nominally compatible but triggers non-PIC
     # ThinLTO codegen for shared libraries (R_X86_64_PC32 vtable relocations in
