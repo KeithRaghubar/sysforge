@@ -603,6 +603,14 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         if k in env:
             _env_log.info(f"Stripped from shell env (superseded by profile): {k}={env.pop(k)!r}")
 
+    # LLVM_PROFILE_FILE is only meaningful during PGO pass 2, where the
+    # toolchain stage injects it via extra_env.  If inherited from the shell
+    # (e.g. user .zprofile), it causes every clang invocation to emit profraw
+    # files into an unrelated directory.
+    _llvm_pf = env.pop("LLVM_PROFILE_FILE", None)
+    if _llvm_pf:
+        _env_log.info(f"Stripped inherited LLVM_PROFILE_FILE={_llvm_pf!r} (only set during PGO pass 2)")
+
     env["MAKEPKG_CONF"] = str(conf_path)
 
     # Suppress git's pager for any git subprocesses run by PKGBUILDs (e.g.
