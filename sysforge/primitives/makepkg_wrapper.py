@@ -322,6 +322,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     # whenever the effective linker is not lld — not only when a linker is declared
     # but missing, since undeclared LDFLAGS containing lld-only flags will break
     # configure test compilations against the system linker.
+    effective_linker = "ld"
     if "LDFLAGS" in profile_overrides:
         declared_linker = _detect_linker_from_ldflags(profile_overrides["LDFLAGS"])
         effective_linker = declared_linker or "ld"
@@ -352,12 +353,14 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 profile_overrides["RUSTFLAGS"] = _replace_rustflags_linker(
                     profile_overrides["RUSTFLAGS"], effective_linker)
 
-    # GCC thin-LTO guard: -flto=thin is clang-only. When the effective compiler
-    # is GCC, rewrite -flto=thin → -flto in LTOFLAGS (and in CFLAGS/CXXFLAGS/
-    # LDFLAGS if present). makepkg appends LTOFLAGS to C{,XX}FLAGS/LDFLAGS when
-    # OPTIONS contains 'lto', so both must be handled.
+    # GCC + LTO guard: GCC emits .gnu.lto_* bitcode that only GNU ld/gold can
+    # process. When CC is GCC-based:
+    #   - Rewrite -flto=thin → -flto (thin LTO is clang-only)
+    #   - If the effective linker is lld, disable LTO entirely — lld cannot
+    #     process GCC LTO bitcode objects (undefined symbol errors at link time)
     effective_cc = cc_override or resolved_profile.get("CC")
-    if effective_cc and not effective_cc.startswith("clang"):
+    _is_gcc = effective_cc and not effective_cc.startswith("clang")
+    if _is_gcc:
         _thin_lto_rewritten = False
         for key in ("LTOFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
             if key in profile_overrides:
@@ -374,6 +377,25 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             _flag_log.warn(
                 f"CC is '{effective_cc}' (not clang) — rewriting "
                 f"-flto=thin to -flto (GCC does not support thin LTO)")
+
+    if _is_gcc and effective_linker == "lld":
+        # GCC LTO bitcode (.gnu.lto_* sections) is incompatible with lld.
+        # Disable LTO by clearing LTOFLAGS and stripping -flto* from flag keys.
+        profile_overrides["LTOFLAGS"] = ""
+        for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
+            if key in profile_overrides:
+                val = profile_overrides[key]
+            elif key in system_assignments:
+                raw = system_assignments[key].strip()
+                val = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
+            else:
+                continue
+            cleaned, stripped = _strip_full_lto(val)
+            if stripped:
+                profile_overrides[key] = cleaned
+        _flag_log.warn(
+            f"CC is '{effective_cc}' with linker '{effective_linker}' — "
+            f"disabling LTO (GCC LTO bitcode is incompatible with lld)")
 
     # Full LTO stripping for PGO passes. -flto/-flto=full are incompatible with
     # clang IR PGO. -flto=thin is nominally compatible but triggers non-PIC

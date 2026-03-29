@@ -361,3 +361,60 @@ def test_emit_gcc_cc_override_rewrites_thin_lto(sys_conf_path):
                            cc_override="gcc") as conf_path:
         conf = read_conf(conf_path)
     assert conf["LTOFLAGS"] == "-flto"
+
+
+# ---------------------------------------------------------------------------
+# GCC + lld LTO disabling
+# ---------------------------------------------------------------------------
+
+def test_emit_gcc_lld_disables_lto(sys_conf_path):
+    """GCC + lld: LTOFLAGS cleared and -flto stripped from CFLAGS."""
+    profile = {
+        "CC": "gcc",
+        "LDFLAGS": "-fuse-ld=lld -Wl,-O1",
+        "LTOFLAGS": "-flto",
+        "CFLAGS": "-O3 -flto -pipe",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == ""
+    assert "-flto" not in conf["CFLAGS"]
+    assert "-O3" in conf["CFLAGS"]
+
+
+def test_emit_gcc_lld_disables_lto_from_system_conf(tmp_path):
+    """GCC + lld: system conf LTOFLAGS cleared when profile doesn't override it."""
+    sys_conf = tmp_path / "makepkg.conf"
+    sys_conf.write_text(
+        'CARCH="x86_64"\n'
+        'CFLAGS="-O2"\n'
+        'LTOFLAGS="-flto=thin"\n'
+    )
+    profile = {"CC": "gcc", "LDFLAGS": "-fuse-ld=lld -Wl,-O1", "CFLAGS": "-O3"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == ""
+
+
+def test_emit_clang_lld_keeps_lto(sys_conf_path):
+    """clang + lld: LTO is preserved (LLVM LTO works with lld)."""
+    profile = {
+        "CC": "clang",
+        "LDFLAGS": "-fuse-ld=lld -Wl,-O1",
+        "LTOFLAGS": "-flto=thin",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == "-flto=thin"
+
+
+def test_emit_gcc_bfd_keeps_lto(sys_conf_path):
+    """GCC + bfd (no -fuse-ld): LTO is preserved (GNU ld handles GCC LTO)."""
+    profile = {
+        "CC": "gcc",
+        "LDFLAGS": "-Wl,-O1",
+        "LTOFLAGS": "-flto",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == "-flto"
