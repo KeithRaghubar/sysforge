@@ -36,6 +36,7 @@ from sysforge.pipeline.stages.configure import (
     _create_user,
     _find_sysforge_source,
     _create_state_dir,
+    _create_sysforge_group,
     _configure_shell,
 )
 from sysforge.pipeline.stages.hardware import (
@@ -395,7 +396,7 @@ class TestWriteResumeReminder:
         reminder = tmp_path / "etc/profile.d/sysforge-resume.sh"
         assert reminder.exists()
         assert "sysforge" in reminder.read_text()
-        assert reminder.stat().st_mode & 0o777 == 0o777
+        assert reminder.stat().st_mode & 0o777 == 0o644
 
 
 class TestSetRootPassword:
@@ -450,13 +451,30 @@ class TestCreateUser:
                 _create_user(cfg)
 
 
+class TestCreateSysforgeGroup:
+    def test_creates_group_and_adds_user(self):
+        cfg = make_cfg(username="builder")
+        with patch("sysforge.pipeline.stages.configure._chroot") as mock_chroot:
+            _create_sysforge_group(cfg)
+        assert mock_chroot.call_count == 2
+        mock_chroot.assert_any_call(cfg.target, ["groupadd", "-f", "sysforge"])
+        mock_chroot.assert_any_call(cfg.target, ["usermod", "-aG", "sysforge", "builder"])
+
+
 class TestCreateStateDir:
     def test_creates_dir_with_permissions(self, tmp_path):
         cfg = make_cfg(target=str(tmp_path))
-        _create_state_dir(cfg)
+        with patch("sysforge.pipeline.stages.configure._chroot") as mock_chroot:
+            _create_state_dir(cfg)
         state_dir = tmp_path / "var/lib/sysforge"
         assert state_dir.is_dir()
-        assert state_dir.stat().st_mode & 0o777 == 0o777
+        assert mock_chroot.call_count == 2
+        mock_chroot.assert_any_call(
+            str(tmp_path), ["chown", "root:sysforge", "/var/lib/sysforge"]
+        )
+        mock_chroot.assert_any_call(
+            str(tmp_path), ["chmod", "0775", "/var/lib/sysforge"]
+        )
 
 
 class TestConfigureShell:

@@ -320,12 +320,20 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
     _log.ui("sysforge installed into target.")
 
 
+def _create_sysforge_group(cfg: BootstrapConfig) -> None:
+    """Create the sysforge group and add the builder user to it."""
+    _chroot(cfg.target, ["groupadd", "-f", "sysforge"])
+    _chroot(cfg.target, ["usermod", "-aG", "sysforge", cfg.username])
+    _log.ui(f"Group sysforge created, {cfg.username} added")
+
+
 def _create_state_dir(cfg: BootstrapConfig) -> None:
-    """Create /var/lib/sysforge with world-writable permissions in the target."""
+    """Create /var/lib/sysforge owned by root:sysforge in the target."""
     state_dir = Path(cfg.target) / "var/lib/sysforge"
     state_dir.mkdir(parents=True, exist_ok=True)
-    state_dir.chmod(0o777)
-    _log.ui("State dir: /var/lib/sysforge (mode 0777)")
+    _chroot(cfg.target, ["chown", "root:sysforge", "/var/lib/sysforge"])
+    _chroot(cfg.target, ["chmod", "0775", "/var/lib/sysforge"])
+    _log.ui("State dir: /var/lib/sysforge (root:sysforge, mode 0775)")
 
 
 def _copy_config_files(cfg: BootstrapConfig) -> None:
@@ -342,8 +350,8 @@ def _write_resume_reminder(cfg: BootstrapConfig) -> None:
     dest = Path(cfg.target) / _RESUME_REMINDER_PATH
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(_RESUME_REMINDER)
-    dest.chmod(0o777)
-    _log.ui("Resume reminder written to /etc/profile.d/sysforge-resume.sh (mode 0777)")
+    dest.chmod(0o644)
+    _log.ui("Resume reminder written to /etc/profile.d/sysforge-resume.sh (mode 0644)")
 
 
 def _configure_shell(cfg: BootstrapConfig) -> None:
@@ -458,6 +466,7 @@ class ConfigureStage(Stage):
         _enable_services(cfg)
         _configure_sshd(cfg)
         _create_user(cfg)
+        _create_sysforge_group(cfg)
         _configure_shell(cfg)
         _set_default_shell(cfg)
         _copy_config_files(cfg)
