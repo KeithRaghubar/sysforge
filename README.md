@@ -47,7 +47,7 @@ sysforge packages sync --dry-run
 
 To override system defaults without modifying `/etc/sysforge/`, create user copies in `~/.config/sysforge/`.
 
-For full CLI reference, profile/rule semantics, and architecture details, see [DESIGN.md](DESIGN.md).
+For full CLI reference, profile/rule semantics, and architecture details, see [DESIGN.md](DESIGN.md) (`glow -p DESIGN.md` for in-shell rendering).
 
 ---
 

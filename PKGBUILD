@@ -24,6 +24,7 @@ optdepends=(
     'sccache: Rust compiler cache support'
     'uv: required for bootstrap pipeline (configure stage)'
     'zsh: zsh shell support'
+    'glow: in-shell markdown rendering for docs'
     'zsh-completions: additional zsh completions'
 )
 conflicts=('sysforge-git')
