@@ -40,6 +40,7 @@ Usage:
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import NoReturn
 
 _VERBOSITY = 0
 _DRY_RUN = False
@@ -168,6 +169,9 @@ class Logger:
     def ui(self, message: str) -> None:
         ui(self._tag, message)
 
+    def fatal(self, message: str, exit_code: int = 1) -> NoReturn:
+        fatal(self._tag, message, exit_code)
+
     def error(self, message: str) -> None:
         error(self._tag, message)
 
@@ -201,6 +205,12 @@ def ui(tag: str, message: str) -> None:
     """Always printed regardless of verbosity. Always written to log files. For interactive output."""
     print(message, file=_out())
     _write_to_files(f"[SYSFORGE][UI]{tag} {message}\n")
+
+
+def fatal(tag: str, message: str, exit_code: int = 1) -> NoReturn:
+    """Print an error message, write to log files, and terminate the process."""
+    error(tag, message)
+    sys.exit(exit_code)
 
 
 def error(tag: str, message: str) -> None:

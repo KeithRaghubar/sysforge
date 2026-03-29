@@ -1063,8 +1063,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
     try:
         pkgbuild_path = find_pkgbuild(str(pkgbuild_path), config)
     except FileNotFoundError as e:
-        print(f"[SYSFORGE] Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        _build_log.fatal(str(e))
 
     # Open per-package log as early as possible so subsequent debug output is captured.
     # Use the PKGBUILD directory name; this matches pkgbase in all normal cases.
@@ -1085,8 +1084,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         try:
             git_pull_rebase(pkgbuild_path.parent)
         except RuntimeError as e:
-            _git_log.error(str(e))
-            sys.exit(1)
+            _git_log.fatal(str(e))
     else:
         _build_log.info("--no-update: skipping git pull --rebase")
 
@@ -1220,14 +1218,13 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 _stale_profraw = list(_pgo_store.glob("**/*.profraw"))
                 if _stale_profraw:
                     _total_bytes = sum(p.stat().st_size for p in _stale_profraw)
-                    _pgo_log.error(
+                    _pgo_log.fatal(
                         f"{len(_stale_profraw)} stale .profraw files "
                         f"({_total_bytes / 1024 / 1024:.1f} MiB) in {_pgo_store} — "
                         "instrumented LLVM binaries may be installed on this system. "
                         "Reinstall clean llvm/llvm-libs or run 'sysforge run toolchain' "
                         "to complete the PGO build."
                     )
-                    sys.exit(1)
 
         # Post-build ABI check (non-fatal)
         if options.abi_check:

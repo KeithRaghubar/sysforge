@@ -103,8 +103,7 @@ def run_stage_standalone(stage, config, options):
             _log.info(f"{stage.name}: complete")
         success = True
     except RuntimeError as e:
-        _log.error(f"{stage.name}: FAILED — {e}")
-        sys.exit(1)
+        _log.fatal(f"{stage.name}: FAILED — {e}")
     finally:
         if unified_log_active:
             log.close_unified_log(success=success, persist=options.persist_log)
@@ -139,17 +138,15 @@ def run_pipeline(config, options, stages=None):
     # Guard against accidental state clobber
     existing_state = state.path.exists()
     if existing_state and not options.resume and not options.start_from:
-        _log.error(f"A state file already exists at {state.path}\n"
+        _log.fatal(f"A state file already exists at {state.path}\n"
             f"  Pass --resume to continue from the last checkpoint.\n"
             f"  Pass --start-from <stage> to start from a specific stage.\n"
             f"  Delete {state.path} to start completely fresh.")
-        sys.exit(1)
 
     # Determine start index
     if options.start_from:
         if options.start_from not in stage_names:
-            _log.error(f"Unknown stage {options.start_from!r}. Valid stages: {stage_names}")
-            sys.exit(1)
+            _log.fatal(f"Unknown stage {options.start_from!r}. Valid stages: {stage_names}")
 
         start_idx = next(i for i, s in enumerate(stages) if s.name == options.start_from)
 
@@ -222,11 +219,10 @@ def run_pipeline(config, options, stages=None):
                 state.save()
                 _log.error(f"{stage.name}: NOT IMPLEMENTED")
                 _log.error(f"  {e}")
-                _log.error(f"To skip this stage during development:\n"
+                _log.fatal(f"To skip this stage during development:\n"
                     f"    sysforge run pipeline --start-from {stage.name} --resume\n"
                     f"  or jump directly to a later stage:\n"
                     f"    sysforge run pipeline --start-from packages")
-                sys.exit(1)
 
             except BootstrapRebootRequired as e:
                 state.save()
@@ -239,8 +235,7 @@ def run_pipeline(config, options, stages=None):
                 state.mark_failed(stage.name, str(e))
                 state.save()
                 _log.error(f"{stage.name}: FAILED — {e}")
-                _log.error("State saved. Run with --resume to continue after fixing the issue.")
-                sys.exit(1)
+                _log.fatal("State saved. Run with --resume to continue after fixing the issue.")
 
         if not options.dry_run:
             pipeline_success = True

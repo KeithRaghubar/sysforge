@@ -15,7 +15,6 @@ Output goes to stdout. Verbosity flags (-vv, -vvv) enable the normal
 Public API:
     cmd_resolve(args)
 """
-import sys
 from pathlib import Path
 
 from sysforge.primitives.config import (
@@ -25,6 +24,8 @@ from sysforge.primitives.config import (
     load_consumes_inference,
 )
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge import log
+_log = log.get_logger("RESOLVE")
 from sysforge.primitives.profile import (
     SYSFORGE_KEYS,
     match_rules,
@@ -196,15 +197,12 @@ def cmd_resolve(args) -> None:
     try:
         pkgbuild_path = find_pkgbuild(args.pkg, config)
     except FileNotFoundError as e:
-        print(f"[SYSFORGE] Error: {e}", file=sys.stderr)
-        print(f"  Tip: run `sysforge build {args.pkg}` to download the PKGBUILD first.", file=sys.stderr)
-        sys.exit(1)
+        _log.fatal(f"{e}\n  Tip: run `sysforge build {args.pkg}` to download the PKGBUILD first.")
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)
     except Exception as e:
-        print(f"[SYSFORGE] Error parsing PKGBUILD: {e}", file=sys.stderr)
-        sys.exit(1)
+        _log.fatal(f"Error parsing PKGBUILD: {e}")
 
     if getattr(args, "deps", False):
         from sysforge.primitives.aur_resolve import resolve_all_deps

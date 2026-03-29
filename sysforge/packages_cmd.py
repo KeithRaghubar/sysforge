@@ -95,8 +95,7 @@ def append_dependency_entries(
 def cmd_packages_list(args):
     path = _resolve_packages_file(getattr(args, "packages", None))
     if not path.exists():
-        print(f"[SYSFORGE] No packages.toml at {path}", file=sys.stderr)
-        sys.exit(1)
+        _log.fatal(f"No packages.toml at {path}")
 
     data = _load_toml(path)
     entries = data.get("package", [])
@@ -226,8 +225,7 @@ def cmd_packages_remove(args):
     path = _resolve_packages_file(getattr(args, "packages", None))
 
     if not path.exists():
-        print(f"[SYSFORGE] packages.toml not found: {path}", file=sys.stderr)
-        sys.exit(1)
+        _log.fatal(f"packages.toml not found: {path}")
 
     text = path.read_text()
     lines = text.splitlines(keepends=True)
@@ -246,8 +244,7 @@ def cmd_packages_remove(args):
             break
 
     if target_start is None:
-        print(f"[SYSFORGE] {pkg} not found in {path}", file=sys.stderr)
-        sys.exit(1)
+        _log.fatal(f"{pkg} not found in {path}")
 
     # Also remove blank lines immediately before the block
     remove_start = target_start
@@ -322,8 +319,7 @@ def cmd_packages_sync(args):
     dry_run = getattr(args, "dry_run", False)
 
     if not path.exists():
-        print(f"[SYSFORGE] packages.toml not found: {path}", file=sys.stderr)
-        sys.exit(1)
+        _log.fatal(f"packages.toml not found: {path}")
 
     data = _load_toml(path)
     build_section = data.get("build", {})

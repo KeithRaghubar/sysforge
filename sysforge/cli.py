@@ -95,16 +95,14 @@ def _cmd_build(args):
                 state_dir=Path(args.state_dir) if args.state_dir else None,
             ))
     except RuntimeError as e:
-        print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
-        sys.exit(1)
+        _log.fatal(str(e))
 
 
 def _cmd_update(args):
     try:
         cmd_update(args)
     except RuntimeError as e:
-        print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
-        sys.exit(1)
+        _log.fatal(str(e))
 
 
 def _cmd_converge(args):
@@ -113,8 +111,7 @@ def _cmd_converge(args):
     try:
         cmd_converge(args)
     except RuntimeError as e:
-        print(f"[SYSFORGE] Fatal: {e}", file=sys.stderr)
-        sys.exit(1)
+        _log.fatal(str(e))
 
 
 def _cmd_completions(args):
