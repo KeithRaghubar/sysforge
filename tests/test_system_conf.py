@@ -230,3 +230,62 @@ def test_emit_kernel_build_ld_override_ignored(sys_conf_path):
     # with kernel_build the system LDFLAGS value should be unchanged
     ldflags = conf.get("LDFLAGS", "")
     assert "-fuse-ld=lld" not in ldflags
+
+
+# ---------------------------------------------------------------------------
+# RUSTFLAGS linker reconciliation
+# ---------------------------------------------------------------------------
+
+def test_emit_rustflags_linker_mismatch_overridden(sys_conf_path):
+    """RUSTFLAGS -fuse-ld=mold is replaced with lld when LDFLAGS uses lld."""
+    profile = {
+        "LDFLAGS": "-fuse-ld=lld -Wl,-O1",
+        "RUSTFLAGS": "-C link-arg=-fuse-ld=mold",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["RUSTFLAGS"] == "-C link-arg=-fuse-ld=lld"
+
+
+def test_emit_rustflags_linker_matches_no_change(sys_conf_path):
+    """RUSTFLAGS left alone when its linker already matches LDFLAGS."""
+    profile = {
+        "LDFLAGS": "-fuse-ld=lld -Wl,-O1",
+        "RUSTFLAGS": "-C link-arg=-fuse-ld=lld -C opt-level=3",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["RUSTFLAGS"] == "-C link-arg=-fuse-ld=lld -C opt-level=3"
+
+
+def test_emit_rustflags_no_linker_unchanged(sys_conf_path):
+    """RUSTFLAGS without a linker declaration is not modified."""
+    profile = {
+        "LDFLAGS": "-fuse-ld=lld -Wl,-O1",
+        "RUSTFLAGS": "-C opt-level=3 -C target-cpu=native",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["RUSTFLAGS"] == "-C opt-level=3 -C target-cpu=native"
+
+
+def test_emit_rustflags_compact_form_overridden(sys_conf_path):
+    """The -Clink-arg= compact form is also reconciled."""
+    profile = {
+        "LDFLAGS": "-fuse-ld=lld -Wl,-O1",
+        "RUSTFLAGS": "-Clink-arg=-fuse-ld=mold -C opt-level=3",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["RUSTFLAGS"] == "-Clink-arg=-fuse-ld=lld -C opt-level=3"
+
+
+def test_emit_rustflags_mold_to_default_linker(sys_conf_path):
+    """When LDFLAGS has no linker (effective=ld), RUSTFLAGS mold is overridden to ld."""
+    profile = {
+        "LDFLAGS": "-Wl,-O1,--as-needed",
+        "RUSTFLAGS": "-C link-arg=-fuse-ld=mold",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["RUSTFLAGS"] == "-C link-arg=-fuse-ld=ld"

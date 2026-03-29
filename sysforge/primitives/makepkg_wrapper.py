@@ -131,6 +131,40 @@ def _detect_linker_from_ldflags(ldflags_val):
     return None
 
 
+def _detect_linker_from_rustflags(rustflags_val):
+    """Return the linker name declared by -C link-arg=-fuse-ld=X in RUSTFLAGS, or None."""
+    tokens = rustflags_val.split()
+    for i, token in enumerate(tokens):
+        # Handle both "-C link-arg=-fuse-ld=X" (two tokens) and
+        # "-Clink-arg=-fuse-ld=X" (single token)
+        if token == "-C" and i + 1 < len(tokens):
+            arg = tokens[i + 1]
+            if arg.startswith("link-arg=-fuse-ld="):
+                return arg[len("link-arg=-fuse-ld="):]
+        elif token.startswith("-Clink-arg=-fuse-ld="):
+            return token[len("-Clink-arg=-fuse-ld="):]
+    return None
+
+
+def _replace_rustflags_linker(rustflags_val, new_linker):
+    """Replace -C link-arg=-fuse-ld=X in RUSTFLAGS with a new linker."""
+    tokens = rustflags_val.split()
+    out = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == "-C" and i + 1 < len(tokens) and tokens[i + 1].startswith("link-arg=-fuse-ld="):
+            out.append("-C")
+            out.append(f"link-arg=-fuse-ld={new_linker}")
+            i += 2
+        elif tokens[i].startswith("-Clink-arg=-fuse-ld="):
+            out.append(f"-Clink-arg=-fuse-ld={new_linker}")
+            i += 1
+        else:
+            out.append(tokens[i])
+            i += 1
+    return " ".join(out)
+
+
 def _inject_linker(ldflags_val, linker_name):
     """
     Replace an existing -fuse-ld=X token in LDFLAGS, or prepend one if absent.
@@ -297,6 +331,20 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 for tok in stripped_tokens:
                     _flag_log.warn(f"Stripped lld-only flag: {tok}")
                 profile_overrides["LDFLAGS"] = cleaned
+
+        # RUSTFLAGS linker reconciliation: if RUSTFLAGS declares a different
+        # linker than LDFLAGS, override it to match. A mismatch causes link
+        # failures when LTO is enabled — mold cannot resolve LLVM bitcode
+        # produced by lld, and vice versa.
+        if "RUSTFLAGS" in profile_overrides:
+            rust_linker = _detect_linker_from_rustflags(profile_overrides["RUSTFLAGS"])
+            if rust_linker and rust_linker != effective_linker:
+                _flag_log.warn(
+                    f"RUSTFLAGS linker '{rust_linker}' conflicts with "
+                    f"LDFLAGS effective linker '{effective_linker}' — "
+                    f"overriding RUSTFLAGS to use '{effective_linker}'")
+                profile_overrides["RUSTFLAGS"] = _replace_rustflags_linker(
+                    profile_overrides["RUSTFLAGS"], effective_linker)
 
     # Full LTO stripping for PGO passes. -flto/-flto=full are incompatible with
     # clang IR PGO. -flto=thin is nominally compatible but triggers non-PIC
