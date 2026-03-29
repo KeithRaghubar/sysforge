@@ -28,8 +28,12 @@
 #   CXXFLAGS = "$CFLAGS"
 #   CPPFLAGS = "-D_FORTIFY_SOURCE=2"
 #   LDFLAGS  = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
-#             # Use -fuse-ld=lld to select lld. lld-only flags (--icf=*) are
-#             # automatically stripped by SysForge when lld is not the effective linker.
+#             # Use -fuse-ld=lld to select lld. Flag guards in emit_makepkg_conf
+#             # handle incompatibilities automatically: lld-only flags (--icf=*)
+#             # stripped when lld is not the linker; RUSTFLAGS linker reconciled
+#             # to match LDFLAGS; -flto=thin rewritten to -flto for GCC; LTO
+#             # disabled entirely when CC=gcc + linker=lld (GCC LTO bitcode is
+#             # incompatible with lld).
 #   DEBUG_CFLAGS   = "-g"
 #   DEBUG_CXXFLAGS = "-g"
 #   DEBUG_LDFLAGS  = ""

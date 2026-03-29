@@ -16,6 +16,7 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 - Recursive AUR dependency resolution — automatically detects, fetches, builds, and installs transitive AUR deps before the main package
 - Pre-build soname dependency analysis to surface ABI mismatches before the build starts
 - PKGBUILD flag extraction and patching — extracts compiler flags from PKGBUILD function bodies and manages them through the profile system instead
+- Automatic toolchain conflict detection — reconciles linker mismatches between RUSTFLAGS and LDFLAGS, rewrites clang-only LTO flags for GCC, and disables LTO when the compiler/linker combination is incompatible
 
 ## What it is not
 
