@@ -942,6 +942,15 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 _DEFAULT_PGO_STORE = "/var/tmp/sysforge-llvm-pgo"
 
 
+def _try_load_toml(path: Path) -> dict | None:
+    """Load a TOML file, returning None on any error."""
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except Exception:
+        return None
+
+
 class PGOBuildSkipped(Exception):
     """
     Raised by run() when build_mode is pgo_llvm_toolchain but profdata is
@@ -1194,6 +1203,31 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 strip_flags=options.strip_flags,
             )
         build_success = True
+
+        # Post-build: abort if profraw files are accumulating outside PGO pass 2.
+        # This catches instrumented LLVM binaries leaking onto the system after a
+        # failed or partial toolchain run — the builds silently emit profraw that
+        # can fill the disk.  Fatal because continued builds would keep generating
+        # profraw until storage is exhausted.
+        if not options.pgo_managed:
+            _tcfg = _try_load_toml(TOOLCHAIN_PATH) if TOOLCHAIN_PATH.exists() else None
+            _pgo_store = Path(
+                _tcfg.get("pgo_store", _DEFAULT_PGO_STORE)
+                if _tcfg is not None
+                else _DEFAULT_PGO_STORE
+            )
+            if _pgo_store.is_dir():
+                _stale_profraw = list(_pgo_store.glob("**/*.profraw"))
+                if _stale_profraw:
+                    _total_bytes = sum(p.stat().st_size for p in _stale_profraw)
+                    _pgo_log.error(
+                        f"{len(_stale_profraw)} stale .profraw files "
+                        f"({_total_bytes / 1024 / 1024:.1f} MiB) in {_pgo_store} — "
+                        "instrumented LLVM binaries may be installed on this system. "
+                        "Reinstall clean llvm/llvm-libs or run 'sysforge run toolchain' "
+                        "to complete the PGO build."
+                    )
+                    sys.exit(1)
 
         # Post-build ABI check (non-fatal)
         if options.abi_check:
