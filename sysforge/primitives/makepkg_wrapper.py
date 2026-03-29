@@ -360,9 +360,15 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     if effective_cc and not effective_cc.startswith("clang"):
         _thin_lto_rewritten = False
         for key in ("LTOFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
-            if key in profile_overrides and "-flto=thin" in profile_overrides[key]:
-                profile_overrides[key] = profile_overrides[key].replace(
-                    "-flto=thin", "-flto")
+            if key in profile_overrides:
+                val = profile_overrides[key]
+            elif key in system_assignments:
+                raw = system_assignments[key].strip()
+                val = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
+            else:
+                continue
+            if "-flto=thin" in val:
+                profile_overrides[key] = val.replace("-flto=thin", "-flto")
                 _thin_lto_rewritten = True
         if _thin_lto_rewritten:
             _flag_log.warn(

@@ -324,6 +324,20 @@ def test_emit_gcc_rewrites_thin_lto_in_ltoflags(sys_conf_path):
     assert conf["LTOFLAGS"] == "-flto"
 
 
+def test_emit_gcc_rewrites_thin_lto_from_system_conf(tmp_path):
+    """-flto=thin in system conf LTOFLAGS is rewritten when profile sets CC=gcc."""
+    sys_conf = tmp_path / "makepkg.conf"
+    sys_conf.write_text(
+        'CARCH="x86_64"\n'
+        'CFLAGS="-O2"\n'
+        'LTOFLAGS="-flto=thin"\n'
+    )
+    profile = {"CC": "gcc", "CFLAGS": "-O3"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == "-flto"
+
+
 def test_emit_gcc_rewrites_thin_lto_in_cflags(sys_conf_path):
     """-flto=thin embedded in CFLAGS is rewritten to -flto when CC=gcc."""
     profile = {"CC": "gcc", "CFLAGS": "-O3 -flto=thin -pipe"}
