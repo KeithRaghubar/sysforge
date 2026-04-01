@@ -97,11 +97,13 @@ def _make_build_state(packages):
 # ---------------------------------------------------------------------------
 
 def test_empty_build_state_exits_cleanly(capsys):
-    with patch("sysforge.update.BuildState") as MockBS:
+    with patch("sysforge.update.BuildState") as MockBS, \
+         patch("sysforge.update.load_config", return_value={}), \
+         patch("sysforge.update._load_full_packages_toml", return_value=({}, [])):
         MockBS.return_value.all_packages.return_value = {}
         cmd_update(_make_args())
     captured = capsys.readouterr()
-    assert "No packages recorded" in captured.err
+    assert "No packages found" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -139,11 +141,16 @@ def _run_update_with_package(tmp_path, pkgbase, pkgver_installed, pkgver_pkgbuil
         "epoch": "0",
     }
 
+    fake_manifest = ({}, [{"name": pkgbase, "source": "aur"}])
+
     with (
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value={"globals": parsed_globals}),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.get_installed_version", return_value=pkgver_installed),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={pkgbase: pkgver_installed}),
         patch("sysforge.update.vercmp") as mock_vercmp,
     ):
         MockBS.return_value.all_packages.return_value = state_data
@@ -189,13 +196,16 @@ def test_check_not_installed(tmp_path):
     }
     args = _make_args()
     parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "htop", "source": "aur"}])
 
     results = []
     with (
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.get_installed_version", return_value=None),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages", return_value={}),
     ):
         MockBS.return_value.all_packages.return_value = state_data
         (tmp_path / "htop" / "PKGBUILD").write_text("pkgname=htop\n")
@@ -220,12 +230,16 @@ def test_vcs_always_flagged(tmp_path):
     }
     args = _make_args()
     parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "neovim-git", "source": "aur"}])
 
     results = []
     with (
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages", return_value={}),
     ):
         MockBS.return_value.all_packages.return_value = state_data
         (pkg_dir / "PKGBUILD").write_text("pkgname=neovim-git\n")
@@ -252,11 +266,16 @@ def test_dry_run_no_build(tmp_path):
     args = _make_args(dry_run=True)
     parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
 
+    fake_manifest = ({}, [{"name": "htop", "source": "aur"}])
+
     with (
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.get_installed_version", return_value="3.3.0-1"),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={"htop": "3.3.0-1"}),
         patch("sysforge.update.vercmp", return_value=1),
         patch("sysforge.primitives.makepkg_wrapper.run") as mock_build,
     ):
@@ -279,21 +298,20 @@ def test_devel_flag_triggers_vcs_rebuild(tmp_path):
     }
     args = _make_args(devel=True)
     parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "neovim-git", "source": "aur"}])
 
     with (
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.primitives.makepkg_wrapper.run") as mock_build,
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages", return_value={}),
+        patch("sysforge.primitives.makepkg_wrapper.run"),
         patch("sysforge.primitives.cache_probe.reset_session"),
     ):
         MockBS.return_value.all_packages.return_value = state_data
 
-        with patch("sysforge.update.build_run" if hasattr(__import__("sysforge.update", fromlist=["build_run"]), "build_run") else "sysforge.primitives.makepkg_wrapper.run"):
-            # Import lazily inside cmd_update; patch at the source
-            pass
-
-        # Patch the lazy import inside cmd_update
         import sysforge.primitives.makepkg_wrapper as mw
         mw_run_orig = mw.run
         call_count = []
@@ -323,11 +341,15 @@ def test_no_devel_skips_vcs_build(tmp_path):
     }
     args = _make_args(devel=False)
     parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "neovim-git", "source": "aur"}])
 
     with (
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages", return_value={}),
     ):
         MockBS.return_value.all_packages.return_value = state_data
 
@@ -381,12 +403,20 @@ def test_pull_failure_continues_to_next_package(tmp_path):
     args = _make_args(no_update=False)
     results = []
 
+    fake_manifest = ({}, [
+        {"name": "htop", "source": "aur"},
+        {"name": "neovim", "source": "aur"},
+    ])
+
     with (
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.git_pull_rebase", side_effect=fake_pull),
         patch("sysforge.update.parse_pkgbuild", return_value=parsed_neovim),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.get_installed_version", return_value="0.9.0-1"),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={"htop": "0.9.0-1", "neovim": "0.9.0-1"}),
         patch("sysforge.update.vercmp", return_value=0),
     ):
         MockBS.return_value.all_packages.return_value = state_data
@@ -495,34 +525,34 @@ def _make_discover_args(**kwargs):
     return SimpleNamespace(**defaults)
 
 
-def test_discover_no_foreign_packages():
+def test_discover_no_foreign_packages(tmp_path):
     bs = MagicMock()
     bs.all_packages.return_value = {}
-    with patch("sysforge.update.get_foreign_packages", return_value={}), \
-         patch("sysforge.update.get_all_installed_packages", return_value={}):
-        results = _discover_and_add(_make_discover_args(), bs, {})
+    packages_path = tmp_path / "packages.toml"
+    with patch("sysforge.update.get_foreign_packages", return_value={}):
+        results = _discover_and_add(_make_discover_args(), bs, {}, packages_path)
     assert results == []
 
 
-def test_discover_all_already_tracked():
+def test_discover_all_already_tracked(tmp_path):
     bs = MagicMock()
     bs.all_packages.return_value = {"yay": {"pkgbase": "yay", "pkgver": "12.0"}}
+    packages_path = tmp_path / "packages.toml"
     with patch("sysforge.update.get_foreign_packages", return_value={"yay": "12.0-1"}), \
-         patch("sysforge.update.get_all_installed_packages", return_value={"yay": "12.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()):
-        results = _discover_and_add(_make_discover_args(), bs, {})
+        results = _discover_and_add(_make_discover_args(), bs, {}, packages_path)
     assert results == []
 
 
 def test_discover_not_in_aur(tmp_path):
     bs = MagicMock()
     bs.all_packages.return_value = {}
+    packages_path = tmp_path / "packages.toml"
     with patch("sysforge.update.get_foreign_packages", return_value={"localonly": "1.0-1"}), \
-         patch("sysforge.update.get_all_installed_packages", return_value={"localonly": "1.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={}), \
          patch("sysforge.update._append_to_packages_toml"):
-        results = _discover_and_add(_make_discover_args(), bs, {})
+        results = _discover_and_add(_make_discover_args(), bs, {}, packages_path)
     assert len(results) == 1
     assert results[0].action == "NOT_FOUND"
     assert results[0].pkgname == "localonly"
@@ -535,9 +565,9 @@ def test_discover_adds_aur_package(tmp_path):
     pkg_dir.mkdir()
     pkgbuild = pkg_dir / "PKGBUILD"
     pkgbuild.write_text("pkgname=yay\npkgver=12.3.3\npkgrel=1\n")
+    packages_path = tmp_path / "packages.toml"
 
     with patch("sysforge.update.get_foreign_packages", return_value={"yay": "12.0.0-1"}), \
-         patch("sysforge.update.get_all_installed_packages", return_value={"yay": "12.0.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={"yay": {"Name": "yay"}}), \
          patch("sysforge.primitives.config.find_pkgbuild", return_value=pkgbuild), \
@@ -545,7 +575,7 @@ def test_discover_adds_aur_package(tmp_path):
                return_value={"globals": {"pkgname": "yay", "pkgver": "12.3.3", "pkgrel": "1", "epoch": "0"}}), \
          patch("sysforge.update.vercmp", return_value=1), \
          patch("sysforge.update._append_to_packages_toml") as mock_append:
-        results = _discover_and_add(_make_discover_args(), bs, {})
+        results = _discover_and_add(_make_discover_args(), bs, {}, packages_path)
 
     assert len(results) == 1
     assert results[0].action == "OUTDATED"
@@ -556,30 +586,30 @@ def test_discover_adds_aur_package(tmp_path):
 def test_discover_dry_run_no_write(tmp_path):
     bs = MagicMock()
     bs.all_packages.return_value = {}
+    packages_path = tmp_path / "packages.toml"
 
     with patch("sysforge.update.get_foreign_packages", return_value={"yay": "12.0.0-1"}), \
-         patch("sysforge.update.get_all_installed_packages", return_value={"yay": "12.0.0-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={"yay": {"Name": "yay"}}), \
          patch("sysforge.update._append_to_packages_toml") as mock_append:
-        results = _discover_and_add(_make_discover_args(dry_run=True), bs, {})
+        results = _discover_and_add(_make_discover_args(dry_run=True), bs, {}, packages_path)
 
     # In dry_run, no PKGBUILD is fetched, entry still added to results but not written
     mock_append.assert_not_called()
     assert len(results) == 1
 
 
-def test_discover_vcs_package_flagged_as_devel():
+def test_discover_vcs_package_flagged_as_devel(tmp_path):
     bs = MagicMock()
     bs.all_packages.return_value = {}
+    packages_path = tmp_path / "packages.toml"
 
     with patch("sysforge.update.get_foreign_packages", return_value={"neovim-git": "r1234.gabcdef-1"}), \
-         patch("sysforge.update.get_all_installed_packages", return_value={"neovim-git": "r1234.gabcdef-1"}), \
          patch("sysforge.update._load_packages_toml_names", return_value=set()), \
          patch("sysforge.primitives.aur.aur_info", return_value={"neovim-git": {"Name": "neovim-git"}}), \
          patch("sysforge.primitives.config.find_pkgbuild", return_value=None), \
          patch("sysforge.update._append_to_packages_toml"):
-        results = _discover_and_add(_make_discover_args(), bs, {})
+        results = _discover_and_add(_make_discover_args(), bs, {}, packages_path)
 
     assert any(r.pkgname == "neovim-git" and r.action == "DEVEL" for r in results)
 
@@ -589,19 +619,21 @@ def test_discover_vcs_package_flagged_as_devel():
 # ---------------------------------------------------------------------------
 
 def test_cmd_update_all_with_empty_build_state(tmp_path, capsys):
-    """--all with empty build_state should not exit early."""
+    """--all with empty build_state and empty manifest should not exit early."""
     args = _make_args(all=True)
 
     with patch("sysforge.update.BuildState") as MockBS, \
          patch("sysforge.update._discover_and_add", return_value=[]) as mock_discover, \
          patch("sysforge.update.load_config", return_value={}), \
+         patch("sysforge.update._load_full_packages_toml", return_value=({}, [])), \
+         patch("sysforge.update.get_all_installed_packages", return_value={}), \
          patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")):
         MockBS.return_value.all_packages.return_value = {}
         cmd_update(args)
 
     mock_discover.assert_called_once()
     captured = capsys.readouterr()
-    assert "No packages recorded" in captured.err
+    assert "No packages found" in captured.err
 
 
 def test_cmd_update_all_discovered_printed(tmp_path, capsys):
@@ -614,6 +646,8 @@ def test_cmd_update_all_discovered_printed(tmp_path, capsys):
     with patch("sysforge.update.BuildState") as MockBS, \
          patch("sysforge.update._discover_and_add", return_value=discovered), \
          patch("sysforge.update.load_config", return_value={}), \
+         patch("sysforge.update._load_full_packages_toml", return_value=({}, [])), \
+         patch("sysforge.update.get_all_installed_packages", return_value={}), \
          patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")):
         MockBS.return_value.all_packages.return_value = {}
         cmd_update(args)
@@ -646,6 +680,8 @@ def test_cmd_update_all_outdated_is_built(tmp_path):
     with patch("sysforge.update.BuildState") as MockBS, \
          patch("sysforge.update._discover_and_add", return_value=discovered), \
          patch("sysforge.update.load_config", return_value={}), \
+         patch("sysforge.update._load_full_packages_toml", return_value=({}, [])), \
+         patch("sysforge.update.get_all_installed_packages", return_value={}), \
          patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")), \
          patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build), \
          patch("sysforge.primitives.cache_probe.reset_session"):
@@ -684,6 +720,8 @@ def test_cmd_update_all_dry_run_no_build(tmp_path):
         with patch("sysforge.update.BuildState") as MockBS, \
              patch("sysforge.update._discover_and_add", return_value=discovered), \
              patch("sysforge.update.load_config", return_value={}), \
+             patch("sysforge.update._load_full_packages_toml", return_value=({}, [])), \
+             patch("sysforge.update.get_all_installed_packages", return_value={}), \
              patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")):
             MockBS.return_value.all_packages.return_value = {}
             cmd_update(args)

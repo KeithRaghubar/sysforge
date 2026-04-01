@@ -681,20 +681,21 @@ Public API: `cmd_resolve(args)`. Uses `find_pkgbuild` from `config.py` for PKGBU
 
 ### `update.py`
 
-Implements `sysforge update` — the update manager. Algorithm:
+Implements `sysforge update` — the update manager. `packages.toml` is the source of truth for which packages to check; `build_state.toml` controls which are eligible for automatic rebuild. Algorithm:
 
 1. Refresh the AUR name cache as a side effect (`fetch_aur_name_cache()`).
-2. If `--all`: run `_discover_and_add()` — two phases:
-   - **Phase 1:** find foreign packages (`pacman -Qm`) not in `build_state.toml` or `packages.toml`; AUR-verify, append to `packages.toml`, compare versions against AUR RPC, queue outdated ones for rebuild.
-   - **Phase 2:** find packages in `packages.toml` that are installed but have no `build_state` record. For those with a local PKGBUILD clone: `git pull --rebase` then compare PKGBUILD version against installed. For those without a local clone: check `pacman -Si` (source=repo) or AUR RPC (source=aur, batched) to get the current version — no auto-clone during discovery. If outdated, clone on demand at build time via `find_pkgbuild`.
-3. Load `build_state.toml` to get the set of sysforge-managed packages. If positional `PKG` names were given, filter to that subset (unrecognised names are warned and skipped).
-4. Group by `pkgbase` to deduplicate split packages.
-5. For each `pkgbase`: `git pull --rebase` the PKGBUILD dir (unless `--no-update`), parse the updated PKGBUILD, get the installed version via `pacman -Q`, compare with `vercmp`.
-6. VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) are flagged as `DEVEL` — their `pkgver` is only meaningful after running `pkgver()`, so static comparison is not possible. They are rebuilt only when `--devel` is passed.
-7. Print a summary table: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`.
-8. Rebuild `NEEDS_REBUILD` and discovered `OUTDATED` packages (and `DEVEL` if `--devel`) via `makepkg_wrapper.run()`. All update builds default to `--cleanbuild` (`-C`) to prevent stale `$srcdir` from a previous failed run causing patch-already-applied errors in `prepare()`. `--syncdeps`/`-s` and `--install`/`-i` are stripped; packages are installed in a single `sudo pacman -U` call at the end. Without `--interactive`, build failures are logged and skipped (batch mode); with `--interactive`, failures pause for user input.
+2. Load config and `packages.toml` early (needed for all paths).
+3. If `--all`: run `_discover_and_add()` — discover foreign packages (`pacman -Qm`) not already in `packages.toml`; AUR-verify, append to `packages.toml`, compare versions, queue outdated ones for rebuild.
+4. Build a unified package set from `packages.toml`, cross-referenced with `build_state.toml`. Packages in the manifest but not in build_state get synthetic records (`pkgbase=name`, `pkgbuild_dir` from `[build].pkgbuild_dir`). These are tracked as `unrecorded` — they are version-checked but only built when `--all` is passed.
+5. Batch-query installed versions via `pacman -Q` once upfront (`get_all_installed_packages()`).
+6. Group by `pkgbase` to deduplicate split packages.
+7. Parallel `git pull --rebase` all PKGBUILD dirs (`ThreadPoolExecutor`, max 8 workers). Deduplicated by resolved path. Skipped by `--no-update` or `--dry-run`.
+8. Parallel version checks (`ThreadPoolExecutor`, max 8 workers): parse PKGBUILD, look up installed version from the batch query, compare with `vercmp`. Split packages check all sub-package names (installed if any is present).
+9. VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) are flagged as `DEVEL` — their `pkgver` is only meaningful after running `pkgver()`, so static comparison is not possible. They are rebuilt only when `--devel` is passed.
+10. Print a summary with totals header and per-package status: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`. Packages without a build record are annotated with `*` and a footnote.
+11. Rebuild `NEEDS_REBUILD` packages that have a build record (and `DEVEL` if `--devel`). With `--all`, unrecorded packages that need rebuild are also built. Discovered `OUTDATED` packages are built. All update builds default to `--cleanbuild` (`-C`) to prevent stale `$srcdir` from a previous failed run causing patch-already-applied errors in `prepare()`. `--syncdeps`/`-s` and `--install`/`-i` are stripped; packages are installed in a single `sudo pacman -U` call at the end. Without `--interactive`, build failures are logged and skipped (batch mode); with `--interactive`, failures pause for user input.
 
-Positional: `[PKG ...]` — optional package names to restrict the run to a subset of sysforge-managed packages.
+Positional: `[PKG ...]` — optional package names to restrict the run to a subset of packages.
 
 Flags: `--all`, `--interactive`, `--packages`, `--dry-run`, `--devel`, `--no-update`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--makepkg`.
 

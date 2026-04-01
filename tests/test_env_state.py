@@ -409,14 +409,19 @@ def _run_update_capture_build_calls(args, pkgbuild_path):
     def fake_parse_pkgbuild(_path):
         return {"globals": {"pkgver": "1.0", "pkgrel": "1"}}
 
+    fake_manifest = ({}, [{"name": pkgbase, "source": "aur"}])
+
     with patch("sysforge.update.BuildState") as MockBS, \
          patch("sysforge.update.fetch_aur_name_cache"), \
          patch("sysforge.update.resolve_state_dir",
                return_value=(Path("/tmp/sf-state-test"), False)), \
+         patch("sysforge.update.load_config", return_value={}), \
+         patch("sysforge.update._load_full_packages_toml",
+               return_value=fake_manifest), \
          patch("sysforge.update.parse_pkgbuild",
                side_effect=fake_parse_pkgbuild), \
-         patch("sysforge.update.get_installed_version",
-               return_value="0.9-1"), \
+         patch("sysforge.update.get_all_installed_packages",
+               return_value={pkgbase: "0.9-1"}), \
          patch("sysforge.update.vercmp", return_value=1), \
          patch("sysforge.update.collect_makedeps", return_value=[]), \
          patch("sysforge.update.filter_missing_deps", return_value=[]), \

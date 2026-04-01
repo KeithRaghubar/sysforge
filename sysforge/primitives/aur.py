@@ -233,7 +233,7 @@ def git_pull_rebase(pkgbuild_dir: Path) -> None:
     if r.returncode == 0:
         for line in r.stdout.strip().splitlines():
             if line.strip():
-                _git_log.info(f"  {line}")
+                _git_log.info(f"  {pkgbuild_dir.name}: {line}")
         return
 
     # Pull failed — abort the rebase to restore a clean state before raising
