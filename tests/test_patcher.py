@@ -37,6 +37,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     cleanup_patch_artifacts,
     patch_noninteractive_kconfig,
     patch_pkgbuild_groups,
+    patch_subshell_env_reset,
 )
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
@@ -538,6 +539,93 @@ def test_cleanup_missing_files_nonfatal():
         pb.touch()
         # Neither artifact exists — should not raise
         cleanup_patch_artifacts(pb)
+
+
+# ---------------------------------------------------------------------------
+# patch_subshell_env_reset
+# ---------------------------------------------------------------------------
+
+def test_subshell_env_reset_injects_unset():
+    """Subshell functions get 'unset CC CXX' when profile sets CC=clang."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "PKGBUILD.sysforge"
+        p.write_text(
+            "_build_musl32() (\n"
+            "  echo musl\n"
+            "  ./configure --prefix=foo\n"
+            ")\n"
+            "\n"
+            "build() {\n"
+            "  _build_musl32\n"
+            "}\n"
+        )
+        count = patch_subshell_env_reset(p, {"CC": "clang", "CXX": "clang++"})
+        assert count == 1
+        text = p.read_text()
+        assert "unset CC CXX" in text
+        # unset should be inside the subshell function, not in build()
+        lines = text.splitlines()
+        unset_idx = next(i for i, l in enumerate(lines) if "unset CC CXX" in l)
+        func_idx = next(i for i, l in enumerate(lines) if "_build_musl32" in l and "(" in l)
+        assert unset_idx == func_idx + 1
+
+
+def test_subshell_env_reset_multiple_functions():
+    """All subshell functions get the reset."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "PKGBUILD.sysforge"
+        p.write_text(
+            "_build_a() (\n  echo a\n)\n\n"
+            "_build_b() (\n  echo b\n)\n\n"
+            "build() {\n  _build_a\n  _build_b\n}\n"
+        )
+        count = patch_subshell_env_reset(p, {"CC": "clang"})
+        assert count == 2
+        assert p.read_text().count("unset CC") == 2
+
+
+def test_subshell_env_reset_skips_brace_functions():
+    """Regular brace functions are not touched."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "PKGBUILD.sysforge"
+        original = "build() {\n  make\n}\n"
+        p.write_text(original)
+        count = patch_subshell_env_reset(p, {"CC": "clang"})
+        assert count == 0
+        assert p.read_text() == original
+
+
+def test_subshell_env_reset_noop_for_gcc():
+    """No reset injected when profile already uses gcc."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "PKGBUILD.sysforge"
+        original = "_helper() (\n  echo hi\n)\n"
+        p.write_text(original)
+        count = patch_subshell_env_reset(p, {"CC": "gcc", "CXX": "g++"})
+        assert count == 0
+        assert p.read_text() == original
+
+
+def test_subshell_env_reset_empty_toolchain():
+    """No reset when toolchain_env is empty."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "PKGBUILD.sysforge"
+        original = "_helper() (\n  echo hi\n)\n"
+        p.write_text(original)
+        count = patch_subshell_env_reset(p, {})
+        assert count == 0
+        assert p.read_text() == original
+
+
+def test_subshell_env_reset_only_cc():
+    """Only CC is unset when only CC differs from default."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "PKGBUILD.sysforge"
+        p.write_text("_helper() (\n  echo hi\n)\n")
+        patch_subshell_env_reset(p, {"CC": "clang", "CXX": "g++"})
+        text = p.read_text()
+        assert "unset CC\n" in text
+        assert "CXX" not in text
 
 
 # ---------------------------------------------------------------------------

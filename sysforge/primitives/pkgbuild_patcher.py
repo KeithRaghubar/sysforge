@@ -563,6 +563,68 @@ def patch_noninteractive_kconfig(patched_path):
 
 
 # ---------------------------------------------------------------------------
+# Subshell toolchain env reset
+# ---------------------------------------------------------------------------
+
+# Matches subshell function definitions: funcname() (
+# Group 1 captures everything up to and including the opening '('.
+_SUBSHELL_FUNC_RE = re.compile(
+    r"^([ \t]*\w+\s*\(\)\s*\()[ \t]*$",
+    re.MULTILINE,
+)
+
+
+def patch_subshell_env_reset(patched_path, toolchain_env):
+    """
+    Inject ``unset CC CXX ...`` at the top of every subshell function body
+    in an already-written PKGBUILD.sysforge.
+
+    Subshell functions — ``funcname() (...)`` — are isolated helper builds
+    (musl bootstrap, embedded grub, dietlibc, etc.) that should use the
+    system-default compiler, not the sysforge profile toolchain.  Without
+    this reset, CC/CXX from the sysforge env leak into sub-builds that
+    expect gcc and produce broken toolchain wrappers (e.g. musl-clang
+    instead of musl-gcc).
+
+    Only injects the reset when *toolchain_env* contains keys that differ
+    from system defaults (gcc/g++).  Does nothing if toolchain_env is empty
+    or all values are already the defaults.
+
+    Modifies patched_path in place.  Returns the number of functions patched.
+    """
+    # System defaults — if the profile matches these, no reset needed.
+    _DEFAULTS = {"CC": "gcc", "CXX": "g++"}
+
+    keys_to_reset = [
+        k for k, v in toolchain_env.items()
+        if k in _DEFAULTS and v != _DEFAULTS[k]
+    ]
+    if not keys_to_reset:
+        return 0
+
+    patched_path = Path(patched_path)
+    text = patched_path.read_text()
+
+    unset_line = "  unset " + " ".join(sorted(keys_to_reset))
+    count = 0
+
+    def _inject(m):
+        nonlocal count
+        count += 1
+        return m.group(1) + "\n" + unset_line
+    new_text = _SUBSHELL_FUNC_RE.sub(_inject, text)
+
+    if count:
+        patched_path.write_text(new_text)
+        _log.info(
+            f"Injected toolchain env reset into {count} subshell function(s): "
+            f"{unset_line!r}"
+        )
+
+    return count
+
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 

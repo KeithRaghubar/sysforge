@@ -39,6 +39,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     extract_pkgbuild_profile,
     patch_noninteractive_kconfig,
     patch_pkgbuild_groups,
+    patch_subshell_env_reset,
     write_extracted_profile,
 )
 from sysforge.primitives.cache_probe import (
@@ -848,6 +849,14 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
     if kernel_build and not interactive:
         patch_noninteractive_kconfig(pkgbuild_path)
+
+    # Reset toolchain env vars in subshell functions so sub-builds (musl
+    # bootstrap, embedded grub, etc.) use the system default compiler
+    # instead of inheriting the sysforge profile CC/CXX.
+    toolchain_keys = CONF_KEY_MAP.get("toolchain", set())
+    toolchain_env = {k: v for k, v in resolved_profile.items() if k in toolchain_keys}
+    if toolchain_env:
+        patch_subshell_env_reset(pkgbuild_path, toolchain_env)
 
     # Probe ThinLTO cache dir (informational, once per build)
     ldflags = resolved_profile.get("LDFLAGS", "")
