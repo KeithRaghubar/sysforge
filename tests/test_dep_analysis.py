@@ -195,7 +195,7 @@ def test_run_abort_propagates():
 # check_makedep_runtime
 # ---------------------------------------------------------------------------
 
-def _mock_run_success(*args, **kwargs):
+def _mock_run_success(*_args, **_kwargs):
     """Simulate a successful probe command."""
     class R:
         returncode = 0
@@ -204,21 +204,41 @@ def _mock_run_success(*args, **kwargs):
     return R()
 
 
-def _mock_run_fail(*args, **kwargs):
-    """Simulate a probe command that exits non-zero."""
+_GUESTFS_ROOT_UUID_OUTPUT = (
+    "supermin: internal insmod virtio_pci.ko\n"
+    "supermin: waiting another 1024000000 ns for root UUID to appear\n"
+    "This usually means your kernel doesn't support virtio\n"
+    "supermin: waiting another 2048000000 ns for root UUID to appear\n"
+)
+
+
+def _mock_run_fail_root_uuid(*_args, **_kwargs):
+    """Simulate guestfish hanging on root UUID (missing virtio-scsi)."""
     class R:
         returncode = 1
-        stdout = ""
-        stderr = "libguestfs: error: appliance boot failed\n"
+        stdout = _GUESTFS_ROOT_UUID_OUTPUT
+        stderr = ""
     return R()
 
 
-def _mock_run_timeout(*args, **kwargs):
+def _mock_run_fail_generic(*_args, **_kwargs):
+    """Simulate a generic guestfish failure without root UUID pattern."""
+    class R:
+        returncode = 1
+        stdout = ""
+        stderr = "libguestfs: error: something else went wrong\n"
+    return R()
+
+
+def _mock_run_timeout(*_args, **_kwargs):
     import subprocess
-    raise subprocess.TimeoutExpired(cmd=args[0], timeout=15)
+    e = subprocess.TimeoutExpired(cmd=["guestfish"], timeout=15)
+    e.stdout = _GUESTFS_ROOT_UUID_OUTPUT
+    e.stderr = ""
+    raise e
 
 
-def _mock_run_not_found(*args, **kwargs):
+def _mock_run_not_found(*_args, **_kwargs):
     raise FileNotFoundError("guestfish")
 
 
@@ -229,21 +249,46 @@ def test_makedep_probe_success():
     assert findings == []
 
 
-def test_makedep_probe_failure():
+def test_makedep_probe_root_uuid_failure():
+    """Root UUID failure should list missing kernel config options."""
+    from unittest.mock import patch
+    mock_config = {"CONFIG_SCSI_VIRTIO": "n", "CONFIG_EXT4_FS": "y",
+                   "CONFIG_VIRTIO": "y", "CONFIG_VIRTIO_PCI": "y",
+                   "CONFIG_VIRTIO_NET": "m"}
+    with patch("sysforge.primitives.dep_analysis._parse_kernel_config", return_value=mock_config):
+        findings = check_makedep_runtime(
+            ["libguestfs"], DEFAULT_CONFIG, pkgname="ventoy",
+            run_fn=_mock_run_fail_root_uuid,
+        )
+    assert len(findings) == 1
+    assert "CONFIG_SCSI_VIRTIO" in findings[0][1]
+    assert "CONFIG_EXT4_FS" not in findings[0][1]  # ext4 is enabled, not listed
+
+
+def test_makedep_probe_timeout_with_diagnosis():
+    """Timeout should still parse debug output for diagnosis."""
+    from unittest.mock import patch
+    mock_config = {"CONFIG_SCSI_VIRTIO": "n", "CONFIG_EXT4_FS": "y",
+                   "CONFIG_VIRTIO": "y", "CONFIG_VIRTIO_PCI": "y",
+                   "CONFIG_VIRTIO_NET": "y"}
+    with patch("sysforge.primitives.dep_analysis._parse_kernel_config", return_value=mock_config):
+        findings = check_makedep_runtime(
+            ["libguestfs"], DEFAULT_CONFIG, pkgname="ventoy",
+            run_fn=_mock_run_timeout,
+        )
+    assert len(findings) == 1
+    assert "CONFIG_SCSI_VIRTIO" in findings[0][1]
+
+
+def test_makedep_probe_generic_failure():
+    """Non-root-UUID failure should give a generic message."""
     findings = check_makedep_runtime(
-        ["libguestfs"], DEFAULT_CONFIG, pkgname="ventoy", run_fn=_mock_run_fail,
+        ["libguestfs"], DEFAULT_CONFIG, pkgname="ventoy",
+        run_fn=_mock_run_fail_generic,
     )
     assert len(findings) == 1
-    assert findings[0][0] == "libguestfs"
     assert "probe failed" in findings[0][1]
-
-
-def test_makedep_probe_timeout():
-    findings = check_makedep_runtime(
-        ["libguestfs"], DEFAULT_CONFIG, pkgname="ventoy", run_fn=_mock_run_timeout,
-    )
-    assert len(findings) == 1
-    assert "timed out" in findings[0][1]
+    assert "LIBGUESTFS_DEBUG" in findings[0][1]
 
 
 def test_makedep_probe_not_installed():
@@ -254,9 +299,9 @@ def test_makedep_probe_not_installed():
 
 
 def test_makedep_probe_skips_unprobed():
-    """Makedepends not in _MAKEDEP_PROBES are silently skipped."""
+    """Makedepends not in _PROBED_MAKEDEPS are silently skipped."""
     findings = check_makedep_runtime(
-        ["git", "python", "make"], DEFAULT_CONFIG, run_fn=_mock_run_fail,
+        ["git", "python", "make"], DEFAULT_CONFIG, run_fn=_mock_run_fail_root_uuid,
     )
     assert findings == []
 
@@ -279,7 +324,8 @@ def test_run_dep_analysis_includes_makedep_probes():
         }
     }
     findings = run_dep_analysis(
-        pkgmeta, DEFAULT_CONFIG, ldconfig_fn=mock_ldconfig, run_fn=_mock_run_fail,
+        pkgmeta, DEFAULT_CONFIG, ldconfig_fn=mock_ldconfig,
+        run_fn=_mock_run_fail_generic,
     )
     assert len(findings) == 1
     assert findings[0][0] == "libguestfs"

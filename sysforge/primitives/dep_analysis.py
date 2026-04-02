@@ -12,8 +12,10 @@ without meaningful value.
 Public API:
     run_dep_analysis(pkgmeta, config, ldconfig_fn=None)
 """
+import os
 import re
 import subprocess
+from pathlib import Path
 
 from sysforge.primitives.failure import handle_failure
 from sysforge import log
@@ -132,15 +134,130 @@ def check_soname_deps(depends, config, pkgname="unknown", ldconfig_fn=None):
 
 _MAKEDEP_PROBE_TIMEOUT = 15  # seconds
 
-# Map of makedepend package names to (probe_cmd, description) tuples.
-# Each probe_cmd is run with a timeout; non-zero exit or timeout = failure.
-_MAKEDEP_PROBES = {
-    "libguestfs": (
-        ["guestfish", "add", "/dev/null", ":", "run"],
-        "libguestfs appliance boot (requires compatible kernel modules: "
-        "virtio, ext4, 9p, etc.)",
-    ),
+# Modules the libguestfs appliance requires to boot.  The appliance uses
+# virtio-scsi for disk access (QEMU -device scsi-hd) and ext4 for the root
+# filesystem.  If any of these are missing from the running kernel (neither
+# built-in nor loadable as a module), the appliance hangs waiting for root.
+_GUESTFS_REQUIRED_MODULES = {
+    "CONFIG_VIRTIO":       "virtio core",
+    "CONFIG_VIRTIO_PCI":   "virtio PCI transport",
+    "CONFIG_SCSI_VIRTIO":  "virtio-scsi (appliance disk access)",
+    "CONFIG_EXT4_FS":      "ext4 (appliance root filesystem)",
+    "CONFIG_VIRTIO_NET":   "virtio-net (appliance networking)",
 }
+
+# Set of makedepend names that have custom probes.
+_PROBED_MAKEDEPS = frozenset({"libguestfs"})
+
+
+def _parse_kernel_config():
+    """
+    Parse the running kernel's config from /proc/config.gz or
+    /boot/config-$(uname -r).  Returns dict of CONFIG_KEY → value
+    ('y', 'm', or 'n' for unset).  Returns None if config is unavailable.
+    """
+    import gzip
+    config_path = Path("/proc/config.gz")
+    boot_config = Path(f"/boot/config-{os.uname().release}")
+
+    lines = None
+    if config_path.exists():
+        with gzip.open(config_path, "rt") as f:
+            lines = f.readlines()
+    elif boot_config.exists():
+        lines = boot_config.read_text().splitlines(keepends=True)
+
+    if lines is None:
+        return None
+
+    result = {}
+    for line in lines:
+        line = line.strip()
+        if line.startswith("CONFIG_") and "=" in line:
+            key, val = line.split("=", 1)
+            result[key] = val
+        elif line.startswith("# CONFIG_") and line.endswith("is not set"):
+            key = line.split()[1]
+            result[key] = "n"
+    return result
+
+
+def _diagnose_guestfs(output, kernel_config):
+    """
+    Parse libguestfs debug output and kernel config to produce a specific
+    diagnostic.  Returns a list of human-readable issue strings.
+    """
+    issues = []
+
+    # Check for "waiting for root UUID" — appliance can't find its root disk
+    if "waiting" in output and "root UUID" in output:
+        missing = []
+        for key, desc in _GUESTFS_REQUIRED_MODULES.items():
+            val = kernel_config.get(key, "n") if kernel_config else None
+            if val == "n":
+                missing.append(f"  {key}=m  ({desc})")
+            elif val is None:
+                missing.append(f"  {key}=m  ({desc}) [cannot verify — /proc/config.gz unavailable]")
+        if missing:
+            issues.append(
+                "appliance cannot find root disk — missing kernel config options:\n"
+                + "\n".join(missing)
+            )
+        else:
+            issues.append(
+                "appliance cannot find root disk — required modules appear enabled "
+                "but the appliance still failed to boot (stale appliance cache?)"
+            )
+    return issues
+
+
+def _probe_libguestfs(pkgname, config, run_fn):
+    """
+    Probe libguestfs by booting its appliance with debug output enabled.
+    Parses the output on failure to identify missing kernel modules.
+
+    Returns list of (makedep, issue_str) tuples.
+    """
+    probe_cmd = ["guestfish", "add", "/dev/null", ":", "run"]
+    probe_env = {**os.environ, "LIBGUESTFS_DEBUG": "1"}
+    _log.info(f"[{pkgname}] probing libguestfs appliance: {' '.join(probe_cmd)}")
+
+    try:
+        result = run_fn(
+            probe_cmd,
+            capture_output=True, text=True,
+            timeout=_MAKEDEP_PROBE_TIMEOUT,
+            env=probe_env,
+        )
+        if result.returncode == 0:
+            _log.info(f"[{pkgname}] libguestfs appliance boot ok")
+            return []
+        combined = (result.stdout or "") + (result.stderr or "")
+    except subprocess.TimeoutExpired as e:
+        parts = []
+        for s in (e.stdout, e.stderr):
+            if isinstance(s, bytes):
+                parts.append(s.decode(errors="replace"))
+            elif isinstance(s, str):
+                parts.append(s)
+        combined = "".join(parts)
+    except FileNotFoundError:
+        _log.info(f"[{pkgname}] libguestfs probe skipped (guestfish not installed)")
+        return []
+
+    # Probe failed or timed out — diagnose
+    kernel_config = _parse_kernel_config()
+    diagnostics = _diagnose_guestfs(combined, kernel_config)
+
+    if diagnostics:
+        detail = "; ".join(diagnostics)
+    else:
+        detail = "appliance failed to boot (run LIBGUESTFS_DEBUG=1 guestfish add /dev/null : run for details)"
+
+    issue = f"makedep 'libguestfs' probe failed: {detail}"
+    _log.error(f"[{pkgname}] {issue}")
+    handle_failure("makedep_probe_failed", issue, config)
+    return [("libguestfs", issue)]
 
 
 def check_makedep_runtime(makedepends, config, pkgname="unknown",
@@ -160,43 +277,12 @@ def check_makedep_runtime(makedepends, config, pkgname="unknown",
 
     findings = []
     for dep in makedepends:
-        # Strip version constraints: libguestfs>=1.50 → libguestfs
         bare = re.split(r"[><=]", dep)[0]
-        if bare not in _MAKEDEP_PROBES:
+        if bare not in _PROBED_MAKEDEPS:
             continue
 
-        probe_cmd, description = _MAKEDEP_PROBES[bare]
-        _log.info(f"[{pkgname}] probing makedep {bare!r}: {' '.join(probe_cmd)}")
-
-        try:
-            result = run_fn(
-                probe_cmd,
-                capture_output=True, text=True,
-                timeout=_MAKEDEP_PROBE_TIMEOUT,
-            )
-            if result.returncode != 0:
-                stderr_tail = (result.stderr or "").strip().splitlines()
-                detail = stderr_tail[-1] if stderr_tail else f"exit code {result.returncode}"
-                issue = (
-                    f"makedep {bare!r} probe failed: {detail}\n"
-                    f"  check: {description}"
-                )
-                _log.error(f"[{pkgname}] {issue}")
-                handle_failure("makedep_probe_failed", issue, config)
-                findings.append((bare, issue))
-            else:
-                _log.info(f"[{pkgname}] makedep probe ok: {bare}")
-        except subprocess.TimeoutExpired:
-            issue = (
-                f"makedep {bare!r} probe timed out after {_MAKEDEP_PROBE_TIMEOUT}s — "
-                f"appliance likely cannot boot\n"
-                f"  check: {description}"
-            )
-            _log.error(f"[{pkgname}] {issue}")
-            handle_failure("makedep_probe_failed", issue, config)
-            findings.append((bare, issue))
-        except FileNotFoundError:
-            _log.info(f"[{pkgname}] makedep probe skipped ({bare!r} not installed)")
+        if bare == "libguestfs":
+            findings.extend(_probe_libguestfs(pkgname, config, run_fn))
 
     return findings
 
