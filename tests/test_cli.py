@@ -22,6 +22,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.cli import (
+    _extract_implicit_makepkg_flags,
     _hoist_verbosity_flags,
     _patch_makepkg_argv,
 )
@@ -181,3 +182,78 @@ def test_expand_long_flag_with_value():
 def test_expand_mixed_short_and_long():
     result = expand_makepkg_flags("-sf --noconfirm")
     assert result == ["-s", "-f", "--noconfirm"]
+
+
+# ---------------------------------------------------------------------------
+# _extract_implicit_makepkg_flags
+# ---------------------------------------------------------------------------
+
+def test_implicit_basic_passthrough():
+    result = _extract_implicit_makepkg_flags(["build", "ventoy", "-sfCci"])
+    assert result == ["build", "ventoy", "-m", "-sfCci"]
+
+
+def test_implicit_multiple_flag_groups():
+    result = _extract_implicit_makepkg_flags(["build", "ventoy", "-sf", "-Cci"])
+    assert result == ["build", "ventoy", "-m", "-sfCci"]
+
+
+def test_implicit_no_subcommand():
+    argv = ["--verbose", "resolve", "pkg"]
+    assert _extract_implicit_makepkg_flags(argv) is argv
+
+
+def test_implicit_no_flags():
+    argv = ["build", "ventoy", "--interactive"]
+    assert _extract_implicit_makepkg_flags(argv) is argv
+
+
+def test_implicit_excluded_flags_not_extracted():
+    """Flags in _PASSTHROUGH_EXCLUDE (-h, -V, -p, -m, -D) stay in argv."""
+    result = _extract_implicit_makepkg_flags(["build", "ventoy", "-h"])
+    assert "-m" not in result
+    assert "-h" in result
+
+
+def test_implicit_mixed_excluded_and_valid():
+    """A token with any excluded char is left alone (not partially extracted)."""
+    result = _extract_implicit_makepkg_flags(["build", "ventoy", "-sh"])
+    # -sh contains h (excluded), so the whole token stays.
+    assert "-m" not in result
+    assert "-sh" in result
+
+
+def test_implicit_update_subcommand():
+    result = _extract_implicit_makepkg_flags(["update", "-sf"])
+    assert result == ["update", "-m", "-sf"]
+
+
+def test_implicit_converge_subcommand():
+    result = _extract_implicit_makepkg_flags(["converge", "-f"])
+    assert result == ["converge", "-m", "-f"]
+
+
+def test_implicit_merge_with_explicit_m():
+    result = _extract_implicit_makepkg_flags(["build", "pkg", "-m", "--noconfirm", "-sf"])
+    assert result == ["build", "pkg", "-m", "--noconfirm -sf", ]
+
+
+def test_implicit_merge_with_explicit_makepkg_eq():
+    result = _extract_implicit_makepkg_flags(["build", "pkg", "--makepkg=--noconfirm", "-sf"])
+    assert result == ["build", "pkg", "--makepkg=--noconfirm -sf"]
+
+
+def test_implicit_preserves_positional_args():
+    result = _extract_implicit_makepkg_flags(["build", "ventoy", "cosmic-osd-git", "-sfCci"])
+    assert result == ["build", "ventoy", "cosmic-osd-git", "-m", "-sfCci"]
+
+
+def test_implicit_long_flags_not_extracted():
+    """--noconfirm and other long flags should not be extracted."""
+    argv = ["build", "pkg", "--interactive"]
+    assert _extract_implicit_makepkg_flags(argv) is argv
+
+
+def test_implicit_preserves_tokens_before_subcommand():
+    result = _extract_implicit_makepkg_flags(["-vv", "build", "pkg", "-sf"])
+    assert result == ["-vv", "build", "pkg", "-m", "-sf"]

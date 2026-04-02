@@ -349,6 +349,68 @@ def _hoist_verbosity_flags(argv):
     return verbose_tokens + rest
 
 
+# Flags that sysforge handles or that take a value arg — exclude from implicit
+# passthrough.  -v is already stripped by _hoist_verbosity_flags.
+_PASSTHROUGH_EXCLUDE = frozenset("hVpmD")
+
+# Subcommands that accept makepkg flag passthrough.
+_MAKEPKG_SUBCOMMANDS = frozenset({"build", "update", "converge"})
+
+
+def _extract_implicit_makepkg_flags(argv):
+    """
+    Detect bare makepkg-style short flags on build/update/converge and rewrite
+    them into explicit ``-m`` form so the rest of the pipeline handles them
+    uniformly.
+
+    sysforge build ventoy -sfCci  →  sysforge build ventoy -m -sfCci
+
+    A token qualifies when it starts with ``-`` (not ``--``), is longer than
+    one character, and every letter after the dash is a valid makepkg short
+    flag not in _PASSTHROUGH_EXCLUDE.  If ``-m`` / ``--makepkg`` is already
+    present the implicit flags are still collected and merged.
+    """
+    # Find the subcommand position.
+    sub_idx = None
+    for i, tok in enumerate(argv):
+        if tok in _MAKEPKG_SUBCOMMANDS:
+            sub_idx = i
+            break
+    if sub_idx is None:
+        return argv
+
+    # Collect implicit flags from after the subcommand.
+    before = list(argv[:sub_idx + 1])
+    implicit = []
+    rest = []
+    for tok in argv[sub_idx + 1:]:
+        if (
+            tok.startswith("-")
+            and not tok.startswith("--")
+            and len(tok) > 1
+            and all(ch not in _PASSTHROUGH_EXCLUDE for ch in tok[1:])
+        ):
+            implicit.append(tok)
+        else:
+            rest.append(tok)
+
+    if not implicit:
+        return argv
+
+    merged = "-" + "".join(tok[1:] for tok in implicit)
+
+    # If -m / --makepkg is already present, merge into its value.
+    for i, tok in enumerate(rest):
+        if tok in ("-m", "--makepkg") and i + 1 < len(rest):
+            rest[i + 1] = rest[i + 1] + " " + merged
+            return before + rest
+        if tok.startswith("--makepkg="):
+            rest[i] = tok + " " + merged
+            return before + rest
+
+    return before + rest + ["-m", merged]
+
+
 def _patch_makepkg_argv(argv):
     """
     Rewrite -m/-makepkg <value> to --makepkg=<value> when <value> starts with
@@ -742,7 +804,9 @@ def _build_parser() -> argparse.ArgumentParser:
 def main():
     from sysforge.primitives.resource_guard import install as _install_resource_guard
     _install_resource_guard()
-    sys.argv[1:] = _hoist_verbosity_flags(_patch_makepkg_argv(sys.argv[1:]))
+    sys.argv[1:] = _hoist_verbosity_flags(
+        _patch_makepkg_argv(_extract_implicit_makepkg_flags(sys.argv[1:]))
+    )
     parser = _build_parser()
     args = parser.parse_args()
     log.set_verbosity(args.verbose)
