@@ -574,31 +574,36 @@ _SUBSHELL_FUNC_RE = re.compile(
 )
 
 
-def patch_subshell_env_reset(patched_path, toolchain_env):
+def patch_subshell_env_reset(patched_path, toolchain_env, inherited_env=None):
     """
-    Inject ``unset CC CXX ...`` at the top of every subshell function body
+    Inject ``unset CC CXX LD ...`` at the top of every subshell function body
     in an already-written PKGBUILD.sysforge.
 
     Subshell functions — ``funcname() (...)`` — are isolated helper builds
     (musl bootstrap, embedded grub, dietlibc, etc.) that should use the
-    system-default compiler, not the sysforge profile toolchain.  Without
-    this reset, CC/CXX from the sysforge env leak into sub-builds that
-    expect gcc and produce broken toolchain wrappers (e.g. musl-clang
-    instead of musl-gcc).
+    system-default compiler and linker, not the sysforge profile toolchain
+    or inherited shell overrides.  Without this reset, CC/CXX/LD leak into
+    sub-builds and produce broken toolchains or linker failures.
 
-    Only injects the reset when *toolchain_env* contains keys that differ
-    from system defaults (gcc/g++).  Does nothing if toolchain_env is empty
-    or all values are already the defaults.
+    Considers two sources of non-default toolchain vars:
+      - *toolchain_env*: CC/CXX from the resolved sysforge profile
+      - *inherited_env*: vars from the parent shell (e.g. LD=ld.lld)
 
-    Modifies patched_path in place.  Returns the number of functions patched.
+    Only injects the reset when at least one key differs from the system
+    default (gcc/g++/ld).  Modifies patched_path in place.  Returns the
+    number of functions patched.
     """
-    # System defaults — if the profile matches these, no reset needed.
-    _DEFAULTS = {"CC": "gcc", "CXX": "g++"}
+    # System defaults — if all values match these, no reset needed.
+    _DEFAULTS = {"CC": "gcc", "CXX": "g++", "LD": "ld"}
 
-    keys_to_reset = [
-        k for k, v in toolchain_env.items()
-        if k in _DEFAULTS and v != _DEFAULTS[k]
-    ]
+    keys_to_reset = set()
+    for k, v in toolchain_env.items():
+        if k in _DEFAULTS and v != _DEFAULTS[k]:
+            keys_to_reset.add(k)
+    if inherited_env:
+        for k in _DEFAULTS:
+            if k in inherited_env and inherited_env[k] != _DEFAULTS[k]:
+                keys_to_reset.add(k)
     if not keys_to_reset:
         return 0
 

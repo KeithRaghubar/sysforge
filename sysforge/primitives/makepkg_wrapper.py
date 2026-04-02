@@ -851,12 +851,12 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         patch_noninteractive_kconfig(pkgbuild_path)
 
     # Reset toolchain env vars in subshell functions so sub-builds (musl
-    # bootstrap, embedded grub, etc.) use the system default compiler
-    # instead of inheriting the sysforge profile CC/CXX.
+    # bootstrap, embedded grub, etc.) use the system default compiler/linker
+    # instead of inheriting the sysforge profile CC/CXX or shell LD.
     toolchain_keys = CONF_KEY_MAP.get("toolchain", set())
     toolchain_env = {k: v for k, v in resolved_profile.items() if k in toolchain_keys}
-    if toolchain_env:
-        patch_subshell_env_reset(pkgbuild_path, toolchain_env)
+    inherited_env = {k: v for k, v in os.environ.items() if k in ("CC", "CXX", "LD")}
+    patch_subshell_env_reset(pkgbuild_path, toolchain_env, inherited_env=inherited_env)
 
     # Probe ThinLTO cache dir (informational, once per build)
     ldflags = resolved_profile.get("LDFLAGS", "")

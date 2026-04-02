@@ -628,6 +628,48 @@ def test_subshell_env_reset_only_cc():
         assert "CXX" not in text
 
 
+def test_subshell_env_reset_inherited_ld():
+    """LD=ld.lld from inherited env is also unset in subshell functions."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "PKGBUILD.sysforge"
+        p.write_text("_build_wimboot() (\n  make\n)\n")
+        count = patch_subshell_env_reset(
+            p, {"CC": "clang"}, inherited_env={"LD": "ld.lld"}
+        )
+        assert count == 1
+        text = p.read_text()
+        assert "CC" in text
+        assert "LD" in text
+
+
+def test_subshell_env_reset_inherited_ld_only():
+    """LD from inherited env triggers reset even when profile CC is default."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "PKGBUILD.sysforge"
+        p.write_text("_helper() (\n  echo hi\n)\n")
+        count = patch_subshell_env_reset(
+            p, {"CC": "gcc"}, inherited_env={"LD": "ld.lld"}
+        )
+        assert count == 1
+        text = p.read_text()
+        assert "LD" in text
+        # CC is default, so should not be in unset
+        assert "CC" not in text.split("unset")[1]
+
+
+def test_subshell_env_reset_inherited_default_ld():
+    """LD=ld (the default) should NOT trigger a reset."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "PKGBUILD.sysforge"
+        original = "_helper() (\n  echo hi\n)\n"
+        p.write_text(original)
+        count = patch_subshell_env_reset(
+            p, {"CC": "gcc"}, inherited_env={"LD": "ld"}
+        )
+        assert count == 0
+        assert p.read_text() == original
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
