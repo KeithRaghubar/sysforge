@@ -25,6 +25,7 @@ _DATA = Path(__file__).parent / "data"
 from sysforge.primitives.dep_analysis import (
     _parse_ldconfig,
     check_soname_deps,
+    check_makedep_runtime,
     run_dep_analysis,
 )
 
@@ -188,3 +189,97 @@ def test_run_abort_propagates():
     }
     with pytest.raises(RuntimeError, match="abi_mismatch"):
         run_dep_analysis(pkgmeta, abort_config(), ldconfig_fn=mock_ldconfig)
+
+
+# ---------------------------------------------------------------------------
+# check_makedep_runtime
+# ---------------------------------------------------------------------------
+
+def _mock_run_success(*args, **kwargs):
+    """Simulate a successful probe command."""
+    class R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+    return R()
+
+
+def _mock_run_fail(*args, **kwargs):
+    """Simulate a probe command that exits non-zero."""
+    class R:
+        returncode = 1
+        stdout = ""
+        stderr = "libguestfs: error: appliance boot failed\n"
+    return R()
+
+
+def _mock_run_timeout(*args, **kwargs):
+    import subprocess
+    raise subprocess.TimeoutExpired(cmd=args[0], timeout=15)
+
+
+def _mock_run_not_found(*args, **kwargs):
+    raise FileNotFoundError("guestfish")
+
+
+def test_makedep_probe_success():
+    findings = check_makedep_runtime(
+        ["libguestfs"], DEFAULT_CONFIG, pkgname="ventoy", run_fn=_mock_run_success,
+    )
+    assert findings == []
+
+
+def test_makedep_probe_failure():
+    findings = check_makedep_runtime(
+        ["libguestfs"], DEFAULT_CONFIG, pkgname="ventoy", run_fn=_mock_run_fail,
+    )
+    assert len(findings) == 1
+    assert findings[0][0] == "libguestfs"
+    assert "probe failed" in findings[0][1]
+
+
+def test_makedep_probe_timeout():
+    findings = check_makedep_runtime(
+        ["libguestfs"], DEFAULT_CONFIG, pkgname="ventoy", run_fn=_mock_run_timeout,
+    )
+    assert len(findings) == 1
+    assert "timed out" in findings[0][1]
+
+
+def test_makedep_probe_not_installed():
+    findings = check_makedep_runtime(
+        ["libguestfs"], DEFAULT_CONFIG, pkgname="ventoy", run_fn=_mock_run_not_found,
+    )
+    assert findings == []
+
+
+def test_makedep_probe_skips_unprobed():
+    """Makedepends not in _MAKEDEP_PROBES are silently skipped."""
+    findings = check_makedep_runtime(
+        ["git", "python", "make"], DEFAULT_CONFIG, run_fn=_mock_run_fail,
+    )
+    assert findings == []
+
+
+def test_makedep_probe_version_constraint():
+    """Version constraints like libguestfs>=1.50 are stripped before lookup."""
+    findings = check_makedep_runtime(
+        ["libguestfs>=1.50"], DEFAULT_CONFIG, pkgname="pkg", run_fn=_mock_run_success,
+    )
+    assert findings == []
+
+
+def test_run_dep_analysis_includes_makedep_probes():
+    """run_dep_analysis runs makedep probes alongside soname checks."""
+    pkgmeta = {
+        "globals": {
+            "pkgname": "ventoy",
+            "depends": [],
+            "makedepends": ["libguestfs"],
+        }
+    }
+    findings = run_dep_analysis(
+        pkgmeta, DEFAULT_CONFIG, ldconfig_fn=mock_ldconfig, run_fn=_mock_run_fail,
+    )
+    assert len(findings) == 1
+    assert findings[0][0] == "libguestfs"

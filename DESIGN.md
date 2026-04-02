@@ -570,13 +570,13 @@ Inline `make VAR=val` and `cmake -DKEY=val` lines are only removed when the key 
 
 ### `dep_analysis.py`
 
-Pre-build soname dependency checks. Runs before `_run_build` in `makepkg_wrapper.run()`.
+Pre-build dependency checks. Runs before `_run_build` in `makepkg_wrapper.run()`. Two check categories:
 
-`check_soname_deps` filters `.so` and `.so=N` entries from `depends`, parses ldconfig -p output, and checks presence and major version. `libcap.so=2` means libcap.so.2 must be present in ldconfig's cache.
+**Soname checks** (`check_soname_deps`): filters `.so` and `.so=N` entries from `depends`, parses ldconfig -p output, and checks presence and major version. `libcap.so=2` means libcap.so.2 must be present in ldconfig's cache. Version constraint checking (pacman -Q / vercmp) was intentionally omitted — makepkg already does this and any pre-check adds false-positive risk without meaningful value.
 
-Version constraint checking (pacman -Q / vercmp) was intentionally omitted — makepkg already does this and any pre-check adds false-positive risk without meaningful value.
+**Makedep runtime probes** (`check_makedep_runtime`): tests makedepends with known runtime requirements beyond package installation. Probes are defined in `_MAKEDEP_PROBES` — a map of package name to (probe_cmd, description). Currently probes: `libguestfs` (appliance boot via `guestfish add /dev/null : run` — requires compatible kernel with virtio/ext4/9p modules). Each probe runs with a 15-second timeout; failure or timeout produces a clear diagnostic instead of a silent mid-build hang. Version constraints on makedepends are stripped before lookup. Packages not in `_MAKEDEP_PROBES` are silently skipped. Not-installed packages (FileNotFoundError) are skipped.
 
-Both functions accept injectable callables for testing. Non-fatal by default; configurable via `abi_mismatch` in `[failure_handling]`.
+All functions accept injectable callables for testing. Non-fatal by default; configurable via `abi_mismatch` and `makedep_probe_failed` in `[failure_handling]`.
 
 **Recursive AUR dependency resolution (v1.0):**
 

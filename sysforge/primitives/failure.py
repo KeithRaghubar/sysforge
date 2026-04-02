@@ -20,6 +20,7 @@ _FAILURE_DEFAULTS = {
     "tempfile_write_failed": "abort",
     "env_conflict":          "warn_and_fallback",
     "abi_mismatch":          "warn_and_fallback",
+    "makedep_probe_failed":  "warn_and_fallback",
     "dep_unsatisfied":       "warn_and_fallback",
 }
 

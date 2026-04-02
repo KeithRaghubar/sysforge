@@ -127,19 +127,96 @@ def check_soname_deps(depends, config, pkgname="unknown", ldconfig_fn=None):
 
 
 # ---------------------------------------------------------------------------
+# Makedepends runtime probes
+# ---------------------------------------------------------------------------
+
+_MAKEDEP_PROBE_TIMEOUT = 15  # seconds
+
+# Map of makedepend package names to (probe_cmd, description) tuples.
+# Each probe_cmd is run with a timeout; non-zero exit or timeout = failure.
+_MAKEDEP_PROBES = {
+    "libguestfs": (
+        ["guestfish", "add", "/dev/null", ":", "run"],
+        "libguestfs appliance boot (requires compatible kernel modules: "
+        "virtio, ext4, 9p, etc.)",
+    ),
+}
+
+
+def check_makedep_runtime(makedepends, config, pkgname="unknown",
+                          run_fn=None):
+    """
+    Probe makedepends that have known runtime requirements beyond package
+    installation (e.g. libguestfs needs a bootable kernel appliance).
+
+    Only probes packages that are actually in the PKGBUILD's makedepends.
+    Each probe runs with a short timeout — failure produces a clear
+    diagnostic instead of a silent mid-build hang.
+
+    Returns list of (makedep, issue_str) tuples for failures.
+    """
+    if run_fn is None:
+        run_fn = subprocess.run
+
+    findings = []
+    for dep in makedepends:
+        # Strip version constraints: libguestfs>=1.50 → libguestfs
+        bare = re.split(r"[><=]", dep)[0]
+        if bare not in _MAKEDEP_PROBES:
+            continue
+
+        probe_cmd, description = _MAKEDEP_PROBES[bare]
+        _log.info(f"[{pkgname}] probing makedep {bare!r}: {' '.join(probe_cmd)}")
+
+        try:
+            result = run_fn(
+                probe_cmd,
+                capture_output=True, text=True,
+                timeout=_MAKEDEP_PROBE_TIMEOUT,
+            )
+            if result.returncode != 0:
+                stderr_tail = (result.stderr or "").strip().splitlines()
+                detail = stderr_tail[-1] if stderr_tail else f"exit code {result.returncode}"
+                issue = (
+                    f"makedep {bare!r} probe failed: {detail}\n"
+                    f"  check: {description}"
+                )
+                _log.error(f"[{pkgname}] {issue}")
+                handle_failure("makedep_probe_failed", issue, config)
+                findings.append((bare, issue))
+            else:
+                _log.info(f"[{pkgname}] makedep probe ok: {bare}")
+        except subprocess.TimeoutExpired:
+            issue = (
+                f"makedep {bare!r} probe timed out after {_MAKEDEP_PROBE_TIMEOUT}s — "
+                f"appliance likely cannot boot\n"
+                f"  check: {description}"
+            )
+            _log.error(f"[{pkgname}] {issue}")
+            handle_failure("makedep_probe_failed", issue, config)
+            findings.append((bare, issue))
+        except FileNotFoundError:
+            _log.info(f"[{pkgname}] makedep probe skipped ({bare!r} not installed)")
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-def run_dep_analysis(pkgmeta, config, ldconfig_fn=None):
+def run_dep_analysis(pkgmeta, config, ldconfig_fn=None, run_fn=None):
     """
-    Run pre-build soname dependency checks against pkgmeta.
+    Run pre-build dependency checks against pkgmeta.
 
-    Extracts depends from pkgmeta globals and checks all .so entries against
-    ldconfig's cache. makedepends are not checked — soname entries only
-    appear in runtime depends, not build deps.
+    Two check categories:
+      1. Soname checks — .so entries in depends verified against ldconfig.
+      2. Makedep runtime probes — makedepends with known runtime requirements
+         (e.g. libguestfs appliance boot) are tested with a short timeout.
 
     Non-fatal by default — behaviour governed by [failure_handling]:
-      abi_mismatch  (default: warn_and_fallback)
+      abi_mismatch         (default: warn_and_fallback)
+      makedep_probe_failed (default: warn_and_fallback)
 
     Returns list of (entry, issue_str) tuples. Empty list = all clear.
     """
@@ -148,18 +225,27 @@ def run_dep_analysis(pkgmeta, config, ldconfig_fn=None):
     if isinstance(pkgname, list):
         pkgname = pkgname[0]
 
+    findings = []
+
+    # Soname checks
     depends = globals_.get("depends", [])
-
     soname_entries = [e for e in depends if _SONAME_RE.match(e)]
-    if not soname_entries:
+    if soname_entries:
+        _log.info(f"[{pkgname}] checking {len(soname_entries)} soname dep(s)")
+        findings.extend(
+            check_soname_deps(depends, config, pkgname=pkgname, ldconfig_fn=ldconfig_fn)
+        )
+    else:
         _log.info(f"[{pkgname}] no soname entries in depends — skipping")
-        return []
 
-    _log.info(f"[{pkgname}] checking {len(soname_entries)} soname dep(s)")
-
-    findings = check_soname_deps(depends, config, pkgname=pkgname, ldconfig_fn=ldconfig_fn)
+    # Makedep runtime probes
+    makedepends = globals_.get("makedepends", [])
+    if makedepends:
+        findings.extend(
+            check_makedep_runtime(makedepends, config, pkgname=pkgname, run_fn=run_fn)
+        )
 
     if not findings:
-        _log.info(f"[{pkgname}] all soname checks passed")
+        _log.info(f"[{pkgname}] all dependency checks passed")
 
     return findings
