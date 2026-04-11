@@ -93,6 +93,9 @@ def append_dependency_entries(
 # ---------------------------------------------------------------------------
 
 def cmd_packages_list(args):
+    if getattr(args, "diagnose", False):
+        _diagnose_manifest(args)
+        return
     if getattr(args, "state", False):
         _list_build_state(args)
         return
@@ -363,6 +366,140 @@ def _sync_toml_inplace(path: Path, changes_by_name: dict) -> None:
                 lines.insert(last_content + 1, new_line)
 
     path.write_text("".join(lines))
+
+
+def _probe_pkgbuild_dir(d: Path) -> str:
+    """Return an update.py-equivalent status string for a candidate pkgbuild dir.
+
+    Mirrors the silent-skip conditions in sysforge.update and
+    sysforge.primitives.aur.git_pull_rebase so the diagnostic matches reality.
+    """
+    import subprocess
+    if not d.exists():
+        return "DIR_MISSING"
+    if not (d / "PKGBUILD").exists():
+        return "NO_PKGBUILD"
+    r = subprocess.run(
+        ["git", "-C", str(d), "rev-parse", "--git-dir"],
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        return "NOT_GIT"
+    r = subprocess.run(
+        ["git", "-C", str(d), "rev-parse", "--abbrev-ref",
+         "--symbolic-full-name", "@{u}"],
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        return "NO_UPSTREAM"
+    return "OK"
+
+
+# Statuses that cause `sysforge update` to silently do nothing for a package.
+_SILENT_FAILURE_STATUSES = {"DIR_MISSING", "NO_PKGBUILD", "NOT_GIT", "NO_UPSTREAM"}
+
+
+def _diagnose_manifest(args):
+    """Print per-package directory/git status as `sysforge update` would see it.
+
+    Walks every entry in packages.toml, resolves its pkgbuild_dir exactly like
+    update.py does (build_state entry if present, else pkgbuild_dir_base / name),
+    and probes that path.  Packages that resolve to DIR_MISSING / NO_PKGBUILD /
+    NOT_GIT / NO_UPSTREAM are the silent-failure buckets — update.py will either
+    skip them with a buried warning or treat them as UP_TO_DATE against a stale
+    local PKGBUILD.  Use this when `sysforge update` is missing packages you
+    know have upstream changes.
+    """
+    from sysforge.primitives.build_state import BuildState
+    from sysforge.pipeline.state import resolve_state_dir
+
+    path = _resolve_packages_file(getattr(args, "packages", None))
+    if not path.exists():
+        _log.fatal(f"No packages.toml at {path}")
+
+    data = _load_toml(path)
+    build_cfg = data.get("build", {})
+    entries = [e for e in data.get("package", []) if "name" in e]
+    if not entries:
+        print(f"No packages defined in {path}")
+        return
+
+    config = load_config() or {}
+    state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
+    bs = BuildState(state_dir)
+    build_state_pkgs = bs.all_packages()
+
+    raw_dir = (
+        build_cfg.get("pkgbuild_dir")
+        or config.get("paths", {}).get("pkgbuild_dir")
+    )
+    pkgbuild_dir_base = Path(raw_dir).expanduser() if raw_dir else None
+
+    rows: list[tuple[str, str, str, str, str]] = []
+    for entry in entries:
+        name = entry["name"]
+        source = entry.get("source", "")
+        if name in build_state_pkgs:
+            tracking = "TRACKED"
+            resolved_dir = Path(build_state_pkgs[name].get("pkgbuild_dir", ""))
+        else:
+            tracking = "UNRECORDED"
+            if pkgbuild_dir_base is None:
+                rows.append((name, source, tracking, "NO_PKGBUILD_BASE", ""))
+                continue
+            resolved_dir = pkgbuild_dir_base / name
+        status = _probe_pkgbuild_dir(resolved_dir)
+        rows.append((name, source, tracking, status, str(resolved_dir)))
+
+    only_problems = getattr(args, "problems_only", False)
+    display_rows = [
+        r for r in rows if not only_problems or r[3] in _SILENT_FAILURE_STATUSES
+    ]
+
+    if not display_rows:
+        if only_problems:
+            print(f"All {len(rows)} package(s) resolve cleanly.")
+        else:
+            print(f"No packages to display from {path}")
+        return
+
+    max_name = max(len(r[0]) for r in display_rows)
+    max_src = max(len(r[1]) for r in display_rows)
+    max_track = max(len(r[2]) for r in display_rows)
+    max_status = max(len(r[3]) for r in display_rows)
+
+    header = (
+        f"  {'NAME':<{max_name}}  {'SOURCE':<{max_src}}  "
+        f"{'TRACK':<{max_track}}  {'STATUS':<{max_status}}  PKGBUILD_DIR"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for name, source, tracking, status, pdir in display_rows:
+        print(
+            f"  {name:<{max_name}}  {source:<{max_src}}  "
+            f"{tracking:<{max_track}}  {status:<{max_status}}  {pdir}"
+        )
+
+    # Summary counts, always computed from the full row set (not display_rows)
+    # so --problems-only still shows the clean-package total.
+    counts: dict[str, int] = {}
+    for _, _, _, status, _ in rows:
+        counts[status] = counts.get(status, 0) + 1
+
+    print()
+    print(f"  {len(rows)} package(s) in {path.name}")
+    for status in ("OK", *sorted(s for s in counts if s != "OK")):
+        if status in counts:
+            marker = " " if status == "OK" else "!"
+            print(f"    {marker} {status:<16} {counts[status]}")
+
+    silent = sum(counts.get(s, 0) for s in _SILENT_FAILURE_STATUSES)
+    if silent:
+        print()
+        print(
+            f"  {silent} package(s) would be silently skipped or "
+            f"stale-compared by `sysforge update`."
+        )
 
 
 def cmd_packages_repair_state(args):

@@ -585,6 +585,10 @@ def _add_packages_parser(sub):
         help=_PACKAGES_HELP)
     p.add_argument("--state", action="store_true", dest="state",
         help="List build_state.toml entries instead of packages.toml.")
+    p.add_argument("--diagnose", action="store_true", dest="diagnose",
+        help="Per-package directory/git status as `sysforge update` would see it.")
+    p.add_argument("--problems-only", action="store_true", dest="problems_only",
+        help="With --diagnose: show only packages that would silently fail.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
     p.set_defaults(func=cmd_packages_list)
@@ -597,6 +601,10 @@ def _add_packages_parser(sub):
         help="Path to packages.toml.")
     p_list.add_argument("--state", action="store_true", dest="state",
         help="List build_state.toml entries instead of packages.toml.")
+    p_list.add_argument("--diagnose", action="store_true", dest="diagnose",
+        help="Per-package directory/git status as `sysforge update` would see it.")
+    p_list.add_argument("--problems-only", action="store_true", dest="problems_only",
+        help="With --diagnose: show only packages that would silently fail.")
     p_list.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
     p_list.set_defaults(func=cmd_packages_list)
