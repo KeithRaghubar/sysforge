@@ -9,11 +9,19 @@
 #   2. Verifies the tag exists in the local repo
 #   3. Fetches sha256sum from the GitHub tarball
 #   4. Updates sha256sums in PKGBUILD
-#   5. Generates .SRCINFO (stable) and .SRCINFO-git (VCS)
-#   6. Prints instructions for pushing to AUR
+#   5. Validates PKGBUILD and PKGBUILD-git in a clean chroot (makechrootpkg)
+#   6. Generates .SRCINFO (stable) and .SRCINFO-git (VCS)
+#   7. Prints instructions for pushing to AUR
+#
+# Prereqs for chroot validation (one-time):
+#   sudo pacman -S --needed devtools
+#   sudo mkarchroot /var/lib/archbuild/extra-x86_64/root base-devel
 #
 # Usage:
-#   bash tools/release.sh [--dry-run]
+#   bash tools/release.sh [--dry-run] [--skip-chroot]
+#
+# Env:
+#   SYSFORGE_CHROOT — override chroot root (default /var/lib/archbuild/extra-x86_64)
 
 set -euo pipefail
 
@@ -21,9 +29,41 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 DRY_RUN=0
+SKIP_CHROOT=0
 for arg in "$@"; do
-    [[ "$arg" == "--dry-run" ]] && DRY_RUN=1
+    case "$arg" in
+        --dry-run)     DRY_RUN=1 ;;
+        --skip-chroot) SKIP_CHROOT=1 ;;
+        *) echo "ERROR: unknown argument: $arg" >&2; exit 2 ;;
+    esac
 done
+
+CHROOT_ROOT="${SYSFORGE_CHROOT:-/var/lib/archbuild/extra-x86_64}"
+
+# ---------------------------------------------------------------------------
+# Clean-chroot build validation helper
+# ---------------------------------------------------------------------------
+# Copies the given PKGBUILD into a scratch dir, runs `makechrootpkg -c -u` so
+# dependency resolution happens against a freshly-updated chroot, and asserts
+# that a package tarball was produced. Catches missing depends/makedepends
+# that a host build would silently accept because the dep is already
+# installed on the dev box.
+chroot_build() {
+    local pkgbuild_src="$1"
+    local label="$2"
+    local scratch
+    scratch=$(mktemp -d)
+    cp "$pkgbuild_src" "$scratch/PKGBUILD"
+    echo "    building $label in $CHROOT_ROOT (scratch: $scratch)"
+    (cd "$scratch" && makechrootpkg -c -u -r "$CHROOT_ROOT")
+    if ! compgen -G "$scratch"/*.pkg.tar.zst > /dev/null; then
+        echo "ERROR: chroot build of $label produced no package"
+        rm -rf "$scratch"
+        exit 1
+    fi
+    rm -rf "$scratch"
+    echo "    $label: chroot build OK"
+}
 
 # ---------------------------------------------------------------------------
 # Read version
@@ -97,6 +137,30 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     make man
 else
     echo "    [dry-run] would run: make man"
+fi
+
+# ---------------------------------------------------------------------------
+# Clean-chroot build validation (PKGBUILD + PKGBUILD-git)
+# ---------------------------------------------------------------------------
+
+if [[ "$DRY_RUN" -eq 0 && "$SKIP_CHROOT" -eq 0 ]]; then
+    echo "==> Validating PKGBUILDs in clean chroot"
+    if ! command -v makechrootpkg >/dev/null 2>&1; then
+        echo "ERROR: makechrootpkg not found. Install devtools:"
+        echo "  sudo pacman -S --needed devtools"
+        exit 1
+    fi
+    if [[ ! -d "$CHROOT_ROOT/root" ]]; then
+        echo "ERROR: chroot $CHROOT_ROOT/root missing. Create it once:"
+        echo "  sudo mkarchroot $CHROOT_ROOT/root base-devel"
+        exit 1
+    fi
+    chroot_build PKGBUILD     "PKGBUILD (stable)"
+    chroot_build PKGBUILD-git "PKGBUILD-git (VCS)"
+elif [[ "$SKIP_CHROOT" -eq 1 ]]; then
+    echo "==> [--skip-chroot] skipping clean-chroot validation"
+else
+    echo "==> [dry-run] would run chroot build for PKGBUILD and PKGBUILD-git"
 fi
 
 # ---------------------------------------------------------------------------

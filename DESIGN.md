@@ -1164,13 +1164,35 @@ Build in this order to satisfy dependencies correctly:
 
 ### AUR publishing process
 
+Release prep is driven by `tools/release.sh`, which reads the version from `pyproject.toml`, verifies the matching `vX.Y.Z` tag exists locally, fetches the GitHub tarball sha256, updates `PKGBUILD`, regenerates the man page, **validates both `PKGBUILD` and `PKGBUILD-git` in a clean chroot**, and writes `.SRCINFO` / `.SRCINFO-git`. After it succeeds, the script prints the `git clone`/`cp`/`commit`/`push` sequence for the `sysforge` and `sysforge-git` AUR repos.
+
+**Clean chroot validation.** The release gate catches underspecified `depends`/`makedepends` that a host build would silently accept because the dep is already installed. It uses `makechrootpkg` from `devtools` and is a hard prerequisite for the release flow — not the everyday `sysforge build` path, which remains a direct host-side `makepkg` invocation for speed.
+
+One-time setup on the release machine:
+
 ```bash
-git clone ssh://aur@aur.archlinux.org/sysforge.git
-makepkg --printsrcinfo > .SRCINFO
-git add PKGBUILD .SRCINFO
-git commit -m "Initial release"
-git push
+sudo pacman -S --needed devtools
+sudo mkarchroot /var/lib/archbuild/extra-x86_64/root base-devel
 ```
+
+Per-release, the script runs (for each of `PKGBUILD` and `PKGBUILD-git`, in a tmpdir so no build artifacts land in the working tree):
+
+```bash
+makechrootpkg -c -u -r "$SYSFORGE_CHROOT"
+```
+
+- `-c` snapshots a clean copy of the root chroot for every build, so state from a prior release cannot leak in.
+- `-u` updates the root chroot against current `core`/`extra` before the snapshot, so validation runs against what an AUR user will actually hit.
+- The build never installs to the host; the release machine stays clean.
+- A missing or empty `*.pkg.tar.zst` in the build tmpdir is a hard failure.
+
+Escape hatches:
+
+- `--skip-chroot` — bypass the chroot gate when iterating on `release.sh` itself. Never use for a real publish.
+- `SYSFORGE_CHROOT` — override the chroot root (default `/var/lib/archbuild/extra-x86_64`) for CI or VM release runs.
+- `--dry-run` — also skips the chroot build.
+
+`makechrootpkg` bind-mounts require root; the script assumes passwordless sudo is configured for it and fails fast with a clear message otherwise.
 
 ---
 
