@@ -44,7 +44,7 @@ release:
 
 man:
 	mkdir -p man
-	PYTHONPATH=. argparse-manpage \
+	PYTHONPATH=. uv run argparse-manpage \
 	  --module sysforge.cli \
 	  --function _build_parser \
 	  --author "Keith Raghubar" \

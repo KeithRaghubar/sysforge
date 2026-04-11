@@ -38,6 +38,15 @@ sysforge update --devel
 # 6. Preview what would be rebuilt without doing it
 sysforge update --dry-run
 
+# 7. Unattended full system update — also discovers foreign packages and
+#    auto-clones any missing src dirs (the supported "fix everything" recipe)
+sysforge update --all --fetch-missing
+
+# 8. Same as above, plus discard divergent local clones (rebase conflicts).
+#    --cleansrc refuses any clone that has uncommitted changes, unpushed commits,
+#    or no upstream — those packages are reported as failed and the run continues.
+sysforge update --all --fetch-missing --cleansrc
+
 # 7. Manage packages.toml
 sysforge packages list
 sysforge packages list --state        # show build_state.toml entries instead

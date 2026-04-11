@@ -11,12 +11,14 @@ Public API:
     import_pgp_keys(pkgmeta)       -> None              recv any missing validpgpkeys
     git_pull_rebase(pkgbuild_dir)  -> None              git pull --rebase; abort+raise on conflict
     git_is_dirty(pkgbuild_dir)    -> bool              True if git repo has uncommitted changes
+    purge_src(pkgbuild_dir)        -> None              rm -rf pkgbuild_dir; fatal if git_is_dirty
     fetch_aur_name_cache()         -> Path | None       refresh ~/.cache/sysforge/aur-packages.txt
 """
 import gzip
 import json
 import os
 import re as _re
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -299,6 +301,36 @@ def git_is_dirty(pkgbuild_dir: Path) -> bool:
         return count.isdigit() and int(count) > 0
 
     return False
+
+
+def purge_src(pkgbuild_dir: Path) -> None:
+    """
+    Remove pkgbuild_dir to allow a fresh clone on the next build.
+
+    Refuses (raises RuntimeError) if the directory is a git repo with local
+    work that would be destroyed: uncommitted tracked changes, unpushed
+    commits, or no upstream tracking branch (entirely-local repo).
+
+    A non-existent directory is a no-op. A non-git directory is purged
+    unconditionally — it has no commit history to protect.
+    """
+    if not pkgbuild_dir.exists():
+        return
+
+    is_git = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
+        capture_output=True,
+    ).returncode == 0
+
+    if is_git and git_is_dirty(pkgbuild_dir):
+        raise RuntimeError(
+            f"refusing to purge {pkgbuild_dir}: uncommitted changes, "
+            "unpushed commits, or no upstream tracking branch — "
+            "resolve manually or commit/push before retrying"
+        )
+
+    _git_log.warn(f"purging {pkgbuild_dir} for clean re-clone")
+    shutil.rmtree(pkgbuild_dir)
 
 
 def aur_clone(name: str, dest: Path) -> None:

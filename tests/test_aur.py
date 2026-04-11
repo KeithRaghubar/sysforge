@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sysforge.primitives.aur import aur_clone, aur_info, fetch_aur_name_cache, git_is_dirty, git_pull_rebase, import_pgp_keys, is_repo_package, pkgctl_checkout, repo_packages
+from sysforge.primitives.aur import aur_clone, aur_info, fetch_aur_name_cache, git_is_dirty, git_pull_rebase, import_pgp_keys, is_repo_package, pkgctl_checkout, purge_src, repo_packages
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +562,117 @@ def test_git_is_dirty_checks_rev_list_after_clean_status(tmp_path):
     rev_list_calls = [c for c in calls if "rev-list" in c]
     assert len(rev_list_calls) == 1
     assert "@{u}..HEAD" in rev_list_calls[0]
+
+
+# ---------------------------------------------------------------------------
+# purge_src
+# ---------------------------------------------------------------------------
+
+def test_purge_src_nonexistent_is_noop(tmp_path):
+    """Missing dir → silent no-op, never invokes git."""
+    target = tmp_path / "missing"
+    purge_src(target)
+    assert not target.exists()
+
+
+def test_purge_src_non_git_dir_purges_unconditionally(tmp_path):
+    """Plain directory with no .git is removed without dirty checks."""
+    target = tmp_path / "plain"
+    target.mkdir()
+    (target / "file.txt").write_text("hi")
+
+    not_repo = subprocess.CompletedProcess(["git"], 128, stdout="", stderr="not a git repo")
+    with patch("subprocess.run", return_value=not_repo):
+        purge_src(target)
+    assert not target.exists()
+
+
+def test_purge_src_clean_repo_purges(tmp_path):
+    """Clean git repo with upstream and zero unpushed commits → purged."""
+    target = tmp_path / "clean"
+    target.mkdir()
+    (target / "PKGBUILD").write_text("pkgname=foo")
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "status" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "@{u}" in cmd_str and "rev-list" not in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
+        if "rev-list" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        purge_src(target)
+    assert not target.exists()
+
+
+def test_purge_src_dirty_worktree_raises(tmp_path):
+    """Uncommitted changes → RuntimeError, dir is preserved."""
+    target = tmp_path / "dirty"
+    target.mkdir()
+    (target / "PKGBUILD").write_text("pkgname=foo")
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "status" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=" M PKGBUILD", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="refusing to purge"):
+            purge_src(target)
+    assert target.exists()
+    assert (target / "PKGBUILD").exists()
+
+
+def test_purge_src_unpushed_commits_raises(tmp_path):
+    """Clean worktree but unpushed commits → RuntimeError, dir preserved."""
+    target = tmp_path / "ahead"
+    target.mkdir()
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "status" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "@{u}" in cmd_str and "rev-list" not in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
+        if "rev-list" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="3", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="refusing to purge"):
+            purge_src(target)
+    assert target.exists()
+
+
+def test_purge_src_no_upstream_raises(tmp_path):
+    """Repo with no tracking branch (entirely local) → refused."""
+    target = tmp_path / "local-only"
+    target.mkdir()
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        if "--git-dir" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "status" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "@{u}" in cmd_str:
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="no upstream")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="refusing to purge"):
+            purge_src(target)
+    assert target.exists()
 
 
 # ---------------------------------------------------------------------------

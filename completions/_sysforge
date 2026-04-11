@@ -105,6 +105,7 @@ _sysforge_build() {
     '--cache-report[print ccache/sccache summary after build]' \
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--no-update[skip git pull --rebase before building]' \
+    '--cleansrc[purge src dir and re-clone before building (refuses if local work present)]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--track-deps[auto-add resolved AUR deps to packages.toml]' \
     '*: :_sysforge_pkg_or_file' \
@@ -128,6 +129,8 @@ _sysforge_update() {
     '--no-update[skip git pull --rebase before checking versions]' \
     '--interactive[pause on build failures to allow manual correction]' \
     '--no-cleanbuild[skip automatic --cleanbuild; useful to re-run only the install step]' \
+    '--cleansrc[purge each src dir and re-clone before building (per-package fatal if local work present)]' \
+    '--fetch-missing[auto-clone packages whose src dir is missing or empty instead of skipping]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--no-unified-log[disable unified log file]' \
     '--purge-log[truncate unified log before this run]' \

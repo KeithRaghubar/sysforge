@@ -38,7 +38,7 @@ _log = log.get_logger("UPDATE")
 from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-from sysforge.primitives.aur import git_pull_rebase, fetch_aur_name_cache
+from sysforge.primitives.aur import git_pull_rebase, fetch_aur_name_cache, purge_src, aur_clone
 from sysforge.primitives.config import load_config
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
@@ -276,19 +276,36 @@ def _check_one_pkgbase(
     all_installed: dict[str, str],
     unrecorded_names: set[str],
     skip_pull_check: bool,
+    fetch_missing: bool = False,
 ) -> _UpdateResult | None:
     """Check a single pkgbase and return an _UpdateResult, or None on skip."""
     pkgbuild_dir = Path(entry["pkgbuild_dir"])
     has_record = not any(pn in unrecorded_names for pn in pkgnames)
 
     if not pkgbuild_dir.is_dir():
-        _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
-        return None
+        if fetch_missing:
+            try:
+                aur_clone(pkgbase, pkgbuild_dir)
+            except RuntimeError as e:
+                _log.error(f"{pkgbase}: --fetch-missing clone failed: {e}")
+                return None
+        else:
+            _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
+            return None
 
     pkgbuild_path = pkgbuild_dir / "PKGBUILD"
     if not pkgbuild_path.exists():
-        _log.warn(f"{pkgbase}: PKGBUILD not found at {pkgbuild_path} — skipping")
-        return None
+        if fetch_missing:
+            # Dir exists but is empty / partial — wipe and re-clone.
+            try:
+                purge_src(pkgbuild_dir)
+                aur_clone(pkgbase, pkgbuild_dir)
+            except RuntimeError as e:
+                _log.error(f"{pkgbase}: --fetch-missing recovery failed: {e}")
+                return None
+        else:
+            _log.warn(f"{pkgbase}: PKGBUILD not found at {pkgbuild_path} — skipping")
+            return None
 
     if not skip_pull_check and pkgbase in pull_errors:
         _log.error(pull_errors[pkgbase])
@@ -437,6 +454,32 @@ def cmd_update(args) -> None:
 
     results: list[_UpdateResult] = []
 
+    # --- Optional --cleansrc: purge each src dir before pulling ---
+    # Per-package fatal: a dirty repo (uncommitted, unpushed, or no upstream)
+    # is reported via cleansrc_failures and excluded from this run; everything
+    # else proceeds normally so the unattended path doesn't abort.
+    cleansrc_failures: dict[str, str] = {}
+    if getattr(args, "cleansrc", False) and not getattr(args, "dry_run", False):
+        seen_purge: set[str] = set()
+        for pkgbase in sorted(pkgbase_map):
+            d = Path(pkgbase_entry[pkgbase]["pkgbuild_dir"])
+            key = str(d)
+            if key in seen_purge:
+                continue
+            seen_purge.add(key)
+            try:
+                purge_src(d)
+            except RuntimeError as e:
+                cleansrc_failures[pkgbase] = str(e)
+                _log.error(f"--cleansrc {pkgbase}: {e}")
+
+        if cleansrc_failures:
+            # Drop fatal pkgbases from this run so they don't get pulled,
+            # version-checked, or built against a stale dir we couldn't purge.
+            for failed in cleansrc_failures:
+                pkgbase_map.pop(failed, None)
+                pkgbase_entry.pop(failed, None)
+
     # --- Parallel git pulls ---
     # Pull all PKGBUILD dirs concurrently before the version-check loop.
     # Deduplicate by resolved path to avoid pulling the same dir twice
@@ -469,12 +512,13 @@ def cmd_update(args) -> None:
                     pull_errors[pkgbase_key] = str(e)
 
     # --- Parallel version checks ---
+    fetch_missing = getattr(args, "fetch_missing", False) and not getattr(args, "dry_run", False)
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(
                 _check_one_pkgbase, pkgbase, pkgnames,
                 pkgbase_entry[pkgbase], pull_errors, all_installed,
-                unrecorded_names, skip_pulls,
+                unrecorded_names, skip_pulls, fetch_missing,
             ): pkgbase
             for pkgbase, pkgnames in sorted(pkgbase_map.items())
         }
@@ -658,6 +702,9 @@ def cmd_update(args) -> None:
     if getattr(args, "cache_report", False):
         emit_session_report()
 
+    # Cleansrc-fatal packages count as failures (build never attempted).
+    failed_pkgs.extend(sorted(cleansrc_failures))
+
     skipped = len(results) - len(to_build)
     _log.ui((
         f"\n[SYSFORGE] Update complete: "
@@ -669,6 +716,11 @@ def cmd_update(args) -> None:
         _log.ui(f"  Built:       {' '.join(built_pkgs)}")
     if failed_pkgs:
         _log.ui(f"  Failed:      {' '.join(failed_pkgs)}")
+    if cleansrc_failures:
+        _log.ui(
+            f"  --cleansrc refused {len(cleansrc_failures)} package(s) with local work; "
+            "commit/push or resolve manually before retrying."
+        )
     if pgo_skipped_pkgs:
         _log.ui(
             f"  PGO-skipped: {' '.join(pgo_skipped_pkgs)}"

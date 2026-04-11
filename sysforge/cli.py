@@ -46,6 +46,23 @@ def _load_config_with_overrides(args) -> dict:
     return config
 
 
+def _cleansrc_target_dir(pkg: str, config: dict) -> Path | None:
+    """
+    Resolve the src dir that --cleansrc should purge for pkg.
+
+    Returns the directory under pkgbuild_src_dir that find_pkgbuild would
+    use, or None if pkg is a path to an existing PKGBUILD/dir (in which
+    case purging would destroy user-supplied input).
+    """
+    p = Path(pkg)
+    if p.exists():
+        return None
+    raw = config.get("paths", {}).get("pkgbuild_src_dir") if config else None
+    if not raw:
+        return None
+    return Path(raw).expanduser() / pkg
+
+
 def _cmd_build(args):
     extra_flags = expand_makepkg_flags(args.makepkg) if args.makepkg else None
     if args.no_pkg_log and args.log_dir:
@@ -55,6 +72,16 @@ def _cmd_build(args):
     config = _load_config_with_overrides(args)
     try:
         for i, pkg in enumerate(packages):
+            if getattr(args, "cleansrc", False):
+                from sysforge.primitives.aur import purge_src
+                target_dir = _cleansrc_target_dir(pkg, config)
+                if target_dir is not None:
+                    try:
+                        purge_src(target_dir)
+                    except RuntimeError as e:
+                        _log.error(f"--cleansrc {pkg!r}: {e}")
+                        continue
+
             pkgbuild = find_pkgbuild(pkg, config)
 
             # Resolve and build AUR deps before the main package
@@ -473,6 +500,10 @@ def _add_build_parser(sub):
         help="Run a post-build ABI compatibility check on built shared libraries.")
     p.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase before building.")
+    p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
+        help="Purge the package src dir and re-clone before building. "
+             "Refuses (per package) if the existing clone has uncommitted changes, "
+             "unpushed commits, or no upstream tracking branch.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
     p.add_argument("--track-deps", action="store_true", dest="track_deps",
@@ -532,6 +563,14 @@ def _add_update_parser(sub):
     p.add_argument("--no-cleanbuild", action="store_true", dest="no_cleanbuild",
         help="Skip the automatic --cleanbuild (-C) added for update runs. "
              "Useful when packages are already built and you only need to re-run the install step.")
+    p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
+        help="Purge each package's src dir and re-clone before building. "
+             "Per-package fatal if the clone has uncommitted changes, unpushed commits, "
+             "or no upstream — that package is reported failed and the run continues.")
+    p.add_argument("--fetch-missing", action="store_true", dest="fetch_missing",
+        help="Auto-clone packages whose src dir is missing or has no PKGBUILD "
+             "instead of skipping them. Combine with --all for an "
+             "unattended full system update.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit update to these package names (default: all sysforge-managed packages).")
     p.set_defaults(func=_cmd_update)
