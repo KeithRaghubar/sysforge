@@ -61,21 +61,30 @@ class BuildState:
     def record(self, pkgname: str, pkgver: str, pkgrel: str,
                epoch: str, pkgbase: str, pkgbuild_dir: Path,
                build_mode: str | None = None,
-               flags_string: str | None = None) -> None:
-        """Record build metadata for a single package name."""
+               flags_string: str | None = None,
+               built_at: str | None = None) -> None:
+        """Record build metadata for a single package name.
+
+        ``built_at`` defaults to now; callers performing a repair pass may
+        pass the original timestamp to preserve true build history.
+        """
         entry = {
             "pkgver": pkgver,
             "pkgrel": pkgrel,
             "epoch": epoch,
             "pkgbase": pkgbase,
             "pkgbuild_dir": str(pkgbuild_dir),
-            "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "built_at": built_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         if build_mode is not None:
             entry["build_mode"] = build_mode
         if flags_string is not None:
             entry["flags_string"] = flags_string
         self._data[pkgname] = entry
+
+    def delete(self, pkgname: str) -> bool:
+        """Remove an entry by pkgname.  Returns True if it existed."""
+        return self._data.pop(pkgname, None) is not None
 
     def get(self, pkgname: str) -> dict | None:
         """Return build record for pkgname, or None if not recorded."""

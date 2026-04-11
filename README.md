@@ -40,6 +40,8 @@ sysforge update --dry-run
 
 # 7. Manage packages.toml
 sysforge packages list
+sysforge packages list --state        # show build_state.toml entries instead
+sysforge packages repair-state --dry-run  # preview fixes for legacy broken entries
 sysforge packages add htop neovim
 sysforge packages remove htop
 sysforge packages sync --dry-run

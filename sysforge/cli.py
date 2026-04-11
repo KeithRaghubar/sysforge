@@ -26,6 +26,7 @@ from sysforge.packages_cmd import (
     cmd_packages_add,
     cmd_packages_remove,
     cmd_packages_sync,
+    cmd_packages_repair_state,
 )
 
 from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags, BuildOptions
@@ -582,6 +583,10 @@ def _add_packages_parser(sub):
     # 'sysforge packages --packages foo.toml' both work
     p.add_argument("--packages", metavar="FILE", dest="packages",
         help=_PACKAGES_HELP)
+    p.add_argument("--state", action="store_true", dest="state",
+        help="List build_state.toml entries instead of packages.toml.")
+    p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory for build_state.toml.")
     p.set_defaults(func=cmd_packages_list)
 
     pkg_sub = p.add_subparsers(dest="packages_cmd")
@@ -590,6 +595,10 @@ def _add_packages_parser(sub):
     p_list = pkg_sub.add_parser("list", help="Show packages in packages.toml.")
     p_list.add_argument("--packages", metavar="FILE", dest="packages",
         help="Path to packages.toml.")
+    p_list.add_argument("--state", action="store_true", dest="state",
+        help="List build_state.toml entries instead of packages.toml.")
+    p_list.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory for build_state.toml.")
     p_list.set_defaults(func=cmd_packages_list)
 
     # add
@@ -615,6 +624,16 @@ def _add_packages_parser(sub):
     p_sync.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show what would change without writing.")
     p_sync.set_defaults(func=cmd_packages_sync)
+
+    # repair-state
+    p_repair = pkg_sub.add_parser("repair-state",
+        help="Re-parse PKGBUILDs to rewrite build_state.toml entries that contain "
+             "unexpanded shell variables (e.g. '$_pkgname-git').")
+    p_repair.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory for build_state.toml.")
+    p_repair.add_argument("--dry-run", action="store_true", dest="dry_run",
+        help="Show the planned repair without writing.")
+    p_repair.set_defaults(func=cmd_packages_repair_state)
 
 
 def _add_setup_parser(sub):

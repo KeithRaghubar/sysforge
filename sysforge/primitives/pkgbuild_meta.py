@@ -104,6 +104,67 @@ def _parse_array_items(raw):
     return result
 
 
+# Matches simple variable references: $var and ${var}.  Intentionally does NOT
+# match shell parameter-expansion forms like ${var:-default}, ${var%suffix},
+# ${var#prefix} — those expressions are left untouched so we never produce a
+# misleading partial substitution.
+_VAR_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _expand_vars(value, scalars, max_iters=8):
+    """Substitute $var / ${var} references using scalars until a fixed point.
+
+    Unknown names are preserved verbatim.  Bounded iteration guards against
+    self-referential scalars like `_a="$_a"`.
+    """
+    for _ in range(max_iters):
+        def repl(m):
+            name = m.group(1) or m.group(2)
+            v = scalars.get(name)
+            return v if isinstance(v, str) else m.group(0)
+        new = _VAR_REF.sub(repl, value)
+        if new == value:
+            return new
+        value = new
+    return value
+
+
+def _apply_var_expansion(globals_dict):
+    """Expand $var / ${var} in scalar and array globals in place.
+
+    Some PKGBUILDs define pkgname/pkgbase via shell variables, e.g.
+    `_pkgname=foo; pkgname="$_pkgname-git"`.  Without expansion, downstream
+    consumers (build_state keys, pacman version checks) see the literal
+    reference string and silently miss the package.  This pass substitutes
+    references that can be resolved from other scalar globals; unresolvable
+    references are left alone so caller-side warnings remain meaningful.
+    """
+    scalars = {
+        k: v for k, v in globals_dict.items() if isinstance(v, str)
+    }
+    # Resolve scalar-to-scalar references first (fixed point over the dict).
+    for _ in range(8):
+        changed = False
+        new_scalars = {}
+        for k, v in scalars.items():
+            nv = _expand_vars(v, scalars)
+            if nv != v:
+                changed = True
+            new_scalars[k] = nv
+        scalars = new_scalars
+        if not changed:
+            break
+
+    for k, v in list(globals_dict.items()):
+        if isinstance(v, str):
+            globals_dict[k] = scalars[k]
+        elif isinstance(v, list):
+            globals_dict[k] = [
+                _expand_vars(item, scalars) if isinstance(item, str) else item
+                for item in v
+            ]
+
+
 def parse_pkgbuild(path):
     """
     Parse a PKGBUILD statically without sourcing or executing it.
@@ -135,4 +196,5 @@ def parse_pkgbuild(path):
         value = next(g for g in m.groups()[1:] if g is not None)
         if key not in result["globals"]:
             result["globals"][key] = value.strip()
+    _apply_var_expansion(result["globals"])
     return result
