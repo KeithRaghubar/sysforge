@@ -826,3 +826,24 @@ source = "aur"
 [[package]]
 name = "yaycache-hook"
 source = "aur"
+
+[[package]]
+name = "lib32-gst-plugins-base"
+source = "aur"
+pkgbuild_patch = true
+
+[[package]]
+name = "lib32-gst-plugins-base-libs"
+source = "aur"
+
+[[package]]
+name = "lib32-gst-plugins-good"
+source = "aur"
+
+[[package]]
+name = "lib32-gstreamer"
+source = "aur"
+
+[[package]]
+name = "lib32-libsoup"
+source = "aur"

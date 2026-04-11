@@ -1192,6 +1192,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         import_pgp_keys(pkgmeta, pkgbuild_path)
         run_dep_analysis(pkgmeta, config)
 
+        import time as _time
+        _build_start = _time.time()
         _run_build(
                 pkgbuild_path, resolved_profile, config, groups,
                 active_consumes=active_consumes,
@@ -1216,6 +1218,11 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         # failed or partial toolchain run — the builds silently emit profraw that
         # can fill the disk.  Fatal because continued builds would keep generating
         # profraw until storage is exhausted.
+        #
+        # Files predating _build_start are orphans from a prior run the user has
+        # since cleaned up (e.g. reinstalled llvm/llvm-libs); purge them rather
+        # than aborting forever.  Only profraw files touched by THIS build signal
+        # a still-instrumented system.
         if not options.pgo_managed:
             _tcfg = _try_load_toml(TOOLCHAIN_PATH) if TOOLCHAIN_PATH.exists() else None
             _pgo_store = Path(
@@ -1224,15 +1231,35 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 else _DEFAULT_PGO_STORE
             )
             if _pgo_store.is_dir():
-                _stale_profraw = list(_pgo_store.glob("**/*.profraw"))
-                if _stale_profraw:
-                    _total_bytes = sum(p.stat().st_size for p in _stale_profraw)
+                _all_profraw = list(_pgo_store.glob("**/*.profraw"))
+                # 1s slack absorbs filesystem mtime rounding on second-granularity fs.
+                _freshness_cutoff = _build_start - 1
+                _fresh_profraw = [
+                    f for f in _all_profraw if f.stat().st_mtime >= _freshness_cutoff
+                ]
+                _orphan_profraw = [
+                    f for f in _all_profraw if f.stat().st_mtime < _freshness_cutoff
+                ]
+                if _fresh_profraw:
+                    _total_bytes = sum(p.stat().st_size for p in _fresh_profraw)
                     _pgo_log.fatal(
-                        f"{len(_stale_profraw)} stale .profraw files "
+                        f"{len(_fresh_profraw)} stale .profraw files "
                         f"({_total_bytes / 1024 / 1024:.1f} MiB) in {_pgo_store} — "
                         "instrumented LLVM binaries may be installed on this system. "
                         "Reinstall clean llvm/llvm-libs or run 'sysforge run toolchain' "
                         "to complete the PGO build."
+                    )
+                if _orphan_profraw:
+                    _orphan_bytes = sum(p.stat().st_size for p in _orphan_profraw)
+                    for _f in _orphan_profraw:
+                        try:
+                            _f.unlink()
+                        except OSError:
+                            pass
+                    _pgo_log.info(
+                        f"Purged {len(_orphan_profraw)} orphaned .profraw file(s) "
+                        f"({_orphan_bytes / 1024 / 1024:.1f} MiB) from {_pgo_store} "
+                        "(prior run residue; current build produced none)"
                     )
 
         # Post-build ABI check (non-fatal)
