@@ -8,7 +8,7 @@ Public API:
     load_config(config_paths=None)         -> dict
     load_conflict_groups(paths=None)       -> dict
     load_consumes_inference(paths=None)    -> dict
-    find_pkgbuild(pkg, config=None)        -> Path   (AUR clone on miss if pkgbuild_dir set)
+    find_pkgbuild(pkg, config=None)        -> Path   (AUR clone on miss if pkgbuild_src_dir set)
 """
 import pprint
 import tomllib
@@ -30,9 +30,9 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
     Search order:
     1. pkg is an existing path → use directly.
     2. <cwd>/<pkg>/PKGBUILD
-    3. <config [paths] pkgbuild_dir>/<pkg>/PKGBUILD  (if configured)
+    3. <config [paths] pkgbuild_src_dir>/<pkg>/PKGBUILD  (if configured)
     4. If not found locally: check pacman sync DBs (pkgctl repo clone) or AUR (aur_clone)
-       — only attempted if pkgbuild_dir is configured.
+       — only attempted if pkgbuild_src_dir is configured.
 
     Raises FileNotFoundError listing all searched paths if nothing is found.
     Raises RuntimeError (from pkgctl_checkout/aur_clone) if the clone fails.
@@ -56,16 +56,16 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
         return cwd_candidate.resolve()
 
     if config:
-        raw = config.get("paths", {}).get("pkgbuild_dir")
+        raw = config.get("paths", {}).get("pkgbuild_src_dir")
         if raw:
-            pkgbuild_dir = Path(raw).expanduser()
-            dir_candidate = pkgbuild_dir / pkg / "PKGBUILD"
+            pkgbuild_src_dir = Path(raw).expanduser()
+            dir_candidate = pkgbuild_src_dir / pkg / "PKGBUILD"
             searched.append(dir_candidate)
             if dir_candidate.exists():
                 return dir_candidate.resolve()
 
             # Not found locally — check repo first, then AUR
-            clone_dest = pkgbuild_dir / pkg
+            clone_dest = pkgbuild_src_dir / pkg
             if is_repo_package(pkg):
                 pkgctl_checkout(pkg, clone_dest)  # raises RuntimeError on failure
                 if dir_candidate.exists():
@@ -79,7 +79,7 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
     raise FileNotFoundError(
         f"PKGBUILD not found for {pkg!r}.\n"
         f"  Searched:\n{searched_str}\n"
-        f"  Pass a full path, set [paths] pkgbuild_dir in flag_profiles.toml,\n"
+        f"  Pass a full path, set [paths] pkgbuild_src_dir in flag_profiles.toml,\n"
         f"  or cd into the package directory and run: sysforge build/resolve <name>"
     )
 

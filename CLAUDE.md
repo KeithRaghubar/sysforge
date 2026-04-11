@@ -7,7 +7,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 ## Dev Environment
 
 - Ryzen 7 5800X3D, RTX 5070, Arch Linux, COSMIC on Wayland, nvidia-open-dkms
-- `pkgbuild_dir = ~/src` (sources); builds at `~/builds`
+- `pkgbuild_src_dir = ~/src` (sources); builds at `~/builds`
 - `etc/sysforge/` = shipped defaults (installed by PKGBUILD); `tests/data/etc/sysforge/` = Keith's live personal config for dev/testing. Separate dirs, not symlinked — update both explicitly when a change affects both.
 
 ## Known Bugs & Gotchas

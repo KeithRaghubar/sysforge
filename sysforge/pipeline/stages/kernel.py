@@ -9,10 +9,10 @@ If kernel.toml is absent the stage exits cleanly — systems using a stock
 kernel (installed via packages stage) skip this without needing --start-from.
 
 kernel.toml structure:
-  pkgname      = "linux-custom"
-  pkgbuild_dir = "~/src"           # parent directory that contains the pkgname/ PKGBUILD dir
-                                   # PKGBUILD is expected at pkgbuild_dir/pkgname/PKGBUILD
-  bootloader   = "systemd-boot"    # systemd-boot | grub | none
+  pkgname          = "linux-custom"
+  pkgbuild_src_dir = "~/src"       # parent directory that contains the pkgname/ PKGBUILD dir
+                                   # PKGBUILD is expected at pkgbuild_src_dir/pkgname/PKGBUILD
+  bootloader       = "systemd-boot"    # systemd-boot | grub | none
 
   [[kconfig]]                      # manual kconfig overrides (optional)
   option = "CONFIG_HZ_1000"        # must match CONFIG_[A-Z0-9_]+
@@ -23,7 +23,7 @@ kconfig fragment:
   (emitted by the hardware stage). Manual overrides from kernel.toml [[kconfig]]
   are merged on top — manual wins on conflict with a WARN.
 
-  The combined fragment is written to <pkgbuild_dir>/<pkgname>/sysforge.config
+  The combined fragment is written to <pkgbuild_src_dir>/<pkgname>/sysforge.config
   before makepkg runs. The PKGBUILD must merge this into its .config;
   a compatible PKGBUILD calls scripts/kconfig/merge_config.sh in prepare().
 
@@ -78,16 +78,16 @@ def _pkgbuild_path(kernel_cfg):
     Resolve the PKGBUILD for the configured kernel package.
     Returns Path to the PKGBUILD file.
 
-    Looks for <pkgbuild_dir>/<srcdir>/PKGBUILD where srcdir defaults to pkgname
+    Looks for <pkgbuild_src_dir>/<srcdir>/PKGBUILD where srcdir defaults to pkgname
     when not specified. srcdir allows the source directory name to differ from
     pkgname (e.g. pkgname="linux-custom", srcdir="linux").
     """
-    pkgbuild_dir = kernel_cfg.get("pkgbuild_dir")
-    if not pkgbuild_dir:
+    pkgbuild_src_dir = kernel_cfg.get("pkgbuild_src_dir")
+    if not pkgbuild_src_dir:
         raise RuntimeError(
-            "[KERNEL] kernel.toml is missing pkgbuild_dir. "
-            "Set pkgbuild_dir to the directory that contains your kernel PKGBUILD directory "
-            '(e.g. pkgbuild_dir = "~/src" if the PKGBUILD is at ~/src/linux-custom/PKGBUILD).'
+            "[KERNEL] kernel.toml is missing pkgbuild_src_dir. "
+            "Set pkgbuild_src_dir to the directory that contains your kernel PKGBUILD directory "
+            '(e.g. pkgbuild_src_dir = "~/src" if the PKGBUILD is at ~/src/linux-custom/PKGBUILD).'
         )
     pkgname = kernel_cfg.get("pkgname")
     if not pkgname:
@@ -95,11 +95,11 @@ def _pkgbuild_path(kernel_cfg):
 
     srcdir = kernel_cfg.get("srcdir") or pkgname
 
-    candidate = Path(pkgbuild_dir).expanduser() / srcdir / "PKGBUILD"
+    candidate = Path(pkgbuild_src_dir).expanduser() / srcdir / "PKGBUILD"
     if not candidate.exists():
         raise RuntimeError(
             f"[KERNEL] PKGBUILD not found: {candidate}. "
-            f"Clone the kernel PKGBUILD into {Path(pkgbuild_dir).expanduser() / srcdir!r} first."
+            f"Clone the kernel PKGBUILD into {Path(pkgbuild_src_dir).expanduser() / srcdir!r} first."
         )
     return candidate
 

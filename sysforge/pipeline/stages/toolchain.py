@@ -181,7 +181,7 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
 
     Three-pass strategy to handle split packages (e.g. llvm-libs comes from the
     llvm PKGBUILD and has no standalone clone target):
-      1. Local direct: check pkgbuild_dir/<name>/PKGBUILD without cloning.
+      1. Local direct: check pkgbuild_src_dir/<name>/PKGBUILD without cloning.
       2. Split scan: parse already-found PKGBUILDs for their pkgname arrays;
          reuse the path if a match is found.
       3. Full resolve: fall back to find_pkgbuild() which may clone from AUR/repo.
@@ -194,7 +194,7 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
 
     pkgbuild_dir: Path | None = None
     if config:
-        raw = config.get("paths", {}).get("pkgbuild_dir")
+        raw = config.get("paths", {}).get("pkgbuild_src_dir")
         if raw:
             pkgbuild_dir = Path(raw).expanduser()
 

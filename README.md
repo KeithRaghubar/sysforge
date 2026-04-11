@@ -87,7 +87,7 @@ Edit `/etc/sysforge/packages.toml` with the packages to install. Repo packages i
 
 ```toml
 [build]
-pkgbuild_dir = "~/src"
+pkgbuild_src_dir = "~/src"
 
 [[package]]
 name   = "sysforge"
@@ -163,7 +163,7 @@ sudo cp completions/_sysforge /usr/share/zsh/site-functions/
 fpath=($(pwd)/completions $fpath) && compinit
 ```
 
-Completes subcommands, all flags, and package names (local `pkgbuild_dir` + pacman sync DB + AUR cache if present at `~/.cache/sysforge/aur-packages.txt`).
+Completes subcommands, all flags, and package names (local `pkgbuild_src_dir` + pacman sync DB + AUR cache if present at `~/.cache/sysforge/aur-packages.txt`).
 
 ---
 

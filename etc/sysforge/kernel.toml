@@ -4,7 +4,7 @@
 # This stage is disabled by default. Set enabled = true and fill in the
 # required fields below to build and install a custom kernel.
 #
-# The kernel PKGBUILD must already be cloned under [paths] pkgbuild_dir in
+# The kernel PKGBUILD must already be cloned under [paths] pkgbuild_src_dir in
 # flag_profiles.toml. A [[rules]] entry with profile = "kernel" is also
 # expected (provided in the default flag_profiles.toml).
 # =============================================================================
@@ -16,7 +16,7 @@ enabled = false
 # ---------------------------------------------------------------------------
 
 # pkgname = "linux-custom"      # base package name (must match the PKGBUILD pkgbase)
-# srcdir  = "linux"             # subdirectory inside pkgbuild_dir containing the PKGBUILD
+# srcdir  = "linux"             # subdirectory inside pkgbuild_src_dir containing the PKGBUILD
 
 # ---------------------------------------------------------------------------
 # Optional fields
@@ -26,7 +26,7 @@ enabled = false
 #                               # controls post-install bootloader update step
 #                               # default: "systemd-boot"
 
-# pkgbuild_dir = "~/src"        # override the global pkgbuild_dir for this kernel only
+# pkgbuild_src_dir = "~/src"    # override the global pkgbuild_src_dir for this kernel only
 
 # ---------------------------------------------------------------------------
 # kconfig — kernel config fragment

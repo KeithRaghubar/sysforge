@@ -27,7 +27,7 @@ from sysforge.pipeline.stages.base import RunOptions
 
 PACKAGES_TOML = """
 [build]
-pkgbuild_dir = "{pkgbuild_dir}"
+pkgbuild_src_dir = "{pkgbuild_src_dir}"
 
 [[package]]
 name = "llvm"
@@ -42,16 +42,16 @@ name = "mesa-git"
 source = "aur"
 """
 
-def make_packages_toml(tmp_path, pkgbuild_dir=None):
-    if pkgbuild_dir is None:
-        pkgbuild_dir = tmp_path / "builds"
+def make_packages_toml(tmp_path, pkgbuild_src_dir=None):
+    if pkgbuild_src_dir is None:
+        pkgbuild_src_dir = tmp_path / "builds"
     p = tmp_path / "packages.toml"
-    p.write_text(PACKAGES_TOML.format(pkgbuild_dir=pkgbuild_dir))
+    p.write_text(PACKAGES_TOML.format(pkgbuild_src_dir=pkgbuild_src_dir))
     return p
 
-def make_pkgbuild(pkgbuild_dir, name):
+def make_pkgbuild(pkgbuild_src_dir, name):
     """Create a minimal PKGBUILD for a package."""
-    d = pkgbuild_dir / name
+    d = pkgbuild_src_dir / name
     d.mkdir(parents=True, exist_ok=True)
     pb = d / "PKGBUILD"
     pb.write_text(f"pkgname={name}\npkgver=1.0\npkgrel=1\n")
@@ -70,7 +70,7 @@ def make_options(**kwargs):
 
 def test_resolve_pkgbuild_finds_local(tmp_path):
     pb = make_pkgbuild(tmp_path, "htop")
-    result = _resolve_pkgbuild("htop", {"pkgbuild_dir": str(tmp_path)}, {})
+    result = _resolve_pkgbuild("htop", {"pkgbuild_src_dir": str(tmp_path)}, {})
     assert result == pb.resolve()
 
 
@@ -83,7 +83,7 @@ def test_resolve_pkgbuild_aur_clone(tmp_path):
     with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
          patch("sysforge.primitives.aur.aur_info", return_value={"mesa-git": {}}), \
          patch("sysforge.primitives.aur.aur_clone", side_effect=fake_clone):
-        result = _resolve_pkgbuild("mesa-git", {"pkgbuild_dir": str(tmp_path)}, {})
+        result = _resolve_pkgbuild("mesa-git", {"pkgbuild_src_dir": str(tmp_path)}, {})
 
     assert result == (tmp_path / "mesa-git" / "PKGBUILD").resolve()
 
@@ -92,13 +92,13 @@ def test_resolve_pkgbuild_not_found_raises(tmp_path):
     with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
          patch("sysforge.primitives.aur.aur_info", return_value={}):
         with pytest.raises(RuntimeError, match="PKGBUILD not found"):
-            _resolve_pkgbuild("nonexistent", {"pkgbuild_dir": str(tmp_path)}, {})
+            _resolve_pkgbuild("nonexistent", {"pkgbuild_src_dir": str(tmp_path)}, {})
 
 
 def test_resolve_pkgbuild_falls_back_to_config_paths(tmp_path):
-    """Falls back to flag_profiles [paths] pkgbuild_dir if build_cfg has none."""
+    """Falls back to flag_profiles [paths] pkgbuild_src_dir if build_cfg has none."""
     pb = make_pkgbuild(tmp_path, "htop")
-    result = _resolve_pkgbuild("htop", {}, {"paths": {"pkgbuild_dir": str(tmp_path)}})
+    result = _resolve_pkgbuild("htop", {}, {"paths": {"pkgbuild_src_dir": str(tmp_path)}})
     assert result == pb.resolve()
 
 
@@ -275,7 +275,7 @@ def test_packages_stage_aur_auto_clone(tmp_path):
 
 PACKAGES_TOML_REPO_MODE = """
 [build]
-pkgbuild_dir = "{pkgbuild_dir}"
+pkgbuild_src_dir = "{pkgbuild_src_dir}"
 repo_mode = "profiled"
 
 [[package]]
@@ -289,7 +289,7 @@ source = "aur"
 
 PACKAGES_TOML_PKGBUILD_PATCH_OVERRIDE = """
 [build]
-pkgbuild_dir = "{pkgbuild_dir}"
+pkgbuild_src_dir = "{pkgbuild_src_dir}"
 
 [[package]]
 name = "htop"
@@ -308,7 +308,7 @@ def test_repo_mode_profiled_builds_repo_pkg_from_source(tmp_path):
     make_pkgbuild(builds_dir, "htop")
     make_pkgbuild(builds_dir, "mesa-git")
     pkg_file = tmp_path / "packages.toml"
-    pkg_file.write_text(PACKAGES_TOML_REPO_MODE.format(pkgbuild_dir=builds_dir))
+    pkg_file.write_text(PACKAGES_TOML_REPO_MODE.format(pkgbuild_src_dir=builds_dir))
 
     state = PipelineState(tmp_path / "state")
 
@@ -328,7 +328,7 @@ def test_pkgbuild_patch_overrides_pacman_repo_mode(tmp_path):
     builds_dir = tmp_path / "builds"
     make_pkgbuild(builds_dir, "htop")
     pkg_file = tmp_path / "packages.toml"
-    pkg_file.write_text(PACKAGES_TOML_PKGBUILD_PATCH_OVERRIDE.format(pkgbuild_dir=builds_dir))
+    pkg_file.write_text(PACKAGES_TOML_PKGBUILD_PATCH_OVERRIDE.format(pkgbuild_src_dir=builds_dir))
 
     state = PipelineState(tmp_path / "state")
 

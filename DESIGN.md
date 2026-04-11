@@ -211,7 +211,7 @@ Each entry declares:
 
 ```toml
 [build]
-pkgbuild_dir = "~/builds"   # PKGBUILD root; auto-cloned if absent
+pkgbuild_src_dir = "~/src"   # PKGBUILD source tree; auto-cloned if absent
 
 [[package]]
 name = "mesa-git"
@@ -228,9 +228,9 @@ cache = false   # PGO build — instrumented objects must never be cached
 
 `sysforge packages` is a namespace for managing an existing `packages.toml`:
 
-- **`packages list`** (default when no subcommand) — tabulates all entries: name, source, and any optional fields set. `--state` switches the source to `build_state.toml` and prints pkgname, pkgbase, version, build mode, and pkgbuild_dir for every recorded package, useful for diagnosing update/converge mismatches (e.g. spotting build_state keys that still hold unexpanded `$var` references from a pre-expansion parser run). `--state-dir DIR` overrides the resolved state directory.
+- **`packages list`** (default when no subcommand) — tabulates all entries: name, source, and any optional fields set. `--state` switches the source to `build_state.toml` and prints pkgname, pkgbase, version, build mode, and per-package pkgbuild_dir for every recorded package, useful for diagnosing update/converge mismatches (e.g. spotting build_state keys that still hold unexpanded `$var` references from a pre-expansion parser run). `--state-dir DIR` overrides the resolved state directory.
 - **`packages repair-state`** — one-shot fixer for `build_state.toml` entries whose keys or metadata still contain unexpanded shell variables (legacy records written before the parser's variable-expansion pass). Entries are grouped by `pkgbuild_dir`; for each group that has at least one broken member, the PKGBUILD is re-parsed through the current parser and the whole group is replaced with correctly keyed entries. `build_mode`, `flags_string`, and `built_at` are carried over from the first pre-existing entry in the group so true build history is preserved — split packages built in one invocation share those fields, so any member is a valid template. Groups where the PKGBUILD no longer exists, or where re-parse still leaves `$` in `pkgname` / `pkgbase` / `pkgver` / `pkgrel` / `epoch` (e.g. shell parameter expansion with substitution like `${_tarver//-/_}` that no static parser can resolve), are skipped with an explicit reason and left untouched. `--dry-run` previews the plan without writing; `--state-dir DIR` overrides the resolved state directory.
-- **`packages add <pkg> [<pkg>...]`** — classifies each package (repo vs AUR via pacman/AUR RPC), infers `pkgbuild_patch` by running `extract_pkgbuild_profile()` on the local PKGBUILD if one exists, and appends the entry. Uses `[build] pkgbuild_dir` from the existing file first, falls back to `[paths] pkgbuild_dir` from `flag_profiles.toml`.
+- **`packages add <pkg> [<pkg>...]`** — classifies each package (repo vs AUR via pacman/AUR RPC), infers `pkgbuild_patch` by running `extract_pkgbuild_profile()` on the local PKGBUILD if one exists, and appends the entry. Uses `[build] pkgbuild_src_dir` from the existing file first, falls back to `[paths] pkgbuild_src_dir` from `flag_profiles.toml`.
 - **`packages remove <pkg>`** — removes the `[[package]]` block for the named entry using line-level manipulation; preserves all surrounding comments and section headers.
 - **`packages sync`** — re-classifies each entry's `source` and re-checks `pkgbuild_patch` (if the local PKGBUILD is available). Non-destructive: manual fields (`cache`) are preserved verbatim. Comments are preserved. `--dry-run` shows what would change without writing.
 
@@ -382,10 +382,10 @@ Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysf
 **`kernel.toml` structure:**
 
 ```toml
-pkgname      = "linux-custom"
-pkgbuild_dir = "~/builds"        # parent dir; PKGBUILD is at <pkgbuild_dir>/<srcdir>/PKGBUILD
-srcdir       = "linux"           # source directory name if different from pkgname (optional)
-bootloader   = "systemd-boot"    # systemd-boot | grub | none  (default: systemd-boot)
+pkgname          = "linux-custom"
+pkgbuild_src_dir = "~/src"       # parent dir; PKGBUILD is at <pkgbuild_src_dir>/<srcdir>/PKGBUILD
+srcdir           = "linux"       # source directory name if different from pkgname (optional)
+bootloader       = "systemd-boot"    # systemd-boot | grub | none  (default: systemd-boot)
 
 [[kconfig]]                      # manual kconfig overrides (optional, repeatable)
 option = "CONFIG_HZ_1000"        # must match CONFIG_[A-Z0-9_]+
@@ -396,7 +396,7 @@ value  = "y"                     # y | m | n | non-empty string
 
 **kconfig fragment:**
 
-Hardware-driven kconfig entries come from `hardware_profile.toml [kconfig]` (emitted by the hardware stage). Manual overrides from `kernel.toml [[kconfig]]` are merged on top — manual wins on conflict with a `[WARN]`. The combined result is written to `<pkgbuild_dir>/<srcdir>/sysforge.config` before `makepkg` runs. The PKGBUILD must merge this into its `.config`; a compatible PKGBUILD calls `scripts/kconfig/merge_config.sh` in `prepare()`.
+Hardware-driven kconfig entries come from `hardware_profile.toml [kconfig]` (emitted by the hardware stage). Manual overrides from `kernel.toml [[kconfig]]` are merged on top — manual wins on conflict with a `[WARN]`. The combined result is written to `<pkgbuild_src_dir>/<srcdir>/sysforge.config` before `makepkg` runs. The PKGBUILD must merge this into its `.config`; a compatible PKGBUILD calls `scripts/kconfig/merge_config.sh` in `prepare()`.
 
 Manual override validation: `option` must match `CONFIG_[A-Z0-9_]+`; `value` must be non-empty (`n` to disable); duplicates within `kernel.toml` are an error.
 
@@ -420,7 +420,7 @@ When `--interactive` is passed to `sysforge build`, kconfig patching is skipped 
 
 Walks `packages.toml` in order:
 - `source = "repo"` → `sudo pacman -S --needed --noconfirm`
-- `source = "aur"` / `"git"` → `_resolve_pkgbuild()` → `makepkg_wrapper.run()`. PKGBUILD lookup order: `packages.toml [build] pkgbuild_dir` → `flag_profiles [paths] pkgbuild_dir` → AUR clone.
+- `source = "aur"` / `"git"` → `_resolve_pkgbuild()` → `makepkg_wrapper.run()`. PKGBUILD lookup order: `packages.toml [build] pkgbuild_src_dir` → `flag_profiles [paths] pkgbuild_src_dir` → AUR clone.
 - Hardware-gated packages skipped if `hardware_profile.toml` is absent or key is missing
 - Non-fatal per-package failures: build continues, failures recorded in state
 - Summary at end: `Total | Built | Failed | Skipped`
@@ -454,7 +454,7 @@ For `compiler = "gcc"`, the default package set is `["gcc", "gcc-libs"]`.
 
 **`skip_build = true`:** registers the system compiler paths in pipeline state without building anything. Downstream stages (packages, kernel) will use the system compiler. Useful when the system compiler is already optimized and no rebuild is needed.
 
-**PKGBUILD resolution:** follows `find_pkgbuild` lookup order (local `pkgbuild_dir` → `pkgctl repo clone`) for every package. At stage start, resolved paths are displayed in a table and the user is prompted to confirm or abort. On abort, the resume command is printed (`sysforge pipeline --resume --state-dir <dir>`) so they can make manual modifications and return.
+**PKGBUILD resolution:** follows `find_pkgbuild` lookup order (local `pkgbuild_src_dir` → `pkgctl repo clone`) for every package. At stage start, resolved paths are displayed in a table and the user is prompted to confirm or abort. On abort, the resume command is printed (`sysforge pipeline --resume --state-dir <dir>`) so they can make manual modifications and return.
 
 **LLVM PGO bootstrap (three passes, only when `pgo = true`):**
 
@@ -507,9 +507,9 @@ TOML config loading and path resolution. Public API:
 - `load_config(config_paths=None)` — loads `flag_profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
 - `load_conflict_groups(paths=None)` — loads `append_conflict_groups.toml`
 - `load_consumes_inference(paths=None)` — loads `consumes_inference.toml`
-- `find_pkgbuild(pkg, config=None)` — resolves a bare package name, directory path, or PKGBUILD path to an absolute PKGBUILD path. Search order: (1) direct path or directory (resolves `dir/PKGBUILD`), (2) `<cwd>/<name>/PKGBUILD`, (3) `<config [paths] pkgbuild_dir>/<name>/PKGBUILD`, (4) auto-clone if not found locally — repo packages via `pkgctl repo clone --protocol=https`, AUR packages via `aur_clone`. Used by `sysforge build`, `sysforge resolve`, and the packages stage.
+- `find_pkgbuild(pkg, config=None)` — resolves a bare package name, directory path, or PKGBUILD path to an absolute PKGBUILD path. Search order: (1) direct path or directory (resolves `dir/PKGBUILD`), (2) `<cwd>/<name>/PKGBUILD`, (3) `<config [paths] pkgbuild_src_dir>/<name>/PKGBUILD`, (4) auto-clone if not found locally — repo packages via `pkgctl repo clone --protocol=https`, AUR packages via `aur_clone`. Used by `sysforge build`, `sysforge resolve`, and the packages stage.
 
-`[paths] pkgbuild_dir` in `flag_profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
+`[paths] pkgbuild_src_dir` in `flag_profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
 - `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles backslash line continuation (e.g. `CFLAGS="... \\\n  -flag"`) and multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines. Merges user conf (`$XDG_CONFIG_HOME/pacman/makepkg.conf`, `~/.makepkg.conf`) on top of system conf.
 
 ### `pacman.py`
@@ -650,9 +650,9 @@ AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key
 - `import_pgp_keys(pkgmeta, pkgbuild_path)` — ensures all `validpgpkeys` listed in the PKGBUILD are in the GPG keyring before `makepkg` runs. Strategy: (1) import any bundled `.asc` files from `keys/pgp/` alongside the PKGBUILD, (2) check which keys are still missing via `gpg --list-keys`, (3) fetch remaining via `gpg --recv-keys`. Import failures are logged as warnings — makepkg surfaces a clearer error if a key is still absent at verification time.
 - `fetch_aur_name_cache(force=False)` — downloads `https://aur.archlinux.org/packages.gz` and extracts it to `~/.cache/sysforge/aur-packages.txt`. Skips the download if the cache is less than 24 hours old unless `force=True`. Called as a side effect of `sysforge update`; read by `sysforge completions packages` to provide AUR package name completion.
 
-`sysforge completions packages` — outputs local pkgbuild_dir packages + pacman sync DB names + AUR cache. Used by zsh completion for `build`, `packages add`. Caps output via `grep -m N "^$PREFIX"` in the completion script to avoid rendering thousands of entries; shows `zle -M` message when limit exceeded.
+`sysforge completions packages` — outputs local pkgbuild_src_dir packages + pacman sync DB names + AUR cache. Used by zsh completion for `build`, `packages add`. Caps output via `grep -m N "^$PREFIX"` in the completion script to avoid rendering thousands of entries; shows `zle -M` message when limit exceeded.
 
-`sysforge completions local` — outputs only locally-cloned packages from `pkgbuild_dir` (no network). Used by zsh completion for `resolve` (only packages with a local PKGBUILD can be resolved without triggering a download).
+`sysforge completions local` — outputs only locally-cloned packages from `pkgbuild_src_dir` (no network). Used by zsh completion for `resolve` (only packages with a local PKGBUILD can be resolved without triggering a download).
 
 `sysforge completions manifest` — outputs only names from the active `packages.toml`. Used by zsh completion for `packages remove` (only valid to remove what's already there).
 
@@ -666,7 +666,7 @@ Version comparison utilities. `vercmp(a, b)` wraps the system `vercmp` binary an
 
 ### `fetch.py`
 
-Implements `sysforge fetch` — download one or more PKGBUILDs into `pkgbuild_dir` without building. Uses `find_pkgbuild` (auto-clones via `pkgctl_checkout` or `aur_clone` if not already present), then runs `git_pull_rebase` for packages that were already cloned (skipped with `--no-update`). Prints the resulting PKGBUILD directory path for each package. Exits 1 if any package failed.
+Implements `sysforge fetch` — download one or more PKGBUILDs into `pkgbuild_src_dir` without building. Uses `find_pkgbuild` (auto-clones via `pkgctl_checkout` or `aur_clone` if not already present), then runs `git_pull_rebase` for packages that were already cloned (skipped with `--no-update`). Prints the resulting PKGBUILD directory path for each package. Exits 1 if any package failed.
 
 Public API: `cmd_fetch(args)`.
 
@@ -691,7 +691,7 @@ Implements `sysforge update` — the update manager. `packages.toml` is the sour
 1. Refresh the AUR name cache as a side effect (`fetch_aur_name_cache()`).
 2. Load config and `packages.toml` early (needed for all paths).
 3. If `--all`: run `_discover_and_add()` — discover foreign packages (`pacman -Qm`) not already in `packages.toml`; AUR-verify, append to `packages.toml`, compare versions, queue outdated ones for rebuild.
-4. Build a unified package set from `packages.toml`, cross-referenced with `build_state.toml`. Packages in the manifest but not in build_state get synthetic records (`pkgbase=name`, `pkgbuild_dir` from `[build].pkgbuild_dir`). These are tracked as `unrecorded` — they are version-checked but only built when `--all` is passed.
+4. Build a unified package set from `packages.toml`, cross-referenced with `build_state.toml`. Packages in the manifest but not in build_state get synthetic records (`pkgbase=name`, per-package `pkgbuild_dir` from `[build].pkgbuild_src_dir`). These are tracked as `unrecorded` — they are version-checked but only built when `--all` is passed.
 5. Batch-query installed versions via `pacman -Q` once upfront (`get_all_installed_packages()`).
 6. Group by `pkgbase` to deduplicate split packages.
 7. Parallel `git pull --rebase` all PKGBUILD dirs (`ThreadPoolExecutor`, max 8 workers). Deduplicated by resolved path. Skipped by `--no-update` or `--dry-run`.
@@ -954,7 +954,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 **Per-package log** — one file per package build, written alongside the PKGBUILD.
 
-- Path: `<pkgbuild_dir>/<pkgname>/sysforge_<pkgname>.log`
+- Path: `<pkgbuild_src_dir>/<pkgname>/sysforge_<pkgname>.log`
 - Same lifecycle as the unified log: appends across builds, cleared on success unless `--persist-log`.
 - Written by both `sysforge pipeline` (via the packages stage) and `sysforge build`.
 - `--no-pkg-logs` disables per-package logs for `sysforge pipeline`.
@@ -1193,7 +1193,7 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 **`repo_mode = "profiled"` is wired in the packages stage only.** The `[build] repo_mode = "pacman" | "profiled"` setting in `packages.toml` is parsed and honoured by `run packages` and `run pipeline` — repo packages with `repo_mode = "profiled"` (or per-package `pkgbuild_patch = true`) are built from source via `_build_aur()` using `find_pkgbuild` (which calls `pkgctl_checkout` for repo packages). It has no effect on `sysforge build` or `sysforge update` — those commands operate on individual packages the user explicitly targets, not on manifest-wide policy. v1.0 target: wire `repo_mode` into `sysforge update` so tracked repo packages with `repo_mode = "profiled"` are rebuilt from source when the Arch packaging repo has a newer version.
 
-**`packages.toml [build] pkgbuild_dir` and `flag_profiles [paths] pkgbuild_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_dir`; falls back to `[paths] pkgbuild_dir`. They can point to different directories or the same one — there's no enforcement that they match.
+**`packages.toml [build] pkgbuild_src_dir` and `flag_profiles [paths] pkgbuild_src_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_src_dir`; falls back to `[paths] pkgbuild_src_dir`. They can point to different directories or the same one — there's no enforcement that they match.
 
 **`[env_precedence]` config table — design cancelled.** The original design proposed a priority stack (wrapper profile = 100, makepkg.conf = 80, shell passthrough = 20, PKGBUILD export = 10) and an `[env_precedence]` TOML table to configure it. This design is superseded. The current model is simpler and more predictable: build tool vars (`CC`, `CFLAGS`, `LDFLAGS`, etc.) are stripped from the inherited shell env in `invoke_makepkg` before makepkg runs — the temp conf is the sole authority for all makepkg-managed keys. Shell env bleed-through is not a configurable priority; it is prevented entirely. SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are exempt — they are SysForge's own interface, not build tool vars, and are not stripped. The `[env_precedence]` table will not be implemented.
 

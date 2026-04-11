@@ -63,13 +63,13 @@ def test_find_pkgbuild_bare_name_via_cwd(tmp_path):
     assert result == pb.resolve()
 
 
-def test_find_pkgbuild_via_pkgbuild_dir(tmp_path):
+def test_find_pkgbuild_via_pkgbuild_src_dir(tmp_path):
     pkg_dir = tmp_path / "mypkg"
     pkg_dir.mkdir()
     pb = pkg_dir / "PKGBUILD"
     pb.write_text("pkgname=mypkg\npkgver=1.0\npkgrel=1\narch=('any')\n")
 
-    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
     with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"):
         result = find_pkgbuild("mypkg", config)
     assert result == pb.resolve()
@@ -90,8 +90,8 @@ def test_find_pkgbuild_error_message_shows_both_searched(tmp_path):
 
 
 def test_find_pkgbuild_aur_clone_on_miss(tmp_path):
-    """When package is on AUR and pkgbuild_dir is configured, it gets cloned."""
-    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    """When package is on AUR and pkgbuild_src_dir is configured, it gets cloned."""
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
     clone_dest = tmp_path / "mypkg"
 
     def fake_clone(name, dest):
@@ -109,7 +109,7 @@ def test_find_pkgbuild_aur_clone_on_miss(tmp_path):
 
 def test_find_pkgbuild_not_on_aur_raises(tmp_path):
     """When package is not on AUR and not found locally, raises FileNotFoundError."""
-    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
 
     with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"), \
          patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
@@ -120,7 +120,7 @@ def test_find_pkgbuild_not_on_aur_raises(tmp_path):
 
 def test_find_pkgbuild_aur_clone_failure_raises(tmp_path):
     """RuntimeError from aur_clone propagates out of find_pkgbuild."""
-    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
 
     with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"), \
          patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
@@ -132,7 +132,7 @@ def test_find_pkgbuild_aur_clone_failure_raises(tmp_path):
 
 def test_find_pkgbuild_repo_package_uses_pkgctl(tmp_path):
     """Repo packages trigger pkgctl_checkout instead of AUR clone."""
-    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
     pkg_dir = tmp_path / "htop"
 
     def fake_checkout(name, dest):

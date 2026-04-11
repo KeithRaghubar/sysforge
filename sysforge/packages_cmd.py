@@ -225,7 +225,7 @@ def cmd_packages_add(args):
 
     # Infer pkgbuild_patch for AUR packages
     config = load_config() or {}
-    raw_dir = build_section.get("pkgbuild_dir") or config.get("paths", {}).get("pkgbuild_dir")
+    raw_dir = build_section.get("pkgbuild_src_dir") or config.get("paths", {}).get("pkgbuild_src_dir")
 
     entries_to_write: list[dict] = []
     for pkg in to_add:
@@ -256,7 +256,7 @@ def cmd_packages_add(args):
         header = (
             "# packages.toml — managed by sysforge packages\n"
             "\n[build]\n"
-            'pkgbuild_dir = "~/builds"\n'
+            'pkgbuild_src_dir = "~/src"\n'
         )
         path.write_text(header + blocks_text)
 
@@ -402,8 +402,8 @@ _SILENT_FAILURE_STATUSES = {"DIR_MISSING", "NO_PKGBUILD", "NOT_GIT", "NO_UPSTREA
 def _diagnose_manifest(args):
     """Print per-package directory/git status as `sysforge update` would see it.
 
-    Walks every entry in packages.toml, resolves its pkgbuild_dir exactly like
-    update.py does (build_state entry if present, else pkgbuild_dir_base / name),
+    Walks every entry in packages.toml, resolves its pkgbuild_src_dir exactly like
+    update.py does (build_state entry if present, else pkgbuild_src_dir_base / name),
     and probes that path.  Packages that resolve to DIR_MISSING / NO_PKGBUILD /
     NOT_GIT / NO_UPSTREAM are the silent-failure buckets — update.py will either
     skip them with a buried warning or treat them as UP_TO_DATE against a stale
@@ -430,10 +430,10 @@ def _diagnose_manifest(args):
     build_state_pkgs = bs.all_packages()
 
     raw_dir = (
-        build_cfg.get("pkgbuild_dir")
-        or config.get("paths", {}).get("pkgbuild_dir")
+        build_cfg.get("pkgbuild_src_dir")
+        or config.get("paths", {}).get("pkgbuild_src_dir")
     )
-    pkgbuild_dir_base = Path(raw_dir).expanduser() if raw_dir else None
+    pkgbuild_src_dir_base = Path(raw_dir).expanduser() if raw_dir else None
 
     rows: list[tuple[str, str, str, str, str]] = []
     for entry in entries:
@@ -444,10 +444,10 @@ def _diagnose_manifest(args):
             resolved_dir = Path(build_state_pkgs[name].get("pkgbuild_dir", ""))
         else:
             tracking = "UNRECORDED"
-            if pkgbuild_dir_base is None:
+            if pkgbuild_src_dir_base is None:
                 rows.append((name, source, tracking, "NO_PKGBUILD_BASE", ""))
                 continue
-            resolved_dir = pkgbuild_dir_base / name
+            resolved_dir = pkgbuild_src_dir_base / name
         status = _probe_pkgbuild_dir(resolved_dir)
         rows.append((name, source, tracking, status, str(resolved_dir)))
 
@@ -708,8 +708,8 @@ def cmd_packages_sync(args):
     if aur_candidates:
         aur_found = set(aur_info(aur_candidates).keys())
 
-    raw_dir = build_section.get("pkgbuild_dir") or config.get("paths", {}).get("pkgbuild_dir")
-    pkgbuild_dir = Path(raw_dir).expanduser() if raw_dir else None
+    raw_dir = build_section.get("pkgbuild_src_dir") or config.get("paths", {}).get("pkgbuild_src_dir")
+    pkgbuild_src_dir = Path(raw_dir).expanduser() if raw_dir else None
 
     change_display: list[str] = []
     changes_by_name: dict[str, dict] = {}
@@ -732,8 +732,8 @@ def cmd_packages_sync(args):
             entry_changes["source"] = new_source
 
         # Re-check pkgbuild_patch (AUR only, only when PKGBUILD is present)
-        if new_source == "aur" and pkgbuild_dir:
-            pkgbuild = pkgbuild_dir / name / "PKGBUILD"
+        if new_source == "aur" and pkgbuild_src_dir:
+            pkgbuild = pkgbuild_src_dir / name / "PKGBUILD"
             if pkgbuild.exists():
                 try:
                     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild

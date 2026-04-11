@@ -7,14 +7,14 @@
 #   pkgbuild_patch optional  true = extract and patch PKGBUILD flags before build
 #   cache          optional  false = disable ccache/sccache for this package
 #
-# AUR packages are resolved via [paths] pkgbuild_dir in flag_profiles.toml.
+# AUR packages are resolved via [paths] pkgbuild_src_dir in flag_profiles.toml.
 # Missing AUR packages are auto-cloned from the AUR.
 # =============================================================================
 
 [build]
 # Directory containing pre-cloned PKGBUILDs for aur/git packages.
-# Each entry should have its own subdirectory: <pkgbuild_dir>/<name>/PKGBUILD
-pkgbuild_dir = "~/builds"
+# Each entry should have its own subdirectory: <pkgbuild_src_dir>/<name>/PKGBUILD
+pkgbuild_src_dir = "~/src"
 repo_mode = "profiled"  # "pacman" (default) | "profiled" — how repo-source packages are built
 #                       # "pacman"   → install via pacman -S --needed (no build step)
 #                       # "profiled" → build from PKGBUILD with sysforge flag profiles

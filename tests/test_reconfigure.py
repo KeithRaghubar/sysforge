@@ -41,7 +41,7 @@ def make_packages_toml(tmp_path, content: str) -> Path:
 
 _BASIC_TOML = """\
 [build]
-pkgbuild_dir = "~/builds"
+pkgbuild_src_dir = "~/src"
 
 [[package]]
 name = "htop"
@@ -55,7 +55,7 @@ pkgbuild_patch = true
 
 _REPO_MODE_PROFILED_TOML = """\
 [build]
-pkgbuild_dir = "~/builds"
+pkgbuild_src_dir = "~/src"
 repo_mode = "profiled"
 
 [[package]]
@@ -119,7 +119,7 @@ def test_set_repo_mode_replaces_existing(tmp_path):
 
 
 def test_set_repo_mode_inserts_after_build_header(tmp_path):
-    p = make_packages_toml(tmp_path, '[build]\npkgbuild_dir = "~/builds"\n')
+    p = make_packages_toml(tmp_path, '[build]\npkgbuild_src_dir = "~/src"\n')
     _set_repo_mode(p, "profiled")
     text = p.read_text()
     assert 'repo_mode = "profiled"' in text
@@ -148,7 +148,7 @@ def test_set_repo_mode_preserves_other_content(tmp_path):
     _set_repo_mode(p, "profiled")
     with open(p, "rb") as f:
         data = tomllib.load(f)
-    assert data["build"]["pkgbuild_dir"] == "~/builds"
+    assert data["build"]["pkgbuild_src_dir"] == "~/src"
     assert any(pkg["name"] == "htop" for pkg in data["package"])
 
 
@@ -244,7 +244,7 @@ def test_step_preview_pkgbuild_patch_shown_as_profiled(tmp_path):
     """A repo package with pkgbuild_patch=true shows profiled build action."""
     toml = """\
 [build]
-pkgbuild_dir = "~/builds"
+pkgbuild_src_dir = "~/src"
 
 [[package]]
 name = "mold"

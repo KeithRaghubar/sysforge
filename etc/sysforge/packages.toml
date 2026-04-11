@@ -11,13 +11,13 @@
 #   cache          optional  false = disable ccache/sccache for this package
 #
 # AUR packages are resolved via the PKGBUILD directory set in flag_profiles.toml
-# ([paths] pkgbuild_dir). Missing AUR packages are auto-cloned from the AUR.
+# ([paths] pkgbuild_src_dir). Missing AUR packages are auto-cloned from the AUR.
 # Repo packages are installed via pacman -S --needed (no build step) unless
 # repo_mode = "profiled" is set below.
 # =============================================================================
 
 # [build]
-# pkgbuild_dir = "~/src"   # override the path from flag_profiles.toml for this manifest
+# pkgbuild_src_dir = "~/src"   # override the path from flag_profiles.toml for this manifest
 # repo_mode    = "pacman"  # "pacman" (default) | "profiled" — how repo-source packages are built
 #                          # "pacman"   → install via pacman -S --needed (no build step)
 #                          # "profiled" → build from PKGBUILD with sysforge flag profiles

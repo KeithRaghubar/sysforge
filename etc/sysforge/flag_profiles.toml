@@ -8,7 +8,7 @@
 #
 # ── [paths] ──────────────────────────────────────────────────────────────────
 #
-#   pkgbuild_dir = "~/src"    # directory searched for PKGBUILDs by bare package name
+#   pkgbuild_src_dir = "~/src"    # directory searched for PKGBUILDs by bare package name
 #                             # sysforge build/resolve <name> looks here first
 #
 # ── [defaults] profile keys (also valid in any [profiles.NAME]) ──────────────
@@ -125,7 +125,7 @@
 # =============================================================================
 
 [paths]
-pkgbuild_dir = "~/src"
+pkgbuild_src_dir = "~/src"
 
 [defaults]
 profile = "standard"

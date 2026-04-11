@@ -166,8 +166,8 @@ def _cmd_completions(args):
         return
 
     if args.resource == "local":
-        # Only locally-cloned packages from pkgbuild_dir — used by `resolve` completion
-        raw = config.get("paths", {}).get("pkgbuild_dir")
+        # Only locally-cloned packages from pkgbuild_src_dir — used by `resolve` completion
+        raw = config.get("paths", {}).get("pkgbuild_src_dir")
         if raw:
             d = Path(raw).expanduser()
             if d.is_dir():
@@ -178,8 +178,8 @@ def _cmd_completions(args):
 
     seen: set[str] = set()
 
-    # Local packages from pkgbuild_dir
-    raw = config.get("paths", {}).get("pkgbuild_dir")
+    # Local packages from pkgbuild_src_dir
+    raw = config.get("paths", {}).get("pkgbuild_src_dir")
     if raw:
         d = Path(raw).expanduser()
         if d.is_dir():
@@ -482,7 +482,7 @@ def _add_build_parser(sub):
 
 def _add_fetch_parser(sub):
     p = sub.add_parser("fetch",
-        help="Download PKGBUILD(s) into pkgbuild_dir without building.")
+        help="Download PKGBUILD(s) into pkgbuild_src_dir without building.")
     p.add_argument(
         "pkgs", nargs="+", metavar="PKG",
         help="One or more package names to download.",

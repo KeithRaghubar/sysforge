@@ -52,7 +52,7 @@ def make_kernel_toml(tmp_path, pkgbuild_dir, pkgname="linux-git",
         'enabled = true',
         f'pkgname = "{pkgname}"',
         f'source = "git"',
-        f'pkgbuild_dir = "{pkgbuild_dir}"',
+        f'pkgbuild_src_dir = "{pkgbuild_dir}"',
         f'bootloader = "{bootloader}"',
     ]
     if kconfig:
@@ -210,22 +210,22 @@ def test_load_kernel_config_returns_dict(tmp_path):
 # _pkgbuild_path
 # ---------------------------------------------------------------------------
 
-def test_pkgbuild_path_missing_pkgbuild_dir():
-    with pytest.raises(RuntimeError, match="missing pkgbuild_dir"):
+def test_pkgbuild_path_missing_pkgbuild_src_dir():
+    with pytest.raises(RuntimeError, match="missing pkgbuild_src_dir"):
         _pkgbuild_path({"pkgname": "linux-git"})
 
 def test_pkgbuild_path_missing_pkgname(tmp_path):
     with pytest.raises(RuntimeError, match="missing pkgname"):
-        _pkgbuild_path({"pkgbuild_dir": str(tmp_path)})
+        _pkgbuild_path({"pkgbuild_src_dir": str(tmp_path)})
 
 def test_pkgbuild_path_pkgbuild_not_found(tmp_path):
     with pytest.raises(RuntimeError, match="PKGBUILD not found"):
-        _pkgbuild_path({"pkgbuild_dir": str(tmp_path), "pkgname": "linux-git"})
+        _pkgbuild_path({"pkgbuild_src_dir": str(tmp_path), "pkgname": "linux-git"})
 
 def test_pkgbuild_path_returns_path(tmp_path):
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
-    result = _pkgbuild_path({"pkgbuild_dir": str(builds), "pkgname": "linux-git"})
+    result = _pkgbuild_path({"pkgbuild_src_dir": str(builds), "pkgname": "linux-git"})
     assert result.name == "PKGBUILD"
     assert result.exists()
 
@@ -234,7 +234,7 @@ def test_pkgbuild_path_srcdir_override(tmp_path):
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux")   # directory is 'linux', not 'linux-custom'
     result = _pkgbuild_path({
-        "pkgbuild_dir": str(builds),
+        "pkgbuild_src_dir": str(builds),
         "pkgname": "linux-custom",
         "srcdir": "linux",
     })
@@ -245,7 +245,7 @@ def test_pkgbuild_path_srcdir_not_found(tmp_path):
     """Error message when srcdir directory doesn't exist."""
     with pytest.raises(RuntimeError, match="PKGBUILD not found"):
         _pkgbuild_path({
-            "pkgbuild_dir": str(tmp_path),
+            "pkgbuild_src_dir": str(tmp_path),
             "pkgname": "linux-custom",
             "srcdir": "linux",
         })
@@ -258,7 +258,7 @@ def test_pkgbuild_path_srcdir_not_found(tmp_path):
 def test_write_kconfig_fragment_no_entries_is_noop(tmp_path):
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
-    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_dir": str(builds)}
+    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
     result = _write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
     assert result is None
     assert not (builds / "linux-git" / "sysforge.config").exists()
@@ -267,7 +267,7 @@ def test_write_kconfig_fragment_hardware_only(tmp_path):
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     hw = make_hardware_profile(tmp_path, kconfig={"CONFIG_MZEN3": "y", "CONFIG_NOUVEAU": "n"})
-    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_dir": str(builds)}
+    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
     config = {"hardware_profile": str(hw)}
 
     result = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
@@ -283,7 +283,7 @@ def test_write_kconfig_fragment_manual_only(tmp_path):
     make_pkgbuild(builds, "linux-git")
     kernel_cfg = {
         "pkgname": "linux-git",
-        "pkgbuild_dir": str(builds),
+        "pkgbuild_src_dir": str(builds),
         "kconfig": [{"option": "CONFIG_HZ_1000", "value": "y"}],
     }
 
@@ -300,7 +300,7 @@ def test_write_kconfig_fragment_merge_hw_and_manual(tmp_path):
     hw = make_hardware_profile(tmp_path, kconfig={"CONFIG_MZEN3": "y"})
     kernel_cfg = {
         "pkgname": "linux-git",
-        "pkgbuild_dir": str(builds),
+        "pkgbuild_src_dir": str(builds),
         "kconfig": [{"option": "CONFIG_HZ_1000", "value": "y"}],
     }
     config = {"hardware_profile": str(hw)}
@@ -317,7 +317,7 @@ def test_write_kconfig_fragment_manual_wins_conflict(tmp_path):
     hw = make_hardware_profile(tmp_path, kconfig={"CONFIG_MZEN3": "y"})
     kernel_cfg = {
         "pkgname": "linux-git",
-        "pkgbuild_dir": str(builds),
+        "pkgbuild_src_dir": str(builds),
         "kconfig": [{"option": "CONFIG_MZEN3", "value": "n"}],  # override hw
     }
     config = {"hardware_profile": str(hw)}
@@ -335,7 +335,7 @@ def test_write_kconfig_fragment_conflict_emits_warn(tmp_path):
     hw = make_hardware_profile(tmp_path, kconfig={"CONFIG_MZEN3": "y"})
     kernel_cfg = {
         "pkgname": "linux-git",
-        "pkgbuild_dir": str(builds),
+        "pkgbuild_src_dir": str(builds),
         "kconfig": [{"option": "CONFIG_MZEN3", "value": "n"}],
     }
     config = {"hardware_profile": str(hw)}
@@ -349,7 +349,7 @@ def test_write_kconfig_fragment_dry_run_no_file(tmp_path):
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     hw = make_hardware_profile(tmp_path, kconfig={"CONFIG_MZEN3": "y"})
-    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_dir": str(builds)}
+    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
     config = {"hardware_profile": str(hw)}
 
     result = _write_kconfig_fragment(kernel_cfg, config, dry_run=True)
@@ -362,7 +362,7 @@ def test_write_kconfig_fragment_invalid_manual_raises(tmp_path):
     make_pkgbuild(builds, "linux-git")
     kernel_cfg = {
         "pkgname": "linux-git",
-        "pkgbuild_dir": str(builds),
+        "pkgbuild_src_dir": str(builds),
         "kconfig": [{"option": "bad-name", "value": "y"}],
     }
     with pytest.raises(RuntimeError, match="invalid option"):
@@ -372,7 +372,7 @@ def test_write_kconfig_fragment_file_has_header(tmp_path):
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     hw = make_hardware_profile(tmp_path, kconfig={"CONFIG_KVM": "y"})
-    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_dir": str(builds)}
+    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
     config = {"hardware_profile": str(hw)}
 
     result = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)

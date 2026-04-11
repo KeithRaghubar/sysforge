@@ -151,7 +151,7 @@ def test_package_lists_gcc_custom():
 def test_resolve_all_pkgbuilds_finds_local(tmp_path):
     make_pkgbuild(tmp_path, "llvm")
     make_pkgbuild(tmp_path, "clang")
-    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
     result = _resolve_all_pkgbuilds(["llvm", "clang"], config)
     assert "llvm" in result
     assert "clang" in result
@@ -159,7 +159,7 @@ def test_resolve_all_pkgbuilds_finds_local(tmp_path):
 
 
 def test_resolve_all_pkgbuilds_missing_raises(tmp_path):
-    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
     with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
          patch("sysforge.primitives.aur.aur_info", return_value={}):
         with pytest.raises(RuntimeError, match="Could not resolve PKGBUILDs"):
@@ -168,7 +168,7 @@ def test_resolve_all_pkgbuilds_missing_raises(tmp_path):
 
 def test_resolve_all_pkgbuilds_partial_miss_reports_all(tmp_path):
     make_pkgbuild(tmp_path, "llvm")
-    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
     with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
          patch("sysforge.primitives.aur.aur_info", return_value={}):
         with pytest.raises(RuntimeError, match="Could not resolve"):
@@ -178,7 +178,7 @@ def test_resolve_all_pkgbuilds_partial_miss_reports_all(tmp_path):
 def test_resolve_all_pkgbuilds_split_found_after_pass3_clone(tmp_path):
     """gcc-libs must be resolved via split-package scan after gcc is cloned in Pass 3,
     not attempted as a standalone pkgctl clone (which would require auth)."""
-    config = {"paths": {"pkgbuild_dir": str(tmp_path)}}
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
 
     # gcc PKGBUILD declares both gcc and gcc-libs in pkgname
     gcc_dir = tmp_path / "gcc"
@@ -353,7 +353,7 @@ def test_toolchain_stage_gcc_dry_run(tmp_path):
         make_pkgbuild(pkgbuild_dir, name)
 
     state = PipelineState(tmp_path / "state")
-    config = {"paths": {"pkgbuild_dir": str(pkgbuild_dir)}}
+    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
     options = make_options(dry_run=True)
 
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
@@ -378,7 +378,7 @@ def test_toolchain_stage_llvm_no_pgo_dry_run(tmp_path):
         make_pkgbuild(pkgbuild_dir, name)
 
     state = PipelineState(tmp_path / "state")
-    config = {"paths": {"pkgbuild_dir": str(pkgbuild_dir)}}
+    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
     options = make_options(dry_run=True)
 
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
@@ -406,7 +406,7 @@ def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
         make_pkgbuild(pkgbuild_dir, name)
 
     state = PipelineState(tmp_path / "state")
-    config = {"paths": {"pkgbuild_dir": str(pkgbuild_dir)}}
+    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
     options = make_options(dry_run=True)
 
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
@@ -433,7 +433,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     make_pkgbuild(pkgbuild_dir, "llvm")
 
     state = PipelineState(tmp_path / "state")
-    config = {"paths": {"pkgbuild_dir": str(pkgbuild_dir)}}
+    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
     options = make_options(dry_run=False)
 
     call_log = []
@@ -1239,7 +1239,7 @@ def test_toolchain_stage_custom_packages(tmp_path):
     make_pkgbuild(pkgbuild_dir, "clang")
 
     state = PipelineState(tmp_path / "state")
-    config = {"paths": {"pkgbuild_dir": str(pkgbuild_dir)}}
+    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
     options = make_options(dry_run=True)
 
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
@@ -1292,7 +1292,7 @@ def test_toolchain_stage_missing_pkgbuild_raises(tmp_path):
     toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
 
     state = PipelineState(tmp_path / "state")
-    config = {"paths": {"pkgbuild_dir": str(tmp_path / "empty")}}
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
     options = make_options()
 
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
@@ -1347,7 +1347,7 @@ def _pgo_setup(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None):
         (pb.parent / f"{name}-18.0.0-1-x86_64.pkg.tar.zst").touch()
 
     state   = PipelineState(tmp_path / "state")
-    config  = {"paths": {"pkgbuild_dir": str(pkgbuild_dir)}}
+    config  = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
     options = make_options(dry_run=False)
     return toml_path, pkgbuild_dir, staging, pgo_store, state, config, options
 

@@ -19,9 +19,9 @@ packages.toml search order:
   2. /etc/sysforge/packages.toml  (system default)
 
 AUR/git package PKGBUILD lookup order (via find_pkgbuild):
-  1. packages.toml [build] pkgbuild_dir/<name>/PKGBUILD  (if set)
-  2. flag_profiles.toml [paths] pkgbuild_dir/<name>/PKGBUILD  (if set)
-  3. AUR clone into pkgbuild_dir if package is found on AUR
+  1. packages.toml [build] pkgbuild_src_dir/<name>/PKGBUILD  (if set)
+  2. flag_profiles.toml [paths] pkgbuild_src_dir/<name>/PKGBUILD  (if set)
+  3. AUR clone into pkgbuild_src_dir if package is found on AUR
 """
 import subprocess
 import tomllib
@@ -75,16 +75,16 @@ def _resolve_pkgbuild(name, build_cfg, config):
     Resolve the PKGBUILD path for an aur/git package.
 
     Builds a lookup config for find_pkgbuild using packages.toml [build]
-    pkgbuild_dir first, falling back to flag_profiles [paths] pkgbuild_dir.
+    pkgbuild_src_dir first, falling back to flag_profiles [paths] pkgbuild_src_dir.
     find_pkgbuild handles cwd lookup, local dir lookup, and AUR auto-clone.
 
     Raises RuntimeError (wrapping FileNotFoundError) if nothing is found.
     """
-    pkgbuild_dir = (
-        build_cfg.get("pkgbuild_dir")
-        or config.get("paths", {}).get("pkgbuild_dir")
+    pkgbuild_src_dir = (
+        build_cfg.get("pkgbuild_src_dir")
+        or config.get("paths", {}).get("pkgbuild_src_dir")
     )
-    lookup_config = {"paths": {"pkgbuild_dir": pkgbuild_dir}} if pkgbuild_dir else None
+    lookup_config = {"paths": {"pkgbuild_src_dir": pkgbuild_src_dir}} if pkgbuild_src_dir else None
     try:
         return find_pkgbuild(name, lookup_config)
     except FileNotFoundError as e:
@@ -177,11 +177,11 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
     """Build an AUR/git package via makepkg_wrapper.run()."""
     name = pkg["name"]
     if options.dry_run:
-        pkgbuild_dir = (
-            build_cfg.get("pkgbuild_dir")
-            or config.get("paths", {}).get("pkgbuild_dir", "")
+        pkgbuild_src_dir = (
+            build_cfg.get("pkgbuild_src_dir")
+            or config.get("paths", {}).get("pkgbuild_src_dir", "")
         )
-        expected = Path(pkgbuild_dir).expanduser() / name / "PKGBUILD" if pkgbuild_dir else f"<pkgbuild_dir>/{name}/PKGBUILD"
+        expected = Path(pkgbuild_src_dir).expanduser() / name / "PKGBUILD" if pkgbuild_src_dir else f"<pkgbuild_src_dir>/{name}/PKGBUILD"
         parts = []
         if toolchain.get("cc_override"):
             parts.append("cc=" + toolchain["cc_override"])

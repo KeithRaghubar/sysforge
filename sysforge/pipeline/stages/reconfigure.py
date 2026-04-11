@@ -602,7 +602,7 @@ def _step_disk(config, state, options, editor: str) -> str:
     _log.ui("─── Disk space ──────────────────────────────────────")
 
     build_dir = Path(
-        config.get("paths", {}).get("pkgbuild_dir", "~")
+        config.get("paths", {}).get("pkgbuild_src_dir", "~")
     ).expanduser()
 
     check_dir = build_dir

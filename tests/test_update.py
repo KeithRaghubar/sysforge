@@ -468,7 +468,7 @@ def test_get_foreign_packages_empty_output():
 def test_load_packages_toml_names_reads_names(tmp_path):
     toml = (tmp_path / "packages.toml")
     toml.write_text(
-        "[build]\npkgbuild_dir = \"~/builds\"\n\n"
+        "[build]\npkgbuild_src_dir = \"~/src\"\n\n"
         "[[package]]\nname = \"htop\"\nsource = \"repo\"\n\n"
         "[[package]]\nname = \"yay\"\nsource = \"aur\"\n"
     )
@@ -483,7 +483,7 @@ def test_load_packages_toml_names_missing_file(tmp_path):
 
 def test_load_packages_toml_names_empty_file(tmp_path):
     toml = tmp_path / "packages.toml"
-    toml.write_text("[build]\npkgbuild_dir = \"~/builds\"\n")
+    toml.write_text("[build]\npkgbuild_src_dir = \"~/src\"\n")
     result = _load_packages_toml_names(toml)
     assert result == set()
 
@@ -505,7 +505,7 @@ def test_append_to_packages_toml_creates_file(tmp_path):
 
 def test_append_to_packages_toml_appends_to_existing(tmp_path):
     path = tmp_path / "packages.toml"
-    path.write_text("[build]\npkgbuild_dir = \"~/builds\"\n\n[[package]]\nname = \"htop\"\n")
+    path.write_text("[build]\npkgbuild_src_dir = \"~/src\"\n\n[[package]]\nname = \"htop\"\n")
     entries = [{"name": "yay", "source": "aur"}]
     with patch("sysforge.packages_cmd.entry_toml_block",
                side_effect=lambda e: f'[[package]]\nname = "{e["name"]}"\n'):

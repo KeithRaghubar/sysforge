@@ -4,8 +4,8 @@
 #
 # ── [paths] ──────────────────────────────────────────────────────────────────
 #
-#   pkgbuild_dir = "~/src"    # directory searched for PKGBUILDs by bare package name
-#                             # sysforge build/resolve <name> looks for <pkgbuild_dir>/<name>/PKGBUILD
+#   pkgbuild_src_dir = "~/src"    # directory searched for PKGBUILDs by bare package name
+#                                 # sysforge build/resolve <name> looks for <pkgbuild_src_dir>/<name>/PKGBUILD
 #
 # ── [defaults] ───────────────────────────────────────────────────────────────
 #
@@ -122,7 +122,7 @@
 # =============================================================================
 
 [paths]
-pkgbuild_dir = "~/src"
+pkgbuild_src_dir = "~/src"
 
 [defaults]
 profile = "standard"

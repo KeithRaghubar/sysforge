@@ -2,7 +2,7 @@
 update.py — check for and rebuild outdated sysforge-managed packages
 
 Compares installed package versions against the latest PKGBUILD versions in
-pkgbuild_dir (after git pull --rebase), then rebuilds packages where the
+pkgbuild_src_dir (after git pull --rebase), then rebuilds packages where the
 PKGBUILD is newer than what is installed.
 
 VCS packages (-git, -svn, -hg, -bzr) cannot be compared by version because
@@ -122,7 +122,7 @@ def _append_to_packages_toml(path: Path, entries: list[dict]) -> None:
         header = (
             "# packages.toml — managed by sysforge packages\n"
             "\n[build]\n"
-            'pkgbuild_dir = "~/builds"\n'
+            'pkgbuild_src_dir = "~/src"\n'
         )
         path.write_text(header + blocks)
 
@@ -394,12 +394,12 @@ def cmd_update(args) -> None:
     build_state_pkgs = bs.all_packages()
     all_installed = get_all_installed_packages()
 
-    # Resolve base pkgbuild_dir for packages without a build_state record
-    pkgbuild_dir_raw = (
-        build_cfg.get("pkgbuild_dir")
-        or config.get("paths", {}).get("pkgbuild_dir")
+    # Resolve base pkgbuild_src_dir for packages without a build_state record
+    pkgbuild_src_dir_raw = (
+        build_cfg.get("pkgbuild_src_dir")
+        or config.get("paths", {}).get("pkgbuild_src_dir")
     )
-    pkgbuild_dir_base = Path(pkgbuild_dir_raw).expanduser() if pkgbuild_dir_raw else None
+    pkgbuild_src_dir_base = Path(pkgbuild_src_dir_raw).expanduser() if pkgbuild_src_dir_raw else None
 
     packages: dict[str, dict] = {}
     unrecorded_names: set[str] = set()
@@ -409,7 +409,7 @@ def cmd_update(args) -> None:
             packages[name] = build_state_pkgs[name]
         else:
             unrecorded_names.add(name)
-            pkgdir = str(pkgbuild_dir_base / name) if pkgbuild_dir_base else ""
+            pkgdir = str(pkgbuild_src_dir_base / name) if pkgbuild_src_dir_base else ""
             packages[name] = {
                 "pkgbase": name,
                 "pkgbuild_dir": pkgdir,
