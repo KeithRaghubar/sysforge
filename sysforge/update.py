@@ -38,7 +38,7 @@ _log = log.get_logger("UPDATE")
 from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-from sysforge.primitives.aur import git_pull_rebase, fetch_aur_name_cache, purge_src, aur_clone
+from sysforge.primitives.aur import git_pull_rebase, fetch_aur_name_cache, purge_src, aur_clone, aur_info
 from sysforge.primitives.config import load_config
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
@@ -440,6 +440,20 @@ def cmd_update(args) -> None:
             if manifest_source:
                 entry["source"] = manifest_source
             packages[name] = entry
+
+    # Resolve pkgbase for unrecorded AUR packages via AUR RPC so split packages
+    # get the correct pkgbase and pkgbuild_dir (e.g. ob-xd-common → pkgbase ob-xd).
+    if unrecorded_names and pkgbuild_src_dir_base:
+        aur_unrecorded = [n for n in unrecorded_names
+                          if packages[n].get("source") != "repo"]
+        if aur_unrecorded:
+            aur_results = aur_info(aur_unrecorded)
+            for name in aur_unrecorded:
+                info = aur_results.get(name)
+                if info and info.get("PackageBase") and info["PackageBase"] != name:
+                    real_base = info["PackageBase"]
+                    packages[name]["pkgbase"] = real_base
+                    packages[name]["pkgbuild_dir"] = str(pkgbuild_src_dir_base / real_base)
 
     # Filter to specific packages when names are given on the command line
     filter_names: list[str] = getattr(args, "pkgnames", None) or []

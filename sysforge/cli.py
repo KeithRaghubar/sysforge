@@ -870,8 +870,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def main():
     from sysforge.primitives.resource_guard import install as _install_resource_guard
     _install_resource_guard()
-    sys.argv[1:] = _hoist_verbosity_flags(
-        _patch_makepkg_argv(_extract_implicit_makepkg_flags(sys.argv[1:]))
+    sys.argv[1:] = _patch_makepkg_argv(
+        _extract_implicit_makepkg_flags(_hoist_verbosity_flags(sys.argv[1:]))
     )
     parser = _build_parser()
     args = parser.parse_args()
