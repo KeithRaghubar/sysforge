@@ -648,7 +648,7 @@ AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key
 - `aur_clone(name, dest)` — `git clone https://aur.archlinux.org/<name>.git <dest>`; raises `RuntimeError` on failure.
 - `git_pull_rebase(pkgbuild_dir)` — `git pull --rebase` in the given dir. No-ops on non-git directories or repos with no upstream tracking branch. Raises `RuntimeError` on conflict (after running `git rebase --abort` to restore a clean state).
 - `git_is_dirty(pkgbuild_dir)` — `True` if the dir is a git repo with uncommitted tracked changes, unpushed commits, or no upstream tracking branch. Untracked files (build artifacts) are intentionally ignored.
-- `purge_src(pkgbuild_dir)` — `rm -rf` the directory after a `git_is_dirty` safety check. Raises `RuntimeError` if the clone holds local work that would be destroyed; non-git directories are purged unconditionally; non-existent paths are a silent no-op. Used by `sysforge build --cleansrc`, `sysforge update --cleansrc`, and the empty/partial-dir recovery branch of `sysforge update --fetch-missing`.
+- `purge_src(pkgbuild_dir)` — `rm -rf` the directory after a `git_is_dirty` safety check. Raises `RuntimeError` if the clone holds local work that would be destroyed; non-git directories are purged unconditionally; non-existent paths are a silent no-op. Used by `sysforge build --cleansrc`, `sysforge update --cleansrc`, and the source sync recovery paths in `sysforge update`.
 - `pkgctl_checkout(name, dest)` — `pkgctl repo clone --protocol=https <name>` run in `dest.parent`; fetches official Arch packaging repo. Raises `RuntimeError` on failure.
 - `import_pgp_keys(pkgmeta, pkgbuild_path)` — ensures all `validpgpkeys` listed in the PKGBUILD are in the GPG keyring before `makepkg` runs. Strategy: (1) import any bundled `.asc` files from `keys/pgp/` alongside the PKGBUILD, (2) check which keys are still missing via `gpg --list-keys`, (3) fetch remaining via `gpg --recv-keys`. Import failures are logged as warnings — makepkg surfaces a clearer error if a key is still absent at verification time.
 - `fetch_aur_name_cache(force=False)` — downloads `https://aur.archlinux.org/packages.gz` and extracts it to `~/.cache/sysforge/aur-packages.txt`. Skips the download if the cache is less than 24 hours old unless `force=True`. Called as a side effect of `sysforge update`; read by `sysforge completions packages` to provide AUR package name completion.
@@ -689,27 +689,33 @@ Public API: `cmd_resolve(args)`. Uses `find_pkgbuild` from `config.py` for PKGBU
 
 ### `update.py`
 
-Implements `sysforge update` — the update manager. `packages.toml` is the source of truth for which packages to check; `build_state.toml` controls which are eligible for automatic rebuild. Algorithm:
+Implements `sysforge update` — the update manager. `packages.toml` is the source of truth for which packages to check; `build_state.toml` controls which are eligible for automatic rebuild. Organized into 7 phases:
 
-1. Refresh the AUR name cache as a side effect (`fetch_aur_name_cache()`).
-2. Load config and `packages.toml` early (needed for all paths).
-3. If `--all`: run `_discover_and_add()` — discover foreign packages (`pacman -Qm`) not already in `packages.toml`; AUR-verify, append to `packages.toml`, compare versions, queue outdated ones for rebuild.
-4. Build a unified package set from `packages.toml`, cross-referenced with `build_state.toml`. Packages in the manifest but not in build_state get synthetic records (`pkgbase=name`, per-package `pkgbuild_dir` from `[build].pkgbuild_src_dir`). These are tracked as `unrecorded` — they are version-checked but only built when `--all` is passed.
-5. Batch-query installed versions via `pacman -Q` once upfront (`get_all_installed_packages()`).
-6. Group by `pkgbase` to deduplicate split packages.
-7. Parallel `git pull --rebase` all PKGBUILD dirs (`ThreadPoolExecutor`, max 8 workers). Deduplicated by resolved path. Skipped by `--no-update` or `--dry-run`.
-   - With `--cleansrc`: every src dir is purged via `purge_src` *before* the pulls. `purge_src` refuses any directory with uncommitted changes, unpushed commits, or no upstream tracking branch — those packages are reported as `--cleansrc` failures, dropped from the rest of this run, and counted toward `failed` in the final summary. Healthy clones are removed and re-cloned by step 8 (via `--fetch-missing` semantics applied implicitly: a missing dir after a successful purge falls into the same recovery path).
-8. Parallel version checks (`ThreadPoolExecutor`, max 8 workers): parse PKGBUILD, look up installed version from the batch query, compare with `vercmp`. Split packages check all sub-package names (installed if any is present).
-   - With `--fetch-missing`: when a package's `pkgbuild_dir` does not exist or has no `PKGBUILD`, the worker calls `aur_clone(pkgbase, pkgbuild_dir)` (purging an empty/partial dir first) instead of emitting the `not found — skipping` warning. Failures are logged per package and the package is dropped from this run, but the rest of the batch continues.
-9. VCS packages (`-git`, `-svn`, `-hg`, `-bzr`) are flagged as `DEVEL` — their `pkgver` is only meaningful after running `pkgver()`, so static comparison is not possible. They are rebuilt only when `--devel` is passed.
-10. Print a summary with totals header and per-package status: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`. Packages without a build record are annotated with `*` and a footnote.
-11. Rebuild `NEEDS_REBUILD` packages that have a build record (and `DEVEL` if `--devel`). With `--all`, unrecorded packages that need rebuild are also built. Discovered `OUTDATED` packages are built. All update builds default to `--cleanbuild` (`-C`) to prevent stale `$srcdir` from a previous failed run causing patch-already-applied errors in `prepare()`. `--syncdeps`/`-s` and `--install`/`-i` are stripped; packages are installed in a single `sudo pacman -U` call at the end. Without `--interactive`, build failures are logged and skipped (batch mode); with `--interactive`, failures pause for user input.
+**Phase 0 — Init.** Load BuildState, config, `packages.toml` manifest. Open unified log (always truncated). Refresh AUR name cache (skipped with `--offline`).
+
+**Phase 1 — Package set assembly** (`_assemble_package_set`). Build a unified `{pkgname: entry}` dict from manifest + build_state. If `--all`: discover foreign packages (`pacman -Qm`) not already tracked, AUR-verify, append to `packages.toml`, merge into the unified dict with `discovered=True`. For unrecorded AUR packages: bulk `aur_info` to resolve real `pkgbase` (split-package fix, e.g. `ob-xd-common` → pkgbase `ob-xd`). Apply positional PKG filter. Group by `pkgbase` to deduplicate split packages.
+
+**Phase 2 — Source sync** (`_sync_sources`). Ensures every tracked package has an up-to-date local PKGBUILD. Skipped entirely with `--offline`. Four sub-phases:
+1. `--cleansrc` purges (sequential): `purge_src` existing dirs. Refuses dirty repos (uncommitted, unpushed, no upstream).
+2. Clones (sequential): `aur_clone` for missing dirs (never-cloned, cleansrc-purged, empty/partial). Single retry with 2s backoff on transient errors. Sequential to avoid AUR rate limiting.
+3. Pulls (parallel, 8 workers): `git_pull_rebase` for existing dirs with a PKGBUILD.
+4. Pull failure recovery (sequential): on pull failure, attempt `purge_src` + `aur_clone`. Handles force-pushed AUR repos. Dirty repos still refused.
+
+Missing dirs are always cloned — no opt-in required. Repo-source packages (`source = "repo"`) are skipped entirely (no local PKGBUILD to sync).
+
+**Phase 3 — Version check** (parallel, 8 workers). Parse PKGBUILD, look up installed version from `pacman -Q`, compare with `vercmp`. Produces unified `_UpdateResult` for all packages (manifest + discovered). Actions: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`.
+
+**Phase 4 — Summary + dry-run gate.** Print per-package status. Discovered packages annotated with `(discovered)`. Exit if `--dry-run`.
+
+**Phase 5 — Build.** Filter to buildable packages: `NEEDS_REBUILD` (+ `DEVEL` if `--devel`), require build_state record unless `--all` or `discovered`. Batch makedeps pre-install (single `sudo pacman -S`). AUR dep resolution + build. Single build loop for all packages. `--cleanbuild` (`-C`) prepended by default (suppressed by `--no-cleanbuild`). `--syncdeps`/`-s` and `--install`/`-i` stripped; packages installed in phase 6.
+
+**Phase 6 — Install + finalize.** Single `sudo pacman -U` for all built packages. Cache report, final summary, close unified log.
 
 Positional: `[PKG ...]` — optional package names to restrict the run to a subset of packages.
 
-Flags: `--all`, `--interactive`, `--packages`, `--dry-run`, `--devel`, `--no-update`, `--no-cleanbuild`, `--cleansrc`, `--fetch-missing`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--makepkg`.
+Flags: `--all`, `--interactive`, `--packages`, `--dry-run`, `--devel`, `--offline`, `--no-cleanbuild`, `--cleansrc`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--makepkg`.
 
-**Unattended full update.** The combination `sysforge update --all --fetch-missing` is the supported recipe for a hands-off "rebuild everything outdated" run: `--all` discovers and adds foreign packages and rebuilds unrecorded entries, and `--fetch-missing` recovers from packages whose local clone has been deleted or never created. Add `--cleansrc` if you also want to discard divergent upstreams (rebase conflicts) — this is destructive but per-package safe, since `purge_src` refuses any clone that holds uncommitted changes, unpushed commits, or has no upstream. A package that `purge_src` refuses is counted as failed and skipped, leaving the rest of the run untouched.
+**Unattended full update.** `sysforge update --all` is the supported recipe for a hands-off "rebuild everything outdated" run: discovers and adds foreign packages, rebuilds unrecorded entries, and automatically clones any missing src dirs. Add `--cleansrc` to also discard divergent upstreams — this is destructive but per-package safe, since `purge_src` refuses any clone that holds uncommitted changes. A refused package is counted as failed and skipped.
 
 ### `converge.py`
 
@@ -949,15 +955,15 @@ Set once at CLI entry via `log.set_verbosity(args.verbose)`. Tests run at verbos
 
 File logging runs at full verbosity regardless of the `-v` level — every `[INFO]`, `[WARN]`, and `[ERROR]` line is written to file even when the terminal shows only errors. Never let file I/O break a build: all file write errors are silently swallowed.
 
-**Unified log** — one file for the entire `sysforge pipeline` run.
+**Unified log** — one file for the entire run.
 
-- Default path: `<state_dir>/sysforge.log` (i.e. `/var/lib/sysforge/sysforge.log`)
-- Appends across runs. Cleared (truncated, not deleted) on successful pipeline completion. Consecutive failures accumulate the full log from first failure until success.
+- Default path: `<state_dir>/sysforge.log` (i.e. `/var/lib/sysforge/sysforge.log`). For `sysforge update`: `<state_dir>/sysforge-update.log`.
+- `sysforge update` always truncates at run start. `sysforge run pipeline` appends across runs and clears on success.
 - A `# log cleared after successful run` marker is left in the file after truncation.
 - `--log-dir <path>` overrides the directory.
-- `--purge-log` truncates before the run starts, regardless of outcome. Use when you want a clean log for a fresh attempt.
+- `--purge-log` (`run pipeline` only) truncates before the run starts.
 - `--persist-log` suppresses truncation on success. Use when you want to keep the log for post-run analysis.
-- `--no-unified-log` disables the unified log entirely for this run.
+- `--no-unified-log` (`run pipeline` only) disables the unified log for this run.
 
 **Per-package log** — one file per package build, written alongside the PKGBUILD.
 

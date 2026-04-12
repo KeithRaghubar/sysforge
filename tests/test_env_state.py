@@ -361,7 +361,7 @@ def test_sysforge_keys_never_injected():
 
 def _make_update_args(**overrides):
     defaults = dict(
-        no_update=True,    # skip git pull; parallel pull block is no-op
+        offline=True,      # skip network; parallel pull block is no-op
         dry_run=False,
         devel=False,
         all=False,
@@ -373,8 +373,6 @@ def _make_update_args(**overrides):
         no_pkg_log=True,
         persist_log=False,
         log_dir=None,
-        no_unified_log=True,
-        purge_log=False,
         cache_report=False,
         packages=None,
     )

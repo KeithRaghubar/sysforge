@@ -126,14 +126,11 @@ _sysforge_update() {
     '--packages[path to packages.toml for --all discovery]:file:_files' \
     '--dry-run[show what would be rebuilt without doing it]' \
     '--devel[include VCS packages (-git, -svn, -hg, -bzr)]' \
-    '--no-update[skip git pull --rebase before checking versions]' \
+    '--offline[no network: skip pulls, clones, and AUR RPC]' \
     '--interactive[pause on build failures to allow manual correction]' \
     '--no-cleanbuild[skip automatic --cleanbuild; useful to re-run only the install step]' \
-    '--cleansrc[purge each src dir and re-clone before building (per-package fatal if local work present)]' \
-    '--fetch-missing[auto-clone packages whose src dir is missing or empty instead of skipping]' \
+    '--cleansrc[purge src dirs and re-clone before building (only for packages needing rebuild)]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
-    '--no-unified-log[disable unified log file]' \
-    '--purge-log[truncate unified log before this run]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate flag_profiles.toml]:file:_files' \
     '--cache-report[print ccache/sccache summary after run]' \

@@ -535,8 +535,8 @@ def _add_update_parser(sub):
         help="Show what would be rebuilt without doing it.")
     p.add_argument("--devel", action="store_true", dest="devel",
         help="Include VCS packages (-git, -svn, -hg, -bzr) in the rebuild.")
-    p.add_argument("--no-update", action="store_true", dest="no_update",
-        help="Skip git pull --rebase before checking versions.")
+    p.add_argument("--offline", action="store_true", dest="offline",
+        help="No network: skip git pulls, clones, and AUR RPC. Pure local version check.")
     p.add_argument("--packages", metavar="FILE", dest="packages",
         help=f"Path to packages.toml for --all discovery (default: {PACKAGES_PATH}).")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
@@ -554,10 +554,6 @@ def _add_update_parser(sub):
     p.add_argument("--makepkg", "-m", metavar="FLAGS",
         help="Extra flags passed verbatim to makepkg (e.g. -m '-f' to force rebuild). "
              "Combined short flags are expanded: -sfci becomes -s -f -c -i.")
-    p.add_argument("--no-unified-log", action="store_true", dest="no_unified_log",
-        help="Disable the unified log file (default: state_dir/sysforge-update.log).")
-    p.add_argument("--purge-log", action="store_true", dest="purge_log",
-        help="Truncate the unified log before this run instead of appending.")
     p.add_argument("--interactive", action="store_true",
         help="Pause on build failures to allow manual correction (default: log failure and continue).")
     p.add_argument("--no-cleanbuild", action="store_true", dest="no_cleanbuild",
@@ -567,10 +563,6 @@ def _add_update_parser(sub):
         help="Purge each package's src dir and re-clone before building. "
              "Per-package fatal if the clone has uncommitted changes, unpushed commits, "
              "or no upstream — that package is reported failed and the run continues.")
-    p.add_argument("--fetch-missing", action="store_true", dest="fetch_missing",
-        help="Auto-clone packages whose src dir is missing or has no PKGBUILD "
-             "instead of skipping them. Combine with --all for an "
-             "unattended full system update.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit update to these package names (default: all sysforge-managed packages).")
     p.set_defaults(func=_cmd_update)

@@ -23,6 +23,15 @@ and reported but only rebuilt when --all is passed.
     2. Allows packages in packages.toml with no build_state record to be
        rebuilt (without --all they are checked but not built).
 
+Phases:
+    0. Init — load state, config, manifest, open unified log
+    1. Package set assembly — merge manifest + build_state + discovery
+    2. Source sync — pull, clone, cleansrc, pull-failure recovery
+    3. Version check — parallel PKGBUILD parsing + vercmp
+    4. Summary + dry-run gate
+    5. Build — makedeps, AUR deps, single build loop
+    6. Install + finalize
+
 Public API:
     cmd_update(args)
 """
@@ -38,7 +47,9 @@ _log = log.get_logger("UPDATE")
 from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-from sysforge.primitives.aur import git_pull_rebase, fetch_aur_name_cache, purge_src, aur_clone, aur_info
+from sysforge.primitives.aur import (
+    git_pull_rebase, fetch_aur_name_cache, purge_src, aur_clone, aur_info,
+)
 from sysforge.primitives.config import load_config
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
@@ -70,6 +81,7 @@ class _UpdateResult:
     pkgbuild_ver: str | None
     pkgbuild_path: Path | None
     has_build_record: bool = True
+    discovered: bool = False
 
 
 def _is_vcs(pkgbase: str) -> bool:
@@ -128,38 +140,23 @@ def _append_to_packages_toml(path: Path, entries: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# --all: foreign package discovery (Phase 1 only — truly new packages)
+# Phase 1: Package set assembly
 # ---------------------------------------------------------------------------
 
-@dataclass
-class _DiscoveredResult:
-    pkgname: str
-    # ADDED, OUTDATED, DEVEL, NOT_FOUND, ALREADY_TRACKED
-    action: str
-    installed_ver: str | None = None
-    pkgbuild_ver: str | None = None
-    pkgbuild_path: Path | None = None
+def _discover_new_packages(
+    args, bs: BuildState, packages_path: Path,
+) -> tuple[list[dict], list[str]]:
+    """Discover foreign packages not yet tracked and append to packages.toml.
 
-
-def _discover_and_add(args, bs: BuildState, config: dict,
-                      packages_path: Path) -> list[_DiscoveredResult]:
+    Returns (entries_added, not_found_names) where entries_added are dicts
+    with at least {name, source} suitable for merging into the unified
+    packages dict.
     """
-    Discover foreign packages not yet in packages.toml and add them.
-
-    Only handles truly new packages (not in packages.toml or build_state).
-    Packages already in packages.toml but missing from build_state are now
-    handled by the main update loop.
-
-    Returns list of _DiscoveredResult for summary display.
-    """
-    from sysforge.primitives.aur import aur_info
-    from sysforge.primitives.config import find_pkgbuild
-
     foreign = get_foreign_packages()
 
     if not foreign:
         _log.info("--all: no foreign packages found")
-        return []
+        return [], []
 
     tracked = set(bs.all_packages().keys())
     in_manifest = _load_packages_toml_names(packages_path)
@@ -168,118 +165,290 @@ def _discover_and_add(args, bs: BuildState, config: dict,
 
     if not new_foreign:
         _log.info("--all: no new foreign packages to discover")
-        return []
+        return [], []
 
-    results: list[_DiscoveredResult] = []
     entries_to_add: list[dict] = []
+    not_found: list[str] = []
 
     _log.info(f"--all: {len(new_foreign)} untracked foreign package(s) found")
     aur_results = aur_info(list(new_foreign.keys()))
 
     for pkgname in sorted(new_foreign):
-        installed_ver = new_foreign[pkgname]
-
         if pkgname not in aur_results:
             _log.warn(f"--all: {pkgname!r} not found in AUR — skipping")
-            results.append(_DiscoveredResult(
-                pkgname=pkgname, action="NOT_FOUND",
-                installed_ver=installed_ver,
-            ))
+            not_found.append(pkgname)
             continue
 
-        pkgbuild_path = None
-        pkgbuild_ver = None
         pkgbuild_patch = False
-
         if not getattr(args, "dry_run", False):
+            from sysforge.primitives.config import find_pkgbuild
             try:
-                pkgbuild_path = find_pkgbuild(pkgname, config)
-            except (FileNotFoundError, RuntimeError) as e:
-                _log.warn(f"--all: {pkgname!r}: {e}")
-
-            if pkgbuild_path and pkgbuild_path.exists():
-                try:
+                pkgbuild_path = find_pkgbuild(pkgname, {})
+                if pkgbuild_path and pkgbuild_path.exists():
                     pkgmeta = parse_pkgbuild(pkgbuild_path)
-                    pkgbuild_ver = format_version(pkgmeta.get("globals", {}))
                     from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
                     pkgbuild_patch = bool(extract_pkgbuild_profile(pkgmeta, pkgbuild_path))
-                except Exception as e:
-                    _log.warn(f"--all: {pkgname!r}: failed to parse PKGBUILD: {e}")
+            except Exception as e:
+                _log.warn(f"--all: {pkgname!r}: {e}")
 
         entry: dict = {"name": pkgname, "source": "aur"}
         if pkgbuild_patch:
             entry["pkgbuild_patch"] = True
+
+        # Carry AUR PackageBase for split-package resolution
+        aur_base = aur_results[pkgname].get("PackageBase")
+        if aur_base and aur_base != pkgname:
+            entry["pkgbase"] = aur_base
+
         entries_to_add.append(entry)
-
-        if _is_vcs(pkgname):
-            action = "DEVEL"
-        elif pkgbuild_ver is not None:
-            try:
-                cmp = vercmp(pkgbuild_ver, installed_ver)
-                action = "OUTDATED" if cmp > 0 else "ADDED"
-            except RuntimeError:
-                action = "ADDED"
-        else:
-            action = "ADDED"
-
-        results.append(_DiscoveredResult(
-            pkgname=pkgname, action=action,
-            installed_ver=installed_ver,
-            pkgbuild_ver=pkgbuild_ver,
-            pkgbuild_path=pkgbuild_path,
-        ))
 
     if entries_to_add and not getattr(args, "dry_run", False):
         _append_to_packages_toml(packages_path, entries_to_add)
         _log.info(f"--all: appended {len(entries_to_add)} package(s) to {packages_path}")
 
-    return results
+    return entries_to_add, not_found
 
 
-def _print_discovery_summary(results: list[_DiscoveredResult], args) -> None:
-    if not results:
-        return
+def _assemble_package_set(
+    args, bs: BuildState, config: dict, packages_path: Path,
+    build_cfg: dict, manifest_entries: list[dict],
+) -> tuple[dict[str, dict], set[str], list[str]]:
+    """Phase 1: build the unified {pkgname: entry} dict.
 
-    outdated  = [r for r in results if r.action == "OUTDATED"]
-    devel     = [r for r in results if r.action == "DEVEL"]
-    not_found = [r for r in results if r.action == "NOT_FOUND"]
-    added     = [r for r in results if r.action == "ADDED"]
+    Returns (packages, unrecorded_names, discovery_not_found).
+    """
+    manifest_by_name = {e["name"]: e for e in manifest_entries}
+    build_state_pkgs = bs.all_packages()
 
-    print("\n  — --all discovery summary —")
+    pkgbuild_src_dir_raw = (
+        build_cfg.get("pkgbuild_src_dir")
+        or config.get("paths", {}).get("pkgbuild_src_dir")
+    )
+    pkgbuild_src_dir_base = Path(pkgbuild_src_dir_raw).expanduser() if pkgbuild_src_dir_raw else None
 
-    for r in outdated:
-        ver_str = f"{r.installed_ver} → {r.pkgbuild_ver}" if r.pkgbuild_ver else r.installed_ver
-        print(f"  [OUTDATED]       {r.pkgname}: {ver_str}")
+    packages: dict[str, dict] = {}
+    unrecorded_names: set[str] = set()
 
-    for r in not_found:
-        print(f"  [NOT_FOUND]      {r.pkgname}: {r.installed_ver} (not in AUR — skipped)")
+    # --- --all: discover truly new foreign packages ---
+    discovery_not_found: list[str] = []
+    if getattr(args, "all", False):
+        discovered_entries, discovery_not_found = _discover_new_packages(args, bs, packages_path)
+        for entry in discovered_entries:
+            name = entry["name"]
+            pkgbase = entry.get("pkgbase", name)
+            pkgdir = str(pkgbuild_src_dir_base / pkgbase) if pkgbuild_src_dir_base else ""
+            packages[name] = {
+                "pkgbase": pkgbase,
+                "pkgbuild_dir": pkgdir,
+                "source": entry.get("source", "aur"),
+                "discovered": True,
+            }
+            unrecorded_names.add(name)
 
-    if devel:
-        flag = "will rebuild" if getattr(args, "devel", False) else "use --devel to rebuild"
-        print(f"  [DEVEL]          {len(devel)} VCS package(s) skipped ({flag})")
+    # Merge manifest entries with build_state
+    for name, manifest_entry in manifest_by_name.items():
+        if name in packages:
+            continue  # Already added by discovery
+        if name in build_state_pkgs:
+            pkg = build_state_pkgs[name]
+            manifest_source = manifest_entry.get("source")
+            if manifest_source and "source" not in pkg:
+                pkg["source"] = manifest_source
+            packages[name] = pkg
+        else:
+            unrecorded_names.add(name)
+            pkgdir = str(pkgbuild_src_dir_base / name) if pkgbuild_src_dir_base else ""
+            entry = {
+                "pkgbase": name,
+                "pkgbuild_dir": pkgdir,
+            }
+            manifest_source = manifest_entry.get("source")
+            if manifest_source:
+                entry["source"] = manifest_source
+            packages[name] = entry
 
-    if added:
-        print(f"  [UP_TO_DATE]     {len(added)} package(s) already current")
+    # Resolve pkgbase for unrecorded AUR packages via AUR RPC so split packages
+    # get the correct pkgbase and pkgbuild_dir (e.g. ob-xd-common → pkgbase ob-xd).
+    offline = getattr(args, "offline", False)
+    if unrecorded_names and pkgbuild_src_dir_base and not offline:
+        aur_unrecorded = [n for n in unrecorded_names
+                          if packages[n].get("source") != "repo"
+                          and not packages[n].get("discovered")]  # already resolved
+        if aur_unrecorded:
+            aur_results = aur_info(aur_unrecorded)
+            for name in aur_unrecorded:
+                info = aur_results.get(name)
+                if info and info.get("PackageBase") and info["PackageBase"] != name:
+                    real_base = info["PackageBase"]
+                    packages[name]["pkgbase"] = real_base
+                    packages[name]["pkgbuild_dir"] = str(pkgbuild_src_dir_base / real_base)
 
-    print()
+    # Filter to specific packages when names are given on the command line
+    filter_names: list[str] = getattr(args, "pkgnames", None) or []
+    if filter_names:
+        unknown = [n for n in filter_names if n not in packages]
+        if unknown:
+            for name in unknown:
+                _log.warn(f"{name}: not found in packages.toml — skipping")
+        packages = {k: v for k, v in packages.items() if k in filter_names}
+
+    return packages, unrecorded_names, discovery_not_found
 
 
 # ---------------------------------------------------------------------------
-# Per-pkgbase version check (called from ThreadPoolExecutor)
+# Phase 2: Source sync (pull + clone + cleansrc + recovery)
+# ---------------------------------------------------------------------------
+
+def _sync_sources(
+    pkgbase_map: dict[str, list],
+    pkgbase_entry: dict[str, dict],
+    args,
+) -> dict[str, str]:
+    """Ensure every package has an up-to-date local PKGBUILD.
+
+    Returns a dict of {pkgbase: error_message} for packages that failed sync.
+    """
+    offline = getattr(args, "offline", False)
+    dry_run = getattr(args, "dry_run", False)
+    cleansrc = getattr(args, "cleansrc", False) and not dry_run
+
+    if offline and not cleansrc:
+        return {}
+
+    sync_failures: dict[str, str] = {}
+    seen_dirs: set[str] = set()
+
+    # --- Sub-phase 1: cleansrc purges (sequential) ---
+    # Only purge dirs for packages that exist; missing dirs will be cloned below.
+    if cleansrc:
+        for pkgbase in sorted(pkgbase_map):
+            entry = pkgbase_entry[pkgbase]
+            if entry.get("source") == "repo":
+                continue
+            d = Path(entry["pkgbuild_dir"])
+            key = str(d)
+            if key in seen_dirs or not d.exists():
+                continue
+            seen_dirs.add(key)
+            try:
+                purge_src(d)
+            except RuntimeError as e:
+                sync_failures[pkgbase] = str(e)
+                _log.error(f"--cleansrc {pkgbase}: {e}")
+
+    if offline:
+        return sync_failures
+
+    # --- Sub-phase 2: sequential clones for missing dirs ---
+    # Covers: never-cloned packages, cleansrc-purged dirs.
+    # Sequential to avoid AUR rate limiting. Single retry on transient errors.
+    seen_dirs.clear()
+    for pkgbase in sorted(pkgbase_map):
+        if pkgbase in sync_failures:
+            continue
+        entry = pkgbase_entry[pkgbase]
+        if entry.get("source") == "repo":
+            continue
+        pkgbuild_dir = Path(entry["pkgbuild_dir"])
+        resolved = str(pkgbuild_dir)
+        if resolved in seen_dirs:
+            continue
+        seen_dirs.add(resolved)
+
+        needs_clone = not pkgbuild_dir.is_dir()
+        needs_recovery = (pkgbuild_dir.is_dir()
+                          and not (pkgbuild_dir / "PKGBUILD").exists())
+        if not needs_clone and not needs_recovery:
+            continue
+
+        if needs_recovery:
+            try:
+                purge_src(pkgbuild_dir)
+            except RuntimeError as e:
+                sync_failures[pkgbase] = str(e)
+                _log.error(f"{pkgbase}: purge failed: {e}")
+                continue
+
+        for attempt in range(2):
+            try:
+                aur_clone(pkgbase, pkgbuild_dir)
+                break
+            except RuntimeError as e:
+                if attempt == 0 and "Connection reset" in str(e):
+                    _log.warn(f"{pkgbase}: clone failed, retrying...")
+                    time.sleep(2)
+                else:
+                    sync_failures[pkgbase] = str(e)
+                    _log.error(f"{pkgbase}: clone failed: {e}")
+
+    # --- Sub-phase 3: parallel git pulls ---
+    # Only pull dirs that exist and have a PKGBUILD (freshly cloned dirs
+    # are already at HEAD, so they're naturally excluded by seen_dirs dedup
+    # only if we track them — but it's harmless to pull a fresh clone).
+    seen_dirs.clear()
+    pull_candidates: list[tuple[str, Path]] = []
+    for pkgbase in sorted(pkgbase_map):
+        if pkgbase in sync_failures:
+            continue
+        entry = pkgbase_entry[pkgbase]
+        if entry.get("source") == "repo":
+            continue
+        d = Path(entry["pkgbuild_dir"])
+        resolved = str(d)
+        if resolved in seen_dirs or not d.is_dir():
+            continue
+        if not (d / "PKGBUILD").exists():
+            continue
+        seen_dirs.add(resolved)
+        pull_candidates.append((pkgbase, d))
+
+    pull_failures: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(git_pull_rebase, pkgbuild_dir): pkgbase
+            for pkgbase, pkgbuild_dir in pull_candidates
+        }
+        for fut in as_completed(futures):
+            pkgbase_key = futures[fut]
+            try:
+                fut.result()
+            except RuntimeError as e:
+                pull_failures[pkgbase_key] = str(e)
+
+    # --- Sub-phase 4: pull failure recovery (sequential) ---
+    # On pull failure, try purge + re-clone. Common when AUR maintainers
+    # force-push. Dirty repos (local work) are still refused by purge_src.
+    for pkgbase, error_msg in pull_failures.items():
+        entry = pkgbase_entry[pkgbase]
+        pkgbuild_dir = Path(entry["pkgbuild_dir"])
+        _log.warn(f"{pkgbase}: pull failed, attempting recovery...")
+        try:
+            purge_src(pkgbuild_dir)
+            aur_clone(pkgbase, pkgbuild_dir)
+        except RuntimeError as e:
+            sync_failures[pkgbase] = f"pull failed: {error_msg}; recovery failed: {e}"
+            _log.error(f"{pkgbase}: recovery failed: {e}")
+
+    return sync_failures
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Version check (called from ThreadPoolExecutor)
 # ---------------------------------------------------------------------------
 
 def _check_one_pkgbase(
     pkgbase: str,
     pkgnames: list[str],
     entry: dict,
-    pull_errors: dict[str, str],
+    sync_failures: dict[str, str],
     all_installed: dict[str, str],
     unrecorded_names: set[str],
-    skip_pull_check: bool,
+    skip_sync_check: bool,
 ) -> _UpdateResult | None:
     """Check a single pkgbase and return an _UpdateResult, or None on skip."""
     pkgbuild_dir = Path(entry["pkgbuild_dir"])
     has_record = not any(pn in unrecorded_names for pn in pkgnames)
+    discovered = entry.get("discovered", False)
 
     if not pkgbuild_dir.is_dir():
         _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
@@ -290,12 +459,12 @@ def _check_one_pkgbase(
         _log.warn(f"{pkgbase}: PKGBUILD not found at {pkgbuild_path} — skipping")
         return None
 
-    if not skip_pull_check and pkgbase in pull_errors:
-        _log.error(pull_errors[pkgbase])
+    if not skip_sync_check and pkgbase in sync_failures:
+        _log.error(sync_failures[pkgbase])
         return _UpdateResult(
             pkgbase=pkgbase, pkgnames=pkgnames, action="PULL_FAILED",
             installed_ver=None, pkgbuild_ver=None, pkgbuild_path=pkgbuild_path,
-            has_build_record=has_record,
+            has_build_record=has_record, discovered=discovered,
         )
 
     try:
@@ -313,6 +482,7 @@ def _check_one_pkgbase(
             pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL",
             installed_ver=None, pkgbuild_ver=pkgbuild_ver,
             pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+            discovered=discovered,
         )
 
     # Check all pkgnames for split packages — installed if ANY sub-package is
@@ -328,6 +498,7 @@ def _check_one_pkgbase(
             pkgbase=pkgbase, pkgnames=pkgnames, action="NOT_INSTALLED",
             installed_ver=None, pkgbuild_ver=pkgbuild_ver,
             pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+            discovered=discovered,
         )
 
     try:
@@ -348,6 +519,7 @@ def _check_one_pkgbase(
         pkgbase=pkgbase, pkgnames=pkgnames, action=action,
         installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
         pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+        discovered=discovered,
     )
 
 
@@ -357,24 +529,26 @@ def _check_one_pkgbase(
 
 def cmd_update(args) -> None:
     """Entry point for `sysforge update`."""
-    # Refresh the AUR name cache as a side effect; failures are non-fatal
-    fetch_aur_name_cache()
+
+    # ── Phase 0: Init ─────────────────────────────────────────────────────
+    offline = getattr(args, "offline", False)
+    if not offline:
+        fetch_aur_name_cache()
 
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
     bs = BuildState(state_dir)
 
-    # Open the unified log early so discovery messages are captured.
-    unified_log_active = not getattr(args, "no_unified_log", False) and not getattr(args, "dry_run", False)
+    # Unified log �� always on, always truncate.
+    unified_log_active = not getattr(args, "dry_run", False)
     unified_log_path = (Path(args.log_dir) if getattr(args, "log_dir", None) else state_dir) / "sysforge-update.log"
     if unified_log_active:
         try:
-            log.open_unified_log(unified_log_path, purge=getattr(args, "purge_log", False))
+            log.open_unified_log(unified_log_path, purge=True)
             _log.info(f"Unified log: {unified_log_path}")
         except OSError as e:
             unified_log_active = False
             _log.warn(f"Cannot write unified log to {unified_log_path}: {e} — logging to terminal only")
 
-    # --- Load config and packages.toml early (needed for all paths) ---
     config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
     config = load_config(config_paths=config_paths) or {}
     if getattr(args, "packages", None):
@@ -382,71 +556,13 @@ def cmd_update(args) -> None:
 
     packages_path = resolve_packages_path(config)
     build_cfg, manifest_entries = _load_full_packages_toml(packages_path)
-    manifest_by_name = {e["name"]: e for e in manifest_entries}
 
-    # --- --all: discover truly new foreign packages ---
-    discovered: list[_DiscoveredResult] = []
-    if getattr(args, "all", False):
-        discovered = _discover_and_add(args, bs, config, packages_path)
-        _print_discovery_summary(discovered, args)
-
-    # --- Build unified package set from packages.toml + build_state ---
-    build_state_pkgs = bs.all_packages()
-    all_installed = get_all_installed_packages()
-
-    # Resolve base pkgbuild_src_dir for packages without a build_state record
-    pkgbuild_src_dir_raw = (
-        build_cfg.get("pkgbuild_src_dir")
-        or config.get("paths", {}).get("pkgbuild_src_dir")
+    # ── Phase 1: Package set assembly ─────────────────────────────────────
+    packages, unrecorded_names, discovery_not_found = _assemble_package_set(
+        args, bs, config, packages_path, build_cfg, manifest_entries,
     )
-    pkgbuild_src_dir_base = Path(pkgbuild_src_dir_raw).expanduser() if pkgbuild_src_dir_raw else None
 
-    packages: dict[str, dict] = {}
-    unrecorded_names: set[str] = set()
-
-    for name in manifest_by_name:
-        if name in build_state_pkgs:
-            pkg = build_state_pkgs[name]
-            manifest_source = manifest_by_name[name].get("source")
-            if manifest_source and "source" not in pkg:
-                pkg["source"] = manifest_source
-            packages[name] = pkg
-        else:
-            unrecorded_names.add(name)
-            pkgdir = str(pkgbuild_src_dir_base / name) if pkgbuild_src_dir_base else ""
-            entry = {
-                "pkgbase": name,
-                "pkgbuild_dir": pkgdir,
-            }
-            manifest_source = manifest_by_name[name].get("source")
-            if manifest_source:
-                entry["source"] = manifest_source
-            packages[name] = entry
-
-    # Resolve pkgbase for unrecorded AUR packages via AUR RPC so split packages
-    # get the correct pkgbase and pkgbuild_dir (e.g. ob-xd-common → pkgbase ob-xd).
-    if unrecorded_names and pkgbuild_src_dir_base:
-        aur_unrecorded = [n for n in unrecorded_names
-                          if packages[n].get("source") != "repo"]
-        if aur_unrecorded:
-            aur_results = aur_info(aur_unrecorded)
-            for name in aur_unrecorded:
-                info = aur_results.get(name)
-                if info and info.get("PackageBase") and info["PackageBase"] != name:
-                    real_base = info["PackageBase"]
-                    packages[name]["pkgbase"] = real_base
-                    packages[name]["pkgbuild_dir"] = str(pkgbuild_src_dir_base / real_base)
-
-    # Filter to specific packages when names are given on the command line
-    filter_names: list[str] = getattr(args, "pkgnames", None) or []
-    if filter_names:
-        unknown = [n for n in filter_names if n not in packages]
-        if unknown:
-            for name in unknown:
-                _log.warn(f"{name}: not found in packages.toml — skipping")
-        packages = {k: v for k, v in packages.items() if k in filter_names}
-
-    if not packages and not discovered:
+    if not packages:
         print(
             "[SYSFORGE] No packages found in packages.toml or build state.\n"
             "Add packages with `sysforge packages add`, or use --all to discover foreign packages.",
@@ -454,112 +570,26 @@ def cmd_update(args) -> None:
         )
         return
 
-    # Group by pkgbase to deduplicate split packages (one PKGBUILD per pkgbase)
     pkgbase_map, pkgbase_entry = group_by_pkgbase(packages)
 
+    # Print discovery summary (before source sync, so user sees what was found)
+    if getattr(args, "all", False):
+        _print_discovery_summary(packages, discovery_not_found)
+
+    # ── Phase 2: Source sync ──────────────────────────────────────────────
+    sync_failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
+
+    # ── Phase 3: Version check ──��─────────────────────────────────────────
+    all_installed = get_all_installed_packages()
+    skip_sync_check = offline
     results: list[_UpdateResult] = []
 
-    # --- Optional --cleansrc: purge each src dir before pulling ---
-    # Per-package fatal: a dirty repo (uncommitted, unpushed, or no upstream)
-    # is reported via cleansrc_failures and excluded from this run; everything
-    # else proceeds normally so the unattended path doesn't abort.
-    cleansrc_failures: dict[str, str] = {}
-    if getattr(args, "cleansrc", False) and not getattr(args, "dry_run", False):
-        seen_purge: set[str] = set()
-        for pkgbase in sorted(pkgbase_map):
-            d = Path(pkgbase_entry[pkgbase]["pkgbuild_dir"])
-            key = str(d)
-            if key in seen_purge:
-                continue
-            seen_purge.add(key)
-            try:
-                purge_src(d)
-            except RuntimeError as e:
-                cleansrc_failures[pkgbase] = str(e)
-                _log.error(f"--cleansrc {pkgbase}: {e}")
-
-        if cleansrc_failures:
-            # Drop fatal pkgbases from this run so they don't get pulled,
-            # version-checked, or built against a stale dir we couldn't purge.
-            for failed in cleansrc_failures:
-                pkgbase_map.pop(failed, None)
-                pkgbase_entry.pop(failed, None)
-
-    # --- Parallel git pulls ---
-    # Pull all PKGBUILD dirs concurrently before the version-check loop.
-    # Deduplicate by resolved path to avoid pulling the same dir twice
-    # (can happen with unrecorded packages sharing a pkgbase).
-    pull_errors: dict[str, str] = {}
-    skip_pulls = getattr(args, "no_update", False) or getattr(args, "dry_run", False)
-    if not skip_pulls:
-        seen_dirs: set[str] = set()
-        pull_candidates: list[tuple[str, Path]] = []
-        for pkgbase in sorted(pkgbase_map):
-            d = Path(pkgbase_entry[pkgbase]["pkgbuild_dir"])
-            resolved = str(d)
-            if resolved in seen_dirs or not d.is_dir():
-                continue
-            if not (d / "PKGBUILD").exists():
-                continue
-            seen_dirs.add(resolved)
-            pull_candidates.append((pkgbase, d))
-
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = {
-                pool.submit(git_pull_rebase, pkgbuild_dir): pkgbase
-                for pkgbase, pkgbuild_dir in pull_candidates
-            }
-            for fut in as_completed(futures):
-                pkgbase_key = futures[fut]
-                try:
-                    fut.result()
-                except RuntimeError as e:
-                    pull_errors[pkgbase_key] = str(e)
-
-    # --- Sequential --fetch-missing clones ---
-    # Clone missing AUR packages one at a time to avoid rate-limiting by the
-    # AUR git server, with a single retry on transient network failures.
-    fetch_missing = getattr(args, "fetch_missing", False) and not getattr(args, "dry_run", False)
-    if fetch_missing:
-        seen_fetch: set[str] = set()
-        for pkgbase in sorted(pkgbase_map):
-            entry = pkgbase_entry[pkgbase]
-            if entry.get("source") == "repo":
-                continue
-            pkgbuild_dir = Path(entry["pkgbuild_dir"])
-            resolved = str(pkgbuild_dir)
-            if resolved in seen_fetch:
-                continue
-            seen_fetch.add(resolved)
-            needs_clone = not pkgbuild_dir.is_dir()
-            needs_recovery = (pkgbuild_dir.is_dir()
-                              and not (pkgbuild_dir / "PKGBUILD").exists())
-            if not needs_clone and not needs_recovery:
-                continue
-            if needs_recovery:
-                try:
-                    purge_src(pkgbuild_dir)
-                except RuntimeError as e:
-                    _log.error(f"{pkgbase}: --fetch-missing purge failed: {e}")
-                    continue
-            for attempt in range(2):
-                try:
-                    aur_clone(pkgbase, pkgbuild_dir)
-                    break
-                except RuntimeError as e:
-                    if attempt == 0 and "Connection reset" in str(e):
-                        _log.warn(f"{pkgbase}: clone failed, retrying...")
-                        time.sleep(2)
-                    else:
-                        _log.error(f"{pkgbase}: --fetch-missing clone failed: {e}")
-
-    # --- Parallel version checks ---
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(
                 _check_one_pkgbase, pkgbase, pkgnames,
-                pkgbase_entry[pkgbase], pull_errors, all_installed,
-                unrecorded_names, skip_pulls,
+                pkgbase_entry[pkgbase], sync_failures, all_installed,
+                unrecorded_names, skip_sync_check,
             ): pkgbase
             for pkgbase, pkgnames in sorted(pkgbase_map.items())
         }
@@ -568,31 +598,29 @@ def cmd_update(args) -> None:
             if result is not None:
                 results.append(result)
 
-    # Sort results for stable output
     results.sort(key=lambda r: r.pkgbase)
 
+    # ── Phase 4: Summary + dry-run gate ───────────────────────────────────
     _print_summary(results, args)
 
     if getattr(args, "dry_run", False):
         return
 
-    # Build packages that need rebuilding (git pull already done above)
-    # Without --all, only packages with a build_state record are built.
+    # ── Phase 5: Build ────────────────────────────────────────────────────
     build_all = getattr(args, "all", False)
     to_build = [r for r in results if r.action == "NEEDS_REBUILD"
-                and (r.has_build_record or build_all)]
+                and (r.has_build_record or build_all or r.discovered)]
     if getattr(args, "devel", False):
         to_build += [r for r in results if r.action == "DEVEL"
-                     and (r.has_build_record or build_all)]
+                     and (r.has_build_record or build_all or r.discovered)]
 
-    # Discovered packages to rebuild (--all mode)
-    discovered_to_build = [
-        d for d in discovered
-        if d.action == "OUTDATED"
-        or (d.action == "DEVEL" and getattr(args, "devel", False))
-    ]
+    # Exclude packages that failed source sync (cleansrc refusal, etc.)
+    cleansrc_failures = {k: v for k, v in sync_failures.items()
+                         if "refusing to purge" in v}
+    if sync_failures:
+        to_build = [r for r in to_build if r.pkgbase not in sync_failures]
 
-    if not to_build and not discovered_to_build:
+    if not to_build:
         print("[SYSFORGE] Nothing to rebuild.")
         return
 
@@ -602,11 +630,8 @@ def cmd_update(args) -> None:
 
     extra_flags = expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else None
 
-    # --- Phase 1: batch pre-install all makedepends (one sudo call) ---
-    all_pkgbuild_paths = (
-        [r.pkgbuild_path for r in to_build if r.pkgbuild_path]
-        + [d.pkgbuild_path for d in discovered_to_build if d.pkgbuild_path]
-    )
+    # Batch pre-install all makedepends (one sudo call)
+    all_pkgbuild_paths = [r.pkgbuild_path for r in to_build if r.pkgbuild_path]
     makedeps = collect_makedeps(all_pkgbuild_paths)
     missing_deps = filter_missing_deps(makedeps)
     if missing_deps:
@@ -614,15 +639,14 @@ def cmd_update(args) -> None:
             batch_install_makedeps(missing_deps)
         except RuntimeError as e:
             _log.error(str(e))
-            print(f"[SYSFORGE] Warning: makedep pre-install failed — some builds may fail", file=sys.stderr)
+            print("[SYSFORGE] Warning: makedep pre-install failed — some builds may fail", file=sys.stderr)
 
-    # --- Phase 1b: resolve and build AUR-only deps ---
+    # Resolve and build AUR-only deps
     from sysforge.primitives.aur_resolve import resolve_aur_deps_batch, build_resolved_deps
     if all_pkgbuild_paths:
         try:
             aur_deps = resolve_aur_deps_batch(all_pkgbuild_paths, config, fetch=True)
-            # Filter out packages we're already about to build
-            building_names = {r.pkgbase for r in to_build} | {d.pkgname for d in discovered_to_build}
+            building_names = {r.pkgbase for r in to_build}
             aur_deps = [d for d in aur_deps if d.name not in building_names]
             if aur_deps:
                 build_resolved_deps(aur_deps)
@@ -630,18 +654,14 @@ def cmd_update(args) -> None:
             _log.error(f"AUR dep resolution failed: {e}")
             print("[SYSFORGE] Warning: AUR dep resolution failed — some builds may fail", file=sys.stderr)
 
-    # Where do built packages land? PKGDEST overrides the pkgbuild dir.
+    # Build all packages
     pkgdest = get_pkgdest()
     interactive = getattr(args, "interactive", False)
     no_cleanbuild = getattr(args, "no_cleanbuild", False)
-    # Prepend cleanbuild so stale $srcdir from a previous failed run never causes
-    # patch-already-applied errors in prepare(). Suppressed by --no-cleanbuild.
     cleanbuild_flags = [] if no_cleanbuild else BATCH_EXTRA_FLAGS
     batch_flags = cleanbuild_flags + (extra_flags or [])
-    # When --no-cleanbuild is set, also strip --cleanbuild/-C from profile makepkg_flags.
     strip_flags = BATCH_STRIP_FLAGS | {"--cleanbuild", "-C"} if no_cleanbuild else BATCH_STRIP_FLAGS
 
-    # --- Phase 2: build all packages (no syncdeps, no install per-package) ---
     built_pkg_files: list = []
     built_pkgs: list[str] = []
     failed_pkgs: list[str] = []
@@ -658,7 +678,7 @@ def cmd_update(args) -> None:
                 profile_conf=getattr(args, "profile_conf", None),
                 cache_report=False,
                 init_session=(not built_pkgs and not failed_pkgs),
-                update=False,  # git pull already done above
+                update=False,  # source sync already done
                 state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
                 extra_flags=batch_flags,
                 strip_flags=strip_flags,
@@ -678,51 +698,9 @@ def cmd_update(args) -> None:
             _log.error(f"Build failed for {result.pkgbase!r}: {e}")
             failed_pkgs.append(result.pkgbase)
 
-    for d in discovered_to_build:
-        # Packages detected via DB version check have no local PKGBUILD yet — clone on demand.
-        pkgbuild_path = d.pkgbuild_path
-        if pkgbuild_path is None:
-            from sysforge.primitives.config import find_pkgbuild
-            try:
-                pkgbuild_path = find_pkgbuild(d.pkgname, config)
-            except (FileNotFoundError, RuntimeError) as e:
-                _log.error(f"Cannot find/clone PKGBUILD for {d.pkgname!r}: {e}")
-                failed_pkgs.append(d.pkgname)
-                continue
+    # ── Phase 6: Install + finalize ───────────────────────────────────────
 
-        search_dir = pkgdest if pkgdest else pkgbuild_path.parent
-        build_start = time.time()
-        try:
-            build_run(pkgbuild_path, options=BuildOptions(
-                pkg_log=not getattr(args, "no_pkg_log", False),
-                persist_log=getattr(args, "persist_log", False),
-                log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
-                profile_conf=getattr(args, "profile_conf", None),
-                cache_report=False,
-                init_session=(not built_pkgs and not failed_pkgs),
-                update=False,  # git pull already done in discovery
-                state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-                extra_flags=batch_flags,
-                strip_flags=strip_flags,
-                interactive=interactive,
-                force_batch=not interactive,
-            ))
-            new_pkgs = sorted(
-                p for p in snapshot_pkg_dir(search_dir)
-                if p.stat().st_mtime >= build_start
-            )
-            built_pkg_files.extend(new_pkgs)
-            built_pkgs.append(d.pkgname)
-        except PGOBuildSkipped as e:
-            _log.warn(str(e))
-            pgo_skipped_pkgs.append(d.pkgname)
-        except (RuntimeError, SystemExit) as e:
-            _log.error(f"Build failed for {d.pkgname!r}: {e}")
-            failed_pkgs.append(d.pkgname)
-
-    # --- Phase 3: install all built packages in one sudo call ---
-    # Deduplicate while preserving order (a package can appear in both loops if
-    # it was discovered via --all and also has a build_state record).
+    # Deduplicate while preserving order
     seen: set = set()
     deduped: list = []
     for p in built_pkg_files:
@@ -743,7 +721,7 @@ def cmd_update(args) -> None:
     if getattr(args, "cache_report", False):
         emit_session_report()
 
-    # Cleansrc-fatal packages count as failures (build never attempted).
+    # Sync failures from cleansrc refusals count as build failures.
     failed_pkgs.extend(sorted(cleansrc_failures))
 
     skipped = len(results) - len(to_build)
@@ -771,6 +749,31 @@ def cmd_update(args) -> None:
     if unified_log_active:
         log.close_unified_log(success=(not failed_pkgs and not install_failed), persist=True)
         _log.ui(f"[SYSFORGE] Unified log: {unified_log_path}")
+
+
+# ---------------------------------------------------------------------------
+# Summary display
+# ---------------------------------------------------------------------------
+
+def _print_discovery_summary(
+    packages: dict[str, dict], not_found: list[str],
+) -> None:
+    """Print summary of --all discovery results."""
+    discovered_pkgs = {k: v for k, v in packages.items() if v.get("discovered")}
+    if not discovered_pkgs and not not_found:
+        return
+
+    print("\n  — --all discovery ��")
+
+    if discovered_pkgs:
+        devel_count = sum(1 for name in discovered_pkgs if _is_vcs(name))
+        print(f"  [DISCOVERED]     {len(discovered_pkgs)} new package(s) added to packages.toml"
+              + (f" ({devel_count} VCS)" if devel_count else ""))
+
+    for name in not_found:
+        print(f"  [NOT_FOUND]      {name} (not in AUR — skipped)")
+
+    print()
 
 
 def _print_summary(results: list[_UpdateResult], args) -> None:
@@ -811,22 +814,23 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
         if not r.has_build_record:
             star = " *"
             has_unrecorded = True
+        disc = " (discovered)" if r.discovered else ""
 
         if r.action == "NEEDS_REBUILD":
-            print(f"  [NEEDS_REBUILD]  {r.pkgbase}: {r.installed_ver} → {r.pkgbuild_ver}{star}")
+            print(f"  [NEEDS_REBUILD]  {r.pkgbase}: {r.installed_ver} → {r.pkgbuild_ver}{star}{disc}")
         elif r.action == "UP_TO_DATE":
-            print(f"  [UP_TO_DATE]     {r.pkgbase}: {r.pkgbuild_ver}{star}")
+            print(f"  [UP_TO_DATE]     {r.pkgbase}: {r.pkgbuild_ver}{star}{disc}")
         elif r.action == "DEVEL":
             if getattr(args, "devel", False):
-                print(f"  [DEVEL]          {r.pkgbase}: will rebuild (--devel){star}")
+                print(f"  [DEVEL]          {r.pkgbase}: will rebuild (--devel){star}{disc}")
             else:
-                print(f"  [DEVEL]          {r.pkgbase}: skipped (use --devel to rebuild){star}")
+                print(f"  [DEVEL]          {r.pkgbase}: skipped (use --devel to rebuild){star}{disc}")
         elif r.action == "NOT_INSTALLED":
-            print(f"  [NOT_INSTALLED]  {r.pkgbase}: {r.pkgbuild_ver} (not currently installed){star}")
+            print(f"  [NOT_INSTALLED]  {r.pkgbase}: {r.pkgbuild_ver} (not currently installed){star}{disc}")
         elif r.action == "DOWNGRADE":
-            print(f"  [DOWNGRADE]      {r.pkgbase}: installed {r.installed_ver} > pkgbuild {r.pkgbuild_ver} (skipped){star}")
+            print(f"  [DOWNGRADE]      {r.pkgbase}: installed {r.installed_ver} > pkgbuild {r.pkgbuild_ver} (skipped){star}{disc}")
         elif r.action == "PULL_FAILED":
-            print(f"  [PULL_FAILED]    {r.pkgbase}: git pull failed (skipped){star}")
+            print(f"  [PULL_FAILED]    {r.pkgbase}: git pull failed (skipped){star}{disc}")
 
     if has_unrecorded:
         print(f"\n  * = no build record (use --all to include in rebuild)")
