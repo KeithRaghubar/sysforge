@@ -276,37 +276,19 @@ def _check_one_pkgbase(
     all_installed: dict[str, str],
     unrecorded_names: set[str],
     skip_pull_check: bool,
-    fetch_missing: bool = False,
 ) -> _UpdateResult | None:
     """Check a single pkgbase and return an _UpdateResult, or None on skip."""
     pkgbuild_dir = Path(entry["pkgbuild_dir"])
     has_record = not any(pn in unrecorded_names for pn in pkgnames)
-    is_repo = entry.get("source") == "repo"
 
     if not pkgbuild_dir.is_dir():
-        if fetch_missing and not is_repo:
-            try:
-                aur_clone(pkgbase, pkgbuild_dir)
-            except RuntimeError as e:
-                _log.error(f"{pkgbase}: --fetch-missing clone failed: {e}")
-                return None
-        else:
-            _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
-            return None
+        _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
+        return None
 
     pkgbuild_path = pkgbuild_dir / "PKGBUILD"
     if not pkgbuild_path.exists():
-        if fetch_missing and not is_repo:
-            # Dir exists but is empty / partial — wipe and re-clone.
-            try:
-                purge_src(pkgbuild_dir)
-                aur_clone(pkgbase, pkgbuild_dir)
-            except RuntimeError as e:
-                _log.error(f"{pkgbase}: --fetch-missing recovery failed: {e}")
-                return None
-        else:
-            _log.warn(f"{pkgbase}: PKGBUILD not found at {pkgbuild_path} — skipping")
-            return None
+        _log.warn(f"{pkgbase}: PKGBUILD not found at {pkgbuild_path} — skipping")
+        return None
 
     if not skip_pull_check and pkgbase in pull_errors:
         _log.error(pull_errors[pkgbase])
@@ -534,14 +516,50 @@ def cmd_update(args) -> None:
                 except RuntimeError as e:
                     pull_errors[pkgbase_key] = str(e)
 
-    # --- Parallel version checks ---
+    # --- Sequential --fetch-missing clones ---
+    # Clone missing AUR packages one at a time to avoid rate-limiting by the
+    # AUR git server, with a single retry on transient network failures.
     fetch_missing = getattr(args, "fetch_missing", False) and not getattr(args, "dry_run", False)
+    if fetch_missing:
+        seen_fetch: set[str] = set()
+        for pkgbase in sorted(pkgbase_map):
+            entry = pkgbase_entry[pkgbase]
+            if entry.get("source") == "repo":
+                continue
+            pkgbuild_dir = Path(entry["pkgbuild_dir"])
+            resolved = str(pkgbuild_dir)
+            if resolved in seen_fetch:
+                continue
+            seen_fetch.add(resolved)
+            needs_clone = not pkgbuild_dir.is_dir()
+            needs_recovery = (pkgbuild_dir.is_dir()
+                              and not (pkgbuild_dir / "PKGBUILD").exists())
+            if not needs_clone and not needs_recovery:
+                continue
+            if needs_recovery:
+                try:
+                    purge_src(pkgbuild_dir)
+                except RuntimeError as e:
+                    _log.error(f"{pkgbase}: --fetch-missing purge failed: {e}")
+                    continue
+            for attempt in range(2):
+                try:
+                    aur_clone(pkgbase, pkgbuild_dir)
+                    break
+                except RuntimeError as e:
+                    if attempt == 0 and "Connection reset" in str(e):
+                        _log.warn(f"{pkgbase}: clone failed, retrying...")
+                        time.sleep(2)
+                    else:
+                        _log.error(f"{pkgbase}: --fetch-missing clone failed: {e}")
+
+    # --- Parallel version checks ---
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(
                 _check_one_pkgbase, pkgbase, pkgnames,
                 pkgbase_entry[pkgbase], pull_errors, all_installed,
-                unrecorded_names, skip_pulls, fetch_missing,
+                unrecorded_names, skip_pulls,
             ): pkgbase
             for pkgbase, pkgnames in sorted(pkgbase_map.items())
         }
