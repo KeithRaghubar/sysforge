@@ -281,9 +281,10 @@ def _check_one_pkgbase(
     """Check a single pkgbase and return an _UpdateResult, or None on skip."""
     pkgbuild_dir = Path(entry["pkgbuild_dir"])
     has_record = not any(pn in unrecorded_names for pn in pkgnames)
+    is_repo = entry.get("source") == "repo"
 
     if not pkgbuild_dir.is_dir():
-        if fetch_missing:
+        if fetch_missing and not is_repo:
             try:
                 aur_clone(pkgbase, pkgbuild_dir)
             except RuntimeError as e:
@@ -295,7 +296,7 @@ def _check_one_pkgbase(
 
     pkgbuild_path = pkgbuild_dir / "PKGBUILD"
     if not pkgbuild_path.exists():
-        if fetch_missing:
+        if fetch_missing and not is_repo:
             # Dir exists but is empty / partial — wipe and re-clone.
             try:
                 purge_src(pkgbuild_dir)
@@ -423,14 +424,22 @@ def cmd_update(args) -> None:
 
     for name in manifest_by_name:
         if name in build_state_pkgs:
-            packages[name] = build_state_pkgs[name]
+            pkg = build_state_pkgs[name]
+            manifest_source = manifest_by_name[name].get("source")
+            if manifest_source and "source" not in pkg:
+                pkg["source"] = manifest_source
+            packages[name] = pkg
         else:
             unrecorded_names.add(name)
             pkgdir = str(pkgbuild_src_dir_base / name) if pkgbuild_src_dir_base else ""
-            packages[name] = {
+            entry = {
                 "pkgbase": name,
                 "pkgbuild_dir": pkgdir,
             }
+            manifest_source = manifest_by_name[name].get("source")
+            if manifest_source:
+                entry["source"] = manifest_source
+            packages[name] = entry
 
     # Filter to specific packages when names are given on the command line
     filter_names: list[str] = getattr(args, "pkgnames", None) or []
