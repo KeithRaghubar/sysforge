@@ -160,6 +160,15 @@ def test_build_mode_in_serialized_toml(tmp_path):
 # State dir via SYSFORGE_STATE_DIR env var
 # ---------------------------------------------------------------------------
 
+def test_corrupt_toml_raises(tmp_path):
+    """A corrupt build_state.toml should raise TOMLDecodeError on load."""
+    state_file = tmp_path / "build_state.toml"
+    state_file.write_text("this is not valid toml [[[")
+    import pytest
+    with pytest.raises(tomllib.TOMLDecodeError):
+        BuildState(tmp_path)
+
+
 def test_state_dir_from_env_var(tmp_path, monkeypatch):
     monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path))
     from sysforge.pipeline.state import resolve_state_dir

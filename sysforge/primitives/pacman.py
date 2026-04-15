@@ -23,6 +23,8 @@ import subprocess
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.aur_resolve import _strip_version
+
 _log = log.get_logger("PACMAN")
 
 
@@ -117,8 +119,8 @@ def collect_makedeps(pkgbuild_paths: list) -> list:
                 raw = [raw]
             # Strip version constraints (e.g. "cmake>=3.16" → "cmake")
             for dep in raw:
-                deps.add(dep.split(">=")[0].split("<=")[0].split("=")[0].split(">")[0].split("<")[0])
-        except Exception as e:
+                deps.add(_strip_version(dep))
+        except (OSError, KeyError, ValueError) as e:
             _log.warn(f"makedeps parse error ({Path(path).parent.name}): {e}")
     return sorted(deps)
 

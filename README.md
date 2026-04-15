@@ -47,7 +47,7 @@ sysforge update --all --fetch-missing
 #    or no upstream — those packages are reported as failed and the run continues.
 sysforge update --all --fetch-missing --cleansrc
 
-# 7. Manage packages.toml
+# 9. Manage packages.toml
 sysforge packages list
 sysforge packages list --state        # show build_state.toml entries instead
 sysforge packages repair-state --dry-run  # preview fixes for legacy broken entries

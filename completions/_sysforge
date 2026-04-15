@@ -179,7 +179,8 @@ _sysforge_packages() {
         list)   _sysforge_packages_list   ;;
         add)    _sysforge_packages_add    ;;
         remove) _sysforge_packages_remove ;;
-        sync)   _sysforge_packages_sync   ;;
+        sync)         _sysforge_packages_sync         ;;
+        repair-state) _sysforge_packages_repair_state ;;
       esac
       ;;
   esac
@@ -191,13 +192,24 @@ _sysforge_packages_subcommands() {
     'add:add a package entry'
     'remove:remove a package entry'
     'sync:re-validate inferable fields (source, pkgbuild_patch)'
+    'repair-state:re-parse PKGBUILDs to fix build_state.toml entries'
   )
   _describe 'subcommand' subcommands
 }
 
 _sysforge_packages_list() {
   _arguments \
-    '--packages[path to packages.toml]:file:_files'
+    '--packages[path to packages.toml]:file:_files' \
+    '--state[list build_state.toml entries instead]' \
+    '--diagnose[per-package directory/git status]' \
+    '--problems-only[with --diagnose, show only problems]' \
+    '--state-dir[override state directory]:dir:_directories'
+}
+
+_sysforge_packages_repair_state() {
+  _arguments \
+    '--state-dir[override state directory]:dir:_directories' \
+    '--dry-run[show planned repair without writing]'
 }
 
 _sysforge_packages_add() {

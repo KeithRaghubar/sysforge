@@ -338,6 +338,8 @@ def _parse_one_makepkg_conf(path: Path) -> dict:
             parts = [value[:-1]]
             for cont_line in rest.splitlines():
                 stripped = cont_line.rstrip()
+                if not stripped:
+                    continue
                 if stripped.endswith("\\"):
                     parts.append(stripped[:-1])
                 else:

@@ -290,7 +290,8 @@ def _assemble_package_set(
         if unknown:
             for name in unknown:
                 _log.warn(f"{name}: not found in packages.toml — skipping")
-        packages = {k: v for k, v in packages.items() if k in filter_names}
+        filter_set = set(filter_names)
+        packages = {k: v for k, v in packages.items() if k in filter_set}
 
     return packages, unrecorded_names, discovery_not_found
 
