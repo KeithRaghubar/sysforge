@@ -124,21 +124,29 @@ def is_repo_package(name: str) -> bool:
     return result.returncode == 0
 
 
-def pkgctl_checkout(name: str, dest: Path) -> None:
+def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
     """
     Clone the official Arch Linux packaging repo for name into dest via pkgctl.
 
     pkgctl repo clone <name> run in dest.parent creates dest.parent/<name>/PKGBUILD.
-    Raises RuntimeError on failure.
+    Raises RuntimeError on failure or timeout.
     """
+    timeout = timeout or None  # 0 → disable
     _build_log.info(f"Checking out {name!r} from official repos → {dest}")
-    result = subprocess.run(
-        ["pkgctl", "repo", "clone", "--protocol=https", name],
-        cwd=str(dest.parent),
-        capture_output=True,
-        text=True,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-    )
+    try:
+        result = subprocess.run(
+            ["pkgctl", "repo", "clone", "--protocol=https", name],
+            cwd=str(dest.parent),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise RuntimeError(
+            f"pkgctl checkout timed out after {timeout}s for {name!r}"
+        )
     if result.returncode != 0:
         raise RuntimeError(
             f"pkgctl checkout failed for {name!r}:\n{result.stderr.strip()}"
@@ -197,16 +205,18 @@ def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:
         _build_log.info("GPG: keyserver fetch succeeded")
 
 
-def git_pull_rebase(pkgbuild_dir: Path) -> None:
+def git_pull_rebase(pkgbuild_dir: Path, *, timeout: int | None = 30) -> None:
     """
     Attempt `git pull --rebase` in pkgbuild_dir before a build.
 
     - Not a git repo: skips silently (plain directories are fine).
     - No tracking branch: skips with an info log (detached HEAD, local-only repos).
     - Success: logs output at INFO level.
+    - Timeout: runs `git rebase --abort` to restore clean state, raises RuntimeError.
     - Conflict / failure: runs `git rebase --abort` to restore clean state,
       then raises RuntimeError so the caller can handle it cleanly.
     """
+    timeout = timeout or None  # 0 → disable
     # Check if the directory is inside a git repo at all
     r = subprocess.run(
         ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
@@ -228,10 +238,23 @@ def git_pull_rebase(pkgbuild_dir: Path) -> None:
     tracking = r.stdout.strip()
     _git_log.info(f"Updating {pkgbuild_dir.name} from {tracking}")
 
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "pull", "--rebase"],
-        capture_output=True, text=True,
-    )
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(pkgbuild_dir), "pull", "--rebase"],
+            capture_output=True, text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        _git_log.error(f"git pull --rebase timed out after {timeout}s for {pkgbuild_dir.name}")
+        subprocess.run(
+            ["git", "-C", str(pkgbuild_dir), "rebase", "--abort"],
+            capture_output=True,
+        )
+        raise RuntimeError(
+            f"git pull --rebase timed out after {timeout}s for {pkgbuild_dir.name}. "
+            "Check network connectivity, or increase [git] pull_timeout in sysforge.toml."
+        )
+
     if r.returncode == 0:
         for line in r.stdout.strip().splitlines():
             if line.strip():
@@ -333,19 +356,28 @@ def purge_src(pkgbuild_dir: Path) -> None:
     shutil.rmtree(pkgbuild_dir)
 
 
-def aur_clone(name: str, dest: Path) -> None:
+def aur_clone(name: str, dest: Path, *, timeout: int | None = 60) -> None:
     """
     Clone an AUR package repository into dest via git.
 
-    Raises RuntimeError on clone failure.
+    Raises RuntimeError on clone failure or timeout.
     """
+    timeout = timeout or None  # 0 → disable
     url = f"{AUR_GIT_BASE}/{name}.git"
     _manifest_log.info(f"Cloning {name!r} from AUR → {dest}")
-    result = subprocess.run(
-        ["git", "clone", url, str(dest)],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "clone", url, str(dest)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise RuntimeError(
+            f"AUR clone timed out after {timeout}s for {name!r}. "
+            "Check network connectivity, or increase [git] clone_timeout in sysforge.toml."
+        )
     if result.returncode != 0:
         raise RuntimeError(
             f"AUR clone failed for {name!r}:\n{result.stderr.strip()}"

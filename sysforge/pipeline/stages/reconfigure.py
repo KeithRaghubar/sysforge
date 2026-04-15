@@ -38,6 +38,7 @@ from sysforge.pipeline.state import resolve_state_dir
 from sysforge.primitives.config import (
     load_config,
     load_conflict_groups,
+    load_sysforge_toml,
 )
 from sysforge.primitives.paths import (
     CONFIG_BASE,
@@ -89,19 +90,9 @@ _MAKEPKG_CONF_HIGHLIGHT = [
 # Helpers: sysforge.toml
 # ---------------------------------------------------------------------------
 
-def _load_sysforge_toml() -> dict:
-    if not SYSFORGE_TOML_PATH.exists():
-        return {}
-    try:
-        with open(SYSFORGE_TOML_PATH, "rb") as f:
-            return tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as e:
-        _log.warn(f"Could not load {SYSFORGE_TOML_PATH}: {e}")
-        return {}
-
 
 def _save_sysforge_toml_ui(key: str, value: str) -> None:
-    data = _load_sysforge_toml()
+    data = load_sysforge_toml()
     ui = dict(data.get("ui", {}))
     ui[key] = value
     data["ui"] = ui
@@ -242,7 +233,7 @@ def _select_steps(options) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _resolve_editor() -> tuple[str, str]:
-    sysforge_cfg = _load_sysforge_toml()
+    sysforge_cfg = load_sysforge_toml()
     candidates = [
         (os.environ.get("SYSFORGE_EDITOR"), "SYSFORGE_EDITOR"),
         (sysforge_cfg.get("ui", {}).get("editor"), "sysforge.toml"),

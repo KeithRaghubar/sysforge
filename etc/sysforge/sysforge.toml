@@ -1,0 +1,18 @@
+# =============================================================================
+# sysforge.toml — global SysForge settings
+#
+# System default: /etc/sysforge/sysforge.toml
+# Override individual values by creating this file or editing it in place.
+# =============================================================================
+
+# [ui]
+# editor = "vim"       # Override $EDITOR for sysforge reconfigure
+
+[git]
+# Timeout in seconds for git pull --rebase during `sysforge update`.
+# Set to 0 to disable the timeout (wait indefinitely).
+pull_timeout = 30
+
+# Timeout in seconds for git clone / pkgctl repo clone operations.
+# Set to 0 to disable the timeout (wait indefinitely).
+clone_timeout = 60

@@ -393,7 +393,7 @@ def test_pull_failure_continues_to_next_package(tmp_path):
 
     pull_call_count = []
 
-    def fake_pull(d):
+    def fake_pull(d, **kwargs):
         pull_call_count.append(d.name)
         if d.name == "htop":
             raise RuntimeError("git pull failed")

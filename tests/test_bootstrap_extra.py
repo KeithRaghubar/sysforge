@@ -49,10 +49,10 @@ from sysforge.pipeline.stages.reconfigure import (
     _parse_step_selection,
     _resolve_editor,
     _probe_host,
-    _load_sysforge_toml,
     _STEP_KEYS,
     ReconfigureStage,
 )
+from sysforge.primitives.config import load_sysforge_toml
 from sysforge.pipeline.runner import _validate_stages, run_pipeline
 from sysforge.pipeline.state import PipelineState
 
@@ -695,7 +695,7 @@ class TestParseStepSelectionExtra:
 class TestResolveEditor:
     def test_sysforge_editor_env_wins(self):
         with patch.dict("os.environ", {"SYSFORGE_EDITOR": "emacs"}, clear=False), \
-             patch("sysforge.pipeline.stages.reconfigure._load_sysforge_toml",
+             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
                    return_value={}):
             editor, source = _resolve_editor()
         assert editor == "emacs"
@@ -703,7 +703,7 @@ class TestResolveEditor:
 
     def test_sysforge_toml_second(self):
         with patch.dict("os.environ", {}, clear=False), \
-             patch("sysforge.pipeline.stages.reconfigure._load_sysforge_toml",
+             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
                    return_value={"ui": {"editor": "helix"}}):
             # Clear env vars that might interfere
             env = dict(SYSFORGE_EDITOR="", EDITOR="", VISUAL="")
@@ -716,7 +716,7 @@ class TestResolveEditor:
         with patch.dict("os.environ",
                         {"EDITOR": "nano", "SYSFORGE_EDITOR": ""},
                         clear=False), \
-             patch("sysforge.pipeline.stages.reconfigure._load_sysforge_toml",
+             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
                    return_value={}):
             editor, source = _resolve_editor()
         assert editor == "nano"
@@ -726,7 +726,7 @@ class TestResolveEditor:
         with patch.dict("os.environ",
                         {"SYSFORGE_EDITOR": "", "EDITOR": "", "VISUAL": ""},
                         clear=False), \
-             patch("sysforge.pipeline.stages.reconfigure._load_sysforge_toml",
+             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
                    return_value={}), \
              patch("sysforge.pipeline.stages.reconfigure.shutil.which") as mock_which:
             mock_which.side_effect = lambda x: "/usr/bin/vim" if x == "vim" else None
@@ -743,23 +743,31 @@ class TestProbeHost:
 
 class TestLoadSysforgeToml:
     def test_missing_file_returns_empty(self, tmp_path):
-        with patch("sysforge.pipeline.stages.reconfigure.SYSFORGE_TOML_PATH",
+        with patch("sysforge.primitives.config.SYSFORGE_TOML_PATH",
                     tmp_path / "nonexistent.toml"):
-            assert _load_sysforge_toml() == {}
+            assert load_sysforge_toml() == {}
 
     def test_valid_file(self, tmp_path):
         toml_path = tmp_path / "sysforge.toml"
         toml_path.write_text('[ui]\neditor = "vim"\n')
-        with patch("sysforge.pipeline.stages.reconfigure.SYSFORGE_TOML_PATH", toml_path):
-            data = _load_sysforge_toml()
+        with patch("sysforge.primitives.config.SYSFORGE_TOML_PATH", toml_path):
+            data = load_sysforge_toml()
         assert data["ui"]["editor"] == "vim"
 
     def test_invalid_toml_warns_returns_empty(self, tmp_path):
         toml_path = tmp_path / "sysforge.toml"
         toml_path.write_text("invalid = [broken\n")
-        with patch("sysforge.pipeline.stages.reconfigure.SYSFORGE_TOML_PATH", toml_path):
-            data = _load_sysforge_toml()
+        with patch("sysforge.primitives.config.SYSFORGE_TOML_PATH", toml_path):
+            data = load_sysforge_toml()
         assert data == {}
+
+    def test_git_section_loaded(self, tmp_path):
+        toml_path = tmp_path / "sysforge.toml"
+        toml_path.write_text('[git]\npull_timeout = 15\nclone_timeout = 45\n')
+        with patch("sysforge.primitives.config.SYSFORGE_TOML_PATH", toml_path):
+            data = load_sysforge_toml()
+        assert data["git"]["pull_timeout"] == 15
+        assert data["git"]["clone_timeout"] == 45
 
 
 class TestReconfigureRebootDetection:

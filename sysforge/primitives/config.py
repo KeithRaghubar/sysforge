@@ -2,12 +2,14 @@
 config.py — SysForge config file loading
 
 Responsible for all TOML config file I/O: flag profiles, conflict groups,
-and consumes inference. Owns the path constants and user/system merge logic.
+consumes inference, and sysforge.toml global settings. Owns the path
+constants and user/system merge logic.
 
 Public API:
     load_config(config_paths=None)         -> dict
     load_conflict_groups(paths=None)       -> dict
     load_consumes_inference(paths=None)    -> dict
+    load_sysforge_toml()                   -> dict
     find_pkgbuild(pkg, config=None)        -> Path   (AUR clone on miss if pkgbuild_src_dir set)
 """
 import pprint
@@ -20,7 +22,23 @@ from sysforge.primitives.paths import (
     CONFIG_PATHS,
     CONFLICT_GROUP_PATHS,
     CONSUMES_INFERENCE_PATHS,
+    SYSFORGE_TOML_PATH,
 )
+
+
+def load_sysforge_toml() -> dict:
+    """Load /etc/sysforge/sysforge.toml (global sysforge settings).
+
+    Returns an empty dict if the file is missing or unparseable.
+    """
+    if not SYSFORGE_TOML_PATH.exists():
+        return {}
+    try:
+        with open(SYSFORGE_TOML_PATH, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        _log.warn(f"Could not load {SYSFORGE_TOML_PATH}: {e}")
+        return {}
 
 
 def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:

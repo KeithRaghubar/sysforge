@@ -50,7 +50,7 @@ from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.aur import (
     git_pull_rebase, fetch_aur_name_cache, purge_src, aur_clone, aur_info,
 )
-from sysforge.primitives.config import load_config
+from sysforge.primitives.config import load_config, load_sysforge_toml
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
 from sysforge.primitives.pacman import (
@@ -312,6 +312,10 @@ def _sync_sources(
     dry_run = getattr(args, "dry_run", False)
     cleansrc = getattr(args, "cleansrc", False) and not dry_run
 
+    git_cfg = load_sysforge_toml().get("git", {})
+    pull_timeout = git_cfg.get("pull_timeout", 30)
+    clone_timeout = git_cfg.get("clone_timeout", 60)
+
     if offline and not cleansrc:
         return {}
 
@@ -371,7 +375,7 @@ def _sync_sources(
 
         for attempt in range(2):
             try:
-                aur_clone(pkgbase, pkgbuild_dir)
+                aur_clone(pkgbase, pkgbuild_dir, timeout=clone_timeout)
                 break
             except RuntimeError as e:
                 if attempt == 0 and "Connection reset" in str(e):
@@ -405,7 +409,7 @@ def _sync_sources(
     pull_failures: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
-            pool.submit(git_pull_rebase, pkgbuild_dir): pkgbase
+            pool.submit(git_pull_rebase, pkgbuild_dir, timeout=pull_timeout): pkgbase
             for pkgbase, pkgbuild_dir in pull_candidates
         }
         for fut in as_completed(futures):
@@ -424,7 +428,7 @@ def _sync_sources(
         _log.warn(f"{pkgbase}: pull failed, attempting recovery...")
         try:
             purge_src(pkgbuild_dir)
-            aur_clone(pkgbase, pkgbuild_dir)
+            aur_clone(pkgbase, pkgbuild_dir, timeout=clone_timeout)
         except RuntimeError as e:
             sync_failures[pkgbase] = f"pull failed: {error_msg}; recovery failed: {e}"
             _log.error(f"{pkgbase}: recovery failed: {e}")

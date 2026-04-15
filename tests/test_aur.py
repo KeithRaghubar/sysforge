@@ -155,6 +155,34 @@ def test_aur_clone_failure_raises():
             aur_clone("nonexistent-pkg-xyz", Path("/tmp/nonexistent"))
 
 
+def test_aur_clone_timeout_raises_and_cleans_up(tmp_path):
+    dest = tmp_path / "slow-pkg"
+    dest.mkdir()  # simulate partial clone directory
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 60)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="timed out after 60s"):
+            aur_clone("slow-pkg", dest, timeout=60)
+
+    assert not dest.exists(), "partial clone directory should be cleaned up"
+
+
+def test_aur_clone_timeout_zero_disables():
+    """timeout=0 should pass None to subprocess (no timeout)."""
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        aur_clone("pkg", Path("/tmp/pkg"), timeout=0)
+
+    assert captured[0].get("timeout") is None
+
+
 # ---------------------------------------------------------------------------
 # is_repo_package
 # ---------------------------------------------------------------------------
@@ -286,6 +314,20 @@ def test_pkgctl_checkout_failure_raises(tmp_path):
     with patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="pkgctl checkout failed"):
             pkgctl_checkout("nonexistent", tmp_path / "nonexistent")
+
+
+def test_pkgctl_checkout_timeout_raises_and_cleans_up(tmp_path):
+    dest = tmp_path / "slow-pkg"
+    dest.mkdir()
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 60)
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="timed out after 60s"):
+            pkgctl_checkout("slow-pkg", dest, timeout=60)
+
+    assert not dest.exists(), "partial checkout directory should be cleaned up"
 
 
 # ---------------------------------------------------------------------------
@@ -749,6 +791,30 @@ def test_git_pull_rebase_conflict_aborts_and_raises(tmp_path):
 
     abort_calls = [c for c in calls if "rebase" in c and "--abort" in c]
     assert len(abort_calls) == 1, "rebase --abort must be called on conflict"
+
+
+def test_git_pull_rebase_timeout_aborts_and_raises(tmp_path):
+    """Timeout on pull should abort rebase and raise RuntimeError."""
+    call_count = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if "--git-dir" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+        if "@{u}" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
+        if "pull" in cmd:
+            raise subprocess.TimeoutExpired(cmd, 30)
+        # rebase --abort
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="timed out after 30s"):
+            git_pull_rebase(tmp_path, timeout=30)
+
+    # Should have called: rev-parse --git-dir, rev-parse @{u}, pull, rebase --abort
+    assert call_count == 4
 
 
 def test_git_pull_rebase_uses_git_dash_c(tmp_path):
