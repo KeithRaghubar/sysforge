@@ -22,6 +22,7 @@ Public API:
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tomllib
@@ -37,8 +38,21 @@ from sysforge.primitives.dep_analysis import (
     _parse_ldconfig,
     soname_satisfied,
 )
+from sysforge.primitives.provides_lookup import (
+    files_db_present,
+    suggest_for_soname,
+)
 
 _log = log.get_logger("DOC")
+
+
+# Issue-string soname extractors. Kept close to the formatters in
+# _check_depends and abi_check.check_so_files — if either message text
+# changes, these patterns need to follow.
+_DEP_SONAME_ISSUE_RE = re.compile(r"^soname not found in ldconfig: (\S+)$")
+_ABI_NEEDED_ISSUE_RE = re.compile(
+    r": NEEDED lib '([^']+)' not found in ldconfig cache"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +234,33 @@ def _check_one(pkgname: str, ldconfig_set: set[str],
     return (dep_issues, abi_issues)
 
 
+def _collect_suggestions(pkgname: str,
+                         dep_issues: list[str],
+                         abi_issues: list[str]) -> dict[str, list[str]]:
+    """
+    For each soname-bearing issue, reverse-lookup candidate packages via
+    `pacman -Fq`. Returns {issue_text: [candidate, ...]}. Issues with no
+    extractable soname are simply absent from the mapping.
+    """
+    lib32 = pkgname.startswith("lib32-")
+    out: dict[str, list[str]] = {}
+    for issue in dep_issues:
+        m = _DEP_SONAME_ISSUE_RE.match(issue)
+        if not m:
+            continue
+        out[issue] = suggest_for_soname(m.group(1), lib32=lib32)
+    for issue in abi_issues:
+        m = _ABI_NEEDED_ISSUE_RE.search(issue)
+        if not m:
+            continue
+        out[issue] = suggest_for_soname(m.group(1), lib32=lib32)
+    return out
+
+
 def _print_report(pkgname: str, version: str | None,
                   dep_issues: list[str], abi_issues: list[str],
-                  quiet: bool) -> None:
+                  quiet: bool,
+                  suggestions: dict[str, list[str]] | None = None) -> None:
     clean = not dep_issues and not abi_issues
     if clean and quiet:
         return
@@ -231,14 +269,25 @@ def _print_report(pkgname: str, version: str | None,
     if clean:
         print("  clean")
         return
+
+    def _emit_issue(issue: str) -> None:
+        print(f"    - {issue}")
+        if suggestions is None or issue not in suggestions:
+            return
+        cands = suggestions[issue]
+        if cands:
+            print(f"      → provided by: {', '.join(cands)}")
+        else:
+            print("      → provided by: no candidate in files db")
+
     if dep_issues:
         print(f"  [DEPENDS] {len(dep_issues)} issue(s):")
         for i in dep_issues:
-            print(f"    - {i}")
+            _emit_issue(i)
     if abi_issues:
         print(f"  [ABI] {len(abi_issues)} issue(s):")
         for i in abi_issues:
-            print(f"    - {i}")
+            _emit_issue(i)
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +304,8 @@ def cmd_doctor(args):
         all: bool                 — verify every foreign package
         shallow: bool             — skip transitive dep closure
         quiet: bool               — suppress clean lines in output
+        suggest: bool             — look up candidate packages for each
+                                    unsatisfied soname via `pacman -Fq`
         config: dict (optional)   — passed through for --graphics overlay read
     """
     config = getattr(args, "config", None) or {}
@@ -292,6 +343,13 @@ def cmd_doctor(args):
 
     ldconfig_set = _parse_ldconfig(_default_ldconfig_fn())
 
+    suggest = bool(getattr(args, "suggest", False))
+    if suggest and not files_db_present():
+        _log.warn("--suggest: pacman files db not synced; "
+                  "run `sudo pacman -Fy` (or `-Fyy`) first — "
+                  "no candidate lookups will be performed")
+        suggest = False
+
     total_issues = 0
     affected_pkgs: list[tuple[str, int]] = []
     for pkgname in targets:
@@ -302,9 +360,14 @@ def cmd_doctor(args):
         if n:
             affected_pkgs.append((pkgname, n))
             total_issues += n
+        suggestions = (
+            _collect_suggestions(pkgname, dep_issues, abi_issues)
+            if suggest else None
+        )
         _print_report(
             pkgname, installed.get(pkgname),
             dep_issues, abi_issues, quiet=args.quiet,
+            suggestions=suggestions,
         )
 
     print()

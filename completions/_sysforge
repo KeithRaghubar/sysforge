@@ -172,6 +172,7 @@ _sysforge_doctor() {
     '--all[verify every foreign package (pacman -Qm)]' \
     '--shallow[do not recurse into transitive dependencies]' \
     '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only issues]' \
+    '(-s --suggest)'{-s,--suggest}'[reverse-lookup candidate packages for each missing soname via pacman -Fq]' \
     '*:installed package:_sysforge_installed_pkg_names'
 }
 

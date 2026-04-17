@@ -104,6 +104,7 @@ sysforge/
 │       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
 │       ├── aur_resolve.py             # recursive AUR dependency resolution + topo sort
 │       ├── dep_analysis.py            # pre-build soname dependency checks
+│       ├── provides_lookup.py         # reverse-lookup soname → package (pacman -Fq)
 │       ├── failure.py                 # failure scenario handling (shared)
 │       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
 │       ├── aur.py                     # AUR RPC v5, git clone, pkgctl checkout, GPG key import
@@ -770,9 +771,11 @@ Closure walk: by default, BFS over the target's `%DEPENDS%` transitively so one 
 
 `--all` verifies every installed package (`pacman -Q`). Slow but comprehensive — a one-shot "is anything broken anywhere" sweep. Covers repo packages (e.g. `steam` from `multilib`) as well as foreign/AUR.
 
-Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--shallow`, `--quiet` (suppress clean lines, show only issues).
+`--suggest` (`-s`) reverse-looks up each unsatisfied soname via `pacman -Fq` and prints `      → provided by: repo/pkg, …` under the issue. Operates on two finding shapes: depends issues whose text matches `soname not found in ldconfig: libfoo.so[=N]`, and ABI issues whose text matches `NEEDED lib 'libfoo.so.N' not found in ldconfig cache`. Undefined-versioned-symbol ABI findings can't pinpoint a single NEEDED lib, so they get no suggestion line. `lib32` context is inferred from the owning pkgname prefix (`lib32-*` → query `usr/lib32/<soname>`). Requires a synced files db: if `/var/lib/pacman/sync/*.files` is absent, the command emits one warning (`run sudo pacman -Fy`) and runs the rest of the report with lookups skipped — findings still show, exit code unchanged.
 
-Log tag: `[DOC]`.
+Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline candidate lookup via files db).
+
+Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — log tag `[PROV]`, public API `files_db_present()` and `suggest_for_soname(entry, *, lib32=False)`.
 
 ---
 
@@ -1066,6 +1069,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 | `[FAILURE]` | Failure scenario dispatch |
 | `[MANIFEST]` | AUR RPC queries |
 | `[PACMAN]` | pacman database and install operations |
+| `[PROV]` | `provides_lookup` — reverse soname → package via `pacman -Fq` |
 | `[VERSION]` | Package version comparison |
 
 **Pipeline stages:**

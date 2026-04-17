@@ -634,6 +634,10 @@ def _add_doctor_parser(sub):
         help="Do not recurse into transitive dependencies of each target.")
     p.add_argument("--quiet", "-q", action="store_true",
         help="Suppress clean lines; print only packages with issues.")
+    p.add_argument("--suggest", "-s", action="store_true",
+        help="For each unsatisfied soname, look up candidate packages "
+             "via `pacman -Fq`. Requires a synced files db "
+             "(`sudo pacman -Fy`).")
     p.set_defaults(func=_cmd_doctor)
 
 

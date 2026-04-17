@@ -61,6 +61,9 @@ sysforge packages sync --dry-run
 sysforge doctor mesa-git
 sysforge doctor --graphics            # curated stack driven by hardware overlay
 sysforge doctor --all                 # every installed package (slow, comprehensive)
+sysforge doctor --graphics --suggest  # reverse-lookup which package owns each
+                                      # missing soname via pacman -Fq
+                                      # (requires sudo pacman -Fy first)
 ```
 
 To override system defaults without modifying `/etc/sysforge/`, create user copies in `~/.config/sysforge/`.

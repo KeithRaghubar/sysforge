@@ -222,7 +222,7 @@ def test_check_depends_pacman_t_all_satisfied():
 def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
         packages=[], graphics=False, all=False,
-        shallow=False, quiet=False, config={},
+        shallow=False, quiet=False, suggest=False, config={},
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -343,6 +343,155 @@ def test_cmd_doctor_affected_line_lists_multiple_packages(tmp_path, monkeypatch,
 
     out = capsys.readouterr().out
     assert "Affected: pkga (1), pkgb (1)" in out
+    assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# _collect_suggestions — soname extraction from depends + ABI issues
+# ---------------------------------------------------------------------------
+
+def test_collect_suggestions_depends_soname(monkeypatch):
+    calls: list[tuple[str, bool]] = []
+
+    def fake_suggest(entry, *, lib32=False, run_fn=None):
+        calls.append((entry, lib32))
+        return ["core/libcap"]
+
+    monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
+
+    issue = "soname not found in ldconfig: libcap.so=2"
+    out = doctor._collect_suggestions("somepkg", [issue], [])
+
+    assert out == {issue: ["core/libcap"]}
+    assert calls == [("libcap.so=2", False)]
+
+
+def test_collect_suggestions_lib32_context(monkeypatch):
+    calls: list[tuple[str, bool]] = []
+
+    def fake_suggest(entry, *, lib32=False, run_fn=None):
+        calls.append((entry, lib32))
+        return ["multilib/lib32-foo"]
+
+    monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
+
+    issue = "soname not found in ldconfig: libfoo.so=3"
+    out = doctor._collect_suggestions("lib32-somepkg", [issue], [])
+
+    assert out == {issue: ["multilib/lib32-foo"]}
+    assert calls == [("libfoo.so=3", True)]
+
+
+def test_collect_suggestions_abi_missing_needed(monkeypatch):
+    def fake_suggest(entry, *, lib32=False, run_fn=None):
+        assert entry == "libbar.so.5"
+        return ["extra/bar"]
+
+    monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
+
+    issue = (
+        "libsomething.so.1: NEEDED lib 'libbar.so.5' not found in "
+        "ldconfig cache — may not be installed or ldconfig not yet run"
+    )
+    out = doctor._collect_suggestions("somepkg", [], [issue])
+    assert out == {issue: ["extra/bar"]}
+
+
+def test_collect_suggestions_skips_unparseable_issues(monkeypatch):
+    """Issues without an extractable soname aren't sent to pacman -F."""
+    sent = []
+
+    def fake_suggest(entry, *, lib32=False, run_fn=None):
+        sent.append(entry)
+        return []
+
+    monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
+
+    dep_issue = "unsatisfied dep: glibc>=2.40"
+    abi_issue = "libfoo.so: undefined versioned symbol not found in any NEEDED lib: bar@FOO_2.0"
+    out = doctor._collect_suggestions("somepkg", [dep_issue], [abi_issue])
+
+    assert out == {}
+    assert sent == []
+
+
+# ---------------------------------------------------------------------------
+# cmd_doctor --suggest — end-to-end rendering + stale-db path
+# ---------------------------------------------------------------------------
+
+def test_cmd_doctor_suggest_renders_candidate_line(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "local"
+    db.mkdir()
+    _mk_pkg(db, "brokenpkg", "1.0-1",
+            depends=["libmissing.so=3"], files=[])
+    installed = {"brokenpkg": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    monkeypatch.setattr(doctor, "files_db_present", lambda: True)
+    monkeypatch.setattr(
+        doctor, "suggest_for_soname",
+        lambda entry, *, lib32=False, run_fn=None: ["core/missinglib"],
+    )
+
+    rc = doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
+    out = capsys.readouterr().out
+
+    assert "soname not found in ldconfig: libmissing.so=3" in out
+    assert "→ provided by: core/missinglib" in out
+    assert rc == 1
+
+
+def test_cmd_doctor_suggest_no_candidate_line(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "local"
+    db.mkdir()
+    _mk_pkg(db, "brokenpkg", "1.0-1",
+            depends=["libghost.so=99"], files=[])
+    installed = {"brokenpkg": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    monkeypatch.setattr(doctor, "files_db_present", lambda: True)
+    monkeypatch.setattr(
+        doctor, "suggest_for_soname",
+        lambda entry, *, lib32=False, run_fn=None: [],
+    )
+
+    doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
+    out = capsys.readouterr().out
+
+    assert "→ provided by: no candidate in files db" in out
+
+
+def test_cmd_doctor_suggest_warns_on_stale_files_db(tmp_path, monkeypatch, capsys):
+    """--suggest without a synced files db warns and skips lookups."""
+    db = tmp_path / "local"
+    db.mkdir()
+    _mk_pkg(db, "brokenpkg", "1.0-1",
+            depends=["libmissing.so=3"], files=[])
+    installed = {"brokenpkg": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    monkeypatch.setattr(doctor, "files_db_present", lambda: False)
+
+    # Assert the lookup primitive is never called.
+    def fail_if_called(*_a, **_kw):
+        raise AssertionError("suggest_for_soname must not run when db is stale")
+    monkeypatch.setattr(doctor, "suggest_for_soname", fail_if_called)
+
+    rc = doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
+    out = capsys.readouterr().out
+
+    # Issue still reported; no candidate line; exit code unchanged.
+    assert "soname not found in ldconfig: libmissing.so=3" in out
+    assert "→ provided by" not in out
     assert rc == 1
 
 
