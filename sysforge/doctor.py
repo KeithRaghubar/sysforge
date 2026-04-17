@@ -267,7 +267,7 @@ def cmd_doctor(args):
     if args.graphics:
         roots.extend(_expand_graphics_targets(config, installed))
     if args.all:
-        roots.extend(pacman.get_foreign_packages().keys())
+        roots.extend(installed.keys())
     # Dedupe preserving order
     seen_roots: set[str] = set()
     deduped: list[str] = []
@@ -293,14 +293,15 @@ def cmd_doctor(args):
     ldconfig_set = _parse_ldconfig(_default_ldconfig_fn())
 
     total_issues = 0
-    affected = 0
+    affected_pkgs: list[tuple[str, int]] = []
     for pkgname in targets:
         dep_issues, abi_issues = _check_one(
             pkgname, ldconfig_set, installed, file_root
         )
-        if dep_issues or abi_issues:
-            affected += 1
-            total_issues += len(dep_issues) + len(abi_issues)
+        n = len(dep_issues) + len(abi_issues)
+        if n:
+            affected_pkgs.append((pkgname, n))
+            total_issues += n
         _print_report(
             pkgname, installed.get(pkgname),
             dep_issues, abi_issues, quiet=args.quiet,
@@ -308,5 +309,8 @@ def cmd_doctor(args):
 
     print()
     print(f"Scanned {len(targets)} package(s); "
-          f"{affected} with issues, {total_issues} total finding(s).")
-    return 1 if affected else 0
+          f"{len(affected_pkgs)} with issues, {total_issues} total finding(s).")
+    if affected_pkgs:
+        names = ", ".join(f"{name} ({n})" for name, n in affected_pkgs)
+        print(f"Affected: {names}")
+    return 1 if affected_pkgs else 0

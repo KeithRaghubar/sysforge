@@ -60,7 +60,7 @@ sysforge packages sync --dry-run
 #     Walks the target's dep closure; --shallow restricts to direct depends.
 sysforge doctor mesa-git
 sysforge doctor --graphics            # curated stack driven by hardware overlay
-sysforge doctor --all                 # every foreign package (slow)
+sysforge doctor --all                 # every installed package (slow, comprehensive)
 ```
 
 To override system defaults without modifying `/etc/sysforge/`, create user copies in `~/.config/sysforge/`.

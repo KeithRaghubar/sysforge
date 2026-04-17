@@ -251,6 +251,8 @@ def test_cmd_doctor_clean_package(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "cleanpkg 1.0-1" in out
     assert "clean" in out
+    # No findings → no Affected: line
+    assert "Affected:" not in out
     assert rc == 0
 
 
@@ -274,6 +276,7 @@ def test_cmd_doctor_reports_missing_dep(tmp_path, monkeypatch, capsys):
     assert "brokenpkg" in out
     assert "[DEPENDS]" in out
     assert "missinglib" in out
+    assert "Affected: brokenpkg (1)" in out
     assert rc == 1
 
 
@@ -309,7 +312,62 @@ def test_cmd_doctor_quiet_hides_clean(tmp_path, monkeypatch, capsys):
     assert "cleanpkg 1.0-1" not in out
     # Summary line still prints
     assert "Scanned" in out
+    # No findings → no Affected: line even in quiet mode
+    assert "Affected:" not in out
     assert rc == 0
+
+
+def test_cmd_doctor_affected_line_lists_multiple_packages(tmp_path, monkeypatch, capsys):
+    """Two broken targets → summary lists both with per-package counts."""
+    db = tmp_path / "local"
+    db.mkdir()
+    _mk_pkg(db, "pkga", "1.0-1", depends=["missinga>=1"], files=[])
+    _mk_pkg(db, "pkgb", "1.0-1", depends=["missingb>=1"], files=[])
+    installed = {"pkga": "1.0-1", "pkgb": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+
+    def fake_pacman_t(cmd, **_kw):
+        # cmd = ["pacman", "-T", *pkg_specs] — echo the spec back as "missing"
+        r = MagicMock()
+        r.stdout = "\n".join(cmd[2:]) + "\n"
+        r.stderr = ""
+        r.returncode = 127
+        return r
+
+    with patch("sysforge.doctor.subprocess.run", side_effect=fake_pacman_t):
+        rc = doctor.cmd_doctor(_make_args(packages=["pkga", "pkgb"]))
+
+    out = capsys.readouterr().out
+    assert "Affected: pkga (1), pkgb (1)" in out
+    assert rc == 1
+
+
+def test_cmd_doctor_all_covers_repo_packages(tmp_path, monkeypatch, capsys):
+    """--all scans every installed package (pacman -Q), not just foreign (pacman -Qm)."""
+    db = tmp_path / "local"
+    db.mkdir()
+    # A repo package (not foreign) with a broken dep — must be scanned under --all.
+    _mk_pkg(db, "steam", "1.0-1", depends=["missinglib>=1"], files=[])
+    installed = {"steam": "1.0-1"}
+    foreign: dict[str, str] = {}  # empty — steam is a repo package
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign)
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+
+    with patch("sysforge.doctor.subprocess.run",
+               side_effect=_pacman_t_mock(["missinglib>=1"], 127)):
+        rc = doctor.cmd_doctor(_make_args(all=True))
+
+    out = capsys.readouterr().out
+    assert "steam" in out
+    assert "Affected: steam (1)" in out
+    assert rc == 1
 
 
 # ---------------------------------------------------------------------------
