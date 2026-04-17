@@ -20,11 +20,13 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from sysforge.primitives.aur_resolve import ResolvedDep
 from sysforge.primitives.config import find_pkgbuild
 from sysforge.resolve import (
     _find_winner,
     _format_conditions,
     _get_profile_chain,
+    _print_deps,
     _print_resolve,
     cmd_resolve,
 )
@@ -404,8 +406,8 @@ def test_print_resolve_internal_keys_separated(capsys, tmp_path):
 # cmd_resolve — integration with test PKGBUILD and config
 # ---------------------------------------------------------------------------
 
-def _make_args(pkg, show_flags=False, profile_conf=None):
-    return SimpleNamespace(pkg=pkg, show_flags=show_flags, profile_conf=profile_conf)
+def _make_args(pkg, show_flags=False, deps=False, profile_conf=None):
+    return SimpleNamespace(pkg=pkg, show_flags=show_flags, deps=deps, profile_conf=profile_conf)
 
 
 def test_cmd_resolve_htop_matches_rule(capsys):
@@ -444,3 +446,67 @@ def test_cmd_resolve_simple_pkgbuild(capsys):
     assert "PKGBUILD:" in out
     assert "Profile chain:" in out
     assert "Consumes:" in out
+
+
+# ---------------------------------------------------------------------------
+# _print_deps — installed deps should be listed by name
+# ---------------------------------------------------------------------------
+
+def test_print_deps_shows_installed_names(capsys, tmp_path):
+    """Installed deps should appear with their names, not just as a count."""
+    pb = tmp_path / "PKGBUILD"
+    pkgmeta = {"globals": {"pkgname": "mypkg"}}
+    deps = [
+        ResolvedDep(name="glibc", source="installed", depth=0, required_by=["mypkg"]),
+        ResolvedDep(name="zlib", source="installed", depth=0, required_by=["mypkg"]),
+    ]
+    _print_deps(pb, pkgmeta, deps)
+    out = capsys.readouterr().out
+    assert "glibc" in out
+    assert "zlib" in out
+    assert "Installed (2)" in out
+
+
+def test_print_deps_shows_mixed_sources(capsys, tmp_path):
+    """All source types should be visible in output."""
+    pb = tmp_path / "PKGBUILD"
+    pkgmeta = {"globals": {"pkgname": "mypkg"}}
+    deps = [
+        ResolvedDep(name="aur-pkg", source="aur", depth=0, required_by=["mypkg"]),
+        ResolvedDep(name="coreutils", source="repo", depth=0, required_by=["mypkg"]),
+        ResolvedDep(name="glibc", source="installed", depth=0, required_by=["mypkg"]),
+    ]
+    _print_deps(pb, pkgmeta, deps)
+    out = capsys.readouterr().out
+    assert "aur-pkg" in out
+    assert "coreutils" in out
+    assert "glibc" in out
+
+
+def test_print_deps_installed_shows_required_by(capsys, tmp_path):
+    """Installed deps should show what requires them."""
+    pb = tmp_path / "PKGBUILD"
+    pkgmeta = {"globals": {"pkgname": "mypkg"}}
+    deps = [
+        ResolvedDep(name="openssl", source="installed", depth=0, required_by=["mypkg"]),
+    ]
+    _print_deps(pb, pkgmeta, deps)
+    out = capsys.readouterr().out
+    assert "required by mypkg" in out
+
+
+# ---------------------------------------------------------------------------
+# --deps and --show-flags mutual exclusion
+# ---------------------------------------------------------------------------
+
+def test_deps_and_show_flags_mutually_exclusive():
+    """argparse should reject --deps and --show-flags together."""
+    import argparse
+    from sysforge.cli import _add_resolve_parser
+
+    parent = argparse.ArgumentParser()
+    sub = parent.add_subparsers()
+    _add_resolve_parser(sub)
+
+    with pytest.raises(SystemExit):
+        parent.parse_args(["resolve", "mypkg", "--deps", "--show-flags"])

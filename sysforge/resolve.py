@@ -185,6 +185,12 @@ def _print_deps(pkgbuild_path: Path, pkgmeta: dict, deps: list) -> None:
             req = ", ".join(dep.required_by)
             print(f"    !  {dep.name}  (required by {req})")
 
+    if installed:
+        print(f"\nInstalled ({len(installed)}) — already satisfied:")
+        for dep in sorted(installed, key=lambda d: d.name):
+            req = ", ".join(dep.required_by)
+            print(f"       {dep.name}  (required by {req})")
+
     print(f"\nSummary: {len(aur_deps)} AUR | {len(repo_deps)} repo | "
           f"{len(installed)} installed | {len(unknown)} unknown")
 

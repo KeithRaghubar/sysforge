@@ -573,9 +573,10 @@ def _add_resolve_parser(sub):
         help="Show which profile would be applied to a package and why.")
     p.add_argument("pkg", metavar="PKG",
         help="Path to a PKGBUILD file, or bare package name.")
-    p.add_argument("--show-flags", action="store_true", dest="show_flags",
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--show-flags", action="store_true", dest="show_flags",
         help="Print the full resolved flag set.")
-    p.add_argument("--deps", action="store_true",
+    mode.add_argument("--deps", action="store_true",
         help="Show transitive dependency tree with build order instead of profile info.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
         help="Path to a flag_profiles.toml to use instead of the default.")
