@@ -6,7 +6,7 @@ All subprocess calls are mocked; no real ELF binaries or system tools required.
 Covers:
     _list_sos_in_pkg     — bsdtar -t parsing, filter for .so.N entries
     _undefined_versioned — nm -D parsing for U sym@VER lines
-    _needed_sonames      — readelf -d parsing for NEEDED entries
+    needed_sonames       — readelf -d parsing for NEEDED entries
     _build_ldconfig_map  — ldconfig -p parsing
     _exported_versioned  — nm -D parsing for defined sym@@VER lines, caching
     _demangle            — c++filt pass-through
@@ -26,7 +26,7 @@ from sysforge.primitives.abi_check import (
     _exported_versioned,
     _is_shim_lib,
     _list_sos_in_pkg,
-    _needed_sonames,
+    needed_sonames,
     _undefined_versioned,
     check_package_abi,
     check_so_files,
@@ -120,7 +120,7 @@ def test_undefined_versioned_no_versioned_undefs():
 
 
 # ---------------------------------------------------------------------------
-# _needed_sonames
+# needed_sonames
 # ---------------------------------------------------------------------------
 
 def test_needed_sonames_parses_readelf():
@@ -131,7 +131,7 @@ def test_needed_sonames_parses_readelf():
     )
     with patch("sysforge.primitives.abi_check.subprocess.run",
                return_value=_mock_run(readelf_out)):
-        result = _needed_sonames(Path("libclang-cpp.so.22.1"))
+        result = needed_sonames(Path("libclang-cpp.so.22.1"))
 
     assert result == ["libLLVM.so.22.1", "libc.so.6"]
 
@@ -139,7 +139,7 @@ def test_needed_sonames_parses_readelf():
 def test_needed_sonames_returns_empty_on_failure():
     with patch("sysforge.primitives.abi_check.subprocess.run",
                return_value=_mock_run("", returncode=1)):
-        result = _needed_sonames(Path("libfoo.so.1"))
+        result = needed_sonames(Path("libfoo.so.1"))
     assert result == []
 
 

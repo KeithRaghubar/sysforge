@@ -15,7 +15,8 @@ For each target package:
 By default the walk recurses into the target's dep closure (BFS, dedup on
 pkgname). --shallow restricts to direct depends only. --graphics expands
 to a curated graphics-stack list driven by the hardware overlay's
-gpu_vendors. --all verifies every foreign package.
+gpu_vendors. --all verifies every installed package (foreign and
+non-foreign); --repo narrows to non-foreign packages only.
 
 Public API:
     cmd_doctor(args)
@@ -24,14 +25,13 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 import tomllib
 from collections import deque
 from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives import pacman
-from sysforge.primitives.abi_check import check_so_files
+from sysforge.primitives.abi_check import check_so_files, needed_sonames
 from sysforge.primitives.aur_resolve import _strip_version
 from sysforge.primitives.dep_analysis import (
     _default_ldconfig_fn,
@@ -52,6 +52,12 @@ _log = log.get_logger("DOC")
 _DEP_SONAME_ISSUE_RE = re.compile(r"^soname not found in ldconfig: (\S+)$")
 _ABI_NEEDED_ISSUE_RE = re.compile(
     r": NEEDED lib '([^']+)' not found in ldconfig cache"
+)
+# An "undefined versioned symbol" issue carries the .so basename at the
+# start of the line; the symbol itself isn't directly lookup-able, but the
+# .so's NEEDED libs are the likely update/rebuild candidates.
+_ABI_UNDEF_ISSUE_RE = re.compile(
+    r"^(?P<soname>\S+\.so[^\s:]*): undefined versioned symbol "
 )
 
 
@@ -223,37 +229,81 @@ def _walk_closure(roots: list[str], shallow: bool) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _check_one(pkgname: str, ldconfig_set: set[str],
-               installed: dict[str, str], file_root: Path) -> tuple[list[str], list[str]]:
-    """Return (dep_issues, abi_issues) for one package."""
+               installed: dict[str, str],
+               file_root: Path) -> tuple[list[str], list[str], list[Path]]:
+    """Return (dep_issues, abi_issues, so_paths) for one package."""
     if pkgname not in installed:
-        return ([f"{pkgname}: not installed"], [])
+        return ([f"{pkgname}: not installed"], [], [])
     depends = pacman.get_package_depends(pkgname)
     dep_issues = _check_depends(depends, ldconfig_set)
     so_paths = _so_paths_for_pkg(pkgname, file_root)
     abi_issues = check_so_files(so_paths)
-    return (dep_issues, abi_issues)
+    return (dep_issues, abi_issues, so_paths)
 
 
 def _collect_suggestions(pkgname: str,
                          dep_issues: list[str],
-                         abi_issues: list[str]) -> dict[str, list[str]]:
+                         abi_issues: list[str],
+                         so_paths: list[Path] | None = None,
+                         cache: dict[tuple[str, bool], list[str]] | None = None,
+                         ) -> dict[str, list[str]]:
     """
-    For each soname-bearing issue, reverse-lookup candidate packages via
+    For each lookup-able issue, reverse-lookup candidate packages via
     `pacman -Fq`. Returns {issue_text: [candidate, ...]}. Issues with no
-    extractable soname are simply absent from the mapping.
+    extractable lookup are absent from the mapping.
+
+    Handled shapes:
+      - dep: "soname not found in ldconfig: <soname>"
+      - abi: "<file>: NEEDED lib '<soname>' not found in ldconfig cache …"
+      - abi: "<file>: undefined versioned symbol …" — enumerate the NEEDED
+        sonames of <file> and suggest whichever packages own them; those
+        are the likely ABI-drift culprits.
+
+    If `cache` is provided it is consulted/populated per (soname, lib32)
+    so repeated lookups across issues and across packages in a single
+    doctor run collapse to one `pacman -Fq` subprocess per soname.
     """
     lib32 = pkgname.startswith("lib32-")
+    by_name: dict[str, Path] = {}
+    for p in so_paths or ():
+        by_name.setdefault(p.name, p)
+
+    def _lookup(soname: str) -> list[str]:
+        key = (soname, lib32)
+        if cache is not None and key in cache:
+            return cache[key]
+        result = suggest_for_soname(soname, lib32=lib32)
+        if cache is not None:
+            cache[key] = result
+        return result
+
     out: dict[str, list[str]] = {}
     for issue in dep_issues:
         m = _DEP_SONAME_ISSUE_RE.match(issue)
         if not m:
             continue
-        out[issue] = suggest_for_soname(m.group(1), lib32=lib32)
+        out[issue] = _lookup(m.group(1))
+
     for issue in abi_issues:
         m = _ABI_NEEDED_ISSUE_RE.search(issue)
+        if m:
+            out[issue] = _lookup(m.group(1))
+            continue
+        m = _ABI_UNDEF_ISSUE_RE.match(issue)
         if not m:
             continue
-        out[issue] = suggest_for_soname(m.group(1), lib32=lib32)
+        path = by_name.get(m.group("soname"))
+        if path is None:
+            continue
+        seen: set[str] = set()
+        merged: list[str] = []
+        for soname in needed_sonames(path):
+            for cand in _lookup(soname):
+                if cand in seen:
+                    continue
+                seen.add(cand)
+                merged.append(cand)
+        out[issue] = merged
     return out
 
 
@@ -264,28 +314,27 @@ def _print_report(pkgname: str, version: str | None,
     clean = not dep_issues and not abi_issues
     if clean and quiet:
         return
-    header = f"== {pkgname} {version or '(not installed)'} =="
-    print(header)
+    _log.ui(f"== {pkgname} {version or '(not installed)'} ==")
     if clean:
-        print("  clean")
+        _log.ui("  clean")
         return
 
     def _emit_issue(issue: str) -> None:
-        print(f"    - {issue}")
+        _log.ui(f"    - {issue}")
         if suggestions is None or issue not in suggestions:
             return
         cands = suggestions[issue]
         if cands:
-            print(f"      → provided by: {', '.join(cands)}")
+            _log.ui(f"      → provided by: {', '.join(cands)}")
         else:
-            print("      → provided by: no candidate in files db")
+            _log.ui("      → provided by: no candidate in files db")
 
     if dep_issues:
-        print(f"  [DEPENDS] {len(dep_issues)} issue(s):")
+        _log.ui(f"  [DEPENDS] {len(dep_issues)} issue(s):")
         for i in dep_issues:
             _emit_issue(i)
     if abi_issues:
-        print(f"  [ABI] {len(abi_issues)} issue(s):")
+        _log.ui(f"  [ABI] {len(abi_issues)} issue(s):")
         for i in abi_issues:
             _emit_issue(i)
 
@@ -301,7 +350,9 @@ def cmd_doctor(args):
     args attributes:
         packages: list[str]       — positional package names
         graphics: bool            — expand to curated graphics stack
-        all: bool                 — verify every foreign package
+        all: bool                 — verify every installed package (foreign
+                                    and non-foreign)
+        repo: bool                — verify every non-foreign package
         shallow: bool             — skip transitive dep closure
         quiet: bool               — suppress clean lines in output
         suggest: bool             — look up candidate packages for each
@@ -319,6 +370,9 @@ def cmd_doctor(args):
         roots.extend(_expand_graphics_targets(config, installed))
     if args.all:
         roots.extend(installed.keys())
+    if getattr(args, "repo", False):
+        foreign = set(pacman.get_foreign_packages().keys())
+        roots.extend(name for name in installed if name not in foreign)
     # Dedupe preserving order
     seen_roots: set[str] = set()
     deduped: list[str] = []
@@ -329,8 +383,9 @@ def cmd_doctor(args):
     roots = deduped
 
     if not roots:
-        print("doctor: no packages to check "
-              "(pass PKG, --graphics, or --all)", file=sys.stderr)
+        _log.error(
+            "no packages to check — pass PKG, --graphics, --all, or --repo"
+        )
         return 2
 
     # Warn on any root that isn't installed — the closure walk will still
@@ -352,8 +407,13 @@ def cmd_doctor(args):
 
     total_issues = 0
     affected_pkgs: list[tuple[str, int]] = []
+    per_pkg_suggestions: list[tuple[str, list[str]]] = []
+    global_candidates: list[str] = []
+    global_seen: set[str] = set()
+    suggest_cache: dict[tuple[str, bool], list[str]] = {}
+
     for pkgname in targets:
-        dep_issues, abi_issues = _check_one(
+        dep_issues, abi_issues, so_paths = _check_one(
             pkgname, ldconfig_set, installed, file_root
         )
         n = len(dep_issues) + len(abi_issues)
@@ -361,7 +421,8 @@ def cmd_doctor(args):
             affected_pkgs.append((pkgname, n))
             total_issues += n
         suggestions = (
-            _collect_suggestions(pkgname, dep_issues, abi_issues)
+            _collect_suggestions(pkgname, dep_issues, abi_issues, so_paths,
+                                 cache=suggest_cache)
             if suggest else None
         )
         _print_report(
@@ -369,11 +430,31 @@ def cmd_doctor(args):
             dep_issues, abi_issues, quiet=args.quiet,
             suggestions=suggestions,
         )
+        if suggest and suggestions:
+            pkg_seen: set[str] = set()
+            pkg_flat: list[str] = []
+            for cands in suggestions.values():
+                for c in cands:
+                    if c not in pkg_seen:
+                        pkg_seen.add(c)
+                        pkg_flat.append(c)
+                    if c not in global_seen:
+                        global_seen.add(c)
+                        global_candidates.append(c)
+            if pkg_flat:
+                per_pkg_suggestions.append((pkgname, pkg_flat))
 
-    print()
-    print(f"Scanned {len(targets)} package(s); "
-          f"{len(affected_pkgs)} with issues, {total_issues} total finding(s).")
+    _log.newline()
+    _log.ui(
+        f"Scanned {len(targets)} package(s); "
+        f"{len(affected_pkgs)} with issues, {total_issues} total finding(s)."
+    )
     if affected_pkgs:
         names = ", ".join(f"{name} ({n})" for name, n in affected_pkgs)
-        print(f"Affected: {names}")
+        _log.ui(f"Affected: {names}")
+    if suggest and global_candidates:
+        _log.ui("Suggestions:")
+        for name, cands in per_pkg_suggestions:
+            _log.ui(f"  {name}: {', '.join(cands)}")
+        _log.ui(f"Suggested packages: {', '.join(global_candidates)}")
     return 1 if affected_pkgs else 0

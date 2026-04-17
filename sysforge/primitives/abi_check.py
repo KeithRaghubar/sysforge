@@ -115,7 +115,7 @@ def _undefined_versioned(so_path: Path) -> set[tuple[str, str]]:
     return out
 
 
-def _needed_sonames(so_path: Path) -> list[str]:
+def needed_sonames(so_path: Path) -> list[str]:
     """Return NEEDED sonames from the dynamic section of so_path."""
     result = subprocess.run(
         ["readelf", "-d", str(so_path)],
@@ -265,7 +265,7 @@ def check_so_files(so_paths: list[Path]) -> list[str]:
         if not undef:
             continue
 
-        needed = _needed_sonames(so_path)
+        needed = needed_sonames(so_path)
         if not needed:
             continue
 

@@ -769,13 +769,23 @@ Closure walk: by default, BFS over the target's `%DEPENDS%` transitively so one 
 
 `--graphics` expands to a curated stack: always `mesa[-git]`, `lib32-mesa[-git]`, `vulkan-icd-loader`, `lib32-vulkan-icd-loader`, `libglvnd`, `lib32-libglvnd`, `egl-wayland`, `xwayland[-git]`; plus per-vendor additions driven by the hardware overlay's `gpu_vendors` list (`nvidia` → active `nvidia-*` / `nvidia-open*-dkms` driver + `lib32-nvidia-utils`; `amd` → `vulkan-radeon`, `lib32-vulkan-radeon`, `libva-mesa-driver`; `intel` → `vulkan-intel`, `lib32-vulkan-intel`, `intel-media-driver`). The list is filtered against `pacman -Q` so only installed variants are actually verified — avoids false negatives on boxes that don't have lib32 counterparts. The expansion table lives in `doctor.py::GRAPHICS_BASE` as reference data, not config.
 
-`--all` verifies every installed package (`pacman -Q`). Slow but comprehensive — a one-shot "is anything broken anywhere" sweep. Covers repo packages (e.g. `steam` from `multilib`) as well as foreign/AUR.
+`--all` verifies every installed package (`pacman -Q`) — foreign and non-foreign. Slow but comprehensive: a one-shot "is anything broken anywhere" sweep. `--repo` narrows to non-foreign packages only (all of `pacman -Q` minus `pacman -Qm`), for when you want to scope a sweep to the distribution-provided side without walking every AUR/custom build.
 
-`--suggest` (`-s`) reverse-looks up each unsatisfied soname via `pacman -Fq` and prints `      → provided by: repo/pkg, …` under the issue. Operates on two finding shapes: depends issues whose text matches `soname not found in ldconfig: libfoo.so[=N]`, and ABI issues whose text matches `NEEDED lib 'libfoo.so.N' not found in ldconfig cache`. Undefined-versioned-symbol ABI findings can't pinpoint a single NEEDED lib, so they get no suggestion line. `lib32` context is inferred from the owning pkgname prefix (`lib32-*` → query `usr/lib32/<soname>`). Requires a synced files db: if `/var/lib/pacman/sync/*.files` is absent, the command emits one warning (`run sudo pacman -Fy`) and runs the rest of the report with lookups skipped — findings still show, exit code unchanged.
+`--suggest` (`-s`) reverse-looks up lookup-able findings via `pacman -Fq` and prints `      → provided by: repo/pkg, …` under each issue. Handled finding shapes:
 
-Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline candidate lookup via files db).
+- Depends issues whose text matches `soname not found in ldconfig: libfoo.so[=N]` — looked up directly.
+- ABI issues of the form `… NEEDED lib 'libfoo.so.N' not found in ldconfig cache` — the missing soname is looked up directly.
+- ABI issues of the form `<file>: undefined versioned symbol …` — the broken `.so`'s NEEDED sonames (from `abi_check.needed_sonames`) are enumerated and each is reverse-looked-up. The emitted candidate list is one of those NEEDED libs' owning packages, deduped in walk order; one of those is typically the ABI-drift culprit needing update or rebuild.
 
-Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — log tag `[PROV]`, public API `files_db_present()` and `suggest_for_soname(entry, *, lib32=False)`.
+`lib32` context is inferred from the owning pkgname prefix (`lib32-*` → query `usr/lib32/<soname>`). Requires a synced files db: if `/var/lib/pacman/sync/*.files` is absent, the command emits one warning (`run sudo pacman -Fy`) and runs the rest of the report with lookups skipped — findings still show, exit code unchanged.
+
+End-of-run summary (when any candidates were collected): `Suggestions:` header with one line per affected package (`  <pkg>: cand-a, cand-b`), followed by a `Suggested packages: …` line deduping candidates across the whole run. Useful for turning a long report into a single install/rebuild list.
+
+All report output (headers, issue lines, summary) flows through `log.ui` (→ stderr + unified log file) so external callers that scrape the unified log see doctor findings.
+
+Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db).
+
+Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — log tag `[PROV]`, public API `files_db_present()` and `suggest_for_soname(entry, *, lib32=False)`. NEEDED-soname extraction reuses `abi_check.needed_sonames` (public since doctor calls it directly for ABI-issue suggestions).
 
 ---
 

@@ -221,7 +221,7 @@ def test_check_depends_pacman_t_all_satisfied():
 
 def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
-        packages=[], graphics=False, all=False,
+        packages=[], graphics=False, all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
     )
     defaults.update(overrides)
@@ -248,11 +248,11 @@ def test_cmd_doctor_clean_package(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
     rc = doctor.cmd_doctor(_make_args(packages=["cleanpkg"]))
-    out = capsys.readouterr().out
-    assert "cleanpkg 1.0-1" in out
-    assert "clean" in out
+    err = capsys.readouterr().err
+    assert "cleanpkg 1.0-1" in err
+    assert "clean" in err
     # No findings → no Affected: line
-    assert "Affected:" not in out
+    assert "Affected:" not in err
     assert rc == 0
 
 
@@ -272,11 +272,11 @@ def test_cmd_doctor_reports_missing_dep(tmp_path, monkeypatch, capsys):
                side_effect=_pacman_t_mock(["missinglib>=2.0"], 127)):
         rc = doctor.cmd_doctor(_make_args(packages=["brokenpkg"]))
 
-    out = capsys.readouterr().out
-    assert "brokenpkg" in out
-    assert "[DEPENDS]" in out
-    assert "missinglib" in out
-    assert "Affected: brokenpkg (1)" in out
+    err = capsys.readouterr().err
+    assert "brokenpkg" in err
+    assert "[DEPENDS]" in err
+    assert "missinglib" in err
+    assert "Affected: brokenpkg (1)" in err
     assert rc == 1
 
 
@@ -289,9 +289,9 @@ def test_cmd_doctor_not_installed(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
     rc = doctor.cmd_doctor(_make_args(packages=["ghost"]))
-    out = capsys.readouterr().out
-    assert "ghost" in out
-    assert "not installed" in out
+    err = capsys.readouterr().err
+    assert "ghost" in err
+    assert "not installed" in err
     assert rc == 1
 
 
@@ -307,13 +307,13 @@ def test_cmd_doctor_quiet_hides_clean(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
     rc = doctor.cmd_doctor(_make_args(packages=["cleanpkg"], quiet=True))
-    out = capsys.readouterr().out
+    err = capsys.readouterr().err
     # Clean package header suppressed
-    assert "cleanpkg 1.0-1" not in out
+    assert "cleanpkg 1.0-1" not in err
     # Summary line still prints
-    assert "Scanned" in out
+    assert "Scanned" in err
     # No findings → no Affected: line even in quiet mode
-    assert "Affected:" not in out
+    assert "Affected:" not in err
     assert rc == 0
 
 
@@ -341,9 +341,29 @@ def test_cmd_doctor_affected_line_lists_multiple_packages(tmp_path, monkeypatch,
     with patch("sysforge.doctor.subprocess.run", side_effect=fake_pacman_t):
         rc = doctor.cmd_doctor(_make_args(packages=["pkga", "pkgb"]))
 
-    out = capsys.readouterr().out
-    assert "Affected: pkga (1), pkgb (1)" in out
+    err = capsys.readouterr().err
+    assert "Affected: pkga (1), pkgb (1)" in err
     assert rc == 1
+
+
+def test_cmd_doctor_output_goes_through_log_ui(tmp_path, monkeypatch, capsys):
+    """Doctor report lines flow through log.ui → stderr, not stdout."""
+    db = tmp_path / "local"
+    db.mkdir()
+    _mk_pkg(db, "cleanpkg", "1.0-1", depends=[], files=[])
+    installed = {"cleanpkg": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+
+    doctor.cmd_doctor(_make_args(packages=["cleanpkg"]))
+    captured = capsys.readouterr()
+
+    assert captured.out == ""
+    assert "== cleanpkg 1.0-1 ==" in captured.err
+    assert "Scanned 1 package(s)" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +418,7 @@ def test_collect_suggestions_abi_missing_needed(monkeypatch):
 
 
 def test_collect_suggestions_skips_unparseable_issues(monkeypatch):
-    """Issues without an extractable soname aren't sent to pacman -F."""
+    """A plain `unsatisfied dep:` line isn't sent to pacman -F."""
     sent = []
 
     def fake_suggest(entry, *, lib32=False, run_fn=None):
@@ -408,11 +428,105 @@ def test_collect_suggestions_skips_unparseable_issues(monkeypatch):
     monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
 
     dep_issue = "unsatisfied dep: glibc>=2.40"
-    abi_issue = "libfoo.so: undefined versioned symbol not found in any NEEDED lib: bar@FOO_2.0"
-    out = doctor._collect_suggestions("somepkg", [dep_issue], [abi_issue])
+    out = doctor._collect_suggestions("somepkg", [dep_issue], [])
 
     assert out == {}
     assert sent == []
+
+
+def test_collect_suggestions_abi_undef_versioned_symbol(monkeypatch):
+    """
+    For an `undefined versioned symbol` issue, enumerate the broken .so's
+    NEEDED sonames and return the packages owning them (deduped).
+    """
+    monkeypatch.setattr(
+        doctor, "needed_sonames",
+        lambda path: ["libstdc++.so.6", "libc.so.6"],
+    )
+
+    calls: list[tuple[str, bool]] = []
+
+    def fake_suggest(entry, *, lib32=False, run_fn=None):
+        calls.append((entry, lib32))
+        return {"libstdc++.so.6": ["core/gcc-libs"],
+                "libc.so.6": ["core/glibc"]}[entry]
+
+    monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
+
+    issue = (
+        "libbroken.so.1: undefined versioned symbol not found in any "
+        "NEEDED lib: sym@FOO_2.0"
+    )
+    so_path = Path("/usr/lib/libbroken.so.1")
+    out = doctor._collect_suggestions(
+        "somepkg", [], [issue], so_paths=[so_path],
+    )
+    assert out == {issue: ["core/gcc-libs", "core/glibc"]}
+    assert calls == [("libstdc++.so.6", False), ("libc.so.6", False)]
+
+
+def test_collect_suggestions_abi_undef_no_so_path_skipped(monkeypatch):
+    """If the broken .so isn't in so_paths we can't enumerate NEEDED libs."""
+    monkeypatch.setattr(
+        doctor, "needed_sonames",
+        lambda path: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+    issue = (
+        "libbroken.so.1: undefined versioned symbol not found in any "
+        "NEEDED lib: sym@FOO_2.0"
+    )
+    out = doctor._collect_suggestions("somepkg", [], [issue], so_paths=[])
+    assert out == {}
+
+
+def test_collect_suggestions_cache_dedupes_repeat_sonames(monkeypatch):
+    """
+    When the same soname is referenced by multiple issues (and across
+    multiple _collect_suggestions calls sharing a cache) it should only
+    hit suggest_for_soname once per (soname, lib32) key.
+    """
+    monkeypatch.setattr(
+        doctor, "needed_sonames",
+        lambda path: ["libc.so.6", "libstdc++.so.6"],
+    )
+
+    calls: list[str] = []
+
+    def fake_suggest(entry, *, lib32=False, run_fn=None):
+        calls.append(entry)
+        return {
+            "libfoo.so.1": ["core/foo"],
+            "libc.so.6": ["core/glibc"],
+            "libstdc++.so.6": ["core/gcc-libs"],
+        }[entry]
+
+    monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
+
+    dep_issue = "libfoo.so.1: soname not found in ldconfig: libfoo.so.1"
+    abi_needed = (
+        "/usr/lib/libbroken.so.1: NEEDED lib 'libfoo.so.1' "
+        "not found in ldconfig cache (…)"
+    )
+    abi_undef = (
+        "libbroken.so.1: undefined versioned symbol not found in any "
+        "NEEDED lib: sym@FOO_2.0"
+    )
+    so_path = Path("/usr/lib/libbroken.so.1")
+
+    cache: dict[tuple[str, bool], list[str]] = {}
+    doctor._collect_suggestions(
+        "pkg-a", [dep_issue], [abi_needed, abi_undef],
+        so_paths=[so_path], cache=cache,
+    )
+    # Second package surfaces the same sonames — must not re-query.
+    doctor._collect_suggestions(
+        "pkg-b", [dep_issue], [abi_needed, abi_undef],
+        so_paths=[so_path], cache=cache,
+    )
+
+    assert sorted(calls) == ["libc.so.6", "libfoo.so.1", "libstdc++.so.6"]
+    assert cache[("libfoo.so.1", False)] == ["core/foo"]
+    assert cache[("libc.so.6", False)] == ["core/glibc"]
 
 
 # ---------------------------------------------------------------------------
@@ -437,10 +551,10 @@ def test_cmd_doctor_suggest_renders_candidate_line(tmp_path, monkeypatch, capsys
     )
 
     rc = doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
-    out = capsys.readouterr().out
+    err = capsys.readouterr().err
 
-    assert "soname not found in ldconfig: libmissing.so=3" in out
-    assert "→ provided by: core/missinglib" in out
+    assert "soname not found in ldconfig: libmissing.so=3" in err
+    assert "→ provided by: core/missinglib" in err
     assert rc == 1
 
 
@@ -462,9 +576,9 @@ def test_cmd_doctor_suggest_no_candidate_line(tmp_path, monkeypatch, capsys):
     )
 
     doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
-    out = capsys.readouterr().out
+    err = capsys.readouterr().err
 
-    assert "→ provided by: no candidate in files db" in out
+    assert "→ provided by: no candidate in files db" in err
 
 
 def test_cmd_doctor_suggest_warns_on_stale_files_db(tmp_path, monkeypatch, capsys):
@@ -487,12 +601,45 @@ def test_cmd_doctor_suggest_warns_on_stale_files_db(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(doctor, "suggest_for_soname", fail_if_called)
 
     rc = doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
-    out = capsys.readouterr().out
+    err = capsys.readouterr().err
 
     # Issue still reported; no candidate line; exit code unchanged.
-    assert "soname not found in ldconfig: libmissing.so=3" in out
-    assert "→ provided by" not in out
+    assert "soname not found in ldconfig: libmissing.so=3" in err
+    assert "→ provided by" not in err
     assert rc == 1
+
+
+def test_cmd_doctor_suggest_summary_rollup(tmp_path, monkeypatch, capsys):
+    """--suggest emits a per-pkg group *and* a deduped global line at the end."""
+    db = tmp_path / "local"
+    db.mkdir()
+    _mk_pkg(db, "pkga", "1.0-1", depends=["libshared.so=1"], files=[])
+    _mk_pkg(db, "pkgb", "1.0-1", depends=["libshared.so=1", "libuniq.so=2"],
+            files=[])
+    installed = {"pkga": "1.0-1", "pkgb": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    monkeypatch.setattr(doctor, "files_db_present", lambda: True)
+    monkeypatch.setattr(
+        doctor, "suggest_for_soname",
+        lambda entry, *, lib32=False, run_fn=None: {
+            "libshared.so=1": ["core/shared"],
+            "libuniq.so=2": ["extra/uniq"],
+        }.get(entry, []),
+    )
+
+    doctor.cmd_doctor(_make_args(packages=["pkga", "pkgb"], suggest=True))
+    err = capsys.readouterr().err
+
+    # Grouped per-pkg lines, preserving per-pkg order
+    assert "Suggestions:" in err
+    assert "  pkga: core/shared" in err
+    assert "  pkgb: core/shared, extra/uniq" in err
+    # Deduped global line — core/shared appears once
+    assert "Suggested packages: core/shared, extra/uniq" in err
 
 
 def test_cmd_doctor_all_covers_repo_packages(tmp_path, monkeypatch, capsys):
@@ -513,10 +660,50 @@ def test_cmd_doctor_all_covers_repo_packages(tmp_path, monkeypatch, capsys):
                side_effect=_pacman_t_mock(["missinglib>=1"], 127)):
         rc = doctor.cmd_doctor(_make_args(all=True))
 
-    out = capsys.readouterr().out
-    assert "steam" in out
-    assert "Affected: steam (1)" in out
+    err = capsys.readouterr().err
+    assert "steam" in err
+    assert "Affected: steam (1)" in err
     assert rc == 1
+
+
+def test_cmd_doctor_all_includes_foreign_and_native(tmp_path, monkeypatch, capsys):
+    """--all includes both foreign and non-foreign packages."""
+    db = tmp_path / "local"
+    db.mkdir()
+    _mk_pkg(db, "nativepkg", "1.0-1", depends=[], files=[])
+    _mk_pkg(db, "foreignpkg", "1.0-1", depends=[], files=[])
+    installed = {"nativepkg": "1.0-1", "foreignpkg": "1.0-1"}
+    foreign = {"foreignpkg": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign)
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+
+    doctor.cmd_doctor(_make_args(all=True))
+    err = capsys.readouterr().err
+    assert "== nativepkg 1.0-1 ==" in err
+    assert "== foreignpkg 1.0-1 ==" in err
+
+
+def test_cmd_doctor_repo_excludes_foreign(tmp_path, monkeypatch, capsys):
+    """--repo walks only non-foreign packages; foreign pkgs must not appear."""
+    db = tmp_path / "local"
+    db.mkdir()
+    _mk_pkg(db, "nativepkg", "1.0-1", depends=[], files=[])
+    _mk_pkg(db, "foreignpkg", "1.0-1", depends=[], files=[])
+    installed = {"nativepkg": "1.0-1", "foreignpkg": "1.0-1"}
+    foreign = {"foreignpkg": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign)
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+
+    doctor.cmd_doctor(_make_args(repo=True))
+    err = capsys.readouterr().err
+    assert "== nativepkg 1.0-1 ==" in err
+    assert "foreignpkg" not in err
 
 
 # ---------------------------------------------------------------------------

@@ -169,7 +169,8 @@ _sysforge_converge() {
 _sysforge_doctor() {
   _arguments \
     '--graphics[expand to curated graphics stack (mesa/vulkan/libglvnd + driver)]' \
-    '--all[verify every foreign package (pacman -Qm)]' \
+    '--all[verify every installed package, foreign + non-foreign (pacman -Q)]' \
+    '--repo[verify every non-foreign (native repo) package]' \
     '--shallow[do not recurse into transitive dependencies]' \
     '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only issues]' \
     '(-s --suggest)'{-s,--suggest}'[reverse-lookup candidate packages for each missing soname via pacman -Fq]' \

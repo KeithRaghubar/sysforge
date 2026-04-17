@@ -629,7 +629,10 @@ def _add_doctor_parser(sub):
         help="Expand to the graphics stack (mesa, vulkan, libglvnd, egl-wayland, "
              "xwayland, plus per-vendor drivers from the hardware overlay's gpu_vendors).")
     p.add_argument("--all", action="store_true", dest="all",
-        help="Verify every installed package (pacman -Q). Slow but comprehensive.")
+        help="Verify every installed package — foreign and non-foreign (pacman -Q). "
+             "Slow but comprehensive.")
+    p.add_argument("--repo", action="store_true", dest="repo",
+        help="Verify every non-foreign (native repo) package. Narrower than --all.")
     p.add_argument("--shallow", action="store_true",
         help="Do not recurse into transitive dependencies of each target.")
     p.add_argument("--quiet", "-q", action="store_true",

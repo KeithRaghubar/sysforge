@@ -60,10 +60,12 @@ sysforge packages sync --dry-run
 #     Walks the target's dep closure; --shallow restricts to direct depends.
 sysforge doctor mesa-git
 sysforge doctor --graphics            # curated stack driven by hardware overlay
-sysforge doctor --all                 # every installed package (slow, comprehensive)
-sysforge doctor --graphics --suggest  # reverse-lookup which package owns each
-                                      # missing soname via pacman -Fq
-                                      # (requires sudo pacman -Fy first)
+sysforge doctor --all                 # every installed package: foreign + non-foreign
+sysforge doctor --repo                # only non-foreign (native repo) packages
+sysforge doctor steam --suggest       # reverse-lookup candidate packages for each
+                                      # missing soname / broken ABI via pacman -Fq
+                                      # (requires sudo pacman -Fy first); prints a
+                                      # grouped per-pkg + deduped global summary
 ```
 
 To override system defaults without modifying `/etc/sysforge/`, create user copies in `~/.config/sysforge/`.
