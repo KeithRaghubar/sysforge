@@ -1,17 +1,23 @@
 """
-abi_check.py — post-build ABI compatibility checker
+abi_check.py — ABI compatibility checker
 
-For each shared library (.so.*) in a built package archive, cross-references
-undefined versioned symbol references against the exported versioned symbols
-of its NEEDED runtime libraries as currently installed on the system.
+For each shared library (.so.*), cross-references undefined versioned symbol
+references against the exported versioned symbols of its NEEDED runtime
+libraries as currently installed on the system.
 
-This catches ABI breakage at build time before installation — e.g. a library
-built against a newer libfoo that exports sym@@FOO_2.0, but the system still
-has libfoo exporting only sym@@FOO_1.0.
+This catches ABI breakage — e.g. a library built against a newer libfoo that
+exports sym@@FOO_2.0, but the system still has libfoo exporting only
+sym@@FOO_1.0.
 
 Public API:
+    check_so_files(so_paths: list[Path]) -> list[str]
+        Pure .so-level core. Takes any list of on-disk shared libraries and
+        returns warning strings. Used by the build path (via check_package_abi)
+        and by doctor.py on installed .so files.
+
     check_package_abi(pkg_path: Path) -> list[str]
-        Returns a list of warning strings (empty if no issues or no .so files).
+        Archive wrapper. Extracts .so.* members from a built .pkg.tar.zst
+        and calls check_so_files on the extracted files.
 """
 
 from __future__ import annotations
@@ -39,7 +45,11 @@ _RE_NM_EXPORT = re.compile(r"^\S+\s+\S\s+(.+@@.+)$", re.MULTILINE)
 _RE_NEEDED = re.compile(r"\(NEEDED\)\s+Shared library:\s+\[([^\]]+)\]")
 
 # ldconfig -p line: "  libfoo.so.1 (libc6,x86-64) => /usr/lib/libfoo.so.1"
-_RE_LDCONFIG = re.compile(r"^\s+(\S+)\s+\([^)]+\)\s+=>\s+(\S+)$", re.MULTILINE)
+# Also capture the tag so we can distinguish 32-bit (libc6) from 64-bit
+# (libc6,x86-64) variants — they share a soname but export differently-mangled
+# symbols, so a 32-bit .so must only resolve NEEDED references against 32-bit
+# libs.
+_RE_LDCONFIG = re.compile(r"^\s+(\S+)\s+\(([^)]+)\)\s+=>\s+(\S+)$", re.MULTILINE)
 
 
 # ---------------------------------------------------------------------------
@@ -116,18 +126,52 @@ def _needed_sonames(so_path: Path) -> list[str]:
     return _RE_NEEDED.findall(result.stdout)
 
 
-def _build_ldconfig_map() -> dict[str, str]:
-    """Run ldconfig -p and return {soname: /path/to/lib}."""
+def _elf_class(so_path: Path) -> str:
+    """Return 'ELF32' or 'ELF64' for so_path; empty string on failure."""
+    result = subprocess.run(
+        ["readelf", "-h", str(so_path)],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("Class:"):
+            parts = line.split()
+            if len(parts) >= 2:
+                return parts[-1]
+    return ""
+
+
+def _ldconfig_tag_class(tag: str) -> str:
+    """Map an ldconfig -p tag like 'libc6,x86-64' to 'ELF64' or 'ELF32'."""
+    # 64-bit markers ldconfig emits for our supported arches.
+    if any(m in tag for m in ("x86-64", "AArch64", "aarch64", "64bit")):
+        return "ELF64"
+    return "ELF32"
+
+
+def _build_ldconfig_map() -> dict[tuple[str, str], str]:
+    """
+    Run ldconfig -p and return {(soname, elf_class): /path/to/lib}.
+
+    The elf_class key ('ELF32' or 'ELF64') ensures 32-bit and 64-bit variants
+    of the same soname don't collide — without it a 32-bit .so would resolve
+    its NEEDED references against 64-bit exports, producing a storm of
+    false-positive "undefined symbol" findings (different mangling for
+    unsigned int vs unsigned long).
+    """
     result = subprocess.run(
         ["ldconfig", "-p"],
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
         return {}
-    mapping: dict[str, str] = {}
+    mapping: dict[tuple[str, str], str] = {}
     for m in _RE_LDCONFIG.finditer(result.stdout):
-        soname, path = m.group(1), m.group(2)
-        mapping.setdefault(soname, path)  # first hit wins (highest priority)
+        soname, tag, path = m.group(1), m.group(2), m.group(3)
+        klass = _ldconfig_tag_class(tag)
+        mapping.setdefault((soname, klass), path)  # first hit wins
     return mapping
 
 
@@ -171,17 +215,105 @@ def _demangle(symbols: list[str]) -> dict[str, str]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def check_package_abi(pkg_path: Path) -> list[str]:
-    """
-    Check ABI compatibility of shared libraries in a built package.
+# Shared libraries whose "undefined versioned symbol" reports are inherent
+# to the library's design rather than linkage bugs. Skipping these avoids
+# drowning real findings under known-benign noise:
+#
+#   libnsl.so.1           — glibc RPC compat shim; xdr_*/svc_*/clnt_* symbols
+#                           are actually implemented in libtirpc at runtime
+#                           but libnsl doesn't declare libtirpc as NEEDED.
+#   libc_malloc_debug.so  — weak __malloc_initialize_hook override pattern.
+#
+# Matches on the .so file basename (with or without version suffix).
+_ABI_CHECK_SHIM_LIBS = {
+    "libnsl.so.1",
+    "libc_malloc_debug.so",
+    "libc_malloc_debug.so.0",
+}
 
-    Extracts .so.* files from the archive, then for each library:
+
+def _is_shim_lib(so_path: Path) -> bool:
+    """True if so_path is a known-benign compat shim that should be skipped."""
+    return so_path.name in _ABI_CHECK_SHIM_LIBS
+
+
+def check_so_files(so_paths: list[Path]) -> list[str]:
+    """
+    Check ABI compatibility of a list of on-disk shared libraries.
+
+    For each library:
     - Collects undefined versioned symbol requirements (nm -D, U sym@VER)
     - Collects NEEDED sonames (readelf -d)
     - Maps sonames to system library paths (ldconfig -p)
     - Checks each required (sym, ver) is exported by at least one NEEDED lib
 
-    Returns a list of warning strings describing any unsatisfied references.
+    Returns a list of warning strings describing any unsatisfied references
+    or NEEDED libs missing from the ldconfig cache. Empty list if clean.
+    """
+    if not so_paths:
+        return []
+
+    issues: list[str] = []
+    ldconfig_map = _build_ldconfig_map()
+    export_cache: dict[str, set[tuple[str, str]]] = {}
+
+    for so_path in so_paths:
+        if _is_shim_lib(so_path):
+            continue
+
+        undef = _undefined_versioned(so_path)
+        if not undef:
+            continue
+
+        needed = _needed_sonames(so_path)
+        if not needed:
+            continue
+
+        so_class = _elf_class(so_path) or "ELF64"
+
+        # Build union of all symbols exported by NEEDED libs of matching arch
+        all_exports: set[tuple[str, str]] = set()
+        missing_libs: list[str] = []
+        for soname in needed:
+            lib_path = ldconfig_map.get((soname, so_class))
+            if lib_path is None:
+                missing_libs.append(soname)
+                continue
+            all_exports |= _exported_versioned(lib_path, export_cache)
+
+        unsatisfied = undef - all_exports
+        if not unsatisfied:
+            continue
+
+        # Demangle symbol names for readability
+        mangled_names = [sym for sym, _ in unsatisfied]
+        dm = _demangle(mangled_names)
+
+        for sym, ver in sorted(unsatisfied):
+            readable = dm.get(sym, sym)
+            if readable != sym:
+                label = f"{readable} ({sym})"
+            else:
+                label = sym
+            issues.append(
+                f"{so_path.name}: undefined versioned symbol not found in any NEEDED lib: "
+                f"{label}@{ver}"
+            )
+
+        for soname in missing_libs:
+            issues.append(
+                f"{so_path.name}: NEEDED lib {soname!r} not found in ldconfig cache — "
+                "may not be installed or ldconfig not yet run"
+            )
+
+    return issues
+
+
+def check_package_abi(pkg_path: Path) -> list[str]:
+    """
+    Check ABI compatibility of shared libraries in a built package archive.
+
+    Extracts .so.* members with bsdtar, then calls check_so_files.
     Returns an empty list if the package has no shared libraries (no-op).
     """
     so_members = _list_sos_in_pkg(pkg_path)
@@ -191,56 +323,6 @@ def check_package_abi(pkg_path: Path) -> list[str]:
 
     _log.info(f"{pkg_path.name}: checking {len(so_members)} shared librar{'y' if len(so_members) == 1 else 'ies'}")
 
-    issues: list[str] = []
-    ldconfig_map = _build_ldconfig_map()
-    export_cache: dict[str, set[tuple[str, str]]] = {}
-
     with tempfile.TemporaryDirectory(prefix="sysforge-abi-") as tmpdir:
-        tmp = Path(tmpdir)
-        extracted = _extract_sos(pkg_path, so_members, tmp)
-
-        for so_path in extracted:
-            undef = _undefined_versioned(so_path)
-            if not undef:
-                continue
-
-            needed = _needed_sonames(so_path)
-            if not needed:
-                continue
-
-            # Build union of all symbols exported by NEEDED libs
-            all_exports: set[tuple[str, str]] = set()
-            missing_libs: list[str] = []
-            for soname in needed:
-                lib_path = ldconfig_map.get(soname)
-                if lib_path is None:
-                    missing_libs.append(soname)
-                    continue
-                all_exports |= _exported_versioned(lib_path, export_cache)
-
-            unsatisfied = undef - all_exports
-            if not unsatisfied:
-                continue
-
-            # Demangle symbol names for readability
-            mangled_names = [sym for sym, _ in unsatisfied]
-            dm = _demangle(mangled_names)
-
-            for sym, ver in sorted(unsatisfied):
-                readable = dm.get(sym, sym)
-                if readable != sym:
-                    label = f"{readable} ({sym})"
-                else:
-                    label = sym
-                issues.append(
-                    f"{so_path.name}: undefined versioned symbol not found in any NEEDED lib: "
-                    f"{label}@{ver}"
-                )
-
-            for soname in missing_libs:
-                issues.append(
-                    f"{so_path.name}: NEEDED lib {soname!r} not found in ldconfig cache — "
-                    "may not be installed or ldconfig not yet run"
-                )
-
-    return issues
+        extracted = _extract_sos(pkg_path, so_members, Path(tmpdir))
+        return check_so_files(extracted)

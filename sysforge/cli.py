@@ -6,6 +6,7 @@ Top-level commands:
     sysforge update         Check for and rebuild outdated sysforge-managed packages
     sysforge resolve <pkg>  Show which profile would be applied to a package
     sysforge converge       Rebuild packages that have drifted from their profile
+    sysforge doctor [PKG]   Health-check installed package depends + linkage
 
 Namespaces:
     sysforge packages       Manage packages.toml (list / add / remove / sync)
@@ -140,6 +141,17 @@ def _cmd_converge(args):
         cmd_converge(args)
     except RuntimeError as e:
         _log.fatal(str(e))
+
+
+def _cmd_doctor(args):
+    args.config = load_config() or {}
+    from sysforge.doctor import cmd_doctor
+    try:
+        rc = cmd_doctor(args)
+    except RuntimeError as e:
+        _log.fatal(str(e))
+    if rc:
+        sys.exit(rc)
 
 
 def _cmd_completions(args):
@@ -607,6 +619,24 @@ def _add_converge_parser(sub):
     p.set_defaults(func=_cmd_converge)
 
 
+def _add_doctor_parser(sub):
+    p = sub.add_parser("doctor",
+        help="Health-check installed package depends + shared-library linkage.")
+    p.add_argument("packages", nargs="*", metavar="PKG",
+        help="One or more installed package names to verify. "
+             "Without any PKG/--graphics/--all, the command exits with usage.")
+    p.add_argument("--graphics", action="store_true",
+        help="Expand to the graphics stack (mesa, vulkan, libglvnd, egl-wayland, "
+             "xwayland, plus per-vendor drivers from the hardware overlay's gpu_vendors).")
+    p.add_argument("--all", action="store_true", dest="all",
+        help="Verify every foreign package (pacman -Qm). Slow.")
+    p.add_argument("--shallow", action="store_true",
+        help="Do not recurse into transitive dependencies of each target.")
+    p.add_argument("--quiet", "-q", action="store_true",
+        help="Suppress clean lines; print only packages with issues.")
+    p.set_defaults(func=_cmd_doctor)
+
+
 def _add_packages_parser(sub):
     """packages namespace: list (default) / add / remove / sync"""
     p = sub.add_parser("packages",
@@ -848,6 +878,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_update_parser(sub)
     _add_resolve_parser(sub)
     _add_converge_parser(sub)
+    _add_doctor_parser(sub)
     _add_packages_parser(sub)
     _add_run_parser(sub)
     _add_setup_parser(sub)

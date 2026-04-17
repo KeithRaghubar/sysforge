@@ -26,9 +26,16 @@ _log = log.get_logger("DEP")
 # Regex patterns
 # ---------------------------------------------------------------------------
 
-# Matches soname entries in depends: libfoo.so  or  libfoo.so=2
-# The =N form means soname major version N → libfoo.so.N in ldconfig.
-_SONAME_RE = re.compile(r"^(?P<base>\S+\.so)(?:=(?P<major>\d+))?$")
+# Matches soname entries in depends. Forms emitted by makepkg's soname
+# reduction:
+#   libfoo.so             — any version
+#   libfoo.so=2           — soname suffix "2"           → libfoo.so.2
+#   libfoo.so=22.1        — soname suffix "22.1"        → libfoo.so.22.1
+#   libfoo.so=22.1-64     — suffix "22.1", arch 64       (arch suffix ignored
+#                                                         for ldconfig lookup)
+_SONAME_RE = re.compile(
+    r"^(?P<base>\S+\.so)(?:=(?P<ver>[^-=\s]+))?(?:-(?P<arch>\d+))?$"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +81,35 @@ def _parse_ldconfig(ldconfig_output):
     return sonames
 
 
+def soname_satisfied(entry, available):
+    """
+    Return True if the soname depends entry is present in the ldconfig set.
+
+    Entry forms:
+      libfoo.so         — any version of libfoo.so matches
+      libfoo.so=N       — libfoo.so.N must be present (or longer suffix)
+      libfoo.so=N.M     — libfoo.so.N.M must be present (or longer suffix)
+      libfoo.so=N-ARCH  — same as above; the ARCH suffix (32/64) is ignored
+                          for the ldconfig match — ldconfig's own lookup
+                          already selects the architecturally-correct lib
+                          based on the runtime search path.
+
+    Returns False for non-soname entries (no .so). Safe to pass arbitrary
+    depends strings — non-matches are treated as not-applicable.
+    """
+    m = _SONAME_RE.match(entry)
+    if not m:
+        return False
+    base = m.group("base")
+    ver = m.group("ver")
+    if ver is not None:
+        expected = f"{base}.{ver}"
+        prefix = expected + "."
+        return any(s == expected or s.startswith(prefix) for s in available)
+    prefix = base + "."
+    return base in available or any(s.startswith(prefix) for s in available)
+
+
 def check_soname_deps(depends, config, pkgname="unknown", ldconfig_fn=None):
     """
     Check that all .so entries in depends are present in ldconfig's cache
@@ -99,31 +135,22 @@ def check_soname_deps(depends, config, pkgname="unknown", ldconfig_fn=None):
         if not m:
             continue
 
-        base = m.group("base")
-        major = m.group("major")
+        if soname_satisfied(entry, available):
+            display = f"{m.group('base')}.{m.group('ver')}" if m.group("ver") else m.group("base")
+            _log.info(f"[{pkgname}] soname ok: {display} → found")
+            continue
 
-        if major is not None:
-            expected = f"{base}.{major}"
-            prefix = expected + "."
-            if not any(s == expected or s.startswith(prefix) for s in available):
-                issue = (
-                    f"soname {expected!r} not found in ldconfig cache "
-                    f"(required by depends entry {entry!r})"
-                )
-                _log.warn(f"[{pkgname}] ABI mismatch: {issue}")
-                handle_failure("abi_mismatch", issue, config)
-                findings.append((entry, issue))
-            else:
-                _log.info(f"[{pkgname}] soname ok: {expected} → found")
+        if m.group("ver") is not None:
+            expected = f"{m.group('base')}.{m.group('ver')}"
+            issue = (
+                f"soname {expected!r} not found in ldconfig cache "
+                f"(required by depends entry {entry!r})"
+            )
         else:
-            prefix = base + "."
-            if base not in available and not any(s.startswith(prefix) for s in available):
-                issue = f"soname {base!r} (any version) not found in ldconfig cache"
-                _log.warn(f"[{pkgname}] ABI mismatch: {issue}")
-                handle_failure("abi_mismatch", issue, config)
-                findings.append((entry, issue))
-            else:
-                _log.info(f"[{pkgname}] soname ok: {base} → found")
+            issue = f"soname {m.group('base')!r} (any version) not found in ldconfig cache"
+        _log.warn(f"[{pkgname}] ABI mismatch: {issue}")
+        handle_failure("abi_mismatch", issue, config)
+        findings.append((entry, issue))
 
     return findings
 

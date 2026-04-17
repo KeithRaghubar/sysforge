@@ -17,6 +17,7 @@ _sysforge() {
         update)   _sysforge_update   ;;
         resolve)  _sysforge_resolve  ;;
         converge) _sysforge_converge ;;
+        doctor)   _sysforge_doctor   ;;
         packages) _sysforge_packages ;;
         run)      _sysforge_run      ;;
         setup)    _sysforge_setup    ;;
@@ -32,6 +33,7 @@ _sysforge_commands() {
     'update:check for and rebuild outdated sysforge-managed packages'
     'resolve:show which profile would apply to a package'
     'converge:rebuild packages that have drifted from their profile'
+    'doctor:health-check installed package depends + linkage'
     'packages:manage packages.toml (list, add, remove, sync)'
     'run:execute a pipeline stage'
     'setup:configure system integration (pacman IgnoreGroup for sf-build)'
@@ -162,6 +164,21 @@ _sysforge_converge() {
     '--cache-report[print ccache/sccache summary after --apply]' \
   && return
   _sysforge_makepkg_flags
+}
+
+_sysforge_doctor() {
+  _arguments \
+    '--graphics[expand to curated graphics stack (mesa/vulkan/libglvnd + driver)]' \
+    '--all[verify every foreign package (pacman -Qm)]' \
+    '--shallow[do not recurse into transitive dependencies]' \
+    '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only issues]' \
+    '*:installed package:_sysforge_installed_pkg_names'
+}
+
+_sysforge_installed_pkg_names() {
+  local -a pkgs
+  pkgs=("${(@f)$(pacman -Qq 2>/dev/null)}")
+  _describe 'installed package' pkgs
 }
 
 _sysforge_packages() {

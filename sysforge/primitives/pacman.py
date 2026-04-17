@@ -18,6 +18,9 @@ Public API:
     get_all_installed_packages()    → dict[str, str]
     get_foreign_packages()          → dict[str, str]
     get_pacman_sync_version(pkgname) → str | None
+    get_local_db_entry(pkgname)     → Path | None
+    get_package_files(pkgname)      → list[str]
+    get_package_depends(pkgname)    → list[str]
 """
 import subprocess
 from pathlib import Path
@@ -206,3 +209,96 @@ def get_pacman_sync_version(pkgname: str) -> str | None:
             if len(parts) == 2:
                 return parts[1].strip()
     return None
+
+
+# ---------------------------------------------------------------------------
+# Local database queries (/var/lib/pacman/local)
+# ---------------------------------------------------------------------------
+
+_LOCAL_DB_ROOT = Path("/var/lib/pacman/local")
+
+
+def get_local_db_entry(pkgname: str, root: Path | None = None) -> Path | None:
+    """
+    Return the path to /var/lib/pacman/local/<pkgname>-<ver>/ for an installed
+    package, or None if not installed. `root` overrides the DB root (for tests).
+
+    Matches the DB directory by name (<pkgname>-<pkgver>-<pkgrel>). Multiple
+    matches can occur if a pkgname is a prefix of another (e.g. `llvm` vs
+    `llvm-libs`); this filters to exact-name matches only.
+    """
+    db_root = root or _LOCAL_DB_ROOT
+    if not db_root.is_dir():
+        return None
+    # Directory names have the form <pkgname>-<pkgver>-<pkgrel>. Split on the
+    # last two '-' separators to extract the name portion and compare exactly.
+    matches: list[Path] = []
+    for child in db_root.iterdir():
+        if not child.is_dir():
+            continue
+        parts = child.name.rsplit("-", 2)
+        if len(parts) == 3 and parts[0] == pkgname:
+            matches.append(child)
+    if not matches:
+        return None
+    if len(matches) > 1:
+        # Shouldn't happen in practice — pacman keeps one entry per pkg.
+        _log.warn(f"multiple local-db entries for {pkgname}: {[m.name for m in matches]}")
+    return matches[0]
+
+
+def get_package_files(pkgname: str, root: Path | None = None) -> list[str]:
+    """
+    Return the list of paths owned by an installed package, as recorded in
+    /var/lib/pacman/local/<pkg>-<ver>/files. Paths are returned verbatim
+    (no leading slash, e.g. "usr/lib/libfoo.so.1"). Directory entries
+    (trailing '/') are filtered out. Empty list if not installed or unreadable.
+    """
+    entry = get_local_db_entry(pkgname, root=root)
+    if entry is None:
+        return []
+    files_path = entry / "files"
+    if not files_path.is_file():
+        return []
+    paths: list[str] = []
+    in_files = False
+    for line in files_path.read_text().splitlines():
+        if line == "%FILES%":
+            in_files = True
+            continue
+        if not in_files:
+            continue
+        if not line or line.endswith("/"):
+            continue
+        if line.startswith("%"):
+            break
+        paths.append(line)
+    return paths
+
+
+def get_package_depends(pkgname: str, root: Path | None = None) -> list[str]:
+    """
+    Return the %DEPENDS% array from /var/lib/pacman/local/<pkg>-<ver>/desc
+    for an installed package. Empty list if not installed, unreadable, or
+    the package declares no depends.
+    """
+    entry = get_local_db_entry(pkgname, root=root)
+    if entry is None:
+        return []
+    desc_path = entry / "desc"
+    if not desc_path.is_file():
+        return []
+    depends: list[str] = []
+    in_section = False
+    for line in desc_path.read_text().splitlines():
+        if line == "%DEPENDS%":
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if not line:
+            break
+        if line.startswith("%"):
+            break
+        depends.append(line)
+    return depends

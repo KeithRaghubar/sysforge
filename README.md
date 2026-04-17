@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-**Current status:** v0.2.0. All commands implemented and usable. Userspace AUR management (`build`, `update`, `resolve`, `converge`, `packages`, `run pipeline/reconfigure/toolchain/packages/kernel`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO.
+**Current status:** v0.2.0. All commands implemented and usable. Userspace AUR management (`build`, `update`, `resolve`, `converge`, `doctor`, `packages`, `run pipeline/reconfigure/toolchain/packages/kernel`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO.
 
 ---
 
@@ -54,6 +54,13 @@ sysforge packages repair-state --dry-run  # preview fixes for legacy broken entr
 sysforge packages add htop neovim
 sysforge packages remove htop
 sysforge packages sync --dry-run
+
+# 10. Health-check an installed package's depends + linkage (e.g. when Steam
+#     launches as a black window and the graphics stack may be out of sync).
+#     Walks the target's dep closure; --shallow restricts to direct depends.
+sysforge doctor mesa-git
+sysforge doctor --graphics            # curated stack driven by hardware overlay
+sysforge doctor --all                 # every foreign package (slow)
 ```
 
 To override system defaults without modifying `/etc/sysforge/`, create user copies in `~/.config/sysforge/`.

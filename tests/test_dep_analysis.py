@@ -27,6 +27,7 @@ from sysforge.primitives.dep_analysis import (
     check_soname_deps,
     check_makedep_runtime,
     run_dep_analysis,
+    soname_satisfied,
 )
 
 
@@ -63,6 +64,45 @@ def test_parse_ldconfig_skips_lines_without_arrow():
 
 def test_parse_ldconfig_empty():
     assert _parse_ldconfig("") == set()
+
+
+# ---------------------------------------------------------------------------
+# soname_satisfied — pure predicate used by both check_soname_deps and doctor
+# ---------------------------------------------------------------------------
+
+def test_soname_satisfied_any_version_present():
+    assert soname_satisfied("libcap.so", {"libcap.so.2", "libcap.so.2.69"})
+
+def test_soname_satisfied_any_version_missing():
+    assert not soname_satisfied("libmissing.so", {"libcap.so.2"})
+
+def test_soname_satisfied_exact_major_present():
+    assert soname_satisfied("libcap.so=2", {"libcap.so.2"})
+    assert soname_satisfied("libcap.so=2", {"libcap.so.2.69"})
+
+def test_soname_satisfied_exact_major_missing():
+    assert not soname_satisfied("libcap.so=3", {"libcap.so.2"})
+
+def test_soname_satisfied_multi_dot_version():
+    # pacman emits e.g. libLLVM.so=22.1-64 — version "22.1", arch suffix "-64".
+    assert soname_satisfied("libLLVM.so=22.1-64", {"libLLVM.so.22.1"})
+    assert soname_satisfied("libLLVM.so=22.1-64", {"libLLVM.so.22.1.0.1"})
+    assert not soname_satisfied("libLLVM.so=23.0-64", {"libLLVM.so.22.1"})
+
+def test_soname_satisfied_arch_suffix_without_version():
+    # libfoo.so-64 isn't a format pacman emits, but be defensive: must not
+    # crash the regex.
+    assert not soname_satisfied("libfoo.so-64", set())
+
+def test_soname_satisfied_bare_base_matches():
+    # ldconfig can list a bare "libfoo.so" entry (dev package); base name
+    # (no =N) should accept it.
+    assert soname_satisfied("libfoo.so", {"libfoo.so"})
+
+def test_soname_satisfied_ignores_non_soname_entries():
+    # Not a soname (regular depends entry) → False; caller skips.
+    assert not soname_satisfied("glibc>=2.39", {"libc.so.6"})
+    assert not soname_satisfied("pacman", {"libalpm.so.14"})
 
 
 # ---------------------------------------------------------------------------

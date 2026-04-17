@@ -621,6 +621,22 @@ Integration points:
 
 The `dep_analysis.py` soname check is orthogonal — it validates shared-library ABI for packages that *are* installed, not whether they can be installed in the first place.
 
+The soname match predicate (`soname_satisfied(entry, available_set)`) is exposed at module scope so `doctor.py` can reuse the `libfoo.so` / `libfoo.so=N` matching rules without duplicating them.
+
+### `abi_check.py`
+
+Post-build ABI compatibility checker. For each shared library (`.so.*`) in a built package, cross-references undefined versioned symbol requirements (`nm -D` `U sym@VER`) against the exported versioned symbols (`nm -D` `sym@@VER`) of its NEEDED runtime libraries (`readelf -d`) as currently resolved by `ldconfig -p`. Catches ABI breakage at build time — e.g. a library built against `libfoo` exporting `sym@@FOO_2.0` when the installed `libfoo` still only exports `sym@@FOO_1.0`.
+
+Two-layer API:
+- `check_so_files(so_paths: list[Path]) -> list[str]` — pure .so-level core. Takes any list of on-disk shared libraries and returns warning strings for unsatisfied versioned symbols and missing NEEDED sonames. Used both by the build path (through `check_package_abi`) and by `doctor.py` on installed `.so` files.
+- `check_package_abi(pkg_path: Path) -> list[str]` — archive wrapper. Lists `.so.*` members with `bsdtar -t`, extracts them with `bsdtar -x` to a temp dir, calls `check_so_files`. Invoked from `makepkg_wrapper.run()` when `--abi-check` is passed to `sysforge build`.
+
+Symbol names are demangled through `c++filt` for readability. Missing NEEDED sonames (NEEDED lib not in `ldconfig -p`) produce a distinct warning from undefined versioned symbols. Packages with no shared libraries return an empty list (no-op).
+
+**Arch-aware ldconfig lookups.** The ldconfig map is keyed by `(soname, ELF class)` rather than soname alone, because `ldconfig -p` lists both 32-bit and 64-bit variants of common sonames (e.g. `libc.so.6`) and first-hit-wins would collapse them. Each `.so` under check has its ELF class determined via `readelf -h` and NEEDED references are resolved against libs of matching arch. Without this, lib32 packages produce a flood of false-positive "undefined symbol" findings because their `unsigned int`-mangled requirements don't match the 64-bit `libc`'s `unsigned long`-mangled exports.
+
+**Shim-library allowlist.** A small set of compat shims shipped by glibc (`libnsl.so.1`, `libc_malloc_debug.so`, `libc_malloc_debug.so.0`) are skipped by `_is_shim_lib`. Their "undefined" symbols are intentional: `libnsl`'s RPC API is implemented by `libtirpc` at runtime (not declared as NEEDED), and `libc_malloc_debug` uses weak-hook override patterns. Without this filter, every `doctor` run reports ~44 findings per glibc that bury the real signal.
+
 ### `failure.py`
 
 Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_analysis` to avoid circular imports.
@@ -738,6 +754,25 @@ Implements `sysforge converge` — the flag drift detector. Algorithm:
 5. With `--apply`: rebuild all `DRIFTED` packages via `makepkg_wrapper.run()` with `update=False`.
 
 Without `--apply`, the command is read-only — it reports drift but does not rebuild. Flags: `--apply`, `--state-dir`, `--profile-conf`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--cache-report`.
+
+### `doctor.py`
+
+Implements `sysforge doctor` — health-check an installed package's depends + linkage against the current system. Diagnoses the class of breakage where a partial rebuild leaves an installed package referencing ABIs that no longer exist (e.g. graphics-stack drift: mesa, vulkan, libglvnd, GPU driver). Read-only — never rebuilds or installs.
+
+For each target package, reads `/var/lib/pacman/local/<pkg>-<ver>/` directly: `files` for package-owned paths (filtered to `.so`/`.so.*`), `desc` for the `%DEPENDS%` array. Then runs two checks per package:
+
+- **Depends check.** For each depends entry: versioned package deps verified via `pacman -T` + `vercmp`; `libfoo.so` and `libfoo.so=N` entries verified via `dep_analysis.soname_satisfied` against the `ldconfig -p` set.
+- **ABI/linkage check.** Calls `abi_check.check_so_files` on the installed `.so` files — same symbol cross-check logic that `sysforge build --abi-check` runs, pointed at `/usr/lib/...` instead of a fresh archive.
+
+Closure walk: by default, BFS over the target's `%DEPENDS%` transitively so one command covers the full dependency neighbourhood (the typical Steam-black-window pattern is a breakage one or two levels down from the root the user names). `--shallow` restricts to direct depends only. BFS dedupes on the resolved real pkgname from `pacman -Q` to collapse `provides`/virtual-package cycles. Output groups issues by the package the issue was found in, not by the root that triggered the walk, so overlapping closures from multiple roots produce one report per affected package.
+
+`--graphics` expands to a curated stack: always `mesa[-git]`, `lib32-mesa[-git]`, `vulkan-icd-loader`, `lib32-vulkan-icd-loader`, `libglvnd`, `lib32-libglvnd`, `egl-wayland`, `xwayland[-git]`; plus per-vendor additions driven by the hardware overlay's `gpu_vendors` list (`nvidia` → active `nvidia-*` / `nvidia-open*-dkms` driver + `lib32-nvidia-utils`; `amd` → `vulkan-radeon`, `lib32-vulkan-radeon`, `libva-mesa-driver`; `intel` → `vulkan-intel`, `lib32-vulkan-intel`, `intel-media-driver`). The list is filtered against `pacman -Q` so only installed variants are actually verified — avoids false negatives on boxes that don't have lib32 counterparts. The expansion table lives in `doctor.py::GRAPHICS_BASE` as reference data, not config.
+
+`--all` verifies every foreign package (`pacman -Qm`). Slow but comprehensive — a one-shot "is anything broken anywhere" sweep.
+
+Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--shallow`, `--quiet` (suppress clean lines, show only issues).
+
+Log tag: `[DOC]`.
 
 ---
 
@@ -1027,6 +1062,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 |---|---|
 | `[AUR]` | AUR name cache lifecycle, clone operations |
 | `[DEP]` | Soname dependency graph checks |
+| `[DOC]` | `sysforge doctor` — installed-package depends + linkage health check |
 | `[FAILURE]` | Failure scenario dispatch |
 | `[MANIFEST]` | AUR RPC queries |
 | `[PACMAN]` | pacman database and install operations |
@@ -1174,7 +1210,7 @@ Build in this order to satisfy dependencies correctly:
 ## Release Plan
 
 - **GitHub:** public from day one; source of truth for all code
-- **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
+- **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `doctor`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
 - **v1.0:** system bootstrapper — stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, sets passwords, and sets the configured default login shell. Remaining v1.0 work: recursive AUR dependency resolution (see `dep_analysis.py` section); `repo_mode = "profiled"` support in `sysforge update`; man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below); direct makepkg flag passthrough via `parse_known_args` (completions done, implementation pending).
 - **v1.x:** package groups (named DE sets for opt-in without enumerating every package); rule priority auto-calculation (CSS-specificity-style scoring from rule conditions); configure stage additions (btrfs snapshots, ccache/sccache init check, build time estimates); LLVM target filtering from hardware detection.
 

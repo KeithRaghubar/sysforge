@@ -24,10 +24,12 @@ from sysforge.primitives.abi_check import (
     _build_ldconfig_map,
     _demangle,
     _exported_versioned,
+    _is_shim_lib,
     _list_sos_in_pkg,
     _needed_sonames,
     _undefined_versioned,
     check_package_abi,
+    check_so_files,
 )
 
 
@@ -155,8 +157,22 @@ def test_build_ldconfig_map_parses_output():
                return_value=_mock_run(ldconfig_out)):
         result = _build_ldconfig_map()
 
-    assert result["libc.so.6"] == "/usr/lib/libc.so.6"
-    assert result["libLLVM.so.22.1"] == "/usr/lib/libLLVM.so.22.1"
+    assert result[("libc.so.6", "ELF64")] == "/usr/lib/libc.so.6"
+    assert result[("libLLVM.so.22.1", "ELF64")] == "/usr/lib/libLLVM.so.22.1"
+
+
+def test_build_ldconfig_map_separates_32_and_64_bit():
+    # Same soname appearing as both 32-bit and 64-bit — must not collapse.
+    ldconfig_out = (
+        "\tlibc.so.6 (libc6,x86-64) => /usr/lib/libc.so.6\n"
+        "\tlibc.so.6 (libc6) => /usr/lib32/libc.so.6\n"
+    )
+    with patch("sysforge.primitives.abi_check.subprocess.run",
+               return_value=_mock_run(ldconfig_out)):
+        result = _build_ldconfig_map()
+
+    assert result[("libc.so.6", "ELF64")] == "/usr/lib/libc.so.6"
+    assert result[("libc.so.6", "ELF32")] == "/usr/lib32/libc.so.6"
 
 
 def test_build_ldconfig_map_returns_empty_on_failure():
@@ -369,3 +385,76 @@ def test_check_package_abi_bsdtar_list_failure():
                return_value=_mock_run("", returncode=1)):
         issues = check_package_abi(Path("bad.pkg.tar.zst"))
     assert issues == []
+
+
+# ---------------------------------------------------------------------------
+# check_so_files — loose .so paths, no archive involved
+# ---------------------------------------------------------------------------
+
+def test_check_so_files_empty_list():
+    """No .so paths → empty issues, no subprocess calls."""
+    with patch("sysforge.primitives.abi_check.subprocess.run") as m:
+        issues = check_so_files([])
+    assert issues == []
+    assert m.call_count == 0
+
+
+def test_check_so_files_missing_symbol_on_installed_so(tmp_path):
+    """check_so_files operating on a .so path directly (installed-file use case)."""
+    so_path = tmp_path / "libclang-cpp.so.22.1"
+    so_path.write_bytes(b"\x7fELF")
+
+    missing_sym = "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_"
+    nm_undef = f"                 U {missing_sym}@LLVM_22.1\n"
+    readelf_needed = " 0x1 (NEEDED)  Shared library: [libLLVM.so.22.1]\n"
+    ldconfig_out = "\tlibLLVM.so.22.1 (libc6,x86-64) => /usr/lib/libLLVM.so.22.1\n"
+    nm_export = "0000001234 T _ZN4llvm5ValueE@@LLVM_22.1\n"
+    cppfilt_out = "std::string::_M_assign(std::string const&)\n"
+
+    def dispatcher(cmd, **_kw):
+        tool = cmd[0]
+        if tool == "nm":
+            return _mock_run(nm_export if cmd[-1] == "/usr/lib/libLLVM.so.22.1" else nm_undef)
+        if tool == "readelf":
+            return _mock_run(readelf_needed)
+        if tool == "ldconfig":
+            return _mock_run(ldconfig_out)
+        if tool == "c++filt":
+            return _mock_run(cppfilt_out)
+        return _mock_run("")
+
+    with patch("sysforge.primitives.abi_check.subprocess.run", side_effect=dispatcher):
+        issues = check_so_files([so_path])
+
+    assert len(issues) == 1
+    assert "libclang-cpp.so.22.1" in issues[0]
+    assert "LLVM_22.1" in issues[0]
+    assert "std::string" in issues[0]
+
+
+# ---------------------------------------------------------------------------
+# Shim-library allowlist
+# ---------------------------------------------------------------------------
+
+def test_is_shim_lib_recognises_known_benign():
+    assert _is_shim_lib(Path("/usr/lib/libnsl.so.1"))
+    assert _is_shim_lib(Path("/usr/lib/libc_malloc_debug.so"))
+    assert _is_shim_lib(Path("/usr/lib/libc_malloc_debug.so.0"))
+    assert not _is_shim_lib(Path("/usr/lib/libc.so.6"))
+    assert not _is_shim_lib(Path("/usr/lib/libLLVM.so.22.1"))
+
+
+def test_check_so_files_skips_shim_libs(tmp_path):
+    """Known-benign compat shims are skipped — no subprocess calls, no issues."""
+    shim = tmp_path / "libnsl.so.1"
+    shim.write_bytes(b"\x7fELF")
+
+    with patch("sysforge.primitives.abi_check.subprocess.run") as m:
+        issues = check_so_files([shim])
+
+    assert issues == []
+    # ldconfig -p is still called unconditionally, but no nm/readelf on the shim
+    for call in m.call_args_list:
+        cmd = call.args[0]
+        assert cmd[0] != "nm", "nm must not be invoked on shim libs"
+        assert cmd[0] != "readelf", "readelf must not be invoked on shim libs"
