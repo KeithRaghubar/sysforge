@@ -614,11 +614,13 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
     env["MAKEPKG_CONF"] = str(conf_path)
 
-    # Suppress git's pager for any git subprocesses run by PKGBUILDs (e.g.
-    # git log in prepare()). Without this, VCS packages like libinput-git
-    # pause unattended builds waiting for the user to quit less(1).
+    # Suppress pagers for any subprocess run by PKGBUILDs. libinput-git's
+    # meson summary and git log in prepare() both pipe through less(1) and
+    # stall unattended batch builds waiting for the user to quit.
     if not interactive:
         env.setdefault("GIT_PAGER", "cat")
+        env.setdefault("PAGER", "cat")
+        env.setdefault("SYSTEMD_PAGER", "cat")
 
     if extra_env:
         for k, v in sorted(extra_env.items()):
