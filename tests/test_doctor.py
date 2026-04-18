@@ -228,7 +228,9 @@ def _make_args(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
-def test_cmd_doctor_no_targets_prints_usage_exits_2(capsys):
+def test_cmd_doctor_no_targets_prints_usage_exits_2(monkeypatch, capsys):
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
     rc = doctor.cmd_doctor(_make_args())
     assert rc == 2
     err = capsys.readouterr().err
@@ -276,7 +278,7 @@ def test_cmd_doctor_reports_missing_dep(tmp_path, monkeypatch, capsys):
     assert "brokenpkg" in err
     assert "[DEPENDS]" in err
     assert "missinglib" in err
-    assert "Affected: brokenpkg (1)" in err
+    assert "Affected: brokenpkg [repo] (1)" in err
     assert rc == 1
 
 
@@ -342,8 +344,53 @@ def test_cmd_doctor_affected_line_lists_multiple_packages(tmp_path, monkeypatch,
         rc = doctor.cmd_doctor(_make_args(packages=["pkga", "pkgb"]))
 
     err = capsys.readouterr().err
-    assert "Affected: pkga (1), pkgb (1)" in err
+    assert "Affected: pkga [repo] (1), pkgb [repo] (1)" in err
     assert rc == 1
+
+
+def test_cmd_doctor_affected_line_tags_mixed_origins(tmp_path, monkeypatch, capsys):
+    """Affected summary tags [aur] for foreign and [repo] for native packages."""
+    db = tmp_path / "local"
+    db.mkdir()
+    _mk_pkg(db, "nativepkg", "1.0-1", depends=["missinga>=1"], files=[])
+    _mk_pkg(db, "foreignpkg", "1.0-1", depends=["missingb>=1"], files=[])
+    installed = {"nativepkg": "1.0-1", "foreignpkg": "1.0-1"}
+    foreign = {"foreignpkg": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign)
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+
+    def fake_pacman_t(cmd, **_kw):
+        r = MagicMock()
+        r.stdout = "\n".join(cmd[2:]) + "\n"
+        r.returncode = 127
+        return r
+
+    with patch("sysforge.doctor.subprocess.run", side_effect=fake_pacman_t):
+        doctor.cmd_doctor(_make_args(packages=["nativepkg", "foreignpkg"]))
+
+    err = capsys.readouterr().err
+    assert "== nativepkg 1.0-1 [repo] ==" in err
+    assert "== foreignpkg 1.0-1 [aur] ==" in err
+    assert "Affected: nativepkg [repo] (1), foreignpkg [aur] (1)" in err
+
+
+def test_cmd_doctor_not_installed_header_has_no_tag(tmp_path, monkeypatch, capsys):
+    """A not-installed root reads '(not installed)' with no origin tag."""
+    db = tmp_path / "local"
+    db.mkdir()
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+
+    doctor.cmd_doctor(_make_args(packages=["ghost"]))
+    err = capsys.readouterr().err
+    assert "== ghost (not installed) ==" in err
+    assert "[repo]" not in err
+    assert "[aur]" not in err
 
 
 def test_cmd_doctor_output_goes_through_log_ui(tmp_path, monkeypatch, capsys):
@@ -362,7 +409,7 @@ def test_cmd_doctor_output_goes_through_log_ui(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
 
     assert captured.out == ""
-    assert "== cleanpkg 1.0-1 ==" in captured.err
+    assert "== cleanpkg 1.0-1 [repo] ==" in captured.err
     assert "Scanned 1 package(s)" in captured.err
 
 
@@ -662,7 +709,7 @@ def test_cmd_doctor_all_covers_repo_packages(tmp_path, monkeypatch, capsys):
 
     err = capsys.readouterr().err
     assert "steam" in err
-    assert "Affected: steam (1)" in err
+    assert "Affected: steam [repo] (1)" in err
     assert rc == 1
 
 
@@ -682,8 +729,8 @@ def test_cmd_doctor_all_includes_foreign_and_native(tmp_path, monkeypatch, capsy
 
     doctor.cmd_doctor(_make_args(all=True))
     err = capsys.readouterr().err
-    assert "== nativepkg 1.0-1 ==" in err
-    assert "== foreignpkg 1.0-1 ==" in err
+    assert "== nativepkg 1.0-1 [repo] ==" in err
+    assert "== foreignpkg 1.0-1 [aur] ==" in err
 
 
 def test_cmd_doctor_repo_excludes_foreign(tmp_path, monkeypatch, capsys):
@@ -702,7 +749,7 @@ def test_cmd_doctor_repo_excludes_foreign(tmp_path, monkeypatch, capsys):
 
     doctor.cmd_doctor(_make_args(repo=True))
     err = capsys.readouterr().err
-    assert "== nativepkg 1.0-1 ==" in err
+    assert "== nativepkg 1.0-1 [repo] ==" in err
     assert "foreignpkg" not in err
 
 

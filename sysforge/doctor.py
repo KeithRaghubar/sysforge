@@ -307,14 +307,30 @@ def _collect_suggestions(pkgname: str,
     return out
 
 
+def _origin_tag(pkgname: str, foreign: set[str], installed: dict[str, str]) -> str:
+    """
+    Return "[aur]" for foreign packages, "[repo]" for non-foreign installed
+    packages, or "" if the package isn't installed (header already reads
+    "(not installed)" in that case).
+    """
+    if pkgname not in installed:
+        return ""
+    return "[aur]" if pkgname in foreign else "[repo]"
+
+
 def _print_report(pkgname: str, version: str | None,
                   dep_issues: list[str], abi_issues: list[str],
                   quiet: bool,
-                  suggestions: dict[str, list[str]] | None = None) -> None:
+                  suggestions: dict[str, list[str]] | None = None,
+                  origin: str = "") -> None:
     clean = not dep_issues and not abi_issues
     if clean and quiet:
         return
-    _log.ui(f"== {pkgname} {version or '(not installed)'} ==")
+    header = f"== {pkgname} {version or '(not installed)'}"
+    if origin:
+        header += f" {origin}"
+    header += " =="
+    _log.ui(header)
     if clean:
         _log.ui("  clean")
         return
@@ -363,6 +379,7 @@ def cmd_doctor(args):
     file_root = Path("/")
 
     installed = pacman.get_all_installed_packages()
+    foreign = set(pacman.get_foreign_packages().keys())
 
     # Assemble root targets
     roots: list[str] = list(args.packages or [])
@@ -371,7 +388,6 @@ def cmd_doctor(args):
     if args.all:
         roots.extend(installed.keys())
     if getattr(args, "repo", False):
-        foreign = set(pacman.get_foreign_packages().keys())
         roots.extend(name for name in installed if name not in foreign)
     # Dedupe preserving order
     seen_roots: set[str] = set()
@@ -406,7 +422,7 @@ def cmd_doctor(args):
         suggest = False
 
     total_issues = 0
-    affected_pkgs: list[tuple[str, int]] = []
+    affected_pkgs: list[tuple[str, int, str]] = []
     per_pkg_suggestions: list[tuple[str, list[str]]] = []
     global_candidates: list[str] = []
     global_seen: set[str] = set()
@@ -416,9 +432,10 @@ def cmd_doctor(args):
         dep_issues, abi_issues, so_paths = _check_one(
             pkgname, ldconfig_set, installed, file_root
         )
+        origin = _origin_tag(pkgname, foreign, installed)
         n = len(dep_issues) + len(abi_issues)
         if n:
-            affected_pkgs.append((pkgname, n))
+            affected_pkgs.append((pkgname, n, origin))
             total_issues += n
         suggestions = (
             _collect_suggestions(pkgname, dep_issues, abi_issues, so_paths,
@@ -429,6 +446,7 @@ def cmd_doctor(args):
             pkgname, installed.get(pkgname),
             dep_issues, abi_issues, quiet=args.quiet,
             suggestions=suggestions,
+            origin=origin,
         )
         if suggest and suggestions:
             pkg_seen: set[str] = set()
@@ -450,7 +468,10 @@ def cmd_doctor(args):
         f"{len(affected_pkgs)} with issues, {total_issues} total finding(s)."
     )
     if affected_pkgs:
-        names = ", ".join(f"{name} ({n})" for name, n in affected_pkgs)
+        names = ", ".join(
+            f"{name} {tag} ({n})" if tag else f"{name} ({n})"
+            for name, n, tag in affected_pkgs
+        )
         _log.ui(f"Affected: {names}")
     if suggest and global_candidates:
         _log.ui("Suggestions:")
