@@ -747,7 +747,7 @@ Implements `sysforge update` — the update manager. `packages.toml` is the sour
 
 Missing dirs are always cloned — no opt-in required. Repo-source packages (`source = "repo"`) are skipped entirely (no local PKGBUILD to sync).
 
-**Phase 3 — Version check** (parallel, 8 workers). Parse PKGBUILD, look up installed version from `pacman -Q`, compare with `vercmp`. Produces unified `_UpdateResult` for all packages (manifest + discovered). Actions: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`.
+**Phase 3 — Version check** (parallel, 8 workers). Parse PKGBUILD, look up installed version from `pacman -Q`, compare with `vercmp`. Produces unified `_UpdateResult` for all packages (manifest + discovered). Actions: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`. The install check runs before the VCS classification — VCS packages (`-git`/`-svn`/`-hg`/`-bzr`) with no installed sub-package report `NOT_INSTALLED`, not `DEVEL`, so `--devel` won't rebuild a VCS package that has been replaced (e.g. `mesa-git` → repo `mesa`).
 
 **Phase 4 — Summary + dry-run gate.** Print per-package status. Discovered packages annotated with `(discovered)`. Exit if `--dry-run`.
 

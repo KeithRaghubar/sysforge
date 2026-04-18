@@ -484,15 +484,6 @@ def _check_one_pkgbase(
     globals_ = pkgmeta.get("globals", {})
     pkgbuild_ver = format_version(globals_)
 
-    # VCS packages: version is only meaningful after running pkgver()
-    if _is_vcs(pkgbase):
-        return _UpdateResult(
-            pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL",
-            installed_ver=None, pkgbuild_ver=pkgbuild_ver,
-            pkgbuild_path=pkgbuild_path, has_build_record=has_record,
-            discovered=discovered,
-        )
-
     # Check all pkgnames for split packages — installed if ANY sub-package is
     installed_ver = None
     for pn in pkgnames:
@@ -505,6 +496,15 @@ def _check_one_pkgbase(
         return _UpdateResult(
             pkgbase=pkgbase, pkgnames=pkgnames, action="NOT_INSTALLED",
             installed_ver=None, pkgbuild_ver=pkgbuild_ver,
+            pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+            discovered=discovered,
+        )
+
+    # VCS packages: version is only meaningful after running pkgver()
+    if _is_vcs(pkgbase):
+        return _UpdateResult(
+            pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL",
+            installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
             pkgbuild_path=pkgbuild_path, has_build_record=has_record,
             discovered=discovered,
         )

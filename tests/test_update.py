@@ -218,7 +218,8 @@ def test_check_not_installed(tmp_path):
     assert any(r.action == "NOT_INSTALLED" for r in results)
 
 
-def test_vcs_always_flagged(tmp_path):
+def test_vcs_installed_is_devel(tmp_path):
+    """Installed VCS package → DEVEL (rebuildable with --devel)."""
     pkg_dir = tmp_path / "neovim-git"
     pkg_dir.mkdir()
     state_data = {
@@ -239,7 +240,8 @@ def test_vcs_always_flagged(tmp_path):
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
-        patch("sysforge.update.get_all_installed_packages", return_value={}),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={"neovim-git": "r1234.gabcdef-1"}),
     ):
         MockBS.return_value.all_packages.return_value = state_data
         (pkg_dir / "PKGBUILD").write_text("pkgname=neovim-git\n")
@@ -250,6 +252,47 @@ def test_vcs_always_flagged(tmp_path):
             cmd_update(args)
 
     assert any(r.action == "DEVEL" for r in results)
+
+
+def test_vcs_not_installed_is_not_installed(tmp_path):
+    """Uninstalled VCS package → NOT_INSTALLED, not DEVEL.
+
+    Regression: replacing mesa-git with repo mesa left mesa-git in build_state;
+    --devel was rebuilding it because the VCS branch skipped the install check.
+    """
+    pkg_dir = tmp_path / "mesa-git"
+    pkg_dir.mkdir()
+    state_data = {
+        "mesa-git": {
+            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
+            "pkgbase": "mesa-git", "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+        }
+    }
+    args = _make_args(devel=True)
+    parsed = {"globals": {"pkgname": "mesa-git", "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "mesa-git", "source": "aur"}])
+
+    results = []
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={"mesa": "1:25.3.1-1"}),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        (pkg_dir / "PKGBUILD").write_text("pkgname=mesa-git\n")
+
+        def capture(res_list, a):
+            results.extend(res_list)
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(args)
+
+    assert any(r.action == "NOT_INSTALLED" for r in results)
+    assert not any(r.action == "DEVEL" for r in results)
 
 
 def test_dry_run_no_build(tmp_path):
@@ -306,7 +349,8 @@ def test_devel_flag_triggers_vcs_rebuild(tmp_path):
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
-        patch("sysforge.update.get_all_installed_packages", return_value={}),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={"neovim-git": "r1234.gabcdef-1"}),
         patch("sysforge.primitives.makepkg_wrapper.run"),
         patch("sysforge.primitives.cache_probe.reset_session"),
     ):
@@ -349,7 +393,8 @@ def test_no_devel_skips_vcs_build(tmp_path):
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
-        patch("sysforge.update.get_all_installed_packages", return_value={}),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={"neovim-git": "r1234.gabcdef-1"}),
     ):
         MockBS.return_value.all_packages.return_value = state_data
 
