@@ -748,6 +748,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                             "install failed (sudo timeout?):")
                     for p in built_pkgs:
                         _build_log.ui(f"  {p.name}")
+                    from sysforge.ui import progress as _ui_progress
+                    _ui_progress.clear()
                     response = (
                         input(
                             _build_log.prompt_prefix("UI") +
@@ -770,6 +772,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                 return
                             _build_log.error(
                                        f"pacman -U failed (exit {result.returncode})")
+                            from sysforge.ui import progress as _ui_progress
+                            _ui_progress.clear()
                             retry = (
                                 input(
                                     _build_log.prompt_prefix("UI") +
@@ -789,6 +793,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                     # anything else: fall through to retry the full build
                     _build_log.info("Retrying build...")
                 else:
+                    from sysforge.ui import progress as _ui_progress
+                    _ui_progress.clear()
                     response = (
                         input(
                             _build_log.prompt_prefix("UI") +
@@ -1142,6 +1148,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             else:
                 reason = pgo_info
                 if sys.stdin.isatty():
+                    from sysforge.ui import progress as _ui_progress
+                    _ui_progress.clear()
                     try:
                         choice = input(
                             _pgo_log.prompt_prefix("WARN")

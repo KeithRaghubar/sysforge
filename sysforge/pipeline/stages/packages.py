@@ -113,6 +113,8 @@ def _prompt_failed_packages(failed_names, errors, options):
 
     _log.warn("\nOptions:\n  [r] Retry all failed\n  [s] Skip all failed\n  [c] Choose per package\n  [a] Abort")
 
+    from sysforge.ui import progress as _ui_progress
+    _ui_progress.clear()
     while True:
         choice = input("Choice [r/s/c/a]: ").strip().lower()
         if choice == "r":
@@ -126,6 +128,7 @@ def _prompt_failed_packages(failed_names, errors, options):
             for name in failed_names:
                 err = errors.get(name, "unknown error")
                 while True:
+                    _ui_progress.clear()
                     ans = input(f"  {name} ({err}) — [r]etry / [s]kip / [a]bort: ").strip().lower()
                     if ans == "r":
                         retry.add(name)
@@ -299,50 +302,53 @@ class PackagesStage(Stage):
                 )
 
         # Main build loop — walk all_names in manifest order
-        for name in all_names:
-            progress = state.get_package_progress()
-            if name in built and name not in retry_set:
-                _log.ui(f"Skipping {name} (already built)")
-                continue
-            if name in skipped or name in skip_set:
-                _log.ui(f"Skipping {name} (user skipped)")
-                continue
-            if name not in progress.get("remaining", []) and name not in retry_set:
-                # Was already handled (built or skipped) in a prior run
-                continue
+        from sysforge.ui import progress as _ui_progress
+        with _ui_progress.tracker(len(all_names), "building") as _tick:
+            for name in all_names:
+                progress = state.get_package_progress()
+                _tick(name)
+                if name in built and name not in retry_set:
+                    _log.ui(f"Skipping {name} (already built)")
+                    continue
+                if name in skipped or name in skip_set:
+                    _log.ui(f"Skipping {name} (user skipped)")
+                    continue
+                if name not in progress.get("remaining", []) and name not in retry_set:
+                    # Was already handled (built or skipped) in a prior run
+                    continue
 
-            pkg = pkg_map[name]
-            source = pkg.get("source", "aur")
+                pkg = pkg_map[name]
+                source = pkg.get("source", "aur")
 
-            # Effective build mode for repo packages:
-            # global repo_mode default, overridden by per-package pkgbuild_patch.
-            repo_mode = build_cfg.get("repo_mode", "pacman")
-            effective_mode = "profiled" if pkg.get("pkgbuild_patch") else repo_mode
+                # Effective build mode for repo packages:
+                # global repo_mode default, overridden by per-package pkgbuild_patch.
+                repo_mode = build_cfg.get("repo_mode", "pacman")
+                effective_mode = "profiled" if pkg.get("pkgbuild_patch") else repo_mode
 
-            state.mark_package_building(name)
-            state.save()
-
-            try:
-                if source == "repo" and effective_mode == "profiled":
-                    _log.ui(f"{name}: repo source with profiled build mode — building from source")
-                    _build_aur(pkg, build_cfg, config, options, toolchain)
-                elif source == "repo":
-                    _install_repo(pkg, options)
-                elif source in ("aur", "git"):
-                    _build_aur(pkg, build_cfg, config, options, toolchain)
-                else:
-                    raise RuntimeError(f"Unknown source type {source!r} for {name!r}")
-
-                state.mark_package_built(name)
+                state.mark_package_building(name)
                 state.save()
-                built.add(name)
-                _log.ui(f"{name}: done")
 
-            except RuntimeError as e:
-                state.mark_package_failed(name, str(e))
-                state.save()
-                _log.error(f"{name}: FAILED — {e}")
-                # Non-fatal: continue with remaining packages
+                try:
+                    if source == "repo" and effective_mode == "profiled":
+                        _log.ui(f"{name}: repo source with profiled build mode — building from source")
+                        _build_aur(pkg, build_cfg, config, options, toolchain)
+                    elif source == "repo":
+                        _install_repo(pkg, options)
+                    elif source in ("aur", "git"):
+                        _build_aur(pkg, build_cfg, config, options, toolchain)
+                    else:
+                        raise RuntimeError(f"Unknown source type {source!r} for {name!r}")
+
+                    state.mark_package_built(name)
+                    state.save()
+                    built.add(name)
+                    _log.ui(f"{name}: done")
+
+                except RuntimeError as e:
+                    state.mark_package_failed(name, str(e))
+                    state.save()
+                    _log.error(f"{name}: FAILED — {e}")
+                    # Non-fatal: continue with remaining packages
 
         # Check if any packages are still failed after the loop
         final = state.get_package_progress()

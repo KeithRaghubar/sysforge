@@ -92,6 +92,9 @@ sysforge/
 │   ├── __init__.py
 │   ├── cli.py                         # CLI entry point and subcommand wiring
 │   ├── log.py                         # structured logging (stderr + optional file output)
+│   ├── ui/
+│   │   ├── __init__.py
+│   │   └── progress.py                # bottom-anchored batch progress indicator (TTY scroll region + plain fallback)
 │   ├── resolve.py                     # sysforge resolve subcommand
 │   ├── update.py                      # sysforge update subcommand
 │   ├── converge.py                    # sysforge converge subcommand (flag drift detection)
@@ -499,7 +502,7 @@ The packages and kernel stages read these values and inject them into the build 
 
 ## Primitives Layer
 
-All modules independently testable. 898 pytest tests (`pytest` from repo root).
+All modules independently testable. 1281 pytest tests (`make test` from repo root).
 
 ### `log.py`
 
@@ -512,6 +515,17 @@ Structured logging module. Output goes to stderr (verbosity-gated) and optionall
 Four levels: `error` (always shown), `warn` (`-v`), `info` (`-vv`), `debug` (`-vvv`). Set once at CLI entry with `log.set_verbosity(args.verbose)`.
 
 Modules obtain a bound `Logger` instance via `log.get_logger("TAG")`, which stores the tag and exposes the same `ui`/`error`/`warn`/`info`/`debug`/`newline`/`prompt_prefix` interface as the module-level functions. Modules with multiple logging subsystems (e.g. `makepkg_wrapper.py`, `profile.py`, `aur.py`) create multiple named loggers at module level (`_conf_log`, `_build_log`, etc.). Module-level helpers (`open_unified_log`, `close_unified_log`, `open_pkg_log`, `close_pkg_log`, `set_verbosity`, `set_dry_run_mode`) are called directly on the `log` module.
+
+### `ui/progress.py`
+
+Bottom-anchored status line for batch operations (`[3/10] building htop`). Dual-mode renderer picked once at `progress.init()` (called from `cli.main` right after `log.set_verbosity`):
+
+- **TTY mode** — DECSTBM scroll region (`ESC[1;N-1r`) reserves the last row; other output (including subprocess output that inherits the TTY — `makepkg`, `git`, `pacman`) scrolls above it. `SIGWINCH` is wired to re-establish the region and redraw the last status on resize. An `atexit` hook releases the region on interpreter shutdown.
+- **Plain mode** — selected when any of the following is true: `sys.stderr` is not a TTY, `_DRY_RUN`, `TERM=dumb`, `TERM=""`, `CI` set, or `NO_COLOR` set. Emits `[PROGRESS] [i/n] label` through `log.ui()` so the same data reaches logs and pipes without ANSI garbage.
+
+Public API: `init()`, `shutdown()`, `render(current, total, label)`, `clear()`, and a `tracker(total, prefix)` context manager that yields a `tick(label)` callable (auto-clears on exit). `clear()` must be called before any `input()` prompt inside a batch loop so the prompt doesn't land inside the scroll region; the next `tick()` re-establishes the region automatically. Reservation is lazy: entering a tracker alone touches nothing — the first `tick()` call establishes the region.
+
+Integration sites: `sysforge/pipeline/stages/packages.py` (build loop), `sysforge/primitives/aur_resolve.py::build_resolved_deps` (AUR deps), `sysforge/update.py` (threaded git pulls + build loop), `sysforge/fetch.py` (fetch loop). Interactive-prompt call sites in `pipeline/stages/packages.py` and `primitives/makepkg_wrapper.py` each call `progress.clear()` before `input()`.
 
 ### `config.py`
 

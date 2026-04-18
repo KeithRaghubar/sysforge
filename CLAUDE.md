@@ -2,7 +2,7 @@
 
 Read DESIGN.md before proposing architecture or API changes. It is the source of truth for module layout, public APIs, CLI structure, feature status, and known gaps. Do not duplicate it here.
 
-Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Config: TOML, Tests: 1159 pytest tests (`make test`)
+Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Config: TOML, Tests: 1281 pytest tests (`make test`)
 
 ## Dev Environment
 

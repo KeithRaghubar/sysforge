@@ -408,17 +408,20 @@ def _sync_sources(
         pull_candidates.append((pkgbase, d))
 
     pull_failures: dict[str, str] = {}
+    from sysforge.ui import progress as _ui_progress
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(git_pull_rebase, pkgbuild_dir, timeout=pull_timeout): pkgbase
             for pkgbase, pkgbuild_dir in pull_candidates
         }
-        for fut in as_completed(futures):
-            pkgbase_key = futures[fut]
-            try:
-                fut.result()
-            except RuntimeError as e:
-                pull_failures[pkgbase_key] = str(e)
+        with _ui_progress.tracker(len(futures), "git pull") as _tick:
+            for fut in as_completed(futures):
+                pkgbase_key = futures[fut]
+                _tick(pkgbase_key)
+                try:
+                    fut.result()
+                except RuntimeError as e:
+                    pull_failures[pkgbase_key] = str(e)
 
     # --- Sub-phase 4: pull failure recovery (sequential) ---
     # On pull failure, try purge + re-clone. Common when AUR maintainers
@@ -672,36 +675,39 @@ def cmd_update(args) -> None:
     failed_pkgs: list[str] = []
     pgo_skipped_pkgs: list[str] = []
 
-    for result in to_build:
-        search_dir = pkgdest if pkgdest else result.pkgbuild_path.parent
-        build_start = time.time()
-        try:
-            build_run(result.pkgbuild_path, options=BuildOptions(
-                pkg_log=not getattr(args, "no_pkg_log", False),
-                persist_log=getattr(args, "persist_log", False),
-                log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
-                profile_conf=getattr(args, "profile_conf", None),
-                cache_report=False,
-                init_session=(not built_pkgs and not failed_pkgs),
-                update=False,  # source sync already done
-                state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-                extra_flags=batch_flags,
-                strip_flags=strip_flags,
-                interactive=interactive,
-                force_batch=not interactive,
-            ))
-            new_pkgs = sorted(
-                p for p in snapshot_pkg_dir(search_dir)
-                if p.stat().st_mtime >= build_start
-            )
-            built_pkg_files.extend(new_pkgs)
-            built_pkgs.append(result.pkgbase)
-        except PGOBuildSkipped as e:
-            _log.warn(str(e))
-            pgo_skipped_pkgs.append(result.pkgbase)
-        except (RuntimeError, SystemExit) as e:
-            _log.error(f"Build failed for {result.pkgbase!r}: {e}")
-            failed_pkgs.append(result.pkgbase)
+    from sysforge.ui import progress as _ui_progress
+    with _ui_progress.tracker(len(to_build), "building") as _tick:
+        for result in to_build:
+            _tick(result.pkgbase)
+            search_dir = pkgdest if pkgdest else result.pkgbuild_path.parent
+            build_start = time.time()
+            try:
+                build_run(result.pkgbuild_path, options=BuildOptions(
+                    pkg_log=not getattr(args, "no_pkg_log", False),
+                    persist_log=getattr(args, "persist_log", False),
+                    log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
+                    profile_conf=getattr(args, "profile_conf", None),
+                    cache_report=False,
+                    init_session=(not built_pkgs and not failed_pkgs),
+                    update=False,  # source sync already done
+                    state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
+                    extra_flags=batch_flags,
+                    strip_flags=strip_flags,
+                    interactive=interactive,
+                    force_batch=not interactive,
+                ))
+                new_pkgs = sorted(
+                    p for p in snapshot_pkg_dir(search_dir)
+                    if p.stat().st_mtime >= build_start
+                )
+                built_pkg_files.extend(new_pkgs)
+                built_pkgs.append(result.pkgbase)
+            except PGOBuildSkipped as e:
+                _log.warn(str(e))
+                pgo_skipped_pkgs.append(result.pkgbase)
+            except (RuntimeError, SystemExit) as e:
+                _log.error(f"Build failed for {result.pkgbase!r}: {e}")
+                failed_pkgs.append(result.pkgbase)
 
     # ── Phase 6: Install + finalize ───────────────────────────────────────
 

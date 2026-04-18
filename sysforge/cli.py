@@ -915,4 +915,6 @@ def main():
     log.set_verbosity(args.verbose)
     if getattr(args, "dry_run", False):
         log.set_dry_run_mode()
+    from sysforge.ui import progress
+    progress.init()
     args.func(args)

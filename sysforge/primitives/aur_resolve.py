@@ -357,23 +357,26 @@ def build_resolved_deps(
 
     _log.ui(f"Building {len(aur_deps)} AUR dependency(ies) before main package")
 
+    from sysforge.ui import progress as _ui_progress
     built: list[str] = []
-    for i, dep in enumerate(aur_deps):
-        req = ", ".join(dep.required_by)
-        _log.ui(f"  [{i + 1}/{len(aur_deps)}] {dep.name} (required by {req})")
+    with _ui_progress.tracker(len(aur_deps), "AUR dep") as _tick:
+        for i, dep in enumerate(aur_deps):
+            req = ", ".join(dep.required_by)
+            _tick(dep.name)
+            _log.ui(f"  [{i + 1}/{len(aur_deps)}] {dep.name} (required by {req})")
 
-        opts = BuildOptions(
-            extra_flags=["-i"],
-            profile_conf=profile_conf,
-            cc_override=cc_override,
-            cxx_override=cxx_override,
-            ld_override=ld_override,
-            state_dir=state_dir,
-            init_session=(i == 0),
-            pkg_log=False,
-        )
-        makepkg_run(dep.pkgbuild_path, options=opts)
-        built.append(dep.name)
+            opts = BuildOptions(
+                extra_flags=["-i"],
+                profile_conf=profile_conf,
+                cc_override=cc_override,
+                cxx_override=cxx_override,
+                ld_override=ld_override,
+                state_dir=state_dir,
+                init_session=(i == 0),
+                pkg_log=False,
+            )
+            makepkg_run(dep.pkgbuild_path, options=opts)
+            built.append(dep.name)
 
     _log.ui(f"All {len(built)} dependency(ies) built and installed")
     return built

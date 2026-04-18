@@ -98,6 +98,11 @@ def close_unified_log(success: bool = True, persist: bool = False) -> None:
     Close the unified log. Truncates on success unless persist=True.
     """
     global _unified_log_fh
+    try:
+        from sysforge.ui import progress as _progress
+        _progress.shutdown()
+    except Exception:
+        pass
     if _unified_log_fh is None:
         return
     if success and not persist:
@@ -209,6 +214,11 @@ def ui(tag: str, message: str) -> None:
 
 def fatal(tag: str, message: str, exit_code: int = 1) -> NoReturn:
     """Print an error message, write to log files, and terminate the process."""
+    try:
+        from sysforge.ui import progress as _progress
+        _progress.shutdown()
+    except Exception:
+        pass
     error(tag, message)
     sys.exit(exit_code)
 

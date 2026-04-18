@@ -22,24 +22,27 @@ def cmd_fetch(args) -> None:
     config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
     config = load_config(config_paths=config_paths)
 
+    from sysforge.ui import progress as _ui_progress
     failed = 0
-    for pkg in args.pkgs:
-        try:
-            pkgbuild_path = find_pkgbuild(pkg, config)
-        except (FileNotFoundError, RuntimeError) as e:
-            _log.error(str(e))
-            failed += 1
-            continue
-
-        pkgbuild_dir = pkgbuild_path.parent
-
-        if not args.no_update:
+    with _ui_progress.tracker(len(args.pkgs), "fetching") as _tick:
+        for pkg in args.pkgs:
+            _tick(pkg)
             try:
-                git_pull_rebase(pkgbuild_dir)
-            except RuntimeError as e:
-                _log.warn(str(e))
+                pkgbuild_path = find_pkgbuild(pkg, config)
+            except (FileNotFoundError, RuntimeError) as e:
+                _log.error(str(e))
+                failed += 1
+                continue
 
-        print(str(pkgbuild_dir))
+            pkgbuild_dir = pkgbuild_path.parent
+
+            if not args.no_update:
+                try:
+                    git_pull_rebase(pkgbuild_dir)
+                except RuntimeError as e:
+                    _log.warn(str(e))
+
+            print(str(pkgbuild_dir))
 
     if failed:
         sys.exit(1)
