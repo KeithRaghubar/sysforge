@@ -105,6 +105,7 @@ sysforge/
 │       ├── aur_resolve.py             # recursive AUR dependency resolution + topo sort
 │       ├── dep_analysis.py            # pre-build soname dependency checks
 │       ├── provides_lookup.py         # reverse-lookup soname → package (pacman -Fq)
+│       ├── graphics_probe.py          # system-state graphics checks (NVIDIA, Wayland, Steam)
 │       ├── failure.py                 # failure scenario handling (shared)
 │       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
 │       ├── aur.py                     # AUR RPC v5, git clone, pkgctl checkout, GPG key import
@@ -638,6 +639,8 @@ Symbol names are demangled through `c++filt` for readability. Missing NEEDED son
 
 **Shim-library allowlist.** A small set of compat shims shipped by glibc (`libnsl.so.1`, `libc_malloc_debug.so`, `libc_malloc_debug.so.0`) are skipped by `_is_shim_lib`. Their "undefined" symbols are intentional: `libnsl`'s RPC API is implemented by `libtirpc` at runtime (not declared as NEEDED), and `libc_malloc_debug` uses weak-hook override patterns. Without this filter, every `doctor` run reports ~44 findings per glibc that bury the real signal.
 
+**Vendored-binary package skip list.** `_ABI_CHECK_SKIP_PACKAGES` (public predicate `is_abi_check_skipped_package(pkgname)`) names packages that ship prebuilt vendored binaries which will never link cleanly against current system libs (e.g. `steam` carries its own CEF runtime, libcurl, etc. under `/usr/lib/steam/`). `doctor.py` skips the ABI/linkage check for these packages and emits a one-line `[ABI] skipped: vendored prebuilt binaries` note; the depends check still runs since depends drift on these is actionable. Applies at package granularity, not soname — a floor-level noise filter for `doctor --all` / `doctor -s <metapackage>` runs whose closures include these packages.
+
 ### `failure.py`
 
 Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_analysis` to avoid circular imports.
@@ -769,25 +772,57 @@ Closure walk: by default, BFS over the target's `%DEPENDS%` transitively so one 
 
 Per-package headers and the final summary both tag each package with its installation origin — `[aur]` for foreign packages (`pacman -Qm`) and `[repo]` for non-foreign. Example: `== steam 1.0.0.79-1 [aur] ==` and `Affected: steam [aur] (62), mesa [repo] (3)`. The tag reflects where the *currently installed* copy came from, not where updates might be available; an AUR package that's also shipped by a repo still reads `[aur]`. This directly distinguishes the rebuild surface: `[aur]` findings are fixed by a rebuild through sysforge's own build path; `[repo]` findings require a `-Syu` that includes a maintainer rebuild. Not-installed roots read `(not installed)` without an origin tag.
 
-`--graphics` expands to a curated stack: always `mesa[-git]`, `lib32-mesa[-git]`, `vulkan-icd-loader`, `lib32-vulkan-icd-loader`, `libglvnd`, `lib32-libglvnd`, `egl-wayland`, `xwayland[-git]`; plus per-vendor additions driven by the hardware overlay's `gpu_vendors` list (`nvidia` → active `nvidia-*` / `nvidia-open*-dkms` driver + `lib32-nvidia-utils`; `amd` → `vulkan-radeon`, `lib32-vulkan-radeon`, `libva-mesa-driver`; `intel` → `vulkan-intel`, `lib32-vulkan-intel`, `intel-media-driver`). The list is filtered against `pacman -Q` so only installed variants are actually verified — avoids false negatives on boxes that don't have lib32 counterparts. The expansion table lives in `doctor.py::GRAPHICS_BASE` as reference data, not config.
+`--graphics` expands to a curated stack: always `mesa[-git]`, `lib32-mesa[-git]`, `vulkan-icd-loader`, `lib32-vulkan-icd-loader`, `libglvnd`, `lib32-libglvnd`, `egl-wayland[-git]`, `xwayland[-git]` / `xorg-xwayland[-git]`, `wayland` + `lib32-wayland`, `libdrm` + `lib32-libdrm`, `libva` + `lib32-libva`, `libvdpau` + `lib32-libvdpau`, `gamescope`; plus per-vendor additions driven by the hardware overlay's `gpu_vendors` list (`nvidia` → active `nvidia-*` / `nvidia-open*-dkms` driver + `lib32-nvidia-utils` + `nvidia-settings`; `amd` → `vulkan-radeon`, `lib32-vulkan-radeon`, `libva-mesa-driver`; `intel` → `vulkan-intel`, `lib32-vulkan-intel`, `intel-media-driver`). The list is filtered against `pacman -Q` so only installed variants are actually verified — avoids false negatives on boxes that don't have lib32 counterparts. The expansion table lives in `doctor.py::GRAPHICS_BASE` / `GRAPHICS_BY_VENDOR` as reference data, not config.
+
+`--graphics` also runs a second axis of checks — system-state probes from `primitives/graphics_probe.py` — after the package walk completes. These catch classes of graphics breakage that ABI/linkage walks cannot see: kernel-module parameters, NVIDIA driver version skew, session-type / compositor misconfiguration, missing Wayland explicit-sync protocol, Steam client config regressions. See `graphics_probe.py` below for the check inventory. Findings with severity `error` contribute to the exit code; `warn` and `info` do not.
+
+Vendor detection for `--graphics` prefers the hardware profile (`/var/lib/sysforge/hardware_profile.toml` → `[gpu] vendors`); when that file is absent, falls back to `lspci -nnk` scraping, extracting `nvidia`/`amd`/`intel`/`radeon` from VGA-class device strings. The `lspci` fallback is used for both the package-expansion vendor list and the graphics-probe vendor-gating.
 
 `--all` verifies every installed package (`pacman -Q`) — foreign and non-foreign. Slow but comprehensive: a one-shot "is anything broken anywhere" sweep. `--repo` narrows to non-foreign packages only (all of `pacman -Q` minus `pacman -Qm`), for when you want to scope a sweep to the distribution-provided side without walking every AUR/custom build.
 
-`--suggest` (`-s`) reverse-looks up lookup-able findings via `pacman -Fq` and prints `      → provided by: repo/pkg, …` under each issue. Handled finding shapes:
+`--suggest` (`-s`) reverse-looks up lookup-able findings via `pacman -Fq` and prints a kind-tagged candidate line under each issue. Findings are split into two kinds — the distinction matters because they imply different remediations:
 
-- Depends issues whose text matches `soname not found in ldconfig: libfoo.so[=N]` — looked up directly.
-- ABI issues of the form `… NEEDED lib 'libfoo.so.N' not found in ldconfig cache` — the missing soname is looked up directly.
-- ABI issues of the form `<file>: undefined versioned symbol …` — the broken `.so`'s NEEDED sonames (from `abi_check.needed_sonames`) are enumerated and each is reverse-looked-up. The emitted candidate list is one of those NEEDED libs' owning packages, deduped in walk order; one of those is typically the ABI-drift culprit needing update or rebuild.
+- `install` — the soname is **not present** on disk. Installing (or reinstalling) the owning package fixes it. Rendered as `      → install candidate: repo/pkg, …`. Covers:
+  - Depends issues whose text matches `soname not found in ldconfig: libfoo.so[=N]`.
+  - ABI issues of the form `… NEEDED lib 'libfoo.so.N' not found in ldconfig cache`.
+- `abi_drift` — the soname **is present** but one of its versioned symbols no longer resolves. The owning library needs to be **upgraded or rebuilt**, not reinstalled. Rendered as `      → ABI-drift candidate (rebuild/upgrade): repo/pkg, …`. Covers:
+  - ABI issues of the form `<file>: undefined versioned symbol …` — the broken `.so`'s NEEDED sonames (from `abi_check.needed_sonames`) are enumerated and each is reverse-looked-up. One of the resulting NEEDED libs' owning packages is the ABI-drift culprit.
+
+Keeping the two kinds distinct avoids the reinstall-loop failure mode where a user reinstalls the surfaced packages and the same findings reappear (reinstalling the same `.pkg.tar.zst` archive cannot change the versioned symbols on disk).
 
 `lib32` context is inferred from the owning pkgname prefix (`lib32-*` → query `usr/lib32/<soname>`). Requires a synced files db: if `/var/lib/pacman/sync/*.files` is absent, the command emits one warning (`run sudo pacman -Fy`) and runs the rest of the report with lookups skipped — findings still show, exit code unchanged.
 
-End-of-run summary (when any candidates were collected): `Suggestions:` header with one line per affected package (`  <pkg>: cand-a, cand-b`), followed by a `Suggested packages: …` line deduping candidates across the whole run. Useful for turning a long report into a single install/rebuild list.
+End-of-run summary (when any candidates were collected): `Suggestions:` header with one line per affected package (`  <pkg>: install: cand-a, cand-b` and/or `  <pkg>: abi-drift: cand-c`), followed by two deduped lists across the whole run — `Install candidates: …` and `ABI-drift candidates (rebuild or upgrade, not reinstall): …`. Useful for turning a long report into a separated install-vs-rebuild punch list.
 
 All report output (headers, issue lines, summary) flows through `log.ui` (→ stderr + unified log file) so external callers that scrape the unified log see doctor findings.
 
 Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db).
 
-Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — log tag `[PROV]`, public API `files_db_present()` and `suggest_for_soname(entry, *, lib32=False)`. NEEDED-soname extraction reuses `abi_check.needed_sonames` (public since doctor calls it directly for ABI-issue suggestions).
+Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — log tag `[PROV]`, public API `files_db_present()` and `suggest_for_soname(entry, *, lib32=False)`. NEEDED-soname extraction reuses `abi_check.needed_sonames` (public since doctor calls it directly for ABI-issue suggestions). System-state probes live in `sysforge/primitives/graphics_probe.py` — log tag `[GFX]`, public API `check_system_graphics(config, *, gpu_vendors=None)`; invoked from `cmd_doctor` when `--graphics` is set.
+
+### `graphics_probe.py`
+
+Read-only system-state checks for graphics stack health. Complements `doctor.py`'s package-walk: the package walk catches ABI/linkage drift; `graphics_probe` catches misconfiguration the ABI walk is structurally blind to (kernel-module parameters, compositor protocol advertisements, Steam client config, driver kmod/userspace version skew). Each check is a small pure probe that reads `/sys`, `/proc/cmdline`, `pacman -Q`, `lsmod`, `wayland-info`, or `~/.steam/root/config/config.vdf` — no writes, no side effects.
+
+Public API: `check_system_graphics(config, *, gpu_vendors=None) -> list[GraphicsFinding]`. `GraphicsFinding` is a frozen dataclass with `severity` (`SEV_ERROR` | `SEV_WARN` | `SEV_INFO`), `check_id`, `message`, `remediation`. Vendor-gated checks run only when `gpu_vendors` includes the relevant vendor; caller may pass an explicit list or let the function auto-detect via hardware profile / `lspci` fallback.
+
+Check inventory (v1):
+
+| `check_id` | Probe | Gating | Severity when failing |
+|---|---|---|---|
+| `nvidia_modeset` | `/sys/module/nvidia_drm/parameters/modeset`, falls back to `/proc/cmdline` | `nvidia` vendor | error |
+| `nvidia_fbdev` | `/sys/module/nvidia_drm/parameters/fbdev` — required when kernel ≥ 6.11 | `nvidia` vendor + kernel ≥ 6.11 | warn |
+| `nvidia_driver_skew` | compare `nvidia-*-dkms` / `nvidia-utils` / `lib32-nvidia-utils` versions from `pacman -Q` | `nvidia` vendor | error |
+| `nvidia_module_loaded` | `lsmod` for `nvidia` | `nvidia` vendor | error |
+| `multilib_enabled` | grep `/etc/pacman.conf` for `[multilib]` | any GPU vendor | warn |
+| `session_type` | `$XDG_SESSION_TYPE` + `$XDG_CURRENT_DESKTOP` | always | info (context only) |
+| `xwayland_present` | `pacman -Q xorg-xwayland` when session is Wayland | Wayland session | error |
+| `explicit_sync_protocol` | `wayland-info` — look for `wp_linux_drm_syncobj_v1` in advertised globals | Wayland session + `nvidia` vendor | error |
+| `steam_gpu_accel` | parse `~/.steam/root/config/config.vdf` for `GPUAccelerationEnabled "1"` | Steam installed | warn |
+
+The explicit-sync check is the load-bearing one for NVIDIA-on-Wayland black-window breakage: when the compositor doesn't advertise `wp_linux_drm_syncobj_v1`, XWayland games on NVIDIA fall back to implicit sync which is known-broken on the NVIDIA explicit-sync driver path.
+
+Log tag: `[GFX]`. No writes, no sudo, no network.
 
 ---
 
@@ -1079,6 +1114,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 | `[DEP]` | Soname dependency graph checks |
 | `[DOC]` | `sysforge doctor` — installed-package depends + linkage health check |
 | `[FAILURE]` | Failure scenario dispatch |
+| `[GFX]` | `graphics_probe` — system-state graphics checks (kernel params, compositor protocols, driver skew) |
 | `[MANIFEST]` | AUR RPC queries |
 | `[PACMAN]` | pacman database and install operations |
 | `[PROV]` | `provides_lookup` — reverse soname → package via `pacman -Fq` |

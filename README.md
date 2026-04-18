@@ -59,13 +59,17 @@ sysforge packages sync --dry-run
 #     launches as a black window and the graphics stack may be out of sync).
 #     Walks the target's dep closure; --shallow restricts to direct depends.
 sysforge doctor mesa-git
-sysforge doctor --graphics            # curated stack driven by hardware overlay
+sysforge doctor --graphics            # curated stack + system-state probes
+                                      # (nvidia-drm modeset, driver version skew,
+                                      #  Wayland explicit-sync, Steam GPU accel, …)
 sysforge doctor --all                 # every installed package: foreign + non-foreign
 sysforge doctor --repo                # only non-foreign (native repo) packages
 sysforge doctor steam --suggest       # reverse-lookup candidate packages for each
                                       # missing soname / broken ABI via pacman -Fq
-                                      # (requires sudo pacman -Fy first); prints a
-                                      # grouped per-pkg + deduped global summary
+                                      # (requires sudo pacman -Fy first); splits
+                                      # findings into "install candidates" (missing
+                                      # on disk → install) vs "ABI-drift candidates"
+                                      # (present but out of sync → rebuild/upgrade)
 ```
 
 To override system defaults without modifying `/etc/sysforge/`, create user copies in `~/.config/sysforge/`.

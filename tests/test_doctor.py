@@ -429,7 +429,7 @@ def test_collect_suggestions_depends_soname(monkeypatch):
     issue = "soname not found in ldconfig: libcap.so=2"
     out = doctor._collect_suggestions("somepkg", [issue], [])
 
-    assert out == {issue: ["core/libcap"]}
+    assert out == {issue: (doctor.SUGGEST_KIND_INSTALL, ["core/libcap"])}
     assert calls == [("libcap.so=2", False)]
 
 
@@ -445,7 +445,7 @@ def test_collect_suggestions_lib32_context(monkeypatch):
     issue = "soname not found in ldconfig: libfoo.so=3"
     out = doctor._collect_suggestions("lib32-somepkg", [issue], [])
 
-    assert out == {issue: ["multilib/lib32-foo"]}
+    assert out == {issue: (doctor.SUGGEST_KIND_INSTALL, ["multilib/lib32-foo"])}
     assert calls == [("libfoo.so=3", True)]
 
 
@@ -461,7 +461,7 @@ def test_collect_suggestions_abi_missing_needed(monkeypatch):
         "ldconfig cache — may not be installed or ldconfig not yet run"
     )
     out = doctor._collect_suggestions("somepkg", [], [issue])
-    assert out == {issue: ["extra/bar"]}
+    assert out == {issue: (doctor.SUGGEST_KIND_INSTALL, ["extra/bar"])}
 
 
 def test_collect_suggestions_skips_unparseable_issues(monkeypatch):
@@ -508,7 +508,9 @@ def test_collect_suggestions_abi_undef_versioned_symbol(monkeypatch):
     out = doctor._collect_suggestions(
         "somepkg", [], [issue], so_paths=[so_path],
     )
-    assert out == {issue: ["core/gcc-libs", "core/glibc"]}
+    assert out == {
+        issue: (doctor.SUGGEST_KIND_ABI_DRIFT, ["core/gcc-libs", "core/glibc"])
+    }
     assert calls == [("libstdc++.so.6", False), ("libc.so.6", False)]
 
 
@@ -601,7 +603,7 @@ def test_cmd_doctor_suggest_renders_candidate_line(tmp_path, monkeypatch, capsys
     err = capsys.readouterr().err
 
     assert "soname not found in ldconfig: libmissing.so=3" in err
-    assert "→ provided by: core/missinglib" in err
+    assert "→ install candidate: core/missinglib" in err
     assert rc == 1
 
 
@@ -625,7 +627,7 @@ def test_cmd_doctor_suggest_no_candidate_line(tmp_path, monkeypatch, capsys):
     doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
     err = capsys.readouterr().err
 
-    assert "→ provided by: no candidate in files db" in err
+    assert "→ install candidate: no candidate in files db" in err
 
 
 def test_cmd_doctor_suggest_warns_on_stale_files_db(tmp_path, monkeypatch, capsys):
@@ -652,7 +654,8 @@ def test_cmd_doctor_suggest_warns_on_stale_files_db(tmp_path, monkeypatch, capsy
 
     # Issue still reported; no candidate line; exit code unchanged.
     assert "soname not found in ldconfig: libmissing.so=3" in err
-    assert "→ provided by" not in err
+    assert "→ install candidate" not in err
+    assert "→ ABI-drift candidate" not in err
     assert rc == 1
 
 
@@ -683,10 +686,99 @@ def test_cmd_doctor_suggest_summary_rollup(tmp_path, monkeypatch, capsys):
 
     # Grouped per-pkg lines, preserving per-pkg order
     assert "Suggestions:" in err
-    assert "  pkga: core/shared" in err
-    assert "  pkgb: core/shared, extra/uniq" in err
-    # Deduped global line — core/shared appears once
-    assert "Suggested packages: core/shared, extra/uniq" in err
+    assert "  pkga: install: core/shared" in err
+    assert "  pkgb: install: core/shared, extra/uniq" in err
+    # Deduped global install line — core/shared appears once
+    assert "Install candidates: core/shared, extra/uniq" in err
+    # No ABI-drift findings in this test
+    assert "ABI-drift candidates" not in err
+
+
+def test_cmd_doctor_suggest_abi_drift_summary(tmp_path, monkeypatch, capsys):
+    """
+    An `undefined versioned symbol` finding lands under the ABI-drift bucket
+    in both the per-issue label and the end-of-run summary, kept separate
+    from install candidates.
+    """
+    db = tmp_path / "local"
+    db.mkdir()
+    so_rel = "usr/lib/libbroken.so.1"
+    _mk_pkg(db, "driftpkg", "1.0-1", depends=[], files=[so_rel])
+    installed = {"driftpkg": "1.0-1"}
+
+    abs_so = tmp_path / so_rel
+    abs_so.parent.mkdir(parents=True, exist_ok=True)
+    abs_so.write_bytes(b"")
+
+    abi_issue = (
+        "libbroken.so.1: undefined versioned symbol not found in any "
+        "NEEDED lib: sym@FOO_2.0"
+    )
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    monkeypatch.setattr(doctor, "files_db_present", lambda: True)
+    monkeypatch.setattr(doctor, "check_so_files", lambda so_paths: [abi_issue])
+    monkeypatch.setattr(doctor, "needed_sonames", lambda p: ["libc.so.6"])
+    monkeypatch.setattr(
+        doctor, "suggest_for_soname",
+        lambda entry, *, lib32=False, run_fn=None: ["core/glibc"],
+    )
+    # doctor uses file_root = Path("/"), so point _so_paths_for_pkg at our fake.
+    monkeypatch.setattr(
+        doctor, "_so_paths_for_pkg",
+        lambda pkgname, file_root: [abs_so],
+    )
+
+    rc = doctor.cmd_doctor(_make_args(packages=["driftpkg"], suggest=True))
+    err = capsys.readouterr().err
+
+    assert "→ ABI-drift candidate (rebuild/upgrade): core/glibc" in err
+    # End-of-run summary
+    assert "driftpkg: ABI-drift: core/glibc" in err
+    assert (
+        "ABI-drift candidates (rebuild or upgrade, not reinstall): core/glibc"
+        in err
+    )
+    # No install line because there are no install-kind findings.
+    assert "Install candidates:" not in err
+    assert rc == 1
+
+
+def test_cmd_doctor_abi_check_skipped_for_vendored_package(
+    tmp_path, monkeypatch, capsys,
+):
+    """
+    Packages in abi_check's bundled-binary skip list (`steam` etc.) have
+    their ABI pass suppressed with an explanatory one-liner. Depends check
+    still runs, and a failing depends is still reported.
+    """
+    db = tmp_path / "local"
+    db.mkdir()
+    # Steam with a broken depends — depends issue must still surface.
+    _mk_pkg(db, "steam", "1.0-1",
+            depends=["libmissing.so=9"], files=["usr/lib/steam/libvendored.so"])
+    installed = {"steam": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+
+    # check_so_files must NOT be invoked for steam.
+    def fail_if_called(*_a, **_kw):
+        raise AssertionError("check_so_files must be skipped for steam")
+    monkeypatch.setattr(doctor, "check_so_files", fail_if_called)
+
+    rc = doctor.cmd_doctor(_make_args(packages=["steam"]))
+    err = capsys.readouterr().err
+
+    assert "[ABI] skipped: vendored prebuilt binaries" in err
+    assert "[DEPENDS] 1 issue(s):" in err
+    assert "libmissing.so=9" in err
+    assert rc == 1
 
 
 def test_cmd_doctor_all_covers_repo_packages(tmp_path, monkeypatch, capsys):

@@ -626,8 +626,11 @@ def _add_doctor_parser(sub):
         help="One or more installed package names to verify. "
              "Without any PKG/--graphics/--all, the command exits with usage.")
     p.add_argument("--graphics", action="store_true",
-        help="Expand to the graphics stack (mesa, vulkan, libglvnd, egl-wayland, "
-             "xwayland, plus per-vendor drivers from the hardware overlay's gpu_vendors).")
+        help="Expand to the graphics stack (mesa, vulkan, libglvnd, wayland, "
+             "libdrm, libva, libvdpau, egl-wayland, xwayland, gamescope, plus "
+             "per-vendor drivers from the hardware overlay's gpu_vendors) AND "
+             "run system-state probes (nvidia-drm modeset, driver version skew, "
+             "Wayland explicit-sync protocol, Steam GPU accel, session type).")
     p.add_argument("--all", action="store_true", dest="all",
         help="Verify every installed package — foreign and non-foreign (pacman -Q). "
              "Slow but comprehensive.")
@@ -639,8 +642,11 @@ def _add_doctor_parser(sub):
         help="Suppress clean lines; print only packages with issues.")
     p.add_argument("--suggest", "-s", action="store_true",
         help="For each unsatisfied soname, look up candidate packages "
-             "via `pacman -Fq`. Requires a synced files db "
-             "(`sudo pacman -Fy`).")
+             "via `pacman -Fq`. Findings split into 'install candidates' "
+             "(missing from disk — install the package) and 'ABI-drift "
+             "candidates' (present but one of their versioned symbols no "
+             "longer resolves — rebuild or upgrade, not reinstall). "
+             "Requires a synced files db (`sudo pacman -Fy`).")
     p.set_defaults(func=_cmd_doctor)
 
 

@@ -1,4 +1,4 @@
-.TH SYSFORGE "1" "2026\-04\-11" "sysforge" "Generated Python Manual"
+.TH SYSFORGE "1" "2026\-04\-18" "sysforge" "Generated Python Manual"
 .SH NAME
 sysforge
 .SH SYNOPSIS
@@ -24,6 +24,9 @@ Show which profile would be applied to a package and why.
 .TP
 \fBsysforge\fR \fI\,converge\/\fR
 Detect and repair packages whose build flags have drifted from the current profile.
+.TP
+\fBsysforge\fR \fI\,doctor\/\fR
+Health\-check installed package depends + shared\-library linkage.
 .TP
 \fBsysforge\fR \fI\,packages\/\fR
 Manage packages.toml (list, add, remove, sync).
@@ -128,12 +131,11 @@ Skip git pull \-\-rebase for packages that are already cloned.
 Path to a flag_profiles.toml to use instead of the default.
 
 .SH COMMAND \fI\,'sysforge update'\/\fR
-usage: sysforge update [\-h] [\-\-all] [\-\-dry\-run] [\-\-devel] [\-\-no\-update]
+usage: sysforge update [\-h] [\-\-all] [\-\-dry\-run] [\-\-devel] [\-\-offline]
                        [\-\-packages FILE] [\-\-state\-dir DIR]
                        [\-\-profile\-conf FILE] [\-\-cache\-report] [\-\-no\-pkg\-log]
                        [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-makepkg FLAGS]
-                       [\-\-no\-unified\-log] [\-\-purge\-log] [\-\-interactive]
-                       [\-\-no\-cleanbuild] [\-\-cleansrc] [\-\-fetch\-missing]
+                       [\-\-interactive] [\-\-no\-cleanbuild] [\-\-cleansrc]
                        [PKG ...]
 
 .TP
@@ -155,8 +157,8 @@ Show what would be rebuilt without doing it.
 Include VCS packages (\-git, \-svn, \-hg, \-bzr) in the rebuild.
 
 .TP
-\fB\-\-no\-update\fR
-Skip git pull \-\-rebase before checking versions.
+\fB\-\-offline\fR
+No network: skip git pulls, clones, and AUR RPC. Pure local version check.
 
 .TP
 \fB\-\-packages\fR \fI\,FILE\/\fR
@@ -193,14 +195,6 @@ Extra flags passed verbatim to makepkg (e.g. \-m '\-f' to force rebuild).
 Combined short flags are expanded: \-sfci becomes \-s \-f \-c \-i.
 
 .TP
-\fB\-\-no\-unified\-log\fR
-Disable the unified log file (default: state_dir/sysforge\-update.log).
-
-.TP
-\fB\-\-purge\-log\fR
-Truncate the unified log before this run instead of appending.
-
-.TP
 \fB\-\-interactive\fR
 Pause on build failures to allow manual correction (default: log failure and
 continue).
@@ -216,13 +210,8 @@ Purge each package's src dir and re\-clone before building. Per\-package fatal
 if the clone has uncommitted changes, unpushed commits, or no upstream — that
 package is reported failed and the run continues.
 
-.TP
-\fB\-\-fetch\-missing\fR
-Auto\-clone packages whose src dir is missing or has no PKGBUILD instead of
-skipping them. Combine with \-\-all for an unattended full system update.
-
 .SH COMMAND \fI\,'sysforge resolve'\/\fR
-usage: sysforge resolve [\-h] [\-\-show\-flags] [\-\-deps] [\-\-profile\-conf FILE] PKG
+usage: sysforge resolve [\-h] [\-\-show\-flags | \-\-deps] [\-\-profile\-conf FILE] PKG
 
 .TP
 \fBPKG\fR
@@ -279,6 +268,50 @@ cleanbuild). \-f is always injected automatically.
 .TP
 \fB\-\-cache\-report\fR
 Print a structured cache summary after \-\-apply runs.
+
+.SH COMMAND \fI\,'sysforge doctor'\/\fR
+usage: sysforge doctor [\-h] [\-\-graphics] [\-\-all] [\-\-repo] [\-\-shallow]
+                       [\-\-quiet] [\-\-suggest]
+                       [PKG ...]
+
+.TP
+\fBPKG\fR
+One or more installed package names to verify. Without any
+PKG/\-\-graphics/\-\-all, the command exits with usage.
+
+.SH OPTIONS \fI\,'sysforge doctor'\/\fR
+.TP
+\fB\-\-graphics\fR
+Expand to the graphics stack (mesa, vulkan, libglvnd, wayland, libdrm, libva,
+libvdpau, egl\-wayland, xwayland, gamescope, plus per\-vendor drivers from the
+hardware overlay's gpu_vendors) AND run system\-state probes (nvidia\-drm
+modeset, driver version skew, Wayland explicit\-sync protocol, Steam GPU accel,
+session type).
+
+.TP
+\fB\-\-all\fR
+Verify every installed package — foreign and non\-foreign (pacman \-Q). Slow but
+comprehensive.
+
+.TP
+\fB\-\-repo\fR
+Verify every non\-foreign (native repo) package. Narrower than \-\-all.
+
+.TP
+\fB\-\-shallow\fR
+Do not recurse into transitive dependencies of each target.
+
+.TP
+\fB\-\-quiet\fR, \fB\-q\fR
+Suppress clean lines; print only packages with issues.
+
+.TP
+\fB\-\-suggest\fR, \fB\-s\fR
+For each unsatisfied soname, look up candidate packages via `pacman \-Fq`.
+Findings split into 'install candidates' (missing from disk — install the
+package) and 'ABI\-drift candidates' (present but one of their versioned
+symbols no longer resolves — rebuild or upgrade, not reinstall). Requires a
+synced files db (`sudo pacman \-Fy`).
 
 .SH COMMAND \fI\,'sysforge packages'\/\fR
 usage: sysforge packages [\-h] [\-\-packages FILE] [\-\-state] [\-\-diagnose]

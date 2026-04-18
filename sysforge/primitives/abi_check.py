@@ -232,9 +232,31 @@ _ABI_CHECK_SHIM_LIBS = {
 }
 
 
+# Packages that ship vendored prebuilt binaries compiled against a fixed
+# distro (typically Ubuntu/Debian steam-runtime). Their undefined versioned
+# symbols mirror that baked-in toolchain, not the host system — reinstalling
+# cannot fix it and the findings overwhelm real signal. Skipped at the
+# package level in doctor's ABI pass. Depends check still runs.
+#
+# Keep this list conservative: only packages that ship a self-contained
+# bundle under their own prefix. Do NOT add metapackages (e.g.
+# steam-native-runtime) whose closures pull real system libs we want
+# checked.
+_ABI_CHECK_SKIP_PACKAGES = {
+    "steam",
+    "discord",
+    "brave-bin",
+}
+
+
 def _is_shim_lib(so_path: Path) -> bool:
     """True if so_path is a known-benign compat shim that should be skipped."""
     return so_path.name in _ABI_CHECK_SHIM_LIBS
+
+
+def is_abi_check_skipped_package(pkgname: str) -> bool:
+    """True if pkgname is in the bundled-binary skip list."""
+    return pkgname in _ABI_CHECK_SKIP_PACKAGES
 
 
 def check_so_files(so_paths: list[Path]) -> list[str]:

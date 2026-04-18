@@ -31,12 +31,20 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives import pacman
-from sysforge.primitives.abi_check import check_so_files, needed_sonames
+from sysforge.primitives.abi_check import (
+    check_so_files,
+    is_abi_check_skipped_package,
+    needed_sonames,
+)
 from sysforge.primitives.aur_resolve import _strip_version
 from sysforge.primitives.dep_analysis import (
     _default_ldconfig_fn,
     _parse_ldconfig,
     soname_satisfied,
+)
+from sysforge.primitives.graphics_probe import (
+    SEV_ERROR as _GFX_SEV_ERROR,
+    check_system_graphics,
 )
 from sysforge.primitives.provides_lookup import (
     files_db_present,
@@ -73,8 +81,14 @@ GRAPHICS_BASE = [
     "vulkan-icd-loader", "lib32-vulkan-icd-loader",
     "vulkan-headers", "vulkan-headers-git",
     "libglvnd", "lib32-libglvnd",
-    "egl-wayland", "lib32-egl-wayland",
+    "egl-wayland", "lib32-egl-wayland", "egl-wayland-git", "lib32-egl-wayland-git",
     "xwayland", "xwayland-git",
+    "xorg-xwayland", "xorg-xwayland-git",
+    "wayland", "lib32-wayland",
+    "libdrm", "lib32-libdrm",
+    "libva", "lib32-libva",
+    "libvdpau", "lib32-libvdpau",
+    "gamescope",
 ]
 
 GRAPHICS_BY_VENDOR = {
@@ -82,6 +96,7 @@ GRAPHICS_BY_VENDOR = {
         "nvidia", "nvidia-dkms",
         "nvidia-open", "nvidia-open-dkms",
         "nvidia-utils", "lib32-nvidia-utils",
+        "nvidia-settings",
     ],
     "amd": [
         "vulkan-radeon", "lib32-vulkan-radeon",
@@ -96,21 +111,64 @@ GRAPHICS_BY_VENDOR = {
 
 
 def _read_gpu_vendors(config) -> list[str]:
-    """Read gpu_vendors from hardware_profile.toml. Empty list if absent."""
+    """
+    Return GPU vendors for the current box.
+
+    Preferred source is `hardware_profile.toml` (written by the hardware
+    pipeline stage). When absent or unreadable, fall back to parsing
+    `lspci -nn`. Keeps `--graphics` and graphics_probe working on systems
+    that haven't run the hardware stage.
+    """
     hw_path = config.get("hardware_profile") if config else None
-    if not hw_path:
-        return []
-    path = Path(hw_path).expanduser()
-    if not path.is_file():
-        return []
+    if hw_path:
+        path = Path(hw_path).expanduser()
+        if path.is_file():
+            try:
+                with open(path, "rb") as f:
+                    hw = tomllib.load(f)
+                vendors = hw.get("hardware", {}).get("gpu_vendors", [])
+                result = [v for v in vendors if isinstance(v, str)]
+                if result:
+                    return result
+            except Exception as e:
+                _log.warn(f"failed to read hardware_profile at {path}: {e}")
+    return _detect_gpu_vendors_via_lspci()
+
+
+def _detect_gpu_vendors_via_lspci() -> list[str]:
+    """
+    Run `lspci -nn` and map VGA/3D-controller lines to vendor names.
+    Returns an empty list if lspci is missing or fails.
+    """
     try:
-        with open(path, "rb") as f:
-            hw = tomllib.load(f)
-    except Exception as e:
-        _log.warn(f"failed to read hardware_profile at {path}: {e}")
+        result = subprocess.run(
+            ["lspci", "-nn"],
+            capture_output=True, text=True, check=False,
+        )
+    except FileNotFoundError:
         return []
-    vendors = hw.get("hardware", {}).get("gpu_vendors", [])
-    return [v for v in vendors if isinstance(v, str)]
+    if result.returncode != 0:
+        return []
+    vendors: list[str] = []
+    seen: set[str] = set()
+    for line in result.stdout.splitlines():
+        # Match VGA compatible controller / 3D controller / Display controller
+        if not re.search(r"VGA compatible controller|3D controller|Display controller",
+                         line, re.IGNORECASE):
+            continue
+        lower = line.lower()
+        if "nvidia" in lower:
+            vendor = "nvidia"
+        elif "advanced micro devices" in lower or " amd " in lower or "[amd/ati]" in lower:
+            vendor = "amd"
+        elif "intel" in lower:
+            vendor = "intel"
+        else:
+            continue
+        if vendor not in seen:
+            seen.add(vendor)
+            vendors.append(vendor)
+    return vendors
 
 
 def _expand_graphics_targets(config, installed: dict[str, str]) -> list[str]:
@@ -230,15 +288,35 @@ def _walk_closure(roots: list[str], shallow: bool) -> list[str]:
 
 def _check_one(pkgname: str, ldconfig_set: set[str],
                installed: dict[str, str],
-               file_root: Path) -> tuple[list[str], list[str], list[Path]]:
-    """Return (dep_issues, abi_issues, so_paths) for one package."""
+               file_root: Path) -> tuple[list[str], list[str], list[Path], bool]:
+    """
+    Return (dep_issues, abi_issues, so_paths, abi_skipped) for one package.
+
+    abi_skipped is True when the package is in abi_check's bundled-binary
+    skip list — its ABI pass is suppressed, but the depends check still runs.
+    """
     if pkgname not in installed:
-        return ([f"{pkgname}: not installed"], [], [])
+        return ([f"{pkgname}: not installed"], [], [], False)
     depends = pacman.get_package_depends(pkgname)
     dep_issues = _check_depends(depends, ldconfig_set)
     so_paths = _so_paths_for_pkg(pkgname, file_root)
+    if is_abi_check_skipped_package(pkgname):
+        return (dep_issues, [], so_paths, True)
     abi_issues = check_so_files(so_paths)
-    return (dep_issues, abi_issues, so_paths)
+    return (dep_issues, abi_issues, so_paths, False)
+
+
+# Suggestion kinds. Each finding implies a different fix action:
+#   "install"   — soname missing from ldconfig; the candidate package
+#                 should be installed (or reinstalled, if its files are
+#                 corrupted).
+#   "abi_drift" — soname IS installed but its exported versioned symbols
+#                 don't match what the dependent .so was built against.
+#                 Reinstalling the same package cannot fix this — the
+#                 candidate needs an update, or a rebuild against the
+#                 current system.
+SUGGEST_KIND_INSTALL = "install"
+SUGGEST_KIND_ABI_DRIFT = "abi_drift"
 
 
 def _collect_suggestions(pkgname: str,
@@ -246,18 +324,19 @@ def _collect_suggestions(pkgname: str,
                          abi_issues: list[str],
                          so_paths: list[Path] | None = None,
                          cache: dict[tuple[str, bool], list[str]] | None = None,
-                         ) -> dict[str, list[str]]:
+                         ) -> dict[str, tuple[str, list[str]]]:
     """
     For each lookup-able issue, reverse-lookup candidate packages via
-    `pacman -Fq`. Returns {issue_text: [candidate, ...]}. Issues with no
-    extractable lookup are absent from the mapping.
+    `pacman -Fq`. Returns {issue_text: (kind, [candidate, ...])}. Issues
+    with no extractable lookup are absent from the mapping.
 
     Handled shapes:
-      - dep: "soname not found in ldconfig: <soname>"
-      - abi: "<file>: NEEDED lib '<soname>' not found in ldconfig cache …"
-      - abi: "<file>: undefined versioned symbol …" — enumerate the NEEDED
-        sonames of <file> and suggest whichever packages own them; those
-        are the likely ABI-drift culprits.
+      - dep: "soname not found in ldconfig: <soname>"       (kind=install)
+      - abi: "<file>: NEEDED lib '<soname>' not found …"    (kind=install)
+      - abi: "<file>: undefined versioned symbol …"         (kind=abi_drift)
+        — enumerate the NEEDED sonames of <file> and suggest whichever
+        packages own them; those are the likely ABI-drift culprits and
+        the fix is upgrade or rebuild, not reinstall.
 
     If `cache` is provided it is consulted/populated per (soname, lib32)
     so repeated lookups across issues and across packages in a single
@@ -277,17 +356,17 @@ def _collect_suggestions(pkgname: str,
             cache[key] = result
         return result
 
-    out: dict[str, list[str]] = {}
+    out: dict[str, tuple[str, list[str]]] = {}
     for issue in dep_issues:
         m = _DEP_SONAME_ISSUE_RE.match(issue)
         if not m:
             continue
-        out[issue] = _lookup(m.group(1))
+        out[issue] = (SUGGEST_KIND_INSTALL, _lookup(m.group(1)))
 
     for issue in abi_issues:
         m = _ABI_NEEDED_ISSUE_RE.search(issue)
         if m:
-            out[issue] = _lookup(m.group(1))
+            out[issue] = (SUGGEST_KIND_INSTALL, _lookup(m.group(1)))
             continue
         m = _ABI_UNDEF_ISSUE_RE.match(issue)
         if not m:
@@ -303,7 +382,7 @@ def _collect_suggestions(pkgname: str,
                     continue
                 seen.add(cand)
                 merged.append(cand)
-        out[issue] = merged
+        out[issue] = (SUGGEST_KIND_ABI_DRIFT, merged)
     return out
 
 
@@ -318,20 +397,27 @@ def _origin_tag(pkgname: str, foreign: set[str], installed: dict[str, str]) -> s
     return "[aur]" if pkgname in foreign else "[repo]"
 
 
+_SUGGEST_LABEL = {
+    SUGGEST_KIND_INSTALL: "install candidate",
+    SUGGEST_KIND_ABI_DRIFT: "ABI-drift candidate (rebuild/upgrade)",
+}
+
+
 def _print_report(pkgname: str, version: str | None,
                   dep_issues: list[str], abi_issues: list[str],
                   quiet: bool,
-                  suggestions: dict[str, list[str]] | None = None,
-                  origin: str = "") -> None:
+                  suggestions: dict[str, tuple[str, list[str]]] | None = None,
+                  origin: str = "",
+                  abi_skipped: bool = False) -> None:
     clean = not dep_issues and not abi_issues
-    if clean and quiet:
+    if clean and quiet and not abi_skipped:
         return
     header = f"== {pkgname} {version or '(not installed)'}"
     if origin:
         header += f" {origin}"
     header += " =="
     _log.ui(header)
-    if clean:
+    if clean and not abi_skipped:
         _log.ui("  clean")
         return
 
@@ -339,17 +425,21 @@ def _print_report(pkgname: str, version: str | None,
         _log.ui(f"    - {issue}")
         if suggestions is None or issue not in suggestions:
             return
-        cands = suggestions[issue]
+        kind, cands = suggestions[issue]
+        label = _SUGGEST_LABEL.get(kind, "candidate")
         if cands:
-            _log.ui(f"      → provided by: {', '.join(cands)}")
+            _log.ui(f"      → {label}: {', '.join(cands)}")
         else:
-            _log.ui("      → provided by: no candidate in files db")
+            _log.ui(f"      → {label}: no candidate in files db")
 
     if dep_issues:
         _log.ui(f"  [DEPENDS] {len(dep_issues)} issue(s):")
         for i in dep_issues:
             _emit_issue(i)
-    if abi_issues:
+    if abi_skipped:
+        _log.ui("  [ABI] skipped: vendored prebuilt binaries "
+                "(reinstall cannot change on-disk symbols)")
+    elif abi_issues:
         _log.ui(f"  [ABI] {len(abi_issues)} issue(s):")
         for i in abi_issues:
             _emit_issue(i)
@@ -423,13 +513,15 @@ def cmd_doctor(args):
 
     total_issues = 0
     affected_pkgs: list[tuple[str, int, str]] = []
-    per_pkg_suggestions: list[tuple[str, list[str]]] = []
-    global_candidates: list[str] = []
-    global_seen: set[str] = set()
+    per_pkg_suggestions: list[tuple[str, list[str], list[str]]] = []
+    global_install: list[str] = []
+    global_drift: list[str] = []
+    global_install_seen: set[str] = set()
+    global_drift_seen: set[str] = set()
     suggest_cache: dict[tuple[str, bool], list[str]] = {}
 
     for pkgname in targets:
-        dep_issues, abi_issues, so_paths = _check_one(
+        dep_issues, abi_issues, so_paths, abi_skipped = _check_one(
             pkgname, ldconfig_set, installed, file_root
         )
         origin = _origin_tag(pkgname, foreign, installed)
@@ -447,20 +539,33 @@ def cmd_doctor(args):
             dep_issues, abi_issues, quiet=args.quiet,
             suggestions=suggestions,
             origin=origin,
+            abi_skipped=abi_skipped,
         )
         if suggest and suggestions:
-            pkg_seen: set[str] = set()
-            pkg_flat: list[str] = []
-            for cands in suggestions.values():
+            pkg_install: list[str] = []
+            pkg_drift: list[str] = []
+            pkg_install_seen: set[str] = set()
+            pkg_drift_seen: set[str] = set()
+            for kind, cands in suggestions.values():
+                if kind == SUGGEST_KIND_INSTALL:
+                    local, local_seen, gbl, gbl_seen = (
+                        pkg_install, pkg_install_seen,
+                        global_install, global_install_seen,
+                    )
+                else:
+                    local, local_seen, gbl, gbl_seen = (
+                        pkg_drift, pkg_drift_seen,
+                        global_drift, global_drift_seen,
+                    )
                 for c in cands:
-                    if c not in pkg_seen:
-                        pkg_seen.add(c)
-                        pkg_flat.append(c)
-                    if c not in global_seen:
-                        global_seen.add(c)
-                        global_candidates.append(c)
-            if pkg_flat:
-                per_pkg_suggestions.append((pkgname, pkg_flat))
+                    if c not in local_seen:
+                        local_seen.add(c)
+                        local.append(c)
+                    if c not in gbl_seen:
+                        gbl_seen.add(c)
+                        gbl.append(c)
+            if pkg_install or pkg_drift:
+                per_pkg_suggestions.append((pkgname, pkg_install, pkg_drift))
 
     _log.newline()
     _log.ui(
@@ -473,9 +578,41 @@ def cmd_doctor(args):
             for name, n, tag in affected_pkgs
         )
         _log.ui(f"Affected: {names}")
-    if suggest and global_candidates:
+    if suggest and (global_install or global_drift):
         _log.ui("Suggestions:")
-        for name, cands in per_pkg_suggestions:
-            _log.ui(f"  {name}: {', '.join(cands)}")
-        _log.ui(f"Suggested packages: {', '.join(global_candidates)}")
-    return 1 if affected_pkgs else 0
+        for name, inst, drift in per_pkg_suggestions:
+            parts: list[str] = []
+            if inst:
+                parts.append(f"install: {', '.join(inst)}")
+            if drift:
+                parts.append(f"ABI-drift: {', '.join(drift)}")
+            _log.ui(f"  {name}: {' | '.join(parts)}")
+        if global_install:
+            _log.ui(f"Install candidates: {', '.join(global_install)}")
+        if global_drift:
+            _log.ui(
+                "ABI-drift candidates (rebuild or upgrade, not reinstall): "
+                f"{', '.join(global_drift)}"
+            )
+
+    # System-state graphics probes — only under --graphics.
+    gfx_error_count = 0
+    if args.graphics:
+        gpu_vendors = _read_gpu_vendors(config)
+        findings = check_system_graphics(config, gpu_vendors=gpu_vendors)
+        if findings:
+            _log.newline()
+            _log.ui("== system graphics checks ==")
+            for f in findings:
+                _log.ui(f"  [{f.severity.upper()}] {f.check_id}: {f.message}")
+                if f.remediation:
+                    _log.ui(f"      → {f.remediation}")
+                if f.severity == _GFX_SEV_ERROR:
+                    gfx_error_count += 1
+            _log.ui(
+                f"Graphics probe: {len(findings)} finding(s), "
+                f"{gfx_error_count} error(s)."
+            )
+    if affected_pkgs or gfx_error_count:
+        return 1
+    return 0
