@@ -1,6 +1,10 @@
 # =============================================================================
 # toolchain.toml — custom LLVM or GCC toolchain build (stage 6 / sysforge run toolchain)
 #
+# *** EXPERIMENTAL — DEFERRED TO POST-1.0 ***
+# Stage ships but is not part of v1.0 stable surface. Emits runtime [WARN]
+# at entry when enabled. See DESIGN.md §Toolchain stage for details.
+#
 # This stage is disabled by default. Set enabled = true and configure the
 # fields below to build and install a custom compiler before the packages
 # and kernel stages run.

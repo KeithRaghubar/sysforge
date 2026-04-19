@@ -307,11 +307,11 @@ Python DAG orchestrator with checkpoint/resume. Stages run in order:
 3. **hardware** — fully implemented (CPU/GPU/NVMe detection → hardware_profile.toml)
 4. **configure** — fully implemented (hostname, locale, timezone, mirrorlist, systemd-boot, user creation + sudo, sshd config, shell dotfiles, passwords via arch-chroot)
 5. **reconfigure** — fully implemented (pre-build checkpoint: config review, disk/network/gpg checks, build preview)
-6. **toolchain** — fully implemented (LLVM/GCC, optional 3-pass PGO bootstrap, compiler propagation to packages/kernel)
+6. **toolchain** — *experimental, deferred post-1.0*; fully implemented (LLVM/GCC, optional 3-pass PGO bootstrap, compiler propagation to packages/kernel)
 7. **packages** — fully implemented
-8. **kernel** — fully implemented
+8. **kernel** — *experimental, deferred post-1.0*; fully implemented
 
-Stages 1–4 are **bootstrap-only** — they run once from a live install environment. Stages 5–8 are **repeatable** and run on the installed system. Use `sysforge run pipeline --start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds. Stages 5–8 are also available as standalone `sysforge run <stage>` commands for repeated, out-of-pipeline use (e.g. `sysforge run toolchain`, `sysforge run packages`).
+Stages 1–4 are **bootstrap-only** — they run once from a live install environment. Stages 5–8 are **repeatable** and run on the installed system. Use `sysforge run pipeline --start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds. Stages 5–8 are also available as standalone `sysforge run <stage>` commands for repeated, out-of-pipeline use (e.g. `sysforge run packages`). The toolchain (6) and kernel (8) stages are shipped but reclassified as experimental for 1.0 — both emit a runtime `[WARN]` at stage start and default to `enabled = false`; treat them as opt-in for early adopters until they are re-promoted post-1.0.
 
 ### Bootstrap workflow (stages 1–4)
 
@@ -401,6 +401,8 @@ On resume with failed packages, the user is prompted to retry or skip each (or `
 
 ### Kernel stage (stage 8)
 
+> **Status: experimental — deferred to post-1.0.** The implementation is shipped, but the kconfig merge, interactive-to-olddefconfig patching, and bootloader update paths need more real-world testing than 1.0 can cover. The stage emits a `[WARN]` at entry when enabled and defaults to `enabled = false`; 1.0 users should leave it off and use a stock pacman kernel.
+
 Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent, so systems using a stock pacman kernel skip it without needing `--start-from`.
 
 **`kernel.toml` structure:**
@@ -450,6 +452,8 @@ Walks `packages.toml` in order:
 - Summary at end: `Total | Built | Failed | Skipped`
 
 ### Toolchain stage (stage 6)
+
+> **Status: experimental — deferred to post-1.0.** The implementation is shipped, but the 3-pass PGO bootstrap (instrumented-symbol reconciliation, profraw merge daemon, staging/profdata lifecycle) has edge cases that need more real-world testing than 1.0 can cover. The stage emits a `[WARN]` at entry when enabled and defaults to `enabled = false`; 1.0 users should leave it off and use the system compiler.
 
 **Opt-in:** stage is a clean no-op if `/etc/sysforge/toolchain.toml` is absent or has `enabled = false`. Systems that skip this stage use whatever compiler is already installed; packages and kernel stages proceed normally.
 
@@ -1325,10 +1329,10 @@ Build in this order to satisfy dependencies correctly:
 ## Release Plan
 
 - **GitHub:** public from day one; source of truth for all code
-- **v0.1.0** (shipped) — profiled AUR helper. All userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `doctor`, `converge`, `setup`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Marks the AUR publication milestone.
+- **v0.1.0** (shipped) — profiled AUR helper. Userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `doctor`, `converge`, `setup`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run packages`. The `run toolchain` and `run kernel` stages shipped in this release but have since been reclassified as **experimental** pending more testing — see v1.0 notes below. Marks the AUR publication milestone.
 - **v0.2.0** (shipped, **current**) — follow-up release on the v0.1.0 surface: VM tooling (`tools/vm/`, `make vm-*` targets), install-path fixes for fresh Arch systems on Python 3.14, bulk-operation progress indicator, VCS detection and paging fixes, `doctor --graphics` scope refinement.
-- **v1.0** (next) — system bootstrapper. Stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, sets passwords, and sets the configured default login shell. Remaining v1.0 work: `repo_mode = "profiled"` support in `sysforge update` (currently wired into `run packages` only — see Known Gaps); man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below).
-- **v1.x:** package groups (named DE sets for opt-in without enumerating every package); rule priority auto-calculation (CSS-specificity-style scoring from rule conditions); configure stage additions (btrfs snapshots, ccache/sccache init check, build time estimates); LLVM target filtering from hardware detection.
+- **v1.0** (next) — system bootstrapper. Stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, sets passwords, and sets the configured default login shell. **Experimental surface, deferred post-1.0:** `run toolchain`, `run kernel`, and the `sysforge update` PGO-toolchain profdata-reuse path (`build_mode = "pgo_llvm_toolchain"`) all remain shipped but emit a runtime `[WARN]` — 1.0 users should leave the stages disabled and use the system compiler + stock pacman kernel. Remaining v1.0 work: fix the build-state persistence bug (1password, openssl-1.0/1.1 reappearing in update lists — see Open Issues), redesign `build_state.toml` as a superset of `pacman -Q` (every installed package tracked, uninitialised marker for packages not built by sysforge), and add coloured CLI output.
+- **v1.x:** `repo_mode = "profiled"` support in `sysforge update`; wrapping `pacman -Syu` inside `sysforge update` for a full AUR-helper experience; man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below); package groups (named DE sets for opt-in without enumerating every package); rule priority auto-calculation (CSS-specificity-style scoring from rule conditions); configure stage additions (btrfs snapshots, ccache/sccache init check, build time estimates); LLVM target filtering from hardware detection. Re-promotion of the toolchain and kernel stages from experimental happens here once their sharp edges are resolved.
 
 ### AUR publishing process
 
@@ -1370,7 +1374,7 @@ Two commands address drift in sysforge-managed packages:
 
 **`sysforge update [PKG ...]`** (implemented) — handles **version drift**. After `git pull --rebase` on each PKGBUILD dir, it compares the new `pkgver`/`pkgrel`/`epoch` against the installed version via `vercmp`. Packages where the PKGBUILD is newer are rebuilt with the current profile. VCS packages (`-git`, etc.) require `--devel` to rebuild since their version is only known after running `pkgver()` during the build. One or more package names may be given as positional arguments to restrict the run to a subset of sysforge-managed packages; unrecognised names are warned and skipped.
 
-**PGO toolchain packages** (`build_mode = "pgo_llvm_toolchain"`) are handled specially during update. `makepkg_wrapper.run()` reads `toolchain.toml → pgo_store`, checks for a saved `clang.profdata` and its `clang.profdata.version` sidecar, and compares the sidecar's LLVM major version against the PKGBUILD's `pkgver` major. If they match, `-fprofile-use=<profdata>` is injected and the build proceeds as a PGO-optimised build. If profdata is absent or version-mismatched (e.g. after a major LLVM bump), the user is prompted: **[p]lain build or [s]kip (default: skip)**. In non-interactive mode the build is skipped automatically. Skipped packages are counted separately in the update summary and do not count as failures. To rebuild profdata after a major version bump, run `sysforge run toolchain`. The toolchain stage itself also reuses compatible profdata — see the **Profdata reuse** section under stage 6.
+**PGO toolchain packages** (`build_mode = "pgo_llvm_toolchain"`, *experimental — deferred post-1.0*) are handled specially during update. `makepkg_wrapper.run()` reads `toolchain.toml → pgo_store`, checks for a saved `clang.profdata` and its `clang.profdata.version` sidecar, and compares the sidecar's LLVM major version against the PKGBUILD's `pkgver` major. If they match, `-fprofile-use=<profdata>` is injected and the build proceeds as a PGO-optimised build — a runtime `[WARN]` fires at this point so users of this path know it is not part of the 1.0 stable surface. If profdata is absent or version-mismatched (e.g. after a major LLVM bump), the user is prompted: **[p]lain build or [s]kip (default: skip)**. In non-interactive mode the build is skipped automatically. Skipped packages are counted separately in the update summary and do not count as failures. To rebuild profdata after a major version bump, run `sysforge run toolchain` (also experimental). The toolchain stage itself also reuses compatible profdata — see the **Profdata reuse** section under stage 6.
 
 **Stale-profraw post-build check.** After every non-PGO-managed build, `makepkg_wrapper.run()` globs `pgo_store` for `*.profraw` files. Any file with `mtime >= build_start - 1s` is treated as **fresh** — it was written by the build just completed, which means an instrumented LLVM is still installed on the system and the build was leaking profile data. The wrapper fatals, telling the user to reinstall `llvm`/`llvm-libs` or run `sysforge run toolchain`. Files strictly older than `build_start` are **orphans** left behind by a prior failed or partial toolchain run whose instrumented binaries the user has since cleaned up; these are unlinked in place and an info line is logged. The split makes the safety net self-healing: once the system is clean, the next build purges the residue automatically instead of requiring manual cleanup of `pgo_store`.
 

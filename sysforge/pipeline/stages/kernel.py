@@ -335,7 +335,7 @@ def _update_bootloader(bootloader, dry_run):
 
 class KernelStage(Stage):
     name = "kernel"
-    description = "Build and install a custom kernel"
+    description = "Build and install a custom kernel (experimental — post-1.0)"
     depends_on = ["packages"]
 
     def run(self, config, state, options):
@@ -343,6 +343,11 @@ class KernelStage(Stage):
         if kernel_cfg is None or not kernel_cfg.get("enabled", False):
             _log.ui("kernel.toml absent or disabled — stage is a no-op")
             return
+
+        _log.warn(
+            "kernel stage is experimental and deferred to post-1.0 — "
+            "kconfig merge and bootloader update paths need more testing",
+        )
 
         pkgname = kernel_cfg.get("pkgname", "unknown")
         bootloader = kernel_cfg.get("bootloader", "systemd-boot")

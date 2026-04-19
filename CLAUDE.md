@@ -15,6 +15,10 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 1. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
 2. **`match_rules` and `pkgbase`** — rules match against `pkgbase` too for split packages; don't regress this.
 
+## Experimental (post-1.0)
+
+`run toolchain` (stage 6), `run kernel` (stage 8), and the PGO-toolchain profdata-reuse path in `sysforge update` (`build_mode = "pgo_llvm_toolchain"`) are shipped but reclassified as experimental for 1.0 — they emit a runtime `[WARN]` at entry and default to disabled. Keep the implementation intact but do not treat them as part of the v1.0 stable surface. See DESIGN.md §Release Plan for full scope.
+
 ## Interaction Preferences
 
 - Be direct. Own mistakes and fix them immediately.

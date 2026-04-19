@@ -276,9 +276,9 @@ _sysforge_run_stages() {
     'pipeline:run the full install pipeline (stages 1-8)'
     'hardware:re-run hardware detection and refresh hardware_profile.toml'
     'reconfigure:pre-build checkpoint'
-    'toolchain:build and install the LLVM/GCC toolchain'
+    'toolchain:[experimental, post-1.0] build and install the LLVM/GCC toolchain'
     'packages:build and install packages from packages.toml'
-    'kernel:build and install the custom kernel'
+    'kernel:[experimental, post-1.0] build and install the custom kernel'
   )
   _describe 'stage' stages
 }

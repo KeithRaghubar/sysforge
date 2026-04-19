@@ -1,3 +1,7 @@
+# *** EXPERIMENTAL — DEFERRED TO POST-1.0 ***
+# Stage ships but is not part of v1.0 stable surface. Emits runtime [WARN]
+# at entry. See DESIGN.md §Kernel stage for details.
+
 enabled      = true
 pkgname      = "linux-custom"
 srcdir       = "linux"

@@ -1456,7 +1456,7 @@ def _compiler_paths(compiler: str) -> tuple[str, str, str | None]:
 
 class ToolchainStage(Stage):
     name = "toolchain"
-    description = "LLVM/GCC toolchain build"
+    description = "LLVM/GCC toolchain build (experimental — post-1.0)"
     depends_on = ["reconfigure"]
 
     def run(self, config, state, options):
@@ -1466,6 +1466,11 @@ class ToolchainStage(Stage):
                 "toolchain.toml absent or disabled — stage is a no-op"
             )
             return
+
+        _log.warn(
+            "toolchain stage is experimental and deferred to post-1.0 — "
+            "PGO bootstrap has known sharp edges; proceed with caution",
+        )
 
         compiler = tcfg.get("compiler", "llvm")
         pgo = tcfg.get("pgo", True) if compiler == "llvm" else False

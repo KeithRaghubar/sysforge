@@ -1,6 +1,13 @@
 # =============================================================================
 # kernel.toml — custom kernel build (stage 8 / sysforge run kernel)
 #
+# *** EXPERIMENTAL — DEFERRED TO POST-1.0 ***
+# This stage ships but is not part of the v1.0 stable surface. The kconfig
+# merge, interactive-to-olddefconfig patching, and bootloader update paths
+# need more real-world testing. When enabled, the stage emits a runtime
+# [WARN] at entry. For 1.0, leave this disabled and use a stock pacman
+# kernel.
+#
 # This stage is disabled by default. Set enabled = true and fill in the
 # required fields below to build and install a custom kernel.
 #
