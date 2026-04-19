@@ -498,3 +498,96 @@ def test_multiple_loggers_independent(capsys):
     out = capsys.readouterr().err
     assert "[SYSFORGE][INFO][CONF] conf msg" in out
     assert "[SYSFORGE][INFO][BUILD] build msg" in out
+
+
+# ---------------------------------------------------------------------------
+# Colour — TTY + NO_COLOR gating
+# ---------------------------------------------------------------------------
+
+class _FakeTTY:
+    """Stand-in stream that reports isatty()=True. Discards writes."""
+    def isatty(self): return True
+    def write(self, _): pass
+    def flush(self): pass
+
+
+def test_use_color_false_under_capsys():
+    # Pytest captures stderr via a non-TTY buffer, so colour is off by default.
+    assert log._use_color() is False
+
+
+def test_use_color_false_when_no_color_set(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
+    assert log._use_color() is False
+
+
+def test_use_color_false_when_no_color_empty_string(monkeypatch):
+    # NO_COLOR standard: empty value does NOT disable; only non-empty does.
+    monkeypatch.setenv("NO_COLOR", "")
+    monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
+    assert log._use_color() is True
+
+
+def test_use_color_true_on_tty_without_no_color(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
+    assert log._use_color() is True
+
+
+def test_format_line_plain_when_color_disabled(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert log._format_line("ERROR", "[TAG]", "boom") == "[SYSFORGE][ERROR][TAG] boom\n"
+
+
+def test_format_line_colored_when_color_enabled(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
+    line = log._format_line("ERROR", "[TAG]", "boom")
+    # Bold + red wraps ERROR; cyan wraps tag; reset after each.
+    assert log._ANSI_RED in line and log._ANSI_BOLD in line
+    assert log._ANSI_CYAN in line
+    assert line.endswith("boom\n")
+    assert "ERROR" in line and "[TAG]" in line
+
+
+def test_format_line_warn_uses_yellow(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
+    line = log._format_line("WARN", "[UPDATE]", "careful")
+    assert log._ANSI_YELLOW in line
+
+
+def test_format_line_debug_uses_dim(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
+    line = log._format_line("DEBUG", "[X]", "deep")
+    assert log._ANSI_DIM in line
+
+
+def test_stream_output_plain_under_capsys(capsys):
+    # Regression: capsys captures non-TTY, so existing exact-match assertions
+    # around the rest of this file must keep working.
+    log.set_verbosity(0)
+    log.error("[TAG]", "boom")
+    out = capsys.readouterr().err
+    assert out == "[SYSFORGE][ERROR][TAG] boom\n"
+    assert "\033[" not in out
+
+
+def test_file_log_has_no_ansi_even_on_tty(tmp_path, monkeypatch):
+    # Even if the current output stream is a TTY, log files must stay plain.
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
+    path = tmp_path / "sysforge.log"
+    log.set_verbosity(2)
+    log.open_unified_log(path)
+    log.error("[TAG]", "redline")
+    log.warn("[TAG]", "yellowline")
+    log.info("[TAG]", "plainline")
+    log.close_unified_log(success=False, persist=True)
+    content = path.read_text()
+    assert "redline" in content
+    assert "yellowline" in content
+    assert "plainline" in content
+    assert "\033[" not in content

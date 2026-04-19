@@ -19,6 +19,10 @@ File logging (always full verbosity, all levels):
 
 Format: [SYSFORGE][LEVEL][TAG] message
 
+Colour: when the output stream is a TTY and ``NO_COLOR`` is unset, the LEVEL
+token is coloured by severity (red for ERROR, yellow for WARN, dim for DEBUG)
+and the TAG is coloured cyan. File logs are never coloured.
+
 Usage:
     from sysforge import log
 
@@ -37,6 +41,7 @@ Usage:
     log.open_pkg_log(path)
     log.close_pkg_log(success=True, persist=False)
 """
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +51,24 @@ _VERBOSITY = 0
 _DRY_RUN = False
 _unified_log_fh = None
 _pkg_log_fh = None
+
+# ---------------------------------------------------------------------------
+# ANSI colour support (TTY + NO_COLOR gated)
+# ---------------------------------------------------------------------------
+
+_ANSI_RESET  = "\033[0m"
+_ANSI_BOLD   = "\033[1m"
+_ANSI_DIM    = "\033[2m"
+_ANSI_RED    = "\033[31m"
+_ANSI_YELLOW = "\033[33m"
+_ANSI_CYAN   = "\033[36m"
+
+_LEVEL_SGR = {
+    "ERROR": _ANSI_BOLD + _ANSI_RED,
+    "WARN":  _ANSI_YELLOW,
+    "INFO":  "",
+    "DEBUG": _ANSI_DIM,
+}
 
 _CLEARED_MARKER = "# log cleared after successful run\n"
 _SEP = "# " + "─" * 60 + "\n"
@@ -74,6 +97,33 @@ def get_verbosity() -> int:
 
 def _out():
     return sys.stdout if _DRY_RUN else sys.stderr
+
+
+def _use_color() -> bool:
+    """Return True iff the active output stream should receive ANSI colour.
+
+    Gated by the NO_COLOR standard (any non-empty value disables) and by
+    whether the destination is a TTY. Checked per-call so redirecting output
+    mid-run is respected and test captures (pytest's capsys) stay plain.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    stream = _out()
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty())
+
+
+def _format_line(level: str, tag: str, message: str) -> str:
+    """Return a ``[SYSFORGE][LEVEL]<tag> <message>\\n`` line, with ANSI colour
+    applied when the output stream is a colour-capable TTY."""
+    plain = f"[SYSFORGE][{level}]{tag} {message}\n"
+    if not _use_color():
+        return plain
+    r = _ANSI_RESET
+    sgr = _LEVEL_SGR.get(level, "")
+    lvl_fmt = f"{sgr}{level}{r}" if sgr else level
+    tag_fmt = f"{_ANSI_CYAN}{tag}{r}" if tag else ""
+    return f"[SYSFORGE][{lvl_fmt}]{tag_fmt} {message}\n"
 
 
 # ---------------------------------------------------------------------------
@@ -225,25 +275,25 @@ def fatal(tag: str, message: str, exit_code: int = 1) -> NoReturn:
 
 def error(tag: str, message: str) -> None:
     """Always printed regardless of verbosity. Always written to log files."""
-    line = f"[SYSFORGE][ERROR]{tag} {message}\n"
-    print(line, end="", file=_out())
-    _write_to_files(line)
+    plain = f"[SYSFORGE][ERROR]{tag} {message}\n"
+    print(_format_line("ERROR", tag, message), end="", file=_out())
+    _write_to_files(plain)
 
 
 def warn(tag: str, message: str) -> None:
     """Printed at verbosity >= 1 (-v). Always written to log files."""
-    line = f"[SYSFORGE][WARN]{tag} {message}\n"
+    plain = f"[SYSFORGE][WARN]{tag} {message}\n"
     if _VERBOSITY >= 1:
-        print(line, end="", file=_out())
-    _write_to_files(line)
+        print(_format_line("WARN", tag, message), end="", file=_out())
+    _write_to_files(plain)
 
 
 def info(tag: str, message: str) -> None:
     """Printed at verbosity >= 2 (-vv). Always written to log files."""
-    line = f"[SYSFORGE][INFO]{tag} {message}\n"
+    plain = f"[SYSFORGE][INFO]{tag} {message}\n"
     if _VERBOSITY >= 2:
-        print(line, end="", file=_out())
-    _write_to_files(line)
+        print(_format_line("INFO", tag, message), end="", file=_out())
+    _write_to_files(plain)
 
 
 def debug(tag: str, message: str) -> None:
@@ -253,7 +303,7 @@ def debug(tag: str, message: str) -> None:
     Use for full config/profile/conf body dumps.
     """
     for part in (message.splitlines() or [""]):
-        entry = f"[SYSFORGE][DEBUG]{tag} {part}\n"
+        plain = f"[SYSFORGE][DEBUG]{tag} {part}\n"
         if _VERBOSITY >= 3:
-            print(entry, end="", file=_out())
-        _write_to_files(entry)
+            print(_format_line("DEBUG", tag, part), end="", file=_out())
+        _write_to_files(plain)
