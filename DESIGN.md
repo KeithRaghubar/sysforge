@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles, tracks build state for update detection, and automates the full build lifecycle — from fetching PKGBUILDs to installing profiled packages. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-The v0.1.0 milestone is a profiled AUR helper: install, update, and manage AUR and custom packages with system-tuned profiled builds. The full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) is implemented — a fresh Arch install is fully automated from the ISO.
+Current release is **v0.2.0**. v0.1.0 shipped the profiled AUR helper surface (install, update, and manage AUR and custom packages with system-tuned profiled builds); v0.2.0 added VM tooling and install-path fixes on top. The full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) is implemented — a fresh Arch install is automated from the ISO — and is the work being stabilised toward the v1.0 milestone. See the [Release Plan](#release-plan) for the shipped-vs-remaining breakdown.
 
 ---
 
@@ -19,13 +19,15 @@ The v0.1.0 milestone is a profiled AUR helper: install, update, and manage AUR a
 9. [Flag Profile System](#flag-profile-system)
 10. [Makepkg Wrapper](#makepkg-wrapper)
 11. [Logging](#logging)
-12. [Hardware Detection](#hardware-detection)
-13. [Cache Management](#cache-management)
-14. [Graphics Stack Build Order](#graphics-stack-build-order)
-15. [Release Plan](#release-plan)
-16. [Re-converge](#re-converge)
-17. [Known Gaps](#known-gaps)
-18. [V2 Roadmap](#v2-roadmap)
+12. [Man Pages](#man-pages)
+13. [Hardware Detection](#hardware-detection)
+14. [Cache Management](#cache-management)
+15. [Graphics Stack Build Order](#graphics-stack-build-order)
+16. [Release Plan](#release-plan)
+17. [Re-converge](#re-converge)
+18. [Known Gaps](#known-gaps)
+19. [V1.x Roadmap](#v1x-roadmap)
+20. [V2 Roadmap](#v2-roadmap)
 
 ---
 
@@ -98,18 +100,25 @@ sysforge/
 │   ├── resolve.py                     # sysforge resolve subcommand
 │   ├── update.py                      # sysforge update subcommand
 │   ├── converge.py                    # sysforge converge subcommand (flag drift detection)
+│   ├── doctor.py                      # sysforge doctor subcommand (ABI/linkage health check)
+│   ├── fetch.py                       # sysforge fetch subcommand (download PKGBUILDs, no build)
 │   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove/sync)
+│   ├── setup_cmd.py                   # sysforge setup subcommand (pacman IgnoreGroup = sf-build guard)
 │   └── primitives/
+│       ├── paths.py                   # config path constants + resolve_packages_path()
 │       ├── config.py                  # TOML config loading, path constants, system conf parsing
+│       ├── pacman.py                  # pacman queries, batch install, makedep helpers
 │       ├── profile.py                 # profile resolution, rule matching, consumes
 │       ├── pkgbuild_meta.py           # static PKGBUILD parser (read-only)
 │       ├── pkgbuild_patcher.py        # PKGBUILD mutation + flag extraction
 │       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
 │       ├── aur_resolve.py             # recursive AUR dependency resolution + topo sort
 │       ├── dep_analysis.py            # pre-build soname dependency checks
+│       ├── abi_check.py               # post-build versioned-symbol ABI check (.so cross-ref)
 │       ├── provides_lookup.py         # reverse-lookup soname → package (pacman -Fq)
 │       ├── graphics_probe.py          # system-state graphics checks (NVIDIA, Wayland, Steam)
 │       ├── failure.py                 # failure scenario handling (shared)
+│       ├── resource_guard.py          # controller RLIMIT_AS cap + lift_for_child() for subprocesses
 │       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
 │       ├── aur.py                     # AUR RPC v5, git clone, pkgctl checkout, GPG key import
 │       ├── build_state.py             # per-package build metadata persistence (build_state.toml)
@@ -126,10 +135,10 @@ sysforge/
 │           ├── base_install.py        # stage 2: pacstrap + genfstab
 │           ├── hardware.py            # stage 3: CPU/GPU/NVMe detection → hardware_profile.toml
 │           ├── configure.py           # stage 4: hostname, locale, timezone, bootloader, user, services (arch-chroot)
-│           ├── reconfigure.py         # stage 5: pre-build checkpoint (implemented)
+│           ├── reconfigure.py         # stage 5: pre-build checkpoint
 │           ├── toolchain.py           # stage 6: LLVM/GCC toolchain build (optional 3-pass PGO)
-│           ├── packages.py            # stage 7: real implementation
-│           └── kernel.py              # stage 8: full implementation
+│           ├── packages.py            # stage 7: package builds
+│           └── kernel.py              # stage 8: kernel build
 ├── tests/
 │   ├── conftest.py
 │   ├── data/
@@ -502,7 +511,7 @@ The packages and kernel stages read these values and inject them into the build 
 
 ## Primitives Layer
 
-All modules independently testable. 1281 pytest tests (`make test` from repo root).
+All modules independently testable. ~1280 pytest tests (`make test` from repo root).
 
 ### `log.py`
 
@@ -526,6 +535,10 @@ Bottom-anchored status line for batch operations (`[3/10] building htop`). Dual-
 Public API: `init()`, `shutdown()`, `render(current, total, label)`, `clear()`, and a `tracker(total, prefix)` context manager that yields a `tick(label)` callable (auto-clears on exit). `clear()` must be called before any `input()` prompt inside a batch loop so the prompt doesn't land inside the scroll region; the next `tick()` re-establishes the region automatically. Reservation is lazy: entering a tracker alone touches nothing — the first `tick()` call establishes the region.
 
 Integration sites: `sysforge/pipeline/stages/packages.py` (build loop), `sysforge/primitives/aur_resolve.py::build_resolved_deps` (AUR deps), `sysforge/update.py` (threaded git pulls + build loop), `sysforge/fetch.py` (fetch loop). Interactive-prompt call sites in `pipeline/stages/packages.py` and `primitives/makepkg_wrapper.py` each call `progress.clear()` before `input()`.
+
+### `paths.py`
+
+Pure constants module — the canonical directory of every config file sysforge reads. `CONFIG_BASE` is derived from `$SYSFORGE_CONFIG_DIR` (falling back to `/etc/sysforge`), and the resolved path lists (`CONFIG_PATHS`, `CONFLICT_GROUP_PATHS`, `CONSUMES_INFERENCE_PATHS`) layer the user file (`~/.config/sysforge/…`) over the system file in `extends_system` order. The sole helper is `resolve_packages_path(config)`, which returns the `packages.toml` path the rest of the codebase should use (honouring `--packages` overrides in `config`). No I/O here — just path strings.
 
 ### `config.py`
 
@@ -607,14 +620,18 @@ Pre-build dependency checks. Runs before `_run_build` in `makepkg_wrapper.run()`
 
 All functions accept injectable callables for testing. Non-fatal by default; configurable via `abi_mismatch` and `makedep_probe_failed` in `[failure_handling]`.
 
-**Recursive AUR dependency resolution (v1.0):**
+The soname match predicate (`soname_satisfied(entry, available_set)`) is exposed at module scope so `doctor.py` can reuse the `libfoo.so` / `libfoo.so=N` matching rules without duplicating them.
 
-`makepkg --syncdeps` installs missing `depends`/`makedepends` via `pacman -S`. Pacman has no AUR visibility, so any dep that is AUR-only and not already installed will cause the build to fail. Sysforge does not currently detect or pre-build AUR deps.
+`dep_analysis.py` validates shared-library ABI for packages that are already installed. Resolving what to install in the first place is the job of `aur_resolve.py` below.
 
-New module: `primitives/aur_resolve.py`. Public API:
+### `aur_resolve.py`
 
+Recursive AUR dependency resolution. `makepkg --syncdeps` installs missing `depends`/`makedepends` via `pacman -S`; pacman has no AUR visibility, so any AUR-only dep that is not already installed will fail the build. `aur_resolve.py` resolves the full dep tree up front, topologically orders it, and builds the missing AUR deps before the target.
+
+Public API:
 - `resolve_aur_deps(pkgbuild_path, config) -> list[ResolvedDep]` — full recursive resolution for a single package
 - `resolve_aur_deps_batch(pkgbuild_paths, config) -> list[ResolvedDep]` — batch resolution for multiple packages (de-duplicated, single topo-sorted build order)
+- `build_resolved_deps(deps, ...)` — build + install the resolved list in order; shared by every call site
 
 Resolution algorithm:
 1. Parse `depends` + `makedepends` from the PKGBUILD.
@@ -632,12 +649,9 @@ Build execution: iterate the topo-sorted list in order. Each dep gets full profi
 Integration points:
 - **`sysforge build`** — resolve before building. `--track-deps` auto-adds resolved AUR deps to `packages.toml` with `reason = "dependency"`.
 - **`run packages` stage** — resolve before building each AUR/profiled package. `--track-deps` behaves the same.
-- **Batch builds (`update`, `converge`)** — resolve after `collect_makedeps()`, before `batch_install_makedeps()`. AUR deps are built and installed first, then the main batch proceeds. No `--track-deps` for update/converge (operates on already-tracked packages only).
+- **`sysforge update`** — resolve after `collect_makedeps()`, before `batch_install_makedeps()`. AUR deps are built and installed first, then the main batch proceeds. No `--track-deps` (operates on already-tracked packages only).
+- **`sysforge converge`** intentionally does **not** invoke `aur_resolve.py`. Converge operates only on packages already recorded in `build_state.toml`; their AUR deps are assumed to already be present.
 - **`sysforge resolve --deps <pkg>`** — standalone dry-run inspection. Shows the full dep tree with build order, AUR vs repo classification, and which deps are already installed.
-
-The `dep_analysis.py` soname check is orthogonal — it validates shared-library ABI for packages that *are* installed, not whether they can be installed in the first place.
-
-The soname match predicate (`soname_satisfied(entry, available_set)`) is exposed at module scope so `doctor.py` can reuse the `libfoo.so` / `libfoo.so=N` matching rules without duplicating them.
 
 ### `abi_check.py`
 
@@ -655,11 +669,29 @@ Symbol names are demangled through `c++filt` for readability. Missing NEEDED son
 
 **Vendored-binary package skip list.** `_ABI_CHECK_SKIP_PACKAGES` (public predicate `is_abi_check_skipped_package(pkgname)`) names packages that ship prebuilt vendored binaries which will never link cleanly against current system libs (e.g. `steam` carries its own CEF runtime, libcurl, etc. under `/usr/lib/steam/`). `doctor.py` skips the ABI/linkage check for these packages and emits a one-line `[ABI] skipped: vendored prebuilt binaries` note; the depends check still runs since depends drift on these is actionable. Applies at package granularity, not soname — a floor-level noise filter for `doctor --all` / `doctor -s <metapackage>` runs whose closures include these packages.
 
+### `provides_lookup.py`
+
+Reverse soname → package lookup backed by `pacman -Fq`. Used by `sysforge doctor --suggest` to convert a missing/broken soname (e.g. `libavcodec.so.62`) into the repo package(s) that would supply it. Public API:
+
+- `files_db_present()` — true when `/var/lib/pacman/sync/*.files` is synced (from `pacman -Fy`). Callers short-circuit lookup when false.
+- `suggest_for_soname(entry, *, lib32=False)` — returns candidate `repo/pkg` strings for a soname entry, honouring `lib32` context (queries `usr/lib32/<soname>` vs `usr/lib/<soname>`).
+
+Log tag: `[PROV]`. Pure read-only — never runs `pacman -Fy`; emits a single `run sudo pacman -Fy` warning if the files db is absent.
+
 ### `failure.py`
 
 Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_analysis` to avoid circular imports.
 
 `handle_failure(scenario, message, config, fallback=None)` dispatches to `abort`, `error`, `warn_and_fallback`, or `fallback` based on `[failure_handling]` config. `profile_missing` and `tempfile_write_failed` always abort regardless of config.
+
+### `resource_guard.py`
+
+Caps the sysforge controller process's virtual address space so a runaway long-running build session (days of pipeline work) cannot balloon memory. Public API:
+
+- `install()` — called once at CLI entry. Sets `RLIMIT_AS` to 2 GiB on the Python process.
+- `lift_for_child()` — returns a `preexec_fn` that restores the address-space limit to `RLIM_INFINITY` for a child process. Used as `preexec_fn=resource_guard.lift_for_child()` on `subprocess` calls whose children legitimately need more than 2 GiB (notably `llvm-profdata merge` in the toolchain stage, which mmaps the full profraw set).
+
+The guard is applied to the controller only — makepkg itself is launched through normal subprocess invocation and inherits whatever the shell granted, so it is not affected unless explicitly opted in via `lift_for_child`.
 
 ### `makepkg_wrapper.py`
 
@@ -681,6 +713,17 @@ High-level flow:
 **System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
 
 **Makepkg flag passthrough:** makepkg short flags can be passed directly on the command line (`sysforge build ventoy -sfCci`) or explicitly via `-m "-sfci"`. Implicit passthrough applies to `build`, `update`, and `converge` — the preprocessing layer (`_extract_implicit_makepkg_flags`) rewrites bare flags into `-m` form before argparse runs. Excluded from implicit passthrough: `-h`, `-V`, `-p`, `-m`, `-D` (conflict with sysforge flags or take a value argument; `-v` is already hoisted). Combined short flags are expanded: `-sfci` → `[-s, -f, -c, -i]`.
+
+### `cache_probe.py`
+
+Passive monitoring of ccache/sccache/ThinLTO caches. Emits the `[CACHE]` log-tag lines that bracket each `makepkg` invocation with pre/post hit-miss deltas and, once per run, the ld.so cache mtime, pacman cache file count/size, and (per-package) the ThinLTO cache dir size extracted from `--thinlto-cache-dir=` in LDFLAGS. Never enables or disables caches — policy for that lives in `[cache]` of `flag_profiles.toml`.
+
+Public API covers three axes:
+- **Per-build stats** — snapshot ccache/sccache counters before and after a build (`ccache --print-stats --format=tab`, `sccache --show-stats`), compute the delta, log hit rate when compilations occurred, say "no compilations recorded" when delta is zero.
+- **System probes** — `emit_system_probes()` for the once-per-run ld.so / pacman cache measurements.
+- **Session report** — the structured `--cache-report` summary accumulates per-package deltas and prints a totals block at end of run, regardless of verbosity (the only output that bypasses `-v` gating).
+
+Each probe is skipped cleanly if the underlying binary is absent (e.g. sccache not installed).
 
 ### `aur.py`
 
@@ -812,7 +855,13 @@ All report output (headers, issue lines, summary) flows through `log.ui` (→ st
 
 Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db).
 
-Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — log tag `[PROV]`, public API `files_db_present()` and `suggest_for_soname(entry, *, lib32=False)`. NEEDED-soname extraction reuses `abi_check.needed_sonames` (public since doctor calls it directly for ABI-issue suggestions). System-state probes live in `sysforge/primitives/graphics_probe.py` — log tag `[GFX]`, public API `check_system_graphics(config, *, gpu_vendors=None)`; invoked from `cmd_doctor` when `--graphics` is set.
+Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — see the `provides_lookup.py` subsection for the public API. NEEDED-soname extraction reuses `abi_check.needed_sonames` (public since doctor calls it directly for ABI-issue suggestions). System-state probes live in `sysforge/primitives/graphics_probe.py` — log tag `[GFX]`, public API `check_system_graphics(config, *, gpu_vendors=None)`; invoked from `cmd_doctor` when `--graphics` is set.
+
+### `setup_cmd.py`
+
+Implements `sysforge setup` — one-shot pre-flight that stops `pacman -Syu` from silently clobbering sysforge-built packages with upstream repo binaries. It inspects `/etc/pacman.conf` for `IgnoreGroup = sf-build` and, if missing, offers to add it (interactive prompt). Packages built by sysforge carry the `sf-build` group, so the IgnoreGroup line gates the whole rebuild surface behind a single policy knob rather than requiring a per-package `IgnorePkg`.
+
+Public API: `cmd_setup(args)`. Flag: `--pacman-conf PATH` (default `/etc/pacman.conf`) for VM or chroot runs where the file lives elsewhere. No effect if the line is already present. Intended to be run once after first installing sysforge; safe to re-run.
 
 ### `graphics_probe.py`
 
@@ -1160,7 +1209,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 ## Man Pages
 
-**v0.1.0 (current):** `argparse-manpage` generates `man/sysforge.1` from the argparse parser exposed via `_build_parser()` in `cli.py`. Generated during `make man` and during the PKGBUILD `build()` step (requires `python-argparse-manpage` makedepend). The man page is not checked into git — it is always generated from the parser at build/package time. Makefile target: `make man`.
+**Current (v0.1.0 / v0.2.0):** `argparse-manpage` generates `man/sysforge.1` from the argparse parser exposed via `_build_parser()` in `cli.py`. Generated during `make man` and during the PKGBUILD `build()` step (requires `python-argparse-manpage` makedepend). The man page is not checked into git — it is always generated from the parser at build/package time. Makefile target: `make man`.
 
 **v1.0 planned migration — scdoc hybrid:**
 
@@ -1276,8 +1325,9 @@ Build in this order to satisfy dependencies correctly:
 ## Release Plan
 
 - **GitHub:** public from day one; source of truth for all code
-- **v0.1.0:** profiled AUR helper — all userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `doctor`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Target milestone for AUR publication.
-- **v1.0:** system bootstrapper — stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, sets passwords, and sets the configured default login shell. Remaining v1.0 work: recursive AUR dependency resolution (see `dep_analysis.py` section); `repo_mode = "profiled"` support in `sysforge update`; man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below); direct makepkg flag passthrough via `parse_known_args` (completions done, implementation pending).
+- **v0.1.0** (shipped) — profiled AUR helper. All userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `doctor`, `converge`, `setup`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run toolchain`, `run packages`, `run kernel`. Marks the AUR publication milestone.
+- **v0.2.0** (shipped, **current**) — follow-up release on the v0.1.0 surface: VM tooling (`tools/vm/`, `make vm-*` targets), install-path fixes for fresh Arch systems on Python 3.14, bulk-operation progress indicator, VCS detection and paging fixes, `doctor --graphics` scope refinement.
+- **v1.0** (next) — system bootstrapper. Stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, sets passwords, and sets the configured default login shell. Remaining v1.0 work: `repo_mode = "profiled"` support in `sysforge update` (currently wired into `run packages` only — see Known Gaps); man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below).
 - **v1.x:** package groups (named DE sets for opt-in without enumerating every package); rule priority auto-calculation (CSS-specificity-style scoring from rule conditions); configure stage additions (btrfs snapshots, ccache/sccache init check, build time estimates); LLVM target filtering from hardware detection.
 
 ### AUR publishing process
@@ -1328,6 +1378,8 @@ Two commands address drift in sysforge-managed packages:
 
 `build_state.toml` is the shared source of truth for both commands. Written by `makepkg_wrapper.run()` after each successful build.
 
+**`sysforge doctor`** is the third drift-surface command and completes the picture — it is read-only and catches the drift class neither of the above detects: **ABI / linkage drift** on already-installed packages, e.g. a partial graphics-stack rebuild leaving `steam` linked against a `libfoo.so.N` that the system no longer exposes. See the `doctor.py` subsection for the full algorithm. Together: `update` → version drift, `converge` → flag drift, `doctor` → ABI drift.
+
 DAG stages are categorised as **bootstrap-only** (partition, base_install, configure) or **repeatable** (hardware, reconfigure, toolchain, packages, kernel). Only repeatable stages participate in re-converge runs. `hardware` is repeatable because re-detecting after a hardware change (e.g. GPU swap) is safe and needs no root.
 
 ---
@@ -1363,7 +1415,7 @@ Post-v1.0 enhancements that build on existing infrastructure. Not required for t
 
 ## V2 Roadmap
 
-V2 goal: advanced AUR helper features beyond the v0.1.0 scope.
+V2 goal: advanced AUR helper features beyond the v1.0 scope.
 
 V2 candidates:
 - **PKGBUILD review** — present diffs to the user before building an AUR package
