@@ -709,6 +709,44 @@ def _find_built_packages(build_dir: Path) -> list:
             if not p.name.endswith(".sig")]
 
 
+_PKG_FILENAME_EXT = re.compile(r"\.pkg\.tar\.[^.]+$")
+
+
+def _parse_built_pkg_filename(pkgname: str, filename: str) -> tuple[str, str, str] | None:
+    """
+    Parse a built Arch package filename into ``(epoch, pkgver, pkgrel)``.
+
+    Expected form: ``<pkgname>-[epoch:]<pkgver>-<pkgrel>-<arch>.pkg.tar.<ext>``.
+    Returns None if the filename does not match this layout for ``pkgname``.
+
+    This is the canonical post-build source of truth for a package's version:
+    the filename always carries the fully resolved values, whereas the static
+    PKGBUILD parser intentionally leaves shell parameter-expansion forms like
+    ``${_ver/[a-z]/.${_ver//[0-9.]/}}`` untouched. Anchoring on the known
+    ``pkgname`` is required because pkgnames may themselves contain hyphens
+    (e.g. ``openssl-1.1``).
+    """
+    m = _PKG_FILENAME_EXT.search(filename)
+    if not m:
+        return None
+    stem = filename[:m.start()]
+    prefix = pkgname + "-"
+    if not stem.startswith(prefix):
+        return None
+    rest = stem[len(prefix):]
+    try:
+        ver_rel, _arch = rest.rsplit("-", 1)
+        ver_part, pkgrel = ver_rel.rsplit("-", 1)
+    except ValueError:
+        return None
+    epoch = "0"
+    if ":" in ver_part:
+        epoch, _, ver_part = ver_part.partition(":")
+    if not ver_part or not pkgrel:
+        return None
+    return (epoch, ver_part, pkgrel)
+
+
 def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                        extra_env=None, extra_flags=None, interactive=False,
                        strip_flags=None):
@@ -1304,12 +1342,32 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 pkgnames = [pkgnames]
             pkgbase = globals_.get("pkgbase") or (pkgnames[0] if pkgnames else "unknown")
             fs = serialize_flags(resolved_profile) if resolved_profile is not None else None
+
+            # Prefer pkgver/pkgrel/epoch from the built .pkg.tar.* filenames
+            # over the static PKGBUILD parse. The parser intentionally leaves
+            # shell parameter-expansion forms (e.g. ``${_ver/[a-z]/.${_ver//[0-9.]/}}``)
+            # untouched, so packages using them would otherwise record a
+            # literal ``$...`` string as pkgver and always mismatch vercmp.
+            filename_versions: dict[str, tuple[str, str, str]] = {}
+            for p in _find_built_packages(pkgbuild_path.resolve().parent):
+                for name in pkgnames:
+                    if name in filename_versions:
+                        continue
+                    parsed = _parse_built_pkg_filename(name, p.name)
+                    if parsed is not None:
+                        filename_versions[name] = parsed
+
             for name in pkgnames:
+                ep, ver, rel = filename_versions.get(name, (
+                    globals_.get("epoch", "0"),
+                    globals_.get("pkgver", ""),
+                    globals_.get("pkgrel", "1"),
+                ))
                 bs.record(
                     pkgname=name,
-                    pkgver=globals_.get("pkgver", ""),
-                    pkgrel=globals_.get("pkgrel", "1"),
-                    epoch=globals_.get("epoch", "0"),
+                    pkgver=ver,
+                    pkgrel=rel,
+                    epoch=ep,
                     pkgbase=pkgbase,
                     pkgbuild_dir=pkgbuild_path.parent,
                     build_mode="profiled",

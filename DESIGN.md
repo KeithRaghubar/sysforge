@@ -762,6 +762,8 @@ Build state persistence. `/var/lib/sysforge/build_state.toml` is a **superset of
 
 Read by `sysforge update` for version drift detection (profiled entries only count as sysforge build records; pacman-mode entries fall through to the unrecorded-synthesis path and need `--all` to rebuild) and by `sysforge converge` for flag drift detection (profiled entries only; pacman-mode entries are silently skipped). Follows the same atomic write-then-rename pattern as `pipeline/state.py`. Legacy records written without `build_mode` are treated as profiled for backward compatibility.
 
+On the write path, after a successful build `makepkg_wrapper.py` derives `pkgver`/`pkgrel`/`epoch` from the produced `.pkg.tar.*` filenames rather than the static PKGBUILD parse. The static parser intentionally leaves shell parameter-expansion forms (e.g. `${_ver/[a-z]/.${_ver//[0-9.]/}}`) untouched so it never produces a misleading partial substitution, but a built package's filename always carries the fully resolved version. Falling back to filenames prevents profiled entries from storing literal `$...` strings that would mismatch every subsequent vercmp and cause the package to be flagged for rebuild on every `sysforge update` run.
+
 Public helpers: `parse_pacman_version(ver_str)` splits a `[epoch:]pkgver-pkgrel` string into a `(epoch, pkgver, pkgrel)` tuple; used by `sync_with_installed()`.
 
 ### `version.py`

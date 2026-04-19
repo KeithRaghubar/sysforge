@@ -203,6 +203,52 @@ def test_parse_pacman_version_empty():
 
 
 # ---------------------------------------------------------------------------
+# _parse_built_pkg_filename — canonical post-build version source
+# ---------------------------------------------------------------------------
+
+def test_parse_built_pkg_filename_basic():
+    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+    assert _parse_built_pkg_filename(
+        "htop", "htop-3.4.1-1-x86_64.pkg.tar.zst"
+    ) == ("0", "3.4.1", "1")
+
+
+def test_parse_built_pkg_filename_with_epoch():
+    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+    assert _parse_built_pkg_filename(
+        "openssl-1.1", "openssl-1.1-2:1.1.1.w-9-x86_64.pkg.tar.zst"
+    ) == ("2", "1.1.1.w", "9")
+
+
+def test_parse_built_pkg_filename_hyphenated_pkgname():
+    # pkgname contains hyphens; anchor on the exact name prevents mis-splitting.
+    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+    assert _parse_built_pkg_filename(
+        "openssl-1.0", "openssl-1.0-1.0.2.u-7-x86_64.pkg.tar.zst"
+    ) == ("0", "1.0.2.u", "7")
+
+
+def test_parse_built_pkg_filename_wrong_name_returns_none():
+    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+    assert _parse_built_pkg_filename(
+        "htop", "neovim-0.10.0-1-x86_64.pkg.tar.zst"
+    ) is None
+
+
+def test_parse_built_pkg_filename_non_pkg_file_returns_none():
+    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+    assert _parse_built_pkg_filename("htop", "htop-3.4.1-1.tar.gz") is None
+    assert _parse_built_pkg_filename("htop", "htop-3.4.1-1-x86_64.sig") is None
+
+
+def test_parse_built_pkg_filename_alt_compression():
+    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+    assert _parse_built_pkg_filename(
+        "htop", "htop-3.4.1-1-x86_64.pkg.tar.xz"
+    ) == ("0", "3.4.1", "1")
+
+
+# ---------------------------------------------------------------------------
 # sync_with_installed (superset behaviour)
 # ---------------------------------------------------------------------------
 
