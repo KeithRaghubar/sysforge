@@ -439,9 +439,13 @@ def _diagnose_manifest(args):
     for entry in entries:
         name = entry["name"]
         source = entry.get("source", "")
-        if name in build_state_pkgs:
+        bs_entry = build_state_pkgs.get(name)
+        # Pacman-mode superset markers carry no pkgbuild_dir — treat them as
+        # UNRECORDED so the probe falls back to pkgbuild_src_dir_base / name.
+        # Missing build_mode defaults to profiled (legacy pre-superset records).
+        if bs_entry is not None and bs_entry.get("build_mode", "profiled") != "pacman":
             tracking = "TRACKED"
-            resolved_dir = Path(build_state_pkgs[name].get("pkgbuild_dir", ""))
+            resolved_dir = Path(bs_entry.get("pkgbuild_dir", ""))
         else:
             tracking = "UNRECORDED"
             if pkgbuild_src_dir_base is None:

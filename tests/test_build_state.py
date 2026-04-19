@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sysforge.primitives.build_state import BuildState
+from sysforge.primitives.build_state import BuildState, parse_pacman_version
 
 
 # ---------------------------------------------------------------------------
@@ -175,3 +175,102 @@ def test_state_dir_from_env_var(tmp_path, monkeypatch):
     chosen, source = resolve_state_dir()
     assert chosen == tmp_path
     assert source == "SYSFORGE_STATE_DIR"
+
+
+# ---------------------------------------------------------------------------
+# parse_pacman_version
+# ---------------------------------------------------------------------------
+
+def test_parse_pacman_version_basic():
+    assert parse_pacman_version("3.4.1-1") == ("0", "3.4.1", "1")
+
+
+def test_parse_pacman_version_with_epoch():
+    assert parse_pacman_version("2:1.2.3-4") == ("2", "1.2.3", "4")
+
+
+def test_parse_pacman_version_multi_dash_pkgver():
+    # r12345.abcdef-1 style (VCS packages)
+    assert parse_pacman_version("r12345.abcdef-1") == ("0", "r12345.abcdef", "1")
+
+
+def test_parse_pacman_version_no_pkgrel():
+    assert parse_pacman_version("1.0") == ("0", "1.0", "1")
+
+
+def test_parse_pacman_version_empty():
+    assert parse_pacman_version("") == ("0", "", "1")
+
+
+# ---------------------------------------------------------------------------
+# sync_with_installed (superset behaviour)
+# ---------------------------------------------------------------------------
+
+def test_sync_adds_pacman_mode_entries_for_new_installs(tmp_path):
+    bs = BuildState(tmp_path)
+    added, removed = bs.sync_with_installed({
+        "htop": "3.4.1-1",
+        "neovim": "0.10.0-1",
+    })
+    assert added == 2
+    assert removed == 0
+    entry = bs.get("htop")
+    assert entry is not None
+    assert entry["build_mode"] == "pacman"
+    assert entry["pkgver"] == "3.4.1"
+    assert entry["pkgrel"] == "1"
+    assert entry["epoch"] == "0"
+    assert "pkgbuild_dir" not in entry
+    assert "flags_string" not in entry
+
+
+def test_sync_preserves_profiled_entries(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs, pkgname="htop", pkgver="3.4.1", build_mode="profiled")
+    # Pre-record carries pkgbuild_dir; sync must not overwrite it.
+    added, removed = bs.sync_with_installed({"htop": "3.4.1-1"})
+    assert added == 0
+    assert removed == 0
+    entry = bs.get("htop")
+    assert entry["build_mode"] == "profiled"
+    assert entry["pkgbuild_dir"] == "/home/user/src/htop"
+
+
+def test_sync_prunes_uninstalled_entries(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs, pkgname="htop", build_mode="profiled")
+    _record(bs, pkgname="neovim", pkgbase="neovim", build_mode="profiled")
+    added, removed = bs.sync_with_installed({"htop": "3.4.1-1"})
+    assert added == 0
+    assert removed == 1
+    assert bs.get("htop") is not None
+    assert bs.get("neovim") is None
+
+
+def test_sync_prunes_zombie_variable_keys(tmp_path):
+    # Simulate a pre-superset zombie: an entry whose key holds a literal
+    # ``$_pkgname`` because the parser failed to expand it. Such a key can
+    # never match `pacman -Q`, so sync_with_installed must drop it.
+    bs = BuildState(tmp_path)
+    bs._data["$_pkgname-git"] = {
+        "pkgver": "r1.abc",
+        "pkgrel": "1",
+        "epoch": "0",
+        "pkgbase": "$_pkgname",
+        "build_mode": "profiled",
+    }
+    added, removed = bs.sync_with_installed({"real-pkg": "1.0-1"})
+    assert removed == 1
+    assert bs.get("$_pkgname-git") is None
+    assert bs.get("real-pkg") is not None
+
+
+def test_sync_roundtrips_through_disk(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.sync_with_installed({"1password": "8.10.30-1", "openssl-1.1": "1.1.1.w-4"})
+    bs.save()
+
+    bs2 = BuildState(tmp_path)
+    assert bs2.get("1password")["build_mode"] == "pacman"
+    assert bs2.get("openssl-1.1")["pkgver"] == "1.1.1.w"
+    assert bs2.get("openssl-1.1")["pkgrel"] == "4"

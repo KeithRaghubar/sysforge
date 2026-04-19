@@ -158,7 +158,14 @@ def _discover_new_packages(
         _log.info("--all: no foreign packages found")
         return [], []
 
-    tracked = set(bs.all_packages().keys())
+    # Pacman-mode entries are superset bookkeeping, not build records, and
+    # must not hide foreign packages from --all discovery. Treat missing
+    # build_mode as legacy-profiled so older records aren't rediscovered.
+    tracked = {
+        name
+        for name, entry in bs.all_packages().items()
+        if entry.get("build_mode", "profiled") != "pacman"
+    }
     in_manifest = _load_packages_toml_names(packages_path)
 
     new_foreign = {k: v for k, v in foreign.items() if k not in tracked and k not in in_manifest}
@@ -245,12 +252,16 @@ def _assemble_package_set(
             }
             unrecorded_names.add(name)
 
-    # Merge manifest entries with build_state
+    # Merge manifest entries with build_state. Pacman-mode markers are
+    # superset bookkeeping only — they carry no pkgbuild_dir, so treat them
+    # as unrecorded and synthesise a pkgbuild_src_dir_base / name path.
+    # Missing build_mode defaults to profiled (legacy records pre-superset).
     for name, manifest_entry in manifest_by_name.items():
         if name in packages:
             continue  # Already added by discovery
-        if name in build_state_pkgs:
-            pkg = build_state_pkgs[name]
+        bs_entry = build_state_pkgs.get(name)
+        if bs_entry is not None and bs_entry.get("build_mode", "profiled") != "pacman":
+            pkg = bs_entry
             manifest_source = manifest_entry.get("source")
             if manifest_source and "source" not in pkg:
                 pkg["source"] = manifest_source
@@ -546,7 +557,22 @@ def cmd_update(args) -> None:
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
     bs = BuildState(state_dir)
 
-    # Unified log �� always on, always truncate.
+    # Superset sync: build_state.toml carries an entry for every installed
+    # package (pacman-mode marker for those sysforge didn't build), so that
+    # every `pacman -Q` name has a known state and zombie entries left by
+    # prior parser runs (e.g. literal ``$_pkgname`` keys) are pruned.
+    try:
+        sync_result = bs.sync_with_installed(get_all_installed_packages())
+    except OSError as e:
+        _log.warn(f"build_state sync failed: {e}")
+    else:
+        if isinstance(sync_result, tuple) and len(sync_result) == 2:
+            added, removed = sync_result
+            if added or removed:
+                bs.save()
+                _log.info(f"build_state sync: +{added} pacman-mode, -{removed} stale")
+
+    # Unified log — always on, always truncate.
     unified_log_active = not getattr(args, "dry_run", False)
     unified_log_path = (Path(args.log_dir) if getattr(args, "log_dir", None) else state_dir) / "sysforge-update.log"
     if unified_log_active:
