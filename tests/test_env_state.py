@@ -342,6 +342,36 @@ def test_toolchain_mismatch_raises_on_unrecognized_thin_flag(tmp_path):
     assert raised == "mismatch"
 
 
+def test_toolchain_mismatch_raises_on_curly_quoted_error(tmp_path):
+    """GCC emits Unicode smart quotes in localized errors — must still match."""
+    import subprocess as _sp
+
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+
+    # Actual output from gpu-burn build: U+2018 LEFT / U+2019 RIGHT single quote.
+    output = [
+        "cc1plus: error: unrecognized argument to \u2018-flto=\u2019 option: \u2018thin\u2019\n",
+        "==> ERROR: A failure occurred in build().\n",
+    ]
+
+    clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
+    with patch.dict(os.environ, clean_env, clear=True):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=_popen_with_stdout(output, 2)):
+            try:
+                invoke_makepkg(pb, conf, {})
+            except ToolchainMismatchError:
+                raised = "mismatch"
+            except _sp.CalledProcessError:
+                raised = "generic"
+            else:
+                raised = "none"
+
+    assert raised == "mismatch"
+
+
 def test_toolchain_mismatch_not_raised_on_unrelated_failure(tmp_path):
     """Non-matching errors raise plain CalledProcessError, not ToolchainMismatchError."""
     import subprocess as _sp

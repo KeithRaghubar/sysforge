@@ -723,8 +723,12 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         elif "target not found:" in stripped:
             missing_deps.append(stripped.strip())
         if not toolchain_mismatch:
+            # GCC emits curly quotes ‘…’ (U+2018/U+2019) when the locale
+            # supports them; normalize to ASCII apostrophes so our patterns
+            # match regardless of the shell's LC_MESSAGES setting.
+            _normalized = stripped.replace("\u2018", "'").replace("\u2019", "'")
             for _pat in TOOLCHAIN_MISMATCH_PATTERNS:
-                if _pat in stripped:
+                if _pat in _normalized:
                     toolchain_mismatch = True
                     break
         if verbose_log:
