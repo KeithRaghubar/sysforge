@@ -35,6 +35,7 @@ Phases:
 Public API:
     cmd_update(args)
 """
+import re
 import sys
 import time
 import tomllib
@@ -418,6 +419,9 @@ def _sync_sources(
 # Phase 3: Version check (called from ThreadPoolExecutor)
 # ---------------------------------------------------------------------------
 
+_UNRESOLVED_EXPANSION = re.compile(r"[${}]")
+
+
 def _check_one_pkgbase(
     pkgbase: str,
     pkgnames: list[str],
@@ -426,6 +430,7 @@ def _check_one_pkgbase(
     all_installed: dict[str, str],
     unrecorded_names: set[str],
     skip_sync_check: bool,
+    rpc_version_by_base: dict[str, str],
 ) -> _UpdateResult | None:
     """Check a single pkgbase and return an _UpdateResult, or None on skip."""
     pkgbuild_dir = Path(entry["pkgbuild_dir"])
@@ -457,6 +462,22 @@ def _check_one_pkgbase(
 
     globals_ = pkgmeta.get("globals", {})
     pkgbuild_ver = format_version(globals_)
+
+    # Static PKGBUILD parser can't evaluate bash parameter expansion
+    # (${var//-/_}, ${var/[a-z]/.sfx}, etc.). When pkgver still contains
+    # shell metacharacters, fall back to the AUR RPC version we already
+    # cached in source_meta.toml — it's the authoritative released version
+    # and is vercmp-ready (already includes pkgrel and any epoch prefix).
+    if _UNRESOLVED_EXPANSION.search(pkgbuild_ver):
+        rpc_ver = rpc_version_by_base.get(pkgbase)
+        if rpc_ver:
+            pkgbuild_ver = rpc_ver
+        else:
+            _log.warn(
+                f"{pkgbase}: pkgver '{pkgbuild_ver}' has unresolved shell "
+                "expansion and no cached RPC version — skipping"
+            )
+            return None
 
     # Check all pkgnames for split packages — installed if ANY sub-package is
     installed_ver = None
@@ -581,12 +602,21 @@ def cmd_update(args) -> None:
     skip_sync_check = offline
     results: list[_UpdateResult] = []
 
+    # Authoritative pkgbuild versions for packages whose PKGBUILDs use bash
+    # parameter expansion the static parser can't evaluate. The scheduler's
+    # SourceMetaCache holds the latest AUR RPC Version per pkgbase.
+    rpc_version_by_base = {
+        pb: meta["rpc_version"]
+        for pb, meta in get_scheduler().cache.all().items()
+        if meta.get("rpc_version")
+    }
+
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(
                 _check_one_pkgbase, pkgbase, pkgnames,
                 pkgbase_entry[pkgbase], sync_failures, all_installed,
-                unrecorded_names, skip_sync_check,
+                unrecorded_names, skip_sync_check, rpc_version_by_base,
             ): pkgbase
             for pkgbase, pkgnames in sorted(pkgbase_map.items())
         }

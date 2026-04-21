@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.update import (
     _is_vcs, cmd_update,
+    _check_one_pkgbase,
     _load_packages_toml_names,
     _append_to_packages_toml, _discover_new_packages, _UpdateResult,
 )
@@ -182,6 +183,65 @@ def test_check_up_to_date(tmp_path, capsys):
     results = _run_update_with_package(tmp_path, "htop", "3.4.1-1", "3.4.1")
     actions = [r.action for r in results]
     assert "UP_TO_DATE" in actions
+
+
+# ---------------------------------------------------------------------------
+# _check_one_pkgbase — RPC version fallback for unresolvable bash expansions
+# ---------------------------------------------------------------------------
+
+def _write_pkgbuild(dir_: Path, body: str) -> Path:
+    dir_.mkdir(parents=True, exist_ok=True)
+    p = dir_ / "PKGBUILD"
+    p.write_text(body)
+    return p
+
+
+def test_unresolved_pkgver_uses_cached_rpc_version(tmp_path):
+    """PKGBUILD with bash parameter expansion falls back to cached RPC version."""
+    pkgbase = "1password"
+    pkg_dir = tmp_path / pkgbase
+    _write_pkgbuild(
+        pkg_dir,
+        '_tarver=8.12.10-36\npkgname=1password\npkgver=${_tarver//-/_}\npkgrel=36\n',
+    )
+    entry = {"pkgbuild_dir": str(pkg_dir), "discovered": False}
+
+    result = _check_one_pkgbase(
+        pkgbase=pkgbase,
+        pkgnames=[pkgbase],
+        entry=entry,
+        sync_failures={},
+        all_installed={pkgbase: "8.12.10-36"},
+        unrecorded_names=set(),
+        skip_sync_check=False,
+        rpc_version_by_base={pkgbase: "8.12.10-36"},
+    )
+    assert result is not None
+    assert result.action == "UP_TO_DATE"
+    assert result.pkgbuild_ver == "8.12.10-36"
+
+
+def test_unresolved_pkgver_without_cache_is_skipped(tmp_path):
+    """No cached RPC version → skip rather than compare gibberish."""
+    pkgbase = "openssl-1.0"
+    pkg_dir = tmp_path / pkgbase
+    _write_pkgbuild(
+        pkg_dir,
+        '_ver=1.0.2u\npkgname=openssl-1.0\npkgver=${_ver/[a-z]/.${_ver//[0-9.]/}}\npkgrel=7\n',
+    )
+    entry = {"pkgbuild_dir": str(pkg_dir), "discovered": False}
+
+    result = _check_one_pkgbase(
+        pkgbase=pkgbase,
+        pkgnames=[pkgbase],
+        entry=entry,
+        sync_failures={},
+        all_installed={pkgbase: "1.0.2.u-7"},
+        unrecorded_names=set(),
+        skip_sync_check=False,
+        rpc_version_by_base={},
+    )
+    assert result is None
 
 
 def test_check_not_installed(tmp_path):
