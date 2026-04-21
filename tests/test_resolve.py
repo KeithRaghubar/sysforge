@@ -93,43 +93,59 @@ def test_find_pkgbuild_error_message_shows_both_searched(tmp_path):
 
 def test_find_pkgbuild_aur_clone_on_miss(tmp_path):
     """When package is on AUR and pkgbuild_src_dir is configured, it gets cloned."""
+    from sysforge.primitives.source_sync import reset_scheduler
+    reset_scheduler()
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
     clone_dest = tmp_path / "mypkg"
 
-    def fake_clone(name, dest):
+    def fake_clone(name, dest, **kw):
         dest.mkdir()
         (dest / "PKGBUILD").write_text("pkgname=mypkg\npkgver=1.0\npkgrel=1\narch=('any')\n")
 
-    with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"), \
-         patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
-         patch("sysforge.primitives.aur.aur_info", return_value={"mypkg": {}}), \
-         patch("sysforge.primitives.aur.aur_clone", side_effect=fake_clone):
-        result = find_pkgbuild("mypkg", config)
+    try:
+        with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"), \
+             patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
+             patch("sysforge.primitives.aur.aur_info", return_value={"mypkg": {}}), \
+             patch("sysforge.primitives.source_sync.aur_clone", side_effect=fake_clone):
+            result = find_pkgbuild("mypkg", config)
 
-    assert result == (clone_dest / "PKGBUILD").resolve()
+        assert result == (clone_dest / "PKGBUILD").resolve()
+    finally:
+        reset_scheduler()
 
 
 def test_find_pkgbuild_not_on_aur_raises(tmp_path):
     """When package is not on AUR and not found locally, raises FileNotFoundError."""
+    from sysforge.primitives.source_sync import reset_scheduler
+    reset_scheduler()
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
 
-    with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"), \
-         patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
-         patch("sysforge.primitives.aur.aur_info", return_value={}):
-        with pytest.raises(FileNotFoundError, match="mypkg"):
-            find_pkgbuild("mypkg", config)
+    try:
+        with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"), \
+             patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
+             patch("sysforge.primitives.aur.aur_info", return_value={}):
+            with pytest.raises(FileNotFoundError, match="mypkg"):
+                find_pkgbuild("mypkg", config)
+    finally:
+        reset_scheduler()
 
 
 def test_find_pkgbuild_aur_clone_failure_raises(tmp_path):
-    """RuntimeError from aur_clone propagates out of find_pkgbuild."""
+    """Scheduler clone failure is re-raised as RuntimeError from find_pkgbuild."""
+    from sysforge.primitives.source_sync import reset_scheduler
+    reset_scheduler()
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
 
-    with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"), \
-         patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
-         patch("sysforge.primitives.aur.aur_info", return_value={"mypkg": {}}), \
-         patch("sysforge.primitives.aur.aur_clone", side_effect=RuntimeError("git clone failed")):
-        with pytest.raises(RuntimeError, match="git clone failed"):
-            find_pkgbuild("mypkg", config)
+    try:
+        with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"), \
+             patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
+             patch("sysforge.primitives.aur.aur_info", return_value={"mypkg": {}}), \
+             patch("sysforge.primitives.source_sync.aur_clone",
+                   side_effect=RuntimeError("git clone failed")):
+            with pytest.raises(RuntimeError, match="git clone failed"):
+                find_pkgbuild("mypkg", config)
+    finally:
+        reset_scheduler()
 
 
 def test_find_pkgbuild_repo_package_uses_pkgctl(tmp_path):

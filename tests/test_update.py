@@ -436,13 +436,6 @@ def test_pull_failure_continues_to_next_package(tmp_path):
         },
     }
 
-    pull_call_count = []
-
-    def fake_pull(d, **kwargs):
-        pull_call_count.append(d.name)
-        if d.name == "htop":
-            raise RuntimeError("git pull failed")
-
     parsed_neovim = {"globals": {"pkgname": "neovim", "pkgver": "0.9.0", "pkgrel": "1", "epoch": "0"}}
 
     args = _make_args(offline=False)
@@ -455,8 +448,9 @@ def test_pull_failure_continues_to_next_package(tmp_path):
 
     with (
         patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.git_pull_rebase", side_effect=fake_pull),
-        patch("sysforge.update.purge_src", side_effect=RuntimeError("recovery purge failed")),
+        # Simulate the scheduler reporting htop failed and neovim up-to-date.
+        patch("sysforge.update._sync_sources",
+              return_value={"htop": "git fetch failed"}),
         patch("sysforge.update.parse_pkgbuild", return_value=parsed_neovim),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config", return_value={}),

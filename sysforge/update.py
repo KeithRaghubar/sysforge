@@ -26,7 +26,7 @@ and reported but only rebuilt when --all is passed.
 Phases:
     0. Init — load state, config, manifest, open unified log
     1. Package set assembly — merge manifest + build_state + discovery
-    2. Source sync — pull, clone, cleansrc, pull-failure recovery
+    2. Source sync — batched RPC + shallow fetch via SourceSyncScheduler
     3. Version check — parallel PKGBUILD parsing + vercmp
     4. Summary + dry-run gate
     5. Build — makedeps, AUR deps, single build loop
@@ -47,9 +47,11 @@ _log = log.get_logger("UPDATE")
 from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-from sysforge.primitives.aur import (
-    git_pull_rebase, fetch_aur_name_cache, purge_src, aur_clone, aur_info,
-    TRANSIENT_GIT_ERRORS, RATE_LIMIT_GIT_ERRORS,
+from sysforge.primitives.aur import fetch_aur_name_cache, aur_info
+from sysforge.primitives.source_sync import (
+    SyncRequest, SyncResult,
+    STATUS_DIVERGED, STATUS_FAILED, STATUS_PURGE_REFUSED, STATUS_RATE_LIMITED,
+    get_scheduler,
 )
 from sysforge.primitives.config import load_config, load_sysforge_toml
 from sysforge.primitives.paths import resolve_packages_path
@@ -71,19 +73,10 @@ from sysforge.pipeline.state import resolve_state_dir
 
 _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
 
-# Circuit breaker: if this many consecutive network ops fail with a transient
-# error, stop attempting further AUR operations for this run. AUR outages and
-# IP-level rate-limiting don't clear up mid-run; continuing just spams the
-# user with identical error logs.
-_NETWORK_BREAKER_THRESHOLD = 5
-
-
-def _is_transient_git_error(err: str) -> bool:
-    return "timed out" in err or any(m in err for m in TRANSIENT_GIT_ERRORS)
-
-
-def _is_rate_limit_error(err: str) -> bool:
-    return any(m in err for m in RATE_LIMIT_GIT_ERRORS)
+# Sync statuses that block the package from proceeding to build.
+_SYNC_BLOCKING_STATUSES = frozenset({
+    STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED,
+})
 
 
 @dataclass
@@ -333,212 +326,83 @@ def _sync_sources(
 ) -> dict[str, str]:
     """Ensure every package has an up-to-date local PKGBUILD.
 
-    Returns a dict of {pkgbase: error_message} for packages that failed sync.
+    Delegates to ``SourceSyncScheduler``: one batched AUR RPC call, then
+    sequential shallow fetches for pkgbases whose Version/LastModified/HEAD
+    have drifted from ``source_meta.toml``. Returns
+    ``{pkgbase: error_message}`` for packages that blocked on sync.
     """
     offline = getattr(args, "offline", False)
     dry_run = getattr(args, "dry_run", False)
     cleansrc = getattr(args, "cleansrc", False) and not dry_run
+    force_devel = getattr(args, "devel", False)
 
-    git_cfg = load_sysforge_toml().get("git", {})
-    pull_timeout = git_cfg.get("pull_timeout", 30)
+    state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
+    sysforge_toml = load_sysforge_toml()
+    git_cfg = sysforge_toml.get("git", {})
+    aur_cfg = sysforge_toml.get("aur", {})
+    # Accept legacy pull_timeout as an alias for fetch_timeout.
+    fetch_timeout = git_cfg.get("fetch_timeout", git_cfg.get("pull_timeout", 30))
     clone_timeout = git_cfg.get("clone_timeout", 60)
+
+    scheduler = get_scheduler(
+        state_dir=state_dir,
+        offline=offline,
+        cleansrc=cleansrc,
+        force_devel=force_devel,
+        min_fetch_interval_ms=aur_cfg.get("min_fetch_interval_ms", 500),
+        rate_limit_abort_s=aur_cfg.get("rate_limit_abort_s", 120.0),
+        fetch_timeout=fetch_timeout,
+        clone_timeout=clone_timeout,
+    )
 
     if offline and not cleansrc:
         return {}
 
-    sync_failures: dict[str, str] = {}
+    reqs: list[SyncRequest] = []
     seen_dirs: set[str] = set()
-
-    # --- Sub-phase 1: cleansrc purges (sequential) ---
-    # Only purge dirs for packages that exist; missing dirs will be cloned below.
-    if cleansrc:
-        for pkgbase in sorted(pkgbase_map):
-            entry = pkgbase_entry[pkgbase]
-            if entry.get("source") == "repo":
-                continue
-            d = Path(entry["pkgbuild_dir"])
-            key = str(d)
-            if key in seen_dirs or not d.exists():
-                continue
-            seen_dirs.add(key)
-            try:
-                purge_src(d)
-            except RuntimeError as e:
-                sync_failures[pkgbase] = str(e)
-                _log.error(f"--cleansrc {pkgbase}: {e}")
-
-    if offline:
-        return sync_failures
-
-    # --- Sub-phase 2: sequential clones for missing dirs ---
-    # Covers: never-cloned packages, cleansrc-purged dirs.
-    # Sequential to avoid AUR rate limiting; aur_clone handles transient retries.
-    seen_dirs.clear()
     for pkgbase in sorted(pkgbase_map):
-        if pkgbase in sync_failures:
-            continue
         entry = pkgbase_entry[pkgbase]
-        if entry.get("source") == "repo":
+        source = entry.get("source", "aur")
+        if source == "repo":
             continue
         pkgbuild_dir = Path(entry["pkgbuild_dir"])
         resolved = str(pkgbuild_dir)
         if resolved in seen_dirs:
             continue
         seen_dirs.add(resolved)
+        reqs.append(SyncRequest(
+            pkgbase=pkgbase, pkgbuild_dir=pkgbuild_dir, source=source,
+        ))
 
-        needs_clone = not pkgbuild_dir.is_dir()
-        needs_recovery = (pkgbuild_dir.is_dir()
-                          and not (pkgbuild_dir / "PKGBUILD").exists())
-        if not needs_clone and not needs_recovery:
-            continue
-
-        if needs_recovery:
-            try:
-                purge_src(pkgbuild_dir)
-            except RuntimeError as e:
-                sync_failures[pkgbase] = str(e)
-                _log.error(f"{pkgbase}: purge failed: {e}")
-                continue
-
-        try:
-            aur_clone(pkgbase, pkgbuild_dir, timeout=clone_timeout)
-        except RuntimeError as e:
-            sync_failures[pkgbase] = str(e)
-            _log.error(f"{pkgbase}: clone failed: {e}")
-
-    # --- Sub-phase 3: parallel git pulls ---
-    # Only pull dirs that exist and have a PKGBUILD (freshly cloned dirs
-    # are already at HEAD, so they're naturally excluded by seen_dirs dedup
-    # only if we track them — but it's harmless to pull a fresh clone).
-    seen_dirs.clear()
-    pull_candidates: list[tuple[str, Path]] = []
-    for pkgbase in sorted(pkgbase_map):
-        if pkgbase in sync_failures:
-            continue
-        entry = pkgbase_entry[pkgbase]
-        if entry.get("source") == "repo":
-            continue
-        d = Path(entry["pkgbuild_dir"])
-        resolved = str(d)
-        if resolved in seen_dirs or not d.is_dir():
-            continue
-        if not (d / "PKGBUILD").exists():
-            continue
-        seen_dirs.add(resolved)
-        pull_candidates.append((pkgbase, d))
-
-    # Adaptive concurrency: start with 4 parallel pulls for speed. As soon as
-    # any pull times out, cancel all still-queued futures and re-run them
-    # sequentially — AUR throttles concurrent connections, so dropping to
-    # one-at-a-time after a timeout is strictly faster than waiting for every
-    # parallel pull to time out and then falling through to sub-phase 4 recovery.
-    pull_failures: dict[str, str] = {}
-    sequential_retry: list[tuple[str, Path]] = []
-    degraded = False
     from sysforge.ui import progress as _ui_progress
-    with _ui_progress.tracker(len(pull_candidates), "git pull") as _tick:
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {
-                pool.submit(git_pull_rebase, d, timeout=pull_timeout): (pb, d)
-                for pb, d in pull_candidates
-            }
-            for fut in as_completed(futures):
-                pkgbase_key, pkgbuild_dir = futures[fut]
-                if fut.cancelled():
-                    sequential_retry.append((pkgbase_key, pkgbuild_dir))
-                    continue
-                _tick(pkgbase_key)
-                try:
-                    fut.result()
-                except RuntimeError as e:
-                    err = str(e)
-                    pull_failures[pkgbase_key] = err
-                    if not degraded and (
-                        _is_transient_git_error(err) or _is_rate_limit_error(err)
-                    ):
-                        degraded = True
-                        _log.warn(
-                            "AUR pull hit a transient error — "
-                            "reverting remaining pulls to sequential mode"
-                        )
-                        for f in futures:
-                            f.cancel()
+    results: dict[str, SyncResult] = {}
+    with _ui_progress.tracker(len(reqs), "source sync") as _tick:
+        for req in reqs:
+            _tick(req.pkgbase)
+            results[req.pkgbase] = scheduler.request(req)
 
-        consecutive_transient = 0
-        breaker_open = False
-        for pkgbase_key, pkgbuild_dir in sequential_retry:
-            _tick(pkgbase_key)
-            if breaker_open:
-                pull_failures[pkgbase_key] = "skipped: AUR circuit breaker open"
-                continue
-            try:
-                git_pull_rebase(pkgbuild_dir, timeout=pull_timeout)
-                consecutive_transient = 0
-            except RuntimeError as e:
-                err = str(e)
-                pull_failures[pkgbase_key] = err
-                if _is_rate_limit_error(err):
-                    breaker_open = True
-                    _log.error(
-                        "AUR is rate-limiting this host (HTTP 429/503) — "
-                        "aborting further pull attempts. Retrying now extends "
-                        "the penalty window; wait a few minutes before rerunning."
-                    )
-                elif _is_transient_git_error(err):
-                    consecutive_transient += 1
-                    if consecutive_transient >= _NETWORK_BREAKER_THRESHOLD:
-                        breaker_open = True
-                        _log.error(
-                            f"AUR unreachable: {consecutive_transient} consecutive "
-                            "transient failures — aborting further pull attempts. "
-                            "Try again in a few minutes."
-                        )
-                else:
-                    consecutive_transient = 0
+    # Summarise per-status counts once at INFO for operator visibility.
+    by_status: dict[str, int] = {}
+    for r in results.values():
+        by_status[r.status] = by_status.get(r.status, 0) + 1
+    if by_status:
+        _log.info("source sync: "
+                  + ", ".join(f"{k}={v}" for k, v in sorted(by_status.items())))
 
-    # --- Sub-phase 4: pull failure recovery (sequential) ---
-    # On pull failure, try purge + re-clone. Common when AUR maintainers
-    # force-push. Dirty repos (local work) are still refused by purge_src.
-    # Same circuit-breaker applies: once AUR is confirmed unreachable, skip
-    # the remaining re-clone attempts.
-    consecutive_transient = 0
-    breaker_open = False
-    for pkgbase, error_msg in pull_failures.items():
-        entry = pkgbase_entry[pkgbase]
-        pkgbuild_dir = Path(entry["pkgbuild_dir"])
-        if breaker_open:
-            sync_failures[pkgbase] = (
-                f"pull failed: {error_msg}; recovery skipped: AUR circuit breaker open"
+    scheduler.close()
+
+    sync_failures: dict[str, str] = {}
+    for pkgbase, result in results.items():
+        if result.status in _SYNC_BLOCKING_STATUSES:
+            sync_failures[pkgbase] = result.error or result.status
+        elif result.status == STATUS_DIVERGED:
+            # Divergence is not a hard failure: local PKGBUILD is kept; build
+            # proceeds against it. Surface as a warning, not a blocker.
+            _log.warn(
+                f"{pkgbase}: {result.error or 'divergent upstream'} — "
+                "build will use the local PKGBUILD; rerun with --cleansrc "
+                "to discard local edits and re-clone"
             )
-            continue
-        _log.warn(f"{pkgbase}: pull failed, attempting recovery...")
-        try:
-            purge_src(pkgbuild_dir)
-            aur_clone(pkgbase, pkgbuild_dir, timeout=clone_timeout)
-            consecutive_transient = 0
-        except RuntimeError as e:
-            err = str(e)
-            sync_failures[pkgbase] = f"pull failed: {error_msg}; recovery failed: {err}"
-            _log.error(f"{pkgbase}: recovery failed: {err}")
-            if _is_rate_limit_error(err):
-                breaker_open = True
-                _log.error(
-                    "AUR is rate-limiting this host (HTTP 429/503) — "
-                    "aborting further re-clone attempts. Retrying now extends "
-                    "the penalty window; wait a few minutes before rerunning."
-                )
-            elif _is_transient_git_error(err):
-                consecutive_transient += 1
-                if consecutive_transient >= _NETWORK_BREAKER_THRESHOLD:
-                    breaker_open = True
-                    _log.error(
-                        f"AUR unreachable: {consecutive_transient} consecutive "
-                        "transient recovery failures — aborting further re-clone "
-                        "attempts. Try again in a few minutes."
-                    )
-            else:
-                consecutive_transient = 0
-
     return sync_failures
 
 

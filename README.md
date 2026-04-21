@@ -30,6 +30,9 @@ sudo vim /etc/sysforge/flag_profiles.toml
 sysforge build neovim-git -m "-si"
 
 # 4. Check for and rebuild any outdated sysforge-managed packages
+#    (Source sync is RPC-first: one batched AUR `info` call, and a git
+#     fetch per package only when the cached version/LastModified differs
+#     from the local HEAD. Steady-state runs do zero git fetches.)
 sysforge update
 
 # 5. Rebuild VCS packages too
@@ -42,9 +45,11 @@ sysforge update --dry-run
 #    auto-clones any missing src dirs (the supported "fix everything" recipe)
 sysforge update --all --fetch-missing
 
-# 8. Same as above, plus discard divergent local clones (rebase conflicts).
-#    --cleansrc refuses any clone that has uncommitted changes, unpushed commits,
-#    or no upstream — those packages are reported as failed and the run continues.
+# 8. Same as above, plus discard divergent local clones (force-pushed upstream
+#    or local-only commits). --cleansrc refuses any clone that has uncommitted
+#    changes, unpushed commits, or no upstream — those packages are reported as
+#    failed and the run continues. --cleansrc also bypasses the RPC short-circuit
+#    and re-clones every AUR package from scratch.
 sysforge update --all --fetch-missing --cleansrc
 
 # 9. Manage packages.toml

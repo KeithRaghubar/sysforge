@@ -58,7 +58,8 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
     # Inline import to avoid a module-level circular dependency:
     # aur.py → log.py (fine), but keeping aur out of config's top-level
     # imports avoids pulling subprocess/urllib into every config load path.
-    from sysforge.primitives.aur import aur_clone, aur_info, is_repo_package, pkgctl_checkout
+    from sysforge.primitives.aur import aur_info, is_repo_package, pkgctl_checkout
+    from sysforge.primitives.source_sync import SyncRequest, get_scheduler
 
     p = Path(pkg)
     if p.is_dir():
@@ -89,7 +90,16 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
                 if dir_candidate.exists():
                     return dir_candidate.resolve()
             elif aur_info([pkg]):
-                aur_clone(pkg, clone_dest)        # raises RuntimeError on failure
+                # Route through the scheduler so repeated find_pkgbuild calls
+                # for the same pkg (fetch.py → update.py → makepkg_wrapper.py)
+                # dedup to a single clone.
+                sync_result = get_scheduler().request(SyncRequest(
+                    pkgbase=pkg, pkgbuild_dir=clone_dest, source="aur",
+                ))
+                if sync_result.error and not dir_candidate.exists():
+                    raise RuntimeError(
+                        f"AUR clone failed for {pkg!r}: {sync_result.error}"
+                    )
                 if dir_candidate.exists():
                     return dir_candidate.resolve()
 

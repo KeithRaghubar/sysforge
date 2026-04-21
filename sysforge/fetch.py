@@ -14,13 +14,16 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("FETCH")
 from sysforge.primitives.config import find_pkgbuild, load_config
-from sysforge.primitives.aur import git_pull_rebase
+from sysforge.primitives.source_sync import SyncRequest, get_scheduler
 
 
 def cmd_fetch(args) -> None:
     """Entry point for sysforge fetch."""
     config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
     config = load_config(config_paths=config_paths)
+    scheduler = get_scheduler(
+        force_devel=getattr(args, "devel", False),
+    )
 
     from sysforge.ui import progress as _ui_progress
     failed = 0
@@ -37,10 +40,13 @@ def cmd_fetch(args) -> None:
             pkgbuild_dir = pkgbuild_path.parent
 
             if not args.no_update:
-                try:
-                    git_pull_rebase(pkgbuild_dir)
-                except RuntimeError as e:
-                    _log.warn(str(e))
+                result = scheduler.request(SyncRequest(
+                    pkgbase=pkgbuild_dir.name,
+                    pkgbuild_dir=pkgbuild_dir,
+                    force_fetch=getattr(args, "force_fetch", False),
+                ))
+                if result.error and result.status != "up_to_date":
+                    _log.warn(f"{pkgbuild_dir.name}: {result.error}")
 
             print(str(pkgbuild_dir))
 

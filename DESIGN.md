@@ -121,6 +121,9 @@ sysforge/
 │       ├── resource_guard.py          # controller RLIMIT_AS cap + lift_for_child() for subprocesses
 │       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
 │       ├── aur.py                     # AUR RPC v5, git clone, pkgctl checkout, GPG key import
+│       ├── rate_limit.py              # shared RPC + git fetch rate limiter (RateLimiter, RateLimited)
+│       ├── source_meta.py             # per-package AUR RPC + git HEAD cache (source_meta.toml)
+│       ├── source_sync.py             # process-wide SourceSyncScheduler (RPC-first, sequential)
 │       ├── build_state.py             # per-package build metadata persistence (build_state.toml)
 │       └── version.py                 # vercmp wrapper + version string formatting
 │   └── pipeline/
@@ -209,6 +212,7 @@ sysforge/
 /var/lib/sysforge/
     pipeline_state.toml              # pipeline checkpoint state (created at runtime)
     build_state.toml                 # per-package build metadata (created at runtime, by sysforge build/update)
+    source_meta.toml                 # per-package AUR RPC + git HEAD snapshot used by the source_sync scheduler
     sysforge.log                     # unified log (created at runtime, cleared on success)
 ```
 
@@ -286,8 +290,10 @@ Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to su
 | Section | Key | Default | Description |
 |---------|-----|---------|-------------|
 | `[ui]` | `editor` | — | Editor for reconfigure stage (overridden by `SYSFORGE_EDITOR` env) |
-| `[git]` | `pull_timeout` | `30` | Seconds before `git pull --rebase` times out during update (0 = no limit) |
+| `[git]` | `fetch_timeout` | `30` | Seconds before a shallow `git fetch` times out during source sync (0 = no limit). Legacy alias: `pull_timeout` |
 | `[git]` | `clone_timeout` | `60` | Seconds before `git clone` / `pkgctl repo clone` times out (0 = no limit) |
+| `[aur]` | `min_fetch_interval_ms` | `500` | Minimum gap between consecutive git fetches against aur.archlinux.org (millisecond resolution) |
+| `[aur]` | `rate_limit_abort_s` | `300` | If AUR returns a `Retry-After` ≥ this many seconds, the remaining sync batch is aborted rather than waited out |
 
 ### Hardware overlays
 
@@ -540,7 +546,7 @@ Bottom-anchored status line for batch operations (`[3/10] building htop`). Dual-
 
 Public API: `init()`, `shutdown()`, `render(current, total, label)`, `clear()`, and a `tracker(total, prefix)` context manager that yields a `tick(label)` callable (auto-clears on exit). `clear()` must be called before any `input()` prompt inside a batch loop so the prompt doesn't land inside the scroll region; the next `tick()` re-establishes the region automatically. Reservation is lazy: entering a tracker alone touches nothing — the first `tick()` call establishes the region.
 
-Integration sites: `sysforge/pipeline/stages/packages.py` (build loop), `sysforge/primitives/aur_resolve.py::build_resolved_deps` (AUR deps), `sysforge/update.py` (threaded git pulls + build loop), `sysforge/fetch.py` (fetch loop). Interactive-prompt call sites in `pipeline/stages/packages.py` and `primitives/makepkg_wrapper.py` each call `progress.clear()` before `input()`.
+Integration sites: `sysforge/pipeline/stages/packages.py` (build loop), `sysforge/primitives/aur_resolve.py::build_resolved_deps` (AUR deps), `sysforge/update.py` (sequential source sync via `source_sync` + threaded version check + build loop), `sysforge/fetch.py` (fetch loop). Interactive-prompt call sites in `pipeline/stages/packages.py` and `primitives/makepkg_wrapper.py` each call `progress.clear()` before `input()`.
 
 ### `paths.py`
 
@@ -552,7 +558,7 @@ TOML config loading and path resolution. Public API:
 - `load_config(config_paths=None)` — loads `flag_profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
 - `load_conflict_groups(paths=None)` — loads `append_conflict_groups.toml`
 - `load_consumes_inference(paths=None)` — loads `consumes_inference.toml`
-- `find_pkgbuild(pkg, config=None)` — resolves a bare package name, directory path, or PKGBUILD path to an absolute PKGBUILD path. Search order: (1) direct path or directory (resolves `dir/PKGBUILD`), (2) `<cwd>/<name>/PKGBUILD`, (3) `<config [paths] pkgbuild_src_dir>/<name>/PKGBUILD`, (4) auto-clone if not found locally — repo packages via `pkgctl repo clone --protocol=https`, AUR packages via `aur_clone`. Used by `sysforge build`, `sysforge resolve`, and the packages stage.
+- `find_pkgbuild(pkg, config=None)` — resolves a bare package name, directory path, or PKGBUILD path to an absolute PKGBUILD path. Search order: (1) direct path or directory (resolves `dir/PKGBUILD`), (2) `<cwd>/<name>/PKGBUILD`, (3) `<config [paths] pkgbuild_src_dir>/<name>/PKGBUILD`, (4) auto-clone if not found locally — repo packages via `pkgctl repo clone --protocol=https`, AUR packages are routed through `get_scheduler().request(SyncRequest(...))` so the clone is deduplicated with any concurrent update/fetch request and shares the same rate-limit budget. Used by `sysforge build`, `sysforge resolve`, and the packages stage.
 
 `[paths] pkgbuild_src_dir` in `flag_profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
 - `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles backslash line continuation (e.g. `CFLAGS="... \\\n  -flag"`) and multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines. Merges user conf (`$XDG_CONFIG_HOME/pacman/makepkg.conf`, `~/.makepkg.conf`) on top of system conf.
@@ -733,13 +739,14 @@ Each probe is skipped cleanly if the underlying binary is absent (e.g. sccache n
 
 ### `aur.py`
 
-AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key import.
+AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key import. Network-facing primitives optionally accept a `RateLimiter` (from `rate_limit.py`) so the scheduler can throttle RPC and git-fetch traffic under a single budget.
 
 - `repo_packages(names)` — single `pacman -Si name1 name2 ...` invocation; returns the subset of names present in any sync DB. Use for batch classification (O(1) subprocesses). Parses stdout for `Name : <pkg>` lines; packages not found produce errors to stderr only.
 - `is_repo_package(name)` — single-name wrapper around pacman -Si; returns `True` if found in any sync DB. Used by `find_pkgbuild` to route auto-clone: repo packages → `pkgctl_checkout`, AUR → `aur_clone`.
 - `aur_info(names)` — single batch `GET https://aur.archlinux.org/rpc/v5/info?arg[]=…` for all names; returns `{name: result_dict}`. Silent on network/JSON errors (returns `{}`).
-- `aur_clone(name, dest)` — `git clone https://aur.archlinux.org/<name>.git <dest>`; raises `RuntimeError` on failure.
-- `git_pull_rebase(pkgbuild_dir)` — `git pull --rebase` in the given dir. No-ops on non-git directories or repos with no upstream tracking branch. Raises `RuntimeError` on conflict (after running `git rebase --abort` to restore a clean state).
+- `aur_clone(name, dest, *, ref=None, depth=None)` — `git clone https://aur.archlinux.org/<name>.git <dest>`; optional `ref` / `depth` support shallow / branch-pinned clones. Raises `RuntimeError` on failure.
+- `git_fetch_and_compare(pkgbuild_dir, *, timeout=30, limiter=None)` — shallow (`--depth=1`) fetch of the tracked upstream followed by a HEAD compare. **Non-destructive**: never runs a merge/rebase/reset; returns a `GitFetchOutcome(status, head_before, head_after, error)` where `status ∈ {"up_to_date", "fetched", "diverged", "failed", "skipped_no_tracking"}`. Divergence (local commits or a force-push upstream) is reported, not auto-recovered — the scheduler leaves the work-tree intact and surfaces the status upward. Honours the limiter's `wait_before_fetch()` / `Retry-After` budget when supplied.
+- `is_transient_git_error(stderr)` / `is_rate_limit_error(stderr)` — shared stderr classifiers used by both the scheduler and legacy retry paths.
 - `git_is_dirty(pkgbuild_dir)` — `True` if the dir is a git repo with uncommitted tracked changes, unpushed commits, or no upstream tracking branch. Untracked files (build artifacts) are intentionally ignored.
 - `purge_src(pkgbuild_dir)` — `rm -rf` the directory after a `git_is_dirty` safety check. Raises `RuntimeError` if the clone holds local work that would be destroyed; non-git directories are purged unconditionally; non-existent paths are a silent no-op. Used by `sysforge build --cleansrc`, `sysforge update --cleansrc`, and the source sync recovery paths in `sysforge update`.
 - `pkgctl_checkout(name, dest)` — `pkgctl repo clone --protocol=https <name>` run in `dest.parent`; fetches official Arch packaging repo. Raises `RuntimeError` on failure.
@@ -751,6 +758,47 @@ AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key
 `sysforge completions local` — outputs only locally-cloned packages from `pkgbuild_src_dir` (no network). Used by zsh completion for `resolve` (only packages with a local PKGBUILD can be resolved without triggering a download).
 
 `sysforge completions manifest` — outputs only names from the active `packages.toml`. Used by zsh completion for `packages remove` (only valid to remove what's already there).
+
+### `rate_limit.py`
+
+Shared token-bucket rate limiter for AUR RPC calls and git fetches. One `RateLimiter` instance lives inside the `SourceSyncScheduler` singleton so every AUR-facing primitive shares a single budget.
+
+- `RateLimiter(min_git_interval_s=0.5, default_retry_after_s=60.0)` — tracks two monotonic clocks: `not_before` (global penalty window, set when the server issues `Retry-After`) and `last_git_fetch` (used to enforce `min_git_interval_s` between consecutive fetches). `wait_before_rpc()` / `wait_before_fetch()` block until both windows have elapsed; `apply_retry_after(seconds, source=…)` extends the penalty window; `remaining_penalty_s()` returns the penalty tail so callers can abort early if it exceeds `rate_limit_abort_s`.
+- `parse_retry_after(header)` — parses RFC 7231 `Retry-After` in both delta-seconds and HTTP-date forms.
+- `http_get_with_rate_limit(url, limiter, *, timeout=10)` — wraps `urllib.request.urlopen`, honours the limiter, and on HTTP 429/503 raises `RateLimited(seconds)` after calling `apply_retry_after`.
+- `run_throttled_git(cmd, limiter, *, timeout=None)` — runs a git subprocess under `wait_before_fetch()`; scans stderr with `RATE_LIMIT_GIT_ERRORS` (`error: 429`, `Too Many Requests`, `error: 503`, `error: 502`) and raises `RateLimited` when the remote pushed back.
+- `RateLimited(seconds)` — exception carrying the `Retry-After` value; unhandled instances propagate up to the scheduler which short-circuits the remaining batch.
+
+### `source_meta.py`
+
+Per-package AUR RPC + git snapshot cache. Backed by `<state_dir>/source_meta.toml` (atomic write-then-rename, same pattern as `build_state.py`).
+
+- `SourceMetaCache(state_dir)` — loads the TOML on construction (silent fallback to empty cache if schema version mismatches).
+- `get(pkgbase)` / `all()` / `delete(pkgbase)` — read/remove entries.
+- `update(pkgbase, *, rpc_version=None, rpc_last_modified=None, rpc_package_base=None, head_commit=None, is_vcs=None, pkgbuild_sha256=None, last_fetch_at=None)` — merges keyword fields into the entry; `None` means "leave unchanged". Writes are buffered — `save()` flushes once per process via `atexit`.
+- `mark_rpc_sync(timestamp=None)` / `last_rpc_at()` — tracks the last batched `aur_info` call so the scheduler can decide whether a fresh RPC is needed.
+
+Schema (`SCHEMA_VERSION = 1`): `rpc_version`, `rpc_last_modified` (Unix timestamp from the AUR RPC), `rpc_package_base`, `head_commit`, `is_vcs`, `pkgbuild_sha256`, `last_fetch_at` (ISO 8601 UTC).
+
+### `source_sync.py`
+
+Process-wide scheduler that enforces the "one RPC call, zero git fetches on steady state" rule. Replaces the old four-sub-phase source-sync block in `sysforge update`.
+
+Public types:
+- `SyncRequest(pkgbase, pkgbuild_dir, source="aur", force_fetch=False)` — input.
+- `SyncResult(pkgbase, status, head_before=None, head_after=None, error=None)` — output. Status constants: `STATUS_UP_TO_DATE`, `STATUS_FETCHED`, `STATUS_CLONED`, `STATUS_DIVERGED`, `STATUS_RATE_LIMITED`, `STATUS_FAILED`, `STATUS_SKIPPED_OFFLINE`, `STATUS_SKIPPED_NO_TRACKING`, `STATUS_PURGE_REFUSED`.
+
+Flow per request:
+1. **RPC gate.** On the first AUR-source request of a batch, fire one `aur_info([…all AUR names…])` call and cache the results in `SourceMetaCache`.
+2. **Short-circuit.** If the cached `rpc_version` / `rpc_last_modified` match the local HEAD's recorded values **and** the package is not a VCS `-git` / `-svn` / `-hg` / `-bzr` (forced-fetch) type **and** `force_fetch=False`, return `STATUS_UP_TO_DATE` without touching the network. This is the common-case path.
+3. **Clone.** If the dir is missing or not a git repo, dispatch `aur_clone` through the limiter.
+4. **Fetch.** Otherwise call `git_fetch_and_compare` — shallow fetch + HEAD compare, never merges or rebases.
+5. **Divergence.** `STATUS_DIVERGED` is *reported*, not fixed: the work-tree is untouched, the build continues against the local PKGBUILD, and the operator decides whether to `--cleansrc` next run.
+6. **Rate limit.** `RateLimited` aborts the remaining batch via `_abort_remaining`, which populates pending results with `STATUS_RATE_LIMITED` so the UI can show per-package status instead of a single global error.
+
+Singletons:
+- `get_scheduler(*, state_dir=None, offline=False, cleansrc=False, force_devel=False, min_fetch_interval_ms=None, rate_limit_abort_s=None, fetch_timeout=None, clone_timeout=None)` — returns the process-wide scheduler, constructing it on first call. Subsequent calls with the same args are memoised; dedup keys: `(pkgbase)` — any given pkgbase is synced at most once per process.
+- `reset_scheduler()` — test-only hook. Tests that need fresh state call this between runs.
 
 ### `build_state.py`
 
@@ -774,7 +822,7 @@ Version comparison utilities. `vercmp(a, b)` wraps the system `vercmp` binary an
 
 ### `fetch.py`
 
-Implements `sysforge fetch` — download one or more PKGBUILDs into `pkgbuild_src_dir` without building. Uses `find_pkgbuild` (auto-clones via `pkgctl_checkout` or `aur_clone` if not already present), then runs `git_pull_rebase` for packages that were already cloned (skipped with `--no-update`). Prints the resulting PKGBUILD directory path for each package. Exits 1 if any package failed.
+Implements `sysforge fetch` — download one or more PKGBUILDs into `pkgbuild_src_dir` without building. Uses `find_pkgbuild` (auto-clones via `pkgctl_checkout` or `aur_clone` if not already present), then routes each already-cloned dir through `get_scheduler().request(SyncRequest(...))` for the shallow-fetch path (skipped with `--no-update`). `--force-fetch` sets `force_fetch=True` on the request, bypassing the RPC short-circuit for callers that want a guaranteed network check (e.g. to pick up a force-push that predates the cached RPC `last_modified`). Prints the resulting PKGBUILD directory path for each package. Exits 1 if any package failed.
 
 Public API: `cmd_fetch(args)`.
 
@@ -800,13 +848,17 @@ Implements `sysforge update` — the update manager. `packages.toml` is the sour
 
 **Phase 1 — Package set assembly** (`_assemble_package_set`). Build a unified `{pkgname: entry}` dict from manifest + build_state. If `--all`: discover foreign packages (`pacman -Qm`) not already tracked, AUR-verify, append to `packages.toml`, merge into the unified dict with `discovered=True`. For unrecorded AUR packages: bulk `aur_info` to resolve real `pkgbase` (split-package fix, e.g. `ob-xd-common` → pkgbase `ob-xd`). Apply positional PKG filter. Group by `pkgbase` to deduplicate split packages.
 
-**Phase 2 — Source sync** (`_sync_sources`). Ensures every tracked package has an up-to-date local PKGBUILD. Skipped entirely with `--offline`. Four sub-phases:
-1. `--cleansrc` purges (sequential): `purge_src` existing dirs. Refuses dirty repos (uncommitted, unpushed, no upstream).
-2. Clones (sequential): `aur_clone` for missing dirs (never-cloned, cleansrc-purged, empty/partial). Single retry with 2s backoff on transient errors. Sequential to avoid AUR rate limiting.
-3. Pulls (parallel, 8 workers): `git_pull_rebase` for existing dirs with a PKGBUILD.
-4. Pull failure recovery (sequential): on pull failure, attempt `purge_src` + `aur_clone`. Handles force-pushed AUR repos. Dirty repos still refused.
+**Phase 2 — Source sync** (`_sync_sources`). Ensures every tracked package has an up-to-date local PKGBUILD. Skipped entirely with `--offline`. Delegates to the `source_sync.SourceSyncScheduler` singleton (`get_scheduler(...)`), issuing one `SyncRequest` per AUR-source package:
 
-Missing dirs are always cloned — no opt-in required. Repo-source packages (`source = "repo"`) are skipped entirely (no local PKGBUILD to sync).
+1. **RPC-first.** The scheduler batches one `aur_info` call for all AUR packages in the run. For every package whose cached `rpc_version` / `rpc_last_modified` still matches the local HEAD metadata, the request short-circuits to `STATUS_UP_TO_DATE` — no `git fetch` executes at all.
+2. **Clone on miss.** Missing / empty / non-git dirs hit `aur_clone` through the shared rate limiter.
+3. **Shallow fetch + compare.** Everything else runs `git_fetch_and_compare` (depth-1 fetch, non-destructive HEAD compare). VCS packages (`-git`/`-svn`/`-hg`/`-bzr`) always fetch regardless of RPC metadata.
+4. **Divergence is surfaced, not fixed.** A local-plus-upstream divergence (e.g. force-push, local commits) yields `STATUS_DIVERGED`; the build proceeds against the local PKGBUILD and an operator can opt into `--cleansrc` on the next run.
+5. **Rate-limit aware.** AUR `Retry-After` is honoured; runs where the remaining penalty exceeds `[aur] rate_limit_abort_s` mark all pending packages `STATUS_RATE_LIMITED` rather than hanging for minutes.
+
+Statuses treated as sync failures for the downstream buildability filter: `STATUS_FAILED`, `STATUS_RATE_LIMITED`, `STATUS_PURGE_REFUSED` (collected in `_SYNC_BLOCKING_STATUSES`). `STATUS_DIVERGED` is a warning, not a blocker.
+
+Repo-source packages (`source = "repo"`) are skipped entirely (no local PKGBUILD to sync).
 
 **Phase 3 — Version check** (parallel, 8 workers). Parse PKGBUILD, look up installed version from `pacman -Q`, compare with `vercmp`. Produces unified `_UpdateResult` for all packages (manifest + discovered). Actions: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`. The install check runs before the VCS classification — VCS packages (`-git`/`-svn`/`-hg`/`-bzr`) with no installed sub-package report `NOT_INSTALLED`, not `DEVEL`, so `--devel` won't rebuild a VCS package that has been replaced (e.g. `mesa-git` → repo `mesa`).
 
@@ -820,7 +872,7 @@ Positional: `[PKG ...]` — optional package names to restrict the run to a subs
 
 Flags: `--all`, `--interactive`, `--packages`, `--dry-run`, `--devel`, `--offline`, `--no-cleanbuild`, `--cleansrc`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--makepkg`.
 
-**Unattended full update.** `sysforge update --all` is the supported recipe for a hands-off "rebuild everything outdated" run: discovers and adds foreign packages, rebuilds unrecorded entries, and automatically clones any missing src dirs. Add `--cleansrc` to also discard divergent upstreams — this is destructive but per-package safe, since `purge_src` refuses any clone that holds uncommitted changes. A refused package is counted as failed and skipped.
+**Unattended full update.** `sysforge update --all` is the supported recipe for a hands-off "rebuild everything outdated" run: discovers and adds foreign packages, rebuilds unrecorded entries, and automatically clones any missing src dirs. Add `--cleansrc` to also discard divergent upstreams — this is destructive but per-package safe, since `purge_src` refuses any clone that holds uncommitted changes. `--cleansrc` also bypasses the RPC short-circuit so every tracked AUR package is re-cloned from scratch rather than trusting the cached metadata. A refused package is counted as failed and skipped.
 
 ### `converge.py`
 
@@ -1406,7 +1458,7 @@ Escape hatches:
 
 Two commands address drift in sysforge-managed packages:
 
-**`sysforge update [PKG ...]`** (implemented) — handles **version drift**. After `git pull --rebase` on each PKGBUILD dir, it compares the new `pkgver`/`pkgrel`/`epoch` against the installed version via `vercmp`. Packages where the PKGBUILD is newer are rebuilt with the current profile. VCS packages (`-git`, etc.) require `--devel` to rebuild since their version is only known after running `pkgver()` during the build. One or more package names may be given as positional arguments to restrict the run to a subset of sysforge-managed packages; unrecognised names are warned and skipped.
+**`sysforge update [PKG ...]`** (implemented) — handles **version drift**. After the `source_sync` scheduler refreshes each PKGBUILD dir (one batched AUR RPC call followed by per-package clone or shallow fetch as needed), it compares the new `pkgver`/`pkgrel`/`epoch` against the installed version via `vercmp`. Packages where the PKGBUILD is newer are rebuilt with the current profile. VCS packages (`-git`, etc.) require `--devel` to rebuild since their version is only known after running `pkgver()` during the build. One or more package names may be given as positional arguments to restrict the run to a subset of sysforge-managed packages; unrecognised names are warned and skipped.
 
 **PGO toolchain packages** (`build_mode = "pgo_llvm_toolchain"`, *experimental — deferred post-1.0*) are handled specially during update. `makepkg_wrapper.run()` reads `toolchain.toml → pgo_store`, checks for a saved `clang.profdata` and its `clang.profdata.version` sidecar, and compares the sidecar's LLVM major version against the PKGBUILD's `pkgver` major. If they match, `-fprofile-use=<profdata>` is injected and the build proceeds as a PGO-optimised build — a runtime `[WARN]` fires at this point so users of this path know it is not part of the 1.0 stable surface. If profdata is absent or version-mismatched (e.g. after a major LLVM bump), the user is prompted: **[p]lain build or [s]kip (default: skip)**. In non-interactive mode the build is skipped automatically. Skipped packages are counted separately in the update summary and do not count as failures. To rebuild profdata after a major version bump, run `sysforge run toolchain` (also experimental). The toolchain stage itself also reuses compatible profdata — see the **Profdata reuse** section under stage 6.
 

@@ -2,10 +2,11 @@
 test_aur.py — unit tests for sysforge.primitives.aur
 
 Covers:
-    aur_info              — successful batch query, empty result, network error, bad JSON
-    aur_clone             — successful clone, git failure
-    git_pull_rebase       — not-a-repo skip, no-tracking skip, success, conflict abort+raise
-    fetch_aur_name_cache  — fresh cache skip, download + write, network failure, force refresh
+    aur_info               — successful batch query, empty result, network error, bad JSON
+    aur_clone              — successful clone, git failure
+    git_fetch_and_compare  — not-a-repo skip, no-tracking skip, up_to_date, fetched, diverged, rate-limited
+    is_{transient,rate_limit}_git_error — classifier smoke tests
+    fetch_aur_name_cache   — fresh cache skip, download + write, network failure, force refresh
 """
 import gzip
 import json
@@ -17,7 +18,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sysforge.primitives.aur import aur_clone, aur_info, fetch_aur_name_cache, git_is_dirty, git_pull_rebase, import_pgp_keys, is_repo_package, pkgctl_checkout, purge_src, repo_packages
+from sysforge.primitives.aur import (
+    aur_clone,
+    aur_info,
+    fetch_aur_name_cache,
+    git_fetch_and_compare,
+    git_is_dirty,
+    import_pgp_keys,
+    is_rate_limit_error,
+    is_repo_package,
+    is_transient_git_error,
+    pkgctl_checkout,
+    purge_src,
+    repo_packages,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -774,124 +788,220 @@ def test_purge_src_no_upstream_raises(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# git_pull_rebase
+# git_fetch_and_compare
 # ---------------------------------------------------------------------------
 
-def test_git_pull_rebase_not_a_repo_skips(tmp_path):
-    """Plain directory with no .git — should return silently."""
-    not_repo = subprocess.CompletedProcess(["git"], 128, stdout="", stderr="not a git repo")
+def _cp(returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(
+        ["git"], returncode, stdout=stdout, stderr=stderr,
+    )
+
+
+def test_git_fetch_and_compare_not_a_repo_skips(tmp_path):
+    """Plain directory with no .git — returns not_a_repo, no network call."""
     def fake_run(cmd, **kwargs):
         if "rev-parse" in cmd and "--git-dir" in cmd:
-            return not_repo
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return _cp(returncode=128, stderr="not a git repo")
+        raise AssertionError(f"unexpected git call after not-a-repo: {cmd}")
+
     with patch("subprocess.run", side_effect=fake_run):
-        git_pull_rebase(tmp_path)  # no exception
+        outcome = git_fetch_and_compare(tmp_path)
+    assert outcome.status == "not_a_repo"
 
 
-def test_git_pull_rebase_no_tracking_skips(tmp_path):
-    """Git repo but no tracking branch — should return silently."""
+def test_git_fetch_and_compare_no_tracking_skips(tmp_path):
+    """Git repo but no tracking branch — returns no_tracking."""
     def fake_run(cmd, **kwargs):
         cmd_str = " ".join(cmd)
         if "--git-dir" in cmd_str:
-            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+            return _cp(stdout=".git")
         if "@{u}" in cmd_str:
-            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="no upstream")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return _cp(returncode=128, stderr="no upstream")
+        raise AssertionError(f"unexpected git call after no-tracking: {cmd}")
+
     with patch("subprocess.run", side_effect=fake_run):
-        git_pull_rebase(tmp_path)  # no exception
+        outcome = git_fetch_and_compare(tmp_path)
+    assert outcome.status == "no_tracking"
 
 
-def test_git_pull_rebase_success(tmp_path):
-    """Successful pull logs output and returns."""
+def test_git_fetch_and_compare_up_to_date(tmp_path):
+    """HEAD == FETCH_HEAD after shallow fetch → up_to_date, no merge."""
+    head = "a" * 40
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return _cp(stdout=".git")
+        if "@{u}" in cmd_str:
+            return _cp(stdout="origin/main")
+        if cmd[3:5] == ["rev-parse", "HEAD"] or cmd[3:5] == ["rev-parse", "FETCH_HEAD"]:
+            return _cp(stdout=head)
+        if "fetch" in cmd:
+            return _cp()
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        outcome = git_fetch_and_compare(tmp_path)
+    assert outcome.status == "up_to_date"
+    assert outcome.head_before == head
+    assert outcome.head_after == head
+
+
+def test_git_fetch_and_compare_fetched_fast_forward(tmp_path):
+    """HEAD is ancestor of FETCH_HEAD → ff-merge succeeds → fetched."""
     calls = []
+    old = "a" * 40
+    new = "b" * 40
+
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
         cmd_str = " ".join(cmd)
         if "--git-dir" in cmd_str:
-            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+            return _cp(stdout=".git")
         if "@{u}" in cmd_str:
-            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
-        if "pull" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout="Already up to date.", stderr="")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return _cp(stdout="origin/main")
+        if cmd[3:5] == ["rev-parse", "HEAD"]:
+            if any("merge" in c for c in calls[:-1]):
+                return _cp(stdout=new)  # post-merge
+            return _cp(stdout=old)
+        if cmd[3:5] == ["rev-parse", "FETCH_HEAD"]:
+            return _cp(stdout=new)
+        if "fetch" in cmd:
+            return _cp()
+        if "merge-base" in cmd:
+            return _cp()  # HEAD is ancestor
+        if "diff-index" in cmd or "status" in cmd or "rev-list" in cmd:
+            return _cp()  # clean working tree
+        if "merge" in cmd and "--ff-only" in cmd:
+            return _cp()
+        raise AssertionError(f"unexpected command: {cmd}")
 
     with patch("subprocess.run", side_effect=fake_run):
-        git_pull_rebase(tmp_path)
+        outcome = git_fetch_and_compare(tmp_path)
+    assert outcome.status == "fetched"
+    assert outcome.head_before == old
+    assert outcome.head_after == new
 
-    pull_calls = [c for c in calls if "pull" in c]
-    assert len(pull_calls) == 1
-    assert "--rebase" in pull_calls[0]
 
+def test_git_fetch_and_compare_diverged_not_ancestor(tmp_path):
+    """HEAD is NOT ancestor of FETCH_HEAD → diverged, no merge."""
+    old = "a" * 40
+    new = "b" * 40
+    merge_calls = []
 
-def test_git_pull_rebase_conflict_aborts_and_raises(tmp_path):
-    """Merge conflict → git rebase --abort is called and RuntimeError raised."""
-    calls = []
     def fake_run(cmd, **kwargs):
-        calls.append(list(cmd))
         cmd_str = " ".join(cmd)
         if "--git-dir" in cmd_str:
-            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+            return _cp(stdout=".git")
         if "@{u}" in cmd_str:
-            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
-        if "pull" in cmd:
-            return subprocess.CompletedProcess(
-                cmd, 1,
-                stdout="CONFLICT (content): Merge conflict in PKGBUILD",
-                stderr="error: could not apply abc1234",
-            )
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return _cp(stdout="origin/main")
+        if cmd[3:5] == ["rev-parse", "HEAD"]:
+            return _cp(stdout=old)
+        if cmd[3:5] == ["rev-parse", "FETCH_HEAD"]:
+            return _cp(stdout=new)
+        if "fetch" in cmd:
+            return _cp()
+        if "merge-base" in cmd:
+            return _cp(returncode=1)  # not an ancestor
+        if "merge" in cmd and "--ff-only" in cmd:
+            merge_calls.append(cmd)
+            return _cp()
+        return _cp()
 
-    with pytest.raises(RuntimeError, match="git pull --rebase failed"):
-        with patch("subprocess.run", side_effect=fake_run):
-            git_pull_rebase(tmp_path)
+    with patch("subprocess.run", side_effect=fake_run):
+        outcome = git_fetch_and_compare(tmp_path)
+    assert outcome.status == "diverged"
+    assert outcome.head_before == old
+    assert outcome.head_after == new
+    # Divergence must NOT trigger a merge attempt.
+    assert merge_calls == []
 
-    abort_calls = [c for c in calls if "rebase" in c and "--abort" in c]
-    assert len(abort_calls) == 1, "rebase --abort must be called on conflict"
 
-
-def test_git_pull_rebase_timeout_aborts_and_raises(tmp_path):
-    """Timeout on pull should abort rebase and raise RuntimeError."""
-    call_count = 0
-
+def test_git_fetch_and_compare_rate_limited(tmp_path):
+    """Fetch stderr contains '429' → rate_limited status."""
     def fake_run(cmd, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if "--git-dir" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
-        if "@{u}" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
-        if "pull" in cmd:
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return _cp(stdout=".git")
+        if "@{u}" in cmd_str:
+            return _cp(stdout="origin/main")
+        if cmd[3:5] == ["rev-parse", "HEAD"]:
+            return _cp(stdout="a" * 40)
+        if "fetch" in cmd:
+            return _cp(returncode=128, stderr="fatal: unable to access: error: 429 Too Many Requests")
+        return _cp()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        outcome = git_fetch_and_compare(tmp_path)
+    assert outcome.status == "rate_limited"
+    assert "429" in (outcome.error or "")
+
+
+def test_git_fetch_and_compare_fetch_timeout(tmp_path):
+    """subprocess.TimeoutExpired → failed with timeout message."""
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return _cp(stdout=".git")
+        if "@{u}" in cmd_str:
+            return _cp(stdout="origin/main")
+        if cmd[3:5] == ["rev-parse", "HEAD"]:
+            return _cp(stdout="a" * 40)
+        if "fetch" in cmd:
             raise subprocess.TimeoutExpired(cmd, 30)
-        # rebase --abort
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return _cp()
 
     with patch("subprocess.run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="timed out after 30s"):
-            git_pull_rebase(tmp_path, timeout=30)
-
-    # Should have called: rev-parse --git-dir, rev-parse @{u}, pull, rebase --abort
-    assert call_count == 4
+        outcome = git_fetch_and_compare(tmp_path, timeout=30)
+    assert outcome.status == "failed"
+    assert "timed out after 30s" in (outcome.error or "")
 
 
-def test_git_pull_rebase_uses_git_dash_c(tmp_path):
-    """All git invocations use git -C <dir> rather than relying on cwd."""
+def test_git_fetch_and_compare_uses_git_dash_c(tmp_path):
+    """All git invocations target the given dir via -C."""
     calls = []
+
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
         cmd_str = " ".join(cmd)
         if "--git-dir" in cmd_str:
-            return subprocess.CompletedProcess(cmd, 0, stdout=".git", stderr="")
+            return _cp(stdout=".git")
         if "@{u}" in cmd_str:
-            return subprocess.CompletedProcess(cmd, 0, stdout="origin/main", stderr="")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return _cp(stdout="origin/main")
+        if cmd[3:5] == ["rev-parse", "HEAD"]:
+            return _cp(stdout="a" * 40)
+        if cmd[3:5] == ["rev-parse", "FETCH_HEAD"]:
+            return _cp(stdout="a" * 40)
+        if "fetch" in cmd:
+            return _cp()
+        return _cp()
 
     with patch("subprocess.run", side_effect=fake_run):
-        git_pull_rebase(tmp_path)
+        git_fetch_and_compare(tmp_path)
 
     for cmd in calls:
-        assert cmd[0] == "git"
-        assert cmd[1] == "-C"
-        assert cmd[2] == str(tmp_path)
+        assert cmd[:3] == ["git", "-C", str(tmp_path)]
+
+
+# ---------------------------------------------------------------------------
+# is_transient_git_error / is_rate_limit_error
+# ---------------------------------------------------------------------------
+
+def test_is_transient_git_error_matches_timeout():
+    assert is_transient_git_error("fetch timed out after 30s") is True
+
+
+def test_is_transient_git_error_negative():
+    assert is_transient_git_error("fatal: repository not found") is False
+
+
+def test_is_rate_limit_error_429_503():
+    assert is_rate_limit_error("fatal: error: 429 Too Many Requests") is True
+    assert is_rate_limit_error("fatal: error: 503 Service Unavailable") is True
+
+
+def test_is_rate_limit_error_negative():
+    assert is_rate_limit_error("fatal: couldn't resolve host") is False
 
 
 # ---------------------------------------------------------------------------

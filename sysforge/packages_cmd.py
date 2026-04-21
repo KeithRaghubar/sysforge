@@ -372,7 +372,7 @@ def _probe_pkgbuild_dir(d: Path) -> str:
     """Return an update.py-equivalent status string for a candidate pkgbuild dir.
 
     Mirrors the silent-skip conditions in sysforge.update and
-    sysforge.primitives.aur.git_pull_rebase so the diagnostic matches reality.
+    sysforge.primitives.aur.git_fetch_and_compare so the diagnostic matches reality.
     """
     import subprocess
     if not d.exists():

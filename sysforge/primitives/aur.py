@@ -2,17 +2,20 @@
 aur.py — AUR RPC queries, git clone, pkgctl checkout, and GPG key import
 
 Public API:
-    repo_packages(names)           -> set[str]          subset of names present in pacman sync DBs
-    repo_packages(names)           -> set[str]          subset of names present in pacman sync DBs (batch)
-    is_repo_package(name)          -> bool              True if name is in pacman sync DBs
-    aur_info(names)                -> dict[str, dict]   batch AUR RPC v5 query (name → result)
-    aur_clone(name, dest)          -> None              git clone from AUR into dest
-    pkgctl_checkout(name, dest)    -> None              pkgctl repo clone into dest
-    import_pgp_keys(pkgmeta)       -> None              recv any missing validpgpkeys
-    git_pull_rebase(pkgbuild_dir)  -> None              git pull --rebase; abort+raise on conflict
-    git_is_dirty(pkgbuild_dir)    -> bool              True if git repo has uncommitted changes
-    purge_src(pkgbuild_dir)        -> None              rm -rf pkgbuild_dir; fatal if git_is_dirty
-    fetch_aur_name_cache()         -> Path | None       refresh ~/.cache/sysforge/aur-packages.txt
+    repo_packages(names)              -> set[str]          subset of names present in pacman sync DBs
+    is_repo_package(name)             -> bool              True if name is in pacman sync DBs
+    aur_info(names)                   -> dict[str, dict]   batch AUR RPC v5 query (name → result)
+    aur_clone(name, dest, *, ref=...) -> None              git clone from AUR into dest
+    pkgctl_checkout(name, dest)       -> None              pkgctl repo clone into dest
+    import_pgp_keys(pkgmeta)          -> None              recv any missing validpgpkeys
+    git_fetch_and_compare(dir, ...)   -> GitFetchOutcome   shallow fetch + HEAD compare (no destructive ops)
+    git_is_dirty(pkgbuild_dir)        -> bool              True if git repo has uncommitted changes
+    purge_src(pkgbuild_dir)           -> None              rm -rf pkgbuild_dir; fatal if git_is_dirty
+    fetch_aur_name_cache()            -> Path | None       refresh ~/.cache/sysforge/aur-packages.txt
+
+Also exports TRANSIENT_GIT_ERRORS / RATE_LIMIT_GIT_ERRORS string tuples and
+``is_transient_git_error()`` / ``is_rate_limit_error()`` classifiers for
+callers that need to distinguish network flakes from AUR throttling.
 """
 import gzip
 import json
@@ -24,6 +27,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
@@ -205,80 +209,160 @@ def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:
         _build_log.info("GPG: keyserver fetch succeeded")
 
 
-def git_pull_rebase(pkgbuild_dir: Path, *, timeout: int | None = 30) -> None:
-    """
-    Attempt `git pull --rebase` in pkgbuild_dir before a build.
+@dataclass
+class GitFetchOutcome:
+    """Result of a non-destructive shallow fetch + HEAD compare.
 
-    - Not a git repo: skips silently (plain directories are fine).
-    - No tracking branch: skips with an info log (detached HEAD, local-only repos).
-    - Success: logs output at INFO level.
-    - Timeout: runs `git rebase --abort` to restore clean state, raises
-      RuntimeError. The caller (`_sync_sources` sub-phase 4) falls back to
-      purge + re-clone, which reliably succeeds even when AUR is throttling
-      concurrent pulls.
-    - Conflict / failure: runs `git rebase --abort` to restore clean state,
-      then raises RuntimeError so the caller can handle it cleanly.
+    ``status`` values:
+      - ``not_a_repo``  — dir isn't a git repo; no action taken.
+      - ``no_tracking`` — no upstream configured; no action taken.
+      - ``up_to_date``  — HEAD already matches FETCH_HEAD.
+      - ``fetched``     — FF-merged FETCH_HEAD onto HEAD.
+      - ``diverged``    — can't fast-forward (divergent history or dirty
+                          working tree). Local PKGBUILD is kept untouched.
+                          Caller can surface and skip; user must rerun with
+                          ``--cleansrc`` if they want the destructive reset.
+      - ``rate_limited`` — git returned 429/503/502. No working-tree change.
+      - ``failed``      — transient or unknown error. No working-tree change.
+    """
+    status: str
+    head_before: str | None
+    head_after: str | None
+    error: str | None = None
+
+
+def git_fetch_and_compare(
+    pkgbuild_dir: Path,
+    *,
+    timeout: int | None = 30,
+    limiter=None,
+) -> GitFetchOutcome:
+    """Shallow-fetch upstream and report the outcome without destructive ops.
+
+    Replaces the old `git pull --rebase` flow. Never runs `rebase --abort`,
+    `reset --hard`, or `purge_src`; divergence is surfaced via the
+    ``diverged`` status so the caller (typically the sync scheduler) can
+    decide whether to skip the package or trigger an opt-in recovery.
+
+    When ``limiter`` is provided, the git invocation goes through
+    ``rate_limit.run_throttled_git`` so the Retry-After window is enforced
+    across RPC and git paths.
     """
     timeout = timeout or None  # 0 → disable
-    # Check if the directory is inside a git repo at all
+
+    def _run(cmd: list[str]):
+        if limiter is not None:
+            from sysforge.primitives.rate_limit import run_throttled_git
+            return run_throttled_git(cmd, limiter, timeout=timeout)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+    # 1. Is this a git repo at all?
     r = subprocess.run(
         ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
         capture_output=True,
     )
     if r.returncode != 0:
-        return  # not a git repo — skip silently
+        return GitFetchOutcome(status="not_a_repo", head_before=None, head_after=None)
 
-    # Check for a configured tracking branch
+    # 2. Is there a tracking branch?
     r = subprocess.run(
         ["git", "-C", str(pkgbuild_dir), "rev-parse",
          "--abbrev-ref", "--symbolic-full-name", "@{u}"],
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        _git_log.info(f"{pkgbuild_dir.name}: no tracking branch — skipping update")
-        return
+        _git_log.info(f"{pkgbuild_dir.name}: no tracking branch — skipping fetch")
+        return GitFetchOutcome(status="no_tracking", head_before=None, head_after=None)
 
     tracking = r.stdout.strip()
-    _git_log.info(f"Updating {pkgbuild_dir.name} from {tracking}")
+    # tracking looks like "origin/master" — split once, right-hand side is the branch.
+    if "/" in tracking:
+        remote, _, branch = tracking.partition("/")
+    else:
+        remote, branch = "origin", tracking
 
+    head_before = _rev_parse(pkgbuild_dir, "HEAD")
+
+    _git_log.info(f"Fetching {pkgbuild_dir.name} from {tracking}")
+
+    # 3. Shallow fetch.
     try:
-        r = subprocess.run(
-            ["git", "-C", str(pkgbuild_dir), "pull", "--rebase"],
-            capture_output=True, text=True,
-            timeout=timeout,
-        )
+        r = _run(["git", "-C", str(pkgbuild_dir), "fetch",
+                  "--depth=1", remote, branch])
     except subprocess.TimeoutExpired:
-        _git_log.error(f"git pull --rebase timed out after {timeout}s for {pkgbuild_dir.name}")
-        subprocess.run(
-            ["git", "-C", str(pkgbuild_dir), "rebase", "--abort"],
-            capture_output=True,
-        )
-        raise RuntimeError(
-            f"git pull --rebase timed out after {timeout}s for {pkgbuild_dir.name}. "
-            "Check network connectivity, or increase [git] pull_timeout in sysforge.toml."
+        err = f"git fetch timed out after {timeout}s"
+        _git_log.warn(f"{pkgbuild_dir.name}: {err}")
+        return GitFetchOutcome(
+            status="failed", head_before=head_before, head_after=None, error=err,
         )
 
-    if r.returncode == 0:
-        for line in r.stdout.strip().splitlines():
-            if line.strip():
-                _git_log.info(f"  {pkgbuild_dir.name}: {line}")
-        return
+    if r.returncode != 0:
+        combined = ((r.stdout or "") + (r.stderr or "")).strip()
+        status = "rate_limited" if is_rate_limit_error(combined) else "failed"
+        _git_log.warn(f"{pkgbuild_dir.name}: git fetch failed: {combined.splitlines()[0] if combined else 'no output'}")
+        return GitFetchOutcome(
+            status=status, head_before=head_before, head_after=None, error=combined,
+        )
 
-    # Pull failed — abort the rebase to restore a clean state before raising
-    combined = (r.stdout + r.stderr).strip()
-    _git_log.error(f"git pull --rebase failed for {pkgbuild_dir.name}:")
-    for line in combined.splitlines():
-        _git_log.error(f"  {line}")
-    subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rebase", "--abort"],
+    fetch_head = _rev_parse(pkgbuild_dir, "FETCH_HEAD")
+    if fetch_head is None or head_before is None:
+        return GitFetchOutcome(
+            status="failed", head_before=head_before, head_after=fetch_head,
+            error="could not resolve HEAD / FETCH_HEAD after fetch",
+        )
+
+    # 4. Up-to-date?
+    if head_before == fetch_head:
+        return GitFetchOutcome(
+            status="up_to_date", head_before=head_before, head_after=head_before,
+        )
+
+    # 5. Can we fast-forward? (HEAD is ancestor of FETCH_HEAD AND working tree is clean)
+    ancestor = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "merge-base",
+         "--is-ancestor", "HEAD", "FETCH_HEAD"],
         capture_output=True,
     )
-    # Keep the stderr in the RuntimeError so callers can spot transient
-    # network failures (Connection reset, Recv failure, ...) and react.
-    raise RuntimeError(
-        f"git pull --rebase failed for {pkgbuild_dir.name}: "
-        f"{combined or 'no output'}"
+    if ancestor.returncode != 0 or git_is_dirty(pkgbuild_dir):
+        err = (
+            f"divergent: HEAD {head_before[:10]} vs FETCH_HEAD {fetch_head[:10]}"
+            if ancestor.returncode != 0
+            else "working tree has local modifications"
+        )
+        _git_log.warn(f"{pkgbuild_dir.name}: {err} — keeping local PKGBUILD")
+        return GitFetchOutcome(
+            status="diverged", head_before=head_before, head_after=fetch_head,
+            error=err,
+        )
+
+    # 6. Fast-forward merge.
+    merge = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "merge", "--ff-only", "FETCH_HEAD"],
+        capture_output=True, text=True,
     )
+    if merge.returncode != 0:
+        combined = ((merge.stdout or "") + (merge.stderr or "")).strip()
+        _git_log.warn(f"{pkgbuild_dir.name}: ff-merge failed: {combined}")
+        return GitFetchOutcome(
+            status="failed", head_before=head_before, head_after=fetch_head,
+            error=combined,
+        )
+
+    new_head = _rev_parse(pkgbuild_dir, "HEAD") or fetch_head
+    _git_log.info(f"  {pkgbuild_dir.name}: {head_before[:10]} → {new_head[:10]}")
+    return GitFetchOutcome(
+        status="fetched", head_before=head_before, head_after=new_head,
+    )
+
+
+def _rev_parse(pkgbuild_dir: Path, ref: str) -> str | None:
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse", ref],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
 
 
 def git_is_dirty(pkgbuild_dir: Path) -> bool:
@@ -381,7 +465,24 @@ RATE_LIMIT_GIT_ERRORS = (
 )
 
 
-def aur_clone(name: str, dest: Path, *, timeout: int | None = 60) -> None:
+def is_transient_git_error(err: str) -> bool:
+    """True for network flakes worth retrying (not rate limits)."""
+    return "timed out" in err or any(m in err for m in TRANSIENT_GIT_ERRORS)
+
+
+def is_rate_limit_error(err: str) -> bool:
+    """True when the server is explicitly throttling (429/503/502)."""
+    return any(m in err for m in RATE_LIMIT_GIT_ERRORS)
+
+
+def aur_clone(
+    name: str,
+    dest: Path,
+    *,
+    timeout: int | None = 60,
+    ref: str | None = None,
+    depth: int | None = None,
+) -> None:
     """
     Clone an AUR package repository into dest via git.
 
@@ -389,15 +490,25 @@ def aur_clone(name: str, dest: Path, *, timeout: int | None = 60) -> None:
     (connection resets, recv failures, TLS hiccups) — these are common when
     AUR is under heavy concurrent load. Raises RuntimeError if the retry also
     fails, or immediately on non-transient errors (e.g. repository not found).
+
+    ``ref`` restricts the clone to a specific branch or tag (``--branch``).
+    ``depth`` passes ``--depth`` for a shallow clone; useful when the caller
+    only needs the current PKGBUILD, not full history.
     """
     timeout = timeout or None  # 0 → disable
     url = f"{AUR_GIT_BASE}/{name}.git"
+    extra: list[str] = []
+    if depth is not None and depth > 0:
+        extra += ["--depth", str(depth)]
+    if ref:
+        extra += ["--branch", ref]
+
     _manifest_log.info(f"Cloning {name!r} from AUR → {dest}")
 
     for attempt in range(2):
         try:
             result = subprocess.run(
-                ["git", "clone", url, str(dest)],
+                ["git", "clone", *extra, url, str(dest)],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -419,8 +530,8 @@ def aur_clone(name: str, dest: Path, *, timeout: int | None = 60) -> None:
             return
 
         stderr = result.stderr.strip()
-        rate_limited = any(marker in stderr for marker in RATE_LIMIT_GIT_ERRORS)
-        transient = any(marker in stderr for marker in TRANSIENT_GIT_ERRORS)
+        rate_limited = is_rate_limit_error(stderr)
+        transient = is_transient_git_error(stderr)
         # Rate limits are a hard "stop retrying" — any retry extends the window.
         if attempt == 0 and transient and not rate_limited:
             shutil.rmtree(dest, ignore_errors=True)

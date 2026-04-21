@@ -14,6 +14,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 
 1. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
 2. **`match_rules` and `pkgbase`** — rules match against `pkgbase` too for split packages; don't regress this.
+3. **Source sync goes through the scheduler, not `git pull --rebase`** — any new `fetch`/`update`/`build` code path that needs a fresh PKGBUILD must call `sysforge.primitives.source_sync.get_scheduler().request(SyncRequest(...))`. The scheduler handles RPC short-circuit, rate limiting, and dedup. See DESIGN.md §`source_sync.py` for status semantics (`STATUS_DIVERGED` is a warning; `STATUS_FAILED` / `STATUS_RATE_LIMITED` / `STATUS_PURGE_REFUSED` are blockers).
 
 ## Experimental (post-1.0)
 

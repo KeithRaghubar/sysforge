@@ -54,7 +54,11 @@ from sysforge.primitives.cache_probe import (
     record_build_result,
     reset_session,
 )
-from sysforge.primitives.aur import import_pgp_keys, git_pull_rebase
+from sysforge.primitives.aur import import_pgp_keys
+from sysforge.primitives.source_sync import (
+    STATUS_DIVERGED, STATUS_FAILED, STATUS_PURGE_REFUSED, STATUS_RATE_LIMITED,
+    SyncRequest, get_scheduler,
+)
 from sysforge.primitives.dep_analysis import run_dep_analysis
 from sysforge.primitives.failure import handle_failure
 from sysforge import log
@@ -1238,12 +1242,21 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         emit_system_probes()
 
     if options.update:
-        try:
-            git_pull_rebase(pkgbuild_path.parent)
-        except RuntimeError as e:
-            _git_log.fatal(str(e))
+        pkgbuild_dir = pkgbuild_path.parent
+        result = get_scheduler().request(SyncRequest(
+            pkgbase=pkgbuild_dir.name,
+            pkgbuild_dir=pkgbuild_dir,
+            force_fetch=True,
+        ))
+        if result.status in (STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED):
+            _git_log.fatal(f"source sync failed for {pkgbuild_dir.name}: "
+                           f"{result.error or result.status}")
+        if result.status == STATUS_DIVERGED:
+            _git_log.warn(
+                f"{pkgbuild_dir.name}: upstream diverged — building with local PKGBUILD"
+            )
     else:
-        _build_log.info("--no-update: skipping git pull --rebase")
+        _build_log.info("--no-update: skipping source sync")
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)

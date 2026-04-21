@@ -75,15 +75,21 @@ def test_resolve_pkgbuild_finds_local(tmp_path):
 
 
 def test_resolve_pkgbuild_aur_clone(tmp_path):
-    """When not found locally, _resolve_pkgbuild triggers AUR clone."""
-    def fake_clone(name, dest):
+    """When not found locally, _resolve_pkgbuild triggers AUR clone via the scheduler."""
+    from sysforge.primitives.source_sync import reset_scheduler
+    reset_scheduler()
+
+    def fake_clone(name, dest, **kw):
         dest.mkdir()
         (dest / "PKGBUILD").write_text("pkgname=mesa-git\n")
 
-    with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
-         patch("sysforge.primitives.aur.aur_info", return_value={"mesa-git": {}}), \
-         patch("sysforge.primitives.aur.aur_clone", side_effect=fake_clone):
-        result = _resolve_pkgbuild("mesa-git", {"pkgbuild_src_dir": str(tmp_path)}, {})
+    try:
+        with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
+             patch("sysforge.primitives.aur.aur_info", return_value={"mesa-git": {}}), \
+             patch("sysforge.primitives.source_sync.aur_clone", side_effect=fake_clone):
+            result = _resolve_pkgbuild("mesa-git", {"pkgbuild_src_dir": str(tmp_path)}, {})
+    finally:
+        reset_scheduler()
 
     assert result == (tmp_path / "mesa-git" / "PKGBUILD").resolve()
 
@@ -241,6 +247,9 @@ def test_packages_stage_skips_already_built(tmp_path):
 
 def test_packages_stage_aur_auto_clone(tmp_path):
     """AUR package missing locally is cloned then built."""
+    from sysforge.primitives.source_sync import reset_scheduler
+    reset_scheduler()
+
     builds_dir = tmp_path / "builds"
     # Only create the repo PKGBUILD; llvm and mesa-git are missing (should be cloned)
     pkg_file = make_packages_toml(tmp_path, builds_dir)
@@ -248,7 +257,7 @@ def test_packages_stage_aur_auto_clone(tmp_path):
     state = PipelineState(tmp_path / "state")
     config = {"packages_file": str(pkg_file)}
 
-    def fake_clone(name, dest):
+    def fake_clone(name, dest, **kw):
         dest.mkdir(parents=True)
         (dest / "PKGBUILD").write_text(f"pkgname={name}\npkgver=1.0\npkgrel=1\n")
 
@@ -256,13 +265,16 @@ def test_packages_stage_aur_auto_clone(tmp_path):
     def fake_makepkg(path, **kwargs):
         built.append(Path(path).parent.name)
 
-    with patch("sysforge.pipeline.stages.packages.makepkg_run", side_effect=fake_makepkg), \
-         patch("sysforge.pipeline.stages.packages.subprocess.run",
-               return_value=MagicMock(returncode=0)), \
-         patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
-         patch("sysforge.primitives.aur.aur_info", return_value={"llvm": {}, "mesa-git": {}}), \
-         patch("sysforge.primitives.aur.aur_clone", side_effect=fake_clone):
-        PackagesStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+    try:
+        with patch("sysforge.pipeline.stages.packages.makepkg_run", side_effect=fake_makepkg), \
+             patch("sysforge.pipeline.stages.packages.subprocess.run",
+                   return_value=MagicMock(returncode=0)), \
+             patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
+             patch("sysforge.primitives.aur.aur_info", return_value={"llvm": {}, "mesa-git": {}}), \
+             patch("sysforge.primitives.source_sync.aur_clone", side_effect=fake_clone):
+            PackagesStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+    finally:
+        reset_scheduler()
 
     assert set(built) == {"llvm", "mesa-git"}
     p = state.get_package_progress()
