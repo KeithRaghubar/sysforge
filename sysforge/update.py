@@ -374,6 +374,14 @@ def _sync_sources(
             pkgbase=pkgbase, pkgbuild_dir=pkgbuild_dir, source=source,
         ))
 
+    # Prime the RPC batch once so every subsequent request() can hit the
+    # short-circuit path. Without this the scheduler only runs _ensure_rpc
+    # inside sync_many(), and the per-request loop below would fetch every
+    # package on every run.
+    aur_bases = [r.pkgbase for r in reqs if r.source in ("aur", "git")]
+    if aur_bases:
+        scheduler._ensure_rpc(aur_bases)
+
     from sysforge.ui import progress as _ui_progress
     results: dict[str, SyncResult] = {}
     with _ui_progress.tracker(len(reqs), "source sync") as _tick:
