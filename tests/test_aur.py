@@ -162,11 +162,67 @@ def test_aur_clone_timeout_raises_and_cleans_up(tmp_path):
     def fake_run(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd, 60)
 
-    with patch("subprocess.run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="timed out after 60s"):
+    with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+        with pytest.raises(RuntimeError, match="timed out after 60s.*after retry"):
             aur_clone("slow-pkg", dest, timeout=60)
 
     assert not dest.exists(), "partial clone directory should be cleaned up"
+
+
+def test_aur_clone_transient_error_retries_then_succeeds(tmp_path):
+    dest = tmp_path / "flaky-pkg"
+    attempts = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            dest.mkdir()  # partial clone dir
+            return subprocess.CompletedProcess(
+                cmd, 128, stdout="",
+                stderr="fatal: unable to access 'https://aur.archlinux.org/flaky-pkg.git/': "
+                       "Recv failure: Connection reset by peer",
+            )
+        dest.mkdir(exist_ok=True)
+        (dest / "PKGBUILD").write_text("pkgname=flaky-pkg\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+        aur_clone("flaky-pkg", dest)
+
+    assert attempts == 2
+    assert (dest / "PKGBUILD").exists()
+
+
+def test_aur_clone_transient_error_retries_then_raises(tmp_path):
+    dest = tmp_path / "broken-pkg"
+
+    def fake_run(cmd, **kwargs):
+        dest.mkdir(exist_ok=True)
+        return subprocess.CompletedProcess(
+            cmd, 128, stdout="",
+            stderr="fatal: unable to access '...': Recv failure: Connection reset by peer",
+        )
+
+    with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+        with pytest.raises(RuntimeError, match="AUR clone failed"):
+            aur_clone("broken-pkg", dest)
+
+
+def test_aur_clone_non_transient_error_does_not_retry(tmp_path):
+    """Non-transient errors (e.g. repo not found) should raise immediately without retry."""
+    attempts = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="repository not found")
+
+    with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+        with pytest.raises(RuntimeError, match="AUR clone failed"):
+            aur_clone("nonexistent-pkg", tmp_path / "nonexistent")
+
+    assert attempts == 1, "non-transient errors must not retry"
 
 
 def test_aur_clone_timeout_zero_disables():

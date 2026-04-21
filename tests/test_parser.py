@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives.pkgbuild_meta import has_hardcoded_gcc, parse_pkgbuild
 
 TESTS_DIR = Path(__file__).parent
 PKGBUILDS_DIR = TESTS_DIR / "data/PKGBUILDs"
@@ -129,3 +129,105 @@ def test_parameter_expansion_not_mangled(tmp_path):
     flags = result["globals"]["_flags"]
     assert "${CFLAGS:-default}" in flags
     assert "${pkgname%-git}" in flags
+
+
+# ---------------------------------------------------------------------------
+# has_hardcoded_gcc
+# ---------------------------------------------------------------------------
+
+def _parse_with_build(tmp_path, body):
+    """Helper: write a minimal PKGBUILD with a build() body and parse it."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "build() {\n"
+        f"{body}\n"
+        "}\n"
+    )
+    return parse_pkgbuild(pkgbuild)
+
+
+def test_hardcoded_gcc_direct_gcc_invocation(tmp_path):
+    parsed = _parse_with_build(tmp_path, "  gcc -O2 -o foo foo.c")
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_direct_gxx_invocation(tmp_path):
+    parsed = _parse_with_build(tmp_path, "  g++ -O2 -o foo foo.cpp")
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_ccache_prefix(tmp_path):
+    parsed = _parse_with_build(tmp_path, "  ccache g++ -O2 -o foo foo.cpp")
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_make_with_cc_assignment(tmp_path):
+    parsed = _parse_with_build(tmp_path, "  make CXX=g++ CC=gcc -j8")
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_env_prefixed_assignment(tmp_path):
+    parsed = _parse_with_build(tmp_path, "  CC=gcc make")
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_respects_cxx_variable(tmp_path):
+    parsed = _parse_with_build(tmp_path, '  $CXX -O2 -o foo foo.cpp')
+    assert has_hardcoded_gcc(parsed) is False
+
+
+def test_hardcoded_gcc_cxx_braced(tmp_path):
+    parsed = _parse_with_build(tmp_path, '  ${CXX} -O2 -o foo foo.cpp')
+    assert has_hardcoded_gcc(parsed) is False
+
+
+def test_hardcoded_gcc_plain_make(tmp_path):
+    parsed = _parse_with_build(tmp_path, "  make -j8")
+    assert has_hardcoded_gcc(parsed) is False
+
+
+def test_hardcoded_gcc_ignores_lgcc_library(tmp_path):
+    parsed = _parse_with_build(tmp_path, '  clang++ -o foo foo.cpp -lgcc_s')
+    assert has_hardcoded_gcc(parsed) is False
+
+
+def test_hardcoded_gcc_ignores_libgcc_reference(tmp_path):
+    parsed = _parse_with_build(tmp_path, '  cp libgcc.a /tmp/')
+    assert has_hardcoded_gcc(parsed) is False
+
+
+def test_hardcoded_gcc_detects_in_package_function(tmp_path):
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "build() { make; }\n"
+        'package() {\n'
+        '  gcc -o helper helper.c\n'
+        '  cp helper "$pkgdir/usr/bin/"\n'
+        '}\n'
+    )
+    parsed = parse_pkgbuild(pkgbuild)
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_empty_parsed():
+    assert has_hardcoded_gcc({}) is False
+    assert has_hardcoded_gcc({"functions": {}}) is False
+    assert has_hardcoded_gcc({"functions": {"build": ""}}) is False
+
+
+def test_hardcoded_gcc_gpu_burn_style_makefile_not_in_pkgbuild(tmp_path):
+    """
+    Proactive detection is limited: gpu-burn's PKGBUILD just calls `make`
+    while the Makefile itself hardcodes g++. Proactive path returns False;
+    the reactive post-failure retry handles this case.
+    """
+    parsed = _parse_with_build(tmp_path, '  make')
+    assert has_hardcoded_gcc(parsed) is False

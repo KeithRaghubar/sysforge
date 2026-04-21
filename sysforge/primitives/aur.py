@@ -212,7 +212,10 @@ def git_pull_rebase(pkgbuild_dir: Path, *, timeout: int | None = 30) -> None:
     - Not a git repo: skips silently (plain directories are fine).
     - No tracking branch: skips with an info log (detached HEAD, local-only repos).
     - Success: logs output at INFO level.
-    - Timeout: runs `git rebase --abort` to restore clean state, raises RuntimeError.
+    - Timeout: runs `git rebase --abort` to restore clean state, raises
+      RuntimeError. The caller (`_sync_sources` sub-phase 4) falls back to
+      purge + re-clone, which reliably succeeds even when AUR is throttling
+      concurrent pulls.
     - Conflict / failure: runs `git rebase --abort` to restore clean state,
       then raises RuntimeError so the caller can handle it cleanly.
     """
@@ -262,16 +265,19 @@ def git_pull_rebase(pkgbuild_dir: Path, *, timeout: int | None = 30) -> None:
         return
 
     # Pull failed — abort the rebase to restore a clean state before raising
+    combined = (r.stdout + r.stderr).strip()
     _git_log.error(f"git pull --rebase failed for {pkgbuild_dir.name}:")
-    for line in (r.stdout + r.stderr).strip().splitlines():
+    for line in combined.splitlines():
         _git_log.error(f"  {line}")
     subprocess.run(
         ["git", "-C", str(pkgbuild_dir), "rebase", "--abort"],
         capture_output=True,
     )
+    # Keep the stderr in the RuntimeError so callers can spot transient
+    # network failures (Connection reset, Recv failure, ...) and react.
     raise RuntimeError(
-        f"git pull --rebase failed for {pkgbuild_dir.name}. "
-        "Resolve conflicts manually and re-run, or use --no-update to skip."
+        f"git pull --rebase failed for {pkgbuild_dir.name}: "
+        f"{combined or 'no output'}"
     )
 
 
@@ -356,29 +362,70 @@ def purge_src(pkgbuild_dir: Path) -> None:
     shutil.rmtree(pkgbuild_dir)
 
 
+TRANSIENT_GIT_ERRORS = (
+    "Connection reset",
+    "Recv failure",
+    "Could not resolve host",
+    "TLS connection",
+    "early EOF",
+    "RPC failed",
+)
+
+# Hard-stop errors: AUR is explicitly refusing us. Retrying extends the
+# penalty window, so callers must break immediately instead of looping.
+RATE_LIMIT_GIT_ERRORS = (
+    "error: 429",
+    "Too Many Requests",
+    "error: 503",
+    "error: 502",
+)
+
+
 def aur_clone(name: str, dest: Path, *, timeout: int | None = 60) -> None:
     """
     Clone an AUR package repository into dest via git.
 
-    Raises RuntimeError on clone failure or timeout.
+    Retries once with a short pause on timeouts and transient network errors
+    (connection resets, recv failures, TLS hiccups) — these are common when
+    AUR is under heavy concurrent load. Raises RuntimeError if the retry also
+    fails, or immediately on non-transient errors (e.g. repository not found).
     """
     timeout = timeout or None  # 0 → disable
     url = f"{AUR_GIT_BASE}/{name}.git"
     _manifest_log.info(f"Cloning {name!r} from AUR → {dest}")
-    try:
-        result = subprocess.run(
-            ["git", "clone", url, str(dest)],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        shutil.rmtree(dest, ignore_errors=True)
-        raise RuntimeError(
-            f"AUR clone timed out after {timeout}s for {name!r}. "
-            "Check network connectivity, or increase [git] clone_timeout in sysforge.toml."
-        )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"AUR clone failed for {name!r}:\n{result.stderr.strip()}"
-        )
+
+    for attempt in range(2):
+        try:
+            result = subprocess.run(
+                ["git", "clone", url, str(dest)],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(dest, ignore_errors=True)
+            if attempt == 0:
+                _manifest_log.warn(
+                    f"{name!r}: AUR clone timed out after {timeout}s, retrying..."
+                )
+                time.sleep(2)
+                continue
+            raise RuntimeError(
+                f"AUR clone timed out after {timeout}s for {name!r} (after retry). "
+                "Check network connectivity, or increase [git] clone_timeout in sysforge.toml."
+            )
+
+        if result.returncode == 0:
+            return
+
+        stderr = result.stderr.strip()
+        rate_limited = any(marker in stderr for marker in RATE_LIMIT_GIT_ERRORS)
+        transient = any(marker in stderr for marker in TRANSIENT_GIT_ERRORS)
+        # Rate limits are a hard "stop retrying" — any retry extends the window.
+        if attempt == 0 and transient and not rate_limited:
+            shutil.rmtree(dest, ignore_errors=True)
+            _manifest_log.warn(f"{name!r}: AUR clone hit transient error, retrying...")
+            time.sleep(2)
+            continue
+
+        raise RuntimeError(f"AUR clone failed for {name!r}:\n{stderr}")

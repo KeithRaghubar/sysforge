@@ -43,7 +43,11 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sysforge.primitives.makepkg_wrapper import invoke_makepkg, resolve_env_vars
+from sysforge.primitives.makepkg_wrapper import (
+    ToolchainMismatchError,
+    invoke_makepkg,
+    resolve_env_vars,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -59,15 +63,17 @@ def _fake_pkgbuild(tmp_path: Path) -> Path:
 
 def _capture_invoke(pkgbuild_path, conf_path, resolved_profile, **kwargs):
     """
-    Call invoke_makepkg with a patched subprocess.run; return (cmd, env).
+    Call invoke_makepkg with a patched subprocess.Popen; return (cmd, env).
     Runs under a clean base environment so shell vars don't bleed into assertions.
     """
     captured = {}
 
-    def fake_run(cmd, **kw):
+    def fake_popen(cmd, **kw):
         captured["cmd"] = list(cmd)
         captured["env"] = dict(kw.get("env") or {})
         m = MagicMock()
+        m.stdout = iter(())  # no output
+        m.wait.return_value = 0
         m.returncode = 0
         return m
 
@@ -79,8 +85,8 @@ def _capture_invoke(pkgbuild_path, conf_path, resolved_profile, **kwargs):
     }
 
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
-                   side_effect=fake_run):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=fake_popen):
             invoke_makepkg(pkgbuild_path, conf_path, resolved_profile, **kwargs)
 
     return captured.get("cmd", []), captured.get("env", {})
@@ -109,6 +115,19 @@ def test_unrelated_env_vars_preserved(tmp_path):
     assert "USER" in env
 
 
+def _fake_popen_factory(captured):
+    """Build a subprocess.Popen stand-in that captures env/cmd and exits 0."""
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(kw.get("env") or {})
+        m = MagicMock()
+        m.stdout = iter(())
+        m.wait.return_value = 0
+        m.returncode = 0
+        return m
+    return fake_popen
+
+
 def test_inherited_cc_stripped_when_no_override(tmp_path):
     """Shell CC is stripped (makepkg/toolchain key) even when no profile CC."""
     pb = _fake_pkgbuild(tmp_path)
@@ -117,16 +136,10 @@ def test_inherited_cc_stripped_when_no_override(tmp_path):
 
     captured = {}
 
-    def fake_run(_cmd, **kw):
-        captured["env"] = dict(kw.get("env") or {})
-        m = MagicMock()
-        m.returncode = 0
-        return m
-
     with patch.dict(os.environ, {"CC": "gcc", "PATH": "/usr/bin", "HOME": "/root"},
                     clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
-                   side_effect=fake_run):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=_fake_popen_factory(captured)):
             invoke_makepkg(pb, conf, {})
 
     assert "CC" not in captured["env"]
@@ -140,16 +153,10 @@ def test_inherited_cc_replaced_by_extra_env(tmp_path):
 
     captured = {}
 
-    def fake_run(_cmd, **kw):
-        captured["env"] = dict(kw.get("env") or {})
-        m = MagicMock()
-        m.returncode = 0
-        return m
-
     with patch.dict(os.environ, {"CC": "gcc", "PATH": "/usr/bin", "HOME": "/root"},
                     clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
-                   side_effect=fake_run):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=_fake_popen_factory(captured)):
             invoke_makepkg(pb, conf, {}, extra_env={"CC": "clang"})
 
     assert captured["env"].get("CC") == "clang"
@@ -164,19 +171,13 @@ def test_venv_stripped_from_env(tmp_path):
 
     captured = {}
 
-    def fake_run(_cmd, **kw):
-        captured["env"] = dict(kw.get("env") or {})
-        m = MagicMock()
-        m.returncode = 0
-        return m
-
     with patch.dict(os.environ, {
         "VIRTUAL_ENV": venv,
         "PATH": f"{venv}/bin:/usr/bin:/bin",
         "HOME": "/root",
     }, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
-                   side_effect=fake_run):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=_fake_popen_factory(captured)):
             invoke_makepkg(pb, conf, {})
 
     env = captured["env"]
@@ -263,6 +264,129 @@ def test_empty_profile_produces_base_cmd(tmp_path):
     cmd, _ = _capture_invoke(pb, conf, {})
     assert cmd[0] == "makepkg"
     assert cmd[1] == "-p"
+
+
+# ---------------------------------------------------------------------------
+# Toolchain mismatch detection (GCC rejects clang-only flag)
+# ---------------------------------------------------------------------------
+
+def _popen_with_stdout(lines, returncode):
+    """Build a Popen stand-in that replays `lines` on stdout and exits with returncode."""
+    def fake_popen(_cmd, **_kw):
+        m = MagicMock()
+        m.stdout = iter(lines)
+        m.wait.return_value = returncode
+        m.returncode = returncode
+        return m
+    return fake_popen
+
+
+def test_toolchain_mismatch_raises_on_flto_thin_rejection(tmp_path):
+    """GCC rejecting -flto=thin triggers ToolchainMismatchError, not CalledProcessError."""
+    import subprocess as _sp
+
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+
+    output = [
+        "==> Starting build()...\n",
+        "g++ -flto=thin -o foo foo.cpp\n",
+        "cc1plus: error: unrecognized argument to '-flto=' option: 'thin'\n",
+        "make: *** [Makefile:45: foo.o] Error 1\n",
+        "==> ERROR: A failure occurred in build().\n",
+    ]
+
+    clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
+    with patch.dict(os.environ, clean_env, clear=True):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=_popen_with_stdout(output, 2)):
+            try:
+                invoke_makepkg(pb, conf, {})
+            except ToolchainMismatchError:
+                raised = "mismatch"
+            except _sp.CalledProcessError:
+                raised = "generic"
+            else:
+                raised = "none"
+
+    assert raised == "mismatch"
+
+
+def test_toolchain_mismatch_raises_on_unrecognized_thin_flag(tmp_path):
+    """Alternative error wording ('unrecognized command-line option') is also caught."""
+    import subprocess as _sp
+
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+
+    output = [
+        "g++: error: unrecognized command-line option '-flto=thin'\n",
+        "==> ERROR: A failure occurred in build().\n",
+    ]
+
+    clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
+    with patch.dict(os.environ, clean_env, clear=True):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=_popen_with_stdout(output, 2)):
+            try:
+                invoke_makepkg(pb, conf, {})
+            except ToolchainMismatchError:
+                raised = "mismatch"
+            except _sp.CalledProcessError:
+                raised = "generic"
+            else:
+                raised = "none"
+
+    assert raised == "mismatch"
+
+
+def test_toolchain_mismatch_not_raised_on_unrelated_failure(tmp_path):
+    """Non-matching errors raise plain CalledProcessError, not ToolchainMismatchError."""
+    import subprocess as _sp
+
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+
+    output = [
+        "==> ERROR: patching failed\n",
+        "==> ERROR: A failure occurred in prepare().\n",
+    ]
+
+    clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
+    with patch.dict(os.environ, clean_env, clear=True):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=_popen_with_stdout(output, 1)):
+            try:
+                invoke_makepkg(pb, conf, {})
+            except ToolchainMismatchError:
+                raised = "mismatch"
+            except _sp.CalledProcessError:
+                raised = "generic"
+            else:
+                raised = "none"
+
+    assert raised == "generic"
+
+
+def test_toolchain_mismatch_not_raised_on_success(tmp_path):
+    """Even if the output contains the pattern, a successful build does not raise."""
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+
+    output = [
+        "==> Building...\n",
+        "==> Finished making\n",
+    ]
+
+    clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
+    with patch.dict(os.environ, clean_env, clear=True):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=_popen_with_stdout(output, 0)):
+            invoke_makepkg(pb, conf, {})  # must not raise
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ execute, or modify any PKGBUILD. All mutation lives in pkgbuild_patcher.py.
 
 Public API:
     parse_pkgbuild(path) -> {"globals": {...}, "functions": {...}}
+    has_hardcoded_gcc(parsed) -> bool
 """
 import re
 
@@ -163,6 +164,69 @@ def _apply_var_expansion(globals_dict):
                 _expand_vars(item, scalars) if isinstance(item, str) else item
                 for item in v
             ]
+
+
+# Matches a hardcoded gcc/g++ invocation at the start of a logical line:
+# optional leading whitespace, optional VAR=value env assignments, optional
+# ccache prefix, then gcc or g++ as the command itself (followed by space or
+# end-of-line). Deliberately conservative — does not match $CC / ${CXX},
+# -lgcc, libgcc, or mentions inside strings/comments (comments are stripped
+# by parse_pkgbuild before this runs).
+_HARDCODED_GCC_CMD = re.compile(
+    r"""
+    ^                             # start of a logical line
+    [ \t]*                        # leading whitespace
+    (?:[A-Za-z_][A-Za-z0-9_]*=\S+[ \t]+)*  # any leading VAR=value assignments
+    (?:ccache[ \t]+)?             # optional ccache prefix
+    (?:gcc|g\+\+)                 # gcc or g++ as the command
+    (?:[ \t]|$)                   # word-terminated (space, tab, or line end)
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
+# Matches CC=gcc / CXX=g++ (and HOSTCC/HOSTCXX) anywhere that a build-time
+# assignment would land — either a standalone line like `CC=gcc make` or as
+# an argument to make: `make CXX=g++`. The trailing context must be a word
+# boundary so we don't match longer values like CC=gcc-12 (harmless to match,
+# but exclude for clarity) — actually, gcc-12 is still hardcoded GCC, so we
+# accept any -\d suffix too.
+_HARDCODED_GCC_ASSIGN = re.compile(
+    r"""
+    (?:^|[ \t;&|])                # start of line or typical command separator
+    (?:CC|CXX|HOSTCC|HOSTCXX)     # build-time compiler variable
+    =                             # literal =
+    (?:gcc|g\+\+)                 # gcc or g++ value
+    (?:-\d+(?:\.\d+)*)?           # optional version suffix (gcc-12, g++-11.2)
+    (?:[ \t;&|]|$)                # word-terminated
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
+
+def has_hardcoded_gcc(parsed):
+    """
+    True if the PKGBUILD's build()/package()/prepare() function bodies invoke
+    gcc/g++ as a direct command, or force CC=gcc / CXX=g++ when invoking a
+    subsidiary build tool (e.g. ``make CXX=g++``).
+
+    Used as a proactive signal for the flag guard: when the package's build
+    system bypasses ``$CC``/``$CXX``, clang-only flags such as ``-flto=thin``
+    must be rewritten to their GCC equivalents before invoking makepkg.
+
+    Detection is deliberately conservative. False is not authoritative — a
+    Makefile checked out in src/ may still hardcode ``g++``. The reactive
+    post-failure path in ``invoke_makepkg`` catches those cases.
+    """
+    funcs = parsed.get("functions", {}) if isinstance(parsed, dict) else {}
+    for name in ("build", "package", "prepare"):
+        body = funcs.get(name)
+        if not body:
+            continue
+        if _HARDCODED_GCC_CMD.search(body):
+            return True
+        if _HARDCODED_GCC_ASSIGN.search(body):
+            return True
+    return False
 
 
 def parse_pkgbuild(path):

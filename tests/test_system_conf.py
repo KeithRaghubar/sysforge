@@ -422,3 +422,59 @@ def test_emit_gcc_bfd_keeps_lto(sys_conf_path):
     with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
         conf = read_conf(conf_path)
     assert conf["LTOFLAGS"] == "-flto"
+
+
+# ---------------------------------------------------------------------------
+# Hardcoded-GCC signal: GCC flag guard activates even when CC=clang
+# ---------------------------------------------------------------------------
+
+def test_emit_hardcoded_gcc_rewrites_thin_lto(sys_conf_path):
+    """pkgbuild_has_hardcoded_gcc=True rewrites -flto=thin even with CC=clang."""
+    profile = {"CC": "clang", "LTOFLAGS": "-flto=thin", "CFLAGS": "-O3 -flto=thin"}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        pkgbuild_has_hardcoded_gcc=True,
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == "-flto"
+    assert "-flto=thin" not in conf["CFLAGS"]
+    assert "-flto" in conf["CFLAGS"]
+
+
+def test_emit_reactive_fallback_rewrites_thin_lto(sys_conf_path):
+    """reactive_gcc_fallback=True rewrites -flto=thin even with CC=clang."""
+    profile = {"CC": "clang", "LTOFLAGS": "-flto=thin"}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        reactive_gcc_fallback=True,
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == "-flto"
+
+
+def test_emit_hardcoded_gcc_lld_disables_lto(sys_conf_path):
+    """pkgbuild_has_hardcoded_gcc + lld disables LTO entirely."""
+    profile = {
+        "CC": "clang",
+        "LDFLAGS": "-fuse-ld=lld",
+        "LTOFLAGS": "-flto=thin",
+        "CFLAGS": "-O3 -flto=thin",
+    }
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        pkgbuild_has_hardcoded_gcc=True,
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == ""
+    assert "-flto" not in conf["CFLAGS"]
+
+
+def test_emit_no_hardcoded_gcc_keeps_thin_lto(sys_conf_path):
+    """Regression guard: CC=clang without any GCC signal preserves thin LTO."""
+    profile = {"CC": "clang", "LTOFLAGS": "-flto=thin"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == "-flto=thin"

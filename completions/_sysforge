@@ -30,7 +30,7 @@ _sysforge_commands() {
   local commands=(
     'build:build a package from a PKGBUILD'
     'fetch:download PKGBUILD(s) into pkgbuild_src_dir without building'
-    'update:check for and rebuild outdated sysforge-managed packages'
+    'update:check for and rebuild outdated sysforge-managed packages (PGO-toolchain build_mode is experimental, post-1.0)'
     'resolve:show which profile would apply to a package'
     'converge:rebuild packages that have drifted from their profile'
     'doctor:health-check installed package depends + linkage'

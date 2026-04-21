@@ -32,7 +32,7 @@ from sysforge.primitives.config import (
     parse_system_makepkg_conf,
 )
 from sysforge.primitives.paths import TOOLCHAIN_PATH
-from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives.pkgbuild_meta import has_hardcoded_gcc, parse_pkgbuild
 from sysforge.primitives.pkgbuild_patcher import (
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
@@ -121,6 +121,28 @@ _LLD_ONLY_FLAGS = frozenset({
 # Full LTO flags incompatible with clang IR PGO. ThinLTO (-flto=thin) is
 # compatible and must NOT be stripped. Bare -flto defaults to full in clang.
 _FULL_LTO_FLAGS = frozenset({"-flto", "-flto=full", "-flto=auto"})
+
+# Substrings in makepkg output that identify a clang-only flag rejected by
+# GCC. When any of these appears on stderr/stdout alongside a non-zero exit,
+# invoke_makepkg raises ToolchainMismatchError so _run_build can retry once
+# with the GCC flag guard forced on.
+TOOLCHAIN_MISMATCH_PATTERNS = (
+    "unrecognized argument to '-flto=' option",
+    "unrecognized command-line option '-flto=thin'",
+)
+
+
+class ToolchainMismatchError(subprocess.CalledProcessError):
+    """
+    Raised by invoke_makepkg when the makepkg failure was caused by the
+    active profile's compiler flags being incompatible with the actual
+    compiler the package's build system invoked — most commonly, clang-only
+    flags like -flto=thin fed to a hardcoded g++.
+
+    Distinct from CalledProcessError so _run_build can catch it specifically
+    and trigger an automatic retry with the GCC+LTO flag guard forced on,
+    without prompting the user for manual correction.
+    """
 
 
 
@@ -232,7 +254,9 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       kernel_build: bool = False,
                       compiler_flags_extra: str | None = None,
                       linker_flags_extra: str | None = None,
-                      strip_full_lto: bool = False):
+                      strip_full_lto: bool = False,
+                      pkgbuild_has_hardcoded_gcc: bool = False,
+                      reactive_gcc_fallback: bool = False):
     """
     Write a complete, self-contained temp makepkg.conf by merging:
       1. All keys from /etc/makepkg.conf (system baseline)
@@ -264,6 +288,17 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     and clears LTOFLAGS so makepkg's lto option cannot re-inject ThinLTO flags at
     build time. Disables LTO entirely for PGO passes — ThinLTO link-time codegen
     combined with IR PGO causes non-PIC vtable relocations in shared library builds.
+
+    pkgbuild_has_hardcoded_gcc: proactive signal that the PKGBUILD's build()
+    or package() function invokes gcc/g++ directly (rather than honoring $CC/
+    $CXX). Activates the GCC+LTO flag guard even when the configured CC is
+    clang — rewriting clang-only flags like -flto=thin so the hardcoded GCC
+    does not reject them.
+
+    reactive_gcc_fallback: set by _run_build() on the second pass of an
+    auto-retry after the first build failed with a GCC-rejects-clang-flag
+    error. Activates the same GCC+LTO guard as pkgbuild_has_hardcoded_gcc,
+    distinguished only for log-message clarity.
     """
     env_keys = CONF_KEY_MAP.get("env", set())
     # Toolchain keys (CC, CXX) are delivered via subprocess env, not via the
@@ -355,12 +390,27 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                     profile_overrides["RUSTFLAGS"], effective_linker)
 
     # GCC + LTO guard: GCC emits .gnu.lto_* bitcode that only GNU ld/gold can
-    # process. When CC is GCC-based:
+    # process. When the effective compiler is GCC — either because the profile
+    # sets CC=gcc, or because the PKGBUILD's build() hardcodes gcc/g++, or a
+    # prior build attempt failed with a clang-only flag rejected by GCC:
     #   - Rewrite -flto=thin → -flto (thin LTO is clang-only)
     #   - If the effective linker is lld, disable LTO entirely — lld cannot
     #     process GCC LTO bitcode objects (undefined symbol errors at link time)
     effective_cc = cc_override or resolved_profile.get("CC")
-    _is_gcc = effective_cc and not effective_cc.startswith("clang")
+    _profile_is_gcc = effective_cc and not effective_cc.startswith("clang")
+    _is_gcc = (
+        _profile_is_gcc
+        or pkgbuild_has_hardcoded_gcc
+        or reactive_gcc_fallback
+    )
+    if _profile_is_gcc:
+        _gcc_reason = f"CC is '{effective_cc}' (not clang)"
+    elif pkgbuild_has_hardcoded_gcc:
+        _gcc_reason = "PKGBUILD build()/package() invokes hardcoded gcc/g++"
+    elif reactive_gcc_fallback:
+        _gcc_reason = "post-failure fallback (GCC rejected clang-only flag)"
+    else:
+        _gcc_reason = None
     if _is_gcc:
         _thin_lto_rewritten = False
         for key in ("LTOFLAGS", "CFLAGS", "CXXFLAGS", "LDFLAGS"):
@@ -376,8 +426,8 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 _thin_lto_rewritten = True
         if _thin_lto_rewritten:
             _flag_log.warn(
-                f"CC is '{effective_cc}' (not clang) — rewriting "
-                f"-flto=thin to -flto (GCC does not support thin LTO)")
+                f"{_gcc_reason} — rewriting -flto=thin to -flto "
+                f"(GCC does not support thin LTO)")
 
     if _is_gcc and effective_linker == "lld":
         # GCC LTO bitcode (.gnu.lto_* sections) is incompatible with lld.
@@ -406,7 +456,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             new_tokens = ["!lto" if t == "lto" else t for t in tokens]
             profile_overrides["OPTIONS"] = "(" + " ".join(new_tokens) + ")"
         _flag_log.warn(
-            f"CC is '{effective_cc}' with linker '{effective_linker}' — "
+            f"{_gcc_reason} with linker '{effective_linker}' — "
             f"disabling LTO (GCC LTO bitcode is incompatible with lld)")
 
     # Full LTO stripping for PGO passes. -flto/-flto=full are incompatible with
@@ -645,36 +695,45 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
     _build_log.info(f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
 
-    if log.get_verbosity() >= 3 and not interactive:
-        # Capture stdout+stderr and log each line with [MAKEPKG] tag.
-        # debug() always writes to the log file, so this fills the gap in the
-        # per-package log regardless of terminal verbosity.
-        proc = subprocess.Popen(
-            cmd, cwd=build_dir, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
-            preexec_fn=lift_for_child,
-        )
-        failed_stage = None
-        missing_deps: list[str] = []
-        for line in proc.stdout:
-            stripped = line.rstrip()
-            if "A failure occurred in prepare()." in stripped:
-                failed_stage = "prepare"
-            elif "A failure occurred in build()." in stripped:
-                failed_stage = "build"
-            elif "A failure occurred in package()." in stripped:
-                failed_stage = "package"
-            elif "target not found:" in stripped:
-                missing_deps.append(stripped.strip())
+    # Always capture stdout+stderr so we can classify failures (prepare vs
+    # build vs package stages, missing deps) and detect clang→GCC flag
+    # rejections that trigger an automatic retry. In verbose mode, lines go
+    # through _makepkg_log (prefixed [MAKEPKG][DEBUG] in the log file);
+    # otherwise they're forwarded verbatim to stdout so the user still sees
+    # live output. stdin is inherited from the parent so interactive prompts
+    # (sudo, signing keys) continue to work.
+    verbose_log = log.get_verbosity() >= 3
+    proc = subprocess.Popen(
+        cmd, cwd=build_dir, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+        preexec_fn=lift_for_child,
+    )
+    failed_stage = None
+    missing_deps: list[str] = []
+    toolchain_mismatch = False
+    for line in proc.stdout:
+        stripped = line.rstrip()
+        if "A failure occurred in prepare()." in stripped:
+            failed_stage = "prepare"
+        elif "A failure occurred in build()." in stripped:
+            failed_stage = "build"
+        elif "A failure occurred in package()." in stripped:
+            failed_stage = "package"
+        elif "target not found:" in stripped:
+            missing_deps.append(stripped.strip())
+        if not toolchain_mismatch:
+            for _pat in TOOLCHAIN_MISMATCH_PATTERNS:
+                if _pat in stripped:
+                    toolchain_mismatch = True
+                    break
+        if verbose_log:
             _makepkg_log.debug(stripped)
-        proc.wait()
-        returncode = proc.returncode
-    else:
-        returncode = subprocess.run(cmd, cwd=build_dir, env=env,
-                                   preexec_fn=lift_for_child).returncode
-        failed_stage = None
-        missing_deps = []
+        else:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+    proc.wait()
+    returncode = proc.returncode
 
     if returncode != 0:
         # Exit code 8 = E_INSTALL_FAILED (pacman failed to install deps).
@@ -700,6 +759,12 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         else:
             _build_log.info("re-run with -vvv to capture full makepkg output "
                       "in the log for diagnosis")
+        if toolchain_mismatch:
+            _flag_log.warn(
+                "Detected clang-only compiler flag rejected by GCC — "
+                "the package's build system likely invokes a hardcoded gcc/g++"
+            )
+            raise ToolchainMismatchError(returncode, "makepkg")
         raise subprocess.CalledProcessError(returncode, "makepkg")
 
 
@@ -762,6 +827,10 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
         try:
             invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                            extra_env, extra_flags, interactive, strip_flags)
+        except ToolchainMismatchError:
+            # Propagate so _run_build can auto-retry with the GCC flag guard
+            # before falling back to normal batch-mode failure handling.
+            raise
         except subprocess.CalledProcessError as e:
             _build_log.error(f"Build failed in batch mode, aborting: {e}")
             raise RuntimeError(f"[build_failed] {e}")
@@ -771,6 +840,10 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                 invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                                extra_env, extra_flags, interactive, strip_flags)
                 break
+            except ToolchainMismatchError:
+                # Propagate so _run_build can auto-retry with the GCC flag
+                # guard instead of prompting the user for manual correction.
+                raise
             except subprocess.CalledProcessError as e:
                 _build_log.error(f"Build failed: {e}")
                 _build_log.info(f"PKGBUILD location: {pkgbuild_path}")
@@ -871,7 +944,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                linker_flags_extra: str | None = None,
                strip_full_lto: bool = False,
                injected_env: dict | None = None,
-               strip_flags=None):
+               strip_flags=None,
+               pkgbuild_has_hardcoded_gcc: bool = False):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -947,16 +1021,40 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             else:
                 _kernel_log.info(f"Non-clang toolchain ({effective_cc!r} → 'gcc'): GCC kernel build")
 
-        with emit_makepkg_conf(resolved_profile, active_consumes,
-                               cc_override=cc_override,
-                               cxx_override=cxx_override,
-                               ld_override=ld_override,
-                               kernel_build=kernel_build,
-                               compiler_flags_extra=compiler_flags_extra,
-                               linker_flags_extra=linker_flags_extra,
-                               strip_full_lto=strip_full_lto) as conf_path:
-            _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
-                               extra_env, extra_flags, interactive, strip_flags)
+        # Outer loop: on ToolchainMismatchError, regenerate the makepkg.conf
+        # once with reactive_gcc_fallback=True (forcing the GCC+LTO guard on)
+        # and retry the build. A second mismatch falls through to normal
+        # failure handling.
+        _reactive_retry_used = False
+        while True:
+            try:
+                with emit_makepkg_conf(
+                        resolved_profile, active_consumes,
+                        cc_override=cc_override,
+                        cxx_override=cxx_override,
+                        ld_override=ld_override,
+                        kernel_build=kernel_build,
+                        compiler_flags_extra=compiler_flags_extra,
+                        linker_flags_extra=linker_flags_extra,
+                        strip_full_lto=strip_full_lto,
+                        pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
+                        reactive_gcc_fallback=_reactive_retry_used) as conf_path:
+                    _invoke_with_retry(
+                        pkgbuild_path, conf_path, resolved_profile,
+                        extra_env, extra_flags, interactive, strip_flags)
+                break
+            except ToolchainMismatchError as e:
+                if _reactive_retry_used:
+                    _flag_log.error(
+                        "Toolchain mismatch persists after auto-retry — "
+                        "aborting (check the PKGBUILD and profile flags)"
+                    )
+                    raise RuntimeError(f"[build_failed] {e}")
+                _flag_log.warn(
+                    "Auto-retrying build with GCC-compatible flags "
+                    "(rewriting clang-only flags like -flto=thin)"
+                )
+                _reactive_retry_used = True
 
         # Post-build cache delta
         pkgname = _pkgname_from_meta(pkgmeta)
@@ -1149,6 +1247,13 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         handle_failure("pkgbuild_unparseable", str(e), config)
         pkgmeta = {"globals": {}}
 
+    pkgbuild_has_hardcoded_gcc = has_hardcoded_gcc(pkgmeta)
+    if pkgbuild_has_hardcoded_gcc:
+        _flag_log.info(
+            "PKGBUILD build()/package() invokes hardcoded gcc/g++ — "
+            "GCC flag guard will be applied even if the active profile sets CC=clang"
+        )
+
     build_success = False
     try:
         matched_rules = match_rules(pkgmeta, config.get("rules", []))
@@ -1261,6 +1366,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 strip_full_lto=options.strip_full_lto,
                 injected_env=options.extra_env,
                 strip_flags=options.strip_flags,
+                pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
             )
         build_success = True
 

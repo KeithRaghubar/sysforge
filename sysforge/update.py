@@ -49,6 +49,7 @@ from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.aur import (
     git_pull_rebase, fetch_aur_name_cache, purge_src, aur_clone, aur_info,
+    TRANSIENT_GIT_ERRORS, RATE_LIMIT_GIT_ERRORS,
 )
 from sysforge.primitives.config import load_config, load_sysforge_toml
 from sysforge.primitives.paths import resolve_packages_path
@@ -69,6 +70,20 @@ from sysforge.pipeline.state import resolve_state_dir
 
 
 _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
+
+# Circuit breaker: if this many consecutive network ops fail with a transient
+# error, stop attempting further AUR operations for this run. AUR outages and
+# IP-level rate-limiting don't clear up mid-run; continuing just spams the
+# user with identical error logs.
+_NETWORK_BREAKER_THRESHOLD = 5
+
+
+def _is_transient_git_error(err: str) -> bool:
+    return "timed out" in err or any(m in err for m in TRANSIENT_GIT_ERRORS)
+
+
+def _is_rate_limit_error(err: str) -> bool:
+    return any(m in err for m in RATE_LIMIT_GIT_ERRORS)
 
 
 @dataclass
@@ -357,7 +372,7 @@ def _sync_sources(
 
     # --- Sub-phase 2: sequential clones for missing dirs ---
     # Covers: never-cloned packages, cleansrc-purged dirs.
-    # Sequential to avoid AUR rate limiting. Single retry on transient errors.
+    # Sequential to avoid AUR rate limiting; aur_clone handles transient retries.
     seen_dirs.clear()
     for pkgbase in sorted(pkgbase_map):
         if pkgbase in sync_failures:
@@ -385,17 +400,11 @@ def _sync_sources(
                 _log.error(f"{pkgbase}: purge failed: {e}")
                 continue
 
-        for attempt in range(2):
-            try:
-                aur_clone(pkgbase, pkgbuild_dir, timeout=clone_timeout)
-                break
-            except RuntimeError as e:
-                if attempt == 0 and "Connection reset" in str(e):
-                    _log.warn(f"{pkgbase}: clone failed, retrying...")
-                    time.sleep(2)
-                else:
-                    sync_failures[pkgbase] = str(e)
-                    _log.error(f"{pkgbase}: clone failed: {e}")
+        try:
+            aur_clone(pkgbase, pkgbuild_dir, timeout=clone_timeout)
+        except RuntimeError as e:
+            sync_failures[pkgbase] = str(e)
+            _log.error(f"{pkgbase}: clone failed: {e}")
 
     # --- Sub-phase 3: parallel git pulls ---
     # Only pull dirs that exist and have a PKGBUILD (freshly cloned dirs
@@ -418,35 +427,117 @@ def _sync_sources(
         seen_dirs.add(resolved)
         pull_candidates.append((pkgbase, d))
 
+    # Adaptive concurrency: start with 4 parallel pulls for speed. As soon as
+    # any pull times out, cancel all still-queued futures and re-run them
+    # sequentially — AUR throttles concurrent connections, so dropping to
+    # one-at-a-time after a timeout is strictly faster than waiting for every
+    # parallel pull to time out and then falling through to sub-phase 4 recovery.
     pull_failures: dict[str, str] = {}
+    sequential_retry: list[tuple[str, Path]] = []
+    degraded = False
     from sysforge.ui import progress as _ui_progress
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {
-            pool.submit(git_pull_rebase, pkgbuild_dir, timeout=pull_timeout): pkgbase
-            for pkgbase, pkgbuild_dir in pull_candidates
-        }
-        with _ui_progress.tracker(len(futures), "git pull") as _tick:
+    with _ui_progress.tracker(len(pull_candidates), "git pull") as _tick:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {
+                pool.submit(git_pull_rebase, d, timeout=pull_timeout): (pb, d)
+                for pb, d in pull_candidates
+            }
             for fut in as_completed(futures):
-                pkgbase_key = futures[fut]
+                pkgbase_key, pkgbuild_dir = futures[fut]
+                if fut.cancelled():
+                    sequential_retry.append((pkgbase_key, pkgbuild_dir))
+                    continue
                 _tick(pkgbase_key)
                 try:
                     fut.result()
                 except RuntimeError as e:
-                    pull_failures[pkgbase_key] = str(e)
+                    err = str(e)
+                    pull_failures[pkgbase_key] = err
+                    if not degraded and (
+                        _is_transient_git_error(err) or _is_rate_limit_error(err)
+                    ):
+                        degraded = True
+                        _log.warn(
+                            "AUR pull hit a transient error — "
+                            "reverting remaining pulls to sequential mode"
+                        )
+                        for f in futures:
+                            f.cancel()
+
+        consecutive_transient = 0
+        breaker_open = False
+        for pkgbase_key, pkgbuild_dir in sequential_retry:
+            _tick(pkgbase_key)
+            if breaker_open:
+                pull_failures[pkgbase_key] = "skipped: AUR circuit breaker open"
+                continue
+            try:
+                git_pull_rebase(pkgbuild_dir, timeout=pull_timeout)
+                consecutive_transient = 0
+            except RuntimeError as e:
+                err = str(e)
+                pull_failures[pkgbase_key] = err
+                if _is_rate_limit_error(err):
+                    breaker_open = True
+                    _log.error(
+                        "AUR is rate-limiting this host (HTTP 429/503) — "
+                        "aborting further pull attempts. Retrying now extends "
+                        "the penalty window; wait a few minutes before rerunning."
+                    )
+                elif _is_transient_git_error(err):
+                    consecutive_transient += 1
+                    if consecutive_transient >= _NETWORK_BREAKER_THRESHOLD:
+                        breaker_open = True
+                        _log.error(
+                            f"AUR unreachable: {consecutive_transient} consecutive "
+                            "transient failures — aborting further pull attempts. "
+                            "Try again in a few minutes."
+                        )
+                else:
+                    consecutive_transient = 0
 
     # --- Sub-phase 4: pull failure recovery (sequential) ---
     # On pull failure, try purge + re-clone. Common when AUR maintainers
     # force-push. Dirty repos (local work) are still refused by purge_src.
+    # Same circuit-breaker applies: once AUR is confirmed unreachable, skip
+    # the remaining re-clone attempts.
+    consecutive_transient = 0
+    breaker_open = False
     for pkgbase, error_msg in pull_failures.items():
         entry = pkgbase_entry[pkgbase]
         pkgbuild_dir = Path(entry["pkgbuild_dir"])
+        if breaker_open:
+            sync_failures[pkgbase] = (
+                f"pull failed: {error_msg}; recovery skipped: AUR circuit breaker open"
+            )
+            continue
         _log.warn(f"{pkgbase}: pull failed, attempting recovery...")
         try:
             purge_src(pkgbuild_dir)
             aur_clone(pkgbase, pkgbuild_dir, timeout=clone_timeout)
+            consecutive_transient = 0
         except RuntimeError as e:
-            sync_failures[pkgbase] = f"pull failed: {error_msg}; recovery failed: {e}"
-            _log.error(f"{pkgbase}: recovery failed: {e}")
+            err = str(e)
+            sync_failures[pkgbase] = f"pull failed: {error_msg}; recovery failed: {err}"
+            _log.error(f"{pkgbase}: recovery failed: {err}")
+            if _is_rate_limit_error(err):
+                breaker_open = True
+                _log.error(
+                    "AUR is rate-limiting this host (HTTP 429/503) — "
+                    "aborting further re-clone attempts. Retrying now extends "
+                    "the penalty window; wait a few minutes before rerunning."
+                )
+            elif _is_transient_git_error(err):
+                consecutive_transient += 1
+                if consecutive_transient >= _NETWORK_BREAKER_THRESHOLD:
+                    breaker_open = True
+                    _log.error(
+                        f"AUR unreachable: {consecutive_transient} consecutive "
+                        "transient recovery failures — aborting further re-clone "
+                        "attempts. Try again in a few minutes."
+                    )
+            else:
+                consecutive_transient = 0
 
     return sync_failures
 

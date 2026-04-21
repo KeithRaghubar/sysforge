@@ -160,7 +160,12 @@ def test_tracker_increments_counter(monkeypatch):
         tick("a")
         tick("b")
         tick("c")
-    assert seen == [(1, 3, "building a"), (2, 3, "building b"), (3, 3, "building c")]
+    assert seen == [
+        (0, 3, "building starting..."),
+        (1, 3, "building a"),
+        (2, 3, "building b"),
+        (3, 3, "building c"),
+    ]
 
 
 def test_tracker_releases_region_on_exit(monkeypatch):

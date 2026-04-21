@@ -168,6 +168,9 @@ def tracker(total: int, prefix: str) -> Iterator[Callable[[str], None]]:
             for item in items:
                 tick(item.name)
                 do_work(item)
+
+    Paints a 0/total placeholder on entry so users see immediate feedback
+    even when the first tick is far away (e.g. a batch of slow git pulls).
     """
     global _last_status
     if _mode is None:
@@ -177,6 +180,9 @@ def tracker(total: int, prefix: str) -> Iterator[Callable[[str], None]]:
     def tick(label: str) -> None:
         counter["i"] += 1
         render(counter["i"], total, f"{prefix} {label}")
+
+    if total > 0:
+        render(0, total, f"{prefix} starting...")
 
     try:
         yield tick
