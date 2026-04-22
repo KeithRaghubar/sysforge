@@ -569,6 +569,8 @@ All pacman and batch-install shared operations. Public API:
 - `get_pkgdest()` — resolves the `PKGDEST` directory from makepkg.conf
 - `snapshot_pkg_dir(pkgdest)` — records the set of `.pkg.tar.*` files currently in pkgdest before a build
 - `batch_install_pkgs(pkgdest, pre_snapshot, ...)` — diffs the post-build pkgdest against the snapshot and installs all new packages in a single `sudo pacman -U`
+- `read_pkgname_from_file(path)` — extracts `pkgname` from a built `.pkg.tar.*` via `bsdtar -xOqf <path> .PKGINFO`; returns `None` on failure
+- `filter_pkgs_to_installed(paths, installed)` — partitions pkg-file paths into `(keep, dropped)` by whether their `pkgname` is in the current installed set; used by `update`/`converge` so split-pkgbase rebuilds don't add sub-packages the user never installed
 - `collect_makedeps(pkgmeta)` / `filter_missing_deps(deps)` / `batch_install_makedeps(deps)` — makedependency helpers
 - `get_installed_version(name)` — `pacman -Q <name>`; returns version string or `None`
 - `get_all_installed_packages()` — `pacman -Q`; returns `{name: version}`
@@ -868,7 +870,7 @@ Repo-source packages (`source = "repo"`) are skipped entirely (no local PKGBUILD
 
 **Phase 5 — Build.** Filter to buildable packages: `NEEDS_REBUILD` (+ `DEVEL` if `--devel`), require build_state record unless `--all` or `discovered`. Batch makedeps pre-install (single `sudo pacman -S`). AUR dep resolution + build. Single build loop for all packages. `--cleanbuild` (`-C`) prepended by default (suppressed by `--no-cleanbuild`). `--syncdeps`/`-s` and `--install`/`-i` stripped; packages installed in phase 6.
 
-**Phase 6 — Install + finalize.** Single `sudo pacman -U` for all built packages. Cache report, final summary, close unified log.
+**Phase 6 — Install + finalize.** Filter the built `.pkg.tar.*` files with `filter_pkgs_to_installed` so only files whose `pkgname` is already present in `pacman -Q` reach `pacman -U` — split `-git` pkgbases emit one file per split pkgname, and rebuilding must not silently add sub-packages the user never installed (e.g. `pipewire-full-git` emits 16 files; only the 2 installed ones get installed). New dependencies built via `build_resolved_deps` are handled on a separate path and are unaffected by this filter. Single `sudo pacman -U` for the kept set. Cache report, final summary, close unified log.
 
 Positional: `[PKG ...]` — optional package names to restrict the run to a subset of packages.
 
@@ -884,7 +886,7 @@ Implements `sysforge converge` — the flag drift detector. Algorithm:
 2. For each profiled package (`build_mode = "profiled"`): re-resolve the current profile via `parse_pkgbuild` → `match_rules` → `resolve_profile` → `serialize_flags`.
 3. Diff the stored `flags_string` against the freshly resolved flags. Packages where the flags differ are `DRIFTED`; identical are `IN_SYNC`. Packages without a stored `flags_string` (built before this feature) are `NO_FLAGS`. Missing PKGBUILD → `NO_PKGBUILD`. Non-profiled packages are silently omitted.
 4. Print a per-package summary with flag diffs for `DRIFTED` entries.
-5. With `--apply`: rebuild all `DRIFTED` packages via `makepkg_wrapper.run()` with `update=False`.
+5. With `--apply`: rebuild all `DRIFTED` packages via `makepkg_wrapper.run()` with `update=False`. Post-build, the pkg-file set is run through `filter_pkgs_to_installed` before `batch_install_pkgs` so repairing drift on one split pkgname never installs sibling sub-packages the user never chose.
 
 Without `--apply`, the command is read-only — it reports drift but does not rebuild. Flags: `--apply`, `--state-dir`, `--profile-conf`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--cache-report`.
 

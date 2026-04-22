@@ -7,10 +7,12 @@ from unittest.mock import patch, MagicMock
 from sysforge.primitives.pacman import (
     collect_makedeps,
     filter_missing_deps,
+    filter_pkgs_to_installed,
     get_installed_version,
     get_all_installed_packages,
     get_foreign_packages,
     get_pacman_sync_version,
+    read_pkgname_from_file,
     snapshot_pkg_dir,
 )
 
@@ -181,3 +183,66 @@ class TestSnapshotPkgDir:
         (tmp_path / "foo-1.0-1-x86_64.pkg.tar").touch()
         result = snapshot_pkg_dir(tmp_path)
         assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# read_pkgname_from_file
+# ---------------------------------------------------------------------------
+
+class TestReadPkgnameFromFile:
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_reads_pkgname(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout="pkgname = foo-bar-git\npkgver = 1.0.0\n",
+            returncode=0,
+        )
+        assert read_pkgname_from_file("/tmp/foo-bar-git-1.0.0-1-x86_64.pkg.tar.zst") == "foo-bar-git"
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_missing_pkgname_field(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="pkgver = 1.0.0\n", returncode=0)
+        assert read_pkgname_from_file("/tmp/x.pkg.tar.zst") is None
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_bsdtar_failure(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", returncode=1)
+        assert read_pkgname_from_file("/tmp/x.pkg.tar.zst") is None
+
+    @patch("sysforge.primitives.pacman.subprocess.run", side_effect=FileNotFoundError)
+    def test_bsdtar_not_installed(self, _mock_run):
+        assert read_pkgname_from_file("/tmp/x.pkg.tar.zst") is None
+
+
+# ---------------------------------------------------------------------------
+# filter_pkgs_to_installed
+# ---------------------------------------------------------------------------
+
+class TestFilterPkgsToInstalled:
+    """Split-pkgbase rebuilds emit a .pkg.tar per pkgname; only install
+    files for pkgnames already on the system."""
+
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file")
+    def test_keeps_only_installed(self, mock_read):
+        pkg_map = {
+            "/tmp/foo-1-1.pkg.tar.zst": "foo",
+            "/tmp/foo-bar-1-1.pkg.tar.zst": "foo-bar",
+            "/tmp/foo-dev-1-1.pkg.tar.zst": "foo-dev",
+        }
+        mock_read.side_effect = lambda p: pkg_map[str(p)]
+        keep, dropped = filter_pkgs_to_installed(list(pkg_map), installed={"foo", "foo-dev"})
+        assert set(str(p) for p in keep) == {"/tmp/foo-1-1.pkg.tar.zst", "/tmp/foo-dev-1-1.pkg.tar.zst"}
+        assert [pn for _, pn in dropped] == ["foo-bar"]
+
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value=None)
+    def test_unreadable_file_kept(self, _mock_read):
+        # If we can't determine pkgname, fall through to pacman to surface the error.
+        keep, dropped = filter_pkgs_to_installed(["/tmp/x.pkg.tar.zst"], installed=set())
+        assert keep == ["/tmp/x.pkg.tar.zst"]
+        assert dropped == []
+
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file")
+    def test_empty_input(self, _mock_read):
+        keep, dropped = filter_pkgs_to_installed([], installed={"foo"})
+        assert keep == []
+        assert dropped == []

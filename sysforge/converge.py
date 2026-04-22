@@ -27,6 +27,8 @@ from sysforge.primitives.config import load_config, load_conflict_groups
 from sysforge.primitives.pacman import (
     BATCH_STRIP_FLAGS,
     batch_install_pkgs,
+    filter_pkgs_to_installed,
+    get_all_installed_packages,
     get_pkgdest,
     snapshot_pkg_dir,
 )
@@ -271,6 +273,19 @@ def _apply(results: list[_ConvergeResult], args) -> None:
             _log.error(f"Build failed for {result.pkgbase!r}: {e}")
             failed += 1
 
+    # Filter out split-pkgbase sub-packages the user never installed —
+    # converge should repair drift on installed pkgnames, not introduce new ones.
+    if built_pkg_files:
+        currently_installed = set(get_all_installed_packages().keys())
+        built_pkg_files, dropped = filter_pkgs_to_installed(built_pkg_files, currently_installed)
+        if dropped:
+            _log.info(
+                f"Skipping install of {len(dropped)} split sub-package(s) "
+                "not currently on the system:"
+            )
+            for path, pn in dropped:
+                _log.info(f"  - {pn} ({path.name})")
+
     if built_pkg_files:
         if not batch_install_pkgs(built_pkg_files):
             _log.error("Batch install failed")
@@ -280,7 +295,7 @@ def _apply(results: list[_ConvergeResult], args) -> None:
             )
             failed += 1
     elif built > 0:
-        _log.warn("No .pkg.tar.* files found after builds — nothing to install")
+        _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
 
     if getattr(args, "cache_report", False):
         emit_session_report()

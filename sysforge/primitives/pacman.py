@@ -11,6 +11,8 @@ Public API:
     get_pkgdest()                   → Path | None
     snapshot_pkg_dir(directory)     → frozenset
     batch_install_pkgs(pkg_paths)   → bool
+    read_pkgname_from_file(path)    → str | None
+    filter_pkgs_to_installed(paths, installed) → (keep, dropped)
     collect_makedeps(pkgbuild_paths) → list
     filter_missing_deps(deps)       → list
     batch_install_makedeps(deps)    → None
@@ -82,6 +84,50 @@ def snapshot_pkg_dir(directory: Path) -> frozenset:
 # ---------------------------------------------------------------------------
 # Package install
 # ---------------------------------------------------------------------------
+
+def read_pkgname_from_file(path) -> str | None:
+    """Return the pkgname recorded in a built package's .PKGINFO, or None.
+
+    Uses bsdtar (already required by makepkg) to read the embedded
+    .PKGINFO without fully extracting the archive.
+    """
+    try:
+        result = subprocess.run(
+            ["bsdtar", "-xOqf", str(path), ".PKGINFO"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("pkgname = "):
+            return line[len("pkgname = "):].strip()
+    return None
+
+
+def filter_pkgs_to_installed(
+    pkg_paths: list, installed: set,
+) -> tuple[list, list]:
+    """Split pkg files into (keep, dropped) by whether pkgname is in ``installed``.
+
+    Built split-pkgbase runs emit .pkg.tar files for every sub-package, even
+    ones the user never installed. Returns ``(keep, dropped)`` where
+    ``dropped`` is ``[(path, pkgname)]``. Files whose pkgname can't be read
+    fall through to ``keep`` so the caller can let pacman surface the error.
+    """
+    keep: list = []
+    dropped: list = []
+    for p in pkg_paths:
+        pn = read_pkgname_from_file(p)
+        if pn is None:
+            keep.append(p)
+        elif pn in installed:
+            keep.append(p)
+        else:
+            dropped.append((p, pn))
+    return keep, dropped
+
 
 def batch_install_pkgs(pkg_paths: list) -> bool:
     """Install all built packages in one sudo pacman -U call. Returns True on success."""

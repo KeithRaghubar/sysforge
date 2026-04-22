@@ -63,6 +63,7 @@ from sysforge.primitives.pacman import (
     get_pkgdest,
     snapshot_pkg_dir,
     batch_install_pkgs,
+    filter_pkgs_to_installed,
     collect_makedeps,
     filter_missing_deps,
     batch_install_makedeps,
@@ -739,14 +740,30 @@ def cmd_update(args) -> None:
             deduped.append(p)
     built_pkg_files = deduped
 
+    # Split-pkgbase safety: makepkg emits one .pkg.tar for every pkgname in
+    # the PKGBUILD, not just the ones the user has installed. Filter to
+    # installed pkgnames so rebuilding e.g. pipewire-full-git doesn't pull
+    # in 14 split sub-packages the user never chose. Refetch now — makedep
+    # and AUR-dep pre-install above may have expanded the installed set.
     install_failed = False
+    if built_pkg_files:
+        currently_installed = set(get_all_installed_packages().keys())
+        built_pkg_files, dropped = filter_pkgs_to_installed(built_pkg_files, currently_installed)
+        if dropped:
+            _log.info(
+                f"Skipping install of {len(dropped)} split sub-package(s) "
+                "not currently on the system:"
+            )
+            for path, pn in dropped:
+                _log.info(f"  - {pn} ({path.name})")
+
     if built_pkg_files:
         if not batch_install_pkgs(built_pkg_files):
             _log.error("Batch package install failed")
             _log.error("packages were built but not installed")
             install_failed = True
     elif built_pkgs:
-        _log.warn("No .pkg.tar.* files found after builds — nothing to install")
+        _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
 
     if getattr(args, "cache_report", False):
         emit_session_report()
