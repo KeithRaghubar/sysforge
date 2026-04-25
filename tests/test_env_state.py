@@ -44,6 +44,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.primitives.makepkg_wrapper import (
+    AlreadyBuilt,
     ToolchainMismatchError,
     invoke_makepkg,
     resolve_env_vars,
@@ -417,6 +418,66 @@ def test_toolchain_mismatch_not_raised_on_success(tmp_path):
         with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
                    side_effect=_popen_with_stdout(output, 0)):
             invoke_makepkg(pb, conf, {})  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Already-built detection (PKGDEST holds matching .pkg.tar)
+# ---------------------------------------------------------------------------
+
+def test_already_built_raises_on_exit_13(tmp_path):
+    """Exit code 13 (E_ALREADY_BUILT) raises AlreadyBuilt, not CalledProcessError."""
+    import subprocess as _sp
+
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+
+    output = ["==> Making package: htop 3.4.1-1\n"]
+
+    clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
+    with patch.dict(os.environ, clean_env, clear=True):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=_popen_with_stdout(output, 13)):
+            try:
+                invoke_makepkg(pb, conf, {})
+            except AlreadyBuilt as e:
+                raised = ("already_built", e.pkgbuild_path)
+            except _sp.CalledProcessError:
+                raised = ("generic", None)
+            else:
+                raised = ("none", None)
+
+    assert raised[0] == "already_built"
+    assert raised[1] == pb
+
+
+def test_already_built_raises_on_message_match(tmp_path):
+    """Diagnostic line matches even when the wrapper rewrites the exit code."""
+    import subprocess as _sp
+
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+
+    output = [
+        "==> Making package: htop 3.4.1-1\n",
+        "==> ERROR: A package has already been built. (use -f to overwrite)\n",
+    ]
+
+    clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
+    with patch.dict(os.environ, clean_env, clear=True):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=_popen_with_stdout(output, 1)):
+            try:
+                invoke_makepkg(pb, conf, {})
+            except AlreadyBuilt:
+                raised = "already_built"
+            except _sp.CalledProcessError:
+                raised = "generic"
+            else:
+                raised = "none"
+
+    assert raised == "already_built"
 
 
 # ---------------------------------------------------------------------------

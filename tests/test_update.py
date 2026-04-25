@@ -266,6 +266,7 @@ def test_check_not_installed(tmp_path):
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
         patch("sysforge.update.get_all_installed_packages", return_value={}),
+        patch("sysforge.update._sync_sources", return_value={}) as mock_sync,
     ):
         MockBS.return_value.all_packages.return_value = state_data
         (tmp_path / "htop" / "PKGBUILD").write_text("pkgname=htop\n")
@@ -276,6 +277,9 @@ def test_check_not_installed(tmp_path):
             cmd_update(args)
 
     assert any(r.action == "NOT_INSTALLED" for r in results)
+    # Source sync must skip uninstalled pkgbases entirely.
+    sync_map = mock_sync.call_args.args[0] if mock_sync.call_args else {}
+    assert "htop" not in sync_map
 
 
 def test_vcs_installed_is_devel(tmp_path):
@@ -342,6 +346,7 @@ def test_vcs_not_installed_is_not_installed(tmp_path):
         patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
         patch("sysforge.update.get_all_installed_packages",
               return_value={"mesa": "1:25.3.1-1"}),
+        patch("sysforge.update._sync_sources", return_value={}) as mock_sync,
     ):
         MockBS.return_value.all_packages.return_value = state_data
         (pkg_dir / "PKGBUILD").write_text("pkgname=mesa-git\n")
@@ -353,6 +358,10 @@ def test_vcs_not_installed_is_not_installed(tmp_path):
 
     assert any(r.action == "NOT_INSTALLED" for r in results)
     assert not any(r.action == "DEVEL" for r in results)
+    # Source sync must skip mesa-git so we don't waste an AUR fetch on a
+    # package replaced by repo mesa.
+    sync_map = mock_sync.call_args.args[0] if mock_sync.call_args else {}
+    assert "mesa-git" not in sync_map
 
 
 def test_dry_run_no_build(tmp_path):
@@ -829,6 +838,67 @@ def test_cmd_update_all_dry_run_no_build(tmp_path):
 # Regression — pipewire-full-git (16 split pkgnames) was rebuilding all
 # sub-packages when only 2 were installed, silently adding 14 new packages.
 # ---------------------------------------------------------------------------
+
+def test_already_built_installs_existing_artifact(tmp_path):
+    """makepkg AlreadyBuilt → locate existing .pkg.tar and install, not fail.
+
+    Regression: makepkg's "A package has already been built" was treated as a
+    build failure even though PKGDEST already held the right artifact.
+    """
+    from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+
+    pkg_dir = tmp_path / "htop"
+    pkg_dir.mkdir()
+    pkgbuild = pkg_dir / "PKGBUILD"
+    pkgbuild.write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    existing_pkg = pkgdest / "htop-3.4.1-1-x86_64.pkg.tar.zst"
+    existing_pkg.touch()
+
+    state_data = {
+        "htop": {
+            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
+            "pkgbase": "htop", "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+        }
+    }
+    args = _make_args()
+    parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "htop", "source": "aur"}])
+    installed = {"htop": "3.3.0-1"}
+
+    def fake_build_run(*a, **kw):
+        raise AlreadyBuilt(pkgbuild)
+
+    install_calls = []
+
+    def fake_install(pkg_paths):
+        install_calls.append([Path(p).name for p in pkg_paths])
+        return True
+
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.update.collect_makedeps", return_value=[]),
+        patch("sysforge.update.filter_missing_deps", return_value=[]),
+        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
+        patch("sysforge.update.snapshot_pkg_dir", return_value=frozenset()),
+        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
+        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
+        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        cmd_update(args)
+
+    assert install_calls == [["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
+
 
 def test_split_pkgbase_only_installs_installed_subpkgnames(tmp_path):
     pkg_dir = tmp_path / "pipewire-full-git"

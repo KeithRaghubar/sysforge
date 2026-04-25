@@ -8,6 +8,7 @@ and PKGBUILD parsing are delegated to their respective modules.
 Public API:
     BuildOptions                       — dataclass of run() options (all fields defaulted)
     PGOBuildSkipped                    — raised when a pgo_llvm_toolchain build is skipped
+    AlreadyBuilt                       — raised when PKGDEST already holds a matching .pkg.tar
     expand_makepkg_flags(flags_str)   → list
     run(pkgbuild_path, options=None)
 """
@@ -148,6 +149,18 @@ class ToolchainMismatchError(subprocess.CalledProcessError):
     without prompting the user for manual correction.
     """
 
+
+class AlreadyBuilt(Exception):
+    """
+    Raised by invoke_makepkg when makepkg refuses to rebuild because PKGDEST
+    already holds a .pkg.tar matching the current pkgname-pkgver-pkgrel-arch
+    (exit code 13 = E_ALREADY_BUILT, or the matching diagnostic line).
+    Callers should locate the existing artifact and install it rather than
+    treat this as a build failure.
+    """
+    def __init__(self, pkgbuild_path: Path):
+        self.pkgbuild_path = pkgbuild_path
+        super().__init__(f"package already built: {pkgbuild_path}")
 
 
 def _detect_linker_from_ldflags(ldflags_val):
@@ -716,6 +729,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     failed_stage = None
     missing_deps: list[str] = []
     toolchain_mismatch = False
+    already_built = False
     for line in proc.stdout:
         stripped = line.rstrip()
         if "A failure occurred in prepare()." in stripped:
@@ -726,6 +740,8 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             failed_stage = "package"
         elif "target not found:" in stripped:
             missing_deps.append(stripped.strip())
+        elif "A package has already been built" in stripped:
+            already_built = True
         if not toolchain_mismatch:
             # GCC emits curly quotes ‘…’ (U+2018/U+2019) when the locale
             # supports them; normalize to ASCII apostrophes so our patterns
@@ -744,6 +760,12 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     returncode = proc.returncode
 
     if returncode != 0:
+        # Exit code 13 = E_ALREADY_BUILT (matching .pkg.tar already in PKGDEST).
+        # Also detect via output match for chroot wrappers that may rewrite the
+        # exit code. Caller (update.py) installs the existing artifact instead
+        # of treating this as a build failure.
+        if returncode == 13 or already_built:
+            raise AlreadyBuilt(pkgbuild_path)
         # Exit code 8 = E_INSTALL_FAILED (pacman failed to install deps).
         # Also triggered when we collected explicit "target not found" lines.
         if returncode == 8 or missing_deps:

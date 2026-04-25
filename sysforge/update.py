@@ -528,6 +528,33 @@ def _check_one_pkgbase(
 
 
 # ---------------------------------------------------------------------------
+# Phase 5 helpers
+# ---------------------------------------------------------------------------
+
+def _find_existing_artifacts(
+    search_dir: Path, pkgnames: list[str], pkgbuild_ver: str | None,
+) -> list[Path]:
+    """Locate already-built .pkg.tar artifacts matching pkgnames + version.
+
+    makepkg's E_ALREADY_BUILT means a file like
+    ``<pkgname>-[epoch:]<pkgver>-<pkgrel>-<arch>.pkg.tar.<ext>`` already
+    exists in PKGDEST (or the build dir if PKGDEST is unset). Glob those
+    paths so the caller can install them in lieu of rebuilding.
+    """
+    if not pkgbuild_ver or not search_dir or not Path(search_dir).is_dir():
+        return []
+    found: list[Path] = []
+    for pkgname in pkgnames:
+        for p in Path(search_dir).glob(
+            f"{pkgname}-{pkgbuild_ver}-*.pkg.tar.*"
+        ):
+            if p.name.endswith(".sig"):
+                continue
+            found.append(p)
+    return found
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -546,8 +573,9 @@ def cmd_update(args) -> None:
     # package (pacman-mode marker for those sysforge didn't build), so that
     # every `pacman -Q` name has a known state and zombie entries left by
     # prior parser runs (e.g. literal ``$_pkgname`` keys) are pruned.
+    all_installed = get_all_installed_packages()
     try:
-        sync_result = bs.sync_with_installed(get_all_installed_packages())
+        sync_result = bs.sync_with_installed(all_installed)
     except OSError as e:
         _log.warn(f"build_state sync failed: {e}")
     else:
@@ -595,14 +623,6 @@ def cmd_update(args) -> None:
     if getattr(args, "all", False):
         _print_discovery_summary(packages, discovery_not_found)
 
-    # ── Phase 2: Source sync ──────────────────────────────────────────────
-    sync_failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
-
-    # ── Phase 3: Version check ──��─────────────────────────────────────────
-    all_installed = get_all_installed_packages()
-    skip_sync_check = offline
-    results: list[_UpdateResult] = []
-
     # Authoritative pkgbuild versions for packages whose PKGBUILDs use bash
     # parameter expansion the static parser can't evaluate. The scheduler's
     # SourceMetaCache holds the latest AUR RPC Version per pkgbase.
@@ -612,6 +632,34 @@ def cmd_update(args) -> None:
         if meta.get("rpc_version")
     }
 
+    # Filter out pkgbases with no installed sub-package: skip source sync and
+    # version check entirely — they would be classified NOT_INSTALLED in
+    # Phase 3 and excluded from build in Phase 5 anyway. Synthesize the
+    # NOT_INSTALLED result here so the summary still surfaces them.
+    active_pkgbase_map: dict[str, list[str]] = {}
+    not_installed_results: list[_UpdateResult] = []
+    for pkgbase, pkgnames in pkgbase_map.items():
+        if any(pn in all_installed for pn in pkgnames):
+            active_pkgbase_map[pkgbase] = pkgnames
+        else:
+            entry = pkgbase_entry[pkgbase]
+            has_record = not any(pn in unrecorded_names for pn in pkgnames)
+            not_installed_results.append(_UpdateResult(
+                pkgbase=pkgbase, pkgnames=pkgnames, action="NOT_INSTALLED",
+                installed_ver=None,
+                pkgbuild_ver=rpc_version_by_base.get(pkgbase),
+                pkgbuild_path=None,
+                has_build_record=has_record,
+                discovered=entry.get("discovered", False),
+            ))
+
+    # ── Phase 2: Source sync ──────────────────────────────────────────────
+    sync_failures = _sync_sources(active_pkgbase_map, pkgbase_entry, args)
+
+    # ── Phase 3: Version check ────────────────────────────────────────────
+    skip_sync_check = offline
+    results: list[_UpdateResult] = list(not_installed_results)
+
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(
@@ -619,7 +667,7 @@ def cmd_update(args) -> None:
                 pkgbase_entry[pkgbase], sync_failures, all_installed,
                 unrecorded_names, skip_sync_check, rpc_version_by_base,
             ): pkgbase
-            for pkgbase, pkgnames in sorted(pkgbase_map.items())
+            for pkgbase, pkgnames in sorted(active_pkgbase_map.items())
         }
         for fut in as_completed(futures):
             result = fut.result()
@@ -652,7 +700,9 @@ def cmd_update(args) -> None:
         print("[SYSFORGE] Nothing to rebuild.")
         return
 
-    from sysforge.primitives.makepkg_wrapper import run as build_run, PGOBuildSkipped
+    from sysforge.primitives.makepkg_wrapper import (
+        run as build_run, PGOBuildSkipped, AlreadyBuilt,
+    )
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
     reset_session()
 
@@ -725,6 +775,23 @@ def cmd_update(args) -> None:
             except PGOBuildSkipped as e:
                 _log.warn(str(e))
                 pgo_skipped_pkgs.append(result.pkgbase)
+            except AlreadyBuilt:
+                existing = _find_existing_artifacts(
+                    search_dir, result.pkgnames, result.pkgbuild_ver,
+                )
+                if existing:
+                    _log.info(
+                        f"{result.pkgbase}: package already built — "
+                        "installing existing artifact"
+                    )
+                    built_pkg_files.extend(existing)
+                    built_pkgs.append(result.pkgbase)
+                else:
+                    _log.error(
+                        f"{result.pkgbase}: makepkg reported already built "
+                        f"but no matching .pkg.tar found in {search_dir}"
+                    )
+                    failed_pkgs.append(result.pkgbase)
             except (RuntimeError, SystemExit) as e:
                 _log.error(f"Build failed for {result.pkgbase!r}: {e}")
                 failed_pkgs.append(result.pkgbase)
@@ -873,7 +940,8 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
             else:
                 print(f"  [DEVEL]          {r.pkgbase}: skipped (use --devel to rebuild){star}{disc}")
         elif r.action == "NOT_INSTALLED":
-            print(f"  [NOT_INSTALLED]  {r.pkgbase}: {r.pkgbuild_ver} (not currently installed){star}{disc}")
+            ver = r.pkgbuild_ver or "?"
+            print(f"  [NOT_INSTALLED]  {r.pkgbase}: {ver} (not currently installed){star}{disc}")
         elif r.action == "DOWNGRADE":
             print(f"  [DOWNGRADE]      {r.pkgbase}: installed {r.installed_ver} > pkgbuild {r.pkgbuild_ver} (skipped){star}{disc}")
         elif r.action == "PULL_FAILED":
