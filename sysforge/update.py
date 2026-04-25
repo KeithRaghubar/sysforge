@@ -562,7 +562,10 @@ def cmd_update(args) -> None:
     """Entry point for `sysforge update`."""
 
     # ── Phase 0: Init ─────────────────────────────────────────────────────
-    offline = getattr(args, "offline", False)
+    install_only = getattr(args, "install_only", False)
+    offline = getattr(args, "offline", False) or install_only
+    if install_only:
+        args.offline = True
     if not offline:
         fetch_aur_name_cache()
 
@@ -700,101 +703,130 @@ def cmd_update(args) -> None:
         print("[SYSFORGE] Nothing to rebuild.")
         return
 
-    from sysforge.primitives.makepkg_wrapper import (
-        run as build_run, PGOBuildSkipped, AlreadyBuilt,
-    )
-    from sysforge.primitives.cache_probe import reset_session, emit_session_report
-    reset_session()
-
-    extra_flags = expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else None
-
-    # Batch pre-install all makedepends (one sudo call)
-    all_pkgbuild_paths = [r.pkgbuild_path for r in to_build if r.pkgbuild_path]
-    makedeps = collect_makedeps(all_pkgbuild_paths)
-    missing_deps = filter_missing_deps(makedeps)
-    if missing_deps:
-        try:
-            batch_install_makedeps(missing_deps)
-        except RuntimeError as e:
-            _log.error(str(e))
-            print("[SYSFORGE] Warning: makedep pre-install failed — some builds may fail", file=sys.stderr)
-
-    # Resolve and build AUR-only deps
-    from sysforge.primitives.aur_resolve import resolve_aur_deps_batch, build_resolved_deps
-    if all_pkgbuild_paths:
-        try:
-            aur_deps = resolve_aur_deps_batch(all_pkgbuild_paths, config, fetch=True)
-            building_names = {r.pkgbase for r in to_build}
-            aur_deps = [d for d in aur_deps if d.name not in building_names]
-            if aur_deps:
-                build_resolved_deps(aur_deps)
-        except RuntimeError as e:
-            _log.error(f"AUR dep resolution failed: {e}")
-            print("[SYSFORGE] Warning: AUR dep resolution failed — some builds may fail", file=sys.stderr)
-
-    # Build all packages
     pkgdest = get_pkgdest()
-    interactive = getattr(args, "interactive", False)
-    no_cleanbuild = getattr(args, "no_cleanbuild", False)
-    cleanbuild_flags = [] if no_cleanbuild else BATCH_EXTRA_FLAGS
-    batch_flags = cleanbuild_flags + (extra_flags or [])
-    strip_flags = BATCH_STRIP_FLAGS | {"--cleanbuild", "-C"} if no_cleanbuild else BATCH_STRIP_FLAGS
-
     built_pkg_files: list = []
     built_pkgs: list[str] = []
     failed_pkgs: list[str] = []
     pgo_skipped_pkgs: list[str] = []
 
-    from sysforge.ui import progress as _ui_progress
-    with _ui_progress.tracker(len(to_build), "building") as _tick:
-        for result in to_build:
-            _tick(result.pkgbase)
-            search_dir = pkgdest if pkgdest else result.pkgbuild_path.parent
-            build_start = time.time()
-            try:
-                build_run(result.pkgbuild_path, options=BuildOptions(
-                    pkg_log=not getattr(args, "no_pkg_log", False),
-                    persist_log=getattr(args, "persist_log", False),
-                    log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
-                    profile_conf=getattr(args, "profile_conf", None),
-                    cache_report=False,
-                    init_session=(not built_pkgs and not failed_pkgs),
-                    update=False,  # source sync already done
-                    state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-                    extra_flags=batch_flags,
-                    strip_flags=strip_flags,
-                    interactive=interactive,
-                    force_batch=not interactive,
-                ))
-                new_pkgs = sorted(
-                    p for p in snapshot_pkg_dir(search_dir)
-                    if p.stat().st_mtime >= build_start
+    if install_only:
+        # Skip the whole build loop: no makedep batching, no AUR-dep resolution,
+        # no makepkg invocation. For each result the version-check filter has
+        # already proved is newer than installed, look for a matching artifact
+        # at exactly that pkgbuild_ver in PKGDEST and queue it for install.
+        from sysforge.ui import progress as _ui_progress
+        with _ui_progress.tracker(len(to_build), "scanning") as _tick:
+            for result in to_build:
+                _tick(result.pkgbase)
+                search_dir = pkgdest if pkgdest else (
+                    result.pkgbuild_path.parent if result.pkgbuild_path else None
                 )
-                built_pkg_files.extend(new_pkgs)
-                built_pkgs.append(result.pkgbase)
-            except PGOBuildSkipped as e:
-                _log.warn(str(e))
-                pgo_skipped_pkgs.append(result.pkgbase)
-            except AlreadyBuilt:
                 existing = _find_existing_artifacts(
                     search_dir, result.pkgnames, result.pkgbuild_ver,
-                )
+                ) if search_dir else []
                 if existing:
                     _log.info(
-                        f"{result.pkgbase}: package already built — "
-                        "installing existing artifact"
+                        f"{result.pkgbase}: queuing pre-built artifact "
+                        f"({result.pkgbuild_ver})"
                     )
                     built_pkg_files.extend(existing)
                     built_pkgs.append(result.pkgbase)
                 else:
-                    _log.error(
-                        f"{result.pkgbase}: makepkg reported already built "
-                        f"but no matching .pkg.tar found in {search_dir}"
+                    _log.info(
+                        f"{result.pkgbase}: [SKIP] no built artifact for "
+                        f"{result.pkgbuild_ver} in {search_dir}"
                     )
+        # Phase 6 (install) handles the rest.
+    else:
+        from sysforge.primitives.makepkg_wrapper import (
+            run as build_run, PGOBuildSkipped, AlreadyBuilt,
+        )
+        from sysforge.primitives.cache_probe import reset_session, emit_session_report
+        reset_session()
+
+        extra_flags = expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else None
+
+        # Batch pre-install all makedepends (one sudo call)
+        all_pkgbuild_paths = [r.pkgbuild_path for r in to_build if r.pkgbuild_path]
+        makedeps = collect_makedeps(all_pkgbuild_paths)
+        missing_deps = filter_missing_deps(makedeps)
+        if missing_deps:
+            try:
+                batch_install_makedeps(missing_deps)
+            except RuntimeError as e:
+                _log.error(str(e))
+                print("[SYSFORGE] Warning: makedep pre-install failed — some builds may fail", file=sys.stderr)
+
+        # Resolve and build AUR-only deps
+        from sysforge.primitives.aur_resolve import resolve_aur_deps_batch, build_resolved_deps
+        if all_pkgbuild_paths:
+            try:
+                aur_deps = resolve_aur_deps_batch(all_pkgbuild_paths, config, fetch=True)
+                building_names = {r.pkgbase for r in to_build}
+                aur_deps = [d for d in aur_deps if d.name not in building_names]
+                if aur_deps:
+                    build_resolved_deps(aur_deps)
+            except RuntimeError as e:
+                _log.error(f"AUR dep resolution failed: {e}")
+                print("[SYSFORGE] Warning: AUR dep resolution failed — some builds may fail", file=sys.stderr)
+
+        # Build all packages
+        interactive = getattr(args, "interactive", False)
+        no_cleanbuild = getattr(args, "no_cleanbuild", False)
+        cleanbuild_flags = [] if no_cleanbuild else BATCH_EXTRA_FLAGS
+        batch_flags = cleanbuild_flags + (extra_flags or [])
+        strip_flags = BATCH_STRIP_FLAGS | {"--cleanbuild", "-C"} if no_cleanbuild else BATCH_STRIP_FLAGS
+
+        from sysforge.ui import progress as _ui_progress
+        with _ui_progress.tracker(len(to_build), "building") as _tick:
+            for result in to_build:
+                _tick(result.pkgbase)
+                search_dir = pkgdest if pkgdest else result.pkgbuild_path.parent
+                build_start = time.time()
+                try:
+                    build_run(result.pkgbuild_path, options=BuildOptions(
+                        pkg_log=not getattr(args, "no_pkg_log", False),
+                        persist_log=getattr(args, "persist_log", False),
+                        log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
+                        profile_conf=getattr(args, "profile_conf", None),
+                        cache_report=False,
+                        init_session=(not built_pkgs and not failed_pkgs),
+                        update=False,  # source sync already done
+                        state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
+                        extra_flags=batch_flags,
+                        strip_flags=strip_flags,
+                        interactive=interactive,
+                        force_batch=not interactive,
+                    ))
+                    new_pkgs = sorted(
+                        p for p in snapshot_pkg_dir(search_dir)
+                        if p.stat().st_mtime >= build_start
+                    )
+                    built_pkg_files.extend(new_pkgs)
+                    built_pkgs.append(result.pkgbase)
+                except PGOBuildSkipped as e:
+                    _log.warn(str(e))
+                    pgo_skipped_pkgs.append(result.pkgbase)
+                except AlreadyBuilt:
+                    existing = _find_existing_artifacts(
+                        search_dir, result.pkgnames, result.pkgbuild_ver,
+                    )
+                    if existing:
+                        _log.info(
+                            f"{result.pkgbase}: package already built — "
+                            "installing existing artifact"
+                        )
+                        built_pkg_files.extend(existing)
+                        built_pkgs.append(result.pkgbase)
+                    else:
+                        _log.error(
+                            f"{result.pkgbase}: makepkg reported already built "
+                            f"but no matching .pkg.tar found in {search_dir}"
+                        )
+                        failed_pkgs.append(result.pkgbase)
+                except (RuntimeError, SystemExit) as e:
+                    _log.error(f"Build failed for {result.pkgbase!r}: {e}")
                     failed_pkgs.append(result.pkgbase)
-            except (RuntimeError, SystemExit) as e:
-                _log.error(f"Build failed for {result.pkgbase!r}: {e}")
-                failed_pkgs.append(result.pkgbase)
 
     # ── Phase 6: Install + finalize ───────────────────────────────────────
 
@@ -832,21 +864,26 @@ def cmd_update(args) -> None:
     elif built_pkgs:
         _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
 
-    if getattr(args, "cache_report", False):
+    if not install_only and getattr(args, "cache_report", False):
+        from sysforge.primitives.cache_probe import emit_session_report
         emit_session_report()
 
     # Sync failures from cleansrc refusals count as build failures.
     failed_pkgs.extend(sorted(cleansrc_failures))
 
     skipped = len(results) - len(to_build)
+    if install_only:
+        skipped += len(to_build) - len(built_pkgs) - len(failed_pkgs)
+    built_label = "installed" if install_only else "built"
     _log.ui((
         f"\n[SYSFORGE] Update complete: "
-        f"{len(built_pkgs)} built, {len(failed_pkgs)} failed, {skipped} skipped"
+        f"{len(built_pkgs)} {built_label}, {len(failed_pkgs)} failed, {skipped} skipped"
         + (f", {len(pgo_skipped_pkgs)} pgo-skipped" if pgo_skipped_pkgs else "")
         + "."
     ))
     if built_pkgs:
-        _log.ui(f"  Built:       {' '.join(built_pkgs)}")
+        _label = "Installed:" if install_only else "Built:"
+        _log.ui(f"  {_label:<13}{' '.join(built_pkgs)}")
     if failed_pkgs:
         _log.ui(f"  Failed:      {' '.join(failed_pkgs)}")
     if cleansrc_failures:

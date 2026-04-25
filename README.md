@@ -52,7 +52,12 @@ sysforge update --all --fetch-missing
 #    and re-clones every AUR package from scratch.
 sysforge update --all --fetch-missing --cleansrc
 
-# 9. Manage packages.toml
+# 9. Install already-built artifacts from PKGDEST without re-running makepkg.
+#    Useful when a previous update was interrupted between build and install,
+#    or after a manual makepkg run. Implies --offline.
+sysforge update --install-only
+
+# 10. Manage packages.toml
 sysforge packages list
 sysforge packages list --state        # show build_state.toml entries instead
 sysforge packages repair-state --dry-run  # preview fixes for legacy broken entries
@@ -60,7 +65,7 @@ sysforge packages add htop neovim
 sysforge packages remove htop
 sysforge packages sync --dry-run
 
-# 10. Health-check an installed package's depends + linkage (e.g. when Steam
+# 11. Health-check an installed package's depends + linkage (e.g. when Steam
 #     launches as a black window and the graphics stack may be out of sync).
 #     Walks the target's dep closure; --shallow restricts to direct depends.
 sysforge doctor mesa-git

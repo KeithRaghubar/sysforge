@@ -985,3 +985,119 @@ def test_split_pkgbase_only_installs_installed_subpkgnames(tmp_path):
     # Crucially, the un-installed split sub-packages must NOT be in the install set.
     assert "libpipewire-full-git-1.0-1-x86_64.pkg.tar.zst" not in installed_names
     assert "pipewire-full-git-1.0-1-x86_64.pkg.tar.zst" not in installed_names
+
+
+# ---------------------------------------------------------------------------
+# --install-only: install pre-built artifacts without re-running makepkg.
+# ---------------------------------------------------------------------------
+
+def test_install_only_installs_existing_artifact_without_building(tmp_path):
+    """--install-only: locate the artifact in PKGDEST and install it; never call build_run."""
+    pkg_dir = tmp_path / "htop"
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    existing_pkg = pkgdest / "htop-3.4.1-1-x86_64.pkg.tar.zst"
+    existing_pkg.touch()
+
+    state_data = {
+        "htop": {
+            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
+            "pkgbase": "htop", "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+        }
+    }
+    args = _make_args(install_only=True)
+    parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "htop", "source": "aur"}])
+    installed = {"htop": "3.3.0-1"}
+
+    install_calls = []
+
+    def fake_install(pkg_paths):
+        install_calls.append([Path(p).name for p in pkg_paths])
+        return True
+
+    build_calls = []
+
+    def fake_build_run(*a, **kw):
+        build_calls.append(a)
+        raise AssertionError("build_run must not be called with --install-only")
+
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
+        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
+        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        cmd_update(args)
+
+    assert build_calls == []
+    assert install_calls == [["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
+
+
+def test_install_only_skips_when_artifact_missing(tmp_path):
+    """--install-only: PKGBUILD newer than installed but no artifact in PKGDEST → skip, no install."""
+    pkg_dir = tmp_path / "htop"
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    # Note: NO matching artifact at 3.4.1; only an older one.
+    (pkgdest / "htop-3.3.0-1-x86_64.pkg.tar.zst").touch()
+
+    state_data = {
+        "htop": {
+            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
+            "pkgbase": "htop", "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+        }
+    }
+    args = _make_args(install_only=True)
+    parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "htop", "source": "aur"}])
+    installed = {"htop": "3.3.0-1"}
+
+    install_calls = []
+
+    def fake_install(pkg_paths):
+        install_calls.append([Path(p).name for p in pkg_paths])
+        return True
+
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
+        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
+        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        cmd_update(args)
+
+    # Nothing eligible → no install call at all.
+    assert install_calls == []
+
+
+def test_install_only_rejects_incompatible_flags():
+    """--install-only with build-tuning flags must abort via fatal()."""
+    import pytest
+    from sysforge.cli import _cmd_update
+
+    args = _make_args(install_only=True, no_cleanbuild=True)
+    with pytest.raises(SystemExit):
+        _cmd_update(args)

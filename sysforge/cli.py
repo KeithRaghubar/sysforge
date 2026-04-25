@@ -129,6 +129,20 @@ def _cmd_build(args):
 
 
 def _cmd_update(args):
+    if getattr(args, "install_only", False):
+        conflicts = [
+            ("--makepkg", getattr(args, "makepkg", None)),
+            ("--no-cleanbuild", getattr(args, "no_cleanbuild", False)),
+            ("--cleansrc", getattr(args, "cleansrc", False)),
+            ("--interactive", getattr(args, "interactive", False)),
+            ("--cache-report", getattr(args, "cache_report", False)),
+        ]
+        bad = [name for name, val in conflicts if val]
+        if bad:
+            _log.fatal(
+                f"--install-only is incompatible with: {', '.join(bad)} "
+                "(no rebuild happens, so build-tuning flags have no effect)"
+            )
     try:
         cmd_update(args)
     except RuntimeError as e:
@@ -550,6 +564,10 @@ def _add_update_parser(sub):
         help="Include VCS packages (-git, -svn, -hg, -bzr) in the rebuild.")
     p.add_argument("--offline", action="store_true", dest="offline",
         help="No network: skip git pulls, clones, and AUR RPC. Pure local version check.")
+    p.add_argument("--install-only", action="store_true", dest="install_only",
+        help="Skip rebuild; install only those locally-built artifacts in PKGDEST that are "
+             "newer than the installed version. Implies --offline. Mutually exclusive with "
+             "--makepkg, --no-cleanbuild, --cleansrc, --interactive, and --cache-report.")
     p.add_argument("--packages", metavar="FILE", dest="packages",
         help=f"Path to packages.toml for --all discovery (default: {PACKAGES_PATH}).")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",

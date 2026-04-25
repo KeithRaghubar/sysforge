@@ -129,6 +129,7 @@ _sysforge_update() {
     '--dry-run[show what would be rebuilt without doing it]' \
     '--devel[include VCS packages (-git, -svn, -hg, -bzr)]' \
     '--offline[no network: skip pulls, clones, and AUR RPC]' \
+    '--install-only[skip rebuild; install only pre-built artifacts in PKGDEST newer than installed (implies --offline)]' \
     '--interactive[pause on build failures to allow manual correction]' \
     '--no-cleanbuild[skip automatic --cleanbuild; useful to re-run only the install step]' \
     '--cleansrc[purge src dirs and re-clone before building (only for packages needing rebuild)]' \
