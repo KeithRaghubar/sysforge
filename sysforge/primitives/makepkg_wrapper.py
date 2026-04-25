@@ -1096,7 +1096,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         record_build_result(pkgname, cc_delta, sc_delta)
 
         success = True
-    except RuntimeError:
+    except (RuntimeError, AlreadyBuilt):
         raise
     except Exception as e:
         handle_failure("tempfile_write_failed", str(e), config)

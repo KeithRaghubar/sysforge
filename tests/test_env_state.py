@@ -480,6 +480,53 @@ def test_already_built_raises_on_message_match(tmp_path):
     assert raised == "already_built"
 
 
+def test_already_built_propagates_through_run_build(tmp_path):
+    """Regression: _run_build's catch-all `except Exception` previously
+    laundered AlreadyBuilt into RuntimeError("[tempfile_write_failed] ..."),
+    so update.py's `except AlreadyBuilt` branch never fired and packages
+    with an existing .pkg.tar were misreported as build failures
+    (`sysforge update --all --devel` surfaced the raw makepkg error).
+    """
+    from contextlib import contextmanager
+    from sysforge.primitives.makepkg_wrapper import _run_build
+
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+
+    @contextmanager
+    def fake_emit(*a, **kw):
+        yield "/tmp/fake_makepkg.conf"
+
+    def raise_already_built(*a, **kw):
+        raise AlreadyBuilt(pb)
+
+    with (
+        patch("sysforge.primitives.makepkg_wrapper.patch_pkgbuild_groups",
+              return_value=pb),
+        patch("sysforge.primitives.makepkg_wrapper.emit_makepkg_conf",
+              side_effect=fake_emit),
+        patch("sysforge.primitives.makepkg_wrapper.resolve_env_vars",
+              return_value={}),
+        patch("sysforge.primitives.makepkg_wrapper._invoke_with_retry",
+              side_effect=raise_already_built),
+    ):
+        try:
+            _run_build(pb, {"batch": True}, {}, [],
+                       extracted_profile=None,
+                       pkgmeta={"globals": {"pkgname": "htop"}})
+        except AlreadyBuilt as e:
+            outcome = ("already_built", e.pkgbuild_path)
+        except RuntimeError as e:
+            outcome = ("runtime_error", str(e))
+        else:
+            outcome = ("none", None)
+
+    assert outcome[0] == "already_built", (
+        f"_run_build laundered AlreadyBuilt into {outcome[0]}: {outcome[1]!r}"
+    )
+    assert outcome[1] == pb
+
+
 # ---------------------------------------------------------------------------
 # Section 3: resolve_env_vars consumes gate
 # ---------------------------------------------------------------------------
