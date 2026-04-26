@@ -91,6 +91,14 @@ from sysforge.primitives.profile import (
 # Flag string utilities
 # ---------------------------------------------------------------------------
 
+# makepkg's install flags. Used to detect when a build invocation will hand
+# the artifact to pacman -U. Both _invoke_with_retry (for sudo-timeout
+# recovery) and cli._cmd_build (for packages.toml auto-tracking) consult
+# this set. Kept in sync with pacman.BATCH_STRIP_FLAGS, which strips the
+# same flags during update/converge batch runs.
+INSTALL_FLAGS = frozenset({"-i", "--install"})
+
+
 def expand_makepkg_flags(flags_str) -> list:
     """
     Split a makepkg flags string into a list of individual flags,
@@ -878,9 +886,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                 _build_log.error(f"Build failed: {e}")
                 _build_log.info(f"PKGBUILD location: {pkgbuild_path}")
 
-                installing = extra_flags and any(
-                    f in ("--install", "-i") for f in extra_flags
-                )
+                installing = extra_flags and any(f in INSTALL_FLAGS for f in extra_flags)
                 built_pkgs = (
                     _find_built_packages(Path(pkgbuild_path).resolve().parent)
                     if installing else []

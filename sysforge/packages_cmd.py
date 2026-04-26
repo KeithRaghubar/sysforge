@@ -57,6 +57,66 @@ def entry_toml_block(entry: dict) -> str:
     return "\n".join(lines)
 
 
+def _classify_and_build_entries(
+    names: list[str],
+    build_section: dict,
+    *,
+    reason: str | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Classify names as repo / AUR and infer pkgbuild_patch for AUR pkgs.
+
+    Shared by `cmd_packages_add` and `append_explicit_entries`. Runs one
+    batched `repo_packages` + one batched `aur_info` RPC for the input set.
+    Returns (entries, unknown_names) where entries is the list of dicts
+    ready for `entry_toml_block`, and unknown_names is the subset that was
+    in neither pacman repos nor AUR (caller decides whether to warn or fatal).
+    """
+    if not names:
+        return [], []
+
+    from sysforge.primitives.aur import repo_packages, aur_info
+    repo_pkgs = repo_packages(names)
+    aur_candidates = [p for p in names if p not in repo_pkgs]
+    aur_found = set(aur_info(aur_candidates).keys()) if aur_candidates else set()
+
+    sources: dict[str, str] = {p: "repo" for p in repo_pkgs}
+    for p in aur_candidates:
+        if p in aur_found:
+            sources[p] = "aur"
+
+    unknown = [p for p in names if p not in sources]
+
+    config = load_config() or {}
+    raw_dir = (
+        build_section.get("pkgbuild_src_dir")
+        or config.get("paths", {}).get("pkgbuild_src_dir")
+    )
+
+    entries: list[dict] = []
+    for pkg in names:
+        if pkg not in sources:
+            continue
+        source = sources[pkg]
+        entry: dict = {"name": pkg, "source": source}
+        if source == "aur" and raw_dir:
+            pkgbuild = Path(raw_dir).expanduser() / pkg / "PKGBUILD"
+            if pkgbuild.exists():
+                try:
+                    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+                    from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
+                    pkgmeta = parse_pkgbuild(pkgbuild)
+                    profile_data = extract_pkgbuild_profile(pkgmeta, pkgbuild)
+                    if profile_data:
+                        entry["pkgbuild_patch"] = True
+                except Exception as e:
+                    _log.warn(f"Could not infer pkgbuild_patch for {pkg}: {e}")
+        if reason is not None:
+            entry["reason"] = reason
+        entries.append(entry)
+
+    return entries, unknown
+
+
 def append_dependency_entries(
     dep_names: list[str],
     packages_file: str | None = None,
@@ -64,6 +124,8 @@ def append_dependency_entries(
     """Append AUR deps to packages.toml with reason='dependency'.
 
     Skips entries that already exist.  Returns list of names actually added.
+    The AUR resolver only yields AUR deps, so source is forced to "aur"
+    without re-running the classifier.
     """
     path = _resolve_packages_file(packages_file)
 
@@ -86,6 +148,80 @@ def append_dependency_entries(
         _log.ui(f"Tracked dependency: {name} → {path}")
 
     return to_add
+
+
+def append_explicit_entries(
+    pkg_names: list[str],
+    packages_file: str | None = None,
+) -> list[str]:
+    """Append explicitly-installed packages to packages.toml.
+
+    Called by `_cmd_build` after a successful `sysforge build <pkg> -i` to
+    auto-track the manifest entry. Idempotent: silently skips names already
+    present (regardless of their existing `reason`). Best-effort: any
+    failure is logged and swallowed — a successful build/install must
+    never be rolled back by manifest bookkeeping.
+
+    Source classification (repo vs aur) and `pkgbuild_patch` inference
+    follow the same path as `sysforge packages add`. Names that classify
+    as neither repo nor AUR get a WARN; the user can run `packages add`
+    manually for those.
+
+    For split packages, callers pass the user-supplied name (typically the
+    pkgbase or the pkgname they typed on the CLI). Matches `packages add`
+    semantics.
+
+    Returns the list of names actually appended.
+    """
+    try:
+        path = _resolve_packages_file(packages_file)
+
+        existing_entries: list[dict] = []
+        build_section: dict = {}
+        if path.exists():
+            data = _load_toml(path)
+            existing_entries = data.get("package", [])
+            build_section = data.get("build", {})
+        elif not path.parent.exists():
+            # Implicit bookkeeping shouldn't materialise new directories.
+            _log.warn(
+                f"packages.toml parent {path.parent} missing; "
+                f"skipping auto-track of {pkg_names}"
+            )
+            return []
+
+        existing_names = {e.get("name") for e in existing_entries}
+        to_classify = [n for n in pkg_names if n not in existing_names]
+        if not to_classify:
+            return []
+
+        entries, unknown = _classify_and_build_entries(to_classify, build_section)
+
+        for name in unknown:
+            _log.warn(
+                f"Could not classify {name} as repo or AUR; skipping packages.toml track. "
+                f"Run `sysforge packages add {name}` manually."
+            )
+
+        if not entries:
+            return []
+
+        blocks = "".join("\n" + entry_toml_block(e) + "\n" for e in entries)
+        if path.exists():
+            with open(path, "a") as f:
+                f.write(blocks)
+        else:
+            path.write_text(
+                "# packages.toml — managed by sysforge packages\n" + blocks
+            )
+
+        added = [e["name"] for e in entries]
+        for name in added:
+            _log.ui(f"Tracked explicit: {name} → {path}")
+        return added
+    except Exception as e:
+        _log.warn(f"Could not auto-track {pkg_names} in packages.toml: {e}")
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -205,47 +341,12 @@ def cmd_packages_add(args):
     if not to_process:
         sys.exit(1)
 
-    # Classify — batch repo + AUR lookup
-    from sysforge.primitives.aur import repo_packages, aur_info
-    repo_pkgs = repo_packages(to_process)
-    aur_candidates = [p for p in to_process if p not in repo_pkgs]
-    aur_found = set(aur_info(aur_candidates).keys()) if aur_candidates else set()
-
-    sources: dict[str, str] = {p: "repo" for p in repo_pkgs}
-    for p in aur_candidates:
-        if p in aur_found:
-            sources[p] = "aur"
-        else:
-            print(f"[SYSFORGE] {p} not found in pacman repos or AUR", file=sys.stderr)
-            had_error = True
-
-    to_add = [p for p in to_process if p in sources]
-    if not to_add:
+    entries_to_write, unknown = _classify_and_build_entries(to_process, build_section)
+    for p in unknown:
+        print(f"[SYSFORGE] {p} not found in pacman repos or AUR", file=sys.stderr)
+        had_error = True
+    if not entries_to_write:
         sys.exit(1)
-
-    # Infer pkgbuild_patch for AUR packages
-    config = load_config() or {}
-    raw_dir = build_section.get("pkgbuild_src_dir") or config.get("paths", {}).get("pkgbuild_src_dir")
-
-    entries_to_write: list[dict] = []
-    for pkg in to_add:
-        source = sources[pkg]
-        pkgbuild_patch = False
-        if source == "aur" and raw_dir:
-            pkgbuild = Path(raw_dir).expanduser() / pkg / "PKGBUILD"
-            if pkgbuild.exists():
-                try:
-                    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-                    from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
-                    pkgmeta = parse_pkgbuild(pkgbuild)
-                    profile_data = extract_pkgbuild_profile(pkgmeta, pkgbuild)
-                    pkgbuild_patch = bool(profile_data)
-                except Exception as e:
-                    _log.warn(f"Could not infer pkgbuild_patch for {pkg}: {e}")
-        entry: dict = {"name": pkg, "source": source}
-        if pkgbuild_patch:
-            entry["pkgbuild_patch"] = True
-        entries_to_write.append(entry)
 
     blocks_text = "".join("\n" + entry_toml_block(e) + "\n" for e in entries_to_write)
     if path.exists():

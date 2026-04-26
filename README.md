@@ -26,7 +26,9 @@ cd sysforge && makepkg -si
 #    (flag_profiles.toml, packages.toml — both are self-documented)
 sudo vim /etc/sysforge/flag_profiles.toml
 
-# 3. Build and install an AUR package with your active profile
+# 3. Build and install an AUR package with your active profile.
+#    The install flag (-i) also auto-records neovim-git in packages.toml,
+#    so it surfaces in `sysforge update` and `sysforge converge` from then on.
 sysforge build neovim-git -m "-si"
 
 # 4. Check for and rebuild any outdated sysforge-managed packages

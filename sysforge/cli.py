@@ -31,7 +31,7 @@ from sysforge.packages_cmd import (
     cmd_packages_repair_state,
 )
 
-from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags, BuildOptions
+from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags, BuildOptions, INSTALL_FLAGS
 from sysforge.primitives.config import find_pkgbuild, load_config
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 
@@ -124,6 +124,10 @@ def _cmd_build(args):
                 abi_check=args.abi_check,
                 state_dir=Path(args.state_dir) if args.state_dir else None,
             ))
+
+            if extra_flags and any(f in INSTALL_FLAGS for f in extra_flags):
+                from sysforge.packages_cmd import append_explicit_entries
+                append_explicit_entries([pkg], packages_file=getattr(args, "packages", None))
     except RuntimeError as e:
         _log.fatal(str(e))
 
