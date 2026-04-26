@@ -532,25 +532,72 @@ def _check_one_pkgbase(
 # ---------------------------------------------------------------------------
 
 def _find_existing_artifacts(
-    search_dir: Path, pkgnames: list[str], pkgbuild_ver: str | None,
+    search_dir: Path,
+    pkgnames: list[str],
+    pkgbuild_ver: str | None,
+    installed_ver: str | None = None,
 ) -> list[Path]:
-    """Locate already-built .pkg.tar artifacts matching pkgnames + version.
+    """Locate already-built .pkg.tar artifacts matching pkgnames.
 
-    makepkg's E_ALREADY_BUILT means a file like
-    ``<pkgname>-[epoch:]<pkgver>-<pkgrel>-<arch>.pkg.tar.<ext>`` already
-    exists in PKGDEST (or the build dir if PKGDEST is unset). Glob those
-    paths so the caller can install them in lieu of rebuilding.
+    Two-stage lookup:
+      1. Strict glob ``{pkgname}-{pkgbuild_ver}-*.pkg.tar.*`` — matches
+         non-VCS packages where the static PKGBUILD parse equals the
+         filename version exactly.
+      2. Fallback ``{pkgname}-*-*-*.pkg.tar.*`` + filename parse + vercmp
+         to pick the newest. Required for VCS (-git/-svn/...) packages,
+         where ``pkgver()`` bumps the version at build time
+         (PKGBUILD ``pkgver=0.1.0`` → artifact ``0.1.0.r45.g1234567``)
+         so the static ``pkgbuild_ver`` never matches the filename.
+
+    If ``installed_ver`` is provided, the fallback only returns artifacts
+    strictly newer than installed — used by ``--install-only`` to avoid
+    redundant reinstalls or downgrades.
     """
-    if not pkgbuild_ver or not search_dir or not Path(search_dir).is_dir():
+    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+    from functools import cmp_to_key
+
+    if not search_dir or not Path(search_dir).is_dir():
         return []
+
     found: list[Path] = []
     for pkgname in pkgnames:
-        for p in Path(search_dir).glob(
-            f"{pkgname}-{pkgbuild_ver}-*.pkg.tar.*"
-        ):
+        if pkgbuild_ver:
+            strict = [
+                p for p in Path(search_dir).glob(
+                    f"{pkgname}-{pkgbuild_ver}-*.pkg.tar.*"
+                )
+                if not p.name.endswith(".sig")
+            ]
+            if strict:
+                found.extend(strict)
+                continue
+
+        candidates: list[tuple[str, Path]] = []
+        for p in Path(search_dir).glob(f"{pkgname}-*-*-*.pkg.tar.*"):
             if p.name.endswith(".sig"):
                 continue
-            found.append(p)
+            parsed = _parse_built_pkg_filename(pkgname, p.name)
+            if parsed is None:
+                continue
+            epoch, ver, rel = parsed
+            ver_string = f"{epoch}:{ver}-{rel}" if epoch != "0" else f"{ver}-{rel}"
+            if installed_ver is not None:
+                try:
+                    if vercmp(ver_string, installed_ver) <= 0:
+                        continue
+                except RuntimeError:
+                    continue
+            candidates.append((ver_string, p))
+
+        if not candidates:
+            continue
+
+        try:
+            candidates.sort(key=cmp_to_key(lambda a, b: vercmp(a[0], b[0])))
+        except RuntimeError:
+            pass
+        found.append(candidates[-1][1])
+
     return found
 
 
@@ -723,11 +770,12 @@ def cmd_update(args) -> None:
                 )
                 existing = _find_existing_artifacts(
                     search_dir, result.pkgnames, result.pkgbuild_ver,
+                    installed_ver=result.installed_ver,
                 ) if search_dir else []
                 if existing:
                     _log.info(
                         f"{result.pkgbase}: queuing pre-built artifact "
-                        f"({result.pkgbuild_ver})"
+                        f"({existing[0].name})"
                     )
                     built_pkg_files.extend(existing)
                     built_pkgs.append(result.pkgbase)

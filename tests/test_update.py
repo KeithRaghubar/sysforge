@@ -1101,3 +1101,172 @@ def test_install_only_rejects_incompatible_flags():
     args = _make_args(install_only=True, no_cleanbuild=True)
     with pytest.raises(SystemExit):
         _cmd_update(args)
+
+
+# ---------------------------------------------------------------------------
+# VCS fallback: pkgver() bumps the version dynamically, so the static
+# pkgbuild_ver never matches the actual artifact filename. Both the
+# AlreadyBuilt path and --install-only must fall back to a pkgname-only
+# lookup and pick the newest by vercmp.
+# ---------------------------------------------------------------------------
+
+def test_already_built_vcs_falls_back_to_newest_pkgname_match(tmp_path):
+    """VCS package: AlreadyBuilt → static pkgbuild_ver doesn't match the
+    bumped filename (0.1.0-1 vs 0.1.0.r45.g1234567-1); helper must fall
+    back to a pkgname-only glob and queue the newest artifact for install.
+    """
+    from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+
+    pkg_dir = tmp_path / "neovim-git"
+    pkg_dir.mkdir()
+    pkgbuild = pkg_dir / "PKGBUILD"
+    pkgbuild.write_text("pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    bumped_pkg = pkgdest / "neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"
+    bumped_pkg.touch()
+
+    state_data = {
+        "neovim-git": {
+            "pkgver": "0.1.0.r10.gaaaaaaa", "pkgrel": "1", "epoch": "0",
+            "pkgbase": "neovim-git", "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+        }
+    }
+    args = _make_args(devel=True)
+    parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "0.1.0", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "neovim-git", "source": "aur"}])
+    installed = {"neovim-git": "0.1.0.r10.gaaaaaaa-1"}
+
+    def fake_build_run(*a, **kw):
+        raise AlreadyBuilt(pkgbuild)
+
+    install_calls = []
+
+    def fake_install(pkg_paths):
+        install_calls.append([Path(p).name for p in pkg_paths])
+        return True
+
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.update.collect_makedeps", return_value=[]),
+        patch("sysforge.update.filter_missing_deps", return_value=[]),
+        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
+        patch("sysforge.update.snapshot_pkg_dir", return_value=frozenset()),
+        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
+        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
+        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        cmd_update(args)
+
+    assert install_calls == [["neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"]]
+
+
+def test_install_only_vcs_picks_newest_artifact_in_pkgdest(tmp_path):
+    """--install-only on a VCS package: static pkgbuild_ver mismatches the
+    artifact filename; the helper must fall back to a pkgname-only glob
+    and select the newest by vercmp, while excluding artifacts not strictly
+    newer than installed.
+    """
+    pkg_dir = tmp_path / "neovim-git"
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text("pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    # Two artifacts in PKGDEST: an older one (== installed, skip) and a
+    # newer one (the intended target).
+    (pkgdest / "neovim-git-0.1.0.r10.gaaaaaaa-1-x86_64.pkg.tar.zst").touch()
+    newest = pkgdest / "neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"
+    newest.touch()
+
+    state_data = {
+        "neovim-git": {
+            "pkgver": "0.1.0.r10.gaaaaaaa", "pkgrel": "1", "epoch": "0",
+            "pkgbase": "neovim-git", "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+        }
+    }
+    args = _make_args(install_only=True, devel=True)
+    parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "0.1.0", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "neovim-git", "source": "aur"}])
+    installed = {"neovim-git": "0.1.0.r10.gaaaaaaa-1"}
+
+    install_calls = []
+
+    def fake_install(pkg_paths):
+        install_calls.append([Path(p).name for p in pkg_paths])
+        return True
+
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
+        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
+        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        cmd_update(args)
+
+    assert install_calls == [["neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"]]
+
+
+def test_install_only_vcs_skips_when_only_older_artifacts_present(tmp_path):
+    """--install-only on a VCS package: only an artifact == installed exists,
+    so the helper's installed_ver guard rejects it and nothing installs."""
+    pkg_dir = tmp_path / "neovim-git"
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text("pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    # Only an artifact at the same version as installed → not strictly newer.
+    (pkgdest / "neovim-git-0.1.0.r10.gaaaaaaa-1-x86_64.pkg.tar.zst").touch()
+
+    state_data = {
+        "neovim-git": {
+            "pkgver": "0.1.0.r10.gaaaaaaa", "pkgrel": "1", "epoch": "0",
+            "pkgbase": "neovim-git", "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+        }
+    }
+    args = _make_args(install_only=True, devel=True)
+    parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "0.1.0", "pkgrel": "1", "epoch": "0"}}
+    fake_manifest = ({}, [{"name": "neovim-git", "source": "aur"}])
+    installed = {"neovim-git": "0.1.0.r10.gaaaaaaa-1"}
+
+    install_calls = []
+
+    def fake_install(pkg_paths):
+        install_calls.append([Path(p).name for p in pkg_paths])
+        return True
+
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_full_packages_toml", return_value=fake_manifest),
+        patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
+        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
+        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        cmd_update(args)
+
+    assert install_calls == []
