@@ -847,3 +847,7 @@ source = "aur"
 [[package]]
 name = "lib32-libsoup"
 source = "aur"
+
+[[package]]
+name = "planify"
+source = "aur"
