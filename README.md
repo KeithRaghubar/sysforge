@@ -27,11 +27,9 @@ cd sysforge && makepkg -si
 sudo vim /etc/sysforge/flag_profiles.toml
 
 # 3. Build and install an AUR package with your active profile.
-#    The install flag (-i) also auto-records neovim-git in packages.toml,
-#    so it surfaces in `sysforge update` and `sysforge converge` from then on.
 sysforge build neovim-git -m "-si"
 
-# 4. Check for and rebuild any outdated sysforge-managed packages
+# 4. Check for and rebuild any outdated installed AUR packages
 #    (Source sync is RPC-first: one batched AUR `info` call, and a git
 #     fetch per package only when the cached version/LastModified differs
 #     from the local HEAD. Steady-state runs do zero git fetches.)
@@ -43,29 +41,28 @@ sysforge update --devel
 # 6. Preview what would be rebuilt without doing it
 sysforge update --dry-run
 
-# 7. Unattended full system update — also discovers foreign packages and
-#    auto-clones any missing src dirs (the supported "fix everything" recipe)
-sysforge update --all --fetch-missing
+# 7. Same as `update`, plus discard divergent local clones (force-pushed
+#    upstream or local-only commits). --cleansrc refuses any clone that has
+#    uncommitted changes, unpushed commits, or no upstream — those packages
+#    are reported as failed and the run continues. --cleansrc also bypasses
+#    the RPC short-circuit and re-clones every AUR package from scratch.
+sysforge update --cleansrc
 
-# 8. Same as above, plus discard divergent local clones (force-pushed upstream
-#    or local-only commits). --cleansrc refuses any clone that has uncommitted
-#    changes, unpushed commits, or no upstream — those packages are reported as
-#    failed and the run continues. --cleansrc also bypasses the RPC short-circuit
-#    and re-clones every AUR package from scratch.
-sysforge update --all --fetch-missing --cleansrc
-
-# 9. Install already-built artifacts from PKGDEST without re-running makepkg.
+# 8. Install already-built artifacts from PKGDEST without re-running makepkg.
 #    Useful when a previous update was interrupted between build and install,
 #    or after a manual makepkg run. Implies --offline.
 sysforge update --install-only
 
-# 10. Manage packages.toml
+# 9. Manage packages.toml entries (install list during pipeline bootstrap;
+#    build-rule overrides at steady-state — see DESIGN.md §Package Manifest)
 sysforge packages list
-sysforge packages list --state        # show build_state.toml entries instead
-sysforge packages repair-state --dry-run  # preview fixes for legacy broken entries
-sysforge packages add htop neovim
-sysforge packages remove htop
-sysforge packages sync --dry-run
+sysforge packages list --orphans     # entries whose package isn't installed
+sysforge packages add mesa-git --pkgbuild-patch
+sysforge packages remove mesa-git
+
+# 9b. Inspect / repair build_state.toml (the live install-state mirror)
+sysforge state list
+sysforge state repair --dry-run      # preview fixes for legacy broken entries
 
 # 11. Health-check an installed package's depends + linkage (e.g. when Steam
 #     launches as a black window and the graphics stack may be out of sync).

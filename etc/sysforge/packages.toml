@@ -1,19 +1,27 @@
 # =============================================================================
 # packages.toml — SysForge package manifest
 #
-# Lists packages SysForge should build and install via the packages stage.
-# Manage with: sysforge packages add/remove/list/sync
+# Dual role (see DESIGN.md §Package Manifest):
+#   - Pipeline `run packages` (bootstrap): every entry is installed.
+#   - `sysforge update` / `sysforge build` (steady-state): entries are
+#     build-rule overrides applied to the live install set.
 #
-# Fields per entry:
+# Manage with: sysforge packages add / remove / list
+#
+# Fields per entry (all optional except name):
 #   name           required  package name
-#   source         required  "repo" (pacman -S) | "aur" (AUR build)
+#   source         optional  "repo" (pacman -S) | "aur" (AUR build) — set when
+#                            classification is ambiguous or you want to force routing
 #   pkgbuild_patch optional  true = extract and patch PKGBUILD flags before build
-#   cache          optional  false = disable ccache/sccache for this package
+#   cache          optional  false = disable ccache/sccache (required for PGO)
+#
+# An entry with only `name` set has no override effect at steady-state;
+# `sysforge packages add` rejects such calls.
 #
 # AUR packages are resolved via the PKGBUILD directory set in flag_profiles.toml
-# ([paths] pkgbuild_src_dir). Missing AUR packages are auto-cloned from the AUR.
-# Repo packages are installed via pacman -S --needed (no build step) unless
-# repo_mode = "profiled" is set below.
+# ([paths] pkgbuild_src_dir) or [build] pkgbuild_src_dir below; missing clones
+# are auto-fetched. Repo packages are installed via pacman -S --needed (no
+# build step) unless repo_mode = "profiled" is set or pkgbuild_patch = true.
 # =============================================================================
 
 # [build]

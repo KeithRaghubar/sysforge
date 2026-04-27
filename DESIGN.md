@@ -204,7 +204,7 @@ sysforge/
     flag_profiles.toml
     consumes_inference.toml
     append_conflict_groups.toml
-    packages.toml                    # default package manifest
+    packages.toml                    # default build-rule overrides
 ~/.config/sysforge/
     flag_profiles.toml               # user overrides
     append_conflict_groups.toml      # user conflict group overrides (optional)
@@ -220,43 +220,57 @@ sysforge/
 
 ## Package Manifest
 
-`packages.toml` is the master list of packages SysForge installs. It is **separate from `flag_profiles.toml`** — package sourcing and build flag tuning are orthogonal concerns and must not be conflated.
+`packages.toml` is the **declared system manifest**. It plays two roles depending on context:
 
-Each entry declares:
-- `source` — one of `repo` (pacman), `aur`, or `git` (direct PKGBUILD)
-- `pkgbuild_patch` *(optional bool)* — if `true`, the PKGBUILD patching library runs on this package before build
-- `cache` *(optional bool)* — `false` disables ccache/sccache for this package (required for PGO stages)
+1. **Bootstrap (pipeline `run packages` stage):** every entry is installed. The manifest *is* the install list, because the system has nothing installed yet beyond the pacstrap base.
+2. **Steady-state (`sysforge update`, `sysforge build`):** entries act as **build-rule overrides** applied to the live install set. Pacman owns the install set; `build_state.toml` mirrors it. An entry whose package is not currently installed is an inert rule, not a "missing" item.
+
+This dual role is intentional: the manifest captures your declared intent, but at steady-state we respect the live system rather than reconciling against the manifest.
+
+The orthogonality of the two roles means:
+- An entry for `mesa-git` can stay in the manifest even if you've rolled back to repo `mesa` — it's an inert rule at steady-state, but the next pipeline bootstrap of a fresh system would still install it.
+- An installed AUR package without an entry uses default rules — `sysforge update` still walks it via `pacman -Qm`, just with no overrides applied.
+- `flag_profiles.toml` and the manifest stay orthogonal: sourcing/patching choices vs. compiler flag tuning.
+
+Each entry overrides at most these fields (all optional except `name`):
+- `source` — `repo` (pacman) vs `aur`. Optional; classification falls through to pacman / AUR RPC if omitted. Set explicitly only when classification is ambiguous or you want to force routing.
+- `pkgbuild_patch` *(bool)* — if `true`, the PKGBUILD patching library runs on this package before build.
+- `cache` *(bool)* — `false` disables ccache/sccache for this package (required for PGO stages).
 
 ```toml
 [build]
 pkgbuild_src_dir = "~/src"   # PKGBUILD source tree; auto-cloned if absent
+repo_mode = "profiled"       # default for repo packages: "pacman" | "profiled"
 
 [[package]]
 name = "mesa-git"
-source = "aur"
-pkgbuild_patch = true
+pkgbuild_patch = true        # override: patch flags before building
 
 [[package]]
 name = "llvm"
-source = "aur"
-cache = false   # PGO build — instrumented objects must never be cached
+cache = false                # override: never cache instrumented PGO objects
 ```
+
+An entry with only `name` and no override fields has no effect on the build. `sysforge packages add` rejects such calls.
+
+### `[build]` global section
+
+- `pkgbuild_src_dir` — directory holding pre-cloned PKGBUILDs (`<pkgbuild_src_dir>/<name>/PKGBUILD`). Missing AUR clones are auto-fetched here on demand.
+- `repo_mode` — default build mode for repo-source packages: `"pacman"` (install via `pacman -S --needed`) or `"profiled"` (build from PKGBUILD with sysforge flag profiles). Per-package `pkgbuild_patch = true` overrides to profiled regardless. Repo-package iteration in `sysforge update` is unchanged for v1.0; `repo_mode` continues to drive `run packages` and `run pipeline` only — see Known Gaps for the v1.x roadmap item.
 
 ### Manifest lifecycle commands
 
-`sysforge packages` is a namespace for managing an existing `packages.toml`:
+`sysforge packages` is a small namespace for managing override entries:
 
-- **`packages list`** (default when no subcommand) — tabulates all entries: name, source, and any optional fields set. `--state` switches the source to `build_state.toml` and prints pkgname, pkgbase, version, build mode, and per-package pkgbuild_dir for every recorded package, useful for diagnosing update/converge mismatches (e.g. spotting build_state keys that still hold unexpanded `$var` references from a pre-expansion parser run). `--state-dir DIR` overrides the resolved state directory.
-- **`packages repair-state`** — one-shot fixer for `build_state.toml` entries whose keys or metadata still contain unexpanded shell variables (legacy records written before the parser's variable-expansion pass). Entries are grouped by `pkgbuild_dir`; for each group that has at least one broken member, the PKGBUILD is re-parsed through the current parser and the whole group is replaced with correctly keyed entries. `build_mode`, `flags_string`, and `built_at` are carried over from the first pre-existing entry in the group so true build history is preserved — split packages built in one invocation share those fields, so any member is a valid template. Groups where the PKGBUILD no longer exists, or where re-parse still leaves `$` in `pkgname` / `pkgbase` / `pkgver` / `pkgrel` / `epoch` (e.g. shell parameter expansion with substitution like `${_tarver//-/_}` that no static parser can resolve), are skipped with an explicit reason and left untouched. `--dry-run` previews the plan without writing; `--state-dir DIR` overrides the resolved state directory.
-- **`packages add <pkg> [<pkg>...]`** — classifies each package (repo vs AUR via pacman/AUR RPC), infers `pkgbuild_patch` by running `extract_pkgbuild_profile()` on the local PKGBUILD if one exists, and appends the entry. Uses `[build] pkgbuild_src_dir` from the existing file first, falls back to `[paths] pkgbuild_src_dir` from `flag_profiles.toml`. `sysforge build <pkg> -i` is the implicit equivalent — building with an install flag tracks the package automatically, so the common workflow does not require a separate `packages add` call.
+- **`packages list`** (default when no subcommand) — tabulates entries: name and any override fields set. `--orphans` lists entries whose package is not currently installed (informational only; entries are still valid rules).
+- **`packages add <pkg> [--source ... | --pkgbuild-patch | --no-cache]`** — adds or updates an override entry. Requires at least one override field on the command line; calls with only `<pkg>` are rejected (the resulting entry would have no effect). `--source` may be set explicitly as a future-proof annotation even when classification would arrive at the same value.
 - **`packages remove <pkg>`** — removes the `[[package]]` block for the named entry using line-level manipulation; preserves all surrounding comments and section headers.
-- **`packages sync`** — re-classifies each entry's `source` and re-checks `pkgbuild_patch` (if the local PKGBUILD is available). Non-destructive: manual fields (`cache`) are preserved verbatim. Comments are preserved. `--dry-run` shows what would change without writing.
 
 All subcommands accept `--packages FILE` to target a specific file (default: `/etc/sysforge/packages.toml`).
 
-Valid per-entry fields: `name`, `source`, `pkgbuild_patch`, `cache`, `reason`. Fields `profile` and `requires_hardware` are **removed** from the schema — do not add them.
+`build_state.toml` inspection and repair has its own namespace — see `sysforge state` (`state list`, `state repair`).
 
-`reason` *(optional string)* — `"explicit"` (default, may be omitted) or `"dependency"`. Tracks whether the entry was added directly by the user or auto-added as a transitive AUR dependency during a build with `--track-deps`. `sysforge build <pkg>` invoked with an install flag (`-i` / `--install`, including via implicit passthrough or `-m`) also auto-appends the main package(s) to `packages.toml` on successful build+install — idempotent (silent no-op if the name is already present, regardless of existing reason), classifier-driven (repo vs AUR via the same pacman/AUR RPC path as `packages add`), warn-and-skip on classification failure, and best-effort (a `packages.toml` write error never rolls back a successful build). Entries written by this path omit the `reason` field, so they default to `"explicit"`. Used for display purposes (e.g. `packages list`) and to distinguish user intent; has no effect on build behaviour.
+Valid per-entry fields: `name`, `source`, `pkgbuild_patch`, `cache`. Unknown fields are ignored.
 
 ### `-march=native` strategy
 
@@ -663,9 +677,9 @@ Resolution algorithm:
 Build execution: iterate the topo-sorted list in order. Each dep gets full profile resolution (flag profiles, PKGBUILD patching) — same as any sysforge-managed build. Each dep is installed immediately after building so subsequent deps can link against it.
 
 Integration points:
-- **`sysforge build`** — resolve before building. `--track-deps` auto-adds resolved AUR deps to `packages.toml` with `reason = "dependency"`. An install flag (`-i` / `--install`) on a successful build also auto-adds the main package(s) with no `reason` (defaults to `"explicit"`); idempotent and orthogonal to `--track-deps`. `update` and `converge` strip install flags via `pacman.BATCH_STRIP_FLAGS` so the auto-add fires only from `build`.
+- **`sysforge build`** — resolve before building. `--track-deps` builds resolved AUR deps in topo order before the target.
 - **`run packages` stage** — resolve before building each AUR/profiled package. `--track-deps` behaves the same.
-- **`sysforge update`** — resolve after `collect_makedeps()`, before `batch_install_makedeps()`. AUR deps are built and installed first, then the main batch proceeds. No `--track-deps` (operates on already-tracked packages only).
+- **`sysforge update`** — resolve after `collect_makedeps()`, before `batch_install_makedeps()`. AUR deps are built and installed first, then the main batch proceeds.
 - **`sysforge converge`** intentionally does **not** invoke `aur_resolve.py`. Converge operates only on packages already recorded in `build_state.toml`; their AUR deps are assumed to already be present.
 - **`sysforge resolve --deps <pkg>`** — standalone dry-run inspection. Shows the full dep tree with build order, AUR vs repo classification, and which deps are already installed.
 
@@ -814,7 +828,7 @@ Build state persistence. `/var/lib/sysforge/build_state.toml` is a **superset of
 
 `BuildState.sync_with_installed(installed)` keeps the file in lockstep with `pacman -Q`: it adds a pacman-mode entry for every newly installed package and prunes entries for packages that are no longer installed. The prune pass also removes zombie entries left by pre-superset parser runs — e.g. legacy keys containing literal `$_pkgname` that can never match a `pacman -Q` name. `sysforge update` calls this at the start of every run and saves if anything changed.
 
-Read by `sysforge update` for version drift detection (profiled entries only count as sysforge build records; pacman-mode entries fall through to the unrecorded-synthesis path and need `--all` to rebuild) and by `sysforge converge` for flag drift detection (profiled entries only; pacman-mode entries are silently skipped). Follows the same atomic write-then-rename pattern as `pipeline/state.py`. Legacy records written without `build_mode` are treated as profiled for backward compatibility.
+Read by `sysforge update` for version drift detection (every installed AUR package is iterated regardless of `build_mode`; profiled entries carry the prior `pkgver` for change-detection, pacman-mode entries are checked against PKGBUILD freshness) and by `sysforge converge` for flag drift detection (profiled entries only; pacman-mode entries are silently skipped). Follows the same atomic write-then-rename pattern as `pipeline/state.py`. Records must carry `build_mode`; the previous compatibility fallback that treated missing `build_mode` as profiled was removed.
 
 On the write path, after a successful build `makepkg_wrapper.py` derives `pkgver`/`pkgrel`/`epoch` from the produced `.pkg.tar.*` filenames rather than the static PKGBUILD parse. The static parser intentionally leaves shell parameter-expansion forms (e.g. `${_ver/[a-z]/.${_ver//[0-9.]/}}`) untouched so it never produces a misleading partial substitution, but a built package's filename always carries the fully resolved version. Falling back to filenames prevents profiled entries from storing literal `$...` strings that would mismatch every subsequent vercmp and cause the package to be flagged for rebuild on every `sysforge update` run.
 
@@ -846,13 +860,13 @@ Public API: `cmd_resolve(args)`. Uses `find_pkgbuild` from `config.py` for PKGBU
 
 ### `update.py`
 
-Implements `sysforge update` — the update manager. `packages.toml` is the source of truth for which packages to check; `build_state.toml` controls which are eligible for automatic rebuild. Organized into 7 phases:
+Implements `sysforge update` — the update manager. The iteration scope is the **live install set**: every installed AUR package (`pacman -Qm`) plus any repo packages selected by overrides. `packages.toml` entries apply as overrides where present (see §Package Manifest). `build_state.toml` records prior build metadata used for change detection but does not gate iteration. Organized into 7 phases:
 
-**Phase 0 — Init.** Load BuildState, config, `packages.toml` manifest. Open unified log (always truncated). Refresh AUR name cache (skipped with `--offline` or `--install-only`).
+**Phase 0 — Init.** Load BuildState, config, `packages.toml` overrides. Open unified log (always truncated). Refresh AUR name cache (skipped with `--offline` or `--install-only`).
 
-**Phase 1 — Package set assembly** (`_assemble_package_set`). Build a unified `{pkgname: entry}` dict from manifest + build_state. If `--all`: discover foreign packages (`pacman -Qm`) not already tracked, AUR-verify, append to `packages.toml`, merge into the unified dict with `discovered=True`. For unrecorded AUR packages: bulk `aur_info` to resolve real `pkgbase` (split-package fix, e.g. `ob-xd-common` → pkgbase `ob-xd`). Apply positional PKG filter. Group by `pkgbase` to deduplicate split packages.
+**Phase 1 — Package set assembly** (`_assemble_package_set`). Build a unified `{pkgname: entry}` dict by walking the live install set: AUR (`pacman -Qm`) is always walked; repo packages are walked when an override entry indicates a profiled build for them. `packages.toml` entries are applied as override overlays (`source`, `pkgbuild_patch`, `cache`, `reason`); installed packages with no entry use defaults. For AUR packages without a build_state record: bulk `aur_info` resolves the real `pkgbase` (split-package fix, e.g. `ob-xd-common` → pkgbase `ob-xd`). Apply positional PKG filter. Group by `pkgbase` to deduplicate split packages. Manifest entries whose package is not installed (e.g. a stored rule for `mesa-git` while repo `mesa` is installed) are not iterated — they are inert rules under the rules-not-install model.
 
-**Phase 2 — Source sync** (`_sync_sources`). Ensures every tracked package has an up-to-date local PKGBUILD. Skipped entirely with `--offline` (and with `--install-only`, which forces offline since no rebuild will happen). Manifest entries with no installed sub-package are filtered out before this phase — they would be classified `NOT_INSTALLED` in Phase 3 and excluded from build anyway, so we don't waste an AUR fetch on them; a synthetic `NOT_INSTALLED` `_UpdateResult` is queued so they still appear in the summary. Delegates to the `source_sync.SourceSyncScheduler` singleton (`get_scheduler(...)`), issuing one `SyncRequest` per AUR-source package:
+**Phase 2 — Source sync** (`_sync_sources`). Ensures every iterated AUR package has an up-to-date local PKGBUILD. Skipped entirely with `--offline` (and with `--install-only`, which forces offline since no rebuild will happen). Delegates to the `source_sync.SourceSyncScheduler` singleton (`get_scheduler(...)`), issuing one `SyncRequest` per AUR-source package:
 
 1. **RPC-first.** The scheduler batches one `aur_info` call for all AUR packages in the run. For every package whose cached `rpc_version` / `rpc_last_modified` still matches the local HEAD metadata, the request short-circuits to `STATUS_UP_TO_DATE` — no `git fetch` executes at all.
 2. **Clone on miss.** Missing / empty / non-git dirs hit `aur_clone` through the shared rate limiter.
@@ -864,11 +878,11 @@ Statuses treated as sync failures for the downstream buildability filter: `STATU
 
 Repo-source packages (`source = "repo"`) are skipped entirely (no local PKGBUILD to sync).
 
-**Phase 3 — Version check** (parallel, 8 workers). Parse PKGBUILD, look up installed version from `pacman -Q`, compare with `vercmp`. Produces unified `_UpdateResult` for all packages (manifest + discovered). Actions: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `NOT_INSTALLED`, `DOWNGRADE`, `PULL_FAILED`. The install check runs before the VCS classification — VCS packages (`-git`/`-svn`/`-hg`/`-bzr`) with no installed sub-package report `NOT_INSTALLED`, not `DEVEL`, so `--devel` won't rebuild a VCS package that has been replaced (e.g. `mesa-git` → repo `mesa`).
+**Phase 3 — Version check.** Parse PKGBUILD, look up installed version from `pacman -Q`, compare with `vercmp`. Produces a unified `_UpdateResult` per iterated package. Actions: `NEEDS_REBUILD`, `UP_TO_DATE`, `DEVEL`, `DOWNGRADE`, `PULL_FAILED`. (`NOT_INSTALLED` is no longer emitted: under the live-install-set iteration model, only installed packages reach Phase 3.)
 
-**Phase 4 — Summary + dry-run gate.** Print per-package status. Discovered packages annotated with `(discovered)`. Exit if `--dry-run`.
+**Phase 4 — Summary + dry-run gate.** Print per-package status. Exit if `--dry-run`.
 
-**Phase 5 — Build.** Filter to buildable packages: `NEEDS_REBUILD` (+ `DEVEL` if `--devel`), require build_state record unless `--all` or `discovered`. Batch makedeps pre-install (single `sudo pacman -S`). AUR dep resolution + build. Single build loop for all packages. `--cleanbuild` (`-C`) prepended by default (suppressed by `--no-cleanbuild`). `--syncdeps`/`-s` and `--install`/`-i` stripped; packages installed in phase 6. `AlreadyBuilt` raised by `makepkg_wrapper.run` (PKGDEST already holds the matching `.pkg.tar`) is treated as a successful build: `_find_existing_artifacts` locates the matching files in pkgdest and queues them for install, instead of marking the pkgbase failed.
+**Phase 5 — Build.** Filter to buildable packages: `NEEDS_REBUILD` (+ `DEVEL` if `--devel`). Batch makedeps pre-install (single `sudo pacman -S`). AUR dep resolution + build. Single build loop for all packages. `--cleanbuild` (`-C`) prepended by default (suppressed by `--no-cleanbuild`). `--syncdeps`/`-s` and `--install`/`-i` stripped; packages installed in phase 6. `AlreadyBuilt` raised by `makepkg_wrapper.run` (PKGDEST already holds the matching `.pkg.tar`) is treated as a successful build: `_find_existing_artifacts` locates the matching files in pkgdest and queues them for install, instead of marking the pkgbase failed.
 
 With `--install-only` the build loop is replaced wholesale: no makedep batching, no AUR dep resolution, no `makepkg` invocation. For each buildable result, `_find_existing_artifacts(pkgdest_or_pkgbuild_dir, pkgnames, pkgbuild_ver, installed_ver=...)` is called directly. Hits are queued for phase 6; misses log a `[SKIP]` line and are counted alongside the existing `skipped` total.
 
@@ -878,11 +892,11 @@ With `--install-only` the build loop is replaced wholesale: no makedep batching,
 
 Positional: `[PKG ...]` — optional package names to restrict the run to a subset of packages.
 
-Flags: `--all`, `--interactive`, `--packages`, `--dry-run`, `--devel`, `--offline`, `--install-only`, `--no-cleanbuild`, `--cleansrc`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--makepkg`.
+Flags: `--interactive`, `--packages`, `--dry-run`, `--devel`, `--offline`, `--install-only`, `--no-cleanbuild`, `--cleansrc`, `--state-dir`, `--profile-conf`, `--cache-report`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--makepkg`.
 
 `--install-only` is mutually exclusive with the build-tuning flags `--makepkg`, `--no-cleanbuild`, `--cleansrc`, `--interactive`, and `--cache-report`; argparse rejects the combination. It implies `--offline`. Use it to install artifacts left in PKGDEST by a previous interrupted run, or by a manual `makepkg` invocation, without re-entering the build loop.
 
-**Unattended full update.** `sysforge update --all` is the supported recipe for a hands-off "rebuild everything outdated" run: discovers and adds foreign packages, rebuilds unrecorded entries, and automatically clones any missing src dirs. Add `--cleansrc` to also discard divergent upstreams — this is destructive but per-package safe, since `purge_src` refuses any clone that holds uncommitted changes. `--cleansrc` also bypasses the RPC short-circuit so every tracked AUR package is re-cloned from scratch rather than trusting the cached metadata. A refused package is counted as failed and skipped.
+**Unattended full update.** `sysforge update` (no positional args) is the supported recipe for a hands-off "rebuild everything outdated" run: walks every installed AUR package plus any repo packages with profiled overrides, rebuilds those flagged `NEEDS_REBUILD`, and automatically clones any missing src dirs. Add `--cleansrc` to also discard divergent upstreams — this is destructive but per-package safe, since `purge_src` refuses any clone that holds uncommitted changes. `--cleansrc` also bypasses the RPC short-circuit so every AUR package in the run is re-cloned from scratch rather than trusting the cached metadata. A refused package is counted as failed and skipped.
 
 ### `converge.py`
 
@@ -1490,7 +1504,7 @@ DAG stages are categorised as **bootstrap-only** (partition, base_install, confi
 
 Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
 
-**`sysforge update` is scoped to sysforge-managed packages by default.** `build_state.toml` records only packages that sysforge built. Packages installed via pacman from repos are not tracked; `pacman -Syu` remains the update path for those. `sysforge update --all` extends this: it discovers all foreign (non-repo) packages via `pacman -Qm` that are not yet in `build_state.toml` or `packages.toml`, and checks packages in `packages.toml` with no build record — using git pull for those with local PKGBUILD clones, and `pacman -Si` / AUR RPC for those without.
+**`sysforge update` does not iterate default-mode repo packages.** Under the rules-not-install model, `sysforge update` walks every installed AUR package (`pacman -Qm`) plus any repo packages selected by overrides. Default-mode repo packages — those with no override and not implicated by `[build].repo_mode` — are not iterated; `pacman -Syu` remains their upgrade path. Wiring `[build].repo_mode = "profiled"` through `update` (so all installed repo packages get rebuilt from source against the Arch packaging repo) is on the v1.x roadmap — see Release Plan and the next gap entry.
 
 **`repo_mode = "profiled"` is wired in the packages stage only.** The `[build] repo_mode = "pacman" | "profiled"` setting in `packages.toml` is parsed and honoured by `run packages` and `run pipeline` — repo packages with `repo_mode = "profiled"` (or per-package `pkgbuild_patch = true`) are built from source via `_build_aur()` using `find_pkgbuild` (which calls `pkgctl_checkout` for repo packages). It has no effect on `sysforge build` or `sysforge update` — those commands operate on individual packages the user explicitly targets, not on manifest-wide policy. Wiring `repo_mode` into `sysforge update` (so tracked repo packages with `repo_mode = "profiled"` are rebuilt from source when the Arch packaging repo has a newer version) is on the v1.x roadmap — see Release Plan.
 
