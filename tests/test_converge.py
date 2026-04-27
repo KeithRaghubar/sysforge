@@ -168,7 +168,7 @@ def _make_pkgbuild(tmp_path, name: str) -> Path:
     return pb
 
 
-def _make_args(tmp_path, apply=False, state_dir=None, profile_conf=None):
+def _make_args(tmp_path, apply=False, state_dir=None, profile_conf=None, pkgnames=None):
     class Args:
         pass
     a = Args()
@@ -179,6 +179,7 @@ def _make_args(tmp_path, apply=False, state_dir=None, profile_conf=None):
     a.persist_log = False
     a.log_dir = None
     a.cache_report = False
+    a.pkgnames = list(pkgnames) if pkgnames else []
     return a
 
 
@@ -319,6 +320,54 @@ def test_converge_empty_state(tmp_path, capsys):
 
     err = capsys.readouterr().err
     assert "No packages" in err
+
+
+def test_converge_pkgname_filter_limits_scope(tmp_path, capsys):
+    _make_pkgbuild(tmp_path, "htop")
+    _make_pkgbuild(tmp_path, "mesa")
+    _make_state(tmp_path, {
+        "htop": {
+            "pkgbase": "htop",
+            "pkgbuild_dir": str(tmp_path / "htop"),
+            "build_mode": "profiled",
+            "flags_string": _BARE_FLAGS,
+        },
+        "mesa": {
+            "pkgbase": "mesa",
+            "pkgbuild_dir": str(tmp_path / "mesa"),
+            "build_mode": "profiled",
+            "flags_string": _BARE_FLAGS,
+        },
+    })
+    args = _make_args(tmp_path, pkgnames=["mesa"])
+
+    with patch("sysforge.converge.load_config", return_value=_MINIMAL_CONFIG), \
+         patch("sysforge.converge.load_conflict_groups", return_value={}):
+        cmd_converge(args)
+
+    out = capsys.readouterr().out
+    assert "mesa" in out
+    assert "htop" not in out
+
+
+def test_converge_pkgname_filter_unknown_warns_and_skips(tmp_path, capsys):
+    _make_pkgbuild(tmp_path, "htop")
+    _make_state(tmp_path, {
+        "htop": {
+            "pkgbase": "htop",
+            "pkgbuild_dir": str(tmp_path / "htop"),
+            "build_mode": "profiled",
+            "flags_string": _BARE_FLAGS,
+        },
+    })
+    args = _make_args(tmp_path, pkgnames=["nonexistent"])
+
+    with patch("sysforge.converge.load_config", return_value=_MINIMAL_CONFIG), \
+         patch("sysforge.converge.load_conflict_groups", return_value={}):
+        cmd_converge(args)
+
+    captured = capsys.readouterr()
+    assert "No matching packages" in captured.err
 
 
 def test_converge_apply_rebuilds_drifted(tmp_path, capsys):

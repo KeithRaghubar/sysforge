@@ -103,6 +103,17 @@ def cmd_converge(args) -> None:
         )
         return
 
+    filter_names: list[str] = getattr(args, "pkgnames", None) or []
+    if filter_names:
+        unknown = [n for n in filter_names if n not in packages]
+        for name in unknown:
+            _log.warn(f"{name}: not found in build_state.toml — skipping")
+        filter_set = set(filter_names)
+        packages = {k: v for k, v in packages.items() if k in filter_set}
+        if not packages:
+            print("[SYSFORGE] No matching packages in build state.", file=sys.stderr)
+            return
+
     config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
     config = load_config(config_paths=config_paths)
     conflict_groups = load_conflict_groups()

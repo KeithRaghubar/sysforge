@@ -639,6 +639,8 @@ def _add_converge_parser(sub):
              "-f is always injected automatically.")
     p.add_argument("--cache-report", action="store_true", dest="cache_report",
         help="Print a structured cache summary after --apply runs.")
+    p.add_argument("pkgnames", metavar="PKG", nargs="*",
+        help="Limit drift check to these package names (default: all build_state-recorded packages).")
     p.set_defaults(func=_cmd_converge)
 
 

@@ -163,6 +163,7 @@ _sysforge_converge() {
     '--persist-log[keep log files after completion (only relevant with --apply)]' \
     '--log-dir[directory for per-package log files]:directory:_files -/' \
     '--cache-report[print ccache/sccache summary after --apply]' \
+    '*: :_sysforge_state_names' \
   && return
   _sysforge_makepkg_flags
 }

@@ -1,4 +1,4 @@
-.TH SYSFORGE "1" "2026\-04\-18" "sysforge" "Generated Python Manual"
+.TH SYSFORGE "1" "2026\-04\-26" "sysforge" "Generated Python Manual"
 .SH NAME
 sysforge
 .SH SYNOPSIS
@@ -32,7 +32,7 @@ Health\-check installed package depends + shared\-library linkage.
 Manage packages.toml (list, add, remove, sync).
 .TP
 \fBsysforge\fR \fI\,run\/\fR
-Execute a pipeline stage (pipeline, hardware, reconfigure, toolchain, packages, kernel).
+Execute a pipeline stage (pipeline, hardware, reconfigure, toolchain, packages, kernel). toolchain and kernel are experimental (post\-1.0).
 .TP
 \fBsysforge\fR \fI\,setup\/\fR
 Configure system integration (pacman IgnoreGroup for sf\-build).
@@ -132,7 +132,7 @@ Path to a flag_profiles.toml to use instead of the default.
 
 .SH COMMAND \fI\,'sysforge update'\/\fR
 usage: sysforge update [\-h] [\-\-all] [\-\-dry\-run] [\-\-devel] [\-\-offline]
-                       [\-\-packages FILE] [\-\-state\-dir DIR]
+                       [\-\-install\-only] [\-\-packages FILE] [\-\-state\-dir DIR]
                        [\-\-profile\-conf FILE] [\-\-cache\-report] [\-\-no\-pkg\-log]
                        [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-makepkg FLAGS]
                        [\-\-interactive] [\-\-no\-cleanbuild] [\-\-cleansrc]
@@ -159,6 +159,12 @@ Include VCS packages (\-git, \-svn, \-hg, \-bzr) in the rebuild.
 .TP
 \fB\-\-offline\fR
 No network: skip git pulls, clones, and AUR RPC. Pure local version check.
+
+.TP
+\fB\-\-install\-only\fR
+Skip rebuild; install only those locally\-built artifacts in PKGDEST that are
+newer than the installed version. Implies \-\-offline. Mutually exclusive with
+\-\-makepkg, \-\-no\-cleanbuild, \-\-cleansrc, \-\-interactive, and \-\-cache\-report.
 
 .TP
 \fB\-\-packages\fR \fI\,FILE\/\fR
@@ -234,6 +240,12 @@ Path to a flag_profiles.toml to use instead of the default.
 usage: sysforge converge [\-h] [\-\-apply] [\-\-state\-dir DIR]
                          [\-\-profile\-conf FILE] [\-\-no\-pkg\-log] [\-\-persist\-log]
                          [\-\-log\-dir DIR] [\-\-makepkg FLAGS] [\-\-cache\-report]
+                         [PKG ...]
+
+.TP
+\fBPKG\fR
+Limit drift check to these package names (default: all build_state\-recorded
+packages).
 
 .SH OPTIONS \fI\,'sysforge converge'\/\fR
 .TP
@@ -438,7 +450,7 @@ usage: sysforge run [\-h] STAGE ...
 POSITIONAL ARGUMENTS \fI\,'sysforge run'\/\fR
 .TP
 \fBsysforge run\fR \fI\,pipeline\/\fR
-Run the full install pipeline (stages 1–8).
+Run the full install pipeline (stages 1–8). Stages 6 (toolchain) and 8 (kernel) are experimental (post\-1.0).
 .TP
 \fBsysforge run\fR \fI\,hardware\/\fR
 Re\-run hardware detection and refresh hardware_profile.toml.
@@ -447,13 +459,13 @@ Re\-run hardware detection and refresh hardware_profile.toml.
 Pre\-build checkpoint: review configs, disk, network, GPG, build preview.
 .TP
 \fBsysforge run\fR \fI\,toolchain\/\fR
-Build and install the LLVM/GCC toolchain from toolchain.toml.
+[experimental — post\-1.0] Build and install the LLVM/GCC toolchain from toolchain.toml.
 .TP
 \fBsysforge run\fR \fI\,packages\/\fR
 Build and install non\-kernel packages from packages.toml.
 .TP
 \fBsysforge run\fR \fI\,kernel\/\fR
-Build and install the custom kernel configured in kernel.toml.
+[experimental — post\-1.0] Build and install the custom kernel configured in kernel.toml.
 
 .SH COMMAND \fI\,'sysforge run pipeline'\/\fR
 usage: sysforge run pipeline [\-h] [\-\-resume] [\-\-start\-from STAGE]

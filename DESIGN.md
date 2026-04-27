@@ -894,7 +894,7 @@ Implements `sysforge converge` — the flag drift detector. Algorithm:
 4. Print a per-package summary with flag diffs for `DRIFTED` entries.
 5. With `--apply`: rebuild all `DRIFTED` packages via `makepkg_wrapper.run()` with `update=False`. Post-build, the pkg-file set is run through `filter_pkgs_to_installed` before `batch_install_pkgs` so repairing drift on one split pkgname never installs sibling sub-packages the user never chose.
 
-Without `--apply`, the command is read-only — it reports drift but does not rebuild. Flags: `--apply`, `--state-dir`, `--profile-conf`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--cache-report`.
+Without `--apply`, the command is read-only — it reports drift but does not rebuild. Positional `[PKG ...]` limits the drift check (and `--apply` rebuild) to the named pkgnames; names not in `build_state.toml` are warned and skipped, matching `update`'s positional behaviour. Flags: `--apply`, `--state-dir`, `--profile-conf`, `--no-pkg-log`, `--persist-log`, `--log-dir`, `--cache-report`.
 
 ### `doctor.py`
 
