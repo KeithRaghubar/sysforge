@@ -27,11 +27,13 @@ from sysforge.packages_cmd import (
     cmd_packages_list,
     cmd_packages_add,
     cmd_packages_remove,
-    cmd_packages_sync,
-    cmd_packages_repair_state,
+)
+from sysforge.state_cmd import (
+    cmd_state_list,
+    cmd_state_repair,
 )
 
-from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags, BuildOptions, INSTALL_FLAGS
+from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags, BuildOptions
 from sysforge.primitives.config import find_pkgbuild, load_config
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 
@@ -101,13 +103,6 @@ def _cmd_build(args):
                     ld_override=args.ld,
                     state_dir=Path(args.state_dir) if args.state_dir else None,
                 )
-                if args.track_deps:
-                    from sysforge.packages_cmd import append_dependency_entries
-                    append_dependency_entries(
-                        [d.name for d in aur_deps],
-                        packages_file=getattr(args, "packages", None),
-                    )
-
             run(pkgbuild, options=BuildOptions(
                 extra_flags=extra_flags,
                 interactive=args.interactive,
@@ -124,10 +119,6 @@ def _cmd_build(args):
                 abi_check=args.abi_check,
                 state_dir=Path(args.state_dir) if args.state_dir else None,
             ))
-
-            if extra_flags and any(f in INSTALL_FLAGS for f in extra_flags):
-                from sysforge.packages_cmd import append_explicit_entries
-                append_explicit_entries([pkg], packages_file=getattr(args, "packages", None))
     except RuntimeError as e:
         _log.fatal(str(e))
 
@@ -537,8 +528,6 @@ def _add_build_parser(sub):
              "unpushed commits, or no upstream tracking branch.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
-    p.add_argument("--track-deps", action="store_true", dest="track_deps",
-        help="Auto-add resolved AUR dependencies to packages.toml with reason='dependency'.")
     p.set_defaults(func=_cmd_build)
 
 
@@ -559,9 +548,6 @@ def _add_fetch_parser(sub):
 def _add_update_parser(sub):
     p = sub.add_parser("update",
         help="Check for and rebuild outdated sysforge-managed packages.")
-    p.add_argument("--all", action="store_true", dest="all",
-        help="Also discover foreign packages (pacman -Qm) not yet tracked; "
-             "add to packages.toml and rebuild if outdated.")
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show what would be rebuilt without doing it.")
     p.add_argument("--devel", action="store_true", dest="devel",
@@ -573,7 +559,7 @@ def _add_update_parser(sub):
              "newer than the installed version. Implies --offline. Mutually exclusive with "
              "--makepkg, --no-cleanbuild, --cleansrc, --interactive, and --cache-report.")
     p.add_argument("--packages", metavar="FILE", dest="packages",
-        help=f"Path to packages.toml for --all discovery (default: {PACKAGES_PATH}).")
+        help=f"Path to packages.toml for override rules (default: {PACKAGES_PATH}).")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
@@ -676,72 +662,72 @@ def _add_doctor_parser(sub):
 
 
 def _add_packages_parser(sub):
-    """packages namespace: list (default) / add / remove / sync"""
+    """packages namespace: list (default) / add / remove."""
     p = sub.add_parser("packages",
-        help="Manage packages.toml (list, add, remove, sync).")
+        help="Manage packages.toml override entries (list, add, remove).")
     # --packages on the parent so bare 'sysforge packages' and
     # 'sysforge packages --packages foo.toml' both work
     p.add_argument("--packages", metavar="FILE", dest="packages",
         help=_PACKAGES_HELP)
-    p.add_argument("--state", action="store_true", dest="state",
-        help="List build_state.toml entries instead of packages.toml.")
-    p.add_argument("--diagnose", action="store_true", dest="diagnose",
-        help="Per-package directory/git status as `sysforge update` would see it.")
-    p.add_argument("--problems-only", action="store_true", dest="problems_only",
-        help="With --diagnose: show only packages that would silently fail.")
-    p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
-        help="Override state directory for build_state.toml.")
+    p.add_argument("--orphans", action="store_true", dest="orphans",
+        help="With list: show only entries whose package is not currently installed.")
     p.set_defaults(func=cmd_packages_list)
 
     pkg_sub = p.add_subparsers(dest="packages_cmd")
 
     # list
-    p_list = pkg_sub.add_parser("list", help="Show packages in packages.toml.")
+    p_list = pkg_sub.add_parser("list", help="Show override entries in packages.toml.")
     p_list.add_argument("--packages", metavar="FILE", dest="packages",
         help="Path to packages.toml.")
-    p_list.add_argument("--state", action="store_true", dest="state",
-        help="List build_state.toml entries instead of packages.toml.")
-    p_list.add_argument("--diagnose", action="store_true", dest="diagnose",
-        help="Per-package directory/git status as `sysforge update` would see it.")
-    p_list.add_argument("--problems-only", action="store_true", dest="problems_only",
-        help="With --diagnose: show only packages that would silently fail.")
-    p_list.add_argument("--state-dir", metavar="DIR", dest="state_dir",
-        help="Override state directory for build_state.toml.")
+    p_list.add_argument("--orphans", action="store_true", dest="orphans",
+        help="Show only entries whose package is not currently installed.")
     p_list.set_defaults(func=cmd_packages_list)
 
     # add
     p_add = pkg_sub.add_parser("add",
-        help="Add a package: classify source, infer pkgbuild_patch, append entry.")
-    p_add.add_argument("pkgs", nargs="+", metavar="PKG", help="One or more package names to add.")
+        help="Add or update an override entry. Requires at least one of "
+             "--pkgbuild-patch / --no-cache / --reason.")
+    p_add.add_argument("pkg", metavar="PKG", help="Package name to add or update.")
+    p_add.add_argument("--source", choices=("repo", "aur"), dest="source",
+        help="Pin routing (metadata; doesn't satisfy validation on its own).")
+    p_add.add_argument("--pkgbuild-patch", action="store_true", dest="pkgbuild_patch",
+        help="Patch PKGBUILD flags before build.")
+    p_add.add_argument("--no-cache", action="store_true", dest="no_cache",
+        help="Disable ccache/sccache for this package (required for PGO).")
+    p_add.add_argument("--reason", metavar="TEXT", dest="reason",
+        help="Free-form note attached to the entry.")
     p_add.add_argument("--packages", metavar="FILE", dest="packages",
         help="Path to packages.toml.")
     p_add.set_defaults(func=cmd_packages_add)
 
     # remove
-    p_remove = pkg_sub.add_parser("remove", help="Remove a package entry.")
+    p_remove = pkg_sub.add_parser("remove", help="Remove an override entry.")
     p_remove.add_argument("pkg", metavar="PKG", help="Package name to remove.")
     p_remove.add_argument("--packages", metavar="FILE", dest="packages",
         help="Path to packages.toml.")
     p_remove.set_defaults(func=cmd_packages_remove)
 
-    # sync
-    p_sync = pkg_sub.add_parser("sync",
-        help="Re-validate inferable fields (source, pkgbuild_patch) for all entries.")
-    p_sync.add_argument("--packages", metavar="FILE", dest="packages",
-        help="Path to packages.toml.")
-    p_sync.add_argument("--dry-run", action="store_true", dest="dry_run",
-        help="Show what would change without writing.")
-    p_sync.set_defaults(func=cmd_packages_sync)
 
-    # repair-state
-    p_repair = pkg_sub.add_parser("repair-state",
+def _add_state_parser(sub):
+    """state namespace: list / repair — operates on build_state.toml."""
+    p = sub.add_parser("state",
+        help="Inspect or repair build_state.toml (live install-state mirror).")
+    state_sub = p.add_subparsers(dest="state_cmd")
+    state_sub.required = True
+
+    p_list = state_sub.add_parser("list", help="Tabulate build_state.toml entries.")
+    p_list.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory.")
+    p_list.set_defaults(func=cmd_state_list)
+
+    p_repair = state_sub.add_parser("repair",
         help="Re-parse PKGBUILDs to rewrite build_state.toml entries that contain "
              "unexpanded shell variables (e.g. '$_pkgname-git').")
     p_repair.add_argument("--state-dir", metavar="DIR", dest="state_dir",
-        help="Override state directory for build_state.toml.")
+        help="Override state directory.")
     p_repair.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show the planned repair without writing.")
-    p_repair.set_defaults(func=cmd_packages_repair_state)
+    p_repair.set_defaults(func=cmd_state_repair)
 
 
 def _add_setup_parser(sub):
@@ -920,6 +906,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_converge_parser(sub)
     _add_doctor_parser(sub)
     _add_packages_parser(sub)
+    _add_state_parser(sub)
     _add_run_parser(sub)
     _add_setup_parser(sub)
 

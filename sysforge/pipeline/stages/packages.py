@@ -1,5 +1,12 @@
 """
-stages/packages.py — stage 7: package builds
+stages/packages.py — stage 7: package builds (bootstrap context)
+
+This is the bootstrap leg of the packages.toml dual role (see
+DESIGN.md §Package Manifest): on a fresh system with only the pacstrap base
+installed, every manifest entry is treated as an install target. At
+steady-state (`sysforge update`, `sysforge build`), the same file behaves as
+build-rule overrides — that path lives in update.py and does not iterate
+the manifest.
 
 Walks packages.toml and builds/installs each entry:
   source = "repo", effective_mode = "pacman"   → pacman -S --needed <name>

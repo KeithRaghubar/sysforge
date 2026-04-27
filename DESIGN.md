@@ -102,7 +102,8 @@ sysforge/
 │   ├── converge.py                    # sysforge converge subcommand (flag drift detection)
 │   ├── doctor.py                      # sysforge doctor subcommand (ABI/linkage health check)
 │   ├── fetch.py                       # sysforge fetch subcommand (download PKGBUILDs, no build)
-│   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove/sync)
+│   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove)
+│   ├── state_cmd.py                   # sysforge state namespace (list/repair) — build_state.toml
 │   ├── setup_cmd.py                   # sysforge setup subcommand (pacman IgnoreGroup = sf-build guard)
 │   └── primitives/
 │       ├── paths.py                   # config path constants + resolve_packages_path()
@@ -256,14 +257,14 @@ An entry with only `name` and no override fields has no effect on the build. `sy
 ### `[build]` global section
 
 - `pkgbuild_src_dir` — directory holding pre-cloned PKGBUILDs (`<pkgbuild_src_dir>/<name>/PKGBUILD`). Missing AUR clones are auto-fetched here on demand.
-- `repo_mode` — default build mode for repo-source packages: `"pacman"` (install via `pacman -S --needed`) or `"profiled"` (build from PKGBUILD with sysforge flag profiles). Per-package `pkgbuild_patch = true` overrides to profiled regardless. Repo-package iteration in `sysforge update` is unchanged for v1.0; `repo_mode` continues to drive `run packages` and `run pipeline` only — see Known Gaps for the v1.x roadmap item.
+- `repo_mode` — default build mode for repo-source packages: `"pacman"` (install via `pacman -S --needed`) or `"profiled"` (build from PKGBUILD with sysforge flag profiles). Per-package `pkgbuild_patch = true` overrides to profiled regardless. `sysforge update` walks repo packages only when an override entry exists for them; default repo packages stay pacman-managed.
 
 ### Manifest lifecycle commands
 
 `sysforge packages` is a small namespace for managing override entries:
 
 - **`packages list`** (default when no subcommand) — tabulates entries: name and any override fields set. `--orphans` lists entries whose package is not currently installed (informational only; entries are still valid rules).
-- **`packages add <pkg> [--source ... | --pkgbuild-patch | --no-cache]`** — adds or updates an override entry. Requires at least one override field on the command line; calls with only `<pkg>` are rejected (the resulting entry would have no effect). `--source` may be set explicitly as a future-proof annotation even when classification would arrive at the same value.
+- **`packages add <pkg> [--source ...] [--pkgbuild-patch] [--no-cache] [--reason TEXT]`** — adds or updates an override entry. Requires at least one of `--pkgbuild-patch`, `--no-cache`, `--reason` (the *behavior-changing* override fields); calls with only `<pkg>` or `<pkg> --source` are rejected. `--source` is metadata that pins routing (`repo` vs `aur`) — it doesn't satisfy validation on its own, since classification arrives at the same value automatically. Entries with no behavior-changing override are auto-pruned on the next `packages.toml` write-back (`add` or `remove`).
 - **`packages remove <pkg>`** — removes the `[[package]]` block for the named entry using line-level manipulation; preserves all surrounding comments and section headers.
 
 All subcommands accept `--packages FILE` to target a specific file (default: `/etc/sysforge/packages.toml`).
@@ -956,6 +957,15 @@ Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides
 Implements `sysforge setup` — one-shot pre-flight that stops `pacman -Syu` from silently clobbering sysforge-built packages with upstream repo binaries. It inspects `/etc/pacman.conf` for `IgnoreGroup = sf-build` and, if missing, offers to add it (interactive prompt). Packages built by sysforge carry the `sf-build` group, so the IgnoreGroup line gates the whole rebuild surface behind a single policy knob rather than requiring a per-package `IgnorePkg`.
 
 Public API: `cmd_setup(args)`. Flag: `--pacman-conf PATH` (default `/etc/pacman.conf`) for VM or chroot runs where the file lives elsewhere. No effect if the line is already present. Intended to be run once after first installing sysforge; safe to re-run.
+
+### `state_cmd.py`
+
+Implements `sysforge state` — a small read/repair namespace for `build_state.toml` (the live install-state mirror). Separate from `sysforge packages` (which manages override rules in `packages.toml`); the split mirrors the rules-vs-state separation described in §Package Manifest.
+
+- **`state list`** — tabulates `build_state.toml` entries: pkgbase, build_mode, last build, profile/flags. Read-only.
+- **`state repair`** — re-parses PKGBUILDs for entries whose stored fields contain unexpanded shell variables (e.g. `${pkgver}` literals from a buggy parse) and rewrites those rows. `--dry-run` previews fixes without writing.
+
+Public API: `cmd_state_list(args)`, `cmd_state_repair(args)`. Both accept `--state-dir` to target a non-default state directory.
 
 ### `graphics_probe.py`
 

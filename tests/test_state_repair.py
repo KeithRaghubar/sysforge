@@ -9,7 +9,7 @@ corrupting good state.
 from pathlib import Path
 from types import SimpleNamespace
 
-from sysforge.packages_cmd import cmd_packages_repair_state
+from sysforge.state_cmd import cmd_state_repair
 from sysforge.primitives.build_state import BuildState
 
 
@@ -55,7 +55,7 @@ def test_repair_simple_scalar_reference(tmp_path, capsys, monkeypatch):
         }
     })
 
-    cmd_packages_repair_state(_args(state_dir))
+    cmd_state_repair(_args(state_dir))
     out = capsys.readouterr().out
     assert "weston-git" in out
 
@@ -101,7 +101,7 @@ def test_repair_split_package(tmp_path, monkeypatch):
         },
     })
 
-    cmd_packages_repair_state(_args(state_dir))
+    cmd_state_repair(_args(state_dir))
 
     bs = BuildState(state_dir)
     pkgs = bs.all_packages()
@@ -134,7 +134,7 @@ def test_repair_dry_run_does_not_write(tmp_path, monkeypatch):
         }
     })
 
-    cmd_packages_repair_state(_args(state_dir, dry_run=True))
+    cmd_state_repair(_args(state_dir, dry_run=True))
 
     bs = BuildState(state_dir)
     # Broken entry must still be present after a dry run.
@@ -165,7 +165,7 @@ def test_repair_skips_unresolvable_parameter_expansion(tmp_path, capsys, monkeyp
         }
     })
 
-    cmd_packages_repair_state(_args(state_dir))
+    cmd_state_repair(_args(state_dir))
     out = capsys.readouterr().out
     assert "expansion incomplete" in out or "cannot resolve" in out
 
@@ -186,7 +186,7 @@ def test_repair_skips_missing_pkgbuild(tmp_path, capsys, monkeypatch):
         }
     })
 
-    cmd_packages_repair_state(_args(state_dir))
+    cmd_state_repair(_args(state_dir))
     out = capsys.readouterr().out
     assert "PKGBUILD not found" in out
 
@@ -205,6 +205,6 @@ def test_repair_noop_when_state_is_clean(tmp_path, capsys, monkeypatch):
         }
     })
 
-    cmd_packages_repair_state(_args(state_dir))
+    cmd_state_repair(_args(state_dir))
     out = capsys.readouterr().out
     assert "No broken entries" in out

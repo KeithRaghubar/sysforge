@@ -19,6 +19,7 @@ _sysforge() {
         converge) _sysforge_converge ;;
         doctor)   _sysforge_doctor   ;;
         packages) _sysforge_packages ;;
+        state)    _sysforge_state    ;;
         run)      _sysforge_run      ;;
         setup)    _sysforge_setup    ;;
       esac
@@ -34,7 +35,8 @@ _sysforge_commands() {
     'resolve:show which profile would apply to a package'
     'converge:rebuild packages that have drifted from their profile'
     'doctor:health-check installed package depends + linkage'
-    'packages:manage packages.toml (list, add, remove, sync)'
+    'packages:manage packages.toml override entries (list, add, remove)'
+    'state:inspect or repair build_state.toml (list, repair)'
     'run:execute a pipeline stage'
     'setup:configure system integration (pacman IgnoreGroup for sf-build)'
   )
@@ -109,7 +111,6 @@ _sysforge_build() {
     '--no-update[skip git pull --rebase before building]' \
     '--cleansrc[purge src dir and re-clone before building (refuses if local work present)]' \
     '--state-dir[override state directory]:directory:_files -/' \
-    '--track-deps[auto-add resolved AUR deps to packages.toml]' \
     '*: :_sysforge_pkg_or_file' \
   && return
   _sysforge_makepkg_flags
@@ -124,8 +125,7 @@ _sysforge_fetch() {
 
 _sysforge_update() {
   _arguments \
-    '--all[discover foreign packages (pacman -Qm) and add to packages.toml]' \
-    '--packages[path to packages.toml for --all discovery]:file:_files' \
+    '--packages[path to packages.toml override file]:file:_files' \
     '--dry-run[show what would be rebuilt without doing it]' \
     '--devel[include VCS packages (-git, -svn, -hg, -bzr)]' \
     '--offline[no network: skip pulls, clones, and AUR RPC]' \
@@ -191,6 +191,7 @@ _sysforge_packages() {
 
   _arguments -C \
     '--packages[path to packages.toml]:file:_files' \
+    '--orphans[with list: show only entries whose package is not currently installed]' \
     '1: :_sysforge_packages_subcommands' \
     '*:: :->args'
 
@@ -200,8 +201,6 @@ _sysforge_packages() {
         list)   _sysforge_packages_list   ;;
         add)    _sysforge_packages_add    ;;
         remove) _sysforge_packages_remove ;;
-        sync)         _sysforge_packages_sync         ;;
-        repair-state) _sysforge_packages_repair_state ;;
       esac
       ;;
   esac
@@ -209,11 +208,9 @@ _sysforge_packages() {
 
 _sysforge_packages_subcommands() {
   local subcommands=(
-    'list:show packages in packages.toml'
-    'add:add a package entry'
-    'remove:remove a package entry'
-    'sync:re-validate inferable fields (source, pkgbuild_patch)'
-    'repair-state:re-parse PKGBUILDs to fix build_state.toml entries'
+    'list:show override entries in packages.toml'
+    'add:add or update an override entry'
+    'remove:remove an override entry'
   )
   _describe 'subcommand' subcommands
 }
@@ -221,22 +218,17 @@ _sysforge_packages_subcommands() {
 _sysforge_packages_list() {
   _arguments \
     '--packages[path to packages.toml]:file:_files' \
-    '--state[list build_state.toml entries instead]' \
-    '--diagnose[per-package directory/git status]' \
-    '--problems-only[with --diagnose, show only problems]' \
-    '--state-dir[override state directory]:dir:_directories'
-}
-
-_sysforge_packages_repair_state() {
-  _arguments \
-    '--state-dir[override state directory]:dir:_directories' \
-    '--dry-run[show planned repair without writing]'
+    '--orphans[show only entries whose package is not currently installed]'
 }
 
 _sysforge_packages_add() {
   _arguments \
     '--packages[path to packages.toml]:file:_files' \
-    '*: :_sysforge_pkg_names'
+    '--source[pin routing (metadata; doesn'\''t satisfy validation alone)]:source:(repo aur)' \
+    '--pkgbuild-patch[patch PKGBUILD flags before build]' \
+    '--no-cache[disable ccache/sccache for this package (required for PGO)]' \
+    '--reason[free-form note attached to the entry]:text' \
+    '1: :_sysforge_pkg_names'
 }
 
 _sysforge_packages_remove() {
@@ -245,10 +237,41 @@ _sysforge_packages_remove() {
     '1: :_sysforge_manifest_names'
 }
 
-_sysforge_packages_sync() {
+_sysforge_state() {
+  local context state state_descr line
+  typeset -A opt_args
+
+  _arguments -C \
+    '1: :_sysforge_state_subcommands' \
+    '*:: :->args'
+
+  case $state in
+    args)
+      case $words[1] in
+        list)   _sysforge_state_list   ;;
+        repair) _sysforge_state_repair ;;
+      esac
+      ;;
+  esac
+}
+
+_sysforge_state_subcommands() {
+  local subcommands=(
+    'list:tabulate build_state.toml entries'
+    'repair:re-parse PKGBUILDs to fix entries with unexpanded shell variables'
+  )
+  _describe 'subcommand' subcommands
+}
+
+_sysforge_state_list() {
   _arguments \
-    '--packages[path to packages.toml]:file:_files' \
-    '--dry-run[show what would change without writing]'
+    '--state-dir[override state directory]:dir:_directories'
+}
+
+_sysforge_state_repair() {
+  _arguments \
+    '--state-dir[override state directory]:dir:_directories' \
+    '--dry-run[show planned repair without writing]'
 }
 
 _sysforge_run() {
