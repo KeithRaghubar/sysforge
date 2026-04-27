@@ -231,3 +231,96 @@ def test_hardcoded_gcc_gpu_burn_style_makefile_not_in_pkgbuild(tmp_path):
     """
     parsed = _parse_with_build(tmp_path, '  make')
     assert has_hardcoded_gcc(parsed) is False
+
+
+# ---------------------------------------------------------------------------
+# has_hardcoded_gcc — quoted assignment forms (lib32-* style PKGBUILDs)
+# ---------------------------------------------------------------------------
+
+def test_hardcoded_gcc_single_quoted_with_m32(tmp_path):
+    """lib32-* PKGBUILD pattern: export CC='gcc -m32'."""
+    parsed = _parse_with_build(tmp_path, "  export CC='gcc -m32'")
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_double_quoted(tmp_path):
+    parsed = _parse_with_build(tmp_path, '  export CC="gcc"')
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_double_quoted_with_extra_flags(tmp_path):
+    parsed = _parse_with_build(tmp_path, '  export CXX="g++ -fwhatever -m32"')
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_negative_substring_lgcc(tmp_path):
+    """Word-boundary regression: -lgcc must not match."""
+    parsed = _parse_with_build(tmp_path, '  $CC -O2 -o foo foo.c -lgcc')
+    assert has_hardcoded_gcc(parsed) is False
+
+
+def test_hardcoded_gcc_negative_var_dollar(tmp_path):
+    parsed = _parse_with_build(tmp_path, '  CC=$gcc make')
+    assert has_hardcoded_gcc(parsed) is False
+
+
+# ---------------------------------------------------------------------------
+# has_hardcoded_gcc — PKGBUILD(5) build-time function coverage
+# ---------------------------------------------------------------------------
+
+def test_hardcoded_gcc_in_check(tmp_path):
+    """check() is a spec-defined build-time function — must be scanned."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "build() { make; }\n"
+        "check() {\n"
+        "  gcc -o test test.c\n"
+        "  ./test\n"
+        "}\n"
+    )
+    parsed = parse_pkgbuild(pkgbuild)
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_in_split_package_function(tmp_path):
+    """package_<pkgname>() variants for split packages must be scanned."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgbase=foo\n"
+        "pkgname=(foo foo-tools)\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "build() { make; }\n"
+        "package_foo() { make install; }\n"
+        "package_foo-tools() {\n"
+        "  g++ -o helper helper.cpp\n"
+        "}\n"
+    )
+    parsed = parse_pkgbuild(pkgbuild)
+    assert has_hardcoded_gcc(parsed) is True
+
+
+def test_hardcoded_gcc_verify_function_not_scanned(tmp_path):
+    """
+    verify() authenticates sources; never compiles. Even a contrived body
+    that would otherwise match must not trigger detection — exercising the
+    spec-derived function allowlist.
+    """
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "verify() {\n"
+        "  CC=gcc make -C /tmp/check\n"
+        "}\n"
+        "build() { make; }\n"
+    )
+    parsed = parse_pkgbuild(pkgbuild)
+    assert has_hardcoded_gcc(parsed) is False

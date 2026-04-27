@@ -383,16 +383,34 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     # whenever the effective linker is not lld — not only when a linker is declared
     # but missing, since undeclared LDFLAGS containing lld-only flags will break
     # configure test compilations against the system linker.
+    #
+    # Detection sources LDFLAGS from profile_overrides first, then falls back to
+    # the system conf — minimal profiles (like ``bare``) often do not override
+    # LDFLAGS, so the system conf's LDFLAGS (e.g. ``-fuse-ld=lld``) is what
+    # actually reaches makepkg.
     effective_linker = "ld"
+    _ldflags_source: str | None = None  # "profile" | "system" | None
+    _ldflags_value = ""
     if "LDFLAGS" in profile_overrides:
-        declared_linker = _detect_linker_from_ldflags(profile_overrides["LDFLAGS"])
+        _ldflags_source = "profile"
+        _ldflags_value = profile_overrides["LDFLAGS"]
+    elif "LDFLAGS" in system_assignments:
+        _ldflags_source = "system"
+        _raw = system_assignments["LDFLAGS"].strip()
+        _ldflags_value = _raw[1:-1] if (len(_raw) >= 2 and _raw[0] == _raw[-1] == '"') else _raw
+    if _ldflags_source is not None:
+        declared_linker = _detect_linker_from_ldflags(_ldflags_value)
         effective_linker = declared_linker or "ld"
 
         if declared_linker and not shutil.which(declared_linker):
             _flag_log.warn(f"Declared linker '{declared_linker}' not found on PATH — treating effective linker as 'ld'")
             effective_linker = "ld"
 
-        if effective_linker != "lld":
+        # Only strip lld-only flags from LDFLAGS we own (profile_overrides). The
+        # system conf is read-only here; if its LDFLAGS contains lld-only flags
+        # and the effective linker isn't lld, the GCC+lld disable branch below
+        # (or the explicit override branch) is what writes a corrected value.
+        if effective_linker != "lld" and _ldflags_source == "profile":
             cleaned, stripped_tokens = _strip_lld_flags(profile_overrides["LDFLAGS"])
             if stripped_tokens:
                 _flag_log.warn(f"Effective linker is '{effective_linker}' (not lld) — stripping lld-specific flags from LDFLAGS")
@@ -1292,11 +1310,20 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         handle_failure("pkgbuild_unparseable", str(e), config)
         pkgmeta = {"globals": {}}
 
-    pkgbuild_has_hardcoded_gcc = has_hardcoded_gcc(pkgmeta)
+    # lib32-* packages always use 32-bit GCC (Arch multilib has no lib32-clang),
+    # so they trigger the guard unconditionally. The directory name is the
+    # canonical package identifier and is reliable even when ``pkgname`` itself
+    # is interpolated (e.g. ``pkgname=lib32-$_basename``), which the static
+    # PKGBUILD parser does not expand.
+    pkgbuild_has_hardcoded_gcc = (
+        has_hardcoded_gcc(pkgmeta)
+        or pkgbuild_path.parent.name.startswith("lib32-")
+    )
     if pkgbuild_has_hardcoded_gcc:
         _flag_log.info(
-            "PKGBUILD build()/package() invokes hardcoded gcc/g++ — "
-            "GCC flag guard will be applied even if the active profile sets CC=clang"
+            "PKGBUILD treated as hardcoded-gcc (build-time function invokes "
+            "gcc/g++ or pkgname is lib32-*) — GCC flag guard will be applied "
+            "even if the active profile sets CC=clang"
         )
 
     build_success = False

@@ -184,30 +184,41 @@ _HARDCODED_GCC_CMD = re.compile(
     re.VERBOSE | re.MULTILINE,
 )
 
-# Matches CC=gcc / CXX=g++ (and HOSTCC/HOSTCXX) anywhere that a build-time
-# assignment would land — either a standalone line like `CC=gcc make` or as
-# an argument to make: `make CXX=g++`. The trailing context must be a word
-# boundary so we don't match longer values like CC=gcc-12 (harmless to match,
-# but exclude for clarity) — actually, gcc-12 is still hardcoded GCC, so we
-# accept any -\d suffix too.
+# Matches CC=gcc / CXX=g++ (and HOSTCC/HOSTCXX) anywhere a build-time
+# assignment would land: standalone (`CC=gcc make`), as a make argument
+# (`make CXX=g++`), or as an exported quoted value (`export CC='gcc -m32'`).
+# The terminator is a lookahead so optional surrounding quotes work without
+# trying to model the entire quoted value — only that gcc/g++ is the leading
+# token after `=` and that it ends on a word boundary.
 _HARDCODED_GCC_ASSIGN = re.compile(
     r"""
-    (?:^|[ \t;&|])                # start of line or typical command separator
+    (?:^|[ \t;&|])                # start of line or shell separator
     (?:CC|CXX|HOSTCC|HOSTCXX)     # build-time compiler variable
     =                             # literal =
-    (?:gcc|g\+\+)                 # gcc or g++ value
+    ['"]?                         # optional opening quote
+    (?:gcc|g\+\+)                 # gcc or g++
     (?:-\d+(?:\.\d+)*)?           # optional version suffix (gcc-12, g++-11.2)
-    (?:[ \t;&|]|$)                # word-terminated
+    (?=[ \t'"&;|]|$)              # word-terminated (lookahead)
     """,
     re.VERBOSE | re.MULTILINE,
 )
 
 
+# PKGBUILD(5) build-time functions that may invoke compilers. ``verify`` is
+# omitted — it authenticates sources and never compiles. ``package_<pkgname>``
+# variants for split packages are matched dynamically via prefix below.
+_SCAN_FUNCS_LITERAL = ("prepare", "build", "check", "package")
+
+
 def has_hardcoded_gcc(parsed):
     """
-    True if the PKGBUILD's build()/package()/prepare() function bodies invoke
-    gcc/g++ as a direct command, or force CC=gcc / CXX=g++ when invoking a
-    subsidiary build tool (e.g. ``make CXX=g++``).
+    True if any PKGBUILD(5) build-time function body invokes gcc/g++ as a
+    direct command, or forces CC=gcc / CXX=g++ when invoking a subsidiary
+    build tool (e.g. ``make CXX=g++``, ``export CC='gcc -m32'``).
+
+    Functions scanned: ``prepare``, ``build``, ``check``, ``package``, and any
+    ``package_<pkgname>`` split-package variant (per PKGBUILD(5)). ``verify``
+    is excluded — it is a source-authentication hook, not a build step.
 
     Used as a proactive signal for the flag guard: when the package's build
     system bypasses ``$CC``/``$CXX``, clang-only flags such as ``-flto=thin``
@@ -218,9 +229,10 @@ def has_hardcoded_gcc(parsed):
     post-failure path in ``invoke_makepkg`` catches those cases.
     """
     funcs = parsed.get("functions", {}) if isinstance(parsed, dict) else {}
-    for name in ("build", "package", "prepare"):
-        body = funcs.get(name)
+    for name, body in funcs.items():
         if not body:
+            continue
+        if name not in _SCAN_FUNCS_LITERAL and not name.startswith("package_"):
             continue
         if _HARDCODED_GCC_CMD.search(body):
             return True
