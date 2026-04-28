@@ -22,12 +22,12 @@ Per-package checkpointing: state is written after every outcome (built/failed).
 On resume with failed packages the user is prompted (or --force-retry bypasses).
 
 packages.toml search order:
-  1. config["packages_file"]  (from --packages or flag_profiles.toml)
+  1. config["packages_file"]  (from --packages or profiles.toml)
   2. /etc/sysforge/packages.toml  (system default)
 
 AUR/git package PKGBUILD lookup order (via find_pkgbuild):
   1. packages.toml [build] pkgbuild_src_dir/<name>/PKGBUILD  (if set)
-  2. flag_profiles.toml [paths] pkgbuild_src_dir/<name>/PKGBUILD  (if set)
+  2. profiles.toml [paths] pkgbuild_src_dir/<name>/PKGBUILD  (if set)
   3. AUR clone into pkgbuild_src_dir if package is found on AUR
 """
 import subprocess

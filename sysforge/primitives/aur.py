@@ -11,7 +11,7 @@ Public API:
     git_fetch_and_compare(dir, ...)   -> GitFetchOutcome   shallow fetch + HEAD compare (no destructive ops)
     git_is_dirty(pkgbuild_dir)        -> bool              True if git repo has uncommitted changes
     purge_src(pkgbuild_dir)           -> None              rm -rf pkgbuild_dir; fatal if git_is_dirty
-    fetch_aur_name_cache()            -> Path | None       refresh ~/.cache/sysforge/aur-packages.txt
+    fetch_aur_name_cache()            -> Path | None       refresh ~/.config/sysforge/cache/aur-packages.txt
 
 Also exports TRANSIENT_GIT_ERRORS / RATE_LIMIT_GIT_ERRORS string tuples and
 ``is_transient_git_error()`` / ``is_rate_limit_error()`` classifiers for
@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.paths import USER_CACHE_DIR
 _aur_log      = log.get_logger("AUR")
 _build_log    = log.get_logger("BUILD")
 _git_log      = log.get_logger("GIT")
@@ -40,7 +41,7 @@ _manifest_log = log.get_logger("MANIFEST")
 AUR_RPC_URL       = "https://aur.archlinux.org/rpc/v5/info"
 AUR_GIT_BASE      = "https://aur.archlinux.org"
 AUR_PACKAGES_URL  = "https://aur.archlinux.org/packages.gz"
-AUR_CACHE_PATH    = Path("~/.cache/sysforge/aur-packages.txt")
+AUR_CACHE_PATH    = USER_CACHE_DIR / "aur-packages.txt"
 AUR_CACHE_MAX_AGE = 86400   # 1 day in seconds
 
 _REQUEST_TIMEOUT = 10   # seconds
@@ -77,7 +78,7 @@ def aur_info(names: list[str]) -> dict[str, dict]:
 
 def fetch_aur_name_cache(force: bool = False) -> Path | None:
     """
-    Download the AUR package name list (packages.gz) to ~/.cache/sysforge/aur-packages.txt.
+    Download the AUR package name list (packages.gz) to ~/.config/sysforge/cache/aur-packages.txt.
 
     Skips the download if the cache file is less than AUR_CACHE_MAX_AGE seconds old,
     unless force=True.  Returns the cache path on success, None on failure.

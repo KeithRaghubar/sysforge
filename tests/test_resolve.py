@@ -427,9 +427,9 @@ def _make_args(pkg, show_flags=False, deps=False, profile_conf=None):
 
 
 def test_cmd_resolve_htop_matches_rule(capsys):
-    """htop has a matching rule in test flag_profiles.toml → profile: optimized."""
+    """htop has a matching rule in test profiles.toml → profile: optimized."""
     pb = str(PKGBUILDS_DIR / "htop.PKGBUILD")
-    profile_conf = str(DATA_DIR / "etc" / "sysforge" / "flag_profiles.toml")
+    profile_conf = str(DATA_DIR / "etc" / "sysforge" / "profiles.toml")
     cmd_resolve(_make_args(pb, profile_conf=profile_conf))
     out = capsys.readouterr().out
     assert "htop" in out
@@ -439,7 +439,7 @@ def test_cmd_resolve_htop_matches_rule(capsys):
 
 def test_cmd_resolve_show_flags_produces_flag_lines(capsys):
     pb = str(PKGBUILDS_DIR / "htop.PKGBUILD")
-    profile_conf = str(DATA_DIR / "etc" / "sysforge" / "flag_profiles.toml")
+    profile_conf = str(DATA_DIR / "etc" / "sysforge" / "profiles.toml")
     cmd_resolve(_make_args(pb, show_flags=True, profile_conf=profile_conf))
     out = capsys.readouterr().out
     # Resolved profile section should appear
@@ -455,7 +455,7 @@ def test_cmd_resolve_missing_pkgbuild_exits(tmp_path):
 def test_cmd_resolve_simple_pkgbuild(capsys):
     """simple.PKGBUILD has pkgname=htop... actually let's check what simple contains."""
     pb = str(PKGBUILDS_DIR / "simple.PKGBUILD")
-    profile_conf = str(DATA_DIR / "etc" / "sysforge" / "flag_profiles.toml")
+    profile_conf = str(DATA_DIR / "etc" / "sysforge" / "profiles.toml")
     cmd_resolve(_make_args(pb, profile_conf=profile_conf))
     out = capsys.readouterr().out
     assert "Package:" in out

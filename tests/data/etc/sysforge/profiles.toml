@@ -1,4 +1,12 @@
 # =============================================================================
+# profiles.toml — compiler flag profiles, package matching rules, and
+# flag-resolution reference data (conflict groups + consumes inference)
+#
+# Tables in this file:
+#   [paths] [defaults] [profiles.*] [[rules]]   — profile selection
+#   [append_conflict_groups]                    — mutually exclusive flag sets
+#   [consumes_inference]                        — makedepends → conf type map
+#
 # REFERENCE — all valid keys and accepted values
 # =============================================================================
 #
@@ -91,7 +99,7 @@
 #
 #   Token-level merge into the parent's value instead of full override.
 #   Useful for adding individual flags without rewriting the whole string.
-#   Conflict groups (from append_conflict_groups.toml) are resolved during merge.
+#   Conflict groups (from [append_conflict_groups] below) are resolved during merge.
 #
 #   [profiles.optimized_lto.append]
 #   CFLAGS  = "-flto=thin"     # replaces -flto* in parent via conflict group
@@ -238,3 +246,35 @@ priority = 30
 pkgnames = ["wine", "wine-*"]
 profile = "bare"
 priority = 30
+
+# =============================================================================
+# Append conflict groups — mutually exclusive flag sets for token-level merges
+#
+# Groups here previously matched the inline CONFLICT_GROUPS constant in
+# test_append_merge.py. Keep in sync if either is changed.
+# =============================================================================
+
+[append_conflict_groups]
+
+# Position-independent code / executable flags — mutually exclusive
+pic   = ["-fPIC", "-fPIE", "-fpic", "-fpie", "-fno-pic", "-fno-pie"]
+
+# Link-time optimisation variants — mutually exclusive
+lto   = ["-flto", "-flto=thin", "-flto=full", "-fno-lto"]
+
+# Stack protection — mutually exclusive
+stack = ["-fstack-protector", "-fstack-protector-strong", "-fno-stack-protector"]
+
+# =============================================================================
+# Consumes inference — makedepends → conf type routing
+# =============================================================================
+
+[consumes_inference]
+cargo  = ["makepkg", "rust", "env"]
+rust   = ["makepkg", "rust", "env"]
+meson  = ["makepkg", "meson", "env"]
+cmake  = ["makepkg", "cmake", "env"]
+ninja  = ["makepkg", "env"]
+make   = ["makepkg", "env"]
+python = ["makepkg", "env"]
+git    = ["makepkg"]

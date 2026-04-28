@@ -7,7 +7,7 @@ system upgrades, and offers to add the setting automatically.
 Why this matters
 ----------------
 Every package sysforge builds is stamped with the 'sf-build' pacman group
-via append_groups in flag_profiles.toml. Without IgnoreGroup = sf-build in
+via append_groups in profiles.toml. Without IgnoreGroup = sf-build in
 /etc/pacman.conf, a plain 'pacman -Syu' will overwrite those packages with
 unoptimized repo binaries, silently discarding the compiler flags sysforge
 applied.

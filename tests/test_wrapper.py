@@ -1,6 +1,6 @@
 """
 test_wrapper.py — parametrized rule matching tests driven by _expect_* keys
-in tests/data/test_flag_profiles.toml.
+in tests/data/test_profiles.toml.
 
 Each rule in that file carries _expect_htop, _expect_lib32, and _expect_llvm
 boolean annotations declaring whether that rule should match each PKGBUILD.
@@ -17,7 +17,7 @@ from sysforge.primitives.profile import match_rules
 
 TESTS_DIR = Path(__file__).parent
 TEST_DATA = TESTS_DIR / "data"
-PROFILES_TOML = TEST_DATA / "test_flag_profiles.toml"
+PROFILES_TOML = TEST_DATA / "test_profiles.toml"
 
 PKGBUILD_PATHS = {
     "htop":  TEST_DATA / "PKGBUILDs/htop.PKGBUILD",

@@ -150,16 +150,14 @@ sysforge/
 │   │   │   ├── complex.PKGBUILD  →  vulkan-headers-git.PKGBUILD  (symlink alias)
 │   │   │   ├── complex2.PKGBUILD →  lib32-llvm.PKGBUILD           (symlink alias)
 │   │   │   └── simple.PKGBUILD   →  htop.PKGBUILD                 (symlink alias)
-│   │   ├── test_flag_profiles.toml
+│   │   ├── test_profiles.toml
 │   │   ├── etc/sysforge/
-│   │   │   ├── flag_profiles.toml
-│   │   │   ├── consumes_inference.toml
-│   │   │   ├── append_conflict_groups.toml
+│   │   │   ├── profiles.toml
 │   │   │   ├── packages.toml
 │   │   │   ├── toolchain.toml
 │   │   │   └── kernel.toml
 │   │   └── user/.config/sysforge/
-│   │       └── flag_profiles.toml
+│   │       └── profiles.toml
 │   ├── test_append_merge.py
 │   ├── test_consumes.py
 │   ├── test_dep_analysis.py
@@ -202,14 +200,13 @@ sysforge/
 
 ```
 /etc/sysforge/
-    flag_profiles.toml
-    consumes_inference.toml
-    append_conflict_groups.toml
+    profiles.toml                    # flag profiles, [[rules]], conflict groups, consumes inference
     packages.toml                    # default build-rule overrides
-~/.config/sysforge/
-    flag_profiles.toml               # user overrides
-    append_conflict_groups.toml      # user conflict group overrides (optional)
 /usr/bin/sysforge
+~/.config/sysforge/
+    profiles.toml                    # user overrides (optional; merges with system via extends_system)
+    cache/aur-packages.txt           # AUR name cache (regenerable, refreshed every 24h)
+    state/                           # fallback runtime state when /var/lib/sysforge is not writable
 /var/lib/sysforge/
     pipeline_state.toml              # pipeline checkpoint state (created at runtime)
     build_state.toml                 # per-package build metadata (created at runtime, by sysforge build/update)
@@ -231,7 +228,7 @@ This dual role is intentional: the manifest captures your declared intent, but a
 The orthogonality of the two roles means:
 - An entry for `mesa-git` can stay in the manifest even if you've rolled back to repo `mesa` — it's an inert rule at steady-state, but the next pipeline bootstrap of a fresh system would still install it.
 - An installed AUR package without an entry uses default rules — `sysforge update` still walks it via `pacman -Qm`, just with no overrides applied.
-- `flag_profiles.toml` and the manifest stay orthogonal: sourcing/patching choices vs. compiler flag tuning.
+- `profiles.toml` and the manifest stay orthogonal: sourcing/patching choices vs. compiler flag tuning.
 
 Each entry overrides at most these fields (all optional except `name`):
 - `source` — `repo` (pacman) vs `aur`. Optional; classification falls through to pacman / AUR RPC if omitted. Set explicitly only when classification is ambiguous or you want to force routing.
@@ -283,20 +280,34 @@ SysForge uses `-march=native` rather than hardcoding CPU-specific flags. Optimiz
 
 ### Config file hierarchy
 
-- System default: `/etc/sysforge/flag_profiles.toml`
-- User override: `~/.config/sysforge/flag_profiles.toml`
+- System default: `/etc/sysforge/profiles.toml`
+- User override: `~/.config/sysforge/profiles.toml`
 
-By default the user file **fully replaces** the system file. To layer on top instead, add `extends_system = true` at the top of the user file — user values take priority on all conflicts. User rule priorities are bumped by 100 on merge (range 100–199) to always outrank system rules (range 0–99).
+`profiles.toml` is a single file holding flag profiles, `[[rules]]`, `[append_conflict_groups]`, and `[consumes_inference]`. By default the user file **fully replaces** the system file. To layer on top instead, add `extends_system = true` at the top of the user file — user values take priority on all conflicts. User rule priorities are bumped by 100 on merge (range 100–199) to always outrank system rules (range 0–99).
+
+### Directory layout
+
+SysForge uses two roots: one global (FHS-required pair) and one user-side (single dir).
+
+| Location | Purpose |
+|----------|---------|
+| `/etc/sysforge/` | Shipped config (read-only, package-owned) |
+| `/var/lib/sysforge/` | Runtime state (build_state, pipeline_state, source_meta, hardware_profile, sysforge.log) |
+| `~/.config/sysforge/` | User config overrides + regenerable cache + state fallback |
+| `~/.config/sysforge/cache/` | AUR name cache (refreshed every 24h) |
+| `~/.config/sysforge/state/` | Fallback for runtime state when `/var/lib/sysforge` is not writable |
+
+On first run, `sysforge` migrates legacy paths (`~/.cache/sysforge`, `~/.local/state/sysforge`) into the new `~/.config/sysforge/` subdirs. Migration is idempotent and best-effort — a failure logs a warning but does not block startup.
 
 ### State directory
 
 Pipeline state is written to `/var/lib/sysforge/` by default. Override via the `SYSFORGE_STATE_DIR` environment variable or `--state-dir` CLI flag; CLI takes priority. Both are logged when present. `SYSFORGE_STATE_DIR` is a SysForge bootstrap var and is intentionally not subject to the build tool env isolation rule.
 
-The configure stage creates a `sysforge` system group and sets the state directory to `root:sysforge` with mode `0775`. The builder user is added to the group during bootstrap; additional admin users can be added via `usermod -aG sysforge <user>`. If `/var/lib/sysforge` is not writable (e.g. standalone usage without bootstrap), the state dir falls back to `~/.local/state/sysforge`.
+The configure stage creates a `sysforge` system group and sets the state directory to `root:sysforge` with mode `0775`. The builder user is added to the group during bootstrap; additional admin users can be added via `usermod -aG sysforge <user>`. If `/var/lib/sysforge` is not writable (e.g. standalone usage without bootstrap), the state dir falls back to `~/.config/sysforge/state`.
 
 ### Profile conf override
 
-Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to substitute an alternate `flag_profiles.toml` at runtime, bypassing the default user/system search paths. Scope is intentionally limited to flag profiles — conflict groups and consumes inference are not affected (edit those files directly if needed). If the specified file sets `extends_system = true`, the standard system config is still merged underneath it via the normal `extends_system` logic.
+Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to substitute an alternate `profiles.toml` at runtime, bypassing the default user/system search paths. The override carries flag profiles, conflict groups, and consumes inference together (all sections live in the one file). If the specified file sets `extends_system = true`, the standard system config is still merged underneath it via the normal `extends_system` logic.
 
 ### Global settings (`sysforge.toml`)
 
@@ -467,7 +478,7 @@ When `--interactive` is passed to `sysforge build`, kconfig patching is skipped 
 
 Walks `packages.toml` in order:
 - `source = "repo"` → `sudo pacman -S --needed --noconfirm`
-- `source = "aur"` / `"git"` → `_resolve_pkgbuild()` → `makepkg_wrapper.run()`. PKGBUILD lookup order: `packages.toml [build] pkgbuild_src_dir` → `flag_profiles [paths] pkgbuild_src_dir` → AUR clone.
+- `source = "aur"` / `"git"` → `_resolve_pkgbuild()` → `makepkg_wrapper.run()`. PKGBUILD lookup order: `packages.toml [build] pkgbuild_src_dir` → `profiles.toml [paths] pkgbuild_src_dir` → AUR clone.
 - Hardware-gated packages skipped if `hardware_profile.toml` is absent or key is missing
 - Non-fatal per-package failures: build continues, failures recorded in state
 - Summary at end: `Total | Built | Failed | Skipped`
@@ -570,12 +581,12 @@ Pure constants module — the canonical directory of every config file sysforge 
 ### `config.py`
 
 TOML config loading and path resolution. Public API:
-- `load_config(config_paths=None)` — loads `flag_profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
-- `load_conflict_groups(paths=None)` — loads `append_conflict_groups.toml`
-- `load_consumes_inference(paths=None)` — loads `consumes_inference.toml`
+- `load_config(config_paths=None)` — loads `profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
+- `load_conflict_groups(paths=None)` — extracts the `[append_conflict_groups]` table from `profiles.toml`
+- `load_consumes_inference(paths=None)` — extracts the `[consumes_inference]` table from `profiles.toml`
 - `find_pkgbuild(pkg, config=None)` — resolves a bare package name, directory path, or PKGBUILD path to an absolute PKGBUILD path. Search order: (1) direct path or directory (resolves `dir/PKGBUILD`), (2) `<cwd>/<name>/PKGBUILD`, (3) `<config [paths] pkgbuild_src_dir>/<name>/PKGBUILD`, (4) auto-clone if not found locally — repo packages via `pkgctl repo clone --protocol=https`, AUR packages are routed through `get_scheduler().request(SyncRequest(...))` so the clone is deduplicated with any concurrent update/fetch request and shares the same rate-limit budget. Used by `sysforge build`, `sysforge resolve`, and the packages stage.
 
-`[paths] pkgbuild_src_dir` in `flag_profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
+`[paths] pkgbuild_src_dir` in `profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
 - `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles backslash line continuation (e.g. `CFLAGS="... \\\n  -flag"`) and multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines. Merges user conf (`$XDG_CONFIG_HOME/pacman/makepkg.conf`, `~/.makepkg.conf`) on top of system conf.
 
 ### `pacman.py`
@@ -747,7 +758,7 @@ High-level flow:
 
 ### `cache_probe.py`
 
-Passive monitoring of ccache/sccache/ThinLTO caches. Emits the `[CACHE]` log-tag lines that bracket each `makepkg` invocation with pre/post hit-miss deltas and, once per run, the ld.so cache mtime, pacman cache file count/size, and (per-package) the ThinLTO cache dir size extracted from `--thinlto-cache-dir=` in LDFLAGS. Never enables or disables caches — policy for that lives in `[cache]` of `flag_profiles.toml`.
+Passive monitoring of ccache/sccache/ThinLTO caches. Emits the `[CACHE]` log-tag lines that bracket each `makepkg` invocation with pre/post hit-miss deltas and, once per run, the ld.so cache mtime, pacman cache file count/size, and (per-package) the ThinLTO cache dir size extracted from `--thinlto-cache-dir=` in LDFLAGS. Never enables or disables caches — policy for that lives in `[cache]` of `profiles.toml`.
 
 Public API covers three axes:
 - **Per-build stats** — snapshot ccache/sccache counters before and after a build (`ccache --print-stats --format=tab`, `sccache --show-stats`), compute the delta, log hit rate when compilations occurred, say "no compilations recorded" when delta is zero.
@@ -770,7 +781,7 @@ AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key
 - `purge_src(pkgbuild_dir)` — `rm -rf` the directory after a `git_is_dirty` safety check. Raises `RuntimeError` if the clone holds local work that would be destroyed; non-git directories are purged unconditionally; non-existent paths are a silent no-op. Used by `sysforge build --cleansrc`, `sysforge update --cleansrc`, and the source sync recovery paths in `sysforge update`.
 - `pkgctl_checkout(name, dest)` — `pkgctl repo clone --protocol=https <name>` run in `dest.parent`; fetches official Arch packaging repo. Raises `RuntimeError` on failure.
 - `import_pgp_keys(pkgmeta, pkgbuild_path)` — ensures all `validpgpkeys` listed in the PKGBUILD are in the GPG keyring before `makepkg` runs. Strategy: (1) import any bundled `.asc` files from `keys/pgp/` alongside the PKGBUILD, (2) check which keys are still missing via `gpg --list-keys`, (3) fetch remaining via `gpg --recv-keys`. Import failures are logged as warnings — makepkg surfaces a clearer error if a key is still absent at verification time.
-- `fetch_aur_name_cache(force=False)` — downloads `https://aur.archlinux.org/packages.gz` and extracts it to `~/.cache/sysforge/aur-packages.txt`. Skips the download if the cache is less than 24 hours old unless `force=True`. Called as a side effect of `sysforge update`; read by `sysforge completions packages` to provide AUR package name completion.
+- `fetch_aur_name_cache(force=False)` — downloads `https://aur.archlinux.org/packages.gz` and extracts it to `~/.config/sysforge/cache/aur-packages.txt`. Skips the download if the cache is less than 24 hours old unless `force=True`. Called as a side effect of `sysforge update`; read by `sysforge completions packages` to provide AUR package name completion.
 
 `sysforge completions packages` — outputs local pkgbuild_src_dir packages + pacman sync DB names + AUR cache. Used by zsh completion for `build`, `packages add`. Caps output via `grep -m N "^$PREFIX"` in the completion script to avoid rendering thousands of entries; shows `zle -M` message when limit exceeded.
 
@@ -1064,7 +1075,7 @@ result: "-march=native -O3 -pipe -fno-stack-protector --icf=all"
 
 #### Conflict groups
 
-Defined in `/etc/sysforge/append_conflict_groups.toml`:
+Defined in the `[append_conflict_groups]` table of `/etc/sysforge/profiles.toml`:
 
 ```toml
 [conflict_groups]
@@ -1073,7 +1084,7 @@ lto   = ["-flto", "-flto=thin", "-flto=full", "-fno-lto"]
 stack = ["-fstack-protector", "-fstack-protector-strong", "-fno-stack-protector"]
 ```
 
-User-defined groups in `~/.config/sysforge/append_conflict_groups.toml` follow the same `extends_system` merge model. Explicit conflict groups take precedence over prefix matching.
+User-defined groups in `~/.config/sysforge/profiles.toml` (under `[append_conflict_groups]`) follow the same `extends_system` merge model. Explicit conflict groups take precedence over prefix matching.
 
 ### Rule match field semantics
 
@@ -1104,11 +1115,11 @@ Highest-priority matching rule wins outright — its profile is resolved in full
 
 Declares which conf types a build requires (`makepkg`, `rust`, `cmake`, `meson`, `env`).
 
-- **Default:** auto-inferred from `makedepends` via `consumes_inference.toml`
+- **Default:** auto-inferred from `makedepends` via the `[consumes_inference]` table in `profiles.toml`
 - **Override:** explicit `consumes` on a profile replaces the inferred value
 
 ```toml
-# /etc/sysforge/consumes_inference.toml
+# /etc/sysforge/profiles.toml
 [consumes_inference]
 cargo  = ["makepkg", "rust", "env"]
 meson  = ["makepkg", "meson", "env"]
@@ -1295,7 +1306,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 | Tag | Covers |
 |---|---|
-| `[CONFIG]` | Config file loading (`flag_profiles.toml`, conflict groups, consumes inference) |
+| `[CONFIG]` | Config file loading (`profiles.toml`: flag profiles, conflict groups, consumes inference) |
 | `[GROUPS]` | Package group resolution |
 | `[PROFILE]` | Profile resolution, rule matching, extends chain |
 | `[STATE]` | Pipeline state directory resolution |
@@ -1397,7 +1408,7 @@ Written atomically (write-then-rename) to `<state_dir>/hardware_profile.toml`. T
 
 ### ccache and sccache
 
-Configured via a `[cache]` table in `flag_profiles.toml`:
+Configured via a `[cache]` table in `profiles.toml`:
 
 ```toml
 [cache]
@@ -1523,7 +1534,7 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 **`repo_mode = "profiled"` is wired in the packages stage only.** The `[build] repo_mode = "pacman" | "profiled"` setting in `packages.toml` is parsed and honoured by `run packages` and `run pipeline` — repo packages with `repo_mode = "profiled"` (or per-package `pkgbuild_patch = true`) are built from source via `_build_aur()` using `find_pkgbuild` (which calls `pkgctl_checkout` for repo packages). It has no effect on `sysforge build` or `sysforge update` — those commands operate on individual packages the user explicitly targets, not on manifest-wide policy. Wiring `repo_mode` into `sysforge update` (so tracked repo packages with `repo_mode = "profiled"` are rebuilt from source when the Arch packaging repo has a newer version) is on the v1.x roadmap — see Release Plan.
 
-**`packages.toml [build] pkgbuild_src_dir` and `flag_profiles [paths] pkgbuild_src_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_src_dir`; falls back to `[paths] pkgbuild_src_dir`. They can point to different directories or the same one — there's no enforcement that they match.
+**`packages.toml [build] pkgbuild_src_dir` and `profiles.toml [paths] pkgbuild_src_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_src_dir`; falls back to `[paths] pkgbuild_src_dir`. They can point to different directories or the same one — there's no enforcement that they match.
 
 **`[env_precedence]` config table — design cancelled.** The original design proposed a priority stack (wrapper profile = 100, makepkg.conf = 80, shell passthrough = 20, PKGBUILD export = 10) and an `[env_precedence]` TOML table to configure it. This design is superseded. The current model is simpler and more predictable: build tool vars (`CC`, `CFLAGS`, `LDFLAGS`, etc.) are stripped from the inherited shell env in `invoke_makepkg` before makepkg runs — the temp conf is the sole authority for all makepkg-managed keys. Shell env bleed-through is not a configurable priority; it is prevented entirely. SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are exempt — they are SysForge's own interface, not build tool vars, and are not stripped. The `[env_precedence]` table will not be implemented.
 

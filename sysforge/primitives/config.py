@@ -1,9 +1,9 @@
 """
 config.py — SysForge config file loading
 
-Responsible for all TOML config file I/O: flag profiles, conflict groups,
-consumes inference, and sysforge.toml global settings. Owns the path
-constants and user/system merge logic.
+Responsible for all TOML config file I/O: profiles.toml (which holds flag
+profiles, [[rules]], append conflict groups, and consumes inference) and
+sysforge.toml global settings. Owns the user/system merge logic.
 
 Public API:
     load_config(config_paths=None)         -> dict
@@ -20,8 +20,6 @@ from pathlib import Path
 
 from sysforge.primitives.paths import (
     CONFIG_PATHS,
-    CONFLICT_GROUP_PATHS,
-    CONSUMES_INFERENCE_PATHS,
     SYSFORGE_TOML_PATH,
 )
 
@@ -107,14 +105,14 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
     raise FileNotFoundError(
         f"PKGBUILD not found for {pkg!r}.\n"
         f"  Searched:\n{searched_str}\n"
-        f"  Pass a full path, set [paths] pkgbuild_src_dir in flag_profiles.toml,\n"
+        f"  Pass a full path, set [paths] pkgbuild_src_dir in profiles.toml,\n"
         f"  or cd into the package directory and run: sysforge build/resolve <name>"
     )
 
 
 def load_config(config_paths=None) -> dict:
     """
-    Load flag_profiles.toml from CONFIG_PATHS (user, then system).
+    Load profiles.toml from CONFIG_PATHS (user, then system).
     If the user config sets extends_system = true, deep-merge onto system config.
     Otherwise the first found file wins outright.
     Rule priorities must be in range 0-99. User rules are bumped by 100 on merge
@@ -150,7 +148,7 @@ def load_config(config_paths=None) -> dict:
 
     if user_config is None and system_config is None:
         raise FileNotFoundError(
-            f"[CONFIG] No flag_profiles.toml found. Searched:\n"
+            f"[CONFIG] No profiles.toml found. Searched:\n"
             + "\n".join(f"  {p}" for p in CONFIG_PATHS)
         )
 
@@ -215,7 +213,7 @@ def _validate_rule_priorities(rules, source):
 
 def load_conflict_groups(conflict_group_paths=None):
     """
-    Load append_conflict_groups.toml from user and system paths.
+    Load [append_conflict_groups] from profiles.toml (user, then system).
     Returns dict: { group_name: [flag, ...] }
 
     If the user file sets extends_system = true, user groups are merged onto
@@ -227,7 +225,7 @@ def load_conflict_groups(conflict_group_paths=None):
         with open(path, "rb") as f:
             return tomllib.load(f)
 
-    paths = conflict_group_paths if conflict_group_paths is not None else CONFLICT_GROUP_PATHS
+    paths = conflict_group_paths if conflict_group_paths is not None else CONFIG_PATHS
     user_path = paths[0] if len(paths) > 0 else None
     system_path = paths[1] if len(paths) > 1 else None
 
@@ -237,13 +235,13 @@ def load_conflict_groups(conflict_group_paths=None):
     if user_data is None and system_data is None:
         return {}
 
-    system_groups = system_data.get("conflict_groups", {}) if system_data else {}
+    system_groups = system_data.get("append_conflict_groups", {}) if system_data else {}
 
     if user_data is None:
         _log.debug(f"Conflict groups (system):\n{pprint.pformat(system_groups, indent=2, sort_dicts=False)}")
         return system_groups
 
-    user_groups = user_data.get("conflict_groups", {})
+    user_groups = user_data.get("append_conflict_groups", {})
 
     if user_data.get("extends_system", False):
         merged = dict(system_groups)
@@ -257,7 +255,7 @@ def load_conflict_groups(conflict_group_paths=None):
 
 def load_consumes_inference(paths=None):
     """
-    Load consumes_inference.toml from system (and optionally user) paths.
+    Load [consumes_inference] from profiles.toml (user, then system).
     Returns dict: { makedep_tool: [conf_type, ...] }
 
     The inference map is system-defined and user-extendable. If the user file
@@ -280,7 +278,7 @@ def load_consumes_inference(paths=None):
         "git":    ["makepkg"],
     }
 
-    resolved_paths = paths if paths is not None else CONSUMES_INFERENCE_PATHS
+    resolved_paths = paths if paths is not None else CONFIG_PATHS
     user_path   = resolved_paths[0] if len(resolved_paths) > 0 else None
     system_path = resolved_paths[1] if len(resolved_paths) > 1 else None
 

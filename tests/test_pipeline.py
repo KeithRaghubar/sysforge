@@ -13,8 +13,8 @@ import pytest
 
 TESTS_DIR = Path(__file__).parent
 TEST_DATA = TESTS_DIR / "data"
-SYS_CONFIG = TEST_DATA / "etc/sysforge/flag_profiles.toml"
-USER_CONFIG = TEST_DATA / "user/.config/sysforge/flag_profiles.toml"
+SYS_CONFIG = TEST_DATA / "etc/sysforge/profiles.toml"
+USER_CONFIG = TEST_DATA / "user/.config/sysforge/profiles.toml"
 
 PKGBUILDS = {
     "htop":  TEST_DATA / "PKGBUILDs/htop.PKGBUILD",
@@ -40,7 +40,7 @@ from sysforge.primitives.makepkg_wrapper import emit_makepkg_conf
 @pytest.fixture
 def test_profiles():
     import tomllib
-    with open(TEST_DATA / "test_flag_profiles.toml", "rb") as f:
+    with open(TEST_DATA / "test_profiles.toml", "rb") as f:
         return tomllib.load(f)["profiles"]
 
 

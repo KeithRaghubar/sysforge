@@ -99,7 +99,7 @@ _sysforge_build() {
   _arguments \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags]:flags' \
     '--interactive[strip --noconfirm from makepkg_flags]' \
-    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '--profile-conf[alternate profiles.toml]:file:_files' \
     '--cc[override C compiler for this build]:compiler' \
     '--cxx[override C++ compiler for this build]:compiler' \
     '--ld[override linker for this build]:linker:(lld mold ld bfd)' \
@@ -119,7 +119,7 @@ _sysforge_build() {
 _sysforge_fetch() {
   _arguments \
     '--no-update[skip git pull --rebase for already-cloned packages]' \
-    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '--profile-conf[alternate profiles.toml]:file:_files' \
     '*: :_sysforge_pkg_names'
 }
 
@@ -135,7 +135,7 @@ _sysforge_update() {
     '--cleansrc[purge src dirs and re-clone before building (only for packages needing rebuild)]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--state-dir[override state directory]:directory:_files -/' \
-    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '--profile-conf[alternate profiles.toml]:file:_files' \
     '--cache-report[print ccache/sccache summary after run]' \
     '--no-pkg-log[disable per-package log files]' \
     '--persist-log[keep log files after successful completion]' \
@@ -149,7 +149,7 @@ _sysforge_resolve() {
   _arguments \
     '--show-flags[print the full resolved flag set]' \
     '--deps[show transitive dependency tree with build order]' \
-    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '--profile-conf[alternate profiles.toml]:file:_files' \
     '1: :_sysforge_local_pkg_names'
 }
 
@@ -158,7 +158,7 @@ _sysforge_converge() {
   _arguments \
     '--apply[rebuild all packages whose flags have drifted from the current profile]' \
     '--state-dir[override state directory]:directory:_files -/' \
-    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '--profile-conf[alternate profiles.toml]:file:_files' \
     '--no-pkg-log[disable per-package log files (only relevant with --apply)]' \
     '--persist-log[keep log files after completion (only relevant with --apply)]' \
     '--log-dir[directory for per-package log files]:directory:_files -/' \
@@ -322,7 +322,7 @@ _sysforge_run_pipeline() {
     '--dry-run[show what would run without executing]' \
     '--packages[path to packages.toml]:file:_files' \
     '--state-dir[override state directory]:directory:_files -/' \
-    '--profile-conf[alternate flag_profiles.toml]:file:_files' \
+    '--profile-conf[alternate profiles.toml]:file:_files' \
     '--no-unified-log[disable unified log file]' \
     '--no-pkg-logs[disable per-package log files]' \
     '--log-dir[directory for log files]:directory:_files -/' \
@@ -365,7 +365,7 @@ _sysforge_run_packages() {
     '--cache-report[print ccache/sccache summary after run]' \
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/' \
-    '--profile-conf[alternate flag_profiles.toml]:file:_files'
+    '--profile-conf[alternate profiles.toml]:file:_files'
 }
 
 _sysforge_run_kernel() {

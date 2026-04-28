@@ -24,7 +24,7 @@ def _write_toml(path, text):
 class TestLoadConfig:
 
     def test_system_only(self, tmp_path):
-        sys = tmp_path / "system" / "flag_profiles.toml"
+        sys = tmp_path / "system" / "profiles.toml"
         _write_toml(sys, """
 [defaults]
 profile = "standard"
@@ -38,7 +38,7 @@ name = "base"
         assert config["rules"][0]["priority"] == 10
 
     def test_user_only(self, tmp_path):
-        user = tmp_path / "user" / "flag_profiles.toml"
+        user = tmp_path / "user" / "profiles.toml"
         _write_toml(user, """
 [defaults]
 profile = "optimized"
@@ -51,7 +51,7 @@ name = "opt"
         assert config["defaults"]["profile"] == "optimized"
 
     def test_no_config_raises(self, tmp_path):
-        with pytest.raises(FileNotFoundError, match="No flag_profiles.toml found"):
+        with pytest.raises(FileNotFoundError, match="No profiles.toml found"):
             load_config(config_paths=[tmp_path / "a.toml", tmp_path / "b.toml"])
 
     def test_user_overrides_system_without_extends(self, tmp_path):
@@ -149,7 +149,7 @@ class TestLoadConflictGroups:
     def test_system_only(self, tmp_path):
         sys = tmp_path / "system.toml"
         _write_toml(sys, """
-[conflict_groups]
+[append_conflict_groups]
 pic = ["-fPIC", "-fpic"]
 """)
         result = load_conflict_groups([tmp_path / "missing.toml", sys])
@@ -159,11 +159,11 @@ pic = ["-fPIC", "-fpic"]
         sys = tmp_path / "sys.toml"
         user = tmp_path / "user.toml"
         _write_toml(sys, """
-[conflict_groups]
+[append_conflict_groups]
 pic = ["-fPIC", "-fpic"]
 """)
         _write_toml(user, """
-[conflict_groups]
+[append_conflict_groups]
 lto = ["-flto", "-fno-lto"]
 """)
         result = load_conflict_groups([user, sys])
@@ -174,14 +174,14 @@ lto = ["-flto", "-fno-lto"]
         sys = tmp_path / "sys.toml"
         user = tmp_path / "user.toml"
         _write_toml(sys, """
-[conflict_groups]
+[append_conflict_groups]
 pic = ["-fPIC", "-fpic"]
 lto = ["-flto", "-fno-lto"]
 """)
         _write_toml(user, """
 extends_system = true
 
-[conflict_groups]
+[append_conflict_groups]
 lto = ["-flto=thin", "-fno-lto"]
 stack = ["-fstack-protector"]
 """)

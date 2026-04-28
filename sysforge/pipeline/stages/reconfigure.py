@@ -59,7 +59,7 @@ _STEPS = [
     ("editor",     "Editor selection",
      "Set preferred editor; save permanently to sysforge.toml"),
     ("config",     "Config file review",
-     "Review flag_profiles.toml, packages.toml, toolchain.toml, kernel.toml, hardware_profile.toml"),
+     "Review profiles.toml, packages.toml, toolchain.toml, kernel.toml, hardware_profile.toml"),
     ("build_mode", "Build mode",
      "View/set packages.toml repo_mode (pacman | profiled); show per-package pkgbuild_patch overrides"),
     ("makepkg",    "makepkg.conf review",
@@ -379,8 +379,8 @@ def _step_config(config, state, options, editor: str) -> str:
     _log.ui("─── Config file review ──────────────────────────────")
 
     _review_config_file(
-        "flag_profiles.toml",
-        CONFIG_BASE / "etc/sysforge/flag_profiles.toml",
+        "profiles.toml",
+        CONFIG_BASE / "etc/sysforge/profiles.toml",
         editor, options.dry_run,
         validate_fn=_validate_flag_profiles,
     )

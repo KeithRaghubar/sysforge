@@ -22,7 +22,7 @@ from sysforge.primitives.profile import (
 )
 from sysforge.primitives.config import load_conflict_groups
 
-_FIXTURE = Path(__file__).parent / "data/etc/sysforge/append_conflict_groups.toml"
+_FIXTURE = Path(__file__).parent / "data/etc/sysforge/profiles.toml"
 CONFLICT_GROUPS = load_conflict_groups(conflict_group_paths=[_FIXTURE])
 
 # ---------------------------------------------------------------------------

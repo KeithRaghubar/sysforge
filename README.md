@@ -23,8 +23,8 @@ git clone https://aur.archlinux.org/sysforge.git
 cd sysforge && makepkg -si
 
 # 2. Edit the config files installed at /etc/sysforge/
-#    (flag_profiles.toml, packages.toml — both are self-documented)
-sudo vim /etc/sysforge/flag_profiles.toml
+#    (profiles.toml, packages.toml — both are self-documented)
+sudo vim /etc/sysforge/profiles.toml
 
 # 3. Build and install an AUR package with your active profile.
 sysforge build neovim-git -m "-si"
@@ -197,7 +197,7 @@ sudo cp completions/_sysforge /usr/share/zsh/site-functions/
 fpath=($(pwd)/completions $fpath) && compinit
 ```
 
-Completes subcommands, all flags, and package names (local `pkgbuild_src_dir` + pacman sync DB + AUR cache if present at `~/.cache/sysforge/aur-packages.txt`).
+Completes subcommands, all flags, and package names (local `pkgbuild_src_dir` + pacman sync DB + AUR cache if present at `~/.config/sysforge/cache/aur-packages.txt`).
 
 ---
 

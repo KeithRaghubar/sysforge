@@ -509,7 +509,7 @@ def _add_build_parser(sub):
     p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
         help="Directory for the per-package log file (default: alongside the PKGBUILD).")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
-        help="Path to a flag_profiles.toml to use instead of the default.")
+        help="Path to a profiles.toml to use instead of the default.")
     p.add_argument("--cc", metavar="COMPILER", dest="cc",
         help="Override CC (C compiler) for this build, e.g. --cc clang.")
     p.add_argument("--cxx", metavar="COMPILER", dest="cxx",
@@ -541,7 +541,7 @@ def _add_fetch_parser(sub):
     p.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase for packages that are already cloned.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
-        help="Path to a flag_profiles.toml to use instead of the default.")
+        help="Path to a profiles.toml to use instead of the default.")
     p.set_defaults(func=cmd_fetch)
 
 
@@ -566,7 +566,7 @@ def _add_update_parser(sub):
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
-        help="Path to a flag_profiles.toml to use instead of the default.")
+        help="Path to a profiles.toml to use instead of the default.")
     p.add_argument("--cache-report", action="store_true", dest="cache_report",
         help="Print a structured cache summary after the run.")
     p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
@@ -603,7 +603,7 @@ def _add_resolve_parser(sub):
     mode.add_argument("--deps", action="store_true",
         help="Show transitive dependency tree with build order instead of profile info.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
-        help="Path to a flag_profiles.toml to use instead of the default.")
+        help="Path to a profiles.toml to use instead of the default.")
     p.set_defaults(func=cmd_resolve)
 
 
@@ -616,7 +616,7 @@ def _add_converge_parser(sub):
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
-        help="Path to a flag_profiles.toml to use instead of the default.")
+        help="Path to a profiles.toml to use instead of the default.")
     p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
         help="Disable per-package log files (only relevant with --apply).")
     p.add_argument("--persist-log", action="store_true", dest="persist_log",
@@ -777,7 +777,7 @@ def _add_run_parser(sub):
     p_pipeline.add_argument("--persist-log", action="store_true", dest="persist_log",
         help="Keep log files after successful completion.")
     p_pipeline.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
-        help="Path to a flag_profiles.toml to use instead of the default.")
+        help="Path to a profiles.toml to use instead of the default.")
     p_pipeline.add_argument("--cache-report", action="store_true", dest="cache_report",
         help="Print a structured cache summary after the pipeline completes.")
     p_pipeline.add_argument("--abi-check", action="store_true", dest="abi_check",
@@ -854,7 +854,7 @@ def _add_run_parser(sub):
     p_pkgs.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p_pkgs.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
-        help="Path to a flag_profiles.toml to use instead of the default.")
+        help="Path to a profiles.toml to use instead of the default.")
     p_pkgs.set_defaults(func=_cmd_run_packages)
 
     # run kernel
@@ -923,7 +923,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main():
     from sysforge.primitives.resource_guard import install as _install_resource_guard
+    from sysforge.primitives.paths import migrate_legacy_user_dirs
     _install_resource_guard()
+    migrate_legacy_user_dirs()
     sys.argv[1:] = _patch_makepkg_argv(
         _extract_implicit_makepkg_flags(_hoist_verbosity_flags(sys.argv[1:]))
     )

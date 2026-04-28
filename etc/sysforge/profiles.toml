@@ -1,9 +1,15 @@
 # =============================================================================
-# flag_profiles.toml — compiler flag profiles and package matching rules
+# profiles.toml — compiler flag profiles, package matching rules, and
+# flag-resolution reference data (conflict groups + consumes inference)
 #
 # SysForge resolves a profile for each package by evaluating [[rules]] in
 # priority order. The highest-priority matching rule wins; [defaults] profile
 # is used when no rule matches.
+#
+# Tables in this file:
+#   [paths] [defaults] [profiles.*] [[rules]]   — profile selection
+#   [append_conflict_groups]                    — mutually exclusive flag sets
+#   [consumes_inference]                        — makedepends → conf type map
 # =============================================================================
 #
 # ── [paths] ──────────────────────────────────────────────────────────────────
@@ -97,7 +103,7 @@
 # ── [profiles.NAME.append] ───────────────────────────────────────────────────
 #
 #   Token-level merge into the parent's value instead of full override.
-#   Conflict groups (append_conflict_groups.toml) are resolved during merge.
+#   Conflict groups ([append_conflict_groups] below) are resolved during merge.
 #
 #   [profiles.optimized_lto.append]
 #   CFLAGS  = "-flto=thin"   # replaces -flto* in parent via conflict group
@@ -209,3 +215,50 @@ makepkg_flags = ["--noconfirm", "--syncdeps", "--rmdeps", "--install", "--noprog
 # pkgnames = ["linux-custom"]
 # profile  = "kernel"
 # priority = 20
+
+# =============================================================================
+# Append conflict groups — mutually exclusive flag sets for token-level merges
+#
+# When a token in [profiles.NAME.append] belongs to a conflict group, all other
+# members of that group are removed from the accumulated flag string before the
+# new token is inserted. Example: appending "-fstack-protector-strong" removes
+# "-fstack-protector" from the parent's flags via the "stack" group.
+# =============================================================================
+
+[append_conflict_groups]
+
+# Position-independent code / executable flags
+pic   = ["-fPIC", "-fPIE", "-fpic", "-fpie", "-fno-pic", "-fno-pie"]
+
+# Link-time optimisation variants
+lto   = ["-flto", "-flto=thin", "-flto=full", "-fno-lto"]
+
+# Stack protection
+stack = ["-fstack-protector", "-fstack-protector-strong", "-fno-stack-protector"]
+
+# =============================================================================
+# Consumes inference — makedepends → conf type routing
+#
+# Maps a makedepends token to the set of conf types SysForge delivers for that
+# build system. The union of all matched tools forms the package's "consumes"
+# set, which controls which profile keys (CFLAGS, RUSTFLAGS, CMAKE_*,
+# MESON_ARGS, etc.) are written to the temp makepkg.conf or injected into env.
+# A per-profile `consumes = [...]` overrides this inference entirely.
+#
+# Conf types:
+#   makepkg  — CFLAGS / CXXFLAGS / LDFLAGS / BUILDENV / OPTIONS / etc.
+#   rust     — RUSTFLAGS / CARGO_* keys
+#   cmake    — CMAKE_* keys
+#   meson    — MESON_ARGS
+#   env      — env-injected keys (RUSTC_WRAPPER, CCACHE_DIR, CARGO_HOME, etc.)
+# =============================================================================
+
+[consumes_inference]
+cargo  = ["makepkg", "rust", "env"]
+rust   = ["makepkg", "rust", "env"]
+meson  = ["makepkg", "meson", "env"]
+cmake  = ["makepkg", "cmake", "env"]
+ninja  = ["makepkg", "env"]
+make   = ["makepkg", "env"]
+python = ["makepkg", "env"]
+git    = ["makepkg"]

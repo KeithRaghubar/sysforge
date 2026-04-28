@@ -16,6 +16,7 @@ Public API:
 import os
 import tomllib
 from sysforge import log
+from sysforge.primitives.paths import USER_STATE_DIR
 _log = log.get_logger("STATE")
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +27,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 _DEFAULT_STATE_DIR = Path("/var/lib/sysforge")
-_FALLBACK_STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", "~/.local/state")).expanduser() / "sysforge"
+_FALLBACK_STATE_DIR = USER_STATE_DIR
 
 
 def _state_dir_is_writable(path: Path) -> bool:
@@ -43,7 +44,7 @@ def resolve_state_dir(cli_override=None):
     Logs both CLI and env sources whenever present.
 
     If the system default (/var/lib/sysforge) is not writable (e.g. running
-    from source without root), falls back to ~/.local/state/sysforge and logs
+    from source without root), falls back to ~/.config/sysforge/state and logs
     a one-time info message so the location is transparent.
     """
     env_val = os.environ.get("SYSFORGE_STATE_DIR")
