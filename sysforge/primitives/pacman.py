@@ -23,6 +23,7 @@ Public API:
     get_local_db_entry(pkgname)     → Path | None
     get_package_files(pkgname)      → list[str]
     get_package_depends(pkgname)    → list[str]
+    get_pkgbase(pkgname)            → str | None
 """
 import subprocess
 from pathlib import Path
@@ -321,6 +322,36 @@ def get_package_files(pkgname: str, root: Path | None = None) -> list[str]:
             break
         paths.append(line)
     return paths
+
+
+def get_pkgbase(pkgname: str, root: Path | None = None) -> str | None:
+    """
+    Return the %BASE% (pkgbase) recorded in /var/lib/pacman/local/<pkg>-<ver>/desc
+    for an installed package. None if not installed, desc unreadable, or
+    %BASE% not recorded (some older entries omit it; non-split packages
+    typically don't record it either).
+
+    Canonical source for mapping a split-subpackage name back to its parent
+    pkgbase — works for any installed package (repo or foreign), no AUR
+    access needed.
+    """
+    entry = get_local_db_entry(pkgname, root=root)
+    if entry is None:
+        return None
+    desc_path = entry / "desc"
+    if not desc_path.is_file():
+        return None
+    in_section = False
+    for line in desc_path.read_text().splitlines():
+        if line == "%BASE%":
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if not line or line.startswith("%"):
+            return None
+        return line
+    return None
 
 
 def get_package_depends(pkgname: str, root: Path | None = None) -> list[str]:

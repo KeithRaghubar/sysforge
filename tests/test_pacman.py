@@ -12,6 +12,7 @@ from sysforge.primitives.pacman import (
     get_all_installed_packages,
     get_foreign_packages,
     get_pacman_sync_version,
+    get_pkgbase,
     read_pkgname_from_file,
     snapshot_pkg_dir,
 )
@@ -246,3 +247,50 @@ class TestFilterPkgsToInstalled:
         keep, dropped = filter_pkgs_to_installed([], installed={"foo"})
         assert keep == []
         assert dropped == []
+
+
+# ---------------------------------------------------------------------------
+# get_pkgbase
+# ---------------------------------------------------------------------------
+
+class TestGetPkgbase:
+
+    def _make_db(self, tmp_path, pkgname, version, base=None, extra_fields=""):
+        entry = tmp_path / f"{pkgname}-{version}"
+        entry.mkdir()
+        desc = f"%NAME%\n{pkgname}\n\n%VERSION%\n{version}\n"
+        if base is not None:
+            desc += f"\n%BASE%\n{base}\n"
+        if extra_fields:
+            desc += "\n" + extra_fields
+        (entry / "desc").write_text(desc)
+        return entry
+
+    def test_split_package_returns_base(self, tmp_path):
+        self._make_db(tmp_path, "linux-custom-headers", "6.19.12.arch1-1",
+                      base="linux-custom")
+        assert get_pkgbase("linux-custom-headers", root=tmp_path) == "linux-custom"
+
+    def test_no_base_field_returns_none(self, tmp_path):
+        self._make_db(tmp_path, "foo", "1.0-1", base=None)
+        assert get_pkgbase("foo", root=tmp_path) is None
+
+    def test_not_installed_returns_none(self, tmp_path):
+        assert get_pkgbase("ghost", root=tmp_path) is None
+
+    def test_missing_desc_returns_none(self, tmp_path):
+        entry = tmp_path / "foo-1.0-1"
+        entry.mkdir()
+        assert get_pkgbase("foo", root=tmp_path) is None
+
+    def test_base_equals_name_for_non_split(self, tmp_path):
+        # Some packages record %BASE% even when pkgbase == pkgname.
+        self._make_db(tmp_path, "vim", "9.1-1", base="vim")
+        assert get_pkgbase("vim", root=tmp_path) == "vim"
+
+    def test_only_first_value_after_base(self, tmp_path):
+        # %BASE% is a single-value field; section ends at next blank or %TAG%.
+        self._make_db(tmp_path, "linux-custom-headers", "6.19.12.arch1-1",
+                      base="linux-custom",
+                      extra_fields="%DESC%\nKernel headers\n")
+        assert get_pkgbase("linux-custom-headers", root=tmp_path) == "linux-custom"

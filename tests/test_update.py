@@ -316,6 +316,59 @@ def test_installed_aur_without_override_uses_defaults(tmp_path):
     assert {r.pkgbase for r in results} == {pkgbase}
 
 
+def test_foreign_split_package_resolves_pkgbase_from_local_db(tmp_path):
+    """Foreign split-package subnames (e.g. linux-custom-headers) collapse to
+    their parent pkgbase via pacman's local DB %BASE%, even when not in AUR.
+    AUR RPC must NOT be called when the local DB already resolves the base."""
+    pkgbase = "linux-custom"
+    pkg_dir = tmp_path / pkgbase
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text(
+        f"pkgbase={pkgbase}\n"
+        f"pkgname=({pkgbase} {pkgbase}-headers)\n"
+        f"pkgver=6.19.12.arch1\npkgrel=1\n"
+    )
+
+    parsed = {"globals": {
+        "pkgbase": pkgbase,
+        "pkgname": [pkgbase, f"{pkgbase}-headers"],
+        "pkgver": "6.19.12.arch1", "pkgrel": "1", "epoch": "0",
+    }}
+
+    foreign = {pkgbase: "6.19.12.arch1-1", f"{pkgbase}-headers": "6.19.12.arch1-1"}
+
+    def fake_get_pkgbase(name, root=None):
+        if name in foreign:
+            return pkgbase
+        return None
+
+    results = []
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.update.get_pkgbase", side_effect=fake_get_pkgbase),
+        patch("sysforge.update.aur_info") as mock_aur_info,
+        patch("sysforge.update.vercmp", return_value=0),
+    ):
+        MockBS.return_value.all_packages.return_value = {}
+
+        def capture(res_list, a):
+            results.extend(res_list)
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(_make_args())
+
+    # Both subpackages collapse into the single linux-custom pkgbase group.
+    assert {r.pkgbase for r in results} == {pkgbase}
+    # AUR RPC must not be called — local DB already supplied %BASE%.
+    mock_aur_info.assert_not_called()
+
+
 def test_repo_package_without_override_is_not_iterated(tmp_path):
     """A repo (non-foreign) package with no override → out of scope."""
     overrides = ({}, {})

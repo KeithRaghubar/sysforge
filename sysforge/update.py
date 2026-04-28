@@ -64,6 +64,7 @@ from sysforge.primitives.pacman import (
     batch_install_makedeps,
     get_all_installed_packages,
     get_foreign_packages,
+    get_pkgbase,
 )
 from sysforge.pipeline.state import resolve_state_dir
 
@@ -184,12 +185,25 @@ def _assemble_package_set(
                 entry["source"] = override_source
             packages[name] = entry
 
-    # Resolve pkgbase for unrecorded AUR packages via AUR RPC so split packages
-    # get the correct pkgbase and pkgbuild_dir (e.g. ob-xd-common → pkgbase ob-xd).
+    # Resolve pkgbase for unrecorded packages from pacman's local DB first.
+    # Works offline for any installed package (repo or foreign) — including
+    # custom-built split packages that aren't in AUR (e.g. linux-custom-headers
+    # → pkgbase linux-custom). Falls through to AUR RPC below for entries
+    # where %BASE% wasn't recorded.
+    if unrecorded_names and pkgbuild_src_dir_base:
+        for name in unrecorded_names:
+            real_base = get_pkgbase(name)
+            if real_base and real_base != name:
+                packages[name]["pkgbase"] = real_base
+                packages[name]["pkgbuild_dir"] = str(pkgbuild_src_dir_base / real_base)
+
+    # AUR RPC fallback for unrecorded packages whose pkgbase still equals their
+    # pkgname (local DB had no %BASE% — older pacman or stripped metadata).
     offline = getattr(args, "offline", False)
     if unrecorded_names and pkgbuild_src_dir_base and not offline:
         aur_unrecorded = [n for n in unrecorded_names
-                          if packages[n].get("source") != "repo"]
+                          if packages[n].get("source") != "repo"
+                          and packages[n].get("pkgbase") == n]
         if aur_unrecorded:
             aur_results = aur_info(aur_unrecorded)
             for name in aur_unrecorded:
