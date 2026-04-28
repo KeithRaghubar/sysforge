@@ -453,6 +453,7 @@ def test_dry_run_no_build(tmp_path):
 
 
 def test_devel_flag_triggers_vcs_rebuild(tmp_path):
+    """--devel + resolved pkgver newer than installed → build runs once."""
     pkgbase = "neovim-git"
     pkg_dir = tmp_path / pkgbase
     pkg_dir.mkdir()
@@ -477,6 +478,8 @@ def test_devel_flag_triggers_vcs_rebuild(tmp_path):
               return_value={pkgbase: "r1234.gabcdef-1"}),
         patch("sysforge.update.get_foreign_packages",
               return_value={pkgbase: "r1234.gabcdef-1"}),
+        patch("sysforge.update.evaluate_vcs_pkgver",
+              return_value="r5678.g9999999-1"),
         patch("sysforge.primitives.cache_probe.reset_session"),
     ):
         MockBS.return_value.all_packages.return_value = state_data
@@ -495,6 +498,104 @@ def test_devel_flag_triggers_vcs_rebuild(tmp_path):
             mw.run = mw_run_orig
 
     assert len(call_count) == 1
+
+
+def test_devel_skips_uptodate_vcs(tmp_path):
+    """--devel + resolved pkgver equal to installed → build does NOT run."""
+    pkgbase = "neovim-git"
+    pkg_dir = tmp_path / pkgbase
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
+    state_data = {
+        pkgbase: {
+            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
+            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+        }
+    }
+    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
+    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
+
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_overrides", return_value=overrides),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={pkgbase: "r1234.gabcdef-1"}),
+        patch("sysforge.update.get_foreign_packages",
+              return_value={pkgbase: "r1234.gabcdef-1"}),
+        patch("sysforge.update.evaluate_vcs_pkgver",
+              return_value="r1234.gabcdef-1"),
+        patch("sysforge.primitives.cache_probe.reset_session"),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+
+        import sysforge.primitives.makepkg_wrapper as mw
+        mw_run_orig = mw.run
+        call_count = []
+
+        def fake_run(*a, **kw):
+            call_count.append(1)
+
+        mw.run = fake_run
+        try:
+            cmd_update(_make_args(devel=True))
+        finally:
+            mw.run = mw_run_orig
+
+    assert len(call_count) == 0
+
+
+def test_devel_skips_when_pkgver_eval_fails(tmp_path, capsys):
+    """--devel + pkgver() resolution returns None → skip with WARN, no build."""
+    pkgbase = "neovim-git"
+    pkg_dir = tmp_path / pkgbase
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
+    state_data = {
+        pkgbase: {
+            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
+            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+        }
+    }
+    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
+    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
+
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_overrides", return_value=overrides),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={pkgbase: "r1234.gabcdef-1"}),
+        patch("sysforge.update.get_foreign_packages",
+              return_value={pkgbase: "r1234.gabcdef-1"}),
+        patch("sysforge.update.evaluate_vcs_pkgver", return_value=None),
+        patch("sysforge.primitives.cache_probe.reset_session"),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+
+        import sysforge.primitives.makepkg_wrapper as mw
+        mw_run_orig = mw.run
+        call_count = []
+
+        def fake_run(*a, **kw):
+            call_count.append(1)
+
+        mw.run = fake_run
+        try:
+            cmd_update(_make_args(devel=True))
+        finally:
+            mw.run = mw_run_orig
+
+    assert len(call_count) == 0
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert "DEVEL_EVAL_FAILED" in combined or "pkgver() evaluation failed" in combined
 
 
 def test_no_devel_skips_vcs_build(tmp_path):
@@ -771,6 +872,7 @@ def test_split_pkgbase_only_installs_installed_subpkgnames(tmp_path):
         patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
+        patch("sysforge.update.evaluate_vcs_pkgver", return_value="1.0.r1.gffffff-1"),
     ):
         MockBS.return_value.all_packages.return_value = state_data
         cmd_update(args)
@@ -965,6 +1067,8 @@ def test_already_built_vcs_falls_back_to_newest_pkgname_match(tmp_path):
         patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
+        patch("sysforge.update.evaluate_vcs_pkgver",
+              return_value="0.1.0.r45.g1234567-1"),
     ):
         MockBS.return_value.all_packages.return_value = state_data
         cmd_update(args)
@@ -1020,6 +1124,8 @@ def test_install_only_vcs_picks_newest_artifact_in_pkgdest(tmp_path):
         patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
         patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
+        patch("sysforge.update.evaluate_vcs_pkgver",
+              return_value="0.1.0.r45.g1234567-1"),
     ):
         MockBS.return_value.all_packages.return_value = state_data
         cmd_update(args)
@@ -1069,6 +1175,8 @@ def test_install_only_vcs_skips_when_only_older_artifacts_present(tmp_path):
         patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
         patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
+        patch("sysforge.update.evaluate_vcs_pkgver",
+              return_value="0.1.0.r45.g1234567-1"),
     ):
         MockBS.return_value.all_packages.return_value = state_data
         cmd_update(args)

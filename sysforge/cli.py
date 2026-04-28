@@ -551,7 +551,10 @@ def _add_update_parser(sub):
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show what would be rebuilt without doing it.")
     p.add_argument("--devel", action="store_true", dest="devel",
-        help="Include VCS packages (-git, -svn, -hg, -bzr) in the rebuild.")
+        help="Resolve and rebuild VCS packages (-git, -svn, -hg, -bzr) whose "
+             "upstream HEAD has advanced past the installed version. "
+             "Resolution runs makepkg --nobuild per VCS package; up-to-date "
+             "packages are skipped, not rebuilt.")
     p.add_argument("--offline", action="store_true", dest="offline",
         help="No network: skip git pulls, clones, and AUR RPC. Pure local version check.")
     p.add_argument("--install-only", action="store_true", dest="install_only",

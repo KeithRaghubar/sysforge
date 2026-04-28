@@ -10,9 +10,12 @@ Compares installed package versions against the latest PKGBUILD versions in
 pkgbuild_src_dir (after source sync), then rebuilds packages where the
 PKGBUILD is newer than what is installed.
 
-VCS packages (-git, -svn, -hg, -bzr) cannot be compared by version because
-pkgver is generated dynamically during the build. They are flagged as DEVEL
-and only rebuilt when --devel is passed.
+VCS packages (-git, -svn, -hg, -bzr) carry a static seed pkgver that does
+not reflect upstream HEAD; their real version is computed by pkgver() at
+build time. Without --devel they are flagged DEVEL and skipped. With
+--devel each VCS pkgbase has its pkgver() resolved up-front (a one-shot
+makepkg --nobuild pass) and vercmp'd against the installed version, so
+only packages whose upstream actually advanced are rebuilt.
 
 Phases:
     0. Init — load state, config, packages.toml overrides, open unified log
@@ -39,6 +42,7 @@ _log = log.get_logger("UPDATE")
 from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives.vcs_pkgver import evaluate_vcs_pkgver
 from sysforge.primitives.aur import fetch_aur_name_cache, aur_info
 from sysforge.primitives.source_sync import (
     SyncRequest, SyncResult,
@@ -76,7 +80,8 @@ _SYNC_BLOCKING_STATUSES = frozenset({
 class _UpdateResult:
     pkgbase: str
     pkgnames: list
-    # Actions: UP_TO_DATE, NEEDS_REBUILD, PULL_FAILED, DEVEL, DOWNGRADE
+    # Actions: UP_TO_DATE, NEEDS_REBUILD, PULL_FAILED, DEVEL,
+    # DEVEL_EVAL_FAILED, DOWNGRADE
     action: str
     installed_ver: str | None
     pkgbuild_ver: str | None
@@ -322,6 +327,7 @@ def _check_one_pkgbase(
     unrecorded_names: set[str],
     skip_sync_check: bool,
     rpc_version_by_base: dict[str, str],
+    force_devel: bool = False,
 ) -> _UpdateResult | None:
     """Check a single pkgbase and return an _UpdateResult, or None on skip."""
     pkgbuild_dir = Path(entry["pkgbuild_dir"])
@@ -379,11 +385,49 @@ def _check_one_pkgbase(
             break
     assert installed_ver is not None, f"{pkgbase}: no installed pkgname in {pkgnames}"
 
-    # VCS packages: version is only meaningful after running pkgver()
+    # VCS packages: static pkgver is just the seed; the real version comes
+    # from running pkgver() against the fetched upstream sources. Without
+    # --devel we don't pay that cost; with --devel we resolve and vercmp.
     if _is_vcs(pkgbase):
+        if not force_devel:
+            return _UpdateResult(
+                pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL",
+                installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
+                pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+            )
+
+        resolved = evaluate_vcs_pkgver(pkgbuild_dir)
+        if resolved is None:
+            _log.warn(
+                f"{pkgbase}: pkgver() evaluation failed — skipping rebuild "
+                "(re-run --devel after the upstream/network issue clears)"
+            )
+            return _UpdateResult(
+                pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL_EVAL_FAILED",
+                installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
+                pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+            )
+
+        try:
+            cmp = vercmp(resolved, installed_ver)
+        except RuntimeError as e:
+            _log.warn(f"{pkgbase}: vercmp failed on resolved {resolved!r}: {e} — skipping")
+            return _UpdateResult(
+                pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL_EVAL_FAILED",
+                installed_ver=installed_ver, pkgbuild_ver=resolved,
+                pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+            )
+
+        if cmp > 0:
+            action = "NEEDS_REBUILD"
+        elif cmp == 0:
+            action = "UP_TO_DATE"
+        else:
+            action = "DOWNGRADE"
+            _log.warn(f"{pkgbase}: resolved {resolved} is older than installed {installed_ver}")
         return _UpdateResult(
-            pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL",
-            installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
+            pkgbase=pkgbase, pkgnames=pkgnames, action=action,
+            installed_ver=installed_ver, pkgbuild_ver=resolved,
             pkgbuild_path=pkgbuild_path, has_build_record=has_record,
         )
 
@@ -566,12 +610,14 @@ def cmd_update(args) -> None:
     skip_sync_check = offline
     results: list[_UpdateResult] = []
 
+    force_devel = getattr(args, "devel", False)
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(
                 _check_one_pkgbase, pkgbase, pkgnames,
                 pkgbase_entry[pkgbase], sync_failures, all_installed,
                 unrecorded_names, skip_sync_check, rpc_version_by_base,
+                force_devel,
             ): pkgbase
             for pkgbase, pkgnames in sorted(pkgbase_map.items())
         }
@@ -589,9 +635,11 @@ def cmd_update(args) -> None:
         return
 
     # ── Phase 5: Build ────────────────────────────────────────────────────
+    # _check_one_pkgbase already resolved VCS pkgver() under --devel and set
+    # NEEDS_REBUILD / UP_TO_DATE / DEVEL_EVAL_FAILED accordingly. The plain
+    # NEEDS_REBUILD filter here therefore picks up genuinely-stale -git
+    # packages and excludes up-to-date ones.
     to_build = [r for r in results if r.action == "NEEDS_REBUILD"]
-    if getattr(args, "devel", False):
-        to_build += [r for r in results if r.action == "DEVEL"]
 
     # Exclude packages that failed source sync (cleansrc refusal, etc.)
     cleansrc_failures = {k: v for k, v in sync_failures.items()
@@ -827,6 +875,8 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
         parts.append(f"{counts['NEEDS_REBUILD']} need rebuild")
     if counts.get("DEVEL"):
         parts.append(f"{counts['DEVEL']} devel")
+    if counts.get("DEVEL_EVAL_FAILED"):
+        parts.append(f"{counts['DEVEL_EVAL_FAILED']} devel-eval-failed")
     if counts.get("DOWNGRADE"):
         parts.append(f"{counts['DOWNGRADE']} downgrade")
     if counts.get("PULL_FAILED"):
@@ -845,10 +895,9 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
         elif r.action == "UP_TO_DATE":
             print(f"  [UP_TO_DATE]     {r.pkgbase}: {r.pkgbuild_ver}{star}")
         elif r.action == "DEVEL":
-            if getattr(args, "devel", False):
-                print(f"  [DEVEL]          {r.pkgbase}: will rebuild (--devel){star}")
-            else:
-                print(f"  [DEVEL]          {r.pkgbase}: skipped (use --devel to rebuild){star}")
+            print(f"  [DEVEL]          {r.pkgbase}: skipped (use --devel to rebuild){star}")
+        elif r.action == "DEVEL_EVAL_FAILED":
+            print(f"  [DEVEL_EVAL_FAILED] {r.pkgbase}: pkgver() resolution failed (skipped){star}")
         elif r.action == "DOWNGRADE":
             print(f"  [DOWNGRADE]      {r.pkgbase}: installed {r.installed_ver} > pkgbuild {r.pkgbuild_ver} (skipped){star}")
         elif r.action == "PULL_FAILED":
