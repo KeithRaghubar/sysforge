@@ -127,7 +127,7 @@ _sysforge_update() {
   _arguments \
     '--packages[path to packages.toml override file]:file:_files' \
     '--dry-run[show what would be rebuilt without doing it]' \
-    '--devel[resolve VCS packages (-git, -svn, -hg, -bzr) via pkgver() and rebuild only those past installed]' \
+    '--devel[resolve VCS packages (-git, -svn, -hg, -bzr) via pkgver() and rebuild only those past installed; reuses per-package upstream commits via git ls-remote on subsequent runs]' \
     '--offline[no network: skip pulls, clones, and AUR RPC]' \
     '--install-only[skip rebuild; install only pre-built artifacts in PKGDEST newer than installed (implies --offline)]' \
     '--interactive[pause on build failures to allow manual correction]' \

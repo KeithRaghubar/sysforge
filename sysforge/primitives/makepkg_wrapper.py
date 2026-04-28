@@ -1512,6 +1512,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         try:
             from sysforge.primitives.build_state import BuildState
             from sysforge.pipeline.state import resolve_state_dir
+            from sysforge.primitives.vcs_pkgver import read_built_upstream_commit
             _state_dir, _ = resolve_state_dir(options.state_dir)
             bs = BuildState(_state_dir)
             globals_ = pkgmeta.get("globals", {})
@@ -1520,6 +1521,14 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 pkgnames = [pkgnames]
             pkgbase = globals_.get("pkgbase") or (pkgnames[0] if pkgnames else "unknown")
             fs = serialize_flags(resolved_profile) if resolved_profile is not None else None
+
+            # Single-git-source VCS packages: capture the just-built upstream
+            # SHA from the cloned srcdir so the next `sysforge update --devel`
+            # can short-circuit pkgver() resolution via `git ls-remote`.
+            # Returns None for non-VCS, multi-git-source, or unparseable
+            # source URLs — recorded entries simply omit the field and fall
+            # through to the full path on the next check.
+            upstream_commit = read_built_upstream_commit(pkgbuild_path.parent)
 
             # Prefer pkgver/pkgrel/epoch from the built .pkg.tar.* filenames
             # over the static PKGBUILD parse. The parser intentionally leaves
@@ -1550,6 +1559,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     pkgbuild_dir=pkgbuild_path.parent,
                     build_mode="profiled",
                     flags_string=fs,
+                    built_upstream_commit=upstream_commit,
                 )
             bs.save()
             _build_log.info(f"Recorded build state for {pkgbase!r}")

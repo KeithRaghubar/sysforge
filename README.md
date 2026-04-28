@@ -35,7 +35,10 @@ sysforge build neovim-git -m "-si"
 #     from the local HEAD. Steady-state runs do zero git fetches.)
 sysforge update
 
-# 5. Rebuild VCS packages too
+# 5. Rebuild VCS packages too. Each VCS package's pkgver() is resolved against
+#    upstream once, then cached as `built_upstream_commit` in build_state.toml
+#    on success; subsequent --devel runs short-circuit via `git ls-remote`
+#    when the upstream tip hasn't moved.
 sysforge update --devel
 
 # 6. Preview what would be rebuilt without doing it

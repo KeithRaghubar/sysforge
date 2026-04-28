@@ -157,6 +157,42 @@ def test_build_mode_in_serialized_toml(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# built_upstream_commit field
+# ---------------------------------------------------------------------------
+
+_FAKE_SHA = "deadbeef0123456789deadbeef0123456789dead"
+
+
+def test_record_with_built_upstream_commit(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="cosmic-comp-git", pkgver="1.0", pkgrel="1", epoch="0",
+              pkgbase="cosmic-comp-git", pkgbuild_dir=Path("/tmp/x"),
+              built_upstream_commit=_FAKE_SHA)
+    entry = bs.get("cosmic-comp-git")
+    assert entry["built_upstream_commit"] == _FAKE_SHA
+
+
+def test_record_without_built_upstream_commit_omits_field(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs)
+    entry = bs.get("htop")
+    assert "built_upstream_commit" not in entry
+
+
+def test_built_upstream_commit_persisted_and_reloaded(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="cosmic-comp-git", pkgver="1.0", pkgrel="1", epoch="0",
+              pkgbase="cosmic-comp-git", pkgbuild_dir=Path("/tmp/x"),
+              built_upstream_commit=_FAKE_SHA)
+    _record(bs, pkgname="htop")
+    bs.save()
+
+    bs2 = BuildState(tmp_path)
+    assert bs2.get("cosmic-comp-git")["built_upstream_commit"] == _FAKE_SHA
+    assert "built_upstream_commit" not in bs2.get("htop")
+
+
+# ---------------------------------------------------------------------------
 # State dir via SYSFORGE_STATE_DIR env var
 # ---------------------------------------------------------------------------
 

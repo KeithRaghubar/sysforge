@@ -554,7 +554,9 @@ def _add_update_parser(sub):
         help="Resolve and rebuild VCS packages (-git, -svn, -hg, -bzr) whose "
              "upstream HEAD has advanced past the installed version. "
              "Resolution runs makepkg --nobuild per VCS package; up-to-date "
-             "packages are skipped, not rebuilt.")
+             "packages are skipped, not rebuilt. Per-package upstream commits "
+             "recorded in build_state are reused on subsequent runs to "
+             "short-circuit the resolve via git ls-remote.")
     p.add_argument("--offline", action="store_true", dest="offline",
         help="No network: skip git pulls, clones, and AUR RPC. Pure local version check.")
     p.add_argument("--install-only", action="store_true", dest="install_only",

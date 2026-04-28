@@ -42,7 +42,7 @@ _log = log.get_logger("UPDATE")
 from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-from sysforge.primitives.vcs_pkgver import evaluate_vcs_pkgver
+from sysforge.primitives.vcs_pkgver import evaluate_vcs_pkgver, peek_upstream_commit
 from sysforge.primitives.aur import fetch_aur_name_cache, aur_info
 from sysforge.primitives.source_sync import (
     SyncRequest, SyncResult,
@@ -328,6 +328,7 @@ def _check_one_pkgbase(
     skip_sync_check: bool,
     rpc_version_by_base: dict[str, str],
     force_devel: bool = False,
+    built_upstream_commit: str | None = None,
 ) -> _UpdateResult | None:
     """Check a single pkgbase and return an _UpdateResult, or None on skip."""
     pkgbuild_dir = Path(entry["pkgbuild_dir"])
@@ -395,6 +396,20 @@ def _check_one_pkgbase(
                 installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
                 pkgbuild_path=pkgbuild_path, has_build_record=has_record,
             )
+
+        # Cheap short-circuit: if the upstream HEAD still matches the SHA we
+        # built last time (recorded in build_state.toml), skip the full
+        # ``makepkg -od --nobuild`` resolve. peek_upstream_commit returns
+        # None for multi-git-source / unparseable PKGBUILDs / network errors,
+        # and we fall through to the canonical path in that case.
+        if built_upstream_commit is not None:
+            current_commit = peek_upstream_commit(pkgbuild_dir)
+            if current_commit is not None and current_commit == built_upstream_commit:
+                return _UpdateResult(
+                    pkgbase=pkgbase, pkgnames=pkgnames, action="UP_TO_DATE",
+                    installed_ver=installed_ver, pkgbuild_ver=installed_ver,
+                    pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+                )
 
         resolved = evaluate_vcs_pkgver(pkgbuild_dir)
         if resolved is None:
@@ -611,6 +626,21 @@ def cmd_update(args) -> None:
     results: list[_UpdateResult] = []
 
     force_devel = getattr(args, "devel", False)
+    # Per-pkgbase upstream-commit cache for the --devel ls-remote short-circuit.
+    # Read once before fan-out so worker threads don't all touch BuildState.
+    # Field is only populated for single-git-source VCS packages that have
+    # been successfully built since the optimisation landed; missing → None
+    # means the worker falls back to the full evaluate_vcs_pkgver path.
+    built_commit_by_base: dict[str, str | None] = {}
+    if force_devel:
+        for pkgbase, pkgnames in pkgbase_map.items():
+            for pn in pkgnames:
+                rec = bs.get(pn)
+                if rec is not None:
+                    sha = rec.get("built_upstream_commit")
+                    if sha:
+                        built_commit_by_base[pkgbase] = sha
+                        break
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(
@@ -618,6 +648,7 @@ def cmd_update(args) -> None:
                 pkgbase_entry[pkgbase], sync_failures, all_installed,
                 unrecorded_names, skip_sync_check, rpc_version_by_base,
                 force_devel,
+                built_commit_by_base.get(pkgbase),
             ): pkgbase
             for pkgbase, pkgnames in sorted(pkgbase_map.items())
         }
