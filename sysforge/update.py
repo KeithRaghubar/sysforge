@@ -480,10 +480,10 @@ def _find_existing_artifacts(
     """Locate already-built .pkg.tar artifacts matching pkgnames.
 
     Two-stage lookup:
-      1. Strict glob ``{pkgname}-{pkgbuild_ver}-*.pkg.tar.*`` — matches
+      1. Strict glob ``{pkgname}-{pkgbuild_ver}-*.pkg.tar*`` — matches
          non-VCS packages where the static PKGBUILD parse equals the
          filename version exactly.
-      2. Fallback ``{pkgname}-*-*-*.pkg.tar.*`` + filename parse + vercmp
+      2. Fallback ``{pkgname}-*-*-*.pkg.tar*`` + filename parse + vercmp
          to pick the newest. Required for VCS (-git/-svn/...) packages,
          where ``pkgver()`` bumps the version at build time
          (PKGBUILD ``pkgver=0.1.0`` → artifact ``0.1.0.r45.g1234567``)
@@ -504,7 +504,7 @@ def _find_existing_artifacts(
         if pkgbuild_ver:
             strict = [
                 p for p in Path(search_dir).glob(
-                    f"{pkgname}-{pkgbuild_ver}-*.pkg.tar.*"
+                    f"{pkgname}-{pkgbuild_ver}-*.pkg.tar*"
                 )
                 if not p.name.endswith(".sig")
             ]
@@ -513,7 +513,7 @@ def _find_existing_artifacts(
                 continue
 
         candidates: list[tuple[str, Path]] = []
-        for p in Path(search_dir).glob(f"{pkgname}-*-*-*.pkg.tar.*"):
+        for p in Path(search_dir).glob(f"{pkgname}-*-*-*.pkg.tar*"):
             if p.name.endswith(".sig"):
                 continue
             parsed = _parse_built_pkg_filename(pkgname, p.name)

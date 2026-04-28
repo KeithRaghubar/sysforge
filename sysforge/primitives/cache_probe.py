@@ -211,13 +211,14 @@ def emit_build_stats(pkgname: str, cc_delta: dict | None, sc_delta: dict | None)
 def probe_pacman_cache(path: str = "/var/cache/pacman/pkg") -> dict | None:
     """
     Return pacman cache file count and total size, or None if inaccessible.
-    Only counts *.pkg.tar.* files.
+    Counts both compressed (*.pkg.tar.zst, *.pkg.tar.xz) and uncompressed
+    (*.pkg.tar) packages — the latter is produced when PKGEXT='.pkg.tar'.
     """
     p = Path(path)
     if not p.is_dir():
         return None
     try:
-        files = list(p.glob("*.pkg.tar.*"))
+        files = list(p.glob("*.pkg.tar*"))
         total = sum(f.stat().st_size for f in files)
         return {"count": len(files), "size_bytes": total, "path": str(p)}
     except PermissionError:

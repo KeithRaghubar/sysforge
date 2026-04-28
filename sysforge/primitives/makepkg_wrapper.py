@@ -825,19 +825,26 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
 
 def _find_built_packages(build_dir: Path) -> list:
-    """Return .pkg.tar.* files in build_dir (excludes .sig files)."""
-    return [p for p in Path(build_dir).glob("*.pkg.tar.*")
+    """Return .pkg.tar* files in build_dir (excludes .sig files).
+
+    Matches both compressed (.pkg.tar.zst, .pkg.tar.xz) and uncompressed
+    (.pkg.tar) packages — the latter is produced when PKGEXT='.pkg.tar'.
+    """
+    return [p for p in Path(build_dir).glob("*.pkg.tar*")
             if not p.name.endswith(".sig")]
 
 
-_PKG_FILENAME_EXT = re.compile(r"\.pkg\.tar\.[^.]+$")
+# Trailing compression suffix is optional: PKGEXT='.pkg.tar' produces
+# uncompressed package files, and `makepkg --packagelist` always prints
+# names that match the configured PKGEXT.
+_PKG_FILENAME_EXT = re.compile(r"\.pkg\.tar(?:\.[^.]+)?$")
 
 
 def _parse_built_pkg_filename(pkgname: str, filename: str) -> tuple[str, str, str] | None:
     """
     Parse a built Arch package filename into ``(epoch, pkgver, pkgrel)``.
 
-    Expected form: ``<pkgname>-[epoch:]<pkgver>-<pkgrel>-<arch>.pkg.tar.<ext>``.
+    Expected form: ``<pkgname>-[epoch:]<pkgver>-<pkgrel>-<arch>.pkg.tar[.<ext>]``.
     Returns None if the filename does not match this layout for ``pkgname``.
 
     This is the canonical post-build source of truth for a package's version:

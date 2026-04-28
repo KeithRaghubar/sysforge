@@ -284,6 +284,16 @@ def test_parse_built_pkg_filename_alt_compression():
     ) == ("0", "3.4.1", "1")
 
 
+def test_parse_built_pkg_filename_uncompressed():
+    # PKGEXT='.pkg.tar' yields uncompressed names; `makepkg --packagelist`
+    # emits them and evaluate_vcs_pkgver feeds them through this parser.
+    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+    assert _parse_built_pkg_filename(
+        "cosmic-applets-git",
+        "cosmic-applets-git-1.0.11.r7.gc003924-1-x86_64.pkg.tar",
+    ) == ("0", "1.0.11.r7.gc003924", "1")
+
+
 # ---------------------------------------------------------------------------
 # sync_with_installed (superset behaviour)
 # ---------------------------------------------------------------------------

@@ -187,6 +187,16 @@ def test_find_built_packages_excludes_sig(tmp_path):
     assert result[0].name == "foo-1.0-1-x86_64.pkg.tar.zst"
 
 
+def test_find_built_packages_finds_uncompressed(tmp_path):
+    # PKGEXT='.pkg.tar' produces uncompressed package files. The .sig still
+    # uses the .pkg.tar.sig form and must be excluded.
+    (tmp_path / "foo-1.0-1-x86_64.pkg.tar").touch()
+    (tmp_path / "foo-1.0-1-x86_64.pkg.tar.sig").touch()
+    result = _find_built_packages(tmp_path)
+    assert len(result) == 1
+    assert result[0].name == "foo-1.0-1-x86_64.pkg.tar"
+
+
 def test_find_built_packages_ignores_unrelated(tmp_path):
     (tmp_path / "PKGBUILD").touch()
     (tmp_path / "src").mkdir()

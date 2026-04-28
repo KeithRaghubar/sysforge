@@ -227,6 +227,20 @@ def test_probe_pacman_cache_missing_dir(tmp_path):
     assert r is None
 
 
+def test_probe_pacman_cache_uncompressed(tmp_path):
+    # PKGEXT='.pkg.tar' produces uncompressed packages; the probe must
+    # count both forms alongside compressed artifacts.
+    pkg_dir = tmp_path / "pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "foo-1.0-1-x86_64.pkg.tar.zst").write_bytes(b"A" * 1024)
+    (pkg_dir / "bar-2.0-1-x86_64.pkg.tar").write_bytes(b"B" * 2048)
+
+    r = probe_pacman_cache(str(pkg_dir))
+    assert r is not None
+    assert r["count"] == 2
+    assert r["size_bytes"] == 3072
+
+
 # ---------------------------------------------------------------------------
 # probe_ldso_mtime
 # ---------------------------------------------------------------------------
