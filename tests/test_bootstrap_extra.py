@@ -471,13 +471,23 @@ class TestCreateStateDir:
             _create_state_dir(cfg)
         state_dir = tmp_path / "var/lib/sysforge"
         assert state_dir.is_dir()
-        assert mock_chroot.call_count == 2
+        assert mock_chroot.call_count == 3
         mock_chroot.assert_any_call(
-            str(tmp_path), ["chown", "root:sysforge", "/var/lib/sysforge"]
+            str(tmp_path), ["chown", "-R", "root:sysforge", "/var/lib/sysforge"]
         )
         mock_chroot.assert_any_call(
-            str(tmp_path), ["chmod", "0775", "/var/lib/sysforge"]
+            str(tmp_path), ["chmod", "02775", "/var/lib/sysforge"]
         )
+        # Recursive contents normalization: any existing files written
+        # earlier in the pipeline get setgid dirs + g+w files.
+        find_calls = [
+            c for c in mock_chroot.call_args_list
+            if len(c.args) >= 2 and c.args[1][:2] == ["sh", "-c"]
+        ]
+        assert len(find_calls) == 1
+        sh_script = find_calls[0].args[1][2]
+        assert "find /var/lib/sysforge -mindepth 1 -type d -exec chmod 02775" in sh_script
+        assert "find /var/lib/sysforge -mindepth 1 -type f -exec chmod g+w" in sh_script
 
 
 class TestConfigureShell:

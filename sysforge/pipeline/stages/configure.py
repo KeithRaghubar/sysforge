@@ -353,12 +353,23 @@ def _create_sysforge_group(cfg: BootstrapConfig) -> None:
 
 
 def _create_state_dir(cfg: BootstrapConfig) -> None:
-    """Create /var/lib/sysforge owned by root:sysforge in the target."""
+    """Create /var/lib/sysforge owned by root:sysforge in the target.
+
+    The bootstrap pipeline writes sysforge.log and pipeline_state.toml into
+    this dir (as root) before the configure stage runs, so without a recursive
+    pass those files stay root:root 0644 and block the post-reboot --resume
+    when the primary user (in group sysforge) tries to append. Setgid on the
+    dir means files written by stages after configure inherit the sysforge
+    group automatically.
+    """
     state_dir = Path(cfg.target) / "var/lib/sysforge"
     state_dir.mkdir(parents=True, exist_ok=True)
-    _chroot(cfg.target, ["chown", "root:sysforge", "/var/lib/sysforge"])
-    _chroot(cfg.target, ["chmod", "0775", "/var/lib/sysforge"])
-    _log.ui("State dir: /var/lib/sysforge (root:sysforge, mode 0775)")
+    _chroot(cfg.target, ["chown", "-R", "root:sysforge", "/var/lib/sysforge"])
+    _chroot(cfg.target, ["chmod", "02775", "/var/lib/sysforge"])
+    _chroot(cfg.target, ["sh", "-c",
+        "find /var/lib/sysforge -mindepth 1 -type d -exec chmod 02775 {} +; "
+        "find /var/lib/sysforge -mindepth 1 -type f -exec chmod g+w {} +"])
+    _log.ui("State dir: /var/lib/sysforge (root:sysforge, mode 02775, contents g+w)")
 
 
 def _copy_config_files(cfg: BootstrapConfig) -> None:

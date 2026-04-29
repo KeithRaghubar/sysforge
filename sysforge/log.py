@@ -140,6 +140,13 @@ def open_unified_log(path, purge: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = "w" if purge else "a"
     _unified_log_fh = open(path, mode, buffering=1)  # line-buffered
+    # Group-writable so other sysforge-group members (e.g. post-reboot primary
+    # user) can append on subsequent invocations. Best-effort: silently skip if
+    # we don't own the file (e.g. appending an existing root-owned log).
+    try:
+        path.chmod(0o664)
+    except OSError:
+        pass
     _write_to_files(_session_header("sysforge pipeline"), raw=True)
 
 
