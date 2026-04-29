@@ -109,12 +109,14 @@ iwctl station wlan0 connect "SSID"
 Run the setup script directly from the repo:
 
 ```bash
+# Latest stable AUR sysforge:
 bash <(curl -sL https://raw.githubusercontent.com/KeithRaghubar/sysforge/main/tools/iso-install.sh)
+
+# Or, to track main with the AUR sysforge-git package:
+bash <(curl -sL https://raw.githubusercontent.com/KeithRaghubar/sysforge/main/tools/iso-install.sh) --git
 ```
 
-The script clones the repo itself — no prior download needed.
-
-The script checks connectivity, installs SysForge (lightweight — no build tools needed), copies config files to `/etc/sysforge/`, and prompts for all required bootstrap values: device, filesystem, hostname, locale, timezone (validated against `/usr/share/zoneinfo/`), username, and passwords (entered silently with confirmation). It writes a complete `bootstrap.toml` and prints the next command when done.
+The script checks connectivity, installs SysForge from the AUR (config files at `/etc/sysforge/` are shipped by the package), and prompts for all required bootstrap values: device, filesystem, hostname, locale, timezone (validated against `/usr/share/zoneinfo/`), username, and passwords (entered silently with confirmation). It writes a complete `bootstrap.toml` and prints the next command when done.
 
 To configure manually instead, edit `/etc/sysforge/bootstrap.toml` directly — every field is documented inline.
 

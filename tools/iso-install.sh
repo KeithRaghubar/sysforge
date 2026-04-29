@@ -2,15 +2,36 @@
 # iso-install.sh — install SysForge on the Arch live ISO and configure bootstrap.toml
 #
 # Run as root from the live Arch install environment:
-#   bash tools/iso-install.sh
+#   bash tools/iso-install.sh           # installs latest stable AUR 'sysforge'
+#   bash tools/iso-install.sh --git     # installs AUR 'sysforge-git' (tip of main)
 #
 # After this script completes, run the bootstrap pipeline:
 #   sysforge run pipeline --state-dir /mnt/var/lib/sysforge
 
 set -euo pipefail
 
-REPO="https://github.com/KeithRaghubar/sysforge.git"
-CLONE_DIR="$HOME/sysforge"
+PKG="sysforge"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -g|--git)
+            PKG="sysforge-git"
+            shift
+            ;;
+        -h|--help)
+            sed -n '2,9p' "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown argument: $1" >&2
+            echo "Usage: $0 [--git]" >&2
+            exit 2
+            ;;
+    esac
+done
+
+AUR_URL="https://aur.archlinux.org/${PKG}.git"
+BUILD_USER="aurbuild"
+SUDOERS_DROPIN="/etc/sudoers.d/99-${BUILD_USER}-iso-install"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -74,32 +95,36 @@ if ! ping -c 1 -W 3 archlinux.org &>/dev/null; then
 fi
 echo "  OK"
 
-# ── 2. Install SysForge ───────────────────────────────────────────────────────
+# ── 2. Install SysForge from AUR ──────────────────────────────────────────────
 
-_header "Installing SysForge"
-pacman -Sy --needed --noconfirm git python-pip
+_header "Installing $PKG from AUR"
+pacman -Sy --needed --noconfirm git base-devel
 
-if [[ -d "$CLONE_DIR/.git" ]]; then
-    echo "  Updating existing clone: $CLONE_DIR"
-    git -C "$CLONE_DIR" pull --rebase --quiet
-else
-    git clone --quiet "$REPO" "$CLONE_DIR"
+# makepkg refuses to run as root; create an unprivileged build user with
+# passwordless sudo (needed by makepkg's pacman -U install step). The drop-in
+# and any user we create are removed on exit.
+_created_user=0
+if ! id "$BUILD_USER" &>/dev/null; then
+    useradd -m -s /bin/bash "$BUILD_USER"
+    _created_user=1
 fi
+install -m 0440 /dev/stdin "$SUDOERS_DROPIN" <<< "$BUILD_USER ALL=(ALL) NOPASSWD: ALL"
 
-pip install --break-system-packages --no-deps --quiet "$CLONE_DIR"
-echo "  Installed: $(sysforge --help 2>&1 | head -1 || echo sysforge)"
+cleanup_build_user() {
+    rm -f "$SUDOERS_DROPIN"
+    if [[ "$_created_user" == 1 ]]; then
+        userdel -r "$BUILD_USER" 2>/dev/null || true
+    fi
+}
+trap cleanup_build_user EXIT
 
-# ── 3. Config files ───────────────────────────────────────────────────────────
+BUILD_DIR=$(sudo -u "$BUILD_USER" mktemp -d -t "iso-install-$PKG-XXXX")
+sudo -u "$BUILD_USER" git clone --quiet "$AUR_URL" "$BUILD_DIR/$PKG"
+( cd "$BUILD_DIR/$PKG" && sudo -u "$BUILD_USER" makepkg -si --noconfirm --needed )
 
-_header "Installing config files"
-if [[ ! -d /etc/sysforge ]]; then
-    cp -r "$CLONE_DIR/etc/sysforge" /etc/sysforge
-    echo "  Copied to /etc/sysforge"
-else
-    echo "  /etc/sysforge already exists — skipping"
-fi
+echo "  Installed: $(sysforge --help 2>&1 | head -1 || echo "$PKG")"
 
-# ── 4. Configure bootstrap.toml ───────────────────────────────────────────────
+# ── 3. Configure bootstrap.toml ───────────────────────────────────────────────
 
 _header "Configure bootstrap.toml"
 echo
