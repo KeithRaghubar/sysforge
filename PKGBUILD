@@ -30,7 +30,7 @@ optdepends=(
 conflicts=('sysforge-git')
 provides=('sysforge')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('eea4194a3734cdf6a438a2a44af27e1ada074140b5527ef1724c2d9ec4ea9906')
+sha256sums=('f8763cd58680e10752ed893e5432e0de38ae3df6c8ea92fe944614453cab1914')
 
 build() {
     cd "$srcdir/$pkgname-$pkgver"

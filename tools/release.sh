@@ -55,7 +55,11 @@ chroot_build() {
     scratch=$(mktemp -d)
     cp "$pkgbuild_src" "$scratch/PKGBUILD"
     echo "    building $label in $CHROOT_ROOT (scratch: $scratch)"
-    (cd "$scratch" && makechrootpkg -c -u -r "$CHROOT_ROOT")
+    # Force PKGDEST/SRCPKGDEST/LOGDEST to the scratch dir so the produced
+    # package lands where the post-build check looks. Otherwise makechrootpkg
+    # honors PKGDEST from the host's /etc/makepkg.conf (e.g. /home/packages).
+    (cd "$scratch" && PKGDEST="$scratch" SRCPKGDEST="$scratch" LOGDEST="$scratch" \
+        makechrootpkg -c -u -r "$CHROOT_ROOT")
     if ! compgen -G "$scratch"/*.pkg.tar.zst > /dev/null; then
         echo "ERROR: chroot build of $label produced no package"
         rm -rf "$scratch"
