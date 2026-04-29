@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-**Current status:** v0.2.0. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `converge`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are shipped but **experimental and deferred to post-1.0** — they emit a runtime `[WARN]` and default to disabled; 1.0 users should use the system compiler and a stock pacman kernel.
+**Current status:** v1.0.0. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `converge`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are shipped but **experimental and deferred to post-1.0** — they emit a runtime `[WARN]` and default to disabled; 1.0 users should use the system compiler and a stock pacman kernel.
 
 ---
 

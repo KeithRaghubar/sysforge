@@ -1,7 +1,7 @@
 # Maintainer: Keith Raghubar <aur.archlinux.org.buckskin000@passmail.net>
 
 pkgname=sysforge
-pkgver=0.2.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="All-in-one Arch Linux helper for system setup and package management with compiler-optimized builds"
 arch=('any')
@@ -58,6 +58,7 @@ package() {
 
     # Default config files
     local _conf="$pkgdir/etc/sysforge"
+    install -Dm644 etc/sysforge/sysforge.toml               "$_conf/sysforge.toml"
     install -Dm644 etc/sysforge/profiles.toml               "$_conf/profiles.toml"
     install -Dm644 etc/sysforge/packages.toml               "$_conf/packages.toml"
     install -Dm644 etc/sysforge/kernel.toml                 "$_conf/kernel.toml"
