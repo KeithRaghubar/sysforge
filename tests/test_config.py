@@ -336,3 +336,36 @@ class TestFindPkgbuild:
         config = {"paths": {"pkgbuild_src_dir": str(src_dir)}}
         result = find_pkgbuild("mypkg", config=config)
         assert result == pkgbuild.resolve()
+
+    def test_creates_pkgbuild_src_dir_before_clone(self, tmp_path, monkeypatch):
+        """
+        On a fresh system pkgbuild_src_dir may not exist yet. find_pkgbuild
+        must create it before reaching pkgctl_checkout, otherwise
+        subprocess(cwd=str(parent)) raises FileNotFoundError before pkgctl
+        even starts.
+        """
+        from unittest.mock import patch
+        from sysforge.primitives.config import find_pkgbuild
+        monkeypatch.chdir(tmp_path)
+
+        src_dir = tmp_path / "src"  # deliberately not created
+        assert not src_dir.exists()
+
+        # Stub the network/system probes: pretend htop is a repo package and
+        # capture the parent dir state at the moment pkgctl_checkout is called.
+        observed_parent_exists = {}
+
+        def fake_pkgctl_checkout(name, dest, *, timeout=60):
+            observed_parent_exists["before"] = dest.parent.exists()
+            # Simulate pkgctl creating dest/PKGBUILD
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "PKGBUILD").write_text("pkgname=htop\n")
+
+        with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
+             patch("sysforge.primitives.aur.pkgctl_checkout",
+                   side_effect=fake_pkgctl_checkout):
+            config = {"paths": {"pkgbuild_src_dir": str(src_dir)}}
+            result = find_pkgbuild("htop", config=config)
+
+        assert observed_parent_exists.get("before") is True
+        assert result == (src_dir / "htop" / "PKGBUILD").resolve()

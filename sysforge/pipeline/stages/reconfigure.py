@@ -267,24 +267,36 @@ def _step_editor(config, state, options, editor: str) -> str:
 
     if not shutil.which(new_editor):
         _log.warn(f"  {new_editor!r} not found in PATH")
-        install = _prompt(f"  Try 'pacman -S {new_editor}'? [y/N]: ").lower()
-        if install == "y" and not options.dry_run:
+        # The editor binary name often differs from the pacman package name
+        # (e.g. nvim → neovim). Default the package guess to the binary, but
+        # let the user override it.
+        pkg_name = _prompt(
+            f"  Pacman package name to install [{new_editor}, ↵ to skip install]: "
+        ) or ""
+        if pkg_name and not options.dry_run:
             result = subprocess.run(
-                ["sudo", "pacman", "-S", "--needed", "--noconfirm", new_editor]
+                ["sudo", "pacman", "-S", "--needed", "--noconfirm", pkg_name]
             )
             if result.returncode != 0 or not shutil.which(new_editor):
                 _log.warn(
-                    f"  Install failed — keeping {editor!r}. "
-                    f"Install {new_editor!r} manually and re-run the editor step."
+                    f"  Install of {pkg_name!r} did not produce {new_editor!r} "
+                    f"on PATH — keeping {editor!r}. "
+                    f"Install manually (e.g. 'pacman -S <pkg>' where the package "
+                    f"provides /usr/bin/{new_editor}) and re-run the editor step."
                 )
                 return editor
-            _log.ui(f"  {new_editor} installed")
+            _log.ui(f"  {pkg_name} installed; {new_editor} now on PATH")
         else:
             _log.warn(
                 f"  Keeping {editor!r}. "
                 f"Install {new_editor!r} manually and re-run the editor step to change."
             )
             return editor
+
+    # Final guard: never persist or return an editor that isn't resolvable.
+    if not shutil.which(new_editor):
+        _log.warn(f"  {new_editor!r} still not on PATH — keeping {editor!r}.")
+        return editor
 
     save = _prompt("  Save as sysforge default? [y/N]: ").lower()
     if save == "y":
@@ -321,13 +333,48 @@ def _validate_flag_profiles(path: Path) -> tuple[bool, str]:
         return False, str(e)
 
 
-def _open_in_editor(path: Path, editor: str) -> None:
+def _run_editor_argv(argv: list[str]) -> int:
+    """
+    Run an editor argv with stdin/stdout/stderr bound to /dev/tty when one is
+    available. Without this, sysforge invoked under output redirection
+    (e.g. ``sysforge ... | tee log``) would launch the editor with a piped
+    stdout, and TUI editors like nvim detect the non-tty and exit silently
+    without ever drawing.
+
+    Returns the editor's exit code, or -1 if the binary couldn't be found.
+    """
+    tty_fd: int | None = None
     try:
-        result = subprocess.run([editor, str(path)])
-        if result.returncode != 0:
-            _log.warn(f"  Editor exited non-zero for {path.name}")
+        tty_fd = os.open("/dev/tty", os.O_RDWR)
+    except OSError:
+        tty_fd = None
+
+    try:
+        if tty_fd is not None:
+            result = subprocess.run(argv, stdin=tty_fd, stdout=tty_fd, stderr=tty_fd)
+        else:
+            result = subprocess.run(argv)
+        return result.returncode
     except FileNotFoundError:
+        return -1
+    finally:
+        if tty_fd is not None:
+            os.close(tty_fd)
+
+
+def _open_in_editor(path: Path, editor: str) -> None:
+    if not shutil.which(editor):
+        _log.warn(
+            f"  Editor {editor!r} is not on PATH — cannot open {path.name}. "
+            f"Re-run the editor step (1) to pick a different one."
+        )
+        return
+    _log.info(f"  Opening: {editor} {path}")
+    rc = _run_editor_argv([editor, str(path)])
+    if rc == -1:
         _log.warn(f"  Editor not found: {editor!r}")
+    elif rc != 0:
+        _log.warn(f"  Editor {editor!r} exited with code {rc} for {path.name}")
 
 
 def _review_config_file(
@@ -545,9 +592,17 @@ def _step_makepkg(config, state, options, editor: str) -> str:
 
     if _interactive() and not options.dry_run:
         if _prompt("  Edit /etc/makepkg.conf? (requires sudo) [e/↵ skip]: ").lower() == "e":
-            result = subprocess.run(["sudo", editor, str(conf_path)])
-            if result.returncode != 0:
-                _log.warn("  Editor exited non-zero — makepkg.conf may be unchanged")
+            if not shutil.which(editor):
+                _log.warn(
+                    f"  Editor {editor!r} is not on PATH — skipping makepkg.conf edit."
+                )
+            else:
+                _log.info(f"  Opening (sudo): {editor} {conf_path}")
+                rc = _run_editor_argv(["sudo", editor, str(conf_path)])
+                if rc == -1:
+                    _log.warn(f"  Editor not found: {editor!r}")
+                elif rc != 0:
+                    _log.warn(f"  Editor exited with code {rc} — makepkg.conf may be unchanged")
 
     return editor
 

@@ -138,6 +138,7 @@ def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
     """
     timeout = timeout or None  # 0 → disable
     _build_log.info(f"Checking out {name!r} from official repos → {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         result = subprocess.run(
             ["pkgctl", "repo", "clone", "--protocol=https", name],
@@ -505,6 +506,7 @@ def aur_clone(
         extra += ["--branch", ref]
 
     _manifest_log.info(f"Cloning {name!r} from AUR → {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
 
     for attempt in range(2):
         try:

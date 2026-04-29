@@ -400,6 +400,50 @@ def test_pkgctl_checkout_timeout_raises_and_cleans_up(tmp_path):
     assert not dest.exists(), "partial checkout directory should be cleaned up"
 
 
+def test_pkgctl_checkout_creates_parent_dir(tmp_path):
+    """
+    A fresh system may not have pkgbuild_src_dir yet. pkgctl_checkout sets
+    cwd=str(dest.parent) on the subprocess, which raises FileNotFoundError
+    before the binary even runs if the parent doesn't exist. Guard with mkdir.
+    """
+    parent = tmp_path / "src"  # deliberately not created
+    dest = parent / "htop"
+    assert not parent.exists()
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["parent_exists"] = Path(kwargs["cwd"]).exists()
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        pkgctl_checkout("htop", dest)
+
+    assert captured.get("parent_exists") is True
+
+
+def test_aur_clone_creates_parent_dir(tmp_path):
+    """
+    git clone <url> <dest> requires dest's parent to exist. aur_clone must
+    create it so a fresh system without ~/src works.
+    """
+    parent = tmp_path / "src"  # deliberately not created
+    dest = parent / "mesa-git"
+    assert not parent.exists()
+
+    def fake_run(cmd, **kwargs):
+        # Verify parent existed at the moment subprocess was about to run
+        assert dest.parent.exists()
+        dest.mkdir()
+        (dest / "PKGBUILD").write_text("pkgname=mesa-git\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        aur_clone("mesa-git", dest)
+
+    assert (dest / "PKGBUILD").exists()
+
+
 # ---------------------------------------------------------------------------
 # import_pgp_keys
 # ---------------------------------------------------------------------------

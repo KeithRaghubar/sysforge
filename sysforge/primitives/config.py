@@ -81,7 +81,10 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
             if dir_candidate.exists():
                 return dir_candidate.resolve()
 
-            # Not found locally — check repo first, then AUR
+            # Not found locally — check repo first, then AUR.
+            # Ensure pkgbuild_src_dir exists so subprocess cwd= and git clone
+            # don't ENOENT on a fresh system where ~/src hasn't been created yet.
+            pkgbuild_src_dir.mkdir(parents=True, exist_ok=True)
             clone_dest = pkgbuild_src_dir / pkg
             if is_repo_package(pkg):
                 pkgctl_checkout(pkg, clone_dest)  # raises RuntimeError on failure

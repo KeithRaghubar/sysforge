@@ -46,9 +46,12 @@ from sysforge.pipeline.stages.hardware import (
     HardwareStage,
 )
 from sysforge.pipeline.stages.reconfigure import (
+    _open_in_editor,
     _parse_step_selection,
     _resolve_editor,
+    _run_editor_argv,
     _probe_host,
+    _step_editor,
     _STEP_KEYS,
     ReconfigureStage,
 )
@@ -733,6 +736,133 @@ class TestResolveEditor:
             editor, source = _resolve_editor()
         assert editor == "vim"
         assert source == "detected"
+
+
+class TestOpenInEditor:
+    def test_missing_editor_warns_and_returns(self, tmp_path):
+        path = tmp_path / "f.toml"
+        path.write_text("")
+        with patch("sysforge.pipeline.stages.reconfigure.shutil.which",
+                   return_value=None), \
+             patch("sysforge.pipeline.stages.reconfigure.subprocess.run") as run, \
+             patch("sysforge.pipeline.stages.reconfigure._log") as log:
+            _open_in_editor(path, "ghosted-editor")
+        run.assert_not_called()
+        # Warns clearly so the user isn't left wondering why nothing opened.
+        assert log.warn.called
+
+    def test_passes_tty_fd_to_subprocess(self, tmp_path):
+        path = tmp_path / "f.toml"
+        path.write_text("")
+        fake_fd = 9999
+        with patch("sysforge.pipeline.stages.reconfigure.shutil.which",
+                   return_value="/usr/bin/nvim"), \
+             patch("sysforge.pipeline.stages.reconfigure.os.open",
+                   return_value=fake_fd) as os_open, \
+             patch("sysforge.pipeline.stages.reconfigure.os.close") as os_close, \
+             patch("sysforge.pipeline.stages.reconfigure.subprocess.run",
+                   return_value=MagicMock(returncode=0)) as run:
+            _open_in_editor(path, "nvim")
+        # /dev/tty must be opened RDWR and bound to all three streams so
+        # editors keep working under `sysforge ... | tee log`.
+        os_open.assert_called_once()
+        opened_path, flags = os_open.call_args.args
+        assert opened_path == "/dev/tty"
+        # Flag value matches os.O_RDWR (don't import os here just for the const).
+        import os as _os
+        assert flags == _os.O_RDWR
+        kwargs = run.call_args.kwargs
+        assert kwargs.get("stdin") == fake_fd
+        assert kwargs.get("stdout") == fake_fd
+        assert kwargs.get("stderr") == fake_fd
+        os_close.assert_called_once_with(fake_fd)
+
+    def test_falls_back_when_no_tty(self, tmp_path):
+        path = tmp_path / "f.toml"
+        path.write_text("")
+        with patch("sysforge.pipeline.stages.reconfigure.shutil.which",
+                   return_value="/usr/bin/nvim"), \
+             patch("sysforge.pipeline.stages.reconfigure.os.open",
+                   side_effect=OSError("no tty")), \
+             patch("sysforge.pipeline.stages.reconfigure.subprocess.run",
+                   return_value=MagicMock(returncode=0)) as run:
+            _open_in_editor(path, "nvim")
+        # Still calls subprocess.run, just without the tty fd kwargs.
+        kwargs = run.call_args.kwargs
+        assert "stdin" not in kwargs
+
+    def test_warns_on_nonzero_exit(self, tmp_path):
+        path = tmp_path / "f.toml"
+        path.write_text("")
+        with patch("sysforge.pipeline.stages.reconfigure.shutil.which",
+                   return_value="/usr/bin/nvim"), \
+             patch("sysforge.pipeline.stages.reconfigure.os.open",
+                   side_effect=OSError("no tty")), \
+             patch("sysforge.pipeline.stages.reconfigure.subprocess.run",
+                   return_value=MagicMock(returncode=2)), \
+             patch("sysforge.pipeline.stages.reconfigure._log") as log:
+            _open_in_editor(path, "nvim")
+        assert log.warn.called
+
+    def test_run_editor_argv_returns_minus_one_on_filenotfound(self):
+        with patch("sysforge.pipeline.stages.reconfigure.os.open",
+                   side_effect=OSError("no tty")), \
+             patch("sysforge.pipeline.stages.reconfigure.subprocess.run",
+                   side_effect=FileNotFoundError):
+            assert _run_editor_argv(["nope"]) == -1
+
+
+class TestStepEditorRejectsUnresolvable:
+    def _opts(self, dry_run=False):
+        opts = MagicMock()
+        opts.dry_run = dry_run
+        return opts
+
+    def test_rejects_when_install_doesnt_provide_binary(self):
+        # User types nvim, install attempt runs but binary is still missing
+        # (e.g. typed package name doesn't actually provide /usr/bin/nvim).
+        # Function must return the original editor, not the unusable one.
+        prompts = iter([
+            "e",        # change?
+            "nvim",     # new editor
+            "neovim",   # package to install
+            "y",        # save?
+        ])
+        with patch("sysforge.pipeline.stages.reconfigure._interactive",
+                   return_value=True), \
+             patch("sysforge.pipeline.stages.reconfigure._resolve_editor",
+                   return_value=("vi", "default")), \
+             patch("sysforge.pipeline.stages.reconfigure._prompt",
+                   side_effect=lambda *a, **k: next(prompts)), \
+             patch("sysforge.pipeline.stages.reconfigure.shutil.which",
+                   return_value=None), \
+             patch("sysforge.pipeline.stages.reconfigure.subprocess.run",
+                   return_value=MagicMock(returncode=1)), \
+             patch("sysforge.pipeline.stages.reconfigure._save_sysforge_toml_ui") as save:
+            result = _step_editor(None, None, self._opts(), "vi")
+        assert result == "vi"
+        save.assert_not_called()
+
+    def test_does_not_save_unresolvable_editor_after_skipped_install(self):
+        # User types nvim, declines install (empty package name), function
+        # must keep the previous editor and not save anything.
+        prompts = iter([
+            "e",        # change?
+            "nvim",     # new editor
+            "",         # package to install (skip)
+        ])
+        with patch("sysforge.pipeline.stages.reconfigure._interactive",
+                   return_value=True), \
+             patch("sysforge.pipeline.stages.reconfigure._resolve_editor",
+                   return_value=("vi", "default")), \
+             patch("sysforge.pipeline.stages.reconfigure._prompt",
+                   side_effect=lambda *a, **k: next(prompts)), \
+             patch("sysforge.pipeline.stages.reconfigure.shutil.which",
+                   return_value=None), \
+             patch("sysforge.pipeline.stages.reconfigure._save_sysforge_toml_ui") as save:
+            result = _step_editor(None, None, self._opts(), "vi")
+        assert result == "vi"
+        save.assert_not_called()
 
 
 class TestProbeHost:
