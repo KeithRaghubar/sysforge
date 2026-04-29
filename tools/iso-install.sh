@@ -197,14 +197,28 @@ sudo -u "$BUILD_USER" git clone --quiet "$AUR_URL" "$BUILD_DIR/$PKG"
 # Stash the cloned sysforge source where the configure stage can find it.
 # pacman doesn't preserve the source tree from a wheel install, so without
 # this the bootstrap pipeline can't copy sysforge into the target.
-SYSFORGE_SRC="$BUILD_DIR/build/$PKG/src/$PKG"
-if [[ -f "$SYSFORGE_SRC/pyproject.toml" ]]; then
+#
+# The extracted dir name varies by PKGBUILD: stable uses a versioned tarball
+# (sysforge-1.0.0), -git uses $pkgname (sysforge-git). Glob for whichever
+# directory under src/ holds a pyproject.toml.
+SYSFORGE_SRC=$(find "$BUILD_DIR/build/$PKG/src" -mindepth 2 -maxdepth 2 -name pyproject.toml -printf '%h\n' 2>/dev/null | head -1)
+if [[ -n "$SYSFORGE_SRC" && -f "$SYSFORGE_SRC/pyproject.toml" ]]; then
     install -d -m 0755 /var/cache/sysforge
     rm -rf /var/cache/sysforge/source
     cp -a "$SYSFORGE_SRC" /var/cache/sysforge/source
     echo "  Source cached at /var/cache/sysforge/source for the configure stage"
+
+    # Older sysforge releases (≤ v1.0.0) only check pip's direct_url.json for
+    # a directory URL. Patch the installed dist-info to point at the cache so
+    # the configure stage can locate the source without a release bump.
+    DIST_INFO=$(find /usr/lib/python*/site-packages -maxdepth 1 -type d -name 'sysforge-*.dist-info' 2>/dev/null | head -1)
+    if [[ -n "$DIST_INFO" ]]; then
+        printf '%s\n' '{"url":"file:///var/cache/sysforge/source","dir_info":{"editable":false}}' \
+            > "$DIST_INFO/direct_url.json"
+        echo "  Patched $DIST_INFO/direct_url.json → /var/cache/sysforge/source"
+    fi
 else
-    echo "  WARN: expected source tree at $SYSFORGE_SRC not found; configure stage will try the chroot-clone fallback" >&2
+    echo "  WARN: no pyproject.toml found under $BUILD_DIR/build/$PKG/src; configure stage will try the chroot-clone fallback" >&2
 fi
 
 echo "  Installed: $(sysforge --help 2>&1 | head -1 || echo "$PKG")"
