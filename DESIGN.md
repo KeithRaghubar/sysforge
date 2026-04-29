@@ -1218,6 +1218,30 @@ When any pattern matches and the process exits non-zero, `invoke_makepkg` raises
 
 To make the pattern scan work for every build mode, `invoke_makepkg` always uses a single `Popen`-with-tee capture path: each line is matched against the patterns, then forwarded to stdout (or to `[DEBUG][MAKEPKG]` when verbosity ≥ 3). stdin remains inherited so sudo prompts still work.
 
+### Build-failure auto-repair
+
+> **Status: planned for v1.x.** Generalises the toolchain-mismatch auto-retry pattern above into a registry of narrow, deterministic repair primitives. Not implemented yet; documented here so the shape is fixed before code lands.
+
+`invoke_makepkg`'s line-tee already supports stdout/stderr pattern matching. Auto-repair adds a registry of `(detection, repair_fn, retry_phase)` tuples. On match, `_run_build` invokes the repair function (idempotent), then re-runs makepkg with `-e` when sources are already laid down or from scratch when `prepare()` must repeat. Each repair class fires at most once per build, so a misdetected error cannot loop. Auto-repair runs before `_invoke_with_retry`'s interactive "correct manually" prompt; on repair success the prompt is skipped, on repair failure the build falls through to existing failure handling unchanged.
+
+Configuration extends `[failure_handling]` with four scenario keys:
+
+```toml
+vendored_deps_missing = "auto_repair"
+pgp_key_missing       = "auto_repair"
+srcinfo_drift         = "auto_repair_with_warning"
+checksum_mismatch     = "prompt_user"
+```
+
+Three new behaviour values join the existing `abort` / `warn_and_fallback` / `fallback` / `error` set: `auto_repair` (repair silently, retry, log at info), `auto_repair_with_warning` (repair, retry, log at `[WARN]`), `prompt_user` (surface the diff and require explicit consent before repairing).
+
+Repair modes:
+
+- **Vendored deps missing** — meson wraps and git submodules collapse to one primitive (both are "PKGBUILD failed to fetch declared subprojects before configure"). Detection: `Automatic wrap-based subproject downloading is disabled` (meson) or `.gitmodules` present in `${srcdir}/<top>` with empty submodule paths. Repair: `meson subprojects download` for wraps, `git submodule update --init --recursive` for submodules, run from the project root. Safe — fetches only what the project itself declares; no PKGBUILD mutation, no `source=()` change.
+- **PGP key missing** — complements the proactive `import_pgp_keys` invoked before makepkg. Catches the case where signature validation fails mid-build because upstream rotated keys after the proactive import or `prepare()` pulled in newly signed sources. Detection: `gpg: Can't check signature: No public key` with an extractable key ID. Repair: rerun `import_pgp_keys` targeting the surfaced ID, retry once. Same trust model as the proactive path.
+- **`.SRCINFO` drift** — sysforge parses PKGBUILD directly, so its own pipeline never reads `.SRCINFO`, but drift breaks AUR push and clean-chroot consumers. Detection: `makepkg --printsrcinfo` output diffs against the committed `.SRCINFO`. Repair: regenerate, with a `[WARN]` log line. Default is `auto_repair_with_warning` rather than silent because drift usually signals upstream PKGBUILD churn the user should see.
+- **Checksum mismatch** — **not silent.** Default `prompt_user`: sysforge surfaces old vs. new sums and the source URL, then requires explicit consent before invoking `updpkgsums`. Silent auto-fix would mask supply-chain compromise — an attacker who replaces an upstream tarball would have sysforge "fix" the checksum and proceed. The user-prompt requirement is the load-bearing security distinction between this mode and the others; do not relax it without an equivalent compensating control.
+
 ### Patched PKGBUILD preservation
 
 On build failure, patched PKGBUILD files are left in place for diagnosis rather than deleted:
@@ -1554,6 +1578,7 @@ Post-v1.0 enhancements that build on existing infrastructure. Not required for t
 - **Rule priority auto-calculation** — auto-calculate a baseline specificity score from rule conditions (mirrors CSS specificity: more AND'd conditions = higher weight), with manual `priority` override for ties. Deferred until enough real rules exist to validate whether auto-priority causes ordering problems in practice.
 - **Configure stage additions** — btrfs snapshot before build runs, ccache/sccache initialisation check, estimated build time heuristic.
 - **LLVM target filtering** — restrict `LLVM_TARGETS_TO_BUILD` based on detected hardware from the hardware stage (e.g. only X86 on x86_64 systems). Currently builds all targets.
+- **Build-failure auto-repair** — detect narrow recurring failure modes (missing vendored deps, missing PGP keys, `.SRCINFO` drift, checksum mismatch) and run a deterministic repair before falling through to the manual-correction prompt. Extends the toolchain-mismatch auto-retry pattern documented under Makepkg Wrapper. Checksum repair is prompted, not silent — supply-chain safety.
 
 ---
 
