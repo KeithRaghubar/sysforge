@@ -84,6 +84,42 @@ _prompt_password() {
     done
 }
 
+# On the live ISO, / is an overlay backed by /run/archiso/cowspace (default
+# 256 MiB tmpfs). base-devel + git won't fit. Grow it before pacman runs.
+# No-op outside archiso.
+_remount_cowspace() {
+    local mp=/run/archiso/cowspace
+    mountpoint -q "$mp" 2>/dev/null || return 0
+
+    local mem_kb target_kb cur_bytes target_bytes cur_human target_human
+    mem_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+    [[ -n "$mem_kb" ]] || _die "Cannot read MemAvailable from /proc/meminfo"
+
+    target_kb=$(( mem_kb / 2 ))
+    (( target_kb > 4 * 1024 * 1024 )) && target_kb=$(( 4 * 1024 * 1024 ))
+    (( target_kb < 1 * 1024 * 1024 )) && target_kb=$(( 1 * 1024 * 1024 ))
+
+    cur_bytes=$(findmnt -bno SIZE "$mp")
+    target_bytes=$(( target_kb * 1024 ))
+
+    cur_human=$(numfmt --to=iec "$cur_bytes" 2>/dev/null || echo "${cur_bytes}B")
+    target_human=$(numfmt --to=iec "$target_bytes" 2>/dev/null || echo "${target_bytes}B")
+
+    if (( cur_bytes >= target_bytes )); then
+        echo "  cowspace already $cur_human (≥ target $target_human) — leaving as is"
+        return 0
+    fi
+
+    echo "  Remounting $mp: $cur_human → $target_human"
+    if ! mount -o "remount,size=${target_kb}K" "$mp"; then
+        echo >&2
+        echo "  Failed to remount cowspace. Run manually before retrying:" >&2
+        echo "    mount -o remount,size=${target_human} $mp" >&2
+        echo "  Or boot the ISO with kernel param: cow_spacesize=${target_human}" >&2
+        _die "cowspace remount failed"
+    fi
+}
+
 # ── 1. Check internet ─────────────────────────────────────────────────────────
 
 _header "Checking internet connectivity"
@@ -95,7 +131,12 @@ if ! ping -c 1 -W 3 archlinux.org &>/dev/null; then
 fi
 echo "  OK"
 
-# ── 2. Install SysForge from AUR ──────────────────────────────────────────────
+# ── 2. Grow cowspace if on live ISO ───────────────────────────────────────────
+
+_header "Checking live-ISO cowspace"
+_remount_cowspace
+
+# ── 3. Install SysForge from AUR ──────────────────────────────────────────────
 
 _header "Installing $PKG from AUR"
 pacman -Sy --needed --noconfirm git base-devel
@@ -119,12 +160,19 @@ cleanup_build_user() {
 trap cleanup_build_user EXIT
 
 BUILD_DIR=$(sudo -u "$BUILD_USER" mktemp -d -t "iso-install-$PKG-XXXX")
+sudo -u "$BUILD_USER" mkdir -p "$BUILD_DIR/build" "$BUILD_DIR/pkg"
 sudo -u "$BUILD_USER" git clone --quiet "$AUR_URL" "$BUILD_DIR/$PKG"
-( cd "$BUILD_DIR/$PKG" && sudo -u "$BUILD_USER" makepkg -si --noconfirm --needed )
+# Pin BUILDDIR/PKGDEST to the /tmp-backed work dir so makepkg's src/ and pkg/
+# never touch cowspace, regardless of /etc/makepkg.conf. `env` is needed
+# because sudo doesn't preserve env across the user switch.
+( cd "$BUILD_DIR/$PKG" && \
+    sudo -u "$BUILD_USER" \
+        env BUILDDIR="$BUILD_DIR/build" PKGDEST="$BUILD_DIR/pkg" \
+        makepkg -si --noconfirm --needed )
 
 echo "  Installed: $(sysforge --help 2>&1 | head -1 || echo "$PKG")"
 
-# ── 3. Configure bootstrap.toml ───────────────────────────────────────────────
+# ── 4. Configure bootstrap.toml ───────────────────────────────────────────────
 
 _header "Configure bootstrap.toml"
 echo
