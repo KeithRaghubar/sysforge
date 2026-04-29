@@ -266,14 +266,29 @@ _RESUME_REMINDER = """\
 
 _RESUME_REMINDER_PATH = Path("etc/profile.d/sysforge-resume.sh")
 
+# Path where iso-install.sh stashes the AUR-cloned sysforge source so the
+# configure stage can copy it into the target. Wheel-only pacman installs
+# don't preserve the source tree, so this cache is the primary handoff.
+_ISO_INSTALL_SOURCE_CACHE = Path("/var/cache/sysforge/source")
+
+# Upstream repo URL — used as a last-resort clone target inside the chroot
+# when no local source tree can be found. Kept aligned with the AUR PKGBUILD.
+_SYSFORGE_REPO_URL = "https://github.com/KeithRaghubar/sysforge.git"
+
 
 def _find_sysforge_source() -> Path | None:
     """
-    Return the sysforge source directory.
+    Return the sysforge source directory on the live ISO.
 
-    Tries pip's direct_url.json first (editable/path installs), then falls
-    back to locating the sysforge package via __file__.
+    Tries iso-install.sh's source cache first, then pip's direct_url.json
+    (editable/path installs), then walks up from sysforge/__file__.
+    Returns None if nothing usable is found — the caller should fall back
+    to cloning from upstream inside the chroot.
     """
+    # Strategy 0: iso-install.sh stash (covers the AUR install path)
+    if (_ISO_INSTALL_SOURCE_CACHE / "pyproject.toml").is_file():
+        return _ISO_INSTALL_SOURCE_CACHE
+
     # Strategy 1: pip metadata (direct_url.json from path/editable installs)
     try:
         dist = distribution("sysforge")
@@ -302,19 +317,29 @@ def _find_sysforge_source() -> Path | None:
 
 
 def _install_sysforge(cfg: BootstrapConfig) -> None:
-    """Copy the sysforge source from the live ISO into the target and install it."""
-    src = _find_sysforge_source()
-    if src is None:
-        raise RuntimeError(
-            "[CONFIGURE] Cannot locate sysforge source via pip metadata — "
-            "cannot install sysforge into target."
-        )
+    """Place sysforge source under <target>/root/sysforge and install it.
 
+    Prefers a local source tree (iso-install cache, pip metadata, or repo
+    walk-up). Falls back to cloning from upstream inside the chroot so the
+    pipeline still completes when sysforge was installed by some other means.
+    """
     target_src = Path(cfg.target) / "root/sysforge"
-    if target_src.exists():
-        shutil.rmtree(target_src)
-    shutil.copytree(src, target_src)
-    _log.ui(f"sysforge source copied to target ({src} → /root/sysforge)")
+    src = _find_sysforge_source()
+
+    if src is not None:
+        if target_src.exists():
+            shutil.rmtree(target_src)
+        shutil.copytree(src, target_src)
+        _log.ui(f"sysforge source copied to target ({src} → /root/sysforge)")
+    else:
+        if target_src.exists():
+            shutil.rmtree(target_src)
+        _log.warn(
+            "No local sysforge source tree found — cloning from "
+            f"{_SYSFORGE_REPO_URL} inside the chroot."
+        )
+        _chroot(cfg.target, ["git", "clone", "--depth", "1", _SYSFORGE_REPO_URL, "/root/sysforge"])
+        _log.ui(f"sysforge source cloned into target (/root/sysforge)")
 
     _chroot(cfg.target, ["uv", "pip", "install", "--system", "--no-deps", "--break-system-packages", "/root/sysforge"])
     _log.ui("sysforge installed into target.")

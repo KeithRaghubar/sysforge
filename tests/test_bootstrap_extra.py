@@ -504,36 +504,50 @@ class TestConfigureShell:
 
 
 class TestFindSysforgeSource:
+    def test_finds_via_iso_install_cache(self, tmp_path):
+        """Strategy 0: a populated /var/cache/sysforge/source wins over pip metadata."""
+        cache = tmp_path / "source"
+        cache.mkdir()
+        (cache / "pyproject.toml").write_text("[project]\nname='sysforge'\n")
+        with patch("sysforge.pipeline.stages.configure._ISO_INSTALL_SOURCE_CACHE", cache):
+            result = _find_sysforge_source()
+        assert result == cache
+
     def test_finds_via_pip_metadata(self, tmp_path):
         """When pip metadata has a file:// URL, return that path."""
         src_dir = tmp_path / "sysforge-src"
         src_dir.mkdir()
         mock_dist = MagicMock()
         mock_dist.read_text.return_value = f'{{"url": "file://{src_dir}"}}'
-        with patch("sysforge.pipeline.stages.configure.distribution",
+        empty_cache = tmp_path / "no-cache"
+        with patch("sysforge.pipeline.stages.configure._ISO_INSTALL_SOURCE_CACHE", empty_cache), \
+             patch("sysforge.pipeline.stages.configure.distribution",
                    return_value=mock_dist):
             result = _find_sysforge_source()
         assert result == src_dir
 
-    def test_falls_back_to_file(self):
+    def test_falls_back_to_file(self, tmp_path):
         """When pip metadata is absent, __file__ fallback runs without error."""
         from importlib.metadata import PackageNotFoundError
-        with patch("sysforge.pipeline.stages.configure.distribution",
+        empty_cache = tmp_path / "no-cache"
+        with patch("sysforge.pipeline.stages.configure._ISO_INSTALL_SOURCE_CACHE", empty_cache), \
+             patch("sysforge.pipeline.stages.configure.distribution",
                    side_effect=PackageNotFoundError("no metadata")):
             result = _find_sysforge_source()
         # Result depends on whether pyproject.toml is above the installed package
         assert result is None or isinstance(result, Path)
 
     def test_returns_none_when_nothing_found(self, tmp_path):
-        """Returns None when pip metadata has no file:// URL and __file__ has no pyproject.toml."""
+        """Returns None when no cache, no pip metadata, and no pyproject.toml above __file__."""
         from importlib.metadata import PackageNotFoundError
-        # No pip metadata
+        empty_cache = tmp_path / "no-cache"
         # __file__ points to a dir with no pyproject.toml above it
         fake_init = tmp_path / "a/b/sysforge/__init__.py"
         fake_init.parent.mkdir(parents=True)
         fake_init.touch()
         import sysforge as _pkg
-        with patch("sysforge.pipeline.stages.configure.distribution",
+        with patch("sysforge.pipeline.stages.configure._ISO_INSTALL_SOURCE_CACHE", empty_cache), \
+             patch("sysforge.pipeline.stages.configure.distribution",
                    side_effect=PackageNotFoundError("no metadata")), \
              patch.object(_pkg, "__file__", str(fake_init)):
             result = _find_sysforge_source()

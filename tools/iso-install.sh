@@ -170,6 +170,19 @@ sudo -u "$BUILD_USER" git clone --quiet "$AUR_URL" "$BUILD_DIR/$PKG"
         env BUILDDIR="$BUILD_DIR/build" PKGDEST="$BUILD_DIR/pkg" \
         makepkg -si --noconfirm --needed )
 
+# Stash the cloned sysforge source where the configure stage can find it.
+# pacman doesn't preserve the source tree from a wheel install, so without
+# this the bootstrap pipeline can't copy sysforge into the target.
+SYSFORGE_SRC="$BUILD_DIR/build/$PKG/src/$PKG"
+if [[ -f "$SYSFORGE_SRC/pyproject.toml" ]]; then
+    install -d -m 0755 /var/cache/sysforge
+    rm -rf /var/cache/sysforge/source
+    cp -a "$SYSFORGE_SRC" /var/cache/sysforge/source
+    echo "  Source cached at /var/cache/sysforge/source for the configure stage"
+else
+    echo "  WARN: expected source tree at $SYSFORGE_SRC not found; configure stage will try the chroot-clone fallback" >&2
+fi
+
 echo "  Installed: $(sysforge --help 2>&1 | head -1 || echo "$PKG")"
 
 # ── 4. Configure bootstrap.toml ───────────────────────────────────────────────
