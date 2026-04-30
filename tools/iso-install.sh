@@ -134,7 +134,10 @@ _prompt_locale() {
 
     while true; do
         read -r -p "  Locale [$default]: " value
-        value="${value:-$default}"
+        # Accept the default unconditionally on empty input — locale -a on the
+        # live ISO often lacks en_US.UTF-8, so validating the default here would
+        # reject it and trap the user.
+        [[ -z "$value" ]] && { echo "$default"; return; }
         if (( ${#valid[@]} == 0 )); then
             echo "  WARN: 'locale' not found — skipping locale validation" >&2
             echo "$value"; return
@@ -157,7 +160,7 @@ _prompt_keymap() {
 
     while true; do
         read -r -p "  Keymap [$default]: " value
-        value="${value:-$default}"
+        [[ -z "$value" ]] && { echo "$default"; return; }
         if (( ${#valid[@]} == 0 )); then
             echo "  WARN: 'localectl' not found — skipping keymap validation" >&2
             echo "$value"; return
