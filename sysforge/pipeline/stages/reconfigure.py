@@ -264,8 +264,11 @@ def _resolve_editor() -> tuple[str, str]:
         (os.environ.get("EDITOR"), "$EDITOR"),
         (os.environ.get("VISUAL"), "$VISUAL"),
     ]
+    # Each candidate must resolve on PATH; otherwise a stale env var or
+    # config entry would propagate as the "editor" and every subsequent
+    # [e]dit prompt would silently fail to open anything.
     for value, source in candidates:
-        if value:
+        if value and shutil.which(value):
             return value, source
     for fallback in ("vim", "nano", "vi"):
         if shutil.which(fallback):
@@ -293,7 +296,7 @@ def _step_editor(config, state, options, editor: str) -> str:
         return editor
 
     if not shutil.which(new_editor):
-        _log.warn(f"  {new_editor!r} not found in PATH")
+        _log.ui(f"  {new_editor!r} not found in PATH")
         # The editor binary name often differs from the pacman package name
         # (e.g. nvim → neovim). Default the package guess to the binary, but
         # let the user override it.
@@ -301,11 +304,25 @@ def _step_editor(config, state, options, editor: str) -> str:
             f"  Pacman package name to install [{new_editor}, ↵ to skip install]: "
         ) or ""
         if pkg_name and not options.dry_run:
+            # Precheck against pacman's sync DB so a typo'd or non-existent
+            # package is rejected with a clear message instead of failing
+            # mid-transaction inside pacman.
+            check = subprocess.run(
+                ["pacman", "-Si", pkg_name],
+                capture_output=True, text=True,
+            )
+            if check.returncode != 0:
+                _log.ui(
+                    f"  {pkg_name!r} not found in pacman repos — keeping {editor!r}. "
+                    f"Run 'pacman -Ss {new_editor}' to find the right package name "
+                    f"and re-run the editor step."
+                )
+                return editor
             result = subprocess.run(
                 ["sudo", "pacman", "-S", "--needed", "--noconfirm", pkg_name]
             )
             if result.returncode != 0 or not shutil.which(new_editor):
-                _log.warn(
+                _log.ui(
                     f"  Install of {pkg_name!r} did not produce {new_editor!r} "
                     f"on PATH — keeping {editor!r}. "
                     f"Install manually (e.g. 'pacman -S <pkg>' where the package "
@@ -314,7 +331,7 @@ def _step_editor(config, state, options, editor: str) -> str:
                 return editor
             _log.ui(f"  {pkg_name} installed; {new_editor} now on PATH")
         else:
-            _log.warn(
+            _log.ui(
                 f"  Keeping {editor!r}. "
                 f"Install {new_editor!r} manually and re-run the editor step to change."
             )
@@ -322,7 +339,7 @@ def _step_editor(config, state, options, editor: str) -> str:
 
     # Final guard: never persist or return an editor that isn't resolvable.
     if not shutil.which(new_editor):
-        _log.warn(f"  {new_editor!r} still not on PATH — keeping {editor!r}.")
+        _log.ui(f"  {new_editor!r} still not on PATH — keeping {editor!r}.")
         return editor
 
     save = _prompt_choice(
@@ -395,17 +412,17 @@ def _run_editor_argv(argv: list[str]) -> int:
 
 def _open_in_editor(path: Path, editor: str) -> None:
     if not shutil.which(editor):
-        _log.warn(
+        _log.ui(
             f"  Editor {editor!r} is not on PATH — cannot open {path.name}. "
             f"Re-run the editor step (1) to pick a different one."
         )
         return
-    _log.info(f"  Opening: {editor} {path}")
+    _log.ui(f"  Opening: {editor} {path}")
     rc = _run_editor_argv([editor, str(path)])
     if rc == -1:
-        _log.warn(f"  Editor not found: {editor!r}")
+        _log.ui(f"  Editor not found: {editor!r}")
     elif rc != 0:
-        _log.warn(f"  Editor {editor!r} exited with code {rc} for {path.name}")
+        _log.ui(f"  Editor {editor!r} exited with code {rc} for {path.name}")
 
 
 def _review_config_file(

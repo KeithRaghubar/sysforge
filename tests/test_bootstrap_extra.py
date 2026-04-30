@@ -747,7 +747,9 @@ class TestResolveEditor:
     def test_sysforge_editor_env_wins(self):
         with patch.dict("os.environ", {"SYSFORGE_EDITOR": "emacs"}, clear=False), \
              patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
-                   return_value={}):
+                   return_value={}), \
+             patch("sysforge.pipeline.stages.reconfigure.shutil.which",
+                   return_value="/usr/bin/emacs"):
             editor, source = _resolve_editor()
         assert editor == "emacs"
         assert source == "SYSFORGE_EDITOR"
@@ -758,7 +760,9 @@ class TestResolveEditor:
                    return_value={"ui": {"editor": "helix"}}):
             # Clear env vars that might interfere
             env = dict(SYSFORGE_EDITOR="", EDITOR="", VISUAL="")
-            with patch.dict("os.environ", env):
+            with patch.dict("os.environ", env), \
+                 patch("sysforge.pipeline.stages.reconfigure.shutil.which",
+                       return_value="/usr/bin/helix"):
                 editor, source = _resolve_editor()
         assert editor == "helix"
         assert source == "sysforge.toml"
@@ -768,7 +772,9 @@ class TestResolveEditor:
                         {"EDITOR": "nano", "SYSFORGE_EDITOR": ""},
                         clear=False), \
              patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
-                   return_value={}):
+                   return_value={}), \
+             patch("sysforge.pipeline.stages.reconfigure.shutil.which",
+                   return_value="/usr/bin/nano"):
             editor, source = _resolve_editor()
         assert editor == "nano"
         assert source == "$EDITOR"
@@ -785,6 +791,23 @@ class TestResolveEditor:
         assert editor == "vim"
         assert source == "detected"
 
+    def test_env_candidate_not_on_path_falls_through(self):
+        # $EDITOR points at an editor that isn't installed. Without
+        # a PATH check, this would have propagated as "the editor"
+        # and every later [e]dit prompt would silently fail. Must
+        # fall through to the next valid candidate.
+        with patch.dict("os.environ",
+                        {"SYSFORGE_EDITOR": "ghosted",
+                         "EDITOR": "", "VISUAL": ""},
+                        clear=False), \
+             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
+                   return_value={}), \
+             patch("sysforge.pipeline.stages.reconfigure.shutil.which") as mock_which:
+            mock_which.side_effect = lambda x: "/usr/bin/nano" if x == "nano" else None
+            editor, source = _resolve_editor()
+        assert editor == "nano"
+        assert source == "detected"
+
 
 class TestOpenInEditor:
     def test_missing_editor_warns_and_returns(self, tmp_path):
@@ -796,8 +819,10 @@ class TestOpenInEditor:
              patch("sysforge.pipeline.stages.reconfigure._log") as log:
             _open_in_editor(path, "ghosted-editor")
         run.assert_not_called()
-        # Warns clearly so the user isn't left wondering why nothing opened.
-        assert log.warn.called
+        # Must surface at UI level so it's visible at default verbosity —
+        # warn() is gated at -v and would leave the user wondering why
+        # nothing opened.
+        assert log.ui.called
 
     def test_passes_tty_fd_to_subprocess(self, tmp_path):
         path = tmp_path / "f.toml"
@@ -850,7 +875,7 @@ class TestOpenInEditor:
                    return_value=MagicMock(returncode=2)), \
              patch("sysforge.pipeline.stages.reconfigure._log") as log:
             _open_in_editor(path, "nvim")
-        assert log.warn.called
+        assert log.ui.called
 
     def test_run_editor_argv_returns_minus_one_on_filenotfound(self):
         with patch("sysforge.pipeline.stages.reconfigure.os.open",
@@ -881,6 +906,15 @@ class TestStepEditorRejectsUnresolvable:
             "nvim",     # new editor
             "neovim",   # package to install
         ])
+
+        def fake_run(argv, *a, **k):
+            # The pacman -Si precheck must succeed so that the install
+            # path is exercised; the install itself then fails to
+            # produce the binary on PATH.
+            if argv[:2] == ["pacman", "-Si"]:
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=1)
+
         with patch("sysforge.pipeline.stages.reconfigure._interactive",
                    return_value=True), \
              patch("sysforge.pipeline.stages.reconfigure._resolve_editor",
@@ -892,11 +926,49 @@ class TestStepEditorRejectsUnresolvable:
              patch("sysforge.pipeline.stages.reconfigure.shutil.which",
                    return_value=None), \
              patch("sysforge.pipeline.stages.reconfigure.subprocess.run",
-                   return_value=MagicMock(returncode=1)), \
+                   side_effect=fake_run), \
              patch("sysforge.pipeline.stages.reconfigure._save_sysforge_toml_ui") as save:
             result = _step_editor(None, None, self._opts(), "vi")
         assert result == "vi"
         save.assert_not_called()
+
+    def test_pacman_precheck_rejects_unknown_package(self):
+        # User types nvim, then a package name that pacman -Si doesn't
+        # recognise. We must reject early without calling sudo pacman -S
+        # and keep the previous editor.
+        choices = iter([
+            "e",        # change?
+        ])
+        prompts = iter([
+            "nvim",     # new editor
+            "neoooovim",  # bogus package name
+        ])
+        calls = []
+
+        def fake_run(argv, *a, **k):
+            calls.append(argv)
+            if argv[:2] == ["pacman", "-Si"]:
+                return MagicMock(returncode=1)  # not in repos
+            return MagicMock(returncode=0)
+
+        with patch("sysforge.pipeline.stages.reconfigure._interactive",
+                   return_value=True), \
+             patch("sysforge.pipeline.stages.reconfigure._resolve_editor",
+                   return_value=("vi", "default")), \
+             patch("sysforge.pipeline.stages.reconfigure._prompt_choice",
+                   side_effect=lambda *a, **k: next(choices)), \
+             patch("sysforge.pipeline.stages.reconfigure._prompt",
+                   side_effect=lambda *a, **k: next(prompts)), \
+             patch("sysforge.pipeline.stages.reconfigure.shutil.which",
+                   return_value=None), \
+             patch("sysforge.pipeline.stages.reconfigure.subprocess.run",
+                   side_effect=fake_run), \
+             patch("sysforge.pipeline.stages.reconfigure._save_sysforge_toml_ui") as save:
+            result = _step_editor(None, None, self._opts(), "vi")
+        assert result == "vi"
+        save.assert_not_called()
+        # Only the precheck ran — no `sudo pacman -S` attempt.
+        assert calls == [["pacman", "-Si", "neoooovim"]]
 
     def test_does_not_save_unresolvable_editor_after_skipped_install(self):
         # User types nvim, declines install (empty package name), function
