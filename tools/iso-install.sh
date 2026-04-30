@@ -108,6 +108,71 @@ _prompt_country() {
     done
 }
 
+# RFC 1123 hostname label: 1-63 chars, [a-zA-Z0-9-], no leading/trailing hyphen.
+_prompt_hostname() {
+    local value
+    while true; do
+        read -r -p "  Hostname: " value
+        [[ -z "$value" ]] && { echo "  (required — cannot be empty)" >&2; continue; }
+        if [[ "$value" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]]; then
+            echo "$value"; return
+        fi
+        echo "  Invalid hostname. RFC 1123: 1-63 chars, letters/digits/hyphens, no leading/trailing hyphen." >&2
+    done
+}
+
+# Validate against `locale -a` if available; otherwise warn and accept.
+_prompt_locale() {
+    local default=$1 value
+    local -A valid=()
+
+    if command -v locale &>/dev/null; then
+        while IFS= read -r entry; do
+            [[ -n "$entry" ]] && valid["${entry,,}"]=1
+        done < <(locale -a 2>/dev/null)
+    fi
+
+    while true; do
+        read -r -p "  Locale [$default]: " value
+        value="${value:-$default}"
+        if (( ${#valid[@]} == 0 )); then
+            echo "  WARN: 'locale' not found — skipping locale validation" >&2
+            echo "$value"; return
+        fi
+        [[ -n "${valid[${value,,}]:-}" ]] && { echo "$value"; return; }
+        echo "  Invalid locale. Run 'locale -a' for valid values." >&2
+    done
+}
+
+# Validate against `localectl list-keymaps` if available; otherwise warn and accept.
+_prompt_keymap() {
+    local default=$1 value
+    local -A valid=()
+
+    if command -v localectl &>/dev/null; then
+        while IFS= read -r entry; do
+            [[ -n "$entry" ]] && valid["${entry,,}"]=1
+        done < <(localectl list-keymaps 2>/dev/null)
+    fi
+
+    while true; do
+        read -r -p "  Keymap [$default]: " value
+        value="${value:-$default}"
+        if (( ${#valid[@]} == 0 )); then
+            echo "  WARN: 'localectl' not found — skipping keymap validation" >&2
+            echo "$value"; return
+        fi
+        [[ -n "${valid[${value,,}]:-}" ]] && { echo "$value"; return; }
+        echo "  Invalid keymap. Run 'localectl list-keymaps' for valid values." >&2
+    done
+}
+
+# Escape an arbitrary string as a TOML basic string. JSON string syntax is a
+# subset compatible with TOML basic strings for printable input.
+_toml_escape() {
+    printf '%s' "$1" | python3 -c 'import sys, json; print(json.dumps(sys.stdin.read()))'
+}
+
 # On the live ISO, / is an overlay backed by /run/archiso/cowspace (default
 # 256 MiB tmpfs). base-devel + git won't fit. Grow it before pacman runs.
 # No-op outside archiso.
@@ -163,7 +228,10 @@ _remount_cowspace
 # ── 3. Install SysForge from AUR ──────────────────────────────────────────────
 
 _header "Installing $PKG from AUR"
-pacman -Sy --needed --noconfirm git base-devel
+# Refresh the pacman db separately so a sync failure surfaces with a clear
+# pointer to the likely cause, instead of getting buried in the install output.
+pacman -Sy 2>&1 || _die "pacman db sync failed — check /etc/pacman.d/mirrorlist and connectivity"
+pacman -S --needed --noconfirm git base-devel
 
 # makepkg refuses to run as root; create an unprivileged build user with
 # passwordless sudo (needed by makepkg's pacman -U install step). The drop-in
@@ -232,19 +300,53 @@ lsblk -d -o NAME,SIZE,MODEL --noheadings | grep -v '^loop' | sed 's/^/    /'
 echo
 
 DEVICE=$(_prompt_required "Block device to install on (e.g. /dev/sda or /dev/nvme0n1)")
+echo
+echo "  WARNING: $DEVICE will be ERASED. All data on it will be lost."
+CONFIRM=$(_prompt_choice "Continue" "no" "yes" "no")
+[[ "$CONFIRM" == "yes" ]] || _die "Aborted by user."
 ROOT_FS=$(_prompt_choice   "Root filesystem [ext4/btrfs]" "ext4" "ext4" "btrfs")
-HOSTNAME=$(_prompt_required "Hostname")
-LOCALE=$(_prompt_default    "Locale" "en_US.UTF-8")
+HOSTNAME=$(_prompt_hostname)
+LOCALE=$(_prompt_locale     "en_US.UTF-8")
 TIMEZONE=$(_prompt_timezone)
-KEYMAP=$(_prompt_default    "Keymap" "us")
+KEYMAP=$(_prompt_keymap     "us")
 COUNTRY=$(_prompt_country    "Mirror country for reflector — name or 2-letter code (leave blank for all)")
 USERNAME=$(_prompt_default   "Primary username" "builder")
 USER_PASSWORD=$(_prompt_password "User password")
 ROOT_PASSWORD=$(_prompt_password "Root password")
 
+# Refuse to overwrite an existing bootstrap.toml without explicit confirmation,
+# so a partial re-run doesn't blow away hand-edited fields.
+if [[ -f /etc/sysforge/bootstrap.toml ]]; then
+    echo
+    echo "  /etc/sysforge/bootstrap.toml already exists."
+    OVERWRITE=$(_prompt_choice "Overwrite" "no" "yes" "no")
+    if [[ "$OVERWRITE" != "yes" ]]; then
+        echo "  Keeping existing bootstrap.toml. Edit it directly with:"
+        echo "    vim /etc/sysforge/bootstrap.toml"
+        echo "  Then run:"
+        echo "    sysforge run pipeline --state-dir /mnt/var/lib/sysforge"
+        exit 0
+    fi
+fi
+
+# Escape all user-supplied values as TOML basic strings. Without this, a
+# password (or hostname etc.) containing ", \, or a control char produces
+# malformed TOML. The escape is also a defense-in-depth against shell
+# expansion inside the unquoted heredoc below.
+DEVICE_TOML=$(_toml_escape "$DEVICE")
+ROOT_FS_TOML=$(_toml_escape "$ROOT_FS")
+HOSTNAME_TOML=$(_toml_escape "$HOSTNAME")
+LOCALE_TOML=$(_toml_escape "$LOCALE")
+TIMEZONE_TOML=$(_toml_escape "$TIMEZONE")
+KEYMAP_TOML=$(_toml_escape "$KEYMAP")
+USERNAME_TOML=$(_toml_escape "$USERNAME")
+USER_PASSWORD_TOML=$(_toml_escape "$USER_PASSWORD")
+ROOT_PASSWORD_TOML=$(_toml_escape "$ROOT_PASSWORD")
+
 # Build optional countries line
 if [[ -n "$COUNTRY" ]]; then
-    COUNTRIES_LINE="countries = [\"$COUNTRY\"]"
+    COUNTRY_TOML=$(_toml_escape "$COUNTRY")
+    COUNTRIES_LINE="countries = [$COUNTRY_TOML]"
 else
     COUNTRIES_LINE="# countries = []  # set to filter mirrors by country"
 fi
@@ -254,24 +356,25 @@ cat > /etc/sysforge/bootstrap.toml << EOF
 target = "/mnt"
 
 [partition]
-device       = "$DEVICE"
+device       = $DEVICE_TOML
 esp_size_mib = 512
-root_fs      = "$ROOT_FS"
+root_fs      = $ROOT_FS_TOML
 
 [system]
-hostname      = "$HOSTNAME"
-locale        = "$LOCALE"
-timezone      = "$TIMEZONE"
-keymap        = "$KEYMAP"
-username      = "$USERNAME"
-user_password = "$USER_PASSWORD"
-root_password = "$ROOT_PASSWORD"
+hostname      = $HOSTNAME_TOML
+locale        = $LOCALE_TOML
+timezone      = $TIMEZONE_TOML
+keymap        = $KEYMAP_TOML
+username      = $USERNAME_TOML
+user_password = $USER_PASSWORD_TOML
+root_password = $ROOT_PASSWORD_TOML
 
 [mirror]
 $COUNTRIES_LINE
 protocol = "https"
 age      = 12
 EOF
+chmod 0600 /etc/sysforge/bootstrap.toml
 
 _header "bootstrap.toml written"
 echo

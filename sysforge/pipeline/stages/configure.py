@@ -378,6 +378,11 @@ def _copy_config_files(cfg: BootstrapConfig) -> None:
     dst = Path(cfg.target) / "etc/sysforge"
     dst.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dst, dirs_exist_ok=True)
+    # bootstrap.toml holds plaintext root/user passwords; copytree preserves
+    # the source mode (often 0644 from the ISO heredoc), so re-tighten here.
+    bootstrap = dst / "bootstrap.toml"
+    if bootstrap.exists():
+        bootstrap.chmod(0o600)
     _log.ui("Config files copied to target /etc/sysforge/")
 
 
@@ -507,8 +512,11 @@ class ConfigureStage(Stage):
         _set_default_shell(cfg)
         _copy_config_files(cfg)
         _create_state_dir(cfg)
-        _install_sysforge(cfg)
+        # Write the resume reminder before the (potentially fragile) sysforge
+        # install. If install fails, the user still has a login-time breadcrumb
+        # pointing at `sysforge run pipeline --resume`.
         _write_resume_reminder(cfg)
+        _install_sysforge(cfg)
         _set_root_password(cfg)
 
         _log.ui("Configure stage complete.")

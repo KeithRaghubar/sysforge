@@ -10,7 +10,10 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sysforge import log
 from sysforge.primitives.paths import BOOTSTRAP_PATH
+
+_log = log.get_logger("BOOTSTRAP")
 
 _VALID_ROOT_FS = {"ext4", "btrfs"}
 _VALID_SHELLS  = {"bash", "zsh"}
@@ -86,7 +89,10 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     mirror_protocol = mirror.get("protocol", "https")
     mirror_age = mirror.get("age", 12)
     root_password = system.get("root_password") or None
-    username = system.get("username", "builder") or "builder"
+    raw_username = system.get("username")
+    if not raw_username:
+        _log.info("[system].username not set in bootstrap.toml — defaulting to 'builder'")
+    username = raw_username or "builder"
     user_password = system.get("user_password") or None
     shell = system.get("shell", "bash")
 

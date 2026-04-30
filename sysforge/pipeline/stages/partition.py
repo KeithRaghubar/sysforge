@@ -65,19 +65,41 @@ def _root_partition(device: str) -> str:
     return f"{device}2"
 
 
-def _is_already_mounted(device: str, target: str) -> bool:
-    """
-    Return True if a partition of device is already mounted at target.
-    This indicates the partition stage already ran — safe to skip on resume.
-    Uses --mountpoint for an exact match so the ISO root overlayfs is not
-    mistaken for a mount at /mnt.
-    """
-    root_part = _root_partition(device)
+def _esp_partition(device: str) -> str:
+    """Derive the ESP partition path from the block device path."""
+    if _needs_p_separator(device):
+        return f"{device}p1"
+    return f"{device}1"
+
+
+def _mounted_at(source: str, mountpoint: str) -> bool:
+    """Return True if `source` is mounted exactly at `mountpoint`."""
     result = subprocess.run(
-        ["findmnt", "--source", root_part, "--mountpoint", target, "--noheadings"],
+        ["findmnt", "--source", source, "--mountpoint", mountpoint, "--noheadings"],
         capture_output=True, text=True,
     )
     return bool(result.stdout.strip())
+
+
+def _is_already_mounted(device: str, target: str) -> bool:
+    """
+    Return True iff *both* the root partition is mounted at target and the ESP
+    is mounted at target/boot. A partial mount (root only) raises so the user
+    can unmount and rerun cleanly — silently skipping in that state would
+    cause later stages (bootloader install, etc.) to fail confusingly.
+    """
+    root_mounted = _mounted_at(_root_partition(device), target)
+    esp_mounted = _mounted_at(_esp_partition(device), f"{target}/boot")
+
+    if root_mounted and esp_mounted:
+        return True
+    if root_mounted ^ esp_mounted:
+        which = "root" if root_mounted else "ESP"
+        raise RuntimeError(
+            f"[PARTITION] Partial mount detected ({which} only). "
+            f"Unmount {target} and rerun, or pass --start-from to skip partitioning entirely."
+        )
+    return False
 
 
 def _check_not_mounted(device: str, target: str) -> None:

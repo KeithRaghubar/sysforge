@@ -138,10 +138,13 @@ def run_pipeline(config, options, stages=None):
     # Guard against accidental state clobber
     existing_state = state.path.exists()
     if existing_state and not options.resume and not options.start_from:
-        _log.fatal(f"A state file already exists at {state.path}\n"
+        resolved = state.path.resolve()
+        _log.fatal(f"A state file already exists at {resolved}\n"
             f"  Pass --resume to continue from the last checkpoint.\n"
             f"  Pass --start-from <stage> to start from a specific stage.\n"
-            f"  Delete {state.path} to start completely fresh.")
+            f"  Delete {resolved} to start completely fresh.\n"
+            f"  (During bootstrap state lives under /mnt/var/lib/sysforge; "
+            f"after reboot under /var/lib/sysforge.)")
 
     # Determine start index
     if options.start_from:

@@ -972,13 +972,20 @@ class ReconfigureStage(Stage):
                 reminder.unlink()
                 _log.ui("Removed login reminder (/etc/profile.d/sysforge-resume.sh)")
             except PermissionError:
-                # Root-owned file; builder user has wheel/sudo access.
-                result = subprocess.run(["sudo", "rm", "-f", str(reminder)])
+                # Root-owned file. If we're root already, the unlink would have
+                # worked — so we only get here as the builder user. Use sudo -n
+                # so a missing-credentials cache fails fast instead of blocking
+                # at a password prompt (this path runs from a profile.d login
+                # chain on some systems; that has no TTY).
+                result = subprocess.run(
+                    ["sudo", "-n", "rm", "-f", str(reminder)],
+                    capture_output=True,
+                )
                 if result.returncode == 0:
                     _log.ui("Removed login reminder via sudo (/etc/profile.d/sysforge-resume.sh)")
                 else:
                     _log.warn(
-                        f"Cannot remove {reminder} — delete it manually"
+                        f"Cannot remove {reminder} — delete it manually with: sudo rm {reminder}"
                     )
 
         _show_stage_summary(state)
