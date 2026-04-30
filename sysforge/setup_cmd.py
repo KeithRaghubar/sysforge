@@ -24,6 +24,8 @@ import re
 import sys
 from pathlib import Path
 
+from sysforge.primitives.prompt import prompt_choice
+
 
 PACMAN_CONF = Path("/etc/pacman.conf")
 _IGNORE_GROUP = "sf-build"
@@ -151,10 +153,11 @@ def cmd_setup(args) -> None:
         f"  from overwriting those packages with unoptimized repo binaries.\n"
     )
 
-    try:
-        answer = input(f"  Add 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path}? [y/N] ").strip().lower()
-    except EOFError:
-        answer = ""
+    answer = prompt_choice(
+        f"  Add 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path}? [y/N] ",
+        choices=("y", "yes", "n"),
+        default="n",
+    )
 
     if answer not in ("y", "yes"):
         print(_RISK_WARNING, file=sys.stderr)

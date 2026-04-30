@@ -27,7 +27,6 @@ import re
 import shutil
 import socket
 import subprocess
-import sys
 import tomllib
 from pathlib import Path
 
@@ -47,6 +46,11 @@ from sysforge.primitives.paths import (
     SYSFORGE_TOML_PATH,
     TOOLCHAIN_PATH,
     resolve_packages_path,
+)
+from sysforge.primitives.prompt import (
+    is_interactive as _interactive,
+    prompt_text as _prompt,
+    prompt_choice as _prompt_choice,
 )
 
 def _pipeline_stages() -> list[tuple[str, str]]:
@@ -114,21 +118,6 @@ def _save_sysforge_toml_ui(key: str, value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helpers: interactivity
-# ---------------------------------------------------------------------------
-
-def _interactive() -> bool:
-    return sys.stdin.isatty()
-
-
-def _prompt(msg: str, default: str = "") -> str:
-    try:
-        return input(msg).strip()
-    except EOFError:
-        return default
-
-
-# ---------------------------------------------------------------------------
 # Stage progress summary
 # ---------------------------------------------------------------------------
 
@@ -164,9 +153,9 @@ def _show_step_menu() -> None:
     _log.ui("─────────────────────────────────────────────────────")
 
 
-def _parse_step_selection(raw: str) -> list[str]:
+def _parse_step_selection(raw: str) -> tuple[list[str], list[str]]:
     """
-    Parse a step selection string into an ordered list of step keys.
+    Parse a step selection string into ``(selected_keys, invalid_tokens)``.
 
     Accepts any combination of:
       - '' or 'all'        → all steps
@@ -174,19 +163,25 @@ def _parse_step_selection(raw: str) -> list[str]:
       - '2-6'              → inclusive range
       - 'network gpg'      → steps by name
       - '1-3 gpg preview'  → mixed
-    Returns all steps if nothing valid was parsed.
+      - '0' or 'cancel'    → cancel (empty result, empty invalid)
+
+    ``invalid_tokens`` lists tokens that didn't match any step / number /
+    range. The caller is responsible for warning the user and either
+    re-prompting (when nothing valid was parsed) or proceeding (when at
+    least one valid token was parsed alongside the invalid ones).
     """
     raw = raw.strip()
     if not raw or raw.lower() == "all":
-        return list(_STEP_KEYS)
+        return list(_STEP_KEYS), []
     if raw == "0" or raw.lower() == "cancel":
-        return []
+        return [], []
 
     selected: list[str] = []
+    invalid: list[str] = []
 
     for token in raw.split():
         if token == "0":
-            return []
+            return [], []
         # Range: 2-6
         if re.match(r"^\d+-\d+$", token):
             start, end = (int(x) for x in token.split("-", 1))
@@ -195,6 +190,8 @@ def _parse_step_selection(raw: str) -> list[str]:
                     key = _STEP_KEYS[i - 1]
                     if key not in selected:
                         selected.append(key)
+            else:
+                invalid.append(token)
         # Number
         elif token.isdigit():
             i = int(token)
@@ -202,12 +199,16 @@ def _parse_step_selection(raw: str) -> list[str]:
                 key = _STEP_KEYS[i - 1]
                 if key not in selected:
                     selected.append(key)
+            else:
+                invalid.append(token)
         # Name
         elif token in _STEP_KEYS:
             if token not in selected:
                 selected.append(token)
+        else:
+            invalid.append(token)
 
-    return selected if selected else list(_STEP_KEYS)
+    return selected, invalid
 
 
 def _select_steps(options) -> list[str]:
@@ -216,16 +217,39 @@ def _select_steps(options) -> list[str]:
         return list(_STEP_KEYS)
 
     _show_step_menu()
-    raw = _prompt(
-        "[RECONFIGURE] Steps to run [↵ for all, or e.g. '1 3', '2-5', 'network gpg']: "
-    )
-    steps = _parse_step_selection(raw)
+    while True:
+        raw = _prompt(
+            "[RECONFIGURE] Steps to run "
+            "[↵ for all, '0' to cancel, or e.g. '1 3', '2-5', 'network gpg']: "
+        )
+        steps, invalid = _parse_step_selection(raw)
 
-    if steps:
+        # Explicit cancel ('0' / 'cancel' / empty after cancel).
+        if not steps and not invalid:
+            if raw and raw.lower() not in ("all",):
+                _log.ui("Cancelled.")
+                return []
+            # Empty/'all' selects everything (handled by parser already).
+            return list(_STEP_KEYS)
+
+        # Nothing recognized — warn and re-prompt instead of silently
+        # falling back to "run all", which is what the caller used to do.
+        if not steps and invalid:
+            _log.warn(
+                f"  Unrecognized input: {' '.join(invalid)}. "
+                f"Valid step names: {', '.join(_STEP_KEYS)}. "
+                f"Valid numbers: 1-{len(_STEP_KEYS)} (or ranges like '2-5'). "
+                f"Press ↵ for all, '0' to cancel."
+            )
+            continue
+
+        # Partially valid — proceed with what parsed, but tell the user
+        # what was ignored so typos don't go unnoticed.
+        if invalid:
+            _log.warn(f"  Ignoring unrecognized tokens: {' '.join(invalid)}")
+
         _log.ui(f"Running steps: {', '.join(steps)}")
-    else:
-        _log.ui("Cancelled.")
-    return steps
+        return steps
 
 
 # ---------------------------------------------------------------------------
@@ -257,8 +281,11 @@ def _step_editor(config, state, options, editor: str) -> str:
     if not _interactive() or options.dry_run:
         return editor
 
-    choice = _prompt(f"  Editor: {editor} (from {source}). Change? [e]dit / [↵] keep: ")
-    if choice.lower() != "e":
+    choice = _prompt_choice(
+        f"  Editor: {editor} (from {source}). Change? [e]dit / [↵] keep: ",
+        choices=("e",),
+    )
+    if choice != "e":
         return editor
 
     new_editor = _prompt(f"  Enter editor command [{editor}]: ") or editor
@@ -298,7 +325,11 @@ def _step_editor(config, state, options, editor: str) -> str:
         _log.warn(f"  {new_editor!r} still not on PATH — keeping {editor!r}.")
         return editor
 
-    save = _prompt("  Save as sysforge default? [y/N]: ").lower()
+    save = _prompt_choice(
+        "  Save as sysforge default? [y/N]: ",
+        choices=("y", "n"),
+        default="n",
+    )
     if save == "y":
         try:
             _save_sysforge_toml_ui("editor", new_editor)
@@ -392,12 +423,19 @@ def _review_config_file(
     if not exists or not _interactive() or dry_run:
         return
 
-    if _prompt(f"    {label} ({path.name}) — [e]dit / [↵] skip: ").lower() != "e":
+    if _prompt_choice(
+        f"    {label} ({path.name}) — [e]dit / [↵] skip: ",
+        choices=("e",),
+    ) != "e":
         return
 
     if warn:
         _log.warn(f"    ⚠  {warn}")
-        if _prompt("    Proceed? [y/N]: ").lower() != "y":
+        if _prompt_choice(
+            "    Proceed? [y/N]: ",
+            choices=("y", "n"),
+            default="n",
+        ) != "y":
             return
 
     while True:
@@ -410,9 +448,11 @@ def _review_config_file(
             _log.ui(f"    ✓ {msg}")
             break
         _log.warn(f"    ✗ {msg}")
-        action = _prompt(
-            "    [r]e-open in editor / [s]kip (keep previous) / [a]bort: "
-        ).lower()
+        action = _prompt_choice(
+            "    [r]e-open in editor / [s]kip (keep previous) / [a]bort: ",
+            choices=("r", "s", "a"),
+            default="s",
+        )
         if action == "r":
             continue
         elif action == "a":
@@ -529,11 +569,12 @@ def _step_build_mode(config, state, options, editor: str) -> str:
     if not _interactive() or options.dry_run:
         return editor
 
-    choice = _prompt(
-        f"  Change repo_mode from {repo_mode!r}? [p]acman / [r]profiled / [↵] keep: "
-    ).lower()
+    choice = _prompt_choice(
+        f"  Change repo_mode from {repo_mode!r}? [p]acman / [r]profiled / [↵] keep: ",
+        choices=("p", "r", "pacman", "profiled"),
+    )
 
-    if choice == "p":
+    if choice in ("p", "pacman"):
         new_mode = "pacman"
     elif choice in ("r", "profiled"):
         new_mode = "profiled"
@@ -591,7 +632,10 @@ def _step_makepkg(config, state, options, editor: str) -> str:
                 pass
 
     if _interactive() and not options.dry_run:
-        if _prompt("  Edit /etc/makepkg.conf? (requires sudo) [e/↵ skip]: ").lower() == "e":
+        if _prompt_choice(
+            "  Edit /etc/makepkg.conf? (requires sudo) [e/↵ skip]: ",
+            choices=("e",),
+        ) == "e":
             if not shutil.which(editor):
                 _log.warn(
                     f"  Editor {editor!r} is not on PATH — skipping makepkg.conf edit."
@@ -794,9 +838,11 @@ def _step_gpg(config, state, options, editor: str) -> str:
         )
 
     if _interactive() and not options.dry_run:
-        choice = _prompt(
-            "  Refresh all keys from keyserver? (gpg --refresh-keys) [y/N]: "
-        ).lower()
+        choice = _prompt_choice(
+            "  Refresh all keys from keyserver? (gpg --refresh-keys) [y/N]: ",
+            choices=("y", "n"),
+            default="n",
+        )
         if choice == "y":
             _log.ui("Running gpg --refresh-keys (this may take a while)...")
             r = subprocess.run(["gpg", "--refresh-keys"])
@@ -995,9 +1041,11 @@ class ReconfigureStage(Stage):
 
         if _interactive() and not options.dry_run and not options.standalone:
             _log.ui("─────────────────────────────────────────────────────")
-            choice = _prompt(
-                "[RECONFIGURE] Ready to proceed to toolchain → packages → kernel? [y/N]: "
-            ).lower()
+            choice = _prompt_choice(
+                "[RECONFIGURE] Ready to proceed to toolchain → packages → kernel? [y/N]: ",
+                choices=("y", "n"),
+                default="n",
+            )
             if choice != "y":
                 raise RuntimeError(
                     "[RECONFIGURE] Aborted by user. Run with --resume to return to this stage."

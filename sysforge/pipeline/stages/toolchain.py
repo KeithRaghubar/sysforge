@@ -79,6 +79,7 @@ from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import find_pkgbuild
 from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
+from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import lift_for_child
 
 # ---------------------------------------------------------------------------
@@ -337,19 +338,18 @@ def _show_resolution_table(
 
 
 def _confirm_or_abort(state_dir) -> None:
-    """Prompt user to confirm. On abort, print resume command and raise."""
-    try:
-        choice = (
-            input(
-                _log.prompt_prefix("UI")
-                + "Proceed with toolchain build? [y/N]: "
-            )
-            .strip()
-            .lower()
-        )
-    except EOFError:
-        # Non-interactive: proceed without prompt
-        return
+    """Prompt user to confirm. On abort, print resume command and raise.
+
+    EOF (non-interactive) defaults to "y" so unattended runs proceed without
+    prompting — matches the long-standing behaviour of this stage.
+    """
+    choice = prompt_choice(
+        "Proceed with toolchain build? [y/N]: ",
+        choices=("y", "yes", "n"),
+        default="n",
+        eof_default="y",
+        tag="TOOLCHAIN",
+    )
     if choice not in ("y", "yes"):
         dir_str = str(state_dir) if state_dir else "/var/lib/sysforge"
         print(
@@ -928,26 +928,24 @@ def _validate_pgo_environment(dry_run: bool) -> None:
             "For a clean build: sudo pacman -S llvm llvm-libs\n"
             + "\n".join(f"  • {s}" for s in stale),
         )
-        import sys as _sys
 
-        if _sys.stdin.isatty():
-            try:
-                answer = input(
-                    _log.prompt_prefix("WARN")
-                    + "Continue with residual instrumentation? [y/N]: "
-                ).strip().lower()
-            except EOFError:
-                answer = ""
-            if answer not in ("y", "yes"):
-                raise RuntimeError(
-                    "[TOOLCHAIN] Aborted — restore clean packages before retrying: "
-                    "sudo pacman -S llvm llvm-libs"
-                )
-        else:
+        if not is_interactive():
             raise RuntimeError(
                 "[TOOLCHAIN] Aborting unattended PGO build: system LLVM packages "
                 "have residual instrumentation from a prior aborted Pass 1 install. "
                 "Restore clean packages before retrying: "
+                "sudo pacman -S llvm llvm-libs"
+            )
+        answer = prompt_choice(
+            "Continue with residual instrumentation? [y/N]: ",
+            choices=("y", "yes", "n"),
+            default="n",
+            tag="TOOLCHAIN",
+            level="WARN",
+        )
+        if answer not in ("y", "yes"):
+            raise RuntimeError(
+                "[TOOLCHAIN] Aborted — restore clean packages before retrying: "
                 "sudo pacman -S llvm llvm-libs"
             )
     else:
@@ -1500,17 +1498,16 @@ class ToolchainStage(Stage):
                 "Building GCC from source is error-prone and yields no meaningful performance gains. "
                 "Set skip_build = true in toolchain.toml to use the system GCC instead.",
             )
-            try:
-                choice = (
-                    input(
-                        _log.prompt_prefix("WARN")
-                        + "Proceed with GCC build anyway? [y/N]: "
-                    )
-                    .strip()
-                    .lower()
-                )
-            except (EOFError, OSError):
-                choice = "y"
+            # eof_default="y": preserve the deliberate "EOF means proceed
+            # unattended" semantic this site has always had.
+            choice = prompt_choice(
+                "Proceed with GCC build anyway? [y/N]: ",
+                choices=("y", "yes", "n"),
+                default="n",
+                eof_default="y",
+                tag="TOOLCHAIN",
+                level="WARN",
+            )
             if choice not in ("y", "yes"):
                 raise RuntimeError(
                     "[TOOLCHAIN] GCC build aborted. Set skip_build = true in toolchain.toml to use the system GCC."

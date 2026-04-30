@@ -112,6 +112,7 @@ sysforge/
 │       ├── profile.py                 # profile resolution, rule matching, consumes
 │       ├── pkgbuild_meta.py           # static PKGBUILD parser (read-only)
 │       ├── pkgbuild_patcher.py        # PKGBUILD mutation + flag extraction
+│       ├── prompt.py                  # shared interactive-prompt helpers (every stage uses these)
 │       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
 │       ├── aur_resolve.py             # recursive AUR dependency resolution + topo sort
 │       ├── dep_analysis.py            # pre-build soname dependency checks
@@ -572,7 +573,20 @@ Bottom-anchored status line for batch operations (`[3/10] building htop`). Dual-
 
 Public API: `init()`, `shutdown()`, `render(current, total, label)`, `clear()`, and a `tracker(total, prefix)` context manager that yields a `tick(label)` callable (auto-clears on exit). `clear()` must be called before any `input()` prompt inside a batch loop so the prompt doesn't land inside the scroll region; the next `tick()` re-establishes the region automatically. Reservation is lazy: entering a tracker alone touches nothing — the first `tick()` call establishes the region.
 
-Integration sites: `sysforge/pipeline/stages/packages.py` (build loop), `sysforge/primitives/aur_resolve.py::build_resolved_deps` (AUR deps), `sysforge/update.py` (sequential source sync via `source_sync` + threaded version check + build loop), `sysforge/fetch.py` (fetch loop). Interactive-prompt call sites in `pipeline/stages/packages.py` and `primitives/makepkg_wrapper.py` each call `progress.clear()` before `input()`.
+Integration sites: `sysforge/pipeline/stages/packages.py` (build loop), `sysforge/primitives/aur_resolve.py::build_resolved_deps` (AUR deps), `sysforge/update.py` (sequential source sync via `source_sync` + threaded version check + build loop), `sysforge/fetch.py` (fetch loop). Interactive-prompt call sites in `pipeline/stages/packages.py` and `primitives/makepkg_wrapper.py` each call `progress.clear()` before invoking `prompt.prompt_choice()`.
+
+### `prompt.py`
+
+Single shared interactive-prompt helper. Every stage that needs user input goes through `prompt.prompt_text()` (free-form) or `prompt.prompt_choice()` (fixed-set), so the behaviour on empty input, unrecognized input, and EOF is consistent across the codebase. `is_interactive()` wraps `sys.stdin.isatty()` for stages that need to gate prompts on a TTY.
+
+Key contract:
+
+- `prompt_choice` re-prompts with a visible warning on unrecognized input (so typos / jibberish never silently fall through to the default), unless the call site passes `retry_on_invalid=False` — used only for destructive prompts (e.g. partition.py's literal-`yes` confirmation) where any non-confirming input must abort.
+- `eof_default` is a separate kwarg from `default`. Most sites pass neither (EOF returns `default`). `toolchain.py`'s GCC-build override and `_confirm_or_abort` deliberately set `eof_default="y"` to preserve their long-standing "EOF means proceed unattended" semantic.
+- Both helpers catch `EOFError` *and* `OSError`, since pytest's captured stdin and other unreadable-stdin scenarios raise the latter.
+- Optional `tag`/`level` kwargs reuse `log.prompt_prefix(level, tag)` so prompts keep the standard `[SYSFORGE][LEVEL][TAG] ` format.
+
+Call sites: `pipeline/stages/reconfigure.py` (11), `pipeline/stages/packages.py` (`_prompt_failed_packages`), `pipeline/stages/toolchain.py` (3), `pipeline/stages/partition.py` (1), `setup_cmd.py` (1), `primitives/makepkg_wrapper.py` (4). No stage may call `input()` directly.
 
 ### `paths.py`
 

@@ -98,14 +98,65 @@ def test_build_mode_step_order():
 # ---------------------------------------------------------------------------
 
 def test_parse_step_selection_build_mode_by_name():
-    result = _parse_step_selection("build_mode")
-    assert result == ["build_mode"]
+    selected, invalid = _parse_step_selection("build_mode")
+    assert selected == ["build_mode"]
+    assert invalid == []
 
 
 def test_parse_step_selection_build_mode_by_number():
     # build_mode is the 3rd step (index 2, number 3)
-    result = _parse_step_selection("3")
-    assert result == ["build_mode"]
+    selected, invalid = _parse_step_selection("3")
+    assert selected == ["build_mode"]
+    assert invalid == []
+
+
+def test_parse_step_selection_invalid_input_reports_invalid():
+    """Single-letter jibberish must NOT silently fall back to 'all' — it must
+    surface in the invalid list so the caller can re-prompt."""
+    selected, invalid = _parse_step_selection("e")
+    assert selected == []
+    assert invalid == ["e"]
+
+
+def test_parse_step_selection_jibberish_reports_invalid():
+    selected, invalid = _parse_step_selection("xyz qqq")
+    assert selected == []
+    assert invalid == ["xyz", "qqq"]
+
+
+def test_parse_step_selection_partial_invalid():
+    """Mixing valid + invalid tokens reports the invalid ones but still
+    returns the valid selection — the caller warns and proceeds."""
+    selected, invalid = _parse_step_selection("editor xyz 99")
+    assert selected == ["editor"]
+    assert invalid == ["xyz", "99"]
+
+
+def test_parse_step_selection_empty_returns_all():
+    selected, invalid = _parse_step_selection("")
+    assert selected == list(_STEP_KEYS)
+    assert invalid == []
+
+
+def test_parse_step_selection_cancel():
+    selected, invalid = _parse_step_selection("0")
+    assert selected == []
+    assert invalid == []
+    selected, invalid = _parse_step_selection("cancel")
+    assert selected == []
+    assert invalid == []
+
+
+def test_parse_step_selection_out_of_range_number():
+    selected, invalid = _parse_step_selection("99")
+    assert selected == []
+    assert invalid == ["99"]
+
+
+def test_parse_step_selection_invalid_range():
+    selected, invalid = _parse_step_selection("5-2")
+    assert selected == []
+    assert invalid == ["5-2"]
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +223,7 @@ def test_step_build_mode_dry_run_does_not_write(tmp_path):
     config = {"packages_file": str(p)}
 
     with patch("sysforge.pipeline.stages.reconfigure._interactive", return_value=True), \
-         patch("sysforge.pipeline.stages.reconfigure._prompt", return_value="r"):
+         patch("sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="r"):
         _step_build_mode(config, None, make_options(dry_run=True), "vi")
 
     assert p.read_text() == original
@@ -190,7 +241,7 @@ def test_step_build_mode_interactive_sets_profiled(tmp_path):
     config = {"packages_file": str(p)}
 
     with patch("sysforge.pipeline.stages.reconfigure._interactive", return_value=True), \
-         patch("sysforge.pipeline.stages.reconfigure._prompt", return_value="r"):
+         patch("sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="r"):
         _step_build_mode(config, None, make_options(), "vi")
 
     with open(p, "rb") as f:
@@ -204,7 +255,7 @@ def test_step_build_mode_interactive_no_change_on_enter(tmp_path):
     config = {"packages_file": str(p)}
 
     with patch("sysforge.pipeline.stages.reconfigure._interactive", return_value=True), \
-         patch("sysforge.pipeline.stages.reconfigure._prompt", return_value=""):
+         patch("sysforge.pipeline.stages.reconfigure._prompt_choice", return_value=""):
         _step_build_mode(config, None, make_options(), "vi")
 
     assert p.read_text() == original

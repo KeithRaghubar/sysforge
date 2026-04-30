@@ -20,6 +20,7 @@ from sysforge import log
 _log = log.get_logger("PARTITION")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import BootstrapConfig, load_bootstrap
+from sysforge.primitives.prompt import prompt_choice
 
 
 # ---------------------------------------------------------------------------
@@ -147,11 +148,15 @@ def _confirm(cfg: BootstrapConfig) -> None:
     print(f"  WARNING: All data on {cfg.device} will be destroyed.")
     print()
 
-    try:
-        answer = input("  Type 'yes' to proceed, anything else to abort: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
-
+    # Destructive: any non-confirming input must abort, never re-prompt.
+    answer = prompt_choice(
+        "  Type 'yes' to proceed, anything else to abort: ",
+        choices=("yes",),
+        default="",
+        eof_default="",
+        retry_on_invalid=False,
+        tag="PARTITION",
+    )
     if answer != "yes":
         raise RuntimeError("[PARTITION] Aborted by user.")
 

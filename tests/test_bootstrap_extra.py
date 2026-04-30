@@ -675,48 +675,72 @@ class TestParseGpuVendorsEdgeCases:
 # ===========================================================================
 
 class TestParseStepSelectionExtra:
+    """
+    _parse_step_selection now returns (selected, invalid). Empty input or
+    'all' selects everything; '0' / 'cancel' returns ([], []); unrecognized
+    tokens are surfaced in `invalid` so the caller can warn the user
+    instead of silently falling back to "run all".
+    """
+
     def test_empty_returns_all(self):
-        assert _parse_step_selection("") == list(_STEP_KEYS)
+        selected, invalid = _parse_step_selection("")
+        assert selected == list(_STEP_KEYS)
+        assert invalid == []
 
     def test_all_keyword(self):
-        assert _parse_step_selection("all") == list(_STEP_KEYS)
+        selected, invalid = _parse_step_selection("all")
+        assert selected == list(_STEP_KEYS)
+        assert invalid == []
 
     def test_ALL_case_insensitive(self):
-        assert _parse_step_selection("ALL") == list(_STEP_KEYS)
+        selected, invalid = _parse_step_selection("ALL")
+        assert selected == list(_STEP_KEYS)
+        assert invalid == []
 
     def test_cancel_returns_empty(self):
-        assert _parse_step_selection("cancel") == []
+        selected, invalid = _parse_step_selection("cancel")
+        assert selected == []
+        assert invalid == []
 
     def test_zero_returns_empty(self):
-        assert _parse_step_selection("0") == []
+        selected, invalid = _parse_step_selection("0")
+        assert selected == []
+        assert invalid == []
 
     def test_zero_in_middle_cancels(self):
-        assert _parse_step_selection("1 0 3") == []
+        selected, invalid = _parse_step_selection("1 0 3")
+        assert selected == []
+        assert invalid == []
 
     def test_range(self):
-        result = _parse_step_selection("1-3")
-        assert result == _STEP_KEYS[:3]
+        selected, invalid = _parse_step_selection("1-3")
+        assert selected == _STEP_KEYS[:3]
+        assert invalid == []
 
     def test_mixed_numbers_and_names(self):
-        result = _parse_step_selection("1 network")
-        assert result == ["editor", "network"]
+        selected, invalid = _parse_step_selection("1 network")
+        assert selected == ["editor", "network"]
+        assert invalid == []
 
     def test_dedup(self):
-        result = _parse_step_selection("1 1 editor")
-        assert result == ["editor"]
+        selected, invalid = _parse_step_selection("1 1 editor")
+        assert selected == ["editor"]
+        assert invalid == []
 
-    def test_out_of_range_number_ignored(self):
-        result = _parse_step_selection("99")
-        # Falls through to default (all steps) since no valid selection
-        assert result == list(_STEP_KEYS)
+    def test_out_of_range_number_reported_as_invalid(self):
+        selected, invalid = _parse_step_selection("99")
+        assert selected == []
+        assert invalid == ["99"]
 
-    def test_invalid_name_ignored(self):
-        result = _parse_step_selection("nonexistent")
-        assert result == list(_STEP_KEYS)
+    def test_invalid_name_reported_as_invalid(self):
+        selected, invalid = _parse_step_selection("nonexistent")
+        assert selected == []
+        assert invalid == ["nonexistent"]
 
-    def test_invalid_range_ignored(self):
-        result = _parse_step_selection("9-1")
-        assert result == list(_STEP_KEYS)
+    def test_invalid_range_reported_as_invalid(self):
+        selected, invalid = _parse_step_selection("9-1")
+        assert selected == []
+        assert invalid == ["9-1"]
 
 
 class TestResolveEditor:
@@ -846,16 +870,23 @@ class TestStepEditorRejectsUnresolvable:
         # User types nvim, install attempt runs but binary is still missing
         # (e.g. typed package name doesn't actually provide /usr/bin/nvim).
         # Function must return the original editor, not the unusable one.
-        prompts = iter([
+        # Single-choice prompts ('change?', 'save?') go through
+        # _prompt_choice; free-text prompts (editor name, pkg name) go
+        # through _prompt.
+        choices = iter([
             "e",        # change?
+            "y",        # save?
+        ])
+        prompts = iter([
             "nvim",     # new editor
             "neovim",   # package to install
-            "y",        # save?
         ])
         with patch("sysforge.pipeline.stages.reconfigure._interactive",
                    return_value=True), \
              patch("sysforge.pipeline.stages.reconfigure._resolve_editor",
                    return_value=("vi", "default")), \
+             patch("sysforge.pipeline.stages.reconfigure._prompt_choice",
+                   side_effect=lambda *a, **k: next(choices)), \
              patch("sysforge.pipeline.stages.reconfigure._prompt",
                    side_effect=lambda *a, **k: next(prompts)), \
              patch("sysforge.pipeline.stages.reconfigure.shutil.which",
@@ -870,8 +901,10 @@ class TestStepEditorRejectsUnresolvable:
     def test_does_not_save_unresolvable_editor_after_skipped_install(self):
         # User types nvim, declines install (empty package name), function
         # must keep the previous editor and not save anything.
-        prompts = iter([
+        choices = iter([
             "e",        # change?
+        ])
+        prompts = iter([
             "nvim",     # new editor
             "",         # package to install (skip)
         ])
@@ -879,6 +912,8 @@ class TestStepEditorRejectsUnresolvable:
                    return_value=True), \
              patch("sysforge.pipeline.stages.reconfigure._resolve_editor",
                    return_value=("vi", "default")), \
+             patch("sysforge.pipeline.stages.reconfigure._prompt_choice",
+                   side_effect=lambda *a, **k: next(choices)), \
              patch("sysforge.pipeline.stages.reconfigure._prompt",
                    side_effect=lambda *a, **k: next(prompts)), \
              patch("sysforge.pipeline.stages.reconfigure.shutil.which",

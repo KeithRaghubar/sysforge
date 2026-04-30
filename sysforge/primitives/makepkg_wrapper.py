@@ -43,6 +43,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_subshell_env_reset,
     write_extracted_profile,
 )
+from sysforge.primitives.prompt import prompt_choice
 from sysforge.primitives.cache_probe import (
     diff_ccache,
     diff_sccache,
@@ -924,14 +925,16 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                         _build_log.ui(f"  {p.name}")
                     from sysforge.ui import progress as _ui_progress
                     _ui_progress.clear()
-                    response = (
-                        input(
-                            _build_log.prompt_prefix("UI") +
-                            "[s]udo re-auth and install, fix PKGBUILD and press "
-                            "Enter to retry, or type 'abort' to stop: "
-                        )
-                        .strip()
-                        .lower()
+                    # Empty input (Enter) → "" → falls through to retry the
+                    # full build below; "s" → install built packages with
+                    # fresh sudo; "abort" → stop.
+                    response = prompt_choice(
+                        "[s]udo re-auth and install, fix PKGBUILD and press "
+                        "Enter to retry, or type 'abort' to stop: ",
+                        choices=("s", "abort"),
+                        default="",
+                        eof_default="abort",
+                        tag="BUILD",
                     )
                     if response == "s":
                         while True:
@@ -948,13 +951,12 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                        f"pacman -U failed (exit {result.returncode})")
                             from sysforge.ui import progress as _ui_progress
                             _ui_progress.clear()
-                            retry = (
-                                input(
-                                    _build_log.prompt_prefix("UI") +
-                                    "Retry install? [s]udo re-auth again, or 'abort': "
-                                )
-                                .strip()
-                                .lower()
+                            retry = prompt_choice(
+                                "Retry install? [s]udo re-auth again, or 'abort': ",
+                                choices=("s", "abort"),
+                                default="abort",
+                                eof_default="abort",
+                                tag="BUILD",
                             )
                             if retry != "s":
                                 raise RuntimeError(
@@ -969,14 +971,14 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                 else:
                     from sysforge.ui import progress as _ui_progress
                     _ui_progress.clear()
-                    response = (
-                        input(
-                            _build_log.prompt_prefix("UI") +
-                            "Manually correct the PKGBUILD and press Enter to retry, "
-                            "or type 'abort' to stop: "
-                        )
-                        .strip()
-                        .lower()
+                    # Empty input → "" → retry; "abort" → stop.
+                    response = prompt_choice(
+                        "Manually correct the PKGBUILD and press Enter to retry, "
+                        "or type 'abort' to stop: ",
+                        choices=("abort",),
+                        default="",
+                        eof_default="abort",
+                        tag="BUILD",
                     )
                     if response == "abort":
                         raise RuntimeError(
@@ -1377,16 +1379,17 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 if sys.stdin.isatty():
                     from sysforge.ui import progress as _ui_progress
                     _ui_progress.clear()
-                    try:
-                        choice = input(
-                            _pgo_log.prompt_prefix("WARN")
-                            + f"PGO profdata unavailable ({reason})."
-                            + " [p]lain build or [s]kip? [S]: "
-                        ).strip().lower()
-                    except EOFError:
-                        choice = ""
+                    choice = prompt_choice(
+                        f"PGO profdata unavailable ({reason})."
+                        " [p]lain build or [s]kip? [S]: ",
+                        choices=("p", "plain", "s"),
+                        default="s",
+                        eof_default="s",
+                        tag="PGO",
+                        level="WARN",
+                    )
                 else:
-                    choice = ""
+                    choice = "s"
                     _pgo_log.warn(
                         f"Non-interactive: skipping pgo_llvm_toolchain build ({reason})",
                     )

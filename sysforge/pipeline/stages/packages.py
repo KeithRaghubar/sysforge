@@ -40,6 +40,7 @@ from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import find_pkgbuild
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
+from sysforge.primitives.prompt import prompt_choice
 
 
 # ---------------------------------------------------------------------------
@@ -122,32 +123,37 @@ def _prompt_failed_packages(failed_names, errors, options):
 
     from sysforge.ui import progress as _ui_progress
     _ui_progress.clear()
-    while True:
-        choice = input("Choice [r/s/c/a]: ").strip().lower()
-        if choice == "r":
-            return set(failed_names), set()
-        elif choice == "s":
-            return set(), set(failed_names)
-        elif choice == "a":
-            raise RuntimeError("[PACKAGES] Aborted by user at failed-package prompt")
-        elif choice == "c":
-            retry, skip = set(), set()
-            for name in failed_names:
-                err = errors.get(name, "unknown error")
-                while True:
-                    _ui_progress.clear()
-                    ans = input(f"  {name} ({err}) — [r]etry / [s]kip / [a]bort: ").strip().lower()
-                    if ans == "r":
-                        retry.add(name)
-                        break
-                    elif ans == "s":
-                        skip.add(name)
-                        break
-                    elif ans == "a":
-                        raise RuntimeError("[PACKAGES] Aborted by user")
-            return retry, skip
-        else:
-            _log.warn("  Please enter r, s, c, or a.")
+    choice = prompt_choice(
+        "Choice [r/s/c/a]: ",
+        choices=("r", "s", "c", "a"),
+        eof_default="a",
+        tag="PACKAGES",
+    )
+    if choice == "r":
+        return set(failed_names), set()
+    if choice == "s":
+        return set(), set(failed_names)
+    if choice == "a":
+        raise RuntimeError("[PACKAGES] Aborted by user at failed-package prompt")
+
+    # choice == "c": choose per package
+    retry, skip = set(), set()
+    for name in failed_names:
+        err = errors.get(name, "unknown error")
+        _ui_progress.clear()
+        ans = prompt_choice(
+            f"  {name} ({err}) — [r]etry / [s]kip / [a]bort: ",
+            choices=("r", "s", "a"),
+            eof_default="a",
+            tag="PACKAGES",
+        )
+        if ans == "r":
+            retry.add(name)
+        elif ans == "s":
+            skip.add(name)
+        else:  # "a"
+            raise RuntimeError("[PACKAGES] Aborted by user")
+    return retry, skip
 
 
 # ---------------------------------------------------------------------------
