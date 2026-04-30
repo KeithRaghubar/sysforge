@@ -8,7 +8,7 @@ Presents a menu of available checks. The user can run all, a numbered subset,
 a range, or refer to steps by name. Defaults to all when non-interactive.
 
 Available steps:
-  1  editor      Editor selection (SYSFORGE_EDITOR → sysforge.toml → $EDITOR → vi)
+  1  editor      Editor selection (SYSFORGE_EDITOR → sysforge.toml → $EDITOR → $VISUAL → detected)
   2  config      Config file review (flag_profiles, packages, toolchain, kernel, hardware_profile)
   3  build_mode  View/set packages.toml repo_mode (pacman | profiled)
   4  makepkg     System makepkg.conf review (MAKEFLAGS, BUILDDIR, PKGDEST, flags)
@@ -273,7 +273,102 @@ def _resolve_editor() -> tuple[str, str]:
     for fallback in ("vim", "nano", "vi"):
         if shutil.which(fallback):
             return fallback, "detected"
-    return "vi", "default"
+    # No editor on PATH at all. Returning a hard-coded "vi" here would lie:
+    # downstream prompts would say "Editor: vi" and "Keeping 'vi'" while
+    # /usr/bin/vi doesn't exist. Empty string + source "none" lets callers
+    # detect this and force the user to pick one.
+    return "", "none"
+
+
+def _try_install_editor(editor_cmd: str, options) -> bool:
+    """
+    Prompt for a pacman package name, install it, and verify ``editor_cmd`` is
+    on PATH afterwards. Returns True only when the install actually produced
+    the binary. False on any failure (user typo, repo miss, install error,
+    binary still missing, dry-run).
+
+    The package guess defaults to ``editor_cmd`` since the binary name often
+    matches the package name (``nano``), but the user can override since they
+    sometimes diverge (``nvim`` → ``neovim``).
+    """
+    pkg_name = _prompt(
+        f"  Pacman package name to install [↵ uses {editor_cmd!r}]: "
+    ) or editor_cmd
+
+    if options.dry_run:
+        _log.ui(f"  [dry-run] would install {pkg_name!r}")
+        return False
+
+    # Precheck against pacman's sync DB so a typo'd or non-existent package is
+    # rejected with a clear message instead of failing mid-transaction inside
+    # pacman.
+    check = subprocess.run(
+        ["pacman", "-Si", pkg_name],
+        capture_output=True, text=True,
+    )
+    if check.returncode != 0:
+        _log.ui(
+            f"  {pkg_name!r} not found in pacman repos. "
+            f"Run 'pacman -Ss {editor_cmd}' to find the right package name."
+        )
+        return False
+    result = subprocess.run(
+        ["sudo", "pacman", "-S", "--needed", "--noconfirm", pkg_name]
+    )
+    if result.returncode != 0 or not shutil.which(editor_cmd):
+        _log.ui(
+            f"  Install of {pkg_name!r} did not produce {editor_cmd!r} on PATH. "
+            f"Install manually (e.g. 'pacman -S <pkg>' where the package "
+            f"provides /usr/bin/{editor_cmd})."
+        )
+        return False
+
+    _log.ui(f"  {pkg_name} installed; {editor_cmd} now on PATH")
+    return True
+
+
+def _select_new_editor(prev_editor: str, have_prev: bool, options) -> str | None:
+    """
+    Loop until the user picks a working editor, installs one, or cancels.
+
+    Returns the new editor command (different from ``prev_editor``) on success.
+    Returns ``None`` when the user kept ``prev_editor`` or cancelled — the
+    caller should keep the previous editor (which may be ``""`` if none).
+    """
+    while True:
+        if have_prev:
+            new_editor = _prompt(
+                f"  Enter editor command [{prev_editor}]: "
+            ) or prev_editor
+            if new_editor == prev_editor:
+                return None  # user kept the current editor
+        else:
+            new_editor = _prompt("  Enter editor command (↵ to skip): ")
+            if not new_editor:
+                _log.ui("  No editor selected — config file edits will be skipped.")
+                return None
+
+        if shutil.which(new_editor):
+            return new_editor
+
+        _log.ui(f"  {new_editor!r} not found in PATH.")
+        action = _prompt_choice(
+            "  [i]nstall via pacman / [r]e-enter editor / [↵] cancel: ",
+            choices=("i", "r"),
+        )
+        if action == "r":
+            continue  # back to the editor-name prompt
+        if action != "i":
+            # Empty / cancel.
+            if have_prev:
+                _log.ui(f"  Keeping {prev_editor!r}.")
+            return None
+
+        if _try_install_editor(new_editor, options):
+            return new_editor
+        # Install failed. Loop back to the editor-name prompt so the user can
+        # try a different editor, retry the install with a different package
+        # name, or cancel.
 
 
 def _step_editor(config, state, options, editor: str) -> str:
@@ -284,63 +379,23 @@ def _step_editor(config, state, options, editor: str) -> str:
     if not _interactive() or options.dry_run:
         return editor
 
-    choice = _prompt_choice(
-        f"  Editor: {editor} (from {source}). Change? [e]dit / [↵] keep: ",
-        choices=("e",),
-    )
-    if choice != "e":
-        return editor
+    have_editor = bool(editor) and shutil.which(editor) is not None
 
-    new_editor = _prompt(f"  Enter editor command [{editor}]: ") or editor
-    if new_editor == editor:
-        return editor
-
-    if not shutil.which(new_editor):
-        _log.ui(f"  {new_editor!r} not found in PATH")
-        # The editor binary name often differs from the pacman package name
-        # (e.g. nvim → neovim). Default the package guess to the binary, but
-        # let the user override it.
-        pkg_name = _prompt(
-            f"  Pacman package name to install [{new_editor}, ↵ to skip install]: "
-        ) or ""
-        if pkg_name and not options.dry_run:
-            # Precheck against pacman's sync DB so a typo'd or non-existent
-            # package is rejected with a clear message instead of failing
-            # mid-transaction inside pacman.
-            check = subprocess.run(
-                ["pacman", "-Si", pkg_name],
-                capture_output=True, text=True,
-            )
-            if check.returncode != 0:
-                _log.ui(
-                    f"  {pkg_name!r} not found in pacman repos — keeping {editor!r}. "
-                    f"Run 'pacman -Ss {new_editor}' to find the right package name "
-                    f"and re-run the editor step."
-                )
-                return editor
-            result = subprocess.run(
-                ["sudo", "pacman", "-S", "--needed", "--noconfirm", pkg_name]
-            )
-            if result.returncode != 0 or not shutil.which(new_editor):
-                _log.ui(
-                    f"  Install of {pkg_name!r} did not produce {new_editor!r} "
-                    f"on PATH — keeping {editor!r}. "
-                    f"Install manually (e.g. 'pacman -S <pkg>' where the package "
-                    f"provides /usr/bin/{new_editor}) and re-run the editor step."
-                )
-                return editor
-            _log.ui(f"  {pkg_name} installed; {new_editor} now on PATH")
-        else:
-            _log.ui(
-                f"  Keeping {editor!r}. "
-                f"Install {new_editor!r} manually and re-run the editor step to change."
-            )
+    if have_editor:
+        choice = _prompt_choice(
+            f"  Editor: {editor} (from {source}). Change? [e]dit / [↵] keep: ",
+            choices=("e",),
+        )
+        if choice != "e":
             return editor
+    else:
+        # No editor on PATH — don't offer a "keep" path that would silently
+        # propagate an unusable editor into the rest of the stage.
+        _log.ui("  No editor found on PATH — pick one to use for config edits.")
 
-    # Final guard: never persist or return an editor that isn't resolvable.
-    if not shutil.which(new_editor):
-        _log.ui(f"  {new_editor!r} still not on PATH — keeping {editor!r}.")
-        return editor
+    new_editor = _select_new_editor(editor, have_editor, options)
+    if new_editor is None:
+        return editor  # caller falls back to the previous editor (may be "")
 
     save = _prompt_choice(
         "  Save as sysforge default? [y/N]: ",
@@ -410,19 +465,36 @@ def _run_editor_argv(argv: list[str]) -> int:
             os.close(tty_fd)
 
 
-def _open_in_editor(path: Path, editor: str) -> None:
+def _open_in_editor(path: Path, editor: str) -> bool:
+    """
+    Launch ``editor`` on ``path``. Returns False when the editor couldn't be
+    launched at all (no editor configured, not on PATH, FileNotFoundError),
+    so the caller can skip the validation pass that would otherwise produce
+    a misleading "✓" on a file that was never actually opened. A non-zero
+    exit from a launched editor still counts as "ran" (returns True) — the
+    user may have edited the file and closed with an error code, and we want
+    to validate either way.
+    """
+    if not editor:
+        _log.ui(
+            f"  No editor configured — cannot open {path.name}. "
+            f"Re-run the editor step (1) to pick one."
+        )
+        return False
     if not shutil.which(editor):
         _log.ui(
             f"  Editor {editor!r} is not on PATH — cannot open {path.name}. "
             f"Re-run the editor step (1) to pick a different one."
         )
-        return
+        return False
     _log.ui(f"  Opening: {editor} {path}")
     rc = _run_editor_argv([editor, str(path)])
     if rc == -1:
         _log.ui(f"  Editor not found: {editor!r}")
-    elif rc != 0:
+        return False
+    if rc != 0:
         _log.ui(f"  Editor {editor!r} exited with code {rc} for {path.name}")
+    return True
 
 
 def _review_config_file(
@@ -456,7 +528,11 @@ def _review_config_file(
             return
 
     while True:
-        _open_in_editor(path, editor)
+        if not _open_in_editor(path, editor):
+            # Editor couldn't be launched. Skip the validation pass entirely:
+            # validating an unopened file would print a misleading "✓" and
+            # bury the user's "I wanted to edit this" intent.
+            return
         if validate_fn is None:
             break
         _log.ui(f"    Validating {label}...")
