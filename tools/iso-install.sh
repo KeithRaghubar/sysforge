@@ -167,6 +167,35 @@ _prompt_keymap() {
     done
 }
 
+# Validate that the input is a whole-disk block device (not a partition,
+# loop, or rom). Refuse the device backing the live ISO so the user can't
+# wipe the medium they booted from.
+_prompt_block_device() {
+    local label=$1 value type live_src live_dev
+    if [[ -e /run/archiso/bootmnt ]]; then
+        live_src=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)
+        [[ -n "$live_src" ]] && live_dev=$(lsblk -no PKNAME "$live_src" 2>/dev/null || true)
+    fi
+    while true; do
+        read -r -p "  $label: " value
+        [[ -z "$value" ]] && { echo "  (required — cannot be empty)" >&2; continue; }
+        if [[ ! -b "$value" ]]; then
+            echo "  '$value' is not a block device. See list above." >&2
+            continue
+        fi
+        type=$(lsblk -dn -o TYPE "$value" 2>/dev/null || true)
+        if [[ "$type" != "disk" ]]; then
+            echo "  '$value' is a '$type', not a whole disk. Pick a top-level device." >&2
+            continue
+        fi
+        if [[ -n "$live_dev" && "$value" == "/dev/$live_dev" ]]; then
+            echo "  '$value' is the live ISO medium — refusing to erase it." >&2
+            continue
+        fi
+        echo "$value"; return
+    done
+}
+
 # Escape an arbitrary string as a TOML basic string. JSON string syntax is a
 # subset compatible with TOML basic strings for printable input.
 _toml_escape() {
@@ -299,7 +328,7 @@ echo "  Available block devices:"
 lsblk -d -o NAME,SIZE,MODEL --noheadings | grep -v '^loop' | sed 's/^/    /'
 echo
 
-DEVICE=$(_prompt_required "Block device to install on (e.g. /dev/sda or /dev/nvme0n1)")
+DEVICE=$(_prompt_block_device "Block device to install on (e.g. /dev/sda or /dev/nvme0n1)")
 echo
 echo "  WARNING: $DEVICE will be ERASED. All data on it will be lost."
 CONFIRM=$(_prompt_choice "Continue" "no" "yes" "no")
