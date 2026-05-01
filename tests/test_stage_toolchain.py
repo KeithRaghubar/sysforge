@@ -187,7 +187,7 @@ def test_resolve_all_pkgbuilds_split_found_after_pass3_clone(tmp_path):
         "pkgbase=gcc\npkgname=('gcc' 'gcc-libs')\npkgver=14.0\npkgrel=1\n"
     )
 
-    def fake_pkgctl_checkout(name, dest):
+    def fake_pkgctl_checkout(name, dest, *, timeout=60):
         # Simulate pkgctl cloning gcc (copies our prepared dir)
         import shutil
         shutil.copytree(gcc_dir, dest)

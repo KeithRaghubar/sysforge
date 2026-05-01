@@ -153,7 +153,7 @@ def test_find_pkgbuild_repo_package_uses_pkgctl(tmp_path):
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
     pkg_dir = tmp_path / "htop"
 
-    def fake_checkout(name, dest):
+    def fake_checkout(name, dest, *, timeout=60):
         dest.mkdir()
         (dest / "PKGBUILD").write_text("pkgname=htop\npkgver=3.3\n")
 
@@ -163,7 +163,10 @@ def test_find_pkgbuild_repo_package_uses_pkgctl(tmp_path):
          patch("sysforge.primitives.aur.aur_info") as mock_aur:
         result = find_pkgbuild("htop", config)
 
-    mock_pkgctl.assert_called_once_with("htop", tmp_path / "htop")
+    mock_pkgctl.assert_called_once()
+    args, kwargs = mock_pkgctl.call_args
+    assert args == ("htop", tmp_path / "htop")
+    assert "timeout" in kwargs
     mock_aur.assert_not_called()
     assert result == (pkg_dir / "PKGBUILD").resolve()
 

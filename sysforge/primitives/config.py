@@ -59,6 +59,8 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
     from sysforge.primitives.aur import aur_info, is_repo_package, pkgctl_checkout
     from sysforge.primitives.source_sync import SyncRequest, get_scheduler
 
+    clone_timeout = load_sysforge_toml().get("git", {}).get("clone_timeout", 60)
+
     p = Path(pkg)
     if p.is_dir():
         p = p / "PKGBUILD"
@@ -87,7 +89,8 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
             pkgbuild_src_dir.mkdir(parents=True, exist_ok=True)
             clone_dest = pkgbuild_src_dir / pkg
             if is_repo_package(pkg):
-                pkgctl_checkout(pkg, clone_dest)  # raises RuntimeError on failure
+                # raises RuntimeError on failure
+                pkgctl_checkout(pkg, clone_dest, timeout=clone_timeout)
                 if dir_candidate.exists():
                     return dir_candidate.resolve()
             elif aur_info([pkg]):

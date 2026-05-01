@@ -344,16 +344,70 @@ def test_repo_packages_single_invocation():
 # pkgctl_checkout
 # ---------------------------------------------------------------------------
 
+class _FakePopen:
+    """Minimal Popen stand-in for pkgctl_checkout tests.
+
+    `lines` is the stdout stream that `_drain` will iterate.
+    `returncode_after_wait` is what `proc.returncode` becomes after `.wait()`.
+    `wait_raises` (optional) is an exception raised by `.wait()` (e.g. TimeoutExpired).
+    `on_start` is invoked once during construction so tests can simulate
+    side effects pkgctl would have (creating the dest dir).
+    """
+    def __init__(self, cmd, *, lines=(), returncode_after_wait=0,
+                 wait_raises=None, on_start=None, **kwargs):
+        self.cmd = cmd
+        self.kwargs = kwargs
+        self.stdout = iter(lines)
+        self._returncode = None
+        self._returncode_after_wait = returncode_after_wait
+        self._wait_raises = wait_raises
+        self.killed = False
+        if on_start is not None:
+            on_start()
+
+    def wait(self, timeout=None):
+        if self._wait_raises is not None:
+            # Raise on the first call (the timed wait), then behave normally
+            # for the post-kill wait.
+            exc = self._wait_raises
+            self._wait_raises = None
+            raise exc
+        self._returncode = self._returncode_after_wait
+        return self._returncode
+
+    def kill(self):
+        self.killed = True
+        self._returncode = -9
+
+    @property
+    def returncode(self):
+        return self._returncode
+
+
+def _popen_factory(*, lines=(), returncode_after_wait=0, wait_raises=None,
+                   on_start=None, captured=None):
+    def factory(cmd, **kwargs):
+        if captured is not None:
+            captured.append((cmd, kwargs))
+        return _FakePopen(
+            cmd,
+            lines=lines,
+            returncode_after_wait=returncode_after_wait,
+            wait_raises=wait_raises,
+            on_start=on_start,
+            **kwargs,
+        )
+    return factory
+
+
 def test_pkgctl_checkout_success(tmp_path):
     pkg_dir = tmp_path / "htop"
 
-    def fake_run(cmd, **kwargs):
-        # Simulate pkgctl creating the directory with a PKGBUILD
+    def on_start():
         pkg_dir.mkdir()
         (pkg_dir / "PKGBUILD").write_text("pkgname=htop\n")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    with patch("subprocess.run", side_effect=fake_run):
+    with patch("subprocess.Popen", side_effect=_popen_factory(on_start=on_start)):
         pkgctl_checkout("htop", pkg_dir)
 
     assert (pkg_dir / "PKGBUILD").exists()
@@ -363,11 +417,7 @@ def test_pkgctl_checkout_runs_in_parent(tmp_path):
     captured = []
     pkg_dir = tmp_path / "htop"
 
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    with patch("subprocess.run", side_effect=fake_run):
+    with patch("subprocess.Popen", side_effect=_popen_factory(captured=captured)):
         pkgctl_checkout("htop", pkg_dir)
 
     cmd, kwargs = captured[0]
@@ -378,10 +428,11 @@ def test_pkgctl_checkout_runs_in_parent(tmp_path):
 
 
 def test_pkgctl_checkout_failure_raises(tmp_path):
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error: package not found")
-
-    with patch("subprocess.run", side_effect=fake_run):
+    factory = _popen_factory(
+        lines=["error: package not found\n"],
+        returncode_after_wait=1,
+    )
+    with patch("subprocess.Popen", side_effect=factory):
         with pytest.raises(RuntimeError, match="pkgctl checkout failed"):
             pkgctl_checkout("nonexistent", tmp_path / "nonexistent")
 
@@ -390,10 +441,10 @@ def test_pkgctl_checkout_timeout_raises_and_cleans_up(tmp_path):
     dest = tmp_path / "slow-pkg"
     dest.mkdir()
 
-    def fake_run(cmd, **kwargs):
-        raise subprocess.TimeoutExpired(cmd, 60)
-
-    with patch("subprocess.run", side_effect=fake_run):
+    factory = _popen_factory(
+        wait_raises=subprocess.TimeoutExpired(cmd=["pkgctl"], timeout=60),
+    )
+    with patch("subprocess.Popen", side_effect=factory):
         with pytest.raises(RuntimeError, match="timed out after 60s"):
             pkgctl_checkout("slow-pkg", dest, timeout=60)
 
@@ -412,14 +463,35 @@ def test_pkgctl_checkout_creates_parent_dir(tmp_path):
 
     captured = {}
 
-    def fake_run(cmd, **kwargs):
+    def factory(cmd, **kwargs):
         captured["parent_exists"] = Path(kwargs["cwd"]).exists()
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return _FakePopen(cmd, **kwargs)
 
-    with patch("subprocess.run", side_effect=fake_run):
+    with patch("subprocess.Popen", side_effect=factory):
         pkgctl_checkout("htop", dest)
 
     assert captured.get("parent_exists") is True
+
+
+def test_pkgctl_checkout_streams_output_to_log(tmp_path):
+    """Lines from pkgctl/git progress must reach the build log so -vvv shows
+    progress instead of a silent multi-minute wait."""
+    factory = _popen_factory(
+        lines=[
+            "==> Cloning htop ...\n",
+            "Cloning into 'htop'...\n",
+            "Receiving objects: 100% (123/123), done.\n",
+        ],
+    )
+    debug_calls = []
+    with patch("subprocess.Popen", side_effect=factory), \
+         patch("sysforge.primitives.aur._build_log") as mock_log:
+        mock_log.debug.side_effect = lambda msg: debug_calls.append(msg)
+        pkgctl_checkout("htop", tmp_path / "htop")
+
+    assert "==> Cloning htop ..." in debug_calls
+    assert "Cloning into 'htop'..." in debug_calls
+    assert "Receiving objects: 100% (123/123), done." in debug_calls
 
 
 def test_aur_clone_creates_parent_dir(tmp_path):

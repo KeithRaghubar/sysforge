@@ -23,6 +23,7 @@ import os
 import re as _re
 import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -135,31 +136,56 @@ def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
 
     pkgctl repo clone <name> run in dest.parent creates dest.parent/<name>/PKGBUILD.
     Raises RuntimeError on failure or timeout.
+
+    Output is streamed line-by-line to the build log so progress is visible at
+    -vvv on slow networks (cloning from gitlab.archlinux.org can take minutes).
     """
     timeout = timeout or None  # 0 → disable
     _build_log.info(f"Checking out {name!r} from official repos → {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["pkgctl", "repo", "clone", "--protocol=https", name],
             cwd=str(dest.parent),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=timeout,
+            bufsize=1,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
     except FileNotFoundError:
         raise RuntimeError(
             "pkgctl not found on PATH. Install it with: sudo pacman -S --needed devtools"
         )
+
+    output_lines: list[str] = []
+    proc_stdout = proc.stdout
+    assert proc_stdout is not None  # set above by stdout=subprocess.PIPE
+
+    def _drain():
+        for line in proc_stdout:
+            stripped = line.rstrip()
+            output_lines.append(stripped)
+            _build_log.debug(stripped)
+
+    drainer = threading.Thread(target=_drain, daemon=True)
+    drainer.start()
+    try:
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        drainer.join(timeout=1)
         shutil.rmtree(dest, ignore_errors=True)
         raise RuntimeError(
-            f"pkgctl checkout timed out after {timeout}s for {name!r}"
+            f"pkgctl checkout timed out after {timeout}s for {name!r}. "
+            "Increase [git] clone_timeout in sysforge.toml on slow networks."
         )
-    if result.returncode != 0:
+    drainer.join(timeout=1)
+
+    if proc.returncode != 0:
         raise RuntimeError(
-            f"pkgctl checkout failed for {name!r}:\n{result.stderr.strip()}"
+            f"pkgctl checkout failed for {name!r}:\n" + "\n".join(output_lines).strip()
         )
 
 
