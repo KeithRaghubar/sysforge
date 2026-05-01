@@ -153,7 +153,7 @@ source = "aur"
 sysforge run pipeline --state-dir /mnt/var/lib/sysforge
 ```
 
-This runs stages 1–4: partition the disk, `pacstrap` the base system, detect hardware, and configure the installed system (hostname, locale, timezone, mirrorlist, systemd-boot bootloader, NetworkManager + sshd service enables, primary user with sudo, and passwords). The pipeline saves a checkpoint after each stage — a failure can be resumed with `--resume`.
+This runs stages 1–4: partition the disk, `pacstrap` the base system, detect hardware, and configure the installed system (hostname, locale, timezone, mirrorlist, systemd-boot bootloader, NetworkManager + sshd service enables, primary user with sudo, passwords, and sysforge itself — built from the ISO source with `makepkg` in the chroot and installed via pacman so the install is tracked from the start). The pipeline saves a checkpoint after each stage — a failure can be resumed with `--resume`.
 
 ### 5. Reboot into the installed system
 

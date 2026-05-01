@@ -316,8 +316,27 @@ def _find_sysforge_source() -> Path | None:
     return None
 
 
+_PKGVER_RE = re.compile(r"^pkgver\s*=\s*['\"]?([^'\"\s]+)['\"]?\s*$", re.MULTILINE)
+
+
+def _read_pkgver(pkgbuild: Path) -> str:
+    """Extract pkgver from a PKGBUILD. Raise RuntimeError if not found."""
+    text = pkgbuild.read_text()
+    match = _PKGVER_RE.search(text)
+    if not match:
+        raise RuntimeError(f"[CONFIGURE] could not parse pkgver from {pkgbuild}")
+    return match.group(1)
+
+
 def _install_sysforge(cfg: BootstrapConfig) -> None:
     """Place sysforge source under <target>/root/sysforge and install it.
+
+    Builds the source via makepkg in the chroot and installs the resulting
+    package with pacman so the install is pacman-tracked (queryable via
+    `pacman -Q sysforge`, removable via `pacman -R sysforge`, and upgradable
+    via the normal AUR flow). Prior versions installed via `uv pip install`,
+    which left files unowned by pacman and required `pacman -U --overwrite`
+    on the first AUR-driven update.
 
     Prefers a local source tree (iso-install cache, pip metadata, or repo
     walk-up). Falls back to cloning from upstream inside the chroot so the
@@ -339,10 +358,70 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
             f"{_SYSFORGE_REPO_URL} inside the chroot."
         )
         _chroot(cfg.target, ["git", "clone", "--depth", "1", _SYSFORGE_REPO_URL, "/root/sysforge"])
-        _log.ui(f"sysforge source cloned into target (/root/sysforge)")
+        _log.ui("sysforge source cloned into target (/root/sysforge)")
 
-    _chroot(cfg.target, ["uv", "pip", "install", "--system", "--no-deps", "--break-system-packages", "/root/sysforge"])
-    _log.ui("sysforge installed into target.")
+    pkgbuild = target_src / "PKGBUILD"
+    if not pkgbuild.is_file():
+        raise RuntimeError(
+            f"[CONFIGURE] no PKGBUILD found in sysforge source at {pkgbuild}. "
+            "Cannot build a pacman-tracked package."
+        )
+    pkgver = _read_pkgver(pkgbuild)
+
+    # Build dir owned by the unprivileged user (makepkg refuses to run as root).
+    rel_build = Path("home") / cfg.username / "sysforge-pkg"
+    build_host = Path(cfg.target) / rel_build
+    build_chroot = "/" + str(rel_build)
+    if build_host.exists():
+        shutil.rmtree(build_host)
+    build_host.mkdir(parents=True)
+
+    # Stage source as the tarball the upstream PKGBUILD's source=() expects
+    # ("sysforge-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz"). When that
+    # filename already exists in SRCDEST, makepkg uses it instead of fetching
+    # — so we never need network or the right git tag inside the chroot.
+    extract_root = build_host / f"sysforge-{pkgver}"
+    shutil.copytree(target_src, extract_root)
+    tarball = build_host / f"sysforge-{pkgver}.tar.gz"
+    subprocess.run(
+        ["tar", "-C", str(build_host), "-czf", str(tarball), f"sysforge-{pkgver}"],
+        check=True,
+    )
+    shutil.rmtree(extract_root)
+    shutil.copy(pkgbuild, build_host / "PKGBUILD")
+
+    _chroot(cfg.target, ["chown", "-R", f"{cfg.username}:{cfg.username}", build_chroot])
+
+    # makepkg -s (implied by -si) calls `sudo pacman -S` to sync makedeps,
+    # and -i installs the built package via `sudo pacman -U`. Both need to
+    # run non-interactively, so grant the build user passwordless sudo for
+    # the duration of the install. Removed in the finally block below.
+    sudoers_drop = Path(cfg.target) / "etc/sudoers.d/99-sysforge-bootstrap-build"
+    sudoers_drop.parent.mkdir(parents=True, exist_ok=True)
+    sudoers_drop.write_text(f"{cfg.username} ALL=(ALL) NOPASSWD: ALL\n")
+    sudoers_drop.chmod(0o440)
+
+    try:
+        result = _chroot(
+            cfg.target,
+            [
+                "sudo", "-u", cfg.username,
+                "bash", "-lc",
+                f"cd {build_chroot} && "
+                "makepkg -si --skipchecksums --skipinteg --noconfirm --needed",
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"[CONFIGURE] makepkg/pacman install of sysforge failed "
+                f"(exit {result.returncode}). Source remains at /root/sysforge "
+                f"and build artefacts at {build_chroot} for inspection."
+            )
+    finally:
+        sudoers_drop.unlink(missing_ok=True)
+
+    _log.ui(f"sysforge {pkgver} installed via pacman (tracked).")
 
 
 def _create_sysforge_group(cfg: BootstrapConfig) -> None:
@@ -493,7 +572,7 @@ class ConfigureStage(Stage):
                 _log.ui(f"[dry-run] would set default shell: {cfg.shell}")
             _log.ui("[dry-run] would copy /etc/sysforge/ to target")
             _log.ui("[dry-run] would create /var/lib/sysforge (mode 0777)")
-            _log.ui("[dry-run] would install sysforge into target via uv")
+            _log.ui("[dry-run] would build sysforge in target via makepkg and install with pacman -U (tracked)")
             _log.ui("[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
             return
 
