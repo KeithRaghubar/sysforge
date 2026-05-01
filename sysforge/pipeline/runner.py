@@ -33,6 +33,19 @@ from sysforge.primitives.cache_probe import (
     emit_system_probes,
     reset_session,
 )
+from sysforge.ui.headers import (
+    closing_lines,
+    stage_complete_line,
+    stage_lines,
+    stage_list_lines,
+    welcome_lines,
+)
+
+
+def _emit(lines):
+    """Emit each line of a multi-line banner via _log.ui."""
+    for line in lines:
+        _log.ui(line)
 
 
 def _validate_stages(stages):
@@ -191,10 +204,19 @@ def run_pipeline(config, options, stages=None):
 
     _log.info(f"Invocation: {_INVOCATION}")
 
+    _emit(welcome_lines(stage_names))
+    _emit(stage_list_lines(
+        stage_names,
+        {s.name: state.stage_status(s.name) for s in stages},
+        next_idx=start_idx,
+    ))
+
     pipeline_success = False
     try:
         # Execute stages
-        for stage in stages[start_idx:]:
+        for global_idx, stage in enumerate(stages, start=1):
+            if global_idx - 1 < start_idx:
+                continue
             status = state.stage_status(stage.name)
 
             if status == "done":
@@ -202,10 +224,11 @@ def run_pipeline(config, options, stages=None):
                 continue
 
             if options.dry_run:
-                _log.info(f"[dry-run] would run stage: {stage.name} — {stage.description}")
+                _emit(stage_lines(global_idx, len(stages),
+                                  f"[dry-run] {stage.name}", stage.description))
                 continue
 
-            _log.info(f"── Stage: {stage.name} ── {stage.description}")
+            _emit(stage_lines(global_idx, len(stages), stage.name, stage.description))
 
             state.mark_running(stage.name)
             state.save()
@@ -214,7 +237,7 @@ def run_pipeline(config, options, stages=None):
                 stage.run(config, state, options)
                 state.mark_done(stage.name)
                 state.save()
-                _log.info(f"{stage.name}: complete ✓")
+                _log.ui(stage_complete_line(stage.name))
 
             except NotImplementedError as e:
                 # Stub stage — hard stop with clear guidance
@@ -242,7 +265,7 @@ def run_pipeline(config, options, stages=None):
 
         if not options.dry_run:
             pipeline_success = True
-            _log.ui("Pipeline complete — all stages finished successfully.")
+            _emit(closing_lines())
 
     finally:
         if unified_log_active:

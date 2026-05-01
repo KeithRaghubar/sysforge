@@ -96,6 +96,7 @@ sysforge/
 │   ├── log.py                         # structured logging (stderr + optional file output)
 │   ├── ui/
 │   │   ├── __init__.py
+│   │   ├── headers.py                 # shared visual primitives (welcome banner, stage banners, stage list, closing rule)
 │   │   └── progress.py                # bottom-anchored batch progress indicator (TTY scroll region + plain fallback)
 │   ├── resolve.py                     # sysforge resolve subcommand
 │   ├── update.py                      # sysforge update subcommand
@@ -416,6 +417,8 @@ The hardware stage (stage 3) needs no config — it auto-detects and writes `har
 - `--dry-run`: logs what would run without calling `stage.run()`
 
 Guard against accidental state clobber: if a state file exists and neither `--resume` nor `--start-from` is passed, the runner exits with instructions rather than overwriting. Both flags are supported on `sysforge run pipeline`.
+
+**User-facing output.** The runner emits a welcome banner (sysforge version + ordered stage chain) and a status snapshot (`✓ done`, `▸ running`, `· pending`, `↳ skipped_to`) before the loop, a stage banner before each stage (`[N/M] name` between two `═` rules), a `✓ name complete` line after each stage, and a closing rule on success. All of this routes through `log.ui` so it reaches both stderr and the unified log regardless of `-v` level. Visual primitives live in `sysforge/ui/headers.py` and share the `═` rule + bold-cyan style with `tools/iso-install.sh` (parallel `_double_rule` / `_step` / `_field` helpers in shell). Step counters are 1-based against the full stage list, so `--start-from configure` shows `[4/8]`, not `[1/…]`.
 
 ### Checkpoint state
 

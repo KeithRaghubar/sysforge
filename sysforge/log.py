@@ -99,7 +99,7 @@ def _out():
     return sys.stdout if _DRY_RUN else sys.stderr
 
 
-def _use_color() -> bool:
+def use_color() -> bool:
     """Return True iff the active output stream should receive ANSI colour.
 
     Gated by the NO_COLOR standard (any non-empty value disables) and by
@@ -117,7 +117,7 @@ def _format_line(level: str, tag: str, message: str) -> str:
     """Return a ``[SYSFORGE][LEVEL]<tag> <message>\\n`` line, with ANSI colour
     applied when the output stream is a colour-capable TTY."""
     plain = f"[SYSFORGE][{level}]{tag} {message}\n"
-    if not _use_color():
+    if not use_color():
         return plain
     r = _ANSI_RESET
     sgr = _LEVEL_SGR.get(level, "")

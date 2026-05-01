@@ -513,26 +513,26 @@ class _FakeTTY:
 
 def test_use_color_false_under_capsys():
     # Pytest captures stderr via a non-TTY buffer, so colour is off by default.
-    assert log._use_color() is False
+    assert log.use_color() is False
 
 
 def test_use_color_false_when_no_color_set(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
-    assert log._use_color() is False
+    assert log.use_color() is False
 
 
 def test_use_color_false_when_no_color_empty_string(monkeypatch):
     # NO_COLOR standard: empty value does NOT disable; only non-empty does.
     monkeypatch.setenv("NO_COLOR", "")
     monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
-    assert log._use_color() is True
+    assert log.use_color() is True
 
 
 def test_use_color_true_on_tty_without_no_color(monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
-    assert log._use_color() is True
+    assert log.use_color() is True
 
 
 def test_format_line_plain_when_color_disabled(monkeypatch):

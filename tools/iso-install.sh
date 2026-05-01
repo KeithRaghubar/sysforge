@@ -36,7 +36,53 @@ SUDOERS_DROPIN="/etc/sudoers.d/99-${BUILD_USER}-iso-install"
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 _die()    { echo "ERROR: $*" >&2; exit 1; }
-_header() { echo; echo "── $*"; }
+
+# Visual primitives — kept in lockstep with sysforge/ui/headers.py so the
+# shell script and the Python pipeline runner share one visual vocabulary.
+
+_use_color() { [[ -t 1 && -z "${NO_COLOR:-}" ]]; }
+
+_term_cols() {
+    local cols=${COLUMNS:-}
+    [[ -z "$cols" ]] && cols=$(tput cols 2>/dev/null || echo 80)
+    (( cols < 40 ))  && cols=40
+    (( cols > 100 )) && cols=100
+    echo "$cols"
+}
+
+_double_rule() {
+    local cols n=0 out=""
+    cols=$(_term_cols)
+    while (( n < cols )); do out+="═"; n=$((n + 1)); done
+    if _use_color; then
+        printf '\033[1m\033[36m%s\033[0m\n' "$out"
+    else
+        printf '%s\n' "$out"
+    fi
+}
+
+_bold() {
+    if _use_color; then printf '\033[1m%s\033[0m' "$1"; else printf '%s' "$1"; fi
+}
+
+_step() {
+    local idx=$1 total=$2 name=$3 desc=$4
+    echo
+    _double_rule
+    printf '  %s\n' "$(_bold "[$idx/$total] $name")"
+    [[ -n "$desc" ]] && printf '  %s\n' "$desc"
+    _double_rule
+    echo
+}
+
+_field() {
+    # _field LABEL VALUE → "  LABEL ........... VALUE"
+    local label=$1 value=$2 prefix pad
+    prefix=$(printf '  %s ' "$label")
+    pad=$((30 - ${#prefix}))
+    (( pad < 3 )) && pad=3
+    printf '%s%s %s\n' "$prefix" "$(printf '%*s' "$pad" '' | tr ' ' '.')" "$value"
+}
 
 _prompt_required() {
     local label=$1 value
@@ -241,9 +287,19 @@ _remount_cowspace() {
     fi
 }
 
+# ── Welcome banner ────────────────────────────────────────────────────────────
+
+echo
+_double_rule
+printf '  %s\n' "$(_bold "SysForge — live-ISO bootstrap")"
+printf '  %s\n' "Installs $PKG and prepares /etc/sysforge/bootstrap.toml."
+printf '  %s\n' "After this script you'll run: sysforge run pipeline --state-dir /mnt/var/lib/sysforge"
+_double_rule
+echo
+
 # ── 1. Check internet ─────────────────────────────────────────────────────────
 
-_header "Checking internet connectivity"
+_step 1 5 "Check internet" "Verify reachability of archlinux.org"
 if ! ping -c 1 -W 3 archlinux.org &>/dev/null; then
     echo "  No connectivity. Connect first:"
     echo "    Wired:    ip link  (usually automatic)"
@@ -254,12 +310,12 @@ echo "  OK"
 
 # ── 2. Grow cowspace if on live ISO ───────────────────────────────────────────
 
-_header "Checking live-ISO cowspace"
+_step 2 5 "Grow cowspace" "Expand /run/archiso/cowspace so the AUR build fits"
 _remount_cowspace
 
 # ── 3. Install SysForge from AUR ──────────────────────────────────────────────
 
-_header "Installing $PKG from AUR"
+_step 3 5 "Install SysForge" "Build and install $PKG from the AUR"
 # Refresh the pacman db separately so a sync failure surfaces with a clear
 # pointer to the likely cause, instead of getting buried in the install output.
 pacman -Sy 2>&1 || _die "pacman db sync failed — check /etc/pacman.d/mirrorlist and connectivity"
@@ -323,10 +379,9 @@ fi
 
 echo "  Installed: $(sysforge --help 2>&1 | head -1 || echo "$PKG")"
 
-# ── 4. Configure bootstrap.toml ───────────────────────────────────────────────
+# ── 4. Collect bootstrap configuration ────────────────────────────────────────
 
-_header "Configure bootstrap.toml"
-echo
+_step 4 5 "Collect bootstrap configuration" "Answer the prompts to populate /etc/sysforge/bootstrap.toml"
 echo "  Available block devices:"
 lsblk -d -o NAME,SIZE,MODEL --noheadings | grep -v '^loop' | sed 's/^/    /'
 echo
@@ -345,6 +400,24 @@ COUNTRY=$(_prompt_country    "Mirror country for reflector — name or 2-letter 
 USERNAME=$(_prompt_default   "Primary username" "builder")
 USER_PASSWORD=$(_prompt_password "User password")
 ROOT_PASSWORD=$(_prompt_password "Root password")
+
+# ── 5. Review and write ───────────────────────────────────────────────────────
+
+_step 5 5 "Review and write" "Confirm the collected configuration before writing /etc/sysforge/bootstrap.toml"
+
+_field "Block device"     "$DEVICE  (will be ERASED)"
+_field "Root filesystem"  "$ROOT_FS"
+_field "Hostname"         "$HOSTNAME"
+_field "Locale"           "$LOCALE"
+_field "Timezone"         "$TIMEZONE"
+_field "Keymap"           "$KEYMAP"
+_field "Mirror country"   "${COUNTRY:-<all>}"
+_field "Username"         "$USERNAME"
+_field "User password"    "[hidden]"
+_field "Root password"    "[hidden]"
+echo
+WRITE_OK=$(_prompt_choice "Write this configuration" "no" "yes" "no")
+[[ "$WRITE_OK" == "yes" ]] || _die "Aborted by user."
 
 # Refuse to overwrite an existing bootstrap.toml without explicit confirmation,
 # so a partial re-run doesn't blow away hand-edited fields.
@@ -408,11 +481,14 @@ age      = 12
 EOF
 chmod 0600 /etc/sysforge/bootstrap.toml
 
-_header "bootstrap.toml written"
+echo
+_double_rule
+printf '  %s\n' "$(_bold "bootstrap.toml written")"
+_double_rule
 echo
 sed 's/^\(\(root\|user\)_password\s*=\s*\).*/\1"[hidden]"/' /etc/sysforge/bootstrap.toml
 echo
-echo "────────────────────────────────────────────────"
+_double_rule
 echo "  To edit further:  vim /etc/sysforge/bootstrap.toml"
 echo "  To run pipeline:  sysforge run pipeline --state-dir /mnt/var/lib/sysforge"
-echo "────────────────────────────────────────────────"
+_double_rule
