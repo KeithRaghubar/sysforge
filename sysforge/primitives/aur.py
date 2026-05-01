@@ -148,6 +148,10 @@ def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
             timeout=timeout,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "pkgctl not found on PATH. Install it with: sudo pacman -S --needed devtools"
+        )
     except subprocess.TimeoutExpired:
         shutil.rmtree(dest, ignore_errors=True)
         raise RuntimeError(

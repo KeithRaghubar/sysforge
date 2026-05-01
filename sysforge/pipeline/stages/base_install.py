@@ -23,6 +23,7 @@ from sysforge.pipeline.stages._bootstrap import load_bootstrap
 # Minimal packages installed via pacstrap.
 # - base-devel:       build toolchain meta-package (make, gcc, fakeroot, binutils, etc.); required for makepkg
 # - base:             core userspace (glibc, bash, coreutils, systemd, pacman, ...)
+# - devtools:         provides pkgctl; required to clone repo PKGBUILDs in `sysforge build/update`
 # - git:              required for cloning PKGBUILDs and sysforge itself
 # - linux-firmware:   hardware firmware blobs
 # - linux:            default Arch kernel (replaced by custom kernel stage if configured)
@@ -36,6 +37,7 @@ _BASE_PACKAGES = [
     "base",
     "base-devel",
     "bash-completion",
+    "devtools",
     "git",
     "linux",
     "linux-firmware",
