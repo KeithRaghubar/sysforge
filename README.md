@@ -118,7 +118,12 @@ bash <(curl -sL https://raw.githubusercontent.com/KeithRaghubar/sysforge/main/to
 
 The script checks connectivity, installs SysForge from the AUR (config files at `/etc/sysforge/` are shipped by the package), and prompts for all required bootstrap values: device, filesystem, hostname, locale, timezone (validated against `/usr/share/zoneinfo/`), username, and passwords (entered silently with confirmation). It writes a complete `bootstrap.toml` and prints the next command when done.
 
-To configure manually instead, edit `/etc/sysforge/bootstrap.toml` directly — every field is documented inline.
+To configure manually instead, copy the starter template into place and edit it — every field is documented inline:
+
+```bash
+sudo install -Dm600 /usr/share/sysforge/bootstrap.toml.example /etc/sysforge/bootstrap.toml
+sudo vim /etc/sysforge/bootstrap.toml
+```
 
 ### 3. Configure packages.toml
 

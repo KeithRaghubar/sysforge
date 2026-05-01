@@ -203,6 +203,9 @@ sysforge/
 /etc/sysforge/
     profiles.toml                    # flag profiles, [[rules]], conflict groups, consumes inference
     packages.toml                    # default build-rule overrides
+    bootstrap.toml                   # written by iso-install.sh (or hand-copied from the example)
+/usr/share/sysforge/
+    bootstrap.toml.example           # starter template for manual hand-edit setups
 /usr/bin/sysforge
 ~/.config/sysforge/
     profiles.toml                    # user overrides (optional; merges with system via extends_system)
@@ -363,7 +366,7 @@ sysforge run pipeline --resume
 
 **`iso-install.sh`** (`tools/iso-install.sh`) automates the live-ISO setup steps: checks connectivity, installs sysforge from the AUR (`sysforge` by default; pass `--git` to install `sysforge-git` instead), and prompts for all required bootstrap values with validation (timezone checked against `/usr/share/zoneinfo/`, passwords entered silently with confirmation). Writes a complete `bootstrap.toml` and prints the pipeline command when done. Builds the AUR package as a temporary unprivileged user (`aurbuild`) since `makepkg` refuses to run as root; the user and its sudoers drop-in are removed on exit.
 
-**`bootstrap.toml`** (`/etc/sysforge/bootstrap.toml`) configures stages 1–4:
+**`bootstrap.toml`** (`/etc/sysforge/bootstrap.toml`) configures stages 1–4. The package does not install this file directly — it ships a starter template at `/usr/share/sysforge/bootstrap.toml.example`. `iso-install.sh` writes the live file from interactive prompts; for hand-edit setups, copy the example to `/etc/sysforge/` first.
 
 ```toml
 target = "/mnt"          # mount point for the new system

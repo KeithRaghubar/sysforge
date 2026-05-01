@@ -63,7 +63,12 @@ package() {
     install -Dm644 etc/sysforge/packages.toml               "$_conf/packages.toml"
     install -Dm644 etc/sysforge/kernel.toml                 "$_conf/kernel.toml"
     install -Dm644 etc/sysforge/toolchain.toml              "$_conf/toolchain.toml"
-    install -Dm644 etc/sysforge/bootstrap.toml              "$_conf/bootstrap.toml"
+
+    # bootstrap.toml is per-host (device, hostname, passwords) — ship as an
+    # example template under /usr/share so iso-install.sh can detect a true
+    # prior run instead of always seeing the package-installed default.
+    install -Dm644 etc/sysforge/bootstrap.toml \
+        "$pkgdir/usr/share/sysforge/bootstrap.toml.example"
 
     # State directory (pipeline state, build state, logs)
     install -Dm644 /dev/null "$pkgdir/usr/lib/tmpfiles.d/sysforge.conf"
