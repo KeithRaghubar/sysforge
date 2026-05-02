@@ -733,6 +733,8 @@ def _add_state_parser(sub):
     p_list = state_sub.add_parser("list", help="Tabulate build_state.toml entries.")
     p_list.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
+    p_list.add_argument("--no-pager", action="store_true", dest="no_pager",
+        help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
     p_list.set_defaults(func=cmd_state_list)
 
     p_repair = state_sub.add_parser("repair",
@@ -745,11 +747,15 @@ def _add_state_parser(sub):
     p_repair.set_defaults(func=cmd_state_repair)
 
     p_orphans = state_sub.add_parser("orphans",
-        help="List (and optionally prune) stale .pkg.tar* artifacts in PKGDEST.")
+        help="List (and optionally prune) stale .pkg.tar* artifacts in PKGDEST. "
+             "Only surfaces superseded files (pkgname installed AND artifact "
+             "older than installed) so --prune is always safe.")
     p_orphans.add_argument("--prune", action="store_true",
-        help="Delete the listed orphan artifacts (prompts for confirmation).")
+        help="Delete the listed superseded artifacts (prompts for confirmation).")
     p_orphans.add_argument("--no-confirm", action="store_true", dest="no_confirm",
         help="Skip the y/N prompt when pruning. Implies --prune.")
+    p_orphans.add_argument("--no-pager", action="store_true", dest="no_pager",
+        help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
     p_orphans.set_defaults(func=cmd_state_orphans)
 
 

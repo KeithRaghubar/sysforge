@@ -15,8 +15,54 @@ Public API:
     cmd_state_repair(args)
     cmd_state_orphans(args)
 """
+import os
+import subprocess
+import sys
 from collections import defaultdict
+from contextlib import contextmanager
 from pathlib import Path
+
+
+@contextmanager
+def _maybe_pager(use_pager: bool):
+    """Pipe `print()` through ``$PAGER`` when stdout is a TTY and the user
+    hasn't disabled paging.
+
+    Falls back to a passthrough write when stdout isn't a TTY (CI, redirect),
+    when ``use_pager`` is False, or when the pager binary can't be spawned.
+    Honors ``$PAGER`` if set; otherwise tries ``less -RFX`` then ``more``.
+    """
+    if not use_pager or not sys.stdout.isatty():
+        yield
+        return
+    pager_cmd = os.environ.get("PAGER")
+    candidates: list[list[str]] = []
+    if pager_cmd:
+        candidates.append([pager_cmd])
+    else:
+        # -R: pass ANSI through; -F: quit if one screen; -X: don't clear.
+        candidates.append(["less", "-RFX"])
+        candidates.append(["more"])
+    for cmd in candidates:
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
+        except (FileNotFoundError, OSError):
+            continue
+        old_stdout = sys.stdout
+        try:
+            sys.stdout = proc.stdin  # type: ignore[assignment]
+            yield
+        finally:
+            sys.stdout = old_stdout
+            try:
+                if proc.stdin and not proc.stdin.closed:
+                    proc.stdin.close()
+            except BrokenPipeError:
+                pass
+            proc.wait()
+        return
+    # No pager available — degrade to passthrough.
+    yield
 
 
 def cmd_state_list(args):
@@ -33,46 +79,48 @@ def cmd_state_list(args):
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
     bs = BuildState(state_dir)
     entries = bs.all_packages()
-    if not entries:
-        print(f"No build state recorded in {state_dir / 'build_state.toml'}")
-        # Even with empty build_state, surface installed foreign packages.
-        _print_untracked_foreign(set())
-        return
+    use_pager = not getattr(args, "no_pager", False)
 
-    rows = []
-    for pkgname, rec in sorted(entries.items()):
-        pkgver = rec.get("pkgver", "")
-        pkgrel = rec.get("pkgrel", "")
-        ver = f"{pkgver}-{pkgrel}" if pkgrel else pkgver
-        epoch = rec.get("epoch", "0")
-        if epoch and epoch != "0":
-            ver = f"{epoch}:{ver}"
-        rows.append((
-            pkgname,
-            rec.get("pkgbase", ""),
-            ver,
-            rec.get("build_mode", ""),
-            rec.get("pkgbuild_dir", ""),
-        ))
+    with _maybe_pager(use_pager):
+        if not entries:
+            print(f"No build state recorded in {state_dir / 'build_state.toml'}")
+            _print_untracked_foreign(set())
+            return
 
-    max_name = max(len(r[0]) for r in rows)
-    max_base = max(len(r[1]) for r in rows)
-    max_ver = max(len(r[2]) for r in rows)
-    max_mode = max(len(r[3]) for r in rows)
+        rows = []
+        for pkgname, rec in sorted(entries.items()):
+            pkgver = rec.get("pkgver", "")
+            pkgrel = rec.get("pkgrel", "")
+            ver = f"{pkgver}-{pkgrel}" if pkgrel else pkgver
+            epoch = rec.get("epoch", "0")
+            if epoch and epoch != "0":
+                ver = f"{epoch}:{ver}"
+            rows.append((
+                pkgname,
+                rec.get("pkgbase", ""),
+                ver,
+                rec.get("build_mode", ""),
+                rec.get("pkgbuild_dir", ""),
+            ))
 
-    header = (
-        f"  {'NAME':<{max_name}}  {'PKGBASE':<{max_base}}  "
-        f"{'VERSION':<{max_ver}}  {'MODE':<{max_mode}}  PKGBUILD_DIR"
-    )
-    print(header)
-    print("  " + "-" * (len(header) - 2))
-    for name, base, ver, mode, pdir in rows:
-        print(
-            f"  {name:<{max_name}}  {base:<{max_base}}  "
-            f"{ver:<{max_ver}}  {mode:<{max_mode}}  {pdir}"
+        max_name = max(len(r[0]) for r in rows)
+        max_base = max(len(r[1]) for r in rows)
+        max_ver = max(len(r[2]) for r in rows)
+        max_mode = max(len(r[3]) for r in rows)
+
+        header = (
+            f"  {'NAME':<{max_name}}  {'PKGBASE':<{max_base}}  "
+            f"{'VERSION':<{max_ver}}  {'MODE':<{max_mode}}  PKGBUILD_DIR"
         )
-    print(f"\n  {len(rows)} recorded package(s)")
-    _print_untracked_foreign(set(entries.keys()))
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for name, base, ver, mode, pdir in rows:
+            print(
+                f"  {name:<{max_name}}  {base:<{max_base}}  "
+                f"{ver:<{max_ver}}  {mode:<{max_mode}}  {pdir}"
+            )
+        print(f"\n  {len(rows)} recorded package(s)")
+        _print_untracked_foreign(set(entries.keys()))
 
 
 def _print_untracked_foreign(tracked: set[str]) -> None:
@@ -275,16 +323,17 @@ def cmd_state_repair(args):
 def cmd_state_orphans(args):
     """Surface — and optionally remove — stale .pkg.tar* artifacts in PKGDEST.
 
-    Two categories:
-      - **untracked**: pkgname not present in `pacman -Q` (build was never
-        installed, or the package was removed later)
-      - **superseded**: pkgname installed, but the artifact is older than
-        the installed version (stale build leftover)
+    Lists only **superseded** artifacts: files whose pkgname is installed
+    AND whose version is strictly older than the installed one. These are
+    safe to delete because the installed package is, by definition, newer.
+
+    Files whose pkgname is *not* installed are deliberately not surfaced —
+    they could be a build kept on purpose (e.g. a kernel artifact for a
+    branch with local commits the user wants to keep available for later
+    install) and we can't safely tell the difference.
 
     Without ``--prune`` the command is read-only. With ``--prune`` the user
-    is asked y/N (skip the prompt with ``--no-confirm``) before the files
-    are unlinked. Files that can't be parsed (missing .PKGINFO, unexpected
-    filename layout) are silently passed over — never deleted.
+    is asked y/N (skip with ``--no-confirm``) before the files are removed.
     """
     from sysforge.primitives.pacman import (
         detect_orphan_artifacts,
@@ -302,33 +351,30 @@ def cmd_state_orphans(args):
 
     installed = get_all_installed_packages()
     result = detect_orphan_artifacts(pkgdest, installed)
-    untracked = result["untracked"]
-    superseded = result["superseded"]
+    superseded = result.get("superseded", [])
+    use_pager = not getattr(args, "no_pager", False)
 
-    if not untracked and not superseded:
-        print(f"No orphans in {pkgdest}.")
+    if not superseded:
+        print(f"No superseded build artifacts in {pkgdest}.")
         return
 
-    def _print_section(title: str, paths: list[Path]) -> None:
-        if not paths:
-            return
-        total = sum(p.stat().st_size for p in paths if p.exists())
-        print(f"  {title} ({len(paths)} file(s), {total / 1024 / 1024:.1f} MiB):")
-        for p in paths:
+    total = sum(p.stat().st_size for p in superseded if p.exists())
+    with _maybe_pager(use_pager and not getattr(args, "prune", False)):
+        print(f"PKGDEST: {pkgdest}\n")
+        print(
+            f"  Superseded — older than installed ({len(superseded)} file(s), "
+            f"{total / 1024 / 1024:.1f} MiB):"
+        )
+        for p in superseded:
             print(f"    {p.name}")
-
-    print(f"PKGDEST: {pkgdest}\n")
-    _print_section("Untracked (pkgname not installed)", untracked)
-    _print_section("Superseded (older than installed)", superseded)
 
     if not getattr(args, "prune", False):
         print("\nRun `sysforge state orphans --prune` to delete.")
         return
 
-    targets = untracked + superseded
     if not getattr(args, "no_confirm", False):
         try:
-            answer = input(f"\nDelete {len(targets)} file(s)? [y/N] ")
+            answer = input(f"\nDelete {len(superseded)} file(s)? [y/N] ")
         except EOFError:
             answer = ""
         if answer.strip().lower() not in {"y", "yes"}:
@@ -336,7 +382,7 @@ def cmd_state_orphans(args):
             return
 
     removed = 0
-    for path in targets:
+    for path in superseded:
         try:
             path.unlink()
             removed += 1

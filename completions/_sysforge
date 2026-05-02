@@ -270,13 +270,15 @@ _sysforge_state_subcommands() {
 
 _sysforge_state_list() {
   _arguments \
-    '--state-dir[override state directory]:dir:_directories'
+    '--state-dir[override state directory]:dir:_directories' \
+    '--no-pager[do not pipe output through $PAGER]'
 }
 
 _sysforge_state_orphans() {
   _arguments \
-    '--prune[delete the listed orphans]' \
-    '--no-confirm[skip the y/N prompt when pruning]'
+    '--prune[delete the listed superseded artifacts]' \
+    '--no-confirm[skip the y/N prompt when pruning]' \
+    '--no-pager[do not pipe output through $PAGER]'
 }
 
 _sysforge_state_repair() {

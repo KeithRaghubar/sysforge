@@ -993,6 +993,13 @@ All report output (headers, issue lines, summary) flows through `log.ui` (→ st
 
 **`--apply` bridge.** `--apply` (implies `--suggest`) hands the REBUILD-classified candidates to `sysforge update` for actual rebuild. Drift-rebuild only in v1.x: install candidates (not yet installed) are surfaced as `→ run: sysforge build <pkg>` informational lines but never invoked. Repo packages outside `sysforge update`'s scope (no override, no `update_repo_profiled`) are surfaced as `→ run: sudo pacman -S <pkg>` and skipped. Foreign packages — and repo packages eligible under `update_repo_profiled` — are gathered into a single eligible list, the user is prompted (`--no-confirm` skips), and `cmd_update` is invoked with that list as the positional pkgname filter. `--dry-run` reports the rebuild list without invoking the build. `--apply`'s exit code dominates the doctor exit — a successful rebuild produces exit 0 even if doctor surfaced issues. The bridge is intentionally thin: rather than extracting `update.py`'s build loop into a separate primitive, doctor synthesizes a `cmd_update` args namespace and reuses the existing path verbatim.
 
+> **Real-world status (2026-05-02): unit-tested only.** The unit tests
+> (`tests/test_doctor.py::test_apply_*`) mock `cmd_update` entirely, so the
+> end-to-end "doctor finds drift → update rebuilds → install succeeds" path
+> has not been exercised against a live system yet. Treat the v1.x release
+> as "ships --apply behind tested-by-mock semantics"; full integration
+> verification is pending the next session.
+
 Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db), `--apply` (drift-rebuild bridge), `--no-confirm`, `--dry-run`.
 
 Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — see the `provides_lookup.py` subsection for the public API. NEEDED-soname extraction reuses `abi_check.needed_sonames` (public since doctor calls it directly for ABI-issue suggestions). System-state probes live in `sysforge/primitives/graphics_probe.py` — log tag `[GFX]`, public API `check_system_graphics(config, *, gpu_vendors=None)`; invoked from `cmd_doctor` when `--graphics` is set.
@@ -1009,9 +1016,12 @@ Implements `sysforge state` — a small read/repair namespace for `build_state.t
 
 - **`state list`** — tabulates `build_state.toml` entries: pkgbase, build_mode, last build, profile/flags. Read-only. Also appends an *Untracked foreign packages* section listing any installed `pacman -Qm` package that has no `build_state.toml` entry — those slipped past sysforge (installed manually) and won't be rebuilt by `sysforge update` from a known PKGBUILD without a fresh fetch.
 - **`state repair`** — re-parses PKGBUILDs for entries whose stored fields contain unexpanded shell variables (e.g. `${pkgver}` literals from a buggy parse) and rewrites those rows. `--dry-run` previews fixes without writing.
-- **`state orphans`** — scans `PKGDEST` for stale `.pkg.tar*` artifacts and partitions them into **untracked** (pkgname not in `pacman -Q`) and **superseded** (pkgname installed but artifact older than the installed version, by `vercmp`). Read-only by default; `--prune` deletes after a y/N prompt (`--no-confirm` skips the prompt). Files whose `.PKGINFO` can't be read or whose filename doesn't parse are silently skipped — never deleted. The detection primitive `pacman.detect_orphan_artifacts(pkgdest, installed)` returns the partitioned dict and is reusable from other callers.
+- **`state orphans`** — scans `PKGDEST` for `.pkg.tar*` artifacts whose pkgname is installed AND whose version is strictly older than the installed version (the **superseded** category). Read-only by default; `--prune` deletes after a y/N prompt (`--no-confirm` skips). The detection primitive `pacman.detect_orphan_artifacts(pkgdest, installed)` returns `{"superseded": [...]}`.
+  - **Files whose pkgname is *not* installed are intentionally NOT surfaced.** They could be a build kept on purpose (a kernel artifact whose source has local commits the user wants to keep available for later install, a test build, etc.) and we can't safely tell the difference. Per the load-bearing rule: if `--prune` wouldn't safely delete a file, don't list it. Users who want a broader view can use `paccache`/manual inspection.
+  - Files whose `.PKGINFO` can't be read or whose filename doesn't parse are silently skipped — never deleted.
+- **Pagination.** Both `state list` and `state orphans` pipe their output through `$PAGER` (or `less -RFX` / `more` as fallbacks) when stdout is a TTY. `--no-pager` disables. The pager wrapper `_maybe_pager(use_pager)` lives in `state_cmd.py` and degrades gracefully when no pager binary is available.
 
-Public API: `cmd_state_list(args)`, `cmd_state_repair(args)`, `cmd_state_orphans(args)`. The first two accept `--state-dir`; `state orphans` reads PKGDEST from the layered system makepkg.conf via `pacman.get_pkgdest()`.
+Public API: `cmd_state_list(args)`, `cmd_state_repair(args)`, `cmd_state_orphans(args)`. The first two accept `--state-dir`; `state orphans` reads PKGDEST from the layered system makepkg.conf via `pacman.get_pkgdest()`. `list` and `orphans` accept `--no-pager`.
 
 ### `graphics_probe.py`
 

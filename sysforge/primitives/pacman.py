@@ -69,32 +69,27 @@ def detect_orphan_artifacts(
     pkgdest: Path,
     installed: dict[str, str],
 ) -> dict[str, list[Path]]:
-    """Classify ``.pkg.tar*`` files in ``pkgdest`` as untracked or superseded.
+    """Classify ``.pkg.tar*`` files in ``pkgdest`` as superseded build leftovers.
 
-    Returns ``{"untracked": [...], "superseded": [...]}``:
+    Returns ``{"superseded": [...]}``: artifacts whose pkgname IS installed
+    AND whose version is strictly older than the installed version. These
+    are stale build outputs that ``--prune`` can safely delete because the
+    installed package is, by definition, newer.
 
-    - **untracked** — pkgname isn't in ``installed`` at all (left from a
-      build whose package was never installed, or from a package later
-      removed). Safe to delete.
-    - **superseded** — pkgname IS installed, but the artifact's version is
-      older than the installed version (a stale build artifact, harmless
-      but takes disk space). Safe to delete.
-
-    Files newer than the installed version, or matching the installed
-    version exactly, are not returned — those are the current build
-    artifacts and removing them would defeat ``--install-only`` reuse.
-
-    ``.sig`` files are ignored. Files whose pkgname can't be read or
-    whose filename doesn't parse fall through silently — never flagged
-    as orphans, since the caller can't safely decide what to do with
-    them. Use ``--clean`` workflows for those by hand.
+    Files newer than the installed version, files matching the installed
+    version exactly, files whose pkgname is not installed at all, files
+    whose ``.PKGINFO`` can't be read, and files whose filename doesn't parse
+    are intentionally NOT classified — the caller can't safely tell whether
+    they're stale or kept on purpose (e.g. a build of a kernel branch with
+    local commits the user wants to keep around for later install). The
+    rule per Keith's spec: if ``--prune`` wouldn't safely delete it, don't
+    list it. ``.sig`` files are ignored.
     """
     from sysforge.primitives.version import vercmp  # avoid import cycle at module load
 
-    untracked: list[Path] = []
     superseded: list[Path] = []
     if not pkgdest.is_dir():
-        return {"untracked": untracked, "superseded": superseded}
+        return {"superseded": superseded}
 
     for path in sorted(pkgdest.glob("*.pkg.tar*")):
         if path.name.endswith(".sig"):
@@ -103,9 +98,10 @@ def detect_orphan_artifacts(
         if pkgname is None:
             continue
         if pkgname not in installed:
-            untracked.append(path)
+            # Not installed — could be a kept-for-later build, a test
+            # artifact, or genuinely abandoned. We can't tell, so we
+            # don't surface it.
             continue
-        # Same pkgname installed — compare versions to find stale builds.
         from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
         parsed = _parse_built_pkg_filename(pkgname, path.name)
         if parsed is None:
@@ -122,7 +118,7 @@ def detect_orphan_artifacts(
         if cmp < 0:
             superseded.append(path)
 
-    return {"untracked": untracked, "superseded": superseded}
+    return {"superseded": superseded}
 
 
 # ---------------------------------------------------------------------------

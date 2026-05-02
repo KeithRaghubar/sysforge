@@ -64,8 +64,11 @@ sysforge packages add mesa-git --pkgbuild-patch
 sysforge packages remove mesa-git
 
 # 9b. Inspect / repair build_state.toml (the live install-state mirror)
-sysforge state list
+sysforge state list                  # paginated by default (TTY); --no-pager
+sysforge state list --no-pager       # raw output, no $PAGER pipe
 sysforge state repair --dry-run      # preview fixes for legacy broken entries
+sysforge state orphans               # superseded .pkg.tar* in PKGDEST (safe to delete)
+sysforge state orphans --prune       # delete them after y/N confirmation
 
 # 11. Health-check an installed package's depends + linkage (e.g. when Steam
 #     launches as a black window and the graphics stack may be out of sync).

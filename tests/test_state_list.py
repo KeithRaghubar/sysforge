@@ -9,8 +9,8 @@ from unittest.mock import patch
 from sysforge.state_cmd import cmd_state_list
 
 
-def _args(state_dir: Path):
-    return SimpleNamespace(state_dir=str(state_dir))
+def _args(state_dir: Path, no_pager: bool = True):
+    return SimpleNamespace(state_dir=str(state_dir), no_pager=no_pager)
 
 
 def _seed_state(state_dir: Path, entries: dict[str, dict]) -> None:
