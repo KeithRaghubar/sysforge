@@ -332,11 +332,15 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
     """Place sysforge source under <target>/root/sysforge and install it.
 
     Builds the source via makepkg in the chroot and installs the resulting
-    package with pacman so the install is pacman-tracked (queryable via
-    `pacman -Q sysforge`, removable via `pacman -R sysforge`, and upgradable
-    via the normal AUR flow). Prior versions installed via `uv pip install`,
-    which left files unowned by pacman and required `pacman -U --overwrite`
-    on the first AUR-driven update.
+    package with `pacman -U --overwrite='/etc/sysforge/*'` so the install is
+    pacman-tracked (queryable via `pacman -Q sysforge`, removable via
+    `pacman -R sysforge`, and upgradable via the normal AUR flow). Build and
+    install are split (makepkg -s, then explicit pacman -U) because makepkg
+    -si gives no way to forward `--overwrite` to its internal pacman call,
+    and the overwrite glob is needed when /etc/sysforge/* already exists
+    from a prior `uv pip install`-based bootstrap (those files are unowned
+    by pacman and would otherwise abort the install with file-conflict
+    errors on a reinstall).
 
     Prefers a local source tree (iso-install cache, pip metadata, or repo
     walk-up). Falls back to cloning from upstream inside the chroot so the
@@ -392,31 +396,60 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
 
     _chroot(cfg.target, ["chown", "-R", f"{cfg.username}:{cfg.username}", build_chroot])
 
-    # makepkg -s (implied by -si) calls `sudo pacman -S` to sync makedeps,
-    # and -i installs the built package via `sudo pacman -U`. Both need to
-    # run non-interactively, so grant the build user passwordless sudo for
-    # the duration of the install. Removed in the finally block below.
+    # makepkg -s calls `sudo pacman -S` to sync makedeps, which needs to run
+    # non-interactively. Grant the build user passwordless sudo for the
+    # duration of the build. Removed in the finally block below.
     sudoers_drop = Path(cfg.target) / "etc/sudoers.d/99-sysforge-bootstrap-build"
     sudoers_drop.parent.mkdir(parents=True, exist_ok=True)
     sudoers_drop.write_text(f"{cfg.username} ALL=(ALL) NOPASSWD: ALL\n")
     sudoers_drop.chmod(0o440)
 
     try:
+        # Step 1: build only (no -i) so we can pass --overwrite to pacman.
         result = _chroot(
             cfg.target,
             [
                 "sudo", "-u", cfg.username,
                 "bash", "-lc",
                 f"cd {build_chroot} && "
-                "makepkg -si --skipchecksums --skipinteg --noconfirm --needed",
+                "makepkg -s --skipchecksums --skipinteg --noconfirm --needed",
             ],
             check=False,
         )
         if result.returncode != 0:
             raise RuntimeError(
-                f"[CONFIGURE] makepkg/pacman install of sysforge failed "
+                f"[CONFIGURE] makepkg build of sysforge failed "
                 f"(exit {result.returncode}). Source remains at /root/sysforge "
                 f"and build artefacts at {build_chroot} for inspection."
+            )
+
+        # Step 2: locate built packages (host-side glob) and install via pacman
+        # with --overwrite so reinstalls over a prior uv-based install don't
+        # fail on unowned /etc/sysforge/* files.
+        built_pkgs = sorted(build_host.glob("*.pkg.tar.zst"))
+        if not built_pkgs:
+            raise RuntimeError(
+                f"[CONFIGURE] makepkg reported success but no .pkg.tar.zst "
+                f"found in {build_host}."
+            )
+        pkg_paths_chroot = [
+            f"{build_chroot}/{p.name}" for p in built_pkgs
+        ]
+        result = _chroot(
+            cfg.target,
+            [
+                "pacman", "-U",
+                "--overwrite=/etc/sysforge/*",
+                "--noconfirm",
+                *pkg_paths_chroot,
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"[CONFIGURE] pacman -U install of sysforge failed "
+                f"(exit {result.returncode}). Built packages remain at "
+                f"{build_chroot} for inspection."
             )
     finally:
         sudoers_drop.unlink(missing_ok=True)

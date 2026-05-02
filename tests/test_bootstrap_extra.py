@@ -612,12 +612,24 @@ class TestInstallSysforge:
         target = self._make_target(tmp_path)
         cfg = make_cfg(target=str(target), username="builder")
 
+        # The build step is mocked, so makepkg never actually produces a
+        # .pkg.tar.zst. Stage one ourselves so the host-side glob finds it
+        # when the install step runs.
+        build_dir = target / "home/builder/sysforge-pkg"
+
+        def chroot_side_effect(target_arg, cmd, check=True):
+            if cmd[:3] == ["sudo", "-u", "builder"]:
+                # Simulate makepkg producing a built package.
+                build_dir.mkdir(parents=True, exist_ok=True)
+                (build_dir / "sysforge-1.0.0-1-any.pkg.tar.zst").touch()
+            return MagicMock(returncode=0)
+
         # _chroot is mocked but subprocess.run is real — the tarball staging
         # uses real `tar` (universally available) so we verify the actual file.
         with patch("sysforge.pipeline.stages.configure._find_sysforge_source",
                    return_value=src), \
-             patch("sysforge.pipeline.stages.configure._chroot") as mock_chroot:
-            mock_chroot.return_value = MagicMock(returncode=0)
+             patch("sysforge.pipeline.stages.configure._chroot",
+                   side_effect=chroot_side_effect) as mock_chroot:
             _install_sysforge(cfg)
 
         # Source copied into target
@@ -625,15 +637,28 @@ class TestInstallSysforge:
         # Tarball staged for makepkg
         assert (target / "home/builder/sysforge-pkg/sysforge-1.0.0.tar.gz").exists()
         assert (target / "home/builder/sysforge-pkg/PKGBUILD").exists()
-        # makepkg invocation goes through arch-chroot as the build user
         chroot_cmds = [c.args[1] for c in mock_chroot.call_args_list]
+        # Build step: makepkg -s (no -i) under sudo -u builder
         makepkg_call = next(
             (c for c in chroot_cmds if c[:3] == ["sudo", "-u", "builder"]),
             None,
         )
         assert makepkg_call is not None, f"no sudo -u builder call found: {chroot_cmds}"
-        assert "makepkg -si --skipchecksums --skipinteg --noconfirm --needed" \
+        assert "makepkg -s --skipchecksums --skipinteg --noconfirm --needed" \
             in makepkg_call[-1]
+        assert " -si " not in makepkg_call[-1] and not makepkg_call[-1].endswith(" -si"), \
+            f"makepkg should not use -i (split build/install): {makepkg_call[-1]}"
+        # Install step: pacman -U with --overwrite for /etc/sysforge/*
+        pacman_call = next(
+            (c for c in chroot_cmds if c[:2] == ["pacman", "-U"]),
+            None,
+        )
+        assert pacman_call is not None, f"no pacman -U call found: {chroot_cmds}"
+        assert "--overwrite=/etc/sysforge/*" in pacman_call, \
+            f"pacman -U missing --overwrite glob: {pacman_call}"
+        assert "--noconfirm" in pacman_call
+        assert any(p.endswith(".pkg.tar.zst") for p in pacman_call), \
+            f"no built package path passed to pacman -U: {pacman_call}"
         # Temporary sudoers drop-in is removed at the end
         assert not (target / "etc/sudoers.d/99-sysforge-bootstrap-build").exists()
 
@@ -652,10 +677,35 @@ class TestInstallSysforge:
                    return_value=src), \
              patch("sysforge.pipeline.stages.configure._chroot",
                    side_effect=chroot_side_effect):
-            with pytest.raises(RuntimeError, match="makepkg/pacman install of sysforge failed"):
+            with pytest.raises(RuntimeError, match="makepkg build of sysforge failed"):
                 _install_sysforge(cfg)
 
         # Sudoers drop-in is removed even on failure
+        assert not (target / "etc/sudoers.d/99-sysforge-bootstrap-build").exists()
+
+    def test_pacman_install_failure_raises_and_cleans_sudoers(self, tmp_path):
+        src = self._stage_source(tmp_path)
+        target = self._make_target(tmp_path)
+        cfg = make_cfg(target=str(target), username="builder")
+        build_dir = target / "home/builder/sysforge-pkg"
+
+        def chroot_side_effect(target_arg, cmd, check=True):
+            # Build step succeeds and stages a built package; pacman -U fails.
+            if cmd[:3] == ["sudo", "-u", "builder"]:
+                build_dir.mkdir(parents=True, exist_ok=True)
+                (build_dir / "sysforge-1.0.0-1-any.pkg.tar.zst").touch()
+                return MagicMock(returncode=0)
+            if cmd[:2] == ["pacman", "-U"]:
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0)
+
+        with patch("sysforge.pipeline.stages.configure._find_sysforge_source",
+                   return_value=src), \
+             patch("sysforge.pipeline.stages.configure._chroot",
+                   side_effect=chroot_side_effect):
+            with pytest.raises(RuntimeError, match="pacman -U install of sysforge failed"):
+                _install_sysforge(cfg)
+
         assert not (target / "etc/sudoers.d/99-sysforge-bootstrap-build").exists()
 
     def test_missing_pkgbuild_in_source_raises(self, tmp_path):
