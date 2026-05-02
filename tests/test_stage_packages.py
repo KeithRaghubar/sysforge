@@ -190,7 +190,7 @@ def test_packages_stage_continues_after_failure(tmp_path):
     with patch("sysforge.pipeline.stages.packages.makepkg_run", side_effect=fail_llvm), \
          patch("sysforge.pipeline.stages.packages.subprocess.run") as mock_pacman:
         mock_pacman.return_value = MagicMock(returncode=0)
-        with pytest.raises(RuntimeError, match="packages stage finished with failures"):
+        with pytest.raises(RuntimeError, match=r"\[PACKAGES\] stage finished with failures"):
             PackagesStage().run(config={"packages_file": str(pkg_file)},
                                 state=state, options=make_options())
 

@@ -15,7 +15,7 @@ depends=(
 )
 makedepends=(
     'uv'
-    'python-pip'
+    'python-installer'
     'python-argparse-manpage'
 )
 optdepends=(
@@ -29,6 +29,13 @@ optdepends=(
 )
 conflicts=('sysforge-git')
 provides=('sysforge')
+backup=(
+    'etc/sysforge/sysforge.toml'
+    'etc/sysforge/profiles.toml'
+    'etc/sysforge/packages.toml'
+    'etc/sysforge/kernel.toml'
+    'etc/sysforge/toolchain.toml'
+)
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('f8763cd58680e10752ed893e5432e0de38ae3df6c8ea92fe944614453cab1914')
 
@@ -47,7 +54,7 @@ build() {
 
 package() {
     cd "$srcdir/$pkgname-$pkgver"
-    python -m pip install --no-deps --root="$pkgdir" dist/*.whl
+    python -m installer --destdir="$pkgdir" dist/*.whl
 
     # Man page
     install -Dm644 man/sysforge.1 "$pkgdir/usr/share/man/man1/sysforge.1"

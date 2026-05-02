@@ -219,7 +219,8 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
                 if isinstance(pkgnames, str):
                     pkgnames = [pkgnames]
                 coverage[path] = set(pkgnames)
-            except Exception:
+            except Exception as e:
+                _log.info(f"  split-package scan: parse failed for {path}: {e}")
                 coverage[path] = set()
 
         still_remaining = []
@@ -265,8 +266,8 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
                         )
                 for r in satisfied:
                     remaining.remove(r)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.info(f"  split-package re-scan: parse failed for {path}: {e}")
         except FileNotFoundError as e:
             errors.append(str(e))
         i += 1
@@ -296,7 +297,8 @@ def _check_pkgver_consistency(pkgbuild_map: dict[str, Path]) -> None:
             try:
                 meta = parse_pkgbuild(path)
                 pkgver = meta.get("globals", {}).get("pkgver", "")
-            except Exception:
+            except Exception as e:
+                _log.info(f"  pkgver consistency: parse failed for {path}: {e}")
                 pkgver = ""
             dir_info[d] = {"pkgver": pkgver, "names": []}
         dir_info[d]["names"].append(name)
@@ -1121,7 +1123,8 @@ def _check_existing_profdata(
                         f"building LLVM {target_major}",
                     )
                 return ("ready", profdata_path)
-        except Exception:
+        except Exception as e:
+            _log.info(f"  profdata reuse: parse failed for {path} ({name}): {e}")
             continue
 
     return ("absent", "cannot determine target LLVM version from PKGBUILDs")

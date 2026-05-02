@@ -333,6 +333,7 @@ install -m 0440 /dev/stdin "$SUDOERS_DROPIN" <<< "$BUILD_USER ALL=(ALL) NOPASSWD
 
 cleanup_build_user() {
     rm -f "$SUDOERS_DROPIN"
+    [[ -n "${BUILD_DIR:-}" && -d "$BUILD_DIR" ]] && rm -rf "$BUILD_DIR"
     if [[ "$_created_user" == 1 ]]; then
         userdel -r "$BUILD_USER" 2>/dev/null || true
     fi
@@ -377,7 +378,7 @@ else
     echo "  WARN: no pyproject.toml found under $BUILD_DIR/build/$PKG/src; configure stage will try the chroot-clone fallback" >&2
 fi
 
-echo "  Installed: $(sysforge --help 2>&1 | head -1 || echo "$PKG")"
+echo "  Installed: $(pacman -Q "$PKG" 2>/dev/null || sysforge --version 2>/dev/null || echo "$PKG")"
 
 # ── 4. Collect bootstrap configuration ────────────────────────────────────────
 

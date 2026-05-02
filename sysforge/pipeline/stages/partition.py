@@ -185,10 +185,11 @@ def _partition_disk(cfg: BootstrapConfig) -> tuple[str, str]:
     ]
 
     _log.info(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
-            f"[PARTITION] sgdisk failed (exit {result.returncode}): {' '.join(cmd)}"
+            f"[PARTITION] sgdisk failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or ' '.join(cmd)}"
         )
 
     # Inform kernel of partition table changes

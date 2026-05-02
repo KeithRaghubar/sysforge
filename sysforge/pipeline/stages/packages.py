@@ -381,7 +381,7 @@ class PackagesStage(Stage):
         if still_failed:
             _log.error(f"Stage complete with failures.\n[SYSFORGE][ERROR][PACKAGES] {summary}\n[SYSFORGE][ERROR][PACKAGES] Failed packages: {still_failed}")
             raise RuntimeError(
-                f"packages stage finished with failures: {still_failed}"
+                f"[PACKAGES] stage finished with failures: {still_failed}"
             )
 
         _log.ui(f"Stage complete.\n[SYSFORGE][INFO][PACKAGES] {summary}")

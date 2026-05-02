@@ -15,7 +15,7 @@ depends=(
 )
 makedepends=(
     'uv'
-    'python-pip'
+    'python-installer'
     'python-argparse-manpage'
 )
 optdepends=(
@@ -24,10 +24,18 @@ optdepends=(
     'sccache: Rust compiler cache support'
     'uv: required for bootstrap pipeline (configure stage)'
     'zsh: zsh shell support'
+    'glow: in-shell markdown rendering for docs'
     'zsh-completions: additional zsh completions'
 )
 conflicts=('sysforge')
 provides=('sysforge')
+backup=(
+    'etc/sysforge/sysforge.toml'
+    'etc/sysforge/profiles.toml'
+    'etc/sysforge/packages.toml'
+    'etc/sysforge/kernel.toml'
+    'etc/sysforge/toolchain.toml'
+)
 source=("$pkgname::git+$url.git")
 sha256sums=('SKIP')
 
@@ -53,7 +61,7 @@ build() {
 
 package() {
     cd "$srcdir/$pkgname"
-    python -m pip install --no-deps --root="$pkgdir" dist/*.whl
+    python -m installer --destdir="$pkgdir" dist/*.whl
 
     # Man page
     install -Dm644 man/sysforge.1 "$pkgdir/usr/share/man/man1/sysforge.1"

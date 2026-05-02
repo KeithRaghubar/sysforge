@@ -811,8 +811,8 @@ def _step_disk(config, state, options, editor: str) -> str:
                 1 for p in data.get("package", [])
                 if p.get("source", "aur") in ("aur", "git")
             )
-    except Exception:
-        pass
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        _log.info(f"  packages.toml unreadable for disk estimate: {e}")
 
     est_gb = n_aur * _DISK_PER_PKG_GB
     _log.ui(
@@ -979,7 +979,8 @@ def _step_preview(config, state, options, editor: str) -> str:
         rules = config.get("rules", [])
         from sysforge.primitives.profile import match_rules as _match_rules
         can_match = True
-    except Exception:
+    except ImportError as e:
+        _log.info(f"  match_rules unavailable, profile preview disabled: {e}")
         rules, can_match = [], False
 
     _log.ui(f"  {'Package':<30}  {'Source':<6}  {'Action'}")
@@ -1030,8 +1031,8 @@ def _step_preview(config, state, options, editor: str) -> str:
             pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
             pgo_label = " + PGO (3-pass)" if pgo else ""
             _log.ui(f"  Toolchain: {compiler}{pgo_label}")
-        except Exception:
-            _log.ui("  Toolchain: toolchain.toml present but unreadable")
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            _log.ui(f"  Toolchain: toolchain.toml present but unreadable ({e})")
     else:
         _log.ui("  Toolchain: no toolchain.toml — toolchain stage will be a no-op")
 
@@ -1043,8 +1044,8 @@ def _step_preview(config, state, options, editor: str) -> str:
                 f"  Kernel: {kcfg.get('pkgname', '?')}  "
                 f"(bootloader: {kcfg.get('bootloader', 'systemd-boot')})"
             )
-        except Exception:
-            _log.ui("  Kernel: kernel.toml present but unreadable")
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            _log.ui(f"  Kernel: kernel.toml present but unreadable ({e})")
     else:
         _log.ui("  Kernel: no kernel.toml — kernel stage will be a no-op")
 
@@ -1076,6 +1077,41 @@ def _run_selected_steps(step_keys: list[str], config, state, options) -> None:
     editor, _ = _resolve_editor()
     for key in step_keys:
         editor = _STEP_FNS[key](config, state, options, editor)
+
+
+def _validate_all_configs(config) -> None:
+    """
+    Re-parse and resolve every config file the downstream stages depend on,
+    surfacing TOML/schema errors here instead of after a 10+ minute build run.
+    Raises RuntimeError with a clear pointer if any file fails to load.
+    """
+    from sysforge.primitives.profile import merge_extends
+
+    pkg_path = resolve_packages_path(config)
+    if pkg_path.exists():
+        try:
+            with open(pkg_path, "rb") as f:
+                tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise RuntimeError(f"[RECONFIGURE] {pkg_path}: TOML parse error: {e}")
+
+    profiles_path = CONFIG_BASE / "profiles.toml"
+    if profiles_path.exists():
+        try:
+            cfg = load_config(config_paths=[profiles_path])
+            conflict_groups = load_conflict_groups()
+            for name in cfg.get("profiles", {}):
+                merge_extends(name, cfg["profiles"], conflict_groups=conflict_groups)
+        except (tomllib.TOMLDecodeError, ValueError, KeyError) as e:
+            raise RuntimeError(f"[RECONFIGURE] {profiles_path}: {e}")
+
+    for path in (TOOLCHAIN_PATH, KERNEL_PATH):
+        if path.exists():
+            try:
+                with open(path, "rb") as f:
+                    tomllib.load(f)
+            except tomllib.TOMLDecodeError as e:
+                raise RuntimeError(f"[RECONFIGURE] {path}: TOML parse error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1131,6 +1167,10 @@ class ReconfigureStage(Stage):
 
         step_keys = _select_steps(options)
         _run_selected_steps(step_keys, config, state, options)
+
+        # Final pre-flight: catch TOML/schema errors before the user confirms,
+        # so downstream stages can't fail 10+ minutes in on broken config.
+        _validate_all_configs(config)
 
         if _interactive() and not options.dry_run and not options.standalone:
             _log.ui("─────────────────────────────────────────────────────")
