@@ -21,6 +21,7 @@ _log = log.get_logger("PARTITION")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import BootstrapConfig, load_bootstrap
 from sysforge.primitives.prompt import prompt_choice
+from sysforge.primitives.run import run_or_raise
 
 
 # ---------------------------------------------------------------------------
@@ -185,12 +186,7 @@ def _partition_disk(cfg: BootstrapConfig) -> tuple[str, str]:
     ]
 
     _log.info(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"[PARTITION] sgdisk failed (exit {result.returncode}): "
-            f"{result.stderr.strip() or ' '.join(cmd)}"
-        )
+    run_or_raise(cmd, tag="PARTITION", operation="sgdisk", hint=" ".join(cmd))
 
     # Inform kernel of partition table changes
     probe = subprocess.run(["partprobe", device], capture_output=True, text=True)
@@ -225,20 +221,21 @@ def _partition_disk(cfg: BootstrapConfig) -> tuple[str, str]:
 def _format_partitions(cfg: BootstrapConfig, esp_part: str, root_part: str) -> None:
     """Format ESP as fat32 and root as the configured filesystem."""
     _log.ui(f"Formatting {esp_part} as fat32")
-    result = subprocess.run(["mkfs.fat", "-F", "32", "-n", "ESP", esp_part])
-    if result.returncode != 0:
-        raise RuntimeError(f"[PARTITION] mkfs.fat failed on {esp_part}")
+    run_or_raise(
+        ["mkfs.fat", "-F", "32", "-n", "ESP", esp_part],
+        tag="PARTITION", operation="mkfs.fat",
+        hint=f"failed on {esp_part}", capture=False,
+    )
 
     _log.ui(f"Formatting {root_part} as {cfg.root_fs}")
-    if cfg.root_fs == "ext4":
-        result = subprocess.run(["mkfs.ext4", "-L", "root", root_part])
-    else:  # btrfs
-        result = subprocess.run(["mkfs.btrfs", "-L", "root", root_part])
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"[PARTITION] mkfs.{cfg.root_fs} failed on {root_part}"
-        )
+    mkfs_cmd = (
+        ["mkfs.ext4", "-L", "root", root_part] if cfg.root_fs == "ext4"
+        else ["mkfs.btrfs", "-L", "root", root_part]
+    )
+    run_or_raise(
+        mkfs_cmd, tag="PARTITION", operation=f"mkfs.{cfg.root_fs}",
+        hint=f"failed on {root_part}", capture=False,
+    )
 
 
 def _mount_partitions(cfg: BootstrapConfig, esp_part: str, root_part: str) -> None:
@@ -248,15 +245,17 @@ def _mount_partitions(cfg: BootstrapConfig, esp_part: str, root_part: str) -> No
 
     _log.ui(f"Mounting {root_part} → {target}")
     Path(target).mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(["mount", root_part, target])
-    if result.returncode != 0:
-        raise RuntimeError(f"[PARTITION] mount failed: {root_part} → {target}")
+    run_or_raise(
+        ["mount", root_part, target], tag="PARTITION", operation="mount",
+        hint=f"{root_part} → {target}",
+    )
 
     _log.ui(f"Mounting {esp_part} → {boot}")
     Path(boot).mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(["mount", "--mkdir", esp_part, boot])
-    if result.returncode != 0:
-        raise RuntimeError(f"[PARTITION] mount failed: {esp_part} → {boot}")
+    run_or_raise(
+        ["mount", "--mkdir", esp_part, boot], tag="PARTITION", operation="mount",
+        hint=f"{esp_part} → {boot}",
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@ from sysforge import log
 _log = log.get_logger("CONFIGURE")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import load_bootstrap, BootstrapConfig
+from sysforge.primitives.run import run_or_raise
 
 
 # ---------------------------------------------------------------------------
@@ -226,13 +227,12 @@ def _create_user(cfg: BootstrapConfig) -> None:
     _log.ui("sudo: wheel group enabled")
 
     if cfg.user_password:
-        result = subprocess.run(
+        run_or_raise(
             ["arch-chroot", cfg.target, "chpasswd"],
+            tag="CONFIGURE", operation="chpasswd",
+            hint=f"failed for {cfg.username!r}",
             input=f"{cfg.username}:{cfg.user_password}\n",
-            text=True,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"[CONFIGURE] chpasswd failed for {cfg.username!r}")
         _log.ui(f"Password set for {cfg.username}.")
     else:
         _log.warn(
@@ -557,13 +557,12 @@ def _set_default_shell(cfg: BootstrapConfig) -> None:
 def _set_root_password(cfg: BootstrapConfig) -> None:
     """Set the root password from bootstrap.toml, or warn if not configured."""
     if cfg.root_password:
-        result = subprocess.run(
+        run_or_raise(
             ["arch-chroot", cfg.target, "chpasswd"],
+            tag="CONFIGURE", operation="chpasswd",
+            hint="root password not set",
             input=f"root:{cfg.root_password}\n",
-            text=True,
         )
-        if result.returncode != 0:
-            raise RuntimeError("[CONFIGURE] chpasswd failed — root password not set")
         _log.ui("Root password set.")
     else:
         _log.warn(

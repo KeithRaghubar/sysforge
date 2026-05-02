@@ -18,6 +18,7 @@ from sysforge import log
 _log = log.get_logger("BASE_INSTALL")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import load_bootstrap
+from sysforge.primitives.run import run_or_raise
 
 
 # Minimal packages installed via pacstrap.
@@ -77,12 +78,10 @@ def _run_pacstrap(target: str, packages: list[str], dry_run: bool) -> None:
     if dry_run:
         _log.ui(f"[dry-run] would run: {' '.join(cmd)}")
         return
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"[BASE_INSTALL] pacstrap failed (exit {result.returncode}). "
-            f"Check network connectivity and pacman keyring."
-        )
+    run_or_raise(
+        cmd, tag="BASE_INSTALL", operation="pacstrap", capture=False,
+        hint="Check network connectivity and pacman keyring.",
+    )
     _log.ui("pacstrap complete.")
 
 
@@ -95,11 +94,7 @@ def _generate_fstab(target: str, dry_run: bool) -> None:
         _log.ui(f"[dry-run] would run: {' '.join(cmd)} >> {fstab_path}")
         return
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"[BASE_INSTALL] genfstab failed (exit {result.returncode}): {result.stderr.strip()}"
-        )
+    result = run_or_raise(cmd, tag="BASE_INSTALL", operation="genfstab")
 
     fstab_path.parent.mkdir(parents=True, exist_ok=True)
     with open(fstab_path, "a") as f:
