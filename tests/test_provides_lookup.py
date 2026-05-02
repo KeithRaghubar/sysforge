@@ -120,6 +120,67 @@ def test_suggest_non_soname_returns_empty():
 
 
 # ---------------------------------------------------------------------------
+# installed_names filter (A1 — stop suggesting already-installed packages)
+# ---------------------------------------------------------------------------
+
+def test_suggest_filters_installed_with_repo_prefix():
+    """`core/glib2` matches an installed `glib2` and is dropped."""
+    out = pl.suggest_for_soname(
+        "libglib-2.0.so=0",
+        run_fn=_fake_run("core/glib2\n", 0),
+        installed_names={"glib2"},
+    )
+    assert out == []
+
+
+def test_suggest_filters_installed_without_repo_prefix():
+    """Lines without a `repo/` prefix still compare bare against installed_names."""
+    out = pl.suggest_for_soname(
+        "libfoo.so",
+        run_fn=_fake_run("foo\n", 0),
+        installed_names={"foo"},
+    )
+    assert out == []
+
+
+def test_suggest_keeps_uninstalled_candidates():
+    out = pl.suggest_for_soname(
+        "libfoo.so",
+        run_fn=_fake_run("core/glib2\nextra/new-pkg\n", 0),
+        installed_names={"glib2"},
+    )
+    assert out == ["extra/new-pkg"]
+
+
+def test_suggest_no_filter_returns_all():
+    """``installed_names=None`` reverts to the legacy behaviour."""
+    out = pl.suggest_for_soname(
+        "libfoo.so",
+        run_fn=_fake_run("core/glib2\nextra/new-pkg\n", 0),
+        installed_names=None,
+    )
+    assert out == ["core/glib2", "extra/new-pkg"]
+
+
+def test_suggest_filter_idempotent_across_calls():
+    """Calling twice with the same args returns identical lists."""
+    runfn = _fake_run("core/glib2\n", 0)
+    first = pl.suggest_for_soname(
+        "libglib-2.0.so=0", run_fn=runfn, installed_names={"glib2"},
+    )
+    second = pl.suggest_for_soname(
+        "libglib-2.0.so=0", run_fn=runfn, installed_names={"glib2"},
+    )
+    assert first == second == []
+
+
+def test_bare_pkgname_strips_repo_prefix():
+    assert pl._bare_pkgname("core/libcap") == "libcap"
+    assert pl._bare_pkgname("multilib/lib32-glib2") == "lib32-glib2"
+    assert pl._bare_pkgname("libcap") == "libcap"
+
+
+# ---------------------------------------------------------------------------
 # files_db_present
 # ---------------------------------------------------------------------------
 

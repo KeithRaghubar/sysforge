@@ -133,6 +133,12 @@ def _assemble_package_set(
       - Every installed foreign package (`pacman -Qm`) — always.
       - Installed repo packages whose name appears in `overrides_by_name` —
         the override is what asks sysforge to manage them.
+      - When ``[build] update_repo_profiled = true`` in packages.toml, every
+        installed repo package is iterated as well (the version-check phase
+        compares against ``pkgctl repo clone``-resolved PKGBUILDs from the
+        Arch packaging repo). Designed for users who maintain a fully
+        profiled system and want repo-side version drift surfaced alongside
+        AUR drift in a single ``sysforge update`` run.
 
     `overrides_by_name` is applied as an overlay (`source`, `pkgbuild_patch`,
     `cache`, `reason`); installed packages with no override use defaults.
@@ -154,24 +160,40 @@ def _assemble_package_set(
         name for name, ov in overrides_by_name.items()
         if ov.get("source") == "repo"
     }
+    profiled_repo_active = build_cfg.get("update_repo_profiled") is True
 
     # Live install set: every installed foreign + every repo package with an
-    # override that pulls it into sysforge's scope.
+    # override that pulls it into sysforge's scope. With
+    # update_repo_profiled, also pull in every installed repo package.
     all_installed = get_all_installed_packages()
-    target_names = {n for n in all_installed if n in foreign or n in repo_overridden}
+    target_names = {n for n in all_installed
+                    if n in foreign
+                    or n in repo_overridden
+                    or (profiled_repo_active and n not in foreign)}
 
     packages: dict[str, dict] = {}
     unrecorded_names: set[str] = set()
 
+    def _resolve_source(name: str, override: dict) -> str | None:
+        """Override > repo (when profiled or override-tagged) > inferred-default."""
+        ov = override.get("source")
+        if ov:
+            return ov
+        if name in repo_overridden:
+            return "repo"
+        if profiled_repo_active and name not in foreign:
+            return "repo"
+        return None
+
     for name in target_names:
         override = overrides_by_name.get(name, {})
         bs_entry = build_state_pkgs.get(name)
+        resolved_source = _resolve_source(name, override)
 
         if bs_entry is not None and bs_entry.get("build_mode", "profiled") != "pacman":
             pkg = dict(bs_entry)
-            override_source = override.get("source")
-            if override_source and "source" not in pkg:
-                pkg["source"] = override_source
+            if resolved_source and "source" not in pkg:
+                pkg["source"] = resolved_source
             packages[name] = pkg
         else:
             unrecorded_names.add(name)
@@ -180,9 +202,8 @@ def _assemble_package_set(
                 "pkgbase": name,
                 "pkgbuild_dir": pkgdir,
             }
-            override_source = override.get("source")
-            if override_source:
-                entry["source"] = override_source
+            if resolved_source:
+                entry["source"] = resolved_source
             packages[name] = entry
 
     # Resolve pkgbase for unrecorded packages from pacman's local DB first.
@@ -274,8 +295,6 @@ def _sync_sources(
     for pkgbase in sorted(pkgbase_map):
         entry = pkgbase_entry[pkgbase]
         source = entry.get("source", "aur")
-        if source == "repo":
-            continue
         pkgbuild_dir = Path(entry["pkgbuild_dir"])
         resolved = str(pkgbuild_dir)
         if resolved in seen_dirs:

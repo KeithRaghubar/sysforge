@@ -428,6 +428,74 @@ def test_repo_package_with_override_is_iterated(tmp_path):
     assert {r.pkgbase for r in results} == {pkgbase}
 
 
+def test_update_repo_profiled_walks_installed_repo_packages(tmp_path):
+    """
+    A2: with `[build] update_repo_profiled = true`, every installed repo
+    package is iterated alongside foreign packages. No per-package override
+    needed; the toml key opts the entire repo surface in.
+    """
+    pkgbase = "firefox"
+    pkg_dir = tmp_path / pkgbase
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text(
+        f"pkgname={pkgbase}\npkgver=131.0\npkgrel=1\n"
+    )
+
+    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "131.0",
+                          "pkgrel": "1", "epoch": "0"}}
+    # build_cfg sets update_repo_profiled; no per-package overrides.
+    overrides = ({"update_repo_profiled": True}, {})
+
+    results = []
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=overrides),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={pkgbase: "131.0-1"}),
+        patch("sysforge.update.get_foreign_packages", return_value={}),
+        patch("sysforge.update.vercmp", return_value=0),
+    ):
+        MockBS.return_value.all_packages.return_value = {}
+
+        def capture(res_list, a):
+            results.extend(res_list)
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(_make_args())
+
+    assert {r.pkgbase for r in results} == {pkgbase}
+
+
+def test_update_repo_profiled_off_skips_repo_packages(tmp_path):
+    """
+    Default (update_repo_profiled unset / false): a repo package without
+    an override stays out of scope. Confirms the gate is load-bearing.
+    """
+    overrides = ({"update_repo_profiled": False}, {})
+
+    results = []
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_overrides", return_value=overrides),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={"firefox": "131.0-1"}),
+        patch("sysforge.update.get_foreign_packages", return_value={}),
+    ):
+        MockBS.return_value.all_packages.return_value = {}
+
+        def capture(res_list, a):
+            results.extend(res_list)
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(_make_args())
+
+    assert results == []
+
+
 # ---------------------------------------------------------------------------
 # DEVEL / dry-run / no-devel
 # ---------------------------------------------------------------------------

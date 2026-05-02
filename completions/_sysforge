@@ -36,7 +36,7 @@ _sysforge_commands() {
     'converge:rebuild packages that have drifted from their profile'
     'doctor:health-check installed package depends + linkage'
     'packages:manage packages.toml override entries (list, add, remove)'
-    'state:inspect or repair build_state.toml (list, repair)'
+    'state:inspect or repair build_state.toml (list, repair, orphans)'
     'run:execute a pipeline stage'
     'setup:configure system integration (pacman IgnoreGroup for sf-build)'
   )
@@ -176,6 +176,9 @@ _sysforge_doctor() {
     '--shallow[do not recurse into transitive dependencies]' \
     '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only issues]' \
     '(-s --suggest)'{-s,--suggest}'[reverse-lookup candidate packages for each missing soname via pacman -Fq]' \
+    '--apply[hand REBUILD candidates to sysforge update; implies --suggest]' \
+    '--no-confirm[skip the y/N prompt before --apply rebuilds]' \
+    '--dry-run[report --apply work without rebuilding]' \
     '*:installed package:_sysforge_installed_pkg_names'
 }
 
@@ -248,8 +251,9 @@ _sysforge_state() {
   case $state in
     args)
       case $words[1] in
-        list)   _sysforge_state_list   ;;
-        repair) _sysforge_state_repair ;;
+        list)    _sysforge_state_list    ;;
+        repair)  _sysforge_state_repair  ;;
+        orphans) _sysforge_state_orphans ;;
       esac
       ;;
   esac
@@ -259,6 +263,7 @@ _sysforge_state_subcommands() {
   local subcommands=(
     'list:tabulate build_state.toml entries'
     'repair:re-parse PKGBUILDs to fix entries with unexpanded shell variables'
+    'orphans:list (and optionally prune) stale .pkg.tar* artifacts in PKGDEST'
   )
   _describe 'subcommand' subcommands
 }
@@ -266,6 +271,12 @@ _sysforge_state_subcommands() {
 _sysforge_state_list() {
   _arguments \
     '--state-dir[override state directory]:dir:_directories'
+}
+
+_sysforge_state_orphans() {
+  _arguments \
+    '--prune[delete the listed orphans]' \
+    '--no-confirm[skip the y/N prompt when pruning]'
 }
 
 _sysforge_state_repair() {

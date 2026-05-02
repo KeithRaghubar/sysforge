@@ -2,8 +2,9 @@
 state_cmd.py — build_state.toml inspection and repair
 
 Implements the `sysforge state` subcommand namespace:
-    list    — tabulate build_state.toml entries
-    repair  — re-parse PKGBUILDs for entries with unexpanded shell variables
+    list     — tabulate build_state.toml entries
+    repair   — re-parse PKGBUILDs for entries with unexpanded shell variables
+    orphans  — surface stale .pkg.tar* artifacts in PKGDEST
 
 Separate from `sysforge packages`, which manages override rules in
 packages.toml. The split mirrors the rules-vs-state separation described
@@ -12,13 +13,20 @@ in DESIGN.md §Package Manifest.
 Public API:
     cmd_state_list(args)
     cmd_state_repair(args)
+    cmd_state_orphans(args)
 """
 from collections import defaultdict
 from pathlib import Path
 
 
 def cmd_state_list(args):
-    """Print build_state.toml entries in a tabular layout."""
+    """Print build_state.toml entries in a tabular layout.
+
+    Also surfaces *untracked foreign packages* — installed AUR-style packages
+    (`pacman -Qm`) that have no entry in build_state.toml. Those slipped past
+    sysforge (installed manually outside the manager) and won't be rebuilt by
+    `sysforge update` from a known PKGBUILD without a fresh fetch.
+    """
     from sysforge.primitives.build_state import BuildState
     from sysforge.pipeline.state import resolve_state_dir
 
@@ -27,6 +35,8 @@ def cmd_state_list(args):
     entries = bs.all_packages()
     if not entries:
         print(f"No build state recorded in {state_dir / 'build_state.toml'}")
+        # Even with empty build_state, surface installed foreign packages.
+        _print_untracked_foreign(set())
         return
 
     rows = []
@@ -62,6 +72,28 @@ def cmd_state_list(args):
             f"{ver:<{max_ver}}  {mode:<{max_mode}}  {pdir}"
         )
     print(f"\n  {len(rows)} recorded package(s)")
+    _print_untracked_foreign(set(entries.keys()))
+
+
+def _print_untracked_foreign(tracked: set[str]) -> None:
+    """Print the foreign-but-untracked-by-sysforge section, when non-empty."""
+    from sysforge.primitives.pacman import get_foreign_packages
+
+    try:
+        foreign = get_foreign_packages()
+    except Exception:
+        return
+    untracked = sorted(set(foreign) - tracked)
+    if not untracked:
+        return
+    print(f"\n  Untracked foreign packages ({len(untracked)}):")
+    for name in untracked:
+        print(f"    {name} {foreign[name]}")
+    print(
+        "    (installed via `pacman -Qm` but with no build_state.toml entry — "
+        "`sysforge update` will pick these up the next time their pkgbase "
+        "PKGBUILD is fetched)"
+    )
 
 
 def cmd_state_repair(args):
@@ -238,3 +270,76 @@ def cmd_state_repair(args):
             total_created += 1
     bs.save()
     print(f"Repaired {total_created} entry(ies) in {bs.path}")
+
+
+def cmd_state_orphans(args):
+    """Surface — and optionally remove — stale .pkg.tar* artifacts in PKGDEST.
+
+    Two categories:
+      - **untracked**: pkgname not present in `pacman -Q` (build was never
+        installed, or the package was removed later)
+      - **superseded**: pkgname installed, but the artifact is older than
+        the installed version (stale build leftover)
+
+    Without ``--prune`` the command is read-only. With ``--prune`` the user
+    is asked y/N (skip the prompt with ``--no-confirm``) before the files
+    are unlinked. Files that can't be parsed (missing .PKGINFO, unexpected
+    filename layout) are silently passed over — never deleted.
+    """
+    from sysforge.primitives.pacman import (
+        detect_orphan_artifacts,
+        get_all_installed_packages,
+        get_pkgdest,
+    )
+
+    pkgdest = get_pkgdest()
+    if pkgdest is None:
+        print("PKGDEST not set in /etc/makepkg.conf — nothing to scan.")
+        return
+    if not pkgdest.is_dir():
+        print(f"PKGDEST {pkgdest} does not exist — nothing to scan.")
+        return
+
+    installed = get_all_installed_packages()
+    result = detect_orphan_artifacts(pkgdest, installed)
+    untracked = result["untracked"]
+    superseded = result["superseded"]
+
+    if not untracked and not superseded:
+        print(f"No orphans in {pkgdest}.")
+        return
+
+    def _print_section(title: str, paths: list[Path]) -> None:
+        if not paths:
+            return
+        total = sum(p.stat().st_size for p in paths if p.exists())
+        print(f"  {title} ({len(paths)} file(s), {total / 1024 / 1024:.1f} MiB):")
+        for p in paths:
+            print(f"    {p.name}")
+
+    print(f"PKGDEST: {pkgdest}\n")
+    _print_section("Untracked (pkgname not installed)", untracked)
+    _print_section("Superseded (older than installed)", superseded)
+
+    if not getattr(args, "prune", False):
+        print("\nRun `sysforge state orphans --prune` to delete.")
+        return
+
+    targets = untracked + superseded
+    if not getattr(args, "no_confirm", False):
+        try:
+            answer = input(f"\nDelete {len(targets)} file(s)? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in {"y", "yes"}:
+            print("Aborted.")
+            return
+
+    removed = 0
+    for path in targets:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError as e:
+            print(f"  could not remove {path.name}: {e}")
+    print(f"Removed {removed} file(s) from {pkgdest}.")

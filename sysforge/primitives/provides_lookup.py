@@ -7,7 +7,8 @@ missing NEEDED runtime library.
 
 Public API:
     files_db_present()                                       -> bool
-    suggest_for_soname(entry, *, lib32=False, run_fn=None)   -> list[str]
+    suggest_for_soname(entry, *, lib32=False, run_fn=None,
+                       installed_names=None)                 -> list[str]
 """
 from __future__ import annotations
 
@@ -54,13 +55,24 @@ def _soname_query_path(entry: str, lib32: bool) -> str | None:
     return f"{libdir}/{soname}"
 
 
+def _bare_pkgname(candidate: str) -> str:
+    """Strip the optional ``repo/`` prefix that `pacman -Fq` emits."""
+    return candidate.split("/", 1)[1] if "/" in candidate else candidate
+
+
 def suggest_for_soname(entry: str, *, lib32: bool = False,
-                       run_fn=None) -> list[str]:
+                       run_fn=None,
+                       installed_names: set[str] | None = None) -> list[str]:
     """
-    Return deduped repo/pkgname candidates whose files db entries match
+    Return deduped ``repo/pkgname`` candidates whose files db entries match
     the soname. Empty list if no match or the entry isn't a soname.
     Callers should gate on files_db_present() so stale-db messaging is
     surfaced once rather than per-issue.
+
+    When ``installed_names`` is provided, candidates already present in the
+    set (compared by bare pkgname, with the ``repo/`` prefix stripped) are
+    dropped — useful for "install candidate" suggestions which shouldn't
+    re-recommend packages the user already has installed.
     """
     if run_fn is None:
         run_fn = subprocess.run
@@ -91,5 +103,7 @@ def suggest_for_soname(entry: str, *, lib32: bool = False,
         if line in seen:
             continue
         seen.add(line)
+        if installed_names and _bare_pkgname(line) in installed_names:
+            continue
         out.append(line)
     return out

@@ -22,11 +22,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 _DATA = Path(__file__).parent / "data"
 
+from sysforge.primitives import dep_analysis as _da
 from sysforge.primitives.dep_analysis import (
     _parse_ldconfig,
     check_soname_deps,
     check_makedep_runtime,
     run_dep_analysis,
+    soname_available,
     soname_satisfied,
 )
 
@@ -103,6 +105,45 @@ def test_soname_satisfied_ignores_non_soname_entries():
     # Not a soname (regular depends entry) → False; caller skips.
     assert not soname_satisfied("glibc>=2.39", {"libc.so.6"})
     assert not soname_satisfied("pacman", {"libalpm.so.14"})
+
+
+# ---------------------------------------------------------------------------
+# soname_available — soname_satisfied + filesystem fallback
+# ---------------------------------------------------------------------------
+
+def test_soname_available_uses_ldconfig_when_present():
+    # Filesystem fallback is patched to empty by the conftest autouse fixture.
+    assert soname_available("libcap.so=2", {"libcap.so.2"})
+
+
+def test_soname_available_returns_false_when_both_empty():
+    assert not soname_available("libcap.so=2", set())
+
+
+def test_soname_available_falls_back_to_filesystem(monkeypatch):
+    """
+    Stale /etc/ld.so.cache: soname is missing from ldconfig but the .so
+    file is on disk. The filesystem fallback masks the cache lag so doctor
+    doesn't surface a false positive.
+    """
+    monkeypatch.setattr(
+        _da, "_filesystem_soname_set",
+        lambda lib32=False: frozenset({"libcap.so.2", "libcap.so.2.69"}),
+    )
+    assert soname_available("libcap.so=2", set())
+
+
+def test_soname_available_lib32_uses_lib32_filesystem_set(monkeypatch):
+    seen: list[bool] = []
+
+    def fake_fs(lib32=False):
+        seen.append(lib32)
+        return frozenset({"libfoo.so.3"}) if lib32 else frozenset()
+
+    monkeypatch.setattr(_da, "_filesystem_soname_set", fake_fs)
+    assert soname_available("libfoo.so=3", set(), lib32=True)
+    assert not soname_available("libfoo.so=3", set(), lib32=False)
+    assert seen == [True, False]
 
 
 # ---------------------------------------------------------------------------

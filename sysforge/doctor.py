@@ -40,7 +40,7 @@ from sysforge.primitives.aur_resolve import _strip_version
 from sysforge.primitives.dep_analysis import (
     _default_ldconfig_fn,
     _parse_ldconfig,
-    soname_satisfied,
+    soname_available,
 )
 from sysforge.primitives.graphics_probe import (
     SEV_ERROR as _GFX_SEV_ERROR,
@@ -212,18 +212,21 @@ def _so_paths_for_pkg(pkgname: str, file_root: Path) -> list[Path]:
     return paths
 
 
-def _check_depends(depends: list[str], ldconfig_set: set[str]) -> list[str]:
+def _check_depends(depends: list[str], ldconfig_set: set[str],
+                   pkgname: str = "") -> list[str]:
     """
     Return list of human-readable issue strings for unsatisfied depends.
 
-    Soname entries (libfoo.so[=N]) are checked against ldconfig_set.
-    Everything else is batched into one `pacman -T` call.
+    Soname entries (libfoo.so[=N]) are checked against ldconfig_set with
+    a filesystem fallback (so a stale /etc/ld.so.cache doesn't generate
+    false positives). Everything else is batched into one `pacman -T` call.
     """
+    lib32 = pkgname.startswith("lib32-")
     issues: list[str] = []
     pkg_specs: list[str] = []
     for entry in depends:
         if ".so" in _strip_version(entry):
-            if not soname_satisfied(entry, ldconfig_set):
+            if not soname_available(entry, ldconfig_set, lib32=lib32):
                 issues.append(f"soname not found in ldconfig: {entry}")
         else:
             pkg_specs.append(entry)
@@ -298,7 +301,7 @@ def _check_one(pkgname: str, ldconfig_set: set[str],
     if pkgname not in installed:
         return ([f"{pkgname}: not installed"], [], [], False)
     depends = pacman.get_package_depends(pkgname)
-    dep_issues = _check_depends(depends, ldconfig_set)
+    dep_issues = _check_depends(depends, ldconfig_set, pkgname=pkgname)
     so_paths = _so_paths_for_pkg(pkgname, file_root)
     if is_abi_check_skipped_package(pkgname):
         return (dep_issues, [], so_paths, True)
@@ -307,23 +310,28 @@ def _check_one(pkgname: str, ldconfig_set: set[str],
 
 
 # Suggestion kinds. Each finding implies a different fix action:
-#   "install"   — soname missing from ldconfig; the candidate package
-#                 should be installed (or reinstalled, if its files are
-#                 corrupted).
+#   "install"   — soname missing on disk; the candidate package should be
+#                 installed. Already-installed candidates are filtered out
+#                 at lookup time so this list never re-recommends what's
+#                 already on the system.
 #   "abi_drift" — soname IS installed but its exported versioned symbols
 #                 don't match what the dependent .so was built against.
-#                 Reinstalling the same package cannot fix this — the
-#                 candidate needs an update, or a rebuild against the
-#                 current system.
+#                 Subdivided into:
+#   "rebuild"   — abi_drift candidate that IS installed → rebuild it
+#                 against the current system.
+#   abi_drift findings whose candidates are NOT installed remain "install"
+#   (the upgrade source is missing entirely).
 SUGGEST_KIND_INSTALL = "install"
 SUGGEST_KIND_ABI_DRIFT = "abi_drift"
+SUGGEST_KIND_REBUILD = "rebuild"
 
 
 def _collect_suggestions(pkgname: str,
                          dep_issues: list[str],
                          abi_issues: list[str],
                          so_paths: list[Path] | None = None,
-                         cache: dict[tuple[str, bool], list[str]] | None = None,
+                         cache: dict[tuple[str, bool, bool], list[str]] | None = None,
+                         installed_names: set[str] | None = None,
                          ) -> dict[str, tuple[str, list[str]]]:
     """
     For each lookup-able issue, reverse-lookup candidate packages via
@@ -338,20 +346,32 @@ def _collect_suggestions(pkgname: str,
         packages own them; those are the likely ABI-drift culprits and
         the fix is upgrade or rebuild, not reinstall.
 
-    If `cache` is provided it is consulted/populated per (soname, lib32)
-    so repeated lookups across issues and across packages in a single
-    doctor run collapse to one `pacman -Fq` subprocess per soname.
+    For ``install`` kind, the ``installed_names`` filter (if provided) is
+    applied at the `suggest_for_soname` layer so the returned candidate
+    list only contains packages the user does not yet have installed.
+
+    For ``abi_drift`` kind, the candidate set is partitioned: candidates
+    in ``installed_names`` are reclassified as ``rebuild`` (the actionable
+    fix is to rebuild what's installed); not-installed remain ``abi_drift``
+    (upgrade source is missing). This splits one `abi_drift` finding into
+    up to two entries in the result dict, distinguished by issue suffix.
+
+    If `cache` is provided it is consulted/populated per
+    ``(soname, lib32, filter_installed)`` so repeated lookups across
+    issues and across packages in a single doctor run collapse to one
+    `pacman -Fq` subprocess per soname per filter mode.
     """
     lib32 = pkgname.startswith("lib32-")
     by_name: dict[str, Path] = {}
     for p in so_paths or ():
         by_name.setdefault(p.name, p)
 
-    def _lookup(soname: str) -> list[str]:
-        key = (soname, lib32)
+    def _lookup(soname: str, *, filter_installed: bool) -> list[str]:
+        key = (soname, lib32, filter_installed)
         if cache is not None and key in cache:
             return cache[key]
-        result = suggest_for_soname(soname, lib32=lib32)
+        names = installed_names if filter_installed else None
+        result = suggest_for_soname(soname, lib32=lib32, installed_names=names)
         if cache is not None:
             cache[key] = result
         return result
@@ -361,12 +381,14 @@ def _collect_suggestions(pkgname: str,
         m = _DEP_SONAME_ISSUE_RE.match(issue)
         if not m:
             continue
-        out[issue] = (SUGGEST_KIND_INSTALL, _lookup(m.group(1)))
+        out[issue] = (SUGGEST_KIND_INSTALL,
+                      _lookup(m.group(1), filter_installed=True))
 
     for issue in abi_issues:
         m = _ABI_NEEDED_ISSUE_RE.search(issue)
         if m:
-            out[issue] = (SUGGEST_KIND_INSTALL, _lookup(m.group(1)))
+            out[issue] = (SUGGEST_KIND_INSTALL,
+                          _lookup(m.group(1), filter_installed=True))
             continue
         m = _ABI_UNDEF_ISSUE_RE.match(issue)
         if not m:
@@ -377,29 +399,57 @@ def _collect_suggestions(pkgname: str,
         seen: set[str] = set()
         merged: list[str] = []
         for soname in needed_sonames(path):
-            for cand in _lookup(soname):
+            for cand in _lookup(soname, filter_installed=False):
                 if cand in seen:
                     continue
                 seen.add(cand)
                 merged.append(cand)
-        out[issue] = (SUGGEST_KIND_ABI_DRIFT, merged)
+        if installed_names is not None:
+            rebuild = [c for c in merged
+                       if _bare_pkgname(c) in installed_names]
+            install = [c for c in merged
+                       if _bare_pkgname(c) not in installed_names]
+            if rebuild:
+                out[issue] = (SUGGEST_KIND_REBUILD, rebuild)
+            if install:
+                key = issue if not rebuild else f"{issue} [missing source]"
+                out[key] = (SUGGEST_KIND_INSTALL, install)
+        else:
+            out[issue] = (SUGGEST_KIND_ABI_DRIFT, merged)
     return out
 
 
-def _origin_tag(pkgname: str, foreign: set[str], installed: dict[str, str]) -> str:
+def _bare_pkgname(candidate: str) -> str:
+    """Strip the optional ``repo/`` prefix that `pacman -Fq` emits."""
+    return candidate.split("/", 1)[1] if "/" in candidate else candidate
+
+
+def _origin_tag(pkgname: str, foreign: set[str], installed: dict[str, str],
+                tracked: set[str] | None = None) -> str:
     """
-    Return "[aur]" for foreign packages, "[repo]" for non-foreign installed
-    packages, or "" if the package isn't installed (header already reads
-    "(not installed)" in that case).
+    Return ``[aur]`` for foreign packages, ``[repo]`` for non-foreign installed
+    packages, or ``""`` if the package isn't installed (header already reads
+    ``(not installed)`` in that case).
+
+    When ``tracked`` is supplied (the set of pkgnames known to
+    ``build_state.toml``), foreign packages absent from it are tagged
+    ``[aur][untracked]`` — the cheap signal that doctor sees the package
+    but ``sysforge update`` won't rebuild it from a known PKGBUILD without
+    a fresh fetch.
     """
     if pkgname not in installed:
         return ""
-    return "[aur]" if pkgname in foreign else "[repo]"
+    if pkgname in foreign:
+        if tracked is not None and pkgname not in tracked:
+            return "[aur][untracked]"
+        return "[aur]"
+    return "[repo]"
 
 
 _SUGGEST_LABEL = {
     SUGGEST_KIND_INSTALL: "install candidate",
     SUGGEST_KIND_ABI_DRIFT: "ABI-drift candidate (rebuild/upgrade)",
+    SUGGEST_KIND_REBUILD: "rebuild candidate",
 }
 
 
@@ -429,6 +479,9 @@ def _print_report(pkgname: str, version: str | None,
         label = _SUGGEST_LABEL.get(kind, "candidate")
         if cands:
             _log.ui(f"      → {label}: {', '.join(cands)}")
+        elif kind == SUGGEST_KIND_INSTALL:
+            _log.ui("      → all owning packages already installed; "
+                    "try `sudo ldconfig`, then re-run doctor")
         else:
             _log.ui(f"      → {label}: no candidate in files db")
 
@@ -463,10 +516,18 @@ def cmd_doctor(args):
         quiet: bool               — suppress clean lines in output
         suggest: bool             — look up candidate packages for each
                                     unsatisfied soname via `pacman -Fq`
+        apply: bool               — hand REBUILD candidates to sysforge
+                                    update for actual rebuild (implies suggest)
+        no_confirm: bool          — skip the y/N prompt before --apply
+        dry_run: bool             — report --apply work without rebuilding
         config: dict (optional)   — passed through for --graphics overlay read
     """
     config = getattr(args, "config", None) or {}
     file_root = Path("/")
+    apply_requested = bool(getattr(args, "apply", False))
+    if apply_requested:
+        # --apply has nothing to act on without --suggest's classified candidates.
+        args.suggest = True
 
     installed = pacman.get_all_installed_packages()
     foreign = set(pacman.get_foreign_packages().keys())
@@ -511,27 +572,44 @@ def cmd_doctor(args):
                   "no candidate lookups will be performed")
         suggest = False
 
+    installed_name_set = set(installed.keys())
+
+    # Used to tag foreign packages with `[untracked]` when they have no
+    # build_state.toml entry. Failure to read the state file is non-fatal —
+    # without `tracked` the legacy behaviour (no [untracked] suffix) holds.
+    tracked_names: set[str] | None = None
+    try:
+        from sysforge.primitives.build_state import BuildState
+        from sysforge.pipeline.state import resolve_state_dir
+        state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
+        tracked_names = set(BuildState(state_dir).all_packages())
+    except Exception:
+        tracked_names = None
+
     total_issues = 0
     affected_pkgs: list[tuple[str, int, str]] = []
-    per_pkg_suggestions: list[tuple[str, list[str], list[str]]] = []
+    per_pkg_suggestions: list[tuple[str, list[str], list[str], list[str]]] = []
     global_install: list[str] = []
+    global_rebuild: list[str] = []
     global_drift: list[str] = []
     global_install_seen: set[str] = set()
+    global_rebuild_seen: set[str] = set()
     global_drift_seen: set[str] = set()
-    suggest_cache: dict[tuple[str, bool], list[str]] = {}
+    suggest_cache: dict[tuple[str, bool, bool], list[str]] = {}
 
     for pkgname in targets:
         dep_issues, abi_issues, so_paths, abi_skipped = _check_one(
             pkgname, ldconfig_set, installed, file_root
         )
-        origin = _origin_tag(pkgname, foreign, installed)
+        origin = _origin_tag(pkgname, foreign, installed, tracked=tracked_names)
         n = len(dep_issues) + len(abi_issues)
         if n:
             affected_pkgs.append((pkgname, n, origin))
             total_issues += n
         suggestions = (
             _collect_suggestions(pkgname, dep_issues, abi_issues, so_paths,
-                                 cache=suggest_cache)
+                                 cache=suggest_cache,
+                                 installed_names=installed_name_set)
             if suggest else None
         )
         _print_report(
@@ -543,20 +621,23 @@ def cmd_doctor(args):
         )
         if suggest and suggestions:
             pkg_install: list[str] = []
+            pkg_rebuild: list[str] = []
             pkg_drift: list[str] = []
             pkg_install_seen: set[str] = set()
+            pkg_rebuild_seen: set[str] = set()
             pkg_drift_seen: set[str] = set()
+            buckets = {
+                SUGGEST_KIND_INSTALL: (pkg_install, pkg_install_seen,
+                                       global_install, global_install_seen),
+                SUGGEST_KIND_REBUILD: (pkg_rebuild, pkg_rebuild_seen,
+                                       global_rebuild, global_rebuild_seen),
+                SUGGEST_KIND_ABI_DRIFT: (pkg_drift, pkg_drift_seen,
+                                         global_drift, global_drift_seen),
+            }
             for kind, cands in suggestions.values():
-                if kind == SUGGEST_KIND_INSTALL:
-                    local, local_seen, gbl, gbl_seen = (
-                        pkg_install, pkg_install_seen,
-                        global_install, global_install_seen,
-                    )
-                else:
-                    local, local_seen, gbl, gbl_seen = (
-                        pkg_drift, pkg_drift_seen,
-                        global_drift, global_drift_seen,
-                    )
+                if kind not in buckets:
+                    continue
+                local, local_seen, gbl, gbl_seen = buckets[kind]
                 for c in cands:
                     if c not in local_seen:
                         local_seen.add(c)
@@ -564,8 +645,10 @@ def cmd_doctor(args):
                     if c not in gbl_seen:
                         gbl_seen.add(c)
                         gbl.append(c)
-            if pkg_install or pkg_drift:
-                per_pkg_suggestions.append((pkgname, pkg_install, pkg_drift))
+            if pkg_install or pkg_rebuild or pkg_drift:
+                per_pkg_suggestions.append(
+                    (pkgname, pkg_install, pkg_rebuild, pkg_drift)
+                )
 
     _log.newline()
     _log.ui(
@@ -578,17 +661,24 @@ def cmd_doctor(args):
             for name, n, tag in affected_pkgs
         )
         _log.ui(f"Affected: {names}")
-    if suggest and (global_install or global_drift):
+    if suggest and (global_install or global_rebuild or global_drift):
         _log.ui("Suggestions:")
-        for name, inst, drift in per_pkg_suggestions:
+        for name, inst, rebuild, drift in per_pkg_suggestions:
             parts: list[str] = []
             if inst:
                 parts.append(f"install: {', '.join(inst)}")
+            if rebuild:
+                parts.append(f"rebuild: {', '.join(rebuild)}")
             if drift:
                 parts.append(f"ABI-drift: {', '.join(drift)}")
             _log.ui(f"  {name}: {' | '.join(parts)}")
         if global_install:
             _log.ui(f"Install candidates: {', '.join(global_install)}")
+        if global_rebuild:
+            _log.ui(
+                "Rebuild candidates (installed; ABI drift): "
+                f"{', '.join(global_rebuild)}"
+            )
         if global_drift:
             _log.ui(
                 "ABI-drift candidates (rebuild or upgrade, not reinstall): "
@@ -613,6 +703,113 @@ def cmd_doctor(args):
                 f"Graphics probe: {len(findings)} finding(s), "
                 f"{gfx_error_count} error(s)."
             )
+
+    # --apply bridge: hand REBUILD candidates to `sysforge update`.
+    if apply_requested:
+        rc = _apply_rebuilds(args, global_rebuild, global_install,
+                             foreign, installed)
+        # When apply runs, its return code dominates so a successful rebuild
+        # produces exit 0 even if doctor found issues.
+        return rc
+
     if affected_pkgs or gfx_error_count:
         return 1
+    return 0
+
+
+def _apply_rebuilds(
+    args, rebuild_candidates: list[str], install_candidates: list[str],
+    foreign: set[str], installed: dict[str, str],
+) -> int:
+    """Hand REBUILD-classified candidates to ``sysforge update``.
+
+    Filters to packages eligible for sysforge's rebuild path (foreign packages,
+    or repo packages that ``sysforge update`` would walk under
+    ``[build] update_repo_profiled = true``). Repo candidates outside that
+    scope are surfaced as informational (``run: sudo pacman -S ...``) rather
+    than invoked. Install candidates (not yet installed) are out of v1.x
+    scope — printed as a hint, never run.
+    """
+    eligible: list[str] = []
+    pacman_only: list[str] = []
+    for cand in rebuild_candidates:
+        bare = cand.split("/", 1)[1] if "/" in cand else cand
+        if bare not in installed:
+            # Defensive: REBUILD by definition implies installed; skip stragglers.
+            continue
+        if bare in foreign:
+            eligible.append(bare)
+        else:
+            pacman_only.append(bare)
+
+    _log.newline()
+    if pacman_only:
+        _log.ui(
+            "Repo packages with ABI drift (rebuild via pacman or set "
+            "[build] update_repo_profiled = true in packages.toml):"
+        )
+        for name in pacman_only:
+            _log.ui(f"  → run: sudo pacman -S {name}")
+    if install_candidates:
+        _log.ui(
+            "Install candidates skipped — `sysforge doctor --apply` only "
+            "rebuilds (not installs) in v1.x:"
+        )
+        for cand in install_candidates:
+            bare = cand.split("/", 1)[1] if "/" in cand else cand
+            _log.ui(f"  → run: sysforge build {bare}")
+
+    if not eligible:
+        _log.ui("No eligible rebuild candidates — nothing to apply.")
+        return 0
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    no_confirm = bool(getattr(args, "no_confirm", False))
+
+    _log.ui(f"\n--apply: would rebuild {len(eligible)} package(s):")
+    for name in eligible:
+        _log.ui(f"  • {name}")
+
+    if dry_run:
+        _log.ui("\n(--dry-run: nothing rebuilt)")
+        return 0
+
+    if not no_confirm:
+        try:
+            answer = input("Proceed with rebuild? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in {"y", "yes"}:
+            _log.ui("Aborted.")
+            return 0
+
+    # Synthesize an args namespace for cmd_update with the eligible packages
+    # as the positional pkgname filter. Carry over any state_dir / log_dir
+    # the caller passed; everything else takes update's defaults.
+    from types import SimpleNamespace
+    from sysforge.update import cmd_update
+    update_args = SimpleNamespace(
+        pkgnames=eligible,
+        packages=None,           # packages.toml override file path (default)
+        profile_conf=None,
+        state_dir=getattr(args, "state_dir", None),
+        log_dir=getattr(args, "log_dir", None),
+        offline=False,
+        install_only=False,
+        dry_run=False,
+        cleansrc=False,
+        devel=False,
+        no_cleanbuild=False,
+        no_pkg_log=False,
+        persist_log=False,
+        interactive=False,
+        makepkg=None,
+        cache_report=False,
+        skip_sync_check=False,
+        cc=None, cxx=None, ld=None,
+    )
+    try:
+        cmd_update(update_args)
+    except SystemExit as e:
+        return int(e.code) if isinstance(e.code, int) else 1
     return 0

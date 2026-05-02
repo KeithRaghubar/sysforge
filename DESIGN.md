@@ -683,7 +683,7 @@ Pre-build dependency checks. Runs before `_run_build` in `makepkg_wrapper.run()`
 
 All functions accept injectable callables for testing. Non-fatal by default; configurable via `abi_mismatch` and `makedep_probe_failed` in `[failure_handling]`.
 
-The soname match predicate (`soname_satisfied(entry, available_set)`) is exposed at module scope so `doctor.py` can reuse the `libfoo.so` / `libfoo.so=N` matching rules without duplicating them.
+The soname match predicate (`soname_satisfied(entry, available_set)`) is exposed at module scope so `doctor.py` can reuse the `libfoo.so` / `libfoo.so=N` matching rules without duplicating them. `soname_available(entry, ldconfig_set, *, lib32=False)` wraps it with a filesystem fallback for stale `/etc/ld.so.cache`: when the in-cache check misses, the resolved library directories (`/usr/lib`, `/usr/lib32`, plus absolute paths from `/etc/ld.so.conf.d/*.conf`) are scanned (lru-cached per process) and the same predicate is applied. `check_soname_deps` and `doctor._check_depends` both use `soname_available` so a freshly-installed package isn't reported as missing while waiting on the post-install hook to rerun `ldconfig`.
 
 `dep_analysis.py` validates shared-library ABI for packages that are already installed. Resolving what to install in the first place is the job of `aur_resolve.py` below.
 
@@ -737,7 +737,7 @@ Symbol names are demangled through `c++filt` for readability. Missing NEEDED son
 Reverse soname → package lookup backed by `pacman -Fq`. Used by `sysforge doctor --suggest` to convert a missing/broken soname (e.g. `libavcodec.so.62`) into the repo package(s) that would supply it. Public API:
 
 - `files_db_present()` — true when `/var/lib/pacman/sync/*.files` is synced (from `pacman -Fy`). Callers short-circuit lookup when false.
-- `suggest_for_soname(entry, *, lib32=False)` — returns candidate `repo/pkg` strings for a soname entry, honouring `lib32` context (queries `usr/lib32/<soname>` vs `usr/lib/<soname>`).
+- `suggest_for_soname(entry, *, lib32=False, installed_names=None)` — returns candidate `repo/pkg` strings for a soname entry, honouring `lib32` context (queries `usr/lib32/<soname>` vs `usr/lib/<soname>`). When `installed_names` is supplied, candidates whose bare pkgname (the part after the optional `repo/` prefix) is in the set are dropped — the load-bearing filter that stops `doctor --suggest` from re-recommending packages the user already has installed.
 
 Log tag: `[PROV]`. Pure read-only — never runs `pacman -Fy`; emits a single `run sudo pacman -Fy` warning if the files db is absent.
 
@@ -842,8 +842,8 @@ Public types:
 Flow per request:
 1. **RPC gate.** On the first AUR-source request of a batch, fire one `aur_info([…all AUR names…])` call and cache the results in `SourceMetaCache`.
 2. **Short-circuit.** If the cached `rpc_version` / `rpc_last_modified` match the local HEAD's recorded values **and** the package is not a VCS `-git` / `-svn` / `-hg` / `-bzr` (forced-fetch) type **and** `force_fetch=False`, return `STATUS_UP_TO_DATE` without touching the network. This is the common-case path.
-3. **Clone.** If the dir is missing or not a git repo, dispatch `aur_clone` through the limiter.
-4. **Fetch.** Otherwise call `git_fetch_and_compare` — shallow fetch + HEAD compare, never merges or rebases.
+3. **Clone.** If the dir is missing or not a git repo, dispatch via the limiter — `pkgctl_checkout` for `source="repo"` (Arch packaging repo via `gitlab.archlinux.org`), `aur_clone` for `source="aur"`/`"git"`. The repo path is never translated to `STATUS_RATE_LIMITED` (gitlab.archlinux.org doesn't enforce AUR's 429/503 budget).
+4. **Fetch.** Otherwise call `git_fetch_and_compare` — shallow fetch + HEAD compare, never merges or rebases. Works for both AUR and repo sources because pkgctl-cloned dirs are plain git repos with a tracking branch.
 5. **Divergence.** `STATUS_DIVERGED` is *reported*, not fixed: the work-tree is untouched, the build continues against the local PKGBUILD, and the operator decides whether to `--cleansrc` next run.
 6. **Rate limit.** `RateLimited` aborts the remaining batch via `_abort_remaining`, which populates pending results with `STATUS_RATE_LIMITED` so the UI can show per-package status instead of a single global error.
 
@@ -903,9 +903,9 @@ Implements `sysforge update` — the update manager. The iteration scope is the 
 
 **Phase 0 — Init.** Load BuildState, config, `packages.toml` overrides. Open unified log (always truncated). Refresh AUR name cache (skipped with `--offline` or `--install-only`).
 
-**Phase 1 — Package set assembly** (`_assemble_package_set`). Build a unified `{pkgname: entry}` dict by walking the live install set: AUR (`pacman -Qm`) is always walked; repo packages are walked when an override entry indicates a profiled build for them. `packages.toml` entries are applied as override overlays (`source`, `pkgbuild_patch`, `cache`, `reason`); installed packages with no entry use defaults. For AUR packages without a build_state record: bulk `aur_info` resolves the real `pkgbase` (split-package fix, e.g. `ob-xd-common` → pkgbase `ob-xd`). Apply positional PKG filter. Group by `pkgbase` to deduplicate split packages. Manifest entries whose package is not installed (e.g. a stored rule for `mesa-git` while repo `mesa` is installed) are not iterated — they are inert rules under the rules-not-install model.
+**Phase 1 — Package set assembly** (`_assemble_package_set`). Build a unified `{pkgname: entry}` dict by walking the live install set: AUR (`pacman -Qm`) is always walked; repo packages are walked when an override entry indicates a profiled build for them, or when `[build] update_repo_profiled = true` is set in `packages.toml` (the latter pulls every installed repo package into scope and tags each entry `source = "repo"` so Phase 2 routes them through pkgctl). `packages.toml` entries are applied as override overlays (`source`, `pkgbuild_patch`, `cache`, `reason`); installed packages with no entry use defaults. For AUR packages without a build_state record: bulk `aur_info` resolves the real `pkgbase` (split-package fix, e.g. `ob-xd-common` → pkgbase `ob-xd`). Apply positional PKG filter. Group by `pkgbase` to deduplicate split packages. Manifest entries whose package is not installed (e.g. a stored rule for `mesa-git` while repo `mesa` is installed) are not iterated — they are inert rules under the rules-not-install model.
 
-**Phase 2 — Source sync** (`_sync_sources`). Ensures every iterated AUR package has an up-to-date local PKGBUILD. Skipped entirely with `--offline` (and with `--install-only`, which forces offline since no rebuild will happen). Delegates to the `source_sync.SourceSyncScheduler` singleton (`get_scheduler(...)`), issuing one `SyncRequest` per AUR-source package:
+**Phase 2 — Source sync** (`_sync_sources`). Ensures every iterated package has an up-to-date local PKGBUILD. Skipped entirely with `--offline` (and with `--install-only`, which forces offline since no rebuild will happen). Delegates to the `source_sync.SourceSyncScheduler` singleton (`get_scheduler(...)`), issuing one `SyncRequest` per package — AUR sources go through the RPC short-circuit and `aur_clone`/`git_fetch_and_compare`, repo sources skip the RPC short-circuit (no AUR-RPC equivalent for the Arch packaging repo) and clone via `pkgctl_checkout` then refresh via `git_fetch_and_compare` like any other git repo:
 
 1. **RPC-first.** The scheduler batches one `aur_info` call for all AUR packages in the run. For every package whose cached `rpc_version` / `rpc_last_modified` still matches the local HEAD metadata, the request short-circuits to `STATUS_UP_TO_DATE` — no `git fetch` executes at all.
 2. **Clone on miss.** Missing / empty / non-git dirs hit `aur_clone` through the shared rate limiter.
@@ -970,23 +970,30 @@ Vendor detection for `--graphics` prefers the hardware profile (`/var/lib/sysfor
 
 `--all` verifies every installed package (`pacman -Q`) — foreign and non-foreign. Slow but comprehensive: a one-shot "is anything broken anywhere" sweep. `--repo` narrows to non-foreign packages only (all of `pacman -Q` minus `pacman -Qm`), for when you want to scope a sweep to the distribution-provided side without walking every AUR/custom build.
 
-`--suggest` (`-s`) reverse-looks up lookup-able findings via `pacman -Fq` and prints a kind-tagged candidate line under each issue. Findings are split into two kinds — the distinction matters because they imply different remediations:
+`--suggest` (`-s`) reverse-looks up lookup-able findings via `pacman -Fq` and prints a kind-tagged candidate line under each issue. Findings are split into three kinds — the distinction matters because they imply different remediations:
 
-- `install` — the soname is **not present** on disk. Installing (or reinstalling) the owning package fixes it. Rendered as `      → install candidate: repo/pkg, …`. Covers:
+- `install` — the soname is **not present** on disk and the owning package is **not installed**. Installing it fixes the finding. Rendered as `      → install candidate: repo/pkg, …`. Covers:
   - Depends issues whose text matches `soname not found in ldconfig: libfoo.so[=N]`.
   - ABI issues of the form `… NEEDED lib 'libfoo.so.N' not found in ldconfig cache`.
-- `abi_drift` — the soname **is present** but one of its versioned symbols no longer resolves. The owning library needs to be **upgraded or rebuilt**, not reinstalled. Rendered as `      → ABI-drift candidate (rebuild/upgrade): repo/pkg, …`. Covers:
-  - ABI issues of the form `<file>: undefined versioned symbol …` — the broken `.so`'s NEEDED sonames (from `abi_check.needed_sonames`) are enumerated and each is reverse-looked-up. One of the resulting NEEDED libs' owning packages is the ABI-drift culprit.
+  - The owning-package check uses `pacman -Q`: candidates already installed are dropped from this list (so `--suggest` never re-recommends a package the user already has). When the filter empties the list, the line becomes `      → all owning packages already installed; try \`sudo ldconfig\`, then re-run doctor` rather than the original `no candidate in files db`.
+- `rebuild` — an `undefined versioned symbol` finding whose candidate owner **is installed**. The fix is to **rebuild** that package against the current system. Rendered as `      → rebuild candidate: repo/pkg, …`.
+- `abi_drift` — same shape as `rebuild`, but only used when no `installed_names` filter is supplied (callers outside `cmd_doctor`). Rendered as `      → ABI-drift candidate (rebuild/upgrade): repo/pkg, …`. Inside `cmd_doctor` every `undefined versioned symbol` is partitioned into `rebuild` (installed) and `install` (not installed) — so `abi_drift` is reserved for direct callers of `_collect_suggestions` that pass `installed_names=None`.
 
-Keeping the two kinds distinct avoids the reinstall-loop failure mode where a user reinstalls the surfaced packages and the same findings reappear (reinstalling the same `.pkg.tar.zst` archive cannot change the versioned symbols on disk).
+Keeping the kinds distinct avoids the reinstall-loop failure mode where a user reinstalls the surfaced packages and the same findings reappear (reinstalling the same `.pkg.tar.zst` archive cannot change the versioned symbols on disk).
+
+**Stale ldconfig fallback.** `/etc/ld.so.cache` is only refreshed when `ldconfig` runs as root, typically from a package install hook. Between an install and the cache refresh — or when the install hook is absent — `ldconfig -p` reports a soname as missing even though the `.so` is on disk. To stop doctor from flagging these as false positives, `dep_analysis.soname_available` consults the resolved library directories (`/usr/lib`, `/usr/lib32`, plus absolute dirs declared in `/etc/ld.so.conf.d/*.conf`) when the in-cache check fails. Per-process `lru_cache` keeps the directory scan to one filesystem traversal per `lib32`/non-`lib32` axis. `soname_satisfied` remains the pure predicate; `soname_available` is the cache-aware variant.
 
 `lib32` context is inferred from the owning pkgname prefix (`lib32-*` → query `usr/lib32/<soname>`). Requires a synced files db: if `/var/lib/pacman/sync/*.files` is absent, the command emits one warning (`run sudo pacman -Fy`) and runs the rest of the report with lookups skipped — findings still show, exit code unchanged.
 
-End-of-run summary (when any candidates were collected): `Suggestions:` header with one line per affected package (`  <pkg>: install: cand-a, cand-b` and/or `  <pkg>: abi-drift: cand-c`), followed by two deduped lists across the whole run — `Install candidates: …` and `ABI-drift candidates (rebuild or upgrade, not reinstall): …`. Useful for turning a long report into a separated install-vs-rebuild punch list.
+End-of-run summary (when any candidates were collected): `Suggestions:` header with one line per affected package (`  <pkg>: install: cand-a, cand-b` and/or `  <pkg>: rebuild: cand-c` and/or `  <pkg>: abi-drift: cand-d`), followed by deduped lists across the whole run — `Install candidates: …`, `Rebuild candidates (installed; ABI drift): …`, and `ABI-drift candidates (rebuild or upgrade, not reinstall): …`. Useful for turning a long report into a separated install/rebuild punch list.
+
+Foreign-package origin tags carry an extra `[untracked]` suffix when the pkgname is in `pacman -Qm` but absent from `build_state.toml` — same signal `sysforge state list` exposes. Header reads `== <pkg> <ver> [aur][untracked] ==` for these. Failure to read `build_state.toml` is non-fatal: the tag silently reverts to plain `[aur]` for backwards-compatible behaviour.
 
 All report output (headers, issue lines, summary) flows through `log.ui` (→ stderr + unified log file) so external callers that scrape the unified log see doctor findings.
 
-Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db).
+**`--apply` bridge.** `--apply` (implies `--suggest`) hands the REBUILD-classified candidates to `sysforge update` for actual rebuild. Drift-rebuild only in v1.x: install candidates (not yet installed) are surfaced as `→ run: sysforge build <pkg>` informational lines but never invoked. Repo packages outside `sysforge update`'s scope (no override, no `update_repo_profiled`) are surfaced as `→ run: sudo pacman -S <pkg>` and skipped. Foreign packages — and repo packages eligible under `update_repo_profiled` — are gathered into a single eligible list, the user is prompted (`--no-confirm` skips), and `cmd_update` is invoked with that list as the positional pkgname filter. `--dry-run` reports the rebuild list without invoking the build. `--apply`'s exit code dominates the doctor exit — a successful rebuild produces exit 0 even if doctor surfaced issues. The bridge is intentionally thin: rather than extracting `update.py`'s build loop into a separate primitive, doctor synthesizes a `cmd_update` args namespace and reuses the existing path verbatim.
+
+Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db), `--apply` (drift-rebuild bridge), `--no-confirm`, `--dry-run`.
 
 Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — see the `provides_lookup.py` subsection for the public API. NEEDED-soname extraction reuses `abi_check.needed_sonames` (public since doctor calls it directly for ABI-issue suggestions). System-state probes live in `sysforge/primitives/graphics_probe.py` — log tag `[GFX]`, public API `check_system_graphics(config, *, gpu_vendors=None)`; invoked from `cmd_doctor` when `--graphics` is set.
 
@@ -1000,10 +1007,11 @@ Public API: `cmd_setup(args)`. Flag: `--pacman-conf PATH` (default `/etc/pacman.
 
 Implements `sysforge state` — a small read/repair namespace for `build_state.toml` (the live install-state mirror). Separate from `sysforge packages` (which manages override rules in `packages.toml`); the split mirrors the rules-vs-state separation described in §Package Manifest.
 
-- **`state list`** — tabulates `build_state.toml` entries: pkgbase, build_mode, last build, profile/flags. Read-only.
+- **`state list`** — tabulates `build_state.toml` entries: pkgbase, build_mode, last build, profile/flags. Read-only. Also appends an *Untracked foreign packages* section listing any installed `pacman -Qm` package that has no `build_state.toml` entry — those slipped past sysforge (installed manually) and won't be rebuilt by `sysforge update` from a known PKGBUILD without a fresh fetch.
 - **`state repair`** — re-parses PKGBUILDs for entries whose stored fields contain unexpanded shell variables (e.g. `${pkgver}` literals from a buggy parse) and rewrites those rows. `--dry-run` previews fixes without writing.
+- **`state orphans`** — scans `PKGDEST` for stale `.pkg.tar*` artifacts and partitions them into **untracked** (pkgname not in `pacman -Q`) and **superseded** (pkgname installed but artifact older than the installed version, by `vercmp`). Read-only by default; `--prune` deletes after a y/N prompt (`--no-confirm` skips the prompt). Files whose `.PKGINFO` can't be read or whose filename doesn't parse are silently skipped — never deleted. The detection primitive `pacman.detect_orphan_artifacts(pkgdest, installed)` returns the partitioned dict and is reusable from other callers.
 
-Public API: `cmd_state_list(args)`, `cmd_state_repair(args)`. Both accept `--state-dir` to target a non-default state directory.
+Public API: `cmd_state_list(args)`, `cmd_state_repair(args)`, `cmd_state_orphans(args)`. The first two accept `--state-dir`; `state orphans` reads PKGDEST from the layered system makepkg.conf via `pacman.get_pkgdest()`.
 
 ### `graphics_probe.py`
 
@@ -1241,9 +1249,9 @@ To make the pattern scan work for every build mode, `invoke_makepkg` always uses
 
 ### Build-failure auto-repair
 
-> **Status: planned for v1.x.** Generalises the toolchain-mismatch auto-retry pattern above into a registry of narrow, deterministic repair primitives. Not implemented yet; documented here so the shape is fixed before code lands.
+> **Status: implemented (all 4 scenarios).** Lives in `sysforge/primitives/auto_repair.py`. `_run_build`'s outer loop catches `CalledProcessError`, walks `auto_repair.REGISTRY`, and on the first match runs the corresponding repair before retrying.
 
-`invoke_makepkg`'s line-tee already supports stdout/stderr pattern matching. Auto-repair adds a registry of `(detection, repair_fn, retry_phase)` tuples. On match, `_run_build` invokes the repair function (idempotent), then re-runs makepkg with `-e` when sources are already laid down or from scratch when `prepare()` must repeat. Each repair class fires at most once per build, so a misdetected error cannot loop. Auto-repair runs before `_invoke_with_retry`'s interactive "correct manually" prompt; on repair success the prompt is skipped, on repair failure the build falls through to existing failure handling unchanged.
+`invoke_makepkg`'s line-tee captures every stdout line into `captured_lines` and attaches the list to the raised `CalledProcessError` (and `ToolchainMismatchError`) as `captured_output`. `_run_build` wraps that buffer in a `BuildOutputAccumulator` (lines + optional `srcdir` for on-disk inspection) and feeds it to `auto_repair.apply_first_match`. Each scenario's `detect(accum)` returns a `MatchInfo` (or `None`); on match the wrapper consults `[failure_handling]` for the per-scenario behaviour, runs `repair(pkgbuild_dir, info)`, and re-enters the build loop. The set of already-fired scenarios is tracked per build (`_repaired_scenarios`) so a misdetected error cannot loop — once a scenario fires it is excluded from subsequent matches in the same build.
 
 Configuration extends `[failure_handling]` with four scenario keys:
 
@@ -1254,7 +1262,9 @@ srcinfo_drift         = "auto_repair_with_warning"
 checksum_mismatch     = "prompt_user"
 ```
 
-Three new behaviour values join the existing `abort` / `warn_and_fallback` / `fallback` / `error` set: `auto_repair` (repair silently, retry, log at info), `auto_repair_with_warning` (repair, retry, log at `[WARN]`), `prompt_user` (surface the diff and require explicit consent before repairing).
+Three new behaviour values join the existing `abort` / `warn_and_fallback` / `fallback` / `error` set: `auto_repair` (repair silently, retry, log at info), `auto_repair_with_warning` (repair, retry, log at `[WARN]`), `prompt_user` (surface the diff and require explicit consent before repairing). In **batch mode** (`batch=true` on the resolved profile) the `prompt_user` behaviour is short-circuited to `aborted` — auto-repair never runs unattended for security-sensitive scenarios. This is the load-bearing rule for `checksum_mismatch`.
+
+`.SRCINFO` drift is the one scenario that is **not** in `REGISTRY` — it has a different lifecycle. `_run_build` calls `auto_repair.preflight_srcinfo(pkgbuild_dir, behaviour)` before the build starts, regenerating `.SRCINFO` (with a `[WARN]` by default) when `makepkg --printsrcinfo` differs from the committed file. The other three scenarios fire on retry from a captured failure.
 
 Repair modes:
 
@@ -1586,9 +1596,11 @@ DAG stages are categorised as **bootstrap-only** (partition, base_install, confi
 
 Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
 
-**`sysforge update` does not iterate default-mode repo packages.** Under the rules-not-install model, `sysforge update` walks every installed AUR package (`pacman -Qm`) plus any repo packages selected by overrides. Default-mode repo packages — those with no override and not implicated by `[build].repo_mode` — are not iterated; `pacman -Syu` remains their upgrade path. Wiring `[build].repo_mode = "profiled"` through `update` (so all installed repo packages get rebuilt from source against the Arch packaging repo) is on the v1.x roadmap — see Release Plan and the next gap entry.
+**`sysforge update` iterates installed repo packages opt-in via `[build] update_repo_profiled = true`.** Under the rules-not-install model, `sysforge update` always walks every installed AUR package (`pacman -Qm`) plus any repo packages selected by overrides. With `update_repo_profiled = true` in `packages.toml`, every installed repo package is iterated as well — Phase 2 routes them through `pkgctl repo clone` (via `source_sync._sync_one` calling `pkgctl_checkout` on first visit and `git_fetch_and_compare` on subsequent runs); Phase 3 vercmp's the static repo PKGBUILD against the installed version and queues rebuilds for newer ones. Default behaviour (key absent or false) preserves the original `pacman -Syu` upgrade path for default-mode repo packages — the toml gate is load-bearing because flipping it on a maintained workstation can mean hundreds of `git fetch`es per update run. The setting is independent of `repo_mode` (which only affects the packages-stage build path).
 
-**`repo_mode = "profiled"` is wired in the packages stage only.** The `[build] repo_mode = "pacman" | "profiled"` setting in `packages.toml` is parsed and honoured by `run packages` and `run pipeline` — repo packages with `repo_mode = "profiled"` (or per-package `pkgbuild_patch = true`) are built from source via `_build_aur()` using `find_pkgbuild` (which calls `pkgctl_checkout` for repo packages). It has no effect on `sysforge build` or `sysforge update` — those commands operate on individual packages the user explicitly targets, not on manifest-wide policy. Wiring `repo_mode` into `sysforge update` (so tracked repo packages with `repo_mode = "profiled"` are rebuilt from source when the Arch packaging repo has a newer version) is on the v1.x roadmap — see Release Plan.
+**`sysforge build` already routes repo packages through `pkgctl_checkout` automatically.** `find_pkgbuild` (`primitives/config.py:91`) checks `is_repo_package()` before AUR-clone fallback, so `sysforge build firefox` Just Works for any repo package — no `repo_mode` plumbing required on the build side.
+
+**`repo_mode = "profiled"` is wired in the packages stage only.** The `[build] repo_mode = "pacman" | "profiled"` setting in `packages.toml` is parsed and honoured by `run packages` and `run pipeline` — repo packages with `repo_mode = "profiled"` (or per-package `pkgbuild_patch = true`) are built from source via `_build_aur()` using `find_pkgbuild` (which calls `pkgctl_checkout` for repo packages). It has no effect on `sysforge build` or `sysforge update` — those commands have their own surfaces (`find_pkgbuild` for the former, `update_repo_profiled` for the latter).
 
 **`packages.toml [build] pkgbuild_src_dir` and `profiles.toml [paths] pkgbuild_src_dir` are separate.** The pipeline's `_resolve_pkgbuild` prefers `[build] pkgbuild_src_dir`; falls back to `[paths] pkgbuild_src_dir`. They can point to different directories or the same one — there's no enforcement that they match.
 

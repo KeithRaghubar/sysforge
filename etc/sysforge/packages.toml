@@ -30,6 +30,11 @@
 #                          # "pacman"   → install via pacman -S --needed (no build step)
 #                          # "profiled" → build from PKGBUILD with sysforge flag profiles
 #                          # per-package pkgbuild_patch = true overrides to "profiled" regardless
+# update_repo_profiled = false  # true → `sysforge update` walks every installed repo package
+#                               # alongside foreign packages, checking the Arch packaging repo
+#                               # for newer PKGBUILDs and rebuilding from source. Costs one
+#                               # `git fetch` per repo package per run. Independent of
+#                               # repo_mode (which only affects the packages stage).
 
 
 # =============================================================================

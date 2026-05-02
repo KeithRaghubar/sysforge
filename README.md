@@ -80,7 +80,9 @@ sysforge doctor steam --suggest       # reverse-lookup candidate packages for ea
                                       # missing soname / broken ABI via pacman -Fq
                                       # (requires sudo pacman -Fy first); splits
                                       # findings into "install candidates" (missing
-                                      # on disk → install) vs "ABI-drift candidates"
+                                      # on disk and not yet installed), "rebuild
+                                      # candidates" (installed; rebuild against
+                                      # current system), and "ABI-drift candidates"
                                       # (present but out of sync → rebuild/upgrade)
 ```
 

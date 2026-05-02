@@ -30,6 +30,7 @@ from sysforge.packages_cmd import (
 )
 from sysforge.state_cmd import (
     cmd_state_list,
+    cmd_state_orphans,
     cmd_state_repair,
 )
 
@@ -659,10 +660,19 @@ def _add_doctor_parser(sub):
     p.add_argument("--suggest", "-s", action="store_true",
         help="For each unsatisfied soname, look up candidate packages "
              "via `pacman -Fq`. Findings split into 'install candidates' "
-             "(missing from disk — install the package) and 'ABI-drift "
-             "candidates' (present but one of their versioned symbols no "
-             "longer resolves — rebuild or upgrade, not reinstall). "
-             "Requires a synced files db (`sudo pacman -Fy`).")
+             "(missing from disk — install the package), 'rebuild "
+             "candidates' (installed; rebuild against the current system), "
+             "and 'ABI-drift candidates' (present but one of their "
+             "versioned symbols no longer resolves — rebuild or upgrade, "
+             "not reinstall). Requires a synced files db (`sudo pacman -Fy`).")
+    p.add_argument("--apply", action="store_true",
+        help="Hand the rebuild candidates from --suggest off to `sysforge "
+             "update` and rebuild them. Implies --suggest. Drift-rebuild only "
+             "in v1.x — install candidates are printed but not invoked.")
+    p.add_argument("--no-confirm", action="store_true", dest="no_confirm",
+        help="Skip the y/N prompt before --apply rebuilds.")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run",
+        help="Report what --apply would rebuild without invoking the build.")
     p.set_defaults(func=_cmd_doctor)
 
 
@@ -733,6 +743,14 @@ def _add_state_parser(sub):
     p_repair.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show the planned repair without writing.")
     p_repair.set_defaults(func=cmd_state_repair)
+
+    p_orphans = state_sub.add_parser("orphans",
+        help="List (and optionally prune) stale .pkg.tar* artifacts in PKGDEST.")
+    p_orphans.add_argument("--prune", action="store_true",
+        help="Delete the listed orphan artifacts (prompts for confirmation).")
+    p_orphans.add_argument("--no-confirm", action="store_true", dest="no_confirm",
+        help="Skip the y/N prompt when pruning. Implies --prune.")
+    p_orphans.set_defaults(func=cmd_state_orphans)
 
 
 def _add_setup_parser(sub):

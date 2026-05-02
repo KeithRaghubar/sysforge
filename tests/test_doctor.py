@@ -223,6 +223,7 @@ def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
         packages=[], graphics=False, all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
+        apply=False, no_confirm=False, dry_run=False,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -349,7 +350,11 @@ def test_cmd_doctor_affected_line_lists_multiple_packages(tmp_path, monkeypatch,
 
 
 def test_cmd_doctor_affected_line_tags_mixed_origins(tmp_path, monkeypatch, capsys):
-    """Affected summary tags [aur] for foreign and [repo] for native packages."""
+    """
+    Affected summary tags [aur] for foreign and [repo] for native packages.
+    Foreign packages with build_state entries get [aur]; foreign without an
+    entry get [aur][untracked] (C3).
+    """
     db = tmp_path / "local"
     db.mkdir()
     _mk_pkg(db, "nativepkg", "1.0-1", depends=["missinga>=1"], files=[])
@@ -361,6 +366,10 @@ def test_cmd_doctor_affected_line_tags_mixed_origins(tmp_path, monkeypatch, caps
     monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign)
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    # Treat foreignpkg as build_state-tracked so the [untracked] tag is suppressed.
+    from sysforge.primitives import build_state as _bs_mod
+    monkeypatch.setattr(_bs_mod.BuildState, "all_packages",
+                        lambda self: {"foreignpkg": {}})
 
     def fake_pacman_t(cmd, **_kw):
         r = MagicMock()
@@ -420,7 +429,7 @@ def test_cmd_doctor_output_goes_through_log_ui(tmp_path, monkeypatch, capsys):
 def test_collect_suggestions_depends_soname(monkeypatch):
     calls: list[tuple[str, bool]] = []
 
-    def fake_suggest(entry, *, lib32=False, run_fn=None):
+    def fake_suggest(entry, *, lib32=False, run_fn=None, installed_names=None):
         calls.append((entry, lib32))
         return ["core/libcap"]
 
@@ -436,7 +445,7 @@ def test_collect_suggestions_depends_soname(monkeypatch):
 def test_collect_suggestions_lib32_context(monkeypatch):
     calls: list[tuple[str, bool]] = []
 
-    def fake_suggest(entry, *, lib32=False, run_fn=None):
+    def fake_suggest(entry, *, lib32=False, run_fn=None, installed_names=None):
         calls.append((entry, lib32))
         return ["multilib/lib32-foo"]
 
@@ -450,7 +459,7 @@ def test_collect_suggestions_lib32_context(monkeypatch):
 
 
 def test_collect_suggestions_abi_missing_needed(monkeypatch):
-    def fake_suggest(entry, *, lib32=False, run_fn=None):
+    def fake_suggest(entry, *, lib32=False, run_fn=None, installed_names=None):
         assert entry == "libbar.so.5"
         return ["extra/bar"]
 
@@ -468,7 +477,7 @@ def test_collect_suggestions_skips_unparseable_issues(monkeypatch):
     """A plain `unsatisfied dep:` line isn't sent to pacman -F."""
     sent = []
 
-    def fake_suggest(entry, *, lib32=False, run_fn=None):
+    def fake_suggest(entry, *, lib32=False, run_fn=None, installed_names=None):
         sent.append(entry)
         return []
 
@@ -493,7 +502,7 @@ def test_collect_suggestions_abi_undef_versioned_symbol(monkeypatch):
 
     calls: list[tuple[str, bool]] = []
 
-    def fake_suggest(entry, *, lib32=False, run_fn=None):
+    def fake_suggest(entry, *, lib32=False, run_fn=None, installed_names=None):
         calls.append((entry, lib32))
         return {"libstdc++.so.6": ["core/gcc-libs"],
                 "libc.so.6": ["core/glibc"]}[entry]
@@ -532,7 +541,7 @@ def test_collect_suggestions_cache_dedupes_repeat_sonames(monkeypatch):
     """
     When the same soname is referenced by multiple issues (and across
     multiple _collect_suggestions calls sharing a cache) it should only
-    hit suggest_for_soname once per (soname, lib32) key.
+    hit suggest_for_soname once per (soname, lib32, filter_installed) key.
     """
     monkeypatch.setattr(
         doctor, "needed_sonames",
@@ -541,7 +550,7 @@ def test_collect_suggestions_cache_dedupes_repeat_sonames(monkeypatch):
 
     calls: list[str] = []
 
-    def fake_suggest(entry, *, lib32=False, run_fn=None):
+    def fake_suggest(entry, *, lib32=False, run_fn=None, installed_names=None):
         calls.append(entry)
         return {
             "libfoo.so.1": ["core/foo"],
@@ -562,7 +571,7 @@ def test_collect_suggestions_cache_dedupes_repeat_sonames(monkeypatch):
     )
     so_path = Path("/usr/lib/libbroken.so.1")
 
-    cache: dict[tuple[str, bool], list[str]] = {}
+    cache: dict[tuple[str, bool, bool], list[str]] = {}
     doctor._collect_suggestions(
         "pkg-a", [dep_issue], [abi_needed, abi_undef],
         so_paths=[so_path], cache=cache,
@@ -574,8 +583,110 @@ def test_collect_suggestions_cache_dedupes_repeat_sonames(monkeypatch):
     )
 
     assert sorted(calls) == ["libc.so.6", "libfoo.so.1", "libstdc++.so.6"]
-    assert cache[("libfoo.so.1", False)] == ["core/foo"]
-    assert cache[("libc.so.6", False)] == ["core/glibc"]
+    # Install-kind lookups (dep_issue, abi_needed) get filter_installed=True;
+    # abi_undef enumerates NEEDED libs with filter_installed=False.
+    assert cache[("libfoo.so.1", False, True)] == ["core/foo"]
+    assert cache[("libc.so.6", False, False)] == ["core/glibc"]
+    assert cache[("libstdc++.so.6", False, False)] == ["core/gcc-libs"]
+
+
+# ---------------------------------------------------------------------------
+# A1: installed_names filter + abi_drift partition + FS fallback
+# ---------------------------------------------------------------------------
+
+def test_collect_suggestions_filters_installed_for_install_kind(monkeypatch):
+    """An install candidate that's already installed should be filtered out."""
+    seen_kwargs: dict[str, set[str] | None] = {}
+
+    def fake_suggest(entry, *, lib32=False, run_fn=None, installed_names=None):
+        seen_kwargs["installed_names"] = installed_names
+        # Real suggest_for_soname would filter; mimic it here.
+        cands = ["core/glib2"]
+        if installed_names:
+            cands = [c for c in cands
+                     if c.split("/", 1)[-1] not in installed_names]
+        return cands
+
+    monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
+
+    issue = "soname not found in ldconfig: libglib-2.0.so=0"
+    out = doctor._collect_suggestions(
+        "somepkg", [issue], [],
+        installed_names={"glib2"},
+    )
+
+    assert seen_kwargs["installed_names"] == {"glib2"}
+    assert out == {issue: (doctor.SUGGEST_KIND_INSTALL, [])}
+
+
+def test_collect_suggestions_partitions_drift_into_rebuild(monkeypatch):
+    """
+    For an undefined-versioned-symbol finding, candidates that are already
+    installed get the REBUILD kind; candidates not installed retain INSTALL
+    kind on a separate dict key.
+    """
+    monkeypatch.setattr(
+        doctor, "needed_sonames",
+        lambda path: ["libfoo.so.1", "libnew.so.2"],
+    )
+
+    def fake_suggest(entry, *, lib32=False, run_fn=None, installed_names=None):
+        return {
+            "libfoo.so.1": ["core/foo"],   # installed → rebuild
+            "libnew.so.2": ["extra/new"],  # not installed → install
+        }[entry]
+
+    monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
+
+    issue = (
+        "libbroken.so.1: undefined versioned symbol not found in any "
+        "NEEDED lib: sym@FOO_2.0"
+    )
+    so_path = Path("/usr/lib/libbroken.so.1")
+    out = doctor._collect_suggestions(
+        "somepkg", [], [issue], so_paths=[so_path],
+        installed_names={"foo"},
+    )
+
+    rebuild_key = issue
+    install_key = f"{issue} [missing source]"
+    assert out[rebuild_key] == (doctor.SUGGEST_KIND_REBUILD, ["core/foo"])
+    assert out[install_key] == (doctor.SUGGEST_KIND_INSTALL, ["extra/new"])
+
+
+def test_collect_suggestions_drift_all_installed_no_install_entry(monkeypatch):
+    """When every drift candidate is installed, only a rebuild entry appears."""
+    monkeypatch.setattr(doctor, "needed_sonames", lambda path: ["libfoo.so.1"])
+
+    def fake_suggest(entry, *, lib32=False, run_fn=None, installed_names=None):
+        return ["core/foo"]
+
+    monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
+
+    issue = (
+        "libbroken.so.1: undefined versioned symbol not found in any "
+        "NEEDED lib: sym@FOO_2.0"
+    )
+    out = doctor._collect_suggestions(
+        "somepkg", [], [issue], so_paths=[Path("/usr/lib/libbroken.so.1")],
+        installed_names={"foo"},
+    )
+    assert out == {issue: (doctor.SUGGEST_KIND_REBUILD, ["core/foo"])}
+
+
+def test_check_depends_filesystem_fallback_when_ldconfig_stale(monkeypatch):
+    """
+    Soname missing from the ldconfig set but present in the filesystem set
+    is treated as satisfied — masks /etc/ld.so.cache lag immediately after
+    install. (Overrides conftest's empty-set patch.)
+    """
+    from sysforge.primitives import dep_analysis as da
+    monkeypatch.setattr(
+        da, "_filesystem_soname_set",
+        lambda lib32=False: frozenset({"libfresh.so.1"}),
+    )
+    issues = doctor._check_depends(["libfresh.so=1"], set())
+    assert issues == []
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +707,7 @@ def test_cmd_doctor_suggest_renders_candidate_line(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(doctor, "files_db_present", lambda: True)
     monkeypatch.setattr(
         doctor, "suggest_for_soname",
-        lambda entry, *, lib32=False, run_fn=None: ["core/missinglib"],
+        lambda entry, *, lib32=False, run_fn=None, installed_names=None: ["core/missinglib"],
     )
 
     rc = doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
@@ -608,6 +719,12 @@ def test_cmd_doctor_suggest_renders_candidate_line(tmp_path, monkeypatch, capsys
 
 
 def test_cmd_doctor_suggest_no_candidate_line(tmp_path, monkeypatch, capsys):
+    """
+    Empty install candidate list — every plausible owner was filtered out
+    by the installed_names check (the bug Keith reported: doctor used to
+    re-recommend installing already-installed packages). The user-facing
+    line points at ldconfig instead of repeating the install suggestion.
+    """
     db = tmp_path / "local"
     db.mkdir()
     _mk_pkg(db, "brokenpkg", "1.0-1",
@@ -621,13 +738,14 @@ def test_cmd_doctor_suggest_no_candidate_line(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "files_db_present", lambda: True)
     monkeypatch.setattr(
         doctor, "suggest_for_soname",
-        lambda entry, *, lib32=False, run_fn=None: [],
+        lambda entry, *, lib32=False, run_fn=None, installed_names=None: [],
     )
 
     doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
     err = capsys.readouterr().err
 
-    assert "→ install candidate: no candidate in files db" in err
+    assert "all owning packages already installed" in err
+    assert "sudo ldconfig" in err
 
 
 def test_cmd_doctor_suggest_warns_on_stale_files_db(tmp_path, monkeypatch, capsys):
@@ -675,7 +793,7 @@ def test_cmd_doctor_suggest_summary_rollup(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "files_db_present", lambda: True)
     monkeypatch.setattr(
         doctor, "suggest_for_soname",
-        lambda entry, *, lib32=False, run_fn=None: {
+        lambda entry, *, lib32=False, run_fn=None, installed_names=None: {
             "libshared.so=1": ["core/shared"],
             "libuniq.so=2": ["extra/uniq"],
         }.get(entry, []),
@@ -696,15 +814,17 @@ def test_cmd_doctor_suggest_summary_rollup(tmp_path, monkeypatch, capsys):
 
 def test_cmd_doctor_suggest_abi_drift_summary(tmp_path, monkeypatch, capsys):
     """
-    An `undefined versioned symbol` finding lands under the ABI-drift bucket
-    in both the per-issue label and the end-of-run summary, kept separate
-    from install candidates.
+    An `undefined versioned symbol` finding whose candidate owner is already
+    installed lands in the REBUILD bucket — both per-issue and in the
+    end-of-run summary — kept separate from install candidates. (A1 partition.)
     """
     db = tmp_path / "local"
     db.mkdir()
     so_rel = "usr/lib/libbroken.so.1"
     _mk_pkg(db, "driftpkg", "1.0-1", depends=[], files=[so_rel])
-    installed = {"driftpkg": "1.0-1"}
+    # glibc is installed — every real system has it, and the partition
+    # logic in _collect_suggestions reclassifies its candidacy as REBUILD.
+    installed = {"driftpkg": "1.0-1", "glibc": "2.40-1"}
 
     abs_so = tmp_path / so_rel
     abs_so.parent.mkdir(parents=True, exist_ok=True)
@@ -724,7 +844,7 @@ def test_cmd_doctor_suggest_abi_drift_summary(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "needed_sonames", lambda p: ["libc.so.6"])
     monkeypatch.setattr(
         doctor, "suggest_for_soname",
-        lambda entry, *, lib32=False, run_fn=None: ["core/glibc"],
+        lambda entry, *, lib32=False, run_fn=None, installed_names=None: ["core/glibc"],
     )
     # doctor uses file_root = Path("/"), so point _so_paths_for_pkg at our fake.
     monkeypatch.setattr(
@@ -735,15 +855,16 @@ def test_cmd_doctor_suggest_abi_drift_summary(tmp_path, monkeypatch, capsys):
     rc = doctor.cmd_doctor(_make_args(packages=["driftpkg"], suggest=True))
     err = capsys.readouterr().err
 
-    assert "→ ABI-drift candidate (rebuild/upgrade): core/glibc" in err
+    assert "→ rebuild candidate: core/glibc" in err
     # End-of-run summary
-    assert "driftpkg: ABI-drift: core/glibc" in err
+    assert "driftpkg: rebuild: core/glibc" in err
     assert (
-        "ABI-drift candidates (rebuild or upgrade, not reinstall): core/glibc"
+        "Rebuild candidates (installed; ABI drift): core/glibc"
         in err
     )
-    # No install line because there are no install-kind findings.
+    # No install line because the candidate was reclassified as rebuild.
     assert "Install candidates:" not in err
+    assert "ABI-drift candidates" not in err
     assert rc == 1
 
 
@@ -805,6 +926,26 @@ def test_cmd_doctor_all_covers_repo_packages(tmp_path, monkeypatch, capsys):
     assert rc == 1
 
 
+def test_cmd_doctor_untracked_foreign_gets_untracked_tag(tmp_path, monkeypatch, capsys):
+    """C3: foreign package with no build_state entry → [aur][untracked] tag."""
+    db = tmp_path / "local"
+    db.mkdir()
+    _mk_pkg(db, "wildpkg", "1.0-1", depends=[], files=[])
+    installed = {"wildpkg": "1.0-1"}
+    foreign = {"wildpkg": "1.0-1"}
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign)
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    from sysforge.primitives import build_state as _bs_mod
+    monkeypatch.setattr(_bs_mod.BuildState, "all_packages", lambda self: {})
+
+    doctor.cmd_doctor(_make_args(packages=["wildpkg"]))
+    err = capsys.readouterr().err
+    assert "== wildpkg 1.0-1 [aur][untracked] ==" in err
+
+
 def test_cmd_doctor_all_includes_foreign_and_native(tmp_path, monkeypatch, capsys):
     """--all includes both foreign and non-foreign packages."""
     db = tmp_path / "local"
@@ -818,6 +959,10 @@ def test_cmd_doctor_all_includes_foreign_and_native(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign)
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    # Treat foreignpkg as build_state-tracked so the bare [aur] tag survives.
+    from sysforge.primitives import build_state as _bs_mod
+    monkeypatch.setattr(_bs_mod.BuildState, "all_packages",
+                        lambda self: {"foreignpkg": {}})
 
     doctor.cmd_doctor(_make_args(all=True))
     err = capsys.readouterr().err
@@ -878,3 +1023,153 @@ def test_pacman_get_local_db_entry_exact_match(tmp_path):
 
 def test_pacman_get_local_db_entry_missing_returns_none(tmp_path):
     assert pacman_mod.get_local_db_entry("ghost", root=tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# B1: doctor --apply bridge
+# ---------------------------------------------------------------------------
+
+def _apply_doctor_setup(tmp_path, monkeypatch, *, foreign=True):
+    """Stage a single drift finding whose REBUILD candidate is a foreign pkg."""
+    db = tmp_path / "local"
+    db.mkdir()
+    so_rel = "usr/lib/libbroken.so.1"
+    _mk_pkg(db, "driftpkg", "1.0-1", depends=[], files=[so_rel])
+
+    abs_so = tmp_path / so_rel
+    abs_so.parent.mkdir(parents=True, exist_ok=True)
+    abs_so.write_bytes(b"")
+
+    target_pkg = "tracked-foreign"
+    installed = {"driftpkg": "1.0-1", target_pkg: "5.0-1"}
+    foreign_set = {target_pkg: "5.0-1"} if foreign else {}
+
+    abi_issue = (
+        "libbroken.so.1: undefined versioned symbol not found in any "
+        "NEEDED lib: sym@FOO_2.0"
+    )
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign_set)
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    monkeypatch.setattr(doctor, "files_db_present", lambda: True)
+    monkeypatch.setattr(doctor, "check_so_files", lambda so_paths: [abi_issue])
+    monkeypatch.setattr(doctor, "needed_sonames", lambda p: ["libtarget.so.5"])
+    monkeypatch.setattr(
+        doctor, "suggest_for_soname",
+        lambda entry, *, lib32=False, run_fn=None, installed_names=None: [
+            f"core/{target_pkg}",
+        ],
+    )
+    monkeypatch.setattr(
+        doctor, "_so_paths_for_pkg",
+        lambda pkgname, file_root: [abs_so],
+    )
+    return target_pkg
+
+
+def test_apply_dry_run_does_not_invoke_update(tmp_path, monkeypatch, capsys):
+    target = _apply_doctor_setup(tmp_path, monkeypatch)
+    called = []
+    monkeypatch.setattr("sysforge.update.cmd_update",
+                        lambda args: called.append(args))
+
+    rc = doctor.cmd_doctor(_make_args(
+        packages=["driftpkg"], apply=True, dry_run=True, no_confirm=True,
+    ))
+
+    assert called == []
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "would rebuild 1 package(s)" in err
+    assert target in err
+    assert "(--dry-run: nothing rebuilt)" in err
+
+
+def test_apply_invokes_cmd_update_with_eligible_pkgnames(tmp_path, monkeypatch, capsys):
+    target = _apply_doctor_setup(tmp_path, monkeypatch)
+    captured = []
+    monkeypatch.setattr("sysforge.update.cmd_update",
+                        lambda args: captured.append(args))
+
+    rc = doctor.cmd_doctor(_make_args(
+        packages=["driftpkg"], apply=True, no_confirm=True,
+    ))
+
+    assert rc == 0
+    assert len(captured) == 1
+    assert captured[0].pkgnames == [target]
+    assert captured[0].dry_run is False
+    err = capsys.readouterr().err
+    assert "would rebuild 1 package(s)" in err
+
+
+def test_apply_repo_candidate_only_suggests_pacman(tmp_path, monkeypatch, capsys):
+    """A REBUILD candidate that is NOT a foreign package → pacman -S hint."""
+    target = _apply_doctor_setup(tmp_path, monkeypatch, foreign=False)
+    called = []
+    monkeypatch.setattr("sysforge.update.cmd_update",
+                        lambda args: called.append(args))
+
+    rc = doctor.cmd_doctor(_make_args(
+        packages=["driftpkg"], apply=True, no_confirm=True,
+    ))
+
+    # Update is never invoked — candidate is not foreign and we don't have
+    # update_repo_profiled. The hint to use pacman -S appears instead.
+    assert called == []
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert f"sudo pacman -S {target}" in err
+    assert "No eligible rebuild candidates" in err
+
+
+def test_apply_prompt_decline_skips_rebuild(tmp_path, monkeypatch, capsys):
+    _apply_doctor_setup(tmp_path, monkeypatch)
+    called = []
+    monkeypatch.setattr("sysforge.update.cmd_update",
+                        lambda args: called.append(args))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+    rc = doctor.cmd_doctor(_make_args(
+        packages=["driftpkg"], apply=True, no_confirm=False,
+    ))
+
+    assert called == []
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "Aborted" in err
+
+
+def test_apply_prompt_y_invokes_update(tmp_path, monkeypatch, capsys):
+    _apply_doctor_setup(tmp_path, monkeypatch)
+    called = []
+    monkeypatch.setattr("sysforge.update.cmd_update",
+                        lambda args: called.append(args))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+
+    rc = doctor.cmd_doctor(_make_args(
+        packages=["driftpkg"], apply=True, no_confirm=False,
+    ))
+
+    assert rc == 0
+    assert len(called) == 1
+
+
+def test_apply_implies_suggest(tmp_path, monkeypatch, capsys):
+    """--apply without --suggest still surfaces classified candidates."""
+    _apply_doctor_setup(tmp_path, monkeypatch)
+    captured = []
+    monkeypatch.setattr("sysforge.update.cmd_update",
+                        lambda args: captured.append(args))
+
+    rc = doctor.cmd_doctor(_make_args(
+        packages=["driftpkg"], apply=True, no_confirm=True, suggest=False,
+    ))
+
+    err = capsys.readouterr().err
+    # The "rebuild candidate" line proves --suggest was effectively on.
+    assert "rebuild candidate" in err
+    assert rc == 0
+    assert len(captured) == 1

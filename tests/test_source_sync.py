@@ -254,12 +254,33 @@ def test_offline_missing_dir_reports_skipped(tmp_path):
     assert "offline" in (result.error or "")
 
 
-def test_repo_source_skipped(tmp_path):
+def test_repo_source_routes_through_pkgctl(tmp_path):
+    """
+    A2: source='repo' on an empty pkgbuild_dir clones via `pkgctl repo clone`
+    instead of the AUR clone path. Outcome is STATUS_CLONED, mirroring the
+    AUR-side semantics — repo packages are now full participants in
+    `sysforge update`'s sync phase.
+    """
     sched = _scheduler(tmp_path)
-    result = sched.request(SyncRequest(
-        pkgbase="htop", pkgbuild_dir=tmp_path / "htop", source="repo",
-    ))
-    assert result.status == STATUS_UP_TO_DATE
+    pkg_dir = tmp_path / "htop"
+
+    def fake_pkgctl(name, dest, *, timeout=None):
+        Path(dest).mkdir(parents=True, exist_ok=True)
+        (Path(dest) / "PKGBUILD").write_text("pkgname=htop\n")
+
+    with patch("sysforge.primitives.source_sync.pkgctl_checkout",
+               side_effect=fake_pkgctl) as pkgctl, \
+         patch("sysforge.primitives.source_sync.aur_clone") as aur_clone_mock, \
+         patch("sysforge.primitives.source_sync._head_commit",
+               return_value="abcd1234"):
+        result = sched.request(SyncRequest(
+            pkgbase="htop", pkgbuild_dir=pkg_dir, source="repo",
+        ))
+
+    pkgctl.assert_called_once()
+    aur_clone_mock.assert_not_called()
+    assert result.status == "cloned"
+    assert result.head_after == "abcd1234"
 
 
 # ---------------------------------------------------------------------------

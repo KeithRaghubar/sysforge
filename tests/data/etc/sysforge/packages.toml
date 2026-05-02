@@ -27,6 +27,10 @@ repo_mode = "profiled"  # "pacman" (default) | "profiled" — how repo-source pa
 #                       # "pacman"   → install via pacman -S --needed (no build step)
 #                       # "profiled" → build from PKGBUILD with sysforge flag profiles
 #                       # per-package pkgbuild_patch = true overrides to "profiled" regardless
+# update_repo_profiled = true   # opt in to repo-package version drift detection in
+#                                # `sysforge update`. When true, every installed repo
+#                                # package is iterated alongside foreign packages and
+#                                # rebuilt from the Arch packaging repo if newer.
 
 
 # =============================================================================

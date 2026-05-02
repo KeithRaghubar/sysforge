@@ -15,6 +15,7 @@ Public API:
 import os
 import re
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 from sysforge.primitives.failure import handle_failure
@@ -110,6 +111,87 @@ def soname_satisfied(entry, available):
     return base in available or any(s.startswith(prefix) for s in available)
 
 
+# ---------------------------------------------------------------------------
+# Filesystem fallback for stale ldconfig cache
+# ---------------------------------------------------------------------------
+#
+# /etc/ld.so.cache is only refreshed when ldconfig runs as root (typically
+# from a package install hook). Between an install and the cache refresh —
+# or when the install hook is missing — `ldconfig -p` reports a soname as
+# absent even though the .so file is on disk and is dlopen-able. To stop
+# doctor from flagging these as "soname not in ldconfig", consult the
+# library directories directly when the cache check misses.
+
+@lru_cache(maxsize=2)
+def _resolve_lib_dirs(lib32: bool) -> tuple[Path, ...]:
+    """
+    Library directories the dynamic linker actually searches.
+
+    For lib32 we only consult /usr/lib32 (Arch's multilib convention).
+    For the default case we start from /usr/lib + /lib and merge any
+    absolute dirs declared in /etc/ld.so.conf.d/*.conf so vendor drops
+    (e.g. nvidia-utils) are picked up. Cached per-process — the conf
+    set doesn't change during a doctor run.
+    """
+    if lib32:
+        return (Path("/usr/lib32"),)
+    dirs: list[Path] = [Path("/usr/lib"), Path("/lib")]
+    conf_d = Path("/etc/ld.so.conf.d")
+    if conf_d.is_dir():
+        for conf in sorted(conf_d.glob("*.conf")):
+            try:
+                content = conf.read_text()
+            except OSError:
+                continue
+            for line in content.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("include"):
+                    continue
+                p = Path(line)
+                if p.is_absolute() and p.is_dir():
+                    dirs.append(p)
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for d in dirs:
+        if d in seen:
+            continue
+        seen.add(d)
+        out.append(d)
+    return tuple(out)
+
+
+@lru_cache(maxsize=2)
+def _filesystem_soname_set(lib32: bool) -> frozenset[str]:
+    """All .so* basenames present in the resolved lib dirs (cached)."""
+    names: set[str] = set()
+    for d in _resolve_lib_dirs(lib32):
+        try:
+            for entry in d.iterdir():
+                if ".so" in entry.name:
+                    names.add(entry.name)
+        except OSError:
+            continue
+    return frozenset(names)
+
+
+def _reset_soname_caches() -> None:
+    """Clear the lib-dir and filesystem-soname caches. For tests."""
+    _resolve_lib_dirs.cache_clear()
+    _filesystem_soname_set.cache_clear()
+
+
+def soname_available(entry, ldconfig_set, *, lib32=False):
+    """
+    True if the soname is satisfied by ``ldconfig_set`` OR present on disk
+    in the standard library directories. The filesystem fallback masks
+    stale /etc/ld.so.cache state — common immediately after an install
+    when ldconfig hasn't been re-run.
+    """
+    if soname_satisfied(entry, ldconfig_set):
+        return True
+    return soname_satisfied(entry, _filesystem_soname_set(lib32))
+
+
 def check_soname_deps(depends, config, pkgname="unknown", ldconfig_fn=None):
     """
     Check that all .so entries in depends are present in ldconfig's cache
@@ -128,6 +210,7 @@ def check_soname_deps(depends, config, pkgname="unknown", ldconfig_fn=None):
         ldconfig_fn = _default_ldconfig_fn
 
     available = _parse_ldconfig(ldconfig_fn())
+    lib32 = pkgname.startswith("lib32-")
     findings = []
 
     for entry in depends:
@@ -135,7 +218,7 @@ def check_soname_deps(depends, config, pkgname="unknown", ldconfig_fn=None):
         if not m:
             continue
 
-        if soname_satisfied(entry, available):
+        if soname_available(entry, available, lib32=lib32):
             display = f"{m.group('base')}.{m.group('ver')}" if m.group("ver") else m.group("base")
             _log.info(f"[{pkgname}] soname ok: {display} → found")
             continue

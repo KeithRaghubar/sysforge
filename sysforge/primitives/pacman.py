@@ -65,6 +65,66 @@ def get_pkgdest() -> Path | None:
     return None
 
 
+def detect_orphan_artifacts(
+    pkgdest: Path,
+    installed: dict[str, str],
+) -> dict[str, list[Path]]:
+    """Classify ``.pkg.tar*`` files in ``pkgdest`` as untracked or superseded.
+
+    Returns ``{"untracked": [...], "superseded": [...]}``:
+
+    - **untracked** — pkgname isn't in ``installed`` at all (left from a
+      build whose package was never installed, or from a package later
+      removed). Safe to delete.
+    - **superseded** — pkgname IS installed, but the artifact's version is
+      older than the installed version (a stale build artifact, harmless
+      but takes disk space). Safe to delete.
+
+    Files newer than the installed version, or matching the installed
+    version exactly, are not returned — those are the current build
+    artifacts and removing them would defeat ``--install-only`` reuse.
+
+    ``.sig`` files are ignored. Files whose pkgname can't be read or
+    whose filename doesn't parse fall through silently — never flagged
+    as orphans, since the caller can't safely decide what to do with
+    them. Use ``--clean`` workflows for those by hand.
+    """
+    from sysforge.primitives.version import vercmp  # avoid import cycle at module load
+
+    untracked: list[Path] = []
+    superseded: list[Path] = []
+    if not pkgdest.is_dir():
+        return {"untracked": untracked, "superseded": superseded}
+
+    for path in sorted(pkgdest.glob("*.pkg.tar*")):
+        if path.name.endswith(".sig"):
+            continue
+        pkgname = read_pkgname_from_file(path)
+        if pkgname is None:
+            continue
+        if pkgname not in installed:
+            untracked.append(path)
+            continue
+        # Same pkgname installed — compare versions to find stale builds.
+        from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+        parsed = _parse_built_pkg_filename(pkgname, path.name)
+        if parsed is None:
+            continue
+        epoch, pkgver, pkgrel = parsed
+        artifact_ver = (
+            f"{epoch}:{pkgver}-{pkgrel}" if epoch and epoch != "0"
+            else f"{pkgver}-{pkgrel}"
+        )
+        try:
+            cmp = vercmp(artifact_ver, installed[pkgname])
+        except RuntimeError:
+            continue
+        if cmp < 0:
+            superseded.append(path)
+
+    return {"untracked": untracked, "superseded": superseded}
+
+
 # ---------------------------------------------------------------------------
 # Package file collection
 # ---------------------------------------------------------------------------

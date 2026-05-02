@@ -757,8 +757,10 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     missing_deps: list[str] = []
     toolchain_mismatch = False
     already_built = False
+    captured_lines: list[str] = []
     for line in proc.stdout:
         stripped = line.rstrip()
+        captured_lines.append(stripped)
         if "A failure occurred in prepare()." in stripped:
             failed_stage = "prepare"
         elif "A failure occurred in build()." in stripped:
@@ -821,8 +823,12 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 "Detected clang-only compiler flag rejected by GCC — "
                 "the package's build system likely invokes a hardcoded gcc/g++"
             )
-            raise ToolchainMismatchError(returncode, "makepkg")
-        raise subprocess.CalledProcessError(returncode, "makepkg")
+            err = ToolchainMismatchError(returncode, "makepkg")
+            err.captured_output = captured_lines
+            raise err
+        cpe = subprocess.CalledProcessError(returncode, "makepkg")
+        cpe.captured_output = captured_lines  # consumed by auto_repair
+        raise cpe
 
 
 def _find_built_packages(build_dir: Path) -> list:
@@ -1084,11 +1090,25 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             else:
                 _kernel_log.info(f"Non-clang toolchain ({effective_cc!r} → 'gcc'): GCC kernel build")
 
+        # ── Pre-flight: .SRCINFO drift regeneration ─────────────────────
+        from sysforge.primitives import auto_repair as _ar
+        _failure_cfg = (config or {}).get("failure_handling", {})
+        _srcinfo_behaviour = _failure_cfg.get(
+            "srcinfo_drift", "auto_repair_with_warning"
+        )
+        try:
+            _ar.preflight_srcinfo(pkgbuild_path.parent, _srcinfo_behaviour)
+        except RuntimeError as _e:
+            raise RuntimeError(f"[build_failed] {_e}")
+
         # Outer loop: on ToolchainMismatchError, regenerate the makepkg.conf
         # once with reactive_gcc_fallback=True (forcing the GCC+LTO guard on)
         # and retry the build. A second mismatch falls through to normal
-        # failure handling.
+        # failure handling. On other failures, walk the auto-repair registry;
+        # each scenario fires at most once so a misdetection cannot loop.
         _reactive_retry_used = False
+        _repaired_scenarios: set[str] = set()
+        _batch_mode = bool(resolved_profile.get("batch", False))
         while True:
             try:
                 with emit_makepkg_conf(
@@ -1118,6 +1138,32 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                     "(rewriting clang-only flags like -flto=thin)"
                 )
                 _reactive_retry_used = True
+            except subprocess.CalledProcessError as e:
+                # Auto-repair: walk REGISTRY against captured stdout. Each
+                # scenario is at-most-once-per-build (tracked in
+                # _repaired_scenarios) so a misdetection can't loop.
+                _captured = getattr(e, "captured_output", None) or []
+                _accum = _ar.BuildOutputAccumulator(
+                    lines=list(_captured),
+                    srcdir=pkgbuild_path.parent / "src",
+                )
+                _result = _ar.apply_first_match(
+                    _ar.REGISTRY,
+                    _accum,
+                    pkgbuild_dir=pkgbuild_path.parent,
+                    behaviour_for=lambda key: _failure_cfg.get(key, "auto_repair"),
+                    batch=_batch_mode,
+                    already_repaired=_repaired_scenarios,
+                )
+                if _result is None or _result.aborted or not _result.repaired:
+                    raise
+                # Retry semantics: incremental keeps srcdir, from_scratch lets
+                # makepkg redo prepare()/extract by NOT passing -e (handled by
+                # the existing strip_flags / extra_flags). For now, retry the
+                # build with the same flags — the repair has fixed the on-disk
+                # state, and the next iteration of the outer loop will rerun
+                # invoke_makepkg.
+                continue
 
         # Post-build cache delta
         pkgname = _pkgname_from_meta(pkgmeta)

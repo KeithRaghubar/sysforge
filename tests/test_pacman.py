@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 
 from sysforge.primitives.pacman import (
     collect_makedeps,
+    detect_orphan_artifacts,
     filter_missing_deps,
     filter_pkgs_to_installed,
     get_installed_version,
@@ -294,3 +295,106 @@ class TestGetPkgbase:
                       base="linux-custom",
                       extra_fields="%DESC%\nKernel headers\n")
         assert get_pkgbase("linux-custom-headers", root=tmp_path) == "linux-custom"
+
+
+# ---------------------------------------------------------------------------
+# detect_orphan_artifacts (C2)
+# ---------------------------------------------------------------------------
+
+class TestDetectOrphanArtifacts:
+    def _mk_pkg(self, pkgdest, name: str, ver: str, rel: str = "1",
+                arch: str = "x86_64", epoch: str = "0"):
+        if epoch and epoch != "0":
+            stem = f"{name}-{epoch}:{ver}-{rel}-{arch}.pkg.tar.zst"
+        else:
+            stem = f"{name}-{ver}-{rel}-{arch}.pkg.tar.zst"
+        path = pkgdest / stem
+        path.write_bytes(b"")
+        return path
+
+    def test_returns_empty_when_pkgdest_missing(self, tmp_path):
+        result = detect_orphan_artifacts(tmp_path / "nope", {})
+        assert result == {"untracked": [], "superseded": []}
+
+    def test_classifies_untracked_when_pkgname_not_installed(self, tmp_path):
+        self._mk_pkg(tmp_path, "ghostpkg", "1.0")
+        with patch("sysforge.primitives.pacman.read_pkgname_from_file",
+                   return_value="ghostpkg"):
+            result = detect_orphan_artifacts(tmp_path, {})
+        assert len(result["untracked"]) == 1
+        assert result["superseded"] == []
+        assert result["untracked"][0].name.startswith("ghostpkg-")
+
+    def test_classifies_superseded_when_artifact_older_than_installed(self, tmp_path):
+        self._mk_pkg(tmp_path, "htop", "3.3.0")
+        with patch("sysforge.primitives.pacman.read_pkgname_from_file",
+                   return_value="htop"):
+            result = detect_orphan_artifacts(tmp_path, {"htop": "3.4.0-1"})
+        assert result["untracked"] == []
+        assert len(result["superseded"]) == 1
+
+    def test_keeps_current_artifacts(self, tmp_path):
+        """Same-version artifacts are not orphans — they are the current build."""
+        self._mk_pkg(tmp_path, "htop", "3.4.0")
+        with patch("sysforge.primitives.pacman.read_pkgname_from_file",
+                   return_value="htop"):
+            result = detect_orphan_artifacts(tmp_path, {"htop": "3.4.0-1"})
+        assert result == {"untracked": [], "superseded": []}
+
+    def test_keeps_newer_artifacts(self, tmp_path):
+        """Newer-than-installed = build hasn't been installed yet, not orphan."""
+        self._mk_pkg(tmp_path, "htop", "3.5.0")
+        with patch("sysforge.primitives.pacman.read_pkgname_from_file",
+                   return_value="htop"):
+            result = detect_orphan_artifacts(tmp_path, {"htop": "3.4.0-1"})
+        assert result == {"untracked": [], "superseded": []}
+
+    def test_ignores_signature_files(self, tmp_path):
+        (tmp_path / "ghostpkg-1.0-1-x86_64.pkg.tar.zst.sig").write_bytes(b"")
+        # If sig was scanned, read_pkgname would be called; assert not called.
+        with patch("sysforge.primitives.pacman.read_pkgname_from_file",
+                   side_effect=AssertionError("must not scan .sig")):
+            result = detect_orphan_artifacts(tmp_path, {})
+        assert result == {"untracked": [], "superseded": []}
+
+    def test_unparseable_filename_is_skipped(self, tmp_path):
+        """Filenames the parser can't decode pass through silently."""
+        path = tmp_path / "weird-thing.pkg.tar.zst"
+        path.write_bytes(b"")
+        with patch("sysforge.primitives.pacman.read_pkgname_from_file",
+                   return_value="otherpkg"):
+            result = detect_orphan_artifacts(tmp_path, {"otherpkg": "1.0-1"})
+        # pkgname returned but filename doesn't parse → not classified.
+        assert result == {"untracked": [], "superseded": []}
+
+    def test_pkginfo_unreadable_passes_through(self, tmp_path):
+        """A package whose .PKGINFO can't be read isn't flagged."""
+        self._mk_pkg(tmp_path, "broken", "1.0")
+        with patch("sysforge.primitives.pacman.read_pkgname_from_file",
+                   return_value=None):
+            result = detect_orphan_artifacts(tmp_path, {"broken": "1.0-1"})
+        assert result == {"untracked": [], "superseded": []}
+
+    def test_mixed_sweep_partitions_correctly(self, tmp_path):
+        """Multiple files: some untracked, some superseded, some current."""
+        names = {
+            (tmp_path / "ghost-1.0-1-x86_64.pkg.tar.zst"): "ghost",
+            (tmp_path / "htop-3.3.0-1-x86_64.pkg.tar.zst"): "htop",
+            (tmp_path / "htop-3.4.0-1-x86_64.pkg.tar.zst"): "htop",
+        }
+        for p in names:
+            p.write_bytes(b"")
+
+        def fake_read(path):
+            return names[path]
+
+        with patch("sysforge.primitives.pacman.read_pkgname_from_file",
+                   side_effect=fake_read):
+            result = detect_orphan_artifacts(tmp_path, {"htop": "3.4.0-1"})
+
+        assert {p.name for p in result["untracked"]} == {
+            "ghost-1.0-1-x86_64.pkg.tar.zst"
+        }
+        assert {p.name for p in result["superseded"]} == {
+            "htop-3.3.0-1-x86_64.pkg.tar.zst"
+        }

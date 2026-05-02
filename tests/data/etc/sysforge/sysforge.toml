@@ -16,3 +16,10 @@ pull_timeout = 30
 # Timeout in seconds for git clone / pkgctl repo clone operations.
 # Set to 0 to disable the timeout (wait indefinitely).
 clone_timeout = 60
+
+[failure_handling]
+# Build-failure auto-repair (DESIGN.md §1242).
+vendored_deps_missing = "auto_repair"
+pgp_key_missing       = "auto_repair"
+srcinfo_drift         = "auto_repair_with_warning"
+checksum_mismatch     = "prompt_user"

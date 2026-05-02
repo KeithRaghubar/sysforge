@@ -58,6 +58,7 @@ from sysforge.primitives.aur import (
     aur_info,
     git_fetch_and_compare,
     is_rate_limit_error,
+    pkgctl_checkout,
     purge_src,
 )
 from sysforge.primitives.rate_limit import RateLimiter
@@ -223,10 +224,6 @@ class SourceSyncScheduler:
         pkgbase = req.pkgbase
         pkgbuild_dir = Path(req.pkgbuild_dir)
 
-        if req.source == "repo":
-            # Repo packages live in pkgctl-managed dirs; sync is out of scope here.
-            return SyncResult(pkgbase=pkgbase, status=STATUS_UP_TO_DATE)
-
         if self._aborted:
             return SyncResult(pkgbase=pkgbase, status=STATUS_RATE_LIMITED,
                               error="rate-limit abort window active")
@@ -264,11 +261,14 @@ class SourceSyncScheduler:
             needs_clone = True
 
         if needs_clone:
-            return self._clone(pkgbase, pkgbuild_dir)
+            return self._clone(pkgbase, pkgbuild_dir, source=req.source)
 
         # --- RPC short-circuit (skip fetch if nothing moved upstream) ---
+        # Repo packages have no AUR-RPC equivalent — they fall through to
+        # the generic fetch path, which works because pkgctl-clones are
+        # plain git repos with a tracking branch.
         meta = self.cache.get(pkgbase)
-        rpc_entry = self._rpc_entry(pkgbase)
+        rpc_entry = self._rpc_entry(pkgbase) if req.source != "repo" else None
         local_head = _head_commit(pkgbuild_dir)
         force = req.force_fetch or self.cleansrc or (
             self.force_devel and _is_vcs(pkgbase)
@@ -296,13 +296,20 @@ class SourceSyncScheduler:
             return False
         return True
 
-    def _clone(self, pkgbase: str, pkgbuild_dir: Path) -> SyncResult:
+    def _clone(self, pkgbase: str, pkgbuild_dir: Path,
+               *, source: str = "aur") -> SyncResult:
         self.limiter.wait_before_fetch()
         try:
-            aur_clone(pkgbase, pkgbuild_dir, timeout=self.clone_timeout)
+            if source == "repo":
+                # gitlab.archlinux.org isn't subject to AUR's 429/503 budget,
+                # so the rate limiter still ticks for the inter-fetch delay
+                # but a checkout failure isn't translated to RATE_LIMITED.
+                pkgctl_checkout(pkgbase, pkgbuild_dir, timeout=self.clone_timeout)
+            else:
+                aur_clone(pkgbase, pkgbuild_dir, timeout=self.clone_timeout)
         except RuntimeError as e:
             err = str(e)
-            if is_rate_limit_error(err):
+            if source != "repo" and is_rate_limit_error(err):
                 self.limiter.apply_retry_after(None, source="AUR clone 429/503")
                 if self.limiter.remaining_penalty_s() > self.rate_limit_abort_s:
                     self._abort_remaining("rate-limit penalty exceeds threshold")
@@ -312,7 +319,7 @@ class SourceSyncScheduler:
             return SyncResult(pkgbase=pkgbase, status=STATUS_FAILED, error=err)
 
         head = _head_commit(pkgbuild_dir)
-        rpc_entry = self._rpc_entry(pkgbase)
+        rpc_entry = self._rpc_entry(pkgbase) if source != "repo" else None
         self.cache.update(
             pkgbase,
             rpc_version=(rpc_entry or {}).get("Version"),
