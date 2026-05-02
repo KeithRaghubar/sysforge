@@ -1,4 +1,5 @@
-.PHONY: dev build install clean test test-v test-x lint release man \
+.PHONY: dev build install clean test test-v test-x lint man \
+        release-major release-minor release-patch \
         vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-ssh vm-ssh-root vm-clean
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
@@ -39,8 +40,14 @@ test-x:
 lint:
 	ruff check sysforge/
 
-release:
-	bash tools/release.sh
+release-major:
+	bash tools/release.sh --bump=major
+
+release-minor:
+	bash tools/release.sh --bump=minor
+
+release-patch:
+	bash tools/release.sh --bump=patch
 
 man:
 	mkdir -p man

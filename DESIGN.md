@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles, tracks build state for update detection, and automates the full build lifecycle — from fetching PKGBUILDs to installing profiled packages. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-Current release is **v1.0.0**. v0.1.0 shipped the profiled AUR helper surface (install, update, and manage AUR and custom packages with system-tuned profiled builds); v0.2.0 added VM tooling and install-path fixes on top; v1.0 rounds out the system-bootstrapper milestone — the full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) is implemented and a fresh Arch install is automated from the ISO. See the [Release Plan](#release-plan) for the shipped-vs-remaining breakdown.
+Current release is **<!--version-->v1.0.0<!--/version-->**. v0.1.0 shipped the profiled AUR helper surface (install, update, and manage AUR and custom packages with system-tuned profiled builds); v0.2.0 added VM tooling and install-path fixes on top; v1.0 rounds out the system-bootstrapper milestone — the full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) is implemented and a fresh Arch install is automated from the ISO. See the [Release Plan](#release-plan) for the shipped-vs-remaining breakdown.
 
 ---
 
@@ -1398,7 +1398,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 ## Man Pages
 
-**Current (v1.0):** `argparse-manpage` generates `man/sysforge.1` from the argparse parser exposed via `_build_parser()` in `cli.py`. Generated during `make man` and during the PKGBUILD `build()` step (requires `python-argparse-manpage` makedepend). The man page is not checked into git — it is always generated from the parser at build/package time. Makefile target: `make man`.
+**Current (v1.0):** `argparse-manpage` generates `man/sysforge.1` from the argparse parser exposed via `_build_parser()` in `cli.py`. Generated during `make man` and during the PKGBUILD `build()` step (requires `python-argparse-manpage` makedepend). The generated page is checked into git so AUR-built tarballs ship with it without requiring AUR users to have `argparse-manpage` installed at unpack time; the release flow regenerates it via `make man` and commits the result alongside the version bump. Makefile target: `make man`.
 
 **v1.0 planned migration — scdoc hybrid:**
 
@@ -1521,7 +1521,16 @@ Build in this order to satisfy dependencies correctly:
 
 ### AUR publishing process
 
-Release prep is driven by `tools/release.sh`, which reads the version from `pyproject.toml`, verifies the matching `vX.Y.Z` tag exists locally, fetches the GitHub tarball sha256, updates `PKGBUILD`, regenerates the man page, **validates both `PKGBUILD` and `PKGBUILD-git` in a clean chroot**, and writes `.SRCINFO` / `.SRCINFO-git`. After it succeeds, the script prints the `git clone`/`cp`/`commit`/`push` sequence for the `sysforge` and `sysforge-git` AUR repos.
+Releases are driven by three Makefile targets — `make release-major`, `make release-minor`, `make release-patch` — each of which calls `tools/release.sh --bump=<level>`. The script handles the full flow end-to-end with a single up-front summary + approval prompt and one mid-run pause for the manual tag push. Phases:
+
+1. **Bump, commit, tag.** Rewrites `pyproject.toml` (the single source of truth for version), `PKGBUILD` `pkgver=`, `PKGBUILD-git` `pkgver=` (leading `X.Y.Z` only — the `.r0.g0000000` suffix is preserved as the placeholder for the dynamic `pkgver()`), the `<!--version-->vX.Y.Z<!--/version-->` markers in `README.md` and `DESIGN.md`, regenerates `uv.lock` (via `uv lock`) and `man/sysforge.1` (via `make man`), then makes a single `release: vX.Y.Z` commit and tags it.
+2. **Push pause.** Prints `git push origin main && git push origin vX.Y.Z` and waits on ENTER. The user pushes manually (releases are deliberate, not background events). The script verifies the tag is on `origin` before continuing.
+3. **Post-tag artifacts.** Fetches the GitHub tarball sha256, updates `sha256sums=` in `PKGBUILD`, **validates both `PKGBUILD` and `PKGBUILD-git` in a clean chroot**, regenerates `.SRCINFO` and `.SRCINFO-git` (both gitignored — local artifacts only), and makes a second `release: vX.Y.Z sha256` commit (the `.SRCINFO` files do not get committed).
+4. **Final instructions.** Prints `git push origin main` and the `git clone`/`cp`/`commit`/`push` sequence for the `sysforge` and `sysforge-git` AUR repos. The user runs those manually.
+
+If interrupted between phases (Ctrl-C at the push pause, or a transient failure), re-running the same `make release-*` command resumes correctly: the script detects that the tag for the *current* `pyproject.toml` version already exists at HEAD and skips Phase 1.
+
+The version markers in `README.md` and `DESIGN.md` are HTML comments (`<!--version-->vX.Y.Z<!--/version-->`) so they render invisibly. Only the marked token rotates per release — historical version mentions in prose (`v0.1.0`, `v0.2.0`, `v1.0`, `v1.x`) are deliberately not wrapped and stay frozen. Pre-flight refuses to run if either marker is missing.
 
 **Clean chroot validation.** The release gate catches underspecified `depends`/`makedepends` that a host build would silently accept because the dep is already installed. It uses `makechrootpkg` from `devtools` and is a hard prerequisite for the release flow — not the everyday `sysforge build` path, which remains a direct host-side `makepkg` invocation for speed.
 
@@ -1547,7 +1556,7 @@ Escape hatches:
 
 - `--skip-chroot` — bypass the chroot gate when iterating on `release.sh` itself. Never use for a real publish.
 - `SYSFORGE_CHROOT` — override the chroot root (default `/var/lib/archbuild/extra-x86_64`) for CI or VM release runs.
-- `--dry-run` — also skips the chroot build.
+- `--dry-run` — walk through every step without writing files, committing, hitting the network, or running the chroot build. Implies `--skip-chroot`.
 
 `makechrootpkg` bind-mounts require root; the script assumes passwordless sudo is configured for it and fails fast with a clear message otherwise.
 
