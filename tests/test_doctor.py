@@ -814,16 +814,17 @@ def test_cmd_doctor_suggest_summary_rollup(tmp_path, monkeypatch, capsys):
 
 def test_cmd_doctor_suggest_abi_drift_summary(tmp_path, monkeypatch, capsys):
     """
-    An `undefined versioned symbol` finding whose candidate owner is already
-    installed lands in the REBUILD bucket — both per-issue and in the
-    end-of-run summary — kept separate from install candidates. (A1 partition.)
+    An `undefined versioned symbol` finding whose candidate owner is an
+    installed *repo* package lands in the REPO_REBUILD bucket — both per-issue
+    and in the end-of-run summary — kept separate from install candidates and
+    from the actionable foreign-rebuild list.
     """
     db = tmp_path / "local"
     db.mkdir()
     so_rel = "usr/lib/libbroken.so.1"
     _mk_pkg(db, "driftpkg", "1.0-1", depends=[], files=[so_rel])
-    # glibc is installed — every real system has it, and the partition
-    # logic in _collect_suggestions reclassifies its candidacy as REBUILD.
+    # glibc is installed — every real system has it. Since glibc is a repo
+    # package (not foreign), the partition routes it to REPO_REBUILD.
     installed = {"driftpkg": "1.0-1", "glibc": "2.40-1"}
 
     abs_so = tmp_path / so_rel
@@ -855,17 +856,121 @@ def test_cmd_doctor_suggest_abi_drift_summary(tmp_path, monkeypatch, capsys):
     rc = doctor.cmd_doctor(_make_args(packages=["driftpkg"], suggest=True))
     err = capsys.readouterr().err
 
-    assert "→ rebuild candidate: core/glibc" in err
+    assert "→ repo rebuild candidate (await repo update): core/glibc" in err
     # End-of-run summary
-    assert "driftpkg: rebuild: core/glibc" in err
+    assert "driftpkg: repo-rebuild: core/glibc" in err
     assert (
-        "Rebuild candidates (installed; ABI drift): core/glibc"
+        "Repo packages with ABI drift "
+        "(await repo update or `sudo pacman -S` to reinstall): core/glibc"
         in err
     )
-    # No install line because the candidate was reclassified as rebuild.
+    # Repo packages must not show up in the actionable foreign-rebuild list.
+    assert "Rebuild candidates (foreign; ABI drift):" not in err
+    # No install line because the candidate was reclassified as repo-rebuild.
     assert "Install candidates:" not in err
     assert "ABI-drift candidates" not in err
     assert rc == 1
+
+
+def test_cmd_doctor_suggest_abi_drift_foreign_stays_actionable(
+    tmp_path, monkeypatch, capsys,
+):
+    """
+    An `undefined versioned symbol` finding whose candidate owner is an
+    installed *foreign* (locally built) package lands in the actionable
+    REBUILD bucket — distinct from the REPO_REBUILD informational bucket.
+    """
+    db = tmp_path / "local"
+    db.mkdir()
+    so_rel = "usr/lib/libbroken.so.1"
+    _mk_pkg(db, "driftpkg", "1.0-1", depends=[], files=[so_rel])
+    _mk_pkg(db, "libfoo-git", "1.0-1", depends=[], files=[])
+    installed = {"driftpkg": "1.0-1", "libfoo-git": "1.0-1"}
+
+    abs_so = tmp_path / so_rel
+    abs_so.parent.mkdir(parents=True, exist_ok=True)
+    abs_so.write_bytes(b"")
+
+    abi_issue = (
+        "libbroken.so.1: undefined versioned symbol not found in any "
+        "NEEDED lib: sym@FOO_2.0"
+    )
+
+    monkeypatch.setattr(pacman_mod, "_LOCAL_DB_ROOT", db)
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(
+        pacman_mod, "get_foreign_packages",
+        lambda: {"libfoo-git": "1.0-1"},
+    )
+    monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    monkeypatch.setattr(doctor, "files_db_present", lambda: True)
+    monkeypatch.setattr(doctor, "check_so_files", lambda so_paths: [abi_issue])
+    monkeypatch.setattr(doctor, "needed_sonames", lambda p: ["libfoo.so.1"])
+    monkeypatch.setattr(
+        doctor, "suggest_for_soname",
+        lambda entry, *, lib32=False, run_fn=None, installed_names=None: ["libfoo-git"],
+    )
+    monkeypatch.setattr(
+        doctor, "_so_paths_for_pkg",
+        lambda pkgname, file_root: [abs_so],
+    )
+
+    rc = doctor.cmd_doctor(_make_args(packages=["driftpkg"], suggest=True))
+    err = capsys.readouterr().err
+
+    assert "→ rebuild candidate: libfoo-git" in err
+    assert "driftpkg: rebuild: libfoo-git" in err
+    assert "Rebuild candidates (foreign; ABI drift): libfoo-git" in err
+    # The repo line must not appear when nothing is in that bucket.
+    assert "Repo packages with ABI drift" not in err
+    assert rc == 1
+
+
+def test_collect_suggestions_partitions_foreign_vs_repo(monkeypatch):
+    """
+    When `foreign` is supplied, an undefined-symbol finding splits into:
+      * installed AND foreign  → SUGGEST_KIND_REBUILD
+      * installed AND non-foreign → SUGGEST_KIND_REPO_REBUILD
+      * not installed → SUGGEST_KIND_INSTALL
+    Each lands on a distinct dict key so all three render in the per-package
+    suggestions output.
+    """
+    monkeypatch.setattr(
+        doctor, "needed_sonames",
+        lambda path: ["libfoo.so.1", "libglibc.so.6", "libnew.so.2"],
+    )
+
+    def fake_suggest(entry, *, lib32=False, run_fn=None, installed_names=None):
+        return {
+            "libfoo.so.1": ["aur/libfoo-git"],   # installed + foreign
+            "libglibc.so.6": ["core/glibc"],     # installed + repo
+            "libnew.so.2": ["extra/new"],        # not installed
+        }[entry]
+
+    monkeypatch.setattr(doctor, "suggest_for_soname", fake_suggest)
+
+    issue = (
+        "libbroken.so.1: undefined versioned symbol not found in any "
+        "NEEDED lib: sym@FOO_2.0"
+    )
+    out = doctor._collect_suggestions(
+        "somepkg", [], [issue], so_paths=[Path("/usr/lib/libbroken.so.1")],
+        installed_names={"libfoo-git", "glibc"},
+        foreign={"libfoo-git"},
+    )
+
+    rebuild_key = issue
+    repo_key = f"{issue} [repo]"
+    install_key = f"{issue} [missing source]"
+    assert out[rebuild_key] == (
+        doctor.SUGGEST_KIND_REBUILD, ["aur/libfoo-git"]
+    )
+    assert out[repo_key] == (
+        doctor.SUGGEST_KIND_REPO_REBUILD, ["core/glibc"]
+    )
+    assert out[install_key] == (
+        doctor.SUGGEST_KIND_INSTALL, ["extra/new"]
+    )
 
 
 def test_cmd_doctor_abi_check_skipped_for_vendored_package(
@@ -1106,7 +1211,12 @@ def test_apply_invokes_cmd_update_with_eligible_pkgnames(tmp_path, monkeypatch, 
 
 
 def test_apply_repo_candidate_only_suggests_pacman(tmp_path, monkeypatch, capsys):
-    """A REBUILD candidate that is NOT a foreign package → pacman -S hint."""
+    """
+    A drift candidate that is NOT a foreign package is classified as
+    REPO_REBUILD upstream — it never reaches the --apply rebuild bridge.
+    The user gets the package name and the `sudo pacman -S` hint via the
+    upstream "Repo packages with ABI drift" summary line.
+    """
     target = _apply_doctor_setup(tmp_path, monkeypatch, foreign=False)
     called = []
     monkeypatch.setattr("sysforge.update.cmd_update",
@@ -1116,12 +1226,19 @@ def test_apply_repo_candidate_only_suggests_pacman(tmp_path, monkeypatch, capsys
         packages=["driftpkg"], apply=True, no_confirm=True,
     ))
 
-    # Update is never invoked — candidate is not foreign and we don't have
-    # update_repo_profiled. The hint to use pacman -S appears instead.
+    # Update is never invoked — candidate is repo-not-foreign so it lands in
+    # REPO_REBUILD, not the actionable REBUILD bucket --apply consumes.
     assert called == []
     assert rc == 0
     err = capsys.readouterr().err
-    assert f"sudo pacman -S {target}" in err
+    # Upstream summary names the package and points at pacman -S.
+    assert (
+        "Repo packages with ABI drift "
+        "(await repo update or `sudo pacman -S` to reinstall): "
+        f"{target}" in err
+        or f"core/{target}" in err  # candidate may carry repo/ prefix
+    )
+    assert "sudo pacman -S" in err
     assert "No eligible rebuild candidates" in err
 
 

@@ -310,20 +310,26 @@ def _check_one(pkgname: str, ldconfig_set: set[str],
 
 
 # Suggestion kinds. Each finding implies a different fix action:
-#   "install"   — soname missing on disk; the candidate package should be
-#                 installed. Already-installed candidates are filtered out
-#                 at lookup time so this list never re-recommends what's
-#                 already on the system.
-#   "abi_drift" — soname IS installed but its exported versioned symbols
-#                 don't match what the dependent .so was built against.
-#                 Subdivided into:
-#   "rebuild"   — abi_drift candidate that IS installed → rebuild it
-#                 against the current system.
+#   "install"      — soname missing on disk; the candidate package should be
+#                    installed. Already-installed candidates are filtered out
+#                    at lookup time so this list never re-recommends what's
+#                    already on the system.
+#   "abi_drift"    — soname IS installed but its exported versioned symbols
+#                    don't match what the dependent .so was built against.
+#                    Subdivided into:
+#   "rebuild"      — abi_drift candidate that IS installed AND is foreign
+#                    (locally built / AUR) → rebuild it against the current
+#                    system. The actionable drift bucket.
+#   "repo_rebuild" — abi_drift candidate that IS installed but comes from an
+#                    official repo. Not actionable through the foreign-package
+#                    rebuild flow; surfaced as informational so the user knows
+#                    drift exists without polluting the actionable list.
 #   abi_drift findings whose candidates are NOT installed remain "install"
 #   (the upgrade source is missing entirely).
 SUGGEST_KIND_INSTALL = "install"
 SUGGEST_KIND_ABI_DRIFT = "abi_drift"
 SUGGEST_KIND_REBUILD = "rebuild"
+SUGGEST_KIND_REPO_REBUILD = "repo_rebuild"
 
 
 def _collect_suggestions(pkgname: str,
@@ -332,6 +338,7 @@ def _collect_suggestions(pkgname: str,
                          so_paths: list[Path] | None = None,
                          cache: dict[tuple[str, bool, bool], list[str]] | None = None,
                          installed_names: set[str] | None = None,
+                         foreign: set[str] | None = None,
                          ) -> dict[str, tuple[str, list[str]]]:
     """
     For each lookup-able issue, reverse-lookup candidate packages via
@@ -350,11 +357,18 @@ def _collect_suggestions(pkgname: str,
     applied at the `suggest_for_soname` layer so the returned candidate
     list only contains packages the user does not yet have installed.
 
-    For ``abi_drift`` kind, the candidate set is partitioned: candidates
-    in ``installed_names`` are reclassified as ``rebuild`` (the actionable
-    fix is to rebuild what's installed); not-installed remain ``abi_drift``
-    (upgrade source is missing). This splits one `abi_drift` finding into
-    up to two entries in the result dict, distinguished by issue suffix.
+    For ``abi_drift`` kind, the candidate set is partitioned three ways
+    when ``installed_names`` is supplied:
+      * installed AND in ``foreign`` → ``rebuild`` (actionable: rebuild
+        the locally-built package against current libs)
+      * installed but NOT in ``foreign`` → ``repo_rebuild`` (informational:
+        repo package whose drift the user can't fix locally — they must
+        await a repo update or `pacman -S` reinstall)
+      * not installed → ``install`` (upgrade source missing entirely)
+    When ``foreign`` is None (legacy callers), the foreign-vs-repo split is
+    skipped and any installed candidate is classified as ``rebuild``.
+    A single `abi_drift` finding can split into up to three entries in the
+    result dict, distinguished by issue suffix.
 
     If `cache` is provided it is consulted/populated per
     ``(soname, lib32, filter_installed)`` so repeated lookups across
@@ -405,14 +419,25 @@ def _collect_suggestions(pkgname: str,
                 seen.add(cand)
                 merged.append(cand)
         if installed_names is not None:
-            rebuild = [c for c in merged
-                       if _bare_pkgname(c) in installed_names]
-            install = [c for c in merged
-                       if _bare_pkgname(c) not in installed_names]
-            if rebuild:
-                out[issue] = (SUGGEST_KIND_REBUILD, rebuild)
+            rebuild_foreign: list[str] = []
+            rebuild_repo: list[str] = []
+            install: list[str] = []
+            for c in merged:
+                bare = _bare_pkgname(c)
+                if bare not in installed_names:
+                    install.append(c)
+                elif foreign is not None and bare not in foreign:
+                    rebuild_repo.append(c)
+                else:
+                    rebuild_foreign.append(c)
+            if rebuild_foreign:
+                out[issue] = (SUGGEST_KIND_REBUILD, rebuild_foreign)
+            if rebuild_repo:
+                key = issue if not rebuild_foreign else f"{issue} [repo]"
+                out[key] = (SUGGEST_KIND_REPO_REBUILD, rebuild_repo)
             if install:
-                key = issue if not rebuild else f"{issue} [missing source]"
+                key = (issue if not (rebuild_foreign or rebuild_repo)
+                       else f"{issue} [missing source]")
                 out[key] = (SUGGEST_KIND_INSTALL, install)
         else:
             out[issue] = (SUGGEST_KIND_ABI_DRIFT, merged)
@@ -450,6 +475,7 @@ _SUGGEST_LABEL = {
     SUGGEST_KIND_INSTALL: "install candidate",
     SUGGEST_KIND_ABI_DRIFT: "ABI-drift candidate (rebuild/upgrade)",
     SUGGEST_KIND_REBUILD: "rebuild candidate",
+    SUGGEST_KIND_REPO_REBUILD: "repo rebuild candidate (await repo update)",
 }
 
 
@@ -588,12 +614,16 @@ def cmd_doctor(args):
 
     total_issues = 0
     affected_pkgs: list[tuple[str, int, str]] = []
-    per_pkg_suggestions: list[tuple[str, list[str], list[str], list[str]]] = []
+    per_pkg_suggestions: list[
+        tuple[str, list[str], list[str], list[str], list[str]]
+    ] = []
     global_install: list[str] = []
     global_rebuild: list[str] = []
+    global_repo_rebuild: list[str] = []
     global_drift: list[str] = []
     global_install_seen: set[str] = set()
     global_rebuild_seen: set[str] = set()
+    global_repo_rebuild_seen: set[str] = set()
     global_drift_seen: set[str] = set()
     suggest_cache: dict[tuple[str, bool, bool], list[str]] = {}
 
@@ -609,7 +639,8 @@ def cmd_doctor(args):
         suggestions = (
             _collect_suggestions(pkgname, dep_issues, abi_issues, so_paths,
                                  cache=suggest_cache,
-                                 installed_names=installed_name_set)
+                                 installed_names=installed_name_set,
+                                 foreign=foreign)
             if suggest else None
         )
         _print_report(
@@ -622,15 +653,21 @@ def cmd_doctor(args):
         if suggest and suggestions:
             pkg_install: list[str] = []
             pkg_rebuild: list[str] = []
+            pkg_repo_rebuild: list[str] = []
             pkg_drift: list[str] = []
             pkg_install_seen: set[str] = set()
             pkg_rebuild_seen: set[str] = set()
+            pkg_repo_rebuild_seen: set[str] = set()
             pkg_drift_seen: set[str] = set()
             buckets = {
                 SUGGEST_KIND_INSTALL: (pkg_install, pkg_install_seen,
                                        global_install, global_install_seen),
                 SUGGEST_KIND_REBUILD: (pkg_rebuild, pkg_rebuild_seen,
                                        global_rebuild, global_rebuild_seen),
+                SUGGEST_KIND_REPO_REBUILD: (pkg_repo_rebuild,
+                                            pkg_repo_rebuild_seen,
+                                            global_repo_rebuild,
+                                            global_repo_rebuild_seen),
                 SUGGEST_KIND_ABI_DRIFT: (pkg_drift, pkg_drift_seen,
                                          global_drift, global_drift_seen),
             }
@@ -645,9 +682,10 @@ def cmd_doctor(args):
                     if c not in gbl_seen:
                         gbl_seen.add(c)
                         gbl.append(c)
-            if pkg_install or pkg_rebuild or pkg_drift:
+            if pkg_install or pkg_rebuild or pkg_repo_rebuild or pkg_drift:
                 per_pkg_suggestions.append(
-                    (pkgname, pkg_install, pkg_rebuild, pkg_drift)
+                    (pkgname, pkg_install, pkg_rebuild,
+                     pkg_repo_rebuild, pkg_drift)
                 )
 
     _log.newline()
@@ -661,14 +699,17 @@ def cmd_doctor(args):
             for name, n, tag in affected_pkgs
         )
         _log.ui(f"Affected: {names}")
-    if suggest and (global_install or global_rebuild or global_drift):
+    if suggest and (global_install or global_rebuild
+                    or global_repo_rebuild or global_drift):
         _log.ui("Suggestions:")
-        for name, inst, rebuild, drift in per_pkg_suggestions:
+        for name, inst, rebuild, repo_rebuild, drift in per_pkg_suggestions:
             parts: list[str] = []
             if inst:
                 parts.append(f"install: {', '.join(inst)}")
             if rebuild:
                 parts.append(f"rebuild: {', '.join(rebuild)}")
+            if repo_rebuild:
+                parts.append(f"repo-rebuild: {', '.join(repo_rebuild)}")
             if drift:
                 parts.append(f"ABI-drift: {', '.join(drift)}")
             _log.ui(f"  {name}: {' | '.join(parts)}")
@@ -676,8 +717,14 @@ def cmd_doctor(args):
             _log.ui(f"Install candidates: {', '.join(global_install)}")
         if global_rebuild:
             _log.ui(
-                "Rebuild candidates (installed; ABI drift): "
+                "Rebuild candidates (foreign; ABI drift): "
                 f"{', '.join(global_rebuild)}"
+            )
+        if global_repo_rebuild:
+            _log.ui(
+                "Repo packages with ABI drift "
+                "(await repo update or `sudo pacman -S` to reinstall): "
+                f"{', '.join(global_repo_rebuild)}"
             )
         if global_drift:
             _log.ui(
