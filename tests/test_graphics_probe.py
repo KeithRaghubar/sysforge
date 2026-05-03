@@ -262,9 +262,35 @@ def test_explicit_sync_present_clean(monkeypatch):
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
     _patch_run(monkeypatch, {"wayland-info": _completed(
         "interface: 'wp_viewporter', version: 1, name: 20\n"
-        "interface: 'wp_linux_drm_syncobj_v1', version: 1, name: 42\n"
+        "interface: 'wp_linux_drm_syncobj_manager_v1', version: 1, name: 42\n"
     )})
     assert gp._check_explicit_sync_protocol(["nvidia"]) is None
+
+
+def test_explicit_sync_legacy_synchronization_clean(monkeypatch):
+    """Older compositors advertise the deprecated explicit-sync protocol."""
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    _patch_run(monkeypatch, {"wayland-info": _completed(
+        "interface: 'zwp_linux_explicit_synchronization_v1', "
+        "version: 2, name: 42\n"
+    )})
+    assert gp._check_explicit_sync_protocol(["nvidia"]) is None
+
+
+def test_explicit_sync_protocol_doc_name_does_not_match(monkeypatch):
+    """
+    The substring `wp_linux_drm_syncobj_v1` is the protocol-document name and
+    never appears as a wl_registry global. A compositor advertising the real
+    `_manager_v1` global must still be detected; the bare doc-name string in
+    isolation must not satisfy the check.
+    """
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    _patch_run(monkeypatch, {"wayland-info": _completed(
+        # Stand-alone bare name (no _manager_) — must NOT match.
+        "interface: 'wp_linux_drm_syncobj_v1', version: 1, name: 42\n"
+    )})
+    f = gp._check_explicit_sync_protocol(["nvidia"])
+    assert f is not None and f.severity == gp.SEV_ERROR
 
 
 def test_explicit_sync_absent_error(monkeypatch):

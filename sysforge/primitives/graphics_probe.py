@@ -263,14 +263,18 @@ def _check_explicit_sync_protocol(
 ) -> GraphicsFinding | None:
     """
     NVIDIA + Wayland XWayland rendering requires the compositor to
-    advertise `wp_linux_drm_syncobj_v1` (or the older
-    `zwp_linux_explicit_sync_v1`). Without it XWayland falls back to
-    implicit sync, which is known-broken on NVIDIA — producing black
-    windows for most Steam games.
+    advertise the `linux-drm-syncobj-v1` protocol — the actual
+    wl_registry global is `wp_linux_drm_syncobj_manager_v1` — or the
+    older `zwp_linux_explicit_synchronization_v1`. Without it XWayland
+    falls back to implicit sync, which is known-broken on NVIDIA —
+    producing black windows for most Steam games.
 
     We probe via `wayland-info`, which reads the compositor's advertised
     globals. If the tool isn't installed we can't check — emit nothing
-    rather than a false positive.
+    rather than a false positive. The substring match has to be the
+    *registry* global name, not the protocol-document name: a probe for
+    the bare `wp_linux_drm_syncobj_v1` string never matches because no
+    such global exists.
     """
     if "nvidia" not in gpu_vendors:
         return None
@@ -280,14 +284,15 @@ def _check_explicit_sync_protocol(
     if r is None or r.returncode != 0:
         return None
     text = r.stdout
-    if "wp_linux_drm_syncobj_v1" in text or "zwp_linux_explicit_sync_v1" in text:
+    if ("wp_linux_drm_syncobj_manager_v1" in text
+            or "zwp_linux_explicit_synchronization_v1" in text):
         return None
     return GraphicsFinding(
         SEV_ERROR, "explicit_sync_protocol",
-        "Wayland compositor does not advertise wp_linux_drm_syncobj_v1 "
-        "(nor the legacy zwp_linux_explicit_sync_v1). On NVIDIA, XWayland "
-        "clients (Steam games) render black without explicit sync. This is "
-        "the single most common cause of Steam black-window on "
+        "Wayland compositor does not advertise wp_linux_drm_syncobj_manager_v1 "
+        "(nor the legacy zwp_linux_explicit_synchronization_v1). On NVIDIA, "
+        "XWayland clients (Steam games) render black without explicit sync. "
+        "This is the single most common cause of Steam black-window on "
         "NVIDIA+Wayland.",
         "Update the compositor to a version that supports the explicit-sync "
         "protocol, or run games via gamescope "
