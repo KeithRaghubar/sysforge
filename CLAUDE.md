@@ -2,7 +2,7 @@
 
 Read DESIGN.md before proposing architecture or API changes. It is the source of truth for module layout, public APIs, CLI structure, feature status, and known gaps. Do not duplicate it here.
 
-Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Config: TOML, Tests: ~1280 pytest tests (`make test`)
+Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Config: TOML. The Makefile is the canonical entry point: `make test` / `make test-v` / `make lint` / `make release-{major,minor,patch}` / `make vm-*`. Don't invoke `pytest` directly.
 
 ## Dev Environment
 
@@ -12,9 +12,15 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 
 ## Known Bugs & Gotchas
 
-1. **`test_pipeline.py`** — imports from both `config.py` and `profile.py`. Watch for breakage if module boundaries shift.
+1. **`tests/test_pipeline.py`** — imports from both `sysforge.primitives.config` and `sysforge.primitives.profile`. Splitting or moving symbols across those modules will break it; update the test in the same change.
 2. **`match_rules` and `pkgbase`** — rules match against `pkgbase` too for split packages; don't regress this.
 3. **Source sync goes through the scheduler, not `git pull --rebase`** — any new `fetch`/`update`/`build` code path that needs a fresh PKGBUILD must call `sysforge.primitives.source_sync.get_scheduler().request(SyncRequest(...))`. The scheduler handles RPC short-circuit, rate limiting, and dedup. See DESIGN.md §`source_sync.py` for status semantics (`STATUS_DIVERGED` is a warning; `STATUS_FAILED` / `STATUS_RATE_LIMITED` / `STATUS_PURGE_REFUSED` are blockers).
+
+## Project Conventions
+
+- **Doc update order**: DESIGN.md is the source of truth — update it first, then README.md, then CLAUDE.md. Don't update downstream docs without a corresponding DESIGN.md change.
+- **Completions stay in lockstep with the CLI**: `completions/_sysforge` is updated in the same change as the CLI surface, not as a follow-up.
+- **PKGBUILD parsing/detection/patching**: cross-check against `PKGBUILD(5)` before changing — easy to miss spec details (e.g. array vs string fields, escape rules).
 
 ## Experimental (post-1.0)
 
