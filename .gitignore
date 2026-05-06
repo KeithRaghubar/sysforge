@@ -16,6 +16,7 @@
 .SRCINFO-git
 
 .claude/
+.remember/
 .venv/
 __pycache__/
 dist/
