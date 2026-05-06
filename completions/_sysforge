@@ -22,6 +22,7 @@ _sysforge() {
         state)    _sysforge_state    ;;
         run)      _sysforge_run      ;;
         setup)    _sysforge_setup    ;;
+        completions) _sysforge_completions ;;
       esac
       ;;
   esac
@@ -396,4 +397,13 @@ _sysforge_run_kernel() {
 _sysforge_setup() {
   _arguments \
     '--pacman-conf[path to pacman.conf]:file:_files'
+}
+
+# Internal scaffolding subcommand used by this completion script itself
+# (see _sysforge_pkg_names, _sysforge_makepkg_flags, etc.). Hidden from
+# `sysforge --help` (argparse.SUPPRESS) but exposed here so that
+# `sysforge completions <TAB>` completes the resource argument.
+_sysforge_completions() {
+  _arguments \
+    '1:resource:(packages manifest local state makepkg-flags)'
 }
