@@ -21,12 +21,11 @@ Public API:
 import sys
 from sysforge import log
 _log = log.get_logger("PIPELINE")
-from pathlib import Path
 
 _INVOCATION = " ".join(sys.argv)
 
 from sysforge.pipeline.state import PipelineState, resolve_state_dir
-from sysforge.pipeline.stages import STAGES, STAGE_NAMES
+from sysforge.pipeline.stages import STAGES
 from sysforge.pipeline.stages.base import BootstrapRebootRequired
 from sysforge.primitives.cache_probe import (
     emit_session_report,

@@ -968,5 +968,5 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
             print(f"  [PULL_FAILED]    {r.pkgbase}: git pull failed (skipped){star}")
 
     if no_record_count:
-        print(f"\n  * = no build record")
+        print("\n  * = no build record")
     print()

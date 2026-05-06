@@ -374,7 +374,7 @@ def _select_new_editor(prev_editor: str, have_prev: bool, options) -> str | None
 def _step_editor(config, state, options, editor: str) -> str:
     """Show current editor, offer to change. Returns editor to use."""
     editor, source = _resolve_editor()
-    _log.ui(f"─── Editor selection ────────────────────────────────")
+    _log.ui("─── Editor selection ────────────────────────────────")
 
     if not _interactive() or options.dry_run:
         return editor

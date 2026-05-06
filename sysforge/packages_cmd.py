@@ -84,7 +84,7 @@ def _entry_is_inert(entry: dict) -> bool:
 
 def _split_blocks(lines: list[str]) -> tuple[list[str], list[tuple[int, int]]]:
     """Locate [[package]] blocks. Returns (lines, [(start, end), ...])."""
-    block_starts = [i for i, l in enumerate(lines) if l.strip() == "[[package]]"]
+    block_starts = [i for i, line in enumerate(lines) if line.strip() == "[[package]]"]
     blocks: list[tuple[int, int]] = []
     for idx, start in enumerate(block_starts):
         end = block_starts[idx + 1] if idx + 1 < len(block_starts) else len(lines)
@@ -142,7 +142,7 @@ def _rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | Non
             peel_start -= 1
         for i in range(peel_start, end):
             drop_set.add(i)
-    keep_lines = [l for i, l in enumerate(lines) if i not in drop_set]
+    keep_lines = [line for i, line in enumerate(lines) if i not in drop_set]
 
     # Drop trailing blank-line runs to avoid growth across rewrites.
     while keep_lines and keep_lines[-1].strip() == "":

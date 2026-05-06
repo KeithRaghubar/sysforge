@@ -23,3 +23,10 @@ pythonpath = ["."]
 # SYSFORGE_CONFIG_DIR is set in tests/conftest.py before any imports.
 # Verbose output so rule parametrize IDs are readable.
 addopts = "-v"
+
+[tool.ruff.lint]
+# E402: SysForge modules deliberately set `_log = log.get_logger("TAG")`
+# between imports so the logger is bound to the module's tag at the top
+# of the file. The pattern is consistent across the codebase and has no
+# runtime side effect — get_logger() is pure.
+ignore = ["E402"]

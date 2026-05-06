@@ -154,7 +154,7 @@ def load_config(config_paths=None) -> dict:
 
     if user_config is None and system_config is None:
         raise FileNotFoundError(
-            f"[CONFIG] No profiles.toml found. Searched:\n"
+            "[CONFIG] No profiles.toml found. Searched:\n"
             + "\n".join(f"  {p}" for p in CONFIG_PATHS)
         )
 
@@ -378,7 +378,7 @@ def _parse_one_makepkg_conf(path: Path) -> dict:
         result[key] = value
 
     _log.info(f"Parsed {len(result)} keys from {path}")
-    _log.debug(f"System makepkg.conf key=value pairs:\n" +
+    _log.debug("System makepkg.conf key=value pairs:\n" +
                "\n".join(f"  {k}={v}" for k, v in result.items()))
     return result
 
