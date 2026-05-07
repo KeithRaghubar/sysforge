@@ -1627,11 +1627,14 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 Post-v1.0 enhancements that build on existing infrastructure. Not required for the v1.0 release.
 
-- **Package groups** — named DE sets (e.g. `[group.cosmic]`, `[group.gnome]`) so users can opt into a curated desktop environment without manually listing every component. Expands to constituent packages at build time.
+- **Package groups** — named DE sets (e.g. `[group.cosmic]`, `[group.gnome]`) so users can opt into a curated desktop environment without manually listing every component. Expands to constituent packages at build time. Pacman groups (`gnome`, `kde-applications`) are often incomplete and don't include AUR/git packages — COSMIC alone has 20+ git packages on AUR that users should not have to enumerate by hand.
 - **Rule priority auto-calculation** — auto-calculate a baseline specificity score from rule conditions (mirrors CSS specificity: more AND'd conditions = higher weight), with manual `priority` override for ties. Deferred until enough real rules exist to validate whether auto-priority causes ordering problems in practice.
 - **Configure stage additions** — btrfs snapshot before build runs, ccache/sccache initialisation check, estimated build time heuristic.
 - **LLVM target filtering** — restrict `LLVM_TARGETS_TO_BUILD` based on detected hardware from the hardware stage (e.g. only X86 on x86_64 systems). Currently builds all targets.
 - **Build-failure auto-repair** — detect narrow recurring failure modes (missing vendored deps, missing PGP keys, `.SRCINFO` drift, checksum mismatch) and run a deterministic repair before falling through to the manual-correction prompt. Extends the toolchain-mismatch auto-retry pattern documented under Makepkg Wrapper. Checksum repair is prompted, not silent — supply-chain safety.
+- **Verbose skip messaging in `sysforge update`** — replace the undifferentiated `skipped` line with reason-specific output (`already up-to-date`, `skipped without --devel`, `rate-limited`, etc.). The internal categories already exist as scheduler status returns (`STATUS_UP_TO_DATE`, `STATUS_RATE_LIMITED`, `STATUS_DIVERGED`); the work is mapping each to a user-facing line and deciding whether to gate behind `-v`.
+- **Pacman integration** — two paths, can land independently. (1) **`pyalpm` read path**: replace subprocess `pacman -Q` parsing with the libalpm Python binding for build-state and drift detection — structured queries, faster, direct sync DB access. Adds a runtime dep (would live under `[extra]`). (2) **PostTransaction hooks**: ship `/usr/share/libalpm/hooks/` entries via the PKGBUILD that refresh build-state after installs and flag `sysforge update` reminders on kernel/toolchain upgrades. Hooks run as root, so they cannot write to `~/sf-state` directly — drop a sentinel under `/var/lib/sysforge/` and have the user-level CLI consume it on next invocation.
+- **Graphics runtime debugging refinement** — tighten the graphics/doctor diagnostics surface (exact scope TBD). Tracked as a follow-up to the 1.0 doctor work; not blocking but a candidate when revisiting graphics-related code.
 
 ---
 
@@ -1641,3 +1644,4 @@ V2 goal: advanced AUR helper features beyond the v1.0 scope.
 
 V2 candidates:
 - **PKGBUILD review** — present diffs to the user before building an AUR package
+- **System maintenance scope expansion** — grow sysforge beyond build/package management into a unified system-maintenance helper: track and manage user-owned system artifacts that currently live ad-hoc across `~/scripts`, `/etc/systemd/system/`, `/etc/pacman.d/hooks/`, etc. Candidate primitives: inventory of tracked files, source-of-truth dir under repo control, install/sync command, drift detection vs filesystem, integration with the existing config/profile/manifest layers.
