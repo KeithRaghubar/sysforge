@@ -111,6 +111,7 @@ _sysforge_build() {
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--no-update[skip git pull --rebase before building]' \
     '--cleansrc[purge src dir and re-clone before building (refuses if local work present)]' \
+    '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '*: :_sysforge_pkg_or_file' \
   && return
@@ -120,6 +121,7 @@ _sysforge_build() {
 _sysforge_fetch() {
   _arguments \
     '--no-update[skip git pull --rebase for already-cloned packages]' \
+    '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
     '*: :_sysforge_pkg_names'
 }
@@ -134,6 +136,7 @@ _sysforge_update() {
     '--interactive[pause on build failures to allow manual correction]' \
     '--no-cleanbuild[skip automatic --cleanbuild; useful to re-run only the install step]' \
     '--cleansrc[purge src dirs and re-clone before building (only for packages needing rebuild)]' \
+    '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
@@ -164,6 +167,7 @@ _sysforge_converge() {
     '--persist-log[keep log files after completion (only relevant with --apply)]' \
     '--log-dir[directory for per-package log files]:directory:_files -/' \
     '--cache-report[print ccache/sccache summary after --apply]' \
+    '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '*: :_sysforge_state_names' \
   && return
   _sysforge_makepkg_flags
@@ -363,6 +367,8 @@ _sysforge_run_toolchain() {
     '--cache-report[print ccache/sccache summary after run]' \
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/' \
+    '--rebuild-profdata[force a full 3-pass PGO build even if profdata exists]' \
+    '--allow-dirty-llvm[bypass the LLVM safety pre-flight refusal on dirty/diverged trees]' \
   && return
   _sysforge_makepkg_flags
 }

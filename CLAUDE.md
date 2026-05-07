@@ -21,6 +21,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 - **Doc update order**: DESIGN.md is the source of truth — update it first, then README.md, then CLAUDE.md. Don't update downstream docs without a corresponding DESIGN.md change.
 - **Completions stay in lockstep with the CLI**: `completions/_sysforge` is updated in the same change as the CLI surface, not as a follow-up.
 - **PKGBUILD parsing/detection/patching**: cross-check against `PKGBUILD(5)` before changing — easy to miss spec details (e.g. array vs string fields, escape rules).
+- **LLVM source-state inspection**: `primitives/llvm_state.collect_llvm_state` is the only allowed entry point for new code that needs to inspect LLVM-toolchain source trees (variant, origin, dirty/diverged, install origin, build_mode). Do not call `git_is_dirty` + URL parsing directly — those checks drift out of sync with the rule set otherwise.
 
 ## Experimental (post-1.0)
 

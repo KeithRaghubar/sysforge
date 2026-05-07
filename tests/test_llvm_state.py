@@ -1,0 +1,444 @@
+"""
+test_llvm_state.py — unit tests for sysforge.primitives.llvm_state
+
+Covers:
+    is_llvm_in_scope            — pattern filter
+    _classify_origin            — repo (gitlab + sentinel), aur, user, missing
+    collect_llvm_state          — full snapshot for a synthetic tree, with
+                                  pacman / build_mode / scheduler-cache mocks
+    offline / probe_fetch       — probe_fetch=False does NOT shell out to
+                                  git fetch (asserts via monkeypatch)
+    evaluate_strict             — dirty + diverged + pgo-mismatch blockers,
+                                  allow_dirty override, profdata-mismatch is
+                                  not suppressible
+    render_preflight            — header + per-package line + blockers block
+"""
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from sysforge.primitives import llvm_state
+from sysforge.primitives.llvm_state import (
+    LlvmPackageState,
+    LlvmPreflightReport,
+    collect_llvm_state,
+    evaluate_strict,
+    is_llvm_in_scope,
+    render_preflight,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _init_repo(
+    path: Path, *, remote_url: str | None, with_tracking: bool = True,
+) -> None:
+    """Create a real git repo with one commit, an upstream tracking branch, and
+    a (cosmetic) origin URL.
+
+    ``with_tracking=False`` skips the upstream setup so the repo is treated as
+    "no upstream tracking branch" by ``git_is_dirty``.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.name", "Test"],
+        check=True,
+    )
+    (path / "PKGBUILD").write_text(
+        "pkgname=llvm\npkgver=20.0.0\npkgrel=1\narch=('x86_64')\n"
+    )
+    subprocess.run(["git", "-C", str(path), "add", "PKGBUILD"], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-q", "-m", "init"], check=True,
+    )
+
+    if with_tracking and remote_url is not None:
+        # Stand up a sibling bare repo so the working tree has a real upstream
+        # to track (git_is_dirty treats "no upstream" as dirty by definition).
+        bare = path.parent / f"{path.name}.git"
+        subprocess.run(
+            ["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "remote", "add", "origin", str(bare)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "push", "-q", "-u", "origin", "main"],
+            check=True,
+        )
+        # Rewrite origin URL to the cosmetic value the test wants to verify.
+        subprocess.run(
+            ["git", "-C", str(path), "remote", "set-url", "origin", remote_url],
+            check=True,
+        )
+    elif remote_url is not None:
+        subprocess.run(
+            ["git", "-C", str(path), "remote", "add", "origin", remote_url],
+            check=True,
+        )
+
+
+@pytest.fixture
+def src_root(tmp_path):
+    """A pkgbuild_src_dir-style directory."""
+    root = tmp_path / "src"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def config(src_root):
+    return {
+        "paths": {"pkgbuild_src_dir": str(src_root)},
+        "rules": [],
+        "profiles": {},
+        "defaults": {},
+    }
+
+
+@pytest.fixture(autouse=True)
+def _stub_pacman(monkeypatch):
+    """Default: nothing is installed. Tests can override per-call."""
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_foreign_packages", lambda: {}
+    )
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_installed_version", lambda _name: None
+    )
+
+
+@pytest.fixture(autouse=True)
+def _stub_scheduler(monkeypatch):
+    """Default: empty SourceMetaCache so divergence falls through to ``unknown``."""
+    class _FakeCache:
+        def all(self):
+            return {}
+
+    class _FakeScheduler:
+        cache = _FakeCache()
+
+    monkeypatch.setattr(
+        "sysforge.primitives.source_sync.get_scheduler", lambda **_: _FakeScheduler()
+    )
+
+
+# ---------------------------------------------------------------------------
+# is_llvm_in_scope
+# ---------------------------------------------------------------------------
+
+def test_is_llvm_in_scope_filters_non_llvm():
+    names = ["mesa-git", "llvm", "llvm-git", "linux-firmware", "clang", "lld"]
+    assert is_llvm_in_scope(names) == ["llvm", "llvm-git", "clang", "lld"]
+
+
+def test_is_llvm_in_scope_handles_lib32():
+    assert "lib32-llvm" in is_llvm_in_scope(["lib32-llvm", "lib32-mesa"])
+    assert "lib32-mesa" not in is_llvm_in_scope(["lib32-llvm", "lib32-mesa"])
+
+
+def test_is_llvm_in_scope_handles_minimal_git_variant():
+    # The pattern matcher uses startswith(prefix + "-") so "llvm-minimal-git"
+    # qualifies as an llvm variant.
+    assert is_llvm_in_scope(["llvm-minimal-git"]) == ["llvm-minimal-git"]
+
+
+# ---------------------------------------------------------------------------
+# _classify_origin
+# ---------------------------------------------------------------------------
+
+def test_classify_origin_aur(src_root):
+    pkg = src_root / "llvm-git"
+    _init_repo(pkg, remote_url="https://aur.archlinux.org/llvm-git.git")
+    origin, url = llvm_state._classify_origin(pkg)
+    assert origin == "aur"
+    assert url and "aur.archlinux.org" in url
+
+
+def test_classify_origin_repo_via_url(src_root):
+    pkg = src_root / "llvm"
+    _init_repo(pkg, remote_url="https://gitlab.archlinux.org/archlinux/packaging/packages/llvm.git")
+    origin, _url = llvm_state._classify_origin(pkg)
+    assert origin == "repo"
+
+
+def test_classify_origin_repo_via_sentinel(src_root):
+    pkg = src_root / "llvm"
+    _init_repo(pkg, remote_url="https://example.org/some/fork.git")
+    (pkg / ".git" / "pkgctl-source").write_text("gitlab.archlinux.org\n")
+    origin, _url = llvm_state._classify_origin(pkg)
+    assert origin == "repo"  # sentinel wins over URL classification
+
+
+def test_classify_origin_user_custom_remote(src_root):
+    pkg = src_root / "llvm"
+    _init_repo(pkg, remote_url="git@github.com:keith/llvm-fork.git")
+    origin, _url = llvm_state._classify_origin(pkg)
+    assert origin == "user"
+
+
+def test_classify_origin_user_no_remote(src_root):
+    pkg = src_root / "llvm"
+    _init_repo(pkg, remote_url=None, with_tracking=False)
+    origin, url = llvm_state._classify_origin(pkg)
+    assert origin == "user"
+    assert url is None
+
+
+def test_classify_origin_missing(tmp_path):
+    origin, url = llvm_state._classify_origin(tmp_path / "does-not-exist")
+    assert origin == "missing"
+    assert url is None
+
+
+# ---------------------------------------------------------------------------
+# collect_llvm_state
+# ---------------------------------------------------------------------------
+
+def test_collect_state_missing_tree(config):
+    """Names with no on-disk tree report origin=missing, divergence=missing."""
+    report = collect_llvm_state(["llvm-git"], config)
+    assert len(report.states) == 1
+    s = report.states[0]
+    assert s.source_origin == "missing"
+    assert s.divergence == "missing"
+    assert s.is_dirty is False
+    assert s.install_origin == "not_installed"
+
+
+def test_collect_state_clean_aur_tree(src_root, config):
+    pkg = src_root / "llvm-git"
+    _init_repo(pkg, remote_url="https://aur.archlinux.org/llvm-git.git")
+    report = collect_llvm_state(["llvm-git"], config)
+    s = report.states[0]
+    assert s.source_origin == "aur"
+    assert s.is_dirty is False
+    assert s.divergence == "unknown"  # no cache entry, no probe
+    assert s.pkgbuild_ver == "20.0.0-1"
+    assert report.has_dirty is False
+    assert report.has_diverged is False
+
+
+def test_collect_state_dirty_uncommitted_changes(src_root, config):
+    pkg = src_root / "llvm-git"
+    _init_repo(pkg, remote_url="https://aur.archlinux.org/llvm-git.git")
+    (pkg / "PKGBUILD").write_text(
+        "pkgname=llvm-git\npkgver=20.0.0.r1\npkgrel=1\narch=('x86_64')\n"
+    )
+    report = collect_llvm_state(["llvm-git"], config)
+    s = report.states[0]
+    assert s.is_dirty is True
+    assert s.dirty_reason == "uncommitted changes"
+    assert report.has_dirty is True
+
+
+def test_collect_state_dirty_no_upstream(src_root, config):
+    pkg = src_root / "llvm-git"
+    _init_repo(pkg, remote_url=None, with_tracking=False)  # no remote at all
+    report = collect_llvm_state(["llvm-git"], config)
+    s = report.states[0]
+    assert s.is_dirty is True
+    assert "upstream" in (s.dirty_reason or "")
+
+
+def test_collect_state_offline_does_not_fetch(src_root, config, monkeypatch):
+    """probe_fetch=False must NOT call git_fetch_and_compare."""
+    pkg = src_root / "llvm-git"
+    _init_repo(pkg, remote_url="https://aur.archlinux.org/llvm-git.git")
+
+    calls: list = []
+
+    def _boom(*_args, **_kwargs):
+        calls.append(_args)
+        raise AssertionError("git_fetch_and_compare must not be called when probe_fetch=False")
+
+    monkeypatch.setattr(llvm_state, "git_fetch_and_compare", _boom)
+    report = collect_llvm_state(["llvm-git"], config, probe_fetch=False)
+    assert calls == []
+    assert report.states[0].divergence == "unknown"
+
+
+def test_collect_state_uses_cache_for_divergence(src_root, config, monkeypatch):
+    pkg = src_root / "llvm-git"
+    _init_repo(pkg, remote_url="https://aur.archlinux.org/llvm-git.git")
+
+    head = subprocess.run(
+        ["git", "-C", str(pkg), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    class _FakeCache:
+        def all(self):
+            return {"llvm-git": {"head_commit": head}}
+
+    class _FakeScheduler:
+        cache = _FakeCache()
+
+    monkeypatch.setattr(
+        "sysforge.primitives.source_sync.get_scheduler", lambda **_: _FakeScheduler()
+    )
+
+    report = collect_llvm_state(["llvm-git"], config)
+    assert report.states[0].divergence == "up_to_date"
+
+
+def test_collect_state_records_install_origin(src_root, config, monkeypatch):
+    pkg = src_root / "llvm"
+    _init_repo(pkg, remote_url="https://gitlab.archlinux.org/archlinux/packaging/packages/llvm.git")
+
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_foreign_packages", lambda: {}
+    )
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_installed_version",
+        lambda name: "20.0.0-1" if name == "llvm" else None,
+    )
+
+    report = collect_llvm_state(["llvm"], config)
+    s = report.states[0]
+    assert s.install_origin == "repo"
+    assert s.installed_ver == "20.0.0-1"
+
+
+def test_collect_state_records_foreign_install(src_root, config, monkeypatch):
+    pkg = src_root / "llvm-git"
+    _init_repo(pkg, remote_url="https://aur.archlinux.org/llvm-git.git")
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_foreign_packages",
+        lambda: {"llvm-git": "20.0.0.r1-1"},
+    )
+
+    report = collect_llvm_state(["llvm-git"], config)
+    s = report.states[0]
+    assert s.install_origin == "foreign"
+    assert s.installed_ver == "20.0.0.r1-1"
+
+
+def test_collect_state_skips_non_llvm():
+    report = collect_llvm_state(["mesa-git", "linux-firmware"], config={})
+    assert report.states == ()
+    assert report.blockers == ()
+
+
+# ---------------------------------------------------------------------------
+# evaluate_strict
+# ---------------------------------------------------------------------------
+
+def _state(**kwargs) -> LlvmPackageState:
+    base = dict(
+        pkgbase="llvm-git",
+        pkgbuild_dir=None,
+        variant="llvm-git",
+        source_origin="aur",
+        remote_url=None,
+        is_dirty=False,
+        dirty_reason=None,
+        divergence="up_to_date",
+        head_short=None,
+        upstream_short=None,
+        install_origin="foreign",
+        installed_ver="20.0.0-1",
+        pkgbuild_ver="20.0.0-1",
+        build_mode=None,
+        pgo_profdata_mismatch=False,
+    )
+    base.update(kwargs)
+    return LlvmPackageState(**base)
+
+
+def _report(*states) -> LlvmPreflightReport:
+    return LlvmPreflightReport(
+        states=tuple(states),
+        blockers=(),
+        has_dirty=any(s.is_dirty for s in states),
+        has_diverged=any(s.divergence == "diverged" for s in states),
+        has_pgo_profdata_mismatch=any(s.pgo_profdata_mismatch for s in states),
+    )
+
+
+def test_evaluate_strict_clean_passes():
+    assert evaluate_strict(_report(_state())) == []
+
+
+def test_evaluate_strict_dirty_blocks():
+    blockers = evaluate_strict(_report(_state(is_dirty=True, dirty_reason="uncommitted changes")))
+    assert len(blockers) == 1
+    assert "dirty" in blockers[0]
+
+
+def test_evaluate_strict_diverged_blocks():
+    blockers = evaluate_strict(
+        _report(_state(divergence="diverged", head_short="abc1234567", upstream_short="def1234567"))
+    )
+    assert len(blockers) == 1
+    assert "diverged" in blockers[0]
+
+
+def test_evaluate_strict_allow_dirty_suppresses_dirty_and_diverged():
+    blockers = evaluate_strict(
+        _report(
+            _state(is_dirty=True, dirty_reason="x"),
+            _state(pkgbase="llvm", divergence="diverged"),
+        ),
+        allow_dirty=True,
+    )
+    assert blockers == []
+
+
+def test_evaluate_strict_pgo_mismatch_not_suppressible():
+    blockers = evaluate_strict(
+        _report(_state(pgo_profdata_mismatch=True)),
+        allow_dirty=True,  # MUST NOT suppress profdata-mismatch
+    )
+    assert len(blockers) == 1
+    assert "profdata" in blockers[0]
+
+
+# ---------------------------------------------------------------------------
+# render_preflight
+# ---------------------------------------------------------------------------
+
+def test_render_empty_returns_empty_string():
+    report = LlvmPreflightReport(
+        states=(), blockers=(),
+        has_dirty=False, has_diverged=False,
+        has_pgo_profdata_mismatch=False,
+    )
+    assert render_preflight(report) == ""
+
+
+def test_render_includes_header_and_state_line():
+    out = render_preflight(_report(_state()))
+    assert "[LLVM]" in out
+    assert "LLVM source pre-flight" in out
+    assert "llvm-git" in out
+    assert "origin=aur" in out
+    assert "clean=clean" in out
+
+
+def test_render_dirty_marks_state_loudly():
+    out = render_preflight(_report(_state(is_dirty=True, dirty_reason="2 unpushed commit(s)")))
+    assert "DIRTY" in out
+    assert "unpushed" in out
+
+
+def test_render_blockers_block_listed_at_end():
+    report = LlvmPreflightReport(
+        states=(_state(is_dirty=True, dirty_reason="uncommitted changes"),),
+        blockers=("llvm-git: dirty (uncommitted changes)",),
+        has_dirty=True, has_diverged=False,
+        has_pgo_profdata_mismatch=False,
+    )
+    out = render_preflight(report)
+    assert "blockers:" in out
+    assert "llvm-git: dirty (uncommitted changes)" in out

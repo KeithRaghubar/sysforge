@@ -29,3 +29,21 @@ clone_timeout = 60
 # pgp_key_missing       = "auto_repair"
 # srcinfo_drift         = "auto_repair_with_warning"
 # checksum_mismatch     = "prompt_user"
+
+[safety]
+# LLVM source-tree safety pre-flight. Surfaces variant, origin, dirty
+# status, divergence, install origin, and resolved build_mode for any
+# LLVM-toolchain package in scope before fetch / update / build / converge
+# / run toolchain touch it.
+#
+# llvm_strict_toolchain — when true (default), `sysforge run toolchain`
+#   refuses to proceed on a dirty or diverged LLVM tree. Bypass per-run
+#   with --allow-dirty-llvm. PGO profdata version mismatches are never
+#   bypassable — building against stale profdata silently corrupts the
+#   output.
+# llvm_preflight — when false, suppress the informational pre-flight
+#   table for fetch / update / build / converge. The toolchain stage
+#   always runs the pre-flight regardless of this setting (it's a safety
+#   gate, not just informational there).
+llvm_strict_toolchain = true
+llvm_preflight        = true

@@ -76,7 +76,12 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("TOOLCHAIN")
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives.config import find_pkgbuild
+from sysforge.primitives.config import find_pkgbuild, load_sysforge_toml
+from sysforge.primitives.llvm_state import (
+    collect_llvm_state,
+    evaluate_strict,
+    render_preflight,
+)
 from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 from sysforge.primitives.prompt import is_interactive, prompt_choice
@@ -327,6 +332,66 @@ def _check_pkgver_consistency(pkgbuild_map: dict[str, Path]) -> None:
     for d, info in dir_info.items():
         if info["pkgver"] != dominant:
             _log.warn(f"  git -C {d} pull --rebase")
+
+
+def _llvm_strict_enabled() -> bool:
+    """Read [safety] llvm_strict_toolchain from sysforge.toml. Default True."""
+    safety = load_sysforge_toml().get("safety", {}) or {}
+    return bool(safety.get("llvm_strict_toolchain", True))
+
+
+def _run_llvm_preflight(names: list[str], config: dict, options) -> None:
+    """Surface LLVM source state and (when strict) refuse on dirty/diverged.
+
+    Always renders the report so users see the situation. When strict mode
+    is enabled (the default for the toolchain stage) and the report has
+    blockers, the stage is aborted unless ``options.allow_dirty_llvm`` is
+    set or the user accepts the prompt interactively.
+
+    A PGO profdata version mismatch is never suppressible — building
+    against a stale profdata silently corrupts the output.
+    """
+    report = collect_llvm_state(names, config, probe_fetch=True)
+    if not report.states:
+        return
+
+    rendered = render_preflight(report, verbose=True)
+    if rendered:
+        _log.ui(rendered)
+
+    allow_dirty = bool(getattr(options, "allow_dirty_llvm", False))
+    if not _llvm_strict_enabled() and not report.has_pgo_profdata_mismatch:
+        return
+
+    blockers = evaluate_strict(report, allow_dirty=allow_dirty)
+    if not blockers:
+        return
+
+    blocker_lines = "\n".join(f"  - {b}" for b in blockers)
+    if not is_interactive():
+        raise RuntimeError(
+            "[TOOLCHAIN] LLVM safety pre-flight refused — strict mode "
+            "blocked the run on the following:\n"
+            f"{blocker_lines}\n"
+            "Re-run with --allow-dirty-llvm to bypass dirty/diverged "
+            "blockers (PGO profdata mismatches cannot be bypassed)."
+        )
+
+    _log.warn("LLVM safety pre-flight has blockers:")
+    for b in blockers:
+        _log.warn(f"  {b}")
+    choice = prompt_choice(
+        "Proceed with toolchain build despite LLVM blockers? [y/N]: ",
+        choices=("y", "yes", "n"),
+        default="n",
+        eof_default="n",
+        tag="TOOLCHAIN",
+        level="WARN",
+    )
+    if choice not in ("y", "yes"):
+        raise RuntimeError(
+            "[TOOLCHAIN] LLVM safety pre-flight aborted by user."
+        )
 
 
 def _show_resolution_table(
@@ -1534,6 +1599,12 @@ class ToolchainStage(Stage):
         # Resolve PKGBUILDs for all packages
         pkgbuild_map = _resolve_all_pkgbuilds(all_names, config)
         _check_pkgver_consistency(pkgbuild_map)
+
+        # LLVM safety pre-flight: refuse-by-default on dirty/diverged trees.
+        # Strict mode is rule-driven from sysforge.toml [safety]; the CLI
+        # --allow-dirty-llvm flag bypasses dirty/diverged blockers (a stale
+        # PGO profdata mismatch is never suppressible).
+        _run_llvm_preflight(all_names, config, options)
 
         pgo_map = {n: pkgbuild_map[n] for n in pgo_pkgs}
         non_pgo_map = {n: pkgbuild_map[n] for n in non_pgo_pkgs}

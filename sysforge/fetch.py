@@ -14,6 +14,7 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("FETCH")
 from sysforge.primitives.config import find_pkgbuild, load_config
+from sysforge.primitives.llvm_state import collect_llvm_state, render_preflight
 from sysforge.primitives.source_sync import SyncRequest, get_scheduler
 
 
@@ -24,6 +25,11 @@ def cmd_fetch(args) -> None:
     scheduler = get_scheduler(
         force_devel=getattr(args, "devel", False),
     )
+
+    if not getattr(args, "no_llvm_preflight", False):
+        report = collect_llvm_state(args.pkgs, config)
+        if report.states:
+            print(render_preflight(report))
 
     from sysforge.ui import progress as _ui_progress
     failed = 0

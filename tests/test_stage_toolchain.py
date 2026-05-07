@@ -4,13 +4,10 @@ test_stage_toolchain.py — tests for the toolchain stage.
 Mocks makepkg_wrapper.run() and subprocess so nothing real is built.
 """
 import os
-import sys
-import tempfile
 import threading
 import time
-import tomllib
 from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -19,20 +16,16 @@ from sysforge.pipeline.stages.toolchain import (
     _load_toolchain_config,
     _package_lists,
     _resolve_all_pkgbuilds,
-    _show_resolution_table,
     _extract_pass2_to_staging,
     _build_pass,
     _do_profraw_merge,
     _profraw_merge_daemon,
     _merge_profraw,
     _remove_staging,
-    TOOLCHAIN_PATH,
     _DEFAULT_LLVM_PGO,
     _DEFAULT_LLVM_NON_PGO,
     _DEFAULT_LLVM_LIB32,
     _DEFAULT_GCC,
-    _DEFAULT_STAGING,
-    _DEFAULT_PGO_STORE,
     _PGO_ALLOWED_MAKEPKG_FLAGS,
     _PROFRAW_MERGE_BATCH_MAX,
     _PROFRAW_MERGE_BATCH_MIN,
@@ -467,6 +460,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
          patch("sysforge.pipeline.stages.toolchain._pgo_pass1_install"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._run_llvm_preflight"), \
          patch("subprocess.run", side_effect=fake_subprocess), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)

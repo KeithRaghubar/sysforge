@@ -39,6 +39,8 @@ class RunOptions:
     makepkg_flags: list[str] = field(default_factory=list)
     # PGO profdata
     rebuild_profdata: bool = False   # force full 3-pass PGO even if compatible profdata exists
+    # LLVM safety pre-flight
+    allow_dirty_llvm: bool = False   # bypass refuse-on-dirty/diverged for the toolchain stage
     # Execution context
     standalone: bool = False         # True when running a single stage outside the pipeline
 

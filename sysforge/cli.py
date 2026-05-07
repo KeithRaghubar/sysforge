@@ -68,6 +68,29 @@ def _cleansrc_target_dir(pkg: str, config: dict) -> Path | None:
     return Path(raw).expanduser() / pkg
 
 
+def _pkg_to_name(p: str) -> str:
+    """Best-effort extraction of a pkgname from a build/converge positional.
+
+    Accepts a bare name, a directory, or a path to a PKGBUILD; falls back
+    to the input string when no clearer name is available. Used only by the
+    LLVM safety pre-flight, which then filters with ``is_llvm_pkgbase``.
+    """
+    pp = Path(p)
+    if pp.name == "PKGBUILD":
+        return pp.parent.name
+    if pp.is_dir():
+        return pp.name
+    return p
+
+
+def _render_llvm_preflight(names: list[str], config: dict) -> None:
+    """Render the LLVM safety pre-flight summary, if any names match."""
+    from sysforge.primitives.llvm_state import collect_llvm_state, render_preflight
+    report = collect_llvm_state(names, config)
+    if report.states:
+        print(render_preflight(report))
+
+
 def _cmd_build(args):
     extra_flags = expand_makepkg_flags(args.makepkg) if args.makepkg else None
     if args.no_pkg_log and args.log_dir:
@@ -75,6 +98,8 @@ def _cmd_build(args):
     _log.info(f"Invocation: {' '.join(sys.argv)}")
     packages = args.pkgbuilds
     config = _load_config_with_overrides(args)
+    if not getattr(args, "no_llvm_preflight", False):
+        _render_llvm_preflight([_pkg_to_name(p) for p in packages], config)
     try:
         for i, pkg in enumerate(packages):
             if getattr(args, "cleansrc", False):
@@ -147,6 +172,9 @@ def _cmd_update(args):
 
 def _cmd_converge(args):
     args.extra_flags = expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else []
+    if not getattr(args, "no_llvm_preflight", False) and getattr(args, "pkgnames", None):
+        config = _load_config_with_overrides(args)
+        _render_llvm_preflight(list(args.pkgnames), config)
     from sysforge.converge import cmd_converge
     try:
         cmd_converge(args)
@@ -333,6 +361,7 @@ def _cmd_run_toolchain(args):
         persist_log=args.persist_log,
         makepkg_flags=expand_makepkg_flags(args.makepkg) if args.makepkg else [],
         rebuild_profdata=args.rebuild_profdata,
+        allow_dirty_llvm=args.allow_dirty_llvm,
     )
     run_stage_standalone(ToolchainStage(), config, options)
 
@@ -527,6 +556,8 @@ def _add_build_parser(sub):
         help="Purge the package src dir and re-clone before building. "
              "Refuses (per package) if the existing clone has uncommitted changes, "
              "unpushed commits, or no upstream tracking branch.")
+    p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
+        help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
     p.set_defaults(func=_cmd_build)
@@ -541,6 +572,8 @@ def _add_fetch_parser(sub):
     )
     p.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase for packages that are already cloned.")
+    p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
+        help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
         help="Path to a profiles.toml to use instead of the default.")
     p.set_defaults(func=cmd_fetch)
@@ -590,6 +623,8 @@ def _add_update_parser(sub):
         help="Purge each package's src dir and re-clone before building. "
              "Per-package fatal if the clone has uncommitted changes, unpushed commits, "
              "or no upstream — that package is reported failed and the run continues.")
+    p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
+        help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit update to these package names (default: all sysforge-managed packages).")
     p.set_defaults(func=_cmd_update)
@@ -631,6 +666,8 @@ def _add_converge_parser(sub):
              "-f is always injected automatically.")
     p.add_argument("--cache-report", action="store_true", dest="cache_report",
         help="Print a structured cache summary after --apply runs.")
+    p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
+        help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit drift check to these package names (default: all build_state-recorded packages).")
     p.set_defaults(func=_cmd_converge)
@@ -854,6 +891,9 @@ def _add_run_parser(sub):
         help="Override state directory.")
     p_toolchain.add_argument("--rebuild-profdata", action="store_true", dest="rebuild_profdata",
         help="Force a full 3-pass PGO build even if compatible profdata already exists.")
+    p_toolchain.add_argument("--allow-dirty-llvm", action="store_true", dest="allow_dirty_llvm",
+        help="Bypass the LLVM safety pre-flight refusal on dirty or diverged "
+             "trees. PGO profdata version mismatches cannot be bypassed.")
     p_toolchain.set_defaults(func=_cmd_run_toolchain)
 
     # run packages

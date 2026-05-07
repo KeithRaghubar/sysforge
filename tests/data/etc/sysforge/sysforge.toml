@@ -23,3 +23,8 @@ vendored_deps_missing = "auto_repair"
 pgp_key_missing       = "auto_repair"
 srcinfo_drift         = "auto_repair_with_warning"
 checksum_mismatch     = "prompt_user"
+
+[safety]
+# LLVM source pre-flight. See etc/sysforge/sysforge.toml for full docs.
+llvm_strict_toolchain = true
+llvm_preflight        = true

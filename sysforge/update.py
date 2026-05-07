@@ -50,6 +50,7 @@ from sysforge.primitives.source_sync import (
     get_scheduler,
 )
 from sysforge.primitives.config import load_config, load_sysforge_toml
+from sysforge.primitives.llvm_state import collect_llvm_state, render_preflight
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
 from sysforge.primitives.pacman import (
@@ -703,6 +704,12 @@ def cmd_update(args) -> None:
         return
 
     pkgbase_map, pkgbase_entry = group_by_pkgbase(packages)
+
+    # ── Phase 1.5: LLVM safety pre-flight (informational) ─────────────────
+    if not getattr(args, "no_llvm_preflight", False):
+        llvm_report = collect_llvm_state(list(pkgbase_map.keys()), config)
+        if llvm_report.states:
+            print(render_preflight(llvm_report))
 
     # Authoritative pkgbuild versions for packages whose PKGBUILDs use bash
     # parameter expansion the static parser can't evaluate. The scheduler's

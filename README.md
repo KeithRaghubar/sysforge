@@ -60,6 +60,16 @@ sysforge update --cleansrc
 #    or after a manual makepkg run. Implies --offline.
 sysforge update --install-only
 
+# 8b. LLVM safety pre-flight. fetch / update / build / converge surface
+#     each LLVM-toolchain pkgbase in scope (variant, origin, dirty/diverged
+#     state, install version, resolved build_mode) before acting; suppress
+#     with --no-llvm-preflight or [safety] llvm_preflight = false in
+#     sysforge.toml. `sysforge run toolchain` runs the same pre-flight in
+#     strict mode and refuses on dirty or diverged trees; bypass per-run
+#     with --allow-dirty-llvm. PGO profdata version mismatches are never
+#     bypassable.
+sysforge run toolchain --allow-dirty-llvm
+
 # 9. Manage packages.toml entries (install list during pipeline bootstrap;
 #    build-rule overrides at steady-state — see DESIGN.md §Package Manifest)
 sysforge packages list
