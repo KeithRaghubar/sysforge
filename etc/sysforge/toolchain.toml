@@ -42,3 +42,24 @@ enabled = false
 # For GCC, only non_pgo is used:
 # non_pgo = ["gcc", "gcc-libs"]
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# LLVM_TARGETS_TO_BUILD filtering
+#
+# When sysforge builds an LLVM PKGBUILD (llvm, clang, compiler-rt, lld, …),
+# pkgbuild_patcher injects -DLLVM_TARGETS_TO_BUILD="<list>" into the cmake
+# invocation so the built toolchain only carries the backends this host
+# actually uses.
+#
+# Resolution order (first match wins):
+#   1. [llvm] targets   in this file — explicit override
+#   2. hardware_profile.toml [hardware] llvm_targets — autodetected from
+#      host arch (uname -m) + gpu_vendors (lspci)
+#   3. Section absent and no autodetection → no filtering, build all
+#      targets (the upstream default).
+#
+# Setting `targets = []` here disables filtering entirely (force build all).
+#
+# [llvm]
+# targets = ["X86", "AMDGPU", "NVPTX"]
+# ---------------------------------------------------------------------------

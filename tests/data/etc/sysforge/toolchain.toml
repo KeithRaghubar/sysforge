@@ -40,3 +40,12 @@ skip_build = false
 # For GCC, only non_pgo is used:
 # non_pgo = ["gcc", "gcc-libs"]
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# LLVM_TARGETS_TO_BUILD filtering — see etc/sysforge/toolchain.toml for docs.
+# Test fixture leaves this unset so callers exercise the autodetect fallback.
+# Override here only when a test specifically needs the explicit-config path.
+#
+# [llvm]
+# targets = ["X86", "AMDGPU", "NVPTX"]
+# ---------------------------------------------------------------------------

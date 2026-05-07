@@ -17,6 +17,11 @@ TEST_DATA = TESTS_DIR / "data"
 
 os.environ.setdefault("SYSFORGE_CONFIG_DIR", str(TEST_DATA))
 
+# Force the subprocess fallback in primitives.pacman so existing tests that
+# mock subprocess.run continue to drive the query. The pyalpm fast path is
+# exercised explicitly in test_pacman_pyalpm.py.
+os.environ.setdefault("SYSFORGE_PACMAN_NO_PYALPM", "1")
+
 # Show all log messages in tests so assertions against log output work.
 import sysforge.log as _sf_log
 _sf_log.set_verbosity(2)

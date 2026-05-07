@@ -476,6 +476,9 @@ def _create_state_dir(cfg: BootstrapConfig) -> None:
     """
     state_dir = Path(cfg.target) / "var/lib/sysforge"
     state_dir.mkdir(parents=True, exist_ok=True)
+    # Pre-create sentinels/ so the libalpm hooks (shipped by the sysforge
+    # PKGBUILD) can drop reminder files even before tmpfiles-create runs.
+    (state_dir / "sentinels").mkdir(exist_ok=True)
     _chroot(cfg.target, ["chown", "-R", "root:sysforge", "/var/lib/sysforge"])
     _chroot(cfg.target, ["chmod", "02775", "/var/lib/sysforge"])
     _chroot(cfg.target, ["sh", "-c",

@@ -44,6 +44,10 @@ sysforge update --devel
 # 6. Preview what would be rebuilt without doing it
 sysforge update --dry-run
 
+# 6b. Default summary shows aggregated counts; -v expands each skipped or
+#     up-to-date package to a per-line reason (rate-limited, devel, etc.).
+sysforge update -v
+
 # 7. Same as `update`, plus discard divergent local clones (force-pushed
 #    upstream or local-only commits). --cleansrc refuses any clone that has
 #    uncommitted changes, unpushed commits, or no upstream — those packages

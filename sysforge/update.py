@@ -71,18 +71,25 @@ from sysforge.pipeline.state import resolve_state_dir
 
 _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
 
-# Sync statuses that block the package from proceeding to build.
-_SYNC_BLOCKING_STATUSES = frozenset({
-    STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED,
-})
+# Sync statuses that block the package from proceeding to build, and the
+# user-facing action each maps to in the update summary. Statuses absent
+# from this map (UP_TO_DATE, FETCHED, CLONED, DIVERGED, SKIPPED_OFFLINE,
+# SKIPPED_NO_TRACKING) are non-blocking — the build proceeds against the
+# local PKGBUILD.
+_SYNC_STATUS_TO_ACTION = {
+    STATUS_FAILED: "PULL_FAILED",
+    STATUS_RATE_LIMITED: "RATE_LIMITED",
+    STATUS_PURGE_REFUSED: "PURGE_REFUSED",
+}
+_SYNC_BLOCKING_STATUSES = frozenset(_SYNC_STATUS_TO_ACTION)
 
 
 @dataclass
 class _UpdateResult:
     pkgbase: str
     pkgnames: list
-    # Actions: UP_TO_DATE, NEEDS_REBUILD, PULL_FAILED, DEVEL,
-    # DEVEL_EVAL_FAILED, DOWNGRADE
+    # Actions: UP_TO_DATE, NEEDS_REBUILD, DEVEL, DEVEL_EVAL_FAILED, DOWNGRADE,
+    # PULL_FAILED, RATE_LIMITED, PURGE_REFUSED.
     action: str
     installed_ver: str | None
     pkgbuild_ver: str | None
@@ -255,13 +262,15 @@ def _sync_sources(
     pkgbase_map: dict[str, list],
     pkgbase_entry: dict[str, dict],
     args,
-) -> dict[str, str]:
+) -> dict[str, tuple[str, str]]:
     """Ensure every package has an up-to-date local PKGBUILD.
 
     Delegates to ``SourceSyncScheduler``: one batched AUR RPC call, then
     sequential shallow fetches for pkgbases whose Version/LastModified/HEAD
     have drifted from ``source_meta.toml``. Returns
-    ``{pkgbase: error_message}`` for packages that blocked on sync.
+    ``{pkgbase: (status, error_message)}`` for packages that blocked on sync;
+    the status is a ``STATUS_*`` constant from source_sync that determines
+    the per-package action shown in the update summary.
     """
     offline = getattr(args, "offline", False)
     dry_run = getattr(args, "dry_run", False)
@@ -329,10 +338,10 @@ def _sync_sources(
 
     scheduler.close()
 
-    sync_failures: dict[str, str] = {}
+    sync_failures: dict[str, tuple[str, str]] = {}
     for pkgbase, result in results.items():
         if result.status in _SYNC_BLOCKING_STATUSES:
-            sync_failures[pkgbase] = result.error or result.status
+            sync_failures[pkgbase] = (result.status, result.error or result.status)
         elif result.status == STATUS_DIVERGED:
             # Divergence is not a hard failure: local PKGBUILD is kept; build
             # proceeds against it. Surface as a warning, not a blocker.
@@ -355,7 +364,7 @@ def _check_one_pkgbase(
     pkgbase: str,
     pkgnames: list[str],
     entry: dict,
-    sync_failures: dict[str, str],
+    sync_failures: dict[str, tuple[str, str]],
     all_installed: dict[str, str],
     unrecorded_names: set[str],
     skip_sync_check: bool,
@@ -377,9 +386,11 @@ def _check_one_pkgbase(
         return None
 
     if not skip_sync_check and pkgbase in sync_failures:
-        _log.error(sync_failures[pkgbase])
+        status, msg = sync_failures[pkgbase]
+        _log.error(msg)
+        action = _SYNC_STATUS_TO_ACTION.get(status, "PULL_FAILED")
         return _UpdateResult(
-            pkgbase=pkgbase, pkgnames=pkgnames, action="PULL_FAILED",
+            pkgbase=pkgbase, pkgnames=pkgnames, action=action,
             installed_ver=None, pkgbuild_ver=None, pkgbuild_path=pkgbuild_path,
             has_build_record=has_record,
         )
@@ -575,11 +586,62 @@ def _find_existing_artifacts(
 
 
 # ---------------------------------------------------------------------------
+# Pacman hook sentinels (libalpm PostTransaction reminder consumption)
+# ---------------------------------------------------------------------------
+
+# Path is fixed by the libalpm hooks shipped under /usr/share/libalpm/hooks/
+# (see PKGBUILD package() and tools/pacman-hook-helper.sh). The matching
+# tmpfiles.d entry creates the directory on package install; this function
+# tolerates a missing dir for installs that predate the hooks.
+_SENTINEL_DIR = Path("/var/lib/sysforge/sentinels")
+
+_SENTINEL_REMINDERS = {
+    "kernel": (
+        "Kernel package(s) changed since last sysforge run — review whether "
+        "kernel-dependent AUR packages (nvidia-dkms, *-headers, vbox modules) "
+        "need a `sysforge update`."
+    ),
+    "toolchain": (
+        "Toolchain package(s) (llvm/clang/gcc) changed since last sysforge "
+        "run — packages built against the prior toolchain may want a rebuild; "
+        "PGO profdata cached under toolchain.toml `pgo_store` may be stale."
+    ),
+}
+
+
+def _consume_pacman_hook_sentinels() -> None:
+    """Surface kernel/toolchain reminders dropped by pacman PostTransaction
+    hooks since the last `sysforge update` run, then unlink them.
+
+    The buildstate sentinel is consumed silently — its only purpose is to
+    nudge the build_state.toml resync that already runs in cmd_update.
+    """
+    if not _SENTINEL_DIR.is_dir():
+        return
+    for kind, reminder in _SENTINEL_REMINDERS.items():
+        path = _SENTINEL_DIR / kind
+        if path.exists():
+            _log.warn(reminder)
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    buildstate = _SENTINEL_DIR / "buildstate"
+    if buildstate.exists():
+        try:
+            buildstate.unlink()
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
 def cmd_update(args) -> None:
     """Entry point for `sysforge update`."""
+
+    _consume_pacman_hook_sentinels()
 
     # ── Phase 0: Init ─────────────────────────────────────────────────────
     install_only = getattr(args, "install_only", False)
@@ -706,8 +768,8 @@ def cmd_update(args) -> None:
     to_build = [r for r in results if r.action == "NEEDS_REBUILD"]
 
     # Exclude packages that failed source sync (cleansrc refusal, etc.)
-    cleansrc_failures = {k: v for k, v in sync_failures.items()
-                         if "refusing to purge" in v}
+    cleansrc_failures = {k: msg for k, (status, msg) in sync_failures.items()
+                         if status == STATUS_PURGE_REFUSED}
     if sync_failures:
         to_build = [r for r in to_build if r.pkgbase not in sync_failures]
 
@@ -919,10 +981,40 @@ def cmd_update(args) -> None:
 # Summary display
 # ---------------------------------------------------------------------------
 
+# (tag, count_label, line_template) per action. line_template is formatted
+# with the _UpdateResult fields plus a trailing {star} ("" or " *"). Order
+# here is the order each action appears in summary header + per-package
+# section.
+_ACTION_FORMATS: dict[str, tuple[str, str, str]] = {
+    "NEEDS_REBUILD":     ("NEEDS_REBUILD",     "need rebuild",
+                          "{pkgbase}: {installed_ver} → {pkgbuild_ver}{star}"),
+    "UP_TO_DATE":        ("UP_TO_DATE",        "up to date",
+                          "{pkgbase}: {pkgbuild_ver}{star}"),
+    "DEVEL":             ("DEVEL",             "devel",
+                          "{pkgbase}: skipped (use --devel to rebuild){star}"),
+    "DEVEL_EVAL_FAILED": ("DEVEL_EVAL_FAILED", "devel-eval-failed",
+                          "{pkgbase}: pkgver() resolution failed (skipped){star}"),
+    "DOWNGRADE":         ("DOWNGRADE",         "downgrade",
+                          "{pkgbase}: installed {installed_ver} > pkgbuild {pkgbuild_ver} (skipped){star}"),
+    "PULL_FAILED":       ("PULL_FAILED",       "pull failed",
+                          "{pkgbase}: git pull failed (skipped){star}"),
+    "RATE_LIMITED":      ("RATE_LIMITED",      "rate-limited",
+                          "{pkgbase}: AUR rate-limited (skipped, retry later){star}"),
+    "PURGE_REFUSED":     ("PURGE_REFUSED",     "purge refused",
+                          "{pkgbase}: --cleansrc refused (local work present, skipped){star}"),
+}
+
+# Actions that are always printed per-package regardless of verbosity.
+# Everything else only appears under -v / verbose mode.
+_ALWAYS_VERBOSE_ACTIONS = frozenset({"NEEDS_REBUILD", "DOWNGRADE"})
+
+
 def _print_summary(results: list[_UpdateResult], args) -> None:
     if not results:
         print("[SYSFORGE] No packages to check.")
         return
+
+    verbose = bool(getattr(args, "verbose", 0))
 
     # Totals header
     counts: dict[str, int] = {}
@@ -933,18 +1025,10 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
             no_record_count += 1
 
     parts = [f"{len(results)} packages"]
-    if counts.get("UP_TO_DATE"):
-        parts.append(f"{counts['UP_TO_DATE']} up to date")
-    if counts.get("NEEDS_REBUILD"):
-        parts.append(f"{counts['NEEDS_REBUILD']} need rebuild")
-    if counts.get("DEVEL"):
-        parts.append(f"{counts['DEVEL']} devel")
-    if counts.get("DEVEL_EVAL_FAILED"):
-        parts.append(f"{counts['DEVEL_EVAL_FAILED']} devel-eval-failed")
-    if counts.get("DOWNGRADE"):
-        parts.append(f"{counts['DOWNGRADE']} downgrade")
-    if counts.get("PULL_FAILED"):
-        parts.append(f"{counts['PULL_FAILED']} pull failed")
+    for action, (_tag, label, _tmpl) in _ACTION_FORMATS.items():
+        n = counts.get(action, 0)
+        if n:
+            parts.append(f"{n} {label}")
     if no_record_count:
         parts.append(f"{no_record_count} no build record")
 
@@ -952,21 +1036,23 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
     print()
 
     for r in results:
+        if not verbose and r.action not in _ALWAYS_VERBOSE_ACTIONS:
+            continue
+        fmt = _ACTION_FORMATS.get(r.action)
+        if fmt is None:
+            continue
+        tag, _label, tmpl = fmt
         star = " *" if not r.has_build_record else ""
+        line = tmpl.format(
+            pkgbase=r.pkgbase,
+            installed_ver=r.installed_ver,
+            pkgbuild_ver=r.pkgbuild_ver,
+            star=star,
+        )
+        print(f"  [{tag}]{' ' * max(1, 17 - len(tag) - 2)}{line}")
 
-        if r.action == "NEEDS_REBUILD":
-            print(f"  [NEEDS_REBUILD]  {r.pkgbase}: {r.installed_ver} → {r.pkgbuild_ver}{star}")
-        elif r.action == "UP_TO_DATE":
-            print(f"  [UP_TO_DATE]     {r.pkgbase}: {r.pkgbuild_ver}{star}")
-        elif r.action == "DEVEL":
-            print(f"  [DEVEL]          {r.pkgbase}: skipped (use --devel to rebuild){star}")
-        elif r.action == "DEVEL_EVAL_FAILED":
-            print(f"  [DEVEL_EVAL_FAILED] {r.pkgbase}: pkgver() resolution failed (skipped){star}")
-        elif r.action == "DOWNGRADE":
-            print(f"  [DOWNGRADE]      {r.pkgbase}: installed {r.installed_ver} > pkgbuild {r.pkgbuild_ver} (skipped){star}")
-        elif r.action == "PULL_FAILED":
-            print(f"  [PULL_FAILED]    {r.pkgbase}: git pull failed (skipped){star}")
-
+    if not verbose and any(r.action not in _ALWAYS_VERBOSE_ACTIONS for r in results):
+        print("  (run with -v to list each skipped/up-to-date package)")
     if no_record_count:
         print("\n  * = no build record")
     print()

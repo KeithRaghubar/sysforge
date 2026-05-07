@@ -23,6 +23,7 @@ kernel. Absent hardware_profile.toml is non-fatal for the kernel stage —
 kconfig entries are simply skipped.
 """
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -165,6 +166,65 @@ def _has_nvme(lspci_text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# LLVM target detection (used by pkgbuild_patcher when building llvm/clang/
+# compiler-rt to filter LLVM_TARGETS_TO_BUILD down to what this host
+# actually uses).
+# ---------------------------------------------------------------------------
+
+# Host arch → LLVM CPU backend. Unknown architectures fall through and
+# yield no autodetected target list — the user must override via
+# toolchain.toml [llvm] targets.
+_HOST_ARCH_TO_LLVM = {
+    "x86_64":  "X86",
+    "amd64":   "X86",
+    "i686":    "X86",
+    "aarch64": "AArch64",
+    "arm64":   "AArch64",
+    "armv7l":  "ARM",
+    "armv6l":  "ARM",
+    "riscv64": "RISCV",
+    "ppc64le": "PowerPC",
+}
+
+# GPU vendor (as emitted by _parse_gpu_vendors) → LLVM GPU backend.
+# Intel Mesa drivers (iris/anv) do not depend on an LLVM backend, so intel
+# GPUs contribute no entry here.
+_GPU_VENDOR_TO_LLVM = {
+    "amd":    "AMDGPU",
+    "nvidia": "NVPTX",
+}
+
+
+def _detect_host_arch() -> str:
+    """Return the running kernel arch as reported by uname -m."""
+    return os.uname().machine
+
+
+def _derive_llvm_targets(host_arch: str, gpu_vendors: list[str]) -> list[str]:
+    """Build the autodetected LLVM_TARGETS_TO_BUILD list for this host.
+
+    Order: CPU backend first, then GPU backends in vendor-detection order.
+    Returns an empty list when the host arch is unrecognised — callers
+    treat empty as "no filtering" (i.e. preserve upstream defaults).
+    """
+    cpu = _HOST_ARCH_TO_LLVM.get(host_arch)
+    targets: list[str] = []
+    if cpu:
+        targets.append(cpu)
+    else:
+        _log.warn(
+            f"host arch {host_arch!r} has no LLVM target mapping — "
+            "llvm_targets left empty (no filtering will be applied)",
+        )
+        return []
+    for vendor in gpu_vendors:
+        backend = _GPU_VENDOR_TO_LLVM.get(vendor)
+        if backend and backend not in targets:
+            targets.append(backend)
+    return targets
+
+
+# ---------------------------------------------------------------------------
 # hardware_profile.toml writer
 # ---------------------------------------------------------------------------
 
@@ -178,8 +238,12 @@ def _write_hardware_profile(path: Path, hw: dict, kconfig: dict, dry_run: bool) 
         f'cpu_vendor  = "{hw.get("cpu_vendor", "")}"',
         f'cpu_family  = {hw.get("cpu_family", 0)}',
         f'cpu_model   = {hw.get("cpu_model", 0)}',
+        f'host_arch   = "{hw.get("host_arch", "")}"',
         "gpu_vendors = [{}]".format(
             ", ".join(f'"{v}"' for v in hw.get("gpu_vendors", []))
+        ),
+        "llvm_targets = [{}]".format(
+            ", ".join(f'"{v}"' for v in hw.get("llvm_targets", []))
         ),
         f'nvme        = {"true" if hw.get("nvme") else "false"}',
         "",
@@ -271,11 +335,20 @@ class HardwareStage(Stage):
         else:
             _log.ui("No kconfig entries generated")
 
+        # --- Host arch + LLVM target list ---
+        host_arch = _detect_host_arch()
+        llvm_targets = _derive_llvm_targets(host_arch, gpu_vendors)
+        _log.ui(f"host_arch: {host_arch}")
+        if llvm_targets:
+            _log.ui(f"llvm_targets: {';'.join(llvm_targets)}")
+
         # --- Hardware summary dict ---
         hw = {
             **cpu_info,
             "gpu_vendors": gpu_vendors,
             "nvme": nvme,
+            "host_arch": host_arch,
+            "llvm_targets": llvm_targets,
         }
 
         # --- Write output ---

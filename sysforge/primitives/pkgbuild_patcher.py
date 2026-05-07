@@ -520,6 +520,25 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta):
     patched_text = "".join(result_lines)
     patched_path.write_text(patched_text)
     _log.info(f"[{pkgname}] Wrote patched PKGBUILD: {patched_path}")
+
+    # LLVM target filtering: only LLVM-toolchain packages get the
+    # -DLLVM_TARGETS_TO_BUILD injection. Resolution order
+    # (toolchain.toml override → hardware autodetect → no filter) is
+    # owned by primitives/llvm_targets.resolve_llvm_targets.
+    pkgbase = globals_.get("pkgbase") or globals_.get("pkgname", "")
+    if isinstance(pkgbase, list):
+        pkgbase = pkgbase[0] if pkgbase else ""
+    if is_llvm_pkgbase(pkgbase):
+        # Lazy imports keep this off the hot path for non-LLVM packages.
+        from sysforge.primitives.llvm_targets import resolve_llvm_targets
+        from sysforge.primitives.paths import TOOLCHAIN_PATH
+        from sysforge.pipeline.state import resolve_state_dir
+        state_dir, _ = resolve_state_dir(None)
+        hw_profile = state_dir / "hardware_profile.toml"
+        targets = resolve_llvm_targets(TOOLCHAIN_PATH, hw_profile)
+        if targets:
+            patch_llvm_targets(patched_path, targets)
+
     return patched_path
 
 
@@ -627,6 +646,87 @@ def patch_subshell_env_reset(patched_path, toolchain_env, inherited_env=None):
         )
 
     return count
+
+
+# ---------------------------------------------------------------------------
+# LLVM_TARGETS_TO_BUILD injection (LLVM PKGBUILDs only)
+# ---------------------------------------------------------------------------
+
+# pkgbase prefixes / exact names that flag a PKGBUILD as part of the LLVM
+# toolchain. The match is anchored at the start of pkgbase: "llvm",
+# "llvm-git", "lib32-llvm", "clang", "compiler-rt", "lld" all match;
+# "rust" / "ocaml-llvm" / etc. do not.
+_LLVM_PKGBASE_PATTERNS = ("llvm", "lib32-llvm", "clang", "lib32-clang",
+                          "compiler-rt", "lib32-compiler-rt",
+                          "lld", "lib32-lld")
+
+# Matches `-DLLVM_TARGETS_TO_BUILD=...` (with optional :STRING type tag and
+# optional surrounding quotes) anywhere on a line. The value side is greedy
+# until whitespace, line continuation `\`, or closing quote.
+_LLVM_TARGETS_RE = re.compile(
+    r'-DLLVM_TARGETS_TO_BUILD(?::[A-Z]+)?=(?:"[^"]*"|\'[^\']*\'|\S+)'
+)
+
+# A line that opens or continues a cmake invocation. We use this as the
+# anchor for inserting -DLLVM_TARGETS_TO_BUILD when the upstream PKGBUILD
+# does not already set it.
+_CMAKE_INVOCATION_RE = re.compile(r"^([ \t]*)cmake\b", re.MULTILINE)
+
+
+def is_llvm_pkgbase(pkgbase: str | None) -> bool:
+    """Return True if pkgbase looks like an LLVM-toolchain package."""
+    if not pkgbase:
+        return False
+    return any(pkgbase == p or pkgbase.startswith(p + "-")
+               for p in _LLVM_PKGBASE_PATTERNS)
+
+
+def patch_llvm_targets(patched_path, targets: list[str]) -> bool:
+    """Inject or replace `-DLLVM_TARGETS_TO_BUILD="<targets>"` in the
+    cmake invocation of an already-written PKGBUILD.sysforge.
+
+    Idempotent: re-running on a PKGBUILD that already carries the same
+    targets value is a no-op. On a no-cmake-found PKGBUILD, logs a warning
+    and returns False — upstream may have switched build systems.
+
+    Returns True when the file was modified.
+    """
+    if not targets:
+        return False
+    value = ";".join(targets)
+    replacement = f'-DLLVM_TARGETS_TO_BUILD="{value}"'
+
+    patched_path = Path(patched_path)
+    text = patched_path.read_text()
+
+    # (1) Already present? — replace if value differs, no-op if same.
+    existing = _LLVM_TARGETS_RE.search(text)
+    if existing:
+        if existing.group(0) == replacement:
+            return False
+        new_text = _LLVM_TARGETS_RE.sub(replacement, text, count=1)
+        patched_path.write_text(new_text)
+        _log.info(f"Replaced LLVM_TARGETS_TO_BUILD: {existing.group(0)!r} → {replacement!r}")
+        return True
+
+    # (2) Insert after the first cmake invocation line. We append the new
+    # arg as a continuation: indentation matched, trailing backslash so
+    # the next line stays part of the same shell statement.
+    cmake_match = _CMAKE_INVOCATION_RE.search(text)
+    if not cmake_match:
+        _log.warn("LLVM target filtering requested but no cmake invocation "
+                  "found in PKGBUILD — leaving unmodified")
+        return False
+
+    indent = cmake_match.group(1)
+    line_end = text.find("\n", cmake_match.end())
+    if line_end == -1:
+        line_end = len(text)
+    insertion = f" \\\n{indent}    {replacement}"
+    new_text = text[:line_end] + insertion + text[line_end:]
+    patched_path.write_text(new_text)
+    _log.info(f"Injected {replacement} after cmake invocation")
+    return True
 
 
 # ---------------------------------------------------------------------------

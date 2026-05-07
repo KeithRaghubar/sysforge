@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.update import (
     _is_vcs, cmd_update,
-    _check_one_pkgbase, _UpdateResult,
+    _check_one_pkgbase,
 )
 from sysforge.primitives.pacman import get_installed_version, get_foreign_packages
 
@@ -947,7 +947,7 @@ def test_pull_failure_continues_to_next_package(tmp_path):
         patch("sysforge.update.BuildState") as MockBS,
         # Simulate the scheduler reporting htop failed and neovim up-to-date.
         patch("sysforge.update._sync_sources",
-              return_value={"htop": "git fetch failed"}),
+              return_value={"htop": ("failed", "git fetch failed")}),
         patch("sysforge.update.parse_pkgbuild", return_value=parsed_neovim),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config", return_value={}),
@@ -1451,3 +1451,103 @@ def test_install_only_vcs_skips_when_only_older_artifacts_present(tmp_path):
         cmd_update(args)
 
     assert install_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Sync-status → action dispatch (verbose skip messaging)
+# ---------------------------------------------------------------------------
+
+def _check_pkgbase_with_sync_status(tmp_path, status):
+    """Run _check_one_pkgbase with a sync_failures entry carrying `status`."""
+    pkgbase = "htop"
+    pkg_dir = tmp_path / pkgbase
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text("pkgname=htop\npkgver=1\npkgrel=1\n")
+
+    return _check_one_pkgbase(
+        pkgbase=pkgbase,
+        pkgnames=[pkgbase],
+        entry={"pkgbuild_dir": str(pkg_dir)},
+        sync_failures={pkgbase: (status, "synthetic error")},
+        all_installed={pkgbase: "1-1"},
+        unrecorded_names=set(),
+        skip_sync_check=False,
+        rpc_version_by_base={},
+    )
+
+
+def test_sync_status_failed_maps_to_pull_failed(tmp_path):
+    result = _check_pkgbase_with_sync_status(tmp_path, "failed")
+    assert result is not None
+    assert result.action == "PULL_FAILED"
+
+
+def test_sync_status_rate_limited_maps_to_rate_limited(tmp_path):
+    result = _check_pkgbase_with_sync_status(tmp_path, "rate_limited")
+    assert result is not None
+    assert result.action == "RATE_LIMITED"
+
+
+def test_sync_status_purge_refused_maps_to_purge_refused(tmp_path):
+    result = _check_pkgbase_with_sync_status(tmp_path, "purge_refused")
+    assert result is not None
+    assert result.action == "PURGE_REFUSED"
+
+
+def test_sync_status_unknown_falls_back_to_pull_failed(tmp_path):
+    """Defensive: an unmapped sync status still produces a recognizable action."""
+    result = _check_pkgbase_with_sync_status(tmp_path, "some_future_status")
+    assert result is not None
+    assert result.action == "PULL_FAILED"
+
+
+# ---------------------------------------------------------------------------
+# _print_summary verbose-vs-default behavior
+# ---------------------------------------------------------------------------
+
+def _make_summary_results():
+    from sysforge.update import _UpdateResult
+    from pathlib import Path
+    return [
+        _UpdateResult("htop", ["htop"], "NEEDS_REBUILD", "3.3.0-1", "3.4.1-1",
+                      Path("/tmp/htop/PKGBUILD")),
+        _UpdateResult("neovim", ["neovim"], "UP_TO_DATE", "0.9.5-1", "0.9.5-1",
+                      Path("/tmp/neovim/PKGBUILD")),
+        _UpdateResult("foo-git", ["foo-git"], "DEVEL", "r10.abc-1", None,
+                      Path("/tmp/foo-git/PKGBUILD")),
+        _UpdateResult("bar", ["bar"], "RATE_LIMITED", None, None,
+                      Path("/tmp/bar/PKGBUILD")),
+    ]
+
+
+def test_print_summary_default_hides_skip_lines(capsys):
+    from sysforge.update import _print_summary
+    args = SimpleNamespace(verbose=0)
+    _print_summary(_make_summary_results(), args)
+    captured = capsys.readouterr().out
+    # NEEDS_REBUILD always shown (actionable)
+    assert "[NEEDS_REBUILD]" in captured
+    assert "htop" in captured
+    # UP_TO_DATE / DEVEL / RATE_LIMITED hidden at default verbosity
+    assert "[UP_TO_DATE]" not in captured
+    assert "[DEVEL]" not in captured
+    assert "[RATE_LIMITED]" not in captured
+    # Header counts still mention every category
+    assert "1 up to date" in captured
+    assert "1 devel" in captured
+    assert "1 rate-limited" in captured
+    # Hint to the user about -v
+    assert "-v" in captured
+
+
+def test_print_summary_verbose_shows_all_lines(capsys):
+    from sysforge.update import _print_summary
+    args = SimpleNamespace(verbose=1)
+    _print_summary(_make_summary_results(), args)
+    captured = capsys.readouterr().out
+    assert "[NEEDS_REBUILD]" in captured
+    assert "[UP_TO_DATE]" in captured
+    assert "[DEVEL]" in captured
+    assert "[RATE_LIMITED]" in captured
+    # No -v hint when already verbose
+    assert "run with -v" not in captured

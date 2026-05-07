@@ -25,6 +25,8 @@ Public API:
     get_package_depends(pkgname)    → list[str]
     get_pkgbase(pkgname)            → str | None
 """
+import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -33,6 +35,65 @@ from sysforge.primitives.aur_resolve import _strip_version
 from sysforge.primitives.makepkg_wrapper import INSTALL_FLAGS
 
 _log = log.get_logger("PACMAN")
+
+
+# ---------------------------------------------------------------------------
+# pyalpm — optional fast path for read queries
+#
+# Set SYSFORGE_PACMAN_NO_PYALPM=1 to force the subprocess fallback even when
+# pyalpm is installed (for parity testing).
+# ---------------------------------------------------------------------------
+
+try:
+    import pyalpm  # type: ignore[import-not-found]
+    _HAS_PYALPM = True
+except ImportError:
+    pyalpm = None  # type: ignore[assignment]
+    _HAS_PYALPM = False
+
+
+def _use_pyalpm() -> bool:
+    return _HAS_PYALPM and not os.environ.get("SYSFORGE_PACMAN_NO_PYALPM")
+
+
+_PACMAN_CONF = Path("/etc/pacman.conf")
+_alpm_handle = None
+
+
+def _read_sync_repo_names() -> list[str]:
+    """Parse /etc/pacman.conf for [<repo>] section names, skipping [options].
+
+    Honours nothing else (Include, SigLevel, etc.) — we only need the names
+    to register sync DBs. Order is preserved so multilib stays last.
+    """
+    if not _PACMAN_CONF.is_file():
+        return ["core", "extra"]
+    repos: list[str] = []
+    section_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+    try:
+        with open(_PACMAN_CONF, encoding="utf-8") as f:
+            for line in f:
+                m = section_re.match(line)
+                if m and m.group(1) != "options":
+                    repos.append(m.group(1))
+    except OSError:
+        return ["core", "extra"]
+    return repos or ["core", "extra"]
+
+
+def _get_alpm_handle():
+    """Return a memoized libalpm handle with sync DBs registered."""
+    global _alpm_handle
+    if _alpm_handle is not None:
+        return _alpm_handle
+    handle = pyalpm.Handle("/", "/var/lib/pacman")
+    for repo in _read_sync_repo_names():
+        try:
+            handle.register_syncdb(repo, 0)
+        except pyalpm.error:
+            continue
+    _alpm_handle = handle
+    return _alpm_handle
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +297,15 @@ def filter_missing_deps(deps: list) -> list:
     """Return the subset of deps not satisfiable by current pacman packages."""
     if not deps:
         return []
+    if _use_pyalpm():
+        try:
+            localdb = _get_alpm_handle().get_localdb()
+            return [
+                dep for dep in deps
+                if pyalpm.find_satisfier(localdb.pkgcache, dep) is None
+            ]
+        except pyalpm.error:
+            pass
     result = subprocess.run(
         ["pacman", "-T"] + deps,
         capture_output=True,
@@ -261,6 +331,12 @@ def batch_install_makedeps(deps: list) -> None:
 
 def get_installed_version(pkgname: str) -> str | None:
     """Run `pacman -Q pkgname`, return version string or None if not installed."""
+    if _use_pyalpm():
+        try:
+            pkg = _get_alpm_handle().get_localdb().get_pkg(pkgname)
+            return pkg.version if pkg else None
+        except pyalpm.error:
+            pass
     result = subprocess.run(
         ["pacman", "-Q", pkgname],
         capture_output=True,
@@ -275,6 +351,12 @@ def get_installed_version(pkgname: str) -> str | None:
 
 def get_all_installed_packages() -> dict[str, str]:
     """Run `pacman -Q` and return {pkgname: installed_version} for all installed packages."""
+    if _use_pyalpm():
+        try:
+            localdb = _get_alpm_handle().get_localdb()
+            return {pkg.name: pkg.version for pkg in localdb.pkgcache}
+        except pyalpm.error:
+            pass
     result = subprocess.run(["pacman", "-Q"], capture_output=True, text=True)
     if result.returncode != 0:
         return {}
@@ -291,6 +373,19 @@ def get_foreign_packages() -> dict[str, str]:
     Run `pacman -Qm` and return {pkgname: installed_version} for all
     foreign (non-repo) packages currently installed.
     """
+    if _use_pyalpm():
+        try:
+            handle = _get_alpm_handle()
+            sync_names: set[str] = set()
+            for db in handle.get_syncdbs():
+                sync_names.update(pkg.name for pkg in db.pkgcache)
+            return {
+                pkg.name: pkg.version
+                for pkg in handle.get_localdb().pkgcache
+                if pkg.name not in sync_names
+            }
+        except pyalpm.error:
+            pass
     result = subprocess.run(["pacman", "-Qm"], capture_output=True, text=True)
     if result.returncode != 0:
         return {}
@@ -304,6 +399,15 @@ def get_foreign_packages() -> dict[str, str]:
 
 def get_pacman_sync_version(pkgname: str) -> str | None:
     """Return the version available in pacman sync databases, or None if not found."""
+    if _use_pyalpm():
+        try:
+            for db in _get_alpm_handle().get_syncdbs():
+                pkg = db.get_pkg(pkgname)
+                if pkg:
+                    return pkg.version
+            return None
+        except pyalpm.error:
+            pass
     result = subprocess.run(["pacman", "-Si", "--", pkgname], capture_output=True, text=True)
     if result.returncode != 0:
         return None

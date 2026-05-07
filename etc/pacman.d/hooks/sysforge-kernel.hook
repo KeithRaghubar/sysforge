@@ -1,0 +1,24 @@
+# sysforge — kernel-upgrade reminder
+#
+# Drops a sentinel under /var/lib/sysforge/sentinels/kernel after any
+# kernel package install/upgrade/remove. The next `sysforge update`
+# invocation reads the sentinel, surfaces a reminder, and unlinks it.
+#
+# Targets `linux*`, which intentionally also matches linux-firmware,
+# linux-headers, and linux-api-headers — any of these warrants nudging
+# the user about kernel-dependent rebuilds.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = linux
+Target = linux-*
+Target = linux*-headers
+
+[Action]
+Description = Recording kernel change for sysforge update reminders...
+When = PostTransaction
+Exec = /usr/lib/sysforge/pacman-hook-helper.sh kernel
+NeedsTargets

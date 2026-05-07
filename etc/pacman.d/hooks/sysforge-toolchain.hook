@@ -1,0 +1,30 @@
+# sysforge — toolchain-upgrade reminder
+#
+# Drops a sentinel under /var/lib/sysforge/sentinels/toolchain after any
+# toolchain package install/upgrade. A toolchain bump (especially a major
+# LLVM/clang or GCC version) often invalidates cached profdata and may
+# require user-managed rebuilds; sysforge surfaces the reminder on the
+# next `sysforge update` invocation.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = llvm
+Target = llvm-libs
+Target = clang
+Target = lld
+Target = compiler-rt
+Target = gcc
+Target = gcc-libs
+Target = lib32-llvm
+Target = lib32-llvm-libs
+Target = lib32-clang
+Target = lib32-compiler-rt
+Target = lib32-gcc-libs
+
+[Action]
+Description = Recording toolchain change for sysforge update reminders...
+When = PostTransaction
+Exec = /usr/lib/sysforge/pacman-hook-helper.sh toolchain
+NeedsTargets

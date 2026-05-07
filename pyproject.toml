@@ -11,6 +11,16 @@ dependencies = [
     "tomli>=2.0; python_version<'3.11'",  # fallback if ever needed
 ]
 
+[project.optional-dependencies]
+# `extra` is opt-in fast-path bindings. Install with `uv sync --extra extra`
+# or via the system package (`pacman -S pyalpm`). When pyalpm is present,
+# sysforge.primitives.pacman uses libalpm for read queries; otherwise it
+# falls back to subprocess `pacman -Q*`. Set SYSFORGE_PACMAN_NO_PYALPM=1
+# to force the subprocess path for parity testing.
+extra = [
+    "pyalpm>=0.10.6",
+]
+
 [project.scripts]
 sysforge = "sysforge.cli:main"
 
