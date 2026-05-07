@@ -1408,6 +1408,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         # flags directly via compiler_flags_extra; we must not override or prompt.
         effective_flags_extra = options.compiler_flags_extra
         if build_mode == "pgo_llvm_toolchain" and not options.pgo_managed:
+            pkgname = pkgbuild_path.parent.name
             pgo_state, pgo_info = _resolve_pgo_state(pkgbuild_path)
             if pgo_state == "ready":
                 pgo_flag = f"-fprofile-use={pgo_info}"
@@ -1426,7 +1427,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     from sysforge.ui import progress as _ui_progress
                     _ui_progress.clear()
                     choice = prompt_choice(
-                        f"PGO profdata unavailable ({reason})."
+                        f"{pkgname}: PGO profdata unavailable ({reason})."
                         " [p]lain build or [s]kip? [S]: ",
                         choices=("p", "plain", "s"),
                         default="s",
@@ -1437,14 +1438,15 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 else:
                     choice = "s"
                     _pgo_log.warn(
-                        f"Non-interactive: skipping pgo_llvm_toolchain build ({reason})",
+                        f"Non-interactive: skipping pgo_llvm_toolchain build for "
+                        f"{pkgname} ({reason})",
                     )
                 if choice not in ("p", "plain"):
                     raise PGOBuildSkipped(
-                        f"[PGO] Skipped {pkgbuild_path.parent.name!r}: {reason}. "
+                        f"[PGO] Skipped {pkgname!r}: {reason}. "
                         "Run 'sysforge run toolchain' to regenerate profdata."
                     )
-                _pgo_log.warn(f"Building without PGO: {reason}")
+                _pgo_log.warn(f"{pkgname}: Building without PGO: {reason}")
 
         extracted_profile = None
         if build_mode in ("patched_pkgbuild", "kernel"):
