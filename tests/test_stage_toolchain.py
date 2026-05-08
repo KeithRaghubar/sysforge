@@ -145,7 +145,7 @@ def test_resolve_all_pkgbuilds_finds_local(tmp_path):
     make_pkgbuild(tmp_path, "llvm")
     make_pkgbuild(tmp_path, "clang")
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
-    result = _resolve_all_pkgbuilds(["llvm", "clang"], config)
+    result = _resolve_all_pkgbuilds(["llvm", "clang"], config, update=False)
     assert "llvm" in result
     assert "clang" in result
     assert result["llvm"].name == "PKGBUILD"
@@ -156,7 +156,7 @@ def test_resolve_all_pkgbuilds_missing_raises(tmp_path):
     with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
          patch("sysforge.primitives.aur.aur_info", return_value={}):
         with pytest.raises(RuntimeError, match="Could not resolve PKGBUILDs"):
-            _resolve_all_pkgbuilds(["nonexistent-pkg"], config)
+            _resolve_all_pkgbuilds(["nonexistent-pkg"], config, update=False)
 
 
 def test_resolve_all_pkgbuilds_partial_miss_reports_all(tmp_path):
@@ -165,7 +165,7 @@ def test_resolve_all_pkgbuilds_partial_miss_reports_all(tmp_path):
     with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
          patch("sysforge.primitives.aur.aur_info", return_value={}):
         with pytest.raises(RuntimeError, match="Could not resolve"):
-            _resolve_all_pkgbuilds(["llvm", "clang", "lld"], config)
+            _resolve_all_pkgbuilds(["llvm", "clang", "lld"], config, update=False)
 
 
 def test_resolve_all_pkgbuilds_split_found_after_pass3_clone(tmp_path):
@@ -187,12 +187,71 @@ def test_resolve_all_pkgbuilds_split_found_after_pass3_clone(tmp_path):
 
     with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
          patch("sysforge.primitives.aur.pkgctl_checkout", side_effect=fake_pkgctl_checkout):
-        result = _resolve_all_pkgbuilds(["gcc", "gcc-libs"], config)
+        result = _resolve_all_pkgbuilds(["gcc", "gcc-libs"], config, update=False)
 
     assert "gcc" in result
     assert "gcc-libs" in result
     # Both must resolve to the same PKGBUILD — not two separate clones
     assert result["gcc"].parent == result["gcc-libs"].parent
+
+
+def test_resolve_all_pkgbuilds_calls_scheduler_when_update_true(tmp_path):
+    """update=True must route every unique resolved dir through SourceSyncScheduler."""
+    make_pkgbuild(tmp_path, "llvm")
+    make_pkgbuild(tmp_path, "clang")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
+
+    fake_scheduler = MagicMock()
+    fake_result = MagicMock()
+    fake_result.status = "up_to_date"
+    fake_result.error = None
+    fake_scheduler.request.return_value = fake_result
+
+    with patch("sysforge.pipeline.stages.toolchain.get_scheduler",
+               return_value=fake_scheduler), \
+         patch("sysforge.pipeline.stages.toolchain.load_sysforge_toml",
+               return_value={"git": {}, "aur": {}}):
+        result = _resolve_all_pkgbuilds(["llvm", "clang"], config, update=True)
+
+    assert "llvm" in result and "clang" in result
+    # Scheduler called once per unique pkgbuild_dir (two: llvm, clang)
+    assert fake_scheduler.request.call_count == 2
+    fake_scheduler._ensure_rpc.assert_called_once()
+    fake_scheduler.close.assert_called_once()
+
+
+def test_resolve_all_pkgbuilds_skips_scheduler_when_update_false(tmp_path):
+    """update=False (mapped from --no-update) must not invoke the scheduler."""
+    make_pkgbuild(tmp_path, "llvm")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
+
+    with patch("sysforge.pipeline.stages.toolchain.get_scheduler") as gs:
+        result = _resolve_all_pkgbuilds(["llvm"], config, update=False)
+
+    assert "llvm" in result
+    gs.assert_not_called()
+
+
+def test_resolve_all_pkgbuilds_blocker_status_raises(tmp_path):
+    """STATUS_FAILED / STATUS_RATE_LIMITED / STATUS_PURGE_REFUSED must abort."""
+    make_pkgbuild(tmp_path, "llvm")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
+
+    fake_scheduler = MagicMock()
+    fake_result = MagicMock()
+    fake_result.status = "failed"   # STATUS_FAILED literal
+    fake_result.error = "git fetch timed out"
+    fake_scheduler.request.return_value = fake_result
+
+    with patch("sysforge.pipeline.stages.toolchain.get_scheduler",
+               return_value=fake_scheduler), \
+         patch("sysforge.pipeline.stages.toolchain.load_sysforge_toml",
+               return_value={"git": {}, "aur": {}}), \
+         patch("sysforge.pipeline.stages.toolchain.STATUS_FAILED", "failed"), \
+         patch("sysforge.pipeline.stages.toolchain._SYNC_BLOCKING_STATUSES",
+               frozenset({"failed"})):
+        with pytest.raises(RuntimeError, match="PKGBUILD sync failed"):
+            _resolve_all_pkgbuilds(["llvm"], config, update=True)
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +486,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
 
     state = PipelineState(tmp_path / "state")
     config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
-    options = make_options(dry_run=False)
+    options = make_options(dry_run=False, auto_pgo=True)
 
     call_log = []
     def fake_run(pkgbuild_path, options=None):
@@ -1342,7 +1401,9 @@ def _pgo_setup(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None):
 
     state   = PipelineState(tmp_path / "state")
     config  = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
-    options = make_options(dry_run=False)
+    # auto_pgo=True: these tests exercise build behaviour, not prompt gating.
+    # The dedicated _pgo_confirm tests cover the prompt logic.
+    options = make_options(dry_run=False, auto_pgo=True)
     return toml_path, pkgbuild_dir, staging, pgo_store, state, config, options
 
 
@@ -1839,3 +1900,75 @@ def test_validate_pgo_environment_runs_before_pass1(tmp_path):
             ToolchainStage().run(config, state, options)
 
     assert not makepkg_calls, "No builds should run when pre-flight check fails"
+
+
+# ---------------------------------------------------------------------------
+# _pgo_confirm — confirmation gate for the fragile PGO sub-flow
+# ---------------------------------------------------------------------------
+
+from sysforge.pipeline.stages.toolchain import _pgo_confirm, _PGOAborted
+
+
+def _confirm_options(*, auto_pgo=False):
+    """Build a minimal RunOptions for _pgo_confirm tests."""
+    return RunOptions(auto_pgo=auto_pgo)
+
+
+def test_pgo_confirm_auto_pgo_skips_prompt():
+    """--auto-pgo bypasses the prompt entirely (no TTY check, no input)."""
+    with patch("sysforge.pipeline.stages.toolchain.is_interactive") as is_int, \
+         patch("sysforge.pipeline.stages.toolchain.prompt_choice") as pc:
+        result = _pgo_confirm(
+            "fake prompt",
+            default="n", eof_default="n",
+            options=_confirm_options(auto_pgo=True),
+            abort_msg="should not abort",
+        )
+    assert result is True
+    is_int.assert_not_called()
+    pc.assert_not_called()
+
+
+def test_pgo_confirm_non_tty_aborts_without_auto_pgo():
+    """No TTY and no --auto-pgo → abort with 'requires --auto-pgo' message."""
+    with patch("sysforge.pipeline.stages.toolchain.is_interactive",
+               return_value=False), \
+         patch("sysforge.pipeline.stages.toolchain.prompt_choice") as pc:
+        with pytest.raises(_PGOAborted, match="non-interactive PGO requires --auto-pgo"):
+            _pgo_confirm(
+                "fake prompt",
+                default="n", eof_default="n",
+                options=_confirm_options(),
+                abort_msg="declined",
+            )
+        pc.assert_not_called()
+
+
+def test_pgo_confirm_tty_yes_returns_true():
+    """User answers 'y' at TTY → returns True."""
+    with patch("sysforge.pipeline.stages.toolchain.is_interactive",
+               return_value=True), \
+         patch("sysforge.pipeline.stages.toolchain.prompt_choice",
+               return_value="y"):
+        result = _pgo_confirm(
+            "fake prompt",
+            default="n", eof_default="n",
+            options=_confirm_options(),
+            abort_msg="declined",
+        )
+    assert result is True
+
+
+def test_pgo_confirm_tty_no_raises():
+    """User answers 'n' at TTY → raises _PGOAborted with the abort_msg."""
+    with patch("sysforge.pipeline.stages.toolchain.is_interactive",
+               return_value=True), \
+         patch("sysforge.pipeline.stages.toolchain.prompt_choice",
+               return_value="n"):
+        with pytest.raises(_PGOAborted, match="user declined the build"):
+            _pgo_confirm(
+                "fake prompt",
+                default="n", eof_default="n",
+                options=_confirm_options(),
+                abort_msg="user declined the build",
+            )

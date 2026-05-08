@@ -68,6 +68,13 @@ sysforge update --install-only
 #     strict mode and refuses on dirty or diverged trees; bypass per-run
 #     with --allow-dirty-llvm. PGO profdata version mismatches are never
 #     bypassable.
+#
+#     `run toolchain` auto-downloads any missing toolchain PKGBUILDs through
+#     the SourceSyncScheduler and refreshes existing trees against upstream
+#     (gated by --no-update). The PGO sub-flow is fragile, so it prompts at
+#     four decision points (profdata reuse, staging/pgo_store purge, 3-pass
+#     start, suspicious profdata size); pass --auto-pgo to bypass the prompts
+#     for unattended runs.
 sysforge run toolchain --allow-dirty-llvm
 
 # 9. Manage packages.toml entries (install list during pipeline bootstrap;

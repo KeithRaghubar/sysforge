@@ -361,6 +361,7 @@ def _cmd_run_toolchain(args):
         persist_log=args.persist_log,
         makepkg_flags=expand_makepkg_flags(args.makepkg) if args.makepkg else [],
         rebuild_profdata=args.rebuild_profdata,
+        auto_pgo=args.auto_pgo,
         allow_dirty_llvm=args.allow_dirty_llvm,
     )
     run_stage_standalone(ToolchainStage(), config, options)
@@ -891,6 +892,11 @@ def _add_run_parser(sub):
         help="Override state directory.")
     p_toolchain.add_argument("--rebuild-profdata", action="store_true", dest="rebuild_profdata",
         help="Force a full 3-pass PGO build even if compatible profdata already exists.")
+    p_toolchain.add_argument("--auto-pgo", action="store_true", dest="auto_pgo",
+        help="Bypass the PGO confirmation prompts (profdata reuse, staging/pgo_store "
+             "purge, 3-pass start, suspicious profdata size). Required for non-interactive "
+             "PGO runs; without it, a non-TTY invocation aborts the PGO sub-flow because PGO "
+             "is fragile and silent mis-optimisation is the failure mode.")
     p_toolchain.add_argument("--allow-dirty-llvm", action="store_true", dest="allow_dirty_llvm",
         help="Bypass the LLVM safety pre-flight refusal on dirty or diverged "
              "trees. PGO profdata version mismatches cannot be bypassed.")

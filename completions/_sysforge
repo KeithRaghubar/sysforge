@@ -368,6 +368,7 @@ _sysforge_run_toolchain() {
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--rebuild-profdata[force a full 3-pass PGO build even if profdata exists]' \
+    '--auto-pgo[bypass PGO confirmation prompts; required for non-interactive PGO]' \
     '--allow-dirty-llvm[bypass the LLVM safety pre-flight refusal on dirty/diverged trees]' \
   && return
   _sysforge_makepkg_flags

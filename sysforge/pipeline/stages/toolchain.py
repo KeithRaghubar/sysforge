@@ -86,6 +86,87 @@ from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import lift_for_child
+from sysforge.primitives.source_sync import (
+    STATUS_DIVERGED,
+    STATUS_FAILED,
+    STATUS_PURGE_REFUSED,
+    STATUS_RATE_LIMITED,
+    SyncRequest,
+    get_scheduler,
+)
+
+_SYNC_BLOCKING_STATUSES = frozenset({
+    STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED,
+})
+
+
+def _sync_pkgbuild_dirs(pkgbuild_map: dict[str, "Path"]) -> None:
+    """
+    Sync each unique resolved PKGBUILD directory through ``SourceSyncScheduler``.
+
+    Mirrors the pattern in ``sysforge.update._sync_sources``: a single batched
+    AUR RPC short-circuit followed by sequential per-pkgbase requests. The
+    toolchain stage does not carry per-package source metadata (it is not
+    driven by ``packages.toml``); every dir is treated as ``source="aur"``.
+    The scheduler tolerates non-AUR remotes — the RPC short-circuit silently
+    no-ops for pkgbases not in the response and a regular ``git fetch`` runs.
+
+    Blocker statuses (``STATUS_FAILED`` / ``STATUS_RATE_LIMITED`` /
+    ``STATUS_PURGE_REFUSED``) raise ``RuntimeError``; ``STATUS_DIVERGED`` is
+    surfaced as a warning so users can opt to keep their local edits.
+    """
+    git_cfg = (load_sysforge_toml().get("git", {}) or {})
+    aur_cfg = (load_sysforge_toml().get("aur", {}) or {})
+    fetch_timeout = git_cfg.get("fetch_timeout", git_cfg.get("pull_timeout", 30))
+    clone_timeout = git_cfg.get("clone_timeout", 60)
+
+    scheduler = get_scheduler(
+        min_fetch_interval_ms=aur_cfg.get("min_fetch_interval_ms", 500),
+        rate_limit_abort_s=aur_cfg.get("rate_limit_abort_s", 120.0),
+        fetch_timeout=fetch_timeout,
+        clone_timeout=clone_timeout,
+    )
+
+    reqs: list[SyncRequest] = []
+    seen: set[str] = set()
+    for path in pkgbuild_map.values():
+        pkgbuild_dir = path.parent if path.name == "PKGBUILD" else path
+        key = str(pkgbuild_dir)
+        if key in seen:
+            continue
+        seen.add(key)
+        reqs.append(SyncRequest(
+            pkgbase=pkgbuild_dir.name,
+            pkgbuild_dir=pkgbuild_dir,
+            source="aur",
+        ))
+
+    if not reqs:
+        return
+
+    aur_bases = [r.pkgbase for r in reqs]
+    scheduler._ensure_rpc(aur_bases)
+
+    failures: list[str] = []
+    for req in reqs:
+        result = scheduler.request(req)
+        if result.status in _SYNC_BLOCKING_STATUSES:
+            failures.append(
+                f"{req.pkgbase}: {result.status} — {result.error or result.status}"
+            )
+        elif result.status == STATUS_DIVERGED:
+            _log.warn(
+                f"{req.pkgbase}: {result.error or 'divergent upstream'} — "
+                "build will use the local PKGBUILD; rerun with --cleansrc "
+                "to discard local edits and re-clone"
+            )
+
+    scheduler.close()
+
+    if failures:
+        raise RuntimeError(
+            "[TOOLCHAIN] PKGBUILD sync failed:\n  " + "\n  ".join(failures)
+        )
 
 # ---------------------------------------------------------------------------
 # Constants / defaults
@@ -181,7 +262,9 @@ def _package_lists(tcfg: dict) -> tuple[list[str], list[str], list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
+def _resolve_all_pkgbuilds(
+    names: list[str], config: dict, *, update: bool = True,
+) -> dict[str, Path]:
     """
     Resolve PKGBUILD paths for all package names.
 
@@ -191,6 +274,13 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
       2. Split scan: parse already-found PKGBUILDs for their pkgname arrays;
          reuse the path if a match is found.
       3. Full resolve: fall back to find_pkgbuild() which may clone from AUR/repo.
+
+    When ``update`` is True (default), every unique resolved PKGBUILD directory
+    is then routed through ``SourceSyncScheduler`` so missing trees get cloned
+    and pre-existing trees are refreshed against upstream — same RPC short-
+    circuit, rate-limit, and dirty-tree handling as ``sysforge update``. Pass
+    ``update=False`` (mapped from ``--no-update``) to use whatever is on disk
+    verbatim. Blocker statuses raise ``RuntimeError``.
 
     Returns {name: pkgbuild_path}. Raises RuntimeError on any miss.
     """
@@ -281,6 +371,10 @@ def _resolve_all_pkgbuilds(names: list[str], config: dict) -> dict[str, Path]:
         raise RuntimeError(
             "[TOOLCHAIN] Could not resolve PKGBUILDs:\n  " + "\n  ".join(errors)
         )
+
+    if update:
+        _sync_pkgbuild_dirs(resolved)
+
     return resolved
 
 
@@ -1141,6 +1235,58 @@ def _write_profdata_version(pgo_store: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Confirmation gate for the fragile PGO sub-flow
+# ---------------------------------------------------------------------------
+
+
+class _PGOAborted(RuntimeError):
+    """User declined a PGO confirmation prompt (or non-TTY without --auto-pgo)."""
+
+
+def _pgo_confirm(
+    msg: str,
+    *,
+    default: str,
+    eof_default: str,
+    options,
+    abort_msg: str,
+) -> bool:
+    """Confirmation gate for fragile PGO decision points.
+
+    Returns True if the user (or `--auto-pgo`) approves; raises ``_PGOAborted``
+    otherwise. Behaviour matrix:
+
+      • ``--auto-pgo`` set        → no prompt; treat as approved.
+      • TTY, no ``--auto-pgo``    → prompt; empty input → ``default``.
+      • Non-TTY, no ``--auto-pgo``→ ``prompt_choice`` returns ``eof_default``
+        (we set this to ``"n"`` everywhere, so the PGO path aborts cleanly with
+        a message directing the user to pass ``--auto-pgo``).
+
+    PGO fragility (silent mis-optimisation if profdata is wrong) is why we
+    deliberately diverge from the rest of sysforge's automation-by-default
+    posture here.
+    """
+    if getattr(options, "auto_pgo", False):
+        return True
+    if not is_interactive():
+        raise _PGOAborted(
+            f"{abort_msg} (non-interactive PGO requires --auto-pgo)"
+        )
+    answer = prompt_choice(
+        msg,
+        choices=("y", "n"),
+        default=default,
+        eof_default=eof_default,
+        retry_on_invalid=False,
+        tag="PGO",
+        level="WARN",
+    )
+    if answer == "y":
+        return True
+    raise _PGOAborted(abort_msg)
+
+
+# ---------------------------------------------------------------------------
 # Profdata reuse check
 # ---------------------------------------------------------------------------
 
@@ -1273,12 +1419,28 @@ def _build_llvm_pgo(
     if not options.rebuild_profdata and not options.dry_run:
         pgo_state, pgo_info = _check_existing_profdata(pgo_store, pgo_map)
         if pgo_state == "ready":
-            skip_profgen = True
-            profdata_path = Path(pgo_info)
-            _log.ui(
-                f"[PGO] Reusing existing profdata: {profdata_path}  "
-                f"(use --rebuild-profdata to force a full 3-pass build)",
-            )
+            # Prompt #1 — profdata reuse decision. Default yes (the common,
+            # cheap path); declining drops into prompts #2 and #3 below.
+            try:
+                _pgo_confirm(
+                    f"[PGO] Reuse existing profdata at {pgo_info}? "
+                    "Selecting no triggers a full 3-pass rebuild. [Y/n]:",
+                    default="y",
+                    eof_default="n",
+                    options=options,
+                    abort_msg="user declined profdata reuse",
+                )
+                skip_profgen = True
+                profdata_path = Path(pgo_info)
+                _log.ui(
+                    f"[PGO] Reusing existing profdata: {profdata_path}  "
+                    f"(use --rebuild-profdata to force a full 3-pass build)",
+                )
+            except _PGOAborted:
+                _log.ui(
+                    "[PGO] Profdata reuse declined — falling through to "
+                    "full 3-pass rebuild",
+                )
         elif pgo_state == "mismatch":
             _log.info(f"[PGO] Existing profdata incompatible: {pgo_info}")
         else:
@@ -1290,15 +1452,41 @@ def _build_llvm_pgo(
             f"({n_total} package(s) across {len(set({**pgo_map, **non_pgo_map, **lib32_map}.values()))} PKGBUILD(s))  "
             f"pgo_store={pgo_store}",
         )
-    else:
+
+    if not skip_profgen and not options.dry_run:
+        import shutil as _shutil
+
+        # Prompt #2 — purge staging/pgo_store. rmtree is silently destructive
+        # of partial Pass-3 staging from a prior failed run, so gate it.
+        if staging.exists() or pgo_store.exists():
+            _pgo_confirm(
+                f"[PGO] Purge staging and pgo_store to start fresh 3-pass build?\n"
+                f"  staging:   {staging}\n"
+                f"  pgo_store: {pgo_store}\n"
+                "[y/N]:",
+                default="n",
+                eof_default="n",
+                options=options,
+                abort_msg="user declined purge of staging/pgo_store",
+            )
+
+        # Prompt #3 — confirm the long 3-pass build before launch. Replaces
+        # the old "Starting 3-pass LLVM PGO build" log with an explicit gate.
+        _pgo_confirm(
+            "[PGO] About to start 3-pass LLVM PGO build "
+            f"({n_pgo} pgo PKGBUILD(s), {n_total} total) — "
+            "~2-3 hours; pass 2 is a long instrumented training run. "
+            f"pgo_store={pgo_store}. Proceed? [y/N]:",
+            default="n",
+            eof_default="n",
+            options=options,
+            abort_msg="user declined 3-pass PGO start",
+        )
         _log.ui(
             f"[PGO] Starting 3-pass LLVM PGO build  "
             f"({n_pgo} pgo PKGBUILD(s), {n_total} total across all passes)  "
             f"pgo_store={pgo_store}",
         )
-
-    if not skip_profgen and not options.dry_run:
-        import shutil as _shutil
 
         if staging.exists():
             _log.info(f"[PGO] Purging stale staging: {staging}")
@@ -1449,6 +1637,19 @@ def _build_llvm_pgo(
                         "check that CCACHE_DISABLE/SCCACHE_DISABLE took effect "
                         "and compilation actually ran.",
                     )
+                    # Prompt #4 — abort before Pass 3 unless the user explicitly
+                    # accepts the suspicious profdata. Wrong profdata silently
+                    # mis-optimises the resulting compiler, so default to no.
+                    _pgo_confirm(
+                        f"[PGO] Pass 2 profdata is suspiciously small "
+                        f"({profdata_size // (1024 * 1024)} MiB) — "
+                        "instrumentation may have been bypassed. "
+                        "Continue to Pass 3 with this profdata? [y/N]:",
+                        default="n",
+                        eof_default="n",
+                        options=options,
+                        abort_msg="user declined Pass 3 due to suspicious profdata",
+                    )
             _log.ui(f"[PGO] Profile data ready: {profdata_path}")
             _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
 
@@ -1596,8 +1797,11 @@ class ToolchainStage(Stage):
             f"Compiler: {compiler}  |  PGO: {pgo}  |  Packages: {pkg_summary}",
         )
 
-        # Resolve PKGBUILDs for all packages
-        pkgbuild_map = _resolve_all_pkgbuilds(all_names, config)
+        # Resolve PKGBUILDs for all packages. Sync through SourceSyncScheduler
+        # unless --no-update was passed.
+        pkgbuild_map = _resolve_all_pkgbuilds(
+            all_names, config, update=not options.no_update,
+        )
         _check_pkgver_consistency(pkgbuild_map)
 
         # LLVM safety pre-flight: refuse-by-default on dirty/diverged trees.
