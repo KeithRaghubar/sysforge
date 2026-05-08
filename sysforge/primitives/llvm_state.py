@@ -347,7 +347,14 @@ def collect_llvm_state(
             else:
                 outcome = git_fetch_and_compare(pkgbuild_dir)
                 divergence = _divergence_from_outcome(outcome)
-                head_short = _short(outcome.head_after or outcome.head_before)
+                # For ``diverged``, head_after is the upstream FETCH_HEAD —
+                # the local HEAD is in head_before. For other statuses
+                # head_after reflects the post-fetch local HEAD.
+                local_head = (
+                    outcome.head_before if outcome.status == "diverged"
+                    else (outcome.head_after or outcome.head_before)
+                )
+                head_short = _short(local_head)
                 upstream_short = _short(outcome.head_after)
             if divergence == "diverged":
                 has_diverged = True

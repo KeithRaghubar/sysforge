@@ -11,8 +11,6 @@ Covers:
 import gzip
 import json
 import subprocess
-import time
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -976,6 +974,8 @@ def test_git_fetch_and_compare_fetched_fast_forward(tmp_path):
             return _cp(stdout=".git")
         if "@{u}" in cmd_str:
             return _cp(stdout="origin/main")
+        if cmd[3:6] == ["rev-parse", "--verify", "--quiet"]:
+            return _cp()  # HEAD exists (empty-repo probe in git_is_dirty)
         if cmd[3:5] == ["rev-parse", "HEAD"]:
             if any("merge" in c for c in calls[:-1]):
                 return _cp(stdout=new)  # post-merge

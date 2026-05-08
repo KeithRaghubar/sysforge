@@ -139,8 +139,17 @@ def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
 
     Output is streamed line-by-line to the build log so progress is visible at
     -vvv on slow networks (cloning from gitlab.archlinux.org can take minutes).
+
+    If ``dest`` exists but has no PKGBUILD, it's a leftover from an aborted
+    prior clone — pkgctl exits 0 with "Skip cloning: Directory exists" in
+    that case, silently masking the missing checkout. Purge first so the
+    re-clone runs (purge_src refuses if the leftover has uncommitted work).
     """
     timeout = timeout or None  # 0 → disable
+    if (dest.exists()
+            and (dest / ".git").exists()
+            and not (dest / "PKGBUILD").exists()):
+        purge_src(dest)
     _build_log.info(f"Checking out {name!r} from official repos → {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -407,11 +416,22 @@ def git_is_dirty(pkgbuild_dir: Path) -> bool:
     3. No tracking branch — the repo is entirely local with no upstream to compare
        against, so it is treated as dirty by definition.
 
+    An empty repo with no HEAD (no commits) is treated as clean — it has no
+    work to protect, and reporting it as dirty would block recovery from
+    aborted-clone leftovers (`.git/` only, no PKGBUILD).
+
     Returns False if the directory is not a git repo or is clean and fully in sync
     with its tracking branch.
     """
     r = subprocess.run(
         ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        return False
+
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--verify", "--quiet", "HEAD"],
         capture_output=True,
     )
     if r.returncode != 0:
