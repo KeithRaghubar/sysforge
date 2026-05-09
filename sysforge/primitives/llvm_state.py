@@ -33,6 +33,7 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives.aur import (
     GitFetchOutcome,
+    classify_head_vs_upstream,
     git_fetch_and_compare,
 )
 from sysforge.primitives.pkgbuild_patcher import is_llvm_pkgbase
@@ -164,15 +165,20 @@ def _resolve_local_only(pkg: str, config: dict | None) -> Path | None:
 # ---------------------------------------------------------------------------
 
 def _dirty_reason(pkgbuild_dir: Path) -> tuple[bool, str | None]:
-    """Re-derive the reason for a dirty tree so we can render it."""
+    """Re-derive the reason for a dirty tree so we can render it.
+
+    Mirrors :func:`sysforge.primitives.aur.git_is_dirty` exactly so the report
+    cannot disagree with the dirty-tree gating used by ``purge_src``.
+    Distinguishes ``"N commit(s) ahead of upstream"`` (true unpushed work)
+    from ``"diverged from upstream (N local / M upstream)"`` (forked
+    histories with at least one local-user-authored commit), and treats
+    upstream-only divergence (``diverged_upstream``) as clean.
+    """
     if not pkgbuild_dir.exists():
         return False, None
 
-    is_repo = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
-        capture_output=True,
-    ).returncode == 0
-    if not is_repo:
+    state, n_local, n_upstream = classify_head_vs_upstream(pkgbuild_dir)
+    if state in ("not_a_repo", "no_head"):
         return False, None
 
     r = subprocess.run(
@@ -183,23 +189,15 @@ def _dirty_reason(pkgbuild_dir: Path) -> tuple[bool, str | None]:
     if r.returncode == 0 and r.stdout.strip():
         return True, "uncommitted changes"
 
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse",
-         "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
+    if state == "no_tracking":
         return True, "no upstream tracking branch"
-
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-list", "--count", "@{u}..HEAD"],
-        capture_output=True, text=True,
-    )
-    if r.returncode == 0:
-        count = r.stdout.strip()
-        if count.isdigit() and int(count) > 0:
-            return True, f"{count} unpushed commit(s)"
-
+    if state == "ahead":
+        suffix = "s" if n_local != 1 else ""
+        return True, f"{n_local} commit{suffix} ahead of upstream"
+    if state == "diverged_user":
+        return True, (
+            f"diverged from upstream ({n_local} local / {n_upstream} upstream)"
+        )
     return False, None
 
 

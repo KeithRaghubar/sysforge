@@ -406,38 +406,138 @@ def _rev_parse(pkgbuild_dir: Path, ref: str) -> str | None:
     return r.stdout.strip() or None
 
 
+def _local_user_email(pkgbuild_dir: Path) -> str | None:
+    """Return ``git config user.email`` for ``pkgbuild_dir`` (repo or global).
+
+    Empty string / missing config → None. Whitespace is stripped.
+    """
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "config", "--get", "user.email"],
+        capture_output=True, text=True,
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip()
+    return None
+
+
+def classify_head_vs_upstream(
+    pkgbuild_dir: Path,
+) -> tuple[str, int, int]:
+    """Classify HEAD relative to its upstream tracking branch.
+
+    Returns ``(state, n_local, n_upstream)`` where ``state`` is one of:
+
+    * ``"not_a_repo"``        — directory has no ``.git``.
+    * ``"no_head"``            — git repo exists but ``HEAD`` is unresolvable
+      (empty clone, ``.git/`` only). Trivially safe to purge.
+    * ``"no_tracking"``        — ``@{u}`` does not resolve. Treated as a
+      local-only repo by ``git_is_dirty``.
+    * ``"clean"``              — HEAD == upstream.
+    * ``"behind"``             — HEAD is a strict ancestor of upstream
+      (local repo just out of date).
+    * ``"ahead"``              — upstream is a strict ancestor of HEAD
+      (operator has unpushed commits).
+    * ``"diverged_user"``      — HEAD and upstream share a common ancestor
+      but neither is descendant of the other, **and** at least one of the
+      ``@{u}..HEAD`` commits is authored by ``git config user.email``.
+    * ``"diverged_upstream"``  — same divergent shape, but no commits in
+      ``@{u}..HEAD`` are authored by the local user. Most likely the
+      upstream rewrote history (force-push); the local clone is logically
+      in-sync, just out of date. Treated as not-dirty.
+
+    ``n_local`` / ``n_upstream`` are commit counts for ``@{u}..HEAD`` and
+    ``HEAD..@{u}`` respectively (both 0 for ``clean``; ``n_local`` is the
+    "ahead" count for ``ahead``).
+    """
+    is_repo = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
+        capture_output=True,
+    ).returncode == 0
+    if not is_repo:
+        return "not_a_repo", 0, 0
+
+    has_head = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--verify", "--quiet", "HEAD"],
+        capture_output=True,
+    ).returncode == 0
+    if not has_head:
+        return "no_head", 0, 0
+
+    upstream = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse",
+         "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        capture_output=True, text=True,
+    )
+    if upstream.returncode != 0:
+        return "no_tracking", 0, 0
+
+    def _count(spec: str) -> int:
+        r = subprocess.run(
+            ["git", "-C", str(pkgbuild_dir), "rev-list", "--count", spec],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            return 0
+        n = r.stdout.strip()
+        return int(n) if n.isdigit() else 0
+
+    n_local = _count("@{u}..HEAD")
+    n_upstream = _count("HEAD..@{u}")
+
+    if n_local == 0 and n_upstream == 0:
+        return "clean", 0, 0
+    if n_local == 0:
+        return "behind", 0, n_upstream
+    if n_upstream == 0:
+        return "ahead", n_local, 0
+
+    # Divergent histories — split on authorship.
+    local_email = _local_user_email(pkgbuild_dir)
+    if not local_email:
+        # No local identity to attribute commits to: be conservative and
+        # treat any divergent commit as the operator's work.
+        return "diverged_user", n_local, n_upstream
+
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "log",
+         "--format=%ae", "@{u}..HEAD"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return "diverged_user", n_local, n_upstream
+    authors = {line.strip().lower() for line in r.stdout.splitlines() if line.strip()}
+    if local_email.lower() in authors:
+        return "diverged_user", n_local, n_upstream
+    return "diverged_upstream", n_local, n_upstream
+
+
 def git_is_dirty(pkgbuild_dir: Path) -> bool:
     """
     Return True if pkgbuild_dir is a git repo with local modifications, defined as:
 
     1. Uncommitted changes — staged or unstaged modifications to tracked files.
        (Untracked files such as build artifacts are intentionally ignored.)
-    2. Unpushed commits — commits that exist locally but not on the tracking branch.
-    3. No tracking branch — the repo is entirely local with no upstream to compare
-       against, so it is treated as dirty by definition.
+    2. Ahead-of-upstream commits — commits on HEAD not on the tracking branch
+       (true unpushed work).
+    3. ``diverged_user`` — divergent histories where the local user authored
+       at least one of the ``@{u}..HEAD`` commits.
+    4. No tracking branch — the repo is entirely local with no upstream to
+       compare against, so it is treated as dirty by definition.
 
-    An empty repo with no HEAD (no commits) is treated as clean — it has no
-    work to protect, and reporting it as dirty would block recovery from
-    aborted-clone leftovers (`.git/` only, no PKGBUILD).
+    Empty repos (no HEAD), clean trees, ``behind`` (out of date but no local
+    work), and ``diverged_upstream`` (force-pushed upstream, no local commits
+    authored by the user) are all reported as not dirty.
 
     Returns False if the directory is not a git repo or is clean and fully in sync
     with its tracking branch.
     """
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
-        capture_output=True,
-    )
-    if r.returncode != 0:
+    state, _, _ = classify_head_vs_upstream(pkgbuild_dir)
+    if state in ("not_a_repo", "no_head"):
         return False
 
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--verify", "--quiet", "HEAD"],
-        capture_output=True,
-    )
-    if r.returncode != 0:
-        return False
-
-    # Check 1: uncommitted changes (tracked files only)
+    # Uncommitted-tracked check is independent of the head-vs-upstream
+    # classification — a clean classification can still co-exist with
+    # uncommitted edits to PKGBUILD.
     r = subprocess.run(
         ["git", "-C", str(pkgbuild_dir), "status",
          "--short", "--untracked-files=no"],
@@ -446,35 +546,20 @@ def git_is_dirty(pkgbuild_dir: Path) -> bool:
     if r.returncode == 0 and r.stdout.strip():
         return True
 
-    # Check 2: verify there is a tracking branch
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse",
-         "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        # No upstream configured — treat as dirty (entirely local repo)
-        return True
-
-    # Check 3: count commits on HEAD that are not on the upstream
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-list", "--count", "@{u}..HEAD"],
-        capture_output=True, text=True,
-    )
-    if r.returncode == 0:
-        count = r.stdout.strip()
-        return count.isdigit() and int(count) > 0
-
-    return False
+    return state in ("no_tracking", "ahead", "diverged_user")
 
 
-def purge_src(pkgbuild_dir: Path) -> None:
+def purge_src(pkgbuild_dir: Path, *, force: bool = False) -> None:
     """
     Remove pkgbuild_dir to allow a fresh clone on the next build.
 
     Refuses (raises RuntimeError) if the directory is a git repo with local
     work that would be destroyed: uncommitted tracked changes, unpushed
     commits, or no upstream tracking branch (entirely-local repo).
+
+    Pass ``force=True`` to bypass the dirty-tree guard and purge unconditionally
+    — the caller has already decided the local work is not worth preserving
+    (e.g. ``--cleansrc-force`` after upstream rewrote history).
 
     A non-existent directory is a no-op. A non-git directory is purged
     unconditionally — it has no commit history to protect.
@@ -487,14 +572,15 @@ def purge_src(pkgbuild_dir: Path) -> None:
         capture_output=True,
     ).returncode == 0
 
-    if is_git and git_is_dirty(pkgbuild_dir):
+    if is_git and not force and git_is_dirty(pkgbuild_dir):
         raise RuntimeError(
             f"refusing to purge {pkgbuild_dir}: uncommitted changes, "
-            "unpushed commits, or no upstream tracking branch — "
-            "resolve manually or commit/push before retrying"
+            "ahead-of-upstream commits, or no upstream tracking branch — "
+            "resolve manually, commit/push, or pass --cleansrc-force"
         )
 
-    _git_log.warn(f"purging {pkgbuild_dir} for clean re-clone")
+    suffix = " (forced)" if force else ""
+    _git_log.warn(f"purging {pkgbuild_dir} for clean re-clone{suffix}")
     shutil.rmtree(pkgbuild_dir)
 
 

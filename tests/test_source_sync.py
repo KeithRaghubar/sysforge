@@ -299,10 +299,10 @@ def test_cleansrc_purges_and_reclones(tmp_path):
          patch("sysforge.primitives.source_sync.aur_clone", side_effect=fake_clone) as clone, \
          patch("sysforge.primitives.source_sync._head_commit", return_value="new"):
         # After purge_src the dir no longer exists; emulate that side effect.
-        purge.side_effect = lambda d: (_ for _ in ()).throw(StopIteration) if False else None
+        purge.side_effect = lambda d, *, force=False: None
         result = sched.request(SyncRequest(pkgbase="htop", pkgbuild_dir=pkg))
 
-    purge.assert_called_once_with(pkg)
+    purge.assert_called_once_with(pkg, force=False)
     # Clone runs because the purge invalidates the cache entry; even with the
     # dir still present, cleansrc forces past the RPC short-circuit.
     assert clone.called or result.status in (STATUS_CLONED, STATUS_UP_TO_DATE, STATUS_FETCHED)

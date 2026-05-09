@@ -275,7 +275,8 @@ def _sync_sources(
     """
     offline = getattr(args, "offline", False)
     dry_run = getattr(args, "dry_run", False)
-    cleansrc = getattr(args, "cleansrc", False) and not dry_run
+    cleansrc_force = getattr(args, "cleansrc_force", False) and not dry_run
+    cleansrc = (cleansrc_force or getattr(args, "cleansrc", False)) and not dry_run
     force_devel = getattr(args, "devel", False)
 
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
@@ -290,6 +291,7 @@ def _sync_sources(
         state_dir=state_dir,
         offline=offline,
         cleansrc=cleansrc,
+        cleansrc_force=cleansrc_force,
         force_devel=force_devel,
         min_fetch_interval_ms=aur_cfg.get("min_fetch_interval_ms", 500),
         rate_limit_abort_s=aur_cfg.get("rate_limit_abort_s", 120.0),

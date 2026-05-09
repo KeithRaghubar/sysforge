@@ -22,7 +22,11 @@ def cmd_fetch(args) -> None:
     """Entry point for sysforge fetch."""
     config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
     config = load_config(config_paths=config_paths)
+    cleansrc_force = getattr(args, "cleansrc_force", False)
+    cleansrc = cleansrc_force or getattr(args, "cleansrc", False)
     scheduler = get_scheduler(
+        cleansrc=cleansrc,
+        cleansrc_force=cleansrc_force,
         force_devel=getattr(args, "devel", False),
     )
 
@@ -45,7 +49,9 @@ def cmd_fetch(args) -> None:
 
             pkgbuild_dir = pkgbuild_path.parent
 
-            if not args.no_update:
+            # --cleansrc[/-force] always engages the scheduler: --no-update
+            # only suppresses the lightweight refresh, not an explicit purge.
+            if cleansrc or not args.no_update:
                 result = scheduler.request(SyncRequest(
                     pkgbase=pkgbuild_dir.name,
                     pkgbuild_dir=pkgbuild_dir,

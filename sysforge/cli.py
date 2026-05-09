@@ -100,14 +100,16 @@ def _cmd_build(args):
     config = _load_config_with_overrides(args)
     if not getattr(args, "no_llvm_preflight", False):
         _render_llvm_preflight([_pkg_to_name(p) for p in packages], config)
+    cleansrc_force = getattr(args, "cleansrc_force", False)
+    cleansrc_active = cleansrc_force or getattr(args, "cleansrc", False)
     try:
         for i, pkg in enumerate(packages):
-            if getattr(args, "cleansrc", False):
+            if cleansrc_active:
                 from sysforge.primitives.aur import purge_src
                 target_dir = _cleansrc_target_dir(pkg, config)
                 if target_dir is not None:
                     try:
-                        purge_src(target_dir)
+                        purge_src(target_dir, force=cleansrc_force)
                     except RuntimeError as e:
                         _log.error(f"--cleansrc {pkg!r}: {e}")
                         continue
@@ -155,6 +157,7 @@ def _cmd_update(args):
             ("--makepkg", getattr(args, "makepkg", None)),
             ("--no-cleanbuild", getattr(args, "no_cleanbuild", False)),
             ("--cleansrc", getattr(args, "cleansrc", False)),
+            ("--cleansrc-force", getattr(args, "cleansrc_force", False)),
             ("--interactive", getattr(args, "interactive", False)),
             ("--cache-report", getattr(args, "cache_report", False)),
         ]
@@ -355,6 +358,8 @@ def _cmd_run_toolchain(args):
     options = RunOptions(
         dry_run=args.dry_run,
         no_update=args.no_update,
+        cleansrc=getattr(args, "cleansrc", False),
+        cleansrc_force=getattr(args, "cleansrc_force", False),
         cache_report=args.cache_report,
         abi_check=args.abi_check,
         state_dir=Path(args.state_dir) if args.state_dir else None,
@@ -556,7 +561,12 @@ def _add_build_parser(sub):
     p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
         help="Purge the package src dir and re-clone before building. "
              "Refuses (per package) if the existing clone has uncommitted changes, "
-             "unpushed commits, or no upstream tracking branch.")
+             "ahead-of-upstream commits, or no upstream tracking branch.")
+    p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
+        help="Like --cleansrc but bypasses the dirty/diverged guard and "
+             "overwrites the local tree unconditionally. Use when the upstream "
+             "rewrote history (e.g. Arch packaging repos force-push every release) "
+             "and the local commits have no value to preserve.")
     p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
         help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
@@ -573,6 +583,13 @@ def _add_fetch_parser(sub):
     )
     p.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase for packages that are already cloned.")
+    p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
+        help="Purge each package's src dir and re-clone. Refuses (per package) "
+             "if the existing clone has uncommitted changes, ahead-of-upstream "
+             "commits, or no upstream tracking branch.")
+    p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
+        help="Like --cleansrc but bypasses the dirty/diverged guard and "
+             "overwrites the local tree unconditionally.")
     p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
         help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
@@ -597,7 +614,8 @@ def _add_update_parser(sub):
     p.add_argument("--install-only", action="store_true", dest="install_only",
         help="Skip rebuild; install only those locally-built artifacts in PKGDEST that are "
              "newer than the installed version. Implies --offline. Mutually exclusive with "
-             "--makepkg, --no-cleanbuild, --cleansrc, --interactive, and --cache-report.")
+             "--makepkg, --no-cleanbuild, --cleansrc, --cleansrc-force, --interactive, and "
+             "--cache-report.")
     p.add_argument("--packages", metavar="FILE", dest="packages",
         help=f"Path to packages.toml for override rules (default: {PACKAGES_PATH}).")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
@@ -622,8 +640,14 @@ def _add_update_parser(sub):
              "Useful when packages are already built and you only need to re-run the install step.")
     p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
         help="Purge each package's src dir and re-clone before building. "
-             "Per-package fatal if the clone has uncommitted changes, unpushed commits, "
-             "or no upstream — that package is reported failed and the run continues.")
+             "Per-package fatal if the clone has uncommitted changes, "
+             "ahead-of-upstream commits, or no upstream — that package is "
+             "reported failed and the run continues.")
+    p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
+        help="Like --cleansrc but bypasses the dirty/diverged guard and "
+             "overwrites every local tree unconditionally. Use when the "
+             "upstream rewrote history (e.g. Arch packaging repos force-push "
+             "every release) and local commits have no value to preserve.")
     p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
         help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
@@ -899,7 +923,19 @@ def _add_run_parser(sub):
              "is fragile and silent mis-optimisation is the failure mode.")
     p_toolchain.add_argument("--allow-dirty-llvm", action="store_true", dest="allow_dirty_llvm",
         help="Bypass the LLVM safety pre-flight refusal on dirty or diverged "
-             "trees. PGO profdata version mismatches cannot be bypassed.")
+             "trees. PGO profdata version mismatches cannot be bypassed. "
+             "Note: this only suppresses the refusal — it does not modify the "
+             "tree. Use --cleansrc-force to actually overwrite the local "
+             "trees with upstream.")
+    p_toolchain.add_argument("--cleansrc", action="store_true", dest="cleansrc",
+        help="Purge each toolchain package's src dir and re-clone before "
+             "building. Refuses (per package) if the existing clone has "
+             "uncommitted changes, ahead-of-upstream commits, or no upstream.")
+    p_toolchain.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
+        help="Like --cleansrc but bypasses the dirty/diverged guard and "
+             "overwrites every local toolchain tree unconditionally. Use when "
+             "the upstream rewrote history (e.g. Arch packaging repos "
+             "force-push every release) and local commits have no value.")
     p_toolchain.set_defaults(func=_cmd_run_toolchain)
 
     # run packages

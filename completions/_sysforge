@@ -111,6 +111,7 @@ _sysforge_build() {
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--no-update[skip git pull --rebase before building]' \
     '--cleansrc[purge src dir and re-clone before building (refuses if local work present)]' \
+    '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '*: :_sysforge_pkg_or_file' \
@@ -121,6 +122,8 @@ _sysforge_build() {
 _sysforge_fetch() {
   _arguments \
     '--no-update[skip git pull --rebase for already-cloned packages]' \
+    '--cleansrc[purge src dirs and re-clone (refuses if local work present)]' \
+    '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
     '*: :_sysforge_pkg_names'
@@ -136,6 +139,7 @@ _sysforge_update() {
     '--interactive[pause on build failures to allow manual correction]' \
     '--no-cleanbuild[skip automatic --cleanbuild; useful to re-run only the install step]' \
     '--cleansrc[purge src dirs and re-clone before building (only for packages needing rebuild)]' \
+    '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--state-dir[override state directory]:directory:_files -/' \
@@ -370,6 +374,8 @@ _sysforge_run_toolchain() {
     '--rebuild-profdata[force a full 3-pass PGO build even if profdata exists]' \
     '--auto-pgo[bypass PGO confirmation prompts; required for non-interactive PGO]' \
     '--allow-dirty-llvm[bypass the LLVM safety pre-flight refusal on dirty/diverged trees]' \
+    '--cleansrc[purge each toolchain src dir and re-clone (refuses if local work present)]' \
+    '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
   && return
   _sysforge_makepkg_flags
 }

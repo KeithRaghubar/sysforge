@@ -35,6 +35,8 @@ class RunOptions:
     abi_check: bool = False          # run post-build ABI compatibility check on .so files
     # Source updates
     no_update: bool = False          # skip git pull --rebase before each build
+    cleansrc: bool = False           # purge each src dir and re-clone (refuses on dirty trees)
+    cleansrc_force: bool = False     # like cleansrc but bypasses the dirty/diverged guard
     # Extra makepkg flags (appended after profile makepkg_flags)
     makepkg_flags: list[str] = field(default_factory=list)
     # PGO profdata

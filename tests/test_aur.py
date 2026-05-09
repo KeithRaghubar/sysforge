@@ -19,6 +19,7 @@ import pytest
 from sysforge.primitives.aur import (
     aur_clone,
     aur_info,
+    classify_head_vs_upstream,
     fetch_aur_name_cache,
     git_fetch_and_compare,
     git_is_dirty,
@@ -769,7 +770,7 @@ def test_git_is_dirty_clean_and_synced(tmp_path):
 
 
 def test_git_is_dirty_checks_rev_list_after_clean_status(tmp_path):
-    """Verify rev-list is called even when status is clean."""
+    """Verify both rev-list directions are queried (ahead + behind)."""
     calls = []
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
@@ -786,8 +787,8 @@ def test_git_is_dirty_checks_rev_list_after_clean_status(tmp_path):
     with patch("subprocess.run", side_effect=fake_run):
         git_is_dirty(tmp_path)
     rev_list_calls = [c for c in calls if "rev-list" in c]
-    assert len(rev_list_calls) == 1
-    assert "@{u}..HEAD" in rev_list_calls[0]
+    assert any("@{u}..HEAD" in c for c in rev_list_calls)
+    assert any("HEAD..@{u}" in c for c in rev_list_calls)
 
 
 # ---------------------------------------------------------------------------
@@ -899,6 +900,208 @@ def test_purge_src_no_upstream_raises(tmp_path):
         with pytest.raises(RuntimeError, match="refusing to purge"):
             purge_src(target)
     assert target.exists()
+
+
+# ---------------------------------------------------------------------------
+# purge_src force=True bypasses the dirty-tree guard
+# ---------------------------------------------------------------------------
+
+def _git(*args, cwd):
+    """Run a git command, asserting success. Helper for the real-git tests."""
+    subprocess.run(["git", "-C", str(cwd), *args],
+                   check=True, capture_output=True)
+
+
+def _seed_upstream_and_local(tmp_path: Path, *,
+                             local_email: str = "local@example.test",
+                             rewrite_upstream: bool = False,
+                             upstream_extra: int = 0,
+                             local_extra: int = 0,
+                             local_authored_extra: bool = False) -> Path:
+    """Seed an upstream + clone with controllable ahead/behind/diverged shape.
+
+    Returns the local clone Path. The remote tracking branch is named
+    ``main`` and the clone has ``user.email`` set to ``local_email`` so
+    authorship-based classification has a stable identity to compare against.
+    """
+    upstream = tmp_path / "upstream.git"
+    upstream.mkdir()
+    _git("init", "--bare", "--initial-branch=main", cwd=upstream)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git("init", "--initial-branch=main", cwd=seed)
+    _git("config", "user.email", "upstream@example.test", cwd=seed)
+    _git("config", "user.name", "upstream", cwd=seed)
+    _git("config", "commit.gpgsign", "false", cwd=seed)
+    (seed / "PKGBUILD").write_text("pkgname=foo\n")
+    _git("add", "PKGBUILD", cwd=seed)
+    _git("commit", "-m", "initial", cwd=seed)
+    _git("remote", "add", "origin", str(upstream), cwd=seed)
+    _git("push", "-u", "origin", "main", cwd=seed)
+
+    local = tmp_path / "local"
+    _git("clone", str(upstream), str(local), cwd=tmp_path)
+    _git("config", "user.email", local_email, cwd=local)
+    _git("config", "user.name", "local", cwd=local)
+    _git("config", "commit.gpgsign", "false", cwd=local)
+
+    if rewrite_upstream:
+        # Force-push a rewritten history on upstream: same logical content,
+        # different SHAs. Mirrors what gitlab.archlinux.org's pkgctl release
+        # flow does each upgpkg.
+        _git("checkout", "--orphan", "rewrite", cwd=seed)
+        (seed / "PKGBUILD").write_text("pkgname=foo\n# rewritten\n")
+        _git("add", "PKGBUILD", cwd=seed)
+        _git("commit", "-m", "rewritten initial", cwd=seed)
+        _git("branch", "-M", "main", cwd=seed)
+        _git("push", "--force", "origin", "main", cwd=seed)
+        # Don't pull into local — leaving local's HEAD on the original SHA
+        # is what creates the diverged-upstream-only state.
+
+    for i in range(upstream_extra):
+        (seed / f"u{i}.txt").write_text(f"u{i}")
+        _git("add", f"u{i}.txt", cwd=seed)
+        _git("commit", "-m", f"upstream-{i}", cwd=seed)
+        _git("push", "origin", "main", cwd=seed)
+
+    for i in range(local_extra):
+        author = local_email if local_authored_extra else "upstream@example.test"
+        env_name = "local" if local_authored_extra else "upstream"
+        (local / f"l{i}.txt").write_text(f"l{i}")
+        _git("add", f"l{i}.txt", cwd=local)
+        subprocess.run(
+            ["git", "-C", str(local), "-c", f"user.email={author}",
+             "-c", f"user.name={env_name}",
+             "commit", "-m", f"local-{i}"],
+            check=True, capture_output=True,
+        )
+
+    # Refresh local's tracking ref so @{u} reflects the actual upstream tip
+    # after a force-push.
+    _git("fetch", "origin", cwd=local)
+    return local
+
+
+def test_classify_clean_repo_returns_clean(tmp_path):
+    local = _seed_upstream_and_local(tmp_path)
+    state, n_local, n_upstream = classify_head_vs_upstream(local)
+    assert state == "clean"
+    assert n_local == 0
+    assert n_upstream == 0
+
+
+def test_classify_behind_only(tmp_path):
+    """Upstream advanced; local has nothing extra → behind."""
+    local = _seed_upstream_and_local(tmp_path, upstream_extra=2)
+    state, n_local, n_upstream = classify_head_vs_upstream(local)
+    assert state == "behind"
+    assert n_local == 0
+    assert n_upstream == 2
+
+
+def test_classify_ahead_only(tmp_path):
+    """Local has unpushed commits, upstream unchanged → ahead."""
+    local = _seed_upstream_and_local(
+        tmp_path, local_extra=3, local_authored_extra=True,
+    )
+    state, n_local, n_upstream = classify_head_vs_upstream(local)
+    assert state == "ahead"
+    assert n_local == 3
+    assert n_upstream == 0
+
+
+def test_classify_diverged_upstream_only(tmp_path):
+    """Upstream force-pushed; no local commits authored by local user.
+
+    The exact reproduction of Keith's LLVM workstation state.
+    """
+    local = _seed_upstream_and_local(tmp_path, rewrite_upstream=True)
+    state, n_local, n_upstream = classify_head_vs_upstream(local)
+    assert state == "diverged_upstream"
+    assert n_local >= 1
+    assert n_upstream >= 1
+
+
+def test_classify_diverged_user(tmp_path):
+    """Upstream force-pushed AND local user authored a divergent commit."""
+    local = _seed_upstream_and_local(
+        tmp_path,
+        rewrite_upstream=True,
+        local_extra=1,
+        local_authored_extra=True,
+    )
+    state, n_local, n_upstream = classify_head_vs_upstream(local)
+    assert state == "diverged_user"
+    assert n_local >= 2
+    assert n_upstream >= 1
+
+
+def test_git_is_dirty_diverged_upstream_returns_clean(tmp_path):
+    """Force-pushed upstream with no local user commits → not dirty."""
+    local = _seed_upstream_and_local(tmp_path, rewrite_upstream=True)
+    assert git_is_dirty(local) is False
+
+
+def test_git_is_dirty_diverged_user_returns_dirty(tmp_path):
+    """Divergence with at least one local-user-authored commit → dirty."""
+    local = _seed_upstream_and_local(
+        tmp_path, rewrite_upstream=True,
+        local_extra=1, local_authored_extra=True,
+    )
+    assert git_is_dirty(local) is True
+
+
+def test_purge_src_force_skips_dirty_check(tmp_path):
+    """force=True purges even when git_is_dirty would refuse."""
+    local = _seed_upstream_and_local(
+        tmp_path, local_extra=2, local_authored_extra=True,
+    )
+    assert git_is_dirty(local) is True
+    purge_src(local, force=True)
+    assert not local.exists()
+
+
+def test_purge_src_force_logs_forced_marker(tmp_path):
+    """The 'forced' marker is logged so the operator can audit."""
+    local = _seed_upstream_and_local(
+        tmp_path, local_extra=1, local_authored_extra=True,
+    )
+    with patch("sysforge.primitives.aur._git_log") as mock_log:
+        purge_src(local, force=True)
+    msg = mock_log.warn.call_args.args[0]
+    assert "(forced)" in msg
+
+
+def test_dirty_reason_ahead_label_via_classify(tmp_path):
+    """Sanity-check the ahead label produced by llvm_state._dirty_reason."""
+    from sysforge.primitives.llvm_state import _dirty_reason
+    local = _seed_upstream_and_local(
+        tmp_path, local_extra=4, local_authored_extra=True,
+    )
+    is_dirty, reason = _dirty_reason(local)
+    assert is_dirty is True
+    assert reason == "4 commits ahead of upstream"
+
+
+def test_dirty_reason_diverged_user_label(tmp_path):
+    from sysforge.primitives.llvm_state import _dirty_reason
+    local = _seed_upstream_and_local(
+        tmp_path, rewrite_upstream=True,
+        local_extra=2, local_authored_extra=True,
+    )
+    is_dirty, reason = _dirty_reason(local)
+    assert is_dirty is True
+    assert reason and reason.startswith("diverged from upstream (")
+
+
+def test_dirty_reason_diverged_upstream_clean(tmp_path):
+    """Force-pushed upstream / no user-authored commits → not dirty."""
+    from sysforge.primitives.llvm_state import _dirty_reason
+    local = _seed_upstream_and_local(tmp_path, rewrite_upstream=True)
+    is_dirty, reason = _dirty_reason(local)
+    assert is_dirty is False
+    assert reason is None
 
 
 # ---------------------------------------------------------------------------

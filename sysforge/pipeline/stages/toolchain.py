@@ -100,7 +100,12 @@ _SYNC_BLOCKING_STATUSES = frozenset({
 })
 
 
-def _sync_pkgbuild_dirs(pkgbuild_map: dict[str, "Path"]) -> None:
+def _sync_pkgbuild_dirs(
+    pkgbuild_map: dict[str, "Path"],
+    *,
+    cleansrc: bool = False,
+    cleansrc_force: bool = False,
+) -> None:
     """
     Sync each unique resolved PKGBUILD directory through ``SourceSyncScheduler``.
 
@@ -110,6 +115,10 @@ def _sync_pkgbuild_dirs(pkgbuild_map: dict[str, "Path"]) -> None:
     driven by ``packages.toml``); every dir is treated as ``source="aur"``.
     The scheduler tolerates non-AUR remotes — the RPC short-circuit silently
     no-ops for pkgbases not in the response and a regular ``git fetch`` runs.
+
+    ``cleansrc`` / ``cleansrc_force`` mirror the CLI flags: when set the
+    scheduler purges + re-clones each tree, with ``cleansrc_force`` further
+    bypassing the dirty-tree refusal in ``purge_src``.
 
     Blocker statuses (``STATUS_FAILED`` / ``STATUS_RATE_LIMITED`` /
     ``STATUS_PURGE_REFUSED``) raise ``RuntimeError``; ``STATUS_DIVERGED`` is
@@ -121,6 +130,8 @@ def _sync_pkgbuild_dirs(pkgbuild_map: dict[str, "Path"]) -> None:
     clone_timeout = git_cfg.get("clone_timeout", 60)
 
     scheduler = get_scheduler(
+        cleansrc=cleansrc or cleansrc_force,
+        cleansrc_force=cleansrc_force,
         min_fetch_interval_ms=aur_cfg.get("min_fetch_interval_ms", 500),
         rate_limit_abort_s=aur_cfg.get("rate_limit_abort_s", 120.0),
         fetch_timeout=fetch_timeout,
@@ -263,7 +274,10 @@ def _package_lists(tcfg: dict) -> tuple[list[str], list[str], list[str]]:
 
 
 def _resolve_all_pkgbuilds(
-    names: list[str], config: dict, *, update: bool = True,
+    names: list[str], config: dict, *,
+    update: bool = True,
+    cleansrc: bool = False,
+    cleansrc_force: bool = False,
 ) -> dict[str, Path]:
     """
     Resolve PKGBUILD paths for all package names.
@@ -372,8 +386,12 @@ def _resolve_all_pkgbuilds(
             "[TOOLCHAIN] Could not resolve PKGBUILDs:\n  " + "\n  ".join(errors)
         )
 
-    if update:
-        _sync_pkgbuild_dirs(resolved)
+    if update or cleansrc or cleansrc_force:
+        _sync_pkgbuild_dirs(
+            resolved,
+            cleansrc=cleansrc,
+            cleansrc_force=cleansrc_force,
+        )
 
     return resolved
 
@@ -1798,9 +1816,14 @@ class ToolchainStage(Stage):
         )
 
         # Resolve PKGBUILDs for all packages. Sync through SourceSyncScheduler
-        # unless --no-update was passed.
+        # unless --no-update was passed; --cleansrc[/-force] forces the sync
+        # path even with --no-update so an explicit purge isn't silently
+        # skipped.
         pkgbuild_map = _resolve_all_pkgbuilds(
-            all_names, config, update=not options.no_update,
+            all_names, config,
+            update=not options.no_update,
+            cleansrc=getattr(options, "cleansrc", False),
+            cleansrc_force=getattr(options, "cleansrc_force", False),
         )
         _check_pkgver_consistency(pkgbuild_map)
 

@@ -115,6 +115,7 @@ class SourceSyncScheduler:
         state_dir: Path,
         offline: bool = False,
         cleansrc: bool = False,
+        cleansrc_force: bool = False,
         force_devel: bool = False,
         min_fetch_interval_ms: int | None = None,
         rate_limit_abort_s: float | None = None,
@@ -123,7 +124,10 @@ class SourceSyncScheduler:
     ):
         self.state_dir = Path(state_dir)
         self.offline = offline
-        self.cleansrc = cleansrc
+        # cleansrc_force implies cleansrc — same purge gate, but with the
+        # dirty-tree refusal bypassed at purge_src.
+        self.cleansrc = cleansrc or cleansrc_force
+        self.cleansrc_force = cleansrc_force
         self.force_devel = force_devel
         self.rate_limit_abort_s = float(rate_limit_abort_s or 120.0)
         self.fetch_timeout = fetch_timeout if fetch_timeout is not None else 30
@@ -231,7 +235,7 @@ class SourceSyncScheduler:
         # --- cleansrc: purge before any other work ---
         if self.cleansrc and pkgbuild_dir.exists():
             try:
-                purge_src(pkgbuild_dir)
+                purge_src(pkgbuild_dir, force=self.cleansrc_force)
                 self.invalidate(pkgbase)
             except RuntimeError as e:
                 _log.error(f"--cleansrc {pkgbase}: {e}")
@@ -253,7 +257,12 @@ class SourceSyncScheduler:
                           and not (pkgbuild_dir / "PKGBUILD").exists())
         if needs_recovery:
             try:
-                purge_src(pkgbuild_dir)
+                # The recovery branch covers degenerate ``.git/``-only
+                # leftovers; ``git_is_dirty`` already reports those as not
+                # dirty (no HEAD), so the explicit force is unnecessary
+                # here. We still propagate ``cleansrc_force`` for
+                # consistency with the explicit cleansrc branch above.
+                purge_src(pkgbuild_dir, force=self.cleansrc_force)
             except RuntimeError as e:
                 return SyncResult(
                     pkgbase=pkgbase, status=STATUS_PURGE_REFUSED, error=str(e),
@@ -406,6 +415,7 @@ def get_scheduler(
     state_dir: Path | None = None,
     offline: bool = False,
     cleansrc: bool = False,
+    cleansrc_force: bool = False,
     force_devel: bool = False,
     min_fetch_interval_ms: int | None = None,
     rate_limit_abort_s: float | None = None,
@@ -415,9 +425,10 @@ def get_scheduler(
     """Return the per-process scheduler, constructing it on first call.
 
     Subsequent calls update mutable runtime flags (``offline`` / ``cleansrc``
-    / ``force_devel``) on the existing instance so callers in different
-    commands (e.g. `sysforge fetch` after `sysforge update`) can share the
-    metadata cache without re-reading ``source_meta.toml``.
+    / ``cleansrc_force`` / ``force_devel``) on the existing instance so
+    callers in different commands (e.g. `sysforge fetch` after `sysforge
+    update`) can share the metadata cache without re-reading
+    ``source_meta.toml``.
     """
     global _scheduler
     if _scheduler is None:
@@ -428,6 +439,7 @@ def get_scheduler(
             state_dir=state_dir,
             offline=offline,
             cleansrc=cleansrc,
+            cleansrc_force=cleansrc_force,
             force_devel=force_devel,
             min_fetch_interval_ms=min_fetch_interval_ms,
             rate_limit_abort_s=rate_limit_abort_s,
@@ -437,7 +449,8 @@ def get_scheduler(
         atexit.register(_scheduler.close)
     else:
         _scheduler.offline = offline or _scheduler.offline
-        _scheduler.cleansrc = cleansrc or _scheduler.cleansrc
+        _scheduler.cleansrc = cleansrc or cleansrc_force or _scheduler.cleansrc
+        _scheduler.cleansrc_force = cleansrc_force or _scheduler.cleansrc_force
         _scheduler.force_devel = force_devel or _scheduler.force_devel
     return _scheduler
 
