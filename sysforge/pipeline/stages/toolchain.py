@@ -110,11 +110,14 @@ def _sync_pkgbuild_dirs(
     Sync each unique resolved PKGBUILD directory through ``SourceSyncScheduler``.
 
     Mirrors the pattern in ``sysforge.update._sync_sources``: a single batched
-    AUR RPC short-circuit followed by sequential per-pkgbase requests. The
-    toolchain stage does not carry per-package source metadata (it is not
-    driven by ``packages.toml``); every dir is treated as ``source="aur"``.
-    The scheduler tolerates non-AUR remotes — the RPC short-circuit silently
-    no-ops for pkgbases not in the response and a regular ``git fetch`` runs.
+    AUR RPC short-circuit followed by sequential per-pkgbase requests. Each
+    pkgbase is classified as ``source="repo"`` (in any pacman sync DB) or
+    ``source="aur"`` via a single batched ``pacman -Si`` (``repo_packages``)
+    so that the scheduler's ``_clone`` path picks the right transport
+    (``pkgctl_checkout`` for repo, ``aur_clone`` for AUR) on the first sync
+    or after a ``--cleansrc`` purge. Without this classification, cleansrc
+    on a repo package (clang/llvm/lld/...) would purge the tree then try
+    to re-clone from AUR and silently leave the dir empty.
 
     ``cleansrc`` / ``cleansrc_force`` mirror the CLI flags: when set the
     scheduler purges + re-clones each tree, with ``cleansrc_force`` further
@@ -124,6 +127,8 @@ def _sync_pkgbuild_dirs(
     ``STATUS_PURGE_REFUSED``) raise ``RuntimeError``; ``STATUS_DIVERGED`` is
     surfaced as a warning so users can opt to keep their local edits.
     """
+    from sysforge.primitives.aur import repo_packages
+
     git_cfg = (load_sysforge_toml().get("git", {}) or {})
     aur_cfg = (load_sysforge_toml().get("aur", {}) or {})
     fetch_timeout = git_cfg.get("fetch_timeout", git_cfg.get("pull_timeout", 30))
@@ -138,7 +143,8 @@ def _sync_pkgbuild_dirs(
         clone_timeout=clone_timeout,
     )
 
-    reqs: list[SyncRequest] = []
+    pkgbases: list[str] = []
+    dirs: list[Path] = []
     seen: set[str] = set()
     for path in pkgbuild_map.values():
         pkgbuild_dir = path.parent if path.name == "PKGBUILD" else path
@@ -146,17 +152,28 @@ def _sync_pkgbuild_dirs(
         if key in seen:
             continue
         seen.add(key)
-        reqs.append(SyncRequest(
-            pkgbase=pkgbuild_dir.name,
-            pkgbuild_dir=pkgbuild_dir,
-            source="aur",
-        ))
+        pkgbases.append(pkgbuild_dir.name)
+        dirs.append(pkgbuild_dir)
 
-    if not reqs:
+    if not pkgbases:
         return
 
-    aur_bases = [r.pkgbase for r in reqs]
-    scheduler._ensure_rpc(aur_bases)
+    in_repo = repo_packages(pkgbases) if pkgbases else set()
+
+    reqs: list[SyncRequest] = [
+        SyncRequest(
+            pkgbase=pkgbase,
+            pkgbuild_dir=pkgbuild_dir,
+            source="repo" if pkgbase in in_repo else "aur",
+        )
+        for pkgbase, pkgbuild_dir in zip(pkgbases, dirs)
+    ]
+
+    # Repo packages have no AUR-RPC entry; priming the RPC with their
+    # names just wastes a request. Mirrors update.py:_sync_sources.
+    aur_bases = [r.pkgbase for r in reqs if r.source != "repo"]
+    if aur_bases:
+        scheduler._ensure_rpc(aur_bases)
 
     failures: list[str] = []
     for req in reqs:
@@ -1441,7 +1458,7 @@ def _build_llvm_pgo(
             # cheap path); declining drops into prompts #2 and #3 below.
             try:
                 _pgo_confirm(
-                    f"[PGO] Reuse existing profdata at {pgo_info}? "
+                    f"Reuse existing profdata at {pgo_info}? "
                     "Selecting no triggers a full 3-pass rebuild. [Y/n]:",
                     default="y",
                     eof_default="n",
@@ -1478,7 +1495,7 @@ def _build_llvm_pgo(
         # of partial Pass-3 staging from a prior failed run, so gate it.
         if staging.exists() or pgo_store.exists():
             _pgo_confirm(
-                f"[PGO] Purge staging and pgo_store to start fresh 3-pass build?\n"
+                f"Purge staging and pgo_store to start fresh 3-pass build?\n"
                 f"  staging:   {staging}\n"
                 f"  pgo_store: {pgo_store}\n"
                 "[y/N]:",
@@ -1491,7 +1508,7 @@ def _build_llvm_pgo(
         # Prompt #3 — confirm the long 3-pass build before launch. Replaces
         # the old "Starting 3-pass LLVM PGO build" log with an explicit gate.
         _pgo_confirm(
-            "[PGO] About to start 3-pass LLVM PGO build "
+            "About to start 3-pass LLVM PGO build "
             f"({n_pgo} pgo PKGBUILD(s), {n_total} total) — "
             "~2-3 hours; pass 2 is a long instrumented training run. "
             f"pgo_store={pgo_store}. Proceed? [y/N]:",
@@ -1659,7 +1676,7 @@ def _build_llvm_pgo(
                     # accepts the suspicious profdata. Wrong profdata silently
                     # mis-optimises the resulting compiler, so default to no.
                     _pgo_confirm(
-                        f"[PGO] Pass 2 profdata is suspiciously small "
+                        f"Pass 2 profdata is suspiciously small "
                         f"({profdata_size // (1024 * 1024)} MiB) — "
                         "instrumentation may have been bypassed. "
                         "Continue to Pass 3 with this profdata? [y/N]:",

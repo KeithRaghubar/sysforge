@@ -207,10 +207,14 @@ def test_resolve_all_pkgbuilds_calls_scheduler_when_update_true(tmp_path):
     fake_result.error = None
     fake_scheduler.request.return_value = fake_result
 
+    # Patch repo_packages to {} so both pkgbases are routed as AUR,
+    # exercising the _ensure_rpc path (real pacman would classify
+    # llvm/clang as repo and skip it).
     with patch("sysforge.pipeline.stages.toolchain.get_scheduler",
                return_value=fake_scheduler), \
          patch("sysforge.pipeline.stages.toolchain.load_sysforge_toml",
-               return_value={"git": {}, "aur": {}}):
+               return_value={"git": {}, "aur": {}}), \
+         patch("sysforge.primitives.aur.repo_packages", return_value=set()):
         result = _resolve_all_pkgbuilds(["llvm", "clang"], config, update=True)
 
     assert "llvm" in result and "clang" in result
@@ -247,11 +251,81 @@ def test_resolve_all_pkgbuilds_blocker_status_raises(tmp_path):
                return_value=fake_scheduler), \
          patch("sysforge.pipeline.stages.toolchain.load_sysforge_toml",
                return_value={"git": {}, "aur": {}}), \
+         patch("sysforge.primitives.aur.repo_packages", return_value=set()), \
          patch("sysforge.pipeline.stages.toolchain.STATUS_FAILED", "failed"), \
          patch("sysforge.pipeline.stages.toolchain._SYNC_BLOCKING_STATUSES",
                frozenset({"failed"})):
         with pytest.raises(RuntimeError, match="PKGBUILD sync failed"):
             _resolve_all_pkgbuilds(["llvm"], config, update=True)
+
+
+def test_sync_pkgbuild_dirs_classifies_repo_vs_aur(tmp_path):
+    """Each SyncRequest must carry source='repo' for [extra]/[core]/etc.
+    packages and source='aur' for AUR-only packages.
+
+    Regression: before this, all toolchain SyncRequests were source='aur',
+    so a --cleansrc on clang/llvm/lld silently failed to re-clone (the
+    purge succeeded, then aur_clone tried gitlab.aur.org/clang.git).
+    """
+    make_pkgbuild(tmp_path, "llvm")
+    make_pkgbuild(tmp_path, "clang")
+    make_pkgbuild(tmp_path, "cosmic-comp-git")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
+
+    captured: list = []
+    fake_scheduler = MagicMock()
+    fake_result = MagicMock()
+    fake_result.status = "up_to_date"
+    fake_result.error = None
+
+    def _request(req):
+        captured.append((req.pkgbase, req.source))
+        return fake_result
+
+    fake_scheduler.request.side_effect = _request
+
+    with patch("sysforge.pipeline.stages.toolchain.get_scheduler",
+               return_value=fake_scheduler), \
+         patch("sysforge.pipeline.stages.toolchain.load_sysforge_toml",
+               return_value={"git": {}, "aur": {}}), \
+         patch("sysforge.primitives.aur.repo_packages",
+               return_value={"llvm", "clang"}):
+        _resolve_all_pkgbuilds(
+            ["llvm", "clang", "cosmic-comp-git"], config, update=True,
+        )
+
+    by_pkgbase = dict(captured)
+    assert by_pkgbase["llvm"] == "repo"
+    assert by_pkgbase["clang"] == "repo"
+    assert by_pkgbase["cosmic-comp-git"] == "aur"
+    fake_scheduler._ensure_rpc.assert_called_once_with(["cosmic-comp-git"])
+
+
+def test_sync_pkgbuild_dirs_skips_rpc_for_repo_only_set(tmp_path):
+    """When every package is in pacman's sync DBs, _ensure_rpc must not run
+    — repo packages have no AUR-RPC equivalent and priming the cache with
+    their names just wastes a request.
+    """
+    make_pkgbuild(tmp_path, "llvm")
+    make_pkgbuild(tmp_path, "clang")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
+
+    fake_scheduler = MagicMock()
+    fake_result = MagicMock()
+    fake_result.status = "up_to_date"
+    fake_result.error = None
+    fake_scheduler.request.return_value = fake_result
+
+    with patch("sysforge.pipeline.stages.toolchain.get_scheduler",
+               return_value=fake_scheduler), \
+         patch("sysforge.pipeline.stages.toolchain.load_sysforge_toml",
+               return_value={"git": {}, "aur": {}}), \
+         patch("sysforge.primitives.aur.repo_packages",
+               return_value={"llvm", "clang"}):
+        _resolve_all_pkgbuilds(["llvm", "clang"], config, update=True)
+
+    fake_scheduler._ensure_rpc.assert_not_called()
+    assert fake_scheduler.request.call_count == 2
 
 
 # ---------------------------------------------------------------------------
