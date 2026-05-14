@@ -22,6 +22,7 @@ _sysforge() {
         state)    _sysforge_state    ;;
         run)      _sysforge_run      ;;
         setup)    _sysforge_setup    ;;
+        env)      _sysforge_env      ;;
         completions) _sysforge_completions ;;
       esac
       ;;
@@ -40,6 +41,7 @@ _sysforge_commands() {
     'state:inspect or repair build_state.toml (list, repair, orphans)'
     'run:execute a pipeline stage'
     'setup:configure system integration (pacman IgnoreGroup for sf-build)'
+    'env:print the inherited env chain (shell vars, parent processes, shell init files)'
   )
   _describe 'command' commands
 }
@@ -410,6 +412,10 @@ _sysforge_run_kernel() {
 _sysforge_setup() {
   _arguments \
     '--pacman-conf[path to pacman.conf]:file:_files'
+}
+
+_sysforge_env() {
+  _arguments
 }
 
 # Internal scaffolding subcommand used by this completion script itself

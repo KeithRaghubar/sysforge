@@ -619,6 +619,38 @@ TOML config loading and path resolution. Public API:
 `[paths] pkgbuild_src_dir` in `profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
 - `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles backslash line continuation (e.g. `CFLAGS="... \\\n  -flag"`) and multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines. Merges user conf (`$XDG_CONFIG_HOME/pacman/makepkg.conf`, `~/.makepkg.conf`) on top of system conf.
 
+### `env_chain.py`
+
+Snapshots and validates the runtime environment chain sysforge inherits, so any command can answer "what env do I see, where did it come from, and which sources disagree?" without manual `env`/`set` archaeology. Public API:
+
+- `collect_env_chain()` — returns an `EnvChainSnapshot` carrying grouped runtime vars (sysforge/toolchain/makepkg/python/desktop/shell), the parent process chain walked via `/proc`, a shell-init-file presence map, a flat `sources` dict (one entry per parseable contributor), and the collection cost in ms.
+- `compute_divergences(snap)` — returns `{var: {source_name: value}}` for every var whose declared values disagree across sources, or where a source declares a value the runtime doesn't carry.
+- `format_env_chain(snap, *, verbosity=0)` — renders the snapshot as human-readable text. Always appends a `mismatches:` block. At `verbosity >= 2` (`-vv`) each grouped var carries an inline `[differs from …]` annotation alongside its value.
+- `validate_env_chain(snap)` — non-fatal warnings (e.g. `SYSFORGE_STATE_DIR` unset, no `VIRTUAL_ENV`).
+- `log_env_chain(level="debug")` — collect + format + emit via `log.get_logger("ENV")`. Called from `cli.main()` at every command's startup so the unified log always captures the env chain.
+
+**Sources read** (parsed once per invocation):
+
+| Source name        | Origin                                                 |
+|--------------------|--------------------------------------------------------|
+| `runtime`          | `os.environ` — the inherited view                      |
+| `etc_environment`  | `/etc/environment` — bare `KEY=value` lines            |
+| `pam_env_default`  | `/etc/security/pam_env.conf` DEFAULT field             |
+| `pam_env_override` | `/etc/security/pam_env.conf` OVERRIDE field            |
+| `system_zshenv` / `user_zshenv`     | `/etc/zsh/zshenv`, `~/.zshenv`        |
+| `system_zprofile` / `user_zprofile` | `/etc/zsh/zprofile`, `~/.zprofile`    |
+| `etc_profile` / `user_profile`      | `/etc/profile`, `~/.profile`          |
+| `system_zshrc` / `user_zshrc`       | `/etc/zsh/zshrc`, `~/.zshrc`          |
+| `system_zlogin` / `user_zlogin`     | `/etc/zsh/zlogin`, `~/.zlogin`        |
+| `systemd_user`     | `systemctl --user show-environment` (skipped without `XDG_RUNTIME_DIR`) |
+| `sysforge_config`  | resolved `[defaults]` profile from `profiles.toml`, flattened via `profile.merge_extends` + `profile.serialize_flags` |
+
+Init-file parsing is regex-based (`export KEY=value`, `KEY=value; export KEY`, plus bare assignments only for `/etc/environment` and `pam_env`). Values containing `$(`, backtick, or `${VAR}` are tagged `<expansion: …>` and counted in `parse_caveats` per source — we do not source files in a subshell because `direnv` / ssh-agent loaders / similar would execute as side effects of every sysforge command.
+
+**Cost.** Collection runs on every sysforge invocation, not only `-vvv` — verbosity gates console output, not collection. Total budget is ~35–75ms in a typical user session, dominated by the `systemctl --user show-environment` subprocess (~25–60ms); the rest is file reads + TOML decode + flag serialization. When `XDG_RUNTIME_DIR` is unset (cron, CI, non-graphical SSH), the subprocess is skipped entirely and the budget drops to ~10ms. `snap.cost_ms` is rendered on the final line of `format_env_chain` for ongoing measurement.
+
+`sysforge env` is the explicit user-facing verb (prints the formatted snapshot at the active verbosity); the startup hook in `cli.main()` ensures the same snapshot lands in every unified log even when the user runs an unrelated verb. `toolchain.toml` is *not* a source — it declares LLVM/PGO stages, not env vars, so including it would invent semantics that aren't there.
+
 ### `pacman.py`
 
 All pacman and batch-install shared operations. Public API:

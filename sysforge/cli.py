@@ -829,6 +829,22 @@ def _add_setup_parser(sub):
     p.set_defaults(func=cmd_setup)
 
 
+def _cmd_env(args):
+    """Print the env chain sysforge has inherited from its parent process."""
+    del args
+    from sysforge.primitives.env_chain import collect_env_chain, format_env_chain
+    print(format_env_chain(collect_env_chain(), verbosity=log.get_verbosity()))
+
+
+def _add_env_parser(sub):
+    p = sub.add_parser("env",
+        help="Print the inherited env chain, all contributing sources "
+             "(shell init files, systemd-user, PAM env, sysforge "
+             "[defaults] profile), and a mismatches block when sources "
+             "disagree. -vv adds inline per-var divergence annotations.")
+    p.set_defaults(func=_cmd_env)
+
+
 def _add_run_parser(sub):
     """run namespace: pipeline / reconfigure / toolchain / packages / kernel"""
     p = sub.add_parser("run",
@@ -1020,6 +1036,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_state_parser(sub)
     _add_run_parser(sub)
     _add_setup_parser(sub)
+    _add_env_parser(sub)
 
     # completions (used by shell completion scripts; not user-facing)
     p_completions = sub.add_parser("completions", help=argparse.SUPPRESS)
@@ -1042,6 +1059,15 @@ def main():
     log.set_verbosity(args.verbose)
     if getattr(args, "dry_run", False):
         log.set_dry_run_mode()
+    # Snapshot inherited env at startup — DEBUG-only on stderr (-vvv), always
+    # written to the file log. Skipped for the `env` verb to avoid duplicating
+    # the output it explicitly prints. Best-effort; never fail startup over it.
+    if getattr(args, "command", None) != "env":
+        try:
+            from sysforge.primitives.env_chain import log_env_chain
+            log_env_chain("debug")
+        except Exception as _e:  # pragma: no cover - defensive
+            log.debug("[ENV]", f"env-chain snapshot failed: {_e}")
     from sysforge.ui import progress
     progress.init()
     args.func(args)
