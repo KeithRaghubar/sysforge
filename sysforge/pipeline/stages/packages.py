@@ -220,6 +220,7 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
         cc_override=toolchain.get("cc_override"),
         cxx_override=toolchain.get("cxx_override"),
         ld_override=toolchain.get("ld_override"),
+        state_dir=options.state_dir,
     )
     makepkg_run(pkgbuild, options=build_opts)
 

@@ -7,7 +7,7 @@ and edge cases not covered by test_stage_bootstrap.py.
 import subprocess
 import textwrap
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -43,8 +43,7 @@ from sysforge.pipeline.stages.configure import (
 )
 from sysforge.pipeline.stages.hardware import (
     _parse_cpuinfo,
-    _parse_gpu_vendors,
-    _has_nvme,
+    parse_gpu_vendors,
     HardwareStage,
 )
 from sysforge.pipeline.stages.reconfigure import (
@@ -60,7 +59,6 @@ from sysforge.pipeline.stages.reconfigure import (
 )
 from sysforge.primitives.config import load_sysforge_toml
 from sysforge.pipeline.runner import _validate_stages, run_pipeline
-from sysforge.pipeline.state import PipelineState
 
 
 # ---------------------------------------------------------------------------
@@ -812,22 +810,22 @@ class TestHardwareLspciFailure:
 class TestParseGpuVendorsEdgeCases:
     def test_display_controller(self):
         lspci = "00:02.0 Display controller: Intel Corporation UHD Graphics\n"
-        assert _parse_gpu_vendors(lspci) == ["intel"]
+        assert parse_gpu_vendors(lspci) == ["intel"]
 
     def test_radeon_detected_as_amd(self):
         lspci = "01:00.0 VGA compatible controller: Radeon RX 580\n"
-        assert _parse_gpu_vendors(lspci) == ["amd"]
+        assert parse_gpu_vendors(lspci) == ["amd"]
 
     def test_unknown_vendor(self):
         lspci = "01:00.0 VGA compatible controller: Matrox Electronics G200eW\n"
-        assert _parse_gpu_vendors(lspci) == ["other"]
+        assert parse_gpu_vendors(lspci) == ["other"]
 
     def test_dedup_multiple_same_vendor(self):
         lspci = (
             "01:00.0 VGA compatible controller: NVIDIA Corporation GA102\n"
             "02:00.0 VGA compatible controller: NVIDIA Corporation GA104\n"
         )
-        assert _parse_gpu_vendors(lspci) == ["nvidia"]
+        assert parse_gpu_vendors(lspci) == ["nvidia"]
 
 
 # ===========================================================================

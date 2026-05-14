@@ -4,10 +4,8 @@ test_stage_bootstrap.py — unit tests for bootstrap stages 1-4.
 Covers pure-logic functions. Subprocess calls (sgdisk, mkfs, pacstrap,
 arch-chroot, etc.) are mocked — nothing real runs.
 """
-import subprocess
 import textwrap
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,7 +16,7 @@ from sysforge.pipeline.stages.hardware import (
     _gpu_kconfig,
     _has_nvme,
     _parse_cpuinfo,
-    _parse_gpu_vendors,
+    parse_gpu_vendors,
     _write_hardware_profile,
     HardwareStage,
 )
@@ -281,21 +279,21 @@ _LSPCI_NVME = """\
 
 class TestParseGpuVendors:
     def test_nvidia(self):
-        assert _parse_gpu_vendors(_LSPCI_NVIDIA) == ["nvidia"]
+        assert parse_gpu_vendors(_LSPCI_NVIDIA) == ["nvidia"]
 
     def test_amd(self):
-        assert _parse_gpu_vendors(_LSPCI_AMD) == ["amd"]
+        assert parse_gpu_vendors(_LSPCI_AMD) == ["amd"]
 
     def test_intel(self):
-        assert _parse_gpu_vendors(_LSPCI_INTEL) == ["intel"]
+        assert parse_gpu_vendors(_LSPCI_INTEL) == ["intel"]
 
     def test_multi(self):
-        vendors = _parse_gpu_vendors(_LSPCI_MULTI)
+        vendors = parse_gpu_vendors(_LSPCI_MULTI)
         assert "intel" in vendors
         assert "nvidia" in vendors
 
     def test_empty(self):
-        assert _parse_gpu_vendors("") == []
+        assert parse_gpu_vendors("") == []
 
 
 class TestGpuKconfig:
@@ -405,6 +403,10 @@ class TestHardwareStageRun:
         with open(out, "rb") as f:
             data = tomllib.load(f)
         assert data["hardware"]["cpu_vendor"] == "AuthenticAMD"
+        assert data["hardware"]["host_arch"]
+        assert data["hardware"]["llvm_targets"]
+        assert "NVPTX" in data["hardware"]["llvm_targets"]
+        assert "AMDGPU" not in data["hardware"]["llvm_targets"]
         assert data["kconfig"]["CONFIG_MZEN3"] == "y"
         assert data["kconfig"]["CONFIG_DRM_NOUVEAU"] == "n"
         assert data["kconfig"]["CONFIG_BLK_DEV_NVME"] == "y"

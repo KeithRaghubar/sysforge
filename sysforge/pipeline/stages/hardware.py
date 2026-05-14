@@ -122,7 +122,7 @@ _LSPCI_VGA_RE = re.compile(
 )
 
 
-def _parse_gpu_vendors(lspci_text: str) -> list[str]:
+def parse_gpu_vendors(lspci_text: str) -> list[str]:
     """
     Extract GPU vendor names from lspci output.
     Returns a deduplicated list of lowercase vendor tags: "amd", "nvidia",
@@ -186,7 +186,7 @@ _HOST_ARCH_TO_LLVM = {
     "ppc64le": "PowerPC",
 }
 
-# GPU vendor (as emitted by _parse_gpu_vendors) → LLVM GPU backend.
+# GPU vendor (as emitted by parse_gpu_vendors) → LLVM GPU backend.
 # Intel Mesa drivers (iris/anv) do not depend on an LLVM backend, so intel
 # GPUs contribute no entry here.
 _GPU_VENDOR_TO_LLVM = {
@@ -195,12 +195,12 @@ _GPU_VENDOR_TO_LLVM = {
 }
 
 
-def _detect_host_arch() -> str:
+def detect_host_arch() -> str:
     """Return the running kernel arch as reported by uname -m."""
     return os.uname().machine
 
 
-def _derive_llvm_targets(host_arch: str, gpu_vendors: list[str]) -> list[str]:
+def derive_llvm_targets(host_arch: str, gpu_vendors: list[str]) -> list[str]:
     """Build the autodetected LLVM_TARGETS_TO_BUILD list for this host.
 
     Order: CPU backend first, then GPU backends in vendor-detection order.
@@ -310,7 +310,7 @@ class HardwareStage(Stage):
         else:
             lspci_text = lspci_result.stdout
 
-        gpu_vendors = _parse_gpu_vendors(lspci_text)
+        gpu_vendors = parse_gpu_vendors(lspci_text)
         nvme = _has_nvme(lspci_text)
 
         if gpu_vendors:
@@ -336,8 +336,8 @@ class HardwareStage(Stage):
             _log.ui("No kconfig entries generated")
 
         # --- Host arch + LLVM target list ---
-        host_arch = _detect_host_arch()
-        llvm_targets = _derive_llvm_targets(host_arch, gpu_vendors)
+        host_arch = detect_host_arch()
+        llvm_targets = derive_llvm_targets(host_arch, gpu_vendors)
         _log.ui(f"host_arch: {host_arch}")
         if llvm_targets:
             _log.ui(f"llvm_targets: {';'.join(llvm_targets)}")

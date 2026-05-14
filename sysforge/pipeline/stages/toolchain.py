@@ -605,6 +605,7 @@ def _build_pkg(
         update=not options.no_update,
         strip_full_lto=pgo_build,
         extra_env=pgo_env,
+        state_dir=options.state_dir,
         abi_check=getattr(options, "abi_check", False),
         pgo_managed=True,
     ))

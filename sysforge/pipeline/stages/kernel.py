@@ -386,6 +386,7 @@ class KernelStage(Stage):
                 cc_override=cc,
                 cxx_override=cxx,
                 abi_check=options.abi_check,
+                state_dir=options.state_dir,
             ))
 
         # Post-install

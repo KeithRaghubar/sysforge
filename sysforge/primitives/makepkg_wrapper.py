@@ -38,6 +38,8 @@ from sysforge.primitives.pkgbuild_patcher import (
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
     extract_pkgbuild_profile,
+    is_llvm_pkgbase,
+    patch_llvm_targets,
     patch_noninteractive_kconfig,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
@@ -1004,6 +1006,48 @@ def _pkgname_from_meta(pkgmeta: dict | None) -> str:
     return name or "unknown"
 
 
+def _maybe_patch_llvm_targets(
+    pkgbuild_path, pkgmeta, state_dir_override: Path | None = None
+) -> None:
+    """Inject ``-DLLVM_TARGETS_TO_BUILD=...`` for LLVM-toolchain PKGBUILDs.
+
+    Applies regardless of build_mode — covers ``update --patch-pkgbuild``,
+    kernel mode, and ``run toolchain`` PGO/plain builds uniformly. Resolution
+    order is:
+      1. toolchain.toml ``[llvm] targets`` override (incl. force-all via ``[]``)
+      2. ``hardware_profile.toml`` at the resolved state dir
+      3. Live hardware detection (uname -m + lspci)
+
+    Falling back to live detection means ``sysforge run toolchain`` works
+    even when the hardware stage hasn't written a profile at the current
+    state dir — which is the common case (toolchain stage runs standalone)
+    and the same scenario that defeated rounds 1 & 2.
+
+    ``state_dir_override`` is still honoured for callers that want to pin
+    the patcher to a specific state dir (CLI ``--state-dir``); it just
+    isn't load-bearing anymore.
+    """
+    if not is_llvm_pkgbase(_pkgname_from_meta(pkgmeta)):
+        return
+    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives.llvm_targets import resolve_or_detect_llvm_targets
+    state_dir, _ = resolve_state_dir(state_dir_override)
+    hw_profile = state_dir / "hardware_profile.toml"
+    targets = resolve_or_detect_llvm_targets(TOOLCHAIN_PATH, hw_profile)
+    if not targets:
+        # Either user explicitly disabled filtering ([llvm] targets = []),
+        # or live detection couldn't classify the host (unsupported arch).
+        # Either way, no patch — let the upstream PKGBUILD decide.
+        return
+    used_live = not hw_profile.is_file()
+    if used_live:
+        _build_log.info(
+            f"LLVM target filter: no hardware_profile.toml at {hw_profile} — "
+            f"using live detection result {targets}",
+        )
+    patch_llvm_targets(pkgbuild_path, targets)
+
+
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
                active_consumes=None, extracted_profile=None, pkgmeta=None,
                extra_flags=None, interactive=False,
@@ -1014,7 +1058,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                strip_full_lto: bool = False,
                injected_env: dict | None = None,
                strip_flags=None,
-               pkgbuild_has_hardcoded_gcc: bool = False):
+               pkgbuild_has_hardcoded_gcc: bool = False,
+               state_dir: Path | None = None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -1035,6 +1080,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         pkgbuild_path = apply_patch_pkgbuild(pkgbuild_path, pkgmeta or {"globals": {}})
     else:
         pkgbuild_path = patch_pkgbuild_groups(pkgbuild_path, groups)
+
+    _maybe_patch_llvm_targets(pkgbuild_path, pkgmeta, state_dir_override=state_dir)
 
     if kernel_build and not interactive:
         patch_noninteractive_kconfig(pkgbuild_path)
@@ -1497,6 +1544,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 injected_env=options.extra_env,
                 strip_flags=options.strip_flags,
                 pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
+                state_dir=options.state_dir,
             )
         build_success = True
 

@@ -521,24 +521,6 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta):
     patched_path.write_text(patched_text)
     _log.info(f"[{pkgname}] Wrote patched PKGBUILD: {patched_path}")
 
-    # LLVM target filtering: only LLVM-toolchain packages get the
-    # -DLLVM_TARGETS_TO_BUILD injection. Resolution order
-    # (toolchain.toml override → hardware autodetect → no filter) is
-    # owned by primitives/llvm_targets.resolve_llvm_targets.
-    pkgbase = globals_.get("pkgbase") or globals_.get("pkgname", "")
-    if isinstance(pkgbase, list):
-        pkgbase = pkgbase[0] if pkgbase else ""
-    if is_llvm_pkgbase(pkgbase):
-        # Lazy imports keep this off the hot path for non-LLVM packages.
-        from sysforge.primitives.llvm_targets import resolve_llvm_targets
-        from sysforge.primitives.paths import TOOLCHAIN_PATH
-        from sysforge.pipeline.state import resolve_state_dir
-        state_dir, _ = resolve_state_dir(None)
-        hw_profile = state_dir / "hardware_profile.toml"
-        targets = resolve_llvm_targets(TOOLCHAIN_PATH, hw_profile)
-        if targets:
-            patch_llvm_targets(patched_path, targets)
-
     return patched_path
 
 
