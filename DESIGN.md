@@ -501,7 +501,7 @@ Walks `packages.toml` in order:
 
 ```toml
 enabled     = true   # must be true to activate the stage
-compiler    = "llvm" # "llvm" or "gcc"
+compiler    = "gcc"  # "gcc" (default when key absent) or "llvm"; LLVM is opt-in
 pgo         = true   # only meaningful when compiler = "llvm"; ignored for gcc
 skip_build  = false  # skip build; just register compiler paths in pipeline state
 
@@ -518,7 +518,7 @@ non_pgo = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
 lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
 ```
 
-For `compiler = "gcc"`, the default package set is `["gcc", "gcc-libs"]`.
+When `compiler` is unset (or set to `"gcc"`), the toolchain stage is **register-only**: it writes the system `/usr/bin/gcc` and `/usr/bin/g++` paths into pipeline state and returns without building anything. Stock `gcc-libs` from pacman's `base-devel` provides the runtime. The 3-pass PGO architecture below only kicks in for the explicit `compiler = "llvm"` path. Building GCC from source has no meaningful performance gains and is error-prone, so the stage doesn't own that path — use `pacman -S gcc gcc-libs` (already in `base-devel`) if you need to (re)install it.
 
 **`skip_build = true`:** registers the system compiler paths in pipeline state without building anything. Downstream stages (packages, kernel) will use the system compiler. Useful when the system compiler is already optimized and no rebuild is needed.
 
@@ -547,7 +547,7 @@ Every pass runs makepkg with `--cleanbuild`. `makepkg` is invoked without `--ins
 
 **`pgo = false` path:** single build pass, all packages built and installed together. No profdata, no staging, no daemon.
 
-**GCC path (`compiler = "gcc"`):** single build pass. `pgo` field is ignored. Produces `/usr/bin/gcc` and `/usr/bin/g++`.
+**GCC path (`compiler = "gcc"`):** no build. Registers `/usr/bin/gcc` and `/usr/bin/g++` in pipeline state and returns. `pgo`, `skip_build`, `[packages]`, and the LLVM safety preflight are all skipped — none of them apply.
 
 **Compiler propagation:** on completion the toolchain stage writes the resolved compiler paths into pipeline state:
 
@@ -559,6 +559,16 @@ ld  = "lld"              # llvm only; absent for gcc
 ```
 
 The packages and kernel stages read these values and inject them into the build environment, overriding any profile-level `CC`/`CXX` defaults. If the toolchain stage was skipped, these keys are absent and stages fall back to the profile.
+
+**Stale-state wipe (disabled / absent stage).** When `toolchain.toml` is absent or has `enabled = false`, the stage clears any prior `[stages.toolchain.result]` from pipeline state before returning. This prevents the failure mode where a user runs `compiler = "llvm"`, disables the stage, and subsequent `packages`/`kernel` stages keep using the stale `cc=/usr/bin/clang`/`ld=lld` overrides — the disable opts out of all downstream LLVM propagation, not just the build.
+
+**Interrupted-install protection.** Three layers, all wired into the LLVM build path (the GCC path is register-only and skips all three):
+
+1. **Stage sentinel** (`primitives/stage_sentinel.py`) — writes `<state_dir>/stage_in_progress.toml` just before the first `sudo pacman -U` of the run and clears it only after the post-install verification (next item) passes. Schema records `stage`, `started_at`, `compiler`, `pgo`, and a stage-specific `recovery_cmd` string (for toolchain: `sudo pacman -S llvm llvm-libs clang lld compiler-rt llvm-libs`). On every subsequent sysforge invocation, `cli.main()` calls `check_and_recover_stale_sentinel()` before dispatching install-bearing commands (`build`, `update`, `converge`, `run *`, `setup`) — if a sentinel is found, the operator is prompted to auto-run the recovery command (`[y/N]`, `eof_default="n"` so unattended runs block rather than silently auto-recover). Refusing recovery exits with status 2 and leaves the sentinel in place; success clears the sentinel and proceeds.
+
+2. **Post-install verification** — after the final `pacman -U` of the LLVM run, `_verify_llvm_install()` checks: (a) `pacman -Q` versions of `llvm`/`llvm-libs`/`clang`/`lld`/`compiler-rt` all agree (the canonical interrupted-install symptom — a mismatched `llvm-libs` is the exact failure mode that produced Keith's broken GUI), (b) `clang --version` and `lld --version` invoke cleanly without missing-symbol errors, (c) when `[llvm] targets` is configured, `llvm-config --targets-built` is a superset. On any failure, the operator is prompted with the recovery `pacman -S ...` (same UX as the sentinel path). Failure with declined recovery leaves the sentinel in place so the operator hits the blocker again at the next sysforge invocation.
+
+3. **Clean-exit SIGINT scope** (`primitives/interrupt.py`) — wraps the LLVM build dispatch in an `InterruptScope` context. The first Ctrl-C flips a flag without raising; the build code checks the flag at safe boundaries (between `makepkg` runs, between PGO passes) and raises `CleanExitRequested` to exit at the next safe point, sentinel intact. A second Ctrl-C falls through to default `SIGINT` handling (immediate termination) — the operator explicitly chose the unsafe path. `CleanExitRequested` subclasses `BaseException` so it propagates through `except Exception:` blocks without being silently swallowed.
 
 ---
 
@@ -1118,6 +1128,11 @@ Log tag: `[GFX]`. No writes, no sudo, no network.
 
 [profiles.standard]
 extends = "bare"
+# Default profile uses system gcc + binutils. LLVM is opt-in — override
+# CC/CXX in a user profile (and optionally set AR/NM/RANLIB/STRIP to the
+# llvm-* variants) or use `sysforge run toolchain --compiler=llvm`.
+CC = "gcc"
+CXX = "g++"
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
@@ -1602,7 +1617,7 @@ Build in this order to satisfy dependencies correctly:
 - **GitHub:** public from day one; source of truth for all code
 - **v0.1.0** (shipped) — profiled AUR helper. Userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `doctor`, `converge`, `setup`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run packages`. The `run toolchain` and `run kernel` stages shipped in this release but have since been reclassified as **experimental** pending more testing — see v1.0 notes below. Marks the AUR publication milestone.
 - **v0.2.0** (shipped) — follow-up release on the v0.1.0 surface: VM tooling (`tools/vm/`, `make vm-*` targets), install-path fixes for fresh Arch systems on Python 3.14, bulk-operation progress indicator, VCS detection and paging fixes, `doctor --graphics` scope refinement.
-- **v1.0** (shipped, **current**) — system bootstrapper. Stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, sets passwords, and sets the configured default login shell. Build-state persistence, `pacman -Q` superset coverage, and coloured CLI output all landed in 2026-04. **Experimental surface, deferred post-1.0:** `run toolchain`, `run kernel`, and the `sysforge update` PGO-toolchain profdata-reuse path (`build_mode = "pgo_llvm_toolchain"`) all remain shipped but emit a runtime `[WARN]` — 1.0 users should leave the stages disabled and use the system compiler + stock pacman kernel. Published to AUR via `tools/release.sh`.
+- **v1.0** (shipped, **current**) — system bootstrapper. Stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, sets passwords, and sets the configured default login shell. Build-state persistence, `pacman -Q` superset coverage, and coloured CLI output all landed in 2026-04. **Experimental surface, deferred post-1.0:** `run toolchain`, `run kernel`, and the `sysforge update` PGO-toolchain profdata-reuse path (`build_mode = "pgo_llvm_toolchain"`) all remain shipped but emit a runtime `[WARN]` — 1.0 users should leave the stages disabled and use the system compiler + stock pacman kernel. Default `compiler` resolution is `gcc`; LLVM is opt-in. The shipped `[profiles.standard]` uses the system gcc/binutils; LLVM components (`clang`, `lld`, `llvm`, `compiler-rt`) are `optdepends` on the sysforge PKGBUILD and only required by the opt-in LLVM profile and `run toolchain --compiler=llvm`. Published to AUR via `tools/release.sh`.
 - **v1.x:** `repo_mode = "profiled"` support in `sysforge update`; wrapping `pacman -Syu` inside `sysforge update` for a full AUR-helper experience; man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below); package groups (named DE sets for opt-in without enumerating every package); rule priority auto-calculation (CSS-specificity-style scoring from rule conditions); configure stage additions (btrfs snapshots, ccache/sccache init check, build time estimates); LLVM target filtering from hardware detection. Re-promotion of the toolchain and kernel stages from experimental happens here once their sharp edges are resolved.
 
 ### AUR publishing process

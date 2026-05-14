@@ -25,7 +25,6 @@ from sysforge.pipeline.stages.toolchain import (
     _DEFAULT_LLVM_PGO,
     _DEFAULT_LLVM_NON_PGO,
     _DEFAULT_LLVM_LIB32,
-    _DEFAULT_GCC,
     _PGO_ALLOWED_MAKEPKG_FLAGS,
     _PROFRAW_MERGE_BATCH_MAX,
     _PROFRAW_MERGE_BATCH_MIN,
@@ -107,13 +106,6 @@ def test_package_lists_llvm_defaults():
     assert lib32 == _DEFAULT_LLVM_LIB32
 
 
-def test_package_lists_gcc():
-    pgo, non_pgo, lib32 = _package_lists({"compiler": "gcc"})
-    assert pgo == []
-    assert non_pgo == _DEFAULT_GCC
-    assert lib32 == []
-
-
 def test_package_lists_custom_override():
     tcfg = {
         "compiler": "llvm",
@@ -128,13 +120,6 @@ def test_package_lists_custom_override():
     assert pgo == ["llvm", "clang"]
     assert non_pgo == ["compiler-rt"]
     assert lib32 == []
-
-
-def test_package_lists_gcc_custom():
-    tcfg = {"compiler": "gcc", "packages": {"non_pgo": ["gcc", "gcc-libs", "binutils"]}}
-    pgo, non_pgo, lib32 = _package_lists(tcfg)
-    assert pgo == []
-    assert non_pgo == ["gcc", "gcc-libs", "binutils"]
 
 
 # ---------------------------------------------------------------------------
@@ -467,28 +452,53 @@ def test_toolchain_stage_noop_when_absent(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# ToolchainStage.run() — GCC single pass
+# ToolchainStage.run() — GCC path is register-only (no build)
 # ---------------------------------------------------------------------------
 
-def test_toolchain_stage_gcc_dry_run(tmp_path):
+def test_toolchain_stage_gcc_registers_paths_without_building(tmp_path):
+    """compiler="gcc" writes /usr/bin/gcc paths into state and returns
+    without resolving PKGBUILDs, syncing sources, or invoking makepkg."""
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
 
-    pkgbuild_dir = tmp_path / "builds"
-    for name in _DEFAULT_GCC:
-        make_pkgbuild(pkgbuild_dir, name)
-
     state = PipelineState(tmp_path / "state")
-    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
-    options = make_options(dry_run=True)
+    # Empty pkgbuild dir on purpose: if the stage tries to resolve any
+    # PKGBUILD, the resolver will raise — proving no build path runs.
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
+    options = make_options(dry_run=False)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock, \
+         patch("sysforge.pipeline.stages.toolchain._resolve_all_pkgbuilds") as resolve_mock:
         ToolchainStage().run(config, state, options)
 
     result = state.get_stage_result("toolchain")
     assert result["cc"] == "/usr/bin/gcc"
     assert result["cxx"] == "/usr/bin/g++"
     assert "ld" not in result
+    makepkg_mock.assert_not_called()
+    resolve_mock.assert_not_called()
+
+
+def test_toolchain_stage_default_compiler_is_gcc_register_only(tmp_path):
+    """Implicit default (no 'compiler' key) resolves to gcc and registers
+    system paths without building."""
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = true\n')
+
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
+    options = make_options(dry_run=False)
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock:
+        ToolchainStage().run(config, state, options)
+
+    result = state.get_stage_result("toolchain")
+    assert result["cc"] == "/usr/bin/gcc"
+    assert result["cxx"] == "/usr/bin/g++"
+    assert "ld" not in result
+    makepkg_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1411,12 +1421,260 @@ def test_toolchain_skip_build_llvm(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Compiler-switch + disabled-stage state correctness (G.1)
+# ---------------------------------------------------------------------------
+
+def test_toolchain_state_overwrites_on_llvm_to_gcc_switch(tmp_path):
+    """llvm→gcc switch must drop the stale 'ld' key from pipeline state.
+
+    The state-write at run() end uses set_stage_result(), which replaces
+    the result dict wholesale (state.py:324). A future refactor that
+    switched to partial-update semantics would leak ld=lld into the gcc
+    run; this test pins the structural overwrite invariant."""
+    state = PipelineState(tmp_path / "state")
+    toml_path = tmp_path / "toolchain.toml"
+
+    # Run 1: llvm skip_build (no real makepkg)
+    toml_path.write_text('enabled = true\ncompiler = "llvm"\nskip_build = true\n')
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run({}, state, make_options())
+    r1 = state.get_stage_result("toolchain")
+    assert r1.get("ld") == "lld"
+    assert r1.get("cc") == "/usr/bin/clang"
+
+    # Run 2: switch to gcc — same state object
+    toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run({}, state, make_options())
+    r2 = state.get_stage_result("toolchain")
+    assert r2.get("cc") == "/usr/bin/gcc"
+    assert "ld" not in r2  # stale 'ld' must not leak across the switch
+
+
+def test_toolchain_state_overwrites_on_gcc_to_llvm_switch(tmp_path):
+    """gcc→llvm switch must populate the 'ld' key (lld)."""
+    state = PipelineState(tmp_path / "state")
+    toml_path = tmp_path / "toolchain.toml"
+
+    toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run({}, state, make_options())
+    r1 = state.get_stage_result("toolchain")
+    assert r1.get("cc") == "/usr/bin/gcc"
+    assert "ld" not in r1
+
+    toml_path.write_text('enabled = true\ncompiler = "llvm"\nskip_build = true\n')
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run({}, state, make_options())
+    r2 = state.get_stage_result("toolchain")
+    assert r2.get("cc") == "/usr/bin/clang"
+    assert r2.get("ld") == "lld"
+
+
+def test_toolchain_disabled_clears_prior_state(tmp_path):
+    """enabled=false must wipe any prior cc/cxx/ld result from state.
+
+    Without this, disabling the stage after a prior llvm run would leave
+    clang/lld as the propagated CC/LD for the packages and kernel stages
+    even though the user opted out."""
+    state = PipelineState(tmp_path / "state")
+    state.set_stage_result("toolchain", {
+        "cc": "/usr/bin/clang", "cxx": "/usr/bin/clang++", "ld": "lld",
+    })
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = false\n')
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run({}, state, make_options())
+
+    assert state.get_stage_result("toolchain") == {}
+
+
+def test_toolchain_absent_clears_prior_state(tmp_path):
+    """toolchain.toml deleted between runs — same wipe behavior."""
+    state = PipelineState(tmp_path / "state")
+    state.set_stage_result("toolchain", {"cc": "/usr/bin/clang"})
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH",
+               tmp_path / "nonexistent.toml"):
+        ToolchainStage().run({}, state, make_options())
+
+    assert state.get_stage_result("toolchain") == {}
+
+
+def test_toolchain_disabled_no_op_when_no_prior_state(tmp_path):
+    """enabled=false with no prior state must not write to state."""
+    state = PipelineState(tmp_path / "state")
+    state.save = MagicMock(wraps=state.save)
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = false\n')
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run({}, state, make_options())
+
+    state.save.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _compiler_paths binary mapping (G dual-toolchain parity)
+# ---------------------------------------------------------------------------
+
+def test_compiler_paths_gcc():
+    from sysforge.pipeline.stages.toolchain import _compiler_paths
+    assert _compiler_paths("gcc") == ("/usr/bin/gcc", "/usr/bin/g++", None)
+
+
+def test_compiler_paths_llvm():
+    from sysforge.pipeline.stages.toolchain import _compiler_paths
+    assert _compiler_paths("llvm") == ("/usr/bin/clang", "/usr/bin/clang++", "lld")
+
+
+# ---------------------------------------------------------------------------
+# Post-install LLVM verification (H)
+# ---------------------------------------------------------------------------
+
+def test_verify_llvm_install_clean_returns_no_issues():
+    """All components agree on version, clang/lld run, targets present."""
+    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
+
+    pacman_output = "\n".join(
+        f"{n} 22.0.1-1" for n in (
+            "llvm", "llvm-libs", "clang", "lld", "compiler-rt",
+        )
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pacman":
+            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
+        if cmd[0] == "clang":
+            return MagicMock(returncode=0, stdout="clang version 22.0.1", stderr="")
+        if cmd[0] == "lld":
+            return MagicMock(returncode=0, stdout="LLD 22.0.1", stderr="")
+        if cmd[0] == "llvm-config":
+            return MagicMock(returncode=0, stdout="X86 AMDGPU NVPTX\n", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
+        issues = _verify_llvm_install(expected_targets=["X86", "AMDGPU"])
+    assert issues == []
+
+
+def test_verify_llvm_install_detects_version_mismatch():
+    """Different versions across LLVM components → canonical mismatch issue."""
+    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
+
+    # llvm-libs at 22.0.1, the rest at 22.0.0 — the exact failure mode
+    # Keith hit (interrupted Pass-1 install of llvm-libs).
+    pacman_output = (
+        "llvm 22.0.0-1\n"
+        "llvm-libs 22.0.1-1\n"
+        "clang 22.0.0-1\n"
+        "lld 22.0.0-1\n"
+        "compiler-rt 22.0.0-1\n"
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pacman":
+            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
+        return MagicMock(returncode=0, stdout="ok", stderr="")
+
+    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
+        issues = _verify_llvm_install()
+    assert any("versions disagree" in i for i in issues)
+    assert any("llvm-libs=22.0.1-1" in i for i in issues)
+
+
+def test_verify_llvm_install_detects_missing_target():
+    """expected_targets not a subset of llvm-config output → issue raised."""
+    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
+
+    pacman_output = "\n".join(
+        f"{n} 22.0.0-1" for n in (
+            "llvm", "llvm-libs", "clang", "lld", "compiler-rt",
+        )
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pacman":
+            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
+        if cmd[0] == "llvm-config":
+            # X86 built, but AMDGPU and NVPTX were configured-out
+            return MagicMock(returncode=0, stdout="X86\n", stderr="")
+        return MagicMock(returncode=0, stdout="ok", stderr="")
+
+    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
+        issues = _verify_llvm_install(expected_targets=["X86", "AMDGPU", "NVPTX"])
+    assert any("missing expected backends" in i for i in issues)
+    assert any("AMDGPU" in i for i in issues)
+
+
+def test_verify_llvm_install_detects_crashing_clang():
+    """clang --version exits non-zero (e.g. missing libLLVM.so) → issue."""
+    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
+
+    pacman_output = "\n".join(
+        f"{n} 22.0.0-1" for n in (
+            "llvm", "llvm-libs", "clang", "lld", "compiler-rt",
+        )
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pacman":
+            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
+        if cmd[0] == "clang":
+            return MagicMock(
+                returncode=127, stdout="",
+                stderr="clang: error while loading shared libraries: libLLVM.so.22",
+            )
+        return MagicMock(returncode=0, stdout="ok", stderr="")
+
+    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
+        issues = _verify_llvm_install()
+    assert any("clang --version" in i for i in issues)
+
+
+def test_verify_llvm_install_skips_targets_when_none_configured():
+    """No expected_targets → llvm-config not queried."""
+    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
+
+    pacman_output = "\n".join(
+        f"{n} 22.0.0-1" for n in (
+            "llvm", "llvm-libs", "clang", "lld", "compiler-rt",
+        )
+    )
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd[0])
+        if cmd[0] == "pacman":
+            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
+        return MagicMock(returncode=0, stdout="ok", stderr="")
+
+    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
+        _verify_llvm_install(expected_targets=None)
+    assert "llvm-config" not in calls
+
+
+def test_llvm_recovery_command_lists_all_components():
+    from sysforge.pipeline.stages.toolchain import _llvm_recovery_command
+    cmd = _llvm_recovery_command()
+    for pkg in ("llvm", "llvm-libs", "clang", "lld", "compiler-rt"):
+        assert pkg in cmd
+    assert cmd.startswith("sudo pacman -S ")
+
+
+# ---------------------------------------------------------------------------
 # ToolchainStage.run() — PKGBUILD resolution error
 # ---------------------------------------------------------------------------
 
 def test_toolchain_stage_missing_pkgbuild_raises(tmp_path):
+    """LLVM path raises when PKGBUILDs can't be resolved.
+
+    (The GCC path is register-only and never resolves PKGBUILDs, so this
+    failure mode only applies to compiler="llvm".)"""
     toml_path = tmp_path / "toolchain.toml"
-    toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
+    toml_path.write_text('enabled = true\ncompiler = "llvm"\npgo = false\n')
 
     state = PipelineState(tmp_path / "state")
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}

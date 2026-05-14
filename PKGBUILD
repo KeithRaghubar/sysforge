@@ -12,6 +12,7 @@ depends=(
     'git'
     'sudo'
     'gnupg'
+    'base-devel'
 )
 makedepends=(
     'uv'
@@ -26,6 +27,10 @@ optdepends=(
     'zsh: zsh shell support'
     'glow: in-shell markdown rendering for docs'
     'zsh-completions: additional zsh completions'
+    'clang: required for the LLVM build profile and sysforge run toolchain --compiler=llvm'
+    'lld: required for the optimized build profile (-fuse-ld=lld)'
+    'llvm: required for sysforge run toolchain --compiler=llvm (PGO bootstrap)'
+    'compiler-rt: required for sysforge run toolchain --compiler=llvm'
 )
 conflicts=('sysforge-git')
 provides=('sysforge')

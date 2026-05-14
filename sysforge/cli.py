@@ -1070,4 +1070,23 @@ def main():
             log.debug("[ENV]", f"env-chain snapshot failed: {_e}")
     from sysforge.ui import progress
     progress.init()
+    # Stale stage-in-progress detection: if a previous install-bearing run
+    # (toolchain/kernel/packages) was interrupted before clearing its
+    # sentinel, block the next mutating command and offer recovery before
+    # proceeding. Read-only commands (env, doctor, resolve, fetch, list,
+    # completions) skip the check so users can inspect without recovery.
+    _INSTALL_BEARING = {
+        "build", "update", "converge", "run", "setup",
+    }
+    if getattr(args, "command", None) in _INSTALL_BEARING:
+        from sysforge.primitives.stage_sentinel import check_and_recover_stale_sentinel
+        state_dir = getattr(args, "state_dir", None)
+        if not check_and_recover_stale_sentinel(state_dir):
+            log.error(
+                "SENTINEL",
+                "Stale stage-in-progress sentinel present; refusing to proceed. "
+                "Run the recovery command shown above, or remove the sentinel "
+                "file once you have manually verified system consistency.",
+            )
+            sys.exit(2)
     args.func(args)

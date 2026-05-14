@@ -11,13 +11,25 @@
 # fields below to build and install a custom compiler before the packages
 # and kernel stages run.
 #
+# When `compiler` is unset, sysforge defaults to "gcc" — the toolchain
+# stage is **register-only** for GCC: it writes the system /usr/bin/gcc
+# paths into pipeline state and returns. Stock gcc-libs from pacman's
+# base-devel provides the runtime; sysforge never builds GCC from source.
+#
+# "llvm" is opt-in only and enables the 3-pass PGO bootstrap, which is
+# fragile across LLVM major bumps. Leave on "gcc" unless you specifically
+# want PGO LLVM.
+#
 # The built compiler is automatically propagated to subsequent stages via
 # pipeline state: packages and kernel will use CC/CXX from this result.
 # =============================================================================
 
 enabled = false
 
-# compiler = "llvm"    # "llvm" or "gcc"
+# compiler = "gcc"     # "gcc" (default when unset) or "llvm". LLVM enables
+#                      # the 3-pass PGO bootstrap, but is fragile across LLVM
+#                      # major bumps — leave on "gcc" unless you specifically
+#                      # want PGO LLVM.
 # pgo     = true       # LLVM only: enable 3-pass PGO bootstrap (ignored for gcc)
 
 # Path where pass-2 binaries are extracted for use as CC/CXX in pass 3.
@@ -39,8 +51,8 @@ enabled = false
 # non_pgo = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
 # lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
 #
-# For GCC, only non_pgo is used:
-# non_pgo = ["gcc", "gcc-libs"]
+# The [packages] section only applies to compiler = "llvm" (the GCC path is
+# register-only — no build, no package list).
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------

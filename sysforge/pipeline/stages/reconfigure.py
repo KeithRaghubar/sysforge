@@ -1027,7 +1027,7 @@ def _step_preview(config, state, options, editor: str) -> str:
         try:
             with open(TOOLCHAIN_PATH, "rb") as f:
                 tcfg = tomllib.load(f)
-            compiler = tcfg.get("compiler", "llvm")
+            compiler = tcfg.get("compiler", "gcc")
             pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
             pgo_label = " + PGO (3-pass)" if pgo else ""
             _log.ui(f"  Toolchain: {compiler}{pgo_label}")

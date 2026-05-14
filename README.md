@@ -2,6 +2,8 @@
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
+The default build profile uses the system gcc; LLVM (clang/lld) is fully supported but opt-in — install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `CC=clang`/`CXX=clang++` in a user profile, or use `sysforge run toolchain --compiler=llvm`.
+
 **Current status:** <!--version-->v1.1.0<!--/version-->. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `converge`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are shipped but **experimental and deferred to post-1.0** — they emit a runtime `[WARN]` and default to disabled; 1.0 users should use the system compiler and a stock pacman kernel.
 
 ---
@@ -211,7 +213,7 @@ sysforge run pipeline --resume
 This runs stages 5–8:
 
 - **reconfigure** — pre-build checks: disk space, network, config review
-- **toolchain** — *(experimental — post-1.0)* builds LLVM/GCC toolchain with optional PGO (reuses existing profdata when compatible; `--rebuild-profdata` to force full 3-pass). Skipped cleanly if `toolchain.toml` has `enabled = false` (the default). Recommended for 1.0: leave disabled.
+- **toolchain** — *(experimental — post-1.0)* builds the LLVM toolchain via the 3-pass PGO bootstrap (reuses existing profdata when compatible; `--rebuild-profdata` forces a full 3-pass). When `compiler` is unset or `"gcc"` the stage is register-only — it writes the system `/usr/bin/gcc` paths into pipeline state without building, since stock gcc/gcc-libs from `base-devel` are already correct. Skipped cleanly if `toolchain.toml` has `enabled = false` (the default). Recommended for 1.0: leave disabled.
 - **packages** — builds and installs everything in `packages.toml` with profiled flags
 - **kernel** — *(experimental — post-1.0)* builds a custom kernel (skipped cleanly if `kernel.toml` is absent or `enabled = false`). Recommended for 1.0: leave disabled and use a stock pacman kernel.
 

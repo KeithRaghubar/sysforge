@@ -1,15 +1,23 @@
 """
-stages/toolchain.py — stage 6: LLVM/GCC toolchain build
+stages/toolchain.py — stage 6: LLVM toolchain build (GCC is register-only)
 
 Opt-in: stage is a clean no-op if /etc/sysforge/toolchain.toml is absent or
 has enabled = false.  Systems that skip this stage use whatever compiler is
 already installed; packages and kernel stages proceed normally.
 
+The toolchain stage is the LLVM PGO bootstrap. The GCC path (compiler="gcc",
+the default) **never builds GCC from source** — it just registers the system
+`/usr/bin/gcc` and `/usr/bin/g++` paths into pipeline state so downstream
+stages (packages, kernel) use them. Stock `gcc-libs` from pacman's
+`base-devel` provides the runtime. Building GCC from source has no
+meaningful performance gains and is error-prone, so sysforge doesn't own
+that path.
+
 toolchain.toml structure:
   enabled     = true     # must be true to activate the stage
-  compiler    = "llvm"   # "llvm" or "gcc"
+  compiler    = "gcc"    # "gcc" (default, register-only) or "llvm" (build via PGO)
   pgo         = true     # only meaningful when compiler = "llvm"; ignored for gcc
-  skip_build  = false    # if true: skip build, just register compiler paths in state
+  skip_build  = false    # LLVM only: register clang paths without building
   pgo_staging = "/var/tmp/sysforge-llvm-stage2"   # staging dir for pass-2 binaries
   pgo_store   = "/var/tmp/sysforge-llvm-pgo"      # dir for profraw/profdata files
 
@@ -77,6 +85,7 @@ from sysforge import log
 _log = log.get_logger("TOOLCHAIN")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import find_pkgbuild, load_sysforge_toml
+from sysforge.primitives.interrupt import CleanExitRequested, InterruptScope
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
     evaluate_strict,
@@ -86,6 +95,7 @@ from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import lift_for_child
+from sysforge.primitives.stage_sentinel import StageSentinel
 from sysforge.primitives.source_sync import (
     STATUS_DIVERGED,
     STATUS_FAILED,
@@ -208,7 +218,6 @@ _DEFAULT_LLVM_LIB32 = [
     "lib32-clang",
     "lib32-spirv-llvm-translator",
 ]
-_DEFAULT_GCC = ["gcc", "gcc-libs"]
 _DEFAULT_STAGING = "/var/tmp/sysforge-llvm-stage2"
 _DEFAULT_PGO_STORE = "/var/tmp/sysforge-llvm-pgo"
 
@@ -269,16 +278,13 @@ def _load_toolchain_config() -> dict | None:
 
 def _package_lists(tcfg: dict) -> tuple[list[str], list[str], list[str]]:
     """
-    Return (pgo_pkgs, non_pgo_pkgs, lib32_pkgs) from toolchain config.
-    For GCC, non_pgo_pkgs = gcc packages, pgo_pkgs and lib32_pkgs = [].
+    Return (pgo_pkgs, non_pgo_pkgs, lib32_pkgs) for the LLVM toolchain build.
+
+    Only called on the LLVM path — the GCC path short-circuits to register
+    system gcc paths without building anything (stock `gcc`/`gcc-libs` from
+    pacman/base-devel provide the runtime).
     """
-    compiler = tcfg.get("compiler", "llvm")
     pkgs_cfg = tcfg.get("packages", {})
-
-    if compiler == "gcc":
-        gcc_pkgs = pkgs_cfg.get("non_pgo", _DEFAULT_GCC)
-        return [], gcc_pkgs, []
-
     pgo_pkgs = pkgs_cfg.get("pgo", _DEFAULT_LLVM_PGO)
     non_pgo_pkgs = pkgs_cfg.get("non_pgo", _DEFAULT_LLVM_NON_PGO)
     lib32_pkgs = pkgs_cfg.get("lib32", _DEFAULT_LLVM_LIB32)
@@ -1378,14 +1384,167 @@ def _check_existing_profdata(
 
 
 # ---------------------------------------------------------------------------
-# Build paths
+# Post-install verification (LLVM only)
 # ---------------------------------------------------------------------------
 
+# Packages whose installed version must match across the LLVM toolchain set.
+# A mismatch — typically from an interrupted `pacman -U` of one pass — is
+# what produces the broken-GUI / missing-symbol failure mode this guard is
+# here to catch. See the incident notes in CLAUDE.md §Experimental.
+_LLVM_VERSION_MATCH_SET = (
+    "llvm",
+    "llvm-libs",
+    "clang",
+    "lld",
+    "compiler-rt",
+)
 
-def _build_gcc(pkgbuild_map: dict[str, Path], options) -> tuple[str, str, None]:
-    """Single-pass GCC build. Returns (cc, cxx, ld=None)."""
-    _build_pass("GCC build (single pass)", pkgbuild_map, options, install=True)
-    return "/usr/bin/gcc", "/usr/bin/g++", None
+
+def _query_pacman_versions(pkgnames: tuple[str, ...]) -> dict[str, str | None]:
+    """Return {pkgname: version_string-or-None} via a single ``pacman -Q``.
+
+    A missing package maps to None. Used by :func:`_verify_llvm_install`
+    to assert that every installed LLVM component reports the same
+    `pkgver-pkgrel`.
+    """
+    result: dict[str, str | None] = {n: None for n in pkgnames}
+    try:
+        proc = subprocess.run(
+            ["pacman", "-Q", *pkgnames],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return result
+    for line in proc.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[0] in result:
+            result[parts[0]] = parts[1].strip()
+    return result
+
+
+def _verify_llvm_install(
+    expected_targets: list[str] | None = None,
+) -> list[str]:
+    """Run post-install LLVM consistency checks.
+
+    Returns a list of human-readable issue strings; empty list means
+    everything is consistent. Caller decides what to do (typically: prompt
+    the user with a recovery `pacman -S ...` command). Checks:
+
+    1. ``pacman -Q`` versions across :data:`_LLVM_VERSION_MATCH_SET` all
+       match. A mismatch is the canonical interrupted-install symptom.
+    2. ``clang --version`` and ``lld --version`` run without crashing.
+    3. ``llvm-config --targets-built`` is a superset of
+       ``expected_targets`` (skipped when ``expected_targets`` is None or
+       empty — i.e. no LLVM_TARGETS filtering was configured).
+    """
+    issues: list[str] = []
+
+    versions = _query_pacman_versions(_LLVM_VERSION_MATCH_SET)
+    installed = {n: v for n, v in versions.items() if v is not None}
+    if installed:
+        unique = set(installed.values())
+        if len(unique) > 1:
+            detail = ", ".join(f"{n}={v}" for n, v in sorted(installed.items()))
+            issues.append(
+                "LLVM component versions disagree (canonical interrupted-install "
+                f"symptom): {detail}"
+            )
+
+    for cmd, label in (
+        (["clang", "--version"], "clang --version"),
+        (["lld", "--version"], "lld --version"),
+    ):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            issues.append(f"{label}: binary missing from PATH")
+            continue
+        if proc.returncode != 0:
+            issues.append(
+                f"{label}: exit {proc.returncode} — {proc.stderr.strip()[:200]}"
+            )
+
+    if expected_targets:
+        try:
+            proc = subprocess.run(
+                ["llvm-config", "--targets-built"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            issues.append("llvm-config: binary missing from PATH")
+        else:
+            if proc.returncode != 0:
+                issues.append(
+                    f"llvm-config --targets-built: exit {proc.returncode}"
+                )
+            else:
+                built = set(proc.stdout.split())
+                missing = [t for t in expected_targets if t not in built]
+                if missing:
+                    issues.append(
+                        "llvm-config --targets-built missing expected backends "
+                        f"({', '.join(missing)}); built={sorted(built)}"
+                    )
+
+    return issues
+
+
+def _llvm_recovery_command() -> str:
+    """The canonical pacman command that restores a consistent LLVM set."""
+    return "sudo pacman -S " + " ".join(_LLVM_VERSION_MATCH_SET) + " llvm-libs"
+
+
+def _prompt_llvm_recovery(issues: list[str], *, source: str) -> bool:
+    """Surface LLVM inconsistency to the operator and offer auto-recovery.
+
+    ``source`` describes where the inconsistency was detected — typically
+    ``"post-install verification"`` (H) or ``"stale stage sentinel"`` (I).
+    Returns True iff the user accepted auto-recovery and it succeeded.
+
+    Non-interactive: the prompt's ``eof_default="n"`` fires and the
+    function returns False without running pacman (the caller raises a
+    blocker so the operator sees the issue at next run).
+    """
+    cmd = _llvm_recovery_command()
+    _log.warn(f"LLVM consistency check failed ({source}):")
+    for issue in issues:
+        _log.warn(f"  - {issue}")
+    _log.warn(f"Suggested recovery: {cmd}")
+
+    choice = prompt_choice(
+        "Restore a consistent LLVM set now? [y/N]: ",
+        choices=("y", "yes", "n"),
+        default="n",
+        eof_default="n",
+        tag="TOOLCHAIN",
+        level="WARN",
+    )
+    if choice not in ("y", "yes"):
+        return False
+
+    try:
+        proc = subprocess.run(cmd.split(), check=False)
+    except FileNotFoundError:
+        _log.error("[TOOLCHAIN] pacman binary missing — cannot run recovery")
+        return False
+    if proc.returncode != 0:
+        _log.error(
+            f"[TOOLCHAIN] Recovery pacman -S exited {proc.returncode}; "
+            "the live system may still be inconsistent",
+        )
+        return False
+    _log.ui("LLVM recovery completed successfully")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Build paths
+# ---------------------------------------------------------------------------
 
 
 def _build_llvm_single(
@@ -1768,6 +1927,17 @@ class ToolchainStage(Stage):
             _log.ui(
                 "toolchain.toml absent or disabled — stage is a no-op"
             )
+            # Clear any prior cc/cxx/ld result so downstream stages
+            # (packages, kernel) don't keep using stale toolchain
+            # overrides from a previous enabled run.
+            if state.get_stage_result("toolchain"):
+                state.set_stage_result("toolchain", {})
+                try:
+                    state.save()
+                except PermissionError:
+                    _log.warn(
+                        "Cannot write state — stale toolchain result will persist",
+                    )
             return
 
         _log.warn(
@@ -1775,12 +1945,32 @@ class ToolchainStage(Stage):
             "PGO bootstrap has known sharp edges; proceed with caution",
         )
 
-        compiler = tcfg.get("compiler", "llvm")
+        compiler = tcfg.get("compiler", "gcc")
         pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
         staging = Path(tcfg.get("pgo_staging", _DEFAULT_STAGING))
         pgo_store = Path(tcfg.get("pgo_store", _DEFAULT_PGO_STORE))
 
-        # skip_build: register compiler paths without building anything
+        # GCC path: never build from source. Register system gcc paths so
+        # downstream stages (packages, kernel) pick them up; stock gcc-libs
+        # from pacman/base-devel provides the runtime. This is intentionally
+        # the only behaviour for compiler="gcc" — sysforge does not own a
+        # GCC build path (no meaningful performance gain, error-prone, and
+        # base-devel already covers it).
+        if compiler == "gcc":
+            cc, cxx, ld = _compiler_paths("gcc")
+            _log.ui(
+                f"Compiler: gcc — registering system paths (no build): cc={cc}  cxx={cxx}",
+            )
+            state.set_stage_result("toolchain", {"cc": cc, "cxx": cxx})
+            try:
+                state.save()
+            except PermissionError:
+                _log.warn(
+                    "Cannot write state — toolchain results will not be checkpointed",
+                )
+            return
+
+        # skip_build (LLVM only): register clang paths without building.
         if tcfg.get("skip_build", False):
             cc, cxx, ld = _compiler_paths(compiler)
             _log.ui(
@@ -1797,26 +1987,6 @@ class ToolchainStage(Stage):
                     "Cannot write state — toolchain results will not be checkpointed",
                 )
             return
-
-        if compiler == "gcc" and not options.dry_run:
-            _log.warn(
-                "Building GCC from source is error-prone and yields no meaningful performance gains. "
-                "Set skip_build = true in toolchain.toml to use the system GCC instead.",
-            )
-            # eof_default="y": preserve the deliberate "EOF means proceed
-            # unattended" semantic this site has always had.
-            choice = prompt_choice(
-                "Proceed with GCC build anyway? [y/N]: ",
-                choices=("y", "yes", "n"),
-                default="n",
-                eof_default="y",
-                tag="TOOLCHAIN",
-                level="WARN",
-            )
-            if choice not in ("y", "yes"):
-                raise RuntimeError(
-                    "[TOOLCHAIN] GCC build aborted. Set skip_build = true in toolchain.toml to use the system GCC."
-                )
 
         pgo_pkgs, non_pgo_pkgs, lib32_pkgs = _package_lists(tcfg)
 
@@ -1875,15 +2045,73 @@ class ToolchainStage(Stage):
         except RuntimeError:
             raise
 
-        # Dispatch to build path
-        if compiler == "gcc":
-            cc, cxx, ld = _build_gcc(non_pgo_map, options)
-        elif pgo:
-            cc, cxx, ld = _build_llvm_pgo(
-                pgo_map, non_pgo_map, lib32_map, staging, pgo_store, options
+        # Mark stage in progress (cleared only after post-install verify).
+        # Any future sysforge invocation that sees this sentinel will block
+        # and offer recovery before proceeding — converting "silently broken
+        # LLVM stack from interrupted install" into a loud blocker at next
+        # run. See primitives/stage_sentinel.py.
+        sentinel = StageSentinel(options.state_dir)
+        try:
+            sentinel.mark_started(
+                "toolchain",
+                compiler=compiler,
+                pgo=pgo,
+                recovery_cmd=_llvm_recovery_command(),
             )
-        else:
-            cc, cxx, ld = _build_llvm_single(pgo_map, non_pgo_map, lib32_map, options)
+        except (OSError, PermissionError) as e:
+            _log.warn(
+                f"Cannot write stage sentinel ({e}); interrupted-run "
+                "detection will be unavailable for this run",
+            )
+
+        # Dispatch to LLVM build path inside an interrupt scope. The first
+        # Ctrl-C is deferred to the next safe boundary inside the build
+        # loop; a second Ctrl-C falls through to immediate exit.
+        # (compiler="gcc" short-circuits earlier in run() — sysforge never
+        # builds GCC from source.)
+        try:
+            with InterruptScope():
+                if pgo:
+                    cc, cxx, ld = _build_llvm_pgo(
+                        pgo_map, non_pgo_map, lib32_map, staging, pgo_store, options
+                    )
+                else:
+                    cc, cxx, ld = _build_llvm_single(
+                        pgo_map, non_pgo_map, lib32_map, options
+                    )
+        except CleanExitRequested:
+            _log.warn(
+                "Toolchain build interrupted at a safe boundary. Stage "
+                "sentinel left in place; the next sysforge invocation will "
+                "detect the interruption and offer LLVM recovery.",
+            )
+            raise RuntimeError(
+                "[TOOLCHAIN] Toolchain build interrupted by user (Ctrl-C). "
+                "Run `sysforge run toolchain` again, or restore consistency with: "
+                f"{_llvm_recovery_command()}"
+            ) from None
+
+        # Post-install verification (H): assert internal LLVM consistency
+        # before clearing the sentinel. If checks fail, offer auto-recovery
+        # via `sudo pacman -S ...` and leave the sentinel in place on
+        # failure so the operator hits the blocker again at next run.
+        expected_targets = (tcfg.get("llvm", {}) or {}).get("targets") or None
+        if not options.dry_run:
+            issues = _verify_llvm_install(expected_targets=expected_targets)
+            if issues:
+                if not _prompt_llvm_recovery(issues, source="post-install verification"):
+                    raise RuntimeError(
+                        "[TOOLCHAIN] Post-install LLVM consistency check failed; "
+                        "the live system may be in a mismatched state. Stage "
+                        "sentinel left in place — restore with: "
+                        f"{_llvm_recovery_command()}"
+                    )
+
+        # All good — clear the sentinel.
+        try:
+            sentinel.clear()
+        except OSError as e:
+            _log.warn(f"Cannot clear stage sentinel ({e})")
 
         # Write compiler paths to pipeline state for downstream stages
         result = {"cc": cc, "cxx": cxx}

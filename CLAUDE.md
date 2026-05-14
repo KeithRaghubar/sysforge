@@ -22,10 +22,15 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 - **Completions stay in lockstep with the CLI**: `completions/_sysforge` is updated in the same change as the CLI surface, not as a follow-up.
 - **PKGBUILD parsing/detection/patching**: cross-check against `PKGBUILD(5)` before changing — easy to miss spec details (e.g. array vs string fields, escape rules).
 - **LLVM source-state inspection**: `primitives/llvm_state.collect_llvm_state` is the only allowed entry point for new code that needs to inspect LLVM-toolchain source trees (variant, origin, dirty/diverged, install origin, build_mode). Do not call `git_is_dirty` + URL parsing directly — those checks drift out of sync with the rule set otherwise.
+- **Dual-toolchain test parity**: any new logic that branches on the resolved compiler (gcc vs llvm/clang) must ship with both a gcc-path test and an llvm/clang-path test in the same change. Regressing one path silently is the failure mode we're guarding against.
 
 ## Experimental (post-1.0)
 
 `run toolchain` (stage 6), `run kernel` (stage 8), and the PGO-toolchain profdata-reuse path in `sysforge update` (`build_mode = "pgo_llvm_toolchain"`) are shipped but reclassified as experimental for 1.0 — they emit a runtime `[WARN]` at entry and default to disabled. Keep the implementation intact but do not treat them as part of the v1.0 stable surface. See DESIGN.md §Release Plan for full scope.
+
+`run toolchain` defaults to `compiler = "gcc"` when the key is unset; LLVM is opt-in only. The shipped `[profiles.standard]` uses system gcc/binutils; LLVM components (`clang`, `lld`, `llvm`, `compiler-rt`) live in `optdepends` and are only required when the LLVM profile or `run toolchain --compiler=llvm` is selected.
+
+**Toolchain stage never builds GCC.** The `compiler = "gcc"` path is register-only — it writes the system `/usr/bin/gcc` paths into pipeline state and returns. Stock `gcc-libs` from `base-devel` provides the runtime. Do not reintroduce a `_build_gcc` helper or any code path that runs `makepkg` for `gcc`/`gcc-libs` under the toolchain stage; if a future change needs a GCC build path, it lives in `packages`, not here.
 
 ## Interaction Preferences
 

@@ -33,12 +33,15 @@
 #                                 # [profiles.NAME.append] does token-level merge
 #
 #   # Compiler / linker  (written to temp makepkg.conf)
-#   CC       = "clang"
-#   CXX      = "clang++"
-#   AR       = "llvm-ar"
-#   NM       = "llvm-nm"
-#   RANLIB   = "llvm-ranlib"
-#   STRIP    = "llvm-strip"
+#   # Default profile uses system gcc/binutils. LLVM is opt-in — set
+#   # CC=clang + CXX=clang++ (plus AR/NM/RANLIB/STRIP if needed) in a
+#   # user profile or via sysforge run toolchain --compiler=llvm.
+#   CC       = "gcc"
+#   CXX      = "g++"
+#   # AR     = "llvm-ar"      # opt-in: LLVM binutils
+#   # NM     = "llvm-nm"
+#   # RANLIB = "llvm-ranlib"
+#   # STRIP  = "llvm-strip"
 #   CFLAGS   = "-march=native -O3 -pipe -fno-plt"
 #   CXXFLAGS = "$CFLAGS"
 #   CPPFLAGS = "-D_FORTIFY_SOURCE=2"
@@ -147,12 +150,12 @@ BUILDDIR = "$HOME/builds"
 
 [profiles.standard]
 extends = "bare"
-CC       = "clang"
-CXX      = "clang++"
-AR       = "llvm-ar"
-NM       = "llvm-nm"
-RANLIB   = "llvm-ranlib"
-STRIP    = "llvm-strip"
+# System default toolchain: gcc + system binutils (ar/nm/ranlib/strip from
+# /usr/bin via the base-devel binutils package). LLVM is opt-in — to build
+# with clang, override CC/CXX in a user profile (and optionally set the
+# LLVM binutils explicitly) or use `sysforge run toolchain --compiler=llvm`.
+CC       = "gcc"
+CXX      = "g++"
 CFLAGS   = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS  = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
