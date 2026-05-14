@@ -281,3 +281,69 @@ def cmd_packages_remove(args):
 
     _rewrite_packages_toml(path, drop_name=pkg)
     print(f"Removed {pkg} from {path}")
+
+
+# ---------------------------------------------------------------------------
+# Verb wrappers
+# ---------------------------------------------------------------------------
+
+from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+
+
+class PackagesListVerb(Verb):
+    """Read-only: show packages.toml override entries."""
+
+    name = "packages-list"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_packages_list(args)
+        return ExecResult()
+
+
+class PackagesAddVerb(Verb):
+    """Add or update an override entry in packages.toml.
+
+    No sentinel: packages.toml is a config file, not the live install
+    set. An interrupted write reverts to the previous file via the
+    atomic write-then-rename in :func:`_rewrite_packages_toml`.
+    """
+
+    name = "packages-add"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        has_pkgbuild_patch = bool(getattr(args, "pkgbuild_patch", False))
+        has_no_cache = bool(getattr(args, "no_cache", False))
+        reason = getattr(args, "reason", None)
+        if not (has_pkgbuild_patch or has_no_cache or reason):
+            return PreCheckResult(
+                blocker=(
+                    f"{args.pkg}: at least one behavior-changing override is required "
+                    "(--pkgbuild-patch, --no-cache, or --reason). "
+                    "--source alone is metadata."
+                ),
+                exit_code=1,
+            )
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_packages_add(args)
+        return ExecResult()
+
+
+class PackagesRemoveVerb(Verb):
+    """Remove an override entry from packages.toml."""
+
+    name = "packages-remove"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_packages_remove(args)
+        return ExecResult()

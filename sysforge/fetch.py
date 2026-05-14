@@ -8,7 +8,6 @@ Prints the resulting PKGBUILD directory for each package.
 Public API:
     cmd_fetch(args)
 """
-import sys
 from pathlib import Path
 
 from sysforge import log
@@ -18,8 +17,8 @@ from sysforge.primitives.llvm_state import collect_llvm_state, render_preflight
 from sysforge.primitives.source_sync import SyncRequest, get_scheduler
 
 
-def cmd_fetch(args) -> None:
-    """Entry point for sysforge fetch."""
+def cmd_fetch(args) -> int:
+    """Entry point for sysforge fetch. Returns process exit code (0 or 1)."""
     config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
     config = load_config(config_paths=config_paths)
     cleansrc_force = getattr(args, "cleansrc_force", False)
@@ -62,5 +61,32 @@ def cmd_fetch(args) -> None:
 
             print(str(pkgbuild_dir))
 
-    if failed:
-        sys.exit(1)
+    return 1 if failed else 0
+
+
+# ---------------------------------------------------------------------------
+# Verb wrapper
+# ---------------------------------------------------------------------------
+
+from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+
+
+class FetchVerb(Verb):
+    """Download PKGBUILD(s) into pkgbuild_src_dir without building.
+
+    No sentinel — fetch never installs packages, so a mid-run interrupt
+    leaves at most a partial clone, which the scheduler reconciles on
+    retry.
+    """
+
+    name = "fetch"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        if not getattr(args, "pkgs", None):
+            return PreCheckResult(blocker="fetch: no packages specified", exit_code=2)
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        rc = cmd_fetch(args)
+        return ExecResult(exit_code=rc)

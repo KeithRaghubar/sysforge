@@ -12,34 +12,42 @@ Namespaces:
     sysforge packages       Manage packages.toml (list / add / remove / sync)
     sysforge run            Execute pipeline stages (pipeline / hardware / reconfigure / toolchain* / packages / kernel*)
                             (* toolchain and kernel are experimental — deferred to post-1.0)
+
+Every verb is a ``Verb`` subclass dispatched through
+:func:`sysforge.verbs.runner.run_verb`. The pre_check / execute /
+post_validate split is documented in DESIGN.md §CLI Verb Framework.
 """
 import argparse
 import sys
 from pathlib import Path
+
 from sysforge import log
+
 _log = log.get_logger("CLI")
 
-from sysforge.resolve import cmd_resolve
-from sysforge.fetch import cmd_fetch
-from sysforge.update import cmd_update
-from sysforge.setup_cmd import cmd_setup
+from sysforge.converge import ConvergeVerb
+from sysforge.doctor import DoctorVerb
+from sysforge.fetch import FetchVerb
 from sysforge.packages_cmd import (
-    cmd_packages_list,
-    cmd_packages_add,
-    cmd_packages_remove,
+    PackagesAddVerb,
+    PackagesListVerb,
+    PackagesRemoveVerb,
 )
-from sysforge.state_cmd import (
-    cmd_state_list,
-    cmd_state_orphans,
-    cmd_state_repair,
-)
-
-from sysforge.primitives.makepkg_wrapper import run, expand_makepkg_flags, BuildOptions
 from sysforge.primitives.config import find_pkgbuild, load_config
+from sysforge.primitives.makepkg_wrapper import BuildOptions, expand_makepkg_flags, run
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
+from sysforge.resolve import ResolveVerb
+from sysforge.setup_cmd import SetupVerb
+from sysforge.state_cmd import StateListVerb, StateOrphansVerb, StateRepairVerb
+from sysforge.update import UpdateVerb
+from sysforge.verbs import ExecResult, PreCheckResult, Verb, run_verb
 
 _PACKAGES_HELP = f"Path to packages.toml (default: {PACKAGES_PATH})."
 
+
+# ---------------------------------------------------------------------------
+# Helpers shared between verbs
+# ---------------------------------------------------------------------------
 
 def _load_config_with_overrides(args) -> dict:
     """Load flag_profiles config and apply CLI overrides (--packages, --profile-conf)."""
@@ -91,18 +99,39 @@ def _render_llvm_preflight(names: list[str], config: dict) -> None:
         print(render_preflight(report))
 
 
-def _cmd_build(args):
-    extra_flags = expand_makepkg_flags(args.makepkg) if args.makepkg else None
-    if args.no_pkg_log and args.log_dir:
-        print("[SYSFORGE] Warning: --log-dir has no effect when --no-pkg-log is set.", file=sys.stderr)
-    _log.info(f"Invocation: {' '.join(sys.argv)}")
-    packages = args.pkgbuilds
-    config = _load_config_with_overrides(args)
-    if not getattr(args, "no_llvm_preflight", False):
-        _render_llvm_preflight([_pkg_to_name(p) for p in packages], config)
-    cleansrc_force = getattr(args, "cleansrc_force", False)
-    cleansrc_active = cleansrc_force or getattr(args, "cleansrc", False)
-    try:
+# ---------------------------------------------------------------------------
+# Verb classes defined here (the ones whose work is inline rather than in a
+# dedicated module). The others (UpdateVerb, FetchVerb, ConvergeVerb,
+# DoctorVerb, ResolveVerb, SetupVerb, PackagesXVerb, StateXVerb) are imported
+# above from their respective modules.
+# ---------------------------------------------------------------------------
+
+class BuildVerb(Verb):
+    """Build one or more packages using their matched profiles."""
+
+    name = "build"
+    requires_sentinel = True
+
+    def pre_check(self, args) -> PreCheckResult:
+        if args.no_pkg_log and args.log_dir:
+            print(
+                "[SYSFORGE] Warning: --log-dir has no effect when --no-pkg-log is set.",
+                file=sys.stderr,
+            )
+        _log.info(f"Invocation: {' '.join(sys.argv)}")
+        config = _load_config_with_overrides(args)
+        if not getattr(args, "no_llvm_preflight", False):
+            _render_llvm_preflight([_pkg_to_name(p) for p in args.pkgbuilds], config)
+        if getattr(args, "dry_run", False):
+            self.requires_sentinel = False
+        return PreCheckResult(ctx={"config": config})
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        config = pre.ctx["config"]
+        extra_flags = expand_makepkg_flags(args.makepkg) if args.makepkg else None
+        packages = args.pkgbuilds
+        cleansrc_force = getattr(args, "cleansrc_force", False)
+        cleansrc_active = cleansrc_force or getattr(args, "cleansrc", False)
         for i, pkg in enumerate(packages):
             if cleansrc_active:
                 from sysforge.primitives.aur import purge_src
@@ -118,8 +147,8 @@ def _cmd_build(args):
 
             # Resolve and build AUR deps before the main package
             from sysforge.primitives.aur_resolve import (
-                resolve_aur_deps,
                 build_resolved_deps,
+                resolve_aur_deps,
             )
             aur_deps = resolve_aur_deps(pkgbuild, config, fetch=True)
             if aur_deps:
@@ -147,276 +176,272 @@ def _cmd_build(args):
                 abi_check=args.abi_check,
                 state_dir=Path(args.state_dir) if args.state_dir else None,
             ))
-    except RuntimeError as e:
-        _log.fatal(str(e))
+        return ExecResult()
 
 
-def _cmd_update(args):
-    if getattr(args, "install_only", False):
-        conflicts = [
-            ("--makepkg", getattr(args, "makepkg", None)),
-            ("--no-cleanbuild", getattr(args, "no_cleanbuild", False)),
-            ("--cleansrc", getattr(args, "cleansrc", False)),
-            ("--cleansrc-force", getattr(args, "cleansrc_force", False)),
-            ("--interactive", getattr(args, "interactive", False)),
-            ("--cache-report", getattr(args, "cache_report", False)),
-        ]
-        bad = [name for name, val in conflicts if val]
-        if bad:
-            _log.fatal(
-                f"--install-only is incompatible with: {', '.join(bad)} "
-                "(no rebuild happens, so build-tuning flags have no effect)"
-            )
-    try:
-        cmd_update(args)
-    except RuntimeError as e:
-        _log.fatal(str(e))
+class EnvVerb(Verb):
+    """Read-only: print the inherited env chain and divergences."""
+
+    name = "env"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        from sysforge.primitives.env_chain import collect_env_chain, format_env_chain
+        print(format_env_chain(collect_env_chain(), verbosity=log.get_verbosity()))
+        return ExecResult()
 
 
-def _cmd_converge(args):
-    args.extra_flags = expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else []
-    if not getattr(args, "no_llvm_preflight", False) and getattr(args, "pkgnames", None):
-        config = _load_config_with_overrides(args)
-        _render_llvm_preflight(list(args.pkgnames), config)
-    from sysforge.converge import cmd_converge
-    try:
-        cmd_converge(args)
-    except RuntimeError as e:
-        _log.fatal(str(e))
+class CompletionsVerb(Verb):
+    """Shell-completion data sink. Not user-facing; called from _sysforge."""
 
+    name = "completions"
+    requires_sentinel = False
 
-def _cmd_doctor(args):
-    args.config = load_config() or {}
-    from sysforge.doctor import cmd_doctor
-    try:
-        rc = cmd_doctor(args)
-    except RuntimeError as e:
-        _log.fatal(str(e))
-    if rc:
-        sys.exit(rc)
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
 
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        import subprocess as _sp
+        config = load_config() or {}
 
-def _cmd_completions(args):
-    import subprocess as _sp
-    config = load_config() or {}
+        if args.resource == "makepkg-flags":
+            r = _sp.run(["makepkg", "--help"], capture_output=True, text=True)
+            text = r.stdout or r.stderr or ""
+            _exclude = {"-h", "--help", "-V", "--version", "-p", "-m", "--nocolor"}
+            import re
+            for line in text.splitlines():
+                m = re.match(r"^\s+(-\w),\s+(--\w[\w-]*)\s+(?:<\w+>\s+)?(.*)", line)
+                if m:
+                    short, long, desc = m.group(1), m.group(2), m.group(3).strip()
+                    if short not in _exclude:
+                        print(f"{short}:{desc}")
+                    if long not in _exclude:
+                        print(f"{long}:{desc}")
+                    continue
+                m = re.match(r"^\s+(--\w[\w-]*)\s+(?:<\w+>\s+)?(.*)", line)
+                if m:
+                    long, desc = m.group(1), m.group(2).strip()
+                    if long not in _exclude:
+                        print(f"{long}:{desc}")
+            return ExecResult()
 
-    if args.resource == "makepkg-flags":
-        # Parse makepkg --help to extract flag/description pairs for completion
-        r = _sp.run(["makepkg", "--help"], capture_output=True, text=True)
-        text = r.stdout or r.stderr or ""
-        # Flags sysforge handles itself — exclude from passthrough completions
-        _exclude = {"-h", "--help", "-V", "--version", "-p", "-m", "--nocolor"}
-        import re
-        for line in text.splitlines():
-            m = re.match(r"^\s+(-\w),\s+(--\w[\w-]*)\s+(?:<\w+>\s+)?(.*)", line)
-            if m:
-                short, long, desc = m.group(1), m.group(2), m.group(3).strip()
-                if short not in _exclude:
-                    print(f"{short}:{desc}")
-                if long not in _exclude:
-                    print(f"{long}:{desc}")
-                continue
-            m = re.match(r"^\s+(--\w[\w-]*)\s+(?:<\w+>\s+)?(.*)", line)
-            if m:
-                long, desc = m.group(1), m.group(2).strip()
-                if long not in _exclude:
-                    print(f"{long}:{desc}")
-        return
+        if args.resource == "state":
+            from sysforge.pipeline.state import resolve_state_dir
+            from sysforge.primitives.build_state import BuildState
+            state_dir, _ = resolve_state_dir(None)
+            bs = BuildState(state_dir)
+            for name in sorted(bs.all_packages()):
+                print(name)
+            return ExecResult()
 
-    if args.resource == "state":
-        # Names tracked in build_state.toml — used by `update` completion
-        from sysforge.primitives.build_state import BuildState
-        from sysforge.pipeline.state import resolve_state_dir
-        state_dir, _ = resolve_state_dir(None)
-        bs = BuildState(state_dir)
-        for name in sorted(bs.all_packages()):
-            print(name)
-        return
+        if args.resource == "manifest":
+            import tomllib as _tomllib
+            pkg_path = resolve_packages_path(config)
+            if pkg_path.exists():
+                with open(pkg_path, "rb") as _f:
+                    data = _tomllib.load(_f)
+                for entry in data.get("package", []):
+                    name = entry.get("name")
+                    if name:
+                        print(name)
+            return ExecResult()
 
-    if args.resource == "manifest":
-        # Names already in packages.toml — used by `packages remove` completion
-        import tomllib as _tomllib
-        pkg_path = resolve_packages_path(config)
-        if pkg_path.exists():
-            with open(pkg_path, "rb") as _f:
-                data = _tomllib.load(_f)
-            for entry in data.get("package", []):
-                name = entry.get("name")
-                if name:
-                    print(name)
-        return
+        if args.resource == "local":
+            raw = config.get("paths", {}).get("pkgbuild_src_dir")
+            if raw:
+                d = Path(raw).expanduser()
+                if d.is_dir():
+                    for sub in sorted(d.iterdir()):
+                        if sub.is_dir() and (sub / "PKGBUILD").exists():
+                            print(sub.name)
+            return ExecResult()
 
-    if args.resource == "local":
-        # Only locally-cloned packages from pkgbuild_src_dir — used by `resolve` completion
+        seen: set[str] = set()
         raw = config.get("paths", {}).get("pkgbuild_src_dir")
         if raw:
             d = Path(raw).expanduser()
             if d.is_dir():
                 for sub in sorted(d.iterdir()):
                     if sub.is_dir() and (sub / "PKGBUILD").exists():
-                        print(sub.name)
-        return
+                        if sub.name not in seen:
+                            seen.add(sub.name)
+                            print(sub.name)
 
-    seen: set[str] = set()
+        r = _sp.run(["pacman", "-Ssq"], capture_output=True, text=True)
+        if r.returncode == 0:
+            for name in r.stdout.splitlines():
+                if name and name not in seen:
+                    seen.add(name)
+                    print(name)
 
-    # Local packages from pkgbuild_src_dir
-    raw = config.get("paths", {}).get("pkgbuild_src_dir")
-    if raw:
-        d = Path(raw).expanduser()
-        if d.is_dir():
-            for sub in sorted(d.iterdir()):
-                if sub.is_dir() and (sub / "PKGBUILD").exists():
-                    if sub.name not in seen:
-                        seen.add(sub.name)
-                        print(sub.name)
-
-    # Pacman sync DB packages
-    r = _sp.run(["pacman", "-Ssq"], capture_output=True, text=True)
-    if r.returncode == 0:
-        for name in r.stdout.splitlines():
-            if name and name not in seen:
-                seen.add(name)
-                print(name)
-
-    # AUR name cache (populated by `sysforge update` as a side effect)
-    from sysforge.primitives.aur import AUR_CACHE_PATH
-    aur_cache = AUR_CACHE_PATH.expanduser()
-    if aur_cache.exists():
-        for name in aur_cache.read_text().splitlines():
-            if name and name not in seen:
-                seen.add(name)
-                print(name)
+        from sysforge.primitives.aur import AUR_CACHE_PATH
+        aur_cache = AUR_CACHE_PATH.expanduser()
+        if aur_cache.exists():
+            for name in aur_cache.read_text().splitlines():
+                if name and name not in seen:
+                    seen.add(name)
+                    print(name)
+        return ExecResult()
 
 
 # ---------------------------------------------------------------------------
-# run namespace handlers
+# run namespace verbs — thin shims onto the pipeline runner.
+#
+# These verbs do NOT install a verb-level sentinel: the pipeline framework
+# (and the stages themselves, e.g. toolchain via sentinel_scope) owns its
+# sentinel coverage. Wrapping the verb in another sentinel_scope would race
+# with the inner stage's sentinel against the same stage_in_progress.toml.
 # ---------------------------------------------------------------------------
 
-def _cmd_run_pipeline(args):
-    from sysforge.pipeline.runner import run_pipeline
-    from sysforge.pipeline.stages.base import RunOptions
+class _RunVerbBase(Verb):
+    """Common scaffolding for ``sysforge run <stage>`` verbs."""
 
-    config = _load_config_with_overrides(args)
+    requires_sentinel = False
 
-    options = RunOptions(
-        resume=args.resume,
-        start_from=args.start_from,
-        force_retry=args.force_retry,
-        dry_run=args.dry_run,
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        no_unified_log=args.no_unified_log,
-        no_pkg_logs=args.no_pkg_logs,
-        log_dir=Path(args.log_dir) if args.log_dir else None,
-        purge_log=args.purge_log,
-        persist_log=args.persist_log,
-        cache_report=args.cache_report,
-        abi_check=args.abi_check,
-        no_update=args.no_update,
-    )
-    run_pipeline(config, options)
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
 
 
-def _cmd_run_hardware(args):
-    from sysforge.pipeline.runner import run_stage_standalone
-    from sysforge.pipeline.stages.hardware import HardwareStage
-    from sysforge.pipeline.stages.base import RunOptions
+class RunPipelineVerb(_RunVerbBase):
+    name = "run-pipeline"
 
-    config = load_config() or {}
-
-    options = RunOptions(
-        dry_run=args.dry_run,
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        no_unified_log=True,
-        no_pkg_logs=True,
-    )
-    run_stage_standalone(HardwareStage(), config, options)
-
-
-def _cmd_run_reconfigure(args):
-    from sysforge.pipeline.runner import run_stage_standalone
-    from sysforge.pipeline.stages.reconfigure import ReconfigureStage
-    from sysforge.pipeline.stages.base import RunOptions
-
-    config = _load_config_with_overrides(args)
-
-    options = RunOptions(
-        dry_run=args.dry_run,
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        no_unified_log=True,
-        no_pkg_logs=True,
-    )
-    run_stage_standalone(ReconfigureStage(), config, options)
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        from sysforge.pipeline.runner import run_pipeline
+        from sysforge.pipeline.stages.base import RunOptions
+        config = _load_config_with_overrides(args)
+        options = RunOptions(
+            resume=args.resume,
+            start_from=args.start_from,
+            force_retry=args.force_retry,
+            dry_run=args.dry_run,
+            state_dir=Path(args.state_dir) if args.state_dir else None,
+            no_unified_log=args.no_unified_log,
+            no_pkg_logs=args.no_pkg_logs,
+            log_dir=Path(args.log_dir) if args.log_dir else None,
+            purge_log=args.purge_log,
+            persist_log=args.persist_log,
+            cache_report=args.cache_report,
+            abi_check=args.abi_check,
+            no_update=args.no_update,
+        )
+        run_pipeline(config, options)
+        return ExecResult()
 
 
-def _cmd_run_toolchain(args):
-    from sysforge.pipeline.runner import run_stage_standalone
-    from sysforge.pipeline.stages.toolchain import ToolchainStage
-    from sysforge.pipeline.stages.base import RunOptions
+class RunHardwareVerb(_RunVerbBase):
+    name = "run-hardware"
 
-    config = load_config() or {}
-
-    options = RunOptions(
-        dry_run=args.dry_run,
-        no_update=args.no_update,
-        cleansrc=getattr(args, "cleansrc", False),
-        cleansrc_force=getattr(args, "cleansrc_force", False),
-        cache_report=args.cache_report,
-        abi_check=args.abi_check,
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        persist_log=args.persist_log,
-        makepkg_flags=expand_makepkg_flags(args.makepkg) if args.makepkg else [],
-        rebuild_profdata=args.rebuild_profdata,
-        auto_pgo=args.auto_pgo,
-        allow_dirty_llvm=args.allow_dirty_llvm,
-    )
-    run_stage_standalone(ToolchainStage(), config, options)
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        from sysforge.pipeline.runner import run_stage_standalone
+        from sysforge.pipeline.stages.base import RunOptions
+        from sysforge.pipeline.stages.hardware import HardwareStage
+        config = load_config() or {}
+        options = RunOptions(
+            dry_run=args.dry_run,
+            state_dir=Path(args.state_dir) if args.state_dir else None,
+            no_unified_log=True,
+            no_pkg_logs=True,
+        )
+        run_stage_standalone(HardwareStage(), config, options)
+        return ExecResult()
 
 
-def _cmd_run_packages(args):
-    from sysforge.pipeline.runner import run_stage_standalone
-    from sysforge.pipeline.stages.packages import PackagesStage
-    from sysforge.pipeline.stages.base import RunOptions
+class RunReconfigureVerb(_RunVerbBase):
+    name = "run-reconfigure"
 
-    config = _load_config_with_overrides(args)
-
-    options = RunOptions(
-        dry_run=args.dry_run,
-        force_retry=args.force_retry,
-        no_update=args.no_update,
-        no_pkg_logs=args.no_pkg_logs,
-        persist_log=args.persist_log,
-        log_dir=Path(args.log_dir) if args.log_dir else None,
-        cache_report=args.cache_report,
-        abi_check=args.abi_check,
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-    )
-    run_stage_standalone(PackagesStage(), config, options)
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        from sysforge.pipeline.runner import run_stage_standalone
+        from sysforge.pipeline.stages.base import RunOptions
+        from sysforge.pipeline.stages.reconfigure import ReconfigureStage
+        config = _load_config_with_overrides(args)
+        options = RunOptions(
+            dry_run=args.dry_run,
+            state_dir=Path(args.state_dir) if args.state_dir else None,
+            no_unified_log=True,
+            no_pkg_logs=True,
+        )
+        run_stage_standalone(ReconfigureStage(), config, options)
+        return ExecResult()
 
 
-def _cmd_run_kernel(args):
-    from sysforge.pipeline.runner import run_stage_standalone
-    from sysforge.pipeline.stages.kernel import KernelStage
-    from sysforge.pipeline.stages.base import RunOptions
+class RunToolchainVerb(_RunVerbBase):
+    name = "run-toolchain"
 
-    config = load_config() or {}
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        from sysforge.pipeline.runner import run_stage_standalone
+        from sysforge.pipeline.stages.base import RunOptions
+        from sysforge.pipeline.stages.toolchain import ToolchainStage
+        config = load_config() or {}
+        options = RunOptions(
+            dry_run=args.dry_run,
+            no_update=args.no_update,
+            cleansrc=getattr(args, "cleansrc", False),
+            cleansrc_force=getattr(args, "cleansrc_force", False),
+            cache_report=args.cache_report,
+            abi_check=args.abi_check,
+            state_dir=Path(args.state_dir) if args.state_dir else None,
+            persist_log=args.persist_log,
+            makepkg_flags=expand_makepkg_flags(args.makepkg) if args.makepkg else [],
+            rebuild_profdata=args.rebuild_profdata,
+            auto_pgo=args.auto_pgo,
+            allow_dirty_llvm=args.allow_dirty_llvm,
+        )
+        run_stage_standalone(ToolchainStage(), config, options)
+        return ExecResult()
 
-    options = RunOptions(
-        dry_run=args.dry_run,
-        no_update=args.no_update,
-        cleansrc=getattr(args, "cleansrc", False),
-        cleansrc_force=getattr(args, "cleansrc_force", False),
-        no_pkg_logs=args.no_pkg_logs,
-        persist_log=args.persist_log,
-        log_dir=Path(args.log_dir) if args.log_dir else None,
-        cache_report=args.cache_report,
-        abi_check=args.abi_check,
-        state_dir=Path(args.state_dir) if args.state_dir else None,
-        profile_conf=getattr(args, "profile_conf", None),
-        non_interactive=getattr(args, "non_interactive", False),
-        bootloader=getattr(args, "bootloader", None),
-        compiler=getattr(args, "compiler", None),
-    )
-    run_stage_standalone(KernelStage(), config, options)
+
+class RunPackagesVerb(_RunVerbBase):
+    name = "run-packages"
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        from sysforge.pipeline.runner import run_stage_standalone
+        from sysforge.pipeline.stages.base import RunOptions
+        from sysforge.pipeline.stages.packages import PackagesStage
+        config = _load_config_with_overrides(args)
+        options = RunOptions(
+            dry_run=args.dry_run,
+            force_retry=args.force_retry,
+            no_update=args.no_update,
+            no_pkg_logs=args.no_pkg_logs,
+            persist_log=args.persist_log,
+            log_dir=Path(args.log_dir) if args.log_dir else None,
+            cache_report=args.cache_report,
+            abi_check=args.abi_check,
+            state_dir=Path(args.state_dir) if args.state_dir else None,
+        )
+        run_stage_standalone(PackagesStage(), config, options)
+        return ExecResult()
+
+
+class RunKernelVerb(_RunVerbBase):
+    name = "run-kernel"
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        from sysforge.pipeline.runner import run_stage_standalone
+        from sysforge.pipeline.stages.base import RunOptions
+        from sysforge.pipeline.stages.kernel import KernelStage
+        config = load_config() or {}
+        options = RunOptions(
+            dry_run=args.dry_run,
+            no_update=args.no_update,
+            cleansrc=getattr(args, "cleansrc", False),
+            cleansrc_force=getattr(args, "cleansrc_force", False),
+            no_pkg_logs=args.no_pkg_logs,
+            persist_log=args.persist_log,
+            log_dir=Path(args.log_dir) if args.log_dir else None,
+            cache_report=args.cache_report,
+            abi_check=args.abi_check,
+            state_dir=Path(args.state_dir) if args.state_dir else None,
+            profile_conf=getattr(args, "profile_conf", None),
+            non_interactive=getattr(args, "non_interactive", False),
+            bootloader=getattr(args, "bootloader", None),
+            compiler=getattr(args, "compiler", None),
+        )
+        run_stage_standalone(KernelStage(), config, options)
+        return ExecResult()
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +487,6 @@ def _extract_implicit_makepkg_flags(argv):
     flag not in _PASSTHROUGH_EXCLUDE.  If ``-m`` / ``--makepkg`` is already
     present the implicit flags are still collected and merged.
     """
-    # Find the subcommand position.
     sub_idx = None
     for i, tok in enumerate(argv):
         if tok in _MAKEPKG_SUBCOMMANDS:
@@ -471,7 +495,6 @@ def _extract_implicit_makepkg_flags(argv):
     if sub_idx is None:
         return argv
 
-    # Collect implicit flags from after the subcommand.
     before = list(argv[:sub_idx + 1])
     implicit = []
     rest = []
@@ -491,7 +514,6 @@ def _extract_implicit_makepkg_flags(argv):
 
     merged = "-" + "".join(tok[1:] for tok in implicit)
 
-    # If -m / --makepkg is already present, merge into its value.
     for i, tok in enumerate(rest):
         if tok in ("-m", "--makepkg") and i + 1 < len(rest):
             rest[i + 1] = rest[i + 1] + " " + merged
@@ -577,7 +599,7 @@ def _add_build_parser(sub):
         help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
-    p.set_defaults(func=_cmd_build)
+    p.set_defaults(verb_cls=BuildVerb)
 
 
 def _add_fetch_parser(sub):
@@ -600,7 +622,7 @@ def _add_fetch_parser(sub):
         help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
         help="Path to a profiles.toml to use instead of the default.")
-    p.set_defaults(func=cmd_fetch)
+    p.set_defaults(verb_cls=FetchVerb)
 
 
 def _add_update_parser(sub):
@@ -658,7 +680,7 @@ def _add_update_parser(sub):
         help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit update to these package names (default: all sysforge-managed packages).")
-    p.set_defaults(func=_cmd_update)
+    p.set_defaults(verb_cls=UpdateVerb)
 
 
 def _add_resolve_parser(sub):
@@ -673,8 +695,7 @@ def _add_resolve_parser(sub):
         help="Show transitive dependency tree with build order instead of profile info.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
         help="Path to a profiles.toml to use instead of the default.")
-    p.set_defaults(func=cmd_resolve)
-
+    p.set_defaults(verb_cls=ResolveVerb)
 
 
 def _add_converge_parser(sub):
@@ -701,7 +722,7 @@ def _add_converge_parser(sub):
         help="Suppress the LLVM source pre-flight summary.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit drift check to these package names (default: all build_state-recorded packages).")
-    p.set_defaults(func=_cmd_converge)
+    p.set_defaults(verb_cls=ConvergeVerb)
 
 
 def _add_doctor_parser(sub):
@@ -741,7 +762,7 @@ def _add_doctor_parser(sub):
         help="Skip the y/N prompt before --apply rebuilds.")
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Report what --apply would rebuild without invoking the build.")
-    p.set_defaults(func=_cmd_doctor)
+    p.set_defaults(verb_cls=DoctorVerb)
 
 
 def _add_packages_parser(sub):
@@ -754,7 +775,7 @@ def _add_packages_parser(sub):
         help=_PACKAGES_HELP)
     p.add_argument("--orphans", action="store_true", dest="orphans",
         help="With list: show only entries whose package is not currently installed.")
-    p.set_defaults(func=cmd_packages_list)
+    p.set_defaults(verb_cls=PackagesListVerb)
 
     pkg_sub = p.add_subparsers(dest="packages_cmd")
 
@@ -764,7 +785,7 @@ def _add_packages_parser(sub):
         help="Path to packages.toml.")
     p_list.add_argument("--orphans", action="store_true", dest="orphans",
         help="Show only entries whose package is not currently installed.")
-    p_list.set_defaults(func=cmd_packages_list)
+    p_list.set_defaults(verb_cls=PackagesListVerb)
 
     # add
     p_add = pkg_sub.add_parser("add",
@@ -781,14 +802,14 @@ def _add_packages_parser(sub):
         help="Free-form note attached to the entry.")
     p_add.add_argument("--packages", metavar="FILE", dest="packages",
         help="Path to packages.toml.")
-    p_add.set_defaults(func=cmd_packages_add)
+    p_add.set_defaults(verb_cls=PackagesAddVerb)
 
     # remove
     p_remove = pkg_sub.add_parser("remove", help="Remove an override entry.")
     p_remove.add_argument("pkg", metavar="PKG", help="Package name to remove.")
     p_remove.add_argument("--packages", metavar="FILE", dest="packages",
         help="Path to packages.toml.")
-    p_remove.set_defaults(func=cmd_packages_remove)
+    p_remove.set_defaults(verb_cls=PackagesRemoveVerb)
 
 
 def _add_state_parser(sub):
@@ -803,7 +824,7 @@ def _add_state_parser(sub):
         help="Override state directory.")
     p_list.add_argument("--no-pager", action="store_true", dest="no_pager",
         help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
-    p_list.set_defaults(func=cmd_state_list)
+    p_list.set_defaults(verb_cls=StateListVerb)
 
     p_repair = state_sub.add_parser("repair",
         help="Re-parse PKGBUILDs to rewrite build_state.toml entries that contain "
@@ -812,7 +833,7 @@ def _add_state_parser(sub):
         help="Override state directory.")
     p_repair.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show the planned repair without writing.")
-    p_repair.set_defaults(func=cmd_state_repair)
+    p_repair.set_defaults(verb_cls=StateRepairVerb)
 
     p_orphans = state_sub.add_parser("orphans",
         help="List (and optionally prune) stale .pkg.tar* artifacts in PKGDEST. "
@@ -824,7 +845,7 @@ def _add_state_parser(sub):
         help="Skip the y/N prompt when pruning. Implies --prune.")
     p_orphans.add_argument("--no-pager", action="store_true", dest="no_pager",
         help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
-    p_orphans.set_defaults(func=cmd_state_orphans)
+    p_orphans.set_defaults(verb_cls=StateOrphansVerb)
 
 
 def _add_setup_parser(sub):
@@ -832,14 +853,7 @@ def _add_setup_parser(sub):
         help="Configure system integration (pacman IgnoreGroup for sf-build).")
     p.add_argument("--pacman-conf", metavar="FILE", dest="pacman_conf",
         help="Path to pacman.conf (default: /etc/pacman.conf).")
-    p.set_defaults(func=cmd_setup)
-
-
-def _cmd_env(args):
-    """Print the env chain sysforge has inherited from its parent process."""
-    del args
-    from sysforge.primitives.env_chain import collect_env_chain, format_env_chain
-    print(format_env_chain(collect_env_chain(), verbosity=log.get_verbosity()))
+    p.set_defaults(verb_cls=SetupVerb)
 
 
 def _add_env_parser(sub):
@@ -848,7 +862,7 @@ def _add_env_parser(sub):
              "(shell init files, systemd-user, PAM env, sysforge "
              "[defaults] profile), and a mismatches block when sources "
              "disagree. -vv adds inline per-var divergence annotations.")
-    p.set_defaults(func=_cmd_env)
+    p.set_defaults(verb_cls=EnvVerb)
 
 
 def _add_run_parser(sub):
@@ -894,7 +908,7 @@ def _add_run_parser(sub):
         help="Run a post-build ABI compatibility check on built shared libraries.")
     p_pipeline.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase before each build.")
-    p_pipeline.set_defaults(func=_cmd_run_pipeline)
+    p_pipeline.set_defaults(verb_cls=RunPipelineVerb)
 
     # run hardware
     p_hw = run_sub.add_parser("hardware",
@@ -903,7 +917,7 @@ def _add_run_parser(sub):
         help="Show what would be written without writing.")
     p_hw.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
-    p_hw.set_defaults(func=_cmd_run_hardware)
+    p_hw.set_defaults(verb_cls=RunHardwareVerb)
 
     # run reconfigure
     p_reconf = run_sub.add_parser("reconfigure",
@@ -914,7 +928,7 @@ def _add_run_parser(sub):
         help="Path to packages.toml (used by disk and preview steps).")
     p_reconf.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
-    p_reconf.set_defaults(func=_cmd_run_reconfigure)
+    p_reconf.set_defaults(verb_cls=RunReconfigureVerb)
 
     # run toolchain
     p_toolchain = run_sub.add_parser("toolchain",
@@ -958,7 +972,7 @@ def _add_run_parser(sub):
              "overwrites every local toolchain tree unconditionally. Use when "
              "the upstream rewrote history (e.g. Arch packaging repos "
              "force-push every release) and local commits have no value.")
-    p_toolchain.set_defaults(func=_cmd_run_toolchain)
+    p_toolchain.set_defaults(verb_cls=RunToolchainVerb)
 
     # run packages
     p_pkgs = run_sub.add_parser("packages",
@@ -985,7 +999,7 @@ def _add_run_parser(sub):
         help="Override state directory.")
     p_pkgs.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
         help="Path to a profiles.toml to use instead of the default.")
-    p_pkgs.set_defaults(func=_cmd_run_packages)
+    p_pkgs.set_defaults(verb_cls=RunPackagesVerb)
 
     # run kernel
     p_kernel = run_sub.add_parser("kernel",
@@ -1026,7 +1040,7 @@ def _add_run_parser(sub):
         help="Override state directory.")
     p_kernel.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
         help="Path to a profiles.toml to use instead of the default.")
-    p_kernel.set_defaults(func=_cmd_run_kernel)
+    p_kernel.set_defaults(verb_cls=RunKernelVerb)
 
 
 # ---------------------------------------------------------------------------
@@ -1066,15 +1080,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # completions (used by shell completion scripts; not user-facing)
     p_completions = sub.add_parser("completions", help=argparse.SUPPRESS)
-    p_completions.add_argument("resource", choices=["packages", "manifest", "local", "state", "makepkg-flags"])
-    p_completions.set_defaults(func=_cmd_completions)
+    p_completions.add_argument(
+        "resource",
+        choices=["packages", "manifest", "local", "state", "makepkg-flags"],
+    )
+    p_completions.set_defaults(verb_cls=CompletionsVerb)
 
     return parser
 
 
 def main():
-    from sysforge.primitives.resource_guard import install as _install_resource_guard
     from sysforge.primitives.paths import migrate_legacy_user_dirs
+    from sysforge.primitives.resource_guard import install as _install_resource_guard
     _install_resource_guard()
     migrate_legacy_user_dirs()
     sys.argv[1:] = _patch_makepkg_argv(
@@ -1101,9 +1118,7 @@ def main():
     # sentinel, block the next mutating command and offer recovery before
     # proceeding. Read-only commands (env, doctor, resolve, fetch, list,
     # completions) skip the check so users can inspect without recovery.
-    _INSTALL_BEARING = {
-        "build", "update", "converge", "run", "setup",
-    }
+    _INSTALL_BEARING = {"build", "update", "converge", "run", "setup"}
     if getattr(args, "command", None) in _INSTALL_BEARING:
         from sysforge.primitives.stage_sentinel import check_and_recover_stale_sentinel
         state_dir = getattr(args, "state_dir", None)
@@ -1115,4 +1130,8 @@ def main():
                 "file once you have manually verified system consistency.",
             )
             sys.exit(2)
-    args.func(args)
+    verb_cls = getattr(args, "verb_cls", None)
+    if verb_cls is None:
+        _log.error("No verb dispatcher set for this command — argparse misconfiguration")
+        sys.exit(2)
+    sys.exit(run_verb(verb_cls(), args))

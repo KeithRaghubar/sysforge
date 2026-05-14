@@ -860,3 +860,36 @@ def _apply_rebuilds(
     except SystemExit as e:
         return int(e.code) if isinstance(e.code, int) else 1
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Verb wrapper
+# ---------------------------------------------------------------------------
+
+from sysforge.primitives.config import load_config as _load_config  # noqa: E402
+from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+
+
+class DoctorVerb(Verb):
+    """Health-check installed package depends and ABI linkage.
+
+    Read-only by default (``cmd_doctor`` only prints findings). ``--apply``
+    delegates to ``cmd_update`` for actual rebuild, but that path
+    synthesizes an update args namespace and invokes the existing function
+    directly — no sentinel needed here, since ``UpdateVerb`` is not in
+    play. The sentinel for the rebuild itself is installed by the
+    delegated rebuild path's ``BuildOptions`` flow.
+    """
+
+    name = "doctor"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        # cmd_doctor reads args.config; the cli.py wrapper used to set this.
+        if not hasattr(args, "config") or args.config is None:
+            args.config = _load_config() or {}
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        rc = cmd_doctor(args) or 0
+        return ExecResult(exit_code=rc)

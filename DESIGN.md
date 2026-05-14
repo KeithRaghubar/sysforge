@@ -15,19 +15,20 @@ Current release is **<!--version-->v1.1.0<!--/version-->**. v0.1.0 shipped the p
 5. [Package Manifest](#package-manifest)
 6. [Config Layer](#config-layer)
 7. [Pipeline Layer](#pipeline-layer)
-8. [Primitives Layer](#primitives-layer)
-9. [Flag Profile System](#flag-profile-system)
-10. [Makepkg Wrapper](#makepkg-wrapper)
-11. [Logging](#logging)
-12. [Man Pages](#man-pages)
-13. [Hardware Detection](#hardware-detection)
-14. [Cache Management](#cache-management)
-15. [Graphics Stack Build Order](#graphics-stack-build-order)
-16. [Release Plan](#release-plan)
-17. [Re-converge](#re-converge)
-18. [Known Gaps](#known-gaps)
-19. [V1.x Roadmap](#v1x-roadmap)
-20. [V2 Roadmap](#v2-roadmap)
+8. [CLI Verb Framework](#cli-verb-framework)
+9. [Primitives Layer](#primitives-layer)
+10. [Flag Profile System](#flag-profile-system)
+11. [Makepkg Wrapper](#makepkg-wrapper)
+12. [Logging](#logging)
+13. [Man Pages](#man-pages)
+14. [Hardware Detection](#hardware-detection)
+15. [Cache Management](#cache-management)
+16. [Graphics Stack Build Order](#graphics-stack-build-order)
+17. [Release Plan](#release-plan)
+18. [Re-converge](#re-converge)
+19. [Known Gaps](#known-gaps)
+20. [V1.x Roadmap](#v1x-roadmap)
+21. [V2 Roadmap](#v2-roadmap)
 
 ---
 
@@ -80,7 +81,7 @@ Three layers:
 └─────────────────────────────────────────┘
 ```
 
-**Import direction:** `cli.py` → command modules (`update.py`, `converge.py`, `packages_cmd.py`, `resolve.py`) → `primitives/*`. No command module imports from another command module.
+**Import direction:** `cli.py` → `verbs/runner.py` → command modules (`update.py`, `converge.py`, `packages_cmd.py`, `resolve.py`, …) → `primitives/*`. Each command module defines a `*Verb(Verb)` subclass alongside its existing helpers; the runner dispatches uniformly across them. No command module imports from another command module. See [CLI Verb Framework](#cli-verb-framework).
 
 ---
 
@@ -581,6 +582,52 @@ The packages and kernel stages read these values and inject them into the build 
 2. **Post-install verification** — after the final `pacman -U` of the LLVM run, `_verify_llvm_install()` checks: (a) `pacman -Q` versions of `llvm`/`llvm-libs`/`clang`/`lld`/`compiler-rt` all agree (the canonical interrupted-install symptom — a mismatched `llvm-libs` is the exact failure mode that produced Keith's broken GUI), (b) `clang --version` and `lld --version` invoke cleanly without missing-symbol errors, (c) when `[llvm] targets` is configured, `llvm-config --targets-built` is a superset. On any failure, the operator is prompted with the recovery `pacman -S ...` (same UX as the sentinel path). Failure with declined recovery leaves the sentinel in place so the operator hits the blocker again at the next sysforge invocation.
 
 3. **Clean-exit SIGINT scope** (`primitives/interrupt.py`) — wraps the LLVM build dispatch in an `InterruptScope` context. The first Ctrl-C flips a flag without raising; the build code checks the flag at safe boundaries (between `makepkg` runs, between PGO passes) and raises `CleanExitRequested` to exit at the next safe point, sentinel intact. A second Ctrl-C falls through to default `SIGINT` handling (immediate termination) — the operator explicitly chose the unsafe path. `CleanExitRequested` subclasses `BaseException` so it propagates through `except Exception:` blocks without being silently swallowed.
+
+The sentinel-installation and clean-exit machinery is exposed as a shared `sentinel_scope()` context manager in `primitives/stage_sentinel.py` (see Verb Framework below) so the same install-bearing protection used by the toolchain stage is also available to standalone CLI verbs.
+
+---
+
+## CLI Verb Framework
+
+Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `resolve`, `env`, `setup`, `packages …`, `state …`, `run …`) is implemented as a `Verb` subclass in `sysforge/verbs/base.py` and dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` is unchanged — `args.func` is now a `Verb` factory rather than a bare function, and `main()` resolves it via `sys.exit(run_verb(args.func(), args))`.
+
+**Three-phase contract.** Each verb implements:
+
+- `pre_check(args) -> PreCheckResult` — validate args, load config, run preflights (LLVM safety, dirty-state guards, sudo checks). No state mutation. Returns one of three terminal shapes:
+  - **proceed**: `skip_reason=None, blocker=None`, optional `ctx` dict carried into later phases.
+  - **skip** (success short-circuit): `skip_reason="…"` — verb exits 0 with the reason logged.
+  - **block** (failure short-circuit): `blocker="…", exit_code=N` — verb exits non-zero with the message logged.
+- `execute(args, pre) -> ExecResult` — do the work. May mutate state. `ExecResult.exit_code` propagates to the process; `ExecResult.artifacts` is a free-form dict for `post_validate` to read.
+- `post_validate(args, pre, result) -> None` — verify post-conditions, write final state, raise `RuntimeError` on failure. Default is a no-op.
+
+**Result types** (`PreCheckResult` and `ExecResult`) are plain dataclasses with `ctx` / `artifacts` dicts; the runner does not inspect their contents. This keeps phase boundaries loose enough for ad-hoc data flow within a verb without inventing a per-verb context class.
+
+**Sentinel handling.** Verbs whose `execute` mutates the live system set `requires_sentinel = True`. The runner wraps `execute + post_validate` in `sentinel_scope(state_dir, verb.name, recovery_cmd=…, retry_cmd=…, **metadata)` from `primitives/stage_sentinel.py`. On entry, the sentinel writes `stage_in_progress.toml`; on normal completion (both phases pass), it clears. On `RuntimeError` or `CleanExitRequested`, the sentinel is left in place so the next sysforge invocation blocks at the CLI-entry recovery prompt. `sentinel_scope` also installs an `InterruptScope`, so verbs participate in the same first-Ctrl-C-defers-to-safe-boundary behaviour as the toolchain stage. The toolchain pipeline stage uses the same primitive — there is one implementation, shared.
+
+**Read-only verbs** (`env`, `resolve`, `state list`, `state orphans` without `--prune`, `packages list`, `doctor` without `--apply`) implement `execute` (the work is printing) and return `ExecResult()`; `post_validate` defaults to no-op and `requires_sentinel = False`. They use the same dispatch path as mutating verbs — no second code path.
+
+**Error model.**
+- `RuntimeError` raised from any phase → `_log.error(msg)`, return 1. Sentinel preserved if active.
+- `SystemExit` → propagate verbatim (lets tests and signal handlers see the raw exit).
+- `CleanExitRequested` → caught inside `sentinel_scope`, logged, re-raised as `RuntimeError` with the verb's `retry_cmd` and `recovery_cmd` in the message; sentinel preserved.
+
+**Per-verb phase mapping** (current shape; phases reflect where each piece of work lives, not which primitives it calls):
+
+| Verb | pre_check | execute | post_validate | sentinel |
+|------|-----------|---------|---------------|----------|
+| `build` | load config + LLVM preflight + `--cleansrc` validation | per-pkg AUR-dep resolve + makepkg | (build_state written by makepkg_wrapper) | yes |
+| `update` | `--install-only` conflict check + config + state load + pacman-hook sentinel consumption | assemble → sync → vercmp → summary → build → install | (build_state written inline) | yes |
+| `fetch` | load config + LLVM preflight | scheduler sync per pkg | non-blocker SyncResult statuses verified | no |
+| `converge` | load state + filter + conflict-group load | drift compare; optional rebuild | (build_state written by rebuild path) | only with `--apply` |
+| `doctor` | load config + target expansion | depends/soname/ABI scan | invoke `BuildVerb` flow when `--apply` | delegated |
+| `resolve` | load config | match rules + print | null | no |
+| `env` | null | collect + format + print env chain | null | no |
+| `setup` | read pacman.conf | check + patch IgnoreGroup | re-read confirms write | no |
+| `packages {list,add,remove}` | load packages.toml + validate override fields | rewrite TOML | null | no |
+| `state {list,repair,orphans}` | load state dir | inspect / repair / prune | null | `repair` only |
+| `run …` namespace | build `RunOptions` | delegate to `pipeline.run_pipeline` / `run_stage_standalone` | pipeline framework | (pipeline owns it) |
+
+**Why not unify with the pipeline `Stage` contract?** Stages already presume multi-stage DAG semantics, per-stage checkpoints, and an opinionated `PipelineState`. Most CLI verbs are single-shot and don't want a pipeline state file. The verb framework reuses `sentinel_scope` for install-bearing protection but otherwise stays independent, so `sysforge env` is not paying for pipeline machinery it doesn't need. The `run` namespace verbs are exactly the thin shim from CLI → pipeline.
 
 ---
 

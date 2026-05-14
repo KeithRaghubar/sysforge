@@ -168,3 +168,24 @@ def cmd_setup(args) -> None:
         print(f"[SYSFORGE] Added 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path}.")
     else:
         print(_MANUAL_INSTRUCTION.format(path=conf_path), file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Verb wrapper
+# ---------------------------------------------------------------------------
+
+from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+
+
+class SetupVerb(Verb):
+    """Configure pacman.conf IgnoreGroup for sysforge-built packages."""
+
+    name = "setup"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_setup(args)
+        return ExecResult()

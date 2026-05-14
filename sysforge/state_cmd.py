@@ -389,3 +389,63 @@ def cmd_state_orphans(args):
         except OSError as e:
             print(f"  could not remove {path.name}: {e}")
     print(f"Removed {removed} file(s) from {pkgdest}.")
+
+
+# ---------------------------------------------------------------------------
+# Verb wrappers
+# ---------------------------------------------------------------------------
+
+from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+
+
+class StateListVerb(Verb):
+    """Read-only: tabulate build_state.toml entries + untracked foreign."""
+
+    name = "state-list"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_state_list(args)
+        return ExecResult()
+
+
+class StateRepairVerb(Verb):
+    """Re-parse PKGBUILDs to repair build_state entries with shell-var leaks.
+
+    ``--dry-run`` short-circuits the actual write; the sentinel covers only
+    the write path so dry runs don't install one.
+    """
+
+    name = "state-repair"
+    requires_sentinel = True
+
+    def pre_check(self, args) -> PreCheckResult:
+        if getattr(args, "dry_run", False):
+            # Dry-run is read-only; downgrade to no-sentinel for this run.
+            self.requires_sentinel = False
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_state_repair(args)
+        return ExecResult()
+
+
+class StateOrphansVerb(Verb):
+    """List (and optionally prune) stale PKGDEST artifacts.
+
+    Sentinel only when ``--prune`` mutates the filesystem.
+    """
+
+    name = "state-orphans"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        self.requires_sentinel = bool(getattr(args, "prune", False))
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_state_orphans(args)
+        return ExecResult()

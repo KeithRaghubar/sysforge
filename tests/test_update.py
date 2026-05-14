@@ -1266,13 +1266,15 @@ def test_install_only_skips_when_artifact_missing(tmp_path):
 
 
 def test_install_only_rejects_incompatible_flags():
-    """--install-only with build-tuning flags must abort via fatal()."""
-    import pytest
-    from sysforge.cli import _cmd_update
+    """--install-only with build-tuning flags must short-circuit pre_check with a blocker."""
+    from sysforge.update import UpdateVerb
 
     args = _make_args(install_only=True, no_cleanbuild=True)
-    with pytest.raises(SystemExit):
-        _cmd_update(args)
+    pre = UpdateVerb().pre_check(args)
+    assert pre.blocker is not None
+    assert "--install-only is incompatible with" in pre.blocker
+    assert "--no-cleanbuild" in pre.blocker
+    assert pre.exit_code == 1
 
 
 # ---------------------------------------------------------------------------

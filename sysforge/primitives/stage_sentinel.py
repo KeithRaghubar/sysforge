@@ -32,10 +32,13 @@ The file is removed in its entirety on ``clear()``. Atomic write-then-rename mat
 import os
 import subprocess
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.interrupt import CleanExitRequested, InterruptScope
 from sysforge.primitives.prompt import prompt_choice
 
 _log = log.get_logger("SENTINEL")
@@ -216,3 +219,79 @@ class StageSentinel:
                     lines.append(f'{key} = "{escaped}"')
             lines.append("")
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# sentinel_scope — shared context manager
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def sentinel_scope(
+    state_dir: Path | str | None,
+    stage_name: str,
+    *,
+    recovery_cmd: str | None = None,
+    retry_cmd: str | None = None,
+    **metadata,
+) -> Iterator["StageSentinel"]:
+    """Install a stage sentinel for the duration of the block.
+
+    Wraps the body in an :class:`InterruptScope` so the first Ctrl-C inside
+    install-bearing work defers to the next safe boundary instead of
+    interrupting mid-mutation. On normal completion the sentinel is cleared;
+    on any exception (including ``CleanExitRequested``) the sentinel is left
+    in place so the next sysforge invocation blocks at the CLI-entry recovery
+    prompt in :func:`check_and_recover_stale_sentinel`.
+
+    Used by both the toolchain pipeline stage and the CLI verb runner so
+    there is one implementation of "install sentinel → interrupt-safe body
+    → clear sentinel on success" rather than two divergent copies.
+
+    Args:
+        state_dir: same resolution as the rest of the state dir
+            (explicit > env var > ``/var/lib/sysforge``).
+        stage_name: short identifier recorded in the sentinel; surfaces in
+            the recovery prompt and the ``CleanExitRequested`` log message.
+        recovery_cmd: shell command (e.g. ``sudo pacman -S llvm llvm-libs``)
+            stored in the sentinel for the operator-facing recovery prompt.
+        retry_cmd: command the operator can re-run to resume from a clean
+            state, surfaced in the ``CleanExitRequested`` → ``RuntimeError``
+            message (e.g. ``sysforge run toolchain``).
+        **metadata: extra fields persisted in the sentinel (e.g.
+            ``compiler="llvm"``, ``pgo=True``).
+
+    Raises:
+        RuntimeError: when a ``CleanExitRequested`` propagates out of the
+            body. The message includes ``retry_cmd`` and ``recovery_cmd``
+            when supplied so the operator has both copy-pasteable hints.
+        Any other exception raised by the body propagates verbatim.
+    """
+    sentinel = StageSentinel(state_dir)
+    try:
+        sentinel.mark_started(stage_name, recovery_cmd=recovery_cmd, **metadata)
+    except (OSError, PermissionError) as e:
+        _log.warn(
+            f"Cannot write stage sentinel ({e}); interrupted-run "
+            "detection will be unavailable for this run"
+        )
+
+    try:
+        with InterruptScope():
+            yield sentinel
+    except CleanExitRequested:
+        _log.warn(
+            f"{stage_name} interrupted at a safe boundary. Stage sentinel "
+            "left in place; the next sysforge invocation will detect the "
+            "interruption and offer recovery."
+        )
+        parts = [f"[{stage_name.upper()}] interrupted by user (Ctrl-C)."]
+        if retry_cmd:
+            parts.append(f"Re-run with `{retry_cmd}` to resume.")
+        if recovery_cmd:
+            parts.append(f"To restore consistency manually: {recovery_cmd}")
+        raise RuntimeError(" ".join(parts)) from None
+
+    try:
+        sentinel.clear()
+    except OSError as e:
+        _log.warn(f"Cannot clear stage sentinel ({e})")

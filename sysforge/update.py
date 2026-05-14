@@ -1065,3 +1065,56 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
     if no_record_count:
         print("\n  * = no build record")
     print()
+
+
+# ---------------------------------------------------------------------------
+# Verb wrapper
+# ---------------------------------------------------------------------------
+
+from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+
+
+class UpdateVerb(Verb):
+    """Check for and rebuild outdated sysforge-managed packages.
+
+    ``--install-only`` is incompatible with build-tuning flags; that
+    conflict is enforced in ``pre_check`` so the verb short-circuits
+    before any state mutation.
+
+    Sentinel: yes. ``cmd_update`` issues ``sudo pacman -U`` against built
+    artifacts at the end of the run; an interrupt between build and
+    install can leave the live system mismatched, so the sentinel covers
+    the whole run.
+    """
+
+    name = "update"
+    requires_sentinel = True
+
+    def pre_check(self, args) -> PreCheckResult:
+        if getattr(args, "install_only", False):
+            conflicts = [
+                ("--makepkg", getattr(args, "makepkg", None)),
+                ("--no-cleanbuild", getattr(args, "no_cleanbuild", False)),
+                ("--cleansrc", getattr(args, "cleansrc", False)),
+                ("--cleansrc-force", getattr(args, "cleansrc_force", False)),
+                ("--interactive", getattr(args, "interactive", False)),
+                ("--cache-report", getattr(args, "cache_report", False)),
+            ]
+            bad = [name for name, val in conflicts if val]
+            if bad:
+                return PreCheckResult(
+                    blocker=(
+                        f"--install-only is incompatible with: {', '.join(bad)} "
+                        "(no rebuild happens, so build-tuning flags have no effect)"
+                    ),
+                    exit_code=1,
+                )
+        # Dry runs and offline-only paths don't mutate the live system —
+        # skip the sentinel for those cases.
+        if getattr(args, "dry_run", False):
+            self.requires_sentinel = False
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_update(args)
+        return ExecResult()

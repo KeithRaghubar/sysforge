@@ -85,7 +85,6 @@ from sysforge import log
 _log = log.get_logger("TOOLCHAIN")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import find_pkgbuild, load_sysforge_toml
-from sysforge.primitives.interrupt import CleanExitRequested, InterruptScope
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
     evaluate_strict,
@@ -95,7 +94,7 @@ from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import lift_for_child
-from sysforge.primitives.stage_sentinel import StageSentinel
+from sysforge.primitives.stage_sentinel import sentinel_scope
 from sysforge.primitives.source_sync import (
     STATUS_DIVERGED,
     STATUS_FAILED,
@@ -2045,73 +2044,45 @@ class ToolchainStage(Stage):
         except RuntimeError:
             raise
 
-        # Mark stage in progress (cleared only after post-install verify).
-        # Any future sysforge invocation that sees this sentinel will block
-        # and offer recovery before proceeding — converting "silently broken
-        # LLVM stack from interrupted install" into a loud blocker at next
-        # run. See primitives/stage_sentinel.py.
-        sentinel = StageSentinel(options.state_dir)
-        try:
-            sentinel.mark_started(
-                "toolchain",
-                compiler=compiler,
-                pgo=pgo,
-                recovery_cmd=_llvm_recovery_command(),
-            )
-        except (OSError, PermissionError) as e:
-            _log.warn(
-                f"Cannot write stage sentinel ({e}); interrupted-run "
-                "detection will be unavailable for this run",
-            )
+        # Install the stage sentinel + interrupt scope as one unit. The
+        # scope writes the sentinel on entry and clears it only on a clean
+        # exit; any exception (RuntimeError, CleanExitRequested) leaves the
+        # sentinel in place so the next sysforge invocation blocks at the
+        # CLI-entry recovery prompt. CleanExitRequested → RuntimeError
+        # translation (with retry_cmd + recovery_cmd in the message) happens
+        # inside sentinel_scope. See primitives/stage_sentinel.py.
+        with sentinel_scope(
+            options.state_dir,
+            "toolchain",
+            recovery_cmd=_llvm_recovery_command(),
+            retry_cmd="sysforge run toolchain",
+            compiler=compiler,
+            pgo=pgo,
+        ):
+            if pgo:
+                cc, cxx, ld = _build_llvm_pgo(
+                    pgo_map, non_pgo_map, lib32_map, staging, pgo_store, options
+                )
+            else:
+                cc, cxx, ld = _build_llvm_single(
+                    pgo_map, non_pgo_map, lib32_map, options
+                )
 
-        # Dispatch to LLVM build path inside an interrupt scope. The first
-        # Ctrl-C is deferred to the next safe boundary inside the build
-        # loop; a second Ctrl-C falls through to immediate exit.
-        # (compiler="gcc" short-circuits earlier in run() — sysforge never
-        # builds GCC from source.)
-        try:
-            with InterruptScope():
-                if pgo:
-                    cc, cxx, ld = _build_llvm_pgo(
-                        pgo_map, non_pgo_map, lib32_map, staging, pgo_store, options
-                    )
-                else:
-                    cc, cxx, ld = _build_llvm_single(
-                        pgo_map, non_pgo_map, lib32_map, options
-                    )
-        except CleanExitRequested:
-            _log.warn(
-                "Toolchain build interrupted at a safe boundary. Stage "
-                "sentinel left in place; the next sysforge invocation will "
-                "detect the interruption and offer LLVM recovery.",
-            )
-            raise RuntimeError(
-                "[TOOLCHAIN] Toolchain build interrupted by user (Ctrl-C). "
-                "Run `sysforge run toolchain` again, or restore consistency with: "
-                f"{_llvm_recovery_command()}"
-            ) from None
-
-        # Post-install verification (H): assert internal LLVM consistency
-        # before clearing the sentinel. If checks fail, offer auto-recovery
-        # via `sudo pacman -S ...` and leave the sentinel in place on
-        # failure so the operator hits the blocker again at next run.
-        expected_targets = (tcfg.get("llvm", {}) or {}).get("targets") or None
-        if not options.dry_run:
-            issues = _verify_llvm_install(expected_targets=expected_targets)
-            if issues:
-                if not _prompt_llvm_recovery(issues, source="post-install verification"):
+            # Post-install verification (H): assert internal LLVM consistency
+            # before clearing the sentinel. Failure raises RuntimeError so
+            # sentinel_scope leaves the sentinel in place on exit.
+            expected_targets = (tcfg.get("llvm", {}) or {}).get("targets") or None
+            if not options.dry_run:
+                issues = _verify_llvm_install(expected_targets=expected_targets)
+                if issues and not _prompt_llvm_recovery(
+                    issues, source="post-install verification",
+                ):
                     raise RuntimeError(
                         "[TOOLCHAIN] Post-install LLVM consistency check failed; "
                         "the live system may be in a mismatched state. Stage "
                         "sentinel left in place — restore with: "
                         f"{_llvm_recovery_command()}"
                     )
-
-        # All good — clear the sentinel.
-        try:
-            sentinel.clear()
-        except OSError as e:
-            _log.warn(f"Cannot clear stage sentinel ({e})")
 
         # Write compiler paths to pipeline state for downstream stages
         result = {"cc": cc, "cxx": cxx}

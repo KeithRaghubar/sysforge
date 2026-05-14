@@ -228,3 +228,24 @@ def cmd_resolve(args) -> None:
         pkgbuild_path, pkgmeta, matched, resolved,
         consumes, groups, config, show_flags=args.show_flags,
     )
+
+
+# ---------------------------------------------------------------------------
+# Verb wrapper
+# ---------------------------------------------------------------------------
+
+from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+
+
+class ResolveVerb(Verb):
+    """Read-only verb: print rule-match + profile resolution for a PKGBUILD."""
+
+    name = "resolve"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_resolve(args)
+        return ExecResult()

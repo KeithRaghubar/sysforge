@@ -312,3 +312,52 @@ def _apply(results: list[_ConvergeResult], args) -> None:
         emit_session_report()
 
     print(f"\n[SYSFORGE] Converge complete: {built} rebuilt, {failed} failed.")
+
+
+# ---------------------------------------------------------------------------
+# Verb wrapper
+# ---------------------------------------------------------------------------
+
+from sysforge.primitives.llvm_state import collect_llvm_state, render_preflight  # noqa: E402
+from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags  # noqa: E402
+from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+
+
+class ConvergeVerb(Verb):
+    """Detect (and optionally repair) flag drift between build_state and current profile.
+
+    ``--apply`` mutates the live system via per-package rebuild + batch
+    install — the sentinel covers that path. The dry (no-``--apply``)
+    path is read-only and runs without a sentinel.
+    """
+
+    name = "converge"
+    requires_sentinel = False  # set True by pre_check when --apply is present
+
+    def pre_check(self, args) -> PreCheckResult:
+        # makepkg flag passthrough lives in args.extra_flags for cmd_converge.
+        args.extra_flags = (
+            expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else []
+        )
+        if (
+            not getattr(args, "no_llvm_preflight", False)
+            and getattr(args, "pkgnames", None)
+        ):
+            from sysforge.primitives.config import load_config as _load_config
+            config = _load_config(
+                config_paths=(
+                    [Path(args.profile_conf)]
+                    if getattr(args, "profile_conf", None)
+                    else None
+                ),
+            )
+            report = collect_llvm_state(list(args.pkgnames), config)
+            if report.states:
+                print(render_preflight(report))
+        if getattr(args, "apply", False):
+            self.requires_sentinel = True
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_converge(args)
+        return ExecResult()
