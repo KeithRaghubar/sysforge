@@ -403,12 +403,18 @@ def _cmd_run_kernel(args):
     options = RunOptions(
         dry_run=args.dry_run,
         no_update=args.no_update,
+        cleansrc=getattr(args, "cleansrc", False),
+        cleansrc_force=getattr(args, "cleansrc_force", False),
         no_pkg_logs=args.no_pkg_logs,
         persist_log=args.persist_log,
         log_dir=Path(args.log_dir) if args.log_dir else None,
         cache_report=args.cache_report,
         abi_check=args.abi_check,
         state_dir=Path(args.state_dir) if args.state_dir else None,
+        profile_conf=getattr(args, "profile_conf", None),
+        non_interactive=getattr(args, "non_interactive", False),
+        bootloader=getattr(args, "bootloader", None),
+        compiler=getattr(args, "compiler", None),
     )
     run_stage_standalone(KernelStage(), config, options)
 
@@ -988,6 +994,24 @@ def _add_run_parser(sub):
         help="Show what would run without executing anything.")
     p_kernel.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase before each build.")
+    p_kernel.add_argument("--cleansrc", action="store_true", dest="cleansrc",
+        help="Purge the kernel src dir and re-clone before building. "
+             "Refuses if the existing clone has uncommitted changes, "
+             "ahead-of-upstream commits, or no upstream.")
+    p_kernel.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
+        help="Like --cleansrc but bypasses the dirty/diverged guard and "
+             "overwrites the local tree unconditionally.")
+    p_kernel.add_argument("--non-interactive", action="store_true", dest="non_interactive",
+        help="Disable interactive kconfig (default is interactive — the PKGBUILD's "
+             "`make nconfig`/`menuconfig`/etc. runs as written). With this flag, "
+             "interactive targets are patched to `make olddefconfig` for unattended runs.")
+    p_kernel.add_argument("--compiler", choices=["gcc", "llvm"], dest="compiler",
+        help="Kernel-stage compiler override (gcc or llvm). Independent of the "
+             "global toolchain stage — lets you keep gcc system-wide but build "
+             "the kernel with LLVM (or vice versa). Resolution order: this flag > "
+             "kernel.toml compiler > toolchain-stage pipeline state.")
+    p_kernel.add_argument("--bootloader", choices=["systemd-boot", "grub", "none"], dest="bootloader",
+        help="Override kernel.toml bootloader for this invocation (systemd-boot is the default).")
     p_kernel.add_argument("--no-pkg-logs", action="store_true", dest="no_pkg_logs",
         help="Disable per-package log files.")
     p_kernel.add_argument("--persist-log", action="store_true", dest="persist_log",
@@ -1000,6 +1024,8 @@ def _add_run_parser(sub):
         help="Run a post-build ABI compatibility check on built shared libraries.")
     p_kernel.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
+    p_kernel.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
+        help="Path to a profiles.toml to use instead of the default.")
     p_kernel.set_defaults(func=_cmd_run_kernel)
 
 

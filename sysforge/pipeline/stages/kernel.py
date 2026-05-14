@@ -49,6 +49,110 @@ _log = log.get_logger("KERNEL")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.paths import KERNEL_PATH
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
+from sysforge.primitives.source_sync import (
+    STATUS_DIVERGED,
+    STATUS_FAILED,
+    STATUS_PURGE_REFUSED,
+    STATUS_RATE_LIMITED,
+    SyncRequest,
+    get_scheduler,
+)
+
+_SYNC_BLOCKING_STATUSES = frozenset({
+    STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED,
+})
+
+_VALID_COMPILERS = ("gcc", "llvm")
+_VALID_BOOTLOADERS = ("systemd-boot", "grub", "none")
+
+
+def _resolve_compiler(kernel_cfg, options, state):
+    """
+    Resolve the kernel-stage compiler. Precedence:
+      1. options.compiler (CLI --compiler)
+      2. kernel_cfg["compiler"]
+      3. pipeline state's toolchain.cc (mapped back to "gcc" or "llvm")
+      4. None (let makepkg_wrapper fall through to profile defaults)
+
+    Returns ("gcc"|"llvm"|None, cc_path|None, cxx_path|None).
+    """
+    cli = getattr(options, "compiler", None)
+    cfg = kernel_cfg.get("compiler")
+    for source, val in (("--compiler", cli), ("kernel.toml", cfg)):
+        if val and val not in _VALID_COMPILERS:
+            raise RuntimeError(
+                f"[KERNEL] invalid {source} value {val!r}: "
+                f"must be one of {_VALID_COMPILERS}"
+            )
+
+    compiler = cli or cfg
+    if compiler:
+        from sysforge.pipeline.stages.toolchain import _compiler_paths
+        cc, cxx, _ = _compiler_paths(compiler)
+        return compiler, cc, cxx
+
+    toolchain = state.get_stage_result("toolchain") if state else None
+    cc = toolchain.get("cc") if toolchain else None
+    cxx = toolchain.get("cxx") if toolchain else None
+    return None, cc, cxx
+
+
+def _resolve_bootloader(kernel_cfg, options):
+    """Resolve bootloader: CLI override > kernel.toml > 'systemd-boot' default."""
+    cli = getattr(options, "bootloader", None)
+    if cli and cli not in _VALID_BOOTLOADERS:
+        raise RuntimeError(
+            f"[KERNEL] invalid --bootloader value {cli!r}: "
+            f"must be one of {_VALID_BOOTLOADERS}"
+        )
+    cfg = kernel_cfg.get("bootloader", "systemd-boot")
+    if cfg not in _VALID_BOOTLOADERS:
+        raise RuntimeError(
+            f"[KERNEL] invalid kernel.toml bootloader {cfg!r}: "
+            f"must be one of {_VALID_BOOTLOADERS}"
+        )
+    return cli or cfg
+
+
+def _presync_kernel_source(pkgbuild_dir, options, state_dir):
+    """
+    Sync the kernel source tree through the SourceSyncScheduler.
+
+    Runs whenever --cleansrc/--cleansrc-force is set (forcing a purge even
+    when --no-update is also set) or when --no-update was not passed.
+    Skipped otherwise. Returns True if a sync was attempted.
+    """
+    cleansrc = bool(getattr(options, "cleansrc", False) or getattr(options, "cleansrc_force", False))
+    if not cleansrc and getattr(options, "no_update", False):
+        _log.info("--no-update: skipping kernel source sync")
+        return False
+
+    if getattr(options, "dry_run", False):
+        kind = "purge + re-clone" if cleansrc else "git fetch + rebase"
+        _log.ui(f"[dry-run] would sync kernel source ({kind}): {pkgbuild_dir}")
+        return False
+
+    scheduler = get_scheduler(
+        state_dir=state_dir,
+        cleansrc=cleansrc,
+        cleansrc_force=bool(getattr(options, "cleansrc_force", False)),
+    )
+    result = scheduler.request(SyncRequest(
+        pkgbase=pkgbuild_dir.name,
+        pkgbuild_dir=pkgbuild_dir,
+        force_fetch=True,
+    ))
+    if result.status in _SYNC_BLOCKING_STATUSES:
+        raise RuntimeError(
+            f"[KERNEL] source sync failed for {pkgbuild_dir.name}: "
+            f"{result.error or result.status}"
+        )
+    if result.status == STATUS_DIVERGED:
+        _log.warn(
+            f"{pkgbuild_dir.name}: upstream diverged — building with local PKGBUILD "
+            "(rerun with --cleansrc to discard local edits)"
+        )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -350,9 +454,17 @@ class KernelStage(Stage):
         )
 
         pkgname = kernel_cfg.get("pkgname", "unknown")
-        bootloader = kernel_cfg.get("bootloader", "systemd-boot")
+        bootloader = _resolve_bootloader(kernel_cfg, options)
 
-        # Resolve state_dir for lsmod snapshot
+        # Interactive kconfig is the kernel-stage default — flipped off by
+        # --non-interactive (or `interactive = false` in kernel.toml). When
+        # interactive=True is passed into BuildOptions, makepkg_wrapper skips
+        # patch_noninteractive_kconfig so the user's PKGBUILD kconfig target
+        # (typically `make nconfig`) runs as written.
+        cfg_interactive = bool(kernel_cfg.get("interactive", True))
+        interactive = cfg_interactive and not getattr(options, "non_interactive", False)
+
+        # Resolve state_dir for lsmod snapshot and scheduler init.
         from sysforge.pipeline.state import resolve_state_dir
 
         state_dir, _ = resolve_state_dir(options.state_dir)
@@ -363,16 +475,24 @@ class KernelStage(Stage):
         # kconfig fragment — requires hardware_profile.toml (hardware stage)
         _write_kconfig_fragment(kernel_cfg, config, options.dry_run)
 
-        # Build
+        # Pre-sync the kernel PKGBUILD tree through SourceSyncScheduler. This
+        # is the only allowed code path for refreshing sources (CLAUDE.md #3).
+        # Running it here (vs. relying on makepkg_wrapper's internal sync)
+        # makes --cleansrc work even when --no-update is also set.
         pkgbuild = _pkgbuild_path(kernel_cfg)
+        synced = _presync_kernel_source(pkgbuild.parent, options, state_dir)
 
-        toolchain = state.get_stage_result("toolchain")
-        cc = toolchain.get("cc") if toolchain else None
-        cxx = toolchain.get("cxx") if toolchain else None
-        if cc:
-            _log.ui(
-                f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}",
-            )
+        # Compiler resolution: CLI > kernel.toml > pipeline state from toolchain.
+        compiler, cc, cxx = _resolve_compiler(kernel_cfg, options, state)
+        if compiler:
+            _log.ui(f"Kernel compiler override: {compiler}  (cc={cc}  cxx={cxx})")
+        elif cc:
+            _log.ui(f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}")
+        else:
+            _log.info("No kernel compiler override — profile defaults apply")
+
+        kconfig_target = "make nconfig (user-supplied)" if interactive else "make olddefconfig (patched)"
+        _log.info(f"Kernel kconfig target: {kconfig_target}")
 
         if options.dry_run:
             _log.ui(f"[dry-run] would build {pkgname} from {pkgbuild}")
@@ -382,7 +502,9 @@ class KernelStage(Stage):
                 pkg_log=not options.no_pkg_logs,
                 persist_log=options.persist_log,
                 log_dir=options.log_dir,
-                update=not options.no_update,
+                profile_conf=getattr(options, "profile_conf", None) or config.get("profile_conf"),
+                update=(not options.no_update) and not synced,
+                interactive=interactive,
                 cc_override=cc,
                 cxx_override=cxx,
                 abi_check=options.abi_check,

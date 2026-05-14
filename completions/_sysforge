@@ -401,12 +401,18 @@ _sysforge_run_kernel() {
   _arguments \
     '--dry-run[show what would run without executing]' \
     '--no-update[skip git pull --rebase before each build]' \
+    '--cleansrc[purge the kernel src dir and re-clone (refuses on dirty trees)]' \
+    '--cleansrc-force[like --cleansrc but bypasses the dirty/diverged guard]' \
+    '--non-interactive[disable interactive kconfig and patch interactive targets to olddefconfig]' \
+    '--compiler[kernel-stage compiler override]:compiler:(gcc llvm)' \
+    '--bootloader[override kernel.toml bootloader]:bootloader:(systemd-boot grub none)' \
     '--no-pkg-logs[disable per-package log files]' \
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \
     '--cache-report[print ccache/sccache summary after run]' \
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
-    '--state-dir[override state directory]:directory:_files -/'
+    '--state-dir[override state directory]:directory:_files -/' \
+    '--profile-conf[alternate profiles.toml]:file:_files'
 }
 
 _sysforge_setup() {

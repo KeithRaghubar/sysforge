@@ -30,8 +30,28 @@ enabled = false
 # ---------------------------------------------------------------------------
 
 # bootloader = "systemd-boot"   # "systemd-boot" | "grub" | "none"
-#                               # controls post-install bootloader update step
+#                               # controls post-install bootloader update step:
+#                               #   systemd-boot → `sudo bootctl update`
+#                               #   grub         → `sudo grub-mkconfig -o /boot/grub/grub.cfg`
+#                               #   none         → skip
 #                               # default: "systemd-boot"
+#                               # CLI override: `sysforge run kernel --bootloader grub`
+
+# interactive = true            # default: true — the PKGBUILD's `make nconfig`
+#                               # / `menuconfig` runs as written so the user can
+#                               # review/edit the resolved kconfig. Set to false
+#                               # (or pass `--non-interactive`) to patch interactive
+#                               # targets to `make olddefconfig` for unattended runs.
+
+# compiler = "gcc"              # "gcc" | "llvm" — kernel-stage compiler override.
+#                               # Independent of the global toolchain stage, so a
+#                               # system that keeps gcc as its default can still
+#                               # build the kernel with LLVM (or vice versa).
+#                               # Resolution order: --compiler CLI flag > this
+#                               # field > toolchain-stage pipeline state. When
+#                               # unset, the kernel inherits whatever the
+#                               # toolchain stage registered (or profile defaults
+#                               # when toolchain is disabled).
 
 # pkgbuild_src_dir = "~/src"    # override the global pkgbuild_src_dir for this kernel only
 

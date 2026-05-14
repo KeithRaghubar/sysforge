@@ -32,6 +32,10 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 
 **Toolchain stage never builds GCC.** The `compiler = "gcc"` path is register-only — it writes the system `/usr/bin/gcc` paths into pipeline state and returns. Stock `gcc-libs` from `base-devel` provides the runtime. Do not reintroduce a `_build_gcc` helper or any code path that runs `makepkg` for `gcc`/`gcc-libs` under the toolchain stage; if a future change needs a GCC build path, it lives in `packages`, not here.
 
+**Kernel stage compiler is independent of the toolchain stage.** `kernel.toml compiler` (and `sysforge run kernel --compiler {gcc,llvm}`) lets the kernel use a different compiler than the system. Resolution: CLI flag > `kernel.toml compiler` > toolchain-stage pipeline state. Use the `_compiler_paths` helper in `sysforge/pipeline/stages/toolchain.py` when mapping the resolved name to cc/cxx paths — don't hardcode `/usr/bin/clang` etc. anywhere else.
+
+**Kernel stage is interactive by default.** Unlike the other stages, `sysforge run kernel` defaults to running the PKGBUILD's interactive kconfig target (typically `make nconfig`). The non-interactive path is opt-in via `--non-interactive` or `kernel.toml interactive = false`. This is the only verb in the CLI where the unattended path is opt-in rather than opt-out; preserve that asymmetry.
+
 ## Interaction Preferences
 
 - Be direct. Own mistakes and fix them immediately.

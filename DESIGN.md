@@ -452,6 +452,8 @@ pkgname          = "linux-custom"
 pkgbuild_src_dir = "~/src"       # parent dir; PKGBUILD is at <pkgbuild_src_dir>/<srcdir>/PKGBUILD
 srcdir           = "linux"       # source directory name if different from pkgname (optional)
 bootloader       = "systemd-boot"    # systemd-boot | grub | none  (default: systemd-boot)
+interactive      = true              # default: true — interactive kconfig (make nconfig)
+compiler         = "llvm"            # "gcc" | "llvm" — kernel-stage compiler (optional)
 
 [[kconfig]]                      # manual kconfig overrides (optional, repeatable)
 option = "CONFIG_HZ_1000"        # must match CONFIG_[A-Z0-9_]+
@@ -459,6 +461,8 @@ value  = "y"                     # y | m | n | non-empty string
 ```
 
 `srcdir` is needed when the PKGBUILD directory name differs from `pkgname` (e.g. `pkgname = "linux-custom"` but the repo is cloned as `~/builds/linux`). Defaults to `pkgname` if omitted.
+
+**Kernel-stage compiler override:** `compiler = "gcc" | "llvm"` is independent of the toolchain stage. A system that keeps gcc system-wide can still build the kernel with LLVM (or vice versa). Resolution order: `--compiler` CLI flag > `kernel.toml compiler` > toolchain-stage pipeline state (cc/cxx set by stage 6) > profile defaults. When set to LLVM, the standard `LLVM=1 LLVM_IAS=1` env vars are injected by `makepkg_wrapper` automatically — no extra PKGBUILD changes needed.
 
 **kconfig fragment:**
 
@@ -472,15 +476,23 @@ If neither source provides any kconfig entries, no fragment is written.
 
 Before the build, `lsmod` output is captured to `<state_dir>/lsmod.snapshot`. This lets the PKGBUILD run `make localmodconfig` reproducibly using a fixed module set from the running system rather than whatever is loaded at build time.
 
-**Noninteractive kconfig:**
+**Interactive kconfig (kernel-stage default):**
 
-Driven by `build_mode = "kernel"` on the resolved profile — no explicit flag needed from the kernel stage or CLI. `patch_noninteractive_kconfig` runs on `PKGBUILD.sysforge` after normal patching, replacing interactive config targets (`oldconfig`, `nconfig`, `menuconfig`, `xconfig`, `gconfig`) with `make olddefconfig`. `olddefconfig` applies defaults for all new symbols without terminal interaction. VAR=val arguments before the target (e.g. `ARCH=x86_64`) and trailing comments are preserved. `--noconfirm` only controls makepkg's own prompts and has no effect on interactive make targets inside the PKGBUILD.
+`sysforge run kernel` is interactive by default — the kernel stage passes `interactive=True` into `BuildOptions`, so `patch_noninteractive_kconfig` is skipped and the PKGBUILD's kconfig target (`make nconfig`/`menuconfig`/etc.) runs as written. The user reviews and edits the resolved config before the build proceeds. The default can be flipped via `kernel.toml interactive = false` or the `--non-interactive` CLI flag; both routes patch interactive targets (`oldconfig`, `nconfig`, `menuconfig`, `xconfig`, `gconfig`) to `make olddefconfig` for unattended runs. `olddefconfig` applies defaults for all new symbols without terminal interaction; VAR=val arguments before the target (e.g. `ARCH=x86_64`) and trailing comments are preserved. `--noconfirm` only controls makepkg's own prompts and has no effect on interactive make targets inside the PKGBUILD.
 
-When `--interactive` is passed to `sysforge build`, kconfig patching is skipped entirely — the PKGBUILD's config targets run as-is, allowing interactive kernel configuration.
+Note: when other verbs (`sysforge build`, `sysforge update`) build a kernel PKGBUILD with `build_mode = "kernel"` on the resolved profile, those paths still default to *non-interactive* — interactive-by-default is a kernel-stage-only contract because the stage is the user-driven kernel build entry point.
+
+**Source sync via the scheduler:**
+
+The kernel stage routes its source refresh through `source_sync.get_scheduler().request(SyncRequest(...))` ahead of the build, the same path as the toolchain stage. `--cleansrc` purges and re-clones the kernel tree (refusing on dirty/ahead/no-upstream clones); `--cleansrc-force` overrides that guard. Cleansrc forces a sync even when `--no-update` is also set, so an explicit purge is never silently skipped. `STATUS_DIVERGED` is a warning; `STATUS_FAILED` / `STATUS_RATE_LIMITED` / `STATUS_PURGE_REFUSED` raise.
+
+**CLI surface (`sysforge run kernel`):**
+
+`--dry-run`, `--no-update`, `--cleansrc`, `--cleansrc-force`, `--non-interactive`, `--compiler {gcc,llvm}`, `--bootloader {systemd-boot,grub,none}`, `--no-pkg-logs`, `--persist-log`, `--log-dir`, `--cache-report`, `--abi-check`, `--state-dir`, `--profile-conf`.
 
 **Post-install steps** (run after `makepkg` succeeds):
 1. `sudo mkinitcpio -P`
-2. Bootloader update: `bootctl update` (systemd-boot), `grub-mkconfig -o /boot/grub/grub.cfg` (grub), or skipped (`none`)
+2. Bootloader update: `bootctl update` (systemd-boot, default), `grub-mkconfig -o /boot/grub/grub.cfg` (grub), or skipped (`none`). The selection comes from `kernel.toml bootloader`, overridable per-invocation via `--bootloader`.
 
 ### Packages stage (stage 7)
 

@@ -4,9 +4,7 @@ test_stage_kernel.py — unit tests for the kernel stage.
 Covers all pure-logic functions. Subprocess calls (lsmod, mkinitcpio,
 bootctl, makepkg) are mocked — nothing real runs.
 """
-import tomllib
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -33,6 +31,10 @@ def make_options(**kwargs):
         dry_run=False, state_dir=None,
         no_unified_log=False, no_pkg_logs=False,
         log_dir=None, purge_log=False, persist_log=False,
+        # Stage-level tests are not exercising the scheduler — default to
+        # --no-update so the kernel pre-sync is a no-op. Sync-specific tests
+        # below override this explicitly.
+        no_update=True,
     )
     defaults.update(kwargs)
     return RunOptions(**defaults)
@@ -51,7 +53,7 @@ def make_kernel_toml(tmp_path, pkgbuild_dir, pkgname="linux-git",
     lines = [
         'enabled = true',
         f'pkgname = "{pkgname}"',
-        f'source = "git"',
+        'source = "git"',
         f'pkgbuild_src_dir = "{pkgbuild_dir}"',
         f'bootloader = "{bootloader}"',
     ]
@@ -528,3 +530,381 @@ def test_kernel_stage_writes_kconfig_fragment_when_hw_profile_present(tmp_path):
     fragment = builds / "linux-git" / "sysforge.config"
     assert fragment.exists()
     assert "CONFIG_MZEN3=y" in fragment.read_text()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_compiler / _resolve_bootloader
+# ---------------------------------------------------------------------------
+
+
+def _state_with_toolchain(tmp_path, cc=None, cxx=None):
+    s = PipelineState(tmp_path / "state")
+    result = {}
+    if cc:
+        result["cc"] = cc
+    if cxx:
+        result["cxx"] = cxx
+    if result:
+        s.set_stage_result("toolchain", result)
+    return s
+
+
+def test_resolve_compiler_cli_wins_over_kernel_toml(tmp_path):
+    from sysforge.pipeline.stages.kernel import _resolve_compiler
+    state = _state_with_toolchain(tmp_path)
+    options = make_options()
+    options.compiler = "llvm"
+    compiler, cc, cxx = _resolve_compiler({"compiler": "gcc"}, options, state)
+    assert compiler == "llvm"
+    assert cc == "/usr/bin/clang"
+    assert cxx == "/usr/bin/clang++"
+
+
+def test_resolve_compiler_kernel_toml_wins_over_pipeline_state(tmp_path):
+    from sysforge.pipeline.stages.kernel import _resolve_compiler
+    state = _state_with_toolchain(tmp_path, cc="/some/pipeline/clang")
+    compiler, cc, cxx = _resolve_compiler({"compiler": "gcc"}, make_options(), state)
+    assert compiler == "gcc"
+    assert cc == "/usr/bin/gcc"
+    assert cxx == "/usr/bin/g++"
+
+
+def test_resolve_compiler_falls_back_to_pipeline_state(tmp_path):
+    from sysforge.pipeline.stages.kernel import _resolve_compiler
+    state = _state_with_toolchain(tmp_path, cc="/usr/bin/clang", cxx="/usr/bin/clang++")
+    compiler, cc, cxx = _resolve_compiler({}, make_options(), state)
+    assert compiler is None
+    assert cc == "/usr/bin/clang"
+    assert cxx == "/usr/bin/clang++"
+
+
+def test_resolve_compiler_no_override_returns_none(tmp_path):
+    from sysforge.pipeline.stages.kernel import _resolve_compiler
+    state = PipelineState(tmp_path / "state")
+    compiler, cc, cxx = _resolve_compiler({}, make_options(), state)
+    assert compiler is None and cc is None and cxx is None
+
+
+def test_resolve_compiler_rejects_invalid_cli(tmp_path):
+    from sysforge.pipeline.stages.kernel import _resolve_compiler
+    state = PipelineState(tmp_path / "state")
+    options = make_options()
+    options.compiler = "icc"
+    with pytest.raises(RuntimeError, match="invalid --compiler"):
+        _resolve_compiler({}, options, state)
+
+
+def test_resolve_compiler_rejects_invalid_kernel_toml(tmp_path):
+    from sysforge.pipeline.stages.kernel import _resolve_compiler
+    state = PipelineState(tmp_path / "state")
+    with pytest.raises(RuntimeError, match="invalid kernel.toml"):
+        _resolve_compiler({"compiler": "icc"}, make_options(), state)
+
+
+def test_resolve_bootloader_cli_wins():
+    from sysforge.pipeline.stages.kernel import _resolve_bootloader
+    options = make_options()
+    options.bootloader = "grub"
+    assert _resolve_bootloader({"bootloader": "systemd-boot"}, options) == "grub"
+
+
+def test_resolve_bootloader_uses_kernel_toml_when_no_cli():
+    from sysforge.pipeline.stages.kernel import _resolve_bootloader
+    assert _resolve_bootloader({"bootloader": "grub"}, make_options()) == "grub"
+
+
+def test_resolve_bootloader_default_is_systemd_boot():
+    from sysforge.pipeline.stages.kernel import _resolve_bootloader
+    assert _resolve_bootloader({}, make_options()) == "systemd-boot"
+
+
+def test_resolve_bootloader_rejects_invalid_cli():
+    from sysforge.pipeline.stages.kernel import _resolve_bootloader
+    options = make_options()
+    options.bootloader = "lilo"
+    with pytest.raises(RuntimeError, match="invalid --bootloader"):
+        _resolve_bootloader({}, options)
+
+
+# ---------------------------------------------------------------------------
+# Interactive default, --non-interactive, BuildOptions plumbing
+# ---------------------------------------------------------------------------
+
+
+def test_kernel_stage_passes_interactive_true_by_default(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    build_opts = mock_build.call_args.kwargs["options"]
+    assert build_opts.interactive is True
+
+
+def test_kernel_stage_non_interactive_flag_flips_to_false(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    opts = make_options(state_dir=tmp_path / "state")
+    opts.non_interactive = True
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    build_opts = mock_build.call_args.kwargs["options"]
+    assert build_opts.interactive is False
+
+
+def test_kernel_stage_kernel_toml_interactive_false(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = tmp_path / "kernel.toml"
+    p.write_text(
+        'enabled = true\n'
+        'pkgname = "linux-git"\n'
+        f'pkgbuild_src_dir = "{builds}"\n'
+        'interactive = false\n'
+    )
+    state = PipelineState(tmp_path / "state")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    build_opts = mock_build.call_args.kwargs["options"]
+    assert build_opts.interactive is False
+
+
+def test_kernel_stage_cli_compiler_llvm_overrides_pipeline(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = _state_with_toolchain(tmp_path, cc="/usr/bin/gcc", cxx="/usr/bin/g++")
+
+    opts = make_options(state_dir=tmp_path / "state")
+    opts.compiler = "llvm"
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    build_opts = mock_build.call_args.kwargs["options"]
+    assert build_opts.cc_override == "/usr/bin/clang"
+    assert build_opts.cxx_override == "/usr/bin/clang++"
+
+
+def test_kernel_stage_cli_compiler_gcc_overrides_pipeline(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = _state_with_toolchain(tmp_path, cc="/usr/bin/clang", cxx="/usr/bin/clang++")
+
+    opts = make_options(state_dir=tmp_path / "state")
+    opts.compiler = "gcc"
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    build_opts = mock_build.call_args.kwargs["options"]
+    assert build_opts.cc_override == "/usr/bin/gcc"
+    assert build_opts.cxx_override == "/usr/bin/g++"
+
+
+def test_kernel_stage_cli_bootloader_override_beats_kernel_toml(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds, bootloader="systemd-boot")
+    state = PipelineState(tmp_path / "state")
+
+    opts = make_options(state_dir=tmp_path / "state")
+    opts.bootloader = "grub"
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    cmds = [c.args[0] for c in mock_sub.call_args_list]
+    assert any("grub-mkconfig" in str(c) for c in cmds)
+    assert not any("bootctl" in str(c) for c in cmds)
+
+
+# ---------------------------------------------------------------------------
+# Scheduler-routed source sync (--cleansrc / --cleansrc-force)
+# ---------------------------------------------------------------------------
+
+
+def _make_sync_result(status="ok", error=None):
+    r = MagicMock()
+    r.status = status
+    r.error = error
+    return r
+
+
+def test_kernel_stage_no_presync_when_no_update(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.get_scheduler") as mock_sched, \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        # default make_options sets no_update=True
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    mock_sched.assert_not_called()
+
+
+def test_kernel_stage_presyncs_when_update_enabled(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    opts = make_options(state_dir=tmp_path / "state", no_update=False)
+
+    scheduler_mock = MagicMock()
+    scheduler_mock.request.return_value = _make_sync_result(status="ok")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.get_scheduler",
+               return_value=scheduler_mock) as mock_sched, \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    mock_sched.assert_called_once()
+    scheduler_mock.request.assert_called_once()
+    req = scheduler_mock.request.call_args.args[0]
+    assert req.pkgbase == "linux-git"
+    assert req.force_fetch is True
+
+
+def test_kernel_stage_cleansrc_overrides_no_update(tmp_path):
+    """--cleansrc should force a sync even when --no-update is also set."""
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    opts = make_options(state_dir=tmp_path / "state", no_update=True, cleansrc=True)
+
+    scheduler_mock = MagicMock()
+    scheduler_mock.request.return_value = _make_sync_result(status="ok")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.get_scheduler",
+               return_value=scheduler_mock) as mock_sched, \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    mock_sched.assert_called_once()
+    kwargs = mock_sched.call_args.kwargs
+    assert kwargs.get("cleansrc") is True
+
+
+def test_kernel_stage_cleansrc_force_propagates(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    opts = make_options(state_dir=tmp_path / "state", no_update=True, cleansrc_force=True)
+
+    scheduler_mock = MagicMock()
+    scheduler_mock.request.return_value = _make_sync_result(status="ok")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.get_scheduler",
+               return_value=scheduler_mock) as mock_sched, \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    kwargs = mock_sched.call_args.kwargs
+    assert kwargs.get("cleansrc") is True
+    assert kwargs.get("cleansrc_force") is True
+
+
+def test_kernel_stage_sync_failure_raises(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.primitives.source_sync import STATUS_FAILED
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    opts = make_options(state_dir=tmp_path / "state", no_update=False)
+
+    scheduler_mock = MagicMock()
+    scheduler_mock.request.return_value = _make_sync_result(
+        status=STATUS_FAILED, error="git clone failed"
+    )
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.get_scheduler",
+               return_value=scheduler_mock), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run"):
+        with pytest.raises(RuntimeError, match="source sync failed"):
+            KernelStage().run({}, state, opts)
+
+
+def test_kernel_stage_sync_diverged_warns_and_continues(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.primitives.source_sync import STATUS_DIVERGED
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    opts = make_options(state_dir=tmp_path / "state", no_update=False)
+
+    scheduler_mock = MagicMock()
+    scheduler_mock.request.return_value = _make_sync_result(status=STATUS_DIVERGED)
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.get_scheduler",
+               return_value=scheduler_mock), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    mock_build.assert_called_once()

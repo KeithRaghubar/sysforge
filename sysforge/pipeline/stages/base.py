@@ -37,6 +37,12 @@ class RunOptions:
     no_update: bool = False          # skip git pull --rebase before each build
     cleansrc: bool = False           # purge each src dir and re-clone (refuses on dirty trees)
     cleansrc_force: bool = False     # like cleansrc but bypasses the dirty/diverged guard
+    # Profile / build configuration
+    profile_conf: str | None = None  # path to alternate profiles.toml for PKGBUILD patching
+    # Kernel stage
+    non_interactive: bool = False    # opt out of interactive kconfig (kernel default is interactive)
+    bootloader: str | None = None    # CLI override for kernel.toml bootloader (systemd-boot|grub|none)
+    compiler: str | None = None      # kernel-stage compiler override ("gcc" or "llvm")
     # Extra makepkg flags (appended after profile makepkg_flags)
     makepkg_flags: list[str] = field(default_factory=list)
     # PGO profdata
