@@ -360,6 +360,89 @@ class TestWriteHardwareProfile:
 
 
 # ---------------------------------------------------------------------------
+# Hardware stage — architecture-aware kconfig disable
+# ---------------------------------------------------------------------------
+
+from sysforge.pipeline.stages.hardware import (  # noqa: E402
+    _ARCH_OWNED_KCONFIG,
+    _HOST_ARCH_TO_KCONFIG_DOMAIN,
+    _arch_disable_kconfig,
+)
+
+
+class TestArchDisableKconfig:
+    def test_x86_64_disables_non_x86_arches(self):
+        disable = _arch_disable_kconfig("x86_64")
+        # Top-level non-x86 architecture umbrellas are disabled
+        assert disable.get("CONFIG_ARM64") == "n"
+        assert disable.get("CONFIG_ARM") == "n"
+        assert disable.get("CONFIG_RISCV") == "n"
+        assert disable.get("CONFIG_PPC") == "n"
+        assert disable.get("CONFIG_MIPS") == "n"
+        assert disable.get("CONFIG_SPARC") == "n"
+        assert disable.get("CONFIG_LOONGARCH") == "n"
+        # Curated arm64 SoC umbrellas are disabled
+        assert disable.get("CONFIG_ARCH_QCOM") == "n"
+        assert disable.get("CONFIG_ARCH_TEGRA") == "n"
+        assert disable.get("CONFIG_ARCH_ROCKCHIP") == "n"
+        # x86 keys are NOT in the disable set
+        assert "CONFIG_X86" not in disable
+        assert "CONFIG_X86_64" not in disable
+        assert "CONFIG_MICROCODE_INTEL" not in disable
+
+    def test_aarch64_disables_x86_arm32_riscv_ppc_mips(self):
+        disable = _arch_disable_kconfig("aarch64")
+        assert disable.get("CONFIG_X86") == "n"
+        assert disable.get("CONFIG_X86_64") == "n"
+        assert disable.get("CONFIG_ARM") == "n"   # 32-bit ARM
+        assert disable.get("CONFIG_RISCV") == "n"
+        assert disable.get("CONFIG_PPC") == "n"
+        assert disable.get("CONFIG_MIPS") == "n"
+        # arm64 keys (including SoC umbrellas) are NOT disabled
+        assert "CONFIG_ARM64" not in disable
+        assert "CONFIG_ARCH_QCOM" not in disable
+        assert "CONFIG_ARCH_TEGRA" not in disable
+
+    def test_riscv64_disables_everything_except_riscv(self):
+        disable = _arch_disable_kconfig("riscv64")
+        assert disable.get("CONFIG_X86") == "n"
+        assert disable.get("CONFIG_ARM64") == "n"
+        assert disable.get("CONFIG_PPC") == "n"
+        assert "CONFIG_RISCV" not in disable
+
+    def test_unknown_host_arch_returns_empty(self, capsys):
+        disable = _arch_disable_kconfig("weirdarch")
+        assert disable == {}
+        captured = capsys.readouterr()
+        assert "weirdarch" in captured.err
+        assert "arch-disable skipped" in captured.err
+
+    def test_all_known_host_archs_map_to_a_registry_domain(self):
+        # Every entry in _HOST_ARCH_TO_KCONFIG_DOMAIN must point at a domain
+        # that actually exists in _ARCH_OWNED_KCONFIG, otherwise that host
+        # gets no disable entries at all (and no WARN, since the map lookup
+        # succeeds but the .get(domain) miss is silent).
+        for host_arch, domain in _HOST_ARCH_TO_KCONFIG_DOMAIN.items():
+            assert domain in _ARCH_OWNED_KCONFIG, (
+                f"host_arch {host_arch!r} maps to domain {domain!r} "
+                f"which is not in _ARCH_OWNED_KCONFIG"
+            )
+
+    def test_host_owned_keys_never_disabled(self, monkeypatch):
+        # Synthetic: register the same key in both the host and a non-host
+        # domain. The defensive filter must skip it on the host.
+        custom_owned = dict(_ARCH_OWNED_KCONFIG)
+        custom_owned["x86"] = frozenset(custom_owned["x86"] | {"CONFIG_SHARED_KEY"})
+        custom_owned["arm64"] = frozenset(custom_owned["arm64"] | {"CONFIG_SHARED_KEY"})
+        monkeypatch.setattr(
+            "sysforge.pipeline.stages.hardware._ARCH_OWNED_KCONFIG",
+            custom_owned,
+        )
+        disable = _arch_disable_kconfig("x86_64")
+        assert "CONFIG_SHARED_KEY" not in disable
+
+
+# ---------------------------------------------------------------------------
 # Hardware stage — full run
 # ---------------------------------------------------------------------------
 

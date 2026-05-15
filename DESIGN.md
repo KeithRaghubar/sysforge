@@ -465,7 +465,7 @@ value  = "y"                     # y | m | n | non-empty string
 
 **kconfig fragment:**
 
-Hardware-driven kconfig entries come from `hardware_profile.toml [kconfig]` (emitted by the hardware stage). Manual overrides from `kernel.toml [[kconfig]]` are merged on top — manual wins on conflict with a `[WARN]`. The combined result is written to `<pkgbuild_src_dir>/<srcdir>/sysforge.config` before `makepkg` runs. The PKGBUILD must merge this into its `.config`; a compatible PKGBUILD calls `scripts/kconfig/merge_config.sh` in `prepare()`.
+Hardware-driven kconfig entries come from `hardware_profile.toml [kconfig]` (emitted by the hardware stage). These include both positive `=y` enables (CPU/GPU/NVMe-driven) and architecture-disable `=n` umbrellas — when the host is x86_64, the hardware stage writes `# CONFIG_ARM64 is not set`, the same for RISC-V/PowerPC/MIPS top-level keys and a curated set of ARM64 SoC families, culling unreachable subtrees from `make nconfig`. See §Hardware Detection → *Architecture-aware kconfig disable* for the registry. Manual overrides from `kernel.toml [[kconfig]]` are merged on top — manual wins on conflict with a `[WARN]`, including for arch-disable entries (a cross-compile use case can re-enable `CONFIG_ARM64=y` per the override path). The combined result is written to `<pkgbuild_src_dir>/<srcdir>/sysforge.config` before `makepkg` runs. The PKGBUILD must merge this into its `.config`; a compatible PKGBUILD calls `scripts/kconfig/merge_config.sh` in `prepare()`.
 
 Manual override validation: `option` must match `CONFIG_[A-Z0-9_]+`; `value` must be non-empty (`n` to disable); duplicates within `kernel.toml` are an error.
 
@@ -1601,9 +1601,56 @@ CONFIG_MZEN3          = "y"
 CONFIG_X86_AMD_PSTATE = "y"
 CONFIG_DRM_NOUVEAU    = "n"
 CONFIG_BLK_DEV_NVME   = "y"
+# … plus arch-disable `=n` entries for every non-host kconfig domain
+CONFIG_ARM64          = "n"
+CONFIG_ARCH_QCOM      = "n"
+# (and the rest of _ARCH_OWNED_KCONFIG minus the host's own domain)
 ```
 
-Written atomically (write-then-rename) to `<state_dir>/hardware_profile.toml`. The kernel stage reads `[kconfig]` from this file; its absence is non-fatal (entries skipped with an INFO log).
+Written atomically (write-then-rename) to `<state_dir>/hardware_profile.toml`. The file has four readers:
+
+- **`pipeline/stages/kernel.py`** — `_load_hardware_kconfig()` consumes `[kconfig]`; entries flow into the `sysforge.config` fragment merged into `.config` via `merge_config.sh`. Absence is non-fatal (entries skipped with an INFO log).
+- **`primitives/llvm_targets.py`** — `_read_hardware_targets()` consumes `[hardware] llvm_targets`; resolves the `LLVM_TARGETS_TO_BUILD` cmake arg injected by `pkgbuild_patcher.patch_llvm_targets`.
+- **`pipeline/stages/reconfigure.py`** — surfaces the file in the pre-build config review so the user can hand-edit before kernel build.
+- **`commands/doctor.py`** — consumes `[hardware] gpu_vendors` to scope the `doctor --graphics` health checks.
+
+### Architecture-aware kconfig disable
+
+In addition to the positive `=y` enables above, the hardware stage emits an `=n` line for every CONFIG_* key owned by a kernel architecture domain that is **not** the host's domain. The data lives in two module-level constants in `pipeline/stages/hardware.py`:
+
+- `_ARCH_OWNED_KCONFIG: dict[str, frozenset[str]]` — `domain → set of CONFIG_* keys that only make sense when the kernel is targeting that domain`. Domains: `x86`, `arm` (32-bit), `arm64`, `riscv`, `powerpc`, `mips`, `sparc`, `loongarch`. Keys are **curated, not exhaustive** — top-level architecture umbrellas (`CONFIG_X86`, `CONFIG_ARM64`, …) plus the major SoC family umbrellas under `arm64` (`CONFIG_ARCH_QCOM`, `CONFIG_ARCH_TEGRA`, `CONFIG_ARCH_ROCKCHIP`, etc.). The Kconfig system itself gates most SoC drivers via `depends on ARCH_<vendor>`, so disabling the umbrella culls the subtree from `make nconfig` automatically.
+- `_HOST_ARCH_TO_KCONFIG_DOMAIN: dict[str, str]` — `uname -m → domain`. Covers `x86_64`/`i686`/`i386` → `x86`, `aarch64` → `arm64`, `armv7l`/`armv6l` → `arm`, `riscv64`/`riscv32` → `riscv`, `ppc64le`/`ppc64`/`ppc` → `powerpc`, `mips`/`mips64` → `mips`, `sparc`/`sparc64` → `sparc`, `loongarch64` → `loongarch`.
+
+`_arch_disable_kconfig(host_arch)` resolves the host domain, then iterates every *other* domain in the registry and emits `{CONFIG_X: "n"}`. Keys appearing in the host's own domain set are filtered out as a defensive guard (no clobber if a future kconfig key gains a presence in multiple domains). Unknown `host_arch` returns an empty dict and logs a WARN.
+
+The `=n` entries land in the same `[kconfig]` table as the existing `=y` enables, so the kernel stage's existing merge path — `merged = {**hw_kconfig, **manual_kconfig}` — applies unchanged. A user cross-compiling or otherwise wanting an arch-disabled key re-enabled puts an explicit `[[kconfig]] option = "CONFIG_ARM64" value = "y"` in `kernel.toml`; the existing manual-override-wins-with-WARN behaviour at `pipeline/stages/kernel.py:344-346` extends to arch-disable entries.
+
+### Tested hardware scope
+
+Design ambition is broad (every kconfig domain in the registry, every CPU/GPU brand the detection code recognises), but real-world validation is currently narrow. This section documents which paths have actually been exercised so users on untested hardware understand where they are taking implemented-but-unvalidated code paths.
+
+**Tested on real iron** (Keith's dev box):
+- Host arch: `x86_64`
+- CPU: AMD Ryzen 7 5800X3D — `AuthenticAMD` family 25 model 33 (Zen 3 / Vermeer)
+- GPU: NVIDIA RTX 5070 (via `nvidia-open-dkms`)
+- Storage: NVMe
+- Distro: Arch Linux, kernel: custom `linux-custom` PKGBUILD
+
+**Tested in VM** (`make vm-iso` → `make vm-install`):
+- Host arch: `x86_64` (qemu/KVM guest)
+- CPU: emulated/passthrough (typically host-passthrough)
+- GPU: virtio (`gpu_vendors` likely empty or `["other"]`)
+- Storage: virtio-blk or NVMe depending on VM config
+
+**Implemented but never exercised against real hardware:**
+- `host_arch ∈ {aarch64, armv7l, armv6l, riscv64, riscv32, ppc64le, ppc64, ppc, mips, mips64, sparc, sparc64, loongarch64}` — registry entries exist and are unit-tested, but no kernel has been built on any of these.
+- Intel CPUs (`GenuineIntel`) — code path falls through to `CONFIG_GENERIC_CPU`, no Intel-specific CPU kconfig mapping exists.
+- AMD CPUs older than Zen 3 — same fallback.
+- AMD Zen 4 / Zen 5 — kconfig keys exist in `_AMD_CPU_KCONFIG` but the dev box predates them.
+- Pure-AMD or pure-Intel GPU systems — Nvidia is the only GPU detection path exercised end-to-end.
+- Non-NVMe storage (SATA, eMMC) — detection works (`_has_nvme` returns False), but no downstream `CONFIG_*` adjustment fires.
+
+When a curated `=n` over-culls on an untested arch, the escape hatch is `kernel.toml [[kconfig]]` — adding the key back with `value = "y"` overrides the hardware-emitted disable per the existing merge semantics.
 
 ---
 

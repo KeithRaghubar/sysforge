@@ -17,6 +17,9 @@ hardware_profile.toml layout:
   CONFIG_X86_AMD_PSTATE = "y"    # AMD P-state driver
   CONFIG_DRM_NOUVEAU    = "n"    # disabled when NVIDIA GPU present
   CONFIG_BLK_DEV_NVME   = "y"    # NVMe present
+  CONFIG_ARM64          = "n"    # arch-disable: host is x86_64
+  CONFIG_ARCH_QCOM      = "n"    # arch-disable: arm64 SoC umbrella
+  # … plus the rest of the non-host kconfig domains (RISC-V, PowerPC, MIPS, …)
 
 The [kconfig] table is consumed by the kernel stage when building a custom
 kernel. Absent hardware_profile.toml is non-fatal for the kernel stage —
@@ -225,6 +228,77 @@ def derive_llvm_targets(host_arch: str, gpu_vendors: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Architecture-aware kconfig disable
+#
+# Each entry in _ARCH_OWNED_KCONFIG maps a kernel architecture "domain" to
+# the CONFIG_* keys that only make sense when the kernel is targeting that
+# domain. The hardware stage emits `<key> = "n"` for every key whose domain
+# is not the host's domain, culling unreachable subtrees from `make nconfig`.
+#
+# Keys are curated, not exhaustive — start with top-level umbrellas. Most
+# SoC drivers are gated by `depends on ARCH_<vendor>` in the kernel's own
+# Kconfig, so disabling the umbrella is enough to cull the subtree.
+# ---------------------------------------------------------------------------
+
+_ARCH_OWNED_KCONFIG = {
+    "x86": frozenset({
+        "CONFIG_X86", "CONFIG_X86_64", "CONFIG_X86_32",
+        "CONFIG_MICROCODE_INTEL", "CONFIG_INTEL_RDT",
+    }),
+    "arm": frozenset({"CONFIG_ARM"}),
+    "arm64": frozenset({
+        "CONFIG_ARM64",
+        "CONFIG_ARCH_BCM", "CONFIG_ARCH_QCOM", "CONFIG_ARCH_TEGRA",
+        "CONFIG_ARCH_ROCKCHIP", "CONFIG_ARCH_SUNXI", "CONFIG_ARCH_MEDIATEK",
+        "CONFIG_ARCH_RENESAS", "CONFIG_ARCH_HISILICON",
+        "CONFIG_ARCH_LAYERSCAPE", "CONFIG_ARCH_MXC",
+        "CONFIG_ARCH_OMAP2PLUS", "CONFIG_ARCH_EXYNOS", "CONFIG_ARCH_K3",
+    }),
+    "riscv":     frozenset({"CONFIG_RISCV"}),
+    "powerpc":   frozenset({"CONFIG_PPC", "CONFIG_PPC32", "CONFIG_PPC64"}),
+    "mips":      frozenset({"CONFIG_MIPS"}),
+    "sparc":     frozenset({"CONFIG_SPARC", "CONFIG_SPARC32", "CONFIG_SPARC64"}),
+    "loongarch": frozenset({"CONFIG_LOONGARCH"}),
+}
+
+_HOST_ARCH_TO_KCONFIG_DOMAIN = {
+    "x86_64": "x86", "i686": "x86", "i386": "x86",
+    "aarch64": "arm64",
+    "armv7l": "arm", "armv6l": "arm",
+    "riscv64": "riscv", "riscv32": "riscv",
+    "ppc64le": "powerpc", "ppc64": "powerpc", "ppc": "powerpc",
+    "mips": "mips", "mips64": "mips",
+    "sparc": "sparc", "sparc64": "sparc",
+    "loongarch64": "loongarch",
+}
+
+
+def _arch_disable_kconfig(host_arch: str) -> dict[str, str]:
+    """Return {CONFIG_X: "n"} entries for every kconfig key owned by a
+    domain other than the host's. Defensive: keys appearing in the host's
+    own domain set are filtered out, so a key registered under multiple
+    domains never gets disabled on a host whose domain owns it.
+    """
+    domain = _HOST_ARCH_TO_KCONFIG_DOMAIN.get(host_arch)
+    if domain is None:
+        _log.warn(
+            f"host_arch={host_arch!r} not mapped to a kconfig domain — "
+            "arch-disable skipped",
+        )
+        return {}
+    host_owned = _ARCH_OWNED_KCONFIG.get(domain, frozenset())
+    disable: dict[str, str] = {}
+    for other_domain, keys in _ARCH_OWNED_KCONFIG.items():
+        if other_domain == domain:
+            continue
+        for key in keys:
+            if key in host_owned:
+                continue
+            disable[key] = "n"
+    return disable
+
+
+# ---------------------------------------------------------------------------
 # hardware_profile.toml writer
 # ---------------------------------------------------------------------------
 
@@ -321,6 +395,13 @@ class HardwareStage(Stage):
         if nvme:
             _log.ui("NVMe: present")
 
+        # --- Host arch + LLVM target list ---
+        host_arch = detect_host_arch()
+        llvm_targets = derive_llvm_targets(host_arch, gpu_vendors)
+        _log.ui(f"host_arch: {host_arch}")
+        if llvm_targets:
+            _log.ui(f"llvm_targets: {';'.join(llvm_targets)}")
+
         # --- Build kconfig ---
         kconfig = {}
         kconfig.update(_cpu_kconfig(cpu_info))
@@ -328,19 +409,26 @@ class HardwareStage(Stage):
         if nvme:
             kconfig["CONFIG_BLK_DEV_NVME"] = "y"
 
+        # Arch-disable runs last so future host-arch-specific =y entries can
+        # never be clobbered by a non-host-domain =n. Manual [[kconfig]] in
+        # kernel.toml overrides anything here — see DESIGN.md §Architecture-
+        # aware kconfig disable for the cross-compile escape hatch.
+        arch_disable = _arch_disable_kconfig(host_arch)
+        kconfig.update(arch_disable)
+        if arch_disable:
+            _log.ui(
+                f"Arch-disable: {len(arch_disable)} kconfig entries set to 'n' "
+                f"(non-{host_arch} architecture/SoC umbrellas)",
+            )
+
         if kconfig:
             _log.ui(
-                f"kconfig entries: {', '.join(f'{k}={v}' for k, v in kconfig.items())}",
+                f"kconfig entries: {len(kconfig)} total "
+                f"({len(kconfig) - len(arch_disable)} hardware-driven, "
+                f"{len(arch_disable)} arch-disable)",
             )
         else:
             _log.ui("No kconfig entries generated")
-
-        # --- Host arch + LLVM target list ---
-        host_arch = detect_host_arch()
-        llvm_targets = derive_llvm_targets(host_arch, gpu_vendors)
-        _log.ui(f"host_arch: {host_arch}")
-        if llvm_targets:
-            _log.ui(f"llvm_targets: {';'.join(llvm_targets)}")
 
         # --- Hardware summary dict ---
         hw = {
