@@ -1076,7 +1076,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_env_parser(sub)
 
     # completions (used by shell completion scripts; not user-facing)
-    p_completions = sub.add_parser("completions", help=argparse.SUPPRESS)
+    p_completions = sub.add_parser("completions")
     p_completions.add_argument(
         "resource",
         choices=["packages", "manifest", "local", "state", "makepkg-flags"],
