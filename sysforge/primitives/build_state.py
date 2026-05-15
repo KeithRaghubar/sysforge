@@ -12,7 +12,9 @@ by the `build_mode` field:
   - "profiled"  — built by sysforge; carries pkgbuild_dir and flags_string.
   - "pacman"    — installed via pacman; pkgver/pkgrel/epoch parsed from
                   `pacman -Q` output; pkgbuild_dir and flags_string absent.
-  - "pgo_llvm_toolchain" — experimental, deferred post-1.0.
+  - "pgo_llvm_toolchain" — LLVM toolchain packages with profdata reuse;
+                  makepkg_wrapper injects -fprofile-use when compatible
+                  clang.profdata is available, otherwise prompts.
 
 `BuildState.sync_with_installed()` keeps the file in lockstep with pacman:
 it adds pacman-mode entries for newly installed packages and prunes entries

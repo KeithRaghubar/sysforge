@@ -1464,9 +1464,6 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     if options.compiler_flags_extra
                     else pgo_flag
                 )
-                _pgo_log.warn(
-                    "PGO-toolchain build path is experimental and deferred to post-1.0",
-                )
                 _pgo_log.info(f"Reusing profdata for PGO build: {pgo_info}")
             else:
                 reason = pgo_info

@@ -1389,7 +1389,7 @@ def _check_existing_profdata(
 # Packages whose installed version must match across the LLVM toolchain set.
 # A mismatch — typically from an interrupted `pacman -U` of one pass — is
 # what produces the broken-GUI / missing-symbol failure mode this guard is
-# here to catch. See the incident notes in CLAUDE.md §Experimental.
+# here to catch.
 _LLVM_VERSION_MATCH_SET = (
     "llvm",
     "llvm-libs",
@@ -1917,7 +1917,7 @@ def _compiler_paths(compiler: str) -> tuple[str, str, str | None]:
 
 class ToolchainStage(Stage):
     name = "toolchain"
-    description = "LLVM/GCC toolchain build (experimental — post-1.0)"
+    description = "LLVM/GCC toolchain build"
     depends_on = ["reconfigure"]
 
     def run(self, config, state, options):
@@ -1938,11 +1938,6 @@ class ToolchainStage(Stage):
                         "Cannot write state — stale toolchain result will persist",
                     )
             return
-
-        _log.warn(
-            "toolchain stage is experimental and deferred to post-1.0 — "
-            "PGO bootstrap has known sharp edges; proceed with caution",
-        )
 
         compiler = tcfg.get("compiler", "gcc")
         pgo = tcfg.get("pgo", True) if compiler == "llvm" else False

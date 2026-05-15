@@ -1,15 +1,10 @@
 # =============================================================================
 # kernel.toml — custom kernel build (stage 8 / sysforge run kernel)
 #
-# *** EXPERIMENTAL — DEFERRED TO POST-1.0 ***
-# This stage ships but is not part of the v1.0 stable surface. The kconfig
-# merge, interactive-to-olddefconfig patching, and bootloader update paths
-# need more real-world testing. When enabled, the stage emits a runtime
-# [WARN] at entry. For 1.0, leave this disabled and use a stock pacman
-# kernel.
-#
-# This stage is disabled by default. Set enabled = true and fill in the
-# required fields below to build and install a custom kernel.
+# This stage is opt-in. Building a custom kernel is a deliberate choice;
+# most users should leave this disabled and rely on a stock pacman kernel.
+# Set enabled = true and fill in the required fields below to build and
+# install a custom kernel.
 #
 # The kernel PKGBUILD must already be cloned under [paths] pkgbuild_src_dir in
 # flag_profiles.toml. A [[rules]] entry with profile = "kernel" is also

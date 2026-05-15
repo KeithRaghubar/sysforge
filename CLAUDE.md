@@ -26,9 +26,9 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 - **CLI verbs go through the Verb framework**: every top-level command is a `Verb` subclass dispatched by `sysforge.verbs.runner.run_verb`. New verbs implement `pre_check` / `execute` / `post_validate` and set `requires_sentinel=True` if they mutate the live system. Read-only verbs (no install) leave `post_validate` as the default no-op and `requires_sentinel=False`. Argparse `set_defaults(verb_cls=XVerb)` wires the class into dispatch — do not add `func=` callbacks. See DESIGN.md §CLI Verb Framework.
 - **Install-bearing scopes share one sentinel primitive**: both the verb runner and the toolchain pipeline stage use `primitives.stage_sentinel.sentinel_scope()`. Do not roll a separate `StageSentinel` install/clear path for a new install-bearing stage or verb — extend the existing primitive instead.
 
-## Experimental (post-1.0)
+## Toolchain & kernel stages
 
-`run toolchain` (stage 6), `run kernel` (stage 8), and the PGO-toolchain profdata-reuse path in `sysforge update` (`build_mode = "pgo_llvm_toolchain"`) are shipped but reclassified as experimental for 1.0 — they emit a runtime `[WARN]` at entry and default to disabled. Keep the implementation intact but do not treat them as part of the v1.0 stable surface. See DESIGN.md §Release Plan for full scope.
+`run toolchain` (stage 6), `run kernel` (stage 8), and the PGO-toolchain profdata-reuse path in `sysforge update` (`build_mode = "pgo_llvm_toolchain"`) are stable as of v1.x (re-promoted from the v1.0 experimental classification). They still default to `enabled = false` in `toolchain.toml` / `kernel.toml` because building a custom toolchain or kernel is an opt-in decision; do not flip the defaults under the assumption that "no longer experimental" means "on by default".
 
 `run toolchain` defaults to `compiler = "gcc"` when the key is unset; LLVM is opt-in only. The shipped `[profiles.standard]` uses system gcc/binutils; LLVM components (`clang`, `lld`, `llvm`, `compiler-rt`) live in `optdepends` and are only required when the LLVM profile or `run toolchain --compiler=llvm` is selected.
 

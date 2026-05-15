@@ -10,8 +10,7 @@ Top-level commands:
 
 Namespaces:
     sysforge packages       Manage packages.toml (list / add / remove / sync)
-    sysforge run            Execute pipeline stages (pipeline / hardware / reconfigure / toolchain* / packages / kernel*)
-                            (* toolchain and kernel are experimental — deferred to post-1.0)
+    sysforge run            Execute pipeline stages (pipeline / hardware / reconfigure / toolchain / packages / kernel)
 
 Every verb is a ``Verb`` subclass dispatched through
 :func:`sysforge.verbs.runner.run_verb`. The pre_check / execute /
@@ -868,15 +867,13 @@ def _add_env_parser(sub):
 def _add_run_parser(sub):
     """run namespace: pipeline / reconfigure / toolchain / packages / kernel"""
     p = sub.add_parser("run",
-        help="Execute a pipeline stage (pipeline, hardware, reconfigure, toolchain, packages, kernel). "
-             "toolchain and kernel are experimental (post-1.0).")
+        help="Execute a pipeline stage (pipeline, hardware, reconfigure, toolchain, packages, kernel).")
     run_sub = p.add_subparsers(dest="run_stage", metavar="STAGE")
     run_sub.required = True
 
     # run pipeline
     p_pipeline = run_sub.add_parser("pipeline",
-        help="Run the full install pipeline (stages 1–8). "
-             "Stages 6 (toolchain) and 8 (kernel) are experimental (post-1.0).")
+        help="Run the full install pipeline (stages 1–8).")
     p_pipeline.add_argument("--resume", action="store_true",
         help="Resume from the last checkpoint.")
     p_pipeline.add_argument("--start-from", metavar="STAGE", dest="start_from",
@@ -932,7 +929,7 @@ def _add_run_parser(sub):
 
     # run toolchain
     p_toolchain = run_sub.add_parser("toolchain",
-        help="[experimental — post-1.0] Build and install the LLVM/GCC toolchain from toolchain.toml.")
+        help="Build and install the LLVM/GCC toolchain from toolchain.toml.")
     p_toolchain.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show what would run without executing anything.")
     p_toolchain.add_argument("--no-update", action="store_true", dest="no_update",
@@ -1003,7 +1000,7 @@ def _add_run_parser(sub):
 
     # run kernel
     p_kernel = run_sub.add_parser("kernel",
-        help="[experimental — post-1.0] Build and install the custom kernel configured in kernel.toml.")
+        help="Build and install the custom kernel configured in kernel.toml.")
     p_kernel.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Show what would run without executing anything.")
     p_kernel.add_argument("--no-update", action="store_true", dest="no_update",
