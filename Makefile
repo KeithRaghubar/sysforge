@@ -1,4 +1,4 @@
-.PHONY: dev build install clean test test-v test-x lint man \
+.PHONY: all dev venv build install clean distclean test test-x lint man \
         release-major release-minor release-patch \
         vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-ssh vm-ssh-root vm-clean
 
@@ -12,11 +12,10 @@ all: test
 # Python dev
 # ---------------------------------------------------------------------------
 
-dev-deps:
-	sudo pacman -S --needed python-pytest ruff
-	uv pip install argparse-manpage
-
 dev:
+	@pacman -Qq python-pytest ruff >/dev/null 2>&1 \
+	    || sudo pacman -S --needed python-pytest ruff
+	@uv pip install --quiet argparse-manpage
 	uv pip install -e .
 
 venv:
@@ -30,9 +29,6 @@ install:
 
 test:
 	pytest
-
-test-v:
-	pytest -v
 
 test-x:
 	pytest -x
@@ -51,7 +47,7 @@ release-patch:
 
 man:
 	mkdir -p man
-	PYTHONPATH=. uv run argparse-manpage \
+	PYTHONPATH=. uv run --no-sync argparse-manpage \
 	  --module sysforge.cli \
 	  --function _build_parser \
 	  --author "Keith Raghubar" \
@@ -61,15 +57,19 @@ man:
 	  --output man/sysforge.1
 
 clean:
-	rm -rf dist/ .venv/ __pycache__/ *.egg-info/ .pytest_cache/
+	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+distclean: clean
+	rm -rf .venv/
 
 # ---------------------------------------------------------------------------
 # Test VM
 # ---------------------------------------------------------------------------
 
 vm-deps:
-	sudo pacman -S --needed qemu-desktop edk2-ovmf gtk-vnc
+	@pacman -Qq qemu-desktop edk2-ovmf gtk-vnc >/dev/null 2>&1 \
+	    || sudo pacman -S --needed qemu-desktop edk2-ovmf gtk-vnc
 
 vm-image:
 	mkdir -p $(VM_DIR)
