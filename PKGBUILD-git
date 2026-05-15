@@ -16,7 +16,6 @@ depends=(
 makedepends=(
     'uv'
     'python-installer'
-    'python-argparse-manpage'
 )
 optdepends=(
     'bash-completion: bash tab completions'
@@ -49,14 +48,6 @@ pkgver() {
 build() {
     cd "$srcdir/$pkgname"
     uv build --wheel
-    PYTHONPATH=. argparse-manpage \
-        --module sysforge.cli \
-        --function _build_parser \
-        --author "Keith Raghubar" \
-        --author-email "aur.archlinux.org.buckskin000@passmail.net" \
-        --project-name "$pkgname" \
-        --url "$url" \
-        --output man/sysforge.1
 }
 
 package() {
