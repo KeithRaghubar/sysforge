@@ -32,7 +32,6 @@ optdepends=(
     'compiler-rt: required for sysforge run toolchain --compiler=llvm'
 )
 conflicts=('sysforge-git')
-provides=('sysforge')
 backup=(
     'etc/sysforge/sysforge.toml'
     'etc/sysforge/profiles.toml'
@@ -55,7 +54,9 @@ package() {
     # Man page
     install -Dm644 man/sysforge.1 "$pkgdir/usr/share/man/man1/sysforge.1"
 
-    # Zsh completion
+    # Shell completions (bash + zsh; both shells are optdeps)
+    install -Dm644 completions/sysforge.bash \
+        "$pkgdir/usr/share/bash-completion/completions/sysforge"
     install -Dm644 completions/_sysforge \
         "$pkgdir/usr/share/zsh/site-functions/_sysforge"
 
