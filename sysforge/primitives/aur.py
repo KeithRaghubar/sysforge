@@ -590,6 +590,7 @@ TRANSIENT_GIT_ERRORS = (
     "Could not resolve host",
     "TLS connection",
     "early EOF",
+    "unexpected eof",  # OpenSSL 3.x: peer closed without close_notify
     "RPC failed",
 )
 

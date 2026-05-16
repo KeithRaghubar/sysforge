@@ -323,6 +323,47 @@ echo "  OK"
 _step 2 5 "Grow cowspace" "Expand /run/archiso/cowspace so the AUR build fits"
 _remount_cowspace
 
+# Mirrors sysforge/primitives/aur.py:TRANSIENT_GIT_ERRORS — keep in sync.
+_TRANSIENT_GIT_ERRORS=(
+    "Connection reset"
+    "Recv failure"
+    "Could not resolve host"
+    "TLS connection"
+    "early EOF"
+    "unexpected eof"
+    "RPC failed"
+)
+
+_is_transient_git_error() {
+    local err=$1 needle
+    for needle in "${_TRANSIENT_GIT_ERRORS[@]}"; do
+        [[ "$err" == *"$needle"* ]] && return 0
+    done
+    return 1
+}
+
+# Clone an AUR repo as $user with a single retry on transient network errors.
+# Matches the policy in aur.py:aur_clone — one retry, 2s pause, hard-fail
+# on non-transient errors (e.g. repo not found, rate limits).
+_aur_clone_with_retry() {
+    local url=$1 dest=$2 user=$3 attempt err
+    for attempt in 1 2; do
+        if err=$(sudo -u "$user" git clone --quiet "$url" "$dest" 2>&1); then
+            return 0
+        fi
+        rm -rf "$dest"
+        if (( attempt == 1 )) && _is_transient_git_error "$err"; then
+            echo "  WARN: transient git error on AUR clone — retrying once in 2s" >&2
+            echo "    $err" >&2
+            sleep 2
+            continue
+        fi
+        echo "  ERROR: AUR clone failed for $url" >&2
+        echo "    $err" >&2
+        return 1
+    done
+}
+
 # ── 3. Install SysForge from AUR ──────────────────────────────────────────────
 
 _step 3 5 "Install SysForge" "Build and install $PKG from the AUR"
@@ -352,7 +393,8 @@ trap cleanup_build_user EXIT
 
 BUILD_DIR=$(sudo -u "$BUILD_USER" mktemp -d -t "iso-install-$PKG-XXXX")
 sudo -u "$BUILD_USER" mkdir -p "$BUILD_DIR/build" "$BUILD_DIR/pkg"
-sudo -u "$BUILD_USER" git clone --quiet "$AUR_URL" "$BUILD_DIR/$PKG"
+_aur_clone_with_retry "$AUR_URL" "$BUILD_DIR/$PKG" "$BUILD_USER" \
+    || _die "AUR clone failed after retry — see error above. This is usually a transient aur.archlinux.org TLS issue; re-running iso-install.sh often clears it."
 # Pin BUILDDIR/PKGDEST to the /tmp-backed work dir so makepkg's src/ and pkg/
 # never touch cowspace, regardless of /etc/makepkg.conf. `env` is needed
 # because sudo doesn't preserve env across the user switch.

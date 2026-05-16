@@ -207,6 +207,36 @@ def test_aur_clone_transient_error_retries_then_succeeds(tmp_path):
     assert (dest / "PKGBUILD").exists()
 
 
+def test_aur_clone_unexpected_eof_retries_then_succeeds(tmp_path):
+    """OpenSSL 3.x 'unexpected eof while reading' must be classified as transient."""
+    dest = tmp_path / "tls-flaky-pkg"
+    attempts = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            dest.mkdir()
+            return subprocess.CompletedProcess(
+                cmd, 128, stdout="",
+                stderr=(
+                    "fatal: unable to access "
+                    "'https://aur.archlinux.org/tls-flaky-pkg.git/': "
+                    "TLS connect error: error:0A000126:SSL routines::"
+                    "unexpected eof while reading"
+                ),
+            )
+        dest.mkdir(exist_ok=True)
+        (dest / "PKGBUILD").write_text("pkgname=tls-flaky-pkg\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run), patch("time.sleep"):
+        aur_clone("tls-flaky-pkg", dest)
+
+    assert attempts == 2
+    assert (dest / "PKGBUILD").exists()
+
+
 def test_aur_clone_transient_error_retries_then_raises(tmp_path):
     dest = tmp_path / "broken-pkg"
 
