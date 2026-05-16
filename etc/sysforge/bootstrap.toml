@@ -48,6 +48,15 @@ root_fs = "ext4"
 # pacman ParallelDownloads (default: 5)
 # parallel_downloads = 5
 
+# Account created by the base_install stage. Defaults to "builder".
+# username = "builder"
+
+# Passwords applied during base_install. Leave unset to skip (run `passwd`
+# manually inside the chroot or after first boot). Values are not retained
+# on disk after a successful pipeline run.
+# user_password = ""
+# root_password = ""
+
 
 # =============================================================================
 # Mirrorlist (stage 4 — requires reflector in the chroot)
