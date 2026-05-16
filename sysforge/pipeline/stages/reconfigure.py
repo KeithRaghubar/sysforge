@@ -285,28 +285,84 @@ def _editor_usable(editor: str) -> bool:
     return bool(editor) and shutil.which(editor) is not None
 
 
-def _try_install_editor(editor_cmd: str, options) -> bool:
+def _packages_providing(editor_cmd: str) -> list[str]:
     """
-    Prompt for a pacman package name, install it, and verify ``editor_cmd`` is
-    on PATH afterwards. Returns True only when the install actually produced
-    the binary. False on any failure (user typo, repo miss, install error,
-    binary still missing, dry-run).
+    Use pacman's files database to find packages providing ``/usr/bin/<editor_cmd>``.
+    Returns deduped package names (without the ``repo/`` prefix), or ``[]`` when
+    nothing matches or the files DB is unavailable.
 
-    The package guess defaults to ``editor_cmd`` since the binary name often
-    matches the package name (``nano``), but the user can override since they
-    sometimes diverge (``nvim`` → ``neovim``).
+    Arch packages install binaries to ``/usr/bin/`` (never ``/usr/local/bin/``),
+    so a single ``pacman -Fq`` query is sufficient. If the files DB has never
+    been synced, ``pacman -Fq`` exits non-zero; the caller hints at ``pacman -Fy``.
     """
-    pkg_name = _prompt(
-        f"  Pacman package name to install [↵ uses {editor_cmd!r}]: "
-    ) or editor_cmd
+    if not shutil.which("pacman"):
+        return []
+    basename = Path(editor_cmd).name
+    if not basename:
+        return []
+    result = subprocess.run(
+        ["pacman", "-Fq", f"/usr/bin/{basename}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    pkgs: list[str] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pkg = line.split("/", 1)[1] if "/" in line else line
+        if pkg not in pkgs:
+            pkgs.append(pkg)
+    return pkgs
 
-    if options.dry_run:
-        _log.ui(f"  [dry-run] would install {pkg_name!r}")
-        return False
 
-    # Precheck against pacman's sync DB so a typo'd or non-existent package is
-    # rejected with a clear message instead of failing mid-transaction inside
-    # pacman.
+def _choose_install_package(editor_cmd: str) -> str | None:
+    """
+    Pick a pacman package to install for ``editor_cmd`` without making the user
+    memorize the bin→package mapping (``nvim`` is provided by ``neovim``, etc.).
+
+    - one candidate     → confirm and install
+    - multiple matches  → numbered picker
+    - no matches        → fall back to a typed package name (with a hint to sync
+      the files DB), validated against ``pacman -Si``
+
+    Returns the chosen package name, or ``None`` if the user cancelled.
+    """
+    candidates = _packages_providing(editor_cmd)
+
+    if len(candidates) == 1:
+        pkg = candidates[0]
+        confirm = _prompt_choice(
+            f"  /usr/bin/{editor_cmd} is provided by {pkg!r}. Install? [y/N]: ",
+            choices=("y", "n"),
+            default="n",
+        )
+        return pkg if confirm == "y" else None
+
+    if len(candidates) > 1:
+        _log.ui(f"  Multiple packages provide /usr/bin/{editor_cmd}:")
+        for i, pkg in enumerate(candidates, 1):
+            _log.ui(f"    [{i}] {pkg}")
+        while True:
+            raw = _prompt(
+                f"  Pick a package [1-{len(candidates)}, ↵ to cancel]: "
+            )
+            if not raw:
+                return None
+            if raw.isdigit():
+                idx = int(raw)
+                if 1 <= idx <= len(candidates):
+                    return candidates[idx - 1]
+            _log.warn(f"  Invalid selection: {raw!r}")
+
+    _log.ui(
+        f"  pacman has no package providing /usr/bin/{editor_cmd}. "
+        f"(If the files DB is stale, run 'sudo pacman -Fy' and retry.)"
+    )
+    pkg_name = _prompt("  Pacman package name to install [↵ to cancel]: ")
+    if not pkg_name:
+        return None
     check = subprocess.run(
         ["pacman", "-Si", pkg_name],
         capture_output=True, text=True,
@@ -316,7 +372,28 @@ def _try_install_editor(editor_cmd: str, options) -> bool:
             f"  {pkg_name!r} not found in pacman repos. "
             f"Run 'pacman -Ss {editor_cmd}' to find the right package name."
         )
+        return None
+    return pkg_name
+
+
+def _try_install_editor(editor_cmd: str, options) -> bool:
+    """
+    Install the pacman package providing ``editor_cmd`` and verify the binary
+    lands on PATH. The package is auto-detected via ``pacman -F`` so the user
+    doesn't have to know which package ships which binary.
+
+    Returns True only when the install actually produced ``editor_cmd``. False
+    on user cancel, no match without a manual fallback, install error, missing
+    binary post-install, or dry-run.
+    """
+    pkg_name = _choose_install_package(editor_cmd)
+    if pkg_name is None:
         return False
+
+    if options.dry_run:
+        _log.ui(f"  [dry-run] would install {pkg_name!r}")
+        return False
+
     result = subprocess.run(
         ["sudo", "pacman", "-S", "--needed", "--noconfirm", pkg_name]
     )

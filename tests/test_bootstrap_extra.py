@@ -431,7 +431,7 @@ class TestCreateUser:
     def test_creates_user_and_sudoers(self, tmp_path):
         cfg = make_cfg(target=str(tmp_path), username="builder")
         with patch("sysforge.pipeline.stages.configure._chroot") as mock_chroot, \
-             patch("sysforge.pipeline.stages.configure.subprocess.run") as mock_run, \
+             patch("sysforge.pipeline.stages.configure.subprocess.run"), \
              patch("sysforge.pipeline.stages.configure._log"):
             mock_chroot.return_value = MagicMock(returncode=0)
             _create_user(cfg)
@@ -1334,30 +1334,32 @@ class TestStepEditorRetryFlow:
         assert result == "vim"
 
     def test_install_succeeds_returns_new_editor(self):
-        # Editor not on PATH → install via pacman → binary now present →
-        # function returns the new editor.
+        # Editor not on PATH → pacman -F auto-detects 'neovim' provides nvim →
+        # user confirms install → binary now present → return new editor.
+        # The user never types a package name: that's the UX win this asserts.
         choices = iter([
             "e",        # change?
-            "i",        # install
+            "i",        # [i]nstall via pacman
+            "y",        # confirm install of auto-detected 'neovim'
             "n",        # decline save
         ])
         prompts = iter([
             "nvim",     # new editor (not on PATH initially)
-            "",         # ↵ defaults pkg name to 'nvim'
         ])
-        # Track which-results so the install can flip nvim from absent to present.
         installed = {"nvim": False}
 
         def fake_which(x):
             if x == "vi":
                 return "/usr/bin/vi"
+            if x == "pacman":
+                return "/usr/bin/pacman"
             if x == "nvim" and installed["nvim"]:
                 return "/usr/bin/nvim"
             return None
 
         def fake_run(argv, *a, **k):
-            if argv[:2] == ["pacman", "-Si"]:
-                return MagicMock(returncode=0)
+            if argv[:2] == ["pacman", "-Fq"]:
+                return MagicMock(returncode=0, stdout="extra/neovim\n", stderr="")
             if argv[:3] == ["sudo", "pacman", "-S"]:
                 installed["nvim"] = True
                 return MagicMock(returncode=0)

@@ -15,13 +15,16 @@ from sysforge.pipeline.stages.reconfigure import (
     _EDITOR_NEEDING_STEPS,
     _STEP_FNS,
     _STEP_KEYS,
+    _choose_install_package,
     _editor_usable,
+    _packages_providing,
     _parse_step_selection,
     _require_usable_editor,
     _run_selected_steps,
     _set_repo_mode,
     _step_build_mode,
     _step_preview,
+    _try_install_editor,
 )
 
 
@@ -514,3 +517,203 @@ def test_run_selected_steps_skips_gate_for_non_editor_steps():
 
     assert seen == [""]
     picker.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Editor install: auto-detect pacman package from binary name
+# ---------------------------------------------------------------------------
+
+
+def _fake_completed(stdout: str = "", returncode: int = 0):
+    """Minimal subprocess.CompletedProcess stand-in for run() mocks."""
+
+    class _R:
+        pass
+
+    r = _R()
+    r.stdout = stdout
+    r.stderr = ""
+    r.returncode = returncode
+    return r
+
+
+def test_packages_providing_strips_repo_prefix_and_dedups():
+    """``pacman -Fq`` returns ``repo/pkg`` lines; we want bare package names."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value="/usr/bin/pacman",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.subprocess.run",
+        return_value=_fake_completed(stdout="core/nano\nextra/orbiton-nano\ncore/nano\n"),
+    ):
+        result = _packages_providing("nano")
+    assert result == ["nano", "orbiton-nano"]
+
+
+def test_packages_providing_empty_when_no_match():
+    """Exit code 1 with empty stdout (no match / stale DB) → []."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value="/usr/bin/pacman",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.subprocess.run",
+        return_value=_fake_completed(stdout="", returncode=1),
+    ):
+        assert _packages_providing("zzz-nonexistent") == []
+
+
+def test_packages_providing_empty_when_pacman_missing():
+    """Non-Arch environments without ``pacman`` on PATH → []."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value=None,
+    ):
+        assert _packages_providing("nvim") == []
+
+
+def test_choose_install_package_single_match_confirm_yes():
+    """One candidate, user confirms → return that package."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._packages_providing",
+        return_value=["neovim"],
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="y",
+    ):
+        assert _choose_install_package("nvim") == "neovim"
+
+
+def test_choose_install_package_single_match_confirm_no():
+    """One candidate, user declines → None (cancel)."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._packages_providing",
+        return_value=["neovim"],
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="n",
+    ):
+        assert _choose_install_package("nvim") is None
+
+
+def test_choose_install_package_multi_match_picks_by_index():
+    """Multiple candidates, user enters '2' → second package."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._packages_providing",
+        return_value=["nano", "orbiton-nano"],
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        return_value="2",
+    ):
+        assert _choose_install_package("nano") == "orbiton-nano"
+
+
+def test_choose_install_package_multi_match_blank_cancels():
+    """Multiple candidates, user presses Enter on blank → None."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._packages_providing",
+        return_value=["nano", "orbiton-nano"],
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        return_value="",
+    ):
+        assert _choose_install_package("nano") is None
+
+
+def test_choose_install_package_no_match_falls_back_to_typed_name():
+    """No pacman -F match → user types a package name → validated via pacman -Si."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._packages_providing",
+        return_value=[],
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        return_value="some-editor-pkg",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.subprocess.run",
+        return_value=_fake_completed(returncode=0),
+    ) as run_mock:
+        assert _choose_install_package("some-editor") == "some-editor-pkg"
+    run_mock.assert_called_once()
+    args = run_mock.call_args.args[0]
+    assert args[:2] == ["pacman", "-Si"]
+    assert args[2] == "some-editor-pkg"
+
+
+def test_choose_install_package_no_match_rejects_invalid_typed_name():
+    """No pacman -F match, typed name not in repos → None."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._packages_providing",
+        return_value=[],
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        return_value="not-a-real-pkg",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.subprocess.run",
+        return_value=_fake_completed(returncode=1),
+    ):
+        assert _choose_install_package("some-editor") is None
+
+
+def test_choose_install_package_no_match_blank_cancels():
+    """No pacman -F match, user presses Enter → None (cancel)."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._packages_providing",
+        return_value=[],
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        return_value="",
+    ):
+        assert _choose_install_package("some-editor") is None
+
+
+def test_try_install_editor_cancelled_picker_returns_false():
+    """User cancels package picker → no subprocess invocation, return False."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._choose_install_package",
+        return_value=None,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.subprocess.run",
+    ) as run_mock:
+        assert _try_install_editor("nvim", make_options()) is False
+    run_mock.assert_not_called()
+
+
+def test_try_install_editor_dry_run_does_not_invoke_pacman():
+    """Even with a chosen package, dry_run must short-circuit before sudo pacman."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._choose_install_package",
+        return_value="neovim",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.subprocess.run",
+    ) as run_mock:
+        assert _try_install_editor("nvim", make_options(dry_run=True)) is False
+    run_mock.assert_not_called()
+
+
+def test_try_install_editor_success_path():
+    """Picker resolves → sudo pacman succeeds → which() finds binary → True."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._choose_install_package",
+        return_value="neovim",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.subprocess.run",
+        return_value=_fake_completed(returncode=0),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value="/usr/bin/nvim",
+    ):
+        assert _try_install_editor("nvim", make_options()) is True
+
+
+def test_try_install_editor_install_succeeds_but_binary_missing():
+    """sudo pacman returns 0 but the binary still isn't on PATH → False."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._choose_install_package",
+        return_value="neovim",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.subprocess.run",
+        return_value=_fake_completed(returncode=0),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value=None,
+    ):
+        assert _try_install_editor("nvim", make_options()) is False
