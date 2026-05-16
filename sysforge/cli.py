@@ -564,7 +564,10 @@ def _add_build_parser(sub):
              "Example: sysforge build PKGBUILD -m '-sfci'",
     )
     p.add_argument("--interactive", action="store_true",
-        help="Strip --noconfirm from profile makepkg_flags.")
+        help="Strip --noconfirm from profile makepkg_flags and hand stdout/stderr "
+             "to makepkg's terminal so pacman conflict prompts and other "
+             "unbuffered interactive output appear immediately (disables "
+             "line-based output classification while set).")
     p.add_argument("--persist-log", action="store_true", dest="persist_log",
         help="Keep the per-package log file after a successful build.")
     p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",

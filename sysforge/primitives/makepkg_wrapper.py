@@ -741,13 +741,34 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
     _build_log.info(f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
 
-    # Always capture stdout+stderr so we can classify failures (prepare vs
-    # build vs package stages, missing deps) and detect clang→GCC flag
-    # rejections that trigger an automatic retry. In verbose mode, lines go
-    # through _makepkg_log (prefixed [MAKEPKG][DEBUG] in the log file);
+    # Interactive branch: inherit the parent's stdio so unbuffered prompts
+    # (pacman conflict, sudo password, gpg signing key) reach the terminal
+    # before the user is asked to type. Trades the line-classification path
+    # (toolchain-mismatch retry, stdout-match AlreadyBuilt, missing-dep
+    # prettification, captured_output for auto_repair) for prompt visibility.
+    # Exit-code signals (13 → AlreadyBuilt, 8 → install failure) still fire.
+    if interactive:
+        proc = subprocess.Popen(
+            cmd, cwd=build_dir, env=env,
+            preexec_fn=lift_for_child,
+        )
+        returncode = proc.wait()
+        if returncode != 0:
+            if returncode == 13:
+                raise AlreadyBuilt(pkgbuild_path)
+            if returncode == 8:
+                _build_log.error("Dependency resolution failed.")
+            raise subprocess.CalledProcessError(returncode, "makepkg")
+        return
+
+    # Non-interactive branch: capture stdout+stderr so we can classify failures
+    # (prepare vs build vs package stages, missing deps) and detect clang→GCC
+    # flag rejections that trigger an automatic retry. In verbose mode, lines
+    # go through _makepkg_log (prefixed [MAKEPKG][DEBUG] in the log file);
     # otherwise they're forwarded verbatim to stdout so the user still sees
-    # live output. stdin is inherited from the parent so interactive prompts
-    # (sudo, signing keys) continue to work.
+    # live output. stdin is inherited from the parent so the few prompts that
+    # do reach a TTY (sudo, signing keys with newline-terminated output)
+    # continue to work.
     verbose_log = log.get_verbosity() >= 3
     proc = subprocess.Popen(
         cmd, cwd=build_dir, env=env,

@@ -36,6 +36,7 @@ Tests cover four areas:
      - -m flags forwarded as extra_flags
 """
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -256,6 +257,50 @@ def test_interactive_strips_noconfirm(tmp_path):
     cmd, _ = _capture_invoke(pb, conf, profile, interactive=True)
     assert "--noconfirm" not in cmd
     assert "--syncdeps" in cmd
+
+
+def _capture_popen_kwargs(pkgbuild_path, conf_path, resolved_profile, **kwargs):
+    """Same as _capture_invoke but returns the full kwargs dict passed to Popen."""
+    captured = {}
+
+    def fake_popen(cmd, **kw):
+        captured["kwargs"] = dict(kw)
+        m = MagicMock()
+        m.stdout = iter(())
+        m.wait.return_value = 0
+        m.returncode = 0
+        return m
+
+    clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root", "USER": "testuser", "LANG": "C"}
+    with patch.dict(os.environ, clean_env, clear=True):
+        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+                   side_effect=fake_popen):
+            invoke_makepkg(pkgbuild_path, conf_path, resolved_profile, **kwargs)
+    return captured.get("kwargs", {})
+
+
+def test_interactive_inherits_stdio(tmp_path):
+    """interactive=True: child inherits parent stdout/stderr so unbuffered
+    prompts (pacman conflict, sudo) reach the terminal immediately."""
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+    kwargs = _capture_popen_kwargs(pb, conf, {}, interactive=True)
+    assert "stdout" not in kwargs, (
+        f"interactive=True must NOT pipe stdout (got stdout={kwargs.get('stdout')!r})")
+    assert "stderr" not in kwargs, (
+        f"interactive=True must NOT pipe stderr (got stderr={kwargs.get('stderr')!r})")
+
+
+def test_noninteractive_pipes_stdio(tmp_path):
+    """interactive=False: stdout/stderr are piped so invoke_makepkg can
+    classify failure stages and detect toolchain mismatches."""
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+    kwargs = _capture_popen_kwargs(pb, conf, {}, interactive=False)
+    assert kwargs.get("stdout") == subprocess.PIPE
+    assert kwargs.get("stderr") == subprocess.STDOUT
 
 
 def test_empty_profile_produces_base_cmd(tmp_path):

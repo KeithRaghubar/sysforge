@@ -455,7 +455,9 @@ class KernelStage(Stage):
         # --non-interactive (or `interactive = false` in kernel.toml). When
         # interactive=True is passed into BuildOptions, makepkg_wrapper skips
         # patch_noninteractive_kconfig so the user's PKGBUILD kconfig target
-        # (typically `make nconfig`) runs as written.
+        # (typically `make nconfig`) runs as written, and the makepkg
+        # subprocess inherits the parent's stdout/stderr so ncurses-driven
+        # kconfig UIs render on the controlling TTY.
         cfg_interactive = bool(kernel_cfg.get("interactive", True))
         interactive = cfg_interactive and not getattr(options, "non_interactive", False)
 
