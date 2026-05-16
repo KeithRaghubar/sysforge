@@ -13,14 +13,18 @@ import pytest
 from sysforge.pipeline.stages.base import RunOptions
 from sysforge.pipeline.stages.reconfigure import (
     _EDITOR_NEEDING_STEPS,
+    _EDITOR_SUGGESTIONS,
+    _KNOWN_EDITORS,
     _STEP_FNS,
     _STEP_KEYS,
     _choose_install_package,
+    _confirm_unknown_editor,
     _editor_usable,
     _packages_providing,
     _parse_step_selection,
     _require_usable_editor,
     _run_selected_steps,
+    _select_new_editor,
     _set_repo_mode,
     _step_build_mode,
     _step_preview,
@@ -717,3 +721,132 @@ def test_try_install_editor_install_succeeds_but_binary_missing():
         return_value=None,
     ):
         assert _try_install_editor("nvim", make_options()) is False
+
+
+# ---------------------------------------------------------------------------
+# Editor allowlist: known-editor check + override confirmation
+# ---------------------------------------------------------------------------
+
+
+def test_known_editors_superset_of_suggestions():
+    """Drift guard: every shown-as-suggestion editor must also pass validation
+    silently — otherwise users would see ``nano`` suggested then warned."""
+    for name in _EDITOR_SUGGESTIONS:
+        assert name in _KNOWN_EDITORS, f"{name!r} suggested but not in allowlist"
+
+
+def test_confirm_unknown_editor_yes_returns_true():
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="y",
+    ):
+        assert _confirm_unknown_editor("htop") is True
+
+
+def test_confirm_unknown_editor_no_returns_false():
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="n",
+    ):
+        assert _confirm_unknown_editor("htop") is False
+
+
+def test_select_known_editor_on_path_no_confirm_prompt():
+    """Entering 'nano' (already on PATH and known) returns without firing the
+    unknown-editor confirm prompt."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        return_value="nano",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value="/usr/bin/nano",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._confirm_unknown_editor",
+    ) as confirm_mock:
+        result = _select_new_editor("", have_prev=False, options=make_options())
+    assert result == "nano"
+    confirm_mock.assert_not_called()
+
+
+def test_select_unknown_editor_on_path_confirm_yes_returns_it():
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        return_value="htop",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value="/usr/bin/htop",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._confirm_unknown_editor",
+        return_value=True,
+    ) as confirm_mock:
+        result = _select_new_editor("", have_prev=False, options=make_options())
+    assert result == "htop"
+    confirm_mock.assert_called_once_with("htop")
+
+
+def test_select_unknown_editor_on_path_confirm_no_re_prompts():
+    """User enters 'htop' (on PATH but off-list), declines override, then
+    enters 'nano' on the next iteration."""
+    prompts = iter(["htop", "nano"])
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        side_effect=lambda *a, **k: next(prompts),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value="/usr/bin/whatever",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._confirm_unknown_editor",
+        return_value=False,
+    ):
+        result = _select_new_editor("", have_prev=False, options=make_options())
+    assert result == "nano"
+
+
+def test_select_unknown_editor_after_install_confirm_yes_returns_it():
+    """Install path resolves 'tmux' as the user's editor; override confirmed."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        return_value="tmux",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value=None,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="i",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._try_install_editor",
+        return_value=True,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._confirm_unknown_editor",
+        return_value=True,
+    ) as confirm_mock:
+        result = _select_new_editor("", have_prev=False, options=make_options())
+    assert result == "tmux"
+    confirm_mock.assert_called_once_with("tmux")
+
+
+def test_select_unknown_editor_after_install_confirm_no_re_prompts():
+    """Install path resolves 'tmux'; user declines override; next iteration
+    types 'vim' (already on PATH after first install)."""
+    prompts = iter(["tmux", "vim"])
+    # which: None for tmux (triggers install), then "/usr/bin/vim" for the
+    # follow-up iteration so vim takes the PATH-existing branch.
+    which_results = iter([None, "/usr/bin/vim"])
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        side_effect=lambda *a, **k: next(prompts),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        side_effect=lambda _: next(which_results),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="i",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._try_install_editor",
+        return_value=True,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._confirm_unknown_editor",
+        return_value=False,
+    ):
+        result = _select_new_editor("", have_prev=False, options=make_options())
+    assert result == "vim"

@@ -433,7 +433,9 @@ def _select_new_editor(prev_editor: str, have_prev: bool, options) -> str | None
                 return None
 
         if shutil.which(new_editor):
-            return new_editor
+            if Path(new_editor).name in _KNOWN_EDITORS or _confirm_unknown_editor(new_editor):
+                return new_editor
+            continue  # off-list and user declined — pick again
 
         _log.ui(f"  {new_editor!r} not found in PATH.")
         action = _prompt_choice(
@@ -449,13 +451,32 @@ def _select_new_editor(prev_editor: str, have_prev: bool, options) -> str | None
             return None
 
         if _try_install_editor(new_editor, options):
-            return new_editor
+            # Install succeeded but the command might still be a non-editor
+            # (user typed 'htop' as editor; pacman happily installed htop).
+            # Confirm before persisting — but leave the package installed,
+            # since rollback would surprise the user.
+            if Path(new_editor).name in _KNOWN_EDITORS or _confirm_unknown_editor(new_editor):
+                return new_editor
+            continue
         # Install failed. Loop back to the editor-name prompt so the user can
         # try a different editor, retry the install with a different package
         # name, or cancel.
 
 
 _EDITOR_SUGGESTIONS = ("nano", "vi", "vim", "nvim", "micro")
+
+# Recognized text editors. Anything outside this set still works but requires
+# an explicit "use anyway" confirmation — catches typos that would otherwise
+# install (via sudo pacman -S) and persist a non-editor command (htop, tmux,
+# less, …) as the user's default $EDITOR.
+_KNOWN_EDITORS = frozenset({
+    "nano", "vi", "vim", "nvim", "emacs", "emacsclient", "micro",
+    "helix", "hx", "kak", "kakoune", "ed", "ne", "joe", "mg", "jed",
+    "mcedit", "jove",
+    "gvim", "gedit", "kate", "kwrite", "gnome-text-editor",
+    "mousepad", "leafpad", "geany",
+    "code", "codium", "code-oss", "subl", "sublime_text",
+})
 
 
 def _format_editor_suggestions() -> list[str]:
@@ -465,6 +486,25 @@ def _format_editor_suggestions() -> list[str]:
         tag = "installed" if shutil.which(name) else "installable"
         lines.append(f"    {name:<6}  ({tag})")
     return lines
+
+
+def _confirm_unknown_editor(cmd: str) -> bool:
+    """
+    Warn that ``cmd`` isn't on the known-editor list and require explicit
+    confirmation before accepting it. The hard case this guards against is a
+    user installing+saving an arbitrary pacman package as their editor (e.g.
+    ``htop`` typed when ``nano`` was intended).
+    """
+    _log.warn(
+        f"  '{cmd}' is not on the known-editor list. "
+        f"Saving an arbitrary command as $EDITOR can cause data loss "
+        f"if a later config-edit prompt opens it."
+    )
+    return _prompt_choice(
+        f"  Use {cmd!r} as editor anyway? [y/N]: ",
+        choices=("y", "n"),
+        default="n",
+    ) == "y"
 
 
 def _require_usable_editor(prev_editor: str, options, *, needed_for: str) -> str:
