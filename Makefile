@@ -1,6 +1,6 @@
 .PHONY: all dev venv build install clean distclean test test-x lint man \
         release-major release-minor release-patch \
-        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-ssh vm-ssh-root vm-clean \
+        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-ssh vm-ssh-root vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
@@ -105,10 +105,21 @@ vm-ssh-root:
 vm-monitor:
 	socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
 
+vm-stop:
+	@if [ -f "$(VM_DIR)/qemu.pid" ] && kill -0 "$$(cat $(VM_DIR)/qemu.pid)" 2>/dev/null; then \
+		echo "Stopping VM via monitor..."; \
+		echo "quit" | socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock 2>/dev/null \
+		  || kill "$$(cat $(VM_DIR)/qemu.pid)"; \
+		rm -f $(VM_DIR)/qemu.pid; \
+	else \
+		echo "No running VM"; \
+		rm -f $(VM_DIR)/qemu.pid; \
+	fi
+
 vm-clean:
 	@if [ -f "$(VM_DISK)" ]; then \
 		echo "Removing VM disk image: $(VM_DISK)"; \
-		rm -f $(VM_DISK) $(VM_DIR)/OVMF_VARS.4m.fd $(VM_DIR)/OVMF_VARS.4m.qcow2 $(VM_DIR)/known_hosts; \
+		rm -f $(VM_DISK) $(VM_DIR)/OVMF_VARS.4m.fd $(VM_DIR)/OVMF_VARS.4m.qcow2 $(VM_DIR)/known_hosts $(VM_DIR)/qemu.pid $(VM_DIR)/qemu-monitor.sock; \
 	else \
 		echo "No disk image found at $(VM_DISK)"; \
 	fi

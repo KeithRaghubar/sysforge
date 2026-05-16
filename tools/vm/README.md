@@ -119,7 +119,7 @@ sudo mkarchroot /var/lib/archbuild/extra-x86_64/root base-devel
 
 `devtools` (which provides `makechrootpkg`) must also be installed.
 
-Then, with the VM running (`make vm-snapshot` in another terminal):
+Then, with the VM running (`make vm-snapshot` — backgrounds automatically):
 
 ```bash
 # Build a .pkg.tar.zst from the working tree via the clean chroot.
@@ -192,8 +192,12 @@ Run them directly if you need flags the Make targets don't expose.
 
 ## Regular use
 
+All three boot targets (`vm-snapshot`, `vm-boot`, `vm-iso`) run QEMU with
+`-daemonize`: they return immediately and the VM keeps running in the
+background. Use `make vm-stop` to shut it down.
+
 ```bash
-# Boot from clean snapshot (changes discarded on exit — safe for testing)
+# Boot ephemerally (changes discarded on exit — safe for testing)
 make vm-snapshot
 
 # Boot normally (changes persist — use when you want to keep state)
@@ -205,17 +209,23 @@ make vm-ssh-root   # root (admin tasks)
 
 # Open the QEMU monitor (savevm, loadvm, quit, etc.)
 make vm-monitor
+
+# Stop the VM (clean shutdown via monitor; falls back to kill)
+make vm-stop
 ```
 
 ## Resetting
 
+`--snapshot` boots in *ephemeral mode* — writes go to a throwaway overlay over
+the current on-disk state. It does **not** auto-load a named snapshot inside
+the qcow2. To start from a specific saved snapshot:
+
 ```bash
 make vm-monitor
-# loadvm clean
+# loadvm clean        # (or any snapshot from `info snapshots`)
 ```
 
-Or just exit (`quit` in monitor or Ctrl-C in the terminal) and `make vm-snapshot`
-again — `--snapshot` always starts from the saved `clean` state.
+Then `make vm-stop` and re-run `make vm-snapshot` for the next ephemeral run.
 
 ## Kernel stage testing workflow
 

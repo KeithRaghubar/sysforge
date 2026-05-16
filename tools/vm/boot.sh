@@ -3,8 +3,17 @@
 #
 # Usage:
 #   ./tools/vm/boot.sh              # boot normally (changes persist)
-#   ./tools/vm/boot.sh --snapshot   # boot from clean snapshot, discard changes on exit
+#   ./tools/vm/boot.sh --snapshot   # boot in ephemeral mode, discard changes on exit
 #   ./tools/vm/boot.sh --iso        # boot from Arch ISO for initial install
+#
+# All modes run QEMU with -daemonize: the script exits as soon as the VM has
+# initialized, and the VM continues running in the background. Use
+# 'make vm-stop' (or 'quit' in 'make vm-monitor') to shut it down.
+#
+# --snapshot uses QEMU's -snapshot flag: writes go to a throwaway overlay over
+# the current on-disk state. It does NOT auto-load a named snapshot. To start
+# from a specific savevm snapshot, 'loadvm NAME' via the monitor before
+# stopping, or restore after the next boot.
 #
 # Normal boots run headless (no window). Access the installed VM via SSH:
 #   ssh -p 10022 root@localhost
@@ -13,7 +22,7 @@
 #   gvncviewer localhost
 #
 # QEMU monitor (for savevm / loadvm):
-#   socat - UNIX-CONNECT:~/.local/share/sysforge-vm/qemu-monitor.sock
+#   make vm-monitor      (wraps socat to ~/.local/share/sysforge-vm/qemu-monitor.sock)
 #   savevm clean     — save current state as 'clean' snapshot
 #   loadvm clean     — restore to 'clean' snapshot
 #   info snapshots   — list saved snapshots
@@ -93,13 +102,35 @@ QEMU_ARGS=(
     # Connect with: socat - UNIX-CONNECT:"$VM_DIR/qemu-monitor.sock"
     -monitor "unix:$VM_DIR/qemu-monitor.sock,server,nowait"
 
+    # Background after init; pidfile lets `make vm-stop` find the process.
+    -daemonize
+    -pidfile "$VM_DIR/qemu.pid"
+
     # Misc
     -rtc base=localtime
 )
 
+# Refuse to launch if a VM is already running; otherwise QEMU fails on socket
+# / port bind with an opaque error. Stale pidfiles (process died without
+# cleanup) are removed so the launch can proceed.
+if [[ -f "$VM_DIR/qemu.pid" ]]; then
+    EXISTING_PID="$(cat "$VM_DIR/qemu.pid" 2>/dev/null || true)"
+    if [[ -n "$EXISTING_PID" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+        echo "VM already running (PID $EXISTING_PID). Use 'make vm-stop' first." >&2
+        exit 1
+    fi
+    rm -f "$VM_DIR/qemu.pid"
+    rm -f "$VM_DIR/qemu-monitor.sock"
+fi
+
 if [[ $SNAPSHOT -eq 1 ]]; then
     QEMU_ARGS+=(-snapshot)
-    echo "Booting from 'clean' snapshot (changes will be discarded)"
+    echo "Booting in ephemeral mode (changes will be discarded on exit)."
+    echo "To revert to a named snapshot before this boot:"
+    echo "  1) make vm-monitor   # connect to the running VM's monitor"
+    echo "  2) loadvm NAME       # restore the desired snapshot"
+    echo "  3) quit"
+    echo "Then re-run 'make vm-snapshot'. List saved snapshots with 'info snapshots' in the monitor."
 fi
 
 VNC_PORT=5900
@@ -120,11 +151,11 @@ if [[ $USE_ISO -eq 1 ]]; then
     )
     echo "Booting from Arch ISO: $ISO_PATH"
     echo "  Console: gvncviewer localhost"
-    echo "  Stop:    Ctrl-C (or 'quit' in monitor)"
+    echo "  Stop:    make vm-stop (or 'quit' in make vm-monitor)"
 else
     echo "VM running headless."
     echo "  SSH:     ssh -p $SSH_PORT root@localhost"
-    echo "  Monitor: socat - UNIX-CONNECT:\"$VM_DIR/qemu-monitor.sock\""
-    echo "  Stop:    Ctrl-C (or 'quit' in monitor)"
+    echo "  Monitor: make vm-monitor"
+    echo "  Stop:    make vm-stop (or 'quit' in make vm-monitor)"
 fi
-exec "${QEMU_ARGS[@]}"
+"${QEMU_ARGS[@]}"
