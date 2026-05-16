@@ -280,6 +280,11 @@ def _resolve_editor() -> tuple[str, str]:
     return "", "none"
 
 
+def _editor_usable(editor: str) -> bool:
+    """True when ``editor`` is set and resolves on PATH."""
+    return bool(editor) and shutil.which(editor) is not None
+
+
 def _try_install_editor(editor_cmd: str, options) -> bool:
     """
     Prompt for a pacman package name, install it, and verify ``editor_cmd`` is
@@ -338,12 +343,14 @@ def _select_new_editor(prev_editor: str, have_prev: bool, options) -> str | None
     while True:
         if have_prev:
             new_editor = _prompt(
-                f"  Enter editor command [{prev_editor}]: "
+                f"  Enter editor command (e.g. nano, vi) [{prev_editor}]: "
             ) or prev_editor
             if new_editor == prev_editor:
                 return None  # user kept the current editor
         else:
-            new_editor = _prompt("  Enter editor command (↵ to skip): ")
+            new_editor = _prompt(
+                "  Enter editor command (e.g. nano, vi; ↵ to skip): "
+            )
             if not new_editor:
                 _log.ui("  No editor selected — config file edits will be skipped.")
                 return None
@@ -371,6 +378,63 @@ def _select_new_editor(prev_editor: str, have_prev: bool, options) -> str | None
         # name, or cancel.
 
 
+_EDITOR_SUGGESTIONS = ("nano", "vi", "vim", "nvim", "micro")
+
+
+def _format_editor_suggestions() -> list[str]:
+    """Return one log line per suggestion, annotated installed/installable."""
+    lines = []
+    for name in _EDITOR_SUGGESTIONS:
+        tag = "installed" if shutil.which(name) else "installable"
+        lines.append(f"    {name:<6}  ({tag})")
+    return lines
+
+
+def _require_usable_editor(prev_editor: str, options, *, needed_for: str) -> str:
+    """
+    Guarantee a usable editor before continuing with an editor-needing step.
+
+    Returns a non-empty editor command that resolves on PATH. If the user
+    cancels the picker without selecting a usable editor, raises
+    RuntimeError to abort the reconfigure stage cleanly — preferable to
+    silently failing every subsequent edit prompt.
+    """
+    if _editor_usable(prev_editor):
+        return prev_editor
+
+    _log.ui("─── Editor required ─────────────────────────────────")
+    _log.ui(f"  The next step ({needed_for}) needs an editor.")
+    _log.ui("  Suggested editors:")
+    for line in _format_editor_suggestions():
+        _log.ui(line)
+
+    have_prev = bool(prev_editor)
+    while True:
+        new_editor = _select_new_editor(prev_editor, have_prev, options)
+        if new_editor and _editor_usable(new_editor):
+            save = _prompt_choice(
+                "  Save as sysforge default? [y/N]: ",
+                choices=("y", "n"),
+                default="n",
+            )
+            if save == "y":
+                try:
+                    _save_sysforge_toml_ui("editor", new_editor)
+                    _log.ui(f"  Saved to {SYSFORGE_TOML_PATH}")
+                except OSError as e:
+                    _log.warn(f"  Could not save preference: {e}")
+            return new_editor
+
+        # User cancelled / kept an unusable previous editor. No path forward
+        # for the gated step — abort the stage with a clear message rather
+        # than running through the rest of the queue as silent no-ops.
+        raise RuntimeError(
+            "[RECONFIGURE] Aborted: a usable editor is required for the "
+            f"selected step ({needed_for}). Re-run with a different step "
+            "selection to skip editor-needing steps."
+        )
+
+
 def _step_editor(config, state, options, editor: str) -> str:
     """Show current editor, offer to change. Returns editor to use."""
     editor, source = _resolve_editor()
@@ -379,7 +443,7 @@ def _step_editor(config, state, options, editor: str) -> str:
     if not _interactive() or options.dry_run:
         return editor
 
-    have_editor = bool(editor) and shutil.which(editor) is not None
+    have_editor = _editor_usable(editor)
 
     if have_editor:
         choice = _prompt_choice(
@@ -475,17 +539,8 @@ def _open_in_editor(path: Path, editor: str) -> bool:
     user may have edited the file and closed with an error code, and we want
     to validate either way.
     """
-    if not editor:
-        _log.ui(
-            f"  No editor configured — cannot open {path.name}. "
-            f"Re-run the editor step (1) to pick one."
-        )
-        return False
-    if not shutil.which(editor):
-        _log.ui(
-            f"  Editor {editor!r} is not on PATH — cannot open {path.name}. "
-            f"Re-run the editor step (1) to pick a different one."
-        )
+    if not _editor_usable(editor):
+        _log.ui(f"  Skipping {path.name} — no usable editor available.")
         return False
     _log.ui(f"  Opening: {editor} {path}")
     rc = _run_editor_argv([editor, str(path)])
@@ -729,7 +784,7 @@ def _step_makepkg(config, state, options, editor: str) -> str:
             "  Edit /etc/makepkg.conf? (requires sudo) [e/↵ skip]: ",
             choices=("e",),
         ) == "e":
-            if not shutil.which(editor):
+            if not _editor_usable(editor):
                 _log.warn(
                     f"  Editor {editor!r} is not on PATH — skipping makepkg.conf edit."
                 )
@@ -1068,14 +1123,24 @@ _STEP_FNS = {
     "preview":    _step_preview,
 }
 
+# Steps that prompt the user to open files in $EDITOR. The gate in
+# _run_selected_steps ensures a usable editor is available before any of
+# these runs — otherwise every edit prompt within them silently fails and
+# the user has no way to recover without restarting the stage.
+_EDITOR_NEEDING_STEPS = frozenset({"config", "makepkg"})
+
 
 def _run_selected_steps(step_keys: list[str], config, state, options) -> None:
     """
     Run selected steps in order. Editor is resolved upfront and threaded
-    through — the editor step may update it for subsequent steps.
+    through — the editor step may update it for subsequent steps. Before
+    each editor-needing step, _require_usable_editor enforces that the
+    threaded editor is on PATH (raises RuntimeError if the user cancels).
     """
     editor, _ = _resolve_editor()
     for key in step_keys:
+        if key in _EDITOR_NEEDING_STEPS and not _editor_usable(editor):
+            editor = _require_usable_editor(editor, options, needed_for=key)
         editor = _STEP_FNS[key](config, state, options, editor)
 
 

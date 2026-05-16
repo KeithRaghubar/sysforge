@@ -4,22 +4,25 @@ test_reconfigure.py — unit tests for sysforge.pipeline.stages.reconfigure
 Covers _set_repo_mode, _step_build_mode, _step_preview, _parse_step_selection,
 and the new build_mode step registration. No real filesystem I/O beyond tmp_path.
 """
-import sys
 import tomllib
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
+from sysforge.pipeline.stages.base import RunOptions
 from sysforge.pipeline.stages.reconfigure import (
-    _STEP_KEYS,
+    _EDITOR_NEEDING_STEPS,
     _STEP_FNS,
+    _STEP_KEYS,
+    _editor_usable,
     _parse_step_selection,
+    _require_usable_editor,
+    _run_selected_steps,
     _set_repo_mode,
     _step_build_mode,
     _step_preview,
 )
-from sysforge.pipeline.stages.base import RunOptions
 
 
 # ---------------------------------------------------------------------------
@@ -324,3 +327,190 @@ def test_step_preview_default_repo_mode_shows_pacman(tmp_path):
 
     combined = " ".join(logged)
     assert "pacman -S --needed" in combined  # htop has no pkgbuild_patch
+
+
+# ---------------------------------------------------------------------------
+# Editor gate: _editor_usable / _require_usable_editor / gated _run_selected_steps
+# ---------------------------------------------------------------------------
+
+def test_editor_needing_steps_set_covers_config_and_makepkg():
+    """The gate must cover the two steps that actually prompt for $EDITOR."""
+    assert "config" in _EDITOR_NEEDING_STEPS
+    assert "makepkg" in _EDITOR_NEEDING_STEPS
+
+
+def test_editor_usable_empty_string_is_false():
+    assert _editor_usable("") is False
+
+
+def test_editor_usable_missing_binary_is_false():
+    with patch("sysforge.pipeline.stages.reconfigure.shutil.which", return_value=None):
+        assert _editor_usable("nonexistent-xyz") is False
+
+
+def test_editor_usable_present_binary_is_true():
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value="/usr/bin/nano",
+    ):
+        assert _editor_usable("nano") is True
+
+
+def test_require_usable_editor_returns_prev_when_usable():
+    """Early-return path: don't prompt when editor is already fine."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable",
+        return_value=True,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._select_new_editor"
+    ) as picker:
+        result = _require_usable_editor("vim", make_options(), needed_for="config")
+    assert result == "vim"
+    picker.assert_not_called()
+
+
+def test_require_usable_editor_picks_new_editor_and_skips_save():
+    """User picks nano; declines to save as default; returns nano."""
+    # _editor_usable: False for "" (initial gate check), True for "nano" (post-pick).
+    def fake_usable(editor):
+        return editor == "nano"
+
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable",
+        side_effect=fake_usable,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._select_new_editor",
+        return_value="nano",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="n",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._save_sysforge_toml_ui"
+    ) as save:
+        result = _require_usable_editor("", make_options(), needed_for="config")
+
+    assert result == "nano"
+    save.assert_not_called()
+
+
+def test_require_usable_editor_saves_when_user_accepts():
+    """User picks nano and accepts the save-as-default prompt."""
+    def fake_usable(editor):
+        return editor == "nano"
+
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable",
+        side_effect=fake_usable,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._select_new_editor",
+        return_value="nano",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="y",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._save_sysforge_toml_ui"
+    ) as save:
+        result = _require_usable_editor("", make_options(), needed_for="config")
+
+    assert result == "nano"
+    save.assert_called_once_with("editor", "nano")
+
+
+def test_require_usable_editor_raises_when_picker_cancels():
+    """User cancels the picker; gate must raise so the stage aborts cleanly."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable",
+        return_value=False,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._select_new_editor",
+        return_value=None,
+    ):
+        with pytest.raises(RuntimeError, match="Aborted"):
+            _require_usable_editor("", make_options(), needed_for="config")
+
+
+def test_run_selected_steps_gates_config_when_editor_unusable():
+    """Queue [config] with no usable editor → gate fires, recovers, step runs with new editor."""
+    captured: list[str] = []
+
+    def fake_config_step(config, state, options, editor):
+        captured.append(editor)
+        return editor
+
+    fake_step_fns = {**_STEP_FNS, "config": fake_config_step}
+
+    def fake_usable(editor):
+        return editor == "nano"
+
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._resolve_editor",
+        return_value=("", "none"),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable",
+        side_effect=fake_usable,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._select_new_editor",
+        return_value="nano",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="n",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._STEP_FNS",
+        fake_step_fns,
+    ):
+        _run_selected_steps(["config"], {}, None, make_options())
+
+    assert captured == ["nano"]
+
+
+def test_run_selected_steps_aborts_when_gate_cancelled():
+    """Queue [editor, config], editor pick yields '', gate picker also cancels → RuntimeError."""
+    def fake_editor_step(config, state, options, editor):
+        # Simulate editor step failing to produce a usable editor.
+        return ""
+
+    fake_step_fns = {**_STEP_FNS, "editor": fake_editor_step}
+
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._resolve_editor",
+        return_value=("", "none"),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable",
+        return_value=False,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._select_new_editor",
+        return_value=None,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._STEP_FNS",
+        fake_step_fns,
+    ):
+        with pytest.raises(RuntimeError, match="Aborted"):
+            _run_selected_steps(["editor", "config"], {}, None, make_options())
+
+
+def test_run_selected_steps_skips_gate_for_non_editor_steps():
+    """Queue [build_mode] with no editor: gate must NOT fire (build_mode is not in _EDITOR_NEEDING_STEPS)."""
+    seen: list[str] = []
+
+    def fake_build_mode_step(config, state, options, editor):
+        seen.append(editor)
+        return editor
+
+    fake_step_fns = {**_STEP_FNS, "build_mode": fake_build_mode_step}
+
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._resolve_editor",
+        return_value=("", "none"),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable",
+        return_value=False,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._select_new_editor"
+    ) as picker, patch(
+        "sysforge.pipeline.stages.reconfigure._STEP_FNS",
+        fake_step_fns,
+    ):
+        _run_selected_steps(["build_mode"], {}, None, make_options())
+
+    assert seen == [""]
+    picker.assert_not_called()
