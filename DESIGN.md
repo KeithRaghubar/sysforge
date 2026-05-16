@@ -116,6 +116,7 @@ sysforge/
 │       ├── pkgbuild_patcher.py        # PKGBUILD mutation + flag extraction
 │       ├── prompt.py                  # shared interactive-prompt helpers (every stage uses these)
 │       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
+│       ├── pty_runner.py              # spawn subprocess on a pty (preserves cargo's live progress bar)
 │       ├── aur_resolve.py             # recursive AUR dependency resolution + topo sort
 │       ├── dep_analysis.py            # pre-build soname dependency checks
 │       ├── abi_check.py               # post-build versioned-symbol ABI check (.so cross-ref)
@@ -898,6 +899,12 @@ High-level flow:
 **System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
 
 **Makepkg flag passthrough:** makepkg short flags can be passed directly on the command line (`sysforge build ventoy -sfCci`) or explicitly via `-m "-sfci"`. Implicit passthrough applies to `build`, `update`, and `converge` — the preprocessing layer (`_extract_implicit_makepkg_flags`) rewrites bare flags into `-m` form before argparse runs. Excluded from implicit passthrough: `-h`, `-V`, `-p`, `-m`, `-D` (conflict with sysforge flags or take a value argument; `-v` is already hoisted). Combined short flags are expanded: `-sfci` → `[-s, -f, -c, -i]`.
+
+**Subprocess stdio:** the non-interactive branch routes makepkg's stdout+stderr through `pty_runner.run_with_pty` so child tools that gate live UI on `isatty()` (cargo's "Building [n/m]" bar, configure-script spinners) still emit their progress animation. Bytes are forwarded verbatim to `sys.stdout.buffer` when sysforge itself is on a tty so the user sees the animation alongside the bottom-anchored `[SYSFORGE][PROGRESS]` indicator. The same byte stream is decoded and split on `\n` into lines for failure classification (`prepare`/`build`/`package`), missing-dep collection (`target not found:`), already-built detection, and clang→GCC toolchain-mismatch pattern matching (curly-quote tolerant). In verbose mode (`-vvv`) or when sysforge stdout is piped (`sysforge update | tee log.txt`), byte forwarding is suppressed; only the decoded lines reach the user, keeping captured logs free of `\r`/ANSI noise. The interactive branch still uses `subprocess.Popen` with inherited stdio so unbuffered prompts (sudo, gpg signing keys, pacman conflict resolution) reach the terminal immediately.
+
+### `pty_runner.py`
+
+Standalone helper: spawns a subprocess attached to a pty so child tools observe a tty on stdout+stderr. Reads raw bytes from the master fd, optionally forwards them verbatim to `sys.stdout.buffer` (preserving `\r`-based progress redraws), and delivers decoded lines to a callback for parent-side pattern matching. Splits lines on `\n` only — `\r` is left in place mid-line so cargo's redraws aren't shredded into spurious "lines". Handles SIGWINCH (chains to the previously installed handler so `ui/progress._on_sigwinch` continues to fire), EIO on child exit, and UTF-8 codepoints split across read boundaries (incremental decoder with `errors="replace"`). stdin is inherited from the parent so TTY-only prompts (sudo) keep working. Used by `makepkg_wrapper.py`'s non-interactive build path; reusable for any subprocess where preserving child-side ANSI animation matters.
 
 ### `cache_probe.py`
 

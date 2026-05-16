@@ -23,6 +23,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from sysforge.primitives.pty_runner import run_with_pty
 from sysforge.primitives.resource_guard import lift_for_child
 
 from sysforge.primitives.config import (
@@ -761,28 +762,27 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             raise subprocess.CalledProcessError(returncode, "makepkg")
         return
 
-    # Non-interactive branch: capture stdout+stderr so we can classify failures
-    # (prepare vs build vs package stages, missing deps) and detect clang→GCC
-    # flag rejections that trigger an automatic retry. In verbose mode, lines
-    # go through _makepkg_log (prefixed [MAKEPKG][DEBUG] in the log file);
-    # otherwise they're forwarded verbatim to stdout so the user still sees
-    # live output. stdin is inherited from the parent so the few prompts that
-    # do reach a TTY (sudo, signing keys with newline-terminated output)
-    # continue to work.
+    # Non-interactive branch: attach makepkg's stdout+stderr to a pty so child
+    # tools that gate live UI on isatty() (cargo, configure spinners) emit
+    # their progress animation. run_with_pty forwards bytes verbatim to
+    # sys.stdout when sysforge itself is on a tty (so the user sees the live
+    # animation), and delivers decoded lines to _on_line regardless. The
+    # callback runs the same failure classification (prepare/build/package),
+    # missing-dep collection, already-built detection, and clang->GCC mismatch
+    # pattern matching (with curly-quote normalization) as before. In verbose
+    # mode, byte forwarding is suppressed and lines route to _makepkg_log
+    # (prefixed [MAKEPKG][DEBUG] in the log file). When sysforge stdout is
+    # piped (e.g. `sysforge update | tee log.txt`), byte forwarding is also
+    # suppressed so captured logs stay free of \r/ANSI garbage.
     verbose_log = log.get_verbosity() >= 3
-    proc = subprocess.Popen(
-        cmd, cwd=build_dir, env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1,
-        preexec_fn=lift_for_child,
-    )
     failed_stage = None
     missing_deps: list[str] = []
     toolchain_mismatch = False
     already_built = False
     captured_lines: list[str] = []
-    for line in proc.stdout:
-        stripped = line.rstrip()
+
+    def _on_line(stripped: str) -> None:
+        nonlocal failed_stage, toolchain_mismatch, already_built
         captured_lines.append(stripped)
         if "A failure occurred in prepare()." in stripped:
             failed_stage = "prepare"
@@ -805,11 +805,14 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                     break
         if verbose_log:
             _makepkg_log.debug(stripped)
-        else:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-    proc.wait()
-    returncode = proc.returncode
+
+    forward_bytes = (not verbose_log) and sys.stdout.isatty()
+    returncode = run_with_pty(
+        cmd, cwd=build_dir, env=env,
+        line_callback=_on_line,
+        forward_bytes=forward_bytes,
+        preexec_fn=lift_for_child,
+    )
 
     if returncode != 0:
         # Exit code 13 = E_ALREADY_BUILT (matching .pkg.tar already in PKGDEST).
