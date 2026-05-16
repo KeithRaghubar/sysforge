@@ -106,23 +106,89 @@ This is your reset point. Every test run can start from here.
 
 ### 5. Install SysForge into the VM
 
+The recommended path builds a `.pkg.tar.zst` from your **local working tree**
+on the host (same clean chroot used by `tools/release.sh`) and installs it
+into the VM over SSH. This way, PKGBUILD changes can be validated against the
+VM before they hit AUR.
+
+One-time chroot setup on the host (skip if already done):
+
 ```bash
-make vm-snapshot   # boot from clean snapshot
-make vm-ssh        # logs in as builder (makepkg cannot run as root)
+sudo mkarchroot /var/lib/archbuild/extra-x86_64/root base-devel
 ```
 
-Inside the VM:
+`devtools` (which provides `makechrootpkg`) must also be installed.
+
+Then, with the VM running (`make vm-snapshot` in another terminal):
+
 ```bash
-git clone https://github.com/KeithRaghubar/sysforge.git
-cd sysforge
-makepkg -si
+# Build a .pkg.tar.zst from the working tree via the clean chroot.
+# Output lands in ~/.local/share/sysforge-vm/build/.
+make vm-pkg-stable        # PKGBUILD (release flavor — includes uncommitted edits)
+make vm-pkg-git           # PKGBUILD-git (VCS flavor — committed state only)
+make vm-pkg-all           # both
+
+# scp + sudo pacman -U into the running VM.
+make vm-install-stable
+make vm-install-git
+
+# Combined: vm-pkg-stable + vm-install-stable.
+make vm-test
 ```
 
-Save another snapshot after this if you want a pre-installed baseline:
+#### Flavor semantics
+
+| Flavor | PKGBUILD used | Source basis | Notes |
+|---|---|---|---|
+| `stable` | `PKGBUILD` | Tarball of the live working tree | Mirrors AUR `sysforge`. Picks up uncommitted edits. |
+| `git` | `PKGBUILD-git` | Local bare clone of the repo | Mirrors AUR `sysforge-git`. Only sees *committed* state — warns if working tree is dirty. |
+
+`conflicts=('sysforge')` in PKGBUILD-git means installing the `git` flavor will
+remove a previously-installed `stable` build, and vice versa via
+`conflicts=('sysforge-git')`. That conflict-pair is itself part of what these
+targets validate.
+
+#### Sanity checks after install
+
+```bash
+make vm-ssh
+# Inside the VM:
+sysforge --version
+pacman -Qi sysforge                                 # description, deps, optdeps
+ls /usr/share/libalpm/hooks/sysforge-*.hook         # 3 pacman hooks installed
+ls /usr/share/bash-completion/completions/sysforge  # bash completion installed
+ls /usr/share/zsh/site-functions/_sysforge          # zsh completion installed
+ls -ld /var/lib/sysforge/sentinels                  # tmpfiles.d created the dir
+```
+
+Save a baseline snapshot after the install if you want a pre-installed VM:
 ```bash
 make vm-monitor
 # savevm sysforge-installed
 ```
+
+#### Alternative (legacy): build inside the VM
+
+```bash
+make vm-ssh
+git clone https://github.com/KeithRaghubar/sysforge.git
+cd sysforge && makepkg -si
+```
+
+Only exercises the *pushed* GitHub state, not local edits. Useful as a smoke
+test of what AUR users will see post-release.
+
+#### Error paths
+
+Both helper scripts (`tools/vm/build-pkg.sh`, `tools/vm/install-pkg.sh`) exit
+non-zero with an actionable hint if a prerequisite is missing:
+
+- Chroot absent → suggests `sudo mkarchroot …`
+- `makechrootpkg` absent → suggests `pacman -S devtools`
+- VM SSH port 10022 unreachable → suggests `make vm-snapshot`
+- No built `.pkg.tar.zst` found → suggests `make vm-pkg-<flavor>`
+
+Run them directly if you need flags the Make targets don't expose.
 
 ## Regular use
 

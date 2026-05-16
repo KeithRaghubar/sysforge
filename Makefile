@@ -1,10 +1,13 @@
 .PHONY: all dev venv build install clean distclean test test-x lint man \
         release-major release-minor release-patch \
-        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-ssh vm-ssh-root vm-clean
+        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-ssh vm-ssh-root vm-clean \
+        vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
 VM_DISK = $(VM_DIR)/arch-sysforge.qcow2
 VM_DISK_SIZE ?= 40G
+VM_BUILD_DIR = $(VM_DIR)/build
+VM_CHROOT ?= /var/lib/archbuild/extra-x86_64
 
 all: test
 
@@ -109,3 +112,30 @@ vm-clean:
 	else \
 		echo "No disk image found at $(VM_DISK)"; \
 	fi
+	rm -rf $(VM_BUILD_DIR)
+
+# ---------------------------------------------------------------------------
+# Local PKGBUILD validation in the VM
+#
+# Build a .pkg.tar.zst from the working tree via the same clean chroot
+# tools/release.sh uses, then scp + pacman -U it into the running VM.
+# Lets us exercise packaging changes (deps, optdeps, hooks, tmpfiles,
+# completions) before publishing to AUR.
+# ---------------------------------------------------------------------------
+
+vm-pkg-stable:
+	./tools/vm/build-pkg.sh stable --out=$(VM_BUILD_DIR) --chroot=$(VM_CHROOT)
+
+vm-pkg-git:
+	./tools/vm/build-pkg.sh git --out=$(VM_BUILD_DIR) --chroot=$(VM_CHROOT)
+
+vm-pkg-all: vm-pkg-stable vm-pkg-git
+
+vm-install-stable:
+	./tools/vm/install-pkg.sh stable --pkg-dir=$(VM_BUILD_DIR)
+
+vm-install-git:
+	./tools/vm/install-pkg.sh git --pkg-dir=$(VM_BUILD_DIR)
+
+# Full round-trip; assumes the VM is already booted (e.g. `make vm-snapshot`).
+vm-test: vm-pkg-stable vm-install-stable
