@@ -586,7 +586,7 @@ The sentinel-installation and clean-exit machinery is exposed as a shared `senti
 
 ## CLI Verb Framework
 
-Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `resolve`, `env`, `setup`, `packages …`, `state …`, `run …`) is implemented as a `Verb` subclass in `sysforge/verbs/base.py` and dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` is unchanged — `args.func` is now a `Verb` factory rather than a bare function, and `main()` resolves it via `sys.exit(run_verb(args.func(), args))`.
+Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `resolve`, `env`, `setup`, `log`, `packages …`, `state …`, `run …`) is implemented as a `Verb` subclass in `sysforge/verbs/base.py` and dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` is unchanged — `args.func` is now a `Verb` factory rather than a bare function, and `main()` resolves it via `sys.exit(run_verb(args.func(), args))`.
 
 **Three-phase contract.** Each verb implements:
 
@@ -601,7 +601,7 @@ Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `res
 
 **Sentinel handling.** Verbs whose `execute` mutates the live system set `requires_sentinel = True`. The runner wraps `execute + post_validate` in `sentinel_scope(state_dir, verb.name, recovery_cmd=…, retry_cmd=…, **metadata)` from `primitives/stage_sentinel.py`. On entry, the sentinel writes `stage_in_progress.toml`; on normal completion (both phases pass), it clears. On `RuntimeError` or `CleanExitRequested`, the sentinel is left in place so the next sysforge invocation blocks at the CLI-entry recovery prompt. `sentinel_scope` also installs an `InterruptScope`, so verbs participate in the same first-Ctrl-C-defers-to-safe-boundary behaviour as the toolchain stage. The toolchain pipeline stage uses the same primitive — there is one implementation, shared.
 
-**Read-only verbs** (`env`, `resolve`, `state list`, `state orphans` without `--prune`, `packages list`, `doctor` without `--apply`) implement `execute` (the work is printing) and return `ExecResult()`; `post_validate` defaults to no-op and `requires_sentinel = False`. They use the same dispatch path as mutating verbs — no second code path.
+**Read-only verbs** (`env`, `resolve`, `log`, `state list`, `state orphans` without `--prune`, `packages list`, `doctor` without `--apply`) implement `execute` (the work is printing) and return `ExecResult()`; `post_validate` defaults to no-op and `requires_sentinel = False`. They use the same dispatch path as mutating verbs — no second code path.
 
 **Error model.**
 - `RuntimeError` raised from any phase → `_log.error(msg)`, return 1. Sentinel preserved if active.
@@ -620,6 +620,7 @@ Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `res
 | `resolve` | load config | match rules + print | null | no |
 | `env` | null | collect + format + print env chain | null | no |
 | `setup` | read pacman.conf | check + patch IgnoreGroup | re-read confirms write | no |
+| `log` | null | resolve unified/per-pkg log path; page through `$PAGER` | null | no |
 | `packages {list,add,remove}` | load packages.toml + validate override fields | rewrite TOML | null | no |
 | `state {list,repair,orphans}` | load state dir | inspect / repair / prune | null | `repair` only |
 | `run …` namespace | build `RunOptions` | delegate to `pipeline.run_pipeline` / `run_stage_standalone` | pipeline framework | (pipeline owns it) |
@@ -645,6 +646,8 @@ Four levels: `error` (always shown), `warn` (`-v`), `info` (`-vv`), `debug` (`-v
 Modules obtain a bound `Logger` instance via `log.get_logger("TAG")`, which stores the tag and exposes the same `ui`/`error`/`warn`/`info`/`debug`/`newline`/`prompt_prefix` interface as the module-level functions. Modules with multiple logging subsystems (e.g. `makepkg_wrapper.py`, `profile.py`, `aur.py`) create multiple named loggers at module level (`_conf_log`, `_build_log`, etc.). Module-level helpers (`open_unified_log`, `close_unified_log`, `open_pkg_log`, `close_pkg_log`, `set_verbosity`, `set_dry_run_mode`) are called directly on the `log` module.
 
 **ANSI colour.** The LEVEL token is coloured by severity (bold red for `ERROR`, yellow for `WARN`, dim for `DEBUG`; `INFO` stays plain) and the TAG is cyan. Colour is applied only when the output stream is a TTY and the `NO_COLOR` environment variable is unset — so `sysforge … | cat`, redirections to files, and CI logs stay plain automatically. File logs (`sysforge.log`, `sysforge_<pkg>.log`) are never coloured regardless of terminal state. `ui/progress.py` consults the same `NO_COLOR` / TTY signals before engaging its scroll-region renderer.
+
+**Viewing logs.** `sysforge log` (no args) pages the unified log at `<state_dir>/sysforge.log`; `sysforge log <pkg>` pages the per-package log at `<pkgbuild_src_dir>/<pkg>/sysforge_<pkg>.log`. Both pipe through `$PAGER` (default `less -RFX`) via the shared `primitives/pager.py:maybe_pager` context manager (also used by `state list` and `state orphans`). Missing files surface as a non-zero exit with the searched path — no AUR clone fallback, so a typo never causes a network operation. Tab-completion uses `sysforge completions local` (dirs under `pkgbuild_src_dir` containing a PKGBUILD).
 
 ### `ui/progress.py`
 

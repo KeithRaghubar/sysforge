@@ -15,54 +15,10 @@ Public API:
     cmd_state_repair(args)
     cmd_state_orphans(args)
 """
-import os
-import subprocess
-import sys
 from collections import defaultdict
-from contextlib import contextmanager
 from pathlib import Path
 
-
-@contextmanager
-def _maybe_pager(use_pager: bool):
-    """Pipe `print()` through ``$PAGER`` when stdout is a TTY and the user
-    hasn't disabled paging.
-
-    Falls back to a passthrough write when stdout isn't a TTY (CI, redirect),
-    when ``use_pager`` is False, or when the pager binary can't be spawned.
-    Honors ``$PAGER`` if set; otherwise tries ``less -RFX`` then ``more``.
-    """
-    if not use_pager or not sys.stdout.isatty():
-        yield
-        return
-    pager_cmd = os.environ.get("PAGER")
-    candidates: list[list[str]] = []
-    if pager_cmd:
-        candidates.append([pager_cmd])
-    else:
-        # -R: pass ANSI through; -F: quit if one screen; -X: don't clear.
-        candidates.append(["less", "-RFX"])
-        candidates.append(["more"])
-    for cmd in candidates:
-        try:
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
-        except (FileNotFoundError, OSError):
-            continue
-        old_stdout = sys.stdout
-        try:
-            sys.stdout = proc.stdin  # type: ignore[assignment]
-            yield
-        finally:
-            sys.stdout = old_stdout
-            try:
-                if proc.stdin and not proc.stdin.closed:
-                    proc.stdin.close()
-            except BrokenPipeError:
-                pass
-            proc.wait()
-        return
-    # No pager available — degrade to passthrough.
-    yield
+from sysforge.primitives.pager import maybe_pager as _maybe_pager
 
 
 def cmd_state_list(args):

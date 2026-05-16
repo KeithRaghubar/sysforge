@@ -93,6 +93,11 @@ sysforge state repair --dry-run      # preview fixes for legacy broken entries
 sysforge state orphans               # superseded .pkg.tar* in PKGDEST (safe to delete)
 sysforge state orphans --prune       # delete them after y/N confirmation
 
+# 10. Page sysforge logs through $PAGER (default less -RFX).
+sysforge log                         # unified log: <state_dir>/sysforge.log
+sysforge log linux-custom            # per-package log: <pkgbuild_src_dir>/linux-custom/sysforge_linux-custom.log
+sysforge log --no-pager              # raw output, no $PAGER pipe
+
 # 11. Health-check an installed package's depends + linkage (e.g. when Steam
 #     launches as a black window and the graphics stack may be out of sync).
 #     Walks the target's dep closure; --shallow restricts to direct depends.

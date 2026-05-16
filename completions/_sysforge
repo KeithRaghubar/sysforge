@@ -24,6 +24,7 @@ _sysforge() {
         run)      _sysforge_run      ;;
         setup)    _sysforge_setup    ;;
         env)      _sysforge_env      ;;
+        log)      _sysforge_log      ;;
         completions) _sysforge_completions ;;
       esac
       ;;
@@ -43,6 +44,7 @@ _sysforge_commands() {
     'run:execute a pipeline stage'
     'setup:configure system integration (pacman IgnoreGroup for sf-build)'
     'env:print the inherited env chain (shell vars, parent processes, shell init files)'
+    'log:page the unified or per-package sysforge log through $PAGER'
   )
   _describe 'command' commands
 }
@@ -423,6 +425,13 @@ _sysforge_setup() {
 
 _sysforge_env() {
   _arguments
+}
+
+_sysforge_log() {
+  _arguments \
+    '--state-dir[override state directory]:directory:_files -/' \
+    '--no-pager[do not pipe output through $PAGER]' \
+    '1: :_sysforge_local_pkg_names'
 }
 
 # Internal scaffolding subcommand used by this completion script itself

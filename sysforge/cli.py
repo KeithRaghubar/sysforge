@@ -27,6 +27,7 @@ _log = log.get_logger("CLI")
 from sysforge.converge import ConvergeVerb
 from sysforge.doctor import DoctorVerb
 from sysforge.fetch import FetchVerb
+from sysforge.log_cmd import LogVerb
 from sysforge.packages_cmd import (
     PackagesAddVerb,
     PackagesListVerb,
@@ -867,6 +868,19 @@ def _add_env_parser(sub):
     p.set_defaults(verb_cls=EnvVerb)
 
 
+def _add_log_parser(sub):
+    p = sub.add_parser("log",
+        help="Page the unified or per-package sysforge log through $PAGER.")
+    p.add_argument("pkg", nargs="?", metavar="PKG",
+        help="Package name (resolves to <pkgbuild_src_dir>/<pkg>/sysforge_<pkg>.log). "
+             "Omit to page the unified log.")
+    p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory (used to locate the unified log).")
+    p.add_argument("--no-pager", action="store_true", dest="no_pager",
+        help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+    p.set_defaults(verb_cls=LogVerb)
+
+
 def _add_run_parser(sub):
     """run namespace: pipeline / reconfigure / toolchain / packages / kernel"""
     p = sub.add_parser("run",
@@ -1083,6 +1097,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_run_parser(sub)
     _add_setup_parser(sub)
     _add_env_parser(sub)
+    _add_log_parser(sub)
 
     # completions (used by shell completion scripts; not user-facing)
     p_completions = sub.add_parser("completions")
