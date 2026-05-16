@@ -299,13 +299,35 @@ def test_cleansrc_purges_and_reclones(tmp_path):
          patch("sysforge.primitives.source_sync.aur_clone", side_effect=fake_clone) as clone, \
          patch("sysforge.primitives.source_sync._head_commit", return_value="new"):
         # After purge_src the dir no longer exists; emulate that side effect.
-        purge.side_effect = lambda d, *, force=False: None
+        purge.side_effect = lambda d, *, force=False, is_vcs=False: None
         result = sched.request(SyncRequest(pkgbase="htop", pkgbuild_dir=pkg))
 
-    purge.assert_called_once_with(pkg, force=False)
+    # Non-VCS pkgbase → is_vcs=False is forwarded so the existing dirty
+    # guard still protects deliberate PKGBUILD edits on repo packages.
+    purge.assert_called_once_with(pkg, force=False, is_vcs=False)
     # Clone runs because the purge invalidates the cache entry; even with the
     # dir still present, cleansrc forces past the RPC short-circuit.
     assert clone.called or result.status in (STATUS_CLONED, STATUS_UP_TO_DATE, STATUS_FETCHED)
+
+
+def test_cleansrc_forwards_is_vcs_for_git_pkgbase(tmp_path):
+    """``-git`` pkgbase → purge_src is called with is_vcs=True so makepkg's
+    pkgver auto-bump does not falsely block ``--cleansrc``.
+    """
+    pkg = _make_repo(tmp_path, "ipp-usb-git")
+    sched = _scheduler(tmp_path, cleansrc=True)
+
+    def fake_clone(name, d, **kw):
+        Path(d).mkdir(exist_ok=True)
+        (Path(d) / "PKGBUILD").write_text("pkgname=ipp-usb-git\n")
+
+    with patch("sysforge.primitives.source_sync.purge_src") as purge, \
+         patch("sysforge.primitives.source_sync.aur_clone", side_effect=fake_clone), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="new"):
+        purge.side_effect = lambda d, *, force=False, is_vcs=False: None
+        sched.request(SyncRequest(pkgbase="ipp-usb-git", pkgbuild_dir=pkg))
+
+    purge.assert_called_once_with(pkg, force=False, is_vcs=True)
 
 
 def test_cleansrc_refused_on_dirty_repo(tmp_path):

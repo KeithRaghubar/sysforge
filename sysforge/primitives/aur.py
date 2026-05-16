@@ -511,7 +511,79 @@ def classify_head_vs_upstream(
     return "diverged_upstream", n_local, n_upstream
 
 
-def git_is_dirty(pkgbuild_dir: Path) -> bool:
+# A VCS packaging repo's PKGBUILD and .SRCINFO are routinely rewritten by
+# makepkg's ``pkgver()`` flow (updates ``pkgver=`` and may reset
+# ``pkgrel=1``). Those auto-bumps are not operator work and must not block
+# ``--cleansrc`` for ``-git``/``-svn``/``-hg``/``-bzr`` packages.
+_PKGVER_LINE_RE = _re.compile(r"^[+-]\s*(pkgver|pkgrel)\s*=\s*\S.*$")
+_VCS_IGNORABLE_PATHS = frozenset({"PKGBUILD", ".SRCINFO"})
+
+
+def _diff_is_pkgver_only(pkgbuild_dir: Path, path: str) -> bool:
+    """Return True iff ``git diff -U0`` for ``path`` only touches pkgver/pkgrel lines.
+
+    Used by ``git_is_dirty(..., is_vcs=True)`` to ignore makepkg's pkgver()
+    auto-bump pattern on VCS packaging repos. Fail-safe: any git error or
+    unexpected diff line makes this return False so the surrounding dirty
+    check keeps protecting the operator's work.
+    """
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir),
+         "diff", "-U0", "--no-color", "--", path],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return False
+    saw_content = False
+    for line in r.stdout.splitlines():
+        if not line:
+            continue
+        # Skip diff metadata: file headers and hunk markers.
+        if line.startswith(("diff ", "index ", "--- ", "+++ ", "@@ ")):
+            continue
+        if line.startswith(("+", "-")):
+            if not _PKGVER_LINE_RE.match(line):
+                return False
+            saw_content = True
+    return saw_content
+
+
+def _uncommitted_dirty_paths(pkgbuild_dir: Path, *, is_vcs: bool) -> list[str]:
+    """Return the list of modified-tracked paths that count as dirty.
+
+    With ``is_vcs=True`` the helper filters out PKGBUILD/.SRCINFO entries
+    whose diff is restricted to pkgver=/pkgrel= line changes (makepkg's
+    pkgver() auto-bump). Returns an empty list on git error.
+    """
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "status",
+         "--short", "--untracked-files=no"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return []
+    paths: list[str] = []
+    for line in r.stdout.splitlines():
+        # Porcelain v1 short format: ``XY <path>`` where XY is two status
+        # chars, then a single space, then the path (rename targets use
+        # ``-> new`` but ``--short`` keeps both names on one line).
+        if len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if not path:
+            continue
+        # Strip the rename-source half if present (``old -> new``); the
+        # destination is what makepkg / the operator actually wrote.
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        if is_vcs and path in _VCS_IGNORABLE_PATHS \
+                and _diff_is_pkgver_only(pkgbuild_dir, path):
+            continue
+        paths.append(path)
+    return paths
+
+
+def git_is_dirty(pkgbuild_dir: Path, *, is_vcs: bool = False) -> bool:
     """
     Return True if pkgbuild_dir is a git repo with local modifications, defined as:
 
@@ -528,6 +600,13 @@ def git_is_dirty(pkgbuild_dir: Path) -> bool:
     work), and ``diverged_upstream`` (force-pushed upstream, no local commits
     authored by the user) are all reported as not dirty.
 
+    Pass ``is_vcs=True`` for VCS packaging repos (``-git``/``-svn``/``-hg``/
+    ``-bzr``) where makepkg's ``pkgver()`` flow auto-rewrites the working-tree
+    ``PKGBUILD``/``.SRCINFO`` (updating ``pkgver=`` and possibly resetting
+    ``pkgrel=1``). Those mechanical auto-bumps are filtered out of the
+    uncommitted-tracked check; deliberate edits to other lines / other files
+    still count. The head-vs-upstream classification is unchanged.
+
     Returns False if the directory is not a git repo or is clean and fully in sync
     with its tracking branch.
     """
@@ -538,24 +617,63 @@ def git_is_dirty(pkgbuild_dir: Path) -> bool:
     # Uncommitted-tracked check is independent of the head-vs-upstream
     # classification — a clean classification can still co-exist with
     # uncommitted edits to PKGBUILD.
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "status",
-         "--short", "--untracked-files=no"],
-        capture_output=True, text=True,
-    )
-    if r.returncode == 0 and r.stdout.strip():
+    if _uncommitted_dirty_paths(pkgbuild_dir, is_vcs=is_vcs):
         return True
 
     return state in ("no_tracking", "ahead", "diverged_user")
 
 
-def purge_src(pkgbuild_dir: Path, *, force: bool = False) -> None:
+def _purge_refusal_message(pkgbuild_dir: Path, *, is_vcs: bool) -> str | None:
+    """Return the operator-facing reason for refusing to purge, or None.
+
+    Concrete causes (named in the message):
+      * uncommitted tracked changes — lists the paths so the operator knows
+        which file is protecting the repo.
+      * ahead-of-upstream commits.
+      * diverged_user (force-pushed upstream **with** local-user commits).
+      * no upstream tracking branch.
+    """
+    state, n_local, _ = classify_head_vs_upstream(pkgbuild_dir)
+    if state in ("not_a_repo", "no_head"):
+        return None
+
+    dirty_paths = _uncommitted_dirty_paths(pkgbuild_dir, is_vcs=is_vcs)
+    causes: list[str] = []
+    if dirty_paths:
+        causes.append(
+            "uncommitted tracked changes ("
+            + ", ".join(sorted(dirty_paths)) + ")"
+        )
+    if state == "ahead":
+        causes.append(f"{n_local} unpushed commit(s) ahead of upstream")
+    elif state == "diverged_user":
+        causes.append("diverged history with local-user-authored commits")
+    elif state == "no_tracking":
+        causes.append("no upstream tracking branch")
+
+    if not causes:
+        return None
+    return (
+        f"refusing to purge {pkgbuild_dir}: " + "; ".join(causes)
+        + " — commit/discard the change or pass --cleansrc-force"
+    )
+
+
+def purge_src(
+    pkgbuild_dir: Path, *, force: bool = False, is_vcs: bool = False,
+) -> None:
     """
     Remove pkgbuild_dir to allow a fresh clone on the next build.
 
     Refuses (raises RuntimeError) if the directory is a git repo with local
     work that would be destroyed: uncommitted tracked changes, unpushed
-    commits, or no upstream tracking branch (entirely-local repo).
+    commits, diverged history with local-user commits, or no upstream
+    tracking branch (entirely-local repo). The error message names the
+    actual cause so the operator can fix it precisely.
+
+    Pass ``is_vcs=True`` for ``-git``/``-svn``/``-hg``/``-bzr`` packaging
+    repos so makepkg's ``pkgver()`` auto-bump of PKGBUILD/.SRCINFO does
+    not falsely block the purge. See ``git_is_dirty`` for the filter rule.
 
     Pass ``force=True`` to bypass the dirty-tree guard and purge unconditionally
     — the caller has already decided the local work is not worth preserving
@@ -572,12 +690,10 @@ def purge_src(pkgbuild_dir: Path, *, force: bool = False) -> None:
         capture_output=True,
     ).returncode == 0
 
-    if is_git and not force and git_is_dirty(pkgbuild_dir):
-        raise RuntimeError(
-            f"refusing to purge {pkgbuild_dir}: uncommitted changes, "
-            "ahead-of-upstream commits, or no upstream tracking branch — "
-            "resolve manually, commit/push, or pass --cleansrc-force"
-        )
+    if is_git and not force:
+        reason = _purge_refusal_message(pkgbuild_dir, is_vcs=is_vcs)
+        if reason is not None:
+            raise RuntimeError(reason)
 
     suffix = " (forced)" if force else ""
     _git_log.warn(f"purging {pkgbuild_dir} for clean re-clone{suffix}")

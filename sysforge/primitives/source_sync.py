@@ -235,7 +235,11 @@ class SourceSyncScheduler:
         # --- cleansrc: purge before any other work ---
         if self.cleansrc and pkgbuild_dir.exists():
             try:
-                purge_src(pkgbuild_dir, force=self.cleansrc_force)
+                purge_src(
+                    pkgbuild_dir,
+                    force=self.cleansrc_force,
+                    is_vcs=_is_vcs(pkgbase),
+                )
                 self.invalidate(pkgbase)
             except RuntimeError as e:
                 _log.error(f"--cleansrc {pkgbase}: {e}")
@@ -262,7 +266,11 @@ class SourceSyncScheduler:
                 # dirty (no HEAD), so the explicit force is unnecessary
                 # here. We still propagate ``cleansrc_force`` for
                 # consistency with the explicit cleansrc branch above.
-                purge_src(pkgbuild_dir, force=self.cleansrc_force)
+                purge_src(
+                    pkgbuild_dir,
+                    force=self.cleansrc_force,
+                    is_vcs=_is_vcs(pkgbase),
+                )
             except RuntimeError as e:
                 return SyncResult(
                     pkgbase=pkgbase, status=STATUS_PURGE_REFUSED, error=str(e),

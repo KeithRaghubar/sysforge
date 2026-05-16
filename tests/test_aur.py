@@ -1103,6 +1103,172 @@ def test_purge_src_force_logs_forced_marker(tmp_path):
     assert "(forced)" in msg
 
 
+def _bump_pkgver_line(repo: Path, *, file: str = "PKGBUILD",
+                      new_value: str = "1.2.3") -> None:
+    """Rewrite ``pkgver=<...>`` in ``repo/<file>`` to ``pkgver=<new_value>``.
+
+    Mirrors makepkg's pkgver() auto-bump on a VCS PKGBUILD without invoking
+    makepkg itself (the test fixture only needs the on-disk diff shape).
+    """
+    p = repo / file
+    text = p.read_text()
+    # PKGBUILD style: bare ``pkgver=...``. .SRCINFO style: ``[tab]pkgver = ...``.
+    if file == ".SRCINFO":
+        lines = []
+        for line in text.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("pkgver = "):
+                indent = line[: len(line) - len(stripped)]
+                lines.append(f"{indent}pkgver = {new_value}")
+            else:
+                lines.append(line)
+        p.write_text("\n".join(lines) + ("\n" if text.endswith("\n") else ""))
+    else:
+        p.write_text(
+            "\n".join(
+                f"pkgver={new_value}" if line.startswith("pkgver=") else line
+                for line in text.splitlines()
+            )
+            + ("\n" if text.endswith("\n") else "")
+        )
+
+
+def _seed_vcs_pkgbuild(tmp_path: Path) -> Path:
+    """Seed an upstream + clone whose initial commit is a realistic VCS PKGBUILD.
+
+    The committed file has ``pkgver=`` and ``pkgrel=`` lines so the tests can
+    mutate them to mimic makepkg's auto-bump. A ``.SRCINFO`` with matching
+    ``pkgver`` / ``pkgrel`` is committed alongside.
+    """
+    upstream = tmp_path / "upstream.git"
+    upstream.mkdir()
+    _git("init", "--bare", "--initial-branch=main", cwd=upstream)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git("init", "--initial-branch=main", cwd=seed)
+    _git("config", "user.email", "upstream@example.test", cwd=seed)
+    _git("config", "user.name", "upstream", cwd=seed)
+    _git("config", "commit.gpgsign", "false", cwd=seed)
+    (seed / "PKGBUILD").write_text(
+        "pkgname=foo-git\n"
+        "pkgver=0.0.r0.gdeadbee\n"
+        "pkgrel=1\n"
+        "source=('git+https://example.test/foo.git')\n"
+    )
+    (seed / ".SRCINFO").write_text(
+        "pkgbase = foo-git\n"
+        "\tpkgver = 0.0.r0.gdeadbee\n"
+        "\tpkgrel = 1\n"
+    )
+    _git("add", "PKGBUILD", ".SRCINFO", cwd=seed)
+    _git("commit", "-m", "initial", cwd=seed)
+    _git("remote", "add", "origin", str(upstream), cwd=seed)
+    _git("push", "-u", "origin", "main", cwd=seed)
+
+    local = tmp_path / "local"
+    _git("clone", str(upstream), str(local), cwd=tmp_path)
+    _git("config", "user.email", "local@example.test", cwd=local)
+    _git("config", "user.name", "local", cwd=local)
+    _git("config", "commit.gpgsign", "false", cwd=local)
+    return local
+
+
+def test_git_is_dirty_vcs_ignores_pkgver_bump(tmp_path):
+    """The makepkg pkgver() auto-bump pattern is not dirty under is_vcs=True."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    _bump_pkgver_line(local, new_value="1.2.3.r5.gabc1234")
+    # Back-compat: without is_vcs the same diff still counts as dirty.
+    assert git_is_dirty(local) is True
+    # With is_vcs the auto-bump is filtered out.
+    assert git_is_dirty(local, is_vcs=True) is False
+
+
+def test_git_is_dirty_vcs_ignores_pkgver_and_pkgrel_reset(tmp_path):
+    """makepkg also resets pkgrel=1 when pkgver changes; both lines are allowlisted."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    text = (local / "PKGBUILD").read_text()
+    text = text.replace("pkgver=0.0.r0.gdeadbee", "pkgver=2.0.r3.gfeedf00")
+    text = text.replace("pkgrel=1", "pkgrel=2")
+    (local / "PKGBUILD").write_text(text)
+    assert git_is_dirty(local, is_vcs=True) is False
+
+
+def test_git_is_dirty_vcs_ignores_srcinfo_bump(tmp_path):
+    """Only .SRCINFO modified, pkgver line only → still not dirty under is_vcs."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    _bump_pkgver_line(local, file=".SRCINFO", new_value="9.9.r9.gcafef00")
+    assert git_is_dirty(local, is_vcs=True) is False
+
+
+def test_git_is_dirty_vcs_still_dirty_on_real_pkgbuild_edit(tmp_path):
+    """A non-pkgver/pkgrel line edit to PKGBUILD still counts as dirty."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    # Bump pkgver (allowlisted) AND add a deliberate makedepends line (not).
+    text = (local / "PKGBUILD").read_text()
+    text = text.replace("pkgver=0.0.r0.gdeadbee", "pkgver=1.2.3")
+    text += "makedepends=('cargo')\n"
+    (local / "PKGBUILD").write_text(text)
+    assert git_is_dirty(local, is_vcs=True) is True
+
+
+def test_git_is_dirty_vcs_still_dirty_on_other_tracked_file_edit(tmp_path):
+    """A tracked file other than PKGBUILD/.SRCINFO modified → still dirty."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    # Commit a tracked patch file so it shows up in `git status` when edited.
+    (local / "fix.patch").write_text("--- a\n+++ b\n")
+    _git("add", "fix.patch", cwd=local)
+    subprocess.run(
+        ["git", "-C", str(local), "-c", "user.email=local@example.test",
+         "-c", "user.name=local", "commit", "-m", "add patch"],
+        check=True, capture_output=True,
+    )
+    # Push so HEAD == upstream after the new commit.
+    _git("push", "origin", "main", cwd=local)
+    (local / "fix.patch").write_text("--- a\n+++ b\n+changed\n")
+    assert git_is_dirty(local, is_vcs=True) is True
+
+
+def test_git_is_dirty_vcs_still_dirty_on_ahead(tmp_path):
+    """Local unpushed commits still block under is_vcs=True."""
+    local = _seed_upstream_and_local(
+        tmp_path, local_extra=1, local_authored_extra=True,
+    )
+    assert git_is_dirty(local, is_vcs=True) is True
+
+
+def test_purge_src_vcs_pkgver_bump_succeeds(tmp_path):
+    """End-to-end: pkgver-only diff + is_vcs=True → purge proceeds, no raise."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    _bump_pkgver_line(local, new_value="3.4.5.r2.gbeef00d")
+    # Without is_vcs the existing guard still refuses, proving back-compat.
+    with pytest.raises(RuntimeError, match="refusing to purge"):
+        purge_src(local)
+    assert local.exists()
+    # With is_vcs the bump is ignored and the purge proceeds.
+    purge_src(local, is_vcs=True)
+    assert not local.exists()
+
+
+def test_purge_src_error_message_names_tracked_files(tmp_path):
+    """The refusal message identifies the actually-dirty paths."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    # Commit a tracked patch so editing it produces a refusal we can inspect.
+    (local / "fix.patch").write_text("--- a\n+++ b\n")
+    _git("add", "fix.patch", cwd=local)
+    subprocess.run(
+        ["git", "-C", str(local), "-c", "user.email=local@example.test",
+         "-c", "user.name=local", "commit", "-m", "add patch"],
+        check=True, capture_output=True,
+    )
+    _git("push", "origin", "main", cwd=local)
+    (local / "fix.patch").write_text("changed\n")
+    with pytest.raises(RuntimeError, match=r"uncommitted tracked changes.*fix\.patch") as exc:
+        purge_src(local, is_vcs=True)
+    # Must surface the actionable next step the operator should take.
+    assert "--cleansrc-force" in str(exc.value)
+
+
 def test_dirty_reason_ahead_label_via_classify(tmp_path):
     """Sanity-check the ahead label produced by llvm_state._dirty_reason."""
     from sysforge.primitives.llvm_state import _dirty_reason
