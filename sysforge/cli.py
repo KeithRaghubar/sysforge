@@ -1049,9 +1049,15 @@ def _add_run_parser(sub):
 
 def _build_parser() -> argparse.ArgumentParser:
     """Return the top-level ArgumentParser. Called by main() and by argparse-manpage."""
+    from sysforge import __version__
     parser = argparse.ArgumentParser(
         prog="sysforge",
         description="Arch Linux AUR helper with compiler-optimized builds.",
+    )
+    parser.add_argument(
+        "-V", "--version",
+        action="version",
+        version=f"sysforge {__version__}",
     )
     parser.add_argument(
         "-v", "--verbose",

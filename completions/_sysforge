@@ -5,6 +5,7 @@ _sysforge() {
   typeset -A opt_args
 
   _arguments -C \
+    '(-V --version)'{-V,--version}'[print sysforge version and exit]' \
     '(-v --verbose)'{-v,--verbose}'[increase verbosity (repeat for more: -vv, -vvv)]' \
     '1: :_sysforge_commands' \
     '*:: :->args'
