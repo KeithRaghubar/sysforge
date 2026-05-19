@@ -4,9 +4,6 @@ test_stage_packages.py — unit tests for the packages stage.
 Mocks out makepkg_wrapper.run() and subprocess (pacman) so nothing real
 is installed. Uses a temp packages.toml and temp state dir.
 """
-import sys
-import tempfile
-import tomllib
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -138,7 +135,7 @@ def test_packages_stage_builds_all(tmp_path):
     config = {"packages_file": str(pkg_file)}
     options = make_options(state_dir=tmp_path / "state")
 
-    with patch("sysforge.pipeline.stages.packages.makepkg_run") as mock_run, \
+    with patch("sysforge.pipeline.stages.packages.makepkg_run"), \
          patch("sysforge.pipeline.stages.packages.subprocess.run") as mock_pacman:
         mock_pacman.return_value = MagicMock(returncode=0)
         PackagesStage().run(config, state, options)
@@ -381,3 +378,109 @@ def test_packages_stage_dry_run_calls_nothing(tmp_path):
         )
         mock_run.assert_not_called()
         mock_pacman.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Sentinel coverage (stage_in_progress.toml)
+# ---------------------------------------------------------------------------
+
+
+def test_packages_stage_writes_sentinel_during_build_and_clears_on_success(tmp_path):
+    """Sentinel is present during the main build loop, cleared on clean exit.
+    Closes the gap surfaced by the safeguards audit (PackagesStage previously
+    ran pacman -S without any stage-level sentinel)."""
+    from sysforge.primitives.stage_sentinel import StageSentinel
+
+    builds_dir = tmp_path / "builds"
+    for name in ("llvm", "mesa-git"):
+        make_pkgbuild(builds_dir, name)
+    pkg_file = make_packages_toml(tmp_path, builds_dir)
+
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    seen = {"present": False, "stage": None}
+
+    def check_sentinel_during_build(*_a, **_kw):
+        record = StageSentinel(state_dir).get_active()
+        if record is not None:
+            seen["present"] = True
+            seen["stage"] = record.get("stage")
+
+    with patch("sysforge.pipeline.stages.packages.makepkg_run",
+               side_effect=check_sentinel_during_build), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run") as mock_pacman:
+        mock_pacman.return_value = MagicMock(returncode=0)
+        PackagesStage().run(
+            {"packages_file": str(pkg_file)}, state,
+            make_options(state_dir=state_dir),
+        )
+
+    assert seen["present"] is True
+    assert seen["stage"] == "packages"
+    # Cleared on clean exit
+    assert StageSentinel(state_dir).get_active() is None
+
+
+def test_packages_stage_clears_sentinel_even_when_some_packages_fail(tmp_path):
+    """Per-package failures are caught by the inner try/except and reported via
+    state. The stage's final RuntimeError is raised OUTSIDE the sentinel scope,
+    so the sentinel is cleared. The sentinel only persists for interruptions
+    (CleanExitRequested) or unexpected exceptions inside the scope."""
+    from sysforge.primitives.stage_sentinel import StageSentinel
+
+    builds_dir = tmp_path / "builds"
+    make_pkgbuild(builds_dir, "llvm")
+    make_pkgbuild(builds_dir, "mesa-git")
+    pkg_file = make_packages_toml(tmp_path, builds_dir)
+
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    def fail_llvm(path, **kwargs):
+        if "llvm" in str(path):
+            raise RuntimeError("llvm build failed")
+
+    with patch("sysforge.pipeline.stages.packages.makepkg_run",
+               side_effect=fail_llvm), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run") as mock_pacman:
+        mock_pacman.return_value = MagicMock(returncode=0)
+        with pytest.raises(RuntimeError, match="stage finished with failures"):
+            PackagesStage().run(
+                {"packages_file": str(pkg_file)}, state,
+                make_options(state_dir=state_dir),
+            )
+
+    # Sentinel should be cleared — the final raise is outside the scope.
+    assert StageSentinel(state_dir).get_active() is None
+
+
+def test_packages_stage_preserves_sentinel_on_unexpected_exception(tmp_path):
+    """A non-RuntimeError leaking from inside the scope (e.g. KeyError from a
+    code bug, or a SystemExit from an interrupt handler upstream) must leave
+    the sentinel in place so the next sysforge run blocks for recovery."""
+    from sysforge.primitives.stage_sentinel import StageSentinel
+
+    builds_dir = tmp_path / "builds"
+    make_pkgbuild(builds_dir, "llvm")
+    make_pkgbuild(builds_dir, "mesa-git")
+    pkg_file = make_packages_toml(tmp_path, builds_dir)
+
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    def boom(*_a, **_kw):
+        raise KeyError("simulated upstream bug")
+
+    with patch("sysforge.pipeline.stages.packages.makepkg_run", side_effect=boom), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run") as mock_pacman:
+        mock_pacman.return_value = MagicMock(returncode=0)
+        with pytest.raises(KeyError):
+            PackagesStage().run(
+                {"packages_file": str(pkg_file)}, state,
+                make_options(state_dir=state_dir),
+            )
+
+    record = StageSentinel(state_dir).get_active()
+    assert record is not None
+    assert record["stage"] == "packages"

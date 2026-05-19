@@ -494,6 +494,8 @@ The kernel stage routes its source refresh through `source_sync.get_scheduler().
 1. `sudo mkinitcpio -P`
 2. Bootloader update: `bootctl update` (systemd-boot, default), `grub-mkconfig -o /boot/grub/grub.cfg` (grub), or skipped (`none`). The selection comes from `kernel.toml bootloader`, overridable per-invocation via `--bootloader`.
 
+**Interrupted-install protection.** The `makepkg --install` call, the post-install `mkinitcpio -P`, and the bootloader regen are wrapped in `sentinel_scope(state_name="kernel", recovery_cmd="sudo mkinitcpio -P", …)`. An interruption anywhere in that window leaves the sentinel in place so the next sysforge invocation blocks at the CLI-entry recovery prompt and offers to regenerate the initramfs — the step whose absence makes the system unbootable. See §Toolchain stage → *Interrupted-install protection* for the shared primitive.
+
 ### Packages stage (stage 7)
 
 Walks `packages.toml` in order:
@@ -502,6 +504,8 @@ Walks `packages.toml` in order:
 - Hardware-gated packages skipped if `hardware_profile.toml` is absent or key is missing
 - Non-fatal per-package failures: build continues, failures recorded in state
 - Summary at end: `Total | Built | Failed | Skipped`
+
+The AUR-dep build and per-package install loop are wrapped in `sentinel_scope(state_name="packages", …)` (no `recovery_cmd` — there's no single shell command that restores a partially-installed package set; the operator verifies with `pacman -Dk` and re-runs `sysforge run packages`). Per-package `RuntimeError` is caught and reported via the state machine; only an interruption or unexpected exception inside the scope preserves the sentinel.
 
 ### Toolchain stage (stage 6)
 
@@ -572,7 +576,7 @@ The packages and kernel stages read these values and inject them into the build 
 
 **Stale-state wipe (disabled / absent stage).** When `toolchain.toml` is absent or has `enabled = false`, the stage clears any prior `[stages.toolchain.result]` from pipeline state before returning. This prevents the failure mode where a user runs `compiler = "llvm"`, disables the stage, and subsequent `packages`/`kernel` stages keep using the stale `cc=/usr/bin/clang`/`ld=lld` overrides — the disable opts out of all downstream LLVM propagation, not just the build.
 
-**Interrupted-install protection.** Three layers, all wired into the LLVM build path (the GCC path is register-only and skips all three):
+**Interrupted-install protection.** Three layers wired into the LLVM build path (the GCC path is register-only and skips all three):
 
 1. **Stage sentinel** (`primitives/stage_sentinel.py`) — writes `<state_dir>/stage_in_progress.toml` just before the first `sudo pacman -U` of the run and clears it only after the post-install verification (next item) passes. Schema records `stage`, `started_at`, `compiler`, `pgo`, and a stage-specific `recovery_cmd` string (for toolchain: `sudo pacman -S llvm llvm-libs clang lld compiler-rt llvm-libs`). On every subsequent sysforge invocation, `cli.main()` calls `check_and_recover_stale_sentinel()` before dispatching install-bearing commands (`build`, `update`, `converge`, `run *`, `setup`) — if a sentinel is found, the operator is prompted to auto-run the recovery command (`[y/N]`, `eof_default="n"` so unattended runs block rather than silently auto-recover). Refusing recovery exits with status 2 and leaves the sentinel in place; success clears the sentinel and proceeds.
 
@@ -580,7 +584,19 @@ The packages and kernel stages read these values and inject them into the build 
 
 3. **Clean-exit SIGINT scope** (`primitives/interrupt.py`) — wraps the LLVM build dispatch in an `InterruptScope` context. The first Ctrl-C flips a flag without raising; the build code checks the flag at safe boundaries (between `makepkg` runs, between PGO passes) and raises `CleanExitRequested` to exit at the next safe point, sentinel intact. A second Ctrl-C falls through to default `SIGINT` handling (immediate termination) — the operator explicitly chose the unsafe path. `CleanExitRequested` subclasses `BaseException` so it propagates through `except Exception:` blocks without being silently swallowed.
 
-The sentinel-installation and clean-exit machinery is exposed as a shared `sentinel_scope()` context manager in `primitives/stage_sentinel.py` (see Verb Framework below) so the same install-bearing protection used by the toolchain stage is also available to standalone CLI verbs.
+The sentinel-installation and clean-exit machinery is exposed as a shared `sentinel_scope()` context manager in `primitives/stage_sentinel.py` (see Verb Framework below) so the same install-bearing protection used by the toolchain stage is also available to other stages and standalone CLI verbs.
+
+**Sentinel coverage map.** The primitive is now used at every install-bearing stage entry, not just the LLVM toolchain. Current callers:
+
+| Caller | `stage_name` | `recovery_cmd` | Notes |
+|---|---|---|---|
+| `pipeline/stages/toolchain.py` (LLVM path) | `toolchain` | `sudo pacman -S llvm llvm-libs clang lld compiler-rt llvm-libs` | Full three-layer protection (sentinel + verify + clean-exit). |
+| `pipeline/stages/kernel.py` | `kernel` | `sudo mkinitcpio -P` (regenerates initramfs — the boot-critical step) | Wraps `makepkg --install`, `mkinitcpio -P`, and the bootloader regen. |
+| `pipeline/stages/packages.py` | `packages` | _none_ (no single command restores a partially-installed package set) | Wraps AUR-dep build + per-package install loop. Per-package failures are state-tracked and don't preserve the sentinel; only an interruption / unexpected exception does. |
+| `pipeline/stages/reconfigure.py` (`_try_install_editor`) | `reconfigure-editor` | _none_ | Single-package install; sentinel is cheap consistency with the larger stages. |
+| `verbs/runner.py` (any verb with `requires_sentinel=True`) | _verb name_ | per-verb (`verb.sentinel_recovery_cmd(args, pre)`) | Currently `build`, `update`, `converge`, `state repair`, `state orphans --prune`. |
+
+The kernel and packages stage sentinels close the audit gap where an interrupted `pacman -U linux-custom` followed by an unfinished `mkinitcpio -P` could leave the system unbootable: the sentinel now persists across the makepkg → mkinitcpio → bootloader window, and the next sysforge invocation blocks at the CLI-entry recovery prompt with `sudo mkinitcpio -P` queued for auto-execution.
 
 ---
 

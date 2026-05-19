@@ -57,10 +57,23 @@ from sysforge.primitives.source_sync import (
     SyncRequest,
     get_scheduler,
 )
+from sysforge.primitives.stage_sentinel import sentinel_scope
 
 _SYNC_BLOCKING_STATUSES = frozenset({
     STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED,
 })
+
+
+def _kernel_recovery_command():
+    """Canonical shell command to restore boot consistency after an interrupted
+    kernel install. Always regenerates the initramfs — that's the step whose
+    absence makes the system unbootable. Bootloader regen is omitted because
+    the sentinel uses naive ``cmd.split()`` (no shell operators) and most
+    bootloaders pick up new kernel images automatically once the initramfs is
+    present; the operator can re-run ``sysforge run kernel`` for a full
+    bootloader-aware regen.
+    """
+    return "sudo mkinitcpio -P"
 
 _VALID_COMPILERS = ("gcc", "llvm")
 _VALID_BOOTLOADERS = ("systemd-boot", "grub", "none")
@@ -491,25 +504,41 @@ class KernelStage(Stage):
         kconfig_target = "make nconfig (user-supplied)" if interactive else "make olddefconfig (patched)"
         _log.info(f"Kernel kconfig target: {kconfig_target}")
 
-        if options.dry_run:
-            _log.ui(f"[dry-run] would build {pkgname} from {pkgbuild}")
-        else:
-            _log.ui(f"Building kernel: {pkgname} from {pkgbuild}")
-            makepkg_run(pkgbuild, options=BuildOptions(
-                pkg_log=not options.no_pkg_logs,
-                persist_log=options.persist_log,
-                log_dir=options.log_dir,
-                profile_conf=getattr(options, "profile_conf", None) or config.get("profile_conf"),
-                update=(not options.no_update) and not synced,
-                interactive=interactive,
-                cc_override=cc,
-                cxx_override=cxx,
-                abi_check=options.abi_check,
-                state_dir=options.state_dir,
-            ))
+        # Install the stage sentinel + interrupt scope around the build and
+        # the boot-critical post-install steps. The makepkg --install path,
+        # mkinitcpio -P, and the bootloader update are the mutation window
+        # whose interruption can leave the system kernel-installed but
+        # initramfs-missing → unbootable. Sentinel write-on-entry / clear-
+        # on-success / leave-on-exception mirrors the toolchain stage.
+        with sentinel_scope(
+            options.state_dir,
+            "kernel",
+            recovery_cmd=_kernel_recovery_command(),
+            retry_cmd="sysforge run kernel",
+            pkgname=pkgname,
+            bootloader=bootloader,
+            compiler=compiler or "default",
+        ):
+            if options.dry_run:
+                _log.ui(f"[dry-run] would build {pkgname} from {pkgbuild}")
+            else:
+                _log.ui(f"Building kernel: {pkgname} from {pkgbuild}")
+                makepkg_run(pkgbuild, options=BuildOptions(
+                    pkg_log=not options.no_pkg_logs,
+                    persist_log=options.persist_log,
+                    log_dir=options.log_dir,
+                    profile_conf=getattr(options, "profile_conf", None) or config.get("profile_conf"),
+                    update=(not options.no_update) and not synced,
+                    interactive=interactive,
+                    cc_override=cc,
+                    cxx_override=cxx,
+                    abi_check=options.abi_check,
+                    state_dir=options.state_dir,
+                ))
 
-        # Post-install
-        _run_mkinitcpio(options.dry_run)
-        _update_bootloader(bootloader, options.dry_run)
+            # Post-install — inside the sentinel so an interrupted
+            # mkinitcpio or bootloader regen blocks the next sysforge run.
+            _run_mkinitcpio(options.dry_run)
+            _update_bootloader(bootloader, options.dry_run)
 
         _log.ui(f"Kernel stage complete: {pkgname}")

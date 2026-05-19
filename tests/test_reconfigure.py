@@ -723,6 +723,41 @@ def test_try_install_editor_install_succeeds_but_binary_missing():
         assert _try_install_editor("nvim", make_options()) is False
 
 
+def test_try_install_editor_writes_sentinel_during_pacman_call(tmp_path):
+    """The editor install is wrapped in a sentinel scope — interrupting the
+    sudo pacman call leaves the sentinel for the next sysforge run to surface."""
+    from sysforge.primitives.stage_sentinel import StageSentinel
+
+    state_dir = tmp_path / "state"
+    seen = {"present": False, "stage": None, "package": None}
+
+    def check_during_pacman(*_a, **_kw):
+        record = StageSentinel(state_dir).get_active()
+        if record is not None:
+            seen["present"] = True
+            seen["stage"] = record.get("stage")
+            seen["package"] = record.get("package")
+        return _fake_completed(returncode=0)
+
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._choose_install_package",
+        return_value="neovim",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.subprocess.run",
+        side_effect=check_during_pacman,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.shutil.which",
+        return_value="/usr/bin/nvim",
+    ):
+        assert _try_install_editor("nvim", make_options(state_dir=state_dir)) is True
+
+    assert seen["present"] is True
+    assert seen["stage"] == "reconfigure-editor"
+    assert seen["package"] == "neovim"
+    # Cleared on clean exit
+    assert StageSentinel(state_dir).get_active() is None
+
+
 # ---------------------------------------------------------------------------
 # Editor allowlist: known-editor check + override confirmation
 # ---------------------------------------------------------------------------

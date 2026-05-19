@@ -41,6 +41,7 @@ from sysforge.primitives.config import find_pkgbuild
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 from sysforge.primitives.prompt import prompt_choice
+from sysforge.primitives.stage_sentinel import sentinel_scope
 
 
 # ---------------------------------------------------------------------------
@@ -286,83 +287,100 @@ class PackagesStage(Stage):
             if source in ("aur", "git") or (source == "repo" and effective == "profiled"):
                 aur_names.append(name)
 
-        if aur_names and not options.dry_run:
-            all_aur_deps = []
-            for name in aur_names:
-                try:
-                    pkgbuild = _resolve_pkgbuild(name, build_cfg, config)
-                    deps = resolve_aur_deps(pkgbuild, config, fetch=True)
-                    # Filter out packages already in the manifest (they'll be built in order)
-                    deps = [d for d in deps if d.name not in pkg_map]
-                    all_aur_deps.extend(deps)
-                except RuntimeError as e:
-                    _log.warn(f"{name}: dep resolution failed ({e}), will attempt build anyway")
+        # Stage-level sentinel covers the AUR-dep build and the per-package
+        # install loop. Interruption inside either path leaves the sentinel
+        # in place so the next sysforge invocation blocks at the CLI-entry
+        # recovery prompt. No recovery_cmd is recorded — there's no single
+        # shell command that restores a partially-installed package set;
+        # the operator verifies (pacman -Dk / pacman -Qkk) and re-runs
+        # `sysforge run packages` to retry/skip failed entries.
+        n_remaining = sum(
+            1 for n in all_names
+            if n not in built and n not in skipped and n not in skip_set
+        )
+        with sentinel_scope(
+            options.state_dir,
+            "packages",
+            retry_cmd="sysforge run packages",
+            remaining=n_remaining,
+        ):
+            if aur_names and not options.dry_run:
+                all_aur_deps = []
+                for name in aur_names:
+                    try:
+                        pkgbuild = _resolve_pkgbuild(name, build_cfg, config)
+                        deps = resolve_aur_deps(pkgbuild, config, fetch=True)
+                        # Filter out packages already in the manifest (they'll be built in order)
+                        deps = [d for d in deps if d.name not in pkg_map]
+                        all_aur_deps.extend(deps)
+                    except RuntimeError as e:
+                        _log.warn(f"{name}: dep resolution failed ({e}), will attempt build anyway")
 
-            # De-duplicate by name, keeping first occurrence (topo order)
-            seen_deps: set[str] = set()
-            unique_deps = []
-            for dep in all_aur_deps:
-                if dep.name not in seen_deps:
-                    seen_deps.add(dep.name)
-                    unique_deps.append(dep)
+                # De-duplicate by name, keeping first occurrence (topo order)
+                seen_deps: set[str] = set()
+                unique_deps = []
+                for dep in all_aur_deps:
+                    if dep.name not in seen_deps:
+                        seen_deps.add(dep.name)
+                        unique_deps.append(dep)
 
-            if unique_deps:
-                build_resolved_deps(
-                    unique_deps,
-                    profile_conf=config.get("profile_conf"),
-                    cc_override=toolchain.get("cc_override"),
-                    cxx_override=toolchain.get("cxx_override"),
-                    ld_override=toolchain.get("ld_override"),
-                )
+                if unique_deps:
+                    build_resolved_deps(
+                        unique_deps,
+                        profile_conf=config.get("profile_conf"),
+                        cc_override=toolchain.get("cc_override"),
+                        cxx_override=toolchain.get("cxx_override"),
+                        ld_override=toolchain.get("ld_override"),
+                    )
 
-        # Main build loop — walk all_names in manifest order
-        from sysforge.ui import progress as _ui_progress
-        with _ui_progress.tracker(len(all_names), "building") as _tick:
-            for name in all_names:
-                progress = state.get_package_progress()
-                _tick(name)
-                if name in built and name not in retry_set:
-                    _log.ui(f"Skipping {name} (already built)")
-                    continue
-                if name in skipped or name in skip_set:
-                    _log.ui(f"Skipping {name} (user skipped)")
-                    continue
-                if name not in progress.get("remaining", []) and name not in retry_set:
-                    # Was already handled (built or skipped) in a prior run
-                    continue
+            # Main build loop — walk all_names in manifest order
+            from sysforge.ui import progress as _ui_progress
+            with _ui_progress.tracker(len(all_names), "building") as _tick:
+                for name in all_names:
+                    progress = state.get_package_progress()
+                    _tick(name)
+                    if name in built and name not in retry_set:
+                        _log.ui(f"Skipping {name} (already built)")
+                        continue
+                    if name in skipped or name in skip_set:
+                        _log.ui(f"Skipping {name} (user skipped)")
+                        continue
+                    if name not in progress.get("remaining", []) and name not in retry_set:
+                        # Was already handled (built or skipped) in a prior run
+                        continue
 
-                pkg = pkg_map[name]
-                source = pkg.get("source", "aur")
+                    pkg = pkg_map[name]
+                    source = pkg.get("source", "aur")
 
-                # Effective build mode for repo packages:
-                # global repo_mode default, overridden by per-package pkgbuild_patch.
-                repo_mode = build_cfg.get("repo_mode", "pacman")
-                effective_mode = "profiled" if pkg.get("pkgbuild_patch") else repo_mode
+                    # Effective build mode for repo packages:
+                    # global repo_mode default, overridden by per-package pkgbuild_patch.
+                    repo_mode = build_cfg.get("repo_mode", "pacman")
+                    effective_mode = "profiled" if pkg.get("pkgbuild_patch") else repo_mode
 
-                state.mark_package_building(name)
-                state.save()
-
-                try:
-                    if source == "repo" and effective_mode == "profiled":
-                        _log.ui(f"{name}: repo source with profiled build mode — building from source")
-                        _build_aur(pkg, build_cfg, config, options, toolchain)
-                    elif source == "repo":
-                        _install_repo(pkg, options)
-                    elif source in ("aur", "git"):
-                        _build_aur(pkg, build_cfg, config, options, toolchain)
-                    else:
-                        raise RuntimeError(f"Unknown source type {source!r} for {name!r}")
-
-                    state.mark_package_built(name)
+                    state.mark_package_building(name)
                     state.save()
-                    built.add(name)
-                    _log.ui(f"{name}: done")
 
-                except RuntimeError as e:
-                    state.mark_package_failed(name, str(e))
-                    state.save()
-                    _log.error(f"{name}: FAILED — {e}")
-                    # Non-fatal: continue with remaining packages
+                    try:
+                        if source == "repo" and effective_mode == "profiled":
+                            _log.ui(f"{name}: repo source with profiled build mode — building from source")
+                            _build_aur(pkg, build_cfg, config, options, toolchain)
+                        elif source == "repo":
+                            _install_repo(pkg, options)
+                        elif source in ("aur", "git"):
+                            _build_aur(pkg, build_cfg, config, options, toolchain)
+                        else:
+                            raise RuntimeError(f"Unknown source type {source!r} for {name!r}")
+
+                        state.mark_package_built(name)
+                        state.save()
+                        built.add(name)
+                        _log.ui(f"{name}: done")
+
+                    except RuntimeError as e:
+                        state.mark_package_failed(name, str(e))
+                        state.save()
+                        _log.error(f"{name}: FAILED — {e}")
+                        # Non-fatal: continue with remaining packages
 
         # Check if any packages are still failed after the loop
         final = state.get_package_progress()

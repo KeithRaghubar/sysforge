@@ -908,3 +908,150 @@ def test_kernel_stage_sync_diverged_warns_and_continues(tmp_path):
         KernelStage().run({}, state, opts)
 
     mock_build.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Sentinel coverage (stage_in_progress.toml)
+# ---------------------------------------------------------------------------
+
+
+def test_kernel_recovery_command_targets_mkinitcpio():
+    """The recovery command must regenerate the initramfs — that's the step
+    whose absence makes the system unbootable after an interrupted install."""
+    from sysforge.pipeline.stages.kernel import _kernel_recovery_command
+    cmd = _kernel_recovery_command()
+    assert "mkinitcpio" in cmd
+    assert cmd.startswith("sudo ")
+
+
+def test_kernel_stage_writes_sentinel_during_build_and_clears_on_success(tmp_path):
+    """Sentinel is present while makepkg_run executes, cleared after a
+    clean stage exit. Mirrors the toolchain stage's protection window."""
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.primitives.stage_sentinel import StageSentinel
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    seen_during_build = {"present": False, "stage": None}
+
+    def check_sentinel_during_build(*_a, **_kw):
+        record = StageSentinel(state_dir).get_active()
+        if record is not None:
+            seen_during_build["present"] = True
+            seen_during_build["stage"] = record.get("stage")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run",
+               side_effect=check_sentinel_during_build), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=state_dir))
+
+    assert seen_during_build["present"] is True
+    assert seen_during_build["stage"] == "kernel"
+    # Cleared on clean exit
+    assert StageSentinel(state_dir).get_active() is None
+
+
+def test_kernel_stage_preserves_sentinel_on_mkinitcpio_failure(tmp_path):
+    """mkinitcpio failure inside the sentinel scope must leave the sentinel
+    behind so the next sysforge invocation hits the recovery prompt."""
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.primitives.stage_sentinel import StageSentinel
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    def fail_mkinitcpio(cmd, **kwargs):
+        if "mkinitcpio" in str(cmd):
+            return MagicMock(returncode=1, stdout="")
+        return MagicMock(returncode=0, stdout="")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run",
+               side_effect=fail_mkinitcpio):
+        with pytest.raises(RuntimeError, match="mkinitcpio"):
+            KernelStage().run({}, state, make_options(state_dir=state_dir))
+
+    record = StageSentinel(state_dir).get_active()
+    assert record is not None
+    assert record["stage"] == "kernel"
+    assert "mkinitcpio" in record["recovery_cmd"]
+
+
+def test_kernel_stage_sentinel_records_compiler_metadata_gcc(tmp_path):
+    """The sentinel records the gcc-path compiler choice for the recovery prompt."""
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.primitives.stage_sentinel import StageSentinel
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    seen = {}
+
+    def fail_mkinitcpio(cmd, **kwargs):
+        if "mkinitcpio" in str(cmd):
+            record = StageSentinel(state_dir).get_active()
+            if record is not None:
+                seen.update(record)
+            return MagicMock(returncode=1, stdout="")
+        return MagicMock(returncode=0, stdout="")
+
+    opts = make_options(state_dir=state_dir)
+    opts.compiler = "gcc"
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run",
+               side_effect=fail_mkinitcpio):
+        with pytest.raises(RuntimeError):
+            KernelStage().run({}, state, opts)
+
+    assert seen.get("compiler") == "gcc"
+    assert seen.get("pkgname") == "linux-git"
+
+
+def test_kernel_stage_sentinel_records_compiler_metadata_llvm(tmp_path):
+    """Parity test for the llvm path — dual-toolchain coverage per CLAUDE.md."""
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.primitives.stage_sentinel import StageSentinel
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    seen = {}
+
+    def fail_mkinitcpio(cmd, **kwargs):
+        if "mkinitcpio" in str(cmd):
+            record = StageSentinel(state_dir).get_active()
+            if record is not None:
+                seen.update(record)
+            return MagicMock(returncode=1, stdout="")
+        return MagicMock(returncode=0, stdout="")
+
+    opts = make_options(state_dir=state_dir)
+    opts.compiler = "llvm"
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run",
+               side_effect=fail_mkinitcpio):
+        with pytest.raises(RuntimeError):
+            KernelStage().run({}, state, opts)
+
+    assert seen.get("compiler") == "llvm"
+    assert seen.get("pkgname") == "linux-git"

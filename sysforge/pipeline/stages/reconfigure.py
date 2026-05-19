@@ -394,9 +394,23 @@ def _try_install_editor(editor_cmd: str, options) -> bool:
         _log.ui(f"  [dry-run] would install {pkg_name!r}")
         return False
 
-    result = subprocess.run(
-        ["sudo", "pacman", "-S", "--needed", "--noconfirm", pkg_name]
-    )
+    # Sentinel scope: pacman -S is atomic within its own transaction, but
+    # wrapping the call keeps install-bearing reconfigure paths consistent
+    # with the toolchain / kernel / packages stages — any interruption
+    # leaves a sentinel for the next sysforge invocation to surface.
+    from sysforge.primitives.stage_sentinel import sentinel_scope
+
+    state_dir = getattr(options, "state_dir", None)
+    with sentinel_scope(
+        state_dir,
+        "reconfigure-editor",
+        retry_cmd="sysforge run reconfigure",
+        package=pkg_name,
+        editor=editor_cmd,
+    ):
+        result = subprocess.run(
+            ["sudo", "pacman", "-S", "--needed", "--noconfirm", pkg_name]
+        )
     if result.returncode != 0 or not shutil.which(editor_cmd):
         _log.ui(
             f"  Install of {pkg_name!r} did not produce {editor_cmd!r} on PATH. "
