@@ -131,6 +131,75 @@ def test_parameter_expansion_not_mangled(tmp_path):
     assert "${pkgname%-git}" in flags
 
 
+def test_arch_specific_makedepends_merged(tmp_path):
+    """makedepends_x86_64 entries merge into the canonical makedepends array.
+
+    Without the merge, consumes inference (which only sees ``makedepends``)
+    would miss ``lib32-rust`` declared under an arch-specific array, and the
+    i686 rust cross-probe would never fire.
+    """
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=lib32-foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "makedepends=('meson')\n"
+        "makedepends_x86_64=('lib32-rust' 'lib32-glib2')\n"
+    )
+    result = parse_pkgbuild(pkgbuild)
+    g = result["globals"]
+    # Both plain and arch-specific entries appear in the canonical list.
+    assert "meson" in g["makedepends"]
+    assert "lib32-rust" in g["makedepends"]
+    assert "lib32-glib2" in g["makedepends"]
+    # The arch-specific key is preserved for callers that need it.
+    assert g["makedepends_x86_64"] == ["lib32-rust", "lib32-glib2"]
+
+
+def test_arch_specific_depends_merged(tmp_path):
+    """depends_aarch64 merges into depends for the same reason."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64 aarch64)\n"
+        "depends=('glibc')\n"
+        "depends_aarch64=('libffi')\n"
+    )
+    result = parse_pkgbuild(pkgbuild)
+    assert "glibc" in result["globals"]["depends"]
+    assert "libffi" in result["globals"]["depends"]
+
+
+def test_arch_specific_merge_deduplicates(tmp_path):
+    """Entries appearing in both plain and arch-specific arrays appear once."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "makedepends=('rust' 'meson')\n"
+        "makedepends_x86_64=('rust' 'lib32-rust')\n"
+    )
+    result = parse_pkgbuild(pkgbuild)
+    md = result["globals"]["makedepends"]
+    assert md.count("rust") == 1
+    assert "meson" in md
+    assert "lib32-rust" in md
+
+
+def test_lib32_rust_stub_fixture_parses():
+    """End-to-end: the lib32-rust-stub fixture must produce a makedepends list
+    containing lib32-rust (declared only via makedepends_x86_64)."""
+    result = parse_pkgbuild(PKGBUILDS_DIR / "lib32-rust-stub.PKGBUILD")
+    md = result["globals"].get("makedepends", [])
+    assert "meson" in md
+    assert "lib32-rust" in md
+
+
 # ---------------------------------------------------------------------------
 # has_hardcoded_gcc
 # ---------------------------------------------------------------------------

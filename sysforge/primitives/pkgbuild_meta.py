@@ -105,6 +105,50 @@ def _parse_array_items(raw):
     return result
 
 
+# PKGBUILD(5) array families that accept arch-specific variants
+# (e.g. ``makedepends_x86_64``). The arch-suffixed array contributes
+# additively to the canonical array for the running architecture.
+_ARCH_ARRAY_FAMILIES = (
+    "depends",
+    "makedepends",
+    "checkdepends",
+    "optdepends",
+    "provides",
+    "conflicts",
+    "replaces",
+)
+
+
+def _merge_arch_arrays(globals_dict):
+    """Merge ``<name>_<arch>`` arrays into their canonical ``<name>`` key.
+
+    PKGBUILD(5) allows arch-specific array variants (`makedepends_x86_64`,
+    `depends_aarch64`, etc.) that the runtime appends to the canonical array
+    when CARCH matches. The static parser sees every variant unconditionally,
+    so consumes inference and rule matching would otherwise miss entries that
+    only appear under an arch suffix (e.g. ``makedepends_x86_64=('lib32-rust')``).
+
+    Merge is additive and order-preserving; the canonical key keeps its
+    existing entries first, then arch-suffixed entries are appended in the
+    order they appear in the dict. Arch-suffixed keys are retained so callers
+    that need to distinguish (e.g. CARCH-aware tools) can still read them.
+    """
+    for family in _ARCH_ARRAY_FAMILIES:
+        merged: list = []
+        seen: set = set()
+        for k, v in list(globals_dict.items()):
+            if k != family and not k.startswith(family + "_"):
+                continue
+            if not isinstance(v, list):
+                continue
+            for item in v:
+                if item not in seen:
+                    merged.append(item)
+                    seen.add(item)
+        if merged:
+            globals_dict[family] = merged
+
+
 # Matches simple variable references: $var and ${var}.  Intentionally does NOT
 # match shell parameter-expansion forms like ${var:-default}, ${var%suffix},
 # ${var#prefix} — those expressions are left untouched so we never produce a
@@ -272,5 +316,6 @@ def parse_pkgbuild(path):
         value = next(g for g in m.groups()[1:] if g is not None)
         if key not in result["globals"]:
             result["globals"][key] = value.strip()
+    _merge_arch_arrays(result["globals"])
     _apply_var_expansion(result["globals"])
     return result
