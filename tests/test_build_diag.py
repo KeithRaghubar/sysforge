@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""
+Unit tests for sysforge.primitives.build_diag.
+
+Covers:
+  - rust E0463 (missing std crate) → exact rustup target add suggestion
+  - gstreamer PTP-no-rust → falls back to lib32 i686 target suggestion when
+    E0463 is absent; suppressed when E0463 is also present (no dup noise)
+  - meson "Unknown options" → stale build/ directory suggestion
+  - clean logs → no suggestions, no false positives
+  - render_suggestions: shape + empty case
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from sysforge.primitives.build_diag import (
+    FixSuggestion,
+    diagnose,
+    render_suggestions,
+)
+
+
+_E0463_BLOCK = (
+    "error[E0463]: can't find crate for `std`\n"
+    "  |\n"
+    "  = note: the `i686-unknown-linux-gnu` target may not be installed\n"
+    "  = help: consider downloading the target with "
+    "`rustup target add i686-unknown-linux-gnu`\n"
+    "\n"
+    "error: aborting due to 1 previous error\n"
+)
+
+
+def _lines(text: str) -> list[str]:
+    return text.splitlines()
+
+
+# ---------------------------------------------------------------------------
+# Signature matchers
+# ---------------------------------------------------------------------------
+
+def test_rust_e0463_with_target_and_active_toolchain():
+    out = diagnose(_lines(_E0463_BLOCK), None, active_rust_toolchain="stable")
+    assert len(out) == 1
+    s = out[0]
+    assert s.signature == "rust:E0463"
+    assert s.fix_cmd == "rustup target add --toolchain stable i686-unknown-linux-gnu"
+
+
+def test_rust_e0463_without_active_toolchain():
+    out = diagnose(_lines(_E0463_BLOCK), None, active_rust_toolchain=None)
+    assert out[0].fix_cmd == "rustup target add i686-unknown-linux-gnu"
+
+
+def test_gst_ptp_alone_suggests_lib32_cross():
+    """PTP error without E0463 — gstreamer-specific cross-target hint."""
+    log = "ERROR: Problem encountered: PTP not supported without Rust compiler\n"
+    out = diagnose(_lines(log), None, active_rust_toolchain="stable")
+    assert len(out) == 1
+    assert out[0].signature == "gst:ptp-no-rust"
+    assert "i686-unknown-linux-gnu" in (out[0].fix_cmd or "")
+
+
+def test_gst_ptp_with_e0463_suppresses_duplicate():
+    """When both signatures match, only the E0463 suggestion is emitted —
+    the PTP hint is redundant with the rust-missing-std fix."""
+    log = (
+        _E0463_BLOCK
+        + "\nERROR: Problem encountered: PTP not supported without Rust compiler\n"
+    )
+    out = diagnose(_lines(log), None, active_rust_toolchain="stable")
+    assert [s.signature for s in out] == ["rust:E0463"]
+
+
+def test_meson_unknown_options():
+    log = "meson.build:42:4: ERROR: Unknown options: \"gst-plugins-base:tremor\"\n"
+    out = diagnose(_lines(log), None)
+    assert len(out) == 1
+    assert out[0].signature == "meson:unknown-options"
+    assert "build" in (out[0].fix_cmd or "")
+
+
+def test_clean_log_no_suggestions():
+    log = (
+        "Configuring done\n"
+        "Generating done\n"
+        "[100%] Built target foo\n"
+        "==> Finished making: foo\n"
+    )
+    assert diagnose(_lines(log), None) == []
+
+
+def test_empty_input_returns_empty():
+    assert diagnose([], None) == []
+
+
+# ---------------------------------------------------------------------------
+# Side-car log discovery
+# ---------------------------------------------------------------------------
+
+def test_meson_log_discovery(tmp_path):
+    """When captured_lines are silent but a meson-log.txt under build_dir
+    contains the signature, diagnose still finds it."""
+    # Replicates the lib32-gstreamer layout: <srcdir>/<subdir>/meson-logs/...
+    meson_dir = tmp_path / "src" / "build" / "meson-logs"
+    meson_dir.mkdir(parents=True)
+    (meson_dir / "meson-log.txt").write_text(_E0463_BLOCK)
+
+    out = diagnose([], tmp_path / "src", active_rust_toolchain="stable")
+    assert len(out) == 1
+    assert out[0].signature == "rust:E0463"
+
+
+# ---------------------------------------------------------------------------
+# Renderer
+# ---------------------------------------------------------------------------
+
+def test_render_empty():
+    assert render_suggestions([]) == ""
+
+
+def test_render_with_fix_cmd():
+    s = FixSuggestion(
+        signature="rust:E0463",
+        message="missing std for i686-unknown-linux-gnu",
+        fix_cmd="rustup target add --toolchain stable i686-unknown-linux-gnu",
+    )
+    out = render_suggestions([s])
+    assert "possible fixes:" in out
+    assert "missing std for i686-unknown-linux-gnu" in out
+    assert "$ rustup target add" in out
+
+
+def test_render_without_fix_cmd():
+    s = FixSuggestion(
+        signature="x", message="something broke", fix_cmd=None,
+    )
+    out = render_suggestions([s])
+    assert "something broke" in out
+    assert "$ " not in out

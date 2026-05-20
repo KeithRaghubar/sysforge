@@ -49,8 +49,23 @@ from sysforge.primitives.source_sync import (
     STATUS_DIVERGED, STATUS_FAILED, STATUS_PURGE_REFUSED, STATUS_RATE_LIMITED,
     get_scheduler,
 )
-from sysforge.primitives.config import load_config, load_sysforge_toml
-from sysforge.primitives.llvm_state import collect_llvm_state, render_preflight
+from sysforge.primitives.config import (
+    load_config, load_sysforge_toml,
+    load_conflict_groups, load_consumes_inference,
+)
+from sysforge.primitives.llvm_state import (
+    collect_llvm_state,
+    render_preflight as render_llvm_preflight,
+)
+from sysforge.primitives.profile import (
+    match_rules, resolve_profile, resolve_consumes,
+)
+from sysforge.primitives.toolchain_preflight import (
+    collect_required_toolchains,
+    run_preflight as run_toolchain_preflight,
+    render_preflight as render_toolchain_preflight,
+    auto_remediate as auto_remediate_toolchain,
+)
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
 from sysforge.primitives.pacman import (
@@ -71,6 +86,76 @@ from sysforge.pipeline.state import resolve_state_dir
 
 
 _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
+
+
+def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
+    """Run the toolchain preflight against ``to_build``.
+
+    Returns ``True`` when the batch may proceed (everything green or all
+    failures cleared by auto-remediation), ``False`` when the user should
+    fix something and re-invoke (and a fix-it block has been printed).
+    """
+    if getattr(args, "no_toolchain_preflight", False):
+        return True
+
+    inference_map = load_consumes_inference()
+    conflict_groups = load_conflict_groups()
+    rules = config.get("rules", [])
+
+    # Matches `RUSTUP_TOOLCHAIN=stable`, `export RUSTUP_TOOLCHAIN=nightly`,
+    # `RUSTUP_TOOLCHAIN="1.78"`, etc. Picked up from the build()/check() body
+    # so the preflight probes the toolchain the PKGBUILD will actually use,
+    # not the workstation's default. First pin in any function body wins —
+    # if a PKGBUILD pins different toolchains across functions, that's
+    # already ambiguous behaviour we'd defer to makepkg anyway.
+    _rustup_pin_re = re.compile(r"RUSTUP_TOOLCHAIN[ \t]*=[ \t]*[\"']?([^\s\"';#]+)")
+
+    per_pkg: dict[str, frozenset[str]] = {}
+    lib32: set[str] = set()
+    rust_pins: dict[str, str] = {}
+    for r in to_build:
+        if r.pkgbuild_path is None:
+            continue
+        # Wide except: preflight is best-effort. If any per-package resolution
+        # blows up (malformed PKGBUILD, missing profile, etc.) we skip that
+        # package and let the actual build path surface the real error.
+        try:
+            pkgmeta = parse_pkgbuild(r.pkgbuild_path)
+            matched = match_rules(pkgmeta, rules)
+            resolved = resolve_profile(pkgmeta, matched, config, conflict_groups)
+            consumes = resolve_consumes(resolved, pkgmeta, inference_map)
+        except Exception as e:
+            _log.warn(f"preflight: skipping {r.pkgbase} — {e}")
+            continue
+        per_pkg[r.pkgbase] = consumes
+        # split-package PKGBUILDs may have multiple pkgnames; if any of them
+        # is a lib32-* name, the whole pkgbase needs the i686 cross target.
+        if any(str(n).startswith("lib32-") for n in r.pkgnames):
+            lib32.add(r.pkgbase)
+        functions = pkgmeta.get("functions") or {}
+        for body in (functions.get("build", ""), functions.get("check", "")):
+            m = _rustup_pin_re.search(body or "")
+            if m:
+                rust_pins[r.pkgbase] = m.group(1)
+                break
+
+    required = collect_required_toolchains(per_pkg, frozenset(lib32), rust_pins)
+    if not required:
+        return True
+
+    report = run_toolchain_preflight(required)
+    if report.failed:
+        non_interactive = getattr(args, "non_interactive", False) or \
+            getattr(args, "noconfirm", False)
+        report = auto_remediate_toolchain(report, non_interactive=non_interactive)
+    if report.failed:
+        print(render_toolchain_preflight(report), file=sys.stderr)
+        return False
+
+    rendered = render_toolchain_preflight(report)
+    if rendered:
+        print(rendered)
+    return True
 
 # Sync statuses that block the package from proceeding to build, and the
 # user-facing action each maps to in the update summary. Statuses absent
@@ -711,7 +796,7 @@ def cmd_update(args) -> None:
     if not getattr(args, "no_llvm_preflight", False):
         llvm_report = collect_llvm_state(list(pkgbase_map.keys()), config)
         if llvm_report.states:
-            print(render_preflight(llvm_report))
+            print(render_llvm_preflight(llvm_report))
 
     # Authoritative pkgbuild versions for packages whose PKGBUILDs use bash
     # parameter expansion the static parser can't evaluate. The scheduler's
@@ -822,6 +907,16 @@ def cmd_update(args) -> None:
                     )
         # Phase 6 (install) handles the rest.
     else:
+        # ── Phase 4.5: Toolchain pre-flight ───────────────────────────────
+        # Probes rust/cmake/meson availability (incl. rustup cross targets
+        # for lib32-* packages) before any makepkg runs. Auto-remediates a
+        # missing `rustup target add ...` when run interactively; otherwise
+        # prints a fix block and aborts the batch.
+        if not _toolchain_preflight_for_batch(to_build, config, args):
+            print("[SYSFORGE] Toolchain pre-flight failed — aborting batch.",
+                  file=sys.stderr)
+            sys.exit(1)
+
         from sysforge.primitives.makepkg_wrapper import (
             run as build_run, PGOBuildSkipped, AlreadyBuilt,
         )

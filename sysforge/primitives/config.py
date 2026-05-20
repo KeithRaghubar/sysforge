@@ -275,13 +275,16 @@ def load_consumes_inference(paths=None):
             return tomllib.load(f)
 
     _DEFAULT_INFERENCE = {
-        "cargo":  ["makepkg", "rust", "env"],
-        "meson":  ["makepkg", "meson", "env"],
-        "cmake":  ["makepkg", "cmake", "env"],
-        "ninja":  ["makepkg", "env"],
-        "make":   ["makepkg", "env"],
-        "python": ["makepkg", "env"],
-        "git":    ["makepkg"],
+        "cargo":      ["makepkg", "rust", "env"],
+        "rust":       ["makepkg", "rust", "env"],
+        "rustup":     ["makepkg", "rust", "env"],
+        "lib32-rust": ["makepkg", "rust", "env"],
+        "meson":      ["makepkg", "meson", "env"],
+        "cmake":      ["makepkg", "cmake", "env"],
+        "ninja":      ["makepkg", "env"],
+        "make":       ["makepkg", "env"],
+        "python":     ["makepkg", "env"],
+        "git":        ["makepkg"],
     }
 
     resolved_paths = paths if paths is not None else CONFIG_PATHS

@@ -681,6 +681,9 @@ def _add_update_parser(sub):
              "every release) and local commits have no value to preserve.")
     p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
         help="Suppress the LLVM source pre-flight summary.")
+    p.add_argument("--no-toolchain-preflight", action="store_true", dest="no_toolchain_preflight",
+        help="Skip the toolchain pre-flight (rust/cmake/meson availability + "
+             "lib32 cross targets) that normally runs before the build loop.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit update to these package names (default: all sysforge-managed packages).")
     p.set_defaults(verb_cls=UpdateVerb)

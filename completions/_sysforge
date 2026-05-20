@@ -146,6 +146,7 @@ _sysforge_update() {
     '--cleansrc[purge src dirs and re-clone before building (only for packages needing rebuild)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
+    '--no-toolchain-preflight[skip toolchain pre-flight (rust/cmake/meson + lib32 cross targets)]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate profiles.toml]:file:_files' \

@@ -79,6 +79,16 @@ sysforge update --install-only
 #     for unattended runs.
 sysforge run toolchain --allow-dirty-llvm
 
+# 8c. Toolchain pre-flight. `sysforge update` probes rust / cmake / meson
+#     availability before the build loop, and for lib32-* packages with
+#     `rust` in consumes also probes the rustup i686-unknown-linux-gnu cross
+#     target. When a probe fails interactively, the matching fix command
+#     (e.g. `rustup target add --toolchain stable i686-unknown-linux-gnu`)
+#     is offered for one-keystroke remediation; non-interactive runs print
+#     the fix and abort. Suppress with --no-toolchain-preflight. On a build
+#     failure, side-car logs (meson, cargo) are also scanned for known
+#     signatures so the next-step fix is surfaced inline with the failure.
+
 # 9. Manage packages.toml entries (install list during pipeline bootstrap;
 #    build-rule overrides at steady-state — see DESIGN.md §Package Manifest)
 sysforge packages list

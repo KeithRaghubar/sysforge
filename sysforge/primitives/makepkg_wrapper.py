@@ -852,6 +852,27 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             err = ToolchainMismatchError(returncode, "makepkg")
             err.captured_output = captured_lines
             raise err
+
+        # Postflight diagnosis — scan captured output + side-car logs (meson,
+        # cargo) for known signatures and print an actionable fix block
+        # before the build-failure exception propagates. This is the long
+        # tail of toolchain_preflight: catches cases that aren't predictable
+        # from makedepends (e.g. vendored meson subprojects that pull in
+        # rust without listing it in the parent PKGBUILD).
+        try:
+            from sysforge.primitives.build_diag import (
+                diagnose as _build_diagnose,
+                render_suggestions as _render_diag_suggestions,
+            )
+            _suggestions = _build_diagnose(
+                captured_lines, build_dir,
+                active_rust_toolchain=os.environ.get("RUSTUP_TOOLCHAIN"),
+            )
+            if _suggestions:
+                _build_log.info(_render_diag_suggestions(_suggestions))
+        except Exception as _diag_e:  # diagnosis must never mask the real failure
+            _build_log.debug(f"postflight diagnosis skipped: {_diag_e}")
+
         cpe = subprocess.CalledProcessError(returncode, "makepkg")
         cpe.captured_output = captured_lines  # consumed by auto_repair
         raise cpe
