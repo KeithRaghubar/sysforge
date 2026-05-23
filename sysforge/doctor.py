@@ -772,7 +772,7 @@ def _apply_rebuilds(
 
     Filters to packages eligible for sysforge's rebuild path (foreign packages,
     or repo packages that ``sysforge update`` would walk under
-    ``[build] update_repo_profiled = true``). Repo candidates outside that
+    ``[build] repo_mode = "profiled"``). Repo candidates outside that
     scope are surfaced as informational (``run: sudo pacman -S ...``) rather
     than invoked. Install candidates (not yet installed) are out of v1.x
     scope — printed as a hint, never run.
@@ -793,7 +793,7 @@ def _apply_rebuilds(
     if pacman_only:
         _log.ui(
             "Repo packages with ABI drift (rebuild via pacman or set "
-            "[build] update_repo_profiled = true in packages.toml):"
+            "[build] repo_mode = \"profiled\" in packages.toml):"
         )
         for name in pacman_only:
             _log.ui(f"  → run: sudo pacman -S {name}")

@@ -99,7 +99,8 @@ class BuildState:
                build_mode: str | None = None,
                flags_string: str | None = None,
                built_at: str | None = None,
-               built_upstream_commit: str | None = None) -> None:
+               built_upstream_commit: str | None = None,
+               source: str | None = None) -> None:
         """Record build metadata for a single package name.
 
         ``built_at`` defaults to now; callers performing a repair pass may
@@ -109,6 +110,12 @@ class BuildState:
         single-source VCS package at the time of build — read by
         ``sysforge update --devel`` to short-circuit ``pkgver()`` resolution
         via ``git ls-remote``. None for non-VCS or multi-git-source packages.
+
+        ``source`` records where the PKGBUILD came from at build time
+        ("aur" | "repo" | "git"). Read by ``sysforge update`` so the source
+        classification is persisted across runs instead of being re-derived
+        from live pacman + overrides every invocation. None for back-compat
+        entries written before the field existed.
         """
         entry = {
             "pkgver": pkgver,
@@ -124,6 +131,8 @@ class BuildState:
             entry["flags_string"] = flags_string
         if built_upstream_commit is not None:
             entry["built_upstream_commit"] = built_upstream_commit
+        if source is not None:
+            entry["source"] = source
         self._data[pkgname] = entry
 
     def delete(self, pkgname: str) -> bool:
@@ -186,7 +195,7 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit"):
+            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source"):
                 if key in entry:
                     val = (
                         str(entry[key])

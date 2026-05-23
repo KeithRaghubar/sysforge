@@ -13,8 +13,10 @@
 #   pkgbuild_patch optional  true = extract and patch PKGBUILD flags before build
 #   cache          optional  false = disable ccache/sccache (required for PGO)
 #
-# An entry with only `name` set has no override effect at steady-state;
-# `sysforge packages add` rejects such calls.
+# An entry with only `name` (or only `name` + `source`) has no override
+# effect at steady-state — `source` is metadata only. `sysforge packages add`
+# rejects such calls, and `sysforge update` warns once and treats the entry
+# as inert.
 #
 # AUR packages are auto-cloned to [build] pkgbuild_src_dir on demand.
 # =============================================================================
@@ -25,12 +27,11 @@
 pkgbuild_src_dir = "~/src"
 repo_mode = "profiled"  # "pacman" (default) | "profiled" — how repo-source packages are built
 #                       # "pacman"   → install via pacman -S --needed (no build step)
-#                       # "profiled" → build from PKGBUILD with sysforge flag profiles
+#                       # "profiled" → build from PKGBUILD with sysforge flag profiles;
+#                       #              `sysforge update` also walks every installed repo
+#                       #              package under this mode (one `git fetch` per run)
 #                       # per-package pkgbuild_patch = true overrides to "profiled" regardless
-# update_repo_profiled = true   # opt in to repo-package version drift detection in
-#                                # `sysforge update`. When true, every installed repo
-#                                # package is iterated alongside foreign packages and
-#                                # rebuilt from the Arch packaging repo if newer.
+# (Deprecated: `update_repo_profiled = true` is normalised to repo_mode = "profiled".)
 
 
 # =============================================================================
@@ -41,46 +42,10 @@ repo_mode = "profiled"  # "pacman" (default) | "profiled" — how repo-source pa
 name = "llvm"
 source = "repo"
 cache = false   # PGO build — never cache instrumented objects
-
-[[package]]
-name = "lld"
-source = "repo"
-
-[[package]]
-name = "clang"
-source = "repo"
-
-[[package]]
-name = "mold"
-source = "repo"
-
-
-# =============================================================================
-# Graphics stack
-# =============================================================================
-
-[[package]]
-name = "vulkan-headers-git"
-source = "aur"
-
-[[package]]
-name = "vulkan-icd-loader-git"
-source = "aur"
-
 [[package]]
 name = "mesa-git"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "nvidia-open-dkms"
-source = "repo"
-
-
-# =============================================================================
-# Desktop — COSMIC
-# =============================================================================
-
 [[package]]
 name = "cosmic-comp-git"
 source = "aur"
@@ -100,235 +65,18 @@ pkgbuild_patch = true
 # =============================================================================
 # Audio
 # =============================================================================
-
-[[package]]
-name = "pipewire"
-source = "repo"
-
-[[package]]
-name = "wireplumber"
-source = "repo"
-
-
-# =============================================================================
-# System utilities
-# =============================================================================
-
-[[package]]
-name = "htop"
-source = "repo"
-
-[[package]]
-name = "neovim"
-source = "repo"
-
-[[package]]
-name = "cosmic-app-library-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-applet-arch"
-source = "aur"
-
-[[package]]
-name = "cosmic-applets-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-bg-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-ext-applet-minimon-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-ext-tweaks-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-files-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-greeter-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-icons-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-idle-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-launcher-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-notifications-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-osd-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-player-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-randr-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-screenshot-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-session-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-settings-daemon-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-settings-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-store-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-term-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-wallpapers-git"
-source = "aur"
-
-[[package]]
-name = "cosmic-workspaces-git"
-source = "aur"
-
-[[package]]
-name = "xdg-desktop-portal-cosmic-git"
-source = "aur"
-
-[[package]]
-name = "1password"
-source = "aur"
-
-[[package]]
-name = "adw-gtk-theme-git"
-source = "aur"
-
-[[package]]
-name = "adwaita-cursors-git"
-source = "aur"
-
-[[package]]
-name = "adwaita-icon-theme-git"
-source = "aur"
-
-[[package]]
-name = "alsa-scarlett-gui-git"
-source = "aur"
-
-[[package]]
-name = "aurutils"
-source = "aur"
-
-[[package]]
-name = "cable"
-source = "aur"
-
-[[package]]
-name = "celt"
-source = "aur"
-
-[[package]]
-name = "chromaprint-fftw"
-source = "aur"
-
-[[package]]
-name = "coppwr"
-source = "aur"
-
-[[package]]
-name = "davs2"
-source = "aur"
-
-[[package]]
-name = "decklink-sdk"
-source = "aur"
-
-[[package]]
-name = "discord_arch_electron"
-source = "aur"
-
 [[package]]
 name = "egl-wayland-git"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "ethtool-git"
-source = "aur"
-
-[[package]]
-name = "extundelete"
-source = "aur"
-
 [[package]]
 name = "flite1"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "freeglut-wayland-git"
-source = "aur"
-
-[[package]]
-name = "glew1.10"
-source = "aur"
-
-[[package]]
-name = "google-chrome"
-source = "aur"
-
-[[package]]
-name = "grim-git"
-source = "aur"
-
-[[package]]
-name = "gsettings-desktop-schemas-git"
-source = "aur"
-
-[[package]]
-name = "gsettings-system-schemas-git"
-source = "aur"
-
 [[package]]
 name = "gtk2"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "hicolor-icon-theme-git"
-source = "aur"
-
-[[package]]
-name = "ipp-usb-git"
-source = "aur"
-
-[[package]]
-name = "jdtls"
-source = "aur"
-
 [[package]]
 name = "lcevcdec"
 source = "aur"
@@ -338,11 +86,6 @@ pkgbuild_patch = true
 name = "lib32-egl-wayland-git"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "lib32-glew1.10"
-source = "aur"
-
 [[package]]
 name = "lib32-gperftools"
 source = "aur"
@@ -387,20 +130,10 @@ pkgbuild_patch = true
 name = "lib32-libpng12"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "lib32-librtmp0"
-source = "aur"
-
 [[package]]
 name = "lib32-libtiff4"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "lib32-libudev0-shim"
-source = "aur"
-
 [[package]]
 name = "lib32-libvpx1.3"
 source = "aur"
@@ -450,416 +183,55 @@ pkgbuild_patch = true
 name = "lib32-zix"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "libaribcaption"
-source = "aur"
-
-[[package]]
-name = "libdbusmenu-gtk2"
-source = "aur"
-
-[[package]]
-name = "libgcrypt15"
-source = "aur"
-
-[[package]]
-name = "libidn11"
-source = "aur"
-
-[[package]]
-name = "libindicator-gtk2"
-source = "aur"
-
 [[package]]
 name = "libinput-git"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "libisocodes"
-source = "aur"
-
-[[package]]
-name = "libjpeg6-turbo"
-source = "aur"
-
-[[package]]
-name = "libklvanc"
-source = "aur"
-
-[[package]]
-name = "libpng12"
-source = "aur"
-
-[[package]]
-name = "librtmp0"
-source = "aur"
-
-[[package]]
-name = "libtiff4"
-source = "aur"
-
-[[package]]
-name = "libudev0-shim"
-source = "aur"
-
-[[package]]
-name = "libvpx1.3"
-source = "aur"
-
 [[package]]
 name = "linux-steam-integration"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "mpeghdec"
-source = "aur"
-
-[[package]]
-name = "nodejs-tern"
-source = "aur"
-
-[[package]]
-name = "ob-xd-common"
-source = "aur"
-
-[[package]]
-name = "ob-xd-lv2"
-source = "aur"
-
-[[package]]
-name = "ob-xd-standalone"
-source = "aur"
-
-[[package]]
-name = "ob-xd-vst3"
-source = "aur"
-
-[[package]]
-name = "oh-my-zsh-git"
-source = "aur"
-
-[[package]]
-name = "oh-my-zsh-powerline-theme-git"
-source = "aur"
-
-[[package]]
-name = "omnisharp-roslyn"
-source = "aur"
-
 [[package]]
 name = "openapv"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "opencl-headers-git"
-source = "aur"
-
-[[package]]
-name = "openssl-1.0"
-source = "aur"
-
-[[package]]
-name = "openssl-1.1"
-source = "aur"
-
-[[package]]
-name = "paccache-hook"
-source = "aur"
-
 [[package]]
 name = "pacman-static"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "papirus-icon-theme-git"
-source = "aur"
-
-[[package]]
-name = "pcsclite-git"
-source = "aur"
-
-[[package]]
-name = "pipewire-full-ffmpeg-git"
-source = "aur"
-
-[[package]]
-name = "pipewire-full-vulkan-git"
-source = "aur"
-
-[[package]]
-name = "playerctl-git"
-source = "aur"
-
-[[package]]
-name = "po4a-bulk-git"
-source = "aur"
-
-[[package]]
-name = "pop-icon-theme-git"
-source = "aur"
-
 [[package]]
 name = "pop-launcher-git"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "pop-sound-theme-git"
-source = "aur"
-
-[[package]]
-name = "powermode-indicator-git"
-source = "aur"
-
-[[package]]
-name = "proton-ge-custom-bin"
-source = "aur"
-
-[[package]]
-name = "proton-pass-bin"
-source = "aur"
-
-[[package]]
-name = "python-pyalsaaudio"
-source = "aur"
-
 [[package]]
 name = "quirc"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "re2c-git"
-source = "aur"
-
 [[package]]
 name = "rockchip-mpp"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "sane-git"
-source = "aur"
-
-[[package]]
-name = "sassc-git"
-source = "aur"
-
-[[package]]
-name = "scopebuddy-git"
-source = "aur"
-
-[[package]]
-name = "shine"
-source = "aur"
-
-[[package]]
-name = "slurp-git"
-source = "aur"
-
-[[package]]
-name = "socat-git"
-source = "aur"
-
-[[package]]
-name = "spirv-headers-git"
-source = "aur"
-
-[[package]]
-name = "spotify"
-source = "aur"
-
-[[package]]
-name = "steam-native-runtime"
-source = "aur"
-
-[[package]]
-name = "svt-jpeg-xs-git"
-source = "aur"
-
-[[package]]
-name = "systemd-boot-pacman-hook"
-source = "aur"
-
-[[package]]
-name = "texlive-installer"
-source = "aur"
-
-[[package]]
-name = "trash-cli-git"
-source = "aur"
-
-[[package]]
-name = "ttf-roboto-slab"
-source = "aur"
-
-[[package]]
-name = "uavs3d-git"
-source = "aur"
-
-[[package]]
-name = "uni-sync-bin"
-source = "aur"
-
-[[package]]
-name = "unixodbc-git"
-source = "aur"
-
-[[package]]
-name = "ventoy"
-source = "aur"
-
-[[package]]
-name = "vk-hdr-layer-kwin6-git"
-source = "aur"
-
-[[package]]
-name = "vo-amrwbenc"
-source = "aur"
-
 [[package]]
 name = "volk-git"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "vulkan-utility-libraries-git"
-source = "aur"
-
-[[package]]
-name = "vulkan-validation-layers-git"
-source = "aur"
-
-[[package]]
-name = "vvenc"
-source = "aur"
-
-[[package]]
-name = "wayland-protocols-git"
-source = "aur"
-
-[[package]]
-name = "wayland-utils-git"
-source = "aur"
-
-[[package]]
-name = "weston-git"
-source = "aur"
-
 [[package]]
 name = "wine-cachyos"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "wlr-protocols-git"
-source = "aur"
-
-[[package]]
-name = "wlr-randr-git"
-source = "aur"
-
-[[package]]
-name = "wlrctl-git"
-source = "aur"
-
-[[package]]
-name = "wlroots-nvidia"
-source = "aur"
-
-[[package]]
-name = "wofi-hg"
-source = "aur"
-
-[[package]]
-name = "xavs"
-source = "aur"
-
 [[package]]
 name = "xavs2"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "xcb-proto-git"
-source = "aur"
-
-[[package]]
-name = "xdg-desktop-portal-git"
-source = "aur"
-
-[[package]]
-name = "xdg-desktop-portal-gtk-git"
-source = "aur"
-
-[[package]]
-name = "xdg-desktop-portal-gtk4-git"
-source = "aur"
-
-[[package]]
-name = "xdg-desktop-portal-wlr-git"
-source = "aur"
-
-[[package]]
-name = "xevd"
-source = "aur"
-
 [[package]]
 name = "xeve"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "xmlto-git"
-source = "aur"
-
 [[package]]
 name = "xorg-xwayland-git"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "xxhash-git"
-source = "aur"
-
-[[package]]
-name = "yay"
-source = "aur"
-
-[[package]]
-name = "yaycache"
-source = "aur"
-
-[[package]]
-name = "yaycache-hook"
-source = "aur"
-
 [[package]]
 name = "lib32-gst-plugins-base"
 source = "aur"
 pkgbuild_patch = true
-
-[[package]]
-name = "lib32-gst-plugins-base-libs"
-source = "aur"
-
-[[package]]
-name = "lib32-gst-plugins-good"
-source = "aur"
-
-[[package]]
-name = "lib32-gstreamer"
-source = "aur"
-
-[[package]]
-name = "lib32-libsoup"
-source = "aur"
-
-[[package]]
-name = "planify"
-source = "aur"

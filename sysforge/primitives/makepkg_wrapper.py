@@ -1467,6 +1467,7 @@ class BuildOptions:
     strip_flags: frozenset | set | None = None
     force_batch: bool = False
     pgo_managed: bool = False
+    source: str | None = None  # "aur" | "repo" | "git" — persisted in build_state
 
 
 # ---------------------------------------------------------------------------
@@ -1776,6 +1777,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     build_mode="profiled",
                     flags_string=fs,
                     built_upstream_commit=upstream_commit,
+                    source=options.source,
                 )
             bs.save()
             _build_log.info(f"Recorded build state for {pkgbase!r}")

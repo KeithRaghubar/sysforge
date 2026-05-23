@@ -15,8 +15,10 @@
 #   pkgbuild_patch optional  true = extract and patch PKGBUILD flags before build
 #   cache          optional  false = disable ccache/sccache (required for PGO)
 #
-# An entry with only `name` set has no override effect at steady-state;
-# `sysforge packages add` rejects such calls.
+# An entry with only `name` (or only `name` + `source`) has no override
+# effect at steady-state — `source` is metadata only. `sysforge packages add`
+# rejects such calls, and `sysforge update` warns once and treats the entry
+# as inert.
 #
 # AUR packages are resolved via the PKGBUILD directory set in flag_profiles.toml
 # ([paths] pkgbuild_src_dir) or [build] pkgbuild_src_dir below; missing clones
@@ -28,13 +30,11 @@
 # pkgbuild_src_dir = "~/src"   # override the path from flag_profiles.toml for this manifest
 # repo_mode    = "pacman"  # "pacman" (default) | "profiled" — how repo-source packages are built
 #                          # "pacman"   → install via pacman -S --needed (no build step)
-#                          # "profiled" → build from PKGBUILD with sysforge flag profiles
+#                          # "profiled" → build from PKGBUILD with sysforge flag profiles;
+#                          #              `sysforge update` also walks every installed repo
+#                          #              package under this mode (one `git fetch` per run)
 #                          # per-package pkgbuild_patch = true overrides to "profiled" regardless
-# update_repo_profiled = false  # true → `sysforge update` walks every installed repo package
-#                               # alongside foreign packages, checking the Arch packaging repo
-#                               # for newer PKGBUILDs and rebuilding from source. Costs one
-#                               # `git fetch` per repo package per run. Independent of
-#                               # repo_mode (which only affects the packages stage).
+# # (Deprecated: `update_repo_profiled = true` is normalised to repo_mode = "profiled".)
 
 
 # =============================================================================
@@ -48,61 +48,3 @@
 # [[package]]
 # name = "sysforge-git"
 # source = "aur"
-
-[[package]]
-name = "ccache"
-source = "repo"
-
-[[package]]
-name = "sccache"
-source = "repo"
-
-[[package]]
-name = "reflector"
-source = "repo"
-
-
-# =============================================================================
-# Shell and editor
-# =============================================================================
-
-[[package]]
-name = "zsh"
-source = "repo"
-
-[[package]]
-name = "neovim"
-source = "repo"
-
-[[package]]
-name = "man-db"
-source = "repo"
-
-[[package]]
-name = "man-pages"
-source = "repo"
-
-
-# =============================================================================
-# System utilities
-# =============================================================================
-
-[[package]]
-name = "htop"
-source = "repo"
-
-[[package]]
-name = "rsync"
-source = "repo"
-
-[[package]]
-name = "unzip"
-source = "repo"
-
-[[package]]
-name = "which"
-source = "repo"
-
-[[package]]
-name = "lsof"
-source = "repo"

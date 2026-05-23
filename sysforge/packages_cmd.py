@@ -31,7 +31,7 @@ from sysforge.primitives.paths import resolve_packages_path
 # Behavior-changing override fields. `source` is metadata (it pins routing
 # but doesn't change build behavior), so it doesn't count toward the
 # "at least one override" rule for `add` validation or auto-prune.
-_OVERRIDE_FIELDS = ("pkgbuild_patch", "cache", "reason")
+OVERRIDE_FIELDS = ("pkgbuild_patch", "cache", "reason")
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ def entry_toml_block(entry: dict) -> str:
     lines = ["[[package]]", f'name = "{entry["name"]}"']
     if "source" in entry:
         lines.append(f'source = "{entry["source"]}"')
-    for key in _OVERRIDE_FIELDS:
+    for key in OVERRIDE_FIELDS:
         if key not in entry:
             continue
         val = entry[key]
@@ -69,9 +69,9 @@ def entry_toml_block(entry: dict) -> str:
     return "\n".join(lines)
 
 
-def _entry_is_inert(entry: dict) -> bool:
+def entry_is_inert(entry: dict) -> bool:
     """An entry is inert if it has no behavior-changing override field set."""
-    return not any(k in entry for k in _OVERRIDE_FIELDS)
+    return not any(k in entry for k in OVERRIDE_FIELDS)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ def _rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | Non
       its own leading newline).
     - `drop_name`: if set, remove the [[package]] block whose `name` matches.
     - Always: auto-prune any [[package]] block that contains no
-      behavior-changing override field (see _OVERRIDE_FIELDS).
+      behavior-changing override field (see OVERRIDE_FIELDS).
     """
     text = path.read_text() if path.exists() else ""
     lines = text.splitlines(keepends=True)
@@ -129,7 +129,7 @@ def _rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | Non
     for start, end in blocks:
         entry = _block_entry(lines, start, end)
         name = entry.get("name", "")
-        if (drop_name is not None and name == drop_name) or _entry_is_inert(entry):
+        if (drop_name is not None and name == drop_name) or entry_is_inert(entry):
             drop_ranges.append((start, end))
 
     # Build the kept-line list, also peeling a leading blank-line run before

@@ -57,6 +57,7 @@ from sysforge.primitives.aur import (
     aur_clone,
     aur_info,
     git_fetch_and_compare,
+    git_is_dirty,
     is_rate_limit_error,
     pkgctl_checkout,
     purge_src,
@@ -298,7 +299,8 @@ class SourceSyncScheduler:
                 head_before=local_head, head_after=local_head,
             )
 
-        return self._fetch(pkgbase, pkgbuild_dir, rpc_entry)
+        return self._fetch(pkgbase, pkgbuild_dir, rpc_entry,
+                           source=req.source)
 
     def _can_short_circuit(
         self, rpc_entry: dict | None, meta: dict | None, local_head: str | None,
@@ -353,6 +355,7 @@ class SourceSyncScheduler:
 
     def _fetch(
         self, pkgbase: str, pkgbuild_dir: Path, rpc_entry: dict | None,
+        *, source: str = "aur",
     ) -> SyncResult:
         outcome: GitFetchOutcome = git_fetch_and_compare(
             pkgbuild_dir, timeout=self.fetch_timeout, limiter=self.limiter,
@@ -366,6 +369,26 @@ class SourceSyncScheduler:
                 head_before=outcome.head_before, head_after=outcome.head_after,
                 error=outcome.error,
             )
+
+        # Repo packages (pkgctl checkouts) don't carry user commits worth
+        # preserving — they only ever diverge because pkgctl's automatic
+        # staging branch drifted from upstream. When the working tree is
+        # clean, hard-reset to FETCH_HEAD so the local PKGBUILD tracks
+        # gitlab.archlinux.org. Dirty trees are still respected (user has
+        # edits) and stay in DIVERGED.
+        if (outcome.status == STATUS_DIVERGED and source == "repo"
+                and not git_is_dirty(pkgbuild_dir)):
+            new_head = _reset_hard_fetch_head(pkgbuild_dir)
+            if new_head is not None:
+                outcome = GitFetchOutcome(
+                    status="fetched",
+                    head_before=outcome.head_before,
+                    head_after=new_head,
+                )
+                _log.info(
+                    f"{pkgbase}: repo clone diverged; reset to upstream "
+                    f"{new_head[:10]}"
+                )
 
         if outcome.status in ("up_to_date", "fetched"):
             self.cache.update(
@@ -409,6 +432,23 @@ def _head_commit(pkgbuild_dir: Path) -> str | None:
     if r.returncode != 0:
         return None
     return r.stdout.strip() or None
+
+
+def _reset_hard_fetch_head(pkgbuild_dir: Path) -> str | None:
+    """Hard-reset the local branch to FETCH_HEAD.
+
+    Used by the repo-source divergence override: pkgctl checkouts have no
+    user commits worth preserving, so when fetch reports divergence and the
+    working tree is clean it's safe to force-track upstream.
+    """
+    import subprocess
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "reset", "--hard", "FETCH_HEAD"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return None
+    return _head_commit(pkgbuild_dir)
 
 
 # ---------------------------------------------------------------------------

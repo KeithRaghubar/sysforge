@@ -193,6 +193,39 @@ def test_built_upstream_commit_persisted_and_reloaded(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# source field — persisted origin classification (aur/repo/git)
+# ---------------------------------------------------------------------------
+
+def test_record_with_source(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="llvm", pkgver="20.1.0", pkgrel="1", epoch="0",
+              pkgbase="llvm", pkgbuild_dir=Path("/tmp/x"), source="repo")
+    assert bs.get("llvm")["source"] == "repo"
+
+
+def test_record_without_source_omits_field(tmp_path):
+    """Back-compat: callers that don't pass source produce no field."""
+    bs = BuildState(tmp_path)
+    _record(bs)
+    assert "source" not in bs.get("htop")
+
+
+def test_source_persisted_and_reloaded(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="mesa-git", pkgver="25.0", pkgrel="1", epoch="0",
+              pkgbase="mesa-git", pkgbuild_dir=Path("/tmp/x"), source="aur")
+    bs.record(pkgname="llvm", pkgver="20.1.0", pkgrel="1", epoch="0",
+              pkgbase="llvm", pkgbuild_dir=Path("/tmp/x"), source="repo")
+    _record(bs, pkgname="htop")  # no source
+    bs.save()
+
+    bs2 = BuildState(tmp_path)
+    assert bs2.get("mesa-git")["source"] == "aur"
+    assert bs2.get("llvm")["source"] == "repo"
+    assert "source" not in bs2.get("htop")
+
+
+# ---------------------------------------------------------------------------
 # State dir via SYSFORGE_STATE_DIR env var
 # ---------------------------------------------------------------------------
 

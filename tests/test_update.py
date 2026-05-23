@@ -395,7 +395,12 @@ def test_repo_package_without_override_is_not_iterated(tmp_path):
 
 
 def test_repo_package_with_override_is_iterated(tmp_path):
-    """A repo package WITH a `source=repo` override → walked."""
+    """A repo package WITH a behavior-changing override → walked.
+
+    The override only takes effect because it sets ``cache = False`` (a
+    behavior-changing field). A bare ``source = "repo"`` entry by itself is
+    inert metadata — see ``test_bare_source_only_override_is_inert``.
+    """
     pkgbase = "llvm"
     pkg_dir = tmp_path / pkgbase
     pkg_dir.mkdir()
@@ -428,11 +433,11 @@ def test_repo_package_with_override_is_iterated(tmp_path):
     assert {r.pkgbase for r in results} == {pkgbase}
 
 
-def test_update_repo_profiled_walks_installed_repo_packages(tmp_path):
+def test_repo_mode_profiled_walks_installed_repo_packages(tmp_path):
     """
-    A2: with `[build] update_repo_profiled = true`, every installed repo
-    package is iterated alongside foreign packages. No per-package override
-    needed; the toml key opts the entire repo surface in.
+    With `[build] repo_mode = "profiled"`, every installed repo package is
+    iterated alongside foreign packages. No per-package override needed;
+    the toml key opts the entire repo surface in.
     """
     pkgbase = "firefox"
     pkg_dir = tmp_path / pkgbase
@@ -443,8 +448,7 @@ def test_update_repo_profiled_walks_installed_repo_packages(tmp_path):
 
     parsed = {"globals": {"pkgname": pkgbase, "pkgver": "131.0",
                           "pkgrel": "1", "epoch": "0"}}
-    # build_cfg sets update_repo_profiled; no per-package overrides.
-    overrides = ({"update_repo_profiled": True}, {})
+    overrides = ({"repo_mode": "profiled"}, {})
 
     results = []
     with (
@@ -469,12 +473,13 @@ def test_update_repo_profiled_walks_installed_repo_packages(tmp_path):
     assert {r.pkgbase for r in results} == {pkgbase}
 
 
-def test_update_repo_profiled_off_skips_repo_packages(tmp_path):
+def test_repo_mode_pacman_skips_repo_packages(tmp_path):
     """
-    Default (update_repo_profiled unset / false): a repo package without
-    an override stays out of scope. Confirms the gate is load-bearing.
+    Default (repo_mode unset / "pacman"): a repo package without a
+    behavior-changing override stays out of scope. Confirms the gate is
+    load-bearing.
     """
-    overrides = ({"update_repo_profiled": False}, {})
+    overrides = ({"repo_mode": "pacman"}, {})
 
     results = []
     with (
@@ -494,6 +499,114 @@ def test_update_repo_profiled_off_skips_repo_packages(tmp_path):
             cmd_update(_make_args())
 
     assert results == []
+
+
+def test_bare_source_only_override_is_inert(tmp_path):
+    """
+    Regression: a `[[package]]` entry with only `name` + `source = "repo"`
+    is inert metadata, not a trigger. The pipewire-style entry that
+    surfaced this bug must not pull the package into update scope.
+    """
+    # Inert override on a repo package, no behavior-changing field set.
+    overrides = ({}, {"pipewire": {"name": "pipewire", "source": "repo"}})
+
+    results = []
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config", return_value={}),
+        patch("sysforge.update._load_overrides", return_value=overrides),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={"pipewire": "1:1.6.5-1"}),
+        patch("sysforge.update.get_foreign_packages", return_value={}),
+    ):
+        MockBS.return_value.all_packages.return_value = {}
+
+        def capture(res_list, a):
+            results.extend(res_list)
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(_make_args())
+
+    assert results == []
+
+
+def test_update_repo_profiled_alias_is_normalised(tmp_path):
+    """
+    Legacy `[build] update_repo_profiled = true` is normalised to
+    `repo_mode = "profiled"` by the loader, so packages get walked just
+    like the canonical key. (Functional alias test; the deprecation
+    warning itself is asserted in test__load_overrides_warns_*.)
+    """
+    pkgbase = "firefox"
+    pkg_dir = tmp_path / pkgbase
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text(
+        f"pkgname={pkgbase}\npkgver=131.0\npkgrel=1\n"
+    )
+    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "131.0",
+                          "pkgrel": "1", "epoch": "0"}}
+    # _load_overrides normalises this in its real path; here we hand the
+    # already-normalised build_cfg to the mock to assert the consumer side.
+    overrides = ({"repo_mode": "profiled"}, {})
+
+    results = []
+    with (
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=overrides),
+        patch("sysforge.update.get_all_installed_packages",
+              return_value={pkgbase: "131.0-1"}),
+        patch("sysforge.update.get_foreign_packages", return_value={}),
+        patch("sysforge.update.vercmp", return_value=0),
+    ):
+        MockBS.return_value.all_packages.return_value = {}
+
+        def capture(res_list, a):
+            results.extend(res_list)
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(_make_args())
+
+    assert {r.pkgbase for r in results} == {pkgbase}
+
+
+def test_load_overrides_warns_on_inert_entries(tmp_path, capsys):
+    """
+    `_load_overrides` emits a warn line for any inert `[[package]]` entry
+    (no behavior-changing field). Hand-edited files accumulate these; the
+    warning prompts cleanup.
+    """
+    from sysforge.update import _load_overrides
+    p = tmp_path / "packages.toml"
+    p.write_text(
+        '[[package]]\nname = "pipewire"\nsource = "repo"\n'
+        '[[package]]\nname = "llvm"\nsource = "repo"\ncache = false\n'
+    )
+    _, overrides = _load_overrides(p)
+    assert set(overrides) == {"pipewire", "llvm"}
+    err = capsys.readouterr().err
+    assert "pipewire" in err and "inert" in err
+    # llvm has a behavior-changing field (cache=false); no warning for it.
+    assert "llvm" not in err or "inert" not in err.split("llvm", 1)[1]
+
+
+def test_load_overrides_normalises_deprecated_update_repo_profiled(tmp_path, capsys):
+    """
+    `[build] update_repo_profiled = true` is normalised to
+    `repo_mode = "profiled"` with a one-shot deprecation warning.
+    """
+    from sysforge.update import _load_overrides
+    p = tmp_path / "packages.toml"
+    p.write_text(
+        '[build]\nupdate_repo_profiled = true\n'
+    )
+    build_cfg, _ = _load_overrides(p)
+    assert build_cfg.get("repo_mode") == "profiled"
+    assert "update_repo_profiled" not in build_cfg
+    err = capsys.readouterr().err
+    assert "update_repo_profiled" in err and "deprecated" in err
 
 
 # ---------------------------------------------------------------------------

@@ -83,6 +83,7 @@ from sysforge.primitives.pacman import (
     get_pkgbase,
 )
 from sysforge.pipeline.state import resolve_state_dir
+from sysforge.packages_cmd import entry_is_inert
 
 
 _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
@@ -181,6 +182,7 @@ class _UpdateResult:
     pkgbuild_ver: str | None
     pkgbuild_path: Path | None
     has_build_record: bool = True
+    source: str | None = None
 
 
 def _is_vcs(pkgbase: str) -> bool:
@@ -198,6 +200,11 @@ def _load_overrides(path: Path) -> tuple[dict, dict[str, dict]]:
     [[package]] entry dict. Entries are *overrides* applied to the live
     install set — they do not declare what should be installed.
 
+    Normalises the deprecated `update_repo_profiled = true` key into
+    `repo_mode = "profiled"` (with a one-shot warning) and emits a warn
+    for any inert override entry (no behavior-changing field set) — those
+    have no effect and should be removed.
+
     Returns ({}, {}) if the file does not exist or cannot be parsed.
     """
     if not path.exists():
@@ -205,8 +212,25 @@ def _load_overrides(path: Path) -> tuple[dict, dict[str, dict]]:
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
-        build_cfg = data.get("build", {})
-        overrides = {e["name"]: e for e in data.get("package", []) if "name" in e}
+        build_cfg = dict(data.get("build", {}))
+        if "update_repo_profiled" in build_cfg:
+            _log.warn(
+                "[build] update_repo_profiled is deprecated; "
+                'use [build] repo_mode = "profiled" instead'
+            )
+            if build_cfg.pop("update_repo_profiled") is True:
+                build_cfg.setdefault("repo_mode", "profiled")
+        overrides: dict[str, dict] = {}
+        for entry in data.get("package", []):
+            name = entry.get("name")
+            if not name:
+                continue
+            overrides[name] = entry
+            if entry_is_inert(entry):
+                _log.warn(
+                    f"{name}: inert override (no behavior-changing field) — "
+                    "has no effect; remove or add pkgbuild_patch/cache/reason"
+                )
         return build_cfg, overrides
     except Exception:
         return {}, {}
@@ -224,14 +248,17 @@ def _assemble_package_set(
 
     Iteration scope:
       - Every installed foreign package (`pacman -Qm`) — always.
-      - Installed repo packages whose name appears in `overrides_by_name` —
-        the override is what asks sysforge to manage them.
-      - When ``[build] update_repo_profiled = true`` in packages.toml, every
+      - Installed repo packages whose override entry sets a behavior-changing
+        field (``pkgbuild_patch``, ``cache``, ``reason``). A bare
+        ``source = "repo"`` entry is inert metadata and is *not* a trigger
+        (matches the `sysforge packages add` validator).
+      - When ``[build] repo_mode = "profiled"`` in packages.toml, every
         installed repo package is iterated as well (the version-check phase
         compares against ``pkgctl repo clone``-resolved PKGBUILDs from the
         Arch packaging repo). Designed for users who maintain a fully
         profiled system and want repo-side version drift surfaced alongside
-        AUR drift in a single ``sysforge update`` run.
+        AUR drift in a single ``sysforge update`` run. The deprecated
+        ``update_repo_profiled = true`` is normalised to this by the loader.
 
     `overrides_by_name` is applied as an overlay (`source`, `pkgbuild_patch`,
     `cache`, `reason`); installed packages with no override use defaults.
@@ -249,39 +276,52 @@ def _assemble_package_set(
     pkgbuild_src_dir_base = Path(pkgbuild_src_dir_raw).expanduser() if pkgbuild_src_dir_raw else None
 
     foreign = set(get_foreign_packages().keys())
-    repo_overridden = {
+    # Behavior-changing overrides (pkgbuild_patch / cache / reason) are what
+    # pull a non-foreign package into update scope. `source` alone is inert
+    # metadata per the `packages add` contract.
+    behavior_overridden = {
         name for name, ov in overrides_by_name.items()
-        if ov.get("source") == "repo"
+        if not entry_is_inert(ov)
     }
-    profiled_repo_active = build_cfg.get("update_repo_profiled") is True
+    repo_mode_profiled = build_cfg.get("repo_mode") == "profiled"
 
-    # Live install set: every installed foreign + every repo package with an
-    # override that pulls it into sysforge's scope. With
-    # update_repo_profiled, also pull in every installed repo package.
+    # Live install set: every installed foreign + every non-foreign package
+    # carrying a behavior-changing override. With repo_mode = "profiled",
+    # also pull in every installed repo package.
     all_installed = get_all_installed_packages()
     target_names = {n for n in all_installed
                     if n in foreign
-                    or n in repo_overridden
-                    or (profiled_repo_active and n not in foreign)}
+                    or n in behavior_overridden
+                    or (repo_mode_profiled and n not in foreign)}
 
     packages: dict[str, dict] = {}
     unrecorded_names: set[str] = set()
 
-    def _resolve_source(name: str, override: dict) -> str | None:
-        """Override > repo (when profiled or override-tagged) > inferred-default."""
+    def _resolve_source(name: str, override: dict, bs_entry: dict | None) -> str | None:
+        """build_state > override > pacman-foreign inference (non-foreign → repo).
+
+        build_state is consulted first so a previously-built package keeps
+        its recorded origin across runs (no flipping if the override is
+        removed or pacman reclassifies). Override and inference are the
+        fallback for packages with no build record yet.
+        """
+        if bs_entry is not None:
+            bs_source = bs_entry.get("source")
+            if bs_source:
+                return bs_source
         ov = override.get("source")
         if ov:
             return ov
-        if name in repo_overridden:
-            return "repo"
-        if profiled_repo_active and name not in foreign:
+        if name not in foreign:
+            # Non-foreign installed package routed through sysforge update —
+            # must come from a repo, so pkgctl is the sync path.
             return "repo"
         return None
 
     for name in target_names:
         override = overrides_by_name.get(name, {})
         bs_entry = build_state_pkgs.get(name)
-        resolved_source = _resolve_source(name, override)
+        resolved_source = _resolve_source(name, override, bs_entry)
 
         if bs_entry is not None and bs_entry.get("build_mode", "profiled") != "pacman":
             pkg = dict(bs_entry)
@@ -463,6 +503,7 @@ def _check_one_pkgbase(
     """Check a single pkgbase and return an _UpdateResult, or None on skip."""
     pkgbuild_dir = Path(entry["pkgbuild_dir"])
     has_record = not any(pn in unrecorded_names for pn in pkgnames)
+    source = entry.get("source")
 
     if not pkgbuild_dir.is_dir():
         _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
@@ -480,7 +521,7 @@ def _check_one_pkgbase(
         return _UpdateResult(
             pkgbase=pkgbase, pkgnames=pkgnames, action=action,
             installed_ver=None, pkgbuild_ver=None, pkgbuild_path=pkgbuild_path,
-            has_build_record=has_record,
+            has_build_record=has_record, source=source,
         )
 
     try:
@@ -527,6 +568,7 @@ def _check_one_pkgbase(
                 pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL",
                 installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
                 pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+                source=source,
             )
 
         # Cheap short-circuit: if the upstream HEAD still matches the SHA we
@@ -541,6 +583,7 @@ def _check_one_pkgbase(
                     pkgbase=pkgbase, pkgnames=pkgnames, action="UP_TO_DATE",
                     installed_ver=installed_ver, pkgbuild_ver=installed_ver,
                     pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+                    source=source,
                 )
 
         resolved = evaluate_vcs_pkgver(pkgbuild_dir)
@@ -553,6 +596,7 @@ def _check_one_pkgbase(
                 pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL_EVAL_FAILED",
                 installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
                 pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+                source=source,
             )
 
         try:
@@ -563,6 +607,7 @@ def _check_one_pkgbase(
                 pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL_EVAL_FAILED",
                 installed_ver=installed_ver, pkgbuild_ver=resolved,
                 pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+                source=source,
             )
 
         if cmp > 0:
@@ -576,6 +621,7 @@ def _check_one_pkgbase(
             pkgbase=pkgbase, pkgnames=pkgnames, action=action,
             installed_ver=installed_ver, pkgbuild_ver=resolved,
             pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+            source=source,
         )
 
     try:
@@ -583,6 +629,22 @@ def _check_one_pkgbase(
     except RuntimeError as e:
         _log.warn(f"{pkgbase}: version comparison failed: {e} — skipping")
         return None
+
+    # Drift observability: when the installed version matches what sysforge
+    # built last time but the on-disk PKGBUILD now describes a different
+    # version, surface that upstream PKGBUILD has moved. The action is still
+    # whatever vercmp says — this is purely informational (-v only).
+    bs_pkgver = entry.get("pkgver")
+    bs_pkgrel = entry.get("pkgrel")
+    bs_epoch = entry.get("epoch", "0")
+    if bs_pkgver is not None and bs_pkgrel is not None:
+        bs_ver = f"{bs_epoch}:{bs_pkgver}-{bs_pkgrel}" if bs_epoch and bs_epoch != "0" \
+            else f"{bs_pkgver}-{bs_pkgrel}"
+        if installed_ver == bs_ver and pkgbuild_ver != bs_ver:
+            _log.info(
+                f"{pkgbase}: PKGBUILD on disk ({pkgbuild_ver}) differs from "
+                f"last built ({bs_ver}) — upstream PKGBUILD has moved"
+            )
 
     if cmp > 0:
         action = "NEEDS_REBUILD"
@@ -596,6 +658,7 @@ def _check_one_pkgbase(
         pkgbase=pkgbase, pkgnames=pkgnames, action=action,
         installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
         pkgbuild_path=pkgbuild_path, has_build_record=has_record,
+        source=source,
     )
 
 
@@ -976,6 +1039,7 @@ def cmd_update(args) -> None:
                         strip_flags=strip_flags,
                         interactive=interactive,
                         force_batch=not interactive,
+                        source=result.source,
                     ))
                     new_pkgs = sorted(
                         p for p in snapshot_pkg_dir(search_dir)

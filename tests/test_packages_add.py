@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from sysforge.packages_cmd import (
     cmd_packages_add,
     cmd_packages_remove,
-    _entry_is_inert,
+    entry_is_inert,
     _rewrite_packages_toml,
 )
 
@@ -111,11 +111,11 @@ def test_add_updates_existing_entry(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_inert_predicate():
-    assert _entry_is_inert({"name": "foo"})
-    assert _entry_is_inert({"name": "foo", "source": "aur"})
-    assert not _entry_is_inert({"name": "foo", "pkgbuild_patch": True})
-    assert not _entry_is_inert({"name": "foo", "cache": False})
-    assert not _entry_is_inert({"name": "foo", "reason": "x"})
+    assert entry_is_inert({"name": "foo"})
+    assert entry_is_inert({"name": "foo", "source": "aur"})
+    assert not entry_is_inert({"name": "foo", "pkgbuild_patch": True})
+    assert not entry_is_inert({"name": "foo", "cache": False})
+    assert not entry_is_inert({"name": "foo", "reason": "x"})
 
 
 def test_add_prunes_existing_inert_entries(tmp_path):

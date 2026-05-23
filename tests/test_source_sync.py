@@ -208,6 +208,80 @@ def test_divergence_is_surfaced_not_fixed(tmp_path):
     assert (pkg / "PKGBUILD").exists()
 
 
+def test_repo_source_diverged_clean_tree_resets_to_upstream(tmp_path):
+    """
+    Auto-refresh: a `source = "repo"` request that returns DIVERGED with a
+    clean working tree is converted to FETCHED via a hard-reset to
+    FETCH_HEAD. pkgctl checkouts have no user commits worth preserving, so
+    "ahead 1, behind 1" should not be a sticky failure.
+    """
+    pkg = _make_repo(tmp_path, "pipewire")
+    sched = _scheduler(tmp_path)
+    outcome = GitFetchOutcome(
+        status="diverged", head_before="oldlocal", head_after="newupstream",
+        error="divergent: HEAD oldlocal vs FETCH_HEAD newupstream",
+    )
+    with patch("sysforge.primitives.source_sync._head_commit", return_value="oldlocal"), \
+         patch("sysforge.primitives.source_sync.git_fetch_and_compare", return_value=outcome), \
+         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
+         patch("sysforge.primitives.source_sync._reset_hard_fetch_head",
+               return_value="newupstream") as reset:
+        result = sched.request(SyncRequest(
+            pkgbase="pipewire", pkgbuild_dir=pkg, source="repo",
+        ))
+
+    reset.assert_called_once_with(pkg)
+    assert result.status == "fetched"
+    assert result.head_after == "newupstream"
+
+
+def test_repo_source_diverged_dirty_tree_stays_diverged(tmp_path):
+    """
+    Dirty trees are still respected — user has local edits and they must
+    not be overwritten. STATUS_DIVERGED stays sticky; --cleansrc remains
+    the explicit escape hatch.
+    """
+    pkg = _make_repo(tmp_path, "pipewire")
+    sched = _scheduler(tmp_path)
+    outcome = GitFetchOutcome(
+        status="diverged", head_before="local", head_after="upstream",
+        error="working tree has local modifications",
+    )
+    with patch("sysforge.primitives.source_sync._head_commit", return_value="local"), \
+         patch("sysforge.primitives.source_sync.git_fetch_and_compare", return_value=outcome), \
+         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=True), \
+         patch("sysforge.primitives.source_sync._reset_hard_fetch_head") as reset:
+        result = sched.request(SyncRequest(
+            pkgbase="pipewire", pkgbuild_dir=pkg, source="repo",
+        ))
+
+    reset.assert_not_called()
+    assert result.status == STATUS_DIVERGED
+
+
+def test_aur_source_diverged_never_auto_resets(tmp_path):
+    """
+    The auto-refresh is repo-only — AUR clones can carry user commits
+    (e.g. local pkgver bumps), so divergence must stay a warning.
+    """
+    pkg = _make_repo(tmp_path, "neovim-git")
+    sched = _scheduler(tmp_path)
+    outcome = GitFetchOutcome(
+        status="diverged", head_before="local", head_after="upstream",
+        error="divergent: HEAD local vs FETCH_HEAD upstream",
+    )
+    with patch("sysforge.primitives.source_sync._head_commit", return_value="local"), \
+         patch("sysforge.primitives.source_sync.git_fetch_and_compare", return_value=outcome), \
+         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
+         patch("sysforge.primitives.source_sync._reset_hard_fetch_head") as reset:
+        result = sched.request(SyncRequest(
+            pkgbase="neovim-git", pkgbuild_dir=pkg, source="aur",
+        ))
+
+    reset.assert_not_called()
+    assert result.status == STATUS_DIVERGED
+
+
 # ---------------------------------------------------------------------------
 # Dedup / offline
 # ---------------------------------------------------------------------------
