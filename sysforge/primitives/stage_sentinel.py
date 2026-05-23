@@ -39,7 +39,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.interrupt import CleanExitRequested, InterruptScope
-from sysforge.primitives.prompt import prompt_choice
+from sysforge.primitives.prompt import is_interactive, prompt_choice
 
 _log = log.get_logger("SENTINEL")
 
@@ -94,6 +94,21 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
             "remove the sentinel file by hand once verified."
         )
 
+    # Non-TTY: the prompt would auto-decline silently, leaving the user
+    # thinking the recovery prompt never fired or that they answered it.
+    # Emit explicit instructions instead so the manual path is obvious.
+    if not is_interactive():
+        _log.error(
+            "Cannot prompt for recovery — stdin is not a TTY. "
+            "Run sysforge in an interactive terminal to use the prompt, "
+            f"or clear the sentinel manually: rm {sentinel.path}"
+        )
+        if recovery_cmd:
+            _log.error(
+                f"Then run the recovery command yourself: {recovery_cmd}"
+            )
+        return False
+
     choice = prompt_choice(
         "Restore a consistent state now? [y/N]: ",
         choices=("y", "yes", "n"),
@@ -124,6 +139,18 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
         )
         return False
     sentinel.clear()
+    # Verify the file is actually gone. If it isn't, the recovery succeeded
+    # but cleared the wrong path (state-dir mismatch, namespace/chroot
+    # surprise, etc.) — log loudly so the user doesn't trust a false-positive
+    # "sentinel cleared" message while the same sentinel keeps firing.
+    if sentinel.path.exists():
+        _log.error(
+            f"Recovery ran but sentinel file is still present at "
+            f"{sentinel.path}. Possible state-dir mismatch — verify "
+            "$SYSFORGE_STATE_DIR and any --state-dir flag match the path "
+            "above, then remove the file manually."
+        )
+        return False
     _log.ui("Recovery completed; sentinel cleared.")
     return True
 

@@ -17,7 +17,6 @@ Covers:
 import os
 import sys
 
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -257,3 +256,40 @@ def test_implicit_long_flags_not_extracted():
 def test_implicit_preserves_tokens_before_subcommand():
     result = _extract_implicit_makepkg_flags(["-vv", "build", "pkg", "-sf"])
     assert result == ["-vv", "build", "pkg", "-m", "-sf"]
+
+
+# ---------------------------------------------------------------------------
+# CLI-entry sentinel check skip on --dry-run
+# ---------------------------------------------------------------------------
+
+def _gate_args(*, command, dry_run):
+    """Minimal args namespace for the sentinel-gate condition."""
+    from types import SimpleNamespace
+    return SimpleNamespace(command=command, dry_run=dry_run, state_dir=None)
+
+
+def test_dry_run_skips_entry_sentinel_check():
+    """
+    Read-only invocations of install-bearing verbs (`update --dry-run`,
+    `build --dry-run`, etc.) must not be blocked by a stale stage sentinel.
+    UpdateVerb's inner sentinel scope already opts out under --dry-run; the
+    outer CLI gate should match so the two stay in sync.
+    """
+    from sysforge.cli import _gate_sentinel_check
+    for cmd in ("build", "update", "converge", "run", "setup"):
+        assert _gate_sentinel_check(_gate_args(command=cmd, dry_run=True)) is False
+
+
+def test_non_dry_run_still_hits_entry_sentinel_check():
+    """Mutating invocations (no --dry-run) must still gate on the sentinel."""
+    from sysforge.cli import _gate_sentinel_check
+    for cmd in ("build", "update", "converge", "run", "setup"):
+        assert _gate_sentinel_check(_gate_args(command=cmd, dry_run=False)) is True
+
+
+def test_read_only_verbs_skip_entry_sentinel_check():
+    """Verbs outside `_INSTALL_BEARING_COMMANDS` always skip the gate."""
+    from sysforge.cli import _gate_sentinel_check
+    for cmd in ("env", "doctor", "resolve", "fetch", "completions", "log",
+                "packages", "state"):
+        assert _gate_sentinel_check(_gate_args(command=cmd, dry_run=False)) is False

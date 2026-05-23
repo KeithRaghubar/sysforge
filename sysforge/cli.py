@@ -1113,6 +1113,30 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_INSTALL_BEARING_COMMANDS = frozenset(
+    {"build", "update", "converge", "run", "setup"}
+)
+
+
+def _gate_sentinel_check(args) -> bool:
+    """True when ``cli.main`` should call ``check_and_recover_stale_sentinel``.
+
+    Install-bearing commands (``build``/``update``/``converge``/``run``/
+    ``setup``) gate on a stale sentinel, except when the invocation is
+    explicitly read-only (``--dry-run``). The inner verb-runner sentinel
+    scope already opts out under ``--dry-run`` (see ``UpdateVerb.pre_check``);
+    keeping the outer CLI gate in lockstep avoids blocking ``sysforge update
+    --dry-run`` on a sentinel from an earlier mutating run the user is still
+    investigating.
+    """
+    cmd = getattr(args, "command", None)
+    if cmd not in _INSTALL_BEARING_COMMANDS:
+        return False
+    if getattr(args, "dry_run", False):
+        return False
+    return True
+
+
 def main():
     from sysforge.primitives.paths import migrate_legacy_user_dirs
     from sysforge.primitives.resource_guard import install as _install_resource_guard
@@ -1142,8 +1166,10 @@ def main():
     # sentinel, block the next mutating command and offer recovery before
     # proceeding. Read-only commands (env, doctor, resolve, fetch, list,
     # completions) skip the check so users can inspect without recovery.
-    _INSTALL_BEARING = {"build", "update", "converge", "run", "setup"}
-    if getattr(args, "command", None) in _INSTALL_BEARING:
+    # Read-only invocations of install-bearing verbs (e.g. `update --dry-run`)
+    # also skip — the inner verb has already opted out of its own sentinel
+    # scope, so the entry gate matching that semantics keeps the two in sync.
+    if _gate_sentinel_check(args):
         from sysforge.primitives.stage_sentinel import check_and_recover_stale_sentinel
         state_dir = getattr(args, "state_dir", None)
         if not check_and_recover_stale_sentinel(state_dir):

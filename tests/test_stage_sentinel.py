@@ -79,7 +79,8 @@ def test_check_stale_declined_returns_false(tmp_path):
     StageSentinel(tmp_path).mark_started(
         "toolchain", recovery_cmd="sudo pacman -S llvm",
     )
-    with patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="n"):
+    with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
+         patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="n"):
         result = check_and_recover_stale_sentinel(tmp_path)
     assert result is False
     # Sentinel left in place on decline so the next run hits it again
@@ -92,7 +93,8 @@ def test_check_stale_accepted_runs_recovery_and_clears(tmp_path):
         "toolchain", recovery_cmd="sudo pacman -S llvm llvm-libs",
     )
     fake_proc = MagicMock(returncode=0)
-    with patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="y"), \
+    with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
+         patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="y"), \
          patch("sysforge.primitives.stage_sentinel.subprocess.run",
                return_value=fake_proc) as run_mock:
         result = check_and_recover_stale_sentinel(tmp_path)
@@ -109,7 +111,8 @@ def test_check_stale_recovery_fails_leaves_sentinel(tmp_path):
         "toolchain", recovery_cmd="sudo pacman -S llvm",
     )
     fake_proc = MagicMock(returncode=1)
-    with patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="y"), \
+    with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
+         patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="y"), \
          patch("sysforge.primitives.stage_sentinel.subprocess.run",
                return_value=fake_proc):
         result = check_and_recover_stale_sentinel(tmp_path)
@@ -120,7 +123,62 @@ def test_check_stale_recovery_fails_leaves_sentinel(tmp_path):
 def test_check_stale_no_recovery_cmd_blocks(tmp_path):
     """A sentinel without recovery_cmd can't be auto-recovered."""
     StageSentinel(tmp_path).mark_started("toolchain")  # no recovery_cmd
-    with patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="y"):
+    with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
+         patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="y"):
         result = check_and_recover_stale_sentinel(tmp_path)
     assert result is False
     assert StageSentinel(tmp_path).get_active() is not None
+
+
+def test_check_stale_non_tty_emits_loud_error_and_blocks(tmp_path, capsys):
+    """
+    Non-TTY context (script, background session, IDE wrapper): the prompt
+    cannot fire. We must NOT silently auto-decline — instead emit explicit
+    manual-recovery instructions so the user understands what happened.
+    """
+    StageSentinel(tmp_path).mark_started(
+        "toolchain", recovery_cmd="sudo pacman -S llvm",
+    )
+    with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=False), \
+         patch("sysforge.primitives.stage_sentinel.prompt_choice") as prompt_mock, \
+         patch("sysforge.primitives.stage_sentinel.subprocess.run") as run_mock:
+        result = check_and_recover_stale_sentinel(tmp_path)
+
+    assert result is False
+    # Prompt never fires; recovery never runs.
+    prompt_mock.assert_not_called()
+    run_mock.assert_not_called()
+    # Sentinel left in place; user must clear manually.
+    assert StageSentinel(tmp_path).get_active() is not None
+    err = capsys.readouterr().err
+    assert "stdin is not a TTY" in err
+    assert str(tmp_path / "stage_in_progress.toml") in err
+    assert "sudo pacman -S llvm" in err
+
+
+def test_check_stale_clear_silent_failure_is_reported(tmp_path, capsys):
+    """
+    Regression for the load-bearing bug: if `sentinel.clear()` "succeeds"
+    but the file is still on disk (state-dir mismatch, chroot/namespace
+    surprise, filesystem quirk), we must NOT print "Recovery completed;
+    sentinel cleared." — the user keeps seeing the sentinel re-fire and
+    has no idea why. Verify-after-clear catches it.
+    """
+    StageSentinel(tmp_path).mark_started(
+        "toolchain", recovery_cmd="sudo pacman -S llvm",
+    )
+    fake_proc = MagicMock(returncode=0)
+    # Simulate clear() being a no-op (file persists) — this is the
+    # silent-failure failure mode in the wild.
+    with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
+         patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="y"), \
+         patch("sysforge.primitives.stage_sentinel.subprocess.run", return_value=fake_proc), \
+         patch.object(StageSentinel, "clear", lambda self: None):
+        result = check_and_recover_stale_sentinel(tmp_path)
+
+    assert result is False
+    # The original sentinel file is still there.
+    assert StageSentinel(tmp_path).get_active() is not None
+    err = capsys.readouterr().err
+    assert "sentinel file is still present" in err
+    assert str(tmp_path / "stage_in_progress.toml") in err
