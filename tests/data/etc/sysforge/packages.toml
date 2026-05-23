@@ -26,11 +26,14 @@
 # Each entry should have its own subdirectory: <pkgbuild_src_dir>/<name>/PKGBUILD
 pkgbuild_src_dir = "~/src"
 repo_mode = "profiled"  # "pacman" (default) | "profiled" — how repo-source packages are built
-#                       # "pacman"   → install via pacman -S --needed (no build step)
-#                       # "profiled" → build from PKGBUILD with sysforge flag profiles;
-#                       #              `sysforge update` also walks every installed repo
-#                       #              package under this mode (one `git fetch` per run)
-#                       # per-package pkgbuild_patch = true overrides to "profiled" regardless
+#                       # "pacman"   → repo packages only enter `sysforge update` scope
+#                       #              if they carry a behavior-changing override.
+#                       # "profiled" → every installed repo package is tracked. Override-
+#                       #              tagged ones are source-built (pkgctl_checkout +
+#                       #              makepkg); the rest take a fast path via batched
+#                       #              `checkupdates` and one terminal `sudo pacman -Syu`
+#                       #              after the source builds. Requires pacman-contrib.
+#                       # per-package pkgbuild_patch = true overrides to source-build regardless
 # (Deprecated: `update_repo_profiled = true` is normalised to repo_mode = "profiled".)
 
 

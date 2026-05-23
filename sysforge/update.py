@@ -81,6 +81,7 @@ from sysforge.primitives.pacman import (
     get_all_installed_packages,
     get_foreign_packages,
     get_pkgbase,
+    checkupdates_map,
 )
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.packages_cmd import entry_is_inert
@@ -175,8 +176,9 @@ _SYNC_BLOCKING_STATUSES = frozenset(_SYNC_STATUS_TO_ACTION)
 class _UpdateResult:
     pkgbase: str
     pkgnames: list
-    # Actions: UP_TO_DATE, NEEDS_REBUILD, DEVEL, DEVEL_EVAL_FAILED, DOWNGRADE,
-    # PULL_FAILED, RATE_LIMITED, PURGE_REFUSED.
+    # Actions: UP_TO_DATE, NEEDS_REBUILD, NEEDS_PACMAN_UPGRADE, DEVEL,
+    # DEVEL_EVAL_FAILED, DOWNGRADE, PULL_FAILED, RATE_LIMITED, PURGE_REFUSED,
+    # SKIPPED_NO_CHECKUPDATES.
     action: str
     installed_ver: str | None
     pkgbuild_ver: str | None
@@ -318,15 +320,39 @@ def _assemble_package_set(
             return "repo"
         return None
 
+    def _resolve_repo_class(name: str, source: str | None) -> str | None:
+        """Sub-classify repo-source packages: "source" vs "pacman".
+
+        Only meaningful when ``source == "repo"``. Returns:
+          - ``"source"`` if the package has a behavior-changing override
+            (``pkgbuild_patch`` / ``cache`` / ``reason``) — it goes through
+            pkgctl-clone + makepkg, same as before.
+          - ``"pacman"`` if it has no override and is in scope only because
+            ``repo_mode = "profiled"`` is set. These skip source sync and
+            get version-checked via the batched ``checkupdates`` call;
+            upgrades are deferred to a single ``sudo pacman -Syu`` at the
+            end of the update.
+          - ``None`` for non-repo sources (aur/git) — those follow the
+            existing path.
+        """
+        if source != "repo":
+            return None
+        if name in behavior_overridden:
+            return "source"
+        return "pacman"
+
     for name in target_names:
         override = overrides_by_name.get(name, {})
         bs_entry = build_state_pkgs.get(name)
         resolved_source = _resolve_source(name, override, bs_entry)
+        resolved_repo_class = _resolve_repo_class(name, resolved_source)
 
         if bs_entry is not None and bs_entry.get("build_mode", "profiled") != "pacman":
             pkg = dict(bs_entry)
             if resolved_source and "source" not in pkg:
                 pkg["source"] = resolved_source
+            if resolved_repo_class:
+                pkg["repo_class"] = resolved_repo_class
             packages[name] = pkg
         else:
             unrecorded_names.add(name)
@@ -337,6 +363,8 @@ def _assemble_package_set(
             }
             if resolved_source:
                 entry["source"] = resolved_source
+            if resolved_repo_class:
+                entry["repo_class"] = resolved_repo_class
             packages[name] = entry
 
     # Resolve pkgbase for unrecorded packages from pacman's local DB first.
@@ -432,6 +460,13 @@ def _sync_sources(
     for pkgbase in sorted(pkgbase_map):
         entry = pkgbase_entry[pkgbase]
         source = entry.get("source", "aur")
+        # Pacman-class repo packages skip source sync entirely — their
+        # upgrade detection runs through ``checkupdates_map`` in Phase 3
+        # and the upgrade itself is dispatched as one ``sudo pacman -Syu``
+        # after the source-build loop. Avoids hundreds of pkgctl/git
+        # fetches for packages that ultimately follow the pacman path.
+        if entry.get("repo_class") == "pacman":
+            continue
         pkgbuild_dir = Path(entry["pkgbuild_dir"])
         resolved = str(pkgbuild_dir)
         if resolved in seen_dirs:
@@ -499,11 +534,61 @@ def _check_one_pkgbase(
     rpc_version_by_base: dict[str, str],
     force_devel: bool = False,
     built_upstream_commit: str | None = None,
+    pacman_updates_map: dict[str, str] | None = None,
 ) -> _UpdateResult | None:
-    """Check a single pkgbase and return an _UpdateResult, or None on skip."""
-    pkgbuild_dir = Path(entry["pkgbuild_dir"])
+    """Check a single pkgbase and return an _UpdateResult, or None on skip.
+
+    Pacman-class repo packages (``entry["repo_class"] == "pacman"``) take a
+    fast path: no PKGBUILD parse, no clone — installed-vs-checkupdates
+    vercmp only. The slow PKGBUILD-parse path below runs for AUR/git and
+    override-tagged repo packages.
+    """
     has_record = not any(pn in unrecorded_names for pn in pkgnames)
     source = entry.get("source")
+
+    # Pacman fast-path: checkupdates already told us if a repo upgrade is
+    # pending. The pkgbuild_dir doesn't need to exist (we never source-build
+    # this class), so this branch precedes the directory existence check.
+    if entry.get("repo_class") == "pacman":
+        installed_ver: str | None = None
+        for pn in pkgnames:
+            ver = all_installed.get(pn)
+            if ver is not None:
+                installed_ver = ver
+                break
+        if installed_ver is None:
+            return None
+        if pacman_updates_map is None:
+            # checkupdates unavailable; can't decide. Surface once, skip
+            # action so the package shows up in the summary as deferred.
+            return _UpdateResult(
+                pkgbase=pkgbase, pkgnames=pkgnames,
+                action="SKIPPED_NO_CHECKUPDATES",
+                installed_ver=installed_ver, pkgbuild_ver=None,
+                pkgbuild_path=None, has_build_record=has_record, source=source,
+            )
+        # checkupdates lists each pkgname (not pkgbase) that needs upgrade.
+        # Pick the newest mapped version across this pkgbase's pkgnames.
+        new_ver: str | None = None
+        for pn in pkgnames:
+            mapped = pacman_updates_map.get(pn)
+            if mapped is None:
+                continue
+            if new_ver is None or vercmp(mapped, new_ver) > 0:
+                new_ver = mapped
+        if new_ver is None:
+            return _UpdateResult(
+                pkgbase=pkgbase, pkgnames=pkgnames, action="UP_TO_DATE",
+                installed_ver=installed_ver, pkgbuild_ver=installed_ver,
+                pkgbuild_path=None, has_build_record=has_record, source=source,
+            )
+        return _UpdateResult(
+            pkgbase=pkgbase, pkgnames=pkgnames, action="NEEDS_PACMAN_UPGRADE",
+            installed_ver=installed_ver, pkgbuild_ver=new_ver,
+            pkgbuild_path=None, has_build_record=has_record, source=source,
+        )
+
+    pkgbuild_dir = Path(entry["pkgbuild_dir"])
 
     if not pkgbuild_dir.is_dir():
         _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
@@ -873,6 +958,26 @@ def cmd_update(args) -> None:
     # ── Phase 2: Source sync ──────────────────────────────────────────────
     sync_failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
 
+    # Pacman fast-path: one ``checkupdates`` call covers every pacman-class
+    # repo package in scope. Only run it when at least one pacman-class
+    # entry exists — skip the subprocess otherwise so default-mode runs
+    # (``repo_mode = "pacman"``) pay nothing for this feature.
+    has_pacman_class = any(
+        e.get("repo_class") == "pacman" for e in pkgbase_entry.values()
+    )
+    pacman_updates_map: dict[str, str] | None
+    if has_pacman_class and not offline:
+        pacman_updates_map = checkupdates_map()
+        if pacman_updates_map is None:
+            _log.warn(
+                "checkupdates unavailable — pacman-class repo packages will "
+                "be reported as SKIPPED_NO_CHECKUPDATES; install pacman-contrib"
+            )
+    else:
+        # Offline or no pacman-class packages — pass an empty dict so the
+        # worker takes the "no upgrade pending" branch (UP_TO_DATE).
+        pacman_updates_map = {} if has_pacman_class else None
+
     # ── Phase 3: Version check ────────────────────────────────────────────
     skip_sync_check = offline
     results: list[_UpdateResult] = []
@@ -901,6 +1006,7 @@ def cmd_update(args) -> None:
                 unrecorded_names, skip_sync_check, rpc_version_by_base,
                 force_devel,
                 built_commit_by_base.get(pkgbase),
+                pacman_updates_map,
             ): pkgbase
             for pkgbase, pkgnames in sorted(pkgbase_map.items())
         }
@@ -923,6 +1029,9 @@ def cmd_update(args) -> None:
     # NEEDS_REBUILD filter here therefore picks up genuinely-stale -git
     # packages and excludes up-to-date ones.
     to_build = [r for r in results if r.action == "NEEDS_REBUILD"]
+    pending_pacman_upgrade = [
+        r for r in results if r.action == "NEEDS_PACMAN_UPGRADE"
+    ]
 
     # Exclude packages that failed source sync (cleansrc refusal, etc.)
     cleansrc_failures = {k: msg for k, (status, msg) in sync_failures.items()
@@ -930,7 +1039,7 @@ def cmd_update(args) -> None:
     if sync_failures:
         to_build = [r for r in to_build if r.pkgbase not in sync_failures]
 
-    if not to_build:
+    if not to_build and not pending_pacman_upgrade:
         print("[SYSFORGE] Nothing to rebuild.")
         return
 
@@ -940,7 +1049,12 @@ def cmd_update(args) -> None:
     failed_pkgs: list[str] = []
     pgo_skipped_pkgs: list[str] = []
 
-    if install_only:
+    if not to_build:
+        # Nothing to source-build, but pacman-class upgrades are pending —
+        # skip Phase 5 (source build) and fall through to Phase 6.5
+        # (pacman -Syu) below. Bypass install_only/normal-build branching.
+        pass
+    elif install_only:
         # Skip the whole build loop: no makedep batching, no AUR-dep resolution,
         # no makepkg invocation. For each result the version-check filter has
         # already proved is newer than installed, look for a matching artifact
@@ -1107,6 +1221,30 @@ def cmd_update(args) -> None:
     elif built_pkgs:
         _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
 
+    # ── Phase 6.5: Bulk pacman upgrade (pacman-class repo packages) ────────
+    # Source-built artifacts are installed first so the `IgnoreGroup =
+    # sf-build` line in /etc/pacman.conf (added by `sysforge setup`) keeps
+    # `pacman -Syu` from clobbering them with upstream repo binaries. We
+    # invoke a single transaction even though the version-check already
+    # listed specific packages — running -Syu is what the user would do
+    # by hand and stays consistent with `pacman -Syu` semantics.
+    pacman_upgrade_pkgs = sorted(r.pkgbase for r in pending_pacman_upgrade)
+    pacman_upgrade_failed = False
+    if pacman_upgrade_pkgs and not offline:
+        noconfirm = getattr(args, "noconfirm", False)
+        cmd = ["sudo", "pacman", "-Syu"]
+        if noconfirm:
+            cmd.append("--noconfirm")
+        _log.info(
+            f"Running pacman -Syu for {len(pacman_upgrade_pkgs)} repo "
+            f"package(s): {' '.join(pacman_upgrade_pkgs)}"
+        )
+        import subprocess as _subprocess
+        rc = _subprocess.run(cmd).returncode
+        if rc != 0:
+            _log.error(f"pacman -Syu exited {rc}")
+            pacman_upgrade_failed = True
+
     if not install_only and getattr(args, "cache_report", False):
         from sysforge.primitives.cache_probe import emit_session_report
         emit_session_report()
@@ -1114,7 +1252,7 @@ def cmd_update(args) -> None:
     # Sync failures from cleansrc refusals count as build failures.
     failed_pkgs.extend(sorted(cleansrc_failures))
 
-    skipped = len(results) - len(to_build)
+    skipped = len(results) - len(to_build) - len(pending_pacman_upgrade)
     if install_only:
         skipped += len(to_build) - len(built_pkgs) - len(failed_pkgs)
     built_label = "installed" if install_only else "built"
@@ -1122,11 +1260,16 @@ def cmd_update(args) -> None:
         f"\n[SYSFORGE] Update complete: "
         f"{len(built_pkgs)} {built_label}, {len(failed_pkgs)} failed, {skipped} skipped"
         + (f", {len(pgo_skipped_pkgs)} pgo-skipped" if pgo_skipped_pkgs else "")
+        + (f", {len(pacman_upgrade_pkgs)} pacman-upgraded" if pacman_upgrade_pkgs else "")
+        + (" (pacman -Syu FAILED)" if pacman_upgrade_failed else "")
         + "."
     ))
     if built_pkgs:
         _label = "Installed:" if install_only else "Built:"
         _log.ui(f"  {_label:<13}{' '.join(built_pkgs)}")
+    if pacman_upgrade_pkgs:
+        suffix = " (transaction FAILED)" if pacman_upgrade_failed else ""
+        _log.ui(f"  Pacman-Syu:  {' '.join(pacman_upgrade_pkgs)}{suffix}")
     if failed_pkgs:
         _log.ui(f"  Failed:      {' '.join(failed_pkgs)}")
     if cleansrc_failures:
@@ -1141,7 +1284,11 @@ def cmd_update(args) -> None:
         )
 
     if unified_log_active:
-        log.close_unified_log(success=(not failed_pkgs and not install_failed), persist=True)
+        log.close_unified_log(
+            success=(not failed_pkgs and not install_failed
+                     and not pacman_upgrade_failed),
+            persist=True,
+        )
         _log.ui(f"[SYSFORGE] Unified log: {unified_log_path}")
 
 
@@ -1156,6 +1303,8 @@ def cmd_update(args) -> None:
 _ACTION_FORMATS: dict[str, tuple[str, str, str]] = {
     "NEEDS_REBUILD":     ("NEEDS_REBUILD",     "need rebuild",
                           "{pkgbase}: {installed_ver} → {pkgbuild_ver}{star}"),
+    "NEEDS_PACMAN_UPGRADE": ("NEEDS_PACMAN", "need pacman upgrade",
+                          "{pkgbase}: {installed_ver} → {pkgbuild_ver} (pacman -Syu){star}"),
     "UP_TO_DATE":        ("UP_TO_DATE",        "up to date",
                           "{pkgbase}: {pkgbuild_ver}{star}"),
     "DEVEL":             ("DEVEL",             "devel",
@@ -1170,11 +1319,15 @@ _ACTION_FORMATS: dict[str, tuple[str, str, str]] = {
                           "{pkgbase}: AUR rate-limited (skipped, retry later){star}"),
     "PURGE_REFUSED":     ("PURGE_REFUSED",     "purge refused",
                           "{pkgbase}: --cleansrc refused (local work present, skipped){star}"),
+    "SKIPPED_NO_CHECKUPDATES": ("NO_CHECKUPDATES", "skipped (no checkupdates)",
+                          "{pkgbase}: checkupdates unavailable, install pacman-contrib{star}"),
 }
 
 # Actions that are always printed per-package regardless of verbosity.
 # Everything else only appears under -v / verbose mode.
-_ALWAYS_VERBOSE_ACTIONS = frozenset({"NEEDS_REBUILD", "DOWNGRADE"})
+_ALWAYS_VERBOSE_ACTIONS = frozenset({
+    "NEEDS_REBUILD", "NEEDS_PACMAN_UPGRADE", "DOWNGRADE",
+})
 
 
 def _print_summary(results: list[_UpdateResult], args) -> None:

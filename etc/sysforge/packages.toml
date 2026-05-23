@@ -29,12 +29,22 @@
 # [build]
 # pkgbuild_src_dir = "~/src"   # override the path from flag_profiles.toml for this manifest
 # repo_mode    = "pacman"  # "pacman" (default) | "profiled" — how repo-source packages are built
-#                          # "pacman"   → install via pacman -S --needed (no build step)
-#                          # "profiled" → build from PKGBUILD with sysforge flag profiles;
-#                          #              `sysforge update` also walks every installed repo
-#                          #              package under this mode (one `git fetch` per run)
+#                          # "pacman"   → install via pacman -S --needed (no build step);
+#                          #              `sysforge update` does NOT touch repo packages
+#                          #              unless they carry a behavior-changing override.
+#                          # "profiled" → `sysforge update` also walks every installed repo
+#                          #              package, but only the subset with an override
+#                          #              (pkgbuild_patch / cache / reason) is source-built;
+#                          #              the rest take a fast path — one batched
+#                          #              `checkupdates` call detects pending upgrades, then
+#                          #              one terminal `sudo pacman -Syu` after the source
+#                          #              builds. Source artifacts install first so the
+#                          #              `IgnoreGroup = sf-build` line from `sysforge setup`
+#                          #              protects them from being clobbered.
 #                          # per-package pkgbuild_patch = true overrides to "profiled" regardless
 # # (Deprecated: `update_repo_profiled = true` is normalised to repo_mode = "profiled".)
+# # Requires `pacman-contrib` for the checkupdates fast path; without it,
+# # pacman-class packages are reported as SKIPPED_NO_CHECKUPDATES.
 
 
 # =============================================================================

@@ -20,6 +20,7 @@ Public API:
     get_all_installed_packages()    → dict[str, str]
     get_foreign_packages()          → dict[str, str]
     get_pacman_sync_version(pkgname) → str | None
+    checkupdates_map(timeout=60.0)  → dict[str, str] | None
     get_local_db_entry(pkgname)     → Path | None
     get_package_files(pkgname)      → list[str]
     get_package_depends(pkgname)    → list[str]
@@ -417,6 +418,61 @@ def get_pacman_sync_version(pkgname: str) -> str | None:
             if len(parts) == 2:
                 return parts[1].strip()
     return None
+
+
+# Sentinel for checkupdates_map: distinguishes "tool unavailable" (None) from
+# "tool ran, nothing to upgrade" (empty dict).
+CHECKUPDATES_UNAVAILABLE = None
+
+
+def checkupdates_map(timeout: float = 60.0) -> dict[str, str] | None:
+    """Run ``checkupdates`` once and return ``{pkgname: new_version}``.
+
+    Uses pacman-contrib's ``checkupdates`` because it refreshes the sync DBs
+    to a side-copy of /var/lib/pacman/sync rather than the live one — safe to
+    run without sudo and without partial-upgrade risk. Output lines are
+    ``pkgname oldver -> newver``.
+
+    Returns:
+      - ``dict`` (possibly empty) when checkupdates ran. Empty means no repo
+        upgrades pending.
+      - ``None`` when ``checkupdates`` is not installed, timed out, or hit an
+        I/O error. Caller treats this as "fast path unavailable" and surfaces
+        a one-shot warning.
+
+    checkupdates exit codes: 0 = updates pending (output is on stdout),
+    2 = no updates (exit-0-with-empty-output on older releases; both handled
+    by returning ``{}``), other = error (returns ``None``).
+    """
+    try:
+        result = subprocess.run(
+            ["checkupdates"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except FileNotFoundError:
+        return None
+    except (subprocess.TimeoutExpired, OSError) as e:
+        _log.warn(f"checkupdates failed: {e}")
+        return None
+
+    # checkupdates exits 2 when there are no updates — not an error.
+    if result.returncode not in (0, 2):
+        if result.stderr.strip():
+            _log.warn(f"checkupdates exited {result.returncode}: {result.stderr.strip()}")
+        else:
+            _log.warn(f"checkupdates exited {result.returncode}")
+        return None
+
+    updates: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        # Expected: "pkgname oldver -> newver" (4 tokens). Tolerate the
+        # alternate 3-token "pkgname oldver newver" form some forks emit.
+        if len(parts) == 4 and parts[2] == "->":
+            updates[parts[0]] = parts[3]
+        elif len(parts) == 3:
+            updates[parts[0]] = parts[2]
+    return updates
 
 
 # ---------------------------------------------------------------------------

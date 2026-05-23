@@ -160,6 +160,56 @@ class TestGetPacmanSyncVersion:
 
 
 # ---------------------------------------------------------------------------
+# checkupdates_map
+# ---------------------------------------------------------------------------
+
+from sysforge.primitives.pacman import checkupdates_map as _checkupdates_map
+
+
+class TestCheckupdatesMap:
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_parses_arrow_format(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout="linux 6.1.0-1 -> 6.2.0-1\nfirefox 130.0-1 -> 131.0-1\n",
+            stderr="",
+            returncode=0,
+        )
+        assert _checkupdates_map() == {
+            "linux": "6.2.0-1",
+            "firefox": "131.0-1",
+        }
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_exit_2_means_no_updates(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout="", stderr="", returncode=2,
+        )
+        assert _checkupdates_map() == {}
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_missing_binary_returns_none(self, mock_run):
+        mock_run.side_effect = FileNotFoundError
+        assert _checkupdates_map() is None
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_error_exit_returns_none(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout="", stderr="db not writable", returncode=1,
+        )
+        assert _checkupdates_map() is None
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_ignores_malformed_lines(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout="linux 6.1.0-1 -> 6.2.0-1\n# comment\nbroken-line\n",
+            stderr="",
+            returncode=0,
+        )
+        assert _checkupdates_map() == {"linux": "6.2.0-1"}
+
+
+# ---------------------------------------------------------------------------
 # snapshot_pkg_dir
 # ---------------------------------------------------------------------------
 
