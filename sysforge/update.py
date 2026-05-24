@@ -122,20 +122,24 @@ _TERMINAL_RESET = "\x1b[?1049l\x1b[?25h\x1b[0m"
 
 
 def _suppress_pagers_in_env(interactive: bool) -> None:
-    """Default PAGER/GIT_PAGER/SYSTEMD_PAGER/LESS to non-paging values.
+    """Force PAGER/GIT_PAGER/SYSTEMD_PAGER/LESS to non-paging values.
 
     Applied for the lifetime of cmd_update when ``--interactive`` is not
     set, so no subprocess (pacman post-install hooks, git, systemd tools
-    invoked by hooks, makepkg subshells, etc.) inherits a $PAGER that
-    would put the terminal into alt-screen mode. ``setdefault`` preserves
-    a user-supplied value (e.g. ``PAGER=most sysforge update``).
+    invoked by hooks, makepkg subshells, meson configure, etc.) inherits
+    a $PAGER that would put the terminal into alt-screen mode.
+
+    Override (not setdefault): an exported ``PAGER=less`` from the user's
+    .zshrc is a preference for *interactive shells*, not consent to be
+    paged in the middle of a batch update. The only opt-in for paging is
+    ``--interactive``, which short-circuits this function entirely.
     """
     if interactive:
         return
-    os.environ.setdefault("PAGER", "cat")
-    os.environ.setdefault("GIT_PAGER", "cat")
-    os.environ.setdefault("SYSTEMD_PAGER", "cat")
-    os.environ.setdefault("LESS", "-RFX")
+    os.environ["PAGER"] = "cat"
+    os.environ["GIT_PAGER"] = "cat"
+    os.environ["SYSTEMD_PAGER"] = "cat"
+    os.environ["LESS"] = "-RFX"
 
 
 def _toolchain_preflight_for_batch(to_build, config, args) -> bool:

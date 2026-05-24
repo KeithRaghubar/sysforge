@@ -229,6 +229,59 @@ def test_extra_env_applied(tmp_path):
     assert env.get("SCCACHE_DIR") == "/var/cache/sccache"
 
 
+def test_pager_env_overridden_for_non_interactive_build(tmp_path):
+    """Regression for the libinput-git pager-hang bug. A user with
+    `export PAGER=less` in .zshrc would otherwise have the value
+    inherited into the makepkg subprocess; `meson configure build` then
+    pipes its summary through less(1) and stalls the PTY. The scrub
+    must override (not setdefault) so PAGER=cat regardless of what the
+    shell exported."""
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+
+    captured = {}
+
+    with patch.dict(os.environ, {
+        "PAGER": "less",
+        "GIT_PAGER": "less",
+        "SYSTEMD_PAGER": "less",
+        "LESS": "-R",
+        "PATH": "/usr/bin",
+        "HOME": "/root",
+    }, clear=True):
+        with _patch_makepkg(captured):
+            invoke_makepkg(pb, conf, {})
+
+    env = captured["env"]
+    assert env.get("PAGER") == "cat"
+    assert env.get("GIT_PAGER") == "cat"
+    assert env.get("SYSTEMD_PAGER") == "cat"
+    assert env.get("LESS") == "-RFX"
+
+
+def test_pager_env_preserved_for_interactive_build(tmp_path):
+    """`--interactive` is the single documented opt-in for paging — when
+    the user has explicitly asked to pause and interact with the build,
+    leave their exported PAGER alone so they can scroll through e.g. a
+    `meson configure` summary."""
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+
+    captured = {}
+
+    with patch.dict(os.environ, {
+        "PAGER": "less",
+        "PATH": "/usr/bin",
+        "HOME": "/root",
+    }, clear=True):
+        with _patch_makepkg(captured):
+            invoke_makepkg(pb, conf, {}, interactive=True)
+
+    assert captured["env"].get("PAGER") == "less"
+
+
 # ---------------------------------------------------------------------------
 # Section 2: invoke_makepkg flag assembly
 # ---------------------------------------------------------------------------

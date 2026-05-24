@@ -776,11 +776,14 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
     # Suppress pagers for any subprocess run by PKGBUILDs. libinput-git's
     # meson summary and git log in prepare() both pipe through less(1) and
-    # stall unattended batch builds waiting for the user to quit.
+    # stall unattended batch builds waiting for the user to quit. Override
+    # unconditionally — an exported PAGER=less from the user's shell is a
+    # preference for interactive shells, not consent to page mid-build.
     if not interactive:
-        env.setdefault("GIT_PAGER", "cat")
-        env.setdefault("PAGER", "cat")
-        env.setdefault("SYSTEMD_PAGER", "cat")
+        env["GIT_PAGER"] = "cat"
+        env["PAGER"] = "cat"
+        env["SYSTEMD_PAGER"] = "cat"
+        env["LESS"] = "-RFX"
 
     if extra_env:
         for k, v in sorted(extra_env.items()):
