@@ -1,9 +1,9 @@
-.TH SYSFORGE "1" "2026\-05\-01" "sysforge" "Generated Python Manual"
+.TH SYSFORGE "1" "2026\-05\-23" "sysforge" "Generated Python Manual"
 .SH NAME
 sysforge
 .SH SYNOPSIS
 .B sysforge
-[-h] [-v] COMMAND ...
+[-h] [-V] [-v] COMMAND ...
 .SH DESCRIPTION
 Arch Linux AUR helper with compiler\-optimized builds.
 
@@ -35,17 +35,24 @@ Manage packages.toml override entries (list, add, remove).
 Inspect or repair build_state.toml (live install\-state mirror).
 .TP
 \fBsysforge\fR \fI\,run\/\fR
-Execute a pipeline stage (pipeline, hardware, reconfigure, toolchain, packages, kernel). toolchain and kernel are experimental (post\-1.0).
+Execute a pipeline stage (pipeline, hardware, reconfigure, toolchain, packages, kernel).
 .TP
 \fBsysforge\fR \fI\,setup\/\fR
 Configure system integration (pacman IgnoreGroup for sf\-build).
+.TP
+\fBsysforge\fR \fI\,env\/\fR
+Print the inherited env chain, all contributing sources (shell init files, systemd\-user, PAM env, sysforge [defaults] profile), and a mismatches block when sources disagree. \-vv adds inline per\-var divergence annotations.
+.TP
+\fBsysforge\fR \fI\,log\/\fR
+Page the unified or per\-package sysforge log through $PAGER.
 
 .SH COMMAND \fI\,'sysforge build'\/\fR
 usage: sysforge build [\-h] [\-\-makepkg FLAGS] [\-\-interactive] [\-\-persist\-log]
                       [\-\-no\-pkg\-log] [\-\-log\-dir DIR] [\-\-profile\-conf FILE]
                       [\-\-cc COMPILER] [\-\-cxx COMPILER] [\-\-ld LINKER]
                       [\-\-cache\-report] [\-\-abi\-check] [\-\-no\-update]
-                      [\-\-cleansrc] [\-\-state\-dir DIR]
+                      [\-\-cleansrc] [\-\-cleansrc\-force] [\-\-no\-llvm\-preflight]
+                      [\-\-state\-dir DIR]
                       PKGBUILD [PKGBUILD ...]
 
 .TP
@@ -61,7 +68,10 @@ PKGBUILD \-m '\-sfci'
 
 .TP
 \fB\-\-interactive\fR
-Strip \-\-noconfirm from profile makepkg_flags.
+Strip \-\-noconfirm from profile makepkg_flags and hand stdout/stderr to
+makepkg's terminal so pacman conflict prompts and other unbuffered interactive
+output appear immediately (disables line\-based output classification while
+set).
 
 .TP
 \fB\-\-persist\-log\fR
@@ -106,15 +116,28 @@ Skip git pull \-\-rebase before building.
 .TP
 \fB\-\-cleansrc\fR
 Purge the package src dir and re\-clone before building. Refuses (per package)
-if the existing clone has uncommitted changes, unpushed commits, or no
-upstream tracking branch.
+if the existing clone has uncommitted changes, ahead\-of\-upstream commits, or
+no upstream tracking branch.
+
+.TP
+\fB\-\-cleansrc\-force\fR
+Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local
+tree unconditionally. Use when the upstream rewrote history (e.g. Arch
+packaging repos force\-push every release) and the local commits have no value
+to preserve.
+
+.TP
+\fB\-\-no\-llvm\-preflight\fR
+Suppress the LLVM source pre\-flight summary.
 
 .TP
 \fB\-\-state\-dir\fR \fI\,DIR\/\fR
 Override state directory for build_state.toml.
 
 .SH COMMAND \fI\,'sysforge fetch'\/\fR
-usage: sysforge fetch [\-h] [\-\-no\-update] [\-\-profile\-conf FILE] PKG [PKG ...]
+usage: sysforge fetch [\-h] [\-\-no\-update] [\-\-cleansrc] [\-\-cleansrc\-force]
+                      [\-\-no\-llvm\-preflight] [\-\-profile\-conf FILE]
+                      PKG [PKG ...]
 
 .TP
 \fBPKG\fR
@@ -126,6 +149,21 @@ One or more package names to download.
 Skip git pull \-\-rebase for packages that are already cloned.
 
 .TP
+\fB\-\-cleansrc\fR
+Purge each package's src dir and re\-clone. Refuses (per package) if the
+existing clone has uncommitted changes, ahead\-of\-upstream commits, or no
+upstream tracking branch.
+
+.TP
+\fB\-\-cleansrc\-force\fR
+Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local
+tree unconditionally.
+
+.TP
+\fB\-\-no\-llvm\-preflight\fR
+Suppress the LLVM source pre\-flight summary.
+
+.TP
 \fB\-\-profile\-conf\fR \fI\,FILE\/\fR
 Path to a profiles.toml to use instead of the default.
 
@@ -135,6 +173,8 @@ usage: sysforge update [\-h] [\-\-dry\-run] [\-\-devel] [\-\-offline] [\-\-insta
                        [\-\-profile\-conf FILE] [\-\-cache\-report] [\-\-no\-pkg\-log]
                        [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-makepkg FLAGS]
                        [\-\-interactive] [\-\-no\-cleanbuild] [\-\-cleansrc]
+                       [\-\-cleansrc\-force] [\-\-no\-llvm\-preflight]
+                       [\-\-no\-toolchain\-preflight]
                        [PKG ...]
 
 .TP
@@ -162,7 +202,8 @@ No network: skip git pulls, clones, and AUR RPC. Pure local version check.
 \fB\-\-install\-only\fR
 Skip rebuild; install only those locally\-built artifacts in PKGDEST that are
 newer than the installed version. Implies \-\-offline. Mutually exclusive with
-\-\-makepkg, \-\-no\-cleanbuild, \-\-cleansrc, \-\-interactive, and \-\-cache\-report.
+\-\-makepkg, \-\-no\-cleanbuild, \-\-cleansrc, \-\-cleansrc\-force, \-\-interactive, and
+\-\-cache\-report.
 
 .TP
 \fB\-\-packages\fR \fI\,FILE\/\fR
@@ -211,8 +252,24 @@ packages are already built and you only need to re\-run the install step.
 .TP
 \fB\-\-cleansrc\fR
 Purge each package's src dir and re\-clone before building. Per\-package fatal
-if the clone has uncommitted changes, unpushed commits, or no upstream — that
-package is reported failed and the run continues.
+if the clone has uncommitted changes, ahead\-of\-upstream commits, or no
+upstream — that package is reported failed and the run continues.
+
+.TP
+\fB\-\-cleansrc\-force\fR
+Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites every
+local tree unconditionally. Use when the upstream rewrote history (e.g. Arch
+packaging repos force\-push every release) and local commits have no value to
+preserve.
+
+.TP
+\fB\-\-no\-llvm\-preflight\fR
+Suppress the LLVM source pre\-flight summary.
+
+.TP
+\fB\-\-no\-toolchain\-preflight\fR
+Skip the toolchain pre\-flight (rust/cmake/meson availability + lib32 cross
+targets) that normally runs before the build loop.
 
 .SH COMMAND \fI\,'sysforge resolve'\/\fR
 usage: sysforge resolve [\-h] [\-\-show\-flags | \-\-deps] [\-\-profile\-conf FILE] PKG
@@ -238,6 +295,7 @@ Path to a profiles.toml to use instead of the default.
 usage: sysforge converge [\-h] [\-\-apply] [\-\-state\-dir DIR]
                          [\-\-profile\-conf FILE] [\-\-no\-pkg\-log] [\-\-persist\-log]
                          [\-\-log\-dir DIR] [\-\-makepkg FLAGS] [\-\-cache\-report]
+                         [\-\-no\-llvm\-preflight]
                          [PKG ...]
 
 .TP
@@ -279,9 +337,14 @@ cleanbuild). \-f is always injected automatically.
 \fB\-\-cache\-report\fR
 Print a structured cache summary after \-\-apply runs.
 
+.TP
+\fB\-\-no\-llvm\-preflight\fR
+Suppress the LLVM source pre\-flight summary.
+
 .SH COMMAND \fI\,'sysforge doctor'\/\fR
 usage: sysforge doctor [\-h] [\-\-graphics] [\-\-all] [\-\-repo] [\-\-shallow]
-                       [\-\-quiet] [\-\-suggest]
+                       [\-\-quiet] [\-\-suggest] [\-\-apply] [\-\-no\-confirm]
+                       [\-\-dry\-run]
                        [PKG ...]
 
 .TP
@@ -319,9 +382,24 @@ Suppress clean lines; print only packages with issues.
 \fB\-\-suggest\fR, \fB\-s\fR
 For each unsatisfied soname, look up candidate packages via `pacman \-Fq`.
 Findings split into 'install candidates' (missing from disk — install the
-package) and 'ABI\-drift candidates' (present but one of their versioned
+package), 'rebuild candidates' (installed; rebuild against the current
+system), and 'ABI\-drift candidates' (present but one of their versioned
 symbols no longer resolves — rebuild or upgrade, not reinstall). Requires a
 synced files db (`sudo pacman \-Fy`).
+
+.TP
+\fB\-\-apply\fR
+Hand the rebuild candidates from \-\-suggest off to `sysforge update` and
+rebuild them. Implies \-\-suggest. Drift\-rebuild only in v1.x — install
+candidates are printed but not invoked.
+
+.TP
+\fB\-\-no\-confirm\fR
+Skip the y/N prompt before \-\-apply rebuilds.
+
+.TP
+\fB\-\-dry\-run\fR
+Report what \-\-apply would rebuild without invoking the build.
 
 .SH COMMAND \fI\,'sysforge packages'\/\fR
 usage: sysforge packages [\-h] [\-\-packages FILE] [\-\-orphans]
@@ -404,7 +482,7 @@ Path to packages.toml (default:
 With list: show only entries whose package is not currently installed.
 
 .SH COMMAND \fI\,'sysforge state'\/\fR
-usage: sysforge state [\-h] {list,repair} ...
+usage: sysforge state [\-h] {list,repair,orphans} ...
 
 .SH
 POSITIONAL ARGUMENTS \fI\,'sysforge state'\/\fR
@@ -414,14 +492,21 @@ Tabulate build_state.toml entries.
 .TP
 \fBsysforge state\fR \fI\,repair\/\fR
 Re\-parse PKGBUILDs to rewrite build_state.toml entries that contain unexpanded shell variables (e.g. '$_pkgname\-git').
+.TP
+\fBsysforge state\fR \fI\,orphans\/\fR
+List (and optionally prune) stale .pkg.tar* artifacts in PKGDEST. Only surfaces superseded files (pkgname installed AND artifact older than installed) so \-\-prune is always safe.
 
 .SH COMMAND \fI\,'sysforge state list'\/\fR
-usage: sysforge state list [\-h] [\-\-state\-dir DIR]
+usage: sysforge state list [\-h] [\-\-state\-dir DIR] [\-\-no\-pager]
 
 .SH OPTIONS \fI\,'sysforge state list'\/\fR
 .TP
 \fB\-\-state\-dir\fR \fI\,DIR\/\fR
 Override state directory.
+
+.TP
+\fB\-\-no\-pager\fR
+Don't pipe output through $PAGER (default: paginate when stdout is a TTY).
 
 .SH COMMAND \fI\,'sysforge state repair'\/\fR
 usage: sysforge state repair [\-h] [\-\-state\-dir DIR] [\-\-dry\-run]
@@ -435,6 +520,22 @@ Override state directory.
 \fB\-\-dry\-run\fR
 Show the planned repair without writing.
 
+.SH COMMAND \fI\,'sysforge state orphans'\/\fR
+usage: sysforge state orphans [\-h] [\-\-prune] [\-\-no\-confirm] [\-\-no\-pager]
+
+.SH OPTIONS \fI\,'sysforge state orphans'\/\fR
+.TP
+\fB\-\-prune\fR
+Delete the listed superseded artifacts (prompts for confirmation).
+
+.TP
+\fB\-\-no\-confirm\fR
+Skip the y/N prompt when pruning. Implies \-\-prune.
+
+.TP
+\fB\-\-no\-pager\fR
+Don't pipe output through $PAGER (default: paginate when stdout is a TTY).
+
 .SH COMMAND \fI\,'sysforge run'\/\fR
 usage: sysforge run [\-h] STAGE ...
 
@@ -442,7 +543,7 @@ usage: sysforge run [\-h] STAGE ...
 POSITIONAL ARGUMENTS \fI\,'sysforge run'\/\fR
 .TP
 \fBsysforge run\fR \fI\,pipeline\/\fR
-Run the full install pipeline (stages 1–8). Stages 6 (toolchain) and 8 (kernel) are experimental (post\-1.0).
+Run the full install pipeline (stages 1–8).
 .TP
 \fBsysforge run\fR \fI\,hardware\/\fR
 Re\-run hardware detection and refresh hardware_profile.toml.
@@ -451,13 +552,13 @@ Re\-run hardware detection and refresh hardware_profile.toml.
 Pre\-build checkpoint: review configs, disk, network, GPG, build preview.
 .TP
 \fBsysforge run\fR \fI\,toolchain\/\fR
-[experimental — post\-1.0] Build and install the LLVM/GCC toolchain from toolchain.toml.
+Build and install the LLVM/GCC toolchain from toolchain.toml.
 .TP
 \fBsysforge run\fR \fI\,packages\/\fR
 Build and install non\-kernel packages from packages.toml.
 .TP
 \fBsysforge run\fR \fI\,kernel\/\fR
-[experimental — post\-1.0] Build and install the custom kernel configured in kernel.toml.
+Build and install the custom kernel configured in kernel.toml.
 
 .SH COMMAND \fI\,'sysforge run pipeline'\/\fR
 usage: sysforge run pipeline [\-h] [\-\-resume] [\-\-start\-from STAGE]
@@ -563,6 +664,8 @@ Override state directory.
 usage: sysforge run toolchain [\-h] [\-\-dry\-run] [\-\-no\-update] [\-\-makepkg FLAGS]
                               [\-\-persist\-log] [\-\-cache\-report] [\-\-abi\-check]
                               [\-\-state\-dir DIR] [\-\-rebuild\-profdata]
+                              [\-\-auto\-pgo] [\-\-allow\-dirty\-llvm] [\-\-cleansrc]
+                              [\-\-cleansrc\-force]
 
 .SH OPTIONS \fI\,'sysforge run toolchain'\/\fR
 .TP
@@ -598,6 +701,33 @@ Override state directory.
 .TP
 \fB\-\-rebuild\-profdata\fR
 Force a full 3\-pass PGO build even if compatible profdata already exists.
+
+.TP
+\fB\-\-auto\-pgo\fR
+Bypass the PGO confirmation prompts (profdata reuse, staging/pgo_store purge,
+3\-pass start, suspicious profdata size). Required for non\-interactive PGO
+runs; without it, a non\-TTY invocation aborts the PGO sub\-flow because PGO is
+fragile and silent mis\-optimisation is the failure mode.
+
+.TP
+\fB\-\-allow\-dirty\-llvm\fR
+Bypass the LLVM safety pre\-flight refusal on dirty or diverged trees. PGO
+profdata version mismatches cannot be bypassed. Note: this only suppresses the
+refusal — it does not modify the tree. Use \-\-cleansrc\-force to actually
+overwrite the local trees with upstream.
+
+.TP
+\fB\-\-cleansrc\fR
+Purge each toolchain package's src dir and re\-clone before building. Refuses
+(per package) if the existing clone has uncommitted changes, ahead\-of\-upstream
+commits, or no upstream.
+
+.TP
+\fB\-\-cleansrc\-force\fR
+Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites every
+local toolchain tree unconditionally. Use when the upstream rewrote history
+(e.g. Arch packaging repos force\-push every release) and local commits have no
+value.
 
 .SH COMMAND \fI\,'sysforge run packages'\/\fR
 usage: sysforge run packages [\-h] [\-\-packages FILE] [\-\-dry\-run]
@@ -653,9 +783,13 @@ Override state directory.
 Path to a profiles.toml to use instead of the default.
 
 .SH COMMAND \fI\,'sysforge run kernel'\/\fR
-usage: sysforge run kernel [\-h] [\-\-dry\-run] [\-\-no\-update] [\-\-no\-pkg\-logs]
-                           [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-cache\-report]
-                           [\-\-abi\-check] [\-\-state\-dir DIR]
+usage: sysforge run kernel [\-h] [\-\-dry\-run] [\-\-no\-update] [\-\-cleansrc]
+                           [\-\-cleansrc\-force] [\-\-non\-interactive]
+                           [\-\-compiler {gcc,llvm}]
+                           [\-\-bootloader {systemd\-boot,grub,none}]
+                           [\-\-no\-pkg\-logs] [\-\-persist\-log] [\-\-log\-dir DIR]
+                           [\-\-cache\-report] [\-\-abi\-check] [\-\-state\-dir DIR]
+                           [\-\-profile\-conf FILE]
 
 .SH OPTIONS \fI\,'sysforge run kernel'\/\fR
 .TP
@@ -665,6 +799,34 @@ Show what would run without executing anything.
 .TP
 \fB\-\-no\-update\fR
 Skip git pull \-\-rebase before each build.
+
+.TP
+\fB\-\-cleansrc\fR
+Purge the kernel src dir and re\-clone before building. Refuses if the existing
+clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream.
+
+.TP
+\fB\-\-cleansrc\-force\fR
+Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local
+tree unconditionally.
+
+.TP
+\fB\-\-non\-interactive\fR
+Disable interactive kconfig (default is interactive — the PKGBUILD's `make
+nconfig`/`menuconfig`/etc. runs as written). With this flag, interactive
+targets are patched to `make olddefconfig` for unattended runs.
+
+.TP
+\fB\-\-compiler\fR \fI\,{gcc,llvm}\/\fR
+Kernel\-stage compiler override (gcc or llvm). Independent of the global
+toolchain stage — lets you keep gcc system\-wide but build the kernel with LLVM
+(or vice versa). Resolution order: this flag > kernel.toml compiler >
+toolchain\-stage pipeline state.
+
+.TP
+\fB\-\-bootloader\fR \fI\,{systemd\-boot,grub,none}\/\fR
+Override kernel.toml bootloader for this invocation (systemd\-boot is the
+default).
 
 .TP
 \fB\-\-no\-pkg\-logs\fR
@@ -690,6 +852,10 @@ Run a post\-build ABI compatibility check on built shared libraries.
 \fB\-\-state\-dir\fR \fI\,DIR\/\fR
 Override state directory.
 
+.TP
+\fB\-\-profile\-conf\fR \fI\,FILE\/\fR
+Path to a profiles.toml to use instead of the default.
+
 .SH COMMAND \fI\,'sysforge setup'\/\fR
 usage: sysforge setup [\-h] [\-\-pacman\-conf FILE]
 
@@ -698,7 +864,37 @@ usage: sysforge setup [\-h] [\-\-pacman\-conf FILE]
 \fB\-\-pacman\-conf\fR \fI\,FILE\/\fR
 Path to pacman.conf (default: /etc/pacman.conf).
 
+.SH COMMAND \fI\,'sysforge env'\/\fR
+usage: sysforge env [\-h]
+
+.SH COMMAND \fI\,'sysforge log'\/\fR
+usage: sysforge log [\-h] [\-\-state\-dir DIR] [\-\-no\-pager] [PKG]
+
+.TP
+\fBPKG\fR
+Package name (resolves to <pkgbuild_src_dir>/<pkg>/sysforge_<pkg>.log). Omit
+to page the unified log.
+
+.SH OPTIONS \fI\,'sysforge log'\/\fR
+.TP
+\fB\-\-state\-dir\fR \fI\,DIR\/\fR
+Override state directory (used to locate the unified log).
+
+.TP
+\fB\-\-no\-pager\fR
+Don't pipe output through $PAGER (default: paginate when stdout is a TTY).
+
+.SH COMMAND \fI\,'sysforge completions'\/\fR
+usage: sysforge completions [\-h] {packages,manifest,local,state,makepkg\-flags}
+
+.TP
+\fB{packages,manifest,local,state,makepkg\-flags}\fR
+
 .SH OPTIONS
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+show program's version number and exit
+
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Verbosity level. Default: errors only. \-v adds warnings. \-vv adds

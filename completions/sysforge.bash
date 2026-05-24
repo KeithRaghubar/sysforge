@@ -161,6 +161,7 @@ _sysforge_update() {
     _sysforge_flag_arg && return
     local flags="--packages --dry-run --devel --offline --install-only --interactive \
         --no-cleanbuild --cleansrc --cleansrc-force --no-llvm-preflight \
+        --no-toolchain-preflight \
         -m --makepkg --state-dir --profile-conf --cache-report \
         --no-pkg-log --persist-log --log-dir"
     if [[ $cur == -* ]]; then

@@ -1,4 +1,5 @@
 .PHONY: all dev venv build install clean distclean test test-x lint man \
+        check-shipped pre-release \
         release-major release-minor release-patch \
         vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-ssh vm-ssh-root vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
@@ -38,6 +39,17 @@ test-x:
 
 lint:
 	ruff check sysforge/
+
+# Pre-release shipped-file validator. Runs the seven check groups in
+# tools/check_shipped.py (configs, pkgbuild, pkgbuild_parity, hooks,
+# completions, versions, manpage). tools/release.sh invokes this from
+# preflight; also runnable standalone.
+check-shipped:
+	uv run --no-sync python tools/check_shipped.py
+
+# Composite gate: lint + tests + shipped-file consistency. Run before
+# kicking off `make release-{major,minor,patch}`.
+pre-release: lint test check-shipped
 
 release-major:
 	bash tools/release.sh --bump=major

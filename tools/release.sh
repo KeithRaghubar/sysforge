@@ -173,12 +173,13 @@ preflight_fresh() {
         echo "ERROR: tag $TAG already exists on origin" >&2
         exit 1
     fi
-    if ! grep -q '<!--version-->v[0-9.]\+<!--/version-->' README.md; then
-        echo "ERROR: <!--version-->...<!--/version--> marker missing in README.md" >&2
-        exit 1
-    fi
-    if ! grep -q '<!--version-->v[0-9.]\+<!--/version-->' DESIGN.md; then
-        echo "ERROR: <!--version-->...<!--/version--> marker missing in DESIGN.md" >&2
+    # Shipped-file consistency gate. Validates every shipped TOML schema,
+    # PKGBUILD install graph, hook->helper parity, completions<->CLI parity,
+    # version markers (subsumes the prior README/DESIGN grep checks), and
+    # man-page freshness. Hard fail — nothing in Phase 1 rewrites a file
+    # unless this passes.
+    if ! make --no-print-directory check-shipped >&2; then
+        echo "ERROR: shipped-file checks failed — fix the findings above and re-run." >&2
         exit 1
     fi
 }
