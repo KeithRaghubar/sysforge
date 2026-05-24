@@ -29,6 +29,7 @@ Phases:
 Public API:
     cmd_update(args)
 """
+import os
 import re
 import sys
 import time
@@ -88,6 +89,30 @@ from sysforge.packages_cmd import entry_is_inert
 
 
 _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
+
+
+# Escape sequences to restore the terminal after an interrupted child that
+# entered alt-screen / hid the cursor / left SGR state set (e.g. a pager
+# killed by Ctrl-C). Written verbatim to stdout from the cmd_update finally
+# block when stdout is a TTY.
+_TERMINAL_RESET = "\x1b[?1049l\x1b[?25h\x1b[0m"
+
+
+def _suppress_pagers_in_env(interactive: bool) -> None:
+    """Default PAGER/GIT_PAGER/SYSTEMD_PAGER/LESS to non-paging values.
+
+    Applied for the lifetime of cmd_update when ``--interactive`` is not
+    set, so no subprocess (pacman post-install hooks, git, systemd tools
+    invoked by hooks, makepkg subshells, etc.) inherits a $PAGER that
+    would put the terminal into alt-screen mode. ``setdefault`` preserves
+    a user-supplied value (e.g. ``PAGER=most sysforge update``).
+    """
+    if interactive:
+        return
+    os.environ.setdefault("PAGER", "cat")
+    os.environ.setdefault("GIT_PAGER", "cat")
+    os.environ.setdefault("SYSTEMD_PAGER", "cat")
+    os.environ.setdefault("LESS", "-RFX")
 
 
 def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
@@ -904,7 +929,24 @@ def cmd_update(args) -> None:
     """Entry point for `sysforge update`."""
 
     _consume_pacman_hook_sentinels()
+    _suppress_pagers_in_env(getattr(args, "interactive", False))
 
+    try:
+        _cmd_update_body(args)
+    finally:
+        # Defensive: if any subprocess (pacman hook, makepkg subshell, etc.)
+        # entered alt-screen mode and died without restoring, emit the reset
+        # so the caller's scrollback isn't lost. No-op when stdout isn't a
+        # TTY (CI, pipes).
+        if sys.stdout.isatty():
+            try:
+                sys.stdout.write(_TERMINAL_RESET)
+                sys.stdout.flush()
+            except (OSError, ValueError):
+                pass
+
+
+def _cmd_update_body(args) -> None:
     # ── Phase 0: Init ─────────────────────────────────────────────────────
     install_only = getattr(args, "install_only", False)
     offline = getattr(args, "offline", False) or install_only
