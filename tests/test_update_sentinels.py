@@ -90,3 +90,34 @@ def test_all_sentinels_consumed_in_one_pass(tmp_path):
         assert not (sentinels / name).exists()
     # kernel + toolchain produce warns; buildstate is silent
     assert mock_log.warn.call_count == 2
+
+
+def test_silent_consume_unlinks_without_warning(tmp_path):
+    """Phase 5 / Phase 6.5 of cmd_update issue their own pacman transactions,
+    which can drop fresh kernel/toolchain sentinels right before cmd_update
+    returns. The end-of-update silent consume must unlink those without
+    re-emitting warnings the Phase 5/6.5 output already covers."""
+    sentinels = tmp_path / "sentinels"
+    sentinels.mkdir()
+    for name in ("kernel", "toolchain", "buildstate"):
+        (sentinels / name).write_text("ts\n")
+
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), _stub_logger() as mock_log:
+        _consume_pacman_hook_sentinels(silent=True)
+
+    for name in ("kernel", "toolchain", "buildstate"):
+        assert not (sentinels / name).exists()
+    mock_log.warn.assert_not_called()
+
+
+def test_silent_default_is_false(tmp_path):
+    """Guard against accidentally inverting the default: the bare call form
+    used at the start of cmd_update must keep producing warnings."""
+    sentinels = tmp_path / "sentinels"
+    sentinels.mkdir()
+    (sentinels / "toolchain").write_text("ts\n")
+
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), _stub_logger() as mock_log:
+        _consume_pacman_hook_sentinels()
+
+    assert mock_log.warn.call_count == 1

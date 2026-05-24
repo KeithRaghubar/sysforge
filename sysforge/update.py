@@ -845,19 +845,25 @@ _SENTINEL_REMINDERS = {
 }
 
 
-def _consume_pacman_hook_sentinels() -> None:
+def _consume_pacman_hook_sentinels(silent: bool = False) -> None:
     """Surface kernel/toolchain reminders dropped by pacman PostTransaction
     hooks since the last `sysforge update` run, then unlink them.
 
     The buildstate sentinel is consumed silently — its only purpose is to
     nudge the build_state.toml resync that already runs in cmd_update.
+
+    silent=True suppresses the kernel/toolchain warnings but still unlinks.
+    Used at the end of cmd_update so sentinels dropped by sysforge's own
+    Phase 5 (pacman -U) and Phase 6.5 (pacman -Syu) transactions don't
+    re-fire as "stale" reminders on the next invocation.
     """
     if not _SENTINEL_DIR.is_dir():
         return
     for kind, reminder in _SENTINEL_REMINDERS.items():
         path = _SENTINEL_DIR / kind
         if path.exists():
-            _log.warn(reminder)
+            if not silent:
+                _log.warn(reminder)
             try:
                 path.unlink()
             except OSError:
@@ -1290,6 +1296,11 @@ def cmd_update(args) -> None:
             persist=True,
         )
         _log.ui(f"[SYSFORGE] Unified log: {unified_log_path}")
+
+    # Clear sentinels that our own Phase 5 / Phase 6.5 pacman transactions
+    # may have dropped this run; the start-of-cmd_update consume already
+    # surfaced anything left by transactions outside sysforge.
+    _consume_pacman_hook_sentinels(silent=True)
 
 
 # ---------------------------------------------------------------------------
