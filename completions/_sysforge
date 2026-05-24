@@ -147,6 +147,7 @@ _sysforge_update() {
     '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--no-toolchain-preflight[skip toolchain pre-flight (rust/cmake/meson + lib32 cross targets)]' \
+    '--include-stage-owned[include packages owned by a pipeline stage (e.g. kernel-stage linux-custom)]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
@@ -242,7 +243,7 @@ _sysforge_packages_list() {
 _sysforge_packages_add() {
   _arguments \
     '--packages[path to packages.toml]:file:_files' \
-    '--source[pin routing (metadata; doesn'\''t satisfy validation alone)]:source:(repo aur)' \
+    '--source[pin routing (metadata; doesn'\''t satisfy validation alone)]:source:(repo aur local)' \
     '--pkgbuild-patch[patch PKGBUILD flags before build]' \
     '--no-cache[disable ccache/sccache for this package (required for PGO)]' \
     '--reason[free-form note attached to the entry]:text' \

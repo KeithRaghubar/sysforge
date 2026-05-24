@@ -1055,3 +1055,81 @@ def test_kernel_stage_sentinel_records_compiler_metadata_llvm(tmp_path):
 
     assert seen.get("compiler") == "llvm"
     assert seen.get("pkgname") == "linux-git"
+
+
+def test_kernel_stage_passes_source_and_owner_stage_to_makepkg(tmp_path):
+    """Kernel stage must hand the resolved source + owner_stage='kernel' to
+    BuildOptions so build_state records who owns the package."""
+    import sysforge.pipeline.stages.kernel as _km
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-custom")
+    # kernel.toml without an explicit `source` — must default to "local"
+    p = tmp_path / "kernel.toml"
+    p.write_text(
+        'enabled = true\n'
+        'pkgname = "linux-custom"\n'
+        f'pkgbuild_src_dir = "{builds}"\n'
+        'bootloader = "none"\n'
+    )
+    state = PipelineState(tmp_path / "state")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_run, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    mock_run.assert_called_once()
+    opts = mock_run.call_args.kwargs["options"]
+    assert opts.source == "local"
+    assert opts.owner_stage == "kernel"
+
+
+def test_kernel_stage_local_source_skips_presync(tmp_path):
+    """When source = "local" (default), source-sync must be skipped — there's
+    no remote to fetch against."""
+    import sysforge.pipeline.stages.kernel as _km
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-custom")
+    p = tmp_path / "kernel.toml"
+    p.write_text(
+        'enabled = true\n'
+        'pkgname = "linux-custom"\n'
+        f'pkgbuild_src_dir = "{builds}"\n'
+        'bootloader = "none"\n'
+    )
+    state = PipelineState(tmp_path / "state")
+
+    opts = make_options(state_dir=tmp_path / "state", no_update=False)
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.get_scheduler") as mock_sched, \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    mock_sched.assert_not_called()
+
+
+def test_kernel_stage_invalid_source_rejected(tmp_path):
+    """Unknown source values in kernel.toml are an error."""
+    import sysforge.pipeline.stages.kernel as _km
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-custom")
+    p = tmp_path / "kernel.toml"
+    p.write_text(
+        'enabled = true\n'
+        'pkgname = "linux-custom"\n'
+        'source = "bogus"\n'
+        f'pkgbuild_src_dir = "{builds}"\n'
+        'bootloader = "none"\n'
+    )
+    state = PipelineState(tmp_path / "state")
+
+    with patch.object(_km, "KERNEL_PATH", p):
+        with pytest.raises(RuntimeError, match="invalid kernel.toml source"):
+            KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))

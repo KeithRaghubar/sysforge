@@ -1467,7 +1467,8 @@ class BuildOptions:
     strip_flags: frozenset | set | None = None
     force_batch: bool = False
     pgo_managed: bool = False
-    source: str | None = None  # "aur" | "repo" | "git" — persisted in build_state
+    source: str | None = None  # "aur" | "repo" | "git" | "local" — persisted in build_state
+    owner_stage: str | None = None  # e.g. "kernel" — persisted so `sysforge update` skips by default
 
 
 # ---------------------------------------------------------------------------
@@ -1778,6 +1779,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     flags_string=fs,
                     built_upstream_commit=upstream_commit,
                     source=options.source,
+                    owner_stage=options.owner_stage,
                 )
             bs.save()
             _build_log.info(f"Recorded build state for {pkgbase!r}")

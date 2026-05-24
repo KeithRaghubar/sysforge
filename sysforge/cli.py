@@ -684,6 +684,10 @@ def _add_update_parser(sub):
     p.add_argument("--no-toolchain-preflight", action="store_true", dest="no_toolchain_preflight",
         help="Skip the toolchain pre-flight (rust/cmake/meson availability + "
              "lib32 cross targets) that normally runs before the build loop.")
+    p.add_argument("--include-stage-owned", action="store_true", dest="include_stage_owned",
+        help="Include packages owned by a pipeline stage (e.g. the kernel "
+             "stage's `linux-custom`). Skipped by default; the owning stage "
+             "(`sysforge run kernel`) is the canonical update path.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit update to these package names (default: all sysforge-managed packages).")
     p.set_defaults(verb_cls=UpdateVerb)
@@ -798,8 +802,9 @@ def _add_packages_parser(sub):
         help="Add or update an override entry. Requires at least one of "
              "--pkgbuild-patch / --no-cache / --reason.")
     p_add.add_argument("pkg", metavar="PKG", help="Package name to add or update.")
-    p_add.add_argument("--source", choices=("repo", "aur"), dest="source",
-        help="Pin routing (metadata; doesn't satisfy validation on its own).")
+    p_add.add_argument("--source", choices=("repo", "aur", "local"), dest="source",
+        help="Pin routing (metadata; doesn't satisfy validation on its own). "
+             "`local` marks a hand-maintained PKGBUILD with no remote to sync from.")
     p_add.add_argument("--pkgbuild-patch", action="store_true", dest="pkgbuild_patch",
         help="Patch PKGBUILD flags before build.")
     p_add.add_argument("--no-cache", action="store_true", dest="no_cache",

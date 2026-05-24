@@ -67,7 +67,30 @@ from sysforge.primitives.toolchain_preflight import (
     render_preflight as render_toolchain_preflight,
     auto_remediate as auto_remediate_toolchain,
 )
-from sysforge.primitives.paths import resolve_packages_path
+from sysforge.primitives.paths import KERNEL_PATH, resolve_packages_path
+
+
+def _kernel_stage_pkgbase() -> str | None:
+    """Return the kernel-stage pkgbase from kernel.toml, or None if absent.
+
+    Used as the bootstrap fallback in ``sysforge update``: before the kernel
+    stage has run (and stamped ``owner_stage = "kernel"`` into build_state),
+    we still need to know which installed package belongs to the kernel
+    stage so it can be skipped from the update sweep. Read directly each
+    call — kernel.toml is small, and update runs aren't hot-path enough to
+    justify caching.
+    """
+    if not KERNEL_PATH.exists():
+        return None
+    try:
+        with open(KERNEL_PATH, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    pkg = data.get("pkgname")
+    if isinstance(pkg, str) and pkg:
+        return pkg
+    return None
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
 from sysforge.primitives.pacman import (
     BATCH_STRIP_FLAGS,
@@ -320,6 +343,50 @@ def _assemble_package_set(
                     if n in foreign
                     or n in behavior_overridden
                     or (repo_mode_profiled and n not in foreign)}
+
+    # Stage-owned packages: skipped by default so `sysforge update` doesn't
+    # double-process kernel-owned packages alongside `sysforge run kernel`.
+    # Authoritative source is ``owner_stage`` recorded in build_state by the
+    # owning stage; the kernel.toml bootstrap fallback covers the first run
+    # before any stamp exists. ``--include-stage-owned`` overrides the skip
+    # (also includes packages explicitly named on the command line).
+    include_stage_owned = bool(getattr(args, "include_stage_owned", False))
+    filter_names: list[str] = getattr(args, "pkgnames", None) or []
+    explicit_set = set(filter_names)
+    stage_owned: dict[str, str] = {}
+    if not include_stage_owned:
+        for name in target_names:
+            owner = (build_state_pkgs.get(name) or {}).get("owner_stage")
+            if owner:
+                stage_owned[name] = owner
+        kernel_pkgbase = _kernel_stage_pkgbase()
+        if kernel_pkgbase:
+            for name in target_names:
+                if name in stage_owned:
+                    continue
+                # Match the pkgbase recorded in build_state (set by makepkg
+                # for split packages), falling back to pacman's offline
+                # `%BASE%` lookup so packages built before this field
+                # existed are still classified correctly.
+                entry = build_state_pkgs.get(name) or {}
+                base = entry.get("pkgbase") or get_pkgbase(name) or name
+                if name == kernel_pkgbase or base == kernel_pkgbase:
+                    stage_owned[name] = "kernel"
+        # Explicit names on the command line are an opt-in for that package.
+        for name in list(stage_owned):
+            if name in explicit_set:
+                del stage_owned[name]
+        if stage_owned:
+            by_stage: dict[str, list[str]] = {}
+            for name, stage in stage_owned.items():
+                by_stage.setdefault(stage, []).append(name)
+            for stage, names in by_stage.items():
+                _log.info(
+                    f"skipping {len(names)} {stage}-stage package(s): "
+                    f"{', '.join(sorted(names))} — run `sysforge run {stage}` "
+                    "to update (or pass --include-stage-owned)"
+                )
+            target_names -= set(stage_owned)
 
     packages: dict[str, dict] = {}
     unrecorded_names: set[str] = set()

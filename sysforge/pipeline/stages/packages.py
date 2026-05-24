@@ -222,6 +222,7 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
         cxx_override=toolchain.get("cxx_override"),
         ld_override=toolchain.get("ld_override"),
         state_dir=options.state_dir,
+        source=pkg.get("source"),
     )
     makepkg_run(pkgbuild, options=build_opts)
 
@@ -284,6 +285,10 @@ class PackagesStage(Stage):
             source = pkg.get("source", "aur")
             rm = build_cfg.get("repo_mode", "pacman")
             effective = "profiled" if pkg.get("pkgbuild_patch") else rm
+            # `local` source has no remote AUR deps to resolve — its
+            # build-time deps come from the local PKGBUILD's depends=()
+            # which makepkg handles directly. Group only aur/git/profiled-repo
+            # for the AUR-dep resolution pass.
             if source in ("aur", "git") or (source == "repo" and effective == "profiled"):
                 aur_names.append(name)
 
@@ -366,7 +371,10 @@ class PackagesStage(Stage):
                             _build_aur(pkg, build_cfg, config, options, toolchain)
                         elif source == "repo":
                             _install_repo(pkg, options)
-                        elif source in ("aur", "git"):
+                        elif source in ("aur", "git", "local"):
+                            # `local` shares the build path with aur/git — the
+                            # PKGBUILD already lives in pkgbuild_src_dir and no
+                            # source sync is performed for it.
                             _build_aur(pkg, build_cfg, config, options, toolchain)
                         else:
                             raise RuntimeError(f"Unknown source type {source!r} for {name!r}")

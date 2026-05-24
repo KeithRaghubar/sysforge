@@ -455,3 +455,62 @@ def test_reset_scheduler_drops_instance(tmp_path):
     s2 = get_scheduler(state_dir=tmp_path)
     assert s1 is not s2
     reset_scheduler()
+
+
+# ---------------------------------------------------------------------------
+# `source = "local"` — hand-maintained PKGBUILD with no remote
+# ---------------------------------------------------------------------------
+
+def test_local_source_short_circuits_without_network(tmp_path):
+    """A local-source request never touches the network or git: the
+    scheduler sees the dir exists and returns STATUS_SKIPPED_LOCAL.
+
+    Patches aur_clone / git_fetch_and_compare to fail loudly if either is
+    invoked — proving the short-circuit is taken before any sync work.
+    """
+    from sysforge.primitives.source_sync import STATUS_SKIPPED_LOCAL
+    pkg = _make_repo(tmp_path, "linux-custom")
+    sched = _scheduler(tmp_path)
+    with patch("sysforge.primitives.source_sync.aur_clone",
+               side_effect=AssertionError("aur_clone must not be called")), \
+         patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+               side_effect=AssertionError("git_fetch_and_compare must not be called")):
+        result = sched.request(SyncRequest(
+            pkgbase="linux-custom", pkgbuild_dir=pkg, source="local",
+        ))
+    assert result.status == STATUS_SKIPPED_LOCAL
+
+
+def test_local_source_missing_dir_is_failed(tmp_path):
+    """A local-source request whose pkgbuild_dir does not exist is reported
+    as STATUS_FAILED — there's no remote to clone from, so the missing
+    directory is an operator-fixable error.
+    """
+    sched = _scheduler(tmp_path)
+    dest = tmp_path / "linux-custom"  # not created
+    result = sched.request(SyncRequest(
+        pkgbase="linux-custom", pkgbuild_dir=dest, source="local",
+    ))
+    assert result.status == STATUS_FAILED
+    assert "missing" in (result.error or "").lower()
+
+
+def test_local_source_excluded_from_rpc_batch(tmp_path):
+    """sync_many's RPC batch must not include local-source pkgbases."""
+    pkg_local = _make_repo(tmp_path, "linux-custom")
+    pkg_aur = _make_repo(tmp_path, "htop")
+    sched = _scheduler(tmp_path)
+    with patch.object(sched, "_ensure_rpc") as ensure_rpc, \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="x"), \
+         patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+               return_value=GitFetchOutcome(status="up_to_date",
+                                            head_before="x", head_after="x")):
+        sched.sync_many([
+            SyncRequest(pkgbase="linux-custom", pkgbuild_dir=pkg_local,
+                        source="local"),
+            SyncRequest(pkgbase="htop", pkgbuild_dir=pkg_aur, source="aur"),
+        ])
+    # RPC should be primed for the AUR base only, never the local one.
+    ensure_rpc.assert_called_once()
+    (called_args,) = ensure_rpc.call_args.args
+    assert called_args == ["htop"]

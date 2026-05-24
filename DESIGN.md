@@ -454,6 +454,9 @@ srcdir           = "linux"       # source directory name if different from pkgna
 bootloader       = "systemd-boot"    # systemd-boot | grub | none  (default: systemd-boot)
 interactive      = true              # default: true — interactive kconfig (make nconfig)
 compiler         = "llvm"            # "gcc" | "llvm" — kernel-stage compiler (optional)
+source           = "local"           # "local" (default) | "aur" | "git"
+                                     # "local" = hand-maintained PKGBUILD, no remote sync.
+                                     # "aur"/"git" = PKGBUILD is a clone of an AUR/git remote.
 
 [[kconfig]]                      # manual kconfig overrides (optional, repeatable)
 option = "CONFIG_HZ_1000"        # must match CONFIG_[A-Z0-9_]+
@@ -484,7 +487,11 @@ Note: when other verbs (`sysforge build`, `sysforge update`) build a kernel PKGB
 
 **Source sync via the scheduler:**
 
-The kernel stage routes its source refresh through `source_sync.get_scheduler().request(SyncRequest(...))` ahead of the build, the same path as the toolchain stage. `--cleansrc` purges and re-clones the kernel tree (refusing on dirty/ahead/no-upstream clones); `--cleansrc-force` overrides that guard. Cleansrc forces a sync even when `--no-update` is also set, so an explicit purge is never silently skipped. `STATUS_DIVERGED` is a warning; `STATUS_FAILED` / `STATUS_RATE_LIMITED` / `STATUS_PURGE_REFUSED` raise.
+The kernel stage routes its source refresh through `source_sync.get_scheduler().request(SyncRequest(..., source=<kernel.toml source>))` ahead of the build, the same path as the toolchain stage. With the default `source = "local"`, the scheduler short-circuits (no RPC, no clone, no fetch) — only `--cleansrc` / `--cleansrc-force` would attempt a purge, but a hand-maintained tree has no remote to re-clone from, so users on the `local` path leave cleansrc unset. For `source = "aur"` / `"git"`, the normal sync runs: `--cleansrc` purges and re-clones (refusing on dirty/ahead/no-upstream clones); `--cleansrc-force` overrides that guard; cleansrc forces a sync even when `--no-update` is also set. `STATUS_DIVERGED` is a warning; `STATUS_FAILED` / `STATUS_RATE_LIMITED` / `STATUS_PURGE_REFUSED` raise.
+
+**Stage-ownership stamp:**
+
+After a successful build, the kernel stage stamps `owner_stage = "kernel"` and `source = "local"` (or the configured value) into `build_state.toml` via `BuildOptions`. `sysforge update` honours that marker and skips the kernel package by default — the canonical update path is `sysforge run kernel`, not a sweep through `update`. Before the first kernel-stage build has written that stamp, the bootstrap fallback in `update.py` reads `kernel.toml`'s `pkgname` and applies the same skip; split sub-packages collapse to the kernel `pkgbase` via the same `get_pkgbase()` lookup that handles other custom-built split packages. `--include-stage-owned` overrides the skip; naming the package explicitly on the `sysforge update` command line is treated as an opt-in for that run.
 
 **CLI surface (`sysforge run kernel`):**
 
@@ -997,8 +1004,8 @@ Schema (`SCHEMA_VERSION = 1`): `rpc_version`, `rpc_last_modified` (Unix timestam
 Process-wide scheduler that enforces the "one RPC call, zero git fetches on steady state" rule. Replaces the old four-sub-phase source-sync block in `sysforge update`.
 
 Public types:
-- `SyncRequest(pkgbase, pkgbuild_dir, source="aur", force_fetch=False)` — input.
-- `SyncResult(pkgbase, status, head_before=None, head_after=None, error=None)` — output. Status constants: `STATUS_UP_TO_DATE`, `STATUS_FETCHED`, `STATUS_CLONED`, `STATUS_DIVERGED`, `STATUS_RATE_LIMITED`, `STATUS_FAILED`, `STATUS_SKIPPED_OFFLINE`, `STATUS_SKIPPED_NO_TRACKING`, `STATUS_PURGE_REFUSED`.
+- `SyncRequest(pkgbase, pkgbuild_dir, source="aur", force_fetch=False)` — input. `source` is one of `"aur" | "repo" | "git" | "local"`. `"aur"` and `"git"` follow the same code path today (AUR RPC + `aur_clone` + `git_fetch_and_compare`); `"repo"` uses `pkgctl_checkout` against gitlab.archlinux.org; `"local"` short-circuits the scheduler entirely — no RPC, no clone, no fetch — for hand-maintained PKGBUILDs with no upstream remote (e.g. the kernel stage's `linux-custom`). A local-source request whose directory doesn't exist returns `STATUS_FAILED` (operator-fixable).
+- `SyncResult(pkgbase, status, head_before=None, head_after=None, error=None)` — output. Status constants: `STATUS_UP_TO_DATE`, `STATUS_FETCHED`, `STATUS_CLONED`, `STATUS_DIVERGED`, `STATUS_RATE_LIMITED`, `STATUS_FAILED`, `STATUS_SKIPPED_OFFLINE`, `STATUS_SKIPPED_NO_TRACKING`, `STATUS_SKIPPED_LOCAL`, `STATUS_PURGE_REFUSED`.
 
 Flow per request:
 1. **RPC gate.** On the first AUR-source request of a batch, fire one `aur_info([…all AUR names…])` call and cache the results in `SourceMetaCache`.
@@ -1016,7 +1023,7 @@ Singletons:
 
 Build state persistence. `/var/lib/sysforge/build_state.toml` is a **superset of `pacman -Q`** — every installed package has an entry, regardless of whether sysforge built it. The `build_mode` field distinguishes them:
 
-- `"profiled"` — built by sysforge; carries `pkgver`, `pkgrel`, `epoch`, `pkgbase`, `pkgbuild_dir`, `flags_string` (serialized resolved compiler flags, newline-separated `KEY=value` lines), `built_at` (ISO 8601 UTC timestamp), and optionally `built_upstream_commit` (40-char SHA of the just-built upstream tree, populated only for single-git-source VCS packages — read by `sysforge update --devel` to short-circuit `pkgver()` resolution via `git ls-remote`; absent for non-VCS, multi-git-source, or any PKGBUILD whose `source=()` has unresolved bash interpolation) and `source` (`"aur"` / `"repo"` / `"git"` — the origin classification at build time, read by `sysforge update`'s source resolver so previously-built packages keep their origin across runs instead of being re-derived from live pacman + overrides every invocation; absent for back-compat entries written before the field existed). Split packages (multiple `pkgname` from one `pkgbase`) each get their own entry, all pointing at the same `pkgbuild_dir`.
+- `"profiled"` — built by sysforge; carries `pkgver`, `pkgrel`, `epoch`, `pkgbase`, `pkgbuild_dir`, `flags_string` (serialized resolved compiler flags, newline-separated `KEY=value` lines), `built_at` (ISO 8601 UTC timestamp), and optionally `built_upstream_commit` (40-char SHA of the just-built upstream tree, populated only for single-git-source VCS packages — read by `sysforge update --devel` to short-circuit `pkgver()` resolution via `git ls-remote`; absent for non-VCS, multi-git-source, or any PKGBUILD whose `source=()` has unresolved bash interpolation), `source` (`"aur"` / `"repo"` / `"git"` / `"local"` — the origin classification at build time, read by `sysforge update`'s source resolver so previously-built packages keep their origin across runs instead of being re-derived from live pacman + overrides every invocation; absent for back-compat entries written before the field existed; `"local"` means a hand-maintained PKGBUILD with no upstream remote, source-sync is skipped for it), and `owner_stage` (e.g. `"kernel"` — set by a pipeline stage that owns the package's lifecycle, so `sysforge update` skips it by default and points the user at the owning stage; `--include-stage-owned` overrides the skip). `source` and `owner_stage` are *sticky* — `BuildState.record()` preserves the prior value when the caller doesn't pass one, so a rebuild through a code path that doesn't know about them won't erase the provenance. Split packages (multiple `pkgname` from one `pkgbase`) each get their own entry, all pointing at the same `pkgbuild_dir`.
 - `"pacman"` — installed via pacman, not built through sysforge. Carries only `pkgver`, `pkgrel`, `epoch` parsed from `pacman -Q`; `pkgbase`, `pkgbuild_dir`, and `flags_string` are absent. Synthesised by `sync_with_installed()`.
 - `"pgo_llvm_toolchain"` — LLVM toolchain packages built with profdata reuse: `makepkg_wrapper` injects `-fprofile-use=<saved-profdata>` when a compatible `clang.profdata` exists, otherwise prompts plain build / skip (default skip). See **PGO toolchain packages** below.
 

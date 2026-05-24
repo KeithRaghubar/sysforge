@@ -100,7 +100,8 @@ class BuildState:
                flags_string: str | None = None,
                built_at: str | None = None,
                built_upstream_commit: str | None = None,
-               source: str | None = None) -> None:
+               source: str | None = None,
+               owner_stage: str | None = None) -> None:
         """Record build metadata for a single package name.
 
         ``built_at`` defaults to now; callers performing a repair pass may
@@ -112,10 +113,18 @@ class BuildState:
         via ``git ls-remote``. None for non-VCS or multi-git-source packages.
 
         ``source`` records where the PKGBUILD came from at build time
-        ("aur" | "repo" | "git"). Read by ``sysforge update`` so the source
-        classification is persisted across runs instead of being re-derived
-        from live pacman + overrides every invocation. None for back-compat
-        entries written before the field existed.
+        ("aur" | "repo" | "git" | "local"). Read by ``sysforge update`` so the
+        source classification is persisted across runs instead of being
+        re-derived from live pacman + overrides every invocation. None for
+        back-compat entries written before the field existed. ``"local"``
+        means the PKGBUILD is hand-maintained with no upstream remote to
+        sync from — source sync is skipped entirely.
+
+        ``owner_stage`` names the pipeline stage that owns this package's
+        lifecycle (e.g. ``"kernel"``). When set, ``sysforge update`` skips
+        the package by default and tells the user to invoke the owning
+        stage instead; ``--include-stage-owned`` overrides the skip. None
+        for packages not claimed by any stage.
         """
         entry = {
             "pkgver": pkgver,
@@ -131,8 +140,22 @@ class BuildState:
             entry["flags_string"] = flags_string
         if built_upstream_commit is not None:
             entry["built_upstream_commit"] = built_upstream_commit
+        # ``source`` and ``owner_stage`` are sticky provenance fields: once
+        # recorded by the stage that built the package, they should not be
+        # erased by subsequent rebuilds that don't know about them (e.g. an
+        # ``--include-stage-owned`` rebuild that goes through ``sysforge
+        # update``'s call to makepkg_wrapper, which inherits source from
+        # _UpdateResult but has no owner_stage in scope). Preserve the prior
+        # value when the caller doesn't pass one.
+        prior = self._data.get(pkgname) or {}
         if source is not None:
             entry["source"] = source
+        elif "source" in prior:
+            entry["source"] = prior["source"]
+        if owner_stage is not None:
+            entry["owner_stage"] = owner_stage
+        elif "owner_stage" in prior:
+            entry["owner_stage"] = prior["owner_stage"]
         self._data[pkgname] = entry
 
     def delete(self, pkgname: str) -> bool:
@@ -195,7 +218,7 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source"):
+            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage"):
                 if key in entry:
                     val = (
                         str(entry[key])

@@ -1,4 +1,4 @@
-.TH SYSFORGE "1" "2026\-05\-23" "sysforge" "Generated Python Manual"
+.TH SYSFORGE "1" "2026\-05\-24" "sysforge" "Generated Python Manual"
 .SH NAME
 sysforge
 .SH SYNOPSIS
@@ -174,7 +174,7 @@ usage: sysforge update [\-h] [\-\-dry\-run] [\-\-devel] [\-\-offline] [\-\-insta
                        [\-\-persist\-log] [\-\-log\-dir DIR] [\-\-makepkg FLAGS]
                        [\-\-interactive] [\-\-no\-cleanbuild] [\-\-cleansrc]
                        [\-\-cleansrc\-force] [\-\-no\-llvm\-preflight]
-                       [\-\-no\-toolchain\-preflight]
+                       [\-\-no\-toolchain\-preflight] [\-\-include\-stage\-owned]
                        [PKG ...]
 
 .TP
@@ -270,6 +270,12 @@ Suppress the LLVM source pre\-flight summary.
 \fB\-\-no\-toolchain\-preflight\fR
 Skip the toolchain pre\-flight (rust/cmake/meson availability + lib32 cross
 targets) that normally runs before the build loop.
+
+.TP
+\fB\-\-include\-stage\-owned\fR
+Include packages owned by a pipeline stage (e.g. the kernel stage's `linux\-
+custom`). Skipped by default; the owning stage (`sysforge run kernel`) is the
+canonical update path.
 
 .SH COMMAND \fI\,'sysforge resolve'\/\fR
 usage: sysforge resolve [\-h] [\-\-show\-flags | \-\-deps] [\-\-profile\-conf FILE] PKG
@@ -430,8 +436,9 @@ Path to packages.toml.
 Show only entries whose package is not currently installed.
 
 .SH COMMAND \fI\,'sysforge packages add'\/\fR
-usage: sysforge packages add [\-h] [\-\-source {repo,aur}] [\-\-pkgbuild\-patch]
-                             [\-\-no\-cache] [\-\-reason TEXT] [\-\-packages FILE]
+usage: sysforge packages add [\-h] [\-\-source {repo,aur,local}]
+                             [\-\-pkgbuild\-patch] [\-\-no\-cache] [\-\-reason TEXT]
+                             [\-\-packages FILE]
                              PKG
 
 .TP
@@ -440,8 +447,9 @@ Package name to add or update.
 
 .SH OPTIONS \fI\,'sysforge packages add'\/\fR
 .TP
-\fB\-\-source\fR \fI\,{repo,aur}\/\fR
-Pin routing (metadata; doesn't satisfy validation on its own).
+\fB\-\-source\fR \fI\,{repo,aur,local}\/\fR
+Pin routing (metadata; doesn't satisfy validation on its own). `local` marks a
+hand\-maintained PKGBUILD with no remote to sync from.
 
 .TP
 \fB\-\-pkgbuild\-patch\fR

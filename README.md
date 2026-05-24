@@ -170,7 +170,7 @@ sudo vim /etc/sysforge/bootstrap.toml
 
 ### 3. Configure packages.toml
 
-Edit `/etc/sysforge/packages.toml` with the packages to install. Repo packages install via pacman; AUR packages are built with your compiler flag profile. Include `sysforge` if you want it installed in the target system:
+Edit `/etc/sysforge/packages.toml` with the packages to install. Repo packages install via pacman; AUR packages are built with your compiler flag profile. Use `source = "local"` for hand-maintained PKGBUILDs with no upstream remote to sync from. Include `sysforge` if you want it installed in the target system:
 
 ```toml
 [build]
@@ -188,6 +188,8 @@ source = "repo"
 name   = "neovim-git"
 source = "aur"
 ```
+
+For a custom kernel like `linux-custom`, configure it in `kernel.toml` instead of `packages.toml` — the kernel stage owns its lifecycle, and `sysforge update` will skip kernel-stage packages by default (use `--include-stage-owned` to override or just name them on the command line).
 
 ### 4. Run the bootstrap pipeline
 

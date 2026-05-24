@@ -344,6 +344,9 @@ def test_foreign_split_package_resolves_pkgbase_from_local_db(tmp_path):
 
     results = []
     with (
+        # Isolate from the workstation's real kernel.toml (which names
+        # linux-custom and would route it through the stage-owned skip).
+        patch("sysforge.update.KERNEL_PATH", tmp_path / "no-kernel-toml"),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
@@ -2030,3 +2033,166 @@ def test_default_mode_does_not_call_checkupdates(tmp_path):
             cmd_update(_make_args())
 
     mock_cu.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Stage-owned packages — kernel ownership filter
+# ---------------------------------------------------------------------------
+
+def _stage_owned_setup(tmp_path, args_extra=None, *, owner_in_state=False,
+                      kernel_toml_present=True):
+    """Build the patches+args needed to exercise the stage-owned filter for
+    `linux-custom`.
+
+    Two ownership signals are switchable:
+      - ``owner_in_state``: kernel stage has stamped ``owner_stage = "kernel"``.
+      - ``kernel_toml_present``: the bootstrap fallback (read kernel.toml's
+        pkgname) finds the package.
+    """
+    pkgbase = "linux-custom"
+    pkg_dir = tmp_path / pkgbase
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text(
+        f"pkgname={pkgbase}\npkgver=6.13\npkgrel=1\n"
+    )
+
+    foreign = {pkgbase: "6.13-1"}
+    state_data: dict = {}
+    if owner_in_state:
+        state_data[pkgbase] = {
+            "pkgver": "6.13", "pkgrel": "1", "epoch": "0",
+            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+            "source": "local", "owner_stage": "kernel",
+        }
+
+    args = _make_args(**(args_extra or {}))
+
+    kernel_path = tmp_path / "kernel.toml"
+    if kernel_toml_present:
+        kernel_path.write_text(
+            'enabled = true\n'
+            f'pkgname = "{pkgbase}"\n'
+            f'pkgbuild_src_dir = "{tmp_path}"\n'
+        )
+
+    results: list = []
+
+    def capture(res_list, a):
+        results.extend(res_list)
+
+    return pkgbase, pkg_dir, foreign, state_data, args, kernel_path, results, capture
+
+
+def test_kernel_owned_package_skipped_by_default(tmp_path, capsys):
+    """linux-custom matched via kernel.toml bootstrap is skipped + info-logged."""
+    (pkgbase, _, foreign, state_data, args, kernel_path, results,
+     capture) = _stage_owned_setup(tmp_path)
+
+    with (
+        patch("sysforge.update.KERNEL_PATH", kernel_path),
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.update.get_pkgbase", return_value=pkgbase),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(args)
+
+    # linux-custom must NOT appear in the result set
+    assert pkgbase not in {r.pkgbase for r in results}
+    # And the skip notice fired on stderr (sysforge's custom logger writes there).
+    captured = capsys.readouterr()
+    assert "kernel-stage package" in captured.err
+    assert "linux-custom" in captured.err
+
+
+def test_kernel_owned_via_build_state_marker_skipped(tmp_path):
+    """The owner_stage marker in build_state is honored even without kernel.toml."""
+    (pkgbase, _, foreign, state_data, args, _kernel_path, results,
+     capture) = _stage_owned_setup(
+        tmp_path, owner_in_state=True, kernel_toml_present=False,
+    )
+
+    with (
+        # KERNEL_PATH points at a nonexistent file so the bootstrap fallback
+        # is inactive — only the build_state marker should drive the skip.
+        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope.toml"),
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(args)
+
+    assert pkgbase not in {r.pkgbase for r in results}
+
+
+def test_include_stage_owned_flag_includes_kernel_package(tmp_path):
+    """--include-stage-owned overrides the skip."""
+    (pkgbase, _, foreign, state_data, args, kernel_path, results,
+     capture) = _stage_owned_setup(
+        tmp_path, args_extra={"include_stage_owned": True},
+        owner_in_state=True,
+    )
+
+    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "6.13",
+                          "pkgrel": "1", "epoch": "0"}}
+
+    with (
+        patch("sysforge.update.KERNEL_PATH", kernel_path),
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.update.vercmp", return_value=0),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(args)
+
+    assert pkgbase in {r.pkgbase for r in results}
+
+
+def test_explicit_pkgname_overrides_stage_owned_skip(tmp_path):
+    """Naming a stage-owned package on the CLI opts it back in for that run."""
+    (pkgbase, _, foreign, state_data, args, kernel_path, results,
+     capture) = _stage_owned_setup(
+        tmp_path, args_extra={"pkgnames": ["linux-custom"]},
+        owner_in_state=True,
+    )
+
+    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "6.13",
+                          "pkgrel": "1", "epoch": "0"}}
+
+    with (
+        patch("sysforge.update.KERNEL_PATH", kernel_path),
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.update.vercmp", return_value=0),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(args)
+
+    assert pkgbase in {r.pkgbase for r in results}

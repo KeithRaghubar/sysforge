@@ -225,6 +225,71 @@ def test_source_persisted_and_reloaded(tmp_path):
     assert "source" not in bs2.get("htop")
 
 
+def test_record_with_local_source(tmp_path):
+    """`source = "local"` is accepted and persisted as-is."""
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="linux-custom", pkgver="6.13.0", pkgrel="1", epoch="0",
+              pkgbase="linux-custom", pkgbuild_dir=Path("/tmp/x"), source="local")
+    assert bs.get("linux-custom")["source"] == "local"
+
+
+def test_source_sticky_on_subsequent_record(tmp_path):
+    """A second record() without source preserves the previously-set source.
+
+    Prevents accidental clearing when the update flow rebuilds a package
+    through a code path that doesn't know the original source classification.
+    """
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="linux-custom", pkgver="6.13.0", pkgrel="1", epoch="0",
+              pkgbase="linux-custom", pkgbuild_dir=Path("/tmp/x"), source="local")
+    # Second build, source not passed
+    bs.record(pkgname="linux-custom", pkgver="6.13.1", pkgrel="1", epoch="0",
+              pkgbase="linux-custom", pkgbuild_dir=Path("/tmp/x"))
+    assert bs.get("linux-custom")["source"] == "local"
+
+
+# ---------------------------------------------------------------------------
+# owner_stage — lifecycle ownership for skipping in `sysforge update`
+# ---------------------------------------------------------------------------
+
+def test_record_with_owner_stage(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="linux-custom", pkgver="6.13.0", pkgrel="1", epoch="0",
+              pkgbase="linux-custom", pkgbuild_dir=Path("/tmp/x"),
+              owner_stage="kernel")
+    assert bs.get("linux-custom")["owner_stage"] == "kernel"
+
+
+def test_record_without_owner_stage_omits_field(tmp_path):
+    """Back-compat: callers that don't pass owner_stage produce no field."""
+    bs = BuildState(tmp_path)
+    _record(bs)
+    assert "owner_stage" not in bs.get("htop")
+
+
+def test_owner_stage_persisted_and_reloaded(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="linux-custom", pkgver="6.13.0", pkgrel="1", epoch="0",
+              pkgbase="linux-custom", pkgbuild_dir=Path("/tmp/x"),
+              owner_stage="kernel")
+    bs.save()
+    bs2 = BuildState(tmp_path)
+    assert bs2.get("linux-custom")["owner_stage"] == "kernel"
+
+
+def test_owner_stage_sticky_on_subsequent_record(tmp_path):
+    """Owner_stage survives a rebuild that doesn't re-pass it (the
+    ``sysforge update --include-stage-owned`` rebuild path)."""
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="linux-custom", pkgver="6.13.0", pkgrel="1", epoch="0",
+              pkgbase="linux-custom", pkgbuild_dir=Path("/tmp/x"),
+              source="local", owner_stage="kernel")
+    bs.record(pkgname="linux-custom", pkgver="6.13.1", pkgrel="1", epoch="0",
+              pkgbase="linux-custom", pkgbuild_dir=Path("/tmp/x"))
+    assert bs.get("linux-custom")["owner_stage"] == "kernel"
+    assert bs.get("linux-custom")["source"] == "local"
+
+
 # ---------------------------------------------------------------------------
 # State dir via SYSFORGE_STATE_DIR env var
 # ---------------------------------------------------------------------------

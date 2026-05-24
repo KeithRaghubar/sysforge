@@ -17,8 +17,13 @@ Public API::
     class SyncRequest:
         pkgbase: str
         pkgbuild_dir: Path
-        source: str = "aur"              # "aur" | "repo" | "git"
+        source: str = "aur"              # "aur" | "repo" | "git" | "local"
         force_fetch: bool = False        # bypass RPC short-circuit
+
+``source = "local"`` describes a hand-maintained PKGBUILD with no upstream
+remote to sync from. The scheduler short-circuits to
+``STATUS_SKIPPED_LOCAL`` without any network or git activity; the directory
+must already exist.
 
     @dataclass
     class SyncResult:
@@ -77,6 +82,7 @@ STATUS_RATE_LIMITED  = "rate_limited"
 STATUS_FAILED        = "failed"
 STATUS_SKIPPED_OFFLINE = "skipped_offline"
 STATUS_SKIPPED_NO_TRACKING = "no_tracking"
+STATUS_SKIPPED_LOCAL = "skipped_local"
 STATUS_PURGE_REFUSED = "purge_refused"
 
 
@@ -228,6 +234,17 @@ class SourceSyncScheduler:
     def _sync_one(self, req: SyncRequest) -> SyncResult:
         pkgbase = req.pkgbase
         pkgbuild_dir = Path(req.pkgbuild_dir)
+
+        if req.source == "local":
+            # Hand-maintained PKGBUILD: no remote to sync against. The
+            # directory must already exist — refuse silently otherwise so
+            # callers see a clean status (it's not a network/AUR failure).
+            if not pkgbuild_dir.is_dir():
+                return SyncResult(
+                    pkgbase=pkgbase, status=STATUS_FAILED,
+                    error=f"local PKGBUILD missing: {pkgbuild_dir}",
+                )
+            return SyncResult(pkgbase=pkgbase, status=STATUS_SKIPPED_LOCAL)
 
         if self._aborted:
             return SyncResult(pkgbase=pkgbase, status=STATUS_RATE_LIMITED,

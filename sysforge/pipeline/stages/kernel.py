@@ -13,6 +13,10 @@ kernel.toml structure:
   pkgbuild_src_dir = "~/src"       # parent directory that contains the pkgname/ PKGBUILD dir
                                    # PKGBUILD is expected at pkgbuild_src_dir/pkgname/PKGBUILD
   bootloader       = "systemd-boot"    # systemd-boot | grub | none
+  source           = "local"           # "local" | "aur" | "git" — PKGBUILD origin.
+                                       # "local" (default) means hand-maintained, no
+                                       # remote to sync from. Set to "aur"/"git" if the
+                                       # kernel PKGBUILD is a clone of an AUR/git remote.
 
   [[kconfig]]                      # manual kconfig overrides (optional)
   option = "CONFIG_HZ_1000"        # must match CONFIG_[A-Z0-9_]+
@@ -127,15 +131,35 @@ def _resolve_bootloader(kernel_cfg, options):
     return cli or cfg
 
 
-def _presync_kernel_source(pkgbuild_dir, options, state_dir):
+_VALID_SOURCES = ("local", "aur", "git")
+
+
+def _resolve_source(kernel_cfg):
+    """Resolve the kernel PKGBUILD source classification; defaults to ``local``."""
+    src = kernel_cfg.get("source", "local")
+    if src not in _VALID_SOURCES:
+        raise RuntimeError(
+            f"[KERNEL] invalid kernel.toml source {src!r}: "
+            f"must be one of {_VALID_SOURCES}"
+        )
+    return src
+
+
+def _presync_kernel_source(pkgbuild_dir, options, state_dir, source="local"):
     """
     Sync the kernel source tree through the SourceSyncScheduler.
 
     Runs whenever --cleansrc/--cleansrc-force is set (forcing a purge even
     when --no-update is also set) or when --no-update was not passed.
     Skipped otherwise. Returns True if a sync was attempted.
+
+    ``source = "local"`` short-circuits the scheduler — there's no remote to
+    fetch against. The PKGBUILD must already be present at ``pkgbuild_dir``.
     """
     cleansrc = bool(getattr(options, "cleansrc", False) or getattr(options, "cleansrc_force", False))
+    if source == "local" and not cleansrc:
+        # Hand-maintained PKGBUILD: nothing to sync. Skip silently.
+        return False
     if not cleansrc and getattr(options, "no_update", False):
         _log.info("--no-update: skipping kernel source sync")
         return False
@@ -153,6 +177,7 @@ def _presync_kernel_source(pkgbuild_dir, options, state_dir):
     result = scheduler.request(SyncRequest(
         pkgbase=pkgbuild_dir.name,
         pkgbuild_dir=pkgbuild_dir,
+        source=source,
         force_fetch=True,
     ))
     if result.status in _SYNC_BLOCKING_STATUSES:
@@ -463,6 +488,7 @@ class KernelStage(Stage):
 
         pkgname = kernel_cfg.get("pkgname", "unknown")
         bootloader = _resolve_bootloader(kernel_cfg, options)
+        source = _resolve_source(kernel_cfg)
 
         # Interactive kconfig is the kernel-stage default — flipped off by
         # --non-interactive (or `interactive = false` in kernel.toml). When
@@ -490,7 +516,7 @@ class KernelStage(Stage):
         # Running it here (vs. relying on makepkg_wrapper's internal sync)
         # makes --cleansrc work even when --no-update is also set.
         pkgbuild = _pkgbuild_path(kernel_cfg)
-        synced = _presync_kernel_source(pkgbuild.parent, options, state_dir)
+        synced = _presync_kernel_source(pkgbuild.parent, options, state_dir, source=source)
 
         # Compiler resolution: CLI > kernel.toml > pipeline state from toolchain.
         compiler, cc, cxx = _resolve_compiler(kernel_cfg, options, state)
@@ -534,6 +560,8 @@ class KernelStage(Stage):
                     cxx_override=cxx,
                     abi_check=options.abi_check,
                     state_dir=options.state_dir,
+                    source=source,
+                    owner_stage="kernel",
                 ))
 
             # Post-install — inside the sentinel so an interrupted
