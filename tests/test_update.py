@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.update import (
     _is_vcs, cmd_update,
-    _check_one_pkgbase,
+    _check_one_pkgbase, _sync_sources,
 )
 from sysforge.primitives.pacman import get_installed_version, get_foreign_packages
 
@@ -1022,6 +1022,134 @@ def test_no_devel_skips_vcs_build(tmp_path):
             mw.run = mw_run_orig
 
     assert len(call_count) == 0
+
+
+def test_check_one_pkgbase_vcs_no_devel_skips_parse(tmp_path):
+    """Without --devel, _check_one_pkgbase returns DEVEL without parsing the
+    PKGBUILD or probing pkgbuild_dir. The pkgbuild_dir intentionally does not
+    exist, and parse_pkgbuild is patched to raise — neither must fire.
+    """
+    pkgbase = "neovim-git"
+    entry = {"pkgbuild_dir": str(tmp_path / "does-not-exist" / pkgbase)}
+
+    with patch(
+        "sysforge.update.parse_pkgbuild",
+        side_effect=AssertionError("parse_pkgbuild must not be called"),
+    ):
+        result = _check_one_pkgbase(
+            pkgbase=pkgbase,
+            pkgnames=[pkgbase],
+            entry=entry,
+            sync_failures={},
+            all_installed={pkgbase: "r1234.gabcdef-1"},
+            unrecorded_names=set(),
+            skip_sync_check=False,
+            rpc_version_by_base={},
+            force_devel=False,
+        )
+
+    assert result is not None
+    assert result.action == "DEVEL"
+    assert result.installed_ver == "r1234.gabcdef-1"
+    assert result.pkgbuild_ver is None
+    assert result.pkgbuild_path is None
+
+
+def test_sync_sources_skips_vcs_without_devel(tmp_path):
+    """``_sync_sources`` omits ``-git`` pkgbases when ``--devel`` is off, even
+    under ``--cleansrc`` — purge_src/aur_clone must never see those dirs.
+    """
+    from sysforge.primitives.source_sync import (
+        STATUS_UP_TO_DATE, SyncResult,
+    )
+
+    htop_dir = tmp_path / "htop"
+    htop_dir.mkdir()
+    (htop_dir / "PKGBUILD").write_text("pkgname=htop\n")
+    mesa_dir = tmp_path / "mesa-git"
+    mesa_dir.mkdir()
+    (mesa_dir / "PKGBUILD").write_text("pkgname=mesa-git\n")
+
+    pkgbase_map = {"htop": ["htop"], "mesa-git": ["mesa-git"]}
+    pkgbase_entry = {
+        "htop": {"pkgbuild_dir": str(htop_dir), "source": "aur"},
+        "mesa-git": {"pkgbuild_dir": str(mesa_dir), "source": "aur"},
+    }
+
+    seen: list[str] = []
+
+    class _FakeScheduler:
+        cache = MagicMock()
+        def _ensure_rpc(self, bases):  # noqa: ARG002
+            pass
+        def request(self, req):
+            seen.append(req.pkgbase)
+            return SyncResult(pkgbase=req.pkgbase, status=STATUS_UP_TO_DATE)
+        def close(self):
+            pass
+
+    args = _make_args(
+        offline=False, cleansrc=True, cleansrc_force=False, devel=False,
+        state_dir=str(tmp_path),
+    )
+
+    with (
+        patch("sysforge.update.get_scheduler", return_value=_FakeScheduler()),
+        patch("sysforge.update.load_sysforge_toml", return_value={}),
+        patch("sysforge.update.resolve_state_dir",
+              return_value=(tmp_path, "test")),
+    ):
+        failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
+
+    assert seen == ["htop"]
+    assert failures == {}
+
+
+def test_sync_sources_includes_vcs_under_devel(tmp_path):
+    """With ``--devel`` the VCS filter is bypassed — both pkgbases are synced."""
+    from sysforge.primitives.source_sync import (
+        STATUS_UP_TO_DATE, SyncResult,
+    )
+
+    htop_dir = tmp_path / "htop"
+    htop_dir.mkdir()
+    (htop_dir / "PKGBUILD").write_text("pkgname=htop\n")
+    mesa_dir = tmp_path / "mesa-git"
+    mesa_dir.mkdir()
+    (mesa_dir / "PKGBUILD").write_text("pkgname=mesa-git\n")
+
+    pkgbase_map = {"htop": ["htop"], "mesa-git": ["mesa-git"]}
+    pkgbase_entry = {
+        "htop": {"pkgbuild_dir": str(htop_dir), "source": "aur"},
+        "mesa-git": {"pkgbuild_dir": str(mesa_dir), "source": "aur"},
+    }
+
+    seen: list[str] = []
+
+    class _FakeScheduler:
+        cache = MagicMock()
+        def _ensure_rpc(self, bases):  # noqa: ARG002
+            pass
+        def request(self, req):
+            seen.append(req.pkgbase)
+            return SyncResult(pkgbase=req.pkgbase, status=STATUS_UP_TO_DATE)
+        def close(self):
+            pass
+
+    args = _make_args(
+        offline=False, cleansrc=False, cleansrc_force=False, devel=True,
+        state_dir=str(tmp_path),
+    )
+
+    with (
+        patch("sysforge.update.get_scheduler", return_value=_FakeScheduler()),
+        patch("sysforge.update.load_sysforge_toml", return_value={}),
+        patch("sysforge.update.resolve_state_dir",
+              return_value=(tmp_path, "test")),
+    ):
+        _sync_sources(pkgbase_map, pkgbase_entry, args)
+
+    assert sorted(seen) == ["htop", "mesa-git"]
 
 
 def test_pull_failure_continues_to_next_package(tmp_path):

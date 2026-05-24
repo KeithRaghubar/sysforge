@@ -467,6 +467,14 @@ def _sync_sources(
         # fetches for packages that ultimately follow the pacman path.
         if entry.get("repo_class") == "pacman":
             continue
+        # VCS packages without ``--devel`` are skipped at the build step
+        # (action ``DEVEL``), so source sync — including ``--cleansrc``
+        # purge + re-clone — is wasted work. Filter them out here so the
+        # progress tracker, status summary, and ``purge_src`` never touch
+        # ``-git`` / ``-svn`` / ``-hg`` / ``-bzr`` trees unless the user
+        # explicitly asked to rebuild them.
+        if _is_vcs(pkgbase) and not force_devel:
+            continue
         pkgbuild_dir = Path(entry["pkgbuild_dir"])
         resolved = str(pkgbuild_dir)
         if resolved in seen_dirs:
@@ -588,6 +596,24 @@ def _check_one_pkgbase(
             pkgbuild_path=None, has_build_record=has_record, source=source,
         )
 
+    # VCS fast-path: without ``--devel`` we never resolve or rebuild VCS
+    # packages, so the PKGBUILD parse, the pkgbuild_dir existence probe, and
+    # the sync-failure log are all wasted work. Return DEVEL straight from
+    # the installed version. Mirrors the source-sync filter in
+    # ``_sync_sources`` — both edges of the build pipeline ignore VCS dirs
+    # entirely when ``--devel`` is absent.
+    if _is_vcs(pkgbase) and not force_devel:
+        devel_installed_ver = next(
+            (all_installed[pn] for pn in pkgnames if pn in all_installed), None,
+        )
+        if devel_installed_ver is None:
+            return None
+        return _UpdateResult(
+            pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL",
+            installed_ver=devel_installed_ver, pkgbuild_ver=None,
+            pkgbuild_path=None, has_build_record=has_record, source=source,
+        )
+
     pkgbuild_dir = Path(entry["pkgbuild_dir"])
 
     if not pkgbuild_dir.is_dir():
@@ -644,18 +670,12 @@ def _check_one_pkgbase(
             break
     assert installed_ver is not None, f"{pkgbase}: no installed pkgname in {pkgnames}"
 
-    # VCS packages: static pkgver is just the seed; the real version comes
-    # from running pkgver() against the fetched upstream sources. Without
-    # --devel we don't pay that cost; with --devel we resolve and vercmp.
+    # VCS packages under --devel: static pkgver is just the seed; the real
+    # version comes from running pkgver() against the fetched upstream
+    # sources. The --devel-off case short-circuits at the top of this
+    # function (no PKGBUILD parse, no source sync) — anything reaching this
+    # branch is opt-in --devel work.
     if _is_vcs(pkgbase):
-        if not force_devel:
-            return _UpdateResult(
-                pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL",
-                installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
-                pkgbuild_path=pkgbuild_path, has_build_record=has_record,
-                source=source,
-            )
-
         # Cheap short-circuit: if the upstream HEAD still matches the SHA we
         # built last time (recorded in build_state.toml), skip the full
         # ``makepkg -od --nobuild`` resolve. peek_upstream_commit returns
