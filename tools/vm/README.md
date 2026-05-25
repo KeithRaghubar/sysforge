@@ -93,16 +93,25 @@ poweroff
 make vm-boot
 ```
 
-Once the VM has fully booted (give it ~10 seconds), save the clean snapshot:
+Once the VM has fully booted (give it ~10 seconds), save the clean snapshot
+via the `vm-savevm` wrapper:
 
 ```bash
-make vm-monitor
-# Inside the monitor:
-savevm clean
-quit
+make vm-savevm NAME=clean
 ```
 
 This is your reset point. Every test run can start from here.
+
+> **Why a wrapper instead of typing `savevm clean` in the monitor?** Plain
+> `savevm` over SLIRP user-mode networking emits
+> `warning: Slirp: Save of field slirp_bootpclient/macaddr failed` and
+> produces an unusable snapshot — libslirp's BOOTP client list isn't fully
+> VMState-migratable. The wrapper detaches the netdev backend
+> (`netdev_del net0`) so libslirp has no in-memory state to (mis)serialize,
+> runs `savevm`, then reattaches the netdev. The cost: SSH on port 10022
+> drops for the duration of the save. After `loadvm <name>` you may need to
+> run `set_link net0 on` from `make vm-monitor` if the link doesn't come back
+> automatically.
 
 ### 5. Install SysForge into the VM
 
@@ -163,8 +172,7 @@ ls -ld /var/lib/sysforge/sentinels                  # tmpfiles.d created the dir
 
 Save a baseline snapshot after the install if you want a pre-installed VM:
 ```bash
-make vm-monitor
-# savevm sysforge-installed
+make vm-savevm NAME=sysforge-installed
 ```
 
 #### Alternative (legacy): build inside the VM
@@ -207,7 +215,8 @@ make vm-boot
 make vm-ssh        # builder user (makepkg / sysforge work)
 make vm-ssh-root   # root (admin tasks)
 
-# Open the QEMU monitor (savevm, loadvm, quit, etc.)
+# Open the QEMU monitor (loadvm, info snapshots, quit, etc.)
+# For savevm use 'make vm-savevm NAME=<tag>' — see step 4 for why.
 make vm-monitor
 
 # Stop the VM (clean shutdown via monitor; falls back to kill)

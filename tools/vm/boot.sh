@@ -21,12 +21,15 @@
 # ISO mode (--iso) opens a VNC display for interactive install access:
 #   gvncviewer localhost
 #
-# QEMU monitor (for savevm / loadvm):
-#   make vm-monitor      (wraps socat to ~/.local/share/sysforge-vm/qemu-monitor.sock)
-#   savevm clean     — save current state as 'clean' snapshot
-#   loadvm clean     — restore to 'clean' snapshot
-#   info snapshots   — list saved snapshots
-#   quit             — stop the VM
+# QEMU monitor (for loadvm, info snapshots, etc.):
+#   make vm-monitor               (wraps socat to ~/.local/share/sysforge-vm/qemu-monitor.sock)
+#   make vm-savevm NAME=clean     — save current state as 'clean' snapshot
+#                                   (wraps the netdev detach/reattach needed to
+#                                    avoid the libslirp BOOTP VMState bug; see
+#                                    Makefile + tools/vm/README.md)
+#   loadvm clean                  — restore to 'clean' snapshot
+#   info snapshots                — list saved snapshots
+#   quit                          — stop the VM
 
 set -euo pipefail
 
@@ -84,12 +87,15 @@ QEMU_ARGS=(
     -smp "$CPU_CORES"
     -m "$RAM_MB"
 
+    # Disk — declared before the pflash drives so QEMU's savevm picks this as
+    # the vmstate target. bdrv_all_find_vmstate_bs() walks drives in
+    # declaration order; if the writable OVMF_VARS pflash came first, savevm
+    # would write guest RAM into the 528 KiB UEFI vars qcow2 instead of here.
+    -drive "file=$DISK_IMAGE,if=virtio,format=qcow2,discard=unmap"
+
     # UEFI firmware (no Secure Boot)
     -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE"
     -drive "if=pflash,format=qcow2,file=$OVMF_VARS"
-
-    # Disk
-    -drive "file=$DISK_IMAGE,if=virtio,format=qcow2,discard=unmap"
 
     # Network: user-mode NAT, SSH port forwarded to host
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"

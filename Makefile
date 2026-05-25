@@ -1,7 +1,7 @@
 .PHONY: all dev venv build install clean distclean test test-x lint man \
         check-shipped pre-release \
         release-major release-minor release-patch \
-        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-ssh vm-ssh-root vm-stop vm-clean \
+        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
@@ -116,6 +116,19 @@ vm-ssh-root:
 
 vm-monitor:
 	socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
+
+# savevm wrapper that works around the libslirp BOOTP VMState bug.
+# Plain `savevm` over user-mode networking emits
+#   warning: Slirp: Save of field slirp_bootpclient/macaddr failed
+# and the resulting snapshot is unusable. Detaching the netdev backend before
+# savevm destroys libslirp's in-memory BOOTP client list so there is nothing
+# to (mis)serialize; reattach after to restore SSH on host port 10022.
+vm-savevm:
+	@if [ -z "$(NAME)" ]; then echo "Usage: make vm-savevm NAME=<snapshot-name>"; exit 2; fi
+	@test -S "$(VM_DIR)/qemu-monitor.sock" || { echo "VM not running (no monitor socket at $(VM_DIR)/qemu-monitor.sock). Start it with 'make vm-boot'."; exit 1; }
+	@( printf 'set_link net0 off\nnetdev_del net0\nsavevm $(NAME)\nnetdev_add user,id=net0,hostfwd=tcp:127.0.0.1:10022-:22\nset_link net0 on\n'; sleep 30 ) \
+	  | socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
+	@echo "Saved snapshot '$(NAME)'. Verify with: make vm-monitor → info snapshots"
 
 vm-stop:
 	@if [ -f "$(VM_DIR)/qemu.pid" ] && kill -0 "$$(cat $(VM_DIR)/qemu.pid)" 2>/dev/null; then \
