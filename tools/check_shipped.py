@@ -533,6 +533,10 @@ def check_manpage(repo: Path) -> list[Finding]:
     try:
         env = {**os.environ}
         env["PYTHONPATH"] = str(repo) + ":" + env.get("PYTHONPATH", "")
+        # Pin COLUMNS so argparse wraps `usage:` lines deterministically
+        # regardless of the caller's terminal width — `make man` pins the
+        # same value, so the committed file is reproducible.
+        env["COLUMNS"] = "80"
         # Intentionally inherit SYSFORGE_CONFIG_DIR from the caller's shell
         # rather than forcing it to `repo`: argparse-manpage embeds path
         # defaults into the help text via `_build_parser()`, and `make man`

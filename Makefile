@@ -62,7 +62,7 @@ release-patch:
 
 man:
 	mkdir -p man
-	PYTHONPATH=. uv run --no-sync argparse-manpage \
+	COLUMNS=80 PYTHONPATH=. uv run --no-sync argparse-manpage \
 	  --module sysforge.cli \
 	  --function _build_parser \
 	  --author "Keith Raghubar" \
