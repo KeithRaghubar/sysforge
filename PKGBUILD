@@ -40,7 +40,7 @@ backup=(
     'etc/sysforge/toolchain.toml'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('4d7ffc98cba7f5f28781724b4afe7ce239368813577b885514bb116451aff216')
+sha256sums=('0c2c6777d9df13d0c5d8fb88ec6ba08887a249c31bc6b197398024a48e8a25a0')
 
 build() {
     cd "$srcdir/$pkgname-$pkgver"
