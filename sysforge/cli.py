@@ -1179,7 +1179,7 @@ def main():
         state_dir = getattr(args, "state_dir", None)
         if not check_and_recover_stale_sentinel(state_dir):
             log.error(
-                "SENTINEL",
+                "[SENTINEL]",
                 "Stale stage-in-progress sentinel present; refusing to proceed. "
                 "Run the recovery command shown above, or remove the sentinel "
                 "file once you have manually verified system consistency.",

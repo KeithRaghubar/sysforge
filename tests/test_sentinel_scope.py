@@ -71,3 +71,18 @@ def test_metadata_round_trips_through_sentinel_file(tmp_path):
     assert record["compiler"] == "llvm"
     assert record["pgo"] is True
     assert record["recovery_cmd"] == "sudo pacman -S llvm"
+
+
+def test_sentinel_scope_omits_none_recovery_cmd(tmp_path):
+    """recovery_cmd=None must not land in the sentinel as the string 'None'."""
+    with pytest.raises(RuntimeError):
+        with sentinel_scope(tmp_path, "update", recovery_cmd=None):
+            record = StageSentinel(tmp_path).get_active()
+            assert record is not None
+            assert record["stage"] == "update"
+            assert "recovery_cmd" not in record
+            raise RuntimeError("boom")
+    # Persisted record after exception: still no recovery_cmd key.
+    record = StageSentinel(tmp_path).get_active()
+    assert record is not None
+    assert "recovery_cmd" not in record

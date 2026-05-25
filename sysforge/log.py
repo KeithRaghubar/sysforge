@@ -212,8 +212,18 @@ def _write_to_files(line: str, raw: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 def prompt_prefix(level: str, tag: str) -> str:
-    """Return a formatted '[SYSFORGE][LEVEL][TAG] ' prefix for use in input() prompts."""
-    return f"[SYSFORGE][{level}]{tag} "
+    """Return a formatted '[SYSFORGE][LEVEL][TAG] ' prefix for use in input() prompts.
+
+    Applies the same ANSI coloring as :func:`_format_line` when the output
+    stream is a colour-capable TTY so prompts match surrounding log lines.
+    """
+    if not use_color():
+        return f"[SYSFORGE][{level}]{tag} "
+    r = _ANSI_RESET
+    sgr = _LEVEL_SGR.get(level, "")
+    lvl_fmt = f"{sgr}{level}{r}" if sgr else level
+    tag_fmt = f"{_ANSI_CYAN}{tag}{r}" if tag else ""
+    return f"[SYSFORGE][{lvl_fmt}]{tag_fmt} "
 
 
 # ---------------------------------------------------------------------------

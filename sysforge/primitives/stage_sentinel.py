@@ -109,6 +109,32 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
             )
         return False
 
+    # No auto-recovery registered: the prompt would dead-end on "y" if we
+    # asked the recovery question, so ask the only question we can actually
+    # honor — clear the sentinel after manual verification.
+    if not recovery_cmd:
+        choice = prompt_choice(
+            "Clear the sentinel and proceed? [y/N]: ",
+            choices=("y", "yes", "n"),
+            default="n",
+            eof_default="n",
+            tag="SENTINEL",
+            level="WARN",
+        )
+        if choice not in ("y", "yes"):
+            return False
+        sentinel.clear()
+        if sentinel.path.exists():
+            _log.error(
+                f"Tried to clear sentinel but file is still present at "
+                f"{sentinel.path}. Possible state-dir mismatch — verify "
+                "$SYSFORGE_STATE_DIR and any --state-dir flag match the path "
+                "above, then remove the file manually."
+            )
+            return False
+        _log.ui("Sentinel cleared; proceeding.")
+        return True
+
     choice = prompt_choice(
         "Restore a consistent state now? [y/N]: ",
         choices=("y", "yes", "n"),
@@ -118,13 +144,6 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
         level="WARN",
     )
     if choice not in ("y", "yes"):
-        return False
-
-    if not recovery_cmd:
-        _log.error(
-            "No recovery command recorded — cannot auto-recover. "
-            "Verify the system manually, then remove the sentinel.",
-        )
         return False
 
     try:
@@ -231,6 +250,11 @@ class StageSentinel:
             lines.append(f"[{section}]")
             for key in sorted(body.keys()):
                 val = body[key]
+                # Skip None — TOML has no null, and str(None) writes the
+                # literal "None" which downstream readers then interpret as
+                # a meaningful (truthy) value. Caller can omit the key.
+                if val is None:
+                    continue
                 if isinstance(val, bool):
                     lines.append(f"{key} = {'true' if val else 'false'}")
                 elif isinstance(val, int):
@@ -294,8 +318,11 @@ def sentinel_scope(
         Any other exception raised by the body propagates verbatim.
     """
     sentinel = StageSentinel(state_dir)
+    # Only forward recovery_cmd when set — otherwise it would land in the
+    # sentinel record as a key with no useful value (see _serialize).
+    extra = {"recovery_cmd": recovery_cmd} if recovery_cmd is not None else {}
     try:
-        sentinel.mark_started(stage_name, recovery_cmd=recovery_cmd, **metadata)
+        sentinel.mark_started(stage_name, **extra, **metadata)
     except (OSError, PermissionError) as e:
         _log.warn(
             f"Cannot write stage sentinel ({e}); interrupted-run "
