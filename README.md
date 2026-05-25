@@ -4,7 +4,7 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 
 The default build profile uses the system gcc; LLVM (clang/lld) is fully supported but opt-in — install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `CC=clang`/`CXX=clang++` in a user profile, or use `sysforge run toolchain --compiler=llvm`.
 
-**Current status:** <!--version-->v1.1.0<!--/version-->. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `converge`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are opt-in (`enabled = false` by default in their respective `.toml` files) — building a custom toolchain or kernel is a deliberate choice; users who want the system compiler and a stock pacman kernel leave them disabled.
+**Current status:** <!--version-->v1.2.0<!--/version-->. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `converge`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are opt-in (`enabled = false` by default in their respective `.toml` files) — building a custom toolchain or kernel is a deliberate choice; users who want the system compiler and a stock pacman kernel leave them disabled.
 
 ---
 
