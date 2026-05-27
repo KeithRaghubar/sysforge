@@ -32,7 +32,7 @@ from sysforge.pipeline.stages.toolchain import (
     _collect_pgo_packages,
     _has_llvm_cmake_config,
     _pgo_install,
-    _pgo_pass1_install,
+    _pgo_pass1_stage,
     _system_llvm_is_instrumented,
     _profile_runtime_ldflag,
     _validate_pgo_environment,
@@ -578,6 +578,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
             "cc": options.cc_override if options else None,
             "flags": list(options.extra_flags or []) if options else [],
             "cfe": options.compiler_flags_extra if options else None,
+            "env": dict(options.extra_env) if options and options.extra_env else {},
         })
         # Simulate Pass 2: instrumented clang running as CC writes a profraw file
         if options and options.cc_override == "/usr/bin/clang":
@@ -601,7 +602,7 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
          patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_install"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_stage"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
          patch("sysforge.pipeline.stages.toolchain._run_llvm_preflight"), \
          patch("subprocess.run", side_effect=fake_subprocess), \
@@ -634,6 +635,25 @@ def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
     assert call_log[2]["cfe"] is not None
     assert "-fprofile-use=" in call_log[2]["cfe"]
     assert "-fprofile-correction" not in call_log[2]["cfe"]
+
+    # Path B: Pass 2 picks up the staged Pass-1 libLLVM via env injection so
+    # the live /usr stays untouched. Pass 3 redirects at the Pass-2 stage2.
+    stage1_lib = "/var/tmp/sysforge-llvm-stage1/usr/lib"
+    pass2_env = call_log[1]["env"]
+    assert pass2_env.get("LLVM_PROFILE_FILE", "").startswith(str(pgo_store)), \
+        "Pass 2 must set LLVM_PROFILE_FILE for profraw routing"
+    assert pass2_env.get("CCACHE_DISABLE") == "1"
+    assert pass2_env.get("SCCACHE_DISABLE") == "1"
+    assert pass2_env.get("LD_LIBRARY_PATH", "").startswith(stage1_lib), \
+        "Pass 2 must redirect dyld at stage1 before /usr"
+    assert pass2_env.get("CMAKE_PREFIX_PATH", "").startswith(
+        "/var/tmp/sysforge-llvm-stage1/usr"
+    )
+    pass3_env = call_log[2]["env"]
+    assert pass3_env.get("LLVM_PROFILE_FILE") == "", \
+        "Pass 3 must clear LLVM_PROFILE_FILE so Pass-2 training env doesn't leak"
+    assert pass3_env.get("LD_LIBRARY_PATH", "").startswith(str(staging / "usr/lib")), \
+        "Pass 3 must redirect dyld at stage2"
 
 
 # ---------------------------------------------------------------------------
@@ -975,7 +995,7 @@ def test_pgo_install_raises_on_pacman_failure(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _has_llvm_cmake_config / _pgo_pass1_install
+# _has_llvm_cmake_config / _pgo_pass1_stage
 # ---------------------------------------------------------------------------
 
 
@@ -1004,8 +1024,12 @@ def test_has_llvm_cmake_config_false(tmp_path):
         assert _has_llvm_cmake_config(pkg) is False
 
 
-def test_pgo_pass1_install_excludes_cmake_pkg(tmp_path):
-    """cmake-config package (llvm) is excluded; shared-lib package (llvm-libs) is installed."""
+def test_pgo_pass1_stage_extracts_all_packages(tmp_path):
+    """Phase 2: every Pass 1a package is staged into stage1 (including the
+    cmake-config llvm pkg) so Pass 1b's find_package(LLVM) finds stage1.
+    Instrumented .a archives are tolerated and resolved via residual
+    profile-runtime LDFLAGS in Pass 1b / Pass 2.  And no `pacman -U`
+    is ever invoked — Pass 1 never touches the live root."""
     pkg_dir = tmp_path / "llvm"
     pkg_dir.mkdir()
     llvm_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
@@ -1013,89 +1037,57 @@ def test_pgo_pass1_install_excludes_cmake_pkg(tmp_path):
     llvm_pkg.touch()
     llvm_libs_pkg.touch()
     pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD", "llvm-libs": pkg_dir / "PKGBUILD"}
+    staging1 = tmp_path / "stage1"
 
-    cmake_listing = "./usr/lib/cmake/llvm/LLVMConfig.cmake\n./usr/lib/libLLVMSupport.a\n"
-    libs_listing = "./usr/lib/libLLVM-18.so.1\n"
-
-    pacman_args = []
+    extract_targets: list[str] = []
+    pacman_called: list[bool] = []
 
     def fake_run(cmd, **kwargs):
         result = MagicMock()
         result.returncode = 0
-        result.stderr = ""
+        result.stderr = b""
+        result.stdout = ""
         if "makepkg" in cmd:
             result.stdout = f"{llvm_pkg}\n{llvm_libs_pkg}\n"
-        elif "tar" in cmd and str(llvm_pkg) in cmd:
-            result.stdout = cmake_listing
-        elif "tar" in cmd and str(llvm_libs_pkg) in cmd:
-            result.stdout = libs_listing
+        elif "tar" in cmd and "-xf" in cmd:
+            extract_targets.append(cmd[cmd.index("-xf") + 1])
         elif "pacman" in cmd:
-            pacman_args.extend(cmd)
-            result.stdout = ""
-        else:
-            result.stdout = ""
+            pacman_called.append(True)
         return result
 
     with patch("subprocess.run", side_effect=fake_run):
-        _pgo_pass1_install(pkgbuild_map, dry_run=False)
+        _pgo_pass1_stage(pkgbuild_map, staging1, dry_run=False)
 
-    assert any("pacman" in str(a) for a in pacman_args)
-    assert str(llvm_libs_pkg) in pacman_args
-    assert str(llvm_pkg) not in pacman_args
+    assert str(llvm_libs_pkg) in extract_targets, "llvm-libs must stage to stage1"
+    assert str(llvm_pkg) in extract_targets, \
+        "Phase 2: cmake-config llvm pkg must also stage so find_package(LLVM) hits stage1"
+    assert not pacman_called, "Pass 1 must not invoke pacman — stage instead of install"
 
 
-def test_pgo_pass1_install_dry_run(tmp_path):
+def test_pgo_pass1_stage_dry_run(tmp_path):
     pkgbuild_map = {"llvm": tmp_path / "llvm" / "PKGBUILD"}
+    staging1 = tmp_path / "stage1"
     with patch("subprocess.run") as mock_run:
-        _pgo_pass1_install(pkgbuild_map, dry_run=True)
+        _pgo_pass1_stage(pkgbuild_map, staging1, dry_run=True)
     mock_run.assert_not_called()
 
 
-def test_pgo_pass1_install_all_excluded_warns_and_returns(tmp_path):
-    """When all packages have cmake/llvm, warn and return without calling pacman."""
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    llvm_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
-    llvm_pkg.touch()
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-    cmake_listing = "./usr/lib/cmake/llvm/LLVMConfig.cmake\n"
-    pacman_called = []
-
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        result.stderr = ""
-        if "makepkg" in cmd:
-            result.stdout = str(llvm_pkg)
-        elif "tar" in cmd:
-            result.stdout = cmake_listing
-        else:
-            if "pacman" in cmd:
-                pacman_called.append(True)
-            result.stdout = ""
-        return result
-
-    with patch("subprocess.run", side_effect=fake_run):
-        _pgo_pass1_install(pkgbuild_map, dry_run=False)
-
-    assert not pacman_called, "pacman should not be called when all packages are excluded"
-
-
-def test_pgo_pass1_install_raises_when_no_packages(tmp_path):
+def test_pgo_pass1_stage_raises_when_no_packages(tmp_path):
     pkg_dir = tmp_path / "llvm"
     pkg_dir.mkdir()
     pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
+    staging1 = tmp_path / "stage1"
 
     def fake_run(cmd, **kwargs):
         result = MagicMock()
         result.returncode = 0
         result.stdout = ""
-        result.stderr = ""
+        result.stderr = b""
         return result
 
     with patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="No built packages"):
-            _pgo_pass1_install(pkgbuild_map, dry_run=False)
+            _pgo_pass1_stage(pkgbuild_map, staging1, dry_run=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1798,7 +1790,7 @@ def _run_pgo(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None,
          patch("sysforge.pipeline.stages.toolchain.makepkg_run",
                side_effect=_pgo_fake_run_factory(pgo_store, call_log)), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_install"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_stage"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
          patch("subprocess.run", side_effect=_fake_subprocess_factory(profdata_size)), \
          patch("sys.stdin.isatty", return_value=False), \
@@ -1813,7 +1805,24 @@ def _run_pgo(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None,
 
 
 def _pass1(call_log):
+    """Phase 2 alias for Pass 1a — the instrumented llvm/llvm-libs build."""
+    return _pass1a(call_log)
+
+
+def _pass1a(call_log):
     return [c for c in call_log if "-fprofile-generate" in (c["cfe"] or "")]
+
+
+def _pass1b(call_log):
+    """Pass 1b: non-instrumented build against stage1 — identified by the
+    CMAKE_PREFIX_PATH→stage1 env and the absence of training/profile flags."""
+    return [
+        c for c in call_log
+        if c["env"].get("CMAKE_PREFIX_PATH", "").startswith("/var/tmp/sysforge-llvm-stage1")
+        and "-fprofile-generate" not in (c["cfe"] or "")
+        and "-fprofile-use" not in (c["cfe"] or "")
+        and c["env"].get("CCACHE_DISABLE") != "1"
+    ]
 
 
 def _pass2(call_log):
@@ -1909,56 +1918,51 @@ def test_pgo_pass3_includes_non_pgo_and_lib32(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_pgo_residual_instrumented_llvm_injects_runtime_into_pass2_and_pass3(tmp_path):
-    """
-    When system LLVM static libs are still instrumented (left by a prior aborted
-    Pass 1 install), packages that call find_package(LLVM) in Pass 2 or Pass 3
-    link against them and fail with undefined __llvm_profile_* symbols unless the
-    profile runtime is added to LDFLAGS.
-
-    Regression test: the linker flag was previously injected into Pass 2 only.
-    Pass 3 was missing it, causing clang-tblgen link failures in production.
-    """
+def test_pgo_profile_runtime_injected_into_pass1b_and_pass2(tmp_path):
+    """Phase 2: Pass 1b and Pass 2 build against stage1's instrumented .a
+    archives via find_package(LLVM). Without the clang profile runtime in
+    LDFLAGS, those builds fail to resolve __llvm_profile_* symbols. Pass 1a
+    (no external instrumented .a) and Pass 3 (built against stage2's
+    non-instrumented LLVM) must NOT receive the flag."""
     fake_rt_flag = "-L/usr/lib/clang/18/lib/linux -lclang_rt.profile-x86_64"
-    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"],
-                        instrumented=True, runtime_flag=fake_rt_flag)
+    call_log = _run_pgo(
+        tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"],
+        runtime_flag=fake_rt_flag,
+    )
 
+    p1a = _pass1a(call_log)
+    p1b = _pass1b(call_log)
     p2 = _pass2(call_log)
     p3 = _pass3(call_log)
+    assert p1a, "Pass 1a must have run"
+    assert p1b, "Pass 1b must have run (non_pgo present)"
     assert p2, "Pass 2 must have run"
     assert p3, "Pass 3 must have run"
 
+    for call in p1a:
+        assert call["lfe"] is None, \
+            "Pass 1a builds llvm from scratch — no external instrumented .a to satisfy"
+    for call in p1b:
+        assert call["lfe"] == fake_rt_flag, \
+            "Pass 1b links against stage1's instrumented .a → profile runtime required"
     for call in p2:
         assert call["lfe"] == fake_rt_flag, \
-            "Profile runtime must be injected into Pass 2 LDFLAGS when system LLVM is instrumented"
+            "Pass 2 non_pgo find_package(LLVM) hits stage1's instrumented .a → profile runtime required"
     for call in p3:
-        assert call["lfe"] == fake_rt_flag, \
-            "Profile runtime must be injected into Pass 3 LDFLAGS when system LLVM is instrumented " \
-            "(regression: clang-tblgen undefined __llvm_profile_* link failure)"
+        assert call["lfe"] is None, \
+            "Pass 3 uses stage2 (non-instrumented) — profile runtime must NOT leak through"
 
 
-def test_pgo_uninstrumented_llvm_no_linker_flags(tmp_path):
-    """When system LLVM is clean, no profile runtime linker flag is injected."""
-    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"], instrumented=False)
-
+def test_pgo_profile_runtime_unavailable_no_injection(tmp_path):
+    """If clang --print-runtime-dir returns nothing, _profile_runtime_ldflag()
+    yields None and no LDFLAGS injection happens for any pass."""
+    call_log = _run_pgo(
+        tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"],
+        runtime_flag=None,
+    )
     for call in call_log:
         assert call["lfe"] is None, \
-            f"No linker flags expected when LLVM is uninstrumented (cc={call['cc']})"
-
-
-def test_pgo_instrumented_llvm_pass1_not_affected(tmp_path):
-    """
-    Pass 1 runs before the instrumented clang is even installed; the residual
-    linker flag guard is checked after Pass 1 completes, so Pass 1 itself must
-    never receive a linker_flags_extra injection.
-    """
-    fake_rt_flag = "-L/fake -lclang_rt.profile-x86_64"
-    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"],
-                        instrumented=True, runtime_flag=fake_rt_flag)
-
-    for call in _pass1(call_log):
-        assert call["lfe"] is None, \
-            "Pass 1 must not receive the residual-instrumentation linker flag"
+            f"No linker flag when profile runtime is unavailable (cc={call['cc']})"
 
 
 # ---------------------------------------------------------------------------
@@ -2016,7 +2020,7 @@ def test_pgo_stale_staging_purged_at_run_start(tmp_path):
          patch("sysforge.pipeline.stages.toolchain.makepkg_run",
                side_effect=_pgo_fake_run_factory(pgo_store, call_log)), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_install"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_stage"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
          patch("subprocess.run", side_effect=_fake_subprocess_factory()), \
          patch("sys.stdin.isatty", return_value=False), \
