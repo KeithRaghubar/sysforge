@@ -635,7 +635,7 @@ def _build_pass(
     """
     extra = ["--install"] if install else []
     if pgo_build:
-        extra = ["--cleanbuild"] + extra
+        extra = ["--cleanbuild", "--force"] + extra
     _log.ui(f"─── {label} ──────────────────────────────────────────")
     seen_dirs: set[Path] = set()
     first = True
