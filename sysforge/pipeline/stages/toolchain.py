@@ -105,6 +105,7 @@ from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import lift_for_child
 from sysforge.primitives.stage_sentinel import sentinel_scope
+from sysforge.ui import progress
 from sysforge.primitives.source_sync import (
     STATUS_DIVERGED,
     STATUS_FAILED,
@@ -650,6 +651,7 @@ def _build_pass(
     pgo_env: dict | None = None,
     staged_deps: bool = False,
     toolchain_variant: str | None = None,
+    phase: tuple[int, int] | None = None,
 ) -> None:
     """Build all packages in pkgbuild_map for one pass.
 
@@ -664,6 +666,9 @@ def _build_pass(
     fail with "target not found" (the version isn't published anywhere), and
     abort the pass.  Pass 1a sets staged_deps=False because it builds against
     the live system; Pass 1b/2/3 set staged_deps=True.
+
+    ``phase=(idx, total)`` drives the nested ``[idx/total][i/n]`` progress
+    indicator surfaced by ``sysforge.ui.progress``.
     """
     extra = ["--install"] if install else []
     if pgo_build:
@@ -673,31 +678,33 @@ def _build_pass(
         extra = extra + ["--nodeps"]
         strip_flags = frozenset({"--syncdeps", "-s"})
     _log.ui(f"─── {label} ──────────────────────────────────────────")
+    total = len({p.parent for p in pkgbuild_map.values()})
     seen_dirs: set[Path] = set()
     first = True
-    for name, pkgbuild_path in pkgbuild_map.items():
-        pkg_dir = pkgbuild_path.parent
-        if pkg_dir in seen_dirs:
-            _log.ui(f"  {name} (split — built with {pkg_dir.name})")
-            continue
-        seen_dirs.add(pkg_dir)
-        _log.ui(f"  {name}")
-        _build_pkg(
-            name,
-            pkgbuild_path,
-            options,
-            cc=cc,
-            cxx=cxx,
-            extra_flags=extra,
-            init_session=first,
-            compiler_flags_extra=compiler_flags_extra,
-            linker_flags_extra=linker_flags_extra,
-            pgo_build=pgo_build,
-            pgo_env=pgo_env,
-            strip_flags=strip_flags,
-            toolchain_variant=toolchain_variant,
-        )
-        first = False
+    with progress.tracker(total, label, phase=phase) as tick:
+        for name, pkgbuild_path in pkgbuild_map.items():
+            pkg_dir = pkgbuild_path.parent
+            if pkg_dir in seen_dirs:
+                _log.ui(f"  {name} (split — built with {pkg_dir.name})")
+                continue
+            seen_dirs.add(pkg_dir)
+            tick(name)
+            _build_pkg(
+                name,
+                pkgbuild_path,
+                options,
+                cc=cc,
+                cxx=cxx,
+                extra_flags=extra,
+                init_session=first,
+                compiler_flags_extra=compiler_flags_extra,
+                linker_flags_extra=linker_flags_extra,
+                pgo_build=pgo_build,
+                pgo_env=pgo_env,
+                strip_flags=strip_flags,
+                toolchain_variant=toolchain_variant,
+            )
+            first = False
 
 
 # ---------------------------------------------------------------------------
@@ -1930,6 +1937,7 @@ def _build_llvm_pgo_inner(
                 install=False,
                 pgo_build=True,
                 compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
+                phase=(1, 4),
             )
             _pgo_pass1_stage(pgo_map, staging1, options.dry_run)
             _log.ui("[PGO] 1/4 complete (staged to "
@@ -1996,6 +2004,7 @@ def _build_llvm_pgo_inner(
                 pgo_build=True,
                 pgo_env=pass1b_env,
                 staged_deps=True,
+                phase=(2, 4),
             )
             _extract_pass2_to_staging(non_pgo_map, staging1, options.dry_run)
             _log.ui(f"[PGO] 2/4 complete (stage1 self-sufficient at {staging1})")
@@ -2075,6 +2084,7 @@ def _build_llvm_pgo_inner(
                     pgo_build=True,
                     pgo_env=pass2_env,
                     staged_deps=True,
+                    phase=(3, 4),
                 )
             finally:
                 stop_event.set()
@@ -2160,6 +2170,7 @@ def _build_llvm_pgo_inner(
             pgo_env=pass3_env,
             staged_deps=True,
             toolchain_variant="pgo_llvm",
+            phase=(4, 4),
         )
         _pgo_install(pass3_label, all_pass3, options.dry_run)
         if skip_profgen:

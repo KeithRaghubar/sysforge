@@ -136,17 +136,29 @@ def shutdown() -> None:
         _release_region()
 
 
-def render(current: int, total: int, label: str) -> None:
-    """Paint a status line 'current/total label'."""
+def render(
+    current: int,
+    total: int,
+    label: str,
+    phase: Optional[tuple[int, int]] = None,
+) -> None:
+    """Paint a status line 'current/total label'.
+
+    When ``phase=(idx, total_phases)`` is given, an outer counter is prepended
+    so the line reads ``[idx/total_phases][current/total] label`` — used by the
+    PGO toolchain stage to surface both the pass number and the per-package
+    progress within the pass.
+    """
     global _last_status
     if _mode is None:
         init()
+    phase_prefix = f"[{phase[0]}/{phase[1]}]" if phase is not None else ""
     if _mode == "plain":
-        msg = f"[PROGRESS] [{current}/{total}] {label}"
+        msg = f"[PROGRESS] {phase_prefix}[{current}/{total}] {label}"
         log.ui("[PROGRESS]", msg)
         _last_status = msg
         return
-    text = f"[SYSFORGE][PROGRESS] [{current}/{total}] {label}"
+    text = f"[SYSFORGE][PROGRESS] {phase_prefix}[{current}/{total}] {label}"
     _last_status = text
     if not _reserved:
         _establish_region()
@@ -161,7 +173,11 @@ def clear() -> None:
 
 
 @contextlib.contextmanager
-def tracker(total: int, prefix: str) -> Iterator[Callable[[str], None]]:
+def tracker(
+    total: int,
+    prefix: str,
+    phase: Optional[tuple[int, int]] = None,
+) -> Iterator[Callable[[str], None]]:
     """Yield a tick(label) callable. Releases the region on exit.
 
         with progress.tracker(len(items), "building") as tick:
@@ -171,6 +187,9 @@ def tracker(total: int, prefix: str) -> Iterator[Callable[[str], None]]:
 
     Paints a 0/total placeholder on entry so users see immediate feedback
     even when the first tick is far away (e.g. a batch of slow git pulls).
+
+    ``phase`` is forwarded to ``render()`` to enable the nested
+    ``[phase][i/n]`` format used by the PGO toolchain stage.
     """
     global _last_status
     if _mode is None:
@@ -179,10 +198,10 @@ def tracker(total: int, prefix: str) -> Iterator[Callable[[str], None]]:
 
     def tick(label: str) -> None:
         counter["i"] += 1
-        render(counter["i"], total, f"{prefix} {label}")
+        render(counter["i"], total, f"{prefix} {label}", phase=phase)
 
     if total > 0:
-        render(0, total, f"{prefix} starting...")
+        render(0, total, f"{prefix} starting...", phase=phase)
 
     try:
         yield tick
