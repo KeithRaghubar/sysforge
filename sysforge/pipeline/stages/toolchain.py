@@ -2120,7 +2120,12 @@ def _build_llvm_pgo_inner(
         # Pass 3 (or sole pass when reusing profdata) — PGO-optimized build.
         # Use staged clang from Pass 2 if available; otherwise fall back to
         # system clang (which, after a prior successful run, is already PGO-optimized).
-        if not skip_profgen and not options.dry_run and not Path(staged_cc).exists():
+        using_staged_cc = (
+            not skip_profgen
+            and not options.dry_run
+            and Path(staged_cc).exists()
+        )
+        if not skip_profgen and not options.dry_run and not using_staged_cc:
             _log.info(
                 f"[PGO] staged clang not found at {staged_cc} "
                 "(clang is non-pgo) — using system clang for Pass 3",
@@ -2139,12 +2144,17 @@ def _build_llvm_pgo_inner(
             else "PGO 4/4 · optimize all packages"
         )
         # Pass 3 env: clear LLVM_PROFILE_FILE so any inherited Pass-2 training
-        # path doesn't get reused, and redirect cmake/dyld at stage2 (the
-        # Pass-2-built non-instrumented compiler) so the final -fprofile-use
-        # build sees stage2's libLLVM/clang headers.  When skip_profgen is set
-        # there is no stage2 — fall back to bare env.
+        # path doesn't get reused.  Only when CC is the staged clang from
+        # stage2 do we also redirect cmake/dyld at stage2 — that clang's
+        # NEEDED libLLVM is stage2's libLLVM, so the redirect is ABI-coherent.
+        # System /usr/bin/clang on the system-clang fallback is linked against
+        # the live /usr libLLVM (full target list) and must NOT be steered at
+        # stage2's stripped (LLVM_TARGETS_TO_BUILD-restricted) libLLVM via
+        # LD_LIBRARY_PATH — that recreates the version-skew failure mode the
+        # Pass 1b comments warn about (symbol lookup errors for missing target
+        # init functions like LLVMInitializeBPFTarget).
         pass3_env: dict[str, str] = {"LLVM_PROFILE_FILE": ""}
-        if not skip_profgen:
+        if using_staged_cc:
             pass3_env.update(_stage_env(staging))
         # Phase 2: Pass 3 builds against stage2's non-instrumented LLVM, so
         # find_package(LLVM) sees no __llvm_profile_* references — no

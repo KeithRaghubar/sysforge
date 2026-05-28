@@ -726,8 +726,87 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     pass3_env = call_log[2]["env"]
     assert pass3_env.get("LLVM_PROFILE_FILE") == "", \
         "Pass 3 must clear LLVM_PROFILE_FILE so Pass-2 training env doesn't leak"
+    # System-clang fallback path (the test setup does not materialise
+    # staged_cc): _stage_env must NOT be injected.  System /usr/bin/clang is
+    # linked against the live /usr libLLVM (full target list); redirecting
+    # dyld at stage2's stripped LLVM_TARGETS_TO_BUILD-restricted libLLVM
+    # via LD_LIBRARY_PATH triggers symbol lookup errors for missing target
+    # init functions (e.g. LLVMInitializeBPFTarget).
+    assert "LD_LIBRARY_PATH" not in pass3_env, \
+        "Pass 3 must NOT redirect dyld at stage2 when falling back to system clang"
+    assert "CMAKE_PREFIX_PATH" not in pass3_env, \
+        "Pass 3 must NOT redirect cmake at stage2 when falling back to system clang"
+
+
+def test_toolchain_stage_pgo_pass3_redirects_dyld_when_clang_staged(tmp_path):
+    """When stage2 contains a staged clang (e.g. clang is in the PGO package set),
+    Pass 3 must redirect cmake/dyld at stage2 — that clang's NEEDED libLLVM is
+    stage2's libLLVM, so the redirect is ABI-coherent."""
+    staging   = tmp_path / "staging"
+    pgo_store = tmp_path / "pgo_store"
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text(
+        f'enabled = true\ncompiler = "llvm"\npgo = true\n'
+        f'pgo_staging = "{staging}"\npgo_store = "{pgo_store}"\n'
+        '[packages]\npgo = ["llvm"]\nnon_pgo = []\nlib32 = []\n'
+    )
+
+    pkgbuild_dir = tmp_path / "builds"
+    make_pkgbuild(pkgbuild_dir, "llvm")
+
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
+    options = make_options(dry_run=False, auto_pgo=True)
+
+    call_log = []
+    def fake_run(pkgbuild_path, options=None):
+        call_log.append({
+            "cc": options.cc_override if options else None,
+            "env": dict(options.extra_env) if options and options.extra_env else {},
+        })
+        if options and options.cc_override == "/usr/bin/clang":
+            pgo_store.mkdir(parents=True, exist_ok=True)
+            _make_old_profraw(pgo_store / "default_0.profraw")
+        # Materialise a staged clang in stage2 right before Pass 3 reads it
+        # (Pass 3 is the 3rd makepkg_run invocation; Pass 2 is the 2nd).
+        if len(call_log) == 2:
+            staged_bin = staging / "usr" / "bin"
+            staged_bin.mkdir(parents=True, exist_ok=True)
+            (staged_bin / "clang").touch()
+            (staged_bin / "clang++").touch()
+
+    pkg_dir = pkgbuild_dir / "llvm"
+    (pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst").touch()
+
+    def fake_subprocess(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        if cmd and "llvm-profdata" in cmd[0]:
+            idx = cmd.index("--output")
+            Path(cmd[idx + 1]).touch()
+        return result
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
+         patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_stage"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._run_llvm_preflight"), \
+         patch("subprocess.run", side_effect=fake_subprocess), \
+         patch("sys.stdin.isatty", return_value=False):
+        ToolchainStage().run(config, state, options)
+
+    assert len(call_log) == 3
+    # Pass 3 picked up the staged clang from stage2
+    assert call_log[2]["cc"] == str(staging / "usr/bin/clang")
+    pass3_env = call_log[2]["env"]
+    assert pass3_env.get("LLVM_PROFILE_FILE") == "", \
+        "Pass 3 must clear LLVM_PROFILE_FILE so Pass-2 training env doesn't leak"
     assert pass3_env.get("LD_LIBRARY_PATH", "").startswith(str(staging / "usr/lib")), \
-        "Pass 3 must redirect dyld at stage2"
+        "Pass 3 must redirect dyld at stage2 when the staged clang is used"
+    assert pass3_env.get("CMAKE_PREFIX_PATH", "").startswith(str(staging / "usr")), \
+        "Pass 3 must redirect cmake at stage2 when the staged clang is used"
 
 
 # ---------------------------------------------------------------------------
