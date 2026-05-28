@@ -17,6 +17,7 @@ Every verb is a ``Verb`` subclass dispatched through
 post_validate split is documented in DESIGN.md §CLI Verb Framework.
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -1153,7 +1154,33 @@ def _gate_sentinel_check(args) -> bool:
     return True
 
 
+def _strip_venv_from_path() -> None:
+    """Scrub sysforge's own venv from inherited PATH/VIRTUAL_ENV/PYTHONPATH.
+
+    Sysforge is typically launched from `~/src/sysforge/.venv/bin/sysforge`
+    after the user's shell has activated the venv. Without this strip, any
+    code that captures `os.environ["PATH"]` (e.g. `_stage_env` in the PGO
+    toolchain stage) carries `.venv/bin` into the makepkg subprocess, where
+    `python -m build`-style PKGBUILD steps resolve `python` to the venv
+    interpreter — which lacks PEP-517 deps and dies with `No module named
+    build`. Gated on a real venv (`sys.prefix != sys.base_prefix`) so a
+    packaged install in `/usr/bin` doesn't accidentally strip `/usr/bin`.
+    """
+    if sys.prefix == sys.base_prefix:
+        return
+    venv_bin = str(Path(sys.executable).parent)
+    path_parts = os.environ.get("PATH", "").split(os.pathsep)
+    cleaned = [p for p in path_parts if p != venv_bin]
+    if len(cleaned) == len(path_parts):
+        return
+    os.environ["PATH"] = os.pathsep.join(cleaned)
+    os.environ.pop("VIRTUAL_ENV", None)
+    os.environ.pop("PYTHONPATH", None)
+    _log.info(f"Stripped venv bin from PATH: {venv_bin}")
+
+
 def main():
+    _strip_venv_from_path()
     from sysforge.primitives.paths import migrate_legacy_user_dirs
     from sysforge.primitives.resource_guard import install as _install_resource_guard
     _install_resource_guard()

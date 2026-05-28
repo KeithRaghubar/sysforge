@@ -195,8 +195,11 @@ def test_inherited_cc_replaced_by_extra_env(tmp_path):
     assert captured["env"].get("CC") == "clang"
 
 
-def test_venv_stripped_from_env(tmp_path):
-    """VIRTUAL_ENV removed, venv bin dir stripped from PATH."""
+def test_venv_env_vars_popped(tmp_path):
+    """invoke_makepkg pops VIRTUAL_ENV/PYTHONPATH defensively. PATH-level
+    stripping is owned by cli._strip_venv_from_path at CLI startup (covered
+    by tests/test_cli.py), so this test exercises only the wrapper's local
+    pop responsibility — not the PATH scrub."""
     pb = _fake_pkgbuild(tmp_path)
     conf = tmp_path / "makepkg.conf"
     conf.write_text("")
@@ -206,7 +209,8 @@ def test_venv_stripped_from_env(tmp_path):
 
     with patch.dict(os.environ, {
         "VIRTUAL_ENV": venv,
-        "PATH": f"{venv}/bin:/usr/bin:/bin",
+        "PYTHONPATH": f"{venv}/lib/python3/site-packages",
+        "PATH": "/usr/bin:/bin",
         "HOME": "/root",
     }, clear=True):
         with _patch_makepkg(captured):
@@ -214,7 +218,7 @@ def test_venv_stripped_from_env(tmp_path):
 
     env = captured["env"]
     assert "VIRTUAL_ENV" not in env
-    assert f"{venv}/bin" not in env.get("PATH", "")
+    assert "PYTHONPATH" not in env
     assert "/usr/bin" in env.get("PATH", "")
 
 

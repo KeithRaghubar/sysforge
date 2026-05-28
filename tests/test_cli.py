@@ -293,3 +293,67 @@ def test_read_only_verbs_skip_entry_sentinel_check():
     for cmd in ("env", "doctor", "resolve", "fetch", "completions", "log",
                 "packages", "state"):
         assert _gate_sentinel_check(_gate_args(command=cmd, dry_run=False)) is False
+
+
+# ---------------------------------------------------------------------------
+# _strip_venv_from_path
+# ---------------------------------------------------------------------------
+
+def test_strip_venv_from_path_removes_venv_bin(monkeypatch):
+    """When running inside a venv, the venv's bin dir is removed from PATH
+    and VIRTUAL_ENV/PYTHONPATH are popped, while other PATH entries keep
+    their order."""
+    from sysforge.cli import _strip_venv_from_path
+
+    venv_root = "/tmp/fake-venv"
+    venv_bin = f"{venv_root}/bin"
+    monkeypatch.setattr(sys, "prefix", venv_root)
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+    monkeypatch.setattr(sys, "executable", f"{venv_bin}/python")
+    monkeypatch.setenv("PATH", f"/usr/bin:{venv_bin}:/usr/local/bin")
+    monkeypatch.setenv("VIRTUAL_ENV", venv_root)
+    monkeypatch.setenv("PYTHONPATH", f"{venv_root}/lib/python3/site-packages")
+
+    _strip_venv_from_path()
+
+    assert os.environ["PATH"] == "/usr/bin:/usr/local/bin"
+    assert "VIRTUAL_ENV" not in os.environ
+    assert "PYTHONPATH" not in os.environ
+
+
+def test_strip_venv_from_path_noop_outside_venv(monkeypatch):
+    """A packaged install (sys.prefix == sys.base_prefix) is not a venv;
+    PATH and friends must be left untouched so we don't strip /usr/bin."""
+    from sysforge.cli import _strip_venv_from_path
+
+    monkeypatch.setattr(sys, "prefix", "/usr")
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+    monkeypatch.setattr(sys, "executable", "/usr/bin/python")
+    monkeypatch.setenv("PATH", "/usr/bin:/usr/local/bin")
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    _strip_venv_from_path()
+
+    assert os.environ["PATH"] == "/usr/bin:/usr/local/bin"
+
+
+def test_strip_venv_from_path_noop_when_venv_bin_absent(monkeypatch):
+    """If sysforge is invoked via an entry-point whose PATH no longer
+    contains the venv bin (e.g. from a non-zsh shell that didn't activate),
+    leave PATH alone but still pop VIRTUAL_ENV/PYTHONPATH if present."""
+    from sysforge.cli import _strip_venv_from_path
+
+    venv_root = "/tmp/fake-venv"
+    monkeypatch.setattr(sys, "prefix", venv_root)
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+    monkeypatch.setattr(sys, "executable", f"{venv_root}/bin/python")
+    monkeypatch.setenv("PATH", "/usr/bin:/usr/local/bin")
+    monkeypatch.setenv("VIRTUAL_ENV", venv_root)
+
+    _strip_venv_from_path()
+
+    # PATH unchanged because nothing to strip; VIRTUAL_ENV kept since the
+    # function bails before the pop when no PATH entry matched.
+    assert os.environ["PATH"] == "/usr/bin:/usr/local/bin"
+    assert os.environ.get("VIRTUAL_ENV") == venv_root
