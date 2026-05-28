@@ -153,7 +153,7 @@ def test_tracker_increments_counter(monkeypatch):
     progress.init()
     seen = []
     # Capture via monkeypatching render
-    def _capture(i, n, label, phase=None):
+    def _capture(i, n, label):
         seen.append((i, n, label))
     monkeypatch.setattr(progress, "render", _capture)
     with progress.tracker(3, "building") as tick:
@@ -161,10 +161,10 @@ def test_tracker_increments_counter(monkeypatch):
         tick("b")
         tick("c")
     assert seen == [
-        (0, 3, "building starting..."),
-        (1, 3, "building a"),
-        (2, 3, "building b"),
-        (3, 3, "building c"),
+        (0, 3, "building · starting..."),
+        (1, 3, "building · a"),
+        (2, 3, "building · b"),
+        (3, 3, "building · c"),
     ]
 
 
@@ -210,43 +210,3 @@ def test_render_reestablishes_after_clear(monkeypatch):
     assert "2/2" in written
 
 
-# --- phase-aware nested format ---------------------------------------------
-
-def test_render_plain_with_phase(monkeypatch):
-    """phase=(idx, total) prepends a [idx/total] block in plain mode."""
-    buf = _fake_plain_stderr(monkeypatch)
-    progress.init()
-    progress.render(2, 5, "build llvm", phase=(1, 4))
-    out = buf.getvalue()
-    assert "[PROGRESS]" in out
-    assert "[1/4][2/5] build llvm" in out
-
-
-def test_render_plain_no_phase_unchanged(monkeypatch):
-    """phase=None preserves the historical `[i/n] label` format exactly."""
-    buf = _fake_plain_stderr(monkeypatch)
-    progress.init()
-    progress.render(3, 10, "building htop")
-    out = buf.getvalue()
-    # Critical: no stray bracket pair before [3/10].
-    assert "[PROGRESS] [3/10] building htop" in out
-
-
-def test_tracker_forwards_phase(monkeypatch):
-    """tracker() with phase forwards it into every render() call (start + ticks)."""
-    _fake_plain_stderr(monkeypatch)
-    progress.init()
-    seen = []
-
-    def _capture(i, n, label, phase=None):
-        seen.append((i, n, label, phase))
-
-    monkeypatch.setattr(progress, "render", _capture)
-    with progress.tracker(2, "PGO 2/4", phase=(2, 4)) as tick:
-        tick("clang")
-        tick("lld")
-    assert seen == [
-        (0, 2, "PGO 2/4 starting...", (2, 4)),
-        (1, 2, "PGO 2/4 clang", (2, 4)),
-        (2, 2, "PGO 2/4 lld", (2, 4)),
-    ]
