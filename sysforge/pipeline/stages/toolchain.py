@@ -75,6 +75,8 @@ Compiler propagation:
   On completion writes cc/cxx/ld to pipeline_state.toml [stages.toolchain.result]
 """
 
+import contextlib
+import fcntl
 import os
 import subprocess
 import sys
@@ -581,6 +583,7 @@ def _build_pkg(
     linker_flags_extra: str | None = None,
     pgo_build: bool = False,
     pgo_env: dict | None = None,
+    strip_flags: frozenset | set | None = None,
 ) -> None:
     """Build one package via makepkg_wrapper.run()."""
     if options.dry_run:
@@ -614,6 +617,7 @@ def _build_pkg(
         extra_env=pgo_env,
         state_dir=options.state_dir,
         abi_check=getattr(options, "abi_check", False),
+        strip_flags=strip_flags,
         pgo_managed=True,
     ))
 
@@ -629,15 +633,29 @@ def _build_pass(
     linker_flags_extra: str | None = None,
     pgo_build: bool = False,
     pgo_env: dict | None = None,
+    staged_deps: bool = False,
 ) -> None:
     """Build all packages in pkgbuild_map for one pass.
 
     Deduplicates by PKGBUILD directory: split packages that share a directory
     (e.g. llvm, llvm-libs, clang from the same PKGBUILD) are only built once.
+
+    ``staged_deps=True`` means PKGBUILD-declared deps (notably ``llvm=<ver>``)
+    are satisfied by a stage prefix (e.g. ``/var/tmp/sysforge-llvm-stage1``)
+    rather than by installed pacman packages.  In that mode ``--syncdeps``/``-s``
+    is stripped from the resolved profile's makepkg_flags and ``--nodeps`` is
+    appended — otherwise makepkg would invoke ``sudo pacman -S llvm=<ver>``,
+    fail with "target not found" (the version isn't published anywhere), and
+    abort the pass.  Pass 1a sets staged_deps=False because it builds against
+    the live system; Pass 1b/2/3 set staged_deps=True.
     """
     extra = ["--install"] if install else []
     if pgo_build:
         extra = ["--cleanbuild", "--force"] + extra
+    strip_flags: frozenset | None = None
+    if staged_deps:
+        extra = extra + ["--nodeps"]
+        strip_flags = frozenset({"--syncdeps", "-s"})
     _log.ui(f"─── {label} ──────────────────────────────────────────")
     seen_dirs: set[Path] = set()
     first = True
@@ -660,6 +678,7 @@ def _build_pass(
             linker_flags_extra=linker_flags_extra,
             pgo_build=pgo_build,
             pgo_env=pgo_env,
+            strip_flags=strip_flags,
         )
         first = False
 
@@ -1420,6 +1439,61 @@ def _query_pacman_versions(pkgnames: tuple[str, ...]) -> dict[str, str | None]:
     return result
 
 
+def _check_llvm_link_resolution() -> list[str]:
+    """Verify installed LLVM binaries resolve libLLVM only under /usr/lib.
+
+    A stage prefix (``/var/tmp/sysforge-llvm-stage*``) appearing in the
+    ``ldd`` output of an installed binary means Pass 3 packaged a bad
+    RPATH or the install is incomplete — silently leaving the system on a
+    libLLVM that's about to be wiped from /var/tmp.  A resolution under
+    some other prefix (``$HOME/.local/lib`` etc.) is also flagged because
+    it means a sibling library is shadowing the package-managed one.
+
+    Returns issue strings; empty list means clean.
+    """
+    issues: list[str] = []
+    for bin_path, label in (
+        ("/usr/bin/clang", "clang"),
+        ("/usr/bin/lld", "lld"),
+    ):
+        if not Path(bin_path).exists():
+            continue
+        try:
+            proc = subprocess.run(
+                ["ldd", bin_path], capture_output=True, text=True, check=False,
+            )
+        except FileNotFoundError:
+            issues.append("ldd: binary missing from PATH")
+            return issues
+        if proc.returncode != 0:
+            issues.append(f"ldd {bin_path}: exit {proc.returncode}")
+            continue
+        libllvm_paths: list[str] = []
+        for line in proc.stdout.splitlines():
+            stripped = line.strip()
+            if "libLLVM" not in stripped:
+                continue
+            parts = stripped.split("=>")
+            if len(parts) < 2:
+                continue
+            tail = parts[1].strip().split()
+            if not tail or tail[0] in ("not", "(0x0)"):
+                continue
+            libllvm_paths.append(tail[0])
+        for p in libllvm_paths:
+            if "/var/tmp/sysforge-llvm-stage" in p:
+                issues.append(
+                    f"{label} resolves libLLVM from a staging prefix: {p} "
+                    "— Pass 3 packaged a bad RPATH or the install is incomplete"
+                )
+            elif not p.startswith("/usr/lib"):
+                issues.append(
+                    f"{label} resolves libLLVM outside /usr/lib: {p} "
+                    "— a sibling libLLVM is shadowing the package-managed one"
+                )
+    return issues
+
+
 def _verify_llvm_install(
     expected_targets: list[str] | None = None,
 ) -> list[str]:
@@ -1435,6 +1509,9 @@ def _verify_llvm_install(
     3. ``llvm-config --targets-built`` is a superset of
        ``expected_targets`` (skipped when ``expected_targets`` is None or
        empty — i.e. no LLVM_TARGETS filtering was configured).
+    4. ``ldd`` of installed clang/lld resolves libLLVM under /usr/lib —
+       never under /var/tmp/sysforge-llvm-stage*.  Catches a Pass-3 RPATH
+       mistake before /var/tmp gets cleaned and breaks the live toolchain.
     """
     issues: list[str] = []
 
@@ -1448,6 +1525,8 @@ def _verify_llvm_install(
                 "LLVM component versions disagree (canonical interrupted-install "
                 f"symptom): {detail}"
             )
+
+    issues.extend(_check_llvm_link_resolution())
 
     for cmd, label in (
         (["clang", "--version"], "clang --version"),
@@ -1539,6 +1618,61 @@ def _prompt_llvm_recovery(issues: list[str], *, source: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Concurrent-build lock
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _pgo_lock(lock_path: Path):
+    """Advisory flock guard for the duration of a PGO toolchain build.
+
+    Two concurrent ``sysforge run toolchain`` invocations would clobber
+    ``/var/tmp/sysforge-llvm-stage1``, ``/var/tmp/sysforge-llvm-stage2`` and
+    the shared ``pgo_store`` profraw directory.  The sentinel scope guards
+    the state-dir but not these /var/tmp + ~/pgo paths, so we add an
+    explicit advisory lock here.  Holder PID is written to the lock file
+    so the loser can surface a useful error.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            holder = ""
+            try:
+                with open(lock_path) as f:
+                    holder = f.read().strip()
+            except OSError:
+                pass
+            os.close(fd)
+            if holder:
+                raise RuntimeError(
+                    f"[TOOLCHAIN] Another sysforge PGO build is running "
+                    f"(pid {holder}); refuse to start a second one."
+                )
+            raise RuntimeError(
+                f"[TOOLCHAIN] PGO build lock at {lock_path} is held; "
+                "refuse to start a second concurrent build."
+            )
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        os.fsync(fd)
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Build paths
 # ---------------------------------------------------------------------------
 
@@ -1556,6 +1690,30 @@ def _build_llvm_single(
 
 
 def _build_llvm_pgo(
+    pgo_map: dict[str, Path],
+    non_pgo_map: dict[str, Path],
+    lib32_map: dict[str, Path],
+    staging1: Path,
+    staging: Path,
+    pgo_store: Path,
+    options,
+) -> tuple[str, str, str]:
+    """Acquire the PGO build lock, then run the 3-pass flow.
+
+    The lock prevents two concurrent ``sysforge run toolchain`` runs from
+    clobbering each other's staging dirs / pgo_store. The lock file lives
+    in the parent of staging1 (typically ``/var/tmp``) so neither the
+    Pass-1 purge nor the post-build cleanup can delete it.
+    """
+    lock_path = staging1.parent / "sysforge-pgo.lock"
+    with _pgo_lock(lock_path):
+        return _build_llvm_pgo_inner(
+            pgo_map, non_pgo_map, lib32_map,
+            staging1, staging, pgo_store, options,
+        )
+
+
+def _build_llvm_pgo_inner(
     pgo_map: dict[str, Path],
     non_pgo_map: dict[str, Path],
     lib32_map: dict[str, Path],
@@ -1791,6 +1949,7 @@ def _build_llvm_pgo(
                 linker_flags_extra=residual_linker_flags,
                 pgo_build=True,
                 pgo_env=pass1b_env,
+                staged_deps=True,
             )
             _extract_pass2_to_staging(non_pgo_map, staging1, options.dry_run)
             _log.ui(f"[PGO] 2/4 complete (stage1 self-sufficient at {staging1})")
@@ -1869,6 +2028,7 @@ def _build_llvm_pgo(
                     linker_flags_extra=residual_linker_flags,
                     pgo_build=True,
                     pgo_env=pass2_env,
+                    staged_deps=True,
                 )
             finally:
                 stop_event.set()
@@ -1952,6 +2112,7 @@ def _build_llvm_pgo(
             compiler_flags_extra=f"-fprofile-use={profdata_path}",
             pgo_build=True,
             pgo_env=pass3_env,
+            staged_deps=True,
         )
         _pgo_install(pass3_label, all_pass3, options.dry_run)
         if skip_profgen:

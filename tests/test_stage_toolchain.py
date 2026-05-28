@@ -1356,6 +1356,73 @@ def test_build_pass_non_pgo_passes_all_flags(tmp_path):
     assert "--noextract" in flags
 
 
+def test_build_pass_staged_deps_adds_nodeps_and_strips_syncdeps(tmp_path):
+    """staged_deps=True: --nodeps added; --syncdeps/-s stripped via strip_flags.
+
+    Reproduces the failure mode that motivated F1: with --syncdeps in the
+    profile flags, Pass 1b's clang build asks pacman to install llvm=<ver>
+    against repos that don't have it. The fix is to make Pass 1b/2/3 set
+    staged_deps=True so makepkg never consults pacman for the staged deps.
+    """
+    pkgbuild = make_pkgbuild(tmp_path, "clang")
+    pkgbuild_map = {"clang": pkgbuild}
+
+    captured = []
+    def fake_run(pb, options=None):
+        captured.append({
+            "extra_flags": list(options.extra_flags or []) if options else [],
+            "strip_flags": options.strip_flags if options else None,
+        })
+
+    options = make_options(dry_run=False,
+                           makepkg_flags=["--syncdeps", "-s", "--noconfirm"])
+
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run):
+        _build_pass(
+            "PGO 2/4 · bootstrap clang/lld against stage1",
+            pkgbuild_map, options,
+            install=False, pgo_build=True, staged_deps=True,
+        )
+
+    rec = captured[0]
+    assert "--nodeps" in rec["extra_flags"]
+    assert rec["strip_flags"] is not None
+    assert "--syncdeps" in rec["strip_flags"]
+    assert "-s" in rec["strip_flags"]
+
+
+def test_build_pass_default_keeps_syncdeps_for_pass1a(tmp_path):
+    """staged_deps=False (default, Pass 1a): no --nodeps, no strip_flags.
+
+    Pass 1a builds against the live system, so --syncdeps must stay so
+    that any missing build deps (cmake, ninja, python, z3, ...) get
+    installed normally before the build starts.
+    """
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    pkgbuild_map = {"llvm": pkgbuild}
+
+    captured = []
+    def fake_run(pb, options=None):
+        captured.append({
+            "extra_flags": list(options.extra_flags or []) if options else [],
+            "strip_flags": options.strip_flags if options else None,
+        })
+
+    options = make_options(dry_run=False,
+                           makepkg_flags=["--syncdeps", "--noconfirm"])
+
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run):
+        _build_pass(
+            "PGO 1/4 · instrument llvm",
+            pkgbuild_map, options,
+            install=False, pgo_build=True,  # staged_deps defaults False
+        )
+
+    rec = captured[0]
+    assert "--nodeps" not in rec["extra_flags"]
+    assert rec["strip_flags"] is None
+
+
 # ---------------------------------------------------------------------------
 # ToolchainStage.run() — custom package list
 # ---------------------------------------------------------------------------
@@ -1658,6 +1725,102 @@ def test_llvm_recovery_command_lists_all_components():
     for pkg in ("llvm", "llvm-libs", "clang", "lld", "compiler-rt"):
         assert pkg in cmd
     assert cmd.startswith("sudo pacman -S ")
+
+
+def test_check_llvm_link_resolution_clean_returns_no_issues():
+    """ldd resolves libLLVM under /usr/lib for clang & lld → no issues."""
+    from sysforge.pipeline.stages.toolchain import _check_llvm_link_resolution
+
+    ldd_clang = (
+        "\tlinux-vdso.so.1 (0x00007ffd)\n"
+        "\tlibLLVM-22.so => /usr/lib/libLLVM-22.so (0x00007f01)\n"
+        "\tlibstdc++.so.6 => /usr/lib/libstdc++.so.6 (0x00007f00)\n"
+    )
+    ldd_lld = (
+        "\tlibLLVM-22.so => /usr/lib/libLLVM-22.so (0x00007f01)\n"
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:1] == ["ldd"] and cmd[1] == "/usr/bin/clang":
+            return MagicMock(returncode=0, stdout=ldd_clang, stderr="")
+        if cmd[:1] == ["ldd"] and cmd[1] == "/usr/bin/lld":
+            return MagicMock(returncode=0, stdout=ldd_lld, stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run), \
+         patch("sysforge.pipeline.stages.toolchain.Path.exists", return_value=True):
+        issues = _check_llvm_link_resolution()
+    assert issues == []
+
+
+def test_check_llvm_link_resolution_detects_staging_leak():
+    """libLLVM resolves from /var/tmp/sysforge-llvm-stage* → issue raised.
+
+    This is the failure mode F3 guards against: a Pass-3 packaging mistake
+    leaves clang with an RPATH or symlink that points back at the staging
+    prefix; /usr looks fine until /var/tmp gets cleaned and clang stops
+    loading. Catch it in the verify step before the user sees a broken
+    toolchain.
+    """
+    from sysforge.pipeline.stages.toolchain import _check_llvm_link_resolution
+
+    ldd_clang = (
+        "\tlibLLVM-22.so => /var/tmp/sysforge-llvm-stage2/usr/lib/libLLVM-22.so "
+        "(0x00007f01)\n"
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:1] == ["ldd"] and cmd[1] == "/usr/bin/clang":
+            return MagicMock(returncode=0, stdout=ldd_clang, stderr="")
+        if cmd[:1] == ["ldd"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run), \
+         patch("sysforge.pipeline.stages.toolchain.Path.exists", return_value=True):
+        issues = _check_llvm_link_resolution()
+    assert any("staging prefix" in i for i in issues)
+    assert any("/var/tmp/sysforge-llvm-stage2" in i for i in issues)
+
+
+def test_check_llvm_link_resolution_detects_non_usr_lib():
+    """libLLVM resolves outside /usr/lib (e.g. ~/.local) → issue raised."""
+    from sysforge.pipeline.stages.toolchain import _check_llvm_link_resolution
+
+    ldd_clang = (
+        "\tlibLLVM-22.so => /home/keith/.local/lib/libLLVM-22.so (0x00007f01)\n"
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:1] == ["ldd"] and cmd[1] == "/usr/bin/clang":
+            return MagicMock(returncode=0, stdout=ldd_clang, stderr="")
+        if cmd[:1] == ["ldd"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run), \
+         patch("sysforge.pipeline.stages.toolchain.Path.exists", return_value=True):
+        issues = _check_llvm_link_resolution()
+    assert any("outside /usr/lib" in i for i in issues)
+
+
+def test_pgo_lock_contention_raises_with_holder_pid(tmp_path):
+    """Second acquirer fails fast with the holder's PID surfaced."""
+    from sysforge.pipeline.stages.toolchain import _pgo_lock
+
+    lock_path = tmp_path / "sysforge-pgo.lock"
+
+    with _pgo_lock(lock_path):
+        # Lock is held; a nested attempt on the same path must fail.
+        with pytest.raises(RuntimeError, match="Another sysforge PGO build"):
+            with _pgo_lock(lock_path):
+                pass
+        # Lock file should name the holder PID.
+        assert lock_path.read_text().strip() == str(os.getpid())
+
+    # After release, a fresh acquirer succeeds.
+    with _pgo_lock(lock_path):
+        pass
 
 
 # ---------------------------------------------------------------------------
