@@ -81,7 +81,7 @@ def _capture_invoke(pkgbuild_path, conf_path, resolved_profile, **kwargs):
         m.returncode = 0
         return m
 
-    def fake_run_with_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None):
+    def fake_run_with_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None, **_kwargs):
         captured["cmd"] = list(cmd)
         captured["env"] = dict(env)
         return 0
@@ -142,7 +142,7 @@ def _fake_popen_factory(captured):
 def _fake_pty_factory(captured, lines=(), returncode=0):
     """Build a run_with_pty stand-in that captures env/cmd, replays `lines`
     via line_callback, and returns `returncode`."""
-    def fake_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None):
+    def fake_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None, **_kwargs):
         captured["cmd"] = list(cmd)
         captured["env"] = dict(env)
         for line in lines:
@@ -386,7 +386,7 @@ def test_noninteractive_uses_pty(tmp_path):
 
     pty_calls = []
 
-    def fake_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None):
+    def fake_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None, **_kwargs):
         pty_calls.append(list(cmd))
         return 0
 
@@ -418,7 +418,7 @@ def test_empty_profile_produces_base_cmd(tmp_path):
 def _pty_with_lines(lines, returncode):
     """Build a run_with_pty stand-in that replays `lines` via line_callback
     and returns `returncode`."""
-    def fake_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None):
+    def fake_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None, **_kwargs):
         for line in lines:
             line_callback(line.rstrip("\n"))
         return returncode

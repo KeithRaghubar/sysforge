@@ -15,14 +15,24 @@ current row in place, so treating \\r as a line boundary would deliver
 every redraw as a separate "line". rstrip("\\r") strips redraw remnants
 before invoking line_callback.
 
+Heartbeat: when idle_callback is set, the runner uses select() to wake up
+every idle_timeout_s seconds. If no line has been delivered in that window,
+idle_callback is invoked with either the most recent \\r-overwritten buffer
+segment (so tools like ninja that redraw a status line in place still report
+progress) or None (the child is producing no output at all). The buffer is
+not consumed by idle_callback — subsequent \\n still delivers the original
+inter-newline content unchanged to line_callback.
+
 Public API:
-    run_with_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None) -> int
+    run_with_pty(cmd, *, cwd, env, line_callback, forward_bytes,
+                 preexec_fn=None, idle_callback=None, idle_timeout_s=30.0) -> int
 """
 import codecs
 import errno
 import fcntl
 import os
 import pty
+import select
 import shutil
 import signal
 import struct
@@ -30,6 +40,7 @@ import subprocess
 import sys
 import termios
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -49,9 +60,17 @@ def run_with_pty(
     line_callback: Callable[[str], None],
     forward_bytes: bool,
     preexec_fn: Optional[Callable[[], None]] = None,
+    idle_callback: Optional[Callable[[Optional[str]], None]] = None,
+    idle_timeout_s: float = 30.0,
 ) -> int:
     """Spawn cmd with stdout+stderr attached to a pty. Returns the child's
-    return code. stdin is inherited from the parent (DEVNULL if unavailable)."""
+    return code. stdin is inherited from the parent (DEVNULL if unavailable).
+
+    If idle_callback is set, it is invoked when no line has been delivered for
+    idle_timeout_s seconds. It receives either the latest ``\\r``-overwritten
+    buffer segment (so tools like ninja that redraw a status line in place
+    still surface progress) or ``None`` when the child has produced no output
+    at all in the window. The buffer is not mutated by the heartbeat path."""
     master_fd, slave_fd = pty.openpty()
 
     sz = shutil.get_terminal_size(fallback=(80, 24))
@@ -94,7 +113,25 @@ def run_with_pty(
 
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         buf = ""
+        last_activity = time.monotonic()
         while True:
+            if idle_callback is not None:
+                wait = max(0.0, idle_timeout_s - (time.monotonic() - last_activity))
+            else:
+                wait = None
+            try:
+                ready, _, _ = select.select([master_fd], [], [], wait)
+            except (OSError, ValueError):
+                break
+            if not ready:
+                # Idle timeout: surface progress without consuming the buffer.
+                # buf may hold an incomplete line (no \n yet); pass only the
+                # latest \r-overwritten segment so ninja-style status redraws
+                # report the current step instead of the whole redraw history.
+                if idle_callback is not None:
+                    idle_callback(buf.split("\r")[-1] if buf else None)
+                    last_activity = time.monotonic()
+                continue
             try:
                 chunk = os.read(master_fd, 4096)
             except OSError as e:
@@ -113,6 +150,7 @@ def run_with_pty(
             while (idx := buf.find("\n")) != -1:
                 line, buf = buf[:idx], buf[idx + 1:]
                 line_callback(line.rstrip("\r"))
+                last_activity = time.monotonic()
 
         buf += decoder.decode(b"", final=True)
         if buf:

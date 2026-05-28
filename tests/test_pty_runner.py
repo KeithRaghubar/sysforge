@@ -150,3 +150,41 @@ def test_utf8_split_across_chunks(tmp_path):
     )
     assert rc == 0
     assert lines == [payload]
+
+
+def test_idle_callback_flushes_latest_cr_segment(tmp_path):
+    """Mimics ninja: emit a few \\r-redrawn status lines, then go quiet."""
+    idle: list[str | None] = []
+    rc = run_with_pty(
+        # printf flushes by default; sleep keeps the pty open while idle.
+        ["bash", "-c", "printf 'a\\rb\\rc'; sleep 0.4"],
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin"},
+        line_callback=lambda _line: None,
+        forward_bytes=False,
+        idle_callback=idle.append,
+        idle_timeout_s=0.05,
+    )
+    assert rc == 0
+    # At least one heartbeat fired during the sleep with the latest
+    # \r-overwritten segment ("c"), not the full redraw history.
+    assert "c" in idle
+    # Every heartbeat is either the latest segment "c" or None (if it fired
+    # before any data arrived); we never leak the redraw history.
+    assert all(s in (None, "c") for s in idle)
+
+
+def test_idle_callback_fires_with_none_on_silence(tmp_path):
+    """When the child produces no output, idle_callback gets None."""
+    idle: list[str | None] = []
+    rc = run_with_pty(
+        ["bash", "-c", "sleep 0.3"],
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin"},
+        line_callback=lambda _line: None,
+        forward_bytes=False,
+        idle_callback=idle.append,
+        idle_timeout_s=0.05,
+    )
+    assert rc == 0
+    assert None in idle

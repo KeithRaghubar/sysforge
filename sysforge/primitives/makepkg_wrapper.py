@@ -103,6 +103,14 @@ from sysforge.primitives.profile import (
 # same flags during update/converge batch runs.
 INSTALL_FLAGS = frozenset({"-i", "--install"})
 
+# Heartbeat cadence for invoke_makepkg's pty loop. Ninja attached to a pty
+# uses \r to redraw a single status line in place and rarely emits \n during
+# a long compile phase, so without a heartbeat both the terminal (under -vvv)
+# and the per-package log stay silent for many minutes even though the build
+# is healthy. The pty runner uses this to surface the latest \r-overwritten
+# segment (or a "no output" marker) at this cadence.
+MAKEPKG_HEARTBEAT_S = 30.0
+
 
 def expand_makepkg_flags(flags_str) -> list:
     """
@@ -873,12 +881,25 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         if verbose_log:
             _makepkg_log.debug(stripped)
 
+    def _on_idle(latest: str | None) -> None:
+        # Surfaces ninja-style \r status redraws (and pure silence) into the
+        # log so `sysforge log <pkg>` keeps moving during long compile phases.
+        # Routed through _makepkg_log so the entry inherits the same
+        # [SYSFORGE][DEBUG][MAKEPKG] prefix and ends up in the per-package log
+        # automatically — visible at -vvv on the terminal, always in the file.
+        if latest:
+            _makepkg_log.debug(f"[heartbeat] {latest}")
+        else:
+            _makepkg_log.debug(f"[heartbeat] no output for ~{MAKEPKG_HEARTBEAT_S:.0f}s")
+
     forward_bytes = (not verbose_log) and sys.stdout.isatty()
     returncode = run_with_pty(
         cmd, cwd=build_dir, env=env,
         line_callback=_on_line,
         forward_bytes=forward_bytes,
         preexec_fn=lift_for_child,
+        idle_callback=_on_idle,
+        idle_timeout_s=MAKEPKG_HEARTBEAT_S,
     )
 
     if returncode != 0:
