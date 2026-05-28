@@ -984,10 +984,10 @@ def _add_run_parser(sub):
     p_toolchain.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p_toolchain.add_argument("--rebuild-profdata", action="store_true", dest="rebuild_profdata",
-        help="Force a full 3-pass PGO build even if compatible profdata already exists.")
+        help="Force a full 4-pass PGO build even if compatible profdata already exists.")
     p_toolchain.add_argument("--auto-pgo", action="store_true", dest="auto_pgo",
         help="Bypass the PGO confirmation prompts (profdata reuse, staging/pgo_store "
-             "purge, 3-pass start, suspicious profdata size). Required for non-interactive "
+             "purge, 4-pass start, suspicious profdata size). Required for non-interactive "
              "PGO runs; without it, a non-TTY invocation aborts the PGO sub-flow because PGO "
              "is fragile and silent mis-optimisation is the failure mode.")
     p_toolchain.add_argument("--allow-dirty-llvm", action="store_true", dest="allow_dirty_llvm",

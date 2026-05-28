@@ -722,12 +722,12 @@ Override state directory.
 
 .TP
 \fB\-\-rebuild\-profdata\fR
-Force a full 3\-pass PGO build even if compatible profdata already exists.
+Force a full 4\-pass PGO build even if compatible profdata already exists.
 
 .TP
 \fB\-\-auto\-pgo\fR
 Bypass the PGO confirmation prompts (profdata reuse, staging/pgo_store purge,
-3\-pass start, suspicious profdata size). Required for non\-interactive PGO
+4\-pass start, suspicious profdata size). Required for non\-interactive PGO
 runs; without it, a non\-TTY invocation aborts the PGO sub\-flow because PGO is
 fragile and silent mis\-optimisation is the failure mode.
 

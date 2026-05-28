@@ -530,7 +530,7 @@ def test_toolchain_stage_llvm_no_pgo_dry_run(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# ToolchainStage.run() — LLVM PGO 3-pass
+# ToolchainStage.run() — LLVM PGO 4-pass
 # ---------------------------------------------------------------------------
 
 def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
@@ -628,7 +628,7 @@ def test_get_toolchain_variant_helper(tmp_path):
     assert get_toolchain_variant(state) == "pgo_llvm"
 
 
-def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):
+def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     """Verify makepkg_wrapper.run is called once per package per pass with correct PGO flags."""
     staging   = tmp_path / "staging"
     pgo_store = tmp_path / "pgo_store"

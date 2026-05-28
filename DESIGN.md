@@ -144,7 +144,7 @@ sysforge/
 │           ├── hardware.py            # stage 3: CPU/GPU/NVMe detection → hardware_profile.toml
 │           ├── configure.py           # stage 4: hostname, locale, timezone, bootloader, user, services (arch-chroot)
 │           ├── reconfigure.py         # stage 5: pre-build checkpoint
-│           ├── toolchain.py           # stage 6: LLVM/GCC toolchain build (optional 3-pass PGO)
+│           ├── toolchain.py           # stage 6: LLVM/GCC toolchain build (optional 4-pass PGO)
 │           ├── packages.py            # stage 7: package builds
 │           └── kernel.py              # stage 8: kernel build
 ├── tests/
@@ -346,7 +346,7 @@ Python DAG orchestrator with checkpoint/resume. Stages run in order:
 3. **hardware** — fully implemented (CPU/GPU/NVMe detection → hardware_profile.toml)
 4. **configure** — fully implemented (hostname, locale, timezone, mirrorlist, systemd-boot, user creation + sudo, sshd config, shell dotfiles, passwords via arch-chroot)
 5. **reconfigure** — fully implemented (pre-build checkpoint: config review, disk/network/gpg checks, build preview)
-6. **toolchain** — fully implemented (LLVM/GCC, optional 3-pass PGO bootstrap, compiler propagation to packages/kernel)
+6. **toolchain** — fully implemented (LLVM/GCC, optional 4-pass PGO bootstrap, compiler propagation to packages/kernel)
 7. **packages** — fully implemented
 8. **kernel** — fully implemented
 
@@ -541,7 +541,7 @@ non_pgo = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
 lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
 ```
 
-When `compiler` is unset (or set to `"gcc"`), the toolchain stage is **register-only**: it writes the system `/usr/bin/gcc` and `/usr/bin/g++` paths into pipeline state and returns without building anything. Stock `gcc-libs` from pacman's `base-devel` provides the runtime. The 3-pass PGO architecture below only kicks in for the explicit `compiler = "llvm"` path. Building GCC from source has no meaningful performance gains and is error-prone, so the stage doesn't own that path — use `pacman -S gcc gcc-libs` (already in `base-devel`) if you need to (re)install it.
+When `compiler` is unset (or set to `"gcc"`), the toolchain stage is **register-only**: it writes the system `/usr/bin/gcc` and `/usr/bin/g++` paths into pipeline state and returns without building anything. Stock `gcc-libs` from pacman's `base-devel` provides the runtime. The 4-pass PGO architecture below only kicks in for the explicit `compiler = "llvm"` path. Building GCC from source has no meaningful performance gains and is error-prone, so the stage doesn't own that path — use `pacman -S gcc gcc-libs` (already in `base-devel`) if you need to (re)install it.
 
 **`skip_build = true`:** registers the system compiler paths in pipeline state without building anything. Downstream stages (packages, kernel) will use the system compiler. Useful when the system compiler is already optimized and no rebuild is needed.
 
@@ -567,17 +567,17 @@ The sequence is **four builds** (Pass 1a, Pass 1b, Pass 2, Pass 3) that produce 
 
 **Dep resolution for staged passes.** Pass 1a builds against the live `/usr` and keeps the profile-supplied `--syncdeps`, so missing build tools (cmake, ninja, python, z3, libffi, …) are pacman-installed normally. Pass 1b, Pass 2, and Pass 3 build against a stage prefix; `CMAKE_PREFIX_PATH=<staging>/usr` makes `find_package(LLVM)` see the staged headers and cmake configs, but pacman has no knowledge of those staged packages. `_build_pass(staged_deps=True)` therefore strips `--syncdeps`/`-s` from the resolved profile's makepkg flags and appends `--nodeps` for those three passes. Without that, makepkg's pre-build dep check would invoke `sudo pacman -S llvm=<pkgver>` and fail with "target not found" (the just-built version is not in any repo). The non-llvm build deps stay required — they're expected to already be on the system from Pass 1a's `--syncdeps` install.
 
-**Concurrent-run lock.** `_build_llvm_pgo` acquires an advisory `flock(2)` on `<pgo_staging1>.parent/sysforge-pgo.lock` (typically `/var/tmp/sysforge-pgo.lock`) for the duration of the 3-pass flow. The sentinel scope guards re-entry on the state-dir but not the `/var/tmp` staging dirs or `~/pgo`, both of which two concurrent runs would corrupt. The lock file holds the owner's PID, so the loser surfaces "another sysforge PGO build is running (pid N)" rather than a confusing mid-flow failure. The path is in `staging1.parent` rather than inside `pgo_store` so the Pass-1 purge cannot delete it.
+**Concurrent-run lock.** `_build_llvm_pgo` acquires an advisory `flock(2)` on `<pgo_staging1>.parent/sysforge-pgo.lock` (typically `/var/tmp/sysforge-pgo.lock`) for the duration of the 4-pass flow. The sentinel scope guards re-entry on the state-dir but not the `/var/tmp` staging dirs or `~/pgo`, both of which two concurrent runs would corrupt. The lock file holds the owner's PID, so the loser surfaces "another sysforge PGO build is running (pid N)" rather than a confusing mid-flow failure. The path is in `staging1.parent` rather than inside `pgo_store` so the Pass-1 purge cannot delete it.
 
 **Post-install libLLVM resolution check.** `_verify_llvm_install` runs `ldd /usr/bin/clang` and `ldd /usr/bin/lld` and asserts that any `libLLVM*.so` lines resolve under `/usr/lib`. A `/var/tmp/sysforge-llvm-stage*` path appearing in `ldd` of an installed binary means Pass 3 packaged a bad RPATH or the install is incomplete — `/usr` looks consistent until `/var/tmp` gets cleaned, at which point the live toolchain silently breaks. The verify-stage check catches that before the sentinel clears.
 
-**Profdata reuse:** before purging `pgo_store`, the stage checks for an existing `clang.profdata` + version sidecar. The sidecar's LLVM major version is compared against the `pkgver` in the pgo PKGBUILDs (not the installed version — the toolchain stage builds a *new* version). If compatible (same major), passes 1–2 are skipped entirely and only the optimized build (Pass 3) runs, using system clang as CC (which, after a prior successful run, is already PGO-optimized). Staging is not needed in this path. `--rebuild-profdata` forces a full 3-pass build regardless, e.g. after upstream codegen changes within the same major version.
+**Profdata reuse:** before purging `pgo_store`, the stage checks for an existing `clang.profdata` + version sidecar. The sidecar's LLVM major version is compared against the `pkgver` in the pgo PKGBUILDs (not the installed version — the toolchain stage builds a *new* version). If compatible (same major), passes 1a–2 are skipped entirely and only the optimized build (Pass 3) runs, using system clang as CC (which, after a prior successful run, is already PGO-optimized). Staging is not needed in this path. `--rebuild-profdata` forces a full 4-pass build regardless, e.g. after upstream codegen changes within the same major version.
 
 **Confirmation gating (PGO).** Unlike the rest of sysforge (which is automation-focused), the LLVM PGO sub-flow is fragile enough that wrong profdata silently mis-optimises the resulting compiler. Four decision points in `_build_llvm_pgo` therefore prompt the user before destructive or long-running work, all sharing a single `_pgo_confirm` helper:
 
-1. **Reuse vs rebuild** — when compatible profdata is found, prompt `[Y/n]` to reuse; declining triggers a full 3-pass rebuild (and continues into prompts 2–3).
+1. **Reuse vs rebuild** — when compatible profdata is found, prompt `[Y/n]` to reuse; declining triggers a full 4-pass rebuild (and continues into prompts 2–3).
 2. **Purge `staging/` and `pgo_store/`** — prompt `[y/N]` before `rmtree`; declining aborts PGO.
-3. **3-pass start** — prompt `[y/N]` before launching the ~2–3 hour 3-pass sequence; declining aborts PGO.
+3. **4-pass start** — prompt `[y/N]` before launching the ~2–3 hour 4-pass sequence; declining aborts PGO.
 4. **Suspicious Pass-2 profdata size** (`< 10 MiB`) — prompt `[y/N]` to continue into Pass 3; declining aborts before Pass 3 so the user can investigate instrumentation.
 
 `--auto-pgo` (added on `run toolchain`) bypasses all four prompts and falls through to the prior automated behaviour. **Non-interactive without `--auto-pgo`** — the prompt's `eof_default="n"` fires and the PGO path aborts with a clear error directing the user to pass `--auto-pgo` or run with a TTY. The other existing prompts (residual-instrumentation, GCC-anyway, main "Proceed with toolchain build?", LLVM blockers) are unchanged.
@@ -1546,7 +1546,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 | `--log-dir <path>` | `run pipeline`, `run packages`, `run kernel`, `build` | Override log file directory |
 | `--purge-log` | `run pipeline` | Truncate unified log before run |
 | `--persist-log` | `run pipeline`, `run toolchain`, `run packages`, `run kernel`, `build` | Keep log files after success |
-| `--rebuild-profdata` | `run toolchain` | Force full 3-pass PGO build even if compatible profdata exists |
+| `--rebuild-profdata` | `run toolchain` | Force full 4-pass PGO build even if compatible profdata exists |
 | `--auto-pgo` | `run toolchain` | Bypass all PGO confirmation prompts (required for non-interactive PGO runs) |
 | `--cleansrc` | `build`, `update`, `fetch`, `run toolchain` | Purge each package's src dir and re-clone before fetching/building. Refuses (per package) on uncommitted changes, ahead-of-upstream commits, or `diverged_user` state |
 | `--cleansrc-force` | `build`, `update`, `fetch`, `run toolchain` | Like `--cleansrc` but bypasses the dirty/diverged guard. Use when the upstream rewrote history (e.g. Arch packaging repos force-push every release) and the local commits have no value to preserve |
@@ -1897,7 +1897,7 @@ Post-v1.0 enhancements that build on existing infrastructure. Not required for t
 
 ### Landed in v1.x
 
-- **Toolchain / kernel stages re-promoted from experimental** *(landed)* — Stages 6 (toolchain) and 8 (kernel), plus the `sysforge update` `build_mode = "pgo_llvm_toolchain"` profdata-reuse path, no longer emit the runtime `[WARN]` at entry and are no longer flagged as deferred post-1.0. Default `enabled = false` is preserved in both `toolchain.toml` and `kernel.toml` — building a custom toolchain or kernel remains an opt-in decision rather than the experimental framing that previously gated it. The implementations (3-pass PGO bootstrap, kconfig merge, bootloader updates, profdata version sidecar) were stable enough through v1.x iteration to drop the warning surface.
+- **Toolchain / kernel stages re-promoted from experimental** *(landed)* — Stages 6 (toolchain) and 8 (kernel), plus the `sysforge update` `build_mode = "pgo_llvm_toolchain"` profdata-reuse path, no longer emit the runtime `[WARN]` at entry and are no longer flagged as deferred post-1.0. Default `enabled = false` is preserved in both `toolchain.toml` and `kernel.toml` — building a custom toolchain or kernel remains an opt-in decision rather than the experimental framing that previously gated it. The implementations (4-pass PGO bootstrap, kconfig merge, bootloader updates, profdata version sidecar) were stable enough through v1.x iteration to drop the warning surface.
 - **LLVM target filtering** *(landed)* — Hardware stage emits `host_arch` and an autodetected `llvm_targets` list (CPU backend from `uname -m`, GPU backends from `gpu_vendors`: `amd`→`AMDGPU`, `nvidia`→`NVPTX`; Intel contributes nothing because the Mesa Intel drivers don't depend on an LLVM backend). `pkgbuild_patcher.patch_llvm_targets` injects `-DLLVM_TARGETS_TO_BUILD="<list>"` into the cmake invocation of any LLVM-toolchain PKGBUILD (`llvm`, `clang`, `compiler-rt`, `lld`, lib32 variants). Resolution order: `[llvm] targets` in `toolchain.toml` (explicit override; empty list disables filtering) → `hardware_profile.toml [hardware] llvm_targets` (autodetect) → no filtering. The `LLVM_EXPERIMENTAL_TARGETS_TO_BUILD` flag is left untouched so opt-in experimental backends still build.
 - **Verbose skip messaging in `sysforge update`** *(landed)* — `_sync_sources` now stores `(status, error)` tuples in `sync_failures`, and `_check_one_pkgbase` dispatches on the status to emit one of `PULL_FAILED` (genuine clone/fetch error), `RATE_LIMITED` (`STATUS_RATE_LIMITED`), or `PURGE_REFUSED` (`STATUS_PURGE_REFUSED`). The summary header always lists per-category counts (`5 need rebuild, 30 up to date, 7 skipped (3 rate-limited, 2 devel, 1 pull failed, 1 purge refused)`); per-package detail is suppressed by default for non-actionable statuses (UP_TO_DATE / DEVEL / RATE_LIMITED / PURGE_REFUSED / PULL_FAILED) and surfaced under `-v`. `NEEDS_REBUILD` and `DOWNGRADE` always render per-package because they are actionable. STATUS_DIVERGED remains a warn-level informational, not a skip — the build proceeds against the local PKGBUILD (DESIGN.md §`source_sync.py`).
 - **Pacman integration** *(landed, both paths)* —

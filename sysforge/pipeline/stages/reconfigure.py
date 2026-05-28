@@ -1215,7 +1215,7 @@ def _step_preview(config, state, options, editor: str) -> str:
                 tcfg = tomllib.load(f)
             compiler = tcfg.get("compiler", "gcc")
             pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
-            pgo_label = " + PGO (3-pass)" if pgo else ""
+            pgo_label = " + PGO (4-pass)" if pgo else ""
             _log.ui(f"  Toolchain: {compiler}{pgo_label}")
         except (OSError, tomllib.TOMLDecodeError) as e:
             _log.ui(f"  Toolchain: toolchain.toml present but unreadable ({e})")

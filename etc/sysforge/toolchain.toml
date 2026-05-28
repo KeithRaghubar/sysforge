@@ -11,7 +11,7 @@
 # paths into pipeline state and returns. Stock gcc-libs from pacman's
 # base-devel provides the runtime; sysforge never builds GCC from source.
 #
-# "llvm" is opt-in only and enables the 3-pass PGO bootstrap, which is
+# "llvm" is opt-in only and enables the 4-pass PGO bootstrap, which is
 # fragile across LLVM major bumps. Leave on "gcc" unless you specifically
 # want PGO LLVM.
 #
@@ -22,10 +22,10 @@
 enabled = false
 
 # compiler = "gcc"     # "gcc" (default when unset) or "llvm". LLVM enables
-#                      # the 3-pass PGO bootstrap, but is fragile across LLVM
+#                      # the 4-pass PGO bootstrap, but is fragile across LLVM
 #                      # major bumps — leave on "gcc" unless you specifically
 #                      # want PGO LLVM.
-# pgo     = true       # LLVM only: enable 3-pass PGO bootstrap (ignored for gcc)
+# pgo     = true       # LLVM only: enable 4-pass PGO bootstrap (ignored for gcc)
 
 # Path where pass-2 binaries are extracted for use as CC/CXX in pass 3.
 # Must be on the same filesystem as /usr and have ~2 GB free.
@@ -33,8 +33,8 @@ enabled = false
 
 # Path where profraw files are written during pass 2 and merged to profdata.
 # Profraw files are deleted after merging; profdata is preserved for reuse.
-# On subsequent runs, compatible profdata (same LLVM major) skips passes 1-2.
-# Use --rebuild-profdata to force a full 3-pass build.
+# On subsequent runs, compatible profdata (same LLVM major) skips passes 1a-2.
+# Use --rebuild-profdata to force a full 4-pass build.
 # Needs ~500 MB free during pass 2.
 # pgo_store = "/var/tmp/sysforge-llvm-pgo"
 

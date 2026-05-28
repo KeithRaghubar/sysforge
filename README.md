@@ -74,7 +74,7 @@ sysforge update --install-only
 #     `run toolchain` auto-downloads any missing toolchain PKGBUILDs through
 #     the SourceSyncScheduler and refreshes existing trees against upstream
 #     (gated by --no-update). The PGO sub-flow is fragile, so it prompts at
-#     four decision points (profdata reuse, staging/pgo_store purge, 3-pass
+#     four decision points (profdata reuse, staging/pgo_store purge, 4-pass
 #     start, suspicious profdata size); pass --auto-pgo to bypass the prompts
 #     for unattended runs.
 sysforge run toolchain --allow-dirty-llvm
@@ -230,7 +230,7 @@ sysforge run pipeline --resume
 This runs stages 5–8:
 
 - **reconfigure** — pre-build checks: disk space, network, config review
-- **toolchain** — *(opt-in)* builds the LLVM toolchain via the 3-pass PGO bootstrap (reuses existing profdata when compatible; `--rebuild-profdata` forces a full 3-pass). When `compiler` is unset or `"gcc"` the stage is register-only — it writes the system `/usr/bin/gcc` paths into pipeline state without building, since stock gcc/gcc-libs from `base-devel` are already correct. Skipped cleanly if `toolchain.toml` has `enabled = false` (the default).
+- **toolchain** — *(opt-in)* builds the LLVM toolchain via the 4-pass PGO bootstrap (reuses existing profdata when compatible; `--rebuild-profdata` forces a full 4-pass). When `compiler` is unset or `"gcc"` the stage is register-only — it writes the system `/usr/bin/gcc` paths into pipeline state without building, since stock gcc/gcc-libs from `base-devel` are already correct. Skipped cleanly if `toolchain.toml` has `enabled = false` (the default).
 - **packages** — builds and installs everything in `packages.toml` with profiled flags
 - **kernel** — *(opt-in)* builds a custom kernel (skipped cleanly if `kernel.toml` is absent or `enabled = false`). `sysforge run kernel` is interactive by default (the PKGBUILD's `make nconfig`/`menuconfig` runs as written); pass `--non-interactive` for unattended runs. Compiler is independent of the toolchain stage — `kernel.toml compiler = "llvm"` or `--compiler llvm` builds the kernel with LLVM even on a gcc system. Bootloader is selectable via `kernel.toml bootloader` (`systemd-boot` default, `grub`, or `none`) or `--bootloader`. Source refresh routes through the source-sync scheduler (`--cleansrc` / `--cleansrc-force`). The hardware stage automatically writes `# CONFIG_<other-arch> is not set` lines for every kernel architecture domain that isn't the host's (ARM/AArch64/RISC-V/PowerPC/MIPS/SPARC/LoongArch top-level keys plus curated SoC family umbrellas), culling unreachable subtrees from the kconfig menu — re-enable any specific key via `kernel.toml [[kconfig]]` if needed.
 

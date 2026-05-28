@@ -46,7 +46,7 @@ class RunOptions:
     # Extra makepkg flags (appended after profile makepkg_flags)
     makepkg_flags: list[str] = field(default_factory=list)
     # PGO profdata
-    rebuild_profdata: bool = False   # force full 3-pass PGO even if compatible profdata exists
+    rebuild_profdata: bool = False   # force full 4-pass PGO even if compatible profdata exists
     auto_pgo: bool = False           # bypass PGO confirmation prompts (required for non-TTY PGO)
     # LLVM safety pre-flight
     allow_dirty_llvm: bool = False   # bypass refuse-on-dirty/diverged for the toolchain stage

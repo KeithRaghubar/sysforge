@@ -8,7 +8,7 @@
 
 enabled    = true
 compiler   = "llvm"    # "llvm" or "gcc"
-pgo        = true      # LLVM only: enable 3-pass PGO bootstrap (ignored for gcc)
+pgo        = true      # LLVM only: enable 4-pass PGO bootstrap (ignored for gcc)
 skip_build = false
 
 # Path where pass-2 binaries are extracted for use as CC/CXX in pass 3.
@@ -17,8 +17,8 @@ skip_build = false
 
 # Path where profraw files are written during pass 2 and merged to profdata.
 # Profraw files are deleted after merging; profdata is preserved for reuse.
-# On subsequent runs, compatible profdata (same LLVM major) skips passes 1-2.
-# Use --rebuild-profdata to force a full 3-pass build.
+# On subsequent runs, compatible profdata (same LLVM major) skips passes 1a-2.
+# Use --rebuild-profdata to force a full 4-pass build.
 # Needs ~500 MB free during pass 2.
 # pgo_store = "/var/tmp/sysforge-llvm-pgo"
 

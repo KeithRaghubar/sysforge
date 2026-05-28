@@ -26,50 +26,57 @@ toolchain.toml structure:
   non_pgo = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
   lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", ...]
 
-LLVM PGO bootstrap (3 passes, only when pgo = true):
-  Pass 1 — system compiler + -fprofile-generate=<pgo_store>/; builds ONLY the
-            llvm/llvm-libs PKGBUILD (pgo list).  clang and lld are NOT built with
-            instrumentation here — they link against the official libLLVM.so at
-            build time, so the resulting libclang-cpp.so would embed a versioned
-            dependency on _M_assign@LLVM_22.1 (a weak symbol the official libLLVM.so
-            exports via its version script by inlining std::string::_M_assign).
-            The instrumented libLLVM.so does not export that symbol (inlining is
-            suppressed by -fprofile-generate), so loading the instrumented
-            libclang-cpp.so against the instrumented libLLVM.so causes a symbol
-            lookup error at runtime.  Keeping clang/lld in non_pgo avoids this.
-            makepkg runs without --install; _pgo_pass1_install() calls sudo pacman -U
-            directly so the sudo keepalive's timestamp entry applies.  Only the
-            shared-lib package (llvm-libs) is installed; cmake-config/static-lib
-            packages (llvm, which contains instrumented .a archives) are excluded so
-            that subsequent find_package(LLVM) calls still use the uninstrumented
-            cmake config and don't link instrumented static libs.
-            Spurious profraw from CMake feature probes purged before Pass 2.
-  Pass 2 — CC=/usr/bin/clang (the system, non-instrumented binary); builds
-            pgo + non_pgo packages (lib32 excluded).  clang/lld/compiler-rt/openmp/
-            polly/spirv-llvm-translator exercise clang frontend, linker, OpenMP
-            structured blocks, compiler-rt intrinsics, and polyhedral analysis.
-            The system clang calls into the instrumented libLLVM.so (installed in
-            Pass 1), generating profraw from LLVM's core optimization and codegen
-            work — the most performance-critical hot paths for a compiler.
-            CCACHE_DISABLE=1 / SCCACHE_DISABLE=1 injected so cache tools cannot
-            bypass the instrumented compiler and silently produce no profraw.
-            LLVM_PROFILE_FILE uses %m_%p (per-module-hash + per-PID) so parallel
-            make -j clang processes each write their own profraw without
-            contending on one file.  Background daemon merges profraw every
-            _PGO_MERGE_INTERVAL seconds with adaptive batch sizing
-            (_PROFRAW_MERGE_BATCH_MAX → _PROFRAW_MERGE_BATCH_MIN on OOM).
-            llvm-profdata invoked with RLIMIT_AS lifted (lift_for_child) so it
-            is not constrained by the sysforge controller's 2 GiB cap.
-            No system install; pgo-package binaries extracted to staging.
-            Merged profdata size logged at [INFO]; warns if below
-            _PGO_PROFDATA_MIN_BYTES (likely indicates bypassed compilation).
-  Pass 3 — CC=staged clang if available (clang in pgo list), else system clang.
-            CFLAGS += -fprofile-use=<profdata>; install all packages
-            (pgo + non_pgo + lib32) via _pgo_install(); staging + profdata
-            removed on success.
+LLVM PGO bootstrap (4 passes, only when pgo = true):
+  Pass 1a — system compiler + -fprofile-generate=<pgo_store>/; builds ONLY the
+            pgo list (llvm, llvm-libs).  makepkg runs WITHOUT --install; outputs
+            are extracted to pgo_staging1 (stage1) by _pgo_pass1_stage so the
+            live /usr is never touched.  Both packages stage — including the
+            cmake-config / static-lib `llvm` package — so Pass 1b's
+            find_package(LLVM) sees the staged headers + configs.  The
+            instrumented .a archives staged alongside surface __llvm_profile_*
+            link errors for anything that consumes LLVM component targets;
+            Pass 1b and Pass 2 work around that via _profile_runtime_ldflag().
+            Spurious profraw from CMake feature probes is purged before Pass 1b.
+  Pass 1b — non-instrumented build of the non_pgo packages (clang, lld,
+            compiler-rt, polly, openmp, spirv-llvm-translator) against stage1.
+            CMAKE_PREFIX_PATH=<staging1>/usr points find_package(LLVM) at stage1
+            so the new clang/lld link against stage1's libLLVM.so and are ABI-
+            coherent with it.  LD_LIBRARY_PATH is deliberately NOT set —
+            forcing the host /usr/bin/clang to load stage1's libLLVM would
+            recreate the version-skew failure mode this refactor exists to
+            prevent.  Outputs are extracted into the same pgo_staging1, making
+            stage1 self-sufficient: it now has a working clang and a working
+            libLLVM, both built from the in-tree LLVM source, both ABI-coherent.
+  Pass 2  — training run.  CC=<staging1>/usr/bin/clang (built in Pass 1b);
+            the Pass-2 env redirects dyld/cmake at stage1 via LD_LIBRARY_PATH,
+            CMAKE_PREFIX_PATH, PATH.  The running clang and the libLLVM it
+            loads are guaranteed coherent because they were built together —
+            no possibility of version drift against /usr.  Builds pgo +
+            non_pgo (lib32 excluded); the act of running stage1's clang
+            against stage1's instrumented libLLVM generates profraw as a
+            side effect.  CCACHE_DISABLE=1 / SCCACHE_DISABLE=1 injected so
+            cache tools cannot bypass the instrumented compiler and silently
+            produce no profraw.  LLVM_PROFILE_FILE uses %m_%p (per-module-
+            hash + per-PID) so parallel make -j clang processes each write
+            their own profraw without contending on one file.  Background
+            daemon merges profraw every _PGO_MERGE_INTERVAL seconds with
+            adaptive batch sizing (_PROFRAW_MERGE_BATCH_MAX →
+            _PROFRAW_MERGE_BATCH_MIN on OOM).  llvm-profdata invoked with
+            RLIMIT_AS lifted (lift_for_child) so it is not constrained by
+            the sysforge controller's 2 GiB cap.  No system install; Pass 2
+            binaries extracted to pgo_staging (stage2).  Merged profdata size
+            logged at [INFO]; warns if below _PGO_PROFDATA_MIN_BYTES (likely
+            indicates bypassed compilation).
+  Pass 3  — CC=staged clang from stage2 if available, else system clang.
+            CFLAGS/LDFLAGS += -fprofile-use=<profdata>; LTO disabled via
+            LTOFLAGS="" (ThinLTO + IR PGO causes non-PIC vtable relocations
+            in lld's ThinLTO codegen for libLLVM.so).  Installs all packages
+            (pgo + non_pgo + lib32) via _pgo_install(); staging prefixes
+            removed on success.  Profdata preserved with a version sidecar
+            (clang.profdata.version) for reuse by sysforge update.
 
   A sudo keepalive thread refreshes credentials every _SUDO_KEEPALIVE_INTERVAL
-  seconds throughout all three passes.
+  seconds throughout all four passes.
 
 Compiler propagation:
   On completion writes cc/cxx/ld to pipeline_state.toml [stages.toolchain.result]
@@ -233,7 +240,7 @@ _PGO_ALLOWED_MAKEPKG_FLAGS = {"-f", "--force"}
 _PGO_MERGE_INTERVAL = 15
 
 # How often (seconds) to refresh sudo credentials during the PGO build sequence.
-# The 3-pass build can run for 2+ hours unattended. The keepalive calls sudo
+# The 4-pass build can run for 2+ hours unattended. The keepalive calls sudo
 # from the sysforge process, and _pgo_install also calls sudo from the same
 # process, so they share the same timestamp entry regardless of timestamp_type.
 _SUDO_KEEPALIVE_INTERVAL = 60
@@ -853,9 +860,9 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> tuple[int, int]:
 def _sudo_keepalive_daemon(stop_event: threading.Event) -> None:
     """
     Background thread: refresh sudo credentials every _SUDO_KEEPALIVE_INTERVAL
-    seconds throughout the 3-pass PGO build sequence.
+    seconds throughout the 4-pass PGO build sequence.
 
-    The 3-pass build can run unattended for 2+ hours. _pgo_install() calls
+    The 4-pass build can run unattended for 2+ hours. _pgo_install() calls
     sudo directly from the sysforge process, so its timestamp entry is the
     same one the keepalive refreshes — credential caching works correctly
     regardless of the sudoers timestamp_type setting.
@@ -1731,7 +1738,7 @@ def _build_llvm_pgo(
     pgo_store: Path,
     options,
 ) -> tuple[str, str, str, str]:
-    """Acquire the PGO build lock, then run the 3-pass flow.
+    """Acquire the PGO build lock, then run the 4-pass flow.
 
     The lock prevents two concurrent ``sysforge run toolchain`` runs from
     clobbering each other's staging dirs / pgo_store. The lock file lives
@@ -1756,32 +1763,38 @@ def _build_llvm_pgo_inner(
     options,
 ) -> tuple[str, str, str, str]:
     """
-    3-pass LLVM PGO build.
+    4-pass LLVM PGO build.
 
-    Pass 1: system compiler + -fprofile-generate; builds ONLY llvm/llvm-libs
-            (pgo list).  clang and lld live in non_pgo to avoid a versioned-symbol
-            ABI issue: building them with -fprofile-generate against the official
-            libLLVM.so embeds a runtime dependency on _M_assign@LLVM_22.1 (a weak
-            symbol only the official build exports via inlining).  The instrumented
-            libLLVM.so does not export it → symbol lookup crash in Pass 2.
-            _pgo_pass1_install() installs llvm-libs (shared lib) but skips the
-            llvm package (cmake-config + instrumented .a archives) so that
-            subsequent find_package(LLVM) calls still resolve the uninstrumented
-            cmake config and avoid linking instrumented static libs.
-    Pass 2: CC=/usr/bin/clang (system, non-instrumented); builds pgo + non_pgo
-            packages (lib32 excluded).  The system clang calls into the instrumented
-            libLLVM.so, generating profraw from LLVM core hot paths.  CCACHE_DISABLE=1 and
-            SCCACHE_DISABLE=1 injected so cache tools cannot bypass the
-            instrumented compiler and silently produce no profraw.  Background
-            daemon merges profraw periodically; final sweep after build.
-            Profdata size checked; warns if suspiciously small.
-            Pgo-package binaries extracted to staging; no system install.
-    Pass 3: CC=staged clang (if clang in pgo list) else system clang.
-            CFLAGS/LDFLAGS += -fprofile-use; LTO disabled via LTOFLAGS=""
-            (ThinLTO + IR PGO causes non-PIC vtable relocations in lld's
-            ThinLTO codegen for libLLVM.so); install pgo + non_pgo + lib32.
-            Staging prefix removed on success.  Profdata preserved with a
-            version sidecar (clang.profdata.version) for reuse by sysforge update.
+    Pass 1a: system compiler + -fprofile-generate; builds ONLY the pgo list
+             (llvm, llvm-libs).  makepkg runs WITHOUT --install; outputs are
+             extracted to pgo_staging1 (stage1) — the live /usr is never
+             touched.  Both packages stage, including the cmake-config /
+             static-lib `llvm` package, so Pass 1b's find_package(LLVM)
+             resolves stage1's headers + configs.
+    Pass 1b: non-instrumented build of non_pgo packages (clang, lld,
+             compiler-rt, polly, openmp, spirv-llvm-translator) against
+             stage1.  CMAKE_PREFIX_PATH=<staging1>/usr; LD_LIBRARY_PATH is
+             deliberately NOT set (forcing system clang to load stage1's
+             libLLVM would recreate the version-skew failure mode this
+             refactor exists to prevent).  Outputs extracted into the same
+             pgo_staging1, making stage1 self-sufficient — both a working
+             clang and a working libLLVM, both ABI-coherent.
+    Pass 2:  training run.  CC=<staging1>/usr/bin/clang (built in Pass 1b);
+             the running clang and the libLLVM it loads are guaranteed
+             coherent because they were built together.  Builds pgo + non_pgo;
+             generates profraw as a side effect.  CCACHE_DISABLE=1 and
+             SCCACHE_DISABLE=1 injected so cache tools cannot bypass the
+             instrumented compiler and silently produce no profraw.
+             Background daemon merges profraw periodically; final sweep after
+             build.  Profdata size checked; warns if suspiciously small.
+             Pgo-package binaries extracted to pgo_staging (stage2); no
+             system install.
+    Pass 3:  CC=staged clang from stage2 if available, else system clang.
+             CFLAGS/LDFLAGS += -fprofile-use; LTO disabled via LTOFLAGS=""
+             (ThinLTO + IR PGO causes non-PIC vtable relocations in lld's
+             ThinLTO codegen for libLLVM.so); install pgo + non_pgo + lib32.
+             Staging prefixes removed on success.  Profdata preserved with a
+             version sidecar (clang.profdata.version) for reuse by sysforge update.
 
     Returns (cc, cxx, ld).
     """
@@ -1795,8 +1808,8 @@ def _build_llvm_pgo_inner(
 
     # Check for existing compatible profdata before purging.
     # If profdata from a previous run matches the target LLVM major version,
-    # skip passes 1-2 and go straight to Pass 3 (the optimized build).
-    # --rebuild-profdata forces a full 3-pass build regardless.
+    # skip passes 1a-2 and go straight to Pass 3 (the optimized build).
+    # --rebuild-profdata forces a full 4-pass build regardless.
     skip_profgen = False
     profdata_path = pgo_store / "clang.profdata"
     if not options.rebuild_profdata and not options.dry_run:
@@ -1807,7 +1820,7 @@ def _build_llvm_pgo_inner(
             try:
                 _pgo_confirm(
                     f"Reuse existing profdata at {pgo_info}? "
-                    "Selecting no triggers a full 3-pass rebuild. [Y/n]:",
+                    "Selecting no triggers a full 4-pass rebuild. [Y/n]:",
                     default="y",
                     eof_default="n",
                     options=options,
@@ -1817,12 +1830,12 @@ def _build_llvm_pgo_inner(
                 profdata_path = Path(pgo_info)
                 _log.ui(
                     f"[PGO] Reusing existing profdata: {profdata_path}  "
-                    f"(use --rebuild-profdata to force a full 3-pass build)",
+                    f"(use --rebuild-profdata to force a full 4-pass build)",
                 )
             except _PGOAborted:
                 _log.ui(
                     "[PGO] Profdata reuse declined — falling through to "
-                    "full 3-pass rebuild",
+                    "full 4-pass rebuild",
                 )
         elif pgo_state == "mismatch":
             _log.info(f"[PGO] Existing profdata incompatible: {pgo_info}")
@@ -1831,7 +1844,7 @@ def _build_llvm_pgo_inner(
 
     if skip_profgen:
         _log.ui(
-            f"[PGO] Skipping passes 1-2, building with existing profdata  "
+            f"[PGO] Skipping passes 1a-2 (instrument/bootstrap/train), building with existing profdata  "
             f"({n_total} package(s) across {len(set({**pgo_map, **non_pgo_map, **lib32_map}.values()))} PKGBUILD(s))  "
             f"pgo_store={pgo_store}",
         )
@@ -1843,7 +1856,7 @@ def _build_llvm_pgo_inner(
         # of partial Pass-1/Pass-3 staging from a prior failed run, so gate it.
         if staging1.exists() or staging.exists() or pgo_store.exists():
             _pgo_confirm(
-                f"Purge staging dirs and pgo_store to start fresh 3-pass build?\n"
+                f"Purge staging dirs and pgo_store to start fresh 4-pass build?\n"
                 f"  stage1:    {staging1}\n"
                 f"  stage2:    {staging}\n"
                 f"  pgo_store: {pgo_store}\n"
@@ -1854,20 +1867,20 @@ def _build_llvm_pgo_inner(
                 abort_msg="user declined purge of staging/pgo_store",
             )
 
-        # Prompt #3 — confirm the long 3-pass build before launch. Replaces
-        # the old "Starting 3-pass LLVM PGO build" log with an explicit gate.
+        # Prompt #3 — confirm the long 4-pass build before launch. Replaces
+        # the old "Starting LLVM PGO build" log with an explicit gate.
         _pgo_confirm(
-            "About to start 3-pass LLVM PGO build "
+            "About to start 4-pass LLVM PGO build "
             f"({n_pgo} pgo PKGBUILD(s), {n_total} total) — "
             "~2-3 hours; pass 2 is a long instrumented training run. "
             f"pgo_store={pgo_store}. Proceed? [y/N]:",
             default="n",
             eof_default="n",
             options=options,
-            abort_msg="user declined 3-pass PGO start",
+            abort_msg="user declined 4-pass PGO start",
         )
         _log.ui(
-            f"[PGO] Starting 3-pass LLVM PGO build  "
+            f"[PGO] Starting 4-pass LLVM PGO build  "
             f"({n_pgo} pgo PKGBUILD(s), {n_total} total across all passes)  "
             f"pgo_store={pgo_store}",
         )
