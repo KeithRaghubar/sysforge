@@ -88,6 +88,7 @@ from sysforge.primitives.profile import (
     resolve_groups,
     resolve_profile,
     serialize_flags,
+    variant_env_overlay,
 )
 
 
@@ -1170,7 +1171,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                injected_env: dict | None = None,
                strip_flags=None,
                pkgbuild_has_hardcoded_gcc: bool = False,
-               state_dir: Path | None = None):
+               state_dir: Path | None = None,
+               toolchain_variant: str | None = None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -1234,6 +1236,24 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             extra_env["CXX"] = cxx_override
         if injected_env:
             extra_env.update(injected_env)
+
+        # Variant-driven per-package env overlay (e.g. MESA_WHICH_LLVM=4 for
+        # mesa-family pkgbases under stock_llvm/pgo_llvm). The overlay is
+        # applied AFTER injected_env so a stage explicitly setting these
+        # keys still wins — sysforge defaults, not overrides.
+        _overlay_pkgbase = (pkgmeta or {}).get("globals", {}).get("pkgbase")
+        if not _overlay_pkgbase:
+            _pkgnames_seq = (pkgmeta or {}).get("pkgnames") or []
+            _overlay_pkgbase = _pkgnames_seq[0] if _pkgnames_seq else None
+        if _overlay_pkgbase:
+            _overlay = variant_env_overlay(_overlay_pkgbase, toolchain_variant)
+            for k, v in _overlay.items():
+                if k not in extra_env:
+                    extra_env[k] = v
+                    _build_log.info(
+                        f"[VARIANT_ENV] {k}={v} "
+                        f"({_overlay_pkgbase}, variant={toolchain_variant})"
+                    )
 
         if kernel_build:
             effective_cc = (
@@ -1661,6 +1681,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 strip_flags=options.strip_flags,
                 pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
                 state_dir=options.state_dir,
+                toolchain_variant=options.toolchain_variant,
             )
         build_success = True
 

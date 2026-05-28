@@ -19,8 +19,49 @@ from sysforge.primitives.profile import (
     _extract_prefix,
     _merge_append_value,
     merge_extends,
+    variant_env_overlay,
 )
 from sysforge.primitives.config import load_conflict_groups
+
+
+# ---------------------------------------------------------------------------
+# variant_env_overlay
+# ---------------------------------------------------------------------------
+
+def test_variant_env_overlay_mesa_under_pgo_llvm():
+    assert variant_env_overlay("mesa-git", "pgo_llvm") == {"MESA_WHICH_LLVM": "4"}
+    assert variant_env_overlay("lib32-mesa-git", "pgo_llvm") == {"MESA_WHICH_LLVM": "4"}
+    assert variant_env_overlay("mesa", "pgo_llvm") == {"MESA_WHICH_LLVM": "4"}
+    assert variant_env_overlay("lib32-mesa", "pgo_llvm") == {"MESA_WHICH_LLVM": "4"}
+
+
+def test_variant_env_overlay_mesa_under_stock_llvm():
+    assert variant_env_overlay("mesa-git", "stock_llvm") == {"MESA_WHICH_LLVM": "4"}
+    assert variant_env_overlay("lib32-mesa-git", "stock_llvm") == {"MESA_WHICH_LLVM": "4"}
+
+
+def test_variant_env_overlay_mesa_under_gcc_is_noop():
+    # gcc variant means sysforge has no LLVM opinion — don't override shell env.
+    assert variant_env_overlay("mesa-git", "gcc") == {}
+    assert variant_env_overlay("lib32-mesa-git", "gcc") == {}
+
+
+def test_variant_env_overlay_mesa_under_system_or_none_is_noop():
+    # Toolchain stage has never run → no overlay.
+    assert variant_env_overlay("mesa-git", "system") == {}
+    assert variant_env_overlay("mesa-git", None) == {}
+
+
+def test_variant_env_overlay_unrelated_pkgbase_is_noop():
+    # Non-mesa pkgbases get nothing even under pgo_llvm.
+    assert variant_env_overlay("htop", "pgo_llvm") == {}
+    assert variant_env_overlay("linux-custom", "pgo_llvm") == {}
+    # A pkgbase that starts with "mesa" but isn't in the known set is ignored.
+    assert variant_env_overlay("mesa3d", "pgo_llvm") == {}
+
+
+def test_variant_env_overlay_empty_pkgbase_is_noop():
+    assert variant_env_overlay("", "pgo_llvm") == {}
 
 _FIXTURE = Path(__file__).parent / "data/etc/sysforge/profiles.toml"
 CONFLICT_GROUPS = load_conflict_groups(conflict_group_paths=[_FIXTURE])

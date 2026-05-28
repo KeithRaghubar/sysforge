@@ -122,6 +122,43 @@ KERNEL_CLEAN_KEYS: frozenset[str] = frozenset({
 
 
 # ---------------------------------------------------------------------------
+# Variant-driven per-package env overlay
+# ---------------------------------------------------------------------------
+#
+# Some PKGBUILDs use a build-time env var to select which LLVM source tree to
+# link against (mesa's MESA_WHICH_LLVM is the canonical example). When the
+# sysforge toolchain stage owns the system clang, that selector should always
+# resolve to "the system LLVM" — otherwise a stray shell export can quietly
+# divert the build to AUR llvm-minimal-git, missing sysforge's compiler entirely.
+#
+# Overlay is opt-in by package + variant; pkgbases not listed here get nothing,
+# so this can't surprise unrelated builds. gcc variant is excluded — when
+# sysforge isn't dictating LLVM, leave the user's shell env alone.
+
+_MESA_PKGBASES = frozenset({"mesa", "mesa-git", "lib32-mesa", "lib32-mesa-git"})
+
+
+def variant_env_overlay(pkgbase: str, variant: str | None) -> dict[str, str]:
+    """Return per-package env vars driven by the active toolchain variant.
+
+    Variants: ``"stock_llvm"`` / ``"pgo_llvm"`` activate overlays;
+    ``"gcc"`` / ``"system"`` / ``None`` get an empty dict so nothing changes
+    for builds where sysforge has no LLVM opinion.
+
+    Today's only overlay: mesa-family pkgbases get ``MESA_WHICH_LLVM=4`` —
+    the PKGBUILD's own selector for ``extra/llvm`` (which is the same
+    package name sysforge installs when it builds LLVM, so the build links
+    against sysforge's clang). Setting it here makes the build reproducible
+    even if the user's shell exports a different value.
+    """
+    if not pkgbase or variant not in ("stock_llvm", "pgo_llvm"):
+        return {}
+    if pkgbase in _MESA_PKGBASES:
+        return {"MESA_WHICH_LLVM": "4"}
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # Append merge internals
 # ---------------------------------------------------------------------------
 
