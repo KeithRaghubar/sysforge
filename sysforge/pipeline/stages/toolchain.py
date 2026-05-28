@@ -1282,26 +1282,48 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
     return profdata_path
 
 
-def _write_profdata_version(pgo_store: Path) -> None:
+def _pgo_target_major(pgo_map: dict[str, Path]) -> str | None:
+    """Return the LLVM major version of the in-tree PGO PKGBUILDs, or None.
+
+    All pgo PKGBUILDs share the same pkgver (enforced by
+    _check_pkgver_consistency); the first one that parses cleanly wins.
+    Mirrors the major extracted in _check_existing_profdata so the
+    write/check pair always compares apples to apples.
     """
-    Write a version sidecar (clang.profdata.version) containing the installed
-    LLVM major version.  Called after a successful PGO build so that
-    sysforge update can check compatibility before reusing the profdata.
-    Failures are non-fatal — a missing sidecar just causes updates to skip
-    the profdata rather than crashing.
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    for name, path in pgo_map.items():
+        try:
+            meta = parse_pkgbuild(path)
+            pkgver = meta.get("globals", {}).get("pkgver", "")
+            if pkgver:
+                return pkgver.split(".")[0]
+        except Exception as e:
+            _log.info(f"  pgo target major: parse failed for {path} ({name}): {e}")
+            continue
+    return None
+
+
+def _write_profdata_version(pgo_store: Path, pgo_map: dict[str, Path]) -> None:
+    """
+    Write a version sidecar (clang.profdata.version) containing the LLVM
+    major version the profdata was generated against — derived from the
+    in-tree PGO PKGBUILDs (what Pass 2 instrumented), not from the system
+    `pacman -Q llvm` which can disagree across a major bump.  Called right
+    after Pass 2 completes so an aborted Pass 3 still leaves recoverable
+    profdata that the next run can reuse via _check_existing_profdata.
+
+    Failures are non-fatal — a missing sidecar just causes the next run to
+    fall through to a full 4-pass rebuild rather than crashing.
     """
     try:
-        result = subprocess.run(
-            ["pacman", "-Q", "llvm"], capture_output=True, text=True
-        )
-        if result.returncode != 0:
+        major = _pgo_target_major(pgo_map)
+        if major is None:
             _log.warn(
-                "[PGO] Could not query LLVM version via pacman — profdata version sidecar not written",
+                "[PGO] Could not determine LLVM major from PGO PKGBUILDs — "
+                "profdata version sidecar not written",
             )
             return
-        # "llvm 22.1.0-1" → major "22"
-        ver_str = result.stdout.split()[1]
-        major = ver_str.split(".")[0]
         version_path = pgo_store / "clang.profdata.version"
         version_path.write_text(major + "\n")
         _log.info(
@@ -2115,6 +2137,14 @@ def _build_llvm_pgo_inner(
                         abort_msg="user declined Pass 3 due to suspicious profdata",
                     )
             _log.ui(f"[PGO] Profile data ready: {profdata_path}")
+            # Write the sidecar now (right after Pass 2 has produced the
+            # profdata, before Pass 3 starts) so an aborted Pass 3 still
+            # leaves recoverable profdata that the next run can reuse via
+            # _check_existing_profdata.  The sidecar's only invariant is
+            # "this profdata is for LLVM major N", determined entirely by
+            # what Pass 2 instrumented — Pass 3 success has no bearing on it.
+            if not options.dry_run:
+                _write_profdata_version(pgo_store, pgo_map)
             _extract_pass2_to_staging(pgo_map, staging, options.dry_run)
 
         # Pass 3 (or sole pass when reusing profdata) — PGO-optimized build.
@@ -2185,10 +2215,9 @@ def _build_llvm_pgo_inner(
         if not options.dry_run:
             sudo_keepalive.join()
 
-    if not options.dry_run:
-        _write_profdata_version(pgo_store)
-        if not skip_profgen:
-            _remove_staging(staging)
+    # Sidecar is written after Pass 2 (above), not here — see comment there.
+    if not options.dry_run and not skip_profgen:
+        _remove_staging(staging)
 
     return "/usr/bin/clang", "/usr/bin/clang++", "lld", "pgo_llvm"
 

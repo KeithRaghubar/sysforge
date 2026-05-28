@@ -737,6 +737,80 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     assert "CMAKE_PREFIX_PATH" not in pass3_env, \
         "Pass 3 must NOT redirect cmake at stage2 when falling back to system clang"
 
+    # Sidecar is written after Pass 2 (not after Pass 3 install) so an aborted
+    # Pass 3 still leaves recoverable profdata.  The major is derived from the
+    # in-tree PKGBUILD pkgver (1.0 from make_pkgbuild) → major "1".
+    sidecar = pgo_store / "clang.profdata.version"
+    assert sidecar.exists(), "Sidecar must be written after Pass 2 completes"
+    assert sidecar.read_text().strip() == "1"
+
+
+def test_toolchain_stage_pgo_sidecar_persists_after_pass3_failure(tmp_path):
+    """When Pass 3 fails (the version-skew failure mode the dyld fix exists to prevent
+    can still strike other call paths), the sidecar written after Pass 2 must persist
+    so the next invocation can short-circuit through profdata reuse."""
+    staging   = tmp_path / "staging"
+    pgo_store = tmp_path / "pgo_store"
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text(
+        f'enabled = true\ncompiler = "llvm"\npgo = true\n'
+        f'pgo_staging = "{staging}"\npgo_store = "{pgo_store}"\n'
+        '[packages]\npgo = ["llvm"]\nnon_pgo = []\nlib32 = []\n'
+    )
+
+    pkgbuild_dir = tmp_path / "builds"
+    make_pkgbuild(pkgbuild_dir, "llvm")
+
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
+    options = make_options(dry_run=False, auto_pgo=True)
+
+    call_log = []
+    def fake_run(pkgbuild_path, options=None):
+        call_log.append({"cc": options.cc_override if options else None})
+        if options and options.cc_override == "/usr/bin/clang":
+            pgo_store.mkdir(parents=True, exist_ok=True)
+            _make_old_profraw(pgo_store / "default_0.profraw")
+        # Pass 3 is the 3rd makepkg_run call — simulate a build failure there
+        # (mirrors the real LLVMInitializeBPFTarget cmake probe abort).
+        if len(call_log) == 3:
+            raise RuntimeError("simulated Pass 3 build failure")
+
+    pkg_dir = pkgbuild_dir / "llvm"
+    (pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst").touch()
+
+    def fake_subprocess(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        if cmd and "llvm-profdata" in cmd[0]:
+            idx = cmd.index("--output")
+            Path(cmd[idx + 1]).touch()
+        return result
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
+         patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_pass1_stage"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._run_llvm_preflight"), \
+         patch("subprocess.run", side_effect=fake_subprocess), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError, match="simulated Pass 3"):
+            ToolchainStage().run(config, state, options)
+
+    # Pass 3 raised — but the sidecar (written between Pass 2 and Pass 3) must
+    # still be on disk so the next `sysforge run toolchain` sees ready profdata
+    # and short-circuits through the reuse prompt rather than asking the user
+    # to purge and start over.
+    sidecar = pgo_store / "clang.profdata.version"
+    assert sidecar.exists(), \
+        "Sidecar must survive a Pass 3 failure so the next run can reuse profdata"
+    assert sidecar.read_text().strip() == "1"
+    # And staging is intentionally NOT removed on Pass 3 failure (only cleared
+    # on full-flow success), so the user can inspect it.
+    assert staging.exists(), "Staging must persist after Pass 3 failure for inspection"
+
 
 def test_toolchain_stage_pgo_pass3_redirects_dyld_when_clang_staged(tmp_path):
     """When stage2 contains a staged clang (e.g. clang is in the PGO package set),
