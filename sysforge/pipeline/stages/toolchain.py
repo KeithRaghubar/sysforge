@@ -1718,7 +1718,7 @@ def _build_llvm_pgo(
             # runs WITHOUT --install; outputs are extracted into stage1 by
             # _pgo_pass1_stage so the live root is never touched.
             _build_pass(
-                "Pass 1a/3 [PGO] instrumented build → llvm / llvm-libs",
+                "PGO 1/4 · instrument llvm / llvm-libs",
                 pgo_map,
                 options,
                 cc=None,
@@ -1728,7 +1728,7 @@ def _build_llvm_pgo(
                 compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
             )
             _pgo_pass1_stage(pgo_map, staging1, options.dry_run)
-            _log.ui("[PGO] Pass 1a/3 complete (staged to "
+            _log.ui("[PGO] 1/4 complete (staged to "
                     f"{staging1} — system /usr untouched)")
 
             # Purge any profraw accumulated during Pass 1a + 1b. CMake feature-
@@ -1782,7 +1782,7 @@ def _build_llvm_pgo(
                     f"({residual_linker_flags})",
                 )
             _build_pass(
-                "Pass 1b/3 [PGO] non-instrumented build against stage1 → clang/lld/...",
+                "PGO 2/4 · bootstrap clang/lld/... against stage1",
                 non_pgo_map,
                 options,
                 cc="/usr/bin/clang",
@@ -1793,7 +1793,7 @@ def _build_llvm_pgo(
                 pgo_env=pass1b_env,
             )
             _extract_pass2_to_staging(non_pgo_map, staging1, options.dry_run)
-            _log.ui(f"[PGO] Pass 1b/3 complete (stage1 self-sufficient at {staging1})")
+            _log.ui(f"[PGO] 2/4 complete (stage1 self-sufficient at {staging1})")
 
             # Pass 2 — training run. CC is stage1's freshly built clang (built
             # in Pass 1b against stage1's instrumented libLLVM), so the running
@@ -1860,7 +1860,7 @@ def _build_llvm_pgo(
                 pass2_cc, pass2_cxx = "/usr/bin/clang", "/usr/bin/clang++"
             try:
                 _build_pass(
-                    "Pass 2/3 [PGO] training run → profraw generation (no system install)",
+                    "PGO 3/4 · train (profraw generation, no system install)",
                     pass2_map,
                     options,
                     cc=pass2_cc,
@@ -1874,7 +1874,7 @@ def _build_llvm_pgo(
                 stop_event.set()
                 if not options.dry_run:
                     monitor.join()
-            _log.ui("[PGO] Pass 2/3 complete")
+            _log.ui("[PGO] 3/4 complete")
 
             # Final sweep: merge any profraw not yet handled by the daemon
             profdata_path = _merge_profraw(pgo_store, options.dry_run)
@@ -1925,9 +1925,9 @@ def _build_llvm_pgo(
 
         all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
         pass3_label = (
-            "[PGO] optimized build → all packages (reusing profdata)"
+            "PGO optimize · all packages (reusing profdata)"
             if skip_profgen
-            else "Pass 3/3 [PGO] optimized build → all packages"
+            else "PGO 4/4 · optimize all packages"
         )
         # Pass 3 env: clear LLVM_PROFILE_FILE so any inherited Pass-2 training
         # path doesn't get reused, and redirect cmake/dyld at stage2 (the
@@ -1957,7 +1957,7 @@ def _build_llvm_pgo(
         if skip_profgen:
             _log.ui("[PGO] Optimized build complete (profdata reused)")
         else:
-            _log.ui("[PGO] Pass 3/3 complete — PGO build finished")
+            _log.ui("[PGO] 4/4 complete — PGO build finished")
 
     finally:
         sudo_stop.set()
