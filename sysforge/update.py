@@ -107,7 +107,11 @@ from sysforge.primitives.pacman import (
     get_pkgbase,
     checkupdates_map,
 )
-from sysforge.pipeline.state import resolve_state_dir
+from sysforge.pipeline.state import (
+    PipelineState,
+    get_toolchain_variant,
+    resolve_state_dir,
+)
 from sysforge.packages_cmd import entry_is_inert
 
 
@@ -1029,6 +1033,12 @@ def _cmd_update_body(args) -> None:
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
     bs = BuildState(state_dir)
 
+    # Active toolchain variant — stamped onto every rebuild via BuildOptions
+    # and used below to surface drift between installed packages' recorded
+    # variant and what's active now. ``"system"`` means the toolchain stage
+    # has never run on this state dir; treat as a benign no-op (no stamp).
+    active_variant = get_toolchain_variant(PipelineState(state_dir))
+
     # Superset sync: build_state.toml carries an entry for every installed
     # package (pacman-mode marker for those sysforge didn't build), so that
     # every `pacman -Q` name has a known state and zombie entries left by
@@ -1159,8 +1169,82 @@ def _cmd_update_body(args) -> None:
     # ── Phase 4: Summary + dry-run gate ───────────────────────────────────
     _print_summary(results, args)
 
+    # ── Phase 4.25: Toolchain-variant drift ───────────────────────────────
+    # Compare each result's recorded toolchain_variant (from build_state)
+    # against the active toolchain. Drift means "the installed binary was
+    # produced under a different compiler identity than is active now".
+    # Pure pacman-mode entries have no variant and are never drift candidates.
+    # Surface as a one-line summary (always) and a full list under
+    # --explain-drift; opt-in rebuild via --rebuild-on-toolchain-drift.
+    drifted: list[tuple[str, str]] = []  # (pkgbase, recorded_variant)
+    if active_variant != "system":
+        seen_bases: set[str] = set()
+        for r in results:
+            if r.pkgbase in seen_bases:
+                continue
+            seen_bases.add(r.pkgbase)
+            # Pick the recorded variant from any one pkgname under this base
+            # — toolchain stamping is per-pkgname but the build that produced
+            # them is per-pkgbase, so all entries in a split package agree.
+            for name in r.pkgnames:
+                rec = bs.get(name) or {}
+                rec_variant = rec.get("toolchain_variant")
+                if rec_variant and rec_variant != active_variant:
+                    drifted.append((r.pkgbase, rec_variant))
+                if rec_variant is not None:
+                    break
+
+    if drifted:
+        sample = ", ".join(f"{pb} ({rv})" for pb, rv in drifted[:3])
+        more = f" (+{len(drifted) - 3} more)" if len(drifted) > 3 else ""
+        _log.ui(
+            f"toolchain drift: {len(drifted)} package(s) built under a "
+            f"different variant than active ({active_variant}): {sample}{more}. "
+            "Pass --rebuild-on-toolchain-drift to rebuild, or "
+            "--explain-drift to list."
+        )
+
+    if getattr(args, "explain_drift", False):
+        if not drifted:
+            print(
+                f"[SYSFORGE] No toolchain drift. Active variant: "
+                f"{active_variant}."
+            )
+        else:
+            print(
+                f"[SYSFORGE] {len(drifted)} package(s) built under a "
+                f"different toolchain variant than active "
+                f"({active_variant}):"
+            )
+            for pkgbase, rec_variant in sorted(drifted):
+                print(f"  {pkgbase:<40}  recorded={rec_variant}")
+        return
+
     if getattr(args, "dry_run", False):
         return
+
+    if getattr(args, "rebuild_on_toolchain_drift", False) and drifted:
+        drifted_bases = {pb for pb, _ in drifted}
+        promoted = 0
+        unbuildable = 0
+        for r in results:
+            if r.pkgbase in drifted_bases and r.action == "UP_TO_DATE":
+                if r.pkgbuild_path is None:
+                    unbuildable += 1
+                    continue
+                r.action = "NEEDS_REBUILD"
+                promoted += 1
+        if promoted:
+            _log.ui(
+                f"--rebuild-on-toolchain-drift: promoted {promoted} "
+                "UP_TO_DATE package(s) to NEEDS_REBUILD"
+            )
+        if unbuildable:
+            _log.warn(
+                f"--rebuild-on-toolchain-drift: {unbuildable} drifted "
+                "package(s) have no resolvable PKGBUILD (likely pacman-class) "
+                "— skipped"
+            )
 
     # ── Phase 5: Build ────────────────────────────────────────────────────
     # _check_one_pkgbase already resolved VCS pkgver() under --devel and set
@@ -1293,6 +1377,7 @@ def _cmd_update_body(args) -> None:
                         interactive=interactive,
                         force_batch=not interactive,
                         source=result.source,
+                        toolchain_variant=active_variant,
                     ))
                     new_pkgs = sorted(
                         p for p in snapshot_pkg_dir(search_dir)

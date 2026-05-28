@@ -291,6 +291,57 @@ def test_owner_stage_sticky_on_subsequent_record(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# toolchain_variant
+# ---------------------------------------------------------------------------
+
+def test_record_with_toolchain_variant(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="3.4.0", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=Path("/tmp/x"),
+              toolchain_variant="pgo_llvm")
+    assert bs.get("htop")["toolchain_variant"] == "pgo_llvm"
+
+
+def test_record_without_toolchain_variant_omits_field(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs)
+    assert "toolchain_variant" not in bs.get("htop")
+
+
+def test_toolchain_variant_persisted_and_reloaded(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="3.4.0", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=Path("/tmp/x"),
+              toolchain_variant="stock_llvm")
+    bs.save()
+    bs2 = BuildState(tmp_path)
+    assert bs2.get("htop")["toolchain_variant"] == "stock_llvm"
+
+
+def test_toolchain_variant_sticky_on_subsequent_record(tmp_path):
+    """Variant survives a rebuild path that doesn't know to re-pass it
+    (e.g. repair/backfill). Matches the sticky-preservation pattern of
+    source and owner_stage."""
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="3.4.0", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=Path("/tmp/x"),
+              toolchain_variant="pgo_llvm")
+    bs.record(pkgname="htop", pkgver="3.4.1", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=Path("/tmp/x"))
+    assert bs.get("htop")["toolchain_variant"] == "pgo_llvm"
+
+
+def test_toolchain_variant_in_serialized_toml(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="3.4.0", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=Path("/tmp/x"),
+              toolchain_variant="gcc")
+    bs.save()
+    text = (tmp_path / "build_state.toml").read_text()
+    assert 'toolchain_variant = "gcc"' in text
+
+
+# ---------------------------------------------------------------------------
 # State dir via SYSFORGE_STATE_DIR env var
 # ---------------------------------------------------------------------------
 

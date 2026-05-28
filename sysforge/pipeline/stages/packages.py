@@ -175,9 +175,13 @@ def _install_repo(pkg, options):
 
 def _toolchain_overrides(state):
     """
-    Read cc/cxx/ld from the toolchain stage result in state.
+    Read cc/cxx/ld and the toolchain variant from the toolchain stage result.
     Returns a dict with only the keys that were set (empty dict if toolchain
     stage was not run or produced no result).
+
+    ``variant`` (when present) flows into BuildOptions.toolchain_variant so
+    every package built by this stage stamps the active toolchain identity
+    into build_state — ``sysforge update`` reads it back to flag drift.
     """
     result = state.get_stage_result("toolchain")
     overrides = {}
@@ -187,6 +191,8 @@ def _toolchain_overrides(state):
         overrides["cxx_override"] = result["cxx"]
     if result.get("ld"):
         overrides["ld_override"] = result["ld"]
+    if result.get("variant"):
+        overrides["variant"] = result["variant"]
     return overrides
 
 
@@ -223,6 +229,7 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
         ld_override=toolchain.get("ld_override"),
         state_dir=options.state_dir,
         source=pkg.get("source"),
+        toolchain_variant=toolchain.get("variant"),
     )
     makepkg_run(pkgbuild, options=build_opts)
 

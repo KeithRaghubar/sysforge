@@ -101,7 +101,8 @@ class BuildState:
                built_at: str | None = None,
                built_upstream_commit: str | None = None,
                source: str | None = None,
-               owner_stage: str | None = None) -> None:
+               owner_stage: str | None = None,
+               toolchain_variant: str | None = None) -> None:
         """Record build metadata for a single package name.
 
         ``built_at`` defaults to now; callers performing a repair pass may
@@ -125,6 +126,14 @@ class BuildState:
         the package by default and tells the user to invoke the owning
         stage instead; ``--include-stage-owned`` overrides the skip. None
         for packages not claimed by any stage.
+
+        ``toolchain_variant`` is the toolchain identity active at build
+        time ("gcc" | "stock_llvm" | "pgo_llvm" | "system"). Read by
+        ``sysforge update`` to surface toolchain drift — packages whose
+        recorded variant differs from the now-active variant are flagged
+        as candidates for rebuild. Sticky like ``source``/``owner_stage``:
+        callers that don't know the variant (repair/backfill paths)
+        preserve any prior value instead of erasing it.
         """
         entry = {
             "pkgver": pkgver,
@@ -140,13 +149,14 @@ class BuildState:
             entry["flags_string"] = flags_string
         if built_upstream_commit is not None:
             entry["built_upstream_commit"] = built_upstream_commit
-        # ``source`` and ``owner_stage`` are sticky provenance fields: once
-        # recorded by the stage that built the package, they should not be
-        # erased by subsequent rebuilds that don't know about them (e.g. an
-        # ``--include-stage-owned`` rebuild that goes through ``sysforge
-        # update``'s call to makepkg_wrapper, which inherits source from
-        # _UpdateResult but has no owner_stage in scope). Preserve the prior
-        # value when the caller doesn't pass one.
+        # ``source``, ``owner_stage``, and ``toolchain_variant`` are sticky
+        # provenance fields: once recorded by the stage that built the
+        # package, they should not be erased by subsequent rebuilds that
+        # don't know about them (e.g. an ``--include-stage-owned`` rebuild
+        # that goes through ``sysforge update``'s call to makepkg_wrapper,
+        # which inherits source from _UpdateResult but has no owner_stage
+        # in scope). Preserve the prior value when the caller doesn't pass
+        # one.
         prior = self._data.get(pkgname) or {}
         if source is not None:
             entry["source"] = source
@@ -156,6 +166,10 @@ class BuildState:
             entry["owner_stage"] = owner_stage
         elif "owner_stage" in prior:
             entry["owner_stage"] = prior["owner_stage"]
+        if toolchain_variant is not None:
+            entry["toolchain_variant"] = toolchain_variant
+        elif "toolchain_variant" in prior:
+            entry["toolchain_variant"] = prior["toolchain_variant"]
         self._data[pkgname] = entry
 
     def delete(self, pkgname: str) -> bool:
@@ -218,7 +232,7 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage"):
+            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant"):
                 if key in entry:
                     val = (
                         str(entry[key])

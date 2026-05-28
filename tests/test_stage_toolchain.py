@@ -476,6 +476,7 @@ def test_toolchain_stage_gcc_registers_paths_without_building(tmp_path):
     assert result["cc"] == "/usr/bin/gcc"
     assert result["cxx"] == "/usr/bin/g++"
     assert "ld" not in result
+    assert result["variant"] == "gcc"
     makepkg_mock.assert_not_called()
     resolve_mock.assert_not_called()
 
@@ -498,6 +499,7 @@ def test_toolchain_stage_default_compiler_is_gcc_register_only(tmp_path):
     assert result["cc"] == "/usr/bin/gcc"
     assert result["cxx"] == "/usr/bin/g++"
     assert "ld" not in result
+    assert result["variant"] == "gcc"
     makepkg_mock.assert_not_called()
 
 
@@ -524,6 +526,7 @@ def test_toolchain_stage_llvm_no_pgo_dry_run(tmp_path):
     assert result["cc"] == "/usr/bin/clang"
     assert result["cxx"] == "/usr/bin/clang++"
     assert result["ld"] == "lld"
+    assert result["variant"] == "stock_llvm"
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +555,77 @@ def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
     assert result["cc"] == "/usr/bin/clang"
     assert result["cxx"] == "/usr/bin/clang++"
     assert result["ld"] == "lld"
+    assert result["variant"] == "pgo_llvm"
+
+
+# ---------------------------------------------------------------------------
+# skip_build variant reflects on-disk profdata
+# ---------------------------------------------------------------------------
+
+def test_toolchain_stage_skip_build_reports_pgo_llvm_when_profdata_present(tmp_path):
+    """skip_build = true with a profdata + version sidecar on disk reports
+    variant=pgo_llvm (reflects what's installed, not just the stage's action)."""
+    pgo_store = tmp_path / "pgo_store"
+    pgo_store.mkdir()
+    (pgo_store / "clang.profdata").write_bytes(b"fake")
+    (pgo_store / "clang.profdata.version").write_text("19")
+
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text(
+        'enabled = true\ncompiler = "llvm"\nskip_build = true\n'
+        f'pgo_store = "{pgo_store}"\n'
+    )
+
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
+    options = make_options(dry_run=False)
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock:
+        ToolchainStage().run(config, state, options)
+
+    result = state.get_stage_result("toolchain")
+    assert result["cc"] == "/usr/bin/clang"
+    assert result["variant"] == "pgo_llvm"
+    makepkg_mock.assert_not_called()
+
+
+def test_toolchain_stage_skip_build_reports_stock_llvm_when_profdata_absent(tmp_path):
+    """skip_build = true with no profdata on disk reports variant=stock_llvm."""
+    pgo_store = tmp_path / "pgo_store_empty"
+    pgo_store.mkdir()  # exists but has no profdata files
+
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text(
+        'enabled = true\ncompiler = "llvm"\nskip_build = true\n'
+        f'pgo_store = "{pgo_store}"\n'
+    )
+
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
+    options = make_options(dry_run=False)
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock:
+        ToolchainStage().run(config, state, options)
+
+    result = state.get_stage_result("toolchain")
+    assert result["variant"] == "stock_llvm"
+    makepkg_mock.assert_not_called()
+
+
+def test_get_toolchain_variant_helper(tmp_path):
+    """get_toolchain_variant returns the canonical variant or 'system' fallback."""
+    from sysforge.pipeline.state import get_toolchain_variant
+
+    state = PipelineState(tmp_path)
+    assert get_toolchain_variant(state) == "system"  # no result yet
+
+    state.set_stage_result("toolchain", {"cc": "/usr/bin/gcc", "variant": "gcc"})
+    assert get_toolchain_variant(state) == "gcc"
+
+    state.set_stage_result("toolchain", {"cc": "/usr/bin/clang", "variant": "pgo_llvm"})
+    assert get_toolchain_variant(state) == "pgo_llvm"
 
 
 def test_toolchain_stage_pgo_calls_makepkg_three_passes(tmp_path):

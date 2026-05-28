@@ -549,6 +549,9 @@ class KernelStage(Stage):
                 _log.ui(f"[dry-run] would build {pkgname} from {pkgbuild}")
             else:
                 _log.ui(f"Building kernel: {pkgname} from {pkgbuild}")
+                from sysforge.pipeline.state import get_toolchain_variant
+
+                variant = get_toolchain_variant(state)
                 makepkg_run(pkgbuild, options=BuildOptions(
                     pkg_log=not options.no_pkg_logs,
                     persist_log=options.persist_log,
@@ -562,6 +565,7 @@ class KernelStage(Stage):
                     state_dir=options.state_dir,
                     source=source,
                     owner_stage="kernel",
+                    toolchain_variant=variant if variant != "system" else None,
                 ))
 
             # Post-install — inside the sentinel so an interrupted

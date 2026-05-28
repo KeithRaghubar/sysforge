@@ -584,8 +584,15 @@ def _build_pkg(
     pgo_build: bool = False,
     pgo_env: dict | None = None,
     strip_flags: frozenset | set | None = None,
+    toolchain_variant: str | None = None,
 ) -> None:
-    """Build one package via makepkg_wrapper.run()."""
+    """Build one package via makepkg_wrapper.run().
+
+    ``toolchain_variant`` is stamped into build_state so ``sysforge update``
+    can flag drift. Set only on install-bearing passes — intermediate PGO
+    passes (1a/1b/2) leave it ``None`` so their (transient, soon-overwritten)
+    build_state writes don't carry a misleading variant claim.
+    """
     if options.dry_run:
         cc_label = f" CC={cc}" if cc else ""
         _log.ui(f"[dry-run] would build {name}{cc_label}")
@@ -619,6 +626,7 @@ def _build_pkg(
         abi_check=getattr(options, "abi_check", False),
         strip_flags=strip_flags,
         pgo_managed=True,
+        toolchain_variant=toolchain_variant,
     ))
 
 
@@ -634,6 +642,7 @@ def _build_pass(
     pgo_build: bool = False,
     pgo_env: dict | None = None,
     staged_deps: bool = False,
+    toolchain_variant: str | None = None,
 ) -> None:
     """Build all packages in pkgbuild_map for one pass.
 
@@ -679,6 +688,7 @@ def _build_pass(
             pgo_build=pgo_build,
             pgo_env=pgo_env,
             strip_flags=strip_flags,
+            toolchain_variant=toolchain_variant,
         )
         first = False
 
@@ -1348,6 +1358,23 @@ def _pgo_confirm(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_skip_build_variant(pgo_store: Path) -> str:
+    """Best-effort variant detection for the ``skip_build = true`` LLVM path.
+
+    The skip_build branch registers paths without resolving PKGBUILDs, so we
+    can't run the strict major-version match in ``_check_existing_profdata``.
+    Fall back to a presence check: if both ``clang.profdata`` and the version
+    sidecar exist in ``pgo_store``, the installed clang is the result of a
+    prior PGO build and reports ``pgo_llvm``. Otherwise ``stock_llvm``.
+
+    This reflects on-disk provenance (what the user is actually running),
+    not just the stage's current action.
+    """
+    if (pgo_store / "clang.profdata").exists() and (pgo_store / "clang.profdata.version").exists():
+        return "pgo_llvm"
+    return "stock_llvm"
+
+
 def _check_existing_profdata(
     pgo_store: Path,
     pgo_map: dict[str, Path],
@@ -1682,11 +1709,17 @@ def _build_llvm_single(
     non_pgo_map: dict[str, Path],
     lib32_map: dict[str, Path],
     options,
-) -> tuple[str, str, str]:
-    """Single-pass LLVM build (pgo = false). Returns (cc, cxx, ld)."""
+) -> tuple[str, str, str, str]:
+    """Single-pass LLVM build (pgo = false). Returns (cc, cxx, ld, variant)."""
     all_pkgs = {**pkgbuild_map, **non_pgo_map, **lib32_map}
-    _build_pass("LLVM build (single pass, no PGO)", all_pkgs, options, install=True)
-    return "/usr/bin/clang", "/usr/bin/clang++", "lld"
+    _build_pass(
+        "LLVM build (single pass, no PGO)",
+        all_pkgs,
+        options,
+        install=True,
+        toolchain_variant="stock_llvm",
+    )
+    return "/usr/bin/clang", "/usr/bin/clang++", "lld", "stock_llvm"
 
 
 def _build_llvm_pgo(
@@ -1697,7 +1730,7 @@ def _build_llvm_pgo(
     staging: Path,
     pgo_store: Path,
     options,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     """Acquire the PGO build lock, then run the 3-pass flow.
 
     The lock prevents two concurrent ``sysforge run toolchain`` runs from
@@ -1721,7 +1754,7 @@ def _build_llvm_pgo_inner(
     staging: Path,
     pgo_store: Path,
     options,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     """
     3-pass LLVM PGO build.
 
@@ -2113,6 +2146,7 @@ def _build_llvm_pgo_inner(
             pgo_build=True,
             pgo_env=pass3_env,
             staged_deps=True,
+            toolchain_variant="pgo_llvm",
         )
         _pgo_install(pass3_label, all_pass3, options.dry_run)
         if skip_profgen:
@@ -2130,7 +2164,7 @@ def _build_llvm_pgo_inner(
         if not skip_profgen:
             _remove_staging(staging)
 
-    return "/usr/bin/clang", "/usr/bin/clang++", "lld"
+    return "/usr/bin/clang", "/usr/bin/clang++", "lld", "pgo_llvm"
 
 
 # ---------------------------------------------------------------------------
@@ -2191,7 +2225,9 @@ class ToolchainStage(Stage):
             _log.ui(
                 f"Compiler: gcc — registering system paths (no build): cc={cc}  cxx={cxx}",
             )
-            state.set_stage_result("toolchain", {"cc": cc, "cxx": cxx})
+            state.set_stage_result(
+                "toolchain", {"cc": cc, "cxx": cxx, "variant": "gcc"}
+            )
             try:
                 state.save()
             except PermissionError:
@@ -2201,12 +2237,18 @@ class ToolchainStage(Stage):
             return
 
         # skip_build (LLVM only): register clang paths without building.
+        # Variant reflects on-disk clang provenance (pgo_llvm if a profdata
+        # + version sidecar pair is present, else stock_llvm) so downstream
+        # conditionals see the actual installed compiler, not just the
+        # stage's current action.
         if tcfg.get("skip_build", False):
             cc, cxx, ld = _compiler_paths(compiler)
+            variant = _resolve_skip_build_variant(pgo_store)
             _log.ui(
-                f"skip_build=true — skipping build, registering {compiler}: cc={cc}  cxx={cxx}",
+                f"skip_build=true — skipping build, registering {compiler} "
+                f"(variant={variant}): cc={cc}  cxx={cxx}",
             )
-            result = {"cc": cc, "cxx": cxx}
+            result = {"cc": cc, "cxx": cxx, "variant": variant}
             if ld is not None:
                 result["ld"] = ld
             state.set_stage_result("toolchain", result)
@@ -2291,12 +2333,12 @@ class ToolchainStage(Stage):
             pgo=pgo,
         ):
             if pgo:
-                cc, cxx, ld = _build_llvm_pgo(
+                cc, cxx, ld, variant = _build_llvm_pgo(
                     pgo_map, non_pgo_map, lib32_map,
                     staging1, staging, pgo_store, options,
                 )
             else:
-                cc, cxx, ld = _build_llvm_single(
+                cc, cxx, ld, variant = _build_llvm_single(
                     pgo_map, non_pgo_map, lib32_map, options
                 )
 
@@ -2316,8 +2358,10 @@ class ToolchainStage(Stage):
                         f"{_llvm_recovery_command()}"
                     )
 
-        # Write compiler paths to pipeline state for downstream stages
-        result = {"cc": cc, "cxx": cxx}
+        # Write compiler paths + variant to pipeline state for downstream
+        # stages. ``variant`` is the canonical signal consumers read via
+        # ``state.get_toolchain_variant`` — do not derive it from the cc path.
+        result = {"cc": cc, "cxx": cxx, "variant": variant}
         if ld is not None:
             result["ld"] = ld
         state.set_stage_result("toolchain", result)

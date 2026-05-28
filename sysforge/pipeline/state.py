@@ -331,3 +331,22 @@ class PipelineState:
             .get(stage_name, {})
             .get("result", {})
         )
+
+
+def get_toolchain_variant(state) -> str:
+    """Return the active toolchain variant for downstream conditional behaviour.
+
+    One of:
+      ``"gcc"``        — system gcc registered by the toolchain stage
+      ``"stock_llvm"`` — clang from a non-PGO LLVM build (or skip_build with
+                         no profdata on disk)
+      ``"pgo_llvm"``   — clang built with -fprofile-use, profdata + version
+                         sidecar present in pgo_store
+      ``"system"``     — toolchain stage has never run on this state dir;
+                         downstream code should fall back to /usr/bin/gcc
+
+    This is the single canonical accessor — do not re-derive variant from
+    ``cc`` path heuristics or by re-reading ``toolchain.toml`` elsewhere.
+    """
+    result = state.get_stage_result("toolchain") or {}
+    return result.get("variant", "system")

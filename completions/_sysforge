@@ -148,6 +148,8 @@ _sysforge_update() {
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--no-toolchain-preflight[skip toolchain pre-flight (rust/cmake/meson + lib32 cross targets)]' \
     '--include-stage-owned[include packages owned by a pipeline stage (e.g. kernel-stage linux-custom)]' \
+    '--explain-drift[list packages built under a different toolchain variant than is active now, then exit]' \
+    '--rebuild-on-toolchain-drift[promote UP_TO_DATE packages with toolchain drift to NEEDS_REBUILD]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate profiles.toml]:file:_files' \

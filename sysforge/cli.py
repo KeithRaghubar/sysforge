@@ -688,6 +688,17 @@ def _add_update_parser(sub):
         help="Include packages owned by a pipeline stage (e.g. the kernel "
              "stage's `linux-custom`). Skipped by default; the owning stage "
              "(`sysforge run kernel`) is the canonical update path.")
+    p.add_argument("--explain-drift", action="store_true", dest="explain_drift",
+        help="List packages whose recorded toolchain_variant differs from "
+             "the currently active toolchain (gcc / stock_llvm / pgo_llvm) "
+             "and exit. Informational; no source sync, no rebuild.")
+    p.add_argument("--rebuild-on-toolchain-drift", action="store_true",
+        dest="rebuild_on_toolchain_drift",
+        help="Treat toolchain-variant drift as an upgrade trigger: packages "
+             "built under a different toolchain than is active now are added "
+             "to the rebuild queue. Off by default — drift is reported but "
+             "not acted on, since most C/C++ packages don't measurably "
+             "benefit from a re-stamp.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit update to these package names (default: all sysforge-managed packages).")
     p.set_defaults(verb_cls=UpdateVerb)

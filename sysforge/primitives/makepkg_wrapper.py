@@ -1472,6 +1472,7 @@ class BuildOptions:
     pgo_managed: bool = False
     source: str | None = None  # "aur" | "repo" | "git" | "local" — persisted in build_state
     owner_stage: str | None = None  # e.g. "kernel" — persisted so `sysforge update` skips by default
+    toolchain_variant: str | None = None  # "gcc" | "stock_llvm" | "pgo_llvm" — persisted so `sysforge update` can flag drift
 
 
 # ---------------------------------------------------------------------------
@@ -1783,6 +1784,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     built_upstream_commit=upstream_commit,
                     source=options.source,
                     owner_stage=options.owner_stage,
+                    toolchain_variant=options.toolchain_variant,
                 )
             bs.save()
             _build_log.info(f"Recorded build state for {pkgbase!r}")

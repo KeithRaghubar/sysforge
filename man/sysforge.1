@@ -1,4 +1,4 @@
-.TH SYSFORGE "1" "2026\-05\-25" "sysforge" "Generated Python Manual"
+.TH SYSFORGE "1" "2026\-05\-28" "sysforge" "Generated Python Manual"
 .SH NAME
 sysforge
 .SH SYNOPSIS
@@ -175,6 +175,7 @@ usage: sysforge update [\-h] [\-\-dry\-run] [\-\-devel] [\-\-offline] [\-\-insta
                        [\-\-interactive] [\-\-no\-cleanbuild] [\-\-cleansrc]
                        [\-\-cleansrc\-force] [\-\-no\-llvm\-preflight]
                        [\-\-no\-toolchain\-preflight] [\-\-include\-stage\-owned]
+                       [\-\-explain\-drift] [\-\-rebuild\-on\-toolchain\-drift]
                        [PKG ...]
 
 .TP
@@ -276,6 +277,19 @@ targets) that normally runs before the build loop.
 Include packages owned by a pipeline stage (e.g. the kernel stage's `linux\-
 custom`). Skipped by default; the owning stage (`sysforge run kernel`) is the
 canonical update path.
+
+.TP
+\fB\-\-explain\-drift\fR
+List packages whose recorded toolchain_variant differs from the currently
+active toolchain (gcc / stock_llvm / pgo_llvm) and exit. Informational; no
+source sync, no rebuild.
+
+.TP
+\fB\-\-rebuild\-on\-toolchain\-drift\fR
+Treat toolchain\-variant drift as an upgrade trigger: packages built under a
+different toolchain than is active now are added to the rebuild queue. Off by
+default — drift is reported but not acted on, since most C/C++ packages don't
+measurably benefit from a re\-stamp.
 
 .SH COMMAND \fI\,'sysforge resolve'\/\fR
 usage: sysforge resolve [\-h] [\-\-show\-flags | \-\-deps] [\-\-profile\-conf FILE] PKG
