@@ -87,6 +87,7 @@ import fcntl
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import tomllib
 from pathlib import Path
@@ -94,6 +95,11 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("TOOLCHAIN")
 from sysforge.pipeline.stages.base import Stage
+from sysforge.primitives.abi_check import (
+    _extract_sos,
+    _list_sos_in_pkg,
+    _undefined_versioned,
+)
 from sysforge.primitives.config import find_pkgbuild, load_sysforge_toml
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
@@ -910,6 +916,40 @@ def _collect_pgo_packages(pkgbuild_map: dict[str, Path]) -> list[Path]:
     return packages
 
 
+def _check_pkg_for_std_in_llvm_version(pkg_files: list[Path]) -> list[str]:
+    """
+    Scan Pass-3 .pkg.tar.zst for the std::-bound-to-libLLVM ABI hazard.
+
+    Any UND versioned symbol with a mangled C++ stdlib prefix (``_ZNSt``)
+    whose version starts with ``LLVM_`` means the package's linker bound a
+    std::string method (etc.) to libLLVM's version namespace instead of
+    libstdc++'s GLIBCXX_*. Installing such a package leaves the live
+    toolchain unable to resolve those symbols at runtime: ``clang --version``
+    crashes with ``symbol lookup error: libclang-cpp.so: undefined symbol
+    _ZNSt..., version LLVM_X.Y``.
+
+    Returns issue strings; empty list = no hazard.
+    """
+    issues: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="sysforge-abi-") as tmpdir:
+        tmp = Path(tmpdir)
+        for pkg in pkg_files:
+            members = _list_sos_in_pkg(pkg)
+            if not members:
+                continue
+            sos = _extract_sos(pkg, members, tmp / pkg.name)
+            for so in sos:
+                undef = _undefined_versioned(so)
+                for sym, ver in sorted(undef):
+                    if sym.startswith("_ZNSt") and ver.startswith("LLVM_"):
+                        issues.append(
+                            f"{pkg.name}: {so.name}: C++ stdlib symbol "
+                            f"bound to LLVM version namespace: {sym}@{ver} "
+                            "(should be GLIBCXX_*)"
+                        )
+    return issues
+
+
 def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> None:
     """
     Install packages built by a PGO pass via a direct 'sudo pacman -U' call.
@@ -920,6 +960,11 @@ def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> No
     sudoers timestamp_timeout, and keepalive approaches are unreliable across
     sudo timestamp_type configurations (tty, ppid, global).  By issuing the
     sudo call here we guarantee it happens at a clean, predictable point.
+
+    Before invoking pacman, runs :func:`_check_pkg_for_std_in_llvm_version` on
+    the built packages and raises ``RuntimeError`` if any ``_ZNSt*@LLVM_*``
+    hazard is found — keeping the live ``/usr`` intact when Pass 3 produced
+    ABI-incoherent binaries.
     """
     if dry_run:
         _log.ui(f"[dry-run] would install packages from {label}")
@@ -929,6 +974,17 @@ def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> No
         raise RuntimeError(
             f"[TOOLCHAIN] No built packages found for {label} — "
             "check that the build completed successfully"
+        )
+    hazards = _check_pkg_for_std_in_llvm_version(pkgs)
+    if hazards:
+        joined = "\n".join(f"  - {h}" for h in hazards)
+        raise RuntimeError(
+            f"[TOOLCHAIN] Refusing to install {label}: "
+            f"Pass-3 packages contain C++ stdlib symbols bound to the LLVM "
+            "version namespace. Installing would leave the live toolchain "
+            "unable to resolve std::string methods at runtime.\n"
+            f"{joined}\n"
+            "Restart with: sysforge run toolchain --rebuild-profdata"
         )
     _log.ui(f"[PGO] Installing {len(pkgs)} package(s) ({label}):")
     for p in pkgs:
@@ -1553,6 +1609,50 @@ def _check_llvm_link_resolution() -> list[str]:
     return issues
 
 
+def _dump_stage_dynsym_evidence(
+    staging: Path, dest_dir: Path | str
+) -> Path | None:
+    """Dump stage2 ``libLLVM.so.*`` dynamic symbols for post-mortem inspection.
+
+    Called from the post-install verify failure path. Writes
+    ``nm -D --defined-only`` of the suspected leak source to
+    ``<state_dir>/llvm_abi_hazard.log`` with a filtered "suspicious symbols"
+    header listing every line matching ``_ZNSt`` — direct evidence of which
+    C++ stdlib exports leaked into stage2's libLLVM under the LLVM version
+    namespace. Returns the log path on success; ``None`` if staging is gone,
+    the suspect ``.so`` is missing, or ``nm`` failed.
+    """
+    if not staging.exists():
+        return None
+    candidates = sorted((staging / "usr/lib").glob("libLLVM.so.*"))
+    so = next((p for p in candidates if p.is_file()), None)
+    if so is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["nm", "-D", "--defined-only", str(so)],
+            capture_output=True, text=True, check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if proc.returncode != 0:
+        return None
+    suspicious = [ln for ln in proc.stdout.splitlines() if "_ZNSt" in ln]
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    out = dest / "llvm_abi_hazard.log"
+    body = (
+        f"# Diagnostic dump from stage2 libLLVM: {so}\n"
+        f"# Suspicious symbols (C++ stdlib exports, {len(suspicious)} found):\n"
+        + "\n".join(suspicious)
+        + ("\n" if suspicious else "")
+        + "# Full nm -D --defined-only output:\n"
+        + proc.stdout
+    )
+    out.write_text(body)
+    return out
+
+
 def _verify_llvm_install(
     expected_targets: list[str] | None = None,
 ) -> list[str]:
@@ -1633,12 +1733,21 @@ def _llvm_recovery_command() -> str:
     return "sudo pacman -S " + " ".join(_LLVM_VERSION_MATCH_SET) + " llvm-libs"
 
 
-def _prompt_llvm_recovery(issues: list[str], *, source: str) -> bool:
+def _prompt_llvm_recovery(
+    issues: list[str],
+    *,
+    source: str,
+    evidence_path: Path | None = None,
+) -> bool:
     """Surface LLVM inconsistency to the operator and offer auto-recovery.
 
     ``source`` describes where the inconsistency was detected — typically
     ``"post-install verification"`` (H) or ``"stale stage sentinel"`` (I).
-    Returns True iff the user accepted auto-recovery and it succeeded.
+    ``evidence_path`` is an optional diagnostic log path (written by
+    :func:`_dump_stage_dynsym_evidence` from the post-install verify
+    failure path) that gets surfaced in the WARN output so the operator
+    knows where to look. Returns True iff the user accepted auto-recovery
+    and it succeeded.
 
     Non-interactive: the prompt's ``eof_default="n"`` fires and the
     function returns False without running pacman (the caller raises a
@@ -1648,6 +1757,8 @@ def _prompt_llvm_recovery(issues: list[str], *, source: str) -> bool:
     _log.warn(f"LLVM consistency check failed ({source}):")
     for issue in issues:
         _log.warn(f"  - {issue}")
+    if evidence_path is not None:
+        _log.warn(f"Diagnostic evidence written to: {evidence_path}")
     _log.warn(f"Suggested recovery: {cmd}")
 
     choice = prompt_choice(
@@ -2216,9 +2327,11 @@ def _build_llvm_pgo_inner(
             sudo_keepalive.join()
 
     # Sidecar is written after Pass 2 (above), not here — see comment there.
-    if not options.dry_run and not skip_profgen:
-        _remove_staging(staging)
-
+    # Staging is intentionally NOT removed here: the caller's
+    # _verify_llvm_install runs after this returns, and on a verify failure
+    # the stage2 prefix is needed by _dump_stage_dynsym_evidence to capture
+    # which exports leaked into stage2's libLLVM. Staging is removed in the
+    # caller after verify passes (or after the operator accepts recovery).
     return "/usr/bin/clang", "/usr/bin/clang++", "lld", "pgo_llvm"
 
 
@@ -2399,19 +2512,35 @@ class ToolchainStage(Stage):
 
             # Post-install verification (H): assert internal LLVM consistency
             # before clearing the sentinel. Failure raises RuntimeError so
-            # sentinel_scope leaves the sentinel in place on exit.
+            # sentinel_scope leaves the sentinel in place on exit. On failure
+            # the stage2 prefix is still on disk (its removal is deferred
+            # until after this check passes), so a dynsym dump can capture
+            # which exports leaked.
             expected_targets = (tcfg.get("llvm", {}) or {}).get("targets") or None
             if not options.dry_run:
                 issues = _verify_llvm_install(expected_targets=expected_targets)
-                if issues and not _prompt_llvm_recovery(
-                    issues, source="post-install verification",
-                ):
-                    raise RuntimeError(
-                        "[TOOLCHAIN] Post-install LLVM consistency check failed; "
-                        "the live system may be in a mismatched state. Stage "
-                        "sentinel left in place — restore with: "
-                        f"{_llvm_recovery_command()}"
+                if issues:
+                    evidence_path = (
+                        _dump_stage_dynsym_evidence(staging, options.state_dir)
+                        if pgo
+                        else None
                     )
+                    if not _prompt_llvm_recovery(
+                        issues,
+                        source="post-install verification",
+                        evidence_path=evidence_path,
+                    ):
+                        raise RuntimeError(
+                            "[TOOLCHAIN] Post-install LLVM consistency check failed; "
+                            "the live system may be in a mismatched state. Stage "
+                            "sentinel left in place — restore with: "
+                            f"{_llvm_recovery_command()}"
+                        )
+                # Verify passed (or recovery accepted) — now safe to wipe
+                # the stage2 prefix. No-op for the non-PGO path (staging
+                # never populated) and the skip_profgen path (no stage2).
+                if pgo:
+                    _remove_staging(staging)
 
         # Write compiler paths + variant to pipeline state for downstream
         # stages. ``variant`` is the canonical signal consumers read via

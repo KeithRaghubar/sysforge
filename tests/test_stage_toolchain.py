@@ -29,7 +29,9 @@ from sysforge.pipeline.stages.toolchain import (
     _PROFRAW_MERGE_BATCH_MAX,
     _PROFRAW_MERGE_BATCH_MIN,
     _PROFRAW_SETTLE_SECS,
+    _check_pkg_for_std_in_llvm_version,
     _collect_pgo_packages,
+    _dump_stage_dynsym_evidence,
     _has_llvm_cmake_config,
     _pgo_install,
     _pgo_pass1_stage,
@@ -1219,6 +1221,161 @@ def test_pgo_install_raises_on_pacman_failure(tmp_path):
     with patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="pacman -U failed"):
             _pgo_install("test", pkgbuild_map, dry_run=False)
+
+
+# ---------------------------------------------------------------------------
+# _check_pkg_for_std_in_llvm_version / _dump_stage_dynsym_evidence
+# ---------------------------------------------------------------------------
+
+
+def test_check_pkg_for_std_in_llvm_version_flags_std_at_llvm(tmp_path):
+    """A `(_ZNSt..., LLVM_22.1)` UND pair is the canonical hazard — flagged."""
+    pkg = tmp_path / "clang-22.1.5-1-x86_64.pkg.tar.zst"
+    pkg.touch()
+    fake_so = tmp_path / "extracted" / "usr/lib/libclang-cpp.so.22.1"
+    fake_so.parent.mkdir(parents=True)
+    fake_so.touch()
+    hazard_sym = (
+        "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_"
+    )
+
+    with patch(
+        "sysforge.pipeline.stages.toolchain._list_sos_in_pkg",
+        return_value=["usr/lib/libclang-cpp.so.22.1"],
+    ), patch(
+        "sysforge.pipeline.stages.toolchain._extract_sos",
+        return_value=[fake_so],
+    ), patch(
+        "sysforge.pipeline.stages.toolchain._undefined_versioned",
+        return_value={(hazard_sym, "LLVM_22.1")},
+    ):
+        issues = _check_pkg_for_std_in_llvm_version([pkg])
+
+    assert len(issues) == 1
+    assert hazard_sym in issues[0]
+    assert "LLVM_22.1" in issues[0]
+    assert pkg.name in issues[0]
+
+
+def test_check_pkg_for_std_in_llvm_version_passes_clean_undef(tmp_path):
+    """Same `_ZNSt` symbol with `GLIBCXX_*` version is the expected case — no issue."""
+    pkg = tmp_path / "clang-22.1.5-1-x86_64.pkg.tar.zst"
+    pkg.touch()
+    fake_so = tmp_path / "extracted" / "usr/lib/libclang-cpp.so.22.1"
+    fake_so.parent.mkdir(parents=True)
+    fake_so.touch()
+    sym = (
+        "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_"
+    )
+
+    with patch(
+        "sysforge.pipeline.stages.toolchain._list_sos_in_pkg",
+        return_value=["usr/lib/libclang-cpp.so.22.1"],
+    ), patch(
+        "sysforge.pipeline.stages.toolchain._extract_sos",
+        return_value=[fake_so],
+    ), patch(
+        "sysforge.pipeline.stages.toolchain._undefined_versioned",
+        return_value={(sym, "GLIBCXX_3.4.21")},
+    ):
+        issues = _check_pkg_for_std_in_llvm_version([pkg])
+
+    assert issues == []
+
+
+def test_check_pkg_for_std_in_llvm_version_skips_non_std_in_llvm_version(tmp_path):
+    """Non-`_ZNSt` symbols (e.g. real LLVM exports) at `LLVM_*` are not hazards."""
+    pkg = tmp_path / "llvm-22.1.5-1-x86_64.pkg.tar.zst"
+    pkg.touch()
+    fake_so = tmp_path / "extracted" / "usr/lib/libLLVM.so.22.1"
+    fake_so.parent.mkdir(parents=True)
+    fake_so.touch()
+
+    with patch(
+        "sysforge.pipeline.stages.toolchain._list_sos_in_pkg",
+        return_value=["usr/lib/libLLVM.so.22.1"],
+    ), patch(
+        "sysforge.pipeline.stages.toolchain._extract_sos",
+        return_value=[fake_so],
+    ), patch(
+        "sysforge.pipeline.stages.toolchain._undefined_versioned",
+        return_value={("LLVMInitializeBPFTarget", "LLVM_22.1")},
+    ):
+        issues = _check_pkg_for_std_in_llvm_version([pkg])
+
+    assert issues == []
+
+
+def test_pgo_install_refuses_hazardous_pass3(tmp_path):
+    """When the ABI hazard scan finds a leak, _pgo_install must NOT run pacman -U."""
+    pkg_dir = tmp_path / "clang"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "clang-22.1.5-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    pkgbuild_map = {"clang": pkg_dir / "PKGBUILD"}
+
+    pacman_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if "pacman" in cmd:
+            pacman_calls.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = str(fake_pkg)
+        result.stderr = ""
+        return result
+
+    hazard = [f"{fake_pkg.name}: libclang-cpp.so.22.1: ..._M_assign@LLVM_22.1"]
+    with patch("subprocess.run", side_effect=fake_run), patch(
+        "sysforge.pipeline.stages.toolchain._check_pkg_for_std_in_llvm_version",
+        return_value=hazard,
+    ):
+        with pytest.raises(RuntimeError, match="Refusing to install"):
+            _pgo_install("PGO 4/4 · optimize all packages", pkgbuild_map, dry_run=False)
+
+    assert pacman_calls == []
+
+
+def test_dump_stage_dynsym_evidence_writes_log(tmp_path):
+    """Helper writes nm output to <dest>/llvm_abi_hazard.log with a filtered header."""
+    staging = tmp_path / "stage2"
+    libdir = staging / "usr/lib"
+    libdir.mkdir(parents=True)
+    so = libdir / "libLLVM.so.22.1"
+    so.touch()
+
+    nm_out = (
+        "0000000000111111 T LLVMCreateModule\n"
+        "0000000000222222 T _ZNSt7__cxx1112basic_string_M_assign\n"
+        "0000000000333333 T _ZNSt7__cxx1112basic_string_M_append\n"
+    )
+
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = nm_out
+        result.stderr = ""
+        return result
+
+    dest_dir = tmp_path / "state"
+    with patch("subprocess.run", side_effect=fake_run):
+        out = _dump_stage_dynsym_evidence(staging, dest_dir)
+
+    assert out is not None
+    assert out == dest_dir / "llvm_abi_hazard.log"
+    text = out.read_text()
+    assert "Suspicious symbols (C++ stdlib exports, 2 found)" in text
+    assert "_ZNSt7__cxx1112basic_string_M_assign" in text
+    assert "LLVMCreateModule" in text  # full dump also present
+
+
+def test_dump_stage_dynsym_evidence_returns_none_when_staging_missing(tmp_path):
+    """No staging dir on disk → returns None, doesn't crash, doesn't write."""
+    staging = tmp_path / "stage2-gone"
+    dest_dir = tmp_path / "state"
+    out = _dump_stage_dynsym_evidence(staging, dest_dir)
+    assert out is None
+    assert not (dest_dir / "llvm_abi_hazard.log").exists()
 
 
 # ---------------------------------------------------------------------------
