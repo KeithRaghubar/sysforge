@@ -1133,3 +1133,278 @@ def test_kernel_stage_invalid_source_rejected(tmp_path):
     with patch.object(_km, "KERNEL_PATH", p):
         with pytest.raises(RuntimeError, match="invalid kernel.toml source"):
             KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+
+# ---------------------------------------------------------------------------
+# 3.3 — Variant-driven compiler nudge
+# ---------------------------------------------------------------------------
+
+def _state_with_variant(tmp_path, variant, cc=None, cxx=None):
+    """Helper: build a PipelineState with the toolchain stage's variant field set."""
+    s = PipelineState(tmp_path / "state")
+    result = {"variant": variant}
+    if cc:
+        result["cc"] = cc
+    if cxx:
+        result["cxx"] = cxx
+    s.set_stage_result("toolchain", result)
+    return s
+
+
+def _run_kernel_with_state(tmp_path, kernel_cfg_state, opts_override=None):
+    """Run KernelStage in a fully-mocked environment, returning the captured mock_log."""
+    import sysforge.pipeline.stages.kernel as _km
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state, p = kernel_cfg_state
+    opts = opts_override or make_options(state_dir=tmp_path / "state")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel._log") as mock_log, \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         patch("sysforge.pipeline.stages.kernel._probe_installed_bootloader",
+               return_value={"systemd-boot"}):
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    return mock_log
+
+
+def _warn_messages(mock_log):
+    return [str(c.args[0]) for c in mock_log.warn.call_args_list]
+
+
+def _info_messages(mock_log):
+    return [str(c.args[0]) for c in mock_log.info.call_args_list]
+
+
+def test_run_logs_pgo_llvm_nudge_when_compiler_unset(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = _state_with_variant(tmp_path, "pgo_llvm",
+                                cc="/usr/bin/clang", cxx="/usr/bin/clang++")
+    p = make_kernel_toml(tmp_path, builds)
+    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+
+    assert any("pgo_llvm" in m and "PGO clang" in m for m in _warn_messages(mock_log)), \
+        f"expected pgo_llvm nudge, got warns: {_warn_messages(mock_log)}"
+
+
+def test_run_logs_stock_llvm_info_when_compiler_unset(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = _state_with_variant(tmp_path, "stock_llvm",
+                                cc="/usr/bin/clang", cxx="/usr/bin/clang++")
+    p = make_kernel_toml(tmp_path, builds)
+    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+
+    assert any("stock_llvm" in m and "inherit clang" in m for m in _info_messages(mock_log)), \
+        f"expected stock_llvm info, got infos: {_info_messages(mock_log)}"
+    # pgo_llvm warn must NOT fire
+    assert not any("pgo_llvm" in m and "PGO clang" in m for m in _warn_messages(mock_log))
+
+
+def test_run_no_nudge_when_compiler_explicit(tmp_path):
+    """kernel.toml compiler explicitly set → no variant-inheritance nudge."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = _state_with_variant(tmp_path, "pgo_llvm",
+                                cc="/usr/bin/clang", cxx="/usr/bin/clang++")
+    p = tmp_path / "kernel.toml"
+    p.write_text(
+        'enabled = true\n'
+        'pkgname = "linux-git"\n'
+        'source = "git"\n'
+        f'pkgbuild_src_dir = "{builds}"\n'
+        'bootloader = "systemd-boot"\n'
+        'compiler = "gcc"\n'
+    )
+    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+
+    assert not any("PGO clang" in m or "inherit clang" in m
+                   for m in _warn_messages(mock_log) + _info_messages(mock_log))
+
+
+def test_run_no_nudge_for_gcc_variant(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = _state_with_variant(tmp_path, "gcc",
+                                cc="/usr/bin/gcc", cxx="/usr/bin/g++")
+    p = make_kernel_toml(tmp_path, builds)
+    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+
+    assert not any("inherit" in m for m in _warn_messages(mock_log) + _info_messages(mock_log))
+
+
+def test_run_no_nudge_for_system_variant(tmp_path):
+    """No toolchain stage result → variant=='system' → no nudge."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = PipelineState(tmp_path / "state")  # no set_stage_result → variant=system
+    p = make_kernel_toml(tmp_path, builds)
+    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+
+    assert not any("inherit" in m for m in _warn_messages(mock_log) + _info_messages(mock_log))
+
+
+# ---------------------------------------------------------------------------
+# A1 — Per-kernel toolchain drift check
+# ---------------------------------------------------------------------------
+
+def _seed_build_state(state_dir, pkgname, toolchain_variant, pkgbuild_dir):
+    from sysforge.primitives.build_state import BuildState
+    bs = BuildState(state_dir)
+    bs.record(
+        pkgname=pkgname, pkgver="6.10", pkgrel="1", epoch="0",
+        pkgbase=pkgname, pkgbuild_dir=pkgbuild_dir,
+        toolchain_variant=toolchain_variant,
+    )
+    bs.save()
+
+
+def test_run_warns_on_variant_drift(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state_dir = tmp_path / "state"
+    _seed_build_state(state_dir, "linux-git", "stock_llvm", builds / "linux-git")
+    state = _state_with_variant(tmp_path, "pgo_llvm",
+                                cc="/usr/bin/clang", cxx="/usr/bin/clang++")
+    p = make_kernel_toml(tmp_path, builds)
+    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+
+    drift = [m for m in _warn_messages(mock_log)
+             if "stock_llvm" in m and "pgo_llvm" in m and "Rebuilding" in m]
+    assert drift, f"expected drift warn, got warns: {_warn_messages(mock_log)}"
+
+
+def test_run_silent_when_variants_match(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state_dir = tmp_path / "state"
+    _seed_build_state(state_dir, "linux-git", "pgo_llvm", builds / "linux-git")
+    state = _state_with_variant(tmp_path, "pgo_llvm",
+                                cc="/usr/bin/clang", cxx="/usr/bin/clang++")
+    p = make_kernel_toml(tmp_path, builds)
+    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+
+    assert not any("Rebuilding will switch toolchains" in m for m in _warn_messages(mock_log))
+
+
+def test_run_silent_when_recorded_variant_absent(tmp_path):
+    """Back-compat: no recorded variant on installed kernel → no drift warn."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    # No build_state seeded → BuildState.get(pkgname) returns None
+    state = _state_with_variant(tmp_path, "pgo_llvm",
+                                cc="/usr/bin/clang", cxx="/usr/bin/clang++")
+    p = make_kernel_toml(tmp_path, builds)
+    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+
+    assert not any("Rebuilding will switch toolchains" in m for m in _warn_messages(mock_log))
+
+
+# ---------------------------------------------------------------------------
+# A2 — Bootloader-installed preflight
+# ---------------------------------------------------------------------------
+
+def test_probe_bootloader_systemd_via_loader_conf(tmp_path):
+    from sysforge.pipeline.stages.kernel import _probe_installed_bootloader
+
+    def fake_exists(self):
+        return str(self) == "/boot/loader/loader.conf"
+
+    with patch("pathlib.Path.exists", fake_exists):
+        assert _probe_installed_bootloader() == {"systemd-boot"}
+
+
+def test_probe_bootloader_grub_via_grub_cfg(tmp_path):
+    from sysforge.pipeline.stages.kernel import _probe_installed_bootloader
+
+    def fake_exists(self):
+        return str(self) == "/boot/grub/grub.cfg"
+
+    with patch("pathlib.Path.exists", fake_exists):
+        assert _probe_installed_bootloader() == {"grub"}
+
+
+def test_probe_bootloader_dual_boot(tmp_path):
+    from sysforge.pipeline.stages.kernel import _probe_installed_bootloader
+
+    def fake_exists(self):
+        return str(self) in ("/boot/loader/loader.conf", "/boot/grub/grub.cfg")
+
+    with patch("pathlib.Path.exists", fake_exists):
+        assert _probe_installed_bootloader() == {"systemd-boot", "grub"}
+
+
+def test_run_warns_when_bootloader_mismatch(tmp_path):
+    """kernel.toml bootloader = grub, only systemd-boot detected → WARN, build proceeds."""
+    import sysforge.pipeline.stages.kernel as _km
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds, bootloader="grub")
+    state = PipelineState(tmp_path / "state")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel._log") as mock_log, \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         patch("sysforge.pipeline.stages.kernel._probe_installed_bootloader",
+               return_value={"systemd-boot"}):
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    mismatch = [m for m in _warn_messages(mock_log)
+                if "bootloader = 'grub'" in m and "not detected" in m]
+    assert mismatch, f"expected bootloader mismatch warn, got: {_warn_messages(mock_log)}"
+
+
+# ---------------------------------------------------------------------------
+# A3 — pkgname ↔ PKGBUILD pkgbase consistency check
+# ---------------------------------------------------------------------------
+
+def _write_pkgbuild_with(builds, dirname, contents):
+    d = builds / dirname
+    d.mkdir(parents=True, exist_ok=True)
+    pb = d / "PKGBUILD"
+    pb.write_text(contents)
+    return pb
+
+
+def test_validate_pkgname_match_split_kernel(tmp_path):
+    from sysforge.pipeline.stages.kernel import _validate_pkgname_matches_pkgbuild
+
+    builds = tmp_path / "builds"
+    pb = _write_pkgbuild_with(builds, "linux-custom",
+        "pkgbase=linux-custom\n"
+        "pkgname=(linux-custom linux-custom-headers)\n"
+        "pkgver=6.10\npkgrel=1\n"
+    )
+    # No raise.
+    _validate_pkgname_matches_pkgbuild(pb, "linux-custom")
+
+
+def test_validate_pkgname_match_simple(tmp_path):
+    from sysforge.pipeline.stages.kernel import _validate_pkgname_matches_pkgbuild
+
+    builds = tmp_path / "builds"
+    pb = _write_pkgbuild_with(builds, "linux-custom",
+        "pkgname=linux-custom\npkgver=6.10\npkgrel=1\n"
+    )
+    _validate_pkgname_matches_pkgbuild(pb, "linux-custom")
+
+
+def test_validate_pkgname_typo_raises(tmp_path):
+    from sysforge.pipeline.stages.kernel import _validate_pkgname_matches_pkgbuild
+
+    builds = tmp_path / "builds"
+    pb = _write_pkgbuild_with(builds, "linux-custom",
+        "pkgbase=linux-custom\n"
+        "pkgname=(linux-custom linux-custom-headers)\n"
+        "pkgver=6.10\npkgrel=1\n"
+    )
+    with pytest.raises(RuntimeError, match="does not match.*pkgbase"):
+        _validate_pkgname_matches_pkgbuild(pb, "linux-custm")

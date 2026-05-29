@@ -134,6 +134,73 @@ def _resolve_bootloader(kernel_cfg, options):
 _VALID_SOURCES = ("local", "aur", "git")
 
 
+def _probe_installed_bootloader():
+    """Return the set of bootloaders detected as installed on this system.
+
+    Primary signal is filesystem markers (cheap, no subprocess). Falls back
+    to ``pacman -Qq`` for the systemd-boot/grub package names when neither
+    marker is present.
+
+    Returns a subset of ``{"systemd-boot", "grub"}``. Empty set means
+    neither was detected (common in containers / VMs where the right
+    answer is ``bootloader = "none"``).
+    """
+    found = set()
+    if Path("/boot/loader/loader.conf").exists():
+        found.add("systemd-boot")
+    if Path("/boot/grub/grub.cfg").exists():
+        found.add("grub")
+    if found:
+        return found
+
+    try:
+        result = subprocess.run(
+            ["pacman", "-Qq", "systemd", "grub"],
+            capture_output=True, text=True, check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return found
+    for line in result.stdout.splitlines():
+        name = line.strip()
+        if name == "systemd" and Path("/usr/bin/bootctl").exists():
+            found.add("systemd-boot")
+        elif name == "grub":
+            found.add("grub")
+    return found
+
+
+def _validate_pkgname_matches_pkgbuild(pkgbuild_path, expected_pkgname):
+    """Static-parse the PKGBUILD and confirm its pkgbase matches kernel.toml.
+
+    Catches typos in ``kernel.toml pkgname`` (or a cloned PKGBUILD whose
+    pkgbase has drifted from the directory name) before a multi-hour build
+    fails late at ``makepkg --install``. Split-package kernels declare
+    ``pkgbase`` explicitly; non-split PKGBUILDs use ``pkgname`` as the
+    effective pkgbase.
+    """
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    parsed = parse_pkgbuild(pkgbuild_path)
+    globals_ = parsed.get("globals", {})
+    parsed_pkgbase = globals_.get("pkgbase")
+    if not parsed_pkgbase:
+        pkgname_field = globals_.get("pkgname")
+        if isinstance(pkgname_field, list):
+            parsed_pkgbase = pkgname_field[0] if pkgname_field else None
+        else:
+            parsed_pkgbase = pkgname_field
+    if not parsed_pkgbase:
+        # Static parse couldn't recover a pkgbase — let makepkg surface this
+        # rather than block on a parse limitation.
+        return
+    if parsed_pkgbase != expected_pkgname:
+        raise RuntimeError(
+            f"[KERNEL] kernel.toml pkgname={expected_pkgname!r} does not match "
+            f"PKGBUILD pkgbase={parsed_pkgbase!r} at {pkgbuild_path}. "
+            "Fix kernel.toml or rename the PKGBUILD directory."
+        )
+
+
 def _resolve_source(kernel_cfg):
     """Resolve the kernel PKGBUILD source classification; defaults to ``local``."""
     src = kernel_cfg.get("source", "local")
@@ -481,6 +548,9 @@ class KernelStage(Stage):
     depends_on = ["packages"]
 
     def run(self, config, state, options):
+        from sysforge.pipeline.state import get_toolchain_variant, resolve_state_dir
+        from sysforge.primitives.build_state import BuildState
+
         kernel_cfg = _load_kernel_config()
         if kernel_cfg is None or not kernel_cfg.get("enabled", False):
             _log.ui("kernel.toml absent or disabled — stage is a no-op")
@@ -489,6 +559,35 @@ class KernelStage(Stage):
         pkgname = kernel_cfg.get("pkgname", "unknown")
         bootloader = _resolve_bootloader(kernel_cfg, options)
         source = _resolve_source(kernel_cfg)
+
+        # Hoisted once: shared by the drift check below, the compiler nudge
+        # downstream, and the BuildState.record() variant stamp later in run.
+        variant = get_toolchain_variant(state)
+        state_dir, _ = resolve_state_dir(options.state_dir)
+
+        # A1: per-kernel toolchain drift. update.py's drift sweep skips
+        # stage-owned packages (the kernel is one), so this stage owns the
+        # drift signal for its own package. Same shape as update.py:1180-1205.
+        recorded_variant = (BuildState(state_dir).get(pkgname) or {}).get("toolchain_variant")
+        if recorded_variant and variant != "system" and recorded_variant != variant:
+            _log.warn(
+                f"Installed {pkgname} was built under toolchain variant "
+                f"{recorded_variant!r}; active variant is {variant!r}. "
+                "Rebuilding will switch toolchains."
+            )
+
+        # A2: surface bootloader mismatch before the build runs, so users on a
+        # grub-only system who left bootloader defaulting to systemd-boot get
+        # a single early warning instead of a post-install bootctl failure.
+        if bootloader != "none":
+            installed_bootloaders = _probe_installed_bootloader()
+            if installed_bootloaders and bootloader not in installed_bootloaders:
+                _log.warn(
+                    f"kernel.toml bootloader = {bootloader!r} but installation "
+                    f"not detected (found: {sorted(installed_bootloaders) or 'none'}). "
+                    "Post-install step will likely fail — pass "
+                    "--bootloader=<installed> or update kernel.toml."
+                )
 
         # Interactive kconfig is the kernel-stage default — flipped off by
         # --non-interactive (or `interactive = false` in kernel.toml). When
@@ -499,11 +598,6 @@ class KernelStage(Stage):
         # kconfig UIs render on the controlling TTY.
         cfg_interactive = bool(kernel_cfg.get("interactive", True))
         interactive = cfg_interactive and not getattr(options, "non_interactive", False)
-
-        # Resolve state_dir for lsmod snapshot and scheduler init.
-        from sysforge.pipeline.state import resolve_state_dir
-
-        state_dir, _ = resolve_state_dir(options.state_dir)
 
         # lsmod snapshot — captured before build for localmodconfig reproducibility
         _capture_lsmod_snapshot(state_dir, options.dry_run)
@@ -518,6 +612,11 @@ class KernelStage(Stage):
         pkgbuild = _pkgbuild_path(kernel_cfg)
         synced = _presync_kernel_source(pkgbuild.parent, options, state_dir, source=source)
 
+        # A3: static-parse the freshly-synced PKGBUILD and confirm pkgbase
+        # matches kernel.toml. Catches typos before makepkg --install fails
+        # late after a multi-hour build.
+        _validate_pkgname_matches_pkgbuild(pkgbuild, pkgname)
+
         # Compiler resolution: CLI > kernel.toml > pipeline state from toolchain.
         compiler, cc, cxx = _resolve_compiler(kernel_cfg, options, state)
         if compiler:
@@ -526,6 +625,25 @@ class KernelStage(Stage):
             _log.ui(f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}")
         else:
             _log.info("No kernel compiler override — profile defaults apply")
+
+        # 3.3: surface the inherited toolchain variant when the user hasn't
+        # set `compiler` explicitly. The pipeline-state fallback already
+        # routes the right cc/cxx through; this just makes the inheritance
+        # visible so the operator can persist it in kernel.toml (and survive
+        # a future toolchain-stage disable that clears [stages.toolchain.result]).
+        if compiler is None and variant == "pgo_llvm":
+            _log.warn(
+                "Active toolchain variant: pgo_llvm — kernel will inherit PGO "
+                "clang via pipeline-state fallback. Set `compiler = \"llvm\"` "
+                "in kernel.toml (or pass --compiler=llvm) to make this explicit "
+                "and survive future toolchain-stage disable."
+            )
+        elif compiler is None and variant == "stock_llvm":
+            _log.info(
+                "Active toolchain variant: stock_llvm — kernel will inherit "
+                "clang via pipeline-state fallback. Set `compiler = \"llvm\"` "
+                "in kernel.toml to make this explicit."
+            )
 
         kconfig_target = "make nconfig (user-supplied)" if interactive else "make olddefconfig (patched)"
         _log.info(f"Kernel kconfig target: {kconfig_target}")
@@ -549,9 +667,6 @@ class KernelStage(Stage):
                 _log.ui(f"[dry-run] would build {pkgname} from {pkgbuild}")
             else:
                 _log.ui(f"Building kernel: {pkgname} from {pkgbuild}")
-                from sysforge.pipeline.state import get_toolchain_variant
-
-                variant = get_toolchain_variant(state)
                 makepkg_run(pkgbuild, options=BuildOptions(
                     pkg_log=not options.no_pkg_logs,
                     persist_log=options.persist_log,
