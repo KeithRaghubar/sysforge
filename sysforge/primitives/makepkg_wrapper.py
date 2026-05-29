@@ -325,7 +325,8 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       strip_full_lto: bool = False,
                       pkgbuild_has_hardcoded_gcc: bool = False,
                       reactive_gcc_fallback: bool = False,
-                      is_lib32: bool = False):
+                      is_lib32: bool = False,
+                      toolchain_variant: str | None = None):
     """
     Write a complete, self-contained temp makepkg.conf by merging:
       1. All keys from /etc/makepkg.conf (system baseline)
@@ -428,6 +429,21 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         else:
             current_ldflags = profile_overrides.get("LDFLAGS", "")
             profile_overrides["LDFLAGS"] = _inject_linker(current_ldflags, ld_override)
+    elif (
+        not kernel_build
+        and toolchain_variant in ("stock_llvm", "pgo_llvm")
+    ):
+        _sd_ldflags = profile_overrides.get("LDFLAGS")
+        if _sd_ldflags is None and "LDFLAGS" in system_assignments:
+            _raw = system_assignments["LDFLAGS"].strip()
+            _sd_ldflags = _raw[1:-1] if (len(_raw) >= 2 and _raw[0] == _raw[-1] == '"') else _raw
+        _sd_ldflags = _sd_ldflags or ""
+        if not _detect_linker_from_ldflags(_sd_ldflags) and shutil.which("lld"):
+            profile_overrides["LDFLAGS"] = _inject_linker(_sd_ldflags, "lld")
+            _flag_log.info(
+                f"[VARIANT_LD] variant={toolchain_variant!r}: defaulting -fuse-ld=lld "
+                "(no linker declared in LDFLAGS, lld available)"
+            )
 
     # Linker guard: determine the effective linker. If no -fuse-ld=X is declared,
     # the effective linker is the system default (bfd). Strip lld-specific flags
@@ -1320,7 +1336,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                         strip_full_lto=strip_full_lto,
                         pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
                         reactive_gcc_fallback=_reactive_retry_used,
-                        is_lib32=is_lib32) as conf_path:
+                        is_lib32=is_lib32,
+                        toolchain_variant=toolchain_variant) as conf_path:
                     _invoke_with_retry(
                         pkgbuild_path, conf_path, resolved_profile,
                         extra_env, extra_flags, interactive, strip_flags)

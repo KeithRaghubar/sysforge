@@ -130,14 +130,9 @@ def test_emit_system_cflags_used_when_no_profile_override(sys_conf_path):
 
 def test_emit_new_profile_key_appended(sys_conf_path):
     """Profile key absent from system conf is appended at end."""
-    profile = {"RUSTFLAGS": "-C target-cpu=native"}
+    profile = {"MAKEFLAGS": "-j$(nproc)"}
     with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
-        content = Path(conf_path).read_text()
-    # RUSTFLAGS is in the system conf fixture, so override it and
-    # test a genuinely new key
-    profile2 = {"MAKEFLAGS": "-j$(nproc)"}
-    with emit_makepkg_conf(profile2, system_conf_path=sys_conf_path) as conf_path2:
-        conf = read_conf(conf_path2)
+        conf = read_conf(conf_path)
     assert "MAKEFLAGS" in conf
 
 def test_emit_no_sysforge_internal_keys(sys_conf_path):
@@ -478,3 +473,130 @@ def test_emit_no_hardcoded_gcc_keeps_thin_lto(sys_conf_path):
     with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
         conf = read_conf(conf_path)
     assert conf["LTOFLAGS"] == "-flto=thin"
+
+
+# ---------------------------------------------------------------------------
+# Variant-derived linker soft default (3.2)
+# ---------------------------------------------------------------------------
+
+def test_emit_variant_stock_llvm_defaults_to_lld(sys_conf_path):
+    """stock_llvm variant + no linker in profile/system LDFLAGS -> -fuse-ld=lld injected."""
+    profile = {}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        toolchain_variant="stock_llvm",
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert "-fuse-ld=lld" in conf.get("LDFLAGS", "")
+
+
+def test_emit_variant_pgo_llvm_defaults_to_lld(sys_conf_path):
+    """pgo_llvm variant gets the same lld default as stock_llvm."""
+    profile = {}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        toolchain_variant="pgo_llvm",
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert "-fuse-ld=lld" in conf.get("LDFLAGS", "")
+
+
+def test_emit_variant_respects_profile_linker(sys_conf_path):
+    """Profile LDFLAGS already declares -fuse-ld=mold -> soft default skips injection."""
+    profile = {"LDFLAGS": "-Wl,-O1 -fuse-ld=mold"}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        toolchain_variant="pgo_llvm",
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    ldflags = conf.get("LDFLAGS", "")
+    assert "-fuse-ld=mold" in ldflags
+    assert "-fuse-ld=lld" not in ldflags
+
+
+def test_emit_variant_respects_system_linker(tmp_path):
+    """System LDFLAGS already declares -fuse-ld=ld.bfd -> soft default skips injection."""
+    p = tmp_path / "makepkg.conf"
+    p.write_text(
+        'CARCH="x86_64"\n'
+        'CFLAGS="-O2"\n'
+        'LDFLAGS="-Wl,-O1 -fuse-ld=ld.bfd"\n'
+    )
+    profile = {}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=p,
+        toolchain_variant="stock_llvm",
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert "-fuse-ld=lld" not in conf.get("LDFLAGS", "")
+
+
+def test_emit_explicit_ld_override_beats_variant_default(sys_conf_path):
+    """Explicit ld_override wins over the variant-derived soft default."""
+    profile = {}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        ld_override="mold",
+        toolchain_variant="pgo_llvm",
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    ldflags = conf.get("LDFLAGS", "")
+    assert "-fuse-ld=mold" in ldflags
+    assert "-fuse-ld=lld" not in ldflags
+
+
+def test_emit_variant_gcc_no_lld_injection(sys_conf_path):
+    """gcc variant must not inject -fuse-ld=lld."""
+    profile = {}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        toolchain_variant="gcc",
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert "-fuse-ld=lld" not in conf.get("LDFLAGS", "")
+
+
+def test_emit_variant_none_no_lld_injection(sys_conf_path):
+    """toolchain_variant=None (no toolchain stage run) -> no soft default."""
+    profile = {}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        toolchain_variant=None,
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert "-fuse-ld=lld" not in conf.get("LDFLAGS", "")
+
+
+def test_emit_variant_kernel_build_skips_lld_default(sys_conf_path):
+    """kernel_build=True short-circuits the variant default (kernel uses LLVM= for linker)."""
+    profile = {}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        toolchain_variant="pgo_llvm",
+        kernel_build=True,
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    # Kernel path leaves LDFLAGS to system-conf passthrough; no -fuse-ld= injected.
+    assert "-fuse-ld=lld" not in conf.get("LDFLAGS", "")
+
+
+def test_emit_variant_lld_missing_skips_injection(sys_conf_path, monkeypatch):
+    """Defensive: if lld is not on PATH, the soft default does not inject."""
+    import sysforge.primitives.makepkg_wrapper as mw
+    monkeypatch.setattr(mw.shutil, "which", lambda name: None if name == "lld" else "/usr/bin/" + name)
+    profile = {}
+    with emit_makepkg_conf(
+        profile,
+        system_conf_path=sys_conf_path,
+        toolchain_variant="stock_llvm",
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert "-fuse-ld=lld" not in conf.get("LDFLAGS", "")
