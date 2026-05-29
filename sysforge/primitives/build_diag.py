@@ -23,7 +23,9 @@ that contradicts the real root cause is worse than no hint at all.
 """
 from __future__ import annotations
 
+import glob
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -156,7 +158,118 @@ def _match_meson_unknown_opts(text: str, active: str | None) -> FixSuggestion | 
     )
 
 
-_MATCHERS = (_match_rust_missing_std, _match_gst_ptp, _match_meson_unknown_opts)
+# ---------------------------------------------------------------------------
+# CUDA host-compiler too new (nvcc rejects the system gcc)
+# ---------------------------------------------------------------------------
+
+# Canonical message emitted by CUDA's crt/host_config.h gate when the host gcc
+# is newer than the toolkit supports.
+_RE_CUDA_UNSUPPORTED_GCC = re.compile(
+    r"unsupported GNU version|UNSUPPORTED COMPILER", re.IGNORECASE
+)
+# Fallback signal: nvcc's frontend chokes on a too-new libstdc++ before the
+# clean gate fires — a `.cu` compilation summary plus libstdc++ header errors.
+_RE_CU_COMPILE_FAIL = re.compile(r'errors detected in the compilation of "[^"]*\.cu"')
+_RE_LIBSTDCXX_PATH = re.compile(r"/usr/include/c\+\+/(\d+)(?:\.\d+)*/")
+
+_CUDA_HOST_CONFIG_PATHS = (
+    "/opt/cuda/include/crt/host_config.h",
+    "/usr/local/cuda/include/crt/host_config.h",
+)
+
+
+def _cuda_max_gcc_major() -> int | None:
+    """Read CUDA's ``crt/host_config.h`` ``#if __GNUC__ > N`` gate → N (the
+    highest supported gcc major), or None if it can't be determined."""
+    paths: list[str] = []
+    nvcc = shutil.which("nvcc")
+    if nvcc:
+        # .../bin/nvcc → .../include/crt/host_config.h
+        paths.append(
+            str(Path(nvcc).resolve().parent.parent / "include" / "crt" / "host_config.h")
+        )
+    paths.extend(_CUDA_HOST_CONFIG_PATHS)
+    for p in paths:
+        try:
+            txt = Path(p).read_text(errors="replace")
+        except OSError:
+            continue
+        m = re.search(r"__GNUC__\s*>\s*(\d+)", txt)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _highest_gpp_upto(major: int) -> str | None:
+    """Return the path to the highest installed ``/usr/bin/g++-N`` with
+    ``N <= major``, or None when none is installed."""
+    best: tuple[int, str] | None = None
+    for path in glob.glob("/usr/bin/g++-*"):
+        suffix = path.rsplit("-", 1)[-1]
+        if not suffix.isdigit():
+            continue
+        n = int(suffix)
+        if n <= major and (best is None or n > best[0]):
+            best = (n, path)
+    return best[1] if best else None
+
+
+def _match_cuda_host_gcc(text: str, active: str | None) -> FixSuggestion | None:
+    del active
+    canonical = _RE_CUDA_UNSUPPORTED_GCC.search(text)
+    cu_libstdcxx = _RE_CU_COMPILE_FAIL.search(text) and _RE_LIBSTDCXX_PATH.search(text)
+    if not (canonical or cu_libstdcxx):
+        return None
+    # Best-effort fix derivation; never let a probe failure mask the diagnosis.
+    try:
+        max_gcc = _cuda_max_gcc_major()
+    except Exception:
+        max_gcc = None
+    m = _RE_LIBSTDCXX_PATH.search(text)
+    sys_major = int(m.group(1)) if m else None
+    ccbin = None
+    if max_gcc is not None:
+        try:
+            ccbin = _highest_gpp_upto(max_gcc)
+        except Exception:
+            ccbin = None
+
+    if max_gcc is not None and sys_major is not None:
+        message = (
+            f"nvcc rejected the system host compiler: this CUDA toolkit supports "
+            f"gcc <= {max_gcc}, but the system gcc is {sys_major}"
+        )
+    else:
+        message = (
+            "nvcc rejected the system host compiler — the system gcc is newer "
+            "than this CUDA toolkit supports"
+        )
+    if ccbin:
+        fix_cmd = (
+            f"NVCC_APPEND_FLAGS='-ccbin {ccbin}' makepkg   "
+            "# point nvcc at a supported host gcc"
+        )
+    elif max_gcc is not None:
+        fix_cmd = (
+            f"install gcc{max_gcc} (or older), then build with "
+            f"NVCC_APPEND_FLAGS='-ccbin /usr/bin/g++-{max_gcc}'"
+        )
+    else:
+        fix_cmd = (
+            "build with NVCC_APPEND_FLAGS='-ccbin /usr/bin/g++-<N>' "
+            "for a CUDA-supported gcc <N>"
+        )
+    return FixSuggestion(
+        signature="cuda:host-gcc-too-new", message=message, fix_cmd=fix_cmd
+    )
+
+
+_MATCHERS = (
+    _match_rust_missing_std,
+    _match_gst_ptp,
+    _match_meson_unknown_opts,
+    _match_cuda_host_gcc,
+)
 
 
 # ---------------------------------------------------------------------------

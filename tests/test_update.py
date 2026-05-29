@@ -2196,3 +2196,46 @@ def test_explicit_pkgname_overrides_stage_owned_skip(tmp_path):
             cmd_update(args)
 
     assert pkgbase in {r.pkgbase for r in results}
+
+
+# ---------------------------------------------------------------------------
+# Build-failure recording (_record_build_failure)
+# ---------------------------------------------------------------------------
+
+def test_record_build_failure_persists_diagnosis(tmp_path):
+    from types import SimpleNamespace
+
+    from sysforge.primitives.build_diag import FixSuggestion
+    from sysforge.primitives.build_state import BuildState
+    from sysforge.update import _record_build_failure
+
+    result = SimpleNamespace(pkgbase="gpu-burn-git", pkgbuild_ver="r93.a113ce7")
+    exc = RuntimeError("[build_failed] makepkg exit 4")
+    exc.diagnosis = [FixSuggestion(
+        signature="cuda:host-gcc-too-new",
+        message="nvcc rejected the system host compiler",
+        fix_cmd="NVCC_APPEND_FLAGS='-ccbin /usr/bin/g++-15'",
+    )]
+
+    _record_build_failure(tmp_path, result, exc)
+
+    rec = BuildState(tmp_path).all_failures()["gpu-burn-git"]
+    assert rec["signature"] == "cuda:host-gcc-too-new"
+    assert rec["fix_cmd"] == "NVCC_APPEND_FLAGS='-ccbin /usr/bin/g++-15'"
+    assert rec["pkgver"] == "r93.a113ce7"
+    assert "[build_failed]" in rec["error"]
+
+
+def test_record_build_failure_without_diagnosis(tmp_path):
+    from types import SimpleNamespace
+
+    from sysforge.primitives.build_state import BuildState
+    from sysforge.update import _record_build_failure
+
+    result = SimpleNamespace(pkgbase="foo-git", pkgbuild_ver=None)
+    _record_build_failure(tmp_path, result, RuntimeError("[build_failed] boom"))
+
+    rec = BuildState(tmp_path).all_failures()["foo-git"]
+    assert "signature" not in rec
+    assert "fix_cmd" not in rec
+    assert "boom" in rec["error"]

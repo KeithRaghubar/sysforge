@@ -39,7 +39,12 @@ from sysforge.primitives.makepkg_wrapper import BuildOptions, expand_makepkg_fla
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 from sysforge.resolve import ResolveVerb
 from sysforge.setup_cmd import SetupVerb
-from sysforge.state_cmd import StateListVerb, StateOrphansVerb, StateRepairVerb
+from sysforge.state_cmd import (
+    StateFailedVerb,
+    StateListVerb,
+    StateOrphansVerb,
+    StateRepairVerb,
+)
 from sysforge.update import UpdateVerb
 from sysforge.verbs import ExecResult, PreCheckResult, Verb, run_verb
 
@@ -869,6 +874,19 @@ def _add_state_parser(sub):
     p_orphans.add_argument("--no-pager", action="store_true", dest="no_pager",
         help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
     p_orphans.set_defaults(verb_cls=StateOrphansVerb)
+
+    p_failed = state_sub.add_parser("failed",
+        help="List packages whose last build failed (recorded in build_state.toml), "
+             "with any diagnosed fix. Entries auto-clear on the next successful build.")
+    p_failed.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory.")
+    p_failed.add_argument("--no-pager", action="store_true", dest="no_pager",
+        help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+    p_failed.add_argument("--clear", metavar="PKGBASE", dest="clear",
+        help="Clear the recorded failure for PKGBASE and exit.")
+    p_failed.add_argument("--clear-all", action="store_true", dest="clear_all",
+        help="Clear all recorded failures and exit.")
+    p_failed.set_defaults(verb_cls=StateFailedVerb)
 
 
 def _add_setup_parser(sub):

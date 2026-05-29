@@ -1,4 +1,4 @@
-.TH SYSFORGE "1" "2026\-05\-28" "sysforge" "Generated Python Manual"
+.TH SYSFORGE "1" "2026\-05\-29" "sysforge" "Generated Python Manual"
 .SH NAME
 sysforge
 .SH SYNOPSIS
@@ -504,7 +504,7 @@ Path to packages.toml (default:
 With list: show only entries whose package is not currently installed.
 
 .SH COMMAND \fI\,'sysforge state'\/\fR
-usage: sysforge state [\-h] {list,repair,orphans} ...
+usage: sysforge state [\-h] {list,repair,orphans,failed} ...
 
 .SH
 POSITIONAL ARGUMENTS \fI\,'sysforge state'\/\fR
@@ -517,6 +517,9 @@ Re\-parse PKGBUILDs to rewrite build_state.toml entries that contain unexpanded 
 .TP
 \fBsysforge state\fR \fI\,orphans\/\fR
 List (and optionally prune) stale .pkg.tar* artifacts in PKGDEST. Only surfaces superseded files (pkgname installed AND artifact older than installed) so \-\-prune is always safe.
+.TP
+\fBsysforge state\fR \fI\,failed\/\fR
+List packages whose last build failed (recorded in build_state.toml), with any diagnosed fix. Entries auto\-clear on the next successful build.
 
 .SH COMMAND \fI\,'sysforge state list'\/\fR
 usage: sysforge state list [\-h] [\-\-state\-dir DIR] [\-\-no\-pager]
@@ -557,6 +560,27 @@ Skip the y/N prompt when pruning. Implies \-\-prune.
 .TP
 \fB\-\-no\-pager\fR
 Don't pipe output through $PAGER (default: paginate when stdout is a TTY).
+
+.SH COMMAND \fI\,'sysforge state failed'\/\fR
+usage: sysforge state failed [\-h] [\-\-state\-dir DIR] [\-\-no\-pager]
+                             [\-\-clear PKGBASE] [\-\-clear\-all]
+
+.SH OPTIONS \fI\,'sysforge state failed'\/\fR
+.TP
+\fB\-\-state\-dir\fR \fI\,DIR\/\fR
+Override state directory.
+
+.TP
+\fB\-\-no\-pager\fR
+Don't pipe output through $PAGER (default: paginate when stdout is a TTY).
+
+.TP
+\fB\-\-clear\fR \fI\,PKGBASE\/\fR
+Clear the recorded failure for PKGBASE and exit.
+
+.TP
+\fB\-\-clear\-all\fR
+Clear all recorded failures and exit.
 
 .SH COMMAND \fI\,'sysforge run'\/\fR
 usage: sysforge run [\-h] STAGE ...

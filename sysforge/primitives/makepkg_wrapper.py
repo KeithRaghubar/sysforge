@@ -958,6 +958,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # tail of toolchain_preflight: catches cases that aren't predictable
         # from makedepends (e.g. vendored meson subprojects that pull in
         # rust without listing it in the parent PKGBUILD).
+        _suggestions = []
         try:
             from sysforge.primitives.build_diag import (
                 diagnose as _build_diagnose,
@@ -974,6 +975,11 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
         cpe = subprocess.CalledProcessError(returncode, "makepkg")
         cpe.captured_output = captured_lines  # consumed by auto_repair
+        # Postflight diagnosis (build_diag suggestions) — carried up so the
+        # caller (sysforge update) can persist signature/fix_cmd alongside the
+        # failure in build_state.toml. List of FixSuggestion; [] when nothing
+        # matched.
+        cpe.diagnosis = _suggestions
         raise cpe
 
 
@@ -1028,6 +1034,16 @@ def _parse_built_pkg_filename(pkgname: str, filename: str) -> tuple[str, str, st
     return (epoch, ver_part, pkgrel)
 
 
+def _build_failed_error(cause: Exception) -> RuntimeError:
+    """Wrap a build failure in the ``[build_failed]`` RuntimeError, preserving
+    the postflight ``diagnosis`` and ``captured_output`` from the underlying
+    CalledProcessError so `sysforge update` can persist them to build_state."""
+    err = RuntimeError(f"[build_failed] {cause}")
+    err.diagnosis = getattr(cause, "diagnosis", None)
+    err.captured_output = getattr(cause, "captured_output", None)
+    return err
+
+
 def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                        extra_env=None, extra_flags=None, interactive=False,
                        strip_flags=None):
@@ -1049,7 +1065,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
             raise
         except subprocess.CalledProcessError as e:
             _build_log.error(f"Build failed in batch mode, aborting: {e}")
-            raise RuntimeError(f"[build_failed] {e}")
+            raise _build_failed_error(e)
     else:
         while True:
             try:
@@ -1309,7 +1325,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         try:
             _ar.preflight_srcinfo(pkgbuild_path.parent, _srcinfo_behaviour)
         except RuntimeError as _e:
-            raise RuntimeError(f"[build_failed] {_e}")
+            raise _build_failed_error(_e)
 
         # Outer loop: on ToolchainMismatchError, regenerate the makepkg.conf
         # once with reactive_gcc_fallback=True (forcing the GCC+LTO guard on)
@@ -1348,7 +1364,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                         "Toolchain mismatch persists after auto-retry — "
                         "aborting (check the PKGBUILD and profile flags)"
                     )
-                    raise RuntimeError(f"[build_failed] {e}")
+                    raise _build_failed_error(e)
                 _flag_log.warn(
                     "Auto-retrying build with GCC-compatible flags "
                     "(rewriting clang-only flags like -flto=thin)"

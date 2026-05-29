@@ -5,6 +5,7 @@ Implements the `sysforge state` subcommand namespace:
     list     — tabulate build_state.toml entries
     repair   — re-parse PKGBUILDs for entries with unexpanded shell variables
     orphans  — surface stale .pkg.tar* artifacts in PKGDEST
+    failed   — list recorded build failures (with any diagnosed fix)
 
 Separate from `sysforge packages`, which manages override rules in
 packages.toml. The split mirrors the rules-vs-state separation described
@@ -347,6 +348,83 @@ def cmd_state_orphans(args):
     print(f"Removed {removed} file(s) from {pkgdest}.")
 
 
+def cmd_state_failed(args):
+    """List recorded build failures from build_state.toml's ``[failures]`` table.
+
+    With ``--clear PKGBASE`` / ``--clear-all`` the matching entries are removed
+    instead of listed. Failures otherwise auto-clear on the next successful
+    build of the same pkgbase (see BuildState.record).
+    """
+    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives.build_state import BuildState
+
+    state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
+    bs = BuildState(state_dir)
+
+    if getattr(args, "clear_all", False):
+        names = list(bs.all_failures())
+        for pkgbase in names:
+            bs.clear_failure(pkgbase)
+        bs.save()
+        print(f"Cleared {len(names)} recorded failure(s).")
+        return
+
+    clear_one = getattr(args, "clear", None)
+    if clear_one:
+        if bs.clear_failure(clear_one):
+            bs.save()
+            print(f"Cleared recorded failure for {clear_one!r}.")
+        else:
+            print(f"No recorded failure for {clear_one!r}.")
+        return
+
+    failures = bs.all_failures()
+    use_pager = not getattr(args, "no_pager", False)
+
+    with _maybe_pager(use_pager):
+        if not failures:
+            print(f"No build failures recorded in {state_dir / 'build_state.toml'}")
+            return
+
+        rows = []
+        for pkgbase, rec in sorted(failures.items()):
+            err = str(rec.get("error", "")).replace("\n", " | ")
+            rows.append((
+                pkgbase,
+                rec.get("failed_at", ""),
+                rec.get("signature", ""),
+                err,
+                rec.get("fix_cmd", ""),
+            ))
+
+        max_base = max(len("PKGBASE"), *(len(r[0]) for r in rows))
+        max_when = max(len("FAILED_AT"), *(len(r[1]) for r in rows))
+        max_sig = max(len("SIGNATURE"), *(len(r[2]) for r in rows))
+
+        header = (
+            f"  {'PKGBASE':<{max_base}}  {'FAILED_AT':<{max_when}}  "
+            f"{'SIGNATURE':<{max_sig}}  ERROR"
+        )
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for base, when, sig, err, fix in rows:
+            err_short = err if len(err) <= 80 else err[:77] + "..."
+            print(
+                f"  {base:<{max_base}}  {when:<{max_when}}  "
+                f"{sig:<{max_sig}}  {err_short}"
+            )
+            if fix:
+                print(
+                    f"  {'':<{max_base}}  {'':<{max_when}}  "
+                    f"{'':<{max_sig}}  fix: {fix}"
+                )
+        print(f"\n  {len(rows)} failed package(s)")
+        print(
+            "  (entries clear on the next successful build; "
+            "or use --clear PKGBASE / --clear-all)"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Verb wrappers
 # ---------------------------------------------------------------------------
@@ -404,4 +482,25 @@ class StateOrphansVerb(Verb):
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         cmd_state_orphans(args)
+        return ExecResult()
+
+
+class StateFailedVerb(Verb):
+    """List recorded build failures (read-only).
+
+    Sentinel only when ``--clear`` / ``--clear-all`` rewrites build_state.toml,
+    mirroring StateRepairVerb's write path.
+    """
+
+    name = "state-failed"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        self.requires_sentinel = bool(
+            getattr(args, "clear", None) or getattr(args, "clear_all", False)
+        )
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_state_failed(args)
         return ExecResult()

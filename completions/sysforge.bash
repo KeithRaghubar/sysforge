@@ -237,7 +237,7 @@ _sysforge_packages() {
 _sysforge_state() {
     _sysforge_flag_arg && return
     if [[ -z $subverb ]]; then
-        COMPREPLY=( $(compgen -W "list repair orphans" -- "$cur") )
+        COMPREPLY=( $(compgen -W "list repair orphans failed" -- "$cur") )
         return
     fi
     case "$subverb" in
@@ -249,6 +249,9 @@ _sysforge_state() {
             ;;
         repair)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --dry-run" -- "$cur") )
+            ;;
+        failed)
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --no-pager --clear --clear-all" -- "$cur") )
             ;;
     esac
 }

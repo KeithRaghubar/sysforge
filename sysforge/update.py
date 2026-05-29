@@ -1021,6 +1021,32 @@ def cmd_update(args) -> None:
                 pass
 
 
+def _record_build_failure(state_dir, result, exc) -> None:
+    """Persist a build failure to build_state.toml's ``[failures]`` table.
+
+    Opens a fresh BuildState so loop-time success writes (recorded by the
+    build worker on disk) aren't clobbered. Pulls the diagnosis signature/fix
+    from the exception's ``.diagnosis`` (attached by makepkg_wrapper) when
+    present. Best-effort: recording must never turn a build failure into a
+    crash. The entry is auto-cleared on the next successful build of the same
+    pkgbase (see BuildState.record).
+    """
+    try:
+        diagnosis = getattr(exc, "diagnosis", None) or []
+        first = diagnosis[0] if diagnosis else None
+        bs_fail = BuildState(state_dir)
+        bs_fail.record_failure(
+            result.pkgbase,
+            error=str(exc),
+            pkgver=getattr(result, "pkgbuild_ver", None),
+            signature=getattr(first, "signature", None),
+            fix_cmd=getattr(first, "fix_cmd", None),
+        )
+        bs_fail.save()
+    except Exception as e:  # pragma: no cover - defensive
+        _log.warn(f"Failed to record build failure for {result.pkgbase!r}: {e}")
+
+
 def _cmd_update_body(args) -> None:
     # ── Phase 0: Init ─────────────────────────────────────────────────────
     install_only = getattr(args, "install_only", False)
@@ -1400,14 +1426,17 @@ def _cmd_update_body(args) -> None:
                         built_pkg_files.extend(existing)
                         built_pkgs.append(result.pkgbase)
                     else:
-                        _log.error(
-                            f"{result.pkgbase}: makepkg reported already built "
-                            f"but no matching .pkg.tar found in {search_dir}"
+                        msg = (
+                            f"makepkg reported already built but no matching "
+                            f".pkg.tar found in {search_dir}"
                         )
+                        _log.error(f"{result.pkgbase}: {msg}")
                         failed_pkgs.append(result.pkgbase)
+                        _record_build_failure(state_dir, result, msg)
                 except (RuntimeError, SystemExit) as e:
                     _log.error(f"Build failed for {result.pkgbase!r}: {e}")
                     failed_pkgs.append(result.pkgbase)
+                    _record_build_failure(state_dir, result, e)
 
     # ── Phase 6: Install + finalize ───────────────────────────────────────
 

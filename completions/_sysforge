@@ -272,6 +272,7 @@ _sysforge_state() {
         list)    _sysforge_state_list    ;;
         repair)  _sysforge_state_repair  ;;
         orphans) _sysforge_state_orphans ;;
+        failed)  _sysforge_state_failed  ;;
       esac
       ;;
   esac
@@ -282,6 +283,7 @@ _sysforge_state_subcommands() {
     'list:tabulate build_state.toml entries'
     'repair:re-parse PKGBUILDs to fix entries with unexpanded shell variables'
     'orphans:list (and optionally prune) stale .pkg.tar* artifacts in PKGDEST'
+    'failed:list recorded build failures (with any diagnosed fix)'
   )
   _describe 'subcommand' subcommands
 }
@@ -303,6 +305,14 @@ _sysforge_state_repair() {
   _arguments \
     '--state-dir[override state directory]:dir:_directories' \
     '--dry-run[show planned repair without writing]'
+}
+
+_sysforge_state_failed() {
+  _arguments \
+    '--state-dir[override state directory]:dir:_directories' \
+    '--no-pager[do not pipe output through $PAGER]' \
+    '--clear[clear the recorded failure for PKGBASE]:pkgbase:_sysforge_state_names' \
+    '--clear-all[clear all recorded failures]'
 }
 
 _sysforge_run() {

@@ -20,6 +20,13 @@ by the `build_mode` field:
 it adds pacman-mode entries for newly installed packages and prunes entries
 for packages that are no longer installed.
 
+Build *failures* live in a separate reserved top-level ``[failures]`` table
+(keyed by pkgbase), written by `record_failure()` and surfaced by
+`sysforge state failed`. It is kept out of the per-package install mirror so
+`all_packages()` / `sync_with_installed()` stay a clean superset of
+`pacman -Q`. A successful `record()` clears any prior failure for that
+pkgbase, so the failed list self-heals on the next good build.
+
 State dir resolution follows pipeline/state.py (highest priority first):
   1. Explicit Path passed at construction (from --state-dir CLI flag)
   2. SYSFORGE_STATE_DIR environment variable
@@ -33,6 +40,44 @@ Public API:
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Reserved top-level key in build_state.toml for the failures namespace. Held
+# apart from the per-package install records so it never leaks into
+# all_packages()/sync_with_installed(). A package literally named "failures"
+# would collide; none exists in practice.
+_FAILURES_KEY = "failures"
+
+# Bounds for the stored failure ``error`` blob — keep the tail (the real
+# compiler/makepkg error is at the bottom), capped so build_state.toml stays
+# human-readable.
+_ERROR_MAX_LINES = 6
+_ERROR_MAX_CHARS = 600
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _toml_escape(value) -> str:
+    """Escape a value for a TOML basic (double-quoted) string."""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+
+
+def _truncate_error(error) -> str:
+    """Reduce an error/exception to a compact tail for storage."""
+    s = str(error).strip()
+    lines = s.splitlines()
+    if len(lines) > _ERROR_MAX_LINES:
+        s = "\n".join(lines[-_ERROR_MAX_LINES:])
+    if len(s) > _ERROR_MAX_CHARS:
+        s = s[-_ERROR_MAX_CHARS:]
+    return s
 
 
 def parse_pacman_version(ver_str: str) -> tuple[str, str, str]:
@@ -86,7 +131,11 @@ class BuildState:
     def __init__(self, state_dir):
         self._dir = Path(state_dir)
         self.path = self._dir / "build_state.toml"
-        self._data = self._load()
+        raw = self._load()
+        # Split the reserved failures namespace out of the install mirror.
+        failures = raw.pop(_FAILURES_KEY, {})
+        self._failures = failures if isinstance(failures, dict) else {}
+        self._data = raw
 
     def _load(self):
         if not self.path.exists():
@@ -171,10 +220,45 @@ class BuildState:
         elif "toolchain_variant" in prior:
             entry["toolchain_variant"] = prior["toolchain_variant"]
         self._data[pkgname] = entry
+        # A successful build clears any recorded failure for this pkgbase so
+        # `sysforge state failed` self-heals on the next good build.
+        self._failures.pop(pkgbase, None)
 
     def delete(self, pkgname: str) -> bool:
         """Remove an entry by pkgname.  Returns True if it existed."""
         return self._data.pop(pkgname, None) is not None
+
+    def record_failure(self, pkgbase: str, *, error,
+                       pkgver: str | None = None,
+                       signature: str | None = None,
+                       fix_cmd: str | None = None,
+                       failed_at: str | None = None) -> None:
+        """Record a build failure for ``pkgbase`` in the ``[failures]`` table.
+
+        ``error`` is the failure message/exception (stored truncated to its
+        tail). ``signature`` / ``fix_cmd`` come from postflight diagnosis
+        (`build_diag`) when a known pattern matched. Overwrites any prior
+        failure for the same pkgbase. ``failed_at`` defaults to now (ISO-8601).
+        """
+        entry = {
+            "failed_at": failed_at or _now_iso(),
+            "error": _truncate_error(error),
+        }
+        if pkgver:
+            entry["pkgver"] = pkgver
+        if signature:
+            entry["signature"] = signature
+        if fix_cmd:
+            entry["fix_cmd"] = fix_cmd
+        self._failures[pkgbase] = entry
+
+    def clear_failure(self, pkgbase: str) -> bool:
+        """Remove a recorded failure by pkgbase.  Returns True if it existed."""
+        return self._failures.pop(pkgbase, None) is not None
+
+    def all_failures(self) -> dict[str, dict]:
+        """Return all recorded failures as {pkgbase: record}."""
+        return dict(self._failures)
 
     def sync_with_installed(self, installed: dict[str, str]) -> tuple[int, int]:
         """
@@ -234,13 +318,18 @@ class BuildState:
             lines.append(f'["{escaped}"]')
             for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant"):
                 if key in entry:
-                    val = (
-                        str(entry[key])
-                        .replace("\\", "\\\\")
-                        .replace('"', '\\"')
-                        .replace("\n", "\\n")
-                        .replace("\r", "\\r")
-                    )
+                    val = _toml_escape(entry[key])
                     lines.append(f'{key} = "{val}"')
             lines.append("")
+        if self._failures:
+            lines.append("# Build failures (cleared on the next successful build).")
+            lines.append("")
+            for pkgbase, entry in sorted(self._failures.items()):
+                escaped = pkgbase.replace("\\", "\\\\").replace('"', '\\"')
+                lines.append(f'[{_FAILURES_KEY}."{escaped}"]')
+                for key in ("failed_at", "pkgver", "signature", "fix_cmd", "error"):
+                    if key in entry:
+                        val = _toml_escape(entry[key])
+                        lines.append(f'{key} = "{val}"')
+                lines.append("")
         return "\n".join(lines)

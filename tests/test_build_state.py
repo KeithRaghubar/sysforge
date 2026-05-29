@@ -515,3 +515,84 @@ def test_sync_roundtrips_through_disk(tmp_path):
     assert bs2.get("1password")["build_mode"] == "pacman"
     assert bs2.get("openssl-1.1")["pkgver"] == "1.1.1.w"
     assert bs2.get("openssl-1.1")["pkgrel"] == "4"
+
+
+# ---------------------------------------------------------------------------
+# Build failures namespace ([failures] table)
+# ---------------------------------------------------------------------------
+
+def test_record_failure_and_all_failures(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record_failure(
+        "gpu-burn-git",
+        error="[build_failed] nvcc exit 4",
+        pkgver="r93.a113ce7",
+        signature="cuda:host-gcc-too-new",
+        fix_cmd="NVCC_APPEND_FLAGS='-ccbin /usr/bin/g++-15'",
+    )
+    failures = bs.all_failures()
+    assert set(failures) == {"gpu-burn-git"}
+    rec = failures["gpu-burn-git"]
+    assert rec["signature"] == "cuda:host-gcc-too-new"
+    assert rec["fix_cmd"] == "NVCC_APPEND_FLAGS='-ccbin /usr/bin/g++-15'"
+    assert rec["pkgver"] == "r93.a113ce7"
+    assert "failed_at" in rec
+
+
+def test_failures_isolated_from_install_mirror(tmp_path):
+    """[failures] must not leak into all_packages()/sync_with_installed()."""
+    bs = BuildState(tmp_path)
+    _record(bs, pkgname="htop", pkgbase="htop")
+    bs.record_failure("foo-git", error="boom")
+    assert "foo-git" not in bs.all_packages()
+    assert "failures" not in bs.all_packages()
+    # sync prunes the install mirror against pacman -Q but must leave failures.
+    bs.sync_with_installed({"htop": "3.4.1-1"})
+    assert bs.all_failures() == {} or "foo-git" in bs.all_failures()
+    assert "foo-git" in bs.all_failures()
+
+
+def test_success_record_clears_failure(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record_failure("gpu-burn-git", error="boom")
+    assert "gpu-burn-git" in bs.all_failures()
+    bs.record(pkgname="gpu-burn", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="gpu-burn-git", pkgbuild_dir=Path("/x"),
+              build_mode="profiled")
+    assert bs.all_failures() == {}
+
+
+def test_clear_failure(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record_failure("foo-git", error="boom")
+    assert bs.clear_failure("foo-git") is True
+    assert bs.clear_failure("foo-git") is False
+    assert bs.all_failures() == {}
+
+
+def test_failures_persist_across_reload(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs, pkgname="htop", pkgbase="htop")
+    bs.record_failure(
+        "gpu-burn-git",
+        error="line1\nline2\n[build_failed] boom",
+        signature="cuda:host-gcc-too-new",
+    )
+    bs.save()
+    bs2 = BuildState(tmp_path)
+    assert "gpu-burn-git" in bs2.all_failures()
+    assert bs2.all_failures()["gpu-burn-git"]["signature"] == "cuda:host-gcc-too-new"
+    # install mirror still intact and free of the failures key
+    assert "htop" in bs2.all_packages()
+    assert "failures" not in bs2.all_packages()
+
+
+def test_error_is_truncated(tmp_path):
+    bs = BuildState(tmp_path)
+    long_err = "\n".join(f"line {i}" for i in range(50))
+    bs.record_failure("foo-git", error=long_err)
+    stored = bs.all_failures()["foo-git"]["error"]
+    # Only the tail is kept (<= 6 lines).
+    assert stored.count("\n") <= 5
+    assert "line 49" in stored
+    assert "line 0" not in stored

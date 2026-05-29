@@ -102,6 +102,8 @@ sysforge state list --no-pager       # raw output, no $PAGER pipe
 sysforge state repair --dry-run      # preview fixes for legacy broken entries
 sysforge state orphans               # superseded .pkg.tar* in PKGDEST (safe to delete)
 sysforge state orphans --prune       # delete them after y/N confirmation
+sysforge state failed                # packages whose last build failed, with any diagnosed fix
+sysforge state failed --clear PKG    # forget one failure (also: --clear-all)
 
 # 10. Page sysforge logs through $PAGER (default less -RFX).
 sysforge log                         # unified log: <state_dir>/sysforge.log

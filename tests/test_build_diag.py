@@ -97,6 +97,59 @@ def test_empty_input_returns_empty():
 
 
 # ---------------------------------------------------------------------------
+# CUDA host-gcc-too-new
+# ---------------------------------------------------------------------------
+
+import sysforge.primitives.build_diag as _bd  # noqa: E402
+
+# nvcc's frontend choking on a too-new libstdc++ (the gpu-burn-git failure):
+# a .cu compile summary + libstdc++ header errors.
+_CUDA_CU_FAIL = (
+    "/usr/include/c++/16.1.1/type_traits(3313): error: expected a declaration\n"
+    "Error limit reached.\n"
+    '100 errors detected in the compilation of "compare.cu".\n'
+)
+
+
+def test_cuda_host_gcc_detects_and_suggests_ccbin(monkeypatch):
+    monkeypatch.setattr(_bd, "_cuda_max_gcc_major", lambda: 15)
+    monkeypatch.setattr(_bd, "_highest_gpp_upto", lambda n: "/usr/bin/g++-15")
+    out = diagnose(_lines(_CUDA_CU_FAIL), None)
+    assert [s.signature for s in out] == ["cuda:host-gcc-too-new"]
+    s = out[0]
+    assert "gcc <= 15" in s.message
+    assert "system gcc is 16" in s.message
+    assert "-ccbin /usr/bin/g++-15" in (s.fix_cmd or "")
+
+
+def test_cuda_host_gcc_canonical_unsupported_message(monkeypatch):
+    """The clean host_config.h gate message matches even without a .cu line."""
+    monkeypatch.setattr(_bd, "_cuda_max_gcc_major", lambda: None)
+    monkeypatch.setattr(_bd, "_highest_gpp_upto", lambda n: None)
+    log = (
+        "#error -- unsupported GNU version! gcc versions later than 15 "
+        "are not supported!\n"
+    )
+    out = diagnose(_lines(log), None)
+    assert [s.signature for s in out] == ["cuda:host-gcc-too-new"]
+
+
+def test_cuda_host_gcc_no_compatible_gpp_installed(monkeypatch):
+    monkeypatch.setattr(_bd, "_cuda_max_gcc_major", lambda: 15)
+    monkeypatch.setattr(_bd, "_highest_gpp_upto", lambda n: None)
+    out = diagnose(_lines(_CUDA_CU_FAIL), None)
+    assert (out[0].fix_cmd or "").startswith("install gcc15")
+
+
+def test_cuda_matcher_no_false_positive_on_flto_thin():
+    """The -flto=thin rejection (the other half of the gpu-burn failure) is a
+    flag mismatch, NOT a CUDA host-compiler mismatch — must not match here."""
+    log = "cc1plus: error: unrecognized argument to '-flto=' option: 'thin'\n"
+    out = diagnose(_lines(log), None)
+    assert all(s.signature != "cuda:host-gcc-too-new" for s in out)
+
+
+# ---------------------------------------------------------------------------
 # Side-car log discovery
 # ---------------------------------------------------------------------------
 
