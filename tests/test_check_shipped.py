@@ -215,14 +215,19 @@ class TestVersionDrift:
         repo = copy_shipped_tree(tmp_path)
         pkgbuild = repo / "PKGBUILD"
         text = pkgbuild.read_text()
-        # Bump pkgver out of sync with pyproject
-        new = text.replace("pkgver=1.1.0", "pkgver=9.9.9")
+        # Bump pkgver out of sync with pyproject. Read the current pkgver
+        # from the shipped PKGBUILD so the test survives release bumps.
+        import re as _re
+        m = _re.search(r"^pkgver=(\S+)$", text, flags=_re.M)
+        assert m, "PKGBUILD has no pkgver= line"
+        current = m.group(1)
+        new = text.replace(f"pkgver={current}", "pkgver=9.9.9", 1)
         assert new != text
         pkgbuild.write_text(new)
 
         res = run_checker(repo=repo, args=["--check=versions"])
         assert res.returncode == 1
-        assert "pkgver=9.9.9 != pyproject 1.1.0" in res.stdout
+        assert f"pkgver=9.9.9 != pyproject {current}" in res.stdout
 
     def test_design_marker_filters_literal_placeholder(self, tmp_path):
         # DESIGN.md embeds `<!--version-->vX.Y.Z<!--/version-->` literally
