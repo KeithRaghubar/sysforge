@@ -67,7 +67,8 @@ from sysforge.primitives.toolchain_preflight import (
     render_preflight as render_toolchain_preflight,
     auto_remediate as auto_remediate_toolchain,
 )
-from sysforge.primitives.paths import KERNEL_PATH, resolve_packages_path
+from sysforge.primitives.paths import KERNEL_PATH, TOOLCHAIN_PATH, resolve_packages_path
+from sysforge.primitives.pkgbuild_patcher import is_llvm_pkgbase
 
 
 def _kernel_stage_pkgbase() -> str | None:
@@ -91,6 +92,32 @@ def _kernel_stage_pkgbase() -> str | None:
     if isinstance(pkg, str) and pkg:
         return pkg
     return None
+
+
+def _toolchain_owns_llvm() -> bool:
+    """Return True if the toolchain stage owns the LLVM suite on this system.
+
+    The toolchain bootstrap fallback in ``sysforge update`` (analogue of
+    ``_kernel_stage_pkgbase``): before the toolchain stage has run (and stamped
+    ``owner_stage = "toolchain"`` into build_state) — and for entries written by
+    older code that predates the field — we still need to skip LLVM packages so
+    ``update`` doesn't rebuild what ``sysforge run toolchain`` owns. Ownership
+    only applies when toolchain.toml is enabled *and* ``compiler = "llvm"``: the
+    default/unset ``gcc`` path is register-only and builds no LLVM, so stock
+    pacman LLVM stays pacman-class and is left alone. Read directly each call —
+    toolchain.toml is small and update isn't a hot path.
+    """
+    if not TOOLCHAIN_PATH.exists():
+        return False
+    try:
+        with open(TOOLCHAIN_PATH, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    # compiler defaults to "gcc" when unset (register-only — owns no LLVM).
+    return data.get("enabled") is True and (data.get("compiler") or "gcc") == "llvm"
+
+
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
 from sysforge.primitives.pacman import (
     BATCH_STRIP_FLAGS,
@@ -391,6 +418,19 @@ def _assemble_package_set(
                 base = entry.get("pkgbase") or get_pkgbase(name) or name
                 if name == kernel_pkgbase or base == kernel_pkgbase:
                     stage_owned[name] = "kernel"
+        # Toolchain bootstrap fallback: when toolchain.toml owns LLVM
+        # (enabled + compiler="llvm"), every in-scope LLVM-suite package is
+        # toolchain-owned even if it predates the owner_stage stamp. Same
+        # name/pkgbase resolution as the kernel fallback so split packages
+        # (e.g. llvm-libs/polly under pkgbase llvm) are caught.
+        if _toolchain_owns_llvm():
+            for name in target_names:
+                if name in stage_owned:
+                    continue
+                entry = build_state_pkgs.get(name) or {}
+                base = entry.get("pkgbase") or get_pkgbase(name) or name
+                if is_llvm_pkgbase(name) or is_llvm_pkgbase(base):
+                    stage_owned[name] = "toolchain"
         # Explicit names on the command line are an opt-in for that package.
         for name in list(stage_owned):
             if name in explicit_set:

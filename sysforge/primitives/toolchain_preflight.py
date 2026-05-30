@@ -276,10 +276,28 @@ def _probe_meson() -> ToolchainCheck:
     )
 
 
-_TOOLCHAIN_REINSTALL_HINT = (
-    "sudo pacman -Syu clang llvm llvm-libs lld   "
-    "# or rebuild via `sysforge run toolchain`"
+# LLVM packages that ship from one upstream release and must share an exact
+# pkgver. A partial upgrade (one of these newer/older than the rest) is the
+# canonical half-installed-toolchain symptom. This is the single source of truth
+# for "the lockstep LLVM suite" — the pipeline-layer install verifier
+# (_LLVM_VERSION_MATCH_SET) imports it too. ``spirv-llvm-translator`` (its own
+# version scheme) and ``lib32-*`` (separate multilib lineage, may carry an
+# epoch) are deliberately excluded: they are not pkgver-locked to this set.
+LLVM_LOCKSTEP_SUITE: tuple[str, ...] = (
+    "llvm", "llvm-libs", "clang", "lld", "compiler-rt", "polly", "openmp",
 )
+
+
+def _reinstall_hint(pkgs) -> str:
+    """Build the toolchain reinstall suggestion (`pacman -Syu …`) for ``pkgs``."""
+    return (
+        "sudo pacman -Syu " + " ".join(pkgs)
+        + "   # or rebuild via `sysforge run toolchain`"
+    )
+
+
+# Default hint (whole suite) for the not-installed / won't-run cases.
+_TOOLCHAIN_REINSTALL_HINT = _reinstall_hint(LLVM_LOCKSTEP_SUITE)
 
 
 def _installed_pkgver(pkg: str) -> str | None:
@@ -291,15 +309,55 @@ def _installed_pkgver(pkg: str) -> str | None:
     return parts[1] if len(parts) >= 2 else None
 
 
+def _pkgver_no_rel(ver: str | None) -> str | None:
+    """Drop the trailing ``-pkgrel`` from a ``[epoch:]pkgver-pkgrel`` string.
+
+    A packaging bump (e.g. ``lld 22.1.5-3`` next to ``clang 22.1.5-1``) is not an
+    upstream-version skew, so the lockstep comparison is on pkgver only. pkgver
+    itself never contains a hyphen (PKGBUILD(5)), so a single right-split is
+    exact; the ``epoch:`` prefix is kept so two epochs of the same pkgver still
+    compare distinct.
+    """
+    if not ver:
+        return ver
+    return ver.rsplit("-", 1)[0]
+
+
+def _llvm_suite_skew() -> tuple[str, list[str]] | None:
+    """Detect a pkgver skew across the *installed* members of the LLVM suite.
+
+    Returns ``(detail, resync_pkgs)`` when installed members disagree on pkgver
+    (``resync_pkgs`` is every installed member, so ``pacman -Syu`` converges them
+    all), or ``None`` when they agree / fewer than two are installed.
+    """
+    installed = {
+        p: v for p in LLVM_LOCKSTEP_SUITE
+        if (v := _pkgver_no_rel(_installed_pkgver(p)))
+    }
+    if len(set(installed.values())) <= 1:
+        return None
+    by_ver: dict[str, list[str]] = {}
+    for pkg, ver in sorted(installed.items()):
+        by_ver.setdefault(ver, []).append(pkg)
+    groups = " vs ".join(
+        f"{'/'.join(pkgs)} {ver}" for ver, pkgs in sorted(by_ver.items())
+    )
+    detail = f"LLVM suite version skew ({groups}) — toolchain is half-installed"
+    return detail, sorted(installed)
+
+
 def _probe_cc(compiler: str) -> ToolchainCheck:
-    """Verify the resolved compiler actually runs — and, for clang, that it is
-    version-consistent with ``llvm-libs``.
+    """Verify the resolved compiler actually runs — and, for clang, that the
+    whole LLVM lockstep suite shares one pkgver.
 
     A half-installed / mismatched LLVM toolchain (clang built against a libLLVM
-    that no longer exports a symbol it needs, or a ``clang``↔``llvm-libs``
-    version skew) makes clang fail to even start with a dynamic-link symbol
-    error. Without this probe that surfaces only as N separate per-package
-    "Unknown compiler(s): [['clang']]" build failures with no captured cause.
+    that no longer exports a symbol it needs, or a partial upgrade that leaves
+    some suite members behind) makes clang fail to even start with a dynamic-link
+    symbol error. Without this probe that surfaces only as N separate per-package
+    "Unknown compiler(s): [['clang']]" build failures with no captured cause. The
+    skew arm checks every installed member of :data:`LLVM_LOCKSTEP_SUITE` (not
+    just ``clang``↔``llvm-libs``) so e.g. a stranded ``compiler-rt`` is caught,
+    and the suggested fix lists every member that needs resyncing.
     """
     base = Path(compiler).name
     name = f"cc:{base}"
@@ -318,20 +376,16 @@ def _probe_cc(compiler: str) -> ToolchainCheck:
             name=name, ok=False, detail=f"{base} cannot run: {first}",
             fix_cmd=install_hint, auto_remediable=False,
         )
-    # clang and llvm-libs are built together and are normally lockstep; a skew
-    # (e.g. clang 22.1.5 against llvm-libs 22.1.6) can break the ABI even when
-    # `clang --version` happens to succeed.
+    # The LLVM suite is built from one upstream release and is normally lockstep;
+    # a skew (e.g. clang/lld/compiler-rt 22.1.5 against llvm/llvm-libs 22.1.6) can
+    # break the ABI even when `clang --version` happens to succeed.
     if is_clang:
-        clang_v = _installed_pkgver("clang")
-        libllvm_v = _installed_pkgver("llvm-libs")
-        if clang_v and libllvm_v and clang_v != libllvm_v:
+        skew = _llvm_suite_skew()
+        if skew is not None:
+            detail, resync = skew
             return ToolchainCheck(
-                name=name, ok=False,
-                detail=(
-                    f"clang {clang_v} / llvm-libs {libllvm_v} version skew "
-                    "(toolchain is half-installed)"
-                ),
-                fix_cmd=_TOOLCHAIN_REINSTALL_HINT, auto_remediable=False,
+                name=name, ok=False, detail=detail,
+                fix_cmd=_reinstall_hint(resync), auto_remediable=False,
             )
     first = (r.stdout or r.stderr).strip().splitlines()
     return ToolchainCheck(

@@ -414,6 +414,9 @@ def test_repo_package_with_override_is_iterated(tmp_path):
 
     results = []
     with (
+        # Isolate from the workstation's real toolchain.toml (enabled + llvm),
+        # which would otherwise route `llvm` through the toolchain stage-owned skip.
+        patch("sysforge.update.TOOLCHAIN_PATH", tmp_path / "no-toolchain-toml"),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
@@ -1843,6 +1846,10 @@ def _run_profiled_repo_update(
     results: list = []
 
     with (
+        # Isolate from the workstation's real toolchain.toml (enabled + llvm),
+        # which would route an `llvm` package through the toolchain stage-owned
+        # skip and out of scope.
+        patch("sysforge.update.TOOLCHAIN_PATH", tmp_path / "no-toolchain-toml"),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config",
@@ -2181,6 +2188,203 @@ def test_explicit_pkgname_overrides_stage_owned_skip(tmp_path):
 
     with (
         patch("sysforge.update.KERNEL_PATH", kernel_path),
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.update.vercmp", return_value=0),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(args)
+
+    assert pkgbase in {r.pkgbase for r in results}
+
+
+# ---------------------------------------------------------------------------
+# Stage-owned packages — toolchain ownership filter (LLVM suite)
+# ---------------------------------------------------------------------------
+
+def _toolchain_owned_setup(tmp_path, args_extra=None, *, owner_in_state=False,
+                           compiler="llvm", enabled=True, toolchain_toml_present=True):
+    """Build the patches+args needed to exercise the toolchain stage-owned
+    filter for an LLVM-suite package (``llvm``).
+
+    Mirrors ``_stage_owned_setup`` but for the toolchain stage:
+      - ``owner_in_state``: toolchain stage has stamped ``owner_stage="toolchain"``.
+      - ``toolchain_toml_present`` + ``enabled`` + ``compiler``: drive the
+        ``_toolchain_owns_llvm()`` bootstrap fallback (active only for
+        enabled + compiler="llvm").
+    """
+    pkgbase = "llvm"
+    pkg_dir = tmp_path / pkgbase
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text(
+        f"pkgname={pkgbase}\npkgver=22.1.6\npkgrel=1\n"
+    )
+
+    foreign = {pkgbase: "22.1.6-1"}
+    state_data: dict = {
+        pkgbase: {
+            "pkgver": "22.1.6", "pkgrel": "1", "epoch": "0",
+            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+            "build_mode": "pgo_llvm_toolchain",
+        }
+    }
+    if owner_in_state:
+        state_data[pkgbase]["owner_stage"] = "toolchain"
+
+    args = _make_args(**(args_extra or {}))
+
+    toolchain_path = tmp_path / "toolchain.toml"
+    if toolchain_toml_present:
+        body = f"enabled = {str(enabled).lower()}\n"
+        if compiler is not None:
+            body += f'compiler = "{compiler}"\n'
+        toolchain_path.write_text(body)
+
+    results: list = []
+
+    def capture(res_list, a):
+        results.extend(res_list)
+
+    return (pkgbase, pkg_dir, foreign, state_data, args, toolchain_path,
+            results, capture)
+
+
+def test_toolchain_owned_llvm_skipped_by_default(tmp_path, capsys):
+    """An LLVM-suite package matched via the toolchain.toml (enabled + llvm)
+    bootstrap fallback is skipped + info-logged, even with no owner_stage stamp."""
+    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
+     capture) = _toolchain_owned_setup(tmp_path)
+
+    with (
+        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.update.get_pkgbase", return_value=pkgbase),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(args)
+
+    assert pkgbase not in {r.pkgbase for r in results}
+    captured = capsys.readouterr()
+    assert "toolchain-stage package" in captured.err
+    assert "run `sysforge run toolchain`" in captured.err
+
+
+def test_toolchain_owned_via_build_state_marker_skipped(tmp_path):
+    """The owner_stage="toolchain" marker is honored even without toolchain.toml."""
+    (pkgbase, _, foreign, state_data, args, _toolchain_path, results,
+     capture) = _toolchain_owned_setup(
+        tmp_path, owner_in_state=True, toolchain_toml_present=False,
+    )
+
+    with (
+        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        # Nonexistent toolchain.toml so the bootstrap fallback is inactive —
+        # only the build_state marker should drive the skip.
+        patch("sysforge.update.TOOLCHAIN_PATH", tmp_path / "nope-toolchain.toml"),
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(args)
+
+    assert pkgbase not in {r.pkgbase for r in results}
+
+
+def test_toolchain_gcc_compiler_does_not_skip_llvm(tmp_path):
+    """Dual-toolchain parity: with toolchain.toml compiler="gcc" the fallback is
+    inactive (register-only path owns no LLVM), so the LLVM package is NOT
+    skipped — it flows through to the build set."""
+    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
+     capture) = _toolchain_owned_setup(tmp_path, compiler="gcc")
+
+    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "22.1.6",
+                          "pkgrel": "1", "epoch": "0"}}
+
+    with (
+        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.update.vercmp", return_value=0),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(args)
+
+    assert pkgbase in {r.pkgbase for r in results}
+
+
+def test_include_stage_owned_includes_toolchain_llvm(tmp_path):
+    """--include-stage-owned overrides the toolchain skip (compiler=llvm)."""
+    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
+     capture) = _toolchain_owned_setup(
+        tmp_path, args_extra={"include_stage_owned": True},
+    )
+
+    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "22.1.6",
+                          "pkgrel": "1", "epoch": "0"}}
+
+    with (
+        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.update.vercmp", return_value=0),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        with patch("sysforge.update._print_summary", side_effect=capture):
+            cmd_update(args)
+
+    assert pkgbase in {r.pkgbase for r in results}
+
+
+def test_explicit_pkgname_overrides_toolchain_skip(tmp_path):
+    """Naming the LLVM package on the CLI opts it back in for that run."""
+    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
+     capture) = _toolchain_owned_setup(
+        tmp_path, args_extra={"pkgnames": ["llvm"]},
+    )
+
+    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "22.1.6",
+                          "pkgrel": "1", "epoch": "0"}}
+
+    with (
+        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),

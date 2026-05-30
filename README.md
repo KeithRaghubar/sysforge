@@ -193,6 +193,8 @@ source = "aur"
 
 For a custom kernel like `linux-custom`, configure it in `kernel.toml` instead of `packages.toml` — the kernel stage owns its lifecycle, and `sysforge update` will skip kernel-stage packages by default (use `--include-stage-owned` to override or just name them on the command line).
 
+The same applies to a custom LLVM toolchain: when `toolchain.toml` is enabled with `compiler = "llvm"`, the toolchain stage owns the LLVM suite (`llvm`, `clang`, `lld`, `compiler-rt`, …), and `sysforge update` skips those packages by default — rebuild them with `sysforge run toolchain` (or override with `--include-stage-owned` / by naming the package).
+
 ### 4. Run the bootstrap pipeline
 
 ```bash

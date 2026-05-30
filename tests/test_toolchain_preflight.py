@@ -399,3 +399,73 @@ def test_probe_cc_clang_consistent_no_skew(monkeypatch):
     report = run_preflight(frozenset({"cc:clang"}))
     assert report.checks[0].ok
     assert not report.failed
+
+
+def test_probe_cc_skew_in_wider_suite(monkeypatch):
+    """compiler-rt lags while clang/llvm-libs match → the suite-wide check still
+    flags it (the old clang-vs-llvm-libs-only check would have missed this)."""
+    monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["clang", "--version"]:
+            return _FakeResult(0, "clang version 22.1.6\n", "")
+        if cmd[:2] == ["pacman", "-Q"]:
+            ver = "22.1.5-1" if cmd[2] == "compiler-rt" else "22.1.6-1"
+            return _FakeResult(0, f"{cmd[2]} {ver}\n", "")
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    report = run_preflight(frozenset({"cc:clang"}))
+    c = report.failed[0]
+    assert "version skew" in c.detail
+    assert "compiler-rt" in c.detail
+    # The fix lists every installed member so `pacman -Syu` resyncs them all —
+    # crucially including the previously-stranded compiler-rt/polly/openmp.
+    for pkg in ("llvm", "llvm-libs", "clang", "lld", "compiler-rt", "polly", "openmp"):
+        assert pkg in (c.fix_cmd or "")
+
+
+def test_probe_cc_pkgrel_only_difference_is_not_skew(monkeypatch):
+    """lld at -3 while the rest are -1 (all same pkgver) is a packaging bump,
+    not an upstream skew — the comparison strips pkgrel."""
+    monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["clang", "--version"]:
+            return _FakeResult(0, "clang version 22.1.5\n", "")
+        if cmd[:2] == ["pacman", "-Q"]:
+            rel = "3" if cmd[2] == "lld" else "1"
+            return _FakeResult(0, f"{cmd[2]} 22.1.5-{rel}\n", "")
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    report = run_preflight(frozenset({"cc:clang"}))
+    assert report.checks[0].ok
+    assert not report.failed
+
+
+def test_probe_cc_independent_lineages_ignored(monkeypatch):
+    """spirv-llvm-translator / lib32-* are not in the lockstep set, so their
+    unrelated versions never trigger a skew."""
+    monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
+    queried: list[str] = []
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["clang", "--version"]:
+            return _FakeResult(0, "clang version 22.1.6\n", "")
+        if cmd[:2] == ["pacman", "-Q"]:
+            queried.append(cmd[2])
+            # If something erroneously queried these, hand back skewed versions.
+            if cmd[2] == "spirv-llvm-translator":
+                return _FakeResult(0, f"{cmd[2]} 22.1.2-1\n", "")
+            if cmd[2].startswith("lib32-"):
+                return _FakeResult(0, f"{cmd[2]} 1:22.1.6-1\n", "")
+            return _FakeResult(0, f"{cmd[2]} 22.1.6-1\n", "")
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    report = run_preflight(frozenset({"cc:clang"}))
+    assert report.checks[0].ok
+    assert not report.failed
+    assert "spirv-llvm-translator" not in queried
+    assert not any(p.startswith("lib32-") for p in queried)

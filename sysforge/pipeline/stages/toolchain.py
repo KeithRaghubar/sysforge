@@ -107,6 +107,7 @@ from sysforge.primitives.llvm_state import (
     render_preflight,
 )
 from sysforge.primitives.paths import TOOLCHAIN_PATH
+from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import lift_for_child
@@ -599,6 +600,7 @@ def _build_pkg(
     pgo_env: dict | None = None,
     strip_flags: frozenset | set | None = None,
     toolchain_variant: str | None = None,
+    owner_stage: str | None = None,
 ) -> None:
     """Build one package via makepkg_wrapper.run().
 
@@ -606,6 +608,11 @@ def _build_pkg(
     can flag drift. Set only on install-bearing passes — intermediate PGO
     passes (1a/1b/2) leave it ``None`` so their (transient, soon-overwritten)
     build_state writes don't carry a misleading variant claim.
+
+    ``owner_stage`` is the stage-ownership marker (``"toolchain"``) that makes
+    ``sysforge update`` skip these LLVM packages by default and point the user
+    at ``sysforge run toolchain`` instead. Like ``toolchain_variant`` it is set
+    only on install-bearing passes; intermediate passes leave it ``None``.
     """
     if options.dry_run:
         cc_label = f" CC={cc}" if cc else ""
@@ -641,6 +648,7 @@ def _build_pkg(
         strip_flags=strip_flags,
         pgo_managed=True,
         toolchain_variant=toolchain_variant,
+        owner_stage=owner_stage,
     ))
 
 
@@ -657,6 +665,7 @@ def _build_pass(
     pgo_env: dict | None = None,
     staged_deps: bool = False,
     toolchain_variant: str | None = None,
+    owner_stage: str | None = None,
 ) -> None:
     """Build all packages in pkgbuild_map for one pass.
 
@@ -705,6 +714,7 @@ def _build_pass(
                 pgo_env=pgo_env,
                 strip_flags=strip_flags,
                 toolchain_variant=toolchain_variant,
+                owner_stage=owner_stage,
             )
             first = False
 
@@ -1520,14 +1530,9 @@ def _check_existing_profdata(
 # Packages whose installed version must match across the LLVM toolchain set.
 # A mismatch — typically from an interrupted `pacman -U` of one pass — is
 # what produces the broken-GUI / missing-symbol failure mode this guard is
-# here to catch.
-_LLVM_VERSION_MATCH_SET = (
-    "llvm",
-    "llvm-libs",
-    "clang",
-    "lld",
-    "compiler-rt",
-)
+# here to catch. Shares the single source of truth with the preflight skew
+# probe (LLVM_LOCKSTEP_SUITE) so the two checks never diverge.
+_LLVM_VERSION_MATCH_SET = LLVM_LOCKSTEP_SUITE
 
 
 def _query_pacman_versions(pkgnames: tuple[str, ...]) -> dict[str, str | None]:
@@ -1730,7 +1735,7 @@ def _verify_llvm_install(
 
 def _llvm_recovery_command() -> str:
     """The canonical pacman command that restores a consistent LLVM set."""
-    return "sudo pacman -S " + " ".join(_LLVM_VERSION_MATCH_SET) + " llvm-libs"
+    return "sudo pacman -S " + " ".join(_LLVM_VERSION_MATCH_SET)
 
 
 def _prompt_llvm_recovery(
@@ -1861,6 +1866,7 @@ def _build_llvm_single(
         options,
         install=True,
         toolchain_variant="stock_llvm",
+        owner_stage="toolchain",
     )
     return "/usr/bin/clang", "/usr/bin/clang++", "lld", "stock_llvm"
 
@@ -2314,6 +2320,7 @@ def _build_llvm_pgo_inner(
             pgo_env=pass3_env,
             staged_deps=True,
             toolchain_variant="pgo_llvm",
+            owner_stage="toolchain",
         )
         _pgo_install(pass3_label, all_pass3, options.dry_run)
         if skip_profgen:

@@ -18,6 +18,7 @@ from sysforge.pipeline.stages.toolchain import (
     _resolve_all_pkgbuilds,
     _extract_pass2_to_staging,
     _build_pass,
+    _build_llvm_single,
     _do_profraw_merge,
     _profraw_merge_daemon,
     _merge_profraw,
@@ -630,6 +631,26 @@ def test_get_toolchain_variant_helper(tmp_path):
     assert get_toolchain_variant(state) == "pgo_llvm"
 
 
+def test_build_llvm_single_stamps_owner_stage(tmp_path):
+    """The non-PGO single-pass install path stamps owner_stage='toolchain' so
+    `sysforge update` skips the LLVM suite by default."""
+    pkgbuild_dir = tmp_path / "builds"
+    pb = make_pkgbuild(pkgbuild_dir, "llvm")
+    options = make_options(dry_run=False, makepkg_flags=[], state_dir=tmp_path / "state")
+
+    captured = {}
+
+    def fake_run(pkgbuild_path, options=None):
+        captured["owner_stage"] = options.owner_stage if options else None
+        captured["variant"] = options.toolchain_variant if options else None
+
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run):
+        _build_llvm_single({"llvm": pb}, {}, {}, options)
+
+    assert captured["owner_stage"] == "toolchain"
+    assert captured["variant"] == "stock_llvm"
+
+
 def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     """Verify makepkg_wrapper.run is called once per package per pass with correct PGO flags."""
     staging   = tmp_path / "staging"
@@ -655,6 +676,7 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
             "flags": list(options.extra_flags or []) if options else [],
             "cfe": options.compiler_flags_extra if options else None,
             "env": dict(options.extra_env) if options and options.extra_env else {},
+            "owner_stage": options.owner_stage if options else None,
         })
         # Simulate Pass 2: instrumented clang running as CC writes a profraw file
         if options and options.cc_override == "/usr/bin/clang":
@@ -701,6 +723,11 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     assert "--install" not in call_log[0]["flags"]
     assert "--install" not in call_log[1]["flags"]
     assert "--install" not in call_log[2]["flags"]
+    # Only the final install-bearing pass (Pass 3) stamps owner_stage so
+    # `sysforge update` skips the LLVM suite; intermediate passes leave it None.
+    assert call_log[0]["owner_stage"] is None
+    assert call_log[1]["owner_stage"] is None
+    assert call_log[2]["owner_stage"] == "toolchain"
     # Pass 1 injects -fprofile-generate so the installed clang is instrumented
     assert call_log[0]["cfe"] is not None
     assert "-fprofile-generate=" in call_log[0]["cfe"]
