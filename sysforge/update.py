@@ -171,6 +171,7 @@ def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
     per_pkg: dict[str, frozenset[str]] = {}
     lib32: set[str] = set()
     rust_pins: dict[str, str] = {}
+    compilers: set[str] = set()
     for r in to_build:
         if r.pkgbuild_path is None:
             continue
@@ -186,6 +187,14 @@ def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
             _log.warn(f"preflight: skipping {r.pkgbase} — {e}")
             continue
         per_pkg[r.pkgbase] = consumes
+        # The resolved compiler(s) for this package — checked for executability
+        # by the preflight so a broken toolchain (e.g. a clang that can't run)
+        # aborts before any build instead of failing each package at compiler
+        # detection.
+        for key in ("CC", "CXX"):
+            val = resolved.get(key)
+            if val:
+                compilers.add(val)
         # split-package PKGBUILDs may have multiple pkgnames; if any of them
         # is a lib32-* name, the whole pkgbase needs the i686 cross target.
         if any(str(n).startswith("lib32-") for n in r.pkgnames):
@@ -197,7 +206,9 @@ def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
                 rust_pins[r.pkgbase] = m.group(1)
                 break
 
-    required = collect_required_toolchains(per_pkg, frozenset(lib32), rust_pins)
+    required = collect_required_toolchains(
+        per_pkg, frozenset(lib32), rust_pins, frozenset(compilers)
+    )
     if not required:
         return True
 

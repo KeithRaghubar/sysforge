@@ -760,6 +760,25 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
     return result
 
 
+def _effective_build_dir(pkgbuild_path, resolved_profile, env) -> Path:
+    """Return the directory makepkg actually built in, for side-car diagnosis.
+
+    With ``BUILDDIR`` set in the profile (or env), makepkg builds under
+    ``$BUILDDIR/<pkgbase>`` rather than in-place, so the meson/cmake logs live
+    there — not under the PKGBUILD dir. Best-effort: uses the PKGBUILD dir name
+    as the pkgbase (true for AUR ``-git`` checkouts) and falls back to the
+    PKGBUILD dir when that candidate doesn't exist.
+    """
+    pkgbuild_dir = Path(pkgbuild_path).parent
+    builddir = resolved_profile.get("BUILDDIR") or env.get("BUILDDIR")
+    if builddir:
+        expanded = Path(os.path.expanduser(os.path.expandvars(str(builddir))))
+        candidate = expanded / pkgbuild_dir.name
+        if (candidate / "src").is_dir():
+            return candidate
+    return pkgbuild_dir
+
+
 def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                    extra_env=None, extra_flags=None, interactive=False,
                    strip_flags=None):
@@ -845,7 +864,26 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 raise AlreadyBuilt(pkgbuild_path)
             if returncode == 8:
                 _build_log.error("Dependency resolution failed.")
-            raise subprocess.CalledProcessError(returncode, "makepkg")
+            cpe = subprocess.CalledProcessError(returncode, "makepkg")
+            # Interactive mode inherits the TTY, so makepkg's stdout was never
+            # captured. Recover a diagnosis from the build's side-car logs
+            # (meson-log.txt / CMakeError.log) under the effective build dir so
+            # `sysforge state failed` records a real signature instead of just
+            # "Aborted by user". Best-effort — never mask the real failure.
+            try:
+                from sysforge.primitives.build_diag import (
+                    diagnose as _build_diagnose,
+                    render_suggestions as _render_diag_suggestions,
+                )
+                diag_dir = _effective_build_dir(pkgbuild_path, resolved_profile, env)
+                _suggestions = _build_diagnose([], diag_dir)
+                if _suggestions:
+                    _build_log.info(_render_diag_suggestions(_suggestions))
+                    cpe.diagnosis = _suggestions
+            except Exception as _diag_e:
+                _build_log.debug(f"interactive postflight diagnosis skipped: {_diag_e}")
+            cpe.captured_output = []
+            raise cpe
         return
 
     # Non-interactive branch: attach makepkg's stdout+stderr to a pty so child
@@ -1034,11 +1072,15 @@ def _parse_built_pkg_filename(pkgname: str, filename: str) -> tuple[str, str, st
     return (epoch, ver_part, pkgrel)
 
 
-def _build_failed_error(cause: Exception) -> RuntimeError:
+def _build_failed_error(cause: Exception, message: str | None = None) -> RuntimeError:
     """Wrap a build failure in the ``[build_failed]`` RuntimeError, preserving
     the postflight ``diagnosis`` and ``captured_output`` from the underlying
-    CalledProcessError so `sysforge update` can persist them to build_state."""
-    err = RuntimeError(f"[build_failed] {cause}")
+    CalledProcessError so `sysforge update` can persist them to build_state.
+
+    ``message`` overrides the default ``[build_failed] <cause>`` text (used by
+    the interactive user-abort raises, which keep their own wording but still
+    carry the diagnosis recovered from the build's side-car logs)."""
+    err = RuntimeError(message or f"[build_failed] {cause}")
     err.diagnosis = getattr(cause, "diagnosis", None)
     err.captured_output = getattr(cause, "captured_output", None)
     return err
@@ -1127,12 +1169,13 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                 tag="BUILD",
                             )
                             if retry != "s":
-                                raise RuntimeError(
-                                    "[build_failed] Aborted by user after install failure"
+                                raise _build_failed_error(
+                                    e,
+                                    "[build_failed] Aborted by user after install failure",
                                 )
                     elif response == "abort":
-                        raise RuntimeError(
-                            "[build_failed] Aborted by user after build failure"
+                        raise _build_failed_error(
+                            e, "[build_failed] Aborted by user after build failure"
                         )
                     # anything else: fall through to retry the full build
                     _build_log.info("Retrying build...")
@@ -1149,8 +1192,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                         tag="BUILD",
                     )
                     if response == "abort":
-                        raise RuntimeError(
-                            "[build_failed] Aborted by user after build failure"
+                        raise _build_failed_error(
+                            e, "[build_failed] Aborted by user after build failure"
                         )
                     _build_log.info("Retrying build...")
 

@@ -300,3 +300,102 @@ def test_auto_remediate_runs_and_reprobes(monkeypatch):
     # Fix shell command must have been invoked at least once.
     assert any("rustup target add" in str(c) for c in calls)
     assert not new_rep.failed
+
+
+# ---------------------------------------------------------------------------
+# Compiler-health probe (cc:<name>) — the broken/half-installed clang case
+# ---------------------------------------------------------------------------
+
+def test_collect_emits_cc_tokens():
+    out = collect_required_toolchains(
+        {}, frozenset(), None, frozenset({"clang", "clang++", "gcc"})
+    )
+    assert out == frozenset({"cc:clang", "cc:clang++", "cc:gcc"})
+
+
+def test_collect_cc_basenames_paths():
+    out = collect_required_toolchains(
+        {}, frozenset(), None, frozenset({"/usr/bin/clang"})
+    )
+    assert out == frozenset({"cc:clang"})
+
+
+def test_probe_cc_ok(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["gcc", "--version"]:
+            return _FakeResult(0, "gcc (GCC) 16.1.1\n", "")
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    report = run_preflight(frozenset({"cc:gcc"}))
+    assert report.checks[0].ok
+    assert report.checks[0].name == "cc:gcc"
+
+
+def test_probe_cc_clang_cannot_run(monkeypatch):
+    """The live failure: clang on PATH but `clang --version` dies with a
+    libLLVM symbol-lookup error → preflight blocks the batch."""
+    monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["clang", "--version"]:
+            return _FakeResult(
+                127, "",
+                "/usr/bin/clang: symbol lookup error: /usr/bin/clang: "
+                "undefined symbol: LLVMInitializeBPFTarget, version LLVM_22.1\n",
+            )
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    report = run_preflight(frozenset({"cc:clang"}))
+    c = report.failed[0]
+    assert c.name == "cc:clang"
+    assert "cannot run" in c.detail
+    assert "symbol lookup error" in c.detail
+    assert "pacman -Syu" in (c.fix_cmd or "")
+    assert c.auto_remediable is False
+
+
+def test_probe_cc_clang_missing(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda c: None)
+    report = run_preflight(frozenset({"cc:clang"}))
+    c = report.failed[0]
+    assert "not on PATH" in c.detail
+    assert "pacman -Syu" in (c.fix_cmd or "")
+
+
+def test_probe_cc_clang_llvm_libs_skew(monkeypatch):
+    """clang --version succeeds but clang and llvm-libs disagree → skew flagged."""
+    monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["clang", "--version"]:
+            return _FakeResult(0, "clang version 22.1.5\n", "")
+        if cmd[:2] == ["pacman", "-Q"]:
+            ver = "22.1.5-1" if cmd[2] == "clang" else "22.1.6-1"
+            return _FakeResult(0, f"{cmd[2]} {ver}\n", "")
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    report = run_preflight(frozenset({"cc:clang"}))
+    c = report.failed[0]
+    assert "version skew" in c.detail
+    assert "22.1.5" in c.detail and "22.1.6" in c.detail
+
+
+def test_probe_cc_clang_consistent_no_skew(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["clang", "--version"]:
+            return _FakeResult(0, "clang version 22.1.6\n", "")
+        if cmd[:2] == ["pacman", "-Q"]:
+            return _FakeResult(0, f"{cmd[2]} 22.1.6-1\n", "")
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    report = run_preflight(frozenset({"cc:clang"}))
+    assert report.checks[0].ok
+    assert not report.failed

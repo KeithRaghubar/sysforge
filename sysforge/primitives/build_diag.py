@@ -37,6 +37,15 @@ _TAG = "DIAG"
 # pointed at a 200 MB build.log.
 _LOG_TAIL_BYTES = 64 * 1024
 _MESON_LOG_GLOBS = ("build*/meson-logs/meson-log.txt", "meson-logs/meson-log.txt")
+# CMake records the compiler-detection failure (e.g. a clang that can't run) in
+# these under the build directory. Same shape as the meson globs so the
+# side-car collector can pick them up for interactive failures (where makepkg's
+# stdout was not captured).
+_CMAKE_LOG_GLOBS = (
+    "build*/CMakeFiles/CMakeError.log", "CMakeFiles/CMakeError.log",
+    "build*/CMakeFiles/CMakeOutput.log", "CMakeFiles/CMakeOutput.log",
+)
+_SIDECAR_LOG_GLOBS = _MESON_LOG_GLOBS + _CMAKE_LOG_GLOBS
 
 
 @dataclass(frozen=True)
@@ -74,7 +83,7 @@ def _collect_text(captured_lines: list[str], build_dir: Path | None) -> str:
         for sub in build_dir.iterdir() if build_dir.is_dir() else ():
             if not sub.is_dir():
                 continue
-            for pat in _MESON_LOG_GLOBS:
+            for pat in _SIDECAR_LOG_GLOBS:
                 for hit in sub.glob(pat):
                     text = _read_tail(hit)
                     if text:
@@ -264,11 +273,47 @@ def _match_cuda_host_gcc(text: str, active: str | None) -> FixSuggestion | None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Broken / mismatched LLVM toolchain (clang cannot run)
+# ---------------------------------------------------------------------------
+
+# A clang/libLLVM ABI mismatch (e.g. clang built against a libLLVM that no
+# longer exports a symbol it needs, or a clang↔llvm-libs version skew) makes
+# clang fail to even start. Surfaces as a dynamic-link symbol error and, via
+# meson, as "Unknown compiler(s): [['clang']]".
+_RE_LLVM_UNDEF_SYMBOL = re.compile(r"undefined symbol: LLVMInitialize\w+")
+_RE_CLANG_SYMBOL_LOOKUP = re.compile(r"symbol lookup error: \S*clang")
+_RE_MESON_UNKNOWN_CLANG = re.compile(r"Unknown compiler\(s\): \[\['clang'?'?\]\]")
+
+
+def _match_broken_llvm_toolchain(text: str, active: str | None) -> FixSuggestion | None:
+    del active
+    if not (
+        _RE_LLVM_UNDEF_SYMBOL.search(text)
+        or _RE_CLANG_SYMBOL_LOOKUP.search(text)
+        or _RE_MESON_UNKNOWN_CLANG.search(text)
+    ):
+        return None
+    return FixSuggestion(
+        signature="toolchain:llvm-broken",
+        message=(
+            "the installed clang/libLLVM are mismatched — clang cannot run "
+            "(likely a clang↔llvm-libs version skew or a half-installed "
+            "toolchain upgrade)"
+        ),
+        fix_cmd=(
+            "reinstall a consistent toolchain: sudo pacman -Syu clang llvm "
+            "llvm-libs lld   # or rebuild via `sysforge run toolchain`"
+        ),
+    )
+
+
 _MATCHERS = (
     _match_rust_missing_std,
     _match_gst_ptp,
     _match_meson_unknown_opts,
     _match_cuda_host_gcc,
+    _match_broken_llvm_toolchain,
 )
 
 

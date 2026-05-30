@@ -28,6 +28,9 @@ Token grammar for required toolchains:
                                           pin in build()/check())
     "cmake"                             — cmake binary on PATH
     "meson"                             — meson binary on PATH
+    "cc:<name>"                         — the resolved compiler (e.g. clang,
+                                          gcc) must run; for clang, also checks
+                                          clang↔llvm-libs version consistency
 
 The active rustup toolchain (when no per-PKGBUILD pin is supplied) is read
 from ``$RUSTUP_TOOLCHAIN``, falling back to ``rustup show active-toolchain``.
@@ -85,6 +88,7 @@ def collect_required_toolchains(
     per_pkg_consumes: Mapping[str, frozenset[str]],
     lib32_pkgs: frozenset[str],
     rust_toolchain_pins: Mapping[str, str] | None = None,
+    compilers: frozenset[str] | None = None,
 ) -> frozenset[str]:
     """Reduce per-package consumes + lib32-ness to a required-toolchain set.
 
@@ -111,6 +115,13 @@ def collect_required_toolchains(
             required.add("cmake")
         if "meson" in consumes:
             required.add("meson")
+    # The resolved compiler(s) across the batch — probed for executability so a
+    # broken/half-installed toolchain (e.g. clang that can't run) aborts the
+    # batch up front rather than failing every package at compiler detection.
+    for compiler in (compilers or frozenset()):
+        base = Path(compiler).name
+        if base:
+            required.add(f"cc:{base}")
     return frozenset(required)
 
 
@@ -265,7 +276,73 @@ def _probe_meson() -> ToolchainCheck:
     )
 
 
+_TOOLCHAIN_REINSTALL_HINT = (
+    "sudo pacman -Syu clang llvm llvm-libs lld   "
+    "# or rebuild via `sysforge run toolchain`"
+)
+
+
+def _installed_pkgver(pkg: str) -> str | None:
+    """Return the installed ``pkgver-pkgrel`` for ``pkg`` (``pacman -Q``), or None."""
+    r = subprocess.run(["pacman", "-Q", pkg], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    parts = r.stdout.split()
+    return parts[1] if len(parts) >= 2 else None
+
+
+def _probe_cc(compiler: str) -> ToolchainCheck:
+    """Verify the resolved compiler actually runs — and, for clang, that it is
+    version-consistent with ``llvm-libs``.
+
+    A half-installed / mismatched LLVM toolchain (clang built against a libLLVM
+    that no longer exports a symbol it needs, or a ``clang``↔``llvm-libs``
+    version skew) makes clang fail to even start with a dynamic-link symbol
+    error. Without this probe that surfaces only as N separate per-package
+    "Unknown compiler(s): [['clang']]" build failures with no captured cause.
+    """
+    base = Path(compiler).name
+    name = f"cc:{base}"
+    is_clang = base.startswith("clang")
+    install_hint = _TOOLCHAIN_REINSTALL_HINT if is_clang else f"pacman -S {base}"
+    if not shutil.which(base):
+        return ToolchainCheck(
+            name=name, ok=False, detail=f"{base} not on PATH",
+            fix_cmd=install_hint, auto_remediable=False,
+        )
+    r = subprocess.run([base, "--version"], capture_output=True, text=True)
+    if r.returncode != 0:
+        lines = (r.stderr or r.stdout or "").strip().splitlines()
+        first = lines[0] if lines else f"{base} --version exited {r.returncode}"
+        return ToolchainCheck(
+            name=name, ok=False, detail=f"{base} cannot run: {first}",
+            fix_cmd=install_hint, auto_remediable=False,
+        )
+    # clang and llvm-libs are built together and are normally lockstep; a skew
+    # (e.g. clang 22.1.5 against llvm-libs 22.1.6) can break the ABI even when
+    # `clang --version` happens to succeed.
+    if is_clang:
+        clang_v = _installed_pkgver("clang")
+        libllvm_v = _installed_pkgver("llvm-libs")
+        if clang_v and libllvm_v and clang_v != libllvm_v:
+            return ToolchainCheck(
+                name=name, ok=False,
+                detail=(
+                    f"clang {clang_v} / llvm-libs {libllvm_v} version skew "
+                    "(toolchain is half-installed)"
+                ),
+                fix_cmd=_TOOLCHAIN_REINSTALL_HINT, auto_remediable=False,
+            )
+    first = (r.stdout or r.stderr).strip().splitlines()
+    return ToolchainCheck(
+        name=name, ok=True, detail=first[0] if first else f"{base} OK",
+        fix_cmd=None, auto_remediable=False,
+    )
+
+
 def _probe_one(token: str) -> ToolchainCheck:
+    if token.startswith("cc:"):
+        return _probe_cc(token[len("cc:") :])
     if token == "rust:native":
         return _probe_rust_native()
     if token.startswith("rust:cross:"):

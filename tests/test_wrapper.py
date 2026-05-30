@@ -74,3 +74,53 @@ def test_rule_match(rule_index, alias, expected):
         f"got {'MATCH' if did_match else 'SKIP'}\n"
         f"Rule: {clean_rule}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Interactive-failure diagnosis helpers (_effective_build_dir, _build_failed_error)
+# ---------------------------------------------------------------------------
+
+def test_effective_build_dir_uses_builddir(tmp_path):
+    """With BUILDDIR set, the diagnosis dir is $BUILDDIR/<pkgbase> (where the
+    meson/cmake side-car logs live), not the in-place PKGBUILD dir."""
+    from sysforge.primitives.makepkg_wrapper import _effective_build_dir
+
+    builddir = tmp_path / "builds"
+    pkgdir = tmp_path / "src" / "wayland-protocols-git"
+    pkgdir.mkdir(parents=True)
+    (pkgdir / "PKGBUILD").write_text("# pkgbuild\n")
+    real = builddir / "wayland-protocols-git"
+    (real / "src").mkdir(parents=True)
+
+    got = _effective_build_dir(
+        pkgdir / "PKGBUILD", {"BUILDDIR": str(builddir)}, {}
+    )
+    assert got == real
+
+
+def test_effective_build_dir_falls_back_to_pkgbuild_dir(tmp_path):
+    """When the BUILDDIR candidate has no src/, fall back to the PKGBUILD dir."""
+    from sysforge.primitives.makepkg_wrapper import _effective_build_dir
+
+    pkgdir = tmp_path / "src" / "foo-git"
+    pkgdir.mkdir(parents=True)
+    got = _effective_build_dir(
+        pkgdir / "PKGBUILD", {"BUILDDIR": str(tmp_path / "builds")}, {}
+    )
+    assert got == pkgdir
+
+
+def test_build_failed_error_carries_diagnosis():
+    """The abort RuntimeError preserves .diagnosis/.captured_output recovered
+    from the failed build's side-car logs."""
+    from sysforge.primitives.build_diag import FixSuggestion
+    from sysforge.primitives.makepkg_wrapper import _build_failed_error
+
+    import subprocess as _sp
+    cause = _sp.CalledProcessError(4, "makepkg")
+    cause.diagnosis = [FixSuggestion("toolchain:llvm-broken", "broken", "fix")]
+    cause.captured_output = []
+    err = _build_failed_error(cause, "[build_failed] Aborted by user after build failure")
+    assert "Aborted by user" in str(err)
+    assert err.diagnosis[0].signature == "toolchain:llvm-broken"
+    assert err.captured_output == []

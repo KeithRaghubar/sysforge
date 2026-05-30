@@ -193,3 +193,42 @@ def test_render_without_fix_cmd():
     out = render_suggestions([s])
     assert "something broke" in out
     assert "$ " not in out
+
+
+# ---------------------------------------------------------------------------
+# Broken LLVM toolchain (clang cannot run)
+# ---------------------------------------------------------------------------
+
+_BROKEN_CLANG_MESON = (
+    "Detecting compiler via: `clang --version` -> 127\n"
+    "/usr/bin/clang: symbol lookup error: /usr/bin/clang: undefined symbol: "
+    "LLVMInitializeBPFTarget, version LLVM_22.1\n"
+    "wayland-protocols/meson.build:1:0: ERROR: Unknown compiler(s): [['clang']]\n"
+)
+
+
+def test_toolchain_broken_symbol_error():
+    out = diagnose(_lines(_BROKEN_CLANG_MESON), None)
+    assert [s.signature for s in out] == ["toolchain:llvm-broken"]
+    assert "pacman -Syu" in (out[0].fix_cmd or "")
+
+
+def test_toolchain_broken_undefined_symbol_only():
+    log = "ld: undefined symbol: LLVMInitializeX86TargetInfo\n"
+    out = diagnose(_lines(log), None)
+    assert any(s.signature == "toolchain:llvm-broken" for s in out)
+
+
+def test_toolchain_broken_no_false_positive():
+    log = "Configuring done\n[100%] Built target foo\n"
+    assert all(s.signature != "toolchain:llvm-broken" for s in diagnose(_lines(log), None))
+
+
+def test_cmake_error_log_sidecar_discovery(tmp_path):
+    """The broken-clang error in CMakeError.log is picked up even when stdout
+    was not captured (interactive mode)."""
+    cmake_dir = tmp_path / "src" / "build" / "CMakeFiles"
+    cmake_dir.mkdir(parents=True)
+    (cmake_dir / "CMakeError.log").write_text(_BROKEN_CLANG_MESON)
+    out = diagnose([], tmp_path / "src")
+    assert [s.signature for s in out] == ["toolchain:llvm-broken"]
