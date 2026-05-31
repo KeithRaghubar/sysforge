@@ -26,7 +26,7 @@ Show which profile would be applied to a package and why.
 Detect and repair packages whose build flags have drifted from the current profile.
 .TP
 \fBsysforge\fR \fI\,doctor\/\fR
-Health\-check installed package depends + shared\-library linkage.
+Diagnose sysforge\-managed system health (linkage, toolchain, hardware, graphics, pacman, state, boot, services).
 .TP
 \fBsysforge\fR \fI\,packages\/\fR
 Manage packages.toml override entries (list, add, remove).
@@ -362,15 +362,17 @@ Print a structured cache summary after \-\-apply runs.
 Suppress the LLVM source pre\-flight summary.
 
 .SH COMMAND \fI\,'sysforge doctor'\/\fR
-usage: sysforge doctor [\-h] [\-\-graphics] [\-\-hardware] [\-\-toolchain] [\-\-all]
-                       [\-\-repo] [\-\-shallow] [\-\-quiet] [\-\-suggest] [\-\-apply]
+usage: sysforge doctor [\-h] [\-\-graphics] [\-\-hardware] [\-\-toolchain] [\-\-pacman]
+                       [\-\-state] [\-\-boot] [\-\-services] [\-\-all] [\-\-repo]
+                       [\-\-shallow] [\-\-quiet] [\-\-suggest] [\-\-apply]
                        [\-\-no\-confirm] [\-\-dry\-run]
                        [PKG ...]
 
 .TP
 \fBPKG\fR
-One or more installed package names to verify. Without any
-PKG/\-\-graphics/\-\-hardware/\-\-toolchain/\-\-all, the command exits with usage.
+One or more installed package names to verify (package depends + ABI linkage
+walk). With no PKG and no axis flag, bare `doctor` runs every system\-state
+axis — the fast full sweep.
 
 .SH OPTIONS \fI\,'sysforge doctor'\/\fR
 .TP
@@ -396,13 +398,40 @@ PGO) but stock repo LLVM is installed — or the PGO profdata is version\-skewed
 — report it. Usable on its own (no PKG).
 
 .TP
+\fB\-\-pacman\fR
+Check local package\-database integrity (read\-only, never syncs): `pacman \-Dk`
+dependency consistency, a stale db.lck, unmerged .pacnew/.pacsave config files
+under /etc, and orphan packages. Usable on its own (no PKG).
+
+.TP
+\fB\-\-state\fR
+Check sysforge's own state integrity: recorded build failures, an interrupted
+stage sentinel from a prior run, and build_state drift vs the live pacman
+database. Read\-only (does not recover). Usable on its own (no PKG).
+
+.TP
+\fB\-\-boot\fR
+Check running\-system boot readiness (reusing the kernel stage's safety
+primitives): per\-kernel boot artifacts (vmlinuz + initramfs + boot entry), a
+recovery fallback kernel, /boot space, and DKMS modules for the running
+kernel. Usable on its own (no PKG).
+
+.TP
+\fB\-\-services\fR
+Check live service/driver runtime health: failed systemd units (`systemctl
+\-\-failed`) and firmware a driver requested but could not load this boot.
+Usable on its own (no PKG).
+
+.TP
 \fB\-\-all\fR
-Verify every installed package — foreign and non\-foreign (pacman \-Q). Slow but
-comprehensive.
+Run every system\-state axis AND the full per\-package walk over every installed
+package — foreign and non\-foreign (pacman \-Q). The exhaustive 'is anything
+broken anywhere' sweep.
 
 .TP
 \fB\-\-repo\fR
-Verify every non\-foreign (native repo) package. Narrower than \-\-all.
+Walk every non\-foreign (native repo) package. Package walk only, no system
+axes; narrower than \-\-all.
 
 .TP
 \fB\-\-shallow\fR

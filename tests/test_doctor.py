@@ -221,21 +221,111 @@ def test_check_depends_pacman_t_all_satisfied():
 
 def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
-        packages=[], graphics=False, hardware=False, all=False, repo=False,
+        packages=[], graphics=False, hardware=False, toolchain=False,
+        pacman=False, state=False, boot=False, services=False,
+        all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
-        apply=False, no_confirm=False, dry_run=False,
+        apply=False, no_confirm=False, dry_run=False, state_dir=None,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
 
 
-def test_cmd_doctor_no_targets_prints_usage_exits_2(monkeypatch, capsys):
+def _patch_axes_clean(monkeypatch):
+    """Neutralise the system-state axes so package-walk tests stay fast and
+    deterministic (they otherwise probe real hardware/toolchain/graphics/
+    pacman/state/boot/services)."""
+    monkeypatch.setattr(doctor, "_collect_toolchain_findings", lambda config: [])
+    monkeypatch.setattr(doctor, "_collect_hardware_findings", lambda: [])
+    monkeypatch.setattr(doctor, "_collect_graphics_findings", lambda config: [])
+    monkeypatch.setattr(doctor, "_collect_pacman_findings", lambda: [])
+    monkeypatch.setattr(doctor, "_collect_state_findings", lambda args: [])
+    monkeypatch.setattr(doctor, "_collect_services_findings", lambda: [])
+    monkeypatch.setattr(doctor, "_collect_boot_findings", lambda: [])
+
+
+def test_cmd_doctor_bare_runs_full_system_sweep(monkeypatch, capsys):
+    """Bare `doctor` (no args) runs every system axis — not a usage error."""
     monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    _patch_axes_clean(monkeypatch)
+
     rc = doctor.cmd_doctor(_make_args())
+    err = capsys.readouterr().err
+    assert "nothing to check" not in err
+    # Every system-axis section renders (clean) — the full sweep.
+    for label in ("toolchain checks", "hardware checks", "system graphics checks",
+                  "pacman / system integrity", "sysforge state integrity",
+                  "boot / kernel runtime", "services / runtime health"):
+        assert label in err, label
+    assert rc == 0
+
+
+def test_cmd_doctor_repo_with_nothing_installed_exits_2(monkeypatch, capsys):
+    """--repo with no installed packages selects no roots and no axes → usage."""
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    rc = doctor.cmd_doctor(_make_args(repo=True))
     assert rc == 2
     err = capsys.readouterr().err
-    assert "no packages to check" in err
+    assert "nothing to check" in err
+
+
+def test_resolve_axis_names_single_new_flag():
+    """A single new axis flag selects exactly that axis (no full sweep)."""
+    assert doctor._resolve_axis_names(_make_args(state=True)) == ["state"]
+    assert doctor._resolve_axis_names(_make_args(pacman=True)) == ["pacman"]
+    # Two flags → both, in canonical order (boot precedes services).
+    assert doctor._resolve_axis_names(
+        _make_args(services=True, boot=True)) == ["boot", "services"]
+
+
+def test_resolve_axis_names_bare_includes_new_axes():
+    names = doctor._resolve_axis_names(_make_args())
+    for n in ("toolchain", "hardware", "graphics", "pacman", "state",
+              "boot", "services"):
+        assert n in names
+
+
+def _patch_kernel_safety(monkeypatch, *, kernels, verify=None, space=None,
+                         dkms=None):
+    from sysforge.primitives import kernel_safety
+    monkeypatch.setattr(kernel_safety, "find_fallback_kernels",
+                        lambda *a, **k: list(kernels))
+    monkeypatch.setattr(kernel_safety, "verify_boot_artifacts",
+                        lambda suffix, *a, **k: (verify or {}).get(suffix, []))
+    monkeypatch.setattr(kernel_safety, "check_boot_mount_space",
+                        lambda *a, **k: space)
+    monkeypatch.setattr(kernel_safety, "check_dkms_for_kernel",
+                        lambda *a, **k: dkms or [])
+    monkeypatch.setattr(kernel_safety, "running_kernel_release",
+                        lambda: "6.0.0-test")
+
+
+def test_collect_boot_findings_adapts_brick_finding(monkeypatch):
+    from sysforge.primitives import diagnostics as diag
+    from sysforge.primitives import kernel_safety
+    brick = kernel_safety.KernelFinding(
+        diag.SEV_ERROR, "boot_vmlinuz_missing", "image gone", "reinstall",
+        is_brick=True)
+    _patch_kernel_safety(monkeypatch, kernels=["linux", "linux-lts"],
+                         verify={"linux": [brick]})
+    findings = doctor._collect_boot_findings()
+    hit = [f for f in findings if f.check_id == "boot_vmlinuz_missing"]
+    assert len(hit) == 1
+    assert hit[0].is_brick and hit[0].is_error
+    assert hit[0].category == "boot"
+
+
+def test_collect_boot_findings_warns_on_single_kernel(monkeypatch):
+    _patch_kernel_safety(monkeypatch, kernels=["linux"])
+    findings = doctor._collect_boot_findings()
+    assert any(f.check_id == "boot_no_fallback" for f in findings)
+
+
+def test_collect_boot_findings_clean_with_fallback(monkeypatch):
+    _patch_kernel_safety(monkeypatch, kernels=["linux", "linux-lts"])
+    assert doctor._collect_boot_findings() == []
 
 
 # ---------------------------------------------------------------------------
@@ -901,7 +991,7 @@ def test_cmd_doctor_suggest_abi_drift_summary(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
     monkeypatch.setattr(doctor, "files_db_present", lambda: True)
-    monkeypatch.setattr(doctor, "check_so_files", lambda so_paths: [abi_issue])
+    monkeypatch.setattr(doctor, "check_so_files", lambda so_paths, **_kw: [abi_issue])
     monkeypatch.setattr(doctor, "needed_sonames", lambda p: ["libc.so.6"])
     monkeypatch.setattr(
         doctor, "suggest_for_soname",
@@ -964,7 +1054,7 @@ def test_cmd_doctor_suggest_abi_drift_foreign_stays_actionable(
     )
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
     monkeypatch.setattr(doctor, "files_db_present", lambda: True)
-    monkeypatch.setattr(doctor, "check_so_files", lambda so_paths: [abi_issue])
+    monkeypatch.setattr(doctor, "check_so_files", lambda so_paths, **_kw: [abi_issue])
     monkeypatch.setattr(doctor, "needed_sonames", lambda p: ["libfoo.so.1"])
     monkeypatch.setattr(
         doctor, "suggest_for_soname",
@@ -1080,6 +1170,7 @@ def test_cmd_doctor_all_covers_repo_packages(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign)
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    _patch_axes_clean(monkeypatch)  # --all also runs system axes; keep them quiet
 
     with patch("sysforge.doctor.subprocess.run",
                side_effect=_pacman_t_mock(["missinglib>=1"], 127)):
@@ -1124,6 +1215,7 @@ def test_cmd_doctor_all_includes_foreign_and_native(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: installed)
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign)
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
+    _patch_axes_clean(monkeypatch)  # --all also runs system axes; keep them quiet
     # Treat foreignpkg as build_state-tracked so the bare [aur] tag survives.
     from sysforge.primitives import build_state as _bs_mod
     monkeypatch.setattr(_bs_mod.BuildState, "all_packages",
@@ -1219,7 +1311,7 @@ def _apply_doctor_setup(tmp_path, monkeypatch, *, foreign=True):
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign_set)
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
     monkeypatch.setattr(doctor, "files_db_present", lambda: True)
-    monkeypatch.setattr(doctor, "check_so_files", lambda so_paths: [abi_issue])
+    monkeypatch.setattr(doctor, "check_so_files", lambda so_paths, **_kw: [abi_issue])
     monkeypatch.setattr(doctor, "needed_sonames", lambda p: ["libtarget.so.5"])
     monkeypatch.setattr(
         doctor, "suggest_for_soname",

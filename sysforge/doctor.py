@@ -30,6 +30,7 @@ from collections import deque
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import diagnostics as diag
 from sysforge.primitives import pacman
 from sysforge.primitives.abi_check import (
     check_so_files,
@@ -42,10 +43,7 @@ from sysforge.primitives.dep_analysis import (
     _parse_ldconfig,
     soname_available,
 )
-from sysforge.primitives.graphics_probe import (
-    SEV_ERROR as _GFX_SEV_ERROR,
-    check_system_graphics,
-)
+from sysforge.primitives.graphics_probe import check_system_graphics
 from sysforge.primitives.provides_lookup import (
     files_db_present,
     suggest_for_soname,
@@ -291,12 +289,18 @@ def _walk_closure(roots: list[str], shallow: bool) -> list[str]:
 
 def _check_one(pkgname: str, ldconfig_set: set[str],
                installed: dict[str, str],
-               file_root: Path) -> tuple[list[str], list[str], list[Path], bool]:
+               file_root: Path,
+               benign_sink: list[str] | None = None,
+               ) -> tuple[list[str], list[str], list[Path], bool]:
     """
     Return (dep_issues, abi_issues, so_paths, abi_skipped) for one package.
 
     abi_skipped is True when the package is in abi_check's bundled-binary
     skip list — its ABI pass is suppressed, but the depends check still runs.
+
+    ``benign_sink`` is forwarded to ``check_so_files`` to accumulate demoted
+    optional-symbol cases (reduced-target libLLVM target-init absences) for the
+    caller's single summary line.
     """
     if pkgname not in installed:
         return ([f"{pkgname}: not installed"], [], [], False)
@@ -305,7 +309,7 @@ def _check_one(pkgname: str, ldconfig_set: set[str],
     so_paths = _so_paths_for_pkg(pkgname, file_root)
     if is_abi_check_skipped_package(pkgname):
         return (dep_issues, [], so_paths, True)
-    abi_issues = check_so_files(so_paths)
+    abi_issues = check_so_files(so_paths, benign_sink=benign_sink)
     return (dep_issues, abi_issues, so_paths, False)
 
 
@@ -525,81 +529,194 @@ def _print_report(pkgname: str, version: str | None,
 
 
 # ---------------------------------------------------------------------------
-# Hardware / boot-readiness checks (--hardware)
+# System-state axes (toolchain / hardware / graphics / …)
+#
+# Each axis is a finding-*producer* (returns ``list[diagnostics.Finding]``);
+# rendering + exit-code reduction is centralised in
+# ``primitives/diagnostics.py`` so doctor and (eventually) the internal callers
+# share one shape, one renderer, one exit-code rule. New axes append a producer
+# here and an entry in ``_SYSTEM_AXIS_ORDER`` / ``_system_axes``.
 # ---------------------------------------------------------------------------
 
-def _emit_hardware_checks() -> int:
-    """Render device-driver coverage + running-kernel boot-config gaps.
+def _collect_toolchain_findings(config) -> list[diag.Finding]:
+    """Configured-vs-installed toolchain provenance (custom LLVM requested but
+    stock repo LLVM installed, or PGO profdata skew). Built on
+    ``llvm_state.detect_toolchain_config_mismatch`` — provenance reporting, not
+    a third toolchain health probe."""
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+    return diag.adapt_many("toolchain", detect_toolchain_config_mismatch(config))
 
-    Mirrors the ``--graphics`` system-probe block: prints each finding as
-    ``[SEV] check_id: message → remediation`` and returns the count of
-    ``error``-severity findings for the exit code. Surfaces the same
-    device/boot-config audit the kernel stage runs, but against the *running*
-    kernel — the on-the-spot diagnostic for "device X has no driver".
-    """
+
+def _collect_hardware_findings() -> list[diag.Finding]:
+    """Device-driver coverage + the *running* kernel's boot-config gaps — the
+    on-the-spot analog of the kernel stage's audit ("device X has no driver")."""
     from sysforge.primitives import device_probe, kernel_safety
     from sysforge.primitives.dep_analysis import _parse_kernel_config
 
     devices = device_probe.enumerate_devices()
     findings = list(device_probe.check_unsupported_devices(devices=devices))
-
     running_cfg = _parse_kernel_config()
     if running_cfg:
         findings += kernel_safety.audit_resolved_config(running_cfg, devices=devices)
-
-    _log.newline()
-    _log.ui("== hardware checks ==")
-    if not findings:
-        _log.ui("  no unsupported devices or boot-config gaps detected")
-        return 0
-
-    error_count = 0
-    for f in findings:
-        _log.ui(f"  [{f.severity.upper()}] {f.check_id}: {f.message}")
-        remediation = getattr(f, "remediation", "")
-        if remediation:
-            _log.ui(f"      → {remediation}")
-        if f.severity == _GFX_SEV_ERROR:
-            error_count += 1
-    _log.ui(
-        f"Hardware probe: {len(findings)} finding(s), {error_count} error(s)."
-    )
-    return error_count
+    return diag.adapt_many("hardware", findings)
 
 
-def _emit_toolchain_checks(config) -> int:
-    """Render configured-vs-installed toolchain mismatches.
+def _collect_graphics_findings(config) -> list[diag.Finding]:
+    """System-state graphics/windowing health (kernel/module params, driver
+    version skew, Wayland protocol advertisement, Steam GPU accel, …)."""
+    gpu_vendors = _read_gpu_vendors(config)
+    return diag.adapt_many("graphics", check_system_graphics(config, gpu_vendors=gpu_vendors))
 
-    Built on ``llvm_state.detect_toolchain_config_mismatch`` (which wraps the
-    sanctioned ``collect_llvm_state`` entry point — provenance reporting, not a
-    toolchain *health* probe). Prints each finding as
-    ``[SEV] check_id: message → remediation`` and returns the count of
-    ``error``-severity findings for the exit code, mirroring ``--hardware``.
+
+def _collect_pacman_findings() -> list[diag.Finding]:
+    """Local pacman-db consistency, stale lock, unmerged .pacnew/.pacsave,
+    orphans. Read-only — never syncs. See ``primitives/system_probe.py``."""
+    from sysforge.primitives import system_probe
+    return system_probe.collect_system_findings()
+
+
+def _collect_state_findings(args) -> list[diag.Finding]:
+    """sysforge's own state integrity: recorded build failures, an interrupted
+    stage sentinel, build_state drift. Read-only — does not recover or save.
+    See ``primitives/state_probe.py``."""
+    from sysforge.primitives import state_probe
+    return state_probe.collect_state_findings(
+        state_dir=getattr(args, "state_dir", None))
+
+
+def _collect_services_findings() -> list[diag.Finding]:
+    """Live service/driver runtime health: failed systemd units, firmware a
+    driver requested but could not load. See ``primitives/runtime_probe.py``."""
+    from sysforge.primitives import runtime_probe
+    return runtime_probe.collect_runtime_findings()
+
+
+def _collect_boot_findings() -> list[diag.Finding]:
+    """Running-system boot readiness — the analog of the kernel stage's gates
+    1/3, reusing ``kernel_safety``: per-kernel boot artifacts (vmlinuz +
+    initramfs + boot entry), a recovery fallback, /boot space, and DKMS modules
+    for the running kernel. Boot-artifact gaps are brick-class."""
+    from sysforge.primitives import kernel_safety
+
+    out: list[diag.Finding] = []
+    kernels = kernel_safety.find_fallback_kernels()
+    if not kernels:
+        out.append(diag.Finding(
+            "boot", diag.SEV_WARN, "boot_no_bootable_kernel",
+            "no bootable kernel (vmlinuz + initramfs) found in /boot",
+            remediation="reinstall your kernel package and regenerate the initramfs"))
+    elif len(kernels) == 1:
+        out.append(diag.Finding(
+            "boot", diag.SEV_INFO, "boot_no_fallback",
+            f"only one bootable kernel ({kernels[0]}); no recovery fallback if it "
+            "fails to boot",
+            remediation="install a second kernel (e.g. linux-lts) as a fallback"))
+
+    kfindings = []
+    for suffix in kernels:
+        kfindings += kernel_safety.verify_boot_artifacts(suffix)
+    space = kernel_safety.check_boot_mount_space()
+    if space is not None:
+        kfindings.append(space)
+    try:
+        kfindings += kernel_safety.check_dkms_for_kernel(
+            kernel_safety.running_kernel_release())
+    except Exception:
+        pass
+
+    out += diag.adapt_many("boot", kfindings)
+    return out
+
+
+# Canonical order the axes render in.
+_SYSTEM_AXIS_ORDER: tuple[str, ...] = (
+    "toolchain", "hardware", "graphics", "pacman", "state", "boot", "services",
+)
+
+# CLI flag attribute → axis name. ``--graphics`` is also a package-walk trigger
+# (the graphics-stack closure); both effects fire when it is set.
+_AXIS_FLAGS: dict[str, str] = {
+    "toolchain": "toolchain",
+    "hardware": "hardware",
+    "graphics": "graphics",
+    "pacman": "pacman",
+    "state": "state",
+    "boot": "boot",
+    "services": "services",
+}
+
+
+def _system_axes(config, args=None) -> dict[str, diag.Axis]:
+    """Build the axis registry. Producer lookups go through module globals so
+    tests can monkeypatch a ``_collect_*`` function."""
+    return {
+        "toolchain": diag.Axis(
+            "toolchain", "toolchain checks",
+            lambda: _collect_toolchain_findings(config),
+            clean_msg=("toolchain config matches the installed LLVM "
+                       "(or no custom LLVM toolchain is configured)")),
+        "hardware": diag.Axis(
+            "hardware", "hardware checks",
+            lambda: _collect_hardware_findings(),
+            clean_msg="no unsupported devices or boot-config gaps detected"),
+        "graphics": diag.Axis(
+            "graphics", "system graphics checks",
+            lambda: _collect_graphics_findings(config),
+            clean_msg="no graphics misconfiguration detected"),
+        "pacman": diag.Axis(
+            "pacman", "pacman / system integrity",
+            lambda: _collect_pacman_findings(),
+            clean_msg="local package database consistent; no config drift or orphans"),
+        "state": diag.Axis(
+            "state", "sysforge state integrity",
+            lambda: _collect_state_findings(args),
+            clean_msg="no build failures, stale sentinel, or state drift"),
+        "boot": diag.Axis(
+            "boot", "boot / kernel runtime",
+            lambda: _collect_boot_findings(),
+            clean_msg="bootable kernel(s) with valid artifacts and a recovery fallback"),
+        "services": diag.Axis(
+            "services", "services / runtime health",
+            lambda: _collect_services_findings(),
+            clean_msg="no failed units or missing firmware"),
+    }
+
+
+def _resolve_axis_names(args) -> list[str]:
+    """Which system axes to run, in canonical order.
+
+    - Explicit axis flags (``--toolchain``/``--hardware``/``--graphics``/…) →
+      exactly those.
+    - ``--all`` or a *bare* invocation (no packages, no ``--repo``, no axis
+      flags) → every axis (the comprehensive system sweep).
+    - Package targets or ``--repo`` without an axis flag → no system axes
+      (a focused package walk).
     """
-    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+    explicit = {name for attr, name in _AXIS_FLAGS.items()
+                if getattr(args, attr, False)}
+    if explicit:
+        return [n for n in _SYSTEM_AXIS_ORDER if n in explicit]
+    if getattr(args, "all", False):
+        return list(_SYSTEM_AXIS_ORDER)
+    if not args.packages and not getattr(args, "repo", False):
+        return list(_SYSTEM_AXIS_ORDER)
+    return []
 
-    findings = detect_toolchain_config_mismatch(config)
 
-    _log.newline()
-    _log.ui("== toolchain checks ==")
-    if not findings:
-        _log.ui(
-            "  toolchain config matches the installed LLVM "
-            "(or no custom LLVM toolchain is configured)"
-        )
+def _run_system_axes(args, config, axis_names: list[str]) -> int:
+    """Run + render the selected system axes; return the total error count."""
+    if not axis_names:
         return 0
-
-    error_count = 0
-    for f in findings:
-        _log.ui(f"  [{f.severity.upper()}] {f.check_id}: {f.message}")
-        if f.remediation:
-            _log.ui(f"      → {f.remediation}")
-        if f.severity == _GFX_SEV_ERROR:
-            error_count += 1
-    _log.ui(
-        f"Toolchain probe: {len(findings)} finding(s), {error_count} error(s)."
-    )
-    return error_count
+    registry = _system_axes(config, args)
+    axes = [registry[n] for n in axis_names if n in registry]
+    results = diag.run_axes(axes)
+    errors = 0
+    for ax in axes:
+        errors += diag.render_axis(
+            _log, ax.label, results[ax.name],
+            clean_msg=ax.clean_msg, quiet=args.quiet,
+        )
+    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -653,24 +770,18 @@ def cmd_doctor(args):
             deduped.append(p)
     roots = deduped
 
-    if not roots:
-        # --hardware / --toolchain are system probes with no package targets —
-        # run them standalone rather than erroring on the empty package set.
-        want_hardware = bool(getattr(args, "hardware", False))
-        want_toolchain = bool(getattr(args, "toolchain", False))
-        if want_hardware or want_toolchain:
-            errors = 0
-            if want_hardware:
-                errors += _emit_hardware_checks()
-            if want_toolchain:
-                errors += _emit_toolchain_checks(config)
-            return 1 if errors else 0
+    # Which system-state axes to run: bare invocation or --all → every axis;
+    # explicit axis flags → just those; a focused package walk → none.
+    axis_names = _resolve_axis_names(args)
+    if not roots and not axis_names:
         _log.error(
-            "no packages to check — pass PKG, --graphics, --hardware, "
-            "--toolchain, --all, or --repo"
+            "nothing to check — pass PKG, --graphics, --hardware, --toolchain, "
+            "--all, or --repo (bare `doctor` runs the full system sweep)"
         )
         return 2
 
+    # Package walk (depends + ABI linkage). A bare / system-only invocation has
+    # no roots — the walk below is a no-op and only the system axes render.
     # Warn on any root that isn't installed — the closure walk will still
     # include it so the report shows it explicitly.
     for r in roots:
@@ -716,10 +827,13 @@ def cmd_doctor(args):
     global_repo_rebuild_seen: set[str] = set()
     global_drift_seen: set[str] = set()
     suggest_cache: dict[tuple[str, bool, bool], list[str]] = {}
+    # Accumulates optional-symbol cases demoted by check_so_files (reduced-target
+    # libLLVM target-init absences) across the whole walk → one summary line.
+    abi_benign: list[str] = []
 
     for pkgname in targets:
         dep_issues, abi_issues, so_paths, abi_skipped = _check_one(
-            pkgname, ldconfig_set, installed, file_root
+            pkgname, ldconfig_set, installed, file_root, benign_sink=abi_benign
         )
         origin = _origin_tag(pkgname, foreign, installed, tracked=tracked_names)
         n = len(dep_issues) + len(abi_issues)
@@ -778,11 +892,17 @@ def cmd_doctor(args):
                      pkg_repo_rebuild, pkg_drift)
                 )
 
-    _log.newline()
-    _log.ui(
-        f"Scanned {len(targets)} package(s); "
-        f"{len(affected_pkgs)} with issues, {total_issues} total finding(s)."
-    )
+    if targets:
+        _log.newline()
+        _log.ui(
+            f"Scanned {len(targets)} package(s); "
+            f"{len(affected_pkgs)} with issues, {total_issues} total finding(s)."
+        )
+        if abi_benign:
+            _log.ui(
+                f"ABI: {len(abi_benign)} optional LLVM target-init symbol(s) "
+                "absent from reduced-target libLLVM (benign; -v to list)."
+            )
     if affected_pkgs:
         names = ", ".join(
             f"{name} {tag} ({n})" if tag else f"{name} ({n})"
@@ -822,29 +942,10 @@ def cmd_doctor(args):
                 f"{', '.join(global_drift)}"
             )
 
-    # System-state graphics probes — only under --graphics.
-    gfx_error_count = 0
-    if args.graphics:
-        gpu_vendors = _read_gpu_vendors(config)
-        findings = check_system_graphics(config, gpu_vendors=gpu_vendors)
-        if findings:
-            _log.newline()
-            _log.ui("== system graphics checks ==")
-            for f in findings:
-                _log.ui(f"  [{f.severity.upper()}] {f.check_id}: {f.message}")
-                if f.remediation:
-                    _log.ui(f"      → {f.remediation}")
-                if f.severity == _GFX_SEV_ERROR:
-                    gfx_error_count += 1
-            _log.ui(
-                f"Graphics probe: {len(findings)} finding(s), "
-                f"{gfx_error_count} error(s)."
-            )
-
-    # System-state hardware probes — under --hardware (alongside a package walk).
-    hw_error_count = 0
-    if getattr(args, "hardware", False):
-        hw_error_count = _emit_hardware_checks()
+    # System-state axes (toolchain / hardware / graphics / …) — selected by
+    # _resolve_axis_names and rendered + exit-coded through the unified
+    # diagnostics renderer.
+    axis_error_count = _run_system_axes(args, config, axis_names)
 
     # --apply bridge: hand REBUILD candidates to `sysforge update`.
     if apply_requested:
@@ -854,7 +955,7 @@ def cmd_doctor(args):
         # produces exit 0 even if doctor found issues.
         return rc
 
-    if affected_pkgs or gfx_error_count or hw_error_count:
+    if affected_pkgs or axis_error_count:
         return 1
     return 0
 

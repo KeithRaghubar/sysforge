@@ -25,6 +25,7 @@ Public API:
 from __future__ import annotations
 
 import fnmatch
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -187,23 +188,37 @@ def find_reference_modules_dir() -> Path | None:
     return pool[0]
 
 
-# Cache: ref_dir -> list[(pattern, module)] parsed from the alias tables.
-_alias_cache: dict[str, list[tuple[str, str]]] = {}
+# Cache: ref_dir -> list[(compiled_glob_regex, module)] parsed from the alias
+# tables. The patterns are compiled once (not on every match) — see below.
+_alias_cache: dict[str, list[tuple[re.Pattern[str], str]]] = {}
 
 
-def _parse_reference_aliases(ref_dir: Path) -> list[tuple[str, str]]:
-    """Parse modules.alias (+ builtin) into (glob_pattern, module) pairs.
+def _parse_reference_aliases(ref_dir: Path) -> list[tuple[re.Pattern[str], str]]:
+    """Parse modules.alias (+ builtin) into (compiled_glob_regex, module) pairs.
 
     modules.alias lines look like: ``alias pci:v00001022d...sv* snd_hda_intel``
     modules.builtin.modinfo packs ``<mod>.alias=<pattern>`` NUL-separated.
-    The parse is cached per ref_dir — it is the hot path for enumerate.
+
+    Each glob is compiled to a regex **once** (via ``fnmatch.translate``) and
+    the result cached per ref_dir. The per-device resolve loop then matches a
+    modalias against the whole table without recompiling: a real modules.alias
+    has ~40k entries, and ``fnmatch.fnmatchcase``'s internal 256-entry compile
+    cache thrashes badly at that size — compiling on the fly made a single
+    ``enumerate_devices()`` take minutes (≈2.3s/device × 64 devices).
     """
     key = str(ref_dir)
     cached = _alias_cache.get(key)
     if cached is not None:
         return cached
 
-    pairs: list[tuple[str, str]] = []
+    pairs: list[tuple[re.Pattern[str], str]] = []
+
+    def _add(pattern: str, module: str) -> None:
+        try:
+            rx = re.compile(fnmatch.translate(pattern))
+        except re.error:
+            return  # skip a pathological pattern rather than abort the parse
+        pairs.append((rx, module.replace("-", "_")))
 
     alias_text = _read_text(ref_dir / "modules.alias")
     if alias_text:
@@ -214,8 +229,7 @@ def _parse_reference_aliases(ref_dir: Path) -> list[tuple[str, str]]:
             rest = line[len("alias "):].strip()
             sp = rest.rsplit(None, 1)
             if len(sp) == 2:
-                pattern, module = sp
-                pairs.append((pattern, module.replace("-", "_")))
+                _add(sp[0], sp[1])
 
     # Built-in drivers carry their device table in modules.builtin.modinfo
     # as NUL-separated key=value records (<module>.alias=<pattern>).
@@ -234,7 +248,7 @@ def _parse_reference_aliases(ref_dir: Path) -> list[tuple[str, str]]:
                 continue
             mod, _, pattern = text.partition(".alias=")
             if pattern:
-                pairs.append((pattern.strip(), mod.replace("-", "_")))
+                _add(pattern.strip(), mod)
 
     _alias_cache[key] = pairs
     return pairs
@@ -243,16 +257,17 @@ def _parse_reference_aliases(ref_dir: Path) -> list[tuple[str, str]]:
 def resolve_expected_modules(modalias: str, ref_dir: Path | None) -> list[str]:
     """Return the module(s) whose device table matches ``modalias``.
 
-    This is exactly modprobe's matching: fnmatch the device modalias against
-    each ``alias`` glob pattern. Returns a de-duplicated, order-preserving
-    list. Empty when no reference DB or no match.
+    This is exactly modprobe's matching: the device modalias is matched against
+    each ``alias`` glob (precompiled, case-sensitive — same semantics as
+    ``fnmatch.fnmatchcase``). Returns a de-duplicated, order-preserving list.
+    Empty when no reference DB or no match.
     """
     if not modalias or ref_dir is None:
         return []
     pairs = _parse_reference_aliases(ref_dir)
     seen: list[str] = []
-    for pattern, module in pairs:
-        if fnmatch.fnmatchcase(modalias, pattern):
+    for rx, module in pairs:
+        if rx.match(modalias):
             if module not in seen:
                 seen.append(module)
     return seen

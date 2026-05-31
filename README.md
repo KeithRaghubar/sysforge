@@ -124,7 +124,19 @@ sysforge doctor --hardware            # inventory all PCI/USB devices, flag any 
 sysforge doctor --toolchain           # flag when toolchain.toml asks for a custom LLVM
                                       # toolchain but stock repo LLVM is installed (or
                                       # PGO profdata is version-skewed); runs on its own
-sysforge doctor --all                 # every installed package: foreign + non-foreign
+sysforge doctor                       # bare: run EVERY system axis (the fast full sweep) —
+                                      # toolchain, hardware, graphics, pacman, state,
+                                      # boot, services; no per-package walk
+sysforge doctor --pacman              # local pacman-db consistency, stale lock, unmerged
+                                      # .pacnew/.pacsave, orphans (read-only, never syncs)
+sysforge doctor --state               # sysforge state: recorded build failures, an
+                                      # interrupted stage sentinel, build_state drift
+sysforge doctor --boot                # running-system boot readiness: kernel artifacts,
+                                      # recovery fallback, /boot space, DKMS
+sysforge doctor --services            # failed systemd units + firmware a driver could
+                                      # not load this boot
+sysforge doctor --all                 # every system axis PLUS every installed package
+                                      # (foreign + non-foreign)
 sysforge doctor --repo                # only non-foreign (native repo) packages
 sysforge doctor steam --suggest       # reverse-lookup candidate packages for each
                                       # missing soname / broken ABI via pacman -Fq

@@ -24,8 +24,12 @@ from sysforge.primitives.abi_check import (
     _build_ldconfig_map,
     _demangle,
     _exported_versioned,
+    _is_optional_llvm_target_init,
     _is_shim_lib,
     _list_sos_in_pkg,
+    _parse_nm_exports,
+    _parse_nm_undefined,
+    _parse_verneed,
     needed_sonames,
     _undefined_versioned,
     check_package_abi,
@@ -458,3 +462,222 @@ def test_check_so_files_skips_shim_libs(tmp_path):
         cmd = call.args[0]
         assert cmd[0] != "nm", "nm must not be invoked on shim libs"
         assert cmd[0] != "readelf", "readelf must not be invoked on shim libs"
+
+
+# ---------------------------------------------------------------------------
+# Precision: nm parsers
+# ---------------------------------------------------------------------------
+
+def test_parse_nm_exports_captures_default_and_nondefault():
+    """Both sym@@VER (default) and sym@VER (non-default back-compat) are exports."""
+    nm_out = (
+        "0000001234 T realpath@@GLIBC_2.3\n"      # default
+        "0000001230 T realpath@GLIBC_2.2.5\n"     # non-default back-compat
+        "0000005678 W advance@GLIBC_2.2.5\n"      # weak defined, non-default
+        "                 U __undef@GLIBC_2.0\n"   # undefined — not an export
+        "0000009999 T plain_unversioned\n"        # no version — skipped
+    )
+    exports = _parse_nm_exports(nm_out)
+    assert ("realpath", "GLIBC_2.3") in exports
+    assert ("realpath", "GLIBC_2.2.5") in exports     # the key non-default capture
+    assert ("advance", "GLIBC_2.2.5") in exports
+    assert ("__undef", "GLIBC_2.0") not in exports
+    assert not any(s == "plain_unversioned" for s, _ in exports)
+
+
+def test_parse_nm_undefined_strong_versioned_only():
+    """Only strong (U) versioned undefined refs; weak/defined/unversioned excluded."""
+    nm_out = (
+        "                 U needsym@LLVM_22.1\n"     # strong undefined, versioned
+        "                 U plain_undef\n"           # strong undefined, no version
+        "                 w weak_undef@GLIBC_2.0\n"  # weak undefined — excluded
+        "0000001234 T defined@@LLVM_22.1\n"          # defined — excluded
+    )
+    undef = _parse_nm_undefined(nm_out)
+    assert undef == {("needsym", "LLVM_22.1")}
+
+
+# ---------------------------------------------------------------------------
+# Precision: Verneed (.gnu.version_r) parsing
+# ---------------------------------------------------------------------------
+
+def test_parse_verneed_binds_versions_to_sonames():
+    version_info = (
+        "Version symbols section '.gnu.version' contains 5 entries:\n"
+        "  ignored: Name: SHOULD_NOT_APPEAR\n"
+        "\n"
+        "Version needs section '.gnu.version_r' contains 2 entries:\n"
+        " Addr: 0x0  Offset: 0x0  Link: 4 (.dynstr)\n"
+        "  000000: Version: 1  File: libLLVM.so.22.1  Cnt: 1\n"
+        "  0x0010:   Name: LLVM_22.1  Flags: none  Version: 12\n"
+        "  000010: Version: 1  File: libc.so.6  Cnt: 2\n"
+        "  0x0020:   Name: GLIBC_2.2.5  Flags: none  Version: 13\n"
+        "  0x0030:   Name: GLIBC_2.3  Flags: none  Version: 14\n"
+    )
+    m = _parse_verneed(version_info)
+    assert m["LLVM_22.1"] == {"libLLVM.so.22.1"}
+    assert m["GLIBC_2.2.5"] == {"libc.so.6"}
+    assert m["GLIBC_2.3"] == {"libc.so.6"}
+    # Names outside the version-needs section must not leak in.
+    assert "SHOULD_NOT_APPEAR" not in m
+
+
+def test_parse_verneed_empty_when_no_section():
+    assert _parse_verneed("no verneed here\n") == {}
+
+
+# ---------------------------------------------------------------------------
+# Precision: LLVM optional target-init recognition
+# ---------------------------------------------------------------------------
+
+def test_is_optional_llvm_target_init_matches_target_entry_points():
+    for sym in (
+        "LLVMInitializeAMDGPUTarget",
+        "LLVMInitializeAMDGPUTargetInfo",
+        "LLVMInitializeAMDGPUTargetMC",
+        "LLVMInitializeAMDGPUAsmParser",
+        "LLVMInitializeAMDGPUAsmPrinter",
+        "LLVMInitializeAMDGPUDisassembler",
+        "LLVMInitializeAArch64AsmPrinter",
+    ):
+        assert _is_optional_llvm_target_init(sym, "LLVM_22.1"), sym
+
+
+def test_is_optional_llvm_target_init_rejects_real_breaks_and_other_namespaces():
+    # A C++ stdlib symbol mis-bound to LLVM_* is a genuine break, not optional.
+    assert not _is_optional_llvm_target_init(
+        "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_",
+        "LLVM_22.1",
+    )
+    # Right name shape but wrong version namespace → not demoted.
+    assert not _is_optional_llvm_target_init("LLVMInitializeAMDGPUTarget", "GLIBC_2.3")
+    # LLVMInitializeCore is always present (not a target backend) → not optional.
+    assert not _is_optional_llvm_target_init("LLVMInitializeCore", "LLVM_22.1")
+
+
+# ---------------------------------------------------------------------------
+# Precision: check_so_files end-to-end (mocked subprocess)
+# ---------------------------------------------------------------------------
+
+_ELF64_HEADER = "ELF Header:\n  Class:                             ELF64\n"
+
+
+def _precision_dispatcher(*, so_undef, needed, ldconfig, lib_exports,
+                          verinfo="", cppfilt=""):
+    """Build a subprocess.run side_effect for a single checked .so.
+
+    lib_exports maps an on-disk lib path → its `nm -D` output. Any nm call on a
+    path not in lib_exports returns the checked .so's own undefined output.
+    """
+    def dispatcher(cmd, **_kw):
+        tool = cmd[0]
+        if tool == "nm":
+            return _mock_run(lib_exports.get(cmd[-1], so_undef))
+        if tool == "readelf":
+            if "--version-info" in cmd:
+                return _mock_run(verinfo)
+            if "-h" in cmd:
+                return _mock_run(_ELF64_HEADER)
+            return _mock_run(needed)  # -d
+        if tool == "ldconfig":
+            return _mock_run(ldconfig)
+        if tool == "c++filt":
+            return _mock_run(cppfilt or "\n".join(cmd[1:]))
+        return _mock_run("")
+    return dispatcher
+
+
+def test_check_so_files_nondefault_export_satisfies(tmp_path):
+    """A requirement sym@VER satisfied by a non-default sym@VER export → clean."""
+    so = tmp_path / "libfoo.so.1"
+    so.write_bytes(b"\x7fELF")
+    dispatcher = _precision_dispatcher(
+        so_undef="                 U realpath@GLIBC_2.2.5\n",
+        needed=" 0x1 (NEEDED)  Shared library: [libc.so.6]\n",
+        ldconfig="\tlibc.so.6 (libc6,x86-64) => /usr/lib/libc.so.6\n",
+        lib_exports={
+            # libc exports realpath ONLY as a non-default single-@ version.
+            "/usr/lib/libc.so.6": (
+                "0000001234 T realpath@@GLIBC_2.3\n"
+                "0000001230 T realpath@GLIBC_2.2.5\n"
+            ),
+        },
+        verinfo=(
+            "Version needs section '.gnu.version_r' contains 1 entries:\n"
+            "  000000: Version: 1  File: libc.so.6  Cnt: 1\n"
+            "  0x0010:   Name: GLIBC_2.2.5  Flags: none  Version: 2\n"
+        ),
+    )
+    with patch("sysforge.primitives.abi_check.subprocess.run", side_effect=dispatcher):
+        issues = check_so_files([so])
+    assert issues == []
+
+
+def test_check_so_files_host_provided_version_not_flagged(tmp_path):
+    """A version bound (Verneed) to no NEEDED lib is host/loader-provided → skipped."""
+    so = tmp_path / "plugin.so"
+    so.write_bytes(b"\x7fELF")
+    dispatcher = _precision_dispatcher(
+        so_undef="                 U host_symbol@APP_1.0\n",
+        needed=" 0x1 (NEEDED)  Shared library: [libsupport.so.1]\n",
+        ldconfig="\tlibsupport.so.1 (libc6,x86-64) => /usr/lib/libsupport.so.1\n",
+        lib_exports={"/usr/lib/libsupport.so.1": "0000001234 T other@@SUP_1.0\n"},
+        # APP_1.0 is provided by the executable that dlopens this plugin, not by
+        # any NEEDED lib — Verneed binds it to a non-NEEDED file.
+        verinfo=(
+            "Version needs section '.gnu.version_r' contains 1 entries:\n"
+            "  000000: Version: 1  File: the_app  Cnt: 1\n"
+            "  0x0010:   Name: APP_1.0  Flags: none  Version: 2\n"
+        ),
+    )
+    with patch("sysforge.primitives.abi_check.subprocess.run", side_effect=dispatcher):
+        issues = check_so_files([so])
+    assert issues == []
+
+
+def test_check_so_files_llvm_target_init_demoted_to_benign(tmp_path):
+    """An absent LLVM target-init symbol (version present) is demoted, not flagged."""
+    so = tmp_path / "radeonsi_drv_video.so"
+    so.write_bytes(b"\x7fELF")
+    dispatcher = _precision_dispatcher(
+        so_undef="                 U LLVMInitializeAMDGPUTarget@LLVM_22.1\n",
+        needed=" 0x1 (NEEDED)  Shared library: [libLLVM.so.22.1]\n",
+        ldconfig="\tlibLLVM.so.22.1 (libc6,x86-64) => /usr/lib/libLLVM.so.22.1\n",
+        # libLLVM defines LLVM_22.1 (X86 target present) but NOT the AMDGPU init.
+        lib_exports={"/usr/lib/libLLVM.so.22.1": "0461baa0 T LLVMInitializeX86Target@@LLVM_22.1\n"},
+        verinfo=(
+            "Version needs section '.gnu.version_r' contains 1 entries:\n"
+            "  000000: Version: 1  File: libLLVM.so.22.1  Cnt: 1\n"
+            "  0x0010:   Name: LLVM_22.1  Flags: none  Version: 2\n"
+        ),
+    )
+    benign: list[str] = []
+    with patch("sysforge.primitives.abi_check.subprocess.run", side_effect=dispatcher):
+        issues = check_so_files([so], benign_sink=benign)
+    assert issues == []
+    assert len(benign) == 1
+    assert "LLVMInitializeAMDGPUTarget@LLVM_22.1" in benign[0]
+
+
+def test_check_so_files_genuine_drift_still_flagged(tmp_path):
+    """A required version absent from the bound lib (soname/version skew) is hard."""
+    so = tmp_path / "libconsumer.so.1"
+    so.write_bytes(b"\x7fELF")
+    dispatcher = _precision_dispatcher(
+        so_undef="                 U _Z3barv@MYLIB_2.0\n",
+        needed=" 0x1 (NEEDED)  Shared library: [libbar.so.1]\n",
+        ldconfig="\tlibbar.so.1 (libc6,x86-64) => /usr/lib/libbar.so.1\n",
+        # libbar only provides MYLIB_1.0 — the required MYLIB_2.0 node is absent.
+        lib_exports={"/usr/lib/libbar.so.1": "0000001234 T _Z3barv@@MYLIB_1.0\n"},
+        verinfo=(
+            "Version needs section '.gnu.version_r' contains 1 entries:\n"
+            "  000000: Version: 1  File: libbar.so.1  Cnt: 1\n"
+            "  0x0010:   Name: MYLIB_2.0  Flags: none  Version: 2\n"
+        ),
+        cppfilt="bar()\n",
+    )
+    with patch("sysforge.primitives.abi_check.subprocess.run", side_effect=dispatcher):
+        issues = check_so_files([so])
+    assert len(issues) == 1
+    assert "MYLIB_2.0" in issues[0]
+    assert "_Z3barv" in issues[0]

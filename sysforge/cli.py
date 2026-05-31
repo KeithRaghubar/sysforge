@@ -756,11 +756,12 @@ def _add_converge_parser(sub):
 
 def _add_doctor_parser(sub):
     p = sub.add_parser("doctor",
-        help="Health-check installed package depends + shared-library linkage.")
+        help="Diagnose sysforge-managed system health (linkage, toolchain, "
+             "hardware, graphics, pacman, state, boot, services).")
     p.add_argument("packages", nargs="*", metavar="PKG",
-        help="One or more installed package names to verify. "
-             "Without any PKG/--graphics/--hardware/--toolchain/--all, the "
-             "command exits with usage.")
+        help="One or more installed package names to verify (package depends "
+             "+ ABI linkage walk). With no PKG and no axis flag, bare `doctor` "
+             "runs every system-state axis — the fast full sweep.")
     p.add_argument("--graphics", action="store_true",
         help="Expand to the graphics stack (mesa, vulkan, libglvnd, wayland, "
              "libdrm, libva, libvdpau, egl-wayland, xwayland, gamescope, plus "
@@ -777,11 +778,32 @@ def _add_doctor_parser(sub):
              "toolchain.toml requests a custom LLVM toolchain (compiler = llvm, "
              "optionally PGO) but stock repo LLVM is installed — or the PGO "
              "profdata is version-skewed — report it. Usable on its own (no PKG).")
+    p.add_argument("--pacman", action="store_true",
+        help="Check local package-database integrity (read-only, never syncs): "
+             "`pacman -Dk` dependency consistency, a stale db.lck, unmerged "
+             ".pacnew/.pacsave config files under /etc, and orphan packages. "
+             "Usable on its own (no PKG).")
+    p.add_argument("--state", action="store_true",
+        help="Check sysforge's own state integrity: recorded build failures, an "
+             "interrupted stage sentinel from a prior run, and build_state drift "
+             "vs the live pacman database. Read-only (does not recover). Usable "
+             "on its own (no PKG).")
+    p.add_argument("--boot", action="store_true",
+        help="Check running-system boot readiness (reusing the kernel stage's "
+             "safety primitives): per-kernel boot artifacts (vmlinuz + initramfs "
+             "+ boot entry), a recovery fallback kernel, /boot space, and DKMS "
+             "modules for the running kernel. Usable on its own (no PKG).")
+    p.add_argument("--services", action="store_true",
+        help="Check live service/driver runtime health: failed systemd units "
+             "(`systemctl --failed`) and firmware a driver requested but could "
+             "not load this boot. Usable on its own (no PKG).")
     p.add_argument("--all", action="store_true", dest="all",
-        help="Verify every installed package — foreign and non-foreign (pacman -Q). "
-             "Slow but comprehensive.")
+        help="Run every system-state axis AND the full per-package walk over "
+             "every installed package — foreign and non-foreign (pacman -Q). "
+             "The exhaustive 'is anything broken anywhere' sweep.")
     p.add_argument("--repo", action="store_true", dest="repo",
-        help="Verify every non-foreign (native repo) package. Narrower than --all.")
+        help="Walk every non-foreign (native repo) package. Package walk only, "
+             "no system axes; narrower than --all.")
     p.add_argument("--shallow", action="store_true",
         help="Do not recurse into transitive dependencies of each target.")
     p.add_argument("--quiet", "-q", action="store_true",
