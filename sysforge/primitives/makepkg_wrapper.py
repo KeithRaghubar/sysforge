@@ -1031,6 +1031,31 @@ def _find_built_packages(build_dir: Path) -> list:
             if not p.name.endswith(".sig")]
 
 
+def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
+    """Install the .pkg.tar* artifacts in ``pkgbuild_dir`` via ``pacman -U``.
+
+    For callers that split build from install — the kernel stage builds with
+    ``BuildOptions.no_install`` so its safety audit can run against the
+    resolved .config, then calls this to install only once the audit passes.
+    Inherits stdio so a pacman conflict/sudo prompt is visible. Raises
+    RuntimeError when no artifact is found or the install fails.
+    """
+    pkgs = _find_built_packages(Path(pkgbuild_dir).resolve())
+    if not pkgs:
+        raise RuntimeError(
+            f"no built package found in {pkgbuild_dir} — nothing to install")
+    cmd = ["sudo", "pacman", "-U"]
+    if noconfirm:
+        cmd.append("--noconfirm")
+    cmd += [str(p) for p in pkgs]
+    _build_log.ui(
+        f"Installing built package(s): {', '.join(p.name for p in pkgs)}")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        raise RuntimeError(f"pacman -U failed (exit {result.returncode})")
+    return pkgs
+
+
 # Trailing compression suffix is optional: PKGEXT='.pkg.tar' produces
 # uncompressed package files, and `makepkg --packagelist` always prints
 # names that match the configured PKGEXT.
@@ -1581,6 +1606,7 @@ class BuildOptions:
     abi_check: bool = False
     strip_flags: frozenset | set | None = None
     force_batch: bool = False
+    no_install: bool = False  # strip -i/--install: build the package but do not install it
     pgo_managed: bool = False
     source: str | None = None  # "aur" | "repo" | "git" | "local" — persisted in build_state
     owner_stage: str | None = None  # e.g. "kernel" — persisted so `sysforge update` skips by default
@@ -1737,6 +1763,15 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         if options.force_batch and not resolved_profile.get("batch", False):
             resolved_profile = dict(resolved_profile)
             resolved_profile["batch"] = True
+
+        # Build-without-install: strip -i/--install so the package is produced
+        # but pacman never runs. Callers that split build from install (e.g.
+        # the kernel stage's pre-install safety audit) install the artifact
+        # themselves via install_built_packages() after their checks pass.
+        effective_strip_flags = options.strip_flags
+        if options.no_install:
+            effective_strip_flags = set(options.strip_flags or ()) | INSTALL_FLAGS
+            _build_log.info("no_install: stripping install flags from makepkg invocation")
         active_consumes = resolve_consumes(resolved_profile, pkgmeta, inference_map)
         groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
 
@@ -1770,7 +1805,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 linker_flags_extra=options.linker_flags_extra,
                 strip_full_lto=options.strip_full_lto,
                 injected_env=options.extra_env,
-                strip_flags=options.strip_flags,
+                strip_flags=effective_strip_flags,
                 pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
                 state_dir=options.state_dir,
                 toolchain_variant=options.toolchain_variant,

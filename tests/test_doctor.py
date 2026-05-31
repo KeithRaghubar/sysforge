@@ -221,7 +221,7 @@ def test_check_depends_pacman_t_all_satisfied():
 
 def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
-        packages=[], graphics=False, all=False, repo=False,
+        packages=[], graphics=False, hardware=False, all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
         apply=False, no_confirm=False, dry_run=False,
     )
@@ -236,6 +236,66 @@ def test_cmd_doctor_no_targets_prints_usage_exits_2(monkeypatch, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "no packages to check" in err
+
+
+# ---------------------------------------------------------------------------
+# cmd_doctor --hardware
+# ---------------------------------------------------------------------------
+
+def _patch_hw(monkeypatch, *, devices=None, unsupported=None,
+              running_cfg=None, audit=None):
+    from sysforge.primitives import device_probe, kernel_safety
+    from sysforge.primitives import dep_analysis
+    monkeypatch.setattr(device_probe, "enumerate_devices",
+                        lambda *a, **k: devices or [])
+    monkeypatch.setattr(device_probe, "check_unsupported_devices",
+                        lambda *a, **k: unsupported or [])
+    monkeypatch.setattr(dep_analysis, "_parse_kernel_config",
+                        lambda: running_cfg)
+    monkeypatch.setattr(kernel_safety, "audit_resolved_config",
+                        lambda *a, **k: audit or [])
+
+
+def test_cmd_doctor_hardware_standalone_bypasses_empty_roots(monkeypatch, capsys):
+    from sysforge.primitives.device_probe import DeviceFinding, SEV_WARN
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    _patch_hw(monkeypatch, unsupported=[
+        DeviceFinding(SEV_WARN, "unsupported_device",
+                      "pci device 0000:0d:00.4 has no driver", "Enable CONFIG_X")])
+
+    rc = doctor.cmd_doctor(_make_args(hardware=True))
+    err = capsys.readouterr().err
+    assert "no packages to check" not in err
+    assert "hardware checks" in err
+    assert "unsupported_device" in err
+    # device-coverage findings are warnings → clean exit
+    assert rc == 0
+
+
+def test_cmd_doctor_hardware_brick_finding_nonzero_exit(monkeypatch, capsys):
+    from sysforge.primitives.kernel_safety import KernelFinding, SEV_ERROR
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    _patch_hw(monkeypatch, running_cfg={"CONFIG_MODULES": "y"}, audit=[
+        KernelFinding(SEV_ERROR, "boot_kconfig:CONFIG_EXT4_FS",
+                      "CONFIG_EXT4_FS is not enabled", "Set CONFIG_EXT4_FS=y",
+                      is_brick=True)])
+
+    rc = doctor.cmd_doctor(_make_args(hardware=True))
+    err = capsys.readouterr().err
+    assert "boot_kconfig:CONFIG_EXT4_FS" in err
+    assert rc == 1
+
+
+def test_cmd_doctor_hardware_clean_exit_zero(monkeypatch, capsys):
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    _patch_hw(monkeypatch, running_cfg=None)
+    rc = doctor.cmd_doctor(_make_args(hardware=True))
+    err = capsys.readouterr().err
+    assert "no unsupported devices or boot-config gaps detected" in err
+    assert rc == 0
 
 
 def test_cmd_doctor_clean_package(tmp_path, monkeypatch, capsys):

@@ -1,0 +1,9 @@
+# Trimmed modules.alias sample for sysforge device_probe tests.
+# Real format: `alias <glob-pattern> <module>`
+alias pci:v00001022d00001487sv*sd*bc*sc*i* snd_hda_intel
+alias pci:v00008086d00002668sv*sd*bc*sc*i* snd_hda_intel
+alias pci:v000010DEd0000228Esv*sd*bc*sc*i* snd_hda_intel
+alias pci:v00001022d00001486sv*sd*bc*sc*i* ccp
+alias pci:v0000144Dd0000A80Asv*sd*bc01sc08i02* nvme
+alias pci:v00008086d000015F3sv*sd*bc*sc*i* igc
+alias usb:v1D6Bp0003d*dc09dsc*dp*ic*isc*ip*in* hub

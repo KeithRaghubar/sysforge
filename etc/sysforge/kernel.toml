@@ -51,6 +51,35 @@ enabled = false
 # pkgbuild_src_dir = "~/src"    # override the global pkgbuild_src_dir for this kernel only
 
 # ---------------------------------------------------------------------------
+# Boot safety — the kernel stage must never leave the system unbootable.
+#
+# Three gates wrap the build/install: a pre-build preflight (fallback-kernel
+# guarantee + /boot space), a resolved-.config audit between build and install
+# (aborts before install if the built kernel drops the root filesystem, storage
+# controller, or core boot infrastructure), and a post-install boot-readiness
+# check (vmlinuz + initramfs present and referenced by a boot entry; DKMS
+# modules rebuilt). Brick-class findings hard-fail; everything else warns.
+# See DESIGN.md §Kernel stage boot-safety.
+# ---------------------------------------------------------------------------
+
+# require_fallback_kernel = true  # default: true — refuse to install a custom
+#                                 # kernel unless a stock linux/linux-lts (with a
+#                                 # boot image) exists, so a broken build still
+#                                 # has a recovery path. CLI: --allow-no-fallback
+
+# boot_audit = true               # default: true — run the /boot space check and
+#                                 # the pre-install resolved-.config audit (Gate 2).
+#                                 # CLI override for the audit: --skip-boot-audit
+
+# min_boot_free_mb = 200          # default: 200 — minimum free MiB on /boot before
+#                                 # building, so a kernel + initramfs install isn't
+#                                 # truncated.
+
+# capture_lsmod_snapshot = true   # default: true — capture lsmod for the PKGBUILD's
+#                                 # `make localmodconfig`. Set false if you don't want
+#                                 # drivers for currently-inactive hardware stripped.
+
+# ---------------------------------------------------------------------------
 # kconfig — kernel config fragment
 #
 # Entries are written to a sysforge.config fragment and applied via

@@ -44,6 +44,7 @@ Post-install steps (run after makepkg succeeds):
   2. Bootloader update    (configured via bootloader = ...)
 """
 
+import os
 import subprocess
 import tomllib
 from pathlib import Path
@@ -51,8 +52,14 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("KERNEL")
 from sysforge.pipeline.stages.base import Stage
+from sysforge.primitives import device_probe, kernel_safety
 from sysforge.primitives.paths import KERNEL_PATH
-from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
+from sysforge.primitives.makepkg_wrapper import (
+    AlreadyBuilt,
+    BuildOptions,
+    install_built_packages,
+    run as makepkg_run,
+)
 from sysforge.primitives.source_sync import (
     STATUS_DIVERGED,
     STATUS_FAILED,
@@ -538,6 +545,202 @@ def _update_bootloader(bootloader, dry_run):
 
 
 # ---------------------------------------------------------------------------
+# Boot-safety gates
+#
+# The kernel stage must never leave the machine unbootable. Three gates wrap
+# the build/install: a cheap pre-build preflight (Gate 1), a resolved-.config
+# audit between build and install (Gate 2 — the only placement that catches a
+# Kconfig dependency cascade like CONFIG_SND_PCI=n hiding CONFIG_SND_HDA_INTEL),
+# and a post-install boot-readiness check (Gate 3). Brick-class findings
+# hard-fail; everything else warns. See DESIGN.md §Kernel stage boot-safety.
+# ---------------------------------------------------------------------------
+
+
+def _gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
+    """Cheap pre-build safety checks. Returns the RootTopology for Gate 2.
+
+    Hard-fails (RuntimeError) on brick conditions — no fallback kernel (E1),
+    or a missing/too-full /boot (D5) — unless overridden. In dry-run these are
+    downgraded to warnings so the run can still preview. The remaining checks
+    (localmodconfig strip warning, DKMS rebuild reminder, mkinitcpio HOOKS vs
+    root topology) are advisory.
+    """
+    require_fallback = bool(kernel_cfg.get("require_fallback_kernel", True))
+    boot_audit = bool(kernel_cfg.get("boot_audit", True))
+    min_free = int(kernel_cfg.get("min_boot_free_mb", 200))
+    allow_no_fallback = bool(getattr(options, "allow_no_fallback", False))
+
+    # E1 — fallback-kernel guarantee.
+    if require_fallback and not allow_no_fallback:
+        fallbacks = kernel_safety.find_fallback_kernels(exclude_pkg=pkgname)
+        if fallbacks:
+            _log.info(f"Fallback kernel(s) present: {', '.join(fallbacks)}")
+        else:
+            msg = (
+                f"no fallback kernel found — installing {pkgname} as the only "
+                "kernel risks an unbootable system with no recovery path. "
+                "Install a stock kernel (e.g. linux-lts) first, or pass "
+                "--allow-no-fallback / set require_fallback_kernel = false."
+            )
+            if dry_run:
+                _log.warn(f"{msg} (dry-run: would abort)")
+            else:
+                raise RuntimeError(f"[KERNEL] {msg}")
+
+    # D5 — /boot mounted with headroom.
+    if boot_audit:
+        space = kernel_safety.check_boot_mount_space(min_mb=min_free)
+        if space is not None:
+            if dry_run:
+                _log.warn(f"[dry-run] {space.message}")
+            else:
+                raise RuntimeError(f"[KERNEL] {space.message} {space.remediation}")
+
+    topology = kernel_safety.detect_root_topology()
+    _log.info(
+        f"Root topology: fstype={topology.root_fstype} "
+        f"transports={','.join(topology.transports) or '-'} "
+        f"crypt={topology.uses_crypt} lvm={topology.uses_lvm} "
+        f"raid={topology.uses_raid}"
+    )
+
+    # A2 — localmodconfig strips inactive hardware.
+    if bool(kernel_cfg.get("capture_lsmod_snapshot", True)):
+        _log.warn(
+            "lsmod snapshot captured for `make localmodconfig` — drivers for "
+            "hardware not active right now will be stripped from the build. "
+            "The post-build boot audit (Gate 2) is the backstop."
+        )
+
+    # F1 — DKMS modules will need rebuilding against the new kernel.
+    dkms = kernel_safety.list_dkms_modules()
+    if dkms:
+        _log.warn(
+            f"DKMS modules present ({', '.join(dkms)}) — they must rebuild "
+            f"against {pkgname}; ensure {pkgname}-headers is installed or they "
+            "will not load on reboot (nvidia → black screen)."
+        )
+
+    # C3 — mkinitcpio HOOKS vs root topology.
+    for finding in kernel_safety.check_mkinitcpio_hooks(topology):
+        _log.warn(f"{finding.message} {finding.remediation}".strip())
+
+    return topology
+
+
+def _resolve_built_config(pkgbuild_dir):
+    """Locate the resolved .config left in the kernel build tree.
+
+    The kernel src lives under ``<build>/src/``; ``<build>`` is the makepkg
+    BUILDDIR (``$BUILDDIR/<pkgbase>`` or ``~/builds/<pkgbase>``) or the
+    PKGBUILD dir itself. Returns the newest matching ``.config`` or None.
+    """
+    pkgbuild_dir = Path(pkgbuild_dir)
+    roots = []
+    builddir = os.environ.get("BUILDDIR")
+    if builddir:
+        roots.append(Path(builddir).expanduser() / pkgbuild_dir.name)
+    roots.append(Path("~/builds").expanduser() / pkgbuild_dir.name)
+    roots.append(pkgbuild_dir)
+
+    configs = []
+    seen = set()
+    for root in roots:
+        if str(root) in seen:
+            continue
+        seen.add(str(root))
+        src = root / "src"
+        if src.is_dir():
+            configs.extend(src.glob("**/.config"))
+    if not configs:
+        return None
+    return max(configs, key=lambda p: p.stat().st_mtime)
+
+
+def _built_kernel_release(config_path):
+    """Read the built kernel's release string from kbuild's kernel.release."""
+    if config_path is None:
+        return None
+    rel = config_path.parent / "include" / "config" / "kernel.release"
+    text = rel.read_text().strip() if rel.exists() else ""
+    return text or None
+
+
+def _gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit):
+    """Audit the resolved .config before install. Raises on brick unless skipped.
+
+    Runs *outside* the install sentinel: a brick abort here leaves the system
+    completely untouched (nothing installed, no sentinel set), so the running
+    kernel stays bootable.
+    """
+    config_path = _resolve_built_config(pkgbuild_dir)
+    if config_path is None:
+        _log.warn(
+            "Gate 2: resolved kernel .config not found in build tree — "
+            "boot-critical config could not be validated before install."
+        )
+        return
+
+    _log.ui(f"Gate 2: auditing resolved kernel config {config_path}")
+    devices = device_probe.enumerate_devices()
+    findings = kernel_safety.audit_resolved_config(config_path, topology, devices)
+    bricks = [f for f in findings if f.is_brick]
+
+    for f in findings:
+        emit = _log.warn if (f.is_brick or f.severity != "info") else _log.info
+        emit(f"Gate 2 [{f.severity.upper()}] {f.check_id}: {f.message}")
+        if f.remediation:
+            _log.info(f"  → {f.remediation}")
+
+    # E2 — overwriting the running kernel's modules.
+    kver = _built_kernel_release(config_path)
+    if kver and kver == kernel_safety.running_kernel_release():
+        _log.warn(
+            f"Built kernel release {kver} matches the running kernel — its "
+            "/lib/modules entry will be overwritten; reboot before relying on "
+            "module loading."
+        )
+
+    if bricks and not skip_boot_audit:
+        raise RuntimeError(
+            f"[KERNEL] {len(bricks)} boot-critical config problem(s) in the "
+            "built kernel — aborting before install so the running system "
+            "stays bootable. Fix the kconfig and rebuild, or pass "
+            f"--skip-boot-audit to override. Resolved .config: {config_path}"
+        )
+    if bricks:
+        _log.warn(
+            f"--skip-boot-audit: proceeding to install despite {len(bricks)} "
+            "brick-class finding(s)"
+        )
+
+
+def _gate3_verify(pkgbuild_dir, pkgname, bootloader):
+    """Post-install boot-readiness verification. Raises on brick.
+
+    Runs inside the sentinel: a failure here leaves the sentinel set so the
+    operator is told to resolve boot wiring before the next run.
+    """
+    findings = list(kernel_safety.verify_boot_artifacts(pkgname, bootloader))
+    kver = _built_kernel_release(_resolve_built_config(pkgbuild_dir))
+    if kver:
+        findings += kernel_safety.check_dkms_for_kernel(kver)
+
+    bricks = [f for f in findings if f.is_brick]
+    for f in findings:
+        _log.warn(f"Gate 3 [{f.severity.upper()}] {f.check_id}: {f.message}")
+        if f.remediation:
+            _log.warn(f"  → {f.remediation}")
+
+    if bricks:
+        raise RuntimeError(
+            f"[KERNEL] {len(bricks)} boot-readiness problem(s) after install — "
+            "the new kernel may not be bootable. Resolve before rebooting "
+            "(see findings above)."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
 
@@ -599,8 +802,11 @@ class KernelStage(Stage):
         cfg_interactive = bool(kernel_cfg.get("interactive", True))
         interactive = cfg_interactive and not getattr(options, "non_interactive", False)
 
-        # lsmod snapshot — captured before build for localmodconfig reproducibility
-        _capture_lsmod_snapshot(state_dir, options.dry_run)
+        # lsmod snapshot — captured before build for localmodconfig
+        # reproducibility. Opt-out via `capture_lsmod_snapshot = false` (Gate 1
+        # warns that localmodconfig strips drivers for inactive hardware).
+        if bool(kernel_cfg.get("capture_lsmod_snapshot", True)):
+            _capture_lsmod_snapshot(state_dir, options.dry_run)
 
         # kconfig fragment — requires hardware_profile.toml (hardware stage)
         _write_kconfig_fragment(kernel_cfg, config, options.dry_run)
@@ -648,25 +854,25 @@ class KernelStage(Stage):
         kconfig_target = "make nconfig (user-supplied)" if interactive else "make olddefconfig (patched)"
         _log.info(f"Kernel kconfig target: {kconfig_target}")
 
-        # Install the stage sentinel + interrupt scope around the build and
-        # the boot-critical post-install steps. The makepkg --install path,
-        # mkinitcpio -P, and the bootloader update are the mutation window
-        # whose interruption can leave the system kernel-installed but
-        # initramfs-missing → unbootable. Sentinel write-on-entry / clear-
-        # on-success / leave-on-exception mirrors the toolchain stage.
-        with sentinel_scope(
-            options.state_dir,
-            "kernel",
-            recovery_cmd=_kernel_recovery_command(),
-            retry_cmd="sysforge run kernel",
-            pkgname=pkgname,
-            bootloader=bootloader,
-            compiler=compiler or "default",
-        ):
-            if options.dry_run:
-                _log.ui(f"[dry-run] would build {pkgname} from {pkgbuild}")
-            else:
-                _log.ui(f"Building kernel: {pkgname} from {pkgbuild}")
+        skip_boot_audit = bool(getattr(options, "skip_boot_audit", False))
+
+        # Gate 1 — cheap preflight (fallback-kernel guarantee, /boot space,
+        # root-topology capture, advisory warnings). Hard-fails *before* the
+        # build so a missing fallback / full /boot aborts with nothing spent.
+        topology = _gate1_preflight(
+            kernel_cfg, options, pkgname, dry_run=options.dry_run,
+        )
+
+        # Build WITHOUT installing, then audit the resolved .config, then
+        # install — so a boot-critical kconfig drop (Gate 2) aborts before any
+        # mutation and the running kernel stays bootable. The build itself
+        # mutates nothing, so it runs outside the install sentinel; a Gate 2
+        # abort therefore leaves no sentinel behind.
+        if options.dry_run:
+            _log.ui(f"[dry-run] would build {pkgname} (no install) from {pkgbuild}")
+        else:
+            _log.ui(f"Building kernel (no install): {pkgname} from {pkgbuild}")
+            try:
                 makepkg_run(pkgbuild, options=BuildOptions(
                     pkg_log=not options.no_pkg_logs,
                     persist_log=options.persist_log,
@@ -681,11 +887,40 @@ class KernelStage(Stage):
                     source=source,
                     owner_stage="kernel",
                     toolchain_variant=variant if variant != "system" else None,
+                    no_install=True,
                 ))
+            except AlreadyBuilt:
+                _log.info(
+                    "Kernel package already built — proceeding to audit + install",
+                )
 
-            # Post-install — inside the sentinel so an interrupted
-            # mkinitcpio or bootloader regen blocks the next sysforge run.
+            # Gate 2 — resolved-.config audit (raises on brick, pre-install).
+            _gate2_audit(pkgbuild.parent, topology, skip_boot_audit=skip_boot_audit)
+
+        # Install + boot wiring are the mutation window — wrap them in the
+        # sentinel so an interrupted install / mkinitcpio / bootloader regen
+        # blocks the next run with a recovery command (the failure mode that
+        # leaves the system kernel-installed but initramfs-missing → unbootable).
+        with sentinel_scope(
+            options.state_dir,
+            "kernel",
+            recovery_cmd=_kernel_recovery_command(),
+            retry_cmd="sysforge run kernel",
+            pkgname=pkgname,
+            bootloader=bootloader,
+            compiler=compiler or "default",
+        ):
+            if options.dry_run:
+                _log.ui(f"[dry-run] would install {pkgname} and wire it into boot")
+            else:
+                install_built_packages(pkgbuild.parent, noconfirm=not interactive)
+
             _run_mkinitcpio(options.dry_run)
             _update_bootloader(bootloader, options.dry_run)
+
+            # Gate 3 — post-install boot-readiness (raises on brick). Inside the
+            # sentinel so an unbootable result blocks the next run for recovery.
+            if not options.dry_run:
+                _gate3_verify(pkgbuild.parent, pkgname, bootloader)
 
         _log.ui(f"Kernel stage complete: {pkgname}")

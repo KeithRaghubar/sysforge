@@ -445,6 +445,8 @@ class RunKernelVerb(_RunVerbBase):
             non_interactive=getattr(args, "non_interactive", False),
             bootloader=getattr(args, "bootloader", None),
             compiler=getattr(args, "compiler", None),
+            allow_no_fallback=getattr(args, "allow_no_fallback", False),
+            skip_boot_audit=getattr(args, "skip_boot_audit", False),
         )
         run_stage_standalone(KernelStage(), config, options)
         return ExecResult()
@@ -764,6 +766,11 @@ def _add_doctor_parser(sub):
              "per-vendor drivers from the hardware overlay's gpu_vendors) AND "
              "run system-state probes (nvidia-drm modeset, driver version skew, "
              "Wayland explicit-sync protocol, Steam GPU accel, session type).")
+    p.add_argument("--hardware", action="store_true",
+        help="Run system-state hardware probes: inventory all PCI/USB devices, "
+             "flag any present device with no kernel driver bound, and audit the "
+             "running kernel's .config for boot-critical / device-driver gaps "
+             "(the missing-driver class of bug). Usable on its own (no PKG).")
     p.add_argument("--all", action="store_true", dest="all",
         help="Verify every installed package — foreign and non-foreign (pacman -Q). "
              "Slow but comprehensive.")
@@ -1092,6 +1099,18 @@ def _add_run_parser(sub):
         help="Override state directory.")
     p_kernel.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
         help="Path to a profiles.toml to use instead of the default.")
+    p_kernel.add_argument("--allow-no-fallback", action="store_true",
+        dest="allow_no_fallback",
+        help="Override the boot-safety guarantee that a fallback kernel "
+             "(stock linux/linux-lts with a boot image) exists before "
+             "installing a custom kernel. Without a fallback, a broken custom "
+             "kernel leaves no recovery path short of a live USB.")
+    p_kernel.add_argument("--skip-boot-audit", action="store_true",
+        dest="skip_boot_audit",
+        help="Override the pre-install boot-critical kconfig audit (Gate 2). "
+             "By default a built kernel that drops the root filesystem / "
+             "storage controller / core boot infra aborts before install; this "
+             "flag installs it anyway. Dangerous — can leave the system unbootable.")
     p_kernel.set_defaults(verb_cls=RunKernelVerb)
 
 

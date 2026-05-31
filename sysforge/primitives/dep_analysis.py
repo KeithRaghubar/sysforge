@@ -267,29 +267,24 @@ def _parse_kernel_config():
     ('y', 'm', or 'n' for unset).  Returns None if config is unavailable.
     """
     import gzip
+
+    from sysforge.primitives.kernel_safety import parse_kconfig_text
+
     config_path = Path("/proc/config.gz")
     boot_config = Path(f"/boot/config-{os.uname().release}")
 
-    lines = None
+    text = None
     if config_path.exists():
         with gzip.open(config_path, "rt") as f:
-            lines = f.readlines()
+            text = f.read()
     elif boot_config.exists():
-        lines = boot_config.read_text().splitlines(keepends=True)
+        text = boot_config.read_text()
 
-    if lines is None:
+    if text is None:
         return None
 
-    result = {}
-    for line in lines:
-        line = line.strip()
-        if line.startswith("CONFIG_") and "=" in line:
-            key, val = line.split("=", 1)
-            result[key] = val
-        elif line.startswith("# CONFIG_") and line.endswith("is not set"):
-            key = line.split()[1]
-            result[key] = "n"
-    return result
+    # Shared .config line parser — see kernel_safety.parse_kconfig_text.
+    return parse_kconfig_text(text)
 
 
 def _diagnose_guestfs(output, kernel_config):

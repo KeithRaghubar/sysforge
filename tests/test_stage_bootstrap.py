@@ -358,6 +358,33 @@ class TestWriteHardwareProfile:
             data = tomllib.load(f)
         assert "kconfig" not in data
 
+    def test_devices_array_of_tables(self, tmp_path):
+        from sysforge.primitives.device_probe import Device
+        out = tmp_path / "hardware_profile.toml"
+        hw = {"cpu_vendor": "AuthenticAMD", "cpu_family": 25, "cpu_model": 33,
+              "gpu_vendors": [], "nvme": True}
+        devices = [
+            Device(bus="pci", address="0000:0d:00.4",
+                   modalias='pci:v00001022d00001487 with "quote"\nand newline',
+                   class_id="0x040300", description="AMD HD Audio", driver=None,
+                   expected_modules=["snd_hda_intel"],
+                   suggested_kconfig=["CONFIG_SND_HDA_INTEL"]),
+        ]
+        _write_hardware_profile(out, hw, {"CONFIG_MZEN3": "y"},
+                                dry_run=False, devices=devices)
+        import tomllib
+        with open(out, "rb") as f:
+            data = tomllib.load(f)
+        # Control chars in the modalias must not break TOML parsing.
+        assert len(data["devices"]) == 1
+        d = data["devices"][0]
+        assert d["bus"] == "pci"
+        assert d["address"] == "0000:0d:00.4"
+        assert d["driver"] == ""
+        assert d["expected_modules"] == ["snd_hda_intel"]
+        assert d["suggested_kconfig"] == ["CONFIG_SND_HDA_INTEL"]
+        assert data["kconfig"]["CONFIG_MZEN3"] == "y"
+
 
 # ---------------------------------------------------------------------------
 # Hardware stage — architecture-aware kconfig disable
@@ -470,9 +497,23 @@ class TestHardwareStageRun:
                 pass  # tested via direct unit tests above
 
         # Direct integration test using real functions
+        from sysforge.primitives.device_probe import Device
+        fake_devices = [
+            Device(bus="pci", address="0000:0d:00.4",
+                   modalias="pci:v00001022d00001487", class_id="0x040300",
+                   description="AMD HD Audio", driver=None,
+                   expected_modules=["snd_hda_intel"],
+                   suggested_kconfig=["CONFIG_SND_HDA_INTEL"]),
+            Device(bus="pci", address="0000:01:00.0",
+                   modalias="pci:v0000144Dd0000A80A", class_id="0x010802",
+                   description="Samsung NVMe", driver="nvme",
+                   expected_modules=["nvme"], suggested_kconfig=["CONFIG_BLK_DEV_NVME"]),
+        ]
         with patch("sysforge.pipeline.stages.hardware.subprocess.run") as mock_run, \
              patch("sysforge.pipeline.stages.hardware.resolve_state_dir",
                    return_value=(tmp_path, "test")), \
+             patch("sysforge.primitives.device_probe.enumerate_devices",
+                   return_value=fake_devices), \
              patch("pathlib.Path.read_text", return_value=_AMD_ZEN3_CPUINFO):
 
             mock_run.return_value = MagicMock(
@@ -490,6 +531,11 @@ class TestHardwareStageRun:
         assert data["hardware"]["llvm_targets"]
         assert "NVPTX" in data["hardware"]["llvm_targets"]
         assert "AMDGPU" not in data["hardware"]["llvm_targets"]
+        # [[devices]] inventory written, with the unbound audio controller.
+        assert len(data["devices"]) == 2
+        audio = next(d for d in data["devices"] if d["address"] == "0000:0d:00.4")
+        assert audio["driver"] == ""
+        assert audio["suggested_kconfig"] == ["CONFIG_SND_HDA_INTEL"]
         assert data["kconfig"]["CONFIG_MZEN3"] == "y"
         assert data["kconfig"]["CONFIG_DRM_NOUVEAU"] == "n"
         assert data["kconfig"]["CONFIG_BLK_DEV_NVME"] == "y"
@@ -501,6 +547,8 @@ class TestHardwareStageRun:
         with patch("sysforge.pipeline.stages.hardware.subprocess.run") as mock_run, \
              patch("sysforge.pipeline.stages.hardware.resolve_state_dir",
                    return_value=(tmp_path, "test")), \
+             patch("sysforge.primitives.device_probe.enumerate_devices",
+                   return_value=[]), \
              patch("pathlib.Path.read_text", return_value=_AMD_ZEN3_CPUINFO):
 
             mock_run.return_value = MagicMock(returncode=0, stdout=_LSPCI_NVIDIA)

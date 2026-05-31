@@ -122,6 +122,8 @@ sysforge/
 │       ├── abi_check.py               # post-build versioned-symbol ABI check (.so cross-ref)
 │       ├── provides_lookup.py         # reverse-lookup soname → package (pacman -Fq)
 │       ├── graphics_probe.py          # system-state graphics checks (NVIDIA, Wayland, Steam)
+│       ├── device_probe.py            # full PCI/USB inventory + driver-coverage (modalias→module→CONFIG)
+│       ├── kernel_safety.py           # kernel boot-safety: .config audit, fallback/boot-artifact/DKMS checks
 │       ├── failure.py                 # failure scenario handling (shared)
 │       ├── resource_guard.py          # controller RLIMIT_AS cap + lift_for_child() for subprocesses
 │       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
@@ -141,7 +143,7 @@ sysforge/
 │           ├── _bootstrap.py          # shared bootstrap config loader (BootstrapConfig dataclass)
 │           ├── partition.py           # stage 1: GPT partitioning, mkfs, mount
 │           ├── base_install.py        # stage 2: pacstrap + genfstab
-│           ├── hardware.py            # stage 3: CPU/GPU/NVMe detection → hardware_profile.toml
+│           ├── hardware.py            # stage 3: CPU/GPU/NVMe detection + PCI/USB inventory → hardware_profile.toml
 │           ├── configure.py           # stage 4: hostname, locale, timezone, bootloader, user, services (arch-chroot)
 │           ├── reconfigure.py         # stage 5: pre-build checkpoint
 │           ├── toolchain.py           # stage 6: LLVM/GCC toolchain build (optional 4-pass PGO)
@@ -408,6 +410,8 @@ age       = 12                 # reflector --latest N hours
 
 The hardware stage (stage 3) needs no config — it auto-detects and writes `hardware_profile.toml` to `state_dir`. After reboot the file is at its natural path (`/var/lib/sysforge/hardware_profile.toml`) and the kernel stage picks it up automatically.
 
+**Full device inventory.** Beyond the scalar CPU/GPU/NVMe summary, the stage enumerates every PCI and USB device via `primitives/device_probe.enumerate_devices()` and appends a `[[devices]]` array-of-tables to `hardware_profile.toml` (bus, address, modalias, class, description, bound driver, expected modules, suggested `CONFIG_*`). The device→module link is resolved against a complete **reference kernel**'s `modules.alias` (newest installed stock kernel, excluding any `custom` modules dir) — a custom kernel that omitted a driver can't resolve the modalias it lacks, so resolving against the reference surfaces the gap. Any present, functional device with no driver bound is WARNed at the stage and pointed at `sysforge doctor --hardware`. The `[[devices]]` block is emitted after the scalar `[hardware]`/`[kconfig]` tables; existing readers (`tomllib`) are unaffected.
+
 ### Runner
 
 `run_pipeline(config, options, stages)` sequences stage execution:
@@ -458,6 +462,12 @@ source           = "local"           # "local" (default) | "aur" | "git"
                                      # "local" = hand-maintained PKGBUILD, no remote sync.
                                      # "aur"/"git" = PKGBUILD is a clone of an AUR/git remote.
 
+# Boot safety (defaults shown; see §Kernel stage boot-safety):
+require_fallback_kernel = true       # refuse to install a custom kernel as the only kernel
+boot_audit              = true       # run /boot-space + pre-install resolved-.config audit
+min_boot_free_mb        = 200        # minimum free MiB on /boot before building
+capture_lsmod_snapshot  = true       # capture lsmod for `make localmodconfig`
+
 [[kconfig]]                      # manual kconfig overrides (optional, repeatable)
 option = "CONFIG_HZ_1000"        # must match CONFIG_[A-Z0-9_]+
 value  = "y"                     # y | m | n | non-empty string
@@ -485,7 +495,7 @@ If neither source provides any kconfig entries, no fragment is written.
 
 **lsmod snapshot:**
 
-Before the build, `lsmod` output is captured to `<state_dir>/lsmod.snapshot`. This lets the PKGBUILD run `make localmodconfig` reproducibly using a fixed module set from the running system rather than whatever is loaded at build time.
+Before the build, `lsmod` output is captured to `<state_dir>/lsmod.snapshot` (unless `capture_lsmod_snapshot = false`). This lets the PKGBUILD run `make localmodconfig` reproducibly using a fixed module set from the running system rather than whatever is loaded at build time. `localmodconfig` strips drivers for hardware *not loaded at snapshot time* — Gate 1 warns about this and Gate 2 (below) is the backstop that catches a dropped root-path driver before install.
 
 **Interactive kconfig (kernel-stage default):**
 
@@ -501,15 +511,26 @@ The kernel stage routes its source refresh through `source_sync.get_scheduler().
 
 After a successful build, the kernel stage stamps `owner_stage = "kernel"` and `source = "local"` (or the configured value) into `build_state.toml` via `BuildOptions`. `sysforge update` honours that marker and skips the kernel package by default — the canonical update path is `sysforge run kernel`, not a sweep through `update`. Before the first kernel-stage build has written that stamp, the bootstrap fallback in `update.py` reads `kernel.toml`'s `pkgname` and applies the same skip; split sub-packages collapse to the kernel `pkgbase` via the same `get_pkgbase()` lookup that handles other custom-built split packages. `--include-stage-owned` overrides the skip; naming the package explicitly on the `sysforge update` command line is treated as an opt-in for that run.
 
+**Kernel stage boot-safety.**
+
+The kernel stage must never leave the machine unbootable. Three gates wrap the build/install, backed by `primitives/kernel_safety.py` (the policy — what aborts vs warns — lives in the stage; the facts live in the primitive). Brick-class findings (`is_brick=True`) hard-fail; everything else warns.
+
+To make a *pre-install* hard-fail possible, the build is **split from the install**: the stage builds with `BuildOptions.no_install=True` (the profile's `-i`/`--install` flags are stripped via `INSTALL_FLAGS`), audits the resolved `.config`, then installs the produced artifact via `makepkg_wrapper.install_built_packages()` (a `sudo pacman -U` of the built `.pkg.tar*`). Without the split, Arch's pacman hooks (`kernel-install`/mkinitcpio) would build the initramfs and boot entry *at install time* — before any audit could run. The build mutates nothing and runs **outside** the sentinel, so a Gate 2 abort leaves the system completely untouched (nothing installed, no sentinel set).
+
+- **Gate 1 — preflight (before the build).** Cheap, read-only. Hard-fails on a missing **fallback kernel** (no stock `linux`/`linux-lts` with a boot image — installing a custom kernel as the only kernel has no recovery path; override with `--allow-no-fallback` / `require_fallback_kernel = false`) and on a **missing/too-full `/boot`** (`min_boot_free_mb`; part of `boot_audit`). Captures the root topology (FS / storage transport / crypt-LVM-RAID from `/proc/mounts` + `lsblk -s` + `/etc/crypttab` + `/proc/mdstat`) for Gate 2. Advisory warnings: localmodconfig strip, DKMS rebuild reminder, mkinitcpio `HOOKS` vs root topology. In `--dry-run` the hard-fails downgrade to warnings.
+- **Gate 2 — resolved-`.config` audit (after build, before install).** Reads the resolved `.config` from the build tree and runs `kernel_safety.audit_resolved_config(config, topology, devices)`. This is the only placement that sees post-merge / post-`olddefconfig` / post-`nconfig` state, so it's the single catch for a **Kconfig dependency cascade** (e.g. `CONFIG_SND_PCI=n` silently dropping `CONFIG_SND_HDA_INTEL`). Brick-class drops — root filesystem, root storage controller, core boot infra (`CONFIG_MODULES`/`BLK_DEV_INITRD`/`DEVTMPFS`/…), systemd prerequisites, crypt/LVM/RAID stacking — **abort before install** (override: `--skip-boot-audit` / `boot_audit = false`). Device-driver gaps (present PCI/USB device with no enabled driver, from `device_probe`) and console/framebuffer drops are advisory.
+- **Gate 3 — boot-readiness (after install + mkinitcpio + bootloader).** `verify_boot_artifacts` confirms `vmlinuz-<pkg>` + `initramfs-<pkg>.img` are present, non-trivial, and referenced by ≥1 boot entry (systemd-boot loader entry or `grub.cfg`) — a missing entry means the kernel installed but cannot be selected (the `bootctl update` ≠ boot-entry trap). `check_dkms_for_kernel` flags DKMS modules not rebuilt for the new release (nvidia → black screen, zfs root → unbootable). Brick findings raise; running inside the sentinel, that leaves the sentinel set so the next run is prompted to recover.
+
 **CLI surface (`sysforge run kernel`):**
 
-`--dry-run`, `--no-update`, `--cleansrc`, `--cleansrc-force`, `--non-interactive`, `--compiler {gcc,llvm}`, `--bootloader {systemd-boot,grub,none}`, `--no-pkg-logs`, `--persist-log`, `--log-dir`, `--cache-report`, `--abi-check`, `--state-dir`, `--profile-conf`.
+`--dry-run`, `--no-update`, `--cleansrc`, `--cleansrc-force`, `--non-interactive`, `--compiler {gcc,llvm}`, `--bootloader {systemd-boot,grub,none}`, `--allow-no-fallback`, `--skip-boot-audit`, `--no-pkg-logs`, `--persist-log`, `--log-dir`, `--cache-report`, `--abi-check`, `--state-dir`, `--profile-conf`.
 
-**Post-install steps** (run after `makepkg` succeeds):
+**Post-install steps** (run after the artifact is installed):
 1. `sudo mkinitcpio -P`
 2. Bootloader update: `bootctl update` (systemd-boot, default), `grub-mkconfig -o /boot/grub/grub.cfg` (grub), or skipped (`none`). The selection comes from `kernel.toml bootloader`, overridable per-invocation via `--bootloader`.
+3. Gate 3 boot-readiness verification (above).
 
-**Interrupted-install protection.** The `makepkg --install` call, the post-install `mkinitcpio -P`, and the bootloader regen are wrapped in `sentinel_scope(state_name="kernel", recovery_cmd="sudo mkinitcpio -P", …)`. An interruption anywhere in that window leaves the sentinel in place so the next sysforge invocation blocks at the CLI-entry recovery prompt and offers to regenerate the initramfs — the step whose absence makes the system unbootable. See §Toolchain stage → *Interrupted-install protection* for the shared primitive.
+**Interrupted-install protection.** The artifact install (`pacman -U`), the post-install `mkinitcpio -P`, the bootloader regen, and Gate 3 are wrapped in `sentinel_scope(state_name="kernel", recovery_cmd="sudo mkinitcpio -P", …)`. (The build runs *before* this scope.) An interruption anywhere in that window leaves the sentinel in place so the next sysforge invocation blocks at the CLI-entry recovery prompt and offers to regenerate the initramfs — the step whose absence makes the system unbootable. See §Toolchain stage → *Interrupted-install protection* for the shared primitive.
 
 ### Packages stage (stage 7)
 
@@ -1177,6 +1198,8 @@ Per-package headers and the final summary both tag each package with its install
 
 `--graphics` also runs a second axis of checks — system-state probes from `primitives/graphics_probe.py` — after the package walk completes. These catch classes of graphics breakage that ABI/linkage walks cannot see: kernel-module parameters, NVIDIA driver version skew, session-type / compositor misconfiguration, missing Wayland explicit-sync protocol, Steam client config regressions. See `graphics_probe.py` below for the check inventory. Findings with severity `error` contribute to the exit code; `warn` and `info` do not.
 
+`--hardware` runs a hardware/boot-readiness axis: it inventories all PCI/USB devices and flags any present device with no driver bound (`device_probe.check_unsupported_devices`), then audits the **running** kernel's `.config` (from `/proc/config.gz` or `/boot/config-$(uname -r)`) against the detected devices and root topology (`kernel_safety.audit_resolved_config`) — the on-the-spot diagnostic for "device X has no driver" / the `CONFIG_SND_PCI`-class trap. Unlike `--graphics`, `--hardware` needs no package targets and can be run on its own (`sysforge doctor --hardware`); it bypasses the empty-roots usage error and renders findings in the same `[SEV] check_id: message → remediation` format. `error`-severity findings (brick-class boot-config drops) contribute to the exit code; device-driver and degraded findings warn.
+
 Vendor detection for `--graphics` prefers the hardware profile (`/var/lib/sysforge/hardware_profile.toml` → `[gpu] vendors`); when that file is absent, falls back to `lspci -nnk` scraping, extracting `nvidia`/`amd`/`intel`/`radeon` from VGA-class device strings. The `lspci` fallback is used for both the package-expansion vendor list and the graphics-probe vendor-gating.
 
 `--all` verifies every installed package (`pacman -Q`) — foreign and non-foreign. Slow but comprehensive: a one-shot "is anything broken anywhere" sweep. `--repo` narrows to non-foreign packages only (all of `pacman -Q` minus `pacman -Qm`), for when you want to scope a sweep to the distribution-provided side without walking every AUR/custom build.
@@ -1212,7 +1235,7 @@ All report output (headers, issue lines, summary) flows through `log.ui` (→ st
 > as "ships --apply behind tested-by-mock semantics"; full integration
 > verification is pending the next session.
 
-Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db), `--apply` (drift-rebuild bridge), `--no-confirm`, `--dry-run`.
+Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--hardware`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db), `--apply` (drift-rebuild bridge), `--no-confirm`, `--dry-run`.
 
 Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — see the `provides_lookup.py` subsection for the public API. NEEDED-soname extraction reuses `abi_check.needed_sonames` (public since doctor calls it directly for ABI-issue suggestions). System-state probes live in `sysforge/primitives/graphics_probe.py` — log tag `[GFX]`, public API `check_system_graphics(config, *, gpu_vendors=None)`; invoked from `cmd_doctor` when `--graphics` is set.
 
@@ -1259,6 +1282,24 @@ Check inventory (v1):
 The explicit-sync check is the load-bearing one for NVIDIA-on-Wayland black-window breakage: when the compositor doesn't advertise `wp_linux_drm_syncobj_manager_v1`, XWayland games on NVIDIA fall back to implicit sync which is known-broken on the NVIDIA explicit-sync driver path. Note: the registry global is `wp_linux_drm_syncobj_manager_v1` — the protocol-document name `linux-drm-syncobj-v1` (i.e. the bare `wp_linux_drm_syncobj_v1` substring) never appears as an advertised global.
 
 Log tag: `[GFX]`. No writes, no sudo, no network.
+
+### `device_probe.py`
+
+Full PCI/USB device inventory plus a driver-coverage check. Read-only; same `_run`/`_read_text`/frozen-finding idiom as `graphics_probe.py`. Walks `/sys/bus/{pci,usb}/devices`, reading each device's `modalias`, class, and the `driver` symlink (the bound-driver signal validates the *running* kernel). The device→module link is resolved against a complete reference kernel's `modules.alias` + `modules.builtin.modinfo` via `fnmatch` (exactly modprobe's matching), cached per reference dir; `find_reference_modules_dir()` picks the newest installed stock kernel (excludes any `custom` modules dir) so a custom kernel that omitted a driver doesn't hide its own gap. A curated `_MODULE_TO_KCONFIG` table maps common modules (audio/NIC/NVMe/USB/GPU) to their `CONFIG_*`; unknown modules degrade to "module name only".
+
+Public API: `enumerate_devices(buses=("pci","usb")) -> list[Device]`; `check_unsupported_devices(*, devices=None) -> list[DeviceFinding]` (flags functional — non-bridge/hub — devices with no driver and a known expected module); `find_reference_modules_dir() -> Path | None`. `Device` carries `bus`/`address`/`modalias`/`class_id`/`description`/`driver`/`expected_modules`/`suggested_kconfig`; `DeviceFinding` mirrors `GraphicsFinding`. Consumers: the hardware stage (`[[devices]]` inventory + WARNs), `doctor --hardware`, and `kernel_safety.audit_resolved_config` (device-driver coverage). Filesystem roots (`_SYS_BUS`, `_MODULES_BASE`) are module-level for test repointing.
+
+### `kernel_safety.py`
+
+Guardrails so the kernel stage can never leave the machine unbootable (see §Kernel stage boot-safety for the policy). Pure/read-only, fixture-testable via module-level path constants (`_BOOT_DIR`, `_PROC_MOUNTS`, `_CRYPTTAB`, `_MDSTAT`, `_MKINITCPIO_CONF`). `KernelFinding` adds `is_brick: bool` to the finding shape — True means "unbootable / dangerous to install"; the kernel stage hard-fails on those and warns on the rest.
+
+Public API:
+- `parse_kconfig(path)` / `parse_kconfig_text(text)` — the shared `.config` line parser (`CONFIG_X=y|m`, `# CONFIG_X is not set` → `n`); also reused by `dep_analysis._parse_kernel_config` for the running kernel.
+- `detect_root_topology() -> RootTopology` — root FS, storage transport, and crypt/LVM/RAID stacking from `/proc/mounts` + `lsblk -s` (+ `/etc/crypttab`, `/proc/mdstat`).
+- `audit_resolved_config(config, topology=None, devices=None) -> list[KernelFinding]` — the one validator: boot-critical symbols (root FS, root storage controller, core boot infra, systemd prereqs, console) keyed off topology, plus device-driver coverage from `device_probe` Devices. Accepts a `.config` path or a pre-parsed dict.
+- `find_fallback_kernels(exclude_pkg=None)` / `verify_boot_artifacts(pkgname, bootloader)` / `check_dkms_for_kernel(kver)` / `list_dkms_modules()` / `check_mkinitcpio_hooks(topology)` / `check_boot_mount_space(min_mb=200)` — the Gate 1/Gate 3 fact-gatherers (fallback presence, post-install vmlinuz+initramfs+boot-entry, DKMS rebuild coverage, mkinitcpio HOOKS vs topology, `/boot` headroom).
+
+The primitive must not import the pipeline layer; the kernel stage owns the abort/warn decisions.
 
 ---
 

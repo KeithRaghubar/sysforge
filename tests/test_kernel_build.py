@@ -6,9 +6,8 @@ test_kernel_build.py — unit tests for kernel build mode behaviours:
   - _invoke_with_retry sudo timeout recovery
 """
 import subprocess
-import os
 from contextlib import contextmanager
-from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -202,6 +201,48 @@ def test_find_built_packages_ignores_unrelated(tmp_path):
     (tmp_path / "src").mkdir()
     result = _find_built_packages(tmp_path)
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# install_built_packages — used by the kernel stage's split build/install
+# ---------------------------------------------------------------------------
+
+def test_install_built_packages_runs_pacman_U(tmp_path):
+    from sysforge.primitives import makepkg_wrapper as mw
+    (tmp_path / "linux-custom-1-1-x86_64.pkg.tar.zst").touch()
+    (tmp_path / "linux-custom-headers-1-1-x86_64.pkg.tar.zst").touch()
+    calls = {}
+
+    def fake_run(cmd, *a, **k):
+        calls["cmd"] = cmd
+        return SimpleNamespace(returncode=0)
+
+    with patch("sysforge.primitives.makepkg_wrapper.subprocess.run", fake_run):
+        pkgs = mw.install_built_packages(tmp_path)
+    assert calls["cmd"][:4] == ["sudo", "pacman", "-U", "--noconfirm"]
+    assert len(pkgs) == 2
+
+
+def test_install_built_packages_no_artifact_raises(tmp_path):
+    from sysforge.primitives import makepkg_wrapper as mw
+    with pytest.raises(RuntimeError, match="nothing to install"):
+        mw.install_built_packages(tmp_path)
+
+
+def test_install_built_packages_pacman_failure_raises(tmp_path):
+    from sysforge.primitives import makepkg_wrapper as mw
+    (tmp_path / "linux-custom-1-1-x86_64.pkg.tar.zst").touch()
+    with patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
+               lambda cmd, *a, **k: SimpleNamespace(returncode=1)):
+        with pytest.raises(RuntimeError, match="pacman -U failed"):
+            mw.install_built_packages(tmp_path)
+
+
+def test_no_install_option_default_false():
+    from sysforge.primitives.makepkg_wrapper import BuildOptions, INSTALL_FLAGS
+    assert BuildOptions().no_install is False
+    # INSTALL_FLAGS is the set merged into strip_flags when no_install is set.
+    assert "-i" in INSTALL_FLAGS and "--install" in INSTALL_FLAGS
 
 
 # ---------------------------------------------------------------------------

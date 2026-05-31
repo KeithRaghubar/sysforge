@@ -19,6 +19,40 @@ from sysforge.pipeline.stages.kernel import (
     _write_kconfig_fragment,
 )
 from sysforge.pipeline.state import PipelineState
+from sysforge.primitives import device_probe, kernel_safety
+import sysforge.pipeline.stages.kernel as _km
+
+
+# ---------------------------------------------------------------------------
+# Boot-safety gate neutralization
+#
+# The KernelStage.run() tests exercise build/install/bootloader flow, not the
+# boot-safety gates (those have dedicated tests below). This autouse fixture
+# neutralizes the gates' system-touching primitives so the flow tests stay
+# hermetic: a fallback kernel is "present", /boot is fine, the resolved-config
+# audit and post-install verification find nothing, and the artifact install
+# is a no-op. Individual gate tests re-patch the specific primitive they probe.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _neutralize_kernel_gates(monkeypatch):
+    monkeypatch.setattr(kernel_safety, "find_fallback_kernels",
+                        lambda *a, **k: ["linux"])
+    monkeypatch.setattr(kernel_safety, "check_boot_mount_space",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(kernel_safety, "detect_root_topology",
+                        lambda: kernel_safety.RootTopology())
+    monkeypatch.setattr(kernel_safety, "list_dkms_modules", lambda: [])
+    monkeypatch.setattr(kernel_safety, "check_mkinitcpio_hooks",
+                        lambda *a, **k: [])
+    monkeypatch.setattr(kernel_safety, "audit_resolved_config",
+                        lambda *a, **k: [])
+    monkeypatch.setattr(kernel_safety, "verify_boot_artifacts",
+                        lambda *a, **k: [])
+    monkeypatch.setattr(kernel_safety, "check_dkms_for_kernel",
+                        lambda *a, **k: [])
+    monkeypatch.setattr(device_probe, "enumerate_devices", lambda *a, **k: [])
+    monkeypatch.setattr(_km, "install_built_packages", lambda *a, **k: [])
 
 
 # ---------------------------------------------------------------------------
@@ -924,10 +958,10 @@ def test_kernel_recovery_command_targets_mkinitcpio():
     assert cmd.startswith("sudo ")
 
 
-def test_kernel_stage_writes_sentinel_during_build_and_clears_on_success(tmp_path):
-    """Sentinel is present while makepkg_run executes, cleared after a
-    clean stage exit. Mirrors the toolchain stage's protection window."""
-    import sysforge.pipeline.stages.kernel as _km
+def test_kernel_stage_writes_sentinel_during_install_and_clears_on_success(tmp_path):
+    """Sentinel wraps the install/boot-wiring window (not the build, which
+    mutates nothing and runs outside so a Gate 2 abort leaves no sentinel).
+    Present while install_built_packages executes, cleared on clean exit."""
     from sysforge.primitives.stage_sentinel import StageSentinel
 
     builds = tmp_path / "builds"
@@ -936,25 +970,157 @@ def test_kernel_stage_writes_sentinel_during_build_and_clears_on_success(tmp_pat
     state_dir = tmp_path / "state"
     state = PipelineState(state_dir)
 
-    seen_during_build = {"present": False, "stage": None}
+    seen_during_install = {"present": False, "stage": None}
 
-    def check_sentinel_during_build(*_a, **_kw):
+    def check_sentinel_during_install(*_a, **_kw):
         record = StageSentinel(state_dir).get_active()
         if record is not None:
-            seen_during_build["present"] = True
-            seen_during_build["stage"] = record.get("stage")
+            seen_during_install["present"] = True
+            seen_during_install["stage"] = record.get("stage")
+        return []
 
     with patch.object(_km, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.makepkg_run",
-               side_effect=check_sentinel_during_build), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch.object(_km, "install_built_packages",
+                      side_effect=check_sentinel_during_install), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=state_dir))
 
-    assert seen_during_build["present"] is True
-    assert seen_during_build["stage"] == "kernel"
+    assert seen_during_install["present"] is True
+    assert seen_during_install["stage"] == "kernel"
     # Cleared on clean exit
     assert StageSentinel(state_dir).get_active() is None
+
+
+# ---------------------------------------------------------------------------
+# Boot-safety gates
+# ---------------------------------------------------------------------------
+
+def test_gate1_no_fallback_hard_fails(tmp_path, monkeypatch):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    monkeypatch.setattr(kernel_safety, "find_fallback_kernels", lambda *a, **k: [])
+    install_mock = MagicMock(return_value=[])
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch.object(_km, "install_built_packages", install_mock), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        with pytest.raises(RuntimeError, match="no fallback kernel"):
+            KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    # Hard-fail is before the build — nothing spent, nothing installed.
+    mock_build.assert_not_called()
+    install_mock.assert_not_called()
+
+
+def test_gate1_allow_no_fallback_proceeds(tmp_path, monkeypatch):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    monkeypatch.setattr(kernel_safety, "find_fallback_kernels", lambda *a, **k: [])
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(
+            state_dir=tmp_path / "state", allow_no_fallback=True))
+    mock_build.assert_called_once()
+
+
+def test_gate1_low_boot_space_hard_fails(tmp_path, monkeypatch):
+    from sysforge.primitives.kernel_safety import KernelFinding, SEV_ERROR
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    monkeypatch.setattr(kernel_safety, "check_boot_mount_space",
+                        lambda *a, **k: KernelFinding(
+                            SEV_ERROR, "boot_low_space", "/boot has 5 MiB free",
+                            "free space", is_brick=True))
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        with pytest.raises(RuntimeError, match="boot"):
+            KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    mock_build.assert_not_called()
+
+
+def test_gate2_brick_aborts_before_install(tmp_path, monkeypatch):
+    from sysforge.primitives.kernel_safety import KernelFinding, SEV_ERROR
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    brick = KernelFinding(SEV_ERROR, "boot_kconfig:CONFIG_EXT4_FS",
+                          "CONFIG_EXT4_FS is not enabled", "Set it", is_brick=True)
+    monkeypatch.setattr(_km, "_resolve_built_config", lambda d: tmp_path / ".config")
+    monkeypatch.setattr(kernel_safety, "audit_resolved_config",
+                        lambda *a, **k: [brick])
+    install_mock = MagicMock(return_value=[])
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch.object(_km, "install_built_packages", install_mock), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        with pytest.raises(RuntimeError, match="boot-critical config"):
+            KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    install_mock.assert_not_called()
+
+
+def test_gate2_skip_boot_audit_installs_anyway(tmp_path, monkeypatch):
+    from sysforge.primitives.kernel_safety import KernelFinding, SEV_ERROR
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    brick = KernelFinding(SEV_ERROR, "boot_kconfig:CONFIG_EXT4_FS",
+                          "CONFIG_EXT4_FS is not enabled", "Set it", is_brick=True)
+    monkeypatch.setattr(_km, "_resolve_built_config", lambda d: tmp_path / ".config")
+    monkeypatch.setattr(kernel_safety, "audit_resolved_config",
+                        lambda *a, **k: [brick])
+    install_mock = MagicMock(return_value=[])
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch.object(_km, "install_built_packages", install_mock), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(
+            state_dir=tmp_path / "state", skip_boot_audit=True))
+    install_mock.assert_called_once()
+
+
+def test_gate3_unbootable_artifacts_raise_after_install(tmp_path, monkeypatch):
+    from sysforge.primitives.kernel_safety import KernelFinding, SEV_ERROR
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    brick = KernelFinding(SEV_ERROR, "boot_entry_missing",
+                          "no boot entry references the kernel", "add one",
+                          is_brick=True)
+    monkeypatch.setattr(kernel_safety, "verify_boot_artifacts",
+                        lambda *a, **k: [brick])
+    install_mock = MagicMock(return_value=[])
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch.object(_km, "install_built_packages", install_mock), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        with pytest.raises(RuntimeError, match="boot-readiness"):
+            KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    # The install did happen — Gate 3 fires post-install.
+    install_mock.assert_called_once()
 
 
 def test_kernel_stage_preserves_sentinel_on_mkinitcpio_failure(tmp_path):

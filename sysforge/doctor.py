@@ -525,6 +525,49 @@ def _print_report(pkgname: str, version: str | None,
 
 
 # ---------------------------------------------------------------------------
+# Hardware / boot-readiness checks (--hardware)
+# ---------------------------------------------------------------------------
+
+def _emit_hardware_checks() -> int:
+    """Render device-driver coverage + running-kernel boot-config gaps.
+
+    Mirrors the ``--graphics`` system-probe block: prints each finding as
+    ``[SEV] check_id: message → remediation`` and returns the count of
+    ``error``-severity findings for the exit code. Surfaces the same
+    device/boot-config audit the kernel stage runs, but against the *running*
+    kernel — the on-the-spot diagnostic for "device X has no driver".
+    """
+    from sysforge.primitives import device_probe, kernel_safety
+    from sysforge.primitives.dep_analysis import _parse_kernel_config
+
+    devices = device_probe.enumerate_devices()
+    findings = list(device_probe.check_unsupported_devices(devices=devices))
+
+    running_cfg = _parse_kernel_config()
+    if running_cfg:
+        findings += kernel_safety.audit_resolved_config(running_cfg, devices=devices)
+
+    _log.newline()
+    _log.ui("== hardware checks ==")
+    if not findings:
+        _log.ui("  no unsupported devices or boot-config gaps detected")
+        return 0
+
+    error_count = 0
+    for f in findings:
+        _log.ui(f"  [{f.severity.upper()}] {f.check_id}: {f.message}")
+        remediation = getattr(f, "remediation", "")
+        if remediation:
+            _log.ui(f"      → {remediation}")
+        if f.severity == _GFX_SEV_ERROR:
+            error_count += 1
+    _log.ui(
+        f"Hardware probe: {len(findings)} finding(s), {error_count} error(s)."
+    )
+    return error_count
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -576,8 +619,13 @@ def cmd_doctor(args):
     roots = deduped
 
     if not roots:
+        # --hardware is a system probe with no package targets — run it
+        # standalone rather than erroring on the empty package set.
+        if getattr(args, "hardware", False):
+            return 1 if _emit_hardware_checks() else 0
         _log.error(
-            "no packages to check — pass PKG, --graphics, --all, or --repo"
+            "no packages to check — pass PKG, --graphics, --hardware, --all, "
+            "or --repo"
         )
         return 2
 
@@ -751,6 +799,11 @@ def cmd_doctor(args):
                 f"{gfx_error_count} error(s)."
             )
 
+    # System-state hardware probes — under --hardware (alongside a package walk).
+    hw_error_count = 0
+    if getattr(args, "hardware", False):
+        hw_error_count = _emit_hardware_checks()
+
     # --apply bridge: hand REBUILD candidates to `sysforge update`.
     if apply_requested:
         rc = _apply_rebuilds(args, global_rebuild, global_install,
@@ -759,7 +812,7 @@ def cmd_doctor(args):
         # produces exit 0 even if doctor found issues.
         return rc
 
-    if affected_pkgs or gfx_error_count:
+    if affected_pkgs or gfx_error_count or hw_error_count:
         return 1
     return 0
 

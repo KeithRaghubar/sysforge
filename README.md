@@ -117,6 +117,10 @@ sysforge doctor mesa-git
 sysforge doctor --graphics            # curated stack + system-state probes
                                       # (nvidia-drm modeset, driver version skew,
                                       #  Wayland explicit-sync, Steam GPU accel, …)
+sysforge doctor --hardware            # inventory all PCI/USB devices, flag any with
+                                      # no driver bound, and audit the running kernel's
+                                      # .config for missing-driver / boot-config gaps
+                                      # (runnable on its own, no package needed)
 sysforge doctor --all                 # every installed package: foreign + non-foreign
 sysforge doctor --repo                # only non-foreign (native repo) packages
 sysforge doctor steam --suggest       # reverse-lookup candidate packages for each
@@ -237,6 +241,8 @@ This runs stages 5–8:
 - **toolchain** — *(opt-in)* builds the LLVM toolchain via the 4-pass PGO bootstrap (reuses existing profdata when compatible; `--rebuild-profdata` forces a full 4-pass). When `compiler` is unset or `"gcc"` the stage is register-only — it writes the system `/usr/bin/gcc` paths into pipeline state without building, since stock gcc/gcc-libs from `base-devel` are already correct. Skipped cleanly if `toolchain.toml` has `enabled = false` (the default).
 - **packages** — builds and installs everything in `packages.toml` with profiled flags
 - **kernel** — *(opt-in)* builds a custom kernel (skipped cleanly if `kernel.toml` is absent or `enabled = false`). `sysforge run kernel` is interactive by default (the PKGBUILD's `make nconfig`/`menuconfig` runs as written); pass `--non-interactive` for unattended runs. Compiler is independent of the toolchain stage — `kernel.toml compiler = "llvm"` or `--compiler llvm` builds the kernel with LLVM even on a gcc system. Bootloader is selectable via `kernel.toml bootloader` (`systemd-boot` default, `grub`, or `none`) or `--bootloader`. Source refresh routes through the source-sync scheduler (`--cleansrc` / `--cleansrc-force`). The hardware stage automatically writes `# CONFIG_<other-arch> is not set` lines for every kernel architecture domain that isn't the host's (ARM/AArch64/RISC-V/PowerPC/MIPS/SPARC/LoongArch top-level keys plus curated SoC family umbrellas), culling unreachable subtrees from the kconfig menu — re-enable any specific key via `kernel.toml [[kconfig]]` if needed.
+
+  **Boot safety:** the kernel stage will not leave the system unbootable. It refuses to install a custom kernel when no fallback kernel exists (override `--allow-no-fallback`), audits the built `.config` *before* installing and aborts if it dropped the root filesystem / storage controller / core boot infrastructure (override `--skip-boot-audit`), and after install verifies the kernel + initramfs landed and are referenced by a boot entry (and that DKMS modules like `nvidia-open-dkms` rebuilt). Tune via `kernel.toml` (`require_fallback_kernel`, `boot_audit`, `min_boot_free_mb`, `capture_lsmod_snapshot`).
 
 If the stage 5–8 run is interrupted, resume it:
 

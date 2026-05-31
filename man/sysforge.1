@@ -1,4 +1,4 @@
-.TH SYSFORGE "1" "2026\-05\-29" "sysforge" "Generated Python Manual"
+.TH SYSFORGE "1" "2026\-05\-31" "sysforge" "Generated Python Manual"
 .SH NAME
 sysforge
 .SH SYNOPSIS
@@ -362,9 +362,9 @@ Print a structured cache summary after \-\-apply runs.
 Suppress the LLVM source pre\-flight summary.
 
 .SH COMMAND \fI\,'sysforge doctor'\/\fR
-usage: sysforge doctor [\-h] [\-\-graphics] [\-\-all] [\-\-repo] [\-\-shallow]
-                       [\-\-quiet] [\-\-suggest] [\-\-apply] [\-\-no\-confirm]
-                       [\-\-dry\-run]
+usage: sysforge doctor [\-h] [\-\-graphics] [\-\-hardware] [\-\-all] [\-\-repo]
+                       [\-\-shallow] [\-\-quiet] [\-\-suggest] [\-\-apply]
+                       [\-\-no\-confirm] [\-\-dry\-run]
                        [PKG ...]
 
 .TP
@@ -380,6 +380,13 @@ libvdpau, egl\-wayland, xwayland, gamescope, plus per\-vendor drivers from the
 hardware overlay's gpu_vendors) AND run system\-state probes (nvidia\-drm
 modeset, driver version skew, Wayland explicit\-sync protocol, Steam GPU accel,
 session type).
+
+.TP
+\fB\-\-hardware\fR
+Run system\-state hardware probes: inventory all PCI/USB devices, flag any
+present device with no kernel driver bound, and audit the running kernel's
+.config for boot\-critical / device\-driver gaps (the missing\-driver class of
+bug). Usable on its own (no PKG).
 
 .TP
 \fB\-\-all\fR
@@ -835,7 +842,8 @@ usage: sysforge run kernel [\-h] [\-\-dry\-run] [\-\-no\-update] [\-\-cleansrc]
                            [\-\-bootloader {systemd\-boot,grub,none}]
                            [\-\-no\-pkg\-logs] [\-\-persist\-log] [\-\-log\-dir DIR]
                            [\-\-cache\-report] [\-\-abi\-check] [\-\-state\-dir DIR]
-                           [\-\-profile\-conf FILE]
+                           [\-\-profile\-conf FILE] [\-\-allow\-no\-fallback]
+                           [\-\-skip\-boot\-audit]
 
 .SH OPTIONS \fI\,'sysforge run kernel'\/\fR
 .TP
@@ -901,6 +909,19 @@ Override state directory.
 .TP
 \fB\-\-profile\-conf\fR \fI\,FILE\/\fR
 Path to a profiles.toml to use instead of the default.
+
+.TP
+\fB\-\-allow\-no\-fallback\fR
+Override the boot\-safety guarantee that a fallback kernel (stock linux/linux\-
+lts with a boot image) exists before installing a custom kernel. Without a
+fallback, a broken custom kernel leaves no recovery path short of a live USB.
+
+.TP
+\fB\-\-skip\-boot\-audit\fR
+Override the pre\-install boot\-critical kconfig audit (Gate 2). By default a
+built kernel that drops the root filesystem / storage controller / core boot
+infra aborts before install; this flag installs it anyway. Dangerous — can
+leave the system unbootable.
 
 .SH COMMAND \fI\,'sysforge setup'\/\fR
 usage: sysforge setup [\-h] [\-\-pacman\-conf FILE]

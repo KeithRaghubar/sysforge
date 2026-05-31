@@ -43,6 +43,8 @@ class RunOptions:
     non_interactive: bool = False    # opt out of interactive kconfig (kernel default is interactive)
     bootloader: str | None = None    # CLI override for kernel.toml bootloader (systemd-boot|grub|none)
     compiler: str | None = None      # kernel-stage compiler override ("gcc" or "llvm")
+    allow_no_fallback: bool = False  # kernel: override the fallback-kernel guarantee (Gate 1)
+    skip_boot_audit: bool = False    # kernel: override the pre-install boot-critical audit (Gate 2)
     # Extra makepkg flags (appended after profile makepkg_flags)
     makepkg_flags: list[str] = field(default_factory=list)
     # PGO profdata

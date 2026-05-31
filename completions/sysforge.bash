@@ -194,7 +194,7 @@ _sysforge_converge() {
 }
 
 _sysforge_doctor() {
-    local flags="--graphics --all --repo --shallow -q --quiet -s --suggest \
+    local flags="--graphics --hardware --all --repo --shallow -q --quiet -s --suggest \
         --apply --no-confirm --dry-run"
     if [[ $cur == -* ]]; then
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
@@ -291,7 +291,8 @@ _sysforge_run() {
         kernel)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update --cleansrc --cleansrc-force \
-                --non-interactive --compiler --bootloader --no-pkg-logs \
+                --non-interactive --compiler --bootloader \
+                --allow-no-fallback --skip-boot-audit --no-pkg-logs \
                 --persist-log --log-dir --cache-report --abi-check \
                 --state-dir --profile-conf" -- "$cur") )
             ;;
