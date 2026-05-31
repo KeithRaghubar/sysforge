@@ -1350,3 +1350,40 @@ def test_apply_implies_suggest(tmp_path, monkeypatch, capsys):
     assert "rebuild candidate" in err
     assert rc == 0
     assert len(captured) == 1
+
+
+# ---------------------------------------------------------------------------
+# cmd_doctor --toolchain
+# ---------------------------------------------------------------------------
+
+def test_cmd_doctor_toolchain_mismatch_nonzero_exit(monkeypatch, capsys):
+    from sysforge.primitives.llvm_state import ToolchainMismatchFinding
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(
+        "sysforge.primitives.llvm_state.detect_toolchain_config_mismatch",
+        lambda *a, **k: (
+            ToolchainMismatchFinding(
+                "toolchain_stock_install", "error",
+                "stock repo LLVM is installed", "run sysforge run toolchain"),
+        ))
+
+    rc = doctor.cmd_doctor(_make_args(toolchain=True))
+    err = capsys.readouterr().err
+    assert "no packages to check" not in err
+    assert "toolchain checks" in err
+    assert "toolchain_stock_install" in err
+    assert rc == 1
+
+
+def test_cmd_doctor_toolchain_clean_exit_zero(monkeypatch, capsys):
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(
+        "sysforge.primitives.llvm_state.detect_toolchain_config_mismatch",
+        lambda *a, **k: ())
+
+    rc = doctor.cmd_doctor(_make_args(toolchain=True))
+    err = capsys.readouterr().err
+    assert "toolchain config matches" in err
+    assert rc == 0

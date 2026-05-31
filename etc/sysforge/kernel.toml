@@ -17,7 +17,7 @@ enabled = false
 # Required fields
 # ---------------------------------------------------------------------------
 
-# pkgname = "linux-custom"      # base package name (must match the PKGBUILD pkgbase)
+pkgname = "linux-sysforge"      # base package name (must match the PKGBUILD pkgbase)
 # srcdir  = "linux"             # subdirectory inside pkgbuild_src_dir containing the PKGBUILD
 
 # ---------------------------------------------------------------------------
@@ -82,6 +82,22 @@ enabled = false
 # capture_lsmod_snapshot = true   # default: true — capture lsmod for the PKGBUILD's
 #                                 # `make localmodconfig`. Set false if you don't want
 #                                 # drivers for currently-inactive hardware stripped.
+
+# base_config = "pkgbuild"        # default: "pkgbuild" — where the build's
+#                                 # *starting* .config comes from, before the
+#                                 # sysforge.config fragment is overlaid:
+#                                 #   "pkgbuild" → the PKGBUILD's own base config
+#                                 #               (no seeding; current behaviour)
+#                                 #   "running"  → the running kernel's config
+#                                 #               (/proc/config.gz, then
+#                                 #                /boot/config-$(uname -r))
+#                                 #   "<path>"   → read the base from that file
+#                                 # For "running"/<path>, sysforge writes the
+#                                 # chosen config to <pkgbuild_dir>/sysforge.base.config;
+#                                 # the PKGBUILD's prepare() must copy it to .config
+#                                 # (then `make olddefconfig`) BEFORE merging
+#                                 # sysforge.config — same cooperation contract as
+#                                 # the fragment below.
 
 # ---------------------------------------------------------------------------
 # kconfig — kernel config fragment

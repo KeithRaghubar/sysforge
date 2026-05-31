@@ -422,6 +422,110 @@ def collect_llvm_state(
 
 
 # ---------------------------------------------------------------------------
+# Configured-vs-installed toolchain provenance
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ToolchainMismatchFinding:
+    check_id: str
+    severity: str        # "error" | "warning" — drives doctor's exit code
+    message: str
+    remediation: str
+
+
+def _load_toolchain_cfg() -> dict | None:
+    """Read ``toolchain.toml`` (intent), or None when absent/unparseable."""
+    import tomllib
+
+    from sysforge.primitives.paths import TOOLCHAIN_PATH
+
+    if not TOOLCHAIN_PATH.exists():
+        return None
+    try:
+        with open(TOOLCHAIN_PATH, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+
+def detect_toolchain_config_mismatch(
+    config: dict | None,
+    *,
+    toolchain_cfg: dict | None = None,
+) -> tuple[ToolchainMismatchFinding, ...]:
+    """Report when ``toolchain.toml`` asks for a custom LLVM toolchain but the
+    installed LLVM doesn't match the configuration.
+
+    This is **provenance reporting**, built strictly on :func:`collect_llvm_state`
+    (the sanctioned LLVM-inspection entry point) — it is *not* a toolchain
+    *health* probe (those live in ``pipeline/stages/toolchain.py::_verify_llvm_install``
+    and ``toolchain_preflight.py::_probe_cc``; don't add a third). Two classes,
+    both gated on ``enabled = true`` + ``compiler = "llvm"`` in toolchain.toml:
+
+      * **stock-repo install** — a custom toolchain build (PGO or single-pass)
+        is never published to a pacman sync DB, so an ``install_origin == "repo"``
+        LLVM means the configured custom toolchain was never built/installed.
+      * **PGO profdata skew** (PGO only) — :func:`collect_llvm_state` flags the
+        stored profdata as version-incompatible with the target LLVM.
+
+    Returns an empty tuple when toolchain.toml isn't configured for a custom LLVM
+    build, or when the install is consistent with the configuration.
+
+    ``toolchain_cfg`` may be injected (tests); otherwise toolchain.toml is read.
+    """
+    cfg = toolchain_cfg if toolchain_cfg is not None else _load_toolchain_cfg()
+    if not cfg:
+        return ()
+    # compiler defaults to "gcc" when unset (register-only — owns no LLVM).
+    if cfg.get("enabled") is not True or (cfg.get("compiler") or "gcc") != "llvm":
+        return ()
+    pgo = bool(cfg.get("pgo", True))  # PGO defaults on for the llvm path
+
+    # Lazy import: the lockstep suite is the single source of truth for which
+    # LLVM packages move together (CLAUDE.md). Imported here to avoid an
+    # import-time cycle with toolchain_preflight.
+    from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
+
+    # Provenance reporting must never throw — a failed snapshot (no pacman, etc.)
+    # degrades to "no findings" rather than breaking the kernel build or doctor.
+    try:
+        report = collect_llvm_state(list(LLVM_LOCKSTEP_SUITE), config)
+    except Exception as e:  # noqa: BLE001 — advisory; never fatal
+        _log.debug(f"toolchain mismatch check skipped: {e}")
+        return ()
+    findings: list[ToolchainMismatchFinding] = []
+
+    stock = sorted(s.pkgbase for s in report.states if s.install_origin == "repo")
+    if stock:
+        kind = "PGO LLVM" if pgo else "custom LLVM"
+        findings.append(ToolchainMismatchFinding(
+            check_id="toolchain_stock_install",
+            severity="error",
+            message=(
+                f"toolchain.toml requests a {kind} toolchain, but stock repo LLVM "
+                f"is installed ({', '.join(stock)}). Builds use the stock "
+                "compiler, not the configured custom toolchain."
+            ),
+            remediation=(
+                "run `sysforge run toolchain` to build/install the custom "
+                "toolchain, or set `compiler = \"gcc\"` in toolchain.toml"
+            ),
+        ))
+    if pgo and report.has_pgo_profdata_mismatch:
+        findings.append(ToolchainMismatchFinding(
+            check_id="toolchain_pgo_profdata_skew",
+            severity="error",
+            message=(
+                "PGO profdata version does not match the target LLVM — a rebuild "
+                "would not reuse the stored profile."
+            ),
+            remediation="run `sysforge run toolchain --rebuild-profdata`",
+        ))
+    return tuple(findings)
+
+
+# ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
 

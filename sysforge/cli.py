@@ -694,7 +694,7 @@ def _add_update_parser(sub):
              "lib32 cross targets) that normally runs before the build loop.")
     p.add_argument("--include-stage-owned", action="store_true", dest="include_stage_owned",
         help="Include packages owned by a pipeline stage (e.g. the kernel "
-             "stage's `linux-custom`). Skipped by default; the owning stage "
+             "stage's `linux-sysforge`). Skipped by default; the owning stage "
              "(`sysforge run kernel`) is the canonical update path.")
     p.add_argument("--explain-drift", action="store_true", dest="explain_drift",
         help="List packages whose recorded toolchain_variant differs from "
@@ -759,7 +759,8 @@ def _add_doctor_parser(sub):
         help="Health-check installed package depends + shared-library linkage.")
     p.add_argument("packages", nargs="*", metavar="PKG",
         help="One or more installed package names to verify. "
-             "Without any PKG/--graphics/--all, the command exits with usage.")
+             "Without any PKG/--graphics/--hardware/--toolchain/--all, the "
+             "command exits with usage.")
     p.add_argument("--graphics", action="store_true",
         help="Expand to the graphics stack (mesa, vulkan, libglvnd, wayland, "
              "libdrm, libva, libvdpau, egl-wayland, xwayland, gamescope, plus "
@@ -771,6 +772,11 @@ def _add_doctor_parser(sub):
              "flag any present device with no kernel driver bound, and audit the "
              "running kernel's .config for boot-critical / device-driver gaps "
              "(the missing-driver class of bug). Usable on its own (no PKG).")
+    p.add_argument("--toolchain", action="store_true",
+        help="Check that the configured toolchain matches what's installed: when "
+             "toolchain.toml requests a custom LLVM toolchain (compiler = llvm, "
+             "optionally PGO) but stock repo LLVM is installed — or the PGO "
+             "profdata is version-skewed — report it. Usable on its own (no PKG).")
     p.add_argument("--all", action="store_true", dest="all",
         help="Verify every installed package — foreign and non-foreign (pacman -Q). "
              "Slow but comprehensive.")

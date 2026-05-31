@@ -567,6 +567,41 @@ def _emit_hardware_checks() -> int:
     return error_count
 
 
+def _emit_toolchain_checks(config) -> int:
+    """Render configured-vs-installed toolchain mismatches.
+
+    Built on ``llvm_state.detect_toolchain_config_mismatch`` (which wraps the
+    sanctioned ``collect_llvm_state`` entry point — provenance reporting, not a
+    toolchain *health* probe). Prints each finding as
+    ``[SEV] check_id: message → remediation`` and returns the count of
+    ``error``-severity findings for the exit code, mirroring ``--hardware``.
+    """
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    findings = detect_toolchain_config_mismatch(config)
+
+    _log.newline()
+    _log.ui("== toolchain checks ==")
+    if not findings:
+        _log.ui(
+            "  toolchain config matches the installed LLVM "
+            "(or no custom LLVM toolchain is configured)"
+        )
+        return 0
+
+    error_count = 0
+    for f in findings:
+        _log.ui(f"  [{f.severity.upper()}] {f.check_id}: {f.message}")
+        if f.remediation:
+            _log.ui(f"      → {f.remediation}")
+        if f.severity == _GFX_SEV_ERROR:
+            error_count += 1
+    _log.ui(
+        f"Toolchain probe: {len(findings)} finding(s), {error_count} error(s)."
+    )
+    return error_count
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -619,13 +654,20 @@ def cmd_doctor(args):
     roots = deduped
 
     if not roots:
-        # --hardware is a system probe with no package targets — run it
-        # standalone rather than erroring on the empty package set.
-        if getattr(args, "hardware", False):
-            return 1 if _emit_hardware_checks() else 0
+        # --hardware / --toolchain are system probes with no package targets —
+        # run them standalone rather than erroring on the empty package set.
+        want_hardware = bool(getattr(args, "hardware", False))
+        want_toolchain = bool(getattr(args, "toolchain", False))
+        if want_hardware or want_toolchain:
+            errors = 0
+            if want_hardware:
+                errors += _emit_hardware_checks()
+            if want_toolchain:
+                errors += _emit_toolchain_checks(config)
+            return 1 if errors else 0
         _log.error(
-            "no packages to check — pass PKG, --graphics, --hardware, --all, "
-            "or --repo"
+            "no packages to check — pass PKG, --graphics, --hardware, "
+            "--toolchain, --all, or --repo"
         )
         return 2
 

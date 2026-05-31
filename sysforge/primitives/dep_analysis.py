@@ -260,26 +260,36 @@ _GUESTFS_REQUIRED_MODULES = {
 _PROBED_MAKEDEPS = frozenset({"libguestfs"})
 
 
+def read_running_kconfig_text() -> str | None:
+    """Return the running kernel's raw ``.config`` text, or None if unavailable.
+
+    Source is ``/proc/config.gz`` (preferred) then ``/boot/config-$(uname -r)``.
+    Single source of truth for *locating* the running config — both the parsed
+    reader below and the kernel stage's ``base_config = "running"`` seeding share
+    it so the lookup order can't drift.
+    """
+    import gzip
+
+    config_path = Path("/proc/config.gz")
+    boot_config = Path(f"/boot/config-{os.uname().release}")
+
+    if config_path.exists():
+        with gzip.open(config_path, "rt") as f:
+            return f.read()
+    if boot_config.exists():
+        return boot_config.read_text()
+    return None
+
+
 def _parse_kernel_config():
     """
     Parse the running kernel's config from /proc/config.gz or
     /boot/config-$(uname -r).  Returns dict of CONFIG_KEY → value
     ('y', 'm', or 'n' for unset).  Returns None if config is unavailable.
     """
-    import gzip
-
     from sysforge.primitives.kernel_safety import parse_kconfig_text
 
-    config_path = Path("/proc/config.gz")
-    boot_config = Path(f"/boot/config-{os.uname().release}")
-
-    text = None
-    if config_path.exists():
-        with gzip.open(config_path, "rt") as f:
-            text = f.read()
-    elif boot_config.exists():
-        text = boot_config.read_text()
-
+    text = read_running_kconfig_text()
     if text is None:
         return None
 

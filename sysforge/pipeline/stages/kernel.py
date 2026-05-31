@@ -9,7 +9,7 @@ If kernel.toml is absent the stage exits cleanly — systems using a stock
 kernel (installed via packages stage) skip this without needing --start-from.
 
 kernel.toml structure:
-  pkgname          = "linux-custom"
+  pkgname          = "linux-sysforge"
   pkgbuild_src_dir = "~/src"       # parent directory that contains the pkgname/ PKGBUILD dir
                                    # PKGBUILD is expected at pkgbuild_src_dir/pkgname/PKGBUILD
   bootloader       = "systemd-boot"    # systemd-boot | grub | none
@@ -32,6 +32,15 @@ kconfig fragment:
   a compatible PKGBUILD calls scripts/kconfig/merge_config.sh in prepare().
 
   If neither source provides any kconfig entries, no fragment is written.
+
+base_config (optional, default "pkgbuild"):
+  Selects the build's *starting* .config, before the fragment is overlaid:
+  "pkgbuild" (the PKGBUILD's own base, no seeding), "running" (the running
+  kernel's config from /proc/config.gz or /boot/config-$(uname -r)), or a path.
+  For "running"/<path>, the chosen config is written to
+  <pkgbuild_src_dir>/<pkgname>/sysforge.base.config; the PKGBUILD's prepare()
+  must copy it to .config (then `make olddefconfig`) before merging
+  sysforge.config — the same cooperation contract as the fragment.
 
 Manual override validation:
   - option: must match CONFIG_[A-Z0-9_]+
@@ -210,6 +219,51 @@ def _validate_pkgname_matches_pkgbuild(pkgbuild_path, expected_pkgname):
         )
 
 
+def _check_pkgname_repo_collision(pkgname, options):
+    """Warn + confirm when the kernel pkgname shadows a pacman sync-repo package.
+
+    A custom kernel should carry a unique name. If ``pkgname`` matches a package
+    in a sync DB (e.g. ``linux``, ``linux-lts``), building and installing it
+    produces a package that overwrites the official one on ``pacman -U`` — almost
+    never intended. Interactive runs confirm the override; unattended runs abort
+    (the safe default); ``--dry-run`` warns without prompting.
+    """
+    from sysforge.primitives.aur import is_repo_package
+    from sysforge.primitives.prompt import is_interactive, prompt_choice
+
+    if not is_repo_package(pkgname):
+        return
+    msg = (
+        f"kernel pkgname {pkgname!r} matches an existing package in a pacman sync "
+        "repo — building it will overwrite the official package on install."
+    )
+    if getattr(options, "dry_run", False):
+        _log.warn(f"{msg} (dry-run: not prompting)")
+        return
+    _log.warn(msg)
+    unattended = bool(getattr(options, "non_interactive", False)) or not is_interactive()
+    if unattended:
+        raise RuntimeError(
+            f"[KERNEL] {msg} Aborting unattended — rename pkgname in kernel.toml, "
+            "or run interactively to confirm the override."
+        )
+    choice = prompt_choice(
+        "Continue and shadow the repo package? [y/N]: ",
+        choices=("y", "yes", "n"),
+        default="n",
+        eof_default="n",
+        retry_on_invalid=False,
+        tag="KERNEL",
+        level="WARN",
+    )
+    if choice not in ("y", "yes"):
+        raise RuntimeError(
+            f"[KERNEL] kernel build aborted — pkgname {pkgname!r} collides with a "
+            "repo package and the override was not confirmed. Rename pkgname in "
+            "kernel.toml."
+        )
+
+
 def _resolve_source(kernel_cfg):
     """Resolve the kernel PKGBUILD source classification; defaults to ``local``."""
     src = kernel_cfg.get("source", "local")
@@ -262,11 +316,61 @@ def _presync_kernel_source(pkgbuild_dir, options, state_dir, source="local"):
             f"{result.error or result.status}"
         )
     if result.status == STATUS_DIVERGED:
-        _log.warn(
-            f"{pkgbuild_dir.name}: upstream diverged — building with local PKGBUILD "
-            "(rerun with --cleansrc to discard local edits)"
-        )
+        _warn_and_confirm_diverged(pkgbuild_dir, options)
     return True
+
+
+def _warn_and_confirm_diverged(pkgbuild_dir, options):
+    """Warn (with commit detail) that the kernel source diverged, then gate the build.
+
+    ``STATUS_DIVERGED`` means the local tree can't fast-forward to upstream —
+    either local commits/uncommitted edits, or upstream advanced while the tree
+    is dirty. Building a *kernel* off stale or hand-edited source is exactly the
+    case where the old silent WARN was too easy to miss, so:
+
+      * interactive run  → require an explicit y/N confirmation;
+      * unattended run (``--non-interactive`` or no TTY) → abort (safe default).
+
+    ``classify_head_vs_upstream`` enriches the message with ahead/behind counts
+    so the common "upstream has new commits but the local repo is dirty" case is
+    spelled out rather than hidden behind a bare "diverged".
+    """
+    from sysforge.primitives.aur import classify_head_vs_upstream
+    from sysforge.primitives.prompt import is_interactive, prompt_choice
+
+    state, n_local, n_upstream = classify_head_vs_upstream(pkgbuild_dir)
+    detail = ""
+    if n_upstream:
+        detail += f" upstream advanced {n_upstream} commit(s);"
+    if n_local:
+        detail += f" local tree is {n_local} commit(s) ahead;"
+    _log.warn(
+        f"{pkgbuild_dir.name}: kernel source diverged ({state}){detail} the local "
+        "PKGBUILD will be used as-is. Rerun with --cleansrc to discard local "
+        "edits and rebuild from upstream."
+    )
+
+    unattended = bool(getattr(options, "non_interactive", False)) or not is_interactive()
+    if unattended:
+        raise RuntimeError(
+            f"[KERNEL] {pkgbuild_dir.name}: refusing to build a kernel from "
+            "diverged source unattended. Resolve the divergence, rerun with "
+            "--cleansrc to discard local edits, or run interactively to confirm."
+        )
+    choice = prompt_choice(
+        "Continue building the kernel from local (diverged) source? [y/N]: ",
+        choices=("y", "yes", "n"),
+        default="n",
+        eof_default="n",
+        retry_on_invalid=False,
+        tag="KERNEL",
+        level="WARN",
+    )
+    if choice not in ("y", "yes"):
+        raise RuntimeError(
+            f"[KERNEL] {pkgbuild_dir.name}: build aborted — diverged source not "
+            "confirmed. Rerun with --cleansrc to discard local edits."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -521,6 +625,72 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None):
     return fragment_path, hw_count, manual_count
 
 
+def _resolve_base_config(kernel_cfg):
+    """Resolve the base ``.config`` text to seed before the fragment merge.
+
+    ``kernel.toml base_config`` selects where the build's *starting* ``.config``
+    comes from (the ``sysforge.config`` fragment is overlaid on top of it):
+
+      * ``"pkgbuild"`` (default) — no seeding; the PKGBUILD provides its own base.
+      * ``"running"``            — the running kernel's config (``/proc/config.gz``
+                                   then ``/boot/config-$(uname -r)``).
+      * ``<path>``               — read the base config from that file.
+
+    Returns ``(source_label, text)`` where ``text`` is ``None`` for the
+    ``"pkgbuild"`` default or when a ``"running"`` source is unavailable (warned).
+    Unknown non-path values raise.
+    """
+    raw = kernel_cfg.get("base_config", "pkgbuild")
+    if not isinstance(raw, str) or not raw:
+        raise RuntimeError(
+            f"[KERNEL] invalid kernel.toml base_config {raw!r}: expected "
+            '"pkgbuild", "running", or a path to a kernel .config file'
+        )
+    if raw == "pkgbuild":
+        return raw, None
+    if raw == "running":
+        from sysforge.primitives.dep_analysis import read_running_kconfig_text
+
+        text = read_running_kconfig_text()
+        if text is None:
+            _log.warn(
+                'base_config = "running" but no running-kernel config found '
+                "(/proc/config.gz or /boot/config-$(uname -r)); falling back to "
+                "the PKGBUILD's own base config"
+            )
+        return raw, text
+    # Anything else is treated as a path to a .config file.
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise RuntimeError(
+            f"[KERNEL] kernel.toml base_config path does not exist: {path}"
+        )
+    return raw, path.read_text()
+
+
+def _write_base_config(kernel_cfg, dry_run):
+    """Resolve ``base_config`` and, when not ``"pkgbuild"``, write the chosen base
+    ``.config`` to ``<pkgbuild_dir>/sysforge.base.config``.
+
+    Mirrors the ``sysforge.config`` fragment contract: sysforge writes the file,
+    the PKGBUILD's ``prepare()`` copies ``sysforge.base.config`` to ``.config``
+    (then runs ``make olddefconfig``) *before* merging ``sysforge.config``. This
+    keeps sysforge from mutating tracked source files. Returns the source label
+    for the resolution summary.
+    """
+    source_label, text = _resolve_base_config(kernel_cfg)
+    if text is None:
+        return source_label
+    pkgbuild = _pkgbuild_path(kernel_cfg)
+    base_path = pkgbuild.parent / "sysforge.base.config"
+    if dry_run:
+        _log.ui(f"[dry-run] would write base kernel config ({source_label}): {base_path}")
+        return source_label
+    base_path.write_text(text if text.endswith("\n") else text + "\n")
+    _log.ui(f"Wrote base kernel config ({source_label}): {base_path}")
+    return source_label
+
+
 # ---------------------------------------------------------------------------
 # Post-install steps
 # ---------------------------------------------------------------------------
@@ -769,7 +939,7 @@ def _gate3_verify(pkgbuild_dir, pkgname, bootloader):
 
 def _log_resolution_summary(
     *, pkgname, compiler, compiler_origin, cc, cxx, variant, bootloader,
-    bootloader_installed, source, kconfig_target,
+    bootloader_installed, source, kconfig_target, base_config_source,
     hw_kconfig_count, manual_kconfig_count, kernel_cfg, skip_boot_audit,
 ):
     """Emit one labelled block of the resolved kernel-build plan.
@@ -796,6 +966,7 @@ def _log_resolution_summary(
     _log.ui(f"  bootloader: {bootloader}{boot_note}")
     _log.ui(f"  source:     {source}")
     _log.ui(f"  kconfig:    {kconfig_target} ({hw_kconfig_count} hardware, {manual_kconfig_count} manual)")
+    _log.ui(f"  base cfg:   {base_config_source}")
     _log.ui(f"  gates:      {gates}")
 
 
@@ -879,6 +1050,10 @@ class KernelStage(Stage):
         # late after a multi-hour build.
         _validate_pkgname_matches_pkgbuild(pkgbuild, pkgname)
 
+        # A4: warn + confirm if the kernel pkgname shadows a pacman repo package
+        # (would overwrite the official package on install).
+        _check_pkgname_repo_collision(pkgname, options)
+
         # Compiler resolution: CLI > kernel.toml > pipeline state from toolchain.
         compiler, cc, cxx = _resolve_compiler(kernel_cfg, options, state)
         if getattr(options, "compiler", None):
@@ -914,6 +1089,23 @@ class KernelStage(Stage):
                 "clang via pipeline-state fallback. Set `compiler = \"llvm\"` "
                 "in kernel.toml to make this explicit."
             )
+
+        # 4a: configured-vs-installed toolchain mismatch. The variant nudge above
+        # reflects what the toolchain *stage* registered in pipeline state; this
+        # reflects on-disk reality via collect_llvm_state (provenance, not a
+        # health probe). It fires even when the toolchain stage never populated
+        # pipeline state — e.g. toolchain.toml configures PGO LLVM but a stock
+        # repo llvm is installed, so the kernel won't be built with the PGO
+        # toolchain the user thinks is active. Surfaced standalone via
+        # `sysforge doctor --toolchain`.
+        from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+        for finding in detect_toolchain_config_mismatch(config):
+            _log.warn(f"{finding.message} — {finding.remediation}")
+
+        # Base .config seeding — written before the fragment so the build order
+        # is base → fragment overlay. "pkgbuild" (default) is a no-op; "running"
+        # or a path seeds sysforge.base.config for the PKGBUILD to copy to .config.
+        base_config_source = _write_base_config(kernel_cfg, options.dry_run)
 
         # kconfig fragment — requires hardware_profile.toml (hardware stage).
         # Written after the source sync so a --cleansrc re-clone doesn't wipe
@@ -953,6 +1145,7 @@ class KernelStage(Stage):
             bootloader_installed=(bootloader == "none" or bootloader in _probe_installed_bootloader()),
             source=source,
             kconfig_target=kconfig_target,
+            base_config_source=base_config_source,
             hw_kconfig_count=hw_kconfig_count,
             manual_kconfig_count=manual_kconfig_count,
             kernel_cfg=kernel_cfg,

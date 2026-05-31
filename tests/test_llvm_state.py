@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -442,3 +443,76 @@ def test_render_blockers_block_listed_at_end():
     out = render_preflight(report)
     assert "blockers:" in out
     assert "llvm-git: dirty (uncommitted changes)" in out
+
+
+# ---------------------------------------------------------------------------
+# detect_toolchain_config_mismatch (configured-vs-installed provenance)
+# ---------------------------------------------------------------------------
+
+def test_mismatch_gcc_config_returns_nothing():
+    """gcc path: no LLVM toolchain configured → no findings, no probe."""
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    with patch("sysforge.primitives.llvm_state.collect_llvm_state") as mock_collect:
+        result = detect_toolchain_config_mismatch(
+            {}, toolchain_cfg={"enabled": True, "compiler": "gcc"})
+    assert result == ()
+    mock_collect.assert_not_called()
+
+
+def test_mismatch_disabled_returns_nothing():
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    result = detect_toolchain_config_mismatch(
+        {}, toolchain_cfg={"enabled": False, "compiler": "llvm"})
+    assert result == ()
+
+
+def test_mismatch_stock_install_flags_error():
+    """llvm+pgo configured but stock repo LLVM installed → error finding."""
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    report = _report(_state(pkgbase="llvm", install_origin="repo"))
+    with patch("sysforge.primitives.llvm_state.collect_llvm_state",
+               return_value=report):
+        result = detect_toolchain_config_mismatch(
+            {}, toolchain_cfg={"enabled": True, "compiler": "llvm", "pgo": True})
+    assert len(result) == 1
+    assert result[0].check_id == "toolchain_stock_install"
+    assert result[0].severity == "error"
+    assert "PGO LLVM" in result[0].message
+
+
+def test_mismatch_custom_install_is_clean():
+    """llvm+pgo configured and a custom (foreign) LLVM installed → no findings."""
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    report = _report(_state(pkgbase="llvm", install_origin="foreign"))
+    with patch("sysforge.primitives.llvm_state.collect_llvm_state",
+               return_value=report):
+        result = detect_toolchain_config_mismatch(
+            {}, toolchain_cfg={"enabled": True, "compiler": "llvm", "pgo": True})
+    assert result == ()
+
+
+def test_mismatch_profdata_skew_flags_error():
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    report = _report(_state(pkgbase="llvm", install_origin="foreign",
+                            pgo_profdata_mismatch=True))
+    with patch("sysforge.primitives.llvm_state.collect_llvm_state",
+               return_value=report):
+        result = detect_toolchain_config_mismatch(
+            {}, toolchain_cfg={"enabled": True, "compiler": "llvm", "pgo": True})
+    assert [f.check_id for f in result] == ["toolchain_pgo_profdata_skew"]
+
+
+def test_mismatch_collect_failure_is_silent():
+    """Provenance reporting must never throw — a failed snapshot → no findings."""
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    with patch("sysforge.primitives.llvm_state.collect_llvm_state",
+               side_effect=FileNotFoundError("pacman")):
+        result = detect_toolchain_config_mismatch(
+            {}, toolchain_cfg={"enabled": True, "compiler": "llvm", "pgo": True})
+    assert result == ()

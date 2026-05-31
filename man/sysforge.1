@@ -275,8 +275,8 @@ targets) that normally runs before the build loop.
 .TP
 \fB\-\-include\-stage\-owned\fR
 Include packages owned by a pipeline stage (e.g. the kernel stage's `linux\-
-custom`). Skipped by default; the owning stage (`sysforge run kernel`) is the
-canonical update path.
+sysforge`). Skipped by default; the owning stage (`sysforge run kernel`) is
+the canonical update path.
 
 .TP
 \fB\-\-explain\-drift\fR
@@ -362,15 +362,15 @@ Print a structured cache summary after \-\-apply runs.
 Suppress the LLVM source pre\-flight summary.
 
 .SH COMMAND \fI\,'sysforge doctor'\/\fR
-usage: sysforge doctor [\-h] [\-\-graphics] [\-\-hardware] [\-\-all] [\-\-repo]
-                       [\-\-shallow] [\-\-quiet] [\-\-suggest] [\-\-apply]
+usage: sysforge doctor [\-h] [\-\-graphics] [\-\-hardware] [\-\-toolchain] [\-\-all]
+                       [\-\-repo] [\-\-shallow] [\-\-quiet] [\-\-suggest] [\-\-apply]
                        [\-\-no\-confirm] [\-\-dry\-run]
                        [PKG ...]
 
 .TP
 \fBPKG\fR
 One or more installed package names to verify. Without any
-PKG/\-\-graphics/\-\-all, the command exits with usage.
+PKG/\-\-graphics/\-\-hardware/\-\-toolchain/\-\-all, the command exits with usage.
 
 .SH OPTIONS \fI\,'sysforge doctor'\/\fR
 .TP
@@ -387,6 +387,13 @@ Run system\-state hardware probes: inventory all PCI/USB devices, flag any
 present device with no kernel driver bound, and audit the running kernel's
 .config for boot\-critical / device\-driver gaps (the missing\-driver class of
 bug). Usable on its own (no PKG).
+
+.TP
+\fB\-\-toolchain\fR
+Check that the configured toolchain matches what's installed: when
+toolchain.toml requests a custom LLVM toolchain (compiler = llvm, optionally
+PGO) but stock repo LLVM is installed — or the PGO profdata is version\-skewed
+— report it. Usable on its own (no PKG).
 
 .TP
 \fB\-\-all\fR

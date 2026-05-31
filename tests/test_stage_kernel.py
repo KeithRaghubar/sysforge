@@ -53,6 +53,14 @@ def _neutralize_kernel_gates(monkeypatch):
                         lambda *a, **k: [])
     monkeypatch.setattr(device_probe, "enumerate_devices", lambda *a, **k: [])
     monkeypatch.setattr(_km, "install_built_packages", lambda *a, **k: [])
+    # The pkgname repo-collision check and the configured-vs-installed toolchain
+    # mismatch check both shell out to pacman; neutralize them so run()-flow
+    # tests stay hermetic. Dedicated tests below exercise them directly.
+    monkeypatch.setattr("sysforge.primitives.aur.is_repo_package",
+                        lambda *a, **k: False)
+    monkeypatch.setattr(
+        "sysforge.primitives.llvm_state.detect_toolchain_config_mismatch",
+        lambda *a, **k: [])
 
 
 # ---------------------------------------------------------------------------
@@ -920,14 +928,18 @@ def test_kernel_stage_sync_failure_raises(tmp_path):
             KernelStage().run({}, state, opts)
 
 
-def test_kernel_stage_sync_diverged_warns_and_continues(tmp_path):
+def _run_kernel_diverged(tmp_path, *, interactive, answer="n"):
+    """Drive KernelStage.run() with a diverged source sync.
+
+    Patches the divergence classifier (avoids real git) and the prompt helpers.
+    Returns the makepkg_run mock so callers can assert build / no-build.
+    """
     import sysforge.pipeline.stages.kernel as _km
     from sysforge.primitives.source_sync import STATUS_DIVERGED
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
-
     opts = make_options(state_dir=tmp_path / "state", no_update=False)
 
     scheduler_mock = MagicMock()
@@ -936,12 +948,54 @@ def test_kernel_stage_sync_diverged_warns_and_continues(tmp_path):
     with patch.object(_km, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.get_scheduler",
                return_value=scheduler_mock), \
+         patch("sysforge.primitives.aur.classify_head_vs_upstream",
+               return_value=("diverged_upstream", 1, 2)), \
+         patch("sysforge.primitives.prompt.is_interactive",
+               return_value=interactive), \
+         patch("sysforge.primitives.prompt.prompt_choice", return_value=answer), \
          patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
+        return mock_build
 
+
+def test_kernel_stage_sync_diverged_aborts_unattended(tmp_path):
+    """No TTY / non-interactive: a diverged kernel source aborts before building."""
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.primitives.source_sync import STATUS_DIVERGED
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path / "state", no_update=False)
+
+    scheduler_mock = MagicMock()
+    scheduler_mock.request.return_value = _make_sync_result(status=STATUS_DIVERGED)
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.get_scheduler",
+               return_value=scheduler_mock), \
+         patch("sysforge.primitives.aur.classify_head_vs_upstream",
+               return_value=("diverged_upstream", 1, 2)), \
+         patch("sysforge.primitives.prompt.is_interactive", return_value=False), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run"):
+        with pytest.raises(RuntimeError, match="diverged source unattended"):
+            KernelStage().run({}, state, opts)
+    mock_build.assert_not_called()
+
+
+def test_kernel_stage_sync_diverged_interactive_confirm_builds(tmp_path):
+    """Interactive run, user confirms: the diverged build proceeds."""
+    mock_build = _run_kernel_diverged(tmp_path, interactive=True, answer="y")
     mock_build.assert_called_once()
+
+
+def test_kernel_stage_sync_diverged_interactive_decline_aborts(tmp_path):
+    """Interactive run, user declines: the build aborts."""
+    with pytest.raises(RuntimeError, match="diverged source not"):
+        _run_kernel_diverged(tmp_path, interactive=True, answer="n")
 
 
 # ---------------------------------------------------------------------------
@@ -1738,3 +1792,161 @@ def test_dry_run_omits_interactive_nudge(tmp_path):
     mock_log = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
 
     assert not any("Running interactively" in m for m in _info_messages(mock_log))
+
+
+# ---------------------------------------------------------------------------
+# _check_pkgname_repo_collision (pkgname shadows a pacman repo package)
+# ---------------------------------------------------------------------------
+
+def test_pkgname_collision_no_match_is_noop():
+    from sysforge.pipeline.stages.kernel import _check_pkgname_repo_collision
+
+    opts = make_options()
+    with patch("sysforge.primitives.aur.is_repo_package", return_value=False):
+        # No raise, no prompt.
+        _check_pkgname_repo_collision("linux-sysforge", opts)
+
+
+def test_pkgname_collision_dry_run_warns_no_prompt():
+    from sysforge.pipeline.stages.kernel import _check_pkgname_repo_collision
+
+    opts = make_options(dry_run=True)
+    with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
+         patch("sysforge.primitives.prompt.prompt_choice") as mock_prompt:
+        _check_pkgname_repo_collision("linux", opts)  # no raise
+    mock_prompt.assert_not_called()
+
+
+def test_pkgname_collision_unattended_aborts():
+    from sysforge.pipeline.stages.kernel import _check_pkgname_repo_collision
+
+    opts = make_options()
+    with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
+         patch("sysforge.primitives.prompt.is_interactive", return_value=False):
+        with pytest.raises(RuntimeError, match="Aborting unattended"):
+            _check_pkgname_repo_collision("linux", opts)
+
+
+def test_pkgname_collision_interactive_confirm_proceeds():
+    from sysforge.pipeline.stages.kernel import _check_pkgname_repo_collision
+
+    opts = make_options()
+    with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
+         patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
+         patch("sysforge.primitives.prompt.prompt_choice", return_value="y"):
+        _check_pkgname_repo_collision("linux", opts)  # no raise
+
+
+def test_pkgname_collision_interactive_decline_aborts():
+    from sysforge.pipeline.stages.kernel import _check_pkgname_repo_collision
+
+    opts = make_options()
+    with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
+         patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
+         patch("sysforge.primitives.prompt.prompt_choice", return_value="n"):
+        with pytest.raises(RuntimeError, match="not confirmed"):
+            _check_pkgname_repo_collision("linux", opts)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_base_config / _write_base_config (configurable kconfig base)
+# ---------------------------------------------------------------------------
+
+def test_resolve_base_config_pkgbuild_default_is_noop():
+    from sysforge.pipeline.stages.kernel import _resolve_base_config
+
+    label, text = _resolve_base_config({})
+    assert label == "pkgbuild"
+    assert text is None
+
+
+def test_resolve_base_config_running_seeds(monkeypatch):
+    from sysforge.pipeline.stages.kernel import _resolve_base_config
+
+    monkeypatch.setattr(
+        "sysforge.primitives.dep_analysis.read_running_kconfig_text",
+        lambda: "CONFIG_FOO=y\n")
+    label, text = _resolve_base_config({"base_config": "running"})
+    assert label == "running"
+    assert text == "CONFIG_FOO=y\n"
+
+
+def test_resolve_base_config_running_missing_warns_and_falls_back(monkeypatch):
+    from sysforge.pipeline.stages.kernel import _resolve_base_config
+
+    monkeypatch.setattr(
+        "sysforge.primitives.dep_analysis.read_running_kconfig_text",
+        lambda: None)
+    label, text = _resolve_base_config({"base_config": "running"})
+    assert label == "running"
+    assert text is None  # falls back to the PKGBUILD base
+
+
+def test_resolve_base_config_path(tmp_path):
+    from sysforge.pipeline.stages.kernel import _resolve_base_config
+
+    cfg_file = tmp_path / "my.config"
+    cfg_file.write_text("CONFIG_BAR=m\n")
+    label, text = _resolve_base_config({"base_config": str(cfg_file)})
+    assert text == "CONFIG_BAR=m\n"
+
+
+def test_resolve_base_config_missing_path_raises(tmp_path):
+    from sysforge.pipeline.stages.kernel import _resolve_base_config
+
+    with pytest.raises(RuntimeError, match="does not exist"):
+        _resolve_base_config({"base_config": str(tmp_path / "nope.config")})
+
+
+def test_resolve_base_config_invalid_value_raises():
+    from sysforge.pipeline.stages.kernel import _resolve_base_config
+
+    with pytest.raises(RuntimeError, match="invalid kernel.toml base_config"):
+        _resolve_base_config({"base_config": ""})
+
+
+def test_write_base_config_writes_file(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.kernel import _write_base_config
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-sysforge")
+    kernel_cfg = {
+        "pkgname": "linux-sysforge",
+        "pkgbuild_src_dir": str(builds),
+        "base_config": "running",
+    }
+    monkeypatch.setattr(
+        "sysforge.primitives.dep_analysis.read_running_kconfig_text",
+        lambda: "CONFIG_FOO=y")
+    label = _write_base_config(kernel_cfg, dry_run=False)
+    assert label == "running"
+    out = builds / "linux-sysforge" / "sysforge.base.config"
+    assert out.read_text() == "CONFIG_FOO=y\n"  # trailing newline added
+
+
+def test_write_base_config_dry_run_no_file(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.kernel import _write_base_config
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-sysforge")
+    kernel_cfg = {
+        "pkgname": "linux-sysforge",
+        "pkgbuild_src_dir": str(builds),
+        "base_config": "running",
+    }
+    monkeypatch.setattr(
+        "sysforge.primitives.dep_analysis.read_running_kconfig_text",
+        lambda: "CONFIG_FOO=y")
+    _write_base_config(kernel_cfg, dry_run=True)
+    assert not (builds / "linux-sysforge" / "sysforge.base.config").exists()
+
+
+def test_write_base_config_pkgbuild_default_writes_nothing(tmp_path):
+    from sysforge.pipeline.stages.kernel import _write_base_config
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-sysforge")
+    kernel_cfg = {"pkgname": "linux-sysforge", "pkgbuild_src_dir": str(builds)}
+    label = _write_base_config(kernel_cfg, dry_run=False)
+    assert label == "pkgbuild"
+    assert not (builds / "linux-sysforge" / "sysforge.base.config").exists()

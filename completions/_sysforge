@@ -190,6 +190,7 @@ _sysforge_doctor() {
   _arguments \
     '--graphics[expand to curated graphics stack (mesa/vulkan/libglvnd + driver)]' \
     '--hardware[inventory PCI/USB devices + audit running kernel for missing drivers / boot-config gaps]' \
+    '--toolchain[check configured toolchain (toolchain.toml) matches the installed LLVM]' \
     '--all[verify every installed package, foreign + non-foreign (pacman -Q)]' \
     '--repo[verify every non-foreign (native repo) package]' \
     '--shallow[do not recurse into transitive dependencies]' \
