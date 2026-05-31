@@ -82,8 +82,6 @@ Compiler propagation:
   On completion writes cc/cxx/ld to pipeline_state.toml [stages.toolchain.result]
 """
 
-import contextlib
-import fcntl
 import os
 import subprocess
 import sys
@@ -95,6 +93,7 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("TOOLCHAIN")
 from sysforge.pipeline.stages.base import Stage
+from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.abi_check import (
     _extract_sos,
     _list_sos_in_pkg,
@@ -1797,7 +1796,6 @@ def _prompt_llvm_recovery(
 # ---------------------------------------------------------------------------
 
 
-@contextlib.contextmanager
 def _pgo_lock(lock_path: Path):
     """Advisory flock guard for the duration of a PGO toolchain build.
 
@@ -1805,46 +1803,11 @@ def _pgo_lock(lock_path: Path):
     ``/var/tmp/sysforge-llvm-stage1``, ``/var/tmp/sysforge-llvm-stage2`` and
     the shared ``pgo_store`` profraw directory.  The sentinel scope guards
     the state-dir but not these /var/tmp + ~/pgo paths, so we add an
-    explicit advisory lock here.  Holder PID is written to the lock file
-    so the loser can surface a useful error.
+    explicit advisory lock here.  Delegates to the shared ``build_lock``
+    primitive (the kernel stage uses the same one) — don't roll a second
+    flock path.
     """
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            holder = ""
-            try:
-                with open(lock_path) as f:
-                    holder = f.read().strip()
-            except OSError:
-                pass
-            os.close(fd)
-            if holder:
-                raise RuntimeError(
-                    f"[TOOLCHAIN] Another sysforge PGO build is running "
-                    f"(pid {holder}); refuse to start a second one."
-                )
-            raise RuntimeError(
-                f"[TOOLCHAIN] PGO build lock at {lock_path} is held; "
-                "refuse to start a second concurrent build."
-            )
-        os.ftruncate(fd, 0)
-        os.write(fd, f"{os.getpid()}\n".encode())
-        os.fsync(fd)
-        try:
-            yield
-        finally:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+    return build_lock(lock_path, label="PGO")
 
 
 # ---------------------------------------------------------------------------

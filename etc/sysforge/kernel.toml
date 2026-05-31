@@ -47,6 +47,10 @@ enabled = false
 #                               # unset, the kernel inherits whatever the
 #                               # toolchain stage registered (or profile defaults
 #                               # when toolchain is disabled).
+#                               # NOTE: compiler = "llvm" builds the kernel WITH
+#                               # clang; it does NOT apply PGO profile data. The
+#                               # profdata trains the clang binary itself, not the
+#                               # linux kernel target — there is no kernel PGO here.
 
 # pkgbuild_src_dir = "~/src"    # override the global pkgbuild_src_dir for this kernel only
 

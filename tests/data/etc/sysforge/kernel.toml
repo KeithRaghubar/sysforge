@@ -9,3 +9,5 @@ bootloader   = "systemd-boot"
 # Pass `sysforge run kernel --non-interactive` for unattended builds.
 # compiler = "llvm" — uncomment to build the kernel with LLVM regardless of
 # the toolchain stage's resolved compiler. CLI: `--compiler {gcc,llvm}`.
+# NOTE: "llvm" builds the kernel with clang; it does NOT apply PGO profdata
+# (that trains the clang binary, not the linux target — no kernel PGO here).
