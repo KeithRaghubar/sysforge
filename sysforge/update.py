@@ -118,6 +118,33 @@ def _toolchain_owns_llvm() -> bool:
     return data.get("enabled") is True and (data.get("compiler") or "gcc") == "llvm"
 
 
+def _toolchain_owned_pkgbases() -> set[str]:
+    """Return the explicit package names the toolchain stage builds.
+
+    Reads ``toolchain.toml [packages]`` (the ``pgo`` + ``non_pgo`` + ``lib32``
+    lists) so ownership covers members that ``is_llvm_pkgbase`` does not match
+    by prefix — notably ``spirv-llvm-translator`` (and any custom-listed
+    package). Unioned with ``is_llvm_pkgbase`` in the update skip loop so split
+    members (llvm-libs/polly under pkgbase llvm) stay covered too. Empty set
+    when toolchain.toml is absent/unreadable or has no [packages] table; the
+    caller only consults this when ``_toolchain_owns_llvm()`` is already True.
+    """
+    if not TOOLCHAIN_PATH.exists():
+        return set()
+    try:
+        with open(TOOLCHAIN_PATH, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return set()
+    pkgs = data.get("packages", {}) or {}
+    owned: set[str] = set()
+    for key in ("pgo", "non_pgo", "lib32"):
+        for name in pkgs.get(key, []) or []:
+            if isinstance(name, str) and name:
+                owned.add(name)
+    return owned
+
+
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
 from sysforge.primitives.pacman import (
     BATCH_STRIP_FLAGS,
@@ -422,14 +449,20 @@ def _assemble_package_set(
         # (enabled + compiler="llvm"), every in-scope LLVM-suite package is
         # toolchain-owned even if it predates the owner_stage stamp. Same
         # name/pkgbase resolution as the kernel fallback so split packages
-        # (e.g. llvm-libs/polly under pkgbase llvm) are caught.
+        # (e.g. llvm-libs/polly under pkgbase llvm) are caught. Ownership is
+        # the union of is_llvm_pkgbase (prefix match: llvm/clang/compiler-rt/
+        # lld + lib32) and the explicit toolchain.toml [packages] lists, so
+        # configured-but-unmatched members like spirv-llvm-translator (and any
+        # custom-listed package) are skipped too — not just the prefix set.
         if _toolchain_owns_llvm():
+            configured = _toolchain_owned_pkgbases()
             for name in target_names:
                 if name in stage_owned:
                     continue
                 entry = build_state_pkgs.get(name) or {}
                 base = entry.get("pkgbase") or get_pkgbase(name) or name
-                if is_llvm_pkgbase(name) or is_llvm_pkgbase(base):
+                if (is_llvm_pkgbase(name) or is_llvm_pkgbase(base)
+                        or name in configured or base in configured):
                     stage_owned[name] = "toolchain"
         # Explicit names on the command line are an opt-in for that package.
         for name in list(stage_owned):

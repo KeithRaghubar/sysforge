@@ -39,6 +39,25 @@ enabled = false
 # pgo_store = "/var/tmp/sysforge-llvm-pgo"
 
 # ---------------------------------------------------------------------------
+# Build-safety gates (LLVM path only — the GCC path is register-only and skips
+# all gates). Gate 1 runs cheap pre-build checks and hard-aborts before any
+# build time is spent on a condition that will definitely fail or break the
+# live toolchain. See DESIGN.md §Toolchain stage boot-safety.
+# ---------------------------------------------------------------------------
+
+# Minimum free space (GiB) required on each filesystem hosting the staging
+# dirs / pgo_store / build output. A full 4-pass LLVM build needs substantial
+# scratch space; falling short mid-build leaves a half-built tree. Override a
+# trip with --skip-build-space-check.
+# min_build_free_gb = 40
+
+# Require the [multilib] repo to be enabled in /etc/pacman.conf when any
+# lib32-* package is in the build scope (lib32 builds need lib32-glibc etc.
+# from multilib). Set false to skip this check (e.g. a pure-64-bit config that
+# lists no lib32 packages — the check is already a no-op then).
+# require_multilib = true
+
+# ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed
 #
 # [packages]

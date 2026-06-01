@@ -394,6 +394,8 @@ class RunToolchainVerb(_RunVerbBase):
             rebuild_profdata=args.rebuild_profdata,
             auto_pgo=args.auto_pgo,
             allow_dirty_llvm=args.allow_dirty_llvm,
+            allow_version_skew=getattr(args, "allow_version_skew", False),
+            skip_build_space_check=getattr(args, "skip_build_space_check", False),
         )
         run_stage_standalone(ToolchainStage(), config, options)
         return ExecResult()
@@ -1050,6 +1052,20 @@ def _add_run_parser(sub):
              "Note: this only suppresses the refusal — it does not modify the "
              "tree. Use --cleansrc-force to actually overwrite the local "
              "trees with upstream.")
+    p_toolchain.add_argument("--allow-version-skew", action="store_true",
+        dest="allow_version_skew",
+        help="Override the pre-build Gate-1 abort when the in-tree LLVM "
+             "PKGBUILDs disagree on pkgver across the lockstep suite "
+             "(llvm/llvm-libs/clang/lld/compiler-rt/polly/openmp). By default a "
+             "skew aborts before building because dependency resolution will "
+             "fail; this builds anyway. spirv-llvm-translator and lib32-* are "
+             "never part of the skew check.")
+    p_toolchain.add_argument("--skip-build-space-check", action="store_true",
+        dest="skip_build_space_check",
+        help="Override the pre-build Gate-1 abort when a filesystem hosting the "
+             "staging dirs / pgo_store / build output lacks min_build_free_gb "
+             "free (default 40 GiB). Dangerous — the multi-hour LLVM build may "
+             "fail partway with no space left.")
     p_toolchain.add_argument("--cleansrc", action="store_true", dest="cleansrc",
         help="Purge each toolchain package's src dir and re-clone before "
              "building. Refuses (per package) if the existing clone has "

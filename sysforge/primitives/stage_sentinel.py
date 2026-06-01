@@ -211,26 +211,6 @@ class StageSentinel:
         serialised verbatim and surfaced in the recovery prompt so the
         user knows what was in flight.
         """
-        # Diagnostic: capture the full caller stack for every sentinel write
-        # to identify the rogue writer producing toolchain-labeled sentinels
-        # during `sysforge update`. Writes directly to a file under the same
-        # state dir as the sentinel itself; the module logger can't be used
-        # here because the unified log isn't open yet on sentinel-scope entry.
-        # Remove once root-caused.
-        import os as _os
-        import traceback
-        try:
-            diag_path = self._dir / "sentinel_writes.log"
-            self._dir.mkdir(parents=True, exist_ok=True)
-            with open(diag_path, "a") as _diag:
-                _diag.write(
-                    f"=== mark_started(stage={stage!r}, metadata={metadata!r}) "
-                    f"pid={_os.getpid()} ===\n"
-                )
-                _diag.write("".join(traceback.format_stack()[:-1]))
-                _diag.write("\n")
-        except OSError:
-            pass
         record = {
             "stage": stage,
             "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

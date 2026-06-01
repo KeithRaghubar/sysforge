@@ -280,7 +280,8 @@ _sysforge_run() {
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update -m --makepkg --persist-log --cache-report \
                 --abi-check --state-dir --rebuild-profdata --auto-pgo \
-                --allow-dirty-llvm --cleansrc --cleansrc-force" -- "$cur") )
+                --allow-dirty-llvm --allow-version-skew --skip-build-space-check \
+                --cleansrc --cleansrc-force" -- "$cur") )
             ;;
         packages)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\

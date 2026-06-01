@@ -10,6 +10,8 @@ Public API:
     BATCH_EXTRA_FLAGS                          — list[str]
     get_pkgdest()                   → Path | None
     snapshot_pkg_dir(directory)     → frozenset
+    get_pacman_cache_dirs()         → list[Path]
+    cached_pkg_files_for(names)     → dict[str, Path | None]
     batch_install_pkgs(pkg_paths)   → bool
     read_pkgname_from_file(path)    → str | None
     filter_pkgs_to_installed(paths, installed) → (keep, dropped)
@@ -199,6 +201,90 @@ def snapshot_pkg_dir(directory: Path) -> frozenset:
         p for p in directory.glob("*.pkg.tar*")
         if not p.name.endswith(".sig")
     )
+
+
+# ---------------------------------------------------------------------------
+# Pacman cache (offline rollback source)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CACHE_DIR = Path("/var/cache/pacman/pkg")
+
+
+def get_pacman_cache_dirs() -> list[Path]:
+    """Return the configured pacman package cache directories.
+
+    Reads ``CacheDir`` lines from the ``[options]`` section of
+    /etc/pacman.conf (there may be several; pacman searches them in order),
+    falling back to ``/var/cache/pacman/pkg`` when none are set — pacman's own
+    default. Used to locate a previously-installed ``.pkg.tar*`` for offline
+    rollback without re-downloading.
+    """
+    if not _PACMAN_CONF.is_file():
+        return [_DEFAULT_CACHE_DIR]
+    dirs: list[Path] = []
+    in_options = False
+    try:
+        with open(_PACMAN_CONF, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    in_options = line == "[options]"
+                    continue
+                if not in_options or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                if key.strip() == "CacheDir":
+                    for token in val.split():
+                        dirs.append(Path(token))
+    except OSError:
+        return [_DEFAULT_CACHE_DIR]
+    return dirs or [_DEFAULT_CACHE_DIR]
+
+
+def cached_pkg_files_for(names) -> dict[str, Path | None]:
+    """Locate each installed package's ``.pkg.tar*`` in the pacman cache.
+
+    For every name in ``names`` that is currently installed, resolves its
+    installed ``pkgver-pkgrel`` (``pacman -Q``) and finds the matching package
+    archive under the configured cache dir(s). The returned dict maps:
+
+      - name → Path     when the exact installed version's archive is cached
+      - name → None     when the package is not installed, or its archive is
+                        not present in any cache dir (e.g. cleared by paccache)
+
+    The caller (toolchain stage snapshot) uses a complete mapping as the
+    offline-undo source: ``batch_install_pkgs(list-of-Paths)`` reinstalls the
+    prior-good set in one ``pacman -U`` transaction. ``None`` entries are how
+    the caller learns auto-undo can't fully restore and warns up front.
+
+    Matching is exact on ``<name>-<pkgver>-<pkgrel>-<arch>.pkg.tar*`` so a
+    prefix collision (``llvm`` vs ``llvm-libs``) can't return the wrong file.
+    """
+    cache_dirs = get_pacman_cache_dirs()
+    result: dict[str, Path | None] = {}
+    for name in names:
+        ver = get_installed_version(name)
+        if ver is None:
+            result[name] = None
+            continue
+        # Built archives are <name>-<pkgver>-<pkgrel>-<arch>.pkg.tar* — the
+        # name+version prefix is followed by a '-<arch>' segment, so anchor on
+        # "<name>-<ver>-" to avoid matching <name>-libs-<ver>.
+        prefix = f"{name}-{ver}-"
+        found: Path | None = None
+        for cache_dir in cache_dirs:
+            if not cache_dir.is_dir():
+                continue
+            for cand in sorted(cache_dir.glob(f"{name}-{ver}-*.pkg.tar*")):
+                if cand.name.endswith(".sig"):
+                    continue
+                if cand.name.startswith(prefix):
+                    found = cand
+                    break
+            if found is not None:
+                break
+        result[name] = found
+    return result
 
 
 # ---------------------------------------------------------------------------

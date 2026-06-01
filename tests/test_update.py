@@ -2402,6 +2402,57 @@ def test_explicit_pkgname_overrides_toolchain_skip(tmp_path):
     assert pkgbase in {r.pkgbase for r in results}
 
 
+def test_toolchain_owned_spirv_skipped_via_configured_list(tmp_path, capsys):
+    """spirv-llvm-translator is NOT matched by is_llvm_pkgbase (prefix set), so
+    only the toolchain.toml [packages] configured-set union skips it. This pins
+    the ownership broadening: a configured-but-unmatched member is skipped."""
+    from sysforge.primitives.pkgbuild_patcher import is_llvm_pkgbase
+
+    pkgbase = "spirv-llvm-translator"
+    assert not is_llvm_pkgbase(pkgbase)  # the gap the broadening closes
+
+    pkg_dir = tmp_path / pkgbase
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\npkgver=19.1.5\npkgrel=1\n")
+    foreign = {pkgbase: "19.1.5-1"}
+    state_data = {
+        pkgbase: {
+            "pkgver": "19.1.5", "pkgrel": "1", "epoch": "0",
+            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
+            "built_at": "2026-03-17T10:00:00Z",
+        }
+    }
+    # toolchain.toml owns LLVM (enabled + llvm) and lists spirv in non_pgo.
+    toolchain_path = tmp_path / "toolchain.toml"
+    toolchain_path.write_text(
+        'enabled = true\ncompiler = "llvm"\n'
+        '[packages]\npgo = ["llvm"]\n'
+        'non_pgo = ["clang", "spirv-llvm-translator"]\nlib32 = []\n'
+    )
+    args = _make_args()
+    results: list = []
+
+    with (
+        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
+        patch("sysforge.update.BuildState") as MockBS,
+        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
+        patch("sysforge.update.load_config",
+              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
+        patch("sysforge.update._load_overrides", return_value=({}, {})),
+        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
+        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.update.get_pkgbase", return_value=pkgbase),
+    ):
+        MockBS.return_value.all_packages.return_value = state_data
+        with patch("sysforge.update._print_summary",
+                   side_effect=lambda res, a: results.extend(res)):
+            cmd_update(args)
+
+    assert pkgbase not in {r.pkgbase for r in results}
+    assert "toolchain-stage package" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # Build-failure recording (_record_build_failure)
 # ---------------------------------------------------------------------------

@@ -399,6 +399,8 @@ _sysforge_run_toolchain() {
     '--rebuild-profdata[force a full 3-pass PGO build even if profdata exists]' \
     '--auto-pgo[bypass PGO confirmation prompts; required for non-interactive PGO]' \
     '--allow-dirty-llvm[bypass the LLVM safety pre-flight refusal on dirty/diverged trees]' \
+    '--allow-version-skew[override the Gate-1 abort on PKGBUILD pkgver skew across the lockstep suite]' \
+    '--skip-build-space-check[override the Gate-1 build-filesystem free-space check]' \
     '--cleansrc[purge each toolchain src dir and re-clone (refuses if local work present)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
   && return

@@ -1,4 +1,4 @@
-.TH SYSFORGE "1" "2026\-05\-31" "sysforge" "Generated Python Manual"
+.TH SYSFORGE "1" "2026\-06\-01" "sysforge" "Generated Python Manual"
 .SH NAME
 sysforge
 .SH SYNOPSIS
@@ -753,7 +753,9 @@ Override state directory.
 usage: sysforge run toolchain [\-h] [\-\-dry\-run] [\-\-no\-update] [\-\-makepkg FLAGS]
                               [\-\-persist\-log] [\-\-cache\-report] [\-\-abi\-check]
                               [\-\-state\-dir DIR] [\-\-rebuild\-profdata]
-                              [\-\-auto\-pgo] [\-\-allow\-dirty\-llvm] [\-\-cleansrc]
+                              [\-\-auto\-pgo] [\-\-allow\-dirty\-llvm]
+                              [\-\-allow\-version\-skew]
+                              [\-\-skip\-build\-space\-check] [\-\-cleansrc]
                               [\-\-cleansrc\-force]
 
 .SH OPTIONS \fI\,'sysforge run toolchain'\/\fR
@@ -804,6 +806,20 @@ Bypass the LLVM safety pre\-flight refusal on dirty or diverged trees. PGO
 profdata version mismatches cannot be bypassed. Note: this only suppresses the
 refusal — it does not modify the tree. Use \-\-cleansrc\-force to actually
 overwrite the local trees with upstream.
+
+.TP
+\fB\-\-allow\-version\-skew\fR
+Override the pre\-build Gate\-1 abort when the in\-tree LLVM PKGBUILDs disagree
+on pkgver across the lockstep suite (llvm/llvm\-libs/clang/lld/compiler\-
+rt/polly/openmp). By default a skew aborts before building because dependency
+resolution will fail; this builds anyway. spirv\-llvm\-translator and lib32\-*
+are never part of the skew check.
+
+.TP
+\fB\-\-skip\-build\-space\-check\fR
+Override the pre\-build Gate\-1 abort when a filesystem hosting the staging dirs
+/ pgo_store / build output lacks min_build_free_gb free (default 40 GiB).
+Dangerous — the multi\-hour LLVM build may fail partway with no space left.
 
 .TP
 \fB\-\-cleansrc\fR

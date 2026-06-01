@@ -82,10 +82,10 @@ Compiler propagation:
   On completion writes cc/cxx/ld to pipeline_state.toml [stages.toolchain.result]
 """
 
+import contextlib
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import tomllib
 from pathlib import Path
@@ -94,11 +94,6 @@ from sysforge import log
 _log = log.get_logger("TOOLCHAIN")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.build_lock import build_lock
-from sysforge.primitives.abi_check import (
-    _extract_sos,
-    _list_sos_in_pkg,
-    _undefined_versioned,
-)
 from sysforge.primitives.config import find_pkgbuild, load_sysforge_toml
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
@@ -107,6 +102,8 @@ from sysforge.primitives.llvm_state import (
 )
 from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
+from sysforge.primitives import toolchain_safety
+from sysforge.primitives.pacman import batch_install_pkgs, cached_pkg_files_for
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import lift_for_child
@@ -434,56 +431,6 @@ def _resolve_all_pkgbuilds(
         )
 
     return resolved
-
-
-def _check_pkgver_consistency(pkgbuild_map: dict[str, Path]) -> None:
-    """
-    Parse all resolved PKGBUILDs and warn if they have inconsistent pkgver values.
-
-    Toolchain packages (e.g. llvm, clang, lld) all come from the same upstream
-    release and must share the same pkgver. A mismatch causes dependency resolution
-    failures at build time (e.g. clang requires llvm=22.1.0 but llvm is 22.1.1).
-    """
-    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-
-    # Parse each unique PKGBUILD directory once
-    dir_info: dict[Path, dict] = {}  # dir -> {pkgver, names}
-    for name, path in pkgbuild_map.items():
-        d = path.parent
-        if d not in dir_info:
-            try:
-                meta = parse_pkgbuild(path)
-                pkgver = meta.get("globals", {}).get("pkgver", "")
-            except Exception as e:
-                _log.info(f"  pkgver consistency: parse failed for {path}: {e}")
-                pkgver = ""
-            dir_info[d] = {"pkgver": pkgver, "names": []}
-        dir_info[d]["names"].append(name)
-
-    versions = {info["pkgver"] for info in dir_info.values() if info["pkgver"]}
-    if len(versions) <= 1:
-        return
-
-    # Determine the dominant (most common) version to identify stale outliers
-    from collections import Counter
-
-    version_counts = Counter(
-        info["pkgver"] for info in dir_info.values() if info["pkgver"]
-    )
-    dominant = version_counts.most_common(1)[0][0]
-
-    _log.warn(
-        "PKGBUILD version mismatch detected — dependency resolution will likely fail:",
-    )
-    for d, info in dir_info.items():
-        ver = info["pkgver"] or "unknown"
-        names = ", ".join(info["names"])
-        marker = "  ← stale" if ver != dominant else ""
-        _log.warn(f"  {ver:<16}  {d}  ({names}){marker}")
-    _log.warn("Sync stale directories before building:")
-    for d, info in dir_info.items():
-        if info["pkgver"] != dominant:
-            _log.warn(f"  git -C {d} pull --rebase")
 
 
 def _llvm_strict_enabled() -> bool:
@@ -925,40 +872,6 @@ def _collect_pgo_packages(pkgbuild_map: dict[str, Path]) -> list[Path]:
     return packages
 
 
-def _check_pkg_for_std_in_llvm_version(pkg_files: list[Path]) -> list[str]:
-    """
-    Scan Pass-3 .pkg.tar.zst for the std::-bound-to-libLLVM ABI hazard.
-
-    Any UND versioned symbol with a mangled C++ stdlib prefix (``_ZNSt``)
-    whose version starts with ``LLVM_`` means the package's linker bound a
-    std::string method (etc.) to libLLVM's version namespace instead of
-    libstdc++'s GLIBCXX_*. Installing such a package leaves the live
-    toolchain unable to resolve those symbols at runtime: ``clang --version``
-    crashes with ``symbol lookup error: libclang-cpp.so: undefined symbol
-    _ZNSt..., version LLVM_X.Y``.
-
-    Returns issue strings; empty list = no hazard.
-    """
-    issues: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="sysforge-abi-") as tmpdir:
-        tmp = Path(tmpdir)
-        for pkg in pkg_files:
-            members = _list_sos_in_pkg(pkg)
-            if not members:
-                continue
-            sos = _extract_sos(pkg, members, tmp / pkg.name)
-            for so in sos:
-                undef = _undefined_versioned(so)
-                for sym, ver in sorted(undef):
-                    if sym.startswith("_ZNSt") and ver.startswith("LLVM_"):
-                        issues.append(
-                            f"{pkg.name}: {so.name}: C++ stdlib symbol "
-                            f"bound to LLVM version namespace: {sym}@{ver} "
-                            "(should be GLIBCXX_*)"
-                        )
-    return issues
-
-
 def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> None:
     """
     Install packages built by a PGO pass via a direct 'sudo pacman -U' call.
@@ -970,10 +883,12 @@ def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> No
     sudo timestamp_type configurations (tty, ppid, global).  By issuing the
     sudo call here we guarantee it happens at a clean, predictable point.
 
-    Before invoking pacman, runs :func:`_check_pkg_for_std_in_llvm_version` on
-    the built packages and raises ``RuntimeError`` if any ``_ZNSt*@LLVM_*``
-    hazard is found — keeping the live ``/usr`` intact when Pass 3 produced
-    ABI-incoherent binaries.
+    The ABI-hazard scan that used to live here is now Gate 2
+    (``_gate2_audit`` → ``toolchain_safety.scan_abi_hazards``), which runs
+    *before* the snapshot + sentinel so a hazardous build aborts with nothing
+    installed. This install is reached only after Gate 2 has cleared the built
+    packages, and runs inside the sentinel; a ``pacman -U`` failure here raises
+    so the caller can roll back to the snapshot.
     """
     if dry_run:
         _log.ui(f"[dry-run] would install packages from {label}")
@@ -983,17 +898,6 @@ def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> No
         raise RuntimeError(
             f"[TOOLCHAIN] No built packages found for {label} — "
             "check that the build completed successfully"
-        )
-    hazards = _check_pkg_for_std_in_llvm_version(pkgs)
-    if hazards:
-        joined = "\n".join(f"  - {h}" for h in hazards)
-        raise RuntimeError(
-            f"[TOOLCHAIN] Refusing to install {label}: "
-            f"Pass-3 packages contain C++ stdlib symbols bound to the LLVM "
-            "version namespace. Installing would leave the live toolchain "
-            "unable to resolve std::string methods at runtime.\n"
-            f"{joined}\n"
-            "Restart with: sysforge run toolchain --rebuild-profdata"
         )
     _log.ui(f"[PGO] Installing {len(pkgs)} package(s) ({label}):")
     for p in pkgs:
@@ -1350,8 +1254,9 @@ def _merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
 def _pgo_target_major(pgo_map: dict[str, Path]) -> str | None:
     """Return the LLVM major version of the in-tree PGO PKGBUILDs, or None.
 
-    All pgo PKGBUILDs share the same pkgver (enforced by
-    _check_pkgver_consistency); the first one that parses cleanly wins.
+    All pgo PKGBUILDs share the same pkgver (Gate 1's
+    toolchain_safety.check_pkgver_lockstep aborts otherwise); the first one
+    that parses cleanly wins.
     Mirrors the major extracted in _check_existing_profdata so the
     write/check pair always compares apples to apples.
     """
@@ -1498,8 +1403,8 @@ def _check_existing_profdata(
     saved_major = version_path.read_text().strip()
 
     # Extract target LLVM major version from the pgo PKGBUILDs.
-    # All pgo PKGBUILDs should share the same pkgver (enforced by
-    # _check_pkgver_consistency); use the first one.
+    # All pgo PKGBUILDs should share the same pkgver (Gate 1's
+    # toolchain_safety.check_pkgver_lockstep aborts otherwise); use the first one.
     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
     for name, path in pgo_map.items():
@@ -1678,16 +1583,14 @@ def _verify_llvm_install(
     """
     issues: list[str] = []
 
+    # Skew arm — drawn from the pure fact in toolchain_safety so this entry
+    # point and the preflight probe share one definition (the data source,
+    # _query_pacman_versions, stays here so the subprocess call remains the
+    # patch point). detect_suite_skew is brick-class on disagreement.
     versions = _query_pacman_versions(_LLVM_VERSION_MATCH_SET)
-    installed = {n: v for n, v in versions.items() if v is not None}
-    if installed:
-        unique = set(installed.values())
-        if len(unique) > 1:
-            detail = ", ".join(f"{n}={v}" for n, v in sorted(installed.items()))
-            issues.append(
-                "LLVM component versions disagree (canonical interrupted-install "
-                f"symptom): {detail}"
-            )
+    skew = toolchain_safety.detect_suite_skew(versions)
+    if skew is not None:
+        issues.append(skew.message)
 
     issues.extend(_check_llvm_link_resolution())
 
@@ -1737,60 +1640,6 @@ def _llvm_recovery_command() -> str:
     return "sudo pacman -S " + " ".join(_LLVM_VERSION_MATCH_SET)
 
 
-def _prompt_llvm_recovery(
-    issues: list[str],
-    *,
-    source: str,
-    evidence_path: Path | None = None,
-) -> bool:
-    """Surface LLVM inconsistency to the operator and offer auto-recovery.
-
-    ``source`` describes where the inconsistency was detected — typically
-    ``"post-install verification"`` (H) or ``"stale stage sentinel"`` (I).
-    ``evidence_path`` is an optional diagnostic log path (written by
-    :func:`_dump_stage_dynsym_evidence` from the post-install verify
-    failure path) that gets surfaced in the WARN output so the operator
-    knows where to look. Returns True iff the user accepted auto-recovery
-    and it succeeded.
-
-    Non-interactive: the prompt's ``eof_default="n"`` fires and the
-    function returns False without running pacman (the caller raises a
-    blocker so the operator sees the issue at next run).
-    """
-    cmd = _llvm_recovery_command()
-    _log.warn(f"LLVM consistency check failed ({source}):")
-    for issue in issues:
-        _log.warn(f"  - {issue}")
-    if evidence_path is not None:
-        _log.warn(f"Diagnostic evidence written to: {evidence_path}")
-    _log.warn(f"Suggested recovery: {cmd}")
-
-    choice = prompt_choice(
-        "Restore a consistent LLVM set now? [y/N]: ",
-        choices=("y", "yes", "n"),
-        default="n",
-        eof_default="n",
-        tag="TOOLCHAIN",
-        level="WARN",
-    )
-    if choice not in ("y", "yes"):
-        return False
-
-    try:
-        proc = subprocess.run(cmd.split(), check=False)
-    except FileNotFoundError:
-        _log.error("[TOOLCHAIN] pacman binary missing — cannot run recovery")
-        return False
-    if proc.returncode != 0:
-        _log.error(
-            f"[TOOLCHAIN] Recovery pacman -S exited {proc.returncode}; "
-            "the live system may still be inconsistent",
-        )
-        return False
-    _log.ui("LLVM recovery completed successfully")
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Concurrent-build lock
 # ---------------------------------------------------------------------------
@@ -1820,42 +1669,39 @@ def _build_llvm_single(
     non_pgo_map: dict[str, Path],
     lib32_map: dict[str, Path],
     options,
-) -> tuple[str, str, str, str]:
-    """Single-pass LLVM build (pgo = false). Returns (cc, cxx, ld, variant)."""
+) -> tuple[dict[str, Path], str, str, str, str]:
+    """Single-pass LLVM build (pgo = false). Builds WITHOUT installing.
+
+    Returns ``(built_map, cc, cxx, ld, variant)``. ``built_map`` is the
+    name→PKGBUILD map the caller uses to collect built ``.pkg.tar*`` for the
+    Gate-2 ABI audit and the atomic, batched install inside the sentinel. The
+    build itself mutates nothing — the live ``/usr`` is only touched by the
+    caller's ``batch_install_pkgs`` step, so a build failure here leaves no
+    sentinel and no partial install (the old per-package ``install=True`` loop
+    could leave a half-installed suite if one package failed mid-batch).
+    """
     all_pkgs = {**pkgbuild_map, **non_pgo_map, **lib32_map}
     _build_pass(
         "LLVM build (single pass, no PGO)",
         all_pkgs,
         options,
-        install=True,
+        install=False,
         toolchain_variant="stock_llvm",
         owner_stage="toolchain",
     )
-    return "/usr/bin/clang", "/usr/bin/clang++", "lld", "stock_llvm"
+    return all_pkgs, "/usr/bin/clang", "/usr/bin/clang++", "lld", "stock_llvm"
 
 
-def _build_llvm_pgo(
-    pgo_map: dict[str, Path],
-    non_pgo_map: dict[str, Path],
-    lib32_map: dict[str, Path],
-    staging1: Path,
-    staging: Path,
-    pgo_store: Path,
-    options,
-) -> tuple[str, str, str, str]:
-    """Acquire the PGO build lock, then run the 4-pass flow.
+def _pgo_lock_path(staging1: Path) -> Path:
+    """Lock-file path guarding the PGO staging dirs + pgo_store.
 
-    The lock prevents two concurrent ``sysforge run toolchain`` runs from
-    clobbering each other's staging dirs / pgo_store. The lock file lives
-    in the parent of staging1 (typically ``/var/tmp``) so neither the
-    Pass-1 purge nor the post-build cleanup can delete it.
+    Lives in the parent of staging1 (typically ``/var/tmp``) so neither the
+    Pass-1 purge nor the post-build cleanup can delete it. The stage acquires
+    this (via :func:`_pgo_lock`) around the whole build → audit → install
+    window, mirroring how the kernel stage wraps its build with
+    ``kernel-build.lock``.
     """
-    lock_path = staging1.parent / "sysforge-pgo.lock"
-    with _pgo_lock(lock_path):
-        return _build_llvm_pgo_inner(
-            pgo_map, non_pgo_map, lib32_map,
-            staging1, staging, pgo_store, options,
-        )
+    return staging1.parent / "sysforge-pgo.lock"
 
 
 def _build_llvm_pgo_inner(
@@ -1866,9 +1712,15 @@ def _build_llvm_pgo_inner(
     staging: Path,
     pgo_store: Path,
     options,
-) -> tuple[str, str, str, str]:
+) -> tuple[dict[str, Path], str, str, str, str]:
     """
-    4-pass LLVM PGO build.
+    4-pass LLVM PGO build. Builds WITHOUT installing.
+
+    Returns ``(built_map, cc, cxx, ld, variant)`` where ``built_map`` is the
+    Pass-3 package map (pgo ∪ non_pgo ∪ lib32) the caller installs *after* the
+    Gate-2 ABI audit, inside the sentinel. Passes 1a/1b/2 and the Pass-3 build
+    all run with ``install=False`` so the live ``/usr`` is untouched until the
+    caller's install step — a build-pass failure therefore leaves no sentinel.
 
     Pass 1a: system compiler + -fprofile-generate; builds ONLY the pgo list
              (llvm, llvm-libs).  makepkg runs WITHOUT --install; outputs are
@@ -2285,11 +2137,15 @@ def _build_llvm_pgo_inner(
             toolchain_variant="pgo_llvm",
             owner_stage="toolchain",
         )
-        _pgo_install(pass3_label, all_pass3, options.dry_run)
+        # Pass 3 is built but NOT installed here — the caller runs the Gate-2
+        # ABI audit on the built packages, snapshots the current suite, then
+        # installs inside the sentinel via _pgo_install. Keeping the install
+        # out of the build function means a Gate-2 abort leaves nothing
+        # installed and no sentinel.
         if skip_profgen:
-            _log.ui("[PGO] Optimized build complete (profdata reused)")
+            _log.ui("[PGO] Optimized build complete (profdata reused) — pending audit + install")
         else:
-            _log.ui("[PGO] 4/4 complete — PGO build finished")
+            _log.ui("[PGO] 4/4 build complete — pending audit + install")
 
     finally:
         sudo_stop.set()
@@ -2297,12 +2153,256 @@ def _build_llvm_pgo_inner(
             sudo_keepalive.join()
 
     # Sidecar is written after Pass 2 (above), not here — see comment there.
-    # Staging is intentionally NOT removed here: the caller's
-    # _verify_llvm_install runs after this returns, and on a verify failure
-    # the stage2 prefix is needed by _dump_stage_dynsym_evidence to capture
-    # which exports leaked into stage2's libLLVM. Staging is removed in the
-    # caller after verify passes (or after the operator accepts recovery).
-    return "/usr/bin/clang", "/usr/bin/clang++", "lld", "pgo_llvm"
+    # Staging is intentionally NOT removed here: the caller's Gate-3
+    # _verify_llvm_install runs after install, and on a verify failure the
+    # stage2 prefix is needed by _dump_stage_dynsym_evidence to capture which
+    # exports leaked into stage2's libLLVM. Staging is removed by the caller
+    # after Gate 3 passes (or after a successful rollback).
+    return all_pass3, "/usr/bin/clang", "/usr/bin/clang++", "lld", "pgo_llvm"
+
+
+# ---------------------------------------------------------------------------
+# Build-safety gates (LLVM path only — the GCC path is register-only and skips
+# all gates). Mirrors the kernel stage: a cheap pre-build preflight (Gate 1,
+# hard-fails before any build time is spent), a pre-install artifact audit
+# (Gate 2, outside the sentinel so an abort leaves nothing installed), and a
+# post-install verify (Gate 3, inside the sentinel). The pure facts live in
+# primitives/toolchain_safety.py; the abort/warn policy lives here.
+# See DESIGN.md §Toolchain stage boot-safety.
+# ---------------------------------------------------------------------------
+
+# Lockstep-suite members for the install-time snapshot. The snapshot also
+# captures whatever the build produced (by built-package name), but seeding it
+# with the installed suite guarantees the prior-good libLLVM/clang/lld set is
+# captured even for members the current build doesn't touch.
+_SNAPSHOT_SUITE: tuple[str, ...] = LLVM_LOCKSTEP_SUITE
+
+
+def _gate1_preflight(
+    lib32_pkgs, staging1, staging, pgo_store,
+    pkgbuild_map, options, tcfg, *, snapshot,
+) -> None:
+    """Cheap pre-build safety checks. Hard-fails before anything is built.
+
+    Brick (abort, overridable): PKGBUILD pkgver skew across the lockstep suite
+    (``--allow-version-skew``); a non-functional clang / missing lld
+    (``smoke_test_compilers``); insufficient build-filesystem space
+    (``--skip-build-space-check`` / ``min_build_free_gb``); [multilib] disabled
+    while a lib32-* is in scope (``require_multilib``). In dry-run every brick
+    is downgraded to a warning so the run can still preview. Advisory (warn):
+    residual instrumentation; incomplete rollback snapshot. Runs for BOTH the
+    PGO and non-PGO paths.
+    """
+    dry_run = options.dry_run
+    allow_skew = bool(getattr(options, "allow_version_skew", False))
+    skip_space = bool(getattr(options, "skip_build_space_check", False))
+    require_multilib = bool(tcfg.get("require_multilib", True))
+    min_free_gb = float(tcfg.get("min_build_free_gb", 40))
+    lib32_in_scope = bool(lib32_pkgs)
+
+    def _abort_or_warn(finding) -> None:
+        if dry_run:
+            _log.warn(f"[dry-run] Gate 1 [{finding.severity.upper()}] "
+                      f"{finding.check_id}: {finding.message}")
+            if finding.remediation:
+                _log.warn(f"  → {finding.remediation}")
+        else:
+            raise RuntimeError(
+                f"[TOOLCHAIN] Gate 1 ({finding.check_id}): {finding.message} "
+                f"{finding.remediation}".rstrip()
+            )
+
+    # Brick: PKGBUILD pkgver skew across lockstep members (spirv + lib32 excluded).
+    if not allow_skew:
+        pkgvers = _parse_pkgbuild_pkgvers(pkgbuild_map)
+        skew = toolchain_safety.check_pkgver_lockstep(pkgvers)
+        if skew is not None:
+            _abort_or_warn(skew)
+    else:
+        _log.warn("--allow-version-skew: skipping the PKGBUILD pkgver lockstep check")
+
+    # Brick: clang must compile + lld must be present (both paths now).
+    for finding in toolchain_safety.smoke_test_compilers():
+        _abort_or_warn(finding)
+
+    # Brick: build filesystems must have headroom.
+    if not skip_space:
+        space = toolchain_safety.check_build_space(
+            [staging1, staging, pgo_store, *(p.parent for p in pkgbuild_map.values())],
+            min_free_gb,
+        )
+        if space is not None:
+            _abort_or_warn(space)
+    else:
+        _log.warn("--skip-build-space-check: skipping the build-space headroom check")
+
+    # Brick: [multilib] must be enabled when lib32 is in scope.
+    if require_multilib:
+        ml = toolchain_safety.check_multilib_enabled(lib32_in_scope)
+        if ml is not None:
+            _abort_or_warn(ml)
+
+    # Advisory: residual instrumentation from a prior aborted Pass 1.
+    for finding in toolchain_safety.detect_residual_instrumentation():
+        _log.warn(f"Gate 1 [{finding.severity.upper()}] {finding.check_id}: "
+                  f"{finding.message}")
+        if finding.remediation:
+            _log.info(f"  → {finding.remediation}")
+
+    # Advisory: rollback-snapshot completeness. Warn up front when auto-undo
+    # won't be able to fully restore (a suite member's cached .pkg.tar is gone).
+    missing = [name for name, path in snapshot.items() if path is None]
+    if missing:
+        _log.warn(
+            f"Rollback snapshot incomplete: {len(missing)} package(s) have no "
+            f"cached .pkg.tar for offline restore ({', '.join(sorted(missing))}). "
+            "If post-install verification fails, auto-undo will fall back to "
+            "`pacman -S` (network) for those."
+        )
+
+
+def _parse_pkgbuild_pkgvers(pkgbuild_map: dict[str, Path]) -> dict[str, str]:
+    """Parse each resolved PKGBUILD's pkgver, keyed by package name.
+
+    One parse per unique PKGBUILD directory (split packages share a dir).
+    Feeds ``toolchain_safety.check_pkgver_lockstep`` — only lockstep-suite
+    members are actually compared there, so spirv-llvm-translator's own version
+    scheme can't raise a false skew.
+    """
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    dir_pkgver: dict[Path, str] = {}
+    out: dict[str, str] = {}
+    for name, path in pkgbuild_map.items():
+        d = path.parent
+        if d not in dir_pkgver:
+            try:
+                meta = parse_pkgbuild(path)
+                dir_pkgver[d] = meta.get("globals", {}).get("pkgver", "") or ""
+            except Exception as e:
+                _log.info(f"  pkgver lockstep: parse failed for {path}: {e}")
+                dir_pkgver[d] = ""
+        if dir_pkgver[d]:
+            out[name] = dir_pkgver[d]
+    return out
+
+
+def _gate2_audit(built_map: dict[str, Path], *, dry_run: bool) -> None:
+    """Scan the built ``.pkg.tar*`` for the std::-bound-to-LLVM ABI hazard.
+
+    Runs *outside* the install sentinel, between build and install, for BOTH
+    the PGO and non-PGO paths (previously only PGO's ``_pgo_install`` scanned).
+    A brick (any ``_ZNSt*@LLVM_*`` symbol) aborts before any ``pacman -U`` — so
+    the live ``/usr`` is untouched and no sentinel is left behind. Skipped in
+    dry-run (nothing was built).
+    """
+    if dry_run:
+        _log.ui("[dry-run] would audit built packages for ABI hazards (Gate 2)")
+        return
+    pkgs = _collect_pgo_packages(built_map)
+    if not pkgs:
+        # Nothing to audit (e.g. AlreadyBuilt with PKGDEST cleared) — the
+        # install step will surface a missing-package error of its own.
+        return
+    _log.ui(f"Gate 2: auditing {len(pkgs)} built package(s) for ABI hazards")
+    findings = toolchain_safety.scan_abi_hazards(pkgs)
+    if findings:
+        joined = "\n".join(f"  - {f.message}" for f in findings)
+        raise RuntimeError(
+            "[TOOLCHAIN] Gate 2: built packages contain C++ stdlib symbols "
+            "bound to the LLVM version namespace — refusing to install (the "
+            "live toolchain would be unable to resolve std::string methods at "
+            f"runtime). Nothing was installed.\n{joined}\n"
+            "Restart with: sysforge run toolchain --rebuild-profdata"
+        )
+
+
+def _snapshot_suite(built_map: dict[str, Path]) -> dict[str, "Path | None"]:
+    """Capture the current-install ``.pkg.tar*`` for the suite + built packages.
+
+    The keys are the lockstep suite ∪ the names this build produced; each maps
+    to the cached archive for that package's currently-installed version (or
+    None when not installed / not in the cache). Used as the offline-undo
+    source: on Gate-3 failure the stage reinstalls the present paths in one
+    ``pacman -U`` transaction to put the prior-good toolchain back.
+    """
+    names = set(_SNAPSHOT_SUITE)
+    for path in built_map.values():
+        names.add(path.parent.name)  # pkgbase dir name; harmless if not a pkg
+    names.update(built_map.keys())
+    return cached_pkg_files_for(sorted(names))
+
+
+def _rollback_to_snapshot(snapshot: dict[str, "Path | None"]) -> bool:
+    """Reinstall the snapshot's cached packages in one ``pacman -U``.
+
+    Returns True when every captured package was reinstalled (live ``/usr`` is
+    back to the prior-good set), False when the snapshot is incomplete (a member
+    had no cached file) or the ``pacman -U`` itself failed — in which case the
+    caller keeps the sentinel set with a recovery command.
+    """
+    files = [p for p in snapshot.values() if p is not None]
+    missing = [n for n, p in snapshot.items() if p is None]
+    if missing:
+        _log.error(
+            f"Cannot fully roll back: {len(missing)} package(s) have no cached "
+            f".pkg.tar ({', '.join(sorted(missing))}). Not attempting a partial "
+            "offline restore."
+        )
+        return False
+    if not files:
+        return False
+    _log.warn(f"Rolling back to {len(files)} cached package(s) via pacman -U")
+    return batch_install_pkgs(files)
+
+
+def _snapshot_recovery_cmd(snapshot: dict[str, "Path | None"]) -> str:
+    """Recovery command stored in the sentinel when rollback can't run cleanly.
+
+    Prefers an offline ``pacman -U <cached files>`` when every member is cached;
+    otherwise falls back to the online ``pacman -S <suite>``. Stored in the
+    sentinel so the next-run recovery prompt has a copy-pasteable restore.
+    """
+    files = [p for p in snapshot.values() if p is not None]
+    if files and all(p is not None for p in snapshot.values()):
+        return "sudo pacman -U --noconfirm " + " ".join(str(p) for p in files)
+    return _llvm_recovery_command()
+
+
+def _log_toolchain_resolution_summary(
+    *, compiler, pgo, variant, pgo_pkgs, non_pgo_pkgs, lib32_pkgs,
+    staging1, staging, pgo_store, tcfg, options, snapshot,
+) -> None:
+    """Emit one labelled block of the resolved toolchain-build plan.
+
+    Kernel-parity: consolidates compiler/pgo/variant, package counts, staging
+    + pgo_store paths, the Gate-1 settings (min_build_free_gb, skew/space
+    overrides, require_multilib), and rollback-snapshot availability so the
+    operator can eyeball it before a multi-hour build — and so ``--dry-run`` has
+    a readable summary rather than only scattered ``[dry-run] would …`` lines.
+    """
+    n_total = len(pgo_pkgs) + len(non_pgo_pkgs) + len(lib32_pkgs)
+    cached = sum(1 for p in snapshot.values() if p is not None)
+    overrides = []
+    if getattr(options, "allow_version_skew", False):
+        overrides.append("allow-version-skew")
+    if getattr(options, "skip_build_space_check", False):
+        overrides.append("skip-build-space-check")
+    gates = (
+        f"min_build_free={float(tcfg.get('min_build_free_gb', 40)):g}GiB "
+        f"require_multilib={'on' if tcfg.get('require_multilib', True) else 'off'}"
+        + (f" overrides={','.join(overrides)}" if overrides else "")
+    )
+    _log.ui("Toolchain build plan:")
+    _log.ui(f"  compiler:   {compiler}  pgo={pgo}  variant={variant}")
+    _log.ui(f"  packages:   {n_total} total "
+            f"({len(pgo_pkgs)} pgo / {len(non_pgo_pkgs)} non-pgo / {len(lib32_pkgs)} lib32)")
+    if pgo:
+        _log.ui(f"  staging1:   {staging1}")
+        _log.ui(f"  staging2:   {staging}")
+        _log.ui(f"  pgo_store:  {pgo_store}")
+    _log.ui(f"  gates:      {gates}")
+    _log.ui(f"  snapshot:   {cached}/{len(snapshot)} suite package(s) cached for offline rollback")
 
 
 # ---------------------------------------------------------------------------
@@ -2423,7 +2523,6 @@ class ToolchainStage(Stage):
             cleansrc=getattr(options, "cleansrc", False),
             cleansrc_force=getattr(options, "cleansrc_force", False),
         )
-        _check_pkgver_consistency(pkgbuild_map)
 
         # LLVM safety pre-flight: refuse-by-default on dirty/diverged trees.
         # Strict mode is rule-driven from sysforge.toml [safety]; the CLI
@@ -2446,6 +2545,29 @@ class ToolchainStage(Stage):
         )
         _show_resolution_table(pkgbuild_map, role_map=role_map or None)
 
+        # Capture the prior-good install set BEFORE any mutation so it can be
+        # restored offline if Gate 3 (post-install verify) fails. Cheap pacman
+        # cache lookup; safe in dry-run (read-only).
+        snapshot = _snapshot_suite({**pgo_map, **non_pgo_map, **lib32_map})
+
+        # B1: consolidated resolution summary — one labelled block plus the
+        # readable core of a --dry-run preview (kernel parity).
+        variant = "pgo_llvm" if pgo else "stock_llvm"
+        _log_toolchain_resolution_summary(
+            compiler=compiler, pgo=pgo, variant=variant,
+            pgo_pkgs=pgo_pkgs, non_pgo_pkgs=non_pgo_pkgs, lib32_pkgs=lib32_pkgs,
+            staging1=staging1, staging=staging, pgo_store=pgo_store,
+            tcfg=tcfg, options=options, snapshot=snapshot,
+        )
+
+        # Gate 1 — cheap pre-build preflight. Hard-fails (overridable) on
+        # definite-failure conditions BEFORE any build time is spent; dry-run
+        # downgrades bricks to warnings. Runs for both PGO and non-PGO.
+        _gate1_preflight(
+            lib32_pkgs, staging1, staging, pgo_store,
+            pkgbuild_map, options, tcfg, snapshot=snapshot,
+        )
+
         # Prompt for confirmation (interactive only)
         try:
             import sys as _sys
@@ -2455,62 +2577,93 @@ class ToolchainStage(Stage):
         except RuntimeError:
             raise
 
-        # Install the stage sentinel + interrupt scope as one unit. The
-        # scope writes the sentinel on entry and clears it only on a clean
-        # exit; any exception (RuntimeError, CleanExitRequested) leaves the
-        # sentinel in place so the next sysforge invocation blocks at the
-        # CLI-entry recovery prompt. CleanExitRequested → RuntimeError
-        # translation (with retry_cmd + recovery_cmd in the message) happens
-        # inside sentinel_scope. See primitives/stage_sentinel.py.
-        with sentinel_scope(
-            options.state_dir,
-            "toolchain",
-            recovery_cmd=_llvm_recovery_command(),
-            retry_cmd="sysforge run toolchain",
-            compiler=compiler,
-            pgo=pgo,
-        ):
+        # Advisory lock around the whole build → audit → snapshot → install
+        # window, mirroring the kernel stage's kernel-build.lock. Guards the
+        # PGO /var/tmp staging dirs + pgo_store (and the non-PGO build area) so
+        # two concurrent `sysforge run toolchain` runs can't clobber each
+        # other. Skipped in dry-run (the lock file would be a side effect).
+        _lock = (
+            contextlib.nullcontext()
+            if options.dry_run
+            else _pgo_lock(_pgo_lock_path(staging1))
+        )
+        with _lock:
+            # Build WITHOUT installing (both paths). The build mutates nothing,
+            # so it runs OUTSIDE the sentinel; a build-pass failure leaves no
+            # sentinel behind (matches kernel).
             if pgo:
-                cc, cxx, ld, variant = _build_llvm_pgo(
+                built_map, cc, cxx, ld, variant = _build_llvm_pgo_inner(
                     pgo_map, non_pgo_map, lib32_map,
                     staging1, staging, pgo_store, options,
                 )
             else:
-                cc, cxx, ld, variant = _build_llvm_single(
+                built_map, cc, cxx, ld, variant = _build_llvm_single(
                     pgo_map, non_pgo_map, lib32_map, options
                 )
 
-            # Post-install verification (H): assert internal LLVM consistency
-            # before clearing the sentinel. Failure raises RuntimeError so
-            # sentinel_scope leaves the sentinel in place on exit. On failure
-            # the stage2 prefix is still on disk (its removal is deferred
-            # until after this check passes), so a dynsym dump can capture
-            # which exports leaked.
-            expected_targets = (tcfg.get("llvm", {}) or {}).get("targets") or None
-            if not options.dry_run:
-                issues = _verify_llvm_install(expected_targets=expected_targets)
-                if issues:
-                    evidence_path = (
-                        _dump_stage_dynsym_evidence(staging, options.state_dir)
-                        if pgo
-                        else None
-                    )
-                    if not _prompt_llvm_recovery(
-                        issues,
-                        source="post-install verification",
-                        evidence_path=evidence_path,
-                    ):
-                        raise RuntimeError(
-                            "[TOOLCHAIN] Post-install LLVM consistency check failed; "
-                            "the live system may be in a mismatched state. Stage "
-                            "sentinel left in place — restore with: "
-                            f"{_llvm_recovery_command()}"
+            # Gate 2 — pre-install ABI-hazard audit (both paths), OUTSIDE the
+            # sentinel: a brick abort here leaves nothing installed and no
+            # sentinel, keeping the live toolchain intact.
+            _gate2_audit(built_map, dry_run=options.dry_run)
+
+            # Install + post-install verify are the mutation window — wrap them
+            # in the sentinel so an interrupted/failed install blocks the next
+            # run with a recovery command. CleanExitRequested → RuntimeError
+            # translation (with retry_cmd + recovery_cmd) happens inside
+            # sentinel_scope. See primitives/stage_sentinel.py.
+            with sentinel_scope(
+                options.state_dir,
+                "toolchain",
+                recovery_cmd=_snapshot_recovery_cmd(snapshot),
+                retry_cmd="sysforge run toolchain",
+                compiler=compiler,
+                pgo=pgo,
+            ) as sentinel:
+                if options.dry_run:
+                    _log.ui("[dry-run] would install built toolchain and verify")
+                else:
+                    label = "PGO optimize" if pgo else "LLVM build (single pass, no PGO)"
+                    _pgo_install(label, built_map, options.dry_run)
+
+                # Gate 3 — post-install verify (H). On failure, auto-restore the
+                # prior-good toolchain from the snapshot (offline pacman -U):
+                #   restore OK   → live /usr is whole again → clear sentinel + raise.
+                #   restore FAIL → keep sentinel (recovery_cmd = snapshot restore).
+                expected_targets = (tcfg.get("llvm", {}) or {}).get("targets") or None
+                if not options.dry_run:
+                    issues = _verify_llvm_install(expected_targets=expected_targets)
+                    if issues:
+                        evidence_path = (
+                            _dump_stage_dynsym_evidence(staging, options.state_dir)
+                            if pgo
+                            else None
                         )
-                # Verify passed (or recovery accepted) — now safe to wipe
-                # the stage2 prefix. No-op for the non-PGO path (staging
-                # never populated) and the skip_profgen path (no stage2).
-                if pgo:
-                    _remove_staging(staging)
+                        _log.warn("Gate 3: post-install LLVM verification failed:")
+                        for issue in issues:
+                            _log.warn(f"  - {issue}")
+                        if evidence_path is not None:
+                            _log.warn(f"Diagnostic evidence written to: {evidence_path}")
+                        _log.warn("Attempting automatic rollback to the prior-good toolchain…")
+                        if _rollback_to_snapshot(snapshot):
+                            # Live /usr restored — the system is whole, so clear
+                            # the sentinel and raise (nothing to recover at next run).
+                            sentinel.clear()
+                            raise RuntimeError(
+                                "[TOOLCHAIN] Built toolchain failed Gate-3 verification; "
+                                "the prior toolchain was restored from the pacman cache. "
+                                "Investigate the build (see findings above) before retrying."
+                            )
+                        # Restore failed / snapshot incomplete — leave the
+                        # sentinel in place with the snapshot recovery command.
+                        raise RuntimeError(
+                            "[TOOLCHAIN] Built toolchain failed Gate-3 verification AND "
+                            "automatic rollback could not complete. The live toolchain may "
+                            "be inconsistent. Stage sentinel left in place — restore with: "
+                            f"{_snapshot_recovery_cmd(snapshot)}"
+                        )
+                    # Verify passed — safe to wipe the stage2 prefix (PGO only).
+                    if pgo:
+                        _remove_staging(staging)
 
         # Write compiler paths + variant to pipeline state for downstream
         # stages. ``variant`` is the canonical signal consumers read via

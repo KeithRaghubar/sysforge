@@ -91,7 +91,8 @@ _KNOWN_TOP_KEYS: dict[str, set[str]] = {
                        "source", "require_fallback_kernel", "boot_audit",
                        "min_boot_free_mb", "capture_lsmod_snapshot"},
     "toolchain.toml": {"enabled", "compiler", "pgo", "skip_build",
-                       "pgo_staging", "pgo_store"},
+                       "pgo_staging", "pgo_store",
+                       "min_build_free_gb", "require_multilib"},
     "bootstrap.toml": {"target"},
 }
 

@@ -52,6 +52,9 @@ class RunOptions:
     auto_pgo: bool = False           # bypass PGO confirmation prompts (required for non-TTY PGO)
     # LLVM safety pre-flight
     allow_dirty_llvm: bool = False   # bypass refuse-on-dirty/diverged for the toolchain stage
+    # Toolchain Gate-1 overrides (mirror kernel's allow_no_fallback/skip_boot_audit)
+    allow_version_skew: bool = False     # toolchain: override the PKGBUILD pkgver-skew brick (Gate 1)
+    skip_build_space_check: bool = False # toolchain: override the build-space-headroom brick (Gate 1)
     # Execution context
     standalone: bool = False         # True when running a single stage outside the pipeline
 

@@ -2,9 +2,11 @@
 test_pacman.py — tests for pacman.py: collect_makedeps, filter_missing_deps,
 get_installed_version, snapshot_pkg_dir.
 """
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from sysforge.primitives.pacman import (
+    cached_pkg_files_for,
     collect_makedeps,
     detect_orphan_artifacts,
     filter_missing_deps,
@@ -12,6 +14,7 @@ from sysforge.primitives.pacman import (
     get_installed_version,
     get_all_installed_packages,
     get_foreign_packages,
+    get_pacman_cache_dirs,
     get_pacman_sync_version,
     get_pkgbase,
     read_pkgname_from_file,
@@ -447,3 +450,74 @@ class TestDetectOrphanArtifacts:
         }
         # The kernel build is not in the result at all.
         assert all("kernel-custom" not in p.name for p in result["superseded"])
+
+
+# ---------------------------------------------------------------------------
+# get_pacman_cache_dirs / cached_pkg_files_for (offline rollback source)
+# ---------------------------------------------------------------------------
+
+class TestPacmanCache:
+    def test_cache_dirs_default_when_no_conf(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sysforge.primitives.pacman._PACMAN_CONF",
+                            tmp_path / "absent.conf")
+        assert get_pacman_cache_dirs() == [Path("/var/cache/pacman/pkg")]
+
+    def test_cache_dirs_parsed_from_options(self, tmp_path, monkeypatch):
+        conf = tmp_path / "pacman.conf"
+        conf.write_text(
+            "[options]\n"
+            "CacheDir = /custom/cache /second/cache\n"
+            "[core]\n"
+            "CacheDir = /should/not/count\n"  # outside [options]
+        )
+        monkeypatch.setattr("sysforge.primitives.pacman._PACMAN_CONF", conf)
+        dirs = get_pacman_cache_dirs()
+        assert dirs == [Path("/custom/cache"), Path("/second/cache")]
+
+    def test_cached_pkg_files_for_resolves_exact_version(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        # Two prefix-colliding names: llvm vs llvm-libs.
+        (cache / "llvm-22.1.5-1-x86_64.pkg.tar.zst").touch()
+        (cache / "llvm-libs-22.1.5-1-x86_64.pkg.tar.zst").touch()
+
+        monkeypatch.setattr("sysforge.primitives.pacman.get_pacman_cache_dirs",
+                            lambda: [cache])
+        versions = {"llvm": "22.1.5-1", "llvm-libs": "22.1.5-1"}
+        monkeypatch.setattr("sysforge.primitives.pacman.get_installed_version",
+                            lambda n: versions.get(n))
+
+        result = cached_pkg_files_for(["llvm", "llvm-libs"])
+        assert result["llvm"].name == "llvm-22.1.5-1-x86_64.pkg.tar.zst"
+        assert result["llvm-libs"].name == "llvm-libs-22.1.5-1-x86_64.pkg.tar.zst"
+
+    def test_cached_pkg_files_for_missing_cache_is_none(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        # Installed but archive absent from the cache (e.g. paccache cleaned it).
+        monkeypatch.setattr("sysforge.primitives.pacman.get_pacman_cache_dirs",
+                            lambda: [cache])
+        monkeypatch.setattr("sysforge.primitives.pacman.get_installed_version",
+                            lambda n: "22.1.5-1")
+        result = cached_pkg_files_for(["clang"])
+        assert result["clang"] is None
+
+    def test_cached_pkg_files_for_not_installed_is_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sysforge.primitives.pacman.get_pacman_cache_dirs",
+                            lambda: [tmp_path])
+        monkeypatch.setattr("sysforge.primitives.pacman.get_installed_version",
+                            lambda n: None)
+        result = cached_pkg_files_for(["openmp"])
+        assert result["openmp"] is None
+
+    def test_cached_pkg_files_for_skips_wrong_version(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        # Only an older version is cached; the installed version isn't there.
+        (cache / "lld-22.1.4-1-x86_64.pkg.tar.zst").touch()
+        monkeypatch.setattr("sysforge.primitives.pacman.get_pacman_cache_dirs",
+                            lambda: [cache])
+        monkeypatch.setattr("sysforge.primitives.pacman.get_installed_version",
+                            lambda n: "22.1.5-1")
+        result = cached_pkg_files_for(["lld"])
+        assert result["lld"] is None

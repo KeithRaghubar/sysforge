@@ -30,7 +30,6 @@ from sysforge.pipeline.stages.toolchain import (
     _PROFRAW_MERGE_BATCH_MAX,
     _PROFRAW_MERGE_BATCH_MIN,
     _PROFRAW_SETTLE_SECS,
-    _check_pkg_for_std_in_llvm_version,
     _collect_pgo_packages,
     _dump_stage_dynsym_evidence,
     _has_llvm_cmake_config,
@@ -69,6 +68,36 @@ def make_pkgbuild(pkgbuild_dir: Path, name: str) -> Path:
     pb = d / "PKGBUILD"
     pb.write_text(f"pkgname={name}\npkgver=1.0\npkgrel=1\n")
     return pb
+
+
+@pytest.fixture(autouse=True)
+def _toolchain_gates_clean(monkeypatch):
+    """Make the host-dependent toolchain-safety facts inert by default.
+
+    Gate 1 (build-space / compiler smoke / multilib) and the install-time
+    snapshot read the real machine — free disk, /usr/bin/clang, /etc/pacman.conf,
+    the pacman cache — none of which a test controls. Mirroring the kernel
+    suite's clean-axis convention, this autouse fixture stubs each pure fact to
+    its no-finding result and the snapshot to "nothing cached" so the existing
+    full-flow tests exercise the build/install plumbing without tripping a gate.
+    Dedicated gate tests re-patch the specific function they target to inject a
+    finding (monkeypatch lets a test override the same attribute).
+    """
+    from sysforge.primitives import toolchain_safety as _ts
+
+    monkeypatch.setattr(_ts, "smoke_test_compilers", lambda: [], raising=True)
+    monkeypatch.setattr(_ts, "check_build_space", lambda *a, **k: None, raising=True)
+    monkeypatch.setattr(_ts, "check_multilib_enabled", lambda *a, **k: None, raising=True)
+    monkeypatch.setattr(_ts, "check_pkgver_lockstep", lambda *a, **k: None, raising=True)
+    monkeypatch.setattr(_ts, "detect_residual_instrumentation", lambda: [], raising=True)
+    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: [], raising=True)
+    # Snapshot: no suite package resolves to a cached file (offline-undo
+    # unavailable). Tests that exercise rollback patch this explicitly.
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain.cached_pkg_files_for",
+        lambda names: {n: None for n in names},
+        raising=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1251,116 +1280,58 @@ def test_pgo_install_raises_on_pacman_failure(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _check_pkg_for_std_in_llvm_version / _dump_stage_dynsym_evidence
+# Gate 2 ABI audit / _dump_stage_dynsym_evidence
+#
+# (The unit coverage for the hazard scan itself now lives in
+# test_toolchain_safety.py::test_scan_abi_hazards_* — the stage just calls it.)
 # ---------------------------------------------------------------------------
 
 
-def test_check_pkg_for_std_in_llvm_version_flags_std_at_llvm(tmp_path):
-    """A `(_ZNSt..., LLVM_22.1)` UND pair is the canonical hazard — flagged."""
-    pkg = tmp_path / "clang-22.1.5-1-x86_64.pkg.tar.zst"
-    pkg.touch()
-    fake_so = tmp_path / "extracted" / "usr/lib/libclang-cpp.so.22.1"
-    fake_so.parent.mkdir(parents=True)
-    fake_so.touch()
-    hazard_sym = (
-        "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_"
-    )
+def test_gate2_audit_refuses_hazardous_build(tmp_path, monkeypatch):
+    """When scan_abi_hazards finds a leak, _gate2_audit aborts before install.
 
-    with patch(
-        "sysforge.pipeline.stages.toolchain._list_sos_in_pkg",
-        return_value=["usr/lib/libclang-cpp.so.22.1"],
-    ), patch(
-        "sysforge.pipeline.stages.toolchain._extract_sos",
-        return_value=[fake_so],
-    ), patch(
-        "sysforge.pipeline.stages.toolchain._undefined_versioned",
-        return_value={(hazard_sym, "LLVM_22.1")},
-    ):
-        issues = _check_pkg_for_std_in_llvm_version([pkg])
+    The ABI-hazard scan moved out of _pgo_install into Gate 2, which runs
+    *outside* the sentinel — so a hazardous build raises with nothing installed
+    and no sentinel left behind. (Replaces the old in-install hazard check.)
+    """
+    from sysforge.pipeline.stages.toolchain import _gate2_audit
+    from sysforge.primitives import toolchain_safety as _ts
 
-    assert len(issues) == 1
-    assert hazard_sym in issues[0]
-    assert "LLVM_22.1" in issues[0]
-    assert pkg.name in issues[0]
-
-
-def test_check_pkg_for_std_in_llvm_version_passes_clean_undef(tmp_path):
-    """Same `_ZNSt` symbol with `GLIBCXX_*` version is the expected case — no issue."""
-    pkg = tmp_path / "clang-22.1.5-1-x86_64.pkg.tar.zst"
-    pkg.touch()
-    fake_so = tmp_path / "extracted" / "usr/lib/libclang-cpp.so.22.1"
-    fake_so.parent.mkdir(parents=True)
-    fake_so.touch()
-    sym = (
-        "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_"
-    )
-
-    with patch(
-        "sysforge.pipeline.stages.toolchain._list_sos_in_pkg",
-        return_value=["usr/lib/libclang-cpp.so.22.1"],
-    ), patch(
-        "sysforge.pipeline.stages.toolchain._extract_sos",
-        return_value=[fake_so],
-    ), patch(
-        "sysforge.pipeline.stages.toolchain._undefined_versioned",
-        return_value={(sym, "GLIBCXX_3.4.21")},
-    ):
-        issues = _check_pkg_for_std_in_llvm_version([pkg])
-
-    assert issues == []
-
-
-def test_check_pkg_for_std_in_llvm_version_skips_non_std_in_llvm_version(tmp_path):
-    """Non-`_ZNSt` symbols (e.g. real LLVM exports) at `LLVM_*` are not hazards."""
-    pkg = tmp_path / "llvm-22.1.5-1-x86_64.pkg.tar.zst"
-    pkg.touch()
-    fake_so = tmp_path / "extracted" / "usr/lib/libLLVM.so.22.1"
-    fake_so.parent.mkdir(parents=True)
-    fake_so.touch()
-
-    with patch(
-        "sysforge.pipeline.stages.toolchain._list_sos_in_pkg",
-        return_value=["usr/lib/libLLVM.so.22.1"],
-    ), patch(
-        "sysforge.pipeline.stages.toolchain._extract_sos",
-        return_value=[fake_so],
-    ), patch(
-        "sysforge.pipeline.stages.toolchain._undefined_versioned",
-        return_value={("LLVMInitializeBPFTarget", "LLVM_22.1")},
-    ):
-        issues = _check_pkg_for_std_in_llvm_version([pkg])
-
-    assert issues == []
-
-
-def test_pgo_install_refuses_hazardous_pass3(tmp_path):
-    """When the ABI hazard scan finds a leak, _pgo_install must NOT run pacman -U."""
     pkg_dir = tmp_path / "clang"
     pkg_dir.mkdir()
     fake_pkg = pkg_dir / "clang-22.1.5-1-x86_64.pkg.tar.zst"
     fake_pkg.touch()
-    pkgbuild_map = {"clang": pkg_dir / "PKGBUILD"}
+    built_map = {"clang": pkg_dir / "PKGBUILD"}
 
-    pacman_calls = []
+    hazard = [_ts.ToolchainFinding(
+        "error", "abi_hazard",
+        f"{fake_pkg.name}: libclang-cpp.so.22.1: _M_assign@LLVM_22.1",
+        is_brick=True,
+    )]
+    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: hazard)
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
+        lambda m: [fake_pkg],
+    )
 
-    def fake_run(cmd, **kwargs):
-        if "pacman" in cmd:
-            pacman_calls.append(cmd)
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = str(fake_pkg)
-        result.stderr = ""
-        return result
+    with pytest.raises(RuntimeError, match="refusing to install"):
+        _gate2_audit(built_map, dry_run=False)
 
-    hazard = [f"{fake_pkg.name}: libclang-cpp.so.22.1: ..._M_assign@LLVM_22.1"]
-    with patch("subprocess.run", side_effect=fake_run), patch(
-        "sysforge.pipeline.stages.toolchain._check_pkg_for_std_in_llvm_version",
-        return_value=hazard,
-    ):
-        with pytest.raises(RuntimeError, match="Refusing to install"):
-            _pgo_install("PGO 4/4 · optimize all packages", pkgbuild_map, dry_run=False)
 
-    assert pacman_calls == []
+def test_gate2_audit_clean_build_passes(tmp_path, monkeypatch):
+    """No hazard → _gate2_audit returns without raising."""
+    from sysforge.pipeline.stages.toolchain import _gate2_audit
+
+    pkg_dir = tmp_path / "clang"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "clang-22.1.5-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
+        lambda m: [fake_pkg],
+    )
+    # scan_abi_hazards stubbed to [] by the autouse fixture.
+    _gate2_audit({"clang": pkg_dir / "PKGBUILD"}, dry_run=False)  # must not raise
 
 
 def test_dump_stage_dynsym_evidence_writes_log(tmp_path):
@@ -2886,3 +2857,223 @@ def test_pgo_confirm_tty_no_raises():
                 options=_confirm_options(),
                 abort_msg="user declined the build",
             )
+
+
+# ---------------------------------------------------------------------------
+# Gates + build/install split + snapshot rollback (kernel-parity overhaul)
+#
+# These drive ToolchainStage().run() end-to-end with the build mocked. The
+# autouse _toolchain_gates_clean fixture neutralizes the host-dependent facts;
+# each test re-patches the one it targets to inject a finding/behaviour.
+# ---------------------------------------------------------------------------
+
+def _single_pass_setup(tmp_path, pkgs=("llvm", "clang")):
+    """A non-PGO (single-pass) LLVM toolchain config + built package fixtures."""
+    toml_path = tmp_path / "toolchain.toml"
+    import json as _json
+    toml_path.write_text(
+        'enabled = true\ncompiler = "llvm"\npgo = false\n'
+        f"[packages]\npgo = {_json.dumps(list(pkgs))}\nnon_pgo = []\nlib32 = []\n"
+    )
+    pkgbuild_dir = tmp_path / "builds"
+    for name in pkgs:
+        pb = make_pkgbuild(pkgbuild_dir, name)
+        (pb.parent / f"{name}-22.1.5-1-x86_64.pkg.tar.zst").touch()
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
+    options = make_options(dry_run=False, state_dir=tmp_path / "state")
+    return toml_path, state, config, options
+
+
+def _sentinel_exists(state_dir):
+    from sysforge.primitives.stage_sentinel import StageSentinel
+    return StageSentinel(state_dir).get_active() is not None
+
+
+def test_gate1_version_skew_aborts_before_build(tmp_path, monkeypatch):
+    """A Gate-1 pkgver-skew brick raises before any makepkg call, no sentinel."""
+    from sysforge.primitives import toolchain_safety as _ts
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+
+    skew = _ts.ToolchainFinding(
+        "error", "pkgver_lockstep", "LLVM PKGBUILD pkgver skew", is_brick=True,
+    )
+    monkeypatch.setattr(_ts, "check_pkgver_lockstep", lambda pv: skew)
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock, \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError, match="Gate 1 .pkgver_lockstep."):
+            ToolchainStage().run(config, state, options)
+
+    makepkg_mock.assert_not_called()
+    assert not _sentinel_exists(tmp_path / "state")
+
+
+def test_gate1_build_space_aborts_overridable(tmp_path, monkeypatch):
+    """A build-space brick aborts; --skip-build-space-check bypasses it."""
+    from sysforge.primitives import toolchain_safety as _ts
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+
+    short = _ts.ToolchainFinding(
+        "error", "build_space", "only 5 GiB free", is_brick=True,
+    )
+    monkeypatch.setattr(_ts, "check_build_space", lambda *a, **k: short)
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError, match="Gate 1 .build_space."):
+            ToolchainStage().run(config, state, options)
+
+        # Override → the brick is skipped and the run proceeds.
+        options.skip_build_space_check = True
+        ToolchainStage().run(config, state, options)
+    assert state.get_stage_result("toolchain")["variant"] == "stock_llvm"
+
+
+def test_gate1_dry_run_downgrades_brick_to_warning(tmp_path, monkeypatch):
+    """In dry-run a Gate-1 brick warns instead of aborting."""
+    from sysforge.primitives import toolchain_safety as _ts
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+    options.dry_run = True
+
+    short = _ts.ToolchainFinding(
+        "error", "build_space", "only 5 GiB free", is_brick=True,
+    )
+    monkeypatch.setattr(_ts, "check_build_space", lambda *a, **k: short)
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"):
+        ToolchainStage().run(config, state, options)  # must not raise
+
+
+def test_single_pass_builds_without_install_then_batches(tmp_path, monkeypatch):
+    """The non-PGO path builds with install=False, audits (Gate 2), then
+    installs via _pgo_install inside the sentinel — no per-package install."""
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+
+    build_calls = []
+
+    def fake_run(pkgbuild_path, options=None):
+        build_calls.append({
+            "install": "--install" in list(options.extra_flags or []) if options else False,
+            "owner_stage": options.owner_stage if options else None,
+        })
+
+    install_calls = []
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install",
+               side_effect=lambda *a, **k: install_calls.append(a)), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
+         patch("sys.stdin.isatty", return_value=False):
+        ToolchainStage().run(config, state, options)
+
+    # Build passes never carry --install (split: install is the caller's job).
+    assert build_calls and all(not c["install"] for c in build_calls)
+    assert all(c["owner_stage"] == "toolchain" for c in build_calls)
+    # Exactly one install step (batched), reached after the build.
+    assert len(install_calls) == 1
+    assert not _sentinel_exists(tmp_path / "state")  # cleared on success
+
+
+def test_gate3_failure_auto_restores_and_clears_sentinel(tmp_path, monkeypatch):
+    """Gate-3 verify failure → snapshot rollback succeeds → sentinel cleared, raise."""
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+
+    # A complete snapshot (every member cached) so rollback can run.
+    cached = tmp_path / "cache" / "llvm-22.1.5-1-x86_64.pkg.tar.zst"
+    cached.parent.mkdir(parents=True)
+    cached.touch()
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain.cached_pkg_files_for",
+        lambda names: {n: cached for n in names},
+    )
+
+    restored = {}
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install",
+               return_value=["clang --version: exit 127"]), \
+         patch("sysforge.pipeline.stages.toolchain.batch_install_pkgs",
+               side_effect=lambda files: restored.setdefault("files", files) or True), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError, match="prior toolchain was restored"):
+            ToolchainStage().run(config, state, options)
+
+    assert restored.get("files")  # rollback ran
+    assert not _sentinel_exists(tmp_path / "state")  # system whole → cleared
+
+
+def test_gate3_failure_restore_fails_keeps_sentinel(tmp_path, monkeypatch):
+    """Gate-3 fails AND rollback fails → sentinel left in place for next-run recovery."""
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+
+    cached = tmp_path / "cache" / "llvm-22.1.5-1-x86_64.pkg.tar.zst"
+    cached.parent.mkdir(parents=True)
+    cached.touch()
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain.cached_pkg_files_for",
+        lambda names: {n: cached for n in names},
+    )
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install",
+               return_value=["clang --version: exit 127"]), \
+         patch("sysforge.pipeline.stages.toolchain.batch_install_pkgs",
+               return_value=False), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError, match="rollback could not complete"):
+            ToolchainStage().run(config, state, options)
+
+    assert _sentinel_exists(tmp_path / "state")  # kept for recovery
+
+
+def test_build_failure_leaves_no_sentinel(tmp_path, monkeypatch):
+    """A build-pass failure raises before the sentinel scope — none left behind."""
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=RuntimeError("build blew up")), \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError, match="build blew up"):
+            ToolchainStage().run(config, state, options)
+
+    assert not _sentinel_exists(tmp_path / "state")
+
+
+def test_gcc_register_only_skips_all_gates(tmp_path, monkeypatch):
+    """The gcc path registers paths and returns — no Gate 1, no smoke test, no build."""
+    from sysforge.primitives import toolchain_safety as _ts
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
+    options = make_options(dry_run=False, state_dir=tmp_path / "state")
+
+    gate_calls = []
+    monkeypatch.setattr(_ts, "smoke_test_compilers",
+                        lambda: gate_calls.append("smoke") or [])
+    monkeypatch.setattr(_ts, "check_build_space",
+                        lambda *a, **k: gate_calls.append("space"))
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock:
+        ToolchainStage().run(config, state, options)
+
+    assert state.get_stage_result("toolchain")["variant"] == "gcc"
+    assert gate_calls == []  # no gate ran on the register-only path
+    makepkg_mock.assert_not_called()
