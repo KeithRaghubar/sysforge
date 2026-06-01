@@ -101,6 +101,7 @@ sysforge/
 │   │   └── progress.py                # bottom-anchored batch progress indicator (TTY scroll region + plain fallback)
 │   ├── resolve.py                     # sysforge resolve subcommand
 │   ├── update.py                      # sysforge update subcommand
+│   ├── build_core.py                  # shared build engine behind `build` + `update` (dep prep, build loop, install)
 │   ├── converge.py                    # sysforge converge subcommand (flag drift detection)
 │   ├── doctor.py                      # sysforge doctor subcommand (ABI/linkage health check)
 │   ├── fetch.py                       # sysforge fetch subcommand (download PKGBUILDs, no build)
@@ -730,8 +731,8 @@ Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `res
 
 | Verb | pre_check | execute | post_validate | sentinel |
 |------|-----------|---------|---------------|----------|
-| `build` | load config + LLVM preflight + `--cleansrc` validation | per-pkg AUR-dep resolve + makepkg | (build_state written by makepkg_wrapper) | yes |
-| `update` | `--install-only` conflict check + config + state load + pacman-hook sentinel consumption | assemble → sync → vercmp → summary → build → install | (build_state written inline) | yes |
+| `build` | load config + LLVM preflight + `--cleansrc` validation | `build_core.build_and_install` (dep prep → build loop → install) | (build_state written by makepkg_wrapper) | yes |
+| `update` | `--install-only` conflict check + config + state load + pacman-hook sentinel consumption | assemble → sync → vercmp → summary → `build_core.build_and_install` | (build_state written inline) | yes |
 | `fetch` | load config + LLVM preflight | scheduler sync per pkg | non-blocker SyncResult statuses verified | no |
 | `converge` | load state + filter + conflict-group load | drift compare; optional rebuild | (build_state written by rebuild path) | only with `--apply` |
 | `doctor` | load config + target expansion | depends/soname/ABI scan | invoke `BuildVerb` flow when `--apply` | delegated |
@@ -744,6 +745,15 @@ Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `res
 | `run …` namespace | build `RunOptions` | delegate to `pipeline.run_pipeline` / `run_stage_standalone` | pipeline framework | (pipeline owns it) |
 
 **Why not unify with the pipeline `Stage` contract?** Stages already presume multi-stage DAG semantics, per-stage checkpoints, and an opinionated `PipelineState`. Most CLI verbs are single-shot and don't want a pipeline state file. The verb framework reuses `sentinel_scope` for install-bearing protection but otherwise stays independent, so `sysforge env` is not paying for pipeline machinery it doesn't need. The `run` namespace verbs are exactly the thin shim from CLI → pipeline.
+
+### Shared build engine (`build_core.py`)
+
+`build` is a strict subset of `update`: both route their actual building through one engine in `sysforge/build_core.py`, so the two paths cannot drift the way they once did (a `build` that left makepkg's `-s`/`--syncdeps` in place would have makepkg run `pacman -S` on an AUR-only dependency and fail, while `update` stripped those flags and pre-resolved every dep itself). `update` extends the shared core with the things that are genuinely its own — version checking, source-sync scheduling, `--install-only`, toolchain pre-flight, the bulk `pacman -Syu`, and the run summary — but the dependency prep, the per-package makepkg invocation, and the install are identical code.
+
+- **`build_and_install(targets, *, sync_source, …) -> BuildOutcome`** — the engine. Runs `prepare_deps`, then a per-package build loop, then `install_built`, returning the built/failed/pgo-skipped lists and the install-failed flag. Each makepkg call uses `strip_flags = BATCH_STRIP_FLAGS` (`{-s, --syncdeps, -i, --install}`) and `force_batch` when non-interactive, so makepkg never resolves deps via pacman and never installs inline — sysforge owns both. `targets` is any object exposing `pkgbase`/`pkgnames`/`pkgbuild_path`/`source` (`update._UpdateResult` qualifies directly; `build` builds a `BuildTarget` from the parsed PKGBUILD via `target_from_pkgbuild`).
+- **`prepare_deps(pkgbuild_paths, config, *, building_names, …)`** — pre-installs missing repo makedeps in one `pacman -S` transaction (`batch_install_makedeps`) and builds AUR/local deps in topo order (`resolve_aur_deps_batch` + `build_resolved_deps`), excluding the packages about to be built themselves. Both arms are best-effort — a failure warns and lets the build proceed, surfacing a genuinely-missing dep as a per-package build failure with a diagnosis rather than aborting the whole batch up front.
+- **`install_built(built_pkg_files) -> (files, install_failed)`** — dedupe, re-fetch the installed set (makedep/AUR pre-install may have expanded it), `filter_pkgs_to_installed` for split-pkgbase safety, then one `pacman -U`. Reused by `update`'s `--install-only` artifact-scan branch.
+- **`sync_source`** is the single deliberate caller difference: `update` passes `False` (Phase 2 already synced sources through the scheduler), `build` passes `not --no-update` to keep its inline per-package source sync (which itself routes through `source_sync.get_scheduler()` inside `makepkg_wrapper.run`). `_find_existing_artifacts` and `_record_build_failure` live here too (moved from `update.py`) since both the engine and `update`'s install-only scan use them.
 
 ---
 
@@ -1037,6 +1047,11 @@ High-level flow:
 11. Invoke `makepkg -p PKGBUILD.sysforge` with temp conf and injected env
 
 **System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
+
+**Flag guards in `emit_makepkg_conf`:** before writing the conf, several scrubs run so a known-broken flag never reaches makepkg:
+- **Linker guard** — when the effective linker (from `-fuse-ld=` in profile-then-system `LDFLAGS`) is not `lld`, lld-only tokens (`--icf=all/safe/none`, bare or inside `-Wl,…`) are stripped from *profile-override* `LDFLAGS` via `_strip_lld_flags` so configure-time link tests against the system linker don't break.
+- **GCC+LTO guard** — GCC's `.gnu.lto_*` bitcode is incompatible with lld; when the effective compiler is GCC, `-flto=thin` is rewritten to `-flto`, and if the linker is lld, LTO is disabled entirely (clear `LTOFLAGS`, strip `-flto*`, flip `lto`→`!lto` in `OPTIONS`).
+- **lib32 guards** — for `is_lib32=True` builds, 64-bit-only `-march=` tokens are scrubbed from `CFLAGS`/`CXXFLAGS` and lld `--icf=*` tokens from `LDFLAGS`, at **both** the profile-override site and the system-conf passthrough. The icf scrub is **unconditional on the effective linker** (unlike the linker guard above): 32-bit identical-code-folding breaks links for some lib32 packages (e.g. `lib32-lzo`) even when lld is active. This keeps the `bare` profile (priority-30 destination for `lib32-*`, silent on these keys) from letting the system conf's host-arch flags through to an i686 build — the guard lives at conf emission, not in a per-profile rule.
 
 **Makepkg flag passthrough:** makepkg short flags can be passed directly on the command line (`sysforge build ventoy -sfCci`) or explicitly via `-m "-sfci"`. Implicit passthrough applies to `build`, `update`, and `converge` — the preprocessing layer (`_extract_implicit_makepkg_flags`) rewrites bare flags into `-m` form before argparse runs. Excluded from implicit passthrough: `-h`, `-V`, `-p`, `-m`, `-D` (conflict with sysforge flags or take a value argument; `-v` is already hoisted). Combined short flags are expanded: `-sfci` → `[-s, -f, -c, -i]`.
 

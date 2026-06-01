@@ -1299,13 +1299,14 @@ def test_already_built_installs_existing_artifact(tmp_path):
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_overrides", return_value=overrides),
         patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
         patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.collect_makedeps", return_value=[]),
-        patch("sysforge.update.filter_missing_deps", return_value=[]),
+        patch("sysforge.build_core.collect_makedeps", return_value=[]),
+        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
         patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.update.snapshot_pkg_dir", return_value=frozenset()),
+        patch("sysforge.build_core.snapshot_pkg_dir", return_value=frozenset()),
         patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
-        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
     ):
@@ -1379,13 +1380,14 @@ def test_split_pkgbase_only_installs_installed_subpkgnames(tmp_path):
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_overrides", return_value=overrides),
         patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
         patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.collect_makedeps", return_value=[]),
-        patch("sysforge.update.filter_missing_deps", return_value=[]),
+        patch("sysforge.build_core.collect_makedeps", return_value=[]),
+        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
         patch("sysforge.update.get_pkgdest", return_value=None),
-        patch("sysforge.update.snapshot_pkg_dir", return_value=frozenset(built_files)),
+        patch("sysforge.build_core.snapshot_pkg_dir", return_value=frozenset(built_files)),
         patch("sysforge.primitives.pacman.read_pkgname_from_file", side_effect=fake_read_pkgname),
-        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
         patch("sysforge.update.evaluate_vcs_pkgver", return_value="1.0.r1.gffffff-1"),
@@ -1450,10 +1452,11 @@ def test_install_only_installs_existing_artifact_without_building(tmp_path):
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_overrides", return_value=overrides),
         patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
         patch("sysforge.update.get_foreign_packages", return_value=installed),
         patch("sysforge.update.get_pkgdest", return_value=pkgdest),
         patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
-        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
     ):
         MockBS.return_value.all_packages.return_value = state_data
@@ -1499,10 +1502,11 @@ def test_install_only_skips_when_artifact_missing(tmp_path):
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_overrides", return_value=overrides),
         patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
         patch("sysforge.update.get_foreign_packages", return_value=installed),
         patch("sysforge.update.get_pkgdest", return_value=pkgdest),
         patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
-        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
     ):
         MockBS.return_value.all_packages.return_value = state_data
@@ -1576,13 +1580,14 @@ def test_already_built_vcs_falls_back_to_newest_pkgname_match(tmp_path):
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_overrides", return_value=overrides),
         patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
         patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.collect_makedeps", return_value=[]),
-        patch("sysforge.update.filter_missing_deps", return_value=[]),
+        patch("sysforge.build_core.collect_makedeps", return_value=[]),
+        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
         patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.update.snapshot_pkg_dir", return_value=frozenset()),
+        patch("sysforge.build_core.snapshot_pkg_dir", return_value=frozenset()),
         patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
-        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
         patch("sysforge.update.evaluate_vcs_pkgver",
@@ -1637,10 +1642,11 @@ def test_install_only_vcs_picks_newest_artifact_in_pkgdest(tmp_path):
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_overrides", return_value=overrides),
         patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
         patch("sysforge.update.get_foreign_packages", return_value=installed),
         patch("sysforge.update.get_pkgdest", return_value=pkgdest),
         patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
-        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
         patch("sysforge.update.evaluate_vcs_pkgver",
               return_value="0.1.0.r45.g1234567-1"),
@@ -1688,10 +1694,11 @@ def test_install_only_vcs_skips_when_only_older_artifacts_present(tmp_path):
         patch("sysforge.update.load_config", return_value={}),
         patch("sysforge.update._load_overrides", return_value=overrides),
         patch("sysforge.update.get_all_installed_packages", return_value=installed),
+        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
         patch("sysforge.update.get_foreign_packages", return_value=installed),
         patch("sysforge.update.get_pkgdest", return_value=pkgdest),
         patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
-        patch("sysforge.update.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
         patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
         patch("sysforge.update.evaluate_vcs_pkgver",
               return_value="0.1.0.r45.g1234567-1"),
@@ -1870,9 +1877,9 @@ def _run_profiled_repo_update(
         ),
         patch("sysforge.update.vercmp", side_effect=_string_vercmp),
         patch("sysforge.update._toolchain_preflight_for_batch", return_value=True),
-        patch("sysforge.update.collect_makedeps", return_value=[]),
-        patch("sysforge.update.filter_missing_deps", return_value=[]),
-        patch("sysforge.update.batch_install_pkgs", return_value=True),
+        patch("sysforge.build_core.collect_makedeps", return_value=[]),
+        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
+        patch("sysforge.build_core.batch_install_pkgs", return_value=True),
         patch("subprocess.run", side_effect=pacman_run_mock or _ok_subprocess),
     ):
         mock_llvm.return_value = MagicMock(states=[])
@@ -2462,7 +2469,7 @@ def test_record_build_failure_persists_diagnosis(tmp_path):
 
     from sysforge.primitives.build_diag import FixSuggestion
     from sysforge.primitives.build_state import BuildState
-    from sysforge.update import _record_build_failure
+    from sysforge.build_core import _record_build_failure
 
     result = SimpleNamespace(pkgbase="gpu-burn-git", pkgbuild_ver="r93.a113ce7")
     exc = RuntimeError("[build_failed] makepkg exit 4")
@@ -2485,7 +2492,7 @@ def test_record_build_failure_without_diagnosis(tmp_path):
     from types import SimpleNamespace
 
     from sysforge.primitives.build_state import BuildState
-    from sysforge.update import _record_build_failure
+    from sysforge.build_core import _record_build_failure
 
     result = SimpleNamespace(pkgbase="foo-git", pkgbuild_ver=None)
     _record_build_failure(tmp_path, result, RuntimeError("[build_failed] boom"))

@@ -23,8 +23,11 @@ Phases:
     2. Source sync — batched RPC + shallow fetch via SourceSyncScheduler
     3. Version check — parallel PKGBUILD parsing + vercmp
     4. Summary + dry-run gate
-    5. Build — makedeps, AUR deps, single build loop
-    6. Install + finalize
+    5+6. Build + install — delegated to build_core.build_and_install (the
+         shared engine behind `build` and `update`: makedep pre-install, AUR
+         dep build, makepkg with -s/-i stripped, deferred bulk install). The
+         --install-only artifact-scan path stays here and reuses
+         build_core.install_built.
 
 Public API:
     cmd_update(args)
@@ -32,7 +35,6 @@ Public API:
 import os
 import re
 import sys
-import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -145,22 +147,16 @@ def _toolchain_owned_pkgbases() -> set[str]:
     return owned
 
 
-from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags, BuildOptions
+from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
 from sysforge.primitives.pacman import (
-    BATCH_STRIP_FLAGS,
-    BATCH_EXTRA_FLAGS,
     get_pkgdest,
-    snapshot_pkg_dir,
-    batch_install_pkgs,
-    filter_pkgs_to_installed,
-    collect_makedeps,
-    filter_missing_deps,
-    batch_install_makedeps,
     get_all_installed_packages,
     get_foreign_packages,
     get_pkgbase,
     checkupdates_map,
 )
+from sysforge import build_core
+from sysforge.build_core import _find_existing_artifacts
 from sysforge.pipeline.state import (
     PipelineState,
     get_toolchain_variant,
@@ -954,75 +950,9 @@ def _check_one_pkgbase(
 # ---------------------------------------------------------------------------
 # Phase 5 helpers
 # ---------------------------------------------------------------------------
-
-def _find_existing_artifacts(
-    search_dir: Path,
-    pkgnames: list[str],
-    pkgbuild_ver: str | None,
-    installed_ver: str | None = None,
-) -> list[Path]:
-    """Locate already-built .pkg.tar artifacts matching pkgnames.
-
-    Two-stage lookup:
-      1. Strict glob ``{pkgname}-{pkgbuild_ver}-*.pkg.tar*`` — matches
-         non-VCS packages where the static PKGBUILD parse equals the
-         filename version exactly.
-      2. Fallback ``{pkgname}-*-*-*.pkg.tar*`` + filename parse + vercmp
-         to pick the newest. Required for VCS (-git/-svn/...) packages,
-         where ``pkgver()`` bumps the version at build time
-         (PKGBUILD ``pkgver=0.1.0`` → artifact ``0.1.0.r45.g1234567``)
-         so the static ``pkgbuild_ver`` never matches the filename.
-
-    If ``installed_ver`` is provided, the fallback only returns artifacts
-    strictly newer than installed — used by ``--install-only`` to avoid
-    redundant reinstalls or downgrades.
-    """
-    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
-    from functools import cmp_to_key
-
-    if not search_dir or not Path(search_dir).is_dir():
-        return []
-
-    found: list[Path] = []
-    for pkgname in pkgnames:
-        if pkgbuild_ver:
-            strict = [
-                p for p in Path(search_dir).glob(
-                    f"{pkgname}-{pkgbuild_ver}-*.pkg.tar*"
-                )
-                if not p.name.endswith(".sig")
-            ]
-            if strict:
-                found.extend(strict)
-                continue
-
-        candidates: list[tuple[str, Path]] = []
-        for p in Path(search_dir).glob(f"{pkgname}-*-*-*.pkg.tar*"):
-            if p.name.endswith(".sig"):
-                continue
-            parsed = _parse_built_pkg_filename(pkgname, p.name)
-            if parsed is None:
-                continue
-            epoch, ver, rel = parsed
-            ver_string = f"{epoch}:{ver}-{rel}" if epoch != "0" else f"{ver}-{rel}"
-            if installed_ver is not None:
-                try:
-                    if vercmp(ver_string, installed_ver) <= 0:
-                        continue
-                except RuntimeError:
-                    continue
-            candidates.append((ver_string, p))
-
-        if not candidates:
-            continue
-
-        try:
-            candidates.sort(key=cmp_to_key(lambda a, b: vercmp(a[0], b[0])))
-        except RuntimeError:
-            pass
-        found.append(candidates[-1][1])
-
-    return found
+# Built-artifact discovery (_find_existing_artifacts) and failure recording
+# (_record_build_failure) live in sysforge.build_core, the shared build engine
+# behind both `build` and `update`. They are imported at the top of this module.
 
 
 # ---------------------------------------------------------------------------
@@ -1103,32 +1033,6 @@ def cmd_update(args) -> None:
                 sys.stdout.flush()
             except (OSError, ValueError):
                 pass
-
-
-def _record_build_failure(state_dir, result, exc) -> None:
-    """Persist a build failure to build_state.toml's ``[failures]`` table.
-
-    Opens a fresh BuildState so loop-time success writes (recorded by the
-    build worker on disk) aren't clobbered. Pulls the diagnosis signature/fix
-    from the exception's ``.diagnosis`` (attached by makepkg_wrapper) when
-    present. Best-effort: recording must never turn a build failure into a
-    crash. The entry is auto-cleared on the next successful build of the same
-    pkgbase (see BuildState.record).
-    """
-    try:
-        diagnosis = getattr(exc, "diagnosis", None) or []
-        first = diagnosis[0] if diagnosis else None
-        bs_fail = BuildState(state_dir)
-        bs_fail.record_failure(
-            result.pkgbase,
-            error=str(exc),
-            pkgver=getattr(result, "pkgbuild_ver", None),
-            signature=getattr(first, "signature", None),
-            fix_cmd=getattr(first, "fix_cmd", None),
-        )
-        bs_fail.save()
-    except Exception as e:  # pragma: no cover - defensive
-        _log.warn(f"Failed to record build failure for {result.pkgbase!r}: {e}")
 
 
 def _cmd_update_body(args) -> None:
@@ -1381,6 +1285,7 @@ def _cmd_update_body(args) -> None:
     built_pkgs: list[str] = []
     failed_pkgs: list[str] = []
     pgo_skipped_pkgs: list[str] = []
+    install_failed = False
 
     if not to_build:
         # Nothing to source-build, but pacman-class upgrades are pending —
@@ -1415,7 +1320,10 @@ def _cmd_update_body(args) -> None:
                         f"{result.pkgbase}: [SKIP] no built artifact for "
                         f"{result.pkgbuild_ver} in {search_dir}"
                     )
-        # Phase 6 (install) handles the rest.
+        # Install the queued pre-built artifacts (no build happened).
+        built_pkg_files, install_failed = build_core.install_built(built_pkg_files)
+        if not built_pkg_files and built_pkgs:
+            _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
     else:
         # ── Phase 4.5: Toolchain pre-flight ───────────────────────────────
         # Probes rust/cmake/meson availability (incl. rustup cross targets
@@ -1427,136 +1335,37 @@ def _cmd_update_body(args) -> None:
                   file=sys.stderr)
             sys.exit(1)
 
-        from sysforge.primitives.makepkg_wrapper import (
-            run as build_run, PGOBuildSkipped, AlreadyBuilt,
+        # ── Phase 5 + 6: dep prep, build loop, bulk install ───────────────
+        # The shared build engine behind both `build` and `update`. `update`
+        # passes sync_source=False because Phase 2 already synced sources via
+        # the scheduler. `to_build` elements (_UpdateResult) are duck-typed as
+        # BuildTargets (pkgbase / pkgnames / pkgbuild_path / source / ...).
+        outcome = build_core.build_and_install(
+            to_build,
+            config=config,
+            sync_source=False,
+            interactive=getattr(args, "interactive", False),
+            no_cleanbuild=getattr(args, "no_cleanbuild", False),
+            profile_conf=getattr(args, "profile_conf", None),
+            state_dir=state_dir,
+            pkg_log=not getattr(args, "no_pkg_log", False),
+            persist_log=getattr(args, "persist_log", False),
+            log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
+            cache_report=getattr(args, "cache_report", False),
+            extra_flags=(
+                expand_makepkg_flags(args.makepkg)
+                if getattr(args, "makepkg", None) else None
+            ),
+            active_variant=active_variant,
+            pkgdest=pkgdest,
         )
-        from sysforge.primitives.cache_probe import reset_session, emit_session_report
-        reset_session()
-
-        extra_flags = expand_makepkg_flags(args.makepkg) if getattr(args, "makepkg", None) else None
-
-        # Batch pre-install all makedepends (one sudo call)
-        all_pkgbuild_paths = [r.pkgbuild_path for r in to_build if r.pkgbuild_path]
-        makedeps = collect_makedeps(all_pkgbuild_paths)
-        missing_deps = filter_missing_deps(makedeps)
-        if missing_deps:
-            try:
-                batch_install_makedeps(missing_deps)
-            except RuntimeError as e:
-                _log.error(str(e))
-                print("[SYSFORGE] Warning: makedep pre-install failed — some builds may fail", file=sys.stderr)
-
-        # Resolve and build AUR-only deps
-        from sysforge.primitives.aur_resolve import resolve_aur_deps_batch, build_resolved_deps
-        if all_pkgbuild_paths:
-            try:
-                aur_deps = resolve_aur_deps_batch(all_pkgbuild_paths, config, fetch=True)
-                building_names = {r.pkgbase for r in to_build}
-                aur_deps = [d for d in aur_deps if d.name not in building_names]
-                if aur_deps:
-                    build_resolved_deps(aur_deps)
-            except RuntimeError as e:
-                _log.error(f"AUR dep resolution failed: {e}")
-                print("[SYSFORGE] Warning: AUR dep resolution failed — some builds may fail", file=sys.stderr)
-
-        # Build all packages
-        interactive = getattr(args, "interactive", False)
-        no_cleanbuild = getattr(args, "no_cleanbuild", False)
-        cleanbuild_flags = [] if no_cleanbuild else BATCH_EXTRA_FLAGS
-        batch_flags = cleanbuild_flags + (extra_flags or [])
-        strip_flags = BATCH_STRIP_FLAGS | {"--cleanbuild", "-C"} if no_cleanbuild else BATCH_STRIP_FLAGS
-
-        from sysforge.ui import progress as _ui_progress
-        with _ui_progress.tracker(len(to_build), "building") as _tick:
-            for result in to_build:
-                _tick(result.pkgbase)
-                search_dir = pkgdest if pkgdest else result.pkgbuild_path.parent
-                build_start = time.time()
-                try:
-                    build_run(result.pkgbuild_path, options=BuildOptions(
-                        pkg_log=not getattr(args, "no_pkg_log", False),
-                        persist_log=getattr(args, "persist_log", False),
-                        log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
-                        profile_conf=getattr(args, "profile_conf", None),
-                        cache_report=False,
-                        init_session=(not built_pkgs and not failed_pkgs),
-                        update=False,  # source sync already done
-                        state_dir=Path(args.state_dir) if getattr(args, "state_dir", None) else None,
-                        extra_flags=batch_flags,
-                        strip_flags=strip_flags,
-                        interactive=interactive,
-                        force_batch=not interactive,
-                        source=result.source,
-                        toolchain_variant=active_variant,
-                    ))
-                    new_pkgs = sorted(
-                        p for p in snapshot_pkg_dir(search_dir)
-                        if p.stat().st_mtime >= build_start
-                    )
-                    built_pkg_files.extend(new_pkgs)
-                    built_pkgs.append(result.pkgbase)
-                except PGOBuildSkipped as e:
-                    _log.warn(str(e))
-                    pgo_skipped_pkgs.append(result.pkgbase)
-                except AlreadyBuilt:
-                    existing = _find_existing_artifacts(
-                        search_dir, result.pkgnames, result.pkgbuild_ver,
-                    )
-                    if existing:
-                        _log.info(
-                            f"{result.pkgbase}: package already built — "
-                            "installing existing artifact"
-                        )
-                        built_pkg_files.extend(existing)
-                        built_pkgs.append(result.pkgbase)
-                    else:
-                        msg = (
-                            f"makepkg reported already built but no matching "
-                            f".pkg.tar found in {search_dir}"
-                        )
-                        _log.error(f"{result.pkgbase}: {msg}")
-                        failed_pkgs.append(result.pkgbase)
-                        _record_build_failure(state_dir, result, msg)
-                except (RuntimeError, SystemExit) as e:
-                    _log.error(f"Build failed for {result.pkgbase!r}: {e}")
-                    failed_pkgs.append(result.pkgbase)
-                    _record_build_failure(state_dir, result, e)
-
-    # ── Phase 6: Install + finalize ───────────────────────────────────────
-
-    # Deduplicate while preserving order
-    seen: set = set()
-    deduped: list = []
-    for p in built_pkg_files:
-        if p not in seen:
-            seen.add(p)
-            deduped.append(p)
-    built_pkg_files = deduped
-
-    # Split-pkgbase safety: makepkg emits one .pkg.tar for every pkgname in
-    # the PKGBUILD, not just the ones the user has installed. Filter to
-    # installed pkgnames so rebuilding e.g. pipewire-full-git doesn't pull
-    # in 14 split sub-packages the user never chose. Refetch now — makedep
-    # and AUR-dep pre-install above may have expanded the installed set.
-    install_failed = False
-    if built_pkg_files:
-        currently_installed = set(get_all_installed_packages().keys())
-        built_pkg_files, dropped = filter_pkgs_to_installed(built_pkg_files, currently_installed)
-        if dropped:
-            _log.info(
-                f"Skipping install of {len(dropped)} split sub-package(s) "
-                "not currently on the system:"
-            )
-            for path, pn in dropped:
-                _log.info(f"  - {pn} ({path.name})")
-
-    if built_pkg_files:
-        if not batch_install_pkgs(built_pkg_files):
-            _log.error("Batch package install failed")
-            _log.error("packages were built but not installed")
-            install_failed = True
-    elif built_pkgs:
-        _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
+        built_pkgs = outcome.built_pkgs
+        failed_pkgs = outcome.failed_pkgs
+        pgo_skipped_pkgs = outcome.pgo_skipped_pkgs
+        built_pkg_files = outcome.built_pkg_files
+        install_failed = outcome.install_failed
+        if not built_pkg_files and built_pkgs:
+            _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
 
     # ── Phase 6.5: Bulk pacman upgrade (pacman-class repo packages) ────────
     # Source-built artifacts are installed first so the `IgnoreGroup =
@@ -1582,9 +1391,8 @@ def _cmd_update_body(args) -> None:
             _log.error(f"pacman -Syu exited {rc}")
             pacman_upgrade_failed = True
 
-    if not install_only and getattr(args, "cache_report", False):
-        from sysforge.primitives.cache_probe import emit_session_report
-        emit_session_report()
+    # (The build cache-probe session report is emitted inside
+    # build_core.build_and_install when --cache-report is set.)
 
     # Sync failures from cleansrc refusals count as build failures.
     failed_pkgs.extend(sorted(cleansrc_failures))

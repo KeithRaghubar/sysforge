@@ -25,6 +25,7 @@ from sysforge import log
 
 _log = log.get_logger("CLI")
 
+from sysforge import build_core
 from sysforge.converge import ConvergeVerb
 from sysforge.doctor import DoctorVerb
 from sysforge.fetch import FetchVerb
@@ -35,7 +36,7 @@ from sysforge.packages_cmd import (
     PackagesRemoveVerb,
 )
 from sysforge.primitives.config import find_pkgbuild, load_config
-from sysforge.primitives.makepkg_wrapper import BuildOptions, expand_makepkg_flags, run
+from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 from sysforge.resolve import ResolveVerb
 from sysforge.setup_cmd import SetupVerb
@@ -138,7 +139,12 @@ class BuildVerb(Verb):
         packages = args.pkgbuilds
         cleansrc_force = getattr(args, "cleansrc_force", False)
         cleansrc_active = cleansrc_force or getattr(args, "cleansrc", False)
-        for i, pkg in enumerate(packages):
+
+        # Resolve each requested package to a build target. --cleansrc purges
+        # the source tree first (build-only concern). A purge refusal skips
+        # that package but does not abort the rest of the batch.
+        targets = []
+        for pkg in packages:
             if cleansrc_active:
                 from sysforge.primitives.aur import purge_src
                 target_dir = _cleansrc_target_dir(pkg, config)
@@ -148,40 +154,43 @@ class BuildVerb(Verb):
                     except RuntimeError as e:
                         _log.error(f"--cleansrc {pkg!r}: {e}")
                         continue
-
             pkgbuild = find_pkgbuild(pkg, config)
+            targets.append(build_core.target_from_pkgbuild(pkgbuild))
 
-            # Resolve and build AUR deps before the main package
-            from sysforge.primitives.aur_resolve import (
-                build_resolved_deps,
-                resolve_aur_deps,
-            )
-            aur_deps = resolve_aur_deps(pkgbuild, config, fetch=True)
-            if aur_deps:
-                build_resolved_deps(
-                    aur_deps,
-                    profile_conf=args.profile_conf,
-                    cc_override=args.cc,
-                    cxx_override=args.cxx,
-                    ld_override=args.ld,
-                    state_dir=Path(args.state_dir) if args.state_dir else None,
-                )
-            run(pkgbuild, options=BuildOptions(
-                extra_flags=extra_flags,
-                interactive=args.interactive,
-                pkg_log=not args.no_pkg_log,
-                persist_log=args.persist_log,
-                log_dir=Path(args.log_dir) if args.log_dir else None,
-                profile_conf=args.profile_conf,
-                cc_override=args.cc,
-                cxx_override=args.cxx,
-                ld_override=args.ld,
-                init_session=(i == 0 and not aur_deps),
-                cache_report=(args.cache_report and i == len(packages) - 1),
-                update=not args.no_update,
-                abi_check=args.abi_check,
-                state_dir=Path(args.state_dir) if args.state_dir else None,
-            ))
+        if not targets:
+            return ExecResult()
+
+        # `build` is a strict subset of `update`: it routes through the same
+        # shared engine (dep pre-install + AUR/local dep build, makepkg with
+        # -s/-i stripped so makepkg never resolves deps itself, deferred bulk
+        # install). The only difference is sync_source=True — build keeps its
+        # inline per-package source sync (update syncs up front in Phase 2).
+        from sysforge.pipeline.state import (
+            PipelineState, get_toolchain_variant, resolve_state_dir,
+        )
+        state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
+        active_variant = get_toolchain_variant(PipelineState(state_dir))
+
+        outcome = build_core.build_and_install(
+            targets,
+            config=config,
+            sync_source=not args.no_update,
+            interactive=args.interactive,
+            profile_conf=args.profile_conf,
+            cc=args.cc,
+            cxx=args.cxx,
+            ld=args.ld,
+            state_dir=state_dir,
+            pkg_log=not args.no_pkg_log,
+            persist_log=args.persist_log,
+            log_dir=Path(args.log_dir) if args.log_dir else None,
+            cache_report=args.cache_report,
+            abi_check=args.abi_check,
+            extra_flags=extra_flags,
+            active_variant=active_variant,
+        )
+        if outcome.failed_pkgs or outcome.install_failed:
+            return ExecResult(exit_code=1)
         return ExecResult()
 
 

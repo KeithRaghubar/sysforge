@@ -22,6 +22,9 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -248,3 +251,116 @@ def test_step5_lib32_scrubs_march_native_from_profile_override():
     # But other CFLAGS content survives.
     assert "-O2" in cflags_line
     assert "-pipe" in cflags_line
+
+
+# ---------------------------------------------------------------------------
+# Step 5 (cont.): lib32 icf scrub — strip lld --icf=* from LDFLAGS
+#
+# 32-bit lld identical-code-folding breaks links for some lib32 packages
+# (e.g. lib32-lzo). Unlike the linker-gated lld-flag strip, this scrub fires
+# for lib32 builds regardless of the effective linker. Covers both the
+# system-conf passthrough and profile-override sites, with gcc + clang parity.
+# ---------------------------------------------------------------------------
+
+def _write_system_conf_ld(tmp_path: Path, ldflags: str) -> Path:
+    p = tmp_path / "system-makepkg.conf"
+    p.write_text(
+        'CARCH="i686"\n'
+        'CHOST="i686-pc-linux-gnu"\n'
+        'CFLAGS="-O2 -pipe"\n'
+        'CXXFLAGS="-O2 -pipe"\n'
+        f'LDFLAGS="{ldflags}"\n'
+    )
+    return p
+
+
+@pytest.mark.parametrize("cc,cxx", [("gcc", "g++"), ("clang", "clang++")])
+def test_step5_lib32_scrubs_icf_from_system_ldflags(cc, cxx):
+    """is_lib32=True strips ``--icf=all`` from system-conf LDFLAGS for both
+    the gcc and clang resolved-compiler paths (the scrub is compiler- and
+    linker-independent — dual-toolchain parity)."""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        system_conf = _write_system_conf_ld(tmp, "-Wl,--as-needed,--icf=all")
+        resolved = {"BUILDDIR": "$HOME/builds", "CC": cc, "CXX": cxx}
+        with emit_makepkg_conf(
+            resolved, frozenset({"makepkg", "env"}),
+            system_conf_path=str(system_conf),
+            is_lib32=True,
+        ) as conf_path:
+            text = Path(conf_path).read_text()
+    ld_line = next(
+        (line for line in text.splitlines() if line.startswith("LDFLAGS=")), ""
+    )
+    assert "--icf=all" not in ld_line
+    # The rest of LDFLAGS survives.
+    assert "--as-needed" in ld_line
+
+
+def test_step5_lib32_scrubs_bare_icf_token_from_system_ldflags():
+    """A bare ``--icf=all`` token (not inside ``-Wl,...``) is also stripped."""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        system_conf = _write_system_conf_ld(tmp, "--icf=all -Wl,--as-needed")
+        resolved = {"BUILDDIR": "$HOME/builds"}
+        with emit_makepkg_conf(
+            resolved, frozenset({"makepkg", "env"}),
+            system_conf_path=str(system_conf),
+            is_lib32=True,
+        ) as conf_path:
+            text = Path(conf_path).read_text()
+    ld_line = next(
+        (line for line in text.splitlines() if line.startswith("LDFLAGS=")), ""
+    )
+    assert "--icf=all" not in ld_line
+    assert "--as-needed" in ld_line
+
+
+def test_step5_non_lib32_keeps_icf_in_system_ldflags():
+    """Default is_lib32=False must leave system LDFLAGS (incl. --icf) untouched."""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        system_conf = _write_system_conf_ld(tmp, "-Wl,--as-needed,--icf=all")
+        resolved = {"BUILDDIR": "$HOME/builds"}
+        with emit_makepkg_conf(
+            resolved, frozenset({"makepkg", "env"}),
+            system_conf_path=str(system_conf),
+        ) as conf_path:
+            text = Path(conf_path).read_text()
+    assert "--icf=all" in text
+
+
+@pytest.mark.parametrize("is_lib32,expect_icf", [(True, False), (False, True)])
+def test_step5_lib32_scrubs_icf_from_profile_ldflags(is_lib32, expect_icf):
+    """With lld the effective linker (so the linker-gated strip is a no-op),
+    the icf removal is attributable solely to the lib32 guard: it strips
+    ``--icf=all`` from profile-override LDFLAGS when is_lib32, and leaves it
+    when not."""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        system_conf = _write_system_conf_ld(tmp, "-Wl,--as-needed")
+        resolved = {
+            "BUILDDIR": "$HOME/builds",
+            "CC": "clang",
+            "CXX": "clang++",
+            "LDFLAGS": "-fuse-ld=lld -Wl,--icf=all -Wl,--as-needed",
+        }
+        # Force lld to be "found" so effective_linker == lld and the
+        # linker-gated lld-flag strip is skipped — isolating the lib32 scrub.
+        with patch(
+            "sysforge.primitives.makepkg_wrapper.shutil.which",
+            side_effect=lambda n: f"/usr/bin/{n}" if n == "lld" else None,
+        ):
+            with emit_makepkg_conf(
+                resolved, frozenset({"makepkg", "env"}),
+                system_conf_path=str(system_conf),
+                is_lib32=is_lib32,
+            ) as conf_path:
+                text = Path(conf_path).read_text()
+    ld_line = next(
+        (line for line in text.splitlines() if line.startswith("LDFLAGS=")), ""
+    )
+    assert ("--icf=all" in ld_line) is expect_icf
+    # -fuse-ld=lld and --as-needed always survive.
+    assert "-fuse-ld=lld" in ld_line
+    assert "--as-needed" in ld_line

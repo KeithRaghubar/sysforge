@@ -28,7 +28,10 @@ cd sysforge && makepkg -si
 #    (profiles.toml, packages.toml — both are self-documented)
 sudo vim /etc/sysforge/profiles.toml
 
-# 3. Build and install an AUR package with your active profile.
+# 3. Build and install an AUR package with your active profile. Dependencies
+#    are handled the same way `sysforge update` does: missing repo deps are
+#    installed up front and AUR/local deps are built first, so makepkg never
+#    tries to `pacman -S` an AUR-only dependency.
 sysforge build neovim-git -m "-si"
 
 # 4. Check for and rebuild any outdated installed AUR packages

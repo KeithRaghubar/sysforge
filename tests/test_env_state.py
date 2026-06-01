@@ -831,11 +831,11 @@ def _run_update_capture_build_calls(args, pkgbuild_path):
          patch("sysforge.update.get_foreign_packages",
                return_value={pkgbase: "0.9-1"}), \
          patch("sysforge.update.vercmp", return_value=1), \
-         patch("sysforge.update.collect_makedeps", return_value=[]), \
-         patch("sysforge.update.filter_missing_deps", return_value=[]), \
+         patch("sysforge.build_core.collect_makedeps", return_value=[]), \
+         patch("sysforge.build_core.filter_missing_deps", return_value=[]), \
          patch("sysforge.update.get_pkgdest", return_value=None), \
-         patch("sysforge.update.snapshot_pkg_dir", return_value=[]), \
-         patch("sysforge.update.batch_install_pkgs", return_value=True), \
+         patch("sysforge.build_core.snapshot_pkg_dir", return_value=[]), \
+         patch("sysforge.build_core.batch_install_pkgs", return_value=True), \
          patch("sysforge.primitives.makepkg_wrapper.run",
                side_effect=fake_build_run), \
          patch("sysforge.primitives.cache_probe.reset_session"), \

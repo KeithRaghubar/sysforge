@@ -622,9 +622,13 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         profile_overrides[key] = (base + " " + linker_flags_extra).strip()
         _pgo_log.info(f"Injecting into LDFLAGS: {linker_flags_extra!r}")
 
-    # lib32 march guard: strip 64-bit-only -march tokens from CFLAGS/CXXFLAGS
-    # in profile overrides. The system-conf passthrough is scrubbed at the
-    # emission loop below so we never write a known-broken value either way.
+    # lib32 guards (profile overrides): strip 64-bit-only -march tokens from
+    # CFLAGS/CXXFLAGS, and lld --icf=* tokens from LDFLAGS. The icf scrub is
+    # unconditional on the linker — 32-bit ICF (identical-code-folding) breaks
+    # links for some lib32 packages (e.g. lib32-lzo) even when lld is active,
+    # so unlike the linker-gated lld-flag strip above we always drop it here.
+    # The system-conf passthrough for both is scrubbed at the emission loop
+    # below so we never write a known-broken value either way.
     if is_lib32:
         for key in ("CFLAGS", "CXXFLAGS"):
             if key in profile_overrides:
@@ -635,6 +639,14 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                         f"profile {key}: {stripped_tokens}"
                     )
                     profile_overrides[key] = cleaned
+        if "LDFLAGS" in profile_overrides:
+            cleaned, stripped_tokens = _strip_lld_flags(profile_overrides["LDFLAGS"])
+            if stripped_tokens:
+                _flag_log.info(
+                    f"lib32 build: stripped lld --icf flag(s) from profile "
+                    f"LDFLAGS: {stripped_tokens}"
+                )
+                profile_overrides["LDFLAGS"] = cleaned
 
     # Build output lines: system conf keys in their original raw form,
     # profile-overridden keys substituted inline, new profile keys appended.
@@ -662,6 +674,17 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 if stripped_tokens:
                     _flag_log.info(
                         f"lib32 build: stripped 64-bit-only -march tokens from "
+                        f"system {key}: {stripped_tokens}"
+                    )
+                    conf_lines.append(f'{key}="{cleaned}"')
+                    continue
+            if is_lib32 and key == "LDFLAGS":
+                raw = raw_val.strip()
+                inner = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
+                cleaned, stripped_tokens = _strip_lld_flags(inner)
+                if stripped_tokens:
+                    _flag_log.info(
+                        f"lib32 build: stripped lld --icf flag(s) from "
                         f"system {key}: {stripped_tokens}"
                     )
                     conf_lines.append(f'{key}="{cleaned}"')
