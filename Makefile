@@ -1,4 +1,4 @@
-.PHONY: all dev venv build install clean distclean test test-x lint man \
+.PHONY: all dev venv build install clean distclean test test-x lint coverage man \
         check-shipped pre-release \
         release-major release-minor release-patch \
         vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
@@ -40,6 +40,17 @@ test-x:
 lint:
 	ruff check sysforge/
 
+# Coverage report. Layers pytest-cov into an ephemeral uv overlay (same
+# `uv run --no-sync` pattern as check-shipped/man) so nothing is added to
+# the system or the venv. Prints a term summary and writes coverage.json;
+# the ratchet baseline lives in tests/COVERAGE_BASELINE.md.
+coverage:
+	uv run --no-sync --with pytest-cov pytest \
+	  --cov=sysforge \
+	  --cov-report=term-missing:skip-covered \
+	  --cov-report=json:coverage.json \
+	  -o addopts="" -q
+
 # Pre-release shipped-file validator. Runs the seven check groups in
 # tools/check_shipped.py (configs, pkgbuild, pkgbuild_parity, hooks,
 # completions, versions, manpage). tools/release.sh invokes this from
@@ -72,7 +83,7 @@ man:
 	  --output man/sysforge.1
 
 clean:
-	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/
+	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/ .coverage coverage.json
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 distclean: clean

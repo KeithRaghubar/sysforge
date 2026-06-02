@@ -18,6 +18,8 @@
 .claude/
 .remember/
 .venv/
+.coverage
+coverage.json
 __pycache__/
 dist/
 pkg/

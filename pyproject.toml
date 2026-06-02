@@ -40,3 +40,15 @@ addopts = "-v"
 # of the file. The pattern is consistent across the codebase and has no
 # runtime side effect — get_logger() is pure.
 ignore = ["E402"]
+
+# Coverage is run via `make coverage`, which layers pytest-cov into an
+# ephemeral `uv run --no-sync --with pytest-cov` overlay (no system/venv
+# mutation). The baseline that the refactor ratchets against lives in
+# tests/COVERAGE_BASELINE.md.
+[tool.coverage.run]
+source = ["sysforge"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+precision = 1
