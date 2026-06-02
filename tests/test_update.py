@@ -127,6 +127,7 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
             self.src_root = src_root
             self.state_dir = state_dir
             self.builds = builds
+            self.fake_run = fake_run  # .commands exposes every emitted argv
 
         def add_pkg(self, pkgbase, body):
             d = src_root / pkgbase
@@ -527,42 +528,10 @@ def test_load_overrides_normalises_deprecated_update_repo_profiled(tmp_path, cap
 # ---------------------------------------------------------------------------
 
 def test_vcs_installed_is_devel(tmp_path):
-    """Installed VCS package → DEVEL (rebuildable with --devel)."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert any(r.action == "DEVEL" for r in results)
+    """Installed VCS package without --devel → DEVEL (rebuildable with --devel)."""
+    r = _decide(tmp_path, "neovim-git", "r1234.gabcdef-1",
+                "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    assert r.action == "DEVEL"
 
 
 def test_dry_run_no_build(update_scenario):
@@ -602,273 +571,116 @@ def test_devel_skips_uptodate_vcs(update_scenario):
     assert builds == []
 
 
-def test_devel_short_circuits_when_upstream_unmoved(tmp_path):
-    """--devel + cached SHA matches ls-remote → evaluate_vcs_pkgver skipped."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    cached_sha = "f00dbabe" + "0" * 32  # 40 hex chars
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-            "built_upstream_commit": cached_sha,
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
+def test_devel_short_circuits_when_upstream_unmoved(update_scenario):
+    """--devel + cached SHA matches the source's commit= pin → the expensive
+    evaluate_vcs_pkgver (makepkg) pass is skipped and nothing rebuilds.
 
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.peek_upstream_commit", return_value=cached_sha) as peek,
-        patch("sysforge.update.evaluate_vcs_pkgver") as evaluate,
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        MockBS.return_value.get.side_effect = lambda name: state_data.get(name)
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-        mw.run = lambda *a, **kw: call_count.append(1)
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert peek.called, "peek_upstream_commit must run when cache is populated"
-    assert not evaluate.called, "evaluate_vcs_pkgver must be skipped on cache hit"
-    assert len(call_count) == 0, "no build should run for an UP_TO_DATE pkgbase"
+    The PKGBUILD pins ``#commit=<sha>``, which peek_upstream_commit resolves
+    in-process (no ls-remote). When it matches the recorded
+    built_upstream_commit, _check_one_pkgbase returns UP_TO_DATE directly."""
+    sha = "f00dbabe" + "0" * 32  # 40 hex chars
+    update_scenario.add_pkg(
+        "neovim-git",
+        "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n"
+        f'source=("neovim::git+https://example.invalid/n.git#commit={sha}")\n',
+    )
+    update_scenario.record("neovim-git", "r1234.gabcdef", "1",
+                           built_upstream_commit=sha)
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert builds == []
+    # The cache hit must skip the makepkg-based evaluate_vcs_pkgver pass.
+    assert not any("--packagelist" in c for c in update_scenario.fake_run.commands)
 
 
-def test_devel_full_resolve_on_lsremote_miss(tmp_path):
-    """--devel + cached SHA differs from ls-remote → falls through to evaluate."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
+def test_devel_full_resolve_on_lsremote_miss(update_scenario):
+    """--devel + cached SHA differs from the source's commit= pin → the peek
+    short-circuit misses, so the full evaluate_vcs_pkgver pass runs and a newer
+    resolved pkgver triggers one build."""
     cached_sha = "a" * 40
     new_sha = "b" * 40
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-            "built_upstream_commit": cached_sha,
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.peek_upstream_commit", return_value=new_sha),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="r5678.gfedcba0-1") as evaluate,
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        MockBS.return_value.get.side_effect = lambda name: state_data.get(name)
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-        mw.run = lambda *a, **kw: call_count.append(1)
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert evaluate.called, "evaluate_vcs_pkgver must run on cache miss"
-    assert len(call_count) == 1, "newer resolved pkgver should trigger one build"
+    update_scenario.add_pkg(
+        "neovim-git",
+        "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n"
+        f'source=("neovim::git+https://example.invalid/n.git#commit={new_sha}")\n',
+    )
+    update_scenario.record("neovim-git", "r1234.gabcdef", "1",
+                           built_upstream_commit=cached_sha)
+    update_scenario.fake_vcs_pkgver("neovim-git", "r5678.gfedcba0-1")  # newer
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert len(builds) == 1
+    assert any("--packagelist" in c for c in update_scenario.fake_run.commands)
 
 
-def test_devel_full_resolve_when_no_cached_commit(tmp_path):
-    """--devel + bs entry lacks built_upstream_commit → no peek, evaluate runs."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-            # no built_upstream_commit
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.peek_upstream_commit") as peek,
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="r1234.gabcdef-1") as evaluate,
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        MockBS.return_value.get.side_effect = lambda name: state_data.get(name)
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-        mw.run = lambda *a, **kw: call_count.append(1)
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert not peek.called, "peek_upstream_commit must be skipped without cached SHA"
-    assert evaluate.called, "evaluate_vcs_pkgver must run when cache is empty"
-    assert len(call_count) == 0, "resolved == installed should not rebuild"
+def test_devel_full_resolve_when_no_cached_commit(update_scenario):
+    """--devel + no recorded built_upstream_commit → no peek, evaluate runs."""
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "r1234.gabcdef-1")  # == installed
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert builds == []  # resolved == installed
+    # With no cached SHA, the full makepkg-based resolve must run.
+    assert any("--packagelist" in c for c in update_scenario.fake_run.commands)
 
 
-def test_devel_skips_when_pkgver_eval_fails(tmp_path, capsys):
-    """--devel + pkgver() resolution returns None → skip with WARN, no build."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
+def test_devel_skips_when_pkgver_eval_fails(update_scenario, capsys):
+    """--devel + pkgver() resolution returns None → skip with WARN, no build.
 
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.evaluate_vcs_pkgver", return_value=None),
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-
-        def fake_run(*a, **kw):
-            call_count.append(1)
-
-        mw.run = fake_run
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert len(call_count) == 0
-    out = capsys.readouterr()
-    combined = out.out + out.err
+    With no fake_vcs_pkgver programmed, the real evaluate_vcs_pkgver runs but
+    `makepkg --packagelist` yields nothing, so it returns None."""
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert builds == []
+    combined = "".join(capsys.readouterr())
     assert "DEVEL_EVAL_FAILED" in combined or "pkgver() evaluation failed" in combined
 
 
-def test_no_devel_skips_vcs_build(tmp_path):
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        call_count = []
-        mw_run_orig = mw.run
-
-        def fake_run(*a, **kw):
-            call_count.append(1)
-
-        mw.run = fake_run
-        try:
-            cmd_update(_make_args(devel=False))
-        finally:
-            mw.run = mw_run_orig
-
-    assert len(call_count) == 0
+def test_no_devel_skips_vcs_build(update_scenario):
+    """Without --devel an installed VCS package is DEVEL-classified only — it
+    is never rebuilt."""
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    builds = update_scenario.run(
+        _make_args(devel=False),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert builds == []
 
 
 def test_check_one_pkgbase_vcs_no_devel_skips_parse(tmp_path):
-    """Without --devel, _check_one_pkgbase returns DEVEL without parsing the
-    PKGBUILD or probing pkgbuild_dir. The pkgbuild_dir intentionally does not
-    exist, and parse_pkgbuild is patched to raise — neither must fire.
+    """Without --devel, _check_one_pkgbase returns DEVEL via the VCS fast-path,
+    before the pkgbuild_dir probe or PKGBUILD parse. The dir intentionally does
+    not exist — reaching the probe would return None, not DEVEL, so a DEVEL
+    result proves neither the probe nor the parse ran.
     """
-    pkgbase = "neovim-git"
-    entry = {"pkgbuild_dir": str(tmp_path / "does-not-exist" / pkgbase)}
-
-    with patch(
-        "sysforge.update.parse_pkgbuild",
-        side_effect=AssertionError("parse_pkgbuild must not be called"),
-    ):
-        result = _check_one_pkgbase(
-            pkgbase=pkgbase,
-            pkgnames=[pkgbase],
-            entry=entry,
-            sync_failures={},
-            all_installed={pkgbase: "r1234.gabcdef-1"},
-            unrecorded_names=set(),
-            skip_sync_check=False,
-            rpc_version_by_base={},
-            force_devel=False,
-        )
-
-    assert result is not None
+    result = _check_one_pkgbase(
+        pkgbase="neovim-git",
+        pkgnames=["neovim-git"],
+        entry={"pkgbuild_dir": str(tmp_path / "does-not-exist" / "neovim-git")},
+        sync_failures={},
+        all_installed={"neovim-git": "r1234.gabcdef-1"},
+        unrecorded_names=set(),
+        skip_sync_check=False,
+        rpc_version_by_base={},
+        force_devel=False,
+    )
     assert result.action == "DEVEL"
     assert result.installed_ver == "r1234.gabcdef-1"
     assert result.pkgbuild_ver is None
