@@ -359,143 +359,56 @@ def test_repo_package_with_override_is_iterated(fake_run, state_dir):
     assert set(packages) == {pkgbase}
 
 
-def test_repo_mode_profiled_walks_installed_repo_packages(tmp_path):
-    """
-    With `[build] repo_mode = "profiled"`, every installed repo package is
-    iterated alongside foreign packages. No per-package override needed;
-    the toml key opts the entire repo surface in.
-    """
-    pkgbase = "firefox"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(
-        f"pkgname={pkgbase}\npkgver=131.0\npkgrel=1\n"
+def test_repo_mode_profiled_walks_installed_repo_packages(fake_run, state_dir):
+    """With ``[build] repo_mode = "profiled"``, every installed repo package is
+    iterated alongside foreign packages — no per-package override needed."""
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="firefox 131.0-1\n")
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {"repo_mode": "profiled"}, {},
     )
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "131.0",
-                          "pkgrel": "1", "epoch": "0"}}
-    overrides = ({"repo_mode": "profiled"}, {})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "131.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert {r.pkgbase for r in results} == {pkgbase}
+    assert set(packages) == {"firefox"}
 
 
-def test_repo_mode_pacman_skips_repo_packages(tmp_path):
-    """
-    Default (repo_mode unset / "pacman"): a repo package without a
-    behavior-changing override stays out of scope. Confirms the gate is
-    load-bearing.
-    """
-    overrides = ({"repo_mode": "pacman"}, {})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"firefox": "131.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert results == []
+def test_repo_mode_pacman_skips_repo_packages(fake_run, state_dir):
+    """Default (repo_mode "pacman"): a repo package without a behavior-changing
+    override stays out of scope. Confirms the gate is load-bearing."""
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="firefox 131.0-1\n")
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {"repo_mode": "pacman"}, {},
+    )
+    assert packages == {}
 
 
-def test_bare_source_only_override_is_inert(tmp_path):
+def test_bare_source_only_override_is_inert(fake_run, state_dir):
     """
     Regression: a `[[package]]` entry with only `name` + `source = "repo"`
     is inert metadata, not a trigger. The pipewire-style entry that
     surfaced this bug must not pull the package into update scope.
     """
     # Inert override on a repo package, no behavior-changing field set.
-    overrides = ({}, {"pipewire": {"name": "pipewire", "source": "repo"}})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"pipewire": "1:1.6.5-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert results == []
-
-
-def test_update_repo_profiled_alias_is_normalised(tmp_path):
-    """
-    Legacy `[build] update_repo_profiled = true` is normalised to
-    `repo_mode = "profiled"` by the loader, so packages get walked just
-    like the canonical key. (Functional alias test; the deprecation
-    warning itself is asserted in test__load_overrides_warns_*.)
-    """
-    pkgbase = "firefox"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(
-        f"pkgname={pkgbase}\npkgver=131.0\npkgrel=1\n"
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="pipewire 1:1.6.5-1\n")
+    overrides = {"pipewire": {"name": "pipewire", "source": "repo"}}
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {}, overrides,
     )
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "131.0",
-                          "pkgrel": "1", "epoch": "0"}}
-    # _load_overrides normalises this in its real path; here we hand the
-    # already-normalised build_cfg to the mock to assert the consumer side.
-    overrides = ({"repo_mode": "profiled"}, {})
+    assert packages == {}
 
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "131.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
 
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert {r.pkgbase for r in results} == {pkgbase}
+def test_update_repo_profiled_alias_is_normalised(fake_run, state_dir):
+    """The consumer side of the legacy ``update_repo_profiled`` alias: once
+    ``_load_overrides`` has normalised it to ``repo_mode = "profiled"`` (the
+    normalisation itself is asserted in
+    ``test_load_overrides_normalises_deprecated_update_repo_profiled``), the
+    package set walks repo packages exactly like the canonical key."""
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="firefox 131.0-1\n")
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {"repo_mode": "profiled"}, {},
+    )
+    assert set(packages) == {"firefox"}
 
 
 def test_load_overrides_warns_on_inert_entries(tmp_path, capsys):
