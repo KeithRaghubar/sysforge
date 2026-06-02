@@ -109,79 +109,55 @@ def test_empty_install_set_exits_cleanly(capsys):
 # cmd_update — version checks
 # ---------------------------------------------------------------------------
 
-def _run_update_with_package(tmp_path, pkgbase, pkgver_installed, pkgver_pkgbuild,
-                              args_extra=None):
-    """
-    Helper: set up a fake PKGBUILD in tmp_path, a build state entry, and run cmd_update.
-    Returns list of _UpdateResult.
-    """
+# ---------------------------------------------------------------------------
+# Version decision — _check_one_pkgbase called directly with a real PKGBUILD
+# on disk (real parse_pkgbuild + real vercmp; no module-global patching).
+# ---------------------------------------------------------------------------
+
+def _decide(tmp_path, pkgbase, installed, pkgbuild_body, **kw):
     pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    pkgbuild = pkg_dir / "PKGBUILD"
-    pkgbuild.write_text(f"pkgname={pkgbase}\npkgver={pkgver_pkgbuild}\npkgrel=1\n")
-
-    state_data = {
-        pkgbase: {
-            "pkgver": pkgver_installed.split("-")[0],
-            "pkgrel": pkgver_installed.split("-")[1] if "-" in pkgver_installed else "1",
-            "epoch": "0",
-            "pkgbase": pkgbase,
-            "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-
-    args = _make_args(**(args_extra or {}))
-
-    parsed_globals = {
-        "pkgname": pkgbase,
-        "pkgver": pkgver_pkgbuild,
-        "pkgrel": "1",
-        "epoch": "0",
-    }
-
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value={"globals": parsed_globals}),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: pkgver_installed}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: pkgver_installed}),
-        patch("sysforge.update.vercmp") as mock_vercmp,
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        # vercmp: 1 if pkgbuild > installed, 0 if equal, -1 if pkgbuild < installed
-        pkgbuild_ver = f"{pkgver_pkgbuild}-1"
-        mock_vercmp.side_effect = lambda a, b: 1 if a == pkgbuild_ver and a != b else (0 if a == b else -1)
-
-        results = []
-        orig_print_summary = __import__("sysforge.update", fromlist=["_print_summary"])._print_summary
-
-        def capture_summary(res_list, a):
-            results.extend(res_list)
-            orig_print_summary(res_list, a)
-
-        with patch("sysforge.update._print_summary", side_effect=capture_summary):
-            cmd_update(args)
-
-    return results
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    (pkg_dir / "PKGBUILD").write_text(pkgbuild_body)
+    return _check_one_pkgbase(
+        pkgbase=pkgbase,
+        pkgnames=[pkgbase],
+        entry={"pkgbuild_dir": str(pkg_dir), "source": "aur"},
+        sync_failures={},
+        all_installed={pkgbase: installed},
+        unrecorded_names=set(),
+        skip_sync_check=True,
+        rpc_version_by_base={},
+        **kw,
+    )
 
 
-def test_check_needs_rebuild(tmp_path, capsys):
-    results = _run_update_with_package(tmp_path, "htop", "3.3.0-1", "3.4.1")
-    actions = [r.action for r in results]
-    assert "NEEDS_REBUILD" in actions
+def test_check_needs_rebuild(tmp_path):
+    r = _decide(tmp_path, "htop", "3.3.0-1", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    assert r.action == "NEEDS_REBUILD"
+    assert r.installed_ver == "3.3.0-1"
+    assert r.pkgbuild_ver == "3.4.1-1"
 
 
-def test_check_up_to_date(tmp_path, capsys):
-    results = _run_update_with_package(tmp_path, "htop", "3.4.1-1", "3.4.1")
-    actions = [r.action for r in results]
-    assert "UP_TO_DATE" in actions
+def test_check_up_to_date(tmp_path):
+    r = _decide(tmp_path, "htop", "3.4.1-1", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    assert r.action == "UP_TO_DATE"
+
+
+def test_check_pkgrel_bump_needs_rebuild(tmp_path):
+    r = _decide(tmp_path, "htop", "3.4.1-1", "pkgname=htop\npkgver=3.4.1\npkgrel=2\n")
+    assert r.action == "NEEDS_REBUILD"
+
+
+def test_check_epoch_dominates(tmp_path):
+    r = _decide(tmp_path, "htop", "9.9-1",
+                "pkgname=htop\nepoch=1\npkgver=1.0\npkgrel=1\n")
+    assert r.action == "NEEDS_REBUILD"
+    assert r.pkgbuild_ver == "1:1.0-1"
+
+
+def test_check_downgrade_flagged(tmp_path):
+    r = _decide(tmp_path, "htop", "3.4.1-1", "pkgname=htop\npkgver=3.3.0\npkgrel=1\n")
+    assert r.action == "DOWNGRADE"
 
 
 # ---------------------------------------------------------------------------
