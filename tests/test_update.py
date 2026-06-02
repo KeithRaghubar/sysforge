@@ -19,9 +19,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.update import (
     _is_vcs, cmd_update,
-    _check_one_pkgbase, _sync_sources,
+    _check_one_pkgbase, _sync_sources, _assemble_package_set,
 )
 from sysforge.primitives.pacman import get_installed_version, get_foreign_packages
+from sysforge.primitives.build_state import BuildState
 
 
 # ---------------------------------------------------------------------------
@@ -224,39 +225,18 @@ def test_unresolved_pkgver_without_cache_is_skipped(tmp_path):
 # silently ignored (no NOT_INSTALLED action under the new model).
 # ---------------------------------------------------------------------------
 
-def test_uninstalled_override_is_silently_skipped(tmp_path, capsys):
+def test_uninstalled_override_is_silently_skipped(fake_run, state_dir):
     """An override entry for a package that isn't installed is inert — not
-    iterated, no NOT_INSTALLED action emitted, no source sync attempted."""
-    pkg_dir = tmp_path / "mesa-git"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=mesa-git\npkgver=1\npkgrel=1\n")
-
-    # mesa (repo) is installed; mesa-git (override) is not.
-    overrides = ({}, {"mesa-git": {"name": "mesa-git", "source": "aur"}})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"mesa": "1:25.3.1-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update._sync_sources", return_value={}) as mock_sync,
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    actions = [r.action for r in results]
-    assert "NOT_INSTALLED" not in actions
-    assert "mesa-git" not in {r.pkgbase for r in results}
-    sync_map = mock_sync.call_args.args[0] if mock_sync.call_args else {}
-    assert "mesa-git" not in sync_map
+    pulled into scope (so no NOT_INSTALLED action, no source sync)."""
+    # mesa (repo) is installed; mesa-git (override target) is not.
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="mesa 1:25.3.1-1\n")
+    overrides = {"mesa-git": {"name": "mesa-git", "source": "aur"}}
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {}, overrides,
+    )
+    assert packages == {}
+    assert "mesa-git" not in packages
 
 
 def test_installed_aur_without_override_uses_defaults(tmp_path):
@@ -348,71 +328,35 @@ def test_foreign_split_package_resolves_pkgbase_from_local_db(tmp_path):
     mock_aur_info.assert_not_called()
 
 
-def test_repo_package_without_override_is_not_iterated(tmp_path):
+def test_repo_package_without_override_is_not_iterated(fake_run, state_dir):
     """A repo (non-foreign) package with no override → out of scope."""
-    overrides = ({}, {})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        # mesa is installed (a repo package), no foreign packages.
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"mesa": "1:25.3.1-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert {r.pkgbase for r in results} == set()
+    # mesa is an installed repo package; no foreign packages.
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="mesa 1:25.3.1-1\n")
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {}, {},
+    )
+    assert packages == {}
 
 
-def test_repo_package_with_override_is_iterated(tmp_path):
-    """A repo package WITH a behavior-changing override → walked.
+def test_repo_package_with_override_is_iterated(fake_run, state_dir):
+    """A repo package WITH a behavior-changing override → in scope.
 
     The override only takes effect because it sets ``cache = False`` (a
     behavior-changing field). A bare ``source = "repo"`` entry by itself is
     inert metadata — see ``test_bare_source_only_override_is_inert``.
     """
     pkgbase = "llvm"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\npkgver=20.1.0\npkgrel=1\n")
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "20.1.0", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "repo", "cache": False}})
-
-    results = []
-    with (
-        # Isolate from the workstation's real toolchain.toml (enabled + llvm),
-        # which would otherwise route `llvm` through the toolchain stage-owned skip.
-        patch("sysforge.update.TOOLCHAIN_PATH", tmp_path / "no-toolchain-toml"),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        # llvm is installed via repo (not foreign), but the override pulls it in.
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "20.1.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert {r.pkgbase for r in results} == {pkgbase}
+    # llvm is an installed repo package (not foreign); the cache=False override
+    # pulls it into scope. include_stage_owned bypasses the toolchain
+    # stage-owned skip without neutralising the workstation's toolchain.toml.
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout=f"{pkgbase} 20.1.0-1\n")
+    overrides = {pkgbase: {"name": pkgbase, "source": "repo", "cache": False}}
+    packages, _ = _assemble_package_set(
+        _make_args(include_stage_owned=True), BuildState(state_dir), {}, {}, overrides,
+    )
+    assert set(packages) == {pkgbase}
 
 
 def test_repo_mode_profiled_walks_installed_repo_packages(tmp_path):
@@ -2444,7 +2388,6 @@ def test_record_build_failure_persists_diagnosis(tmp_path):
     from types import SimpleNamespace
 
     from sysforge.primitives.build_diag import FixSuggestion
-    from sysforge.primitives.build_state import BuildState
     from sysforge.build_core import _record_build_failure
 
     result = SimpleNamespace(pkgbase="gpu-burn-git", pkgbuild_ver="r93.a113ce7")
@@ -2467,7 +2410,6 @@ def test_record_build_failure_persists_diagnosis(tmp_path):
 def test_record_build_failure_without_diagnosis(tmp_path):
     from types import SimpleNamespace
 
-    from sysforge.primitives.build_state import BuildState
     from sysforge.build_core import _record_build_failure
 
     result = SimpleNamespace(pkgbase="foo-git", pkgbuild_ver=None)
