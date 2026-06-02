@@ -131,6 +131,45 @@ def test_parameter_expansion_not_mangled(tmp_path):
     assert "${pkgname%-git}" in flags
 
 
+def test_brace_expansion_in_makedepends(tmp_path):
+    """Unquoted bash brace lists expand to separate array items, matching how
+    makepkg/bash sees them (regression for afdko's python-{build,installer,wheel}
+    being treated as one bogus dependency)."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "makedepends=(cmake python-{build,installer,wheel} ninja)\n"
+    )
+    result = parse_pkgbuild(pkgbuild)
+    md = result["globals"]["makedepends"]
+    assert "python-build" in md
+    assert "python-installer" in md
+    assert "python-wheel" in md
+    assert "python-{build,installer,wheel}" not in md
+    assert md == ["cmake", "python-build", "python-installer", "python-wheel", "ninja"]
+
+
+def test_brace_expansion_leaves_parameter_expansion_intact(tmp_path):
+    """An unquoted ${...} must not be split on its internal punctuation — brace
+    expansion never reaches into parameter expansions."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "depends=(lib-${_x} bare{a,b})\n"
+    )
+    result = parse_pkgbuild(pkgbuild)
+    deps = result["globals"]["depends"]
+    # ${_x} is unresolved → preserved verbatim, not brace-split.
+    assert "lib-${_x}" in deps
+    assert "barea" in deps and "bareb" in deps
+
+
 def test_arch_specific_makedepends_merged(tmp_path):
     """makedepends_x86_64 entries merge into the canonical makedepends array.
 

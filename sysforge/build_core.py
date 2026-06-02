@@ -46,6 +46,7 @@ from sysforge.primitives.pacman import (
     batch_install_makedeps,
     get_all_installed_packages,
 )
+from sysforge.primitives.aur import repo_packages
 
 _log = log.get_logger("BUILD")
 
@@ -226,6 +227,12 @@ def prepare_deps(
     pkgbases we are about to build ourselves — excluded so we never try to
     resolve a target as its own dependency.
 
+    The repo arm installs **only** packages that exist in a sync repo. AUR-only
+    makedeps are filtered out here (``repo_packages``) and left to the AUR arm:
+    mixing an AUR name into the ``pacman -S`` transaction makes pacman abort the
+    whole transaction with "target not found", installing none of the repo
+    makedeps either (the proton-cachyos exit-8 regression).
+
     Both arms are best-effort: a failure warns and lets the build proceed (a
     genuinely missing dep surfaces as a per-package build failure with a
     diagnosis, rather than aborting the whole batch up front).
@@ -233,12 +240,15 @@ def prepare_deps(
     if not pkgbuild_paths:
         return
 
-    # Repo makedeps — one sudo transaction.
+    # Repo makedeps — one sudo transaction. Restrict to sync-repo packages so
+    # AUR makedeps don't poison the pacman -S transaction (they're built by the
+    # AUR arm below).
     makedeps = collect_makedeps(pkgbuild_paths)
     missing_deps = filter_missing_deps(makedeps)
-    if missing_deps:
+    repo_missing = sorted(repo_packages(missing_deps)) if missing_deps else []
+    if repo_missing:
         try:
-            batch_install_makedeps(missing_deps)
+            batch_install_makedeps(repo_missing)
         except RuntimeError as e:
             _log.error(str(e))
             _log.ui(

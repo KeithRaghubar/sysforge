@@ -85,6 +85,8 @@ def test_prepare_deps_preinstalls_makedeps_and_builds_aur(tmp_path):
               return_value=["lib32-foo", "python-ufonormalizer"]),
         patch("sysforge.build_core.filter_missing_deps",
               return_value=["lib32-foo", "python-ufonormalizer"]),
+        # Only lib32-foo is in a sync repo; python-ufonormalizer is AUR-only.
+        patch("sysforge.build_core.repo_packages", return_value={"lib32-foo"}),
         patch("sysforge.build_core.batch_install_makedeps") as mk_install,
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
               return_value=aur_deps),
@@ -95,11 +97,43 @@ def test_prepare_deps_preinstalls_makedeps_and_builds_aur(tmp_path):
             building_names={"proton-cachyos"},
         )
 
-    mk_install.assert_called_once_with(["lib32-foo", "python-ufonormalizer"])
+    # The AUR-only makedep must NOT reach pacman -S — only the repo subset does.
+    mk_install.assert_called_once_with(["lib32-foo"])
     build_aur.assert_called_once()
     # The package we are building is excluded; the AUR-only dep is built.
     passed = build_aur.call_args.args[0]
     assert [d.name for d in passed] == ["python-ufonormalizer"]
+
+
+def test_prepare_deps_excludes_aur_makedeps_from_pacman(tmp_path):
+    """Regression for the proton-cachyos exit-8 failure: AUR-only makedeps must
+    never be passed to ``pacman -S`` — mixing them in makes pacman abort the
+    whole transaction with "target not found", installing none of the repo
+    makedeps either. Only sync-repo packages reach batch_install_makedeps."""
+    target = _make_target(tmp_path, "proton-cachyos")
+    # As seen in the real failure: 4 repo makedeps + 2 AUR makedeps.
+    missing = [
+        "afdko", "fontforge", "mingw-w64-tools",
+        "python-pefile", "python-setuptools-scm", "xorg-util-macros",
+    ]
+    repo_subset = {
+        "fontforge", "python-pefile", "python-setuptools-scm", "xorg-util-macros",
+    }
+    with (
+        patch("sysforge.build_core.collect_makedeps", return_value=missing),
+        patch("sysforge.build_core.filter_missing_deps", return_value=missing),
+        patch("sysforge.build_core.repo_packages", return_value=repo_subset),
+        patch("sysforge.build_core.batch_install_makedeps") as mk_install,
+        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
+              return_value=[]),
+        patch("sysforge.primitives.aur_resolve.build_resolved_deps"),
+    ):
+        build_core.prepare_deps([target.pkgbuild_path], {})
+
+    mk_install.assert_called_once_with(sorted(repo_subset))
+    # No AUR name leaked into the pacman -S transaction.
+    passed = mk_install.call_args.args[0]
+    assert "afdko" not in passed and "mingw-w64-tools" not in passed
 
 
 def test_prepare_deps_makedep_failure_is_nonfatal(tmp_path):
@@ -109,6 +143,7 @@ def test_prepare_deps_makedep_failure_is_nonfatal(tmp_path):
     with (
         patch("sysforge.build_core.collect_makedeps", return_value=["x"]),
         patch("sysforge.build_core.filter_missing_deps", return_value=["x"]),
+        patch("sysforge.build_core.repo_packages", return_value={"x"}),
         patch("sysforge.build_core.batch_install_makedeps",
               side_effect=RuntimeError("boom")),
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",

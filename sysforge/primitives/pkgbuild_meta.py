@@ -94,14 +94,122 @@ def _extract_functions(text):
     return functions, global_text
 
 
+def _split_top_commas(s):
+    """Split ``s`` on commas that sit at brace-depth 0 (brace-expansion helper)."""
+    parts, depth, cur = [], 0, []
+    for c in s:
+        if c == "{":
+            depth += 1
+            cur.append(c)
+        elif c == "}":
+            depth -= 1
+            cur.append(c)
+        elif c == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+    parts.append("".join(cur))
+    return parts
+
+
+def _expand_sequence(s):
+    """Expand a bash sequence expression ``x..y[..incr]``; return None if not one.
+
+    Supports numeric (``1..3``, ``5..1``, ``0..10..2``) and single-char
+    (``a..e``) ranges. Zero-padding fidelity is intentionally skipped — it does
+    not occur in dependency/source arrays in practice.
+    """
+    m = re.fullmatch(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?", s)
+    if m:
+        start, end = int(m.group(1)), int(m.group(2))
+        step = abs(int(m.group(3))) if m.group(3) else 1
+        step = step or 1
+        rng = (range(start, end + 1, step) if start <= end
+               else range(start, end - 1, -step))
+        return [str(v) for v in rng]
+    m = re.fullmatch(r"([a-zA-Z])\.\.([a-zA-Z])(?:\.\.(-?\d+))?", s)
+    if m:
+        start, end = ord(m.group(1)), ord(m.group(2))
+        step = abs(int(m.group(3))) if m.group(3) else 1
+        step = step or 1
+        rng = (range(start, end + 1, step) if start <= end
+               else range(start, end - 1, -step))
+        return [chr(v) for v in rng]
+    return None
+
+
+def _expand_braces(token):
+    """Bash-style brace expansion of a single unquoted word.
+
+    Handles comma lists (``python-{build,installer,wheel}`` →
+    ``python-build python-installer python-wheel``), sequence expressions
+    (``{1..3}``, ``{a..c}``), nesting, and multiple groups (cartesian product).
+    A brace group with no top-level comma and no sequence is literal, as in bash
+    (``{foo}`` stays ``{foo}``). ``${...}`` parameter expansions are skipped
+    whole so their contents are never split — variable expansion runs later in
+    :func:`parse_pkgbuild`.
+    """
+    n = len(token)
+    i = 0
+    while i < n:
+        if token[i] == "{":
+            # Find the matching close brace, tracking nesting depth.
+            depth, j = 0, i
+            while j < n:
+                if token[j] == "{":
+                    depth += 1
+                elif token[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if depth != 0:  # unbalanced — nothing further to expand
+                return [token]
+
+            if i > 0 and token[i - 1] == "$":
+                # ${...} parameter expansion — skip the whole span, never split.
+                i = j + 1
+                continue
+
+            inner = token[i + 1:j]
+            parts = _split_top_commas(inner)
+            if len(parts) > 1:
+                options = parts
+            else:
+                options = _expand_sequence(inner)
+            if not options:
+                # Not a valid brace expansion: keep braces literal, scan on.
+                i = j + 1
+                continue
+
+            prefix, suffix = token[:i], token[j + 1:]
+            results = []
+            for opt in options:
+                for head in _expand_braces(opt):
+                    for tail in _expand_braces(suffix):
+                        results.append(prefix + head + tail)
+            return results
+        i += 1
+    return [token]
+
+
 def _parse_array_items(raw):
-    """Parse array contents respecting quoted strings with spaces."""
+    """Parse array contents respecting quoted strings with spaces.
+
+    Unquoted tokens undergo bash brace expansion
+    (``python-{build,installer,wheel}`` yields three items); quoted tokens are
+    kept verbatim, matching bash (brace expansion does not occur within quotes).
+    """
     items = re.findall(r"'([^']*)'|\"([^\"]*)\"|(\S+)", raw)
     result = []
-    for groups in items:
-        val = next((g for g in groups if g), None)
-        if val:
-            result.append(val)
+    for sq, dq, unq in items:
+        if sq:
+            result.append(sq)
+        elif dq:
+            result.append(dq)
+        elif unq:
+            result.extend(_expand_braces(unq))
     return result
 
 
