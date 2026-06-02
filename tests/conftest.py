@@ -84,13 +84,18 @@ class _RunRecorder:
       ``CalledProcessError`` on a non-zero response, like the real call.
     """
 
-    def __init__(self):
+    def __init__(self, real_run=None):
         self.calls = []
         self.default = _make_proc()
         self._rules = []
+        self._passthrough = []
+        self._real_run = real_run
 
     def __call__(self, cmd, *args, **kwargs):
         self.calls.append(cmd)
+        for predicate in self._passthrough:
+            if predicate(cmd) and self._real_run is not None:
+                return self._real_run(cmd, *args, **kwargs)
         proc = self.default
         for predicate, response in self._rules:
             if predicate(cmd):
@@ -121,6 +126,13 @@ class _RunRecorder:
         self.default = _make_proc(returncode, stdout, stderr)
         return self
 
+    def passthrough(self, match):
+        """Let commands matching ``match`` run for real instead of returning a
+        programmed/default response. Use for pure, safe binaries (e.g.
+        ``vercmp``) whose genuine output a behavior test depends on."""
+        self._passthrough.append(self._as_predicate(match))
+        return self
+
     @property
     def commands(self):
         """Each recorded call as one string, for ergonomic assertions."""
@@ -131,7 +143,7 @@ class _RunRecorder:
 @pytest.fixture
 def fake_run(monkeypatch):
     """Install a programmable ``subprocess.run`` recorder at the global seam."""
-    recorder = _RunRecorder()
+    recorder = _RunRecorder(subprocess.run)
     monkeypatch.setattr(subprocess, "run", recorder)
     return recorder
 

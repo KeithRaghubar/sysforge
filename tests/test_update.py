@@ -89,6 +89,80 @@ def _make_args(**kwargs):
     return SimpleNamespace(**defaults)
 
 
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
+    """Drive the real ``cmd_update`` behavior-first.
+
+    Provides a real ``BuildState`` (seedable via ``record``), an on-disk
+    minimal config so the real ``load_config`` / ``_assemble_package_set``
+    resolve PKGBUILDs under a temp source root, ``fake_run`` pacman, and the
+    build + VCS-eval externals faked at the subprocess/lazy-import seam — no
+    ``sysforge.update.*`` patching. The conversion target for the cmd_update
+    integration tests.
+    """
+    import sysforge.primitives.makepkg_wrapper as _mw
+
+    src_root = tmp_path / "src"
+    src_root.mkdir()
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "sysforge.toml").write_text(f'[paths]\npkgbuild_src_dir = "{src_root}"\n')
+    (cfg_dir / "packages.toml").write_text("")
+    monkeypatch.setenv("SYSFORGE_CONFIG_DIR", str(cfg_dir))
+
+    # The build is the true external these tests observe. build_core lazily
+    # re-imports makepkg_wrapper.run at call time, so patching the module
+    # attribute intercepts it; returning None means "no artifact" so no install.
+    builds: list = []
+    monkeypatch.setattr(_mw, "run", lambda *a, **k: builds.append((a, k)))
+    # vercmp is a pure, safe binary; let the real version comparison run so the
+    # rebuild decision is genuinely exercised.
+    fake_run.passthrough("vercmp")
+
+    class _Scenario:
+        def __init__(self):
+            self.src_root = src_root
+            self.state_dir = state_dir
+            self.builds = builds
+
+        def add_pkg(self, pkgbase, body):
+            d = src_root / pkgbase
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "PKGBUILD").write_text(body)
+            return d
+
+        def record(self, pkgname, pkgver, pkgrel, *, epoch="0", pkgbase=None,
+                   **kw):
+            base = pkgbase or pkgname
+            bs = BuildState(state_dir)
+            bs.record(pkgname, pkgver, pkgrel, epoch, base,
+                      src_root / base, build_mode="profiled", **kw)
+            bs.save()
+
+        def fake_vcs_pkgver(self, pkgname, version, arch="x86_64"):
+            # evaluate_vcs_pkgver runs `makepkg -od ...` then
+            # `makepkg --packagelist`, parsing the resolved version from the
+            # printed package filename. Drive the real function via fake_run.
+            fake_run.respond(["makepkg", "-od"], returncode=0)
+            fake_run.respond(["makepkg", "--packagelist"],
+                             stdout=f"{pkgname}-{version}-{arch}.pkg.tar.zst\n")
+
+        def run(self, args, *, installed, foreign=None):
+            foreign = foreign or {}
+            setattr(args, "no_llvm_preflight", getattr(args, "no_llvm_preflight", True))
+            fake_run.respond(["pacman", "-Qm"],
+                             stdout="".join(f"{n} {v}\n" for n, v in foreign.items()))
+            fake_run.respond(["pacman", "-Q"],
+                             stdout="".join(f"{n} {v}\n" for n, v in installed.items()))
+            cmd_update(args)
+            return builds
+
+    return _Scenario()
+
+
 # ---------------------------------------------------------------------------
 # cmd_update — empty state
 # ---------------------------------------------------------------------------
@@ -491,134 +565,41 @@ def test_vcs_installed_is_devel(tmp_path):
     assert any(r.action == "DEVEL" for r in results)
 
 
-def test_dry_run_no_build(tmp_path):
-    pkgbase = "htop"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "3.3.0-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "3.3.0-1"}),
-        patch("sysforge.update.vercmp", return_value=1),
-        patch("sysforge.primitives.makepkg_wrapper.run") as mock_build,
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(_make_args(dry_run=True))
-
-    mock_build.assert_not_called()
+def test_dry_run_no_build(update_scenario):
+    # htop installed at 3.3.0-1, PKGBUILD at 3.4.1 -> NEEDS_REBUILD, but
+    # --dry-run must not invoke the build.
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    builds = update_scenario.run(
+        _make_args(dry_run=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    assert builds == []
 
 
-def test_devel_flag_triggers_vcs_rebuild(tmp_path):
+def test_devel_flag_triggers_vcs_rebuild(update_scenario):
     """--devel + resolved pkgver newer than installed → build runs once."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="r5678.g9999999-1"),
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-
-        def fake_run(*a, **kw):
-            call_count.append(1)
-
-        mw.run = fake_run
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert len(call_count) == 1
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "r5678.g9999999-1")
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert len(builds) == 1
 
 
-def test_devel_skips_uptodate_vcs(tmp_path):
+def test_devel_skips_uptodate_vcs(update_scenario):
     """--devel + resolved pkgver equal to installed → build does NOT run."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="r1234.gabcdef-1"),
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-
-        def fake_run(*a, **kw):
-            call_count.append(1)
-
-        mw.run = fake_run
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert len(call_count) == 0
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "r1234.gabcdef-1")
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert builds == []
 
 
 def test_devel_short_circuits_when_upstream_unmoved(tmp_path):
