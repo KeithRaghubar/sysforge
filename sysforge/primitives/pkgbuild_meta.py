@@ -318,6 +318,98 @@ def _apply_var_expansion(globals_dict):
             ]
 
 
+# Matches an array-parameter reference that occupies an entire array item,
+# e.g. ``${_pydeps[@]}`` or ``${_pydeps[@]/#/python-}``.  group(1) is the
+# referenced array name; group(2) is the optional transform suffix (everything
+# between the closing ``]`` and the closing ``}``).  ``[@]`` and ``[*]`` are both
+# accepted — for a dependency array the splice-into-multiple-items behaviour is
+# what we want regardless of quoting.
+_ARRAY_REF = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\[[@*]\](.*)\}$")
+
+
+def _has_glob_meta(s):
+    """True if *s* contains bash pattern metacharacters we do not interpret."""
+    return any(c in s for c in "*?[")
+
+
+def _apply_array_transform(elements, transform):
+    """Apply a bash ``${arr[@]<transform>}`` suffix to each array element.
+
+    Supports the dependency-array idioms seen in real PKGBUILDs:
+
+    - ``""``         → elements unchanged (``${a[@]}``)
+    - ``/#/PREFIX``  → prepend PREFIX to each (``${a[@]/#/python-}``)
+    - ``/%/SUFFIX``  → append SUFFIX to each  (``${a[@]/%/-git}``)
+    - ``/PAT/REPL``  → replace first literal PAT with REPL in each
+    - ``//PAT/REPL`` → replace every literal PAT with REPL in each
+
+    Returns ``None`` for an unsupported transform (slices, anchored
+    ``/#PAT/``/``/%PAT/`` patterns, glob metacharacters) so the caller can leave
+    the original token verbatim rather than emit a misleading partial result.
+    """
+    if not transform:
+        return list(elements)
+    if transform.startswith("/#/"):       # ${a[@]/#/PREFIX} → prepend
+        return [transform[3:] + e for e in elements]
+    if transform.startswith("/%/"):       # ${a[@]/%/SUFFIX} → append
+        return [e + transform[3:] for e in elements]
+    if transform.startswith("//"):        # ${a[@]//PAT/REPL} → replace all
+        rest = transform[2:]
+        if "/" in rest and rest[:1] not in ("#", "%"):
+            pat, repl = rest.split("/", 1)
+            if pat and not _has_glob_meta(pat):
+                return [e.replace(pat, repl) for e in elements]
+        return None
+    if transform.startswith("/"):         # ${a[@]/PAT/REPL} → replace first
+        rest = transform[1:]
+        if "/" in rest and rest[:1] not in ("#", "%"):
+            pat, repl = rest.split("/", 1)
+            if pat and not _has_glob_meta(pat):
+                return [e.replace(pat, repl, 1) for e in elements]
+        return None
+    return None
+
+
+def _expand_array_refs(globals_dict):
+    """Resolve ``${arr[@]}`` / ``${arr[*]}`` references in array globals in place.
+
+    bash array expansions such as ``depends=("${_pydeps[@]/#/python-}")`` splice
+    every element of ``_pydeps`` (each prefixed with ``python-``) into ``depends``.
+    The static parser captures ``_pydeps`` as its own array global, so this pass
+    resolves the reference by symbol-table lookup — no shell sourcing.  Supported
+    transforms are the dependency-array idioms in :func:`_apply_array_transform`.
+
+    A reference to an unknown array, or an unsupported transform, leaves the token
+    verbatim — downstream the AUR resolver detects the surviving ``${...}`` and
+    rescues the deps from authoritative AUR RPC metadata, and a guard keeps the
+    junk token out of ``pacman``/AUR queries.  Runs after ``_merge_arch_arrays``
+    and before ``_apply_var_expansion`` so spliced items still get ``$var``
+    substitution.
+    """
+    for key, value in list(globals_dict.items()):
+        if not isinstance(value, list):
+            continue
+        new_items = []
+        changed = False
+        for item in value:
+            m = _ARRAY_REF.match(item) if isinstance(item, str) else None
+            if not m:
+                new_items.append(item)
+                continue
+            ref = globals_dict.get(m.group(1))
+            if not isinstance(ref, list):
+                new_items.append(item)        # unknown array — leave verbatim
+                continue
+            expanded = _apply_array_transform(ref, m.group(2))
+            if expanded is None:
+                new_items.append(item)        # unsupported transform — verbatim
+                continue
+            new_items.extend(expanded)
+            changed = True
+        if changed:
+            globals_dict[key] = new_items
+
+
 # Matches a hardcoded gcc/g++ invocation at the start of a logical line:
 # optional leading whitespace, optional VAR=value env assignments, optional
 # ccache prefix, then gcc or g++ as the command itself (followed by space or
@@ -425,5 +517,6 @@ def parse_pkgbuild(path):
         if key not in result["globals"]:
             result["globals"][key] = value.strip()
     _merge_arch_arrays(result["globals"])
+    _expand_array_refs(result["globals"])
     _apply_var_expansion(result["globals"])
     return result

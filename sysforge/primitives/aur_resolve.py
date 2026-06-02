@@ -63,6 +63,24 @@ def _is_soname(dep: str) -> bool:
     return ".so" in name
 
 
+def _looks_unresolved(dep: str) -> bool:
+    """True if a dep token still carries un-evaluated shell syntax.
+
+    The static parser resolves brace, array, and scalar expansions, but
+    constructs it cannot evaluate (command substitution, conditionals, unknown
+    variables) leave a residual token such as ``${_pydeps[@]/#/python-}`` or
+    ``$(uname -m)``.  These are not real package names: they must never reach
+    ``pacman``/AUR queries, and their presence signals that discovery should
+    fall back to authoritative AUR RPC metadata.
+    """
+    return any(c in dep for c in "${}`(")
+
+
+def _deps_need_rpc_rescue(depends: list[str], makedepends: list[str]) -> bool:
+    """True if any statically-parsed dep token is still unresolved shell syntax."""
+    return any(_looks_unresolved(d) for d in (*depends, *makedepends))
+
+
 def _get_missing_deps(dep_specs: list[str]) -> list[str]:
     """Return dep specs not satisfied on the local system (pacman -T)."""
     if not dep_specs:
@@ -125,9 +143,15 @@ def _resolve_deps(
     if not dep_specs:
         return
 
-    # Build name -> original spec mapping, skip already-visited
+    # Build name -> original spec mapping, skip already-visited and any token
+    # that still carries un-evaluated shell syntax (not a real package name).
     name_map: dict[str, str] = {}
     for spec in dep_specs:
+        if _looks_unresolved(spec):
+            _log.info(
+                f"skipping unresolved dep token {spec!r} (required by {required_by})"
+            )
+            continue
         name = _strip_version(spec)
         if name and name not in visited and name not in name_map:
             name_map[name] = spec
@@ -190,8 +214,15 @@ def _resolve_deps(
 
         in_progress.add(name)
 
-        # Resolve this dep's own dependencies
+        # Resolve this dep's own dependencies.  When fetching, clone the PKGBUILD
+        # so the build step has a local tree, and prefer the static parse for
+        # discovery — but fall back to authoritative AUR RPC metadata when the
+        # parse fails or still carries un-evaluated shell syntax (command
+        # substitution, conditionals) the static parser cannot expand.  RPC
+        # ``.SRCINFO`` is fully shell-evaluated, so its dep list is complete.
         pkgbuild_path = None
+        child_deps: list[str] = []
+        child_makedeps: list[str] = []
         if fetch:
             try:
                 pkgbuild_path = find_pkgbuild(name, config)
@@ -199,6 +230,15 @@ def _resolve_deps(
             except (FileNotFoundError, RuntimeError) as e:
                 _log.info(f"{name}: PKGBUILD not available ({e}), using AUR RPC metadata")
                 child_deps, child_makedeps = _get_deps_from_aur_rpc(name, aur_data)
+            else:
+                if _deps_need_rpc_rescue(child_deps, child_makedeps):
+                    rpc_deps, rpc_makedeps = _get_deps_from_aur_rpc(name, aur_data)
+                    if rpc_deps or rpc_makedeps:
+                        _log.info(
+                            f"{name}: static parse left unresolved dep tokens, "
+                            "using AUR RPC metadata for discovery"
+                        )
+                        child_deps, child_makedeps = rpc_deps, rpc_makedeps
         else:
             child_deps, child_makedeps = _get_deps_from_aur_rpc(name, aur_data)
 

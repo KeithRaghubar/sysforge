@@ -2,13 +2,10 @@
 test_aur_resolve.py — tests for recursive AUR dependency resolution
 """
 import textwrap
-from pathlib import Path
 
 import pytest
 
 from sysforge.primitives.aur_resolve import (
-    ResolvedDep,
-    _get_missing_deps,
     _is_soname,
     _strip_version,
     resolve_aur_deps,
@@ -153,8 +150,8 @@ class TestResolveAurDeps:
     def test_transitive_aur_deps(self, tmp_path, monkeypatch):
         """A → B (AUR) → C (AUR): topo order is [C, B]."""
         pkg_a = _make_pkgbuild(tmp_path, "A", depends=["B"])
-        pkg_b = _make_pkgbuild(tmp_path, "B", depends=["C"])
-        pkg_c = _make_pkgbuild(tmp_path, "C")
+        _make_pkgbuild(tmp_path, "B", depends=["C"])  # created for find_pkgbuild
+        _make_pkgbuild(tmp_path, "C")  # created for find_pkgbuild
 
         aur_set = {"B", "C"}
 
@@ -186,7 +183,7 @@ class TestResolveAurDeps:
     def test_cycle_detection(self, tmp_path, monkeypatch):
         """A → B → A cycle raises RuntimeError."""
         pkg_a = _make_pkgbuild(tmp_path, "A", depends=["B"])
-        pkg_b = _make_pkgbuild(tmp_path, "B", depends=["A"])
+        _make_pkgbuild(tmp_path, "B", depends=["A"])  # created for find_pkgbuild
 
         aur_set = {"A", "B"}
 
@@ -351,10 +348,8 @@ class TestResolveAurDeps:
 
         # repodep should be classified as missing → repo
         call_count = {"repo_packages": 0}
-        original_get_missing = lambda specs: specs
 
         def mock_get_missing(specs):
-            stripped = [_strip_version(s) for s in specs]
             return specs  # all missing
 
         monkeypatch.setattr(
@@ -378,6 +373,90 @@ class TestResolveAurDeps:
         assert result[0].name == "aurpkg"
         assert result[0].pkgbuild_path is None  # no fetch
 
+    def test_rpc_rescue_on_unparseable_static_deps(self, tmp_path, monkeypatch):
+        """When the cloned PKGBUILD's deps are un-evaluatable shell syntax, child
+        discovery falls back to authoritative AUR RPC metadata — while the package
+        is still built from its local clone.
+
+        Mirrors afdko, whose ``depends=("${_pydeps[@]/#/python-}")`` (or any
+        command-substitution dep) the static parser cannot fully expand; without
+        the rescue the transitive AUR dep would be dropped and a later
+        ``makepkg --syncdeps`` would abort on it.
+        """
+        _make_pkgbuild(tmp_path, "mypkg", depends=["B"])
+        # B's static PKGBUILD carries a command-substitution dep — unparseable.
+        _make_pkgbuild(tmp_path, "B", depends=["$(echo pydep)"])
+        _make_pkgbuild(tmp_path, "pydep")
+
+        aur_set = {"B", "pydep"}
+        monkeypatch.setattr(
+            "sysforge.primitives.aur_resolve._get_missing_deps",
+            lambda specs: [s for s in specs if _strip_version(s) in aur_set],
+        )
+        monkeypatch.setattr(
+            "sysforge.primitives.aur_resolve.repo_packages",
+            lambda names: set(),
+        )
+
+        def mock_aur_info(names):
+            out = {}
+            for n in names:
+                if n == "B":
+                    out[n] = {"Name": "B", "Depends": ["pydep"], "MakeDepends": []}
+                elif n == "pydep":
+                    out[n] = {"Name": "pydep"}
+            return out
+
+        monkeypatch.setattr(
+            "sysforge.primitives.aur_resolve.aur_info", mock_aur_info
+        )
+        monkeypatch.setattr(
+            "sysforge.primitives.aur_resolve.find_pkgbuild",
+            lambda name, cfg: tmp_path / name / "PKGBUILD",
+        )
+
+        result = resolve_aur_deps(tmp_path / "mypkg" / "PKGBUILD", None)
+        names = [d.name for d in result]
+        # pydep is discoverable ONLY via the RPC rescue (static parse hid it).
+        assert names == ["pydep", "B"]
+        # B is still built from its local clone, not the RPC metadata.
+        b = next(d for d in result if d.name == "B")
+        assert b.pkgbuild_path == tmp_path / "B" / "PKGBUILD"
+
+    def test_unresolved_token_guard(self, tmp_path, monkeypatch):
+        """A residual ``${...}`` token (e.g. an unknown array ref the parser left
+        verbatim) is never handed to pacman/AUR queries as a bogus package name."""
+        pkgbuild = _make_pkgbuild(
+            tmp_path, "mypkg", depends=["realpkg", "${_undefined[@]}"]
+        )
+
+        queried: list[str] = []
+
+        def mock_repo_packages(names):
+            queried.extend(names)
+            return set()
+
+        monkeypatch.setattr(
+            "sysforge.primitives.aur_resolve._get_missing_deps",
+            lambda specs: specs,
+        )
+        monkeypatch.setattr(
+            "sysforge.primitives.aur_resolve.repo_packages", mock_repo_packages
+        )
+        monkeypatch.setattr(
+            "sysforge.primitives.aur_resolve.aur_info",
+            lambda names: {n: {"Name": n} for n in names},
+        )
+        monkeypatch.setattr(
+            "sysforge.primitives.aur_resolve.find_pkgbuild",
+            lambda name, cfg: _make_pkgbuild(tmp_path, name),
+        )
+
+        result = resolve_aur_deps(pkgbuild, None)
+        assert "${_undefined[@]}" not in queried
+        assert queried == ["realpkg"]
+        assert [d.name for d in result] == ["realpkg"]
+
 
 class TestResolveAllDeps:
     """Test resolve_all_deps which returns all dep types."""
@@ -390,7 +469,6 @@ class TestResolveAllDeps:
         aur_pkgbuild = _make_pkgbuild(tmp_path, "aurpkg")
 
         def mock_missing(specs):
-            stripped = {_strip_version(s) for s in specs}
             return [s for s in specs if _strip_version(s) in {"aurpkg", "repopkg"}]
 
         monkeypatch.setattr(

@@ -34,7 +34,7 @@ import subprocess
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives.aur_resolve import _strip_version
+from sysforge.primitives.aur_resolve import _looks_unresolved, _strip_version
 from sysforge.primitives.makepkg_wrapper import INSTALL_FLAGS
 
 _log = log.get_logger("PACMAN")
@@ -372,8 +372,12 @@ def collect_makedeps(pkgbuild_paths: list) -> list:
             raw = pkgmeta.get("globals", {}).get("makedepends", [])
             if isinstance(raw, str):
                 raw = [raw]
-            # Strip version constraints (e.g. "cmake>=3.16" → "cmake")
+            # Strip version constraints (e.g. "cmake>=3.16" → "cmake"); skip any
+            # token the static parser left as un-evaluated shell syntax so it is
+            # never handed to the repo `pacman -S` transaction as a bogus name.
             for dep in raw:
+                if _looks_unresolved(dep):
+                    continue
                 deps.add(_strip_version(dep))
         except (OSError, KeyError, ValueError) as e:
             _log.warn(f"makedeps parse error ({Path(path).parent.name}): {e}")

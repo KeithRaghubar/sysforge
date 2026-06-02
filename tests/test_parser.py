@@ -170,6 +170,97 @@ def test_brace_expansion_leaves_parameter_expansion_intact(tmp_path):
     assert "barea" in deps and "bareb" in deps
 
 
+def test_array_parameter_expansion_prefix(tmp_path):
+    """``${arr[@]/#/python-}`` splices the referenced array, prefixing each item.
+
+    Regression for afdko's ``depends=(... "${_pydeps[@]/#/python-}")``: the static
+    parser used to leave a single bogus ``${_pydeps[@]/#/python-}`` token and drop
+    python-ufonormalizer from the AUR dep graph, so a later ``makepkg --syncdeps``
+    aborted with "target not found: python-ufonormalizer".
+    """
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=afdko\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "_pydeps=(booleanoperations defcon ufonormalizer zopfli)\n"
+        'depends=(python "${_pydeps[@]/#/python-}")\n'
+    )
+    deps = parse_pkgbuild(pkgbuild)["globals"]["depends"]
+    assert "python-ufonormalizer" in deps
+    assert deps == [
+        "python",
+        "python-booleanoperations",
+        "python-defcon",
+        "python-ufonormalizer",
+        "python-zopfli",
+    ]
+    assert not any("${" in d for d in deps)
+
+
+def test_array_parameter_expansion_plain(tmp_path):
+    """``${arr[@]}`` with no transform splices the array elements verbatim."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "_common=(glibc gcc-libs)\n"
+        'depends=("${_common[@]}" zlib)\n'
+    )
+    deps = parse_pkgbuild(pkgbuild)["globals"]["depends"]
+    assert deps == ["glibc", "gcc-libs", "zlib"]
+
+
+def test_array_parameter_expansion_suffix_and_replace(tmp_path):
+    """``/%/SUFFIX`` appends, ``/PAT/REPL`` replaces, and ``[*]`` acts like ``[@]``."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "_mods=(comp settings)\n"
+        "_libs=(libfoo libbar)\n"
+        'makedepends=("${_mods[@]/%/-git}" "${_libs[*]/lib/lib32-}")\n'
+    )
+    md = parse_pkgbuild(pkgbuild)["globals"]["makedepends"]
+    assert md == ["comp-git", "settings-git", "lib32-foo", "lib32-bar"]
+
+
+def test_array_parameter_expansion_unknown_array_preserved(tmp_path):
+    """A reference to an array we never captured is left verbatim (no garbage)."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        'depends=(zlib "${_missing[@]/#/python-}")\n'
+    )
+    deps = parse_pkgbuild(pkgbuild)["globals"]["depends"]
+    assert "zlib" in deps
+    # Preserved, not partially expanded — the resolver's RPC rescue handles it.
+    assert "${_missing[@]/#/python-}" in deps
+
+
+def test_array_parameter_expansion_unsupported_transform_preserved(tmp_path):
+    """An unsupported transform (slice) leaves the token verbatim rather than guess."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "_a=(x y z)\n"
+        'depends=("${_a[@]:1:2}")\n'
+    )
+    deps = parse_pkgbuild(pkgbuild)["globals"]["depends"]
+    assert deps == ["${_a[@]:1:2}"]
+
+
 def test_arch_specific_makedepends_merged(tmp_path):
     """makedepends_x86_64 entries merge into the canonical makedepends array.
 
