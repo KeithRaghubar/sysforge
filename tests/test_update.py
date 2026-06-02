@@ -151,6 +151,40 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
             fake_run.respond(["makepkg", "--packagelist"],
                              stdout=f"{pkgname}-{version}-{arch}.pkg.tar.zst\n")
 
+        def fake_sync(self, statuses=None):
+            """Inject a fake source-sync scheduler (for offline=False runs).
+
+            ``statuses`` maps pkgbase -> status string, or a (status, error)
+            tuple; unlisted pkgbases resolve UP_TO_DATE. Injected at the
+            source_sync singleton so update's get_scheduler() returns it.
+            """
+            from sysforge.primitives import source_sync
+            from sysforge.primitives.source_sync import (
+                STATUS_UP_TO_DATE, SyncResult,
+            )
+            table = statuses or {}
+
+            class _FakeCache:
+                def all(self):
+                    return {}
+
+            class _FakeScheduler:
+                offline = cleansrc = cleansrc_force = force_devel = False
+                cache = _FakeCache()
+
+                def _ensure_rpc(self, bases):
+                    pass
+
+                def request(self, req):
+                    spec = table.get(req.pkgbase, STATUS_UP_TO_DATE)
+                    status, error = spec if isinstance(spec, tuple) else (spec, None)
+                    return SyncResult(pkgbase=req.pkgbase, status=status, error=error)
+
+                def close(self):
+                    pass
+
+            monkeypatch.setattr(source_sync, "_scheduler", _FakeScheduler())
+
         def run(self, args, *, installed, foreign=None):
             foreign = foreign or {}
             setattr(args, "no_llvm_preflight", getattr(args, "no_llvm_preflight", True))
@@ -687,30 +721,28 @@ def test_check_one_pkgbase_vcs_no_devel_skips_parse(tmp_path):
     assert result.pkgbuild_path is None
 
 
-def test_sync_sources_skips_vcs_without_devel(tmp_path):
+def test_sync_sources_skips_vcs_without_devel(tmp_path, monkeypatch):
     """``_sync_sources`` omits ``-git`` pkgbases when ``--devel`` is off, even
     under ``--cleansrc`` — purge_src/aur_clone must never see those dirs.
     """
-    from sysforge.primitives.source_sync import (
-        STATUS_UP_TO_DATE, SyncResult,
-    )
+    from sysforge.primitives import source_sync
+    from sysforge.primitives.source_sync import STATUS_UP_TO_DATE, SyncResult
 
-    htop_dir = tmp_path / "htop"
-    htop_dir.mkdir()
-    (htop_dir / "PKGBUILD").write_text("pkgname=htop\n")
-    mesa_dir = tmp_path / "mesa-git"
-    mesa_dir.mkdir()
-    (mesa_dir / "PKGBUILD").write_text("pkgname=mesa-git\n")
+    for name in ("htop", "mesa-git"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "PKGBUILD").write_text(f"pkgname={name}\n")
 
     pkgbase_map = {"htop": ["htop"], "mesa-git": ["mesa-git"]}
     pkgbase_entry = {
-        "htop": {"pkgbuild_dir": str(htop_dir), "source": "aur"},
-        "mesa-git": {"pkgbuild_dir": str(mesa_dir), "source": "aur"},
+        "htop": {"pkgbuild_dir": str(tmp_path / "htop"), "source": "aur"},
+        "mesa-git": {"pkgbuild_dir": str(tmp_path / "mesa-git"), "source": "aur"},
     }
 
     seen: list[str] = []
 
     class _FakeScheduler:
+        offline = cleansrc = cleansrc_force = force_devel = False
         cache = MagicMock()
         def _ensure_rpc(self, bases):  # noqa: ARG002
             pass
@@ -720,45 +752,37 @@ def test_sync_sources_skips_vcs_without_devel(tmp_path):
         def close(self):
             pass
 
-    args = _make_args(
-        offline=False, cleansrc=True, cleansrc_force=False, devel=False,
-        state_dir=str(tmp_path),
-    )
-
-    with (
-        patch("sysforge.update.get_scheduler", return_value=_FakeScheduler()),
-        patch("sysforge.update.load_sysforge_toml", return_value={}),
-        patch("sysforge.update.resolve_state_dir",
-              return_value=(tmp_path, "test")),
-    ):
-        failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
+    # Inject at the source_sync singleton so update's bound get_scheduler()
+    # returns the fake without patching sysforge.update.*.
+    monkeypatch.setattr(source_sync, "_scheduler", _FakeScheduler())
+    args = _make_args(offline=False, cleansrc=True, cleansrc_force=False,
+                      devel=False, state_dir=str(tmp_path))
+    failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
 
     assert seen == ["htop"]
     assert failures == {}
 
 
-def test_sync_sources_includes_vcs_under_devel(tmp_path):
+def test_sync_sources_includes_vcs_under_devel(tmp_path, monkeypatch):
     """With ``--devel`` the VCS filter is bypassed — both pkgbases are synced."""
-    from sysforge.primitives.source_sync import (
-        STATUS_UP_TO_DATE, SyncResult,
-    )
+    from sysforge.primitives import source_sync
+    from sysforge.primitives.source_sync import STATUS_UP_TO_DATE, SyncResult
 
-    htop_dir = tmp_path / "htop"
-    htop_dir.mkdir()
-    (htop_dir / "PKGBUILD").write_text("pkgname=htop\n")
-    mesa_dir = tmp_path / "mesa-git"
-    mesa_dir.mkdir()
-    (mesa_dir / "PKGBUILD").write_text("pkgname=mesa-git\n")
+    for name in ("htop", "mesa-git"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "PKGBUILD").write_text(f"pkgname={name}\n")
 
     pkgbase_map = {"htop": ["htop"], "mesa-git": ["mesa-git"]}
     pkgbase_entry = {
-        "htop": {"pkgbuild_dir": str(htop_dir), "source": "aur"},
-        "mesa-git": {"pkgbuild_dir": str(mesa_dir), "source": "aur"},
+        "htop": {"pkgbuild_dir": str(tmp_path / "htop"), "source": "aur"},
+        "mesa-git": {"pkgbuild_dir": str(tmp_path / "mesa-git"), "source": "aur"},
     }
 
     seen: list[str] = []
 
     class _FakeScheduler:
+        offline = cleansrc = cleansrc_force = force_devel = False
         cache = MagicMock()
         def _ensure_rpc(self, bases):  # noqa: ARG002
             pass
@@ -768,79 +792,33 @@ def test_sync_sources_includes_vcs_under_devel(tmp_path):
         def close(self):
             pass
 
-    args = _make_args(
-        offline=False, cleansrc=False, cleansrc_force=False, devel=True,
-        state_dir=str(tmp_path),
-    )
-
-    with (
-        patch("sysforge.update.get_scheduler", return_value=_FakeScheduler()),
-        patch("sysforge.update.load_sysforge_toml", return_value={}),
-        patch("sysforge.update.resolve_state_dir",
-              return_value=(tmp_path, "test")),
-    ):
-        _sync_sources(pkgbase_map, pkgbase_entry, args)
+    monkeypatch.setattr(source_sync, "_scheduler", _FakeScheduler())
+    args = _make_args(offline=False, cleansrc=False, cleansrc_force=False,
+                      devel=True, state_dir=str(tmp_path))
+    _sync_sources(pkgbase_map, pkgbase_entry, args)
 
     assert sorted(seen) == ["htop", "mesa-git"]
 
 
-def test_pull_failure_continues_to_next_package(tmp_path):
-    pkg1_dir = tmp_path / "htop"
-    pkg1_dir.mkdir()
-    (pkg1_dir / "PKGBUILD").write_text("pkgname=htop\n")
-
-    pkg2_dir = tmp_path / "neovim"
-    pkg2_dir.mkdir()
-    (pkg2_dir / "PKGBUILD").write_text("pkgname=neovim\n")
-
-    state_data = {
-        "htop": {
-            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "htop", "pkgbuild_dir": str(pkg1_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        },
-        "neovim": {
-            "pkgver": "0.9.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "neovim", "pkgbuild_dir": str(pkg2_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        },
-    }
-
-    parsed_neovim = {"globals": {"pkgname": "neovim", "pkgver": "0.9.0", "pkgrel": "1", "epoch": "0"}}
-
-    args = _make_args(offline=False)
-    results = []
-
-    overrides = ({}, {
-        "htop": {"name": "htop", "source": "aur"},
-        "neovim": {"name": "neovim", "source": "aur"},
-    })
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        # Simulate the scheduler reporting htop failed and neovim up-to-date.
-        patch("sysforge.update._sync_sources",
-              return_value={"htop": ("failed", "git fetch failed")}),
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed_neovim),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"htop": "0.9.0-1", "neovim": "0.9.0-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={"htop": "0.9.0-1", "neovim": "0.9.0-1"}),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
-
-    actions = {r.pkgbase: r.action for r in results}
-    assert actions.get("htop") == "PULL_FAILED"
-    assert actions.get("neovim") == "UP_TO_DATE"
+def test_pull_failure_continues_to_next_package(update_scenario, capsys):
+    """A source-sync failure for one pkgbase doesn't block the rest: htop's
+    sync failure surfaces (PULL_FAILED), while neovim is still version-checked
+    and found up to date."""
+    from sysforge.primitives.source_sync import STATUS_FAILED
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=0.9.0\npkgrel=1\n")
+    update_scenario.add_pkg("neovim", "pkgname=neovim\npkgver=0.9.0\npkgrel=1\n")
+    update_scenario.fake_sync({"htop": (STATUS_FAILED, "git fetch failed")})
+    update_scenario.run(
+        _make_args(offline=False),
+        installed={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
+        foreign={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
+    )
+    combined = "".join(capsys.readouterr())
+    # htop's sync failure surfaces (PULL_FAILED) ...
+    assert "git fetch failed" in combined
+    assert "1 pull failed" in combined
+    # ... and the run continues through neovim to completion (not aborted).
+    assert "Update complete" in combined
 
 
 # ---------------------------------------------------------------------------
