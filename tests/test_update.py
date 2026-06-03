@@ -552,7 +552,7 @@ def test_foreign_split_package_resolves_pkgbase_from_local_db(tmp_path):
     with (
         # Isolate from the workstation's real kernel.toml (which names
         # linux-custom and would route it through the stage-owned skip).
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "no-kernel-toml"),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "no-kernel-toml"),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
@@ -1453,7 +1453,7 @@ def test_kernel_owned_package_skipped_by_default(tmp_path, capsys):
      capture) = _stage_owned_setup(tmp_path)
 
     with (
-        patch("sysforge.update.KERNEL_PATH", kernel_path),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", kernel_path),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config",
@@ -1485,7 +1485,7 @@ def test_kernel_owned_via_build_state_marker_skipped(tmp_path):
     with (
         # KERNEL_PATH points at a nonexistent file so the bootstrap fallback
         # is inactive — only the build_state marker should drive the skip.
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope.toml"),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope.toml"),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config",
@@ -1513,7 +1513,7 @@ def test_include_stage_owned_flag_includes_kernel_package(tmp_path):
                           "pkgrel": "1", "epoch": "0"}}
 
     with (
-        patch("sysforge.update.KERNEL_PATH", kernel_path),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", kernel_path),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
@@ -1543,7 +1543,7 @@ def test_explicit_pkgname_overrides_stage_owned_skip(tmp_path):
                           "pkgrel": "1", "epoch": "0"}}
 
     with (
-        patch("sysforge.update.KERNEL_PATH", kernel_path),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", kernel_path),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
@@ -1573,7 +1573,7 @@ def _toolchain_owned_setup(tmp_path, args_extra=None, *, owner_in_state=False,
     Mirrors ``_stage_owned_setup`` but for the toolchain stage:
       - ``owner_in_state``: toolchain stage has stamped ``owner_stage="toolchain"``.
       - ``toolchain_toml_present`` + ``enabled`` + ``compiler``: drive the
-        ``_toolchain_owns_llvm()`` bootstrap fallback (active only for
+        ``stage_ownership`` config bootstrap fallback (active only for
         enabled + compiler="llvm").
     """
     pkgbase = "llvm"
@@ -1620,8 +1620,8 @@ def test_toolchain_owned_llvm_skipped_by_default(tmp_path, capsys):
      capture) = _toolchain_owned_setup(tmp_path)
 
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
-        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config",
@@ -1649,10 +1649,10 @@ def test_toolchain_owned_via_build_state_marker_skipped(tmp_path):
     )
 
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
         # Nonexistent toolchain.toml so the bootstrap fallback is inactive —
         # only the build_state marker should drive the skip.
-        patch("sysforge.update.TOOLCHAIN_PATH", tmp_path / "nope-toolchain.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", tmp_path / "nope-toolchain.toml"),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config",
@@ -1679,8 +1679,8 @@ def test_toolchain_gcc_compiler_does_not_skip_llvm(tmp_path):
                           "pkgrel": "1", "epoch": "0"}}
 
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
-        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
@@ -1709,8 +1709,8 @@ def test_include_stage_owned_includes_toolchain_llvm(tmp_path):
                           "pkgrel": "1", "epoch": "0"}}
 
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
-        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
@@ -1739,8 +1739,8 @@ def test_explicit_pkgname_overrides_toolchain_skip(tmp_path):
                           "pkgrel": "1", "epoch": "0"}}
 
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
-        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.parse_pkgbuild", return_value=parsed),
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
@@ -1789,8 +1789,8 @@ def test_toolchain_owned_spirv_skipped_via_configured_list(tmp_path, capsys):
     results: list = []
 
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
-        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
         patch("sysforge.update.BuildState") as MockBS,
         patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
         patch("sysforge.update.load_config",
