@@ -365,17 +365,11 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
 # cmd_update — empty state
 # ---------------------------------------------------------------------------
 
-def test_empty_install_set_exits_cleanly(capsys):
+def test_empty_install_set_exits_cleanly(update_scenario, capsys):
     """No foreign packages and no repo-source overrides → nothing in scope."""
-    with patch("sysforge.update.BuildState") as MockBS, \
-         patch("sysforge.update.load_config", return_value={}), \
-         patch("sysforge.update._load_overrides", return_value=({}, {})), \
-         patch("sysforge.update.get_all_installed_packages", return_value={}), \
-         patch("sysforge.update.get_foreign_packages", return_value={}):
-        MockBS.return_value.all_packages.return_value = {}
-        cmd_update(_make_args())
+    update_scenario.run(_make_args(), installed={}, foreign={})
     captured = capsys.readouterr()
-    assert "No installed packages in scope" in captured.err
+    assert "No installed packages in scope" in (captured.out + captured.err)
 
 
 # ---------------------------------------------------------------------------
@@ -511,37 +505,21 @@ def test_uninstalled_override_is_silently_skipped(fake_run, state_dir):
     assert "mesa-git" not in packages
 
 
-def test_installed_aur_without_override_uses_defaults(tmp_path):
-    """AUR package installed but with no override entry → walked with defaults."""
-    pkgbase = "yay"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\npkgver=12.3.3\npkgrel=1\n")
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "12.3.3", "pkgrel": "1", "epoch": "0"}}
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),  # no overrides
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "12.3.3-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "12.3.3-1"}),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert {r.pkgbase for r in results} == {pkgbase}
+def test_installed_aur_without_override_uses_defaults(update_scenario, capsys):
+    """AUR package installed but with no override entry → walked with defaults
+    (in scope, version-checked, reported as up to date)."""
+    pkgbase = "example-aur-pkg"
+    update_scenario.add_pkg(
+        pkgbase, f"pkgname={pkgbase}\npkgver=12.3.3\npkgrel=1\n")
+    update_scenario.run(
+        _make_args(verbose=1),
+        installed={pkgbase: "12.3.3-1"}, foreign={pkgbase: "12.3.3-1"},
+    )
+    combined = "".join(capsys.readouterr())
+    # The package is iterated (1 package checked) and found up to date.
+    assert "1 packages" in combined
+    assert "1 up to date" in combined
+    assert pkgbase in combined
 
 
 def test_foreign_split_package_resolves_pkgbase_from_local_db(tmp_path):
