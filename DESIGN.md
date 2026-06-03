@@ -796,7 +796,7 @@ Single shared interactive-prompt helper. Every stage that needs user input goes 
 
 Key contract:
 
-- `prompt_choice` re-prompts with a visible warning on unrecognized input (so typos / jibberish never silently fall through to the default), unless the call site passes `retry_on_invalid=False` — used only for destructive prompts (e.g. partition.py's literal-`yes` confirmation) where any non-confirming input must abort.
+- `prompt_choice` re-prompts with a visible warning on unrecognized input (so typos / jibberish never silently fall through to the default), unless the call site passes `retry_on_invalid=False` — used for destructive / mutate-confirm prompts where any non-confirming input must abort (partition.py's literal-`yes` confirmation; the `[y/N]` confirms in `state orphans --prune`, `doctor --apply` rebuild, and `auto_repair`'s checksum-mismatch `updpkgsums` retry). These three previously used a bare `input()` with a hand-rolled `EOFError` guard; routing them through `prompt_choice` also picks up the captured-stdin `OSError`-as-EOF handling for free.
 - `eof_default` is a separate kwarg from `default`. Most sites pass neither (EOF returns `default`). `toolchain.py`'s GCC-build override and `_confirm_or_abort` deliberately set `eof_default="y"` to preserve their long-standing "EOF means proceed unattended" semantic.
 - Both helpers catch `EOFError` *and* `OSError`, since pytest's captured stdin and other unreadable-stdin scenarios raise the latter.
 - Optional `tag`/`level` kwargs reuse `log.prompt_prefix(level, tag)` so prompts keep the standard `[SYSFORGE][LEVEL][TAG] ` format.

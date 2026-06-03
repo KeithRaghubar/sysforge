@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from sysforge import log
+from sysforge.primitives.prompt import prompt_choice
 
 _log = log.get_logger("REPAIR")
 
@@ -347,11 +348,11 @@ def _repair_checksum_mismatch(pkgbuild_dir: Path, info: MatchInfo) -> None:
         flush=True,
     )
     print("=" * 70, flush=True)
-    try:
-        answer = input("Run updpkgsums and retry? [y/N] ")
-    except EOFError:
-        answer = ""
-    if answer.strip().lower() not in {"y", "yes"}:
+    answer = prompt_choice(
+        "Run updpkgsums and retry? [y/N] ", ["y", "yes"],
+        default="", retry_on_invalid=False,
+    )
+    if answer not in {"y", "yes"}:
         raise RuntimeError("checksum_mismatch repair: user declined")
     updpkgsums = shutil.which("updpkgsums")
     if updpkgsums is None:

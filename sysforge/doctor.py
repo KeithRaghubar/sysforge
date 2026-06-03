@@ -38,6 +38,7 @@ from sysforge.primitives.abi_check import (
     needed_sonames,
 )
 from sysforge.primitives.aur_resolve import _strip_version
+from sysforge.primitives.prompt import prompt_choice
 from sysforge.primitives.dep_analysis import (
     _default_ldconfig_fn,
     _parse_ldconfig,
@@ -1018,11 +1019,11 @@ def _apply_rebuilds(
         return 0
 
     if not no_confirm:
-        try:
-            answer = input("Proceed with rebuild? [y/N] ")
-        except EOFError:
-            answer = ""
-        if answer.strip().lower() not in {"y", "yes"}:
+        answer = prompt_choice(
+            "Proceed with rebuild? [y/N] ", ["y", "yes"],
+            default="", retry_on_invalid=False,
+        )
+        if answer not in {"y", "yes"}:
             _log.ui("Aborted.")
             return 0
 
