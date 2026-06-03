@@ -103,6 +103,13 @@ from sysforge.primitives.profile import (
 # same flags during update/converge batch runs.
 INSTALL_FLAGS = frozenset({"-i", "--install"})
 
+# makepkg's dependency-sync flags. Stripped whenever sysforge has already
+# satisfied deps itself and must stop makepkg from invoking ``sudo pacman -S``:
+# the update/converge batch path (via pacman.BATCH_STRIP_FLAGS) pre-installs
+# repo makedeps in one shot, and the toolchain stage's staged-deps passes
+# satisfy ``llvm=<ver>`` from a stage prefix that isn't published anywhere.
+SYNC_FLAGS = frozenset({"--syncdeps", "-s"})
+
 # Heartbeat cadence for invoke_makepkg's pty loop. Ninja attached to a pty
 # uses \r to redraw a single status line in place and rarely emits \n during
 # a long compile phase, so without a heartbeat both the terminal (under -vvv)
