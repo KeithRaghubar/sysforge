@@ -168,6 +168,8 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
             self.builds = builds
             self.fake_run = fake_run  # .commands exposes every emitted argv
             self.pkgdest = None
+            self._build_cfg = {}
+            self._overrides = []
 
         def add_pkg(self, pkgbase, body):
             d = src_root / pkgbase
@@ -243,6 +245,49 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
                 fake_run.respond(["bsdtar", "-xOqf", str(target / fn)],
                                  stdout=f"pkgname = {pn}\n")
             build_behaviors[pkgbase] = _produce
+
+        def _write_packages(self):
+            """Serialize the accumulated [build] cfg + [[package]] overrides
+            into the harness packages.toml (read by the real _load_overrides
+            via the --packages CLI seam)."""
+            lines = []
+            if self._build_cfg:
+                lines.append("[build]")
+                for k, v in self._build_cfg.items():
+                    lines.append(f'{k} = "{v}"')
+                lines.append("")
+            for ov in self._overrides:
+                lines.append("[[package]]")
+                for k, v in ov.items():
+                    if isinstance(v, bool):
+                        lines.append(f"{k} = {str(v).lower()}")
+                    else:
+                        lines.append(f'{k} = "{v}"')
+                lines.append("")
+            packages_path.write_text("\n".join(lines))
+
+        def set_repo_mode(self, mode):
+            """Set ``[build] repo_mode`` (e.g. "profiled") in packages.toml."""
+            self._build_cfg["repo_mode"] = mode
+            self._write_packages()
+
+        def add_override(self, name, **fields):
+            """Add a ``[[package]]`` override entry to packages.toml."""
+            self._overrides.append({"name": name, **fields})
+            self._write_packages()
+
+        def fake_checkupdates(self, updates):
+            """Program the ``checkupdates`` repo-upgrade probe.
+
+            ``updates`` is ``{pkgname: newver}`` (checkupdates ran and listed
+            them) or ``None`` (binary errors → fast path unavailable). Drives
+            the real checkupdates_map via fake_run.
+            """
+            if updates is None:
+                fake_run.respond(["checkupdates"], returncode=127)
+            else:
+                out = "".join(f"{n} 0-0 -> {v}\n" for n, v in updates.items())
+                fake_run.respond(["checkupdates"], stdout=out)
 
         def installed_pkg_files(self):
             """Filenames passed to the final ``pacman -U`` install transaction(s)."""
@@ -1273,240 +1318,106 @@ def test_print_summary_verbose_shows_all_lines(capsys):
 # repo_mode = "profiled" → pacman-class fast path
 # ---------------------------------------------------------------------------
 
-def _run_profiled_repo_update(
-    tmp_path,
-    pkgbase: str,
-    installed_ver: str,
-    *,
-    override: dict | None = None,
-    checkupdates_result,
-    parse_pkgbuild_mock=None,
-    pacman_run_mock=None,
-    args_extra: dict | None = None,
-):
-    """Helper for repo_mode = 'profiled' tests.
-
-    Drives ``cmd_update`` against a single installed repo package with
-    ``repo_mode = "profiled"``, mocking out checkupdates and (optionally)
-    the source-sync and PKGBUILD parse paths. Returns the captured
-    ``_UpdateResult`` list and the list of ``subprocess.run`` call args
-    seen by the bulk-pacman dispatch site (the ``import subprocess as _subprocess``
-    inside cmd_update).
-    """
-    overrides_dict: dict = {pkgbase: override} if override else {}
-    overrides = ({"repo_mode": "profiled"}, overrides_dict)
-
-    # Source-class repo packages need a PKGBUILD on disk + parse_pkgbuild mock.
-    if override and not (override.keys() & {"pkgbuild_patch", "cache", "reason"}):
-        # treat as inert → leave alone
-        pass
-    if override and ({"pkgbuild_patch", "cache", "reason"} & override.keys()):
-        pkg_dir = tmp_path / pkgbase
-        pkg_dir.mkdir(exist_ok=True)
-        (pkg_dir / "PKGBUILD").write_text(
-            f"pkgname={pkgbase}\npkgver={installed_ver.rsplit('-', 1)[0]}\npkgrel=1\n"
-        )
-
-    args = _make_args(**(args_extra or {}))
-    args.offline = False  # checkupdates needs offline=False to run
-
-    results: list = []
-
-    with (
-        # Isolate from the workstation's real toolchain.toml (enabled + llvm),
-        # which would route an `llvm` package through the toolchain stage-owned
-        # skip and out of scope.
-        patch("sysforge.update.TOOLCHAIN_PATH", tmp_path / "no-toolchain-toml"),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: installed_ver}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update.fetch_aur_name_cache"),
-        patch("sysforge.update._sync_sources", return_value={}),
-        patch("sysforge.update.checkupdates_map", return_value=checkupdates_result),
-        patch("sysforge.update.collect_llvm_state") as mock_llvm,
-        patch(
-            "sysforge.update.parse_pkgbuild",
-            new=parse_pkgbuild_mock or MagicMock(
-                return_value={"globals": {"pkgname": pkgbase, "pkgver": "0", "pkgrel": "1", "epoch": "0"}}
-            ),
-        ),
-        patch("sysforge.update.vercmp", side_effect=_string_vercmp),
-        patch("sysforge.update._toolchain_preflight_for_batch", return_value=True),
-        patch("sysforge.build_core.collect_makedeps", return_value=[]),
-        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
-        patch("sysforge.build_core.batch_install_pkgs", return_value=True),
-        patch("subprocess.run", side_effect=pacman_run_mock or _ok_subprocess),
-    ):
-        mock_llvm.return_value = MagicMock(states=[])
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
-
-    return results
+def _syu_fired(scenario):
+    """True iff the bulk ``sudo pacman -Syu`` repo-upgrade transaction ran."""
+    return any("pacman -Syu" in c for c in scenario.fake_run.commands)
 
 
-def _string_vercmp(a: str, b: str) -> int:
-    """Stand-in for `vercmp` that does string comparison.
-
-    Sufficient for tests that use simple monotone versions like
-    "1.0.0-1" vs "1.0.1-1".
-    """
-    if a == b:
-        return 0
-    return 1 if a > b else -1
+def _checkupdates_called(scenario):
+    """True iff the ``checkupdates`` repo-upgrade probe was invoked."""
+    return any("checkupdates" in c for c in scenario.fake_run.commands)
 
 
-def _ok_subprocess(*a, **kw):
-    """Fallback subprocess.run mock — always returns rc=0."""
-    return MagicMock(returncode=0, stdout="", stderr="")
-
-
-def test_repo_pacman_class_flags_needs_pacman_upgrade(tmp_path):
-    """repo_mode=profiled + no override + checkupdates newer → NEEDS_PACMAN_UPGRADE."""
-    parse_mock = MagicMock()
-    pacman_calls: list = []
-
-    def trace_subprocess(*args, **kwargs):
-        pacman_calls.append(args[0] if args else kwargs.get("args"))
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    results = _run_profiled_repo_update(
-        tmp_path, "firefox", "130.0-1",
-        checkupdates_result={"firefox": "131.0-1"},
-        parse_pkgbuild_mock=parse_mock,
-        pacman_run_mock=trace_subprocess,
+def test_repo_pacman_class_flags_needs_pacman_upgrade(update_scenario, capsys):
+    """repo_mode=profiled + no override + checkupdates newer → the package is
+    flagged for a pacman upgrade and the bulk pacman -Syu fires (no source build)."""
+    update_scenario.set_repo_mode("profiled")
+    update_scenario.fake_sync()  # neutralize the real source-sync scheduler
+    update_scenario.fake_checkupdates({"firefox": "131.0-1"})
+    update_scenario.run(
+        _make_args(offline=False),
+        installed={"firefox": "130.0-1"}, foreign={},
     )
-
-    actions = [r.action for r in results]
-    assert actions == ["NEEDS_PACMAN_UPGRADE"]
-    # Fast path: no PKGBUILD parse for pacman-class entries.
-    parse_mock.assert_not_called()
-    # The bulk pacman -Syu should fire exactly once.
-    syu_calls = [c for c in pacman_calls
-                 if isinstance(c, list) and "pacman" in c and "-Syu" in c]
-    assert len(syu_calls) == 1
+    combined = "".join(capsys.readouterr())
+    assert "1 need pacman upgrade" in combined
+    # Pacman fast path: deferred to one bulk -Syu, no source build.
+    assert update_scenario.builds == []
+    assert _syu_fired(update_scenario)
 
 
-def test_repo_pacman_class_up_to_date_when_not_in_checkupdates(tmp_path):
-    """repo_mode=profiled + no override + nothing in checkupdates → UP_TO_DATE, no pacman -Syu."""
-    pacman_calls: list = []
-
-    def trace_subprocess(*args, **kwargs):
-        pacman_calls.append(args[0] if args else kwargs.get("args"))
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    results = _run_profiled_repo_update(
-        tmp_path, "firefox", "131.0-1",
-        checkupdates_result={},  # No upgrades pending
-        pacman_run_mock=trace_subprocess,
+def test_repo_pacman_class_up_to_date_when_not_in_checkupdates(update_scenario, capsys):
+    """repo_mode=profiled + nothing pending in checkupdates → UP_TO_DATE, no -Syu."""
+    update_scenario.set_repo_mode("profiled")
+    update_scenario.fake_sync()
+    update_scenario.fake_checkupdates({})  # ran, nothing pending
+    update_scenario.run(
+        _make_args(offline=False),
+        installed={"firefox": "131.0-1"}, foreign={},
     )
-
-    actions = [r.action for r in results]
-    assert actions == ["UP_TO_DATE"]
-    # No upgrade pending → no pacman -Syu invocation.
-    syu_calls = [c for c in pacman_calls
-                 if isinstance(c, list) and "pacman" in c and "-Syu" in c]
-    assert syu_calls == []
+    combined = "".join(capsys.readouterr())
+    assert "1 up to date" in combined
+    assert not _syu_fired(update_scenario)
 
 
-def test_repo_pacman_class_skipped_when_checkupdates_missing(tmp_path):
-    """repo_mode=profiled + checkupdates returns None (binary missing) → SKIPPED_NO_CHECKUPDATES."""
-    pacman_calls: list = []
-
-    def trace_subprocess(*args, **kwargs):
-        pacman_calls.append(args[0] if args else kwargs.get("args"))
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    results = _run_profiled_repo_update(
-        tmp_path, "firefox", "131.0-1",
-        checkupdates_result=None,  # pacman-contrib not installed
-        pacman_run_mock=trace_subprocess,
+def test_repo_pacman_class_skipped_when_checkupdates_missing(update_scenario, capsys):
+    """repo_mode=profiled + checkupdates errors (binary unavailable) →
+    SKIPPED_NO_CHECKUPDATES surfaces and nothing is upgraded."""
+    update_scenario.set_repo_mode("profiled")
+    update_scenario.fake_sync()
+    update_scenario.fake_checkupdates(None)  # fast path unavailable
+    update_scenario.run(
+        _make_args(offline=False, verbose=1),
+        installed={"firefox": "131.0-1"}, foreign={},
     )
-
-    actions = [r.action for r in results]
-    assert actions == ["SKIPPED_NO_CHECKUPDATES"]
-    # No -Syu dispatched because no NEEDS_PACMAN_UPGRADE entry exists.
-    syu_calls = [c for c in pacman_calls
-                 if isinstance(c, list) and "pacman" in c and "-Syu" in c]
-    assert syu_calls == []
+    combined = "".join(capsys.readouterr())
+    assert "skipped (no checkupdates)" in combined
+    assert not _syu_fired(update_scenario)
 
 
-def test_repo_source_class_still_goes_through_pkgbuild_parse(tmp_path):
-    """repo_mode=profiled + override (pkgbuild_patch=True) → source-build path, NOT pacman fast path."""
-    parse_mock = MagicMock(return_value={
-        "globals": {"pkgname": "llvm", "pkgver": "20.1.0", "pkgrel": "1", "epoch": "0"},
-    })
-
-    results = _run_profiled_repo_update(
-        tmp_path, "llvm", "20.1.0-1",
-        override={"name": "llvm", "source": "repo", "pkgbuild_patch": True},
-        # Should be ignored because override pulls us through the source path.
-        checkupdates_result={"llvm": "20.2.0-1"},
-        parse_pkgbuild_mock=parse_mock,
-        args_extra={"dry_run": True},  # stop before actual build
+def test_repo_source_class_still_goes_through_pkgbuild_parse(update_scenario, capsys):
+    """repo_mode=profiled + a behavior-changing override (pkgbuild_patch) →
+    source path (real PKGBUILD parse + vercmp), NOT the pacman fast path:
+    checkupdates is never consulted for a source-class package."""
+    update_scenario.set_repo_mode("profiled")
+    update_scenario.add_override("firefox", source="repo", pkgbuild_patch=True)
+    update_scenario.add_pkg("firefox", "pkgname=firefox\npkgver=131.0\npkgrel=1\n")
+    update_scenario.fake_sync()
+    # Programmed but must be ignored — the override forces the source path.
+    update_scenario.fake_checkupdates({"firefox": "132.0-1"})
+    update_scenario.run(
+        _make_args(offline=False, dry_run=True),
+        installed={"firefox": "131.0-1"}, foreign={},
     )
-
-    actions = [r.action for r in results]
-    # PKGBUILD parsed → vercmp says equal → UP_TO_DATE (not NEEDS_PACMAN_UPGRADE)
-    assert actions == ["UP_TO_DATE"]
-    parse_mock.assert_called()
-
-
-def test_offline_skips_checkupdates_call(tmp_path):
-    """--offline → checkupdates is not invoked; pacman-class entries report UP_TO_DATE."""
-    overrides = ({"repo_mode": "profiled"}, {})
-    results: list = []
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"firefox": "131.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update._sync_sources", return_value={}),
-        patch("sysforge.update.checkupdates_map") as mock_cu,
-        patch("sysforge.update.collect_llvm_state") as mock_llvm,
-    ):
-        mock_llvm.return_value = MagicMock(states=[])
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args(offline=True))
-
-    mock_cu.assert_not_called()
+    combined = "".join(capsys.readouterr())
+    # Real parse + vercmp say equal → up to date, and no pacman fast path.
+    assert "1 up to date" in combined
+    assert not _checkupdates_called(update_scenario)
+    assert not _syu_fired(update_scenario)
 
 
-def test_default_mode_does_not_call_checkupdates(tmp_path):
-    """repo_mode unset (default = pacman) → no pacman-class entries, no checkupdates call."""
-    overrides = ({}, {})  # no repo_mode key, no overrides
+def test_offline_skips_checkupdates_call(update_scenario, capsys):
+    """--offline → checkupdates is never invoked even in profiled repo mode."""
+    update_scenario.set_repo_mode("profiled")
+    update_scenario.fake_sync()
+    update_scenario.fake_checkupdates({"firefox": "131.0-1"})
+    update_scenario.run(
+        _make_args(offline=True),
+        installed={"firefox": "130.0-1"}, foreign={},
+    )
+    assert not _checkupdates_called(update_scenario)
+    assert not _syu_fired(update_scenario)
 
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"firefox": "131.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update.checkupdates_map") as mock_cu,
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-        with patch("sysforge.update._print_summary"):
-            cmd_update(_make_args())
 
-    mock_cu.assert_not_called()
+def test_default_mode_does_not_call_checkupdates(update_scenario):
+    """repo_mode unset (default pacman) → no pacman-class entries in scope, so
+    checkupdates is never invoked."""
+    update_scenario.fake_sync()
+    update_scenario.fake_checkupdates({"firefox": "131.0-1"})
+    update_scenario.run(
+        _make_args(offline=False),
+        installed={"firefox": "131.0-1"}, foreign={},
+    )
+    assert not _checkupdates_called(update_scenario)
 
 
 # ---------------------------------------------------------------------------
