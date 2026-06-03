@@ -109,18 +109,57 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
     src_root.mkdir()
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
-    (cfg_dir / "sysforge.toml").write_text(f'[paths]\npkgbuild_src_dir = "{src_root}"\n')
-    (cfg_dir / "packages.toml").write_text("")
-    monkeypatch.setenv("SYSFORGE_CONFIG_DIR", str(cfg_dir))
+    # Real config files steered through the genuine CLI seams (--profile-conf /
+    # --packages) so the production load_config / _load_overrides run against
+    # them. The frozen CONFIG_PATHS/PACKAGES_PATH constants (captured at import)
+    # can't be redirected by env, so injecting explicit paths is the only
+    # deterministic seam — and it's the real one a user drives. The profile is a
+    # copy of the test default with pkgbuild_src_dir repointed at our temp src
+    # root; packages.toml is empty (no overrides).
+    import re as _re
+    _test_data = Path(__file__).parent / "data"
+    _profiles_src = (_test_data / "etc/sysforge/profiles.toml").read_text()
+    _profiles_src = _re.sub(
+        r'(?m)^\s*pkgbuild_src_dir\s*=.*$',
+        f'pkgbuild_src_dir = "{src_root}"',
+        _profiles_src,
+    )
+    profiles_path = cfg_dir / "profiles.toml"
+    profiles_path.write_text(_profiles_src)
+    packages_path = cfg_dir / "packages.toml"
+    packages_path.write_text("")
 
     # The build is the true external these tests observe. build_core lazily
     # re-imports makepkg_wrapper.run at call time, so patching the module
     # attribute intercepts it; returning None means "no artifact" so no install.
+    #
+    # ``build_behaviors`` lets a test attach a per-pkgbase side effect to the
+    # faked build (raise AlreadyBuilt, or "produce" artifacts on disk) so the
+    # real install path in build_core runs against observable state instead of
+    # patched-out internals. The pkgbase is recovered from the PKGBUILD's parent
+    # dir name (the harness lays every package out as ``src_root/<pkgbase>``).
     builds: list = []
-    monkeypatch.setattr(_mw, "run", lambda *a, **k: builds.append((a, k)))
+    build_behaviors: dict = {}
+
+    def _fake_build(*a, **k):
+        builds.append((a, k))
+        pkgbuild_path = a[0] if a else k.get("pkgbuild_path")
+        pkgbase = Path(pkgbuild_path).parent.name if pkgbuild_path else None
+        behavior = build_behaviors.get(pkgbase)
+        if behavior is not None:
+            behavior()
+
+    monkeypatch.setattr(_mw, "run", _fake_build)
     # vercmp is a pure, safe binary; let the real version comparison run so the
     # rebuild decision is genuinely exercised.
     fake_run.passthrough("vercmp")
+
+    # Neutralize the host's real /etc/makepkg.conf so get_pkgdest() is None by
+    # default (the build then searches each PKGBUILD's own dir). use_pkgdest()
+    # overrides this to point PKGDEST at a temp dir. Without this, tests would
+    # non-deterministically pick up the developer machine's actual PKGDEST.
+    monkeypatch.setattr(
+        "sysforge.primitives.config.parse_system_makepkg_conf", lambda: {})
 
     class _Scenario:
         def __init__(self):
@@ -128,6 +167,7 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
             self.state_dir = state_dir
             self.builds = builds
             self.fake_run = fake_run  # .commands exposes every emitted argv
+            self.pkgdest = None
 
         def add_pkg(self, pkgbase, body):
             d = src_root / pkgbase
@@ -142,6 +182,78 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
             bs.record(pkgname, pkgver, pkgrel, epoch, base,
                       src_root / base, build_mode="profiled", **kw)
             bs.save()
+
+        def use_pkgdest(self):
+            """Point the real get_pkgdest() at a temp PKGDEST dir.
+
+            Fakes the genuine external (the system makepkg.conf) at
+            ``parse_system_makepkg_conf`` rather than patching update's
+            ``get_pkgdest`` binding, so the real PKGDEST resolution runs.
+            """
+            pd = tmp_path / "pkgdest"
+            pd.mkdir(exist_ok=True)
+            self.pkgdest = pd
+            monkeypatch.setattr(
+                "sysforge.primitives.config.parse_system_makepkg_conf",
+                lambda: {"PKGDEST": str(pd)},
+            )
+            return pd
+
+        def add_artifact(self, filename, pkgname, *, in_dir=None):
+            """Place a pre-built ``.pkg.tar`` artifact and teach the install
+            path to read its pkgname.
+
+            ``read_pkgname_from_file`` shells ``bsdtar -xOqf <path> .PKGINFO``;
+            registering a fake_run response keyed on the file path returns the
+            embedded pkgname so ``filter_pkgs_to_installed`` resolves it without
+            a real archive. Defaults to the active PKGDEST.
+            """
+            target = Path(in_dir) if in_dir else self.pkgdest
+            assert target is not None, "call use_pkgdest() or pass in_dir="
+            path = target / filename
+            path.touch()
+            fake_run.respond(["bsdtar", "-xOqf", str(path)],
+                             stdout=f"pkgname = {pkgname}\n")
+            return path
+
+        def build_raises_already_built(self, pkgbase):
+            """Make the faked build for ``pkgbase`` raise AlreadyBuilt, exercising
+            build_core's existing-artifact recovery path."""
+            from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+            pkgbuild = src_root / pkgbase / "PKGBUILD"
+
+            def _raise():
+                raise AlreadyBuilt(pkgbuild)
+
+            build_behaviors[pkgbase] = _raise
+
+        def build_produces(self, pkgbase, artifacts, *, in_dir=None):
+            """Make the faked build emit ``artifacts`` ({filename: pkgname}) on
+            disk with a fresh mtime so snapshot_pkg_dir picks them up, and
+            register their pkgname reads for the install filter."""
+            target = Path(in_dir) if in_dir else (self.pkgdest or src_root / pkgbase)
+
+            def _produce():
+                import time
+                time.sleep(0.01)  # ensure mtime >= build_start
+                for fn in artifacts:
+                    (target / fn).touch()
+
+            for fn, pn in artifacts.items():
+                fake_run.respond(["bsdtar", "-xOqf", str(target / fn)],
+                                 stdout=f"pkgname = {pn}\n")
+            build_behaviors[pkgbase] = _produce
+
+        def installed_pkg_files(self):
+            """Filenames passed to the final ``pacman -U`` install transaction(s)."""
+            calls = []
+            for cmd in fake_run.commands:
+                if "pacman -U" in cmd:
+                    calls.append([
+                        Path(tok).name for tok in cmd.split()
+                        if ".pkg.tar" in tok
+                    ])
+            return calls
 
         def fake_vcs_pkgver(self, pkgname, version, arch="x86_64"):
             # evaluate_vcs_pkgver runs `makepkg -od ...` then
@@ -187,6 +299,12 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
 
         def run(self, args, *, installed, foreign=None):
             foreign = foreign or {}
+            # Steer the real config loaders at the harness's on-disk config
+            # unless the test supplied its own paths.
+            if not getattr(args, "profile_conf", None):
+                args.profile_conf = str(profiles_path)
+            if not getattr(args, "packages", None):
+                args.packages = str(packages_path)
             setattr(args, "no_llvm_preflight", getattr(args, "no_llvm_preflight", True))
             fake_run.respond(["pacman", "-Qm"],
                              stdout="".join(f"{n} {v}\n" for n, v in foreign.items()))
@@ -817,8 +935,11 @@ def test_pull_failure_continues_to_next_package(update_scenario, capsys):
     # htop's sync failure surfaces (PULL_FAILED) ...
     assert "git fetch failed" in combined
     assert "1 pull failed" in combined
-    # ... and the run continues through neovim to completion (not aborted).
-    assert "Update complete" in combined
+    # ... and the run is NOT aborted by it: neovim is still version-checked
+    # (counted up to date) and the run reaches a clean finish. Both packages
+    # are at the installed version, so there is nothing to rebuild.
+    assert "1 up to date" in combined
+    assert "Nothing to rebuild" in combined
 
 
 # ---------------------------------------------------------------------------
@@ -857,155 +978,65 @@ def test_get_foreign_packages_empty_output():
 # sub-packages when only 2 were installed, silently adding 14 new packages.
 # ---------------------------------------------------------------------------
 
-def test_already_built_installs_existing_artifact(tmp_path):
+def test_already_built_installs_existing_artifact(update_scenario):
     """makepkg AlreadyBuilt → locate existing .pkg.tar and install, not fail.
 
     Regression: makepkg's "A package has already been built" was treated as a
     build failure even though PKGDEST already held the right artifact.
     """
-    from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.use_pkgdest()
+    update_scenario.add_artifact("htop-3.4.1-1-x86_64.pkg.tar.zst", "htop")
+    update_scenario.build_raises_already_built("htop")
 
-    pkg_dir = tmp_path / "htop"
-    pkg_dir.mkdir()
-    pkgbuild = pkg_dir / "PKGBUILD"
-    pkgbuild.write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.run(
+        _make_args(),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
 
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    existing_pkg = pkgdest / "htop-3.4.1-1-x86_64.pkg.tar.zst"
-    existing_pkg.touch()
-
-    state_data = {
-        "htop": {
-            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "htop", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args()
-    parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"htop": {"name": "htop", "source": "aur"}})
-    installed = {"htop": "3.3.0-1"}
-
-    def fake_build_run(*a, **kw):
-        raise AlreadyBuilt(pkgbuild)
-
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.build_core.collect_makedeps", return_value=[]),
-        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.build_core.snapshot_pkg_dir", return_value=frozenset()),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert install_calls == [["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
+    assert update_scenario.installed_pkg_files() == [
+        ["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
 
 
-def test_split_pkgbase_only_installs_installed_subpkgnames(tmp_path):
-    pkg_dir = tmp_path / "pipewire-full-git"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=pipewire-full-git\n")
-
-    # Build emits 4 pkg files for 4 split pkgnames; only 2 are installed.
-    built_files = [
-        pkg_dir / "pipewire-full-git-1.0-1-x86_64.pkg.tar.zst",
-        pkg_dir / "pipewire-full-ffmpeg-git-1.0-1-x86_64.pkg.tar.zst",
-        pkg_dir / "pipewire-full-vulkan-git-1.0-1-x86_64.pkg.tar.zst",
-        pkg_dir / "libpipewire-full-git-1.0-1-x86_64.pkg.tar.zst",
-    ]
-
-    def fake_build_run(*a, **kw):
-        # Stamp mtime after build_start so snapshot_pkg_dir's mtime filter keeps them.
-        import time
-        time.sleep(0.01)
-        for f in built_files:
-            f.touch()
-
-    state_data = {
-        "pipewire-full-ffmpeg-git": {
-            "pkgver": "1.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "pipewire-full-git", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        },
-        "pipewire-full-vulkan-git": {
-            "pkgver": "1.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "pipewire-full-git", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        },
-    }
-    args = _make_args(devel=True)
-    parsed = {"globals": {"pkgname": "pipewire-full-git", "pkgver": "1.0", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {
-        "pipewire-full-ffmpeg-git": {"name": "pipewire-full-ffmpeg-git", "source": "aur"},
-        "pipewire-full-vulkan-git": {"name": "pipewire-full-vulkan-git", "source": "aur"},
+def test_split_pkgbase_only_installs_installed_subpkgnames(update_scenario):
+    """A split-pkgbase build emits a .pkg.tar per sub-package, but only the
+    sub-packages the user already has installed get queued for install."""
+    update_scenario.add_pkg(
+        "pipewire-full-git",
+        "pkgname=pipewire-full-git\npkgver=1.0\npkgrel=1\n",
+    )
+    # --devel resolves a newer VCS version, so the pkgbase rebuilds.
+    update_scenario.fake_vcs_pkgver("pipewire-full-git", "1.0.r1.gffffff-1")
+    update_scenario.use_pkgdest()
+    # Both installed sub-packages are recorded under the shared pkgbase.
+    update_scenario.record("pipewire-full-ffmpeg-git", "1.0", "1",
+                           pkgbase="pipewire-full-git")
+    update_scenario.record("pipewire-full-vulkan-git", "1.0", "1",
+                           pkgbase="pipewire-full-git")
+    # The build emits all four split artifacts into PKGDEST.
+    update_scenario.build_produces("pipewire-full-git", {
+        "pipewire-full-git-1.0-1-x86_64.pkg.tar.zst": "pipewire-full-git",
+        "pipewire-full-ffmpeg-git-1.0-1-x86_64.pkg.tar.zst": "pipewire-full-ffmpeg-git",
+        "pipewire-full-vulkan-git-1.0-1-x86_64.pkg.tar.zst": "pipewire-full-vulkan-git",
+        "libpipewire-full-git-1.0-1-x86_64.pkg.tar.zst": "libpipewire-full-git",
     })
+
     installed = {
         "pipewire-full-ffmpeg-git": "1.0-1",
         "pipewire-full-vulkan-git": "1.0-1",
     }
+    update_scenario.run(
+        _make_args(devel=True), installed=installed, foreign=installed,
+    )
 
-    def fake_read_pkgname(path):
-        stem = Path(path).name
-        for pn in ["pipewire-full-ffmpeg-git", "pipewire-full-vulkan-git",
-                   "libpipewire-full-git", "pipewire-full-git"]:
-            if stem.startswith(pn + "-"):
-                return pn
-        return None
-
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.build_core.collect_makedeps", return_value=[]),
-        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
-        patch("sysforge.update.get_pkgdest", return_value=None),
-        patch("sysforge.build_core.snapshot_pkg_dir", return_value=frozenset(built_files)),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", side_effect=fake_read_pkgname),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
-        patch("sysforge.update.evaluate_vcs_pkgver", return_value="1.0.r1.gffffff-1"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert len(install_calls) == 1
-    installed_names = install_calls[0]
+    calls = update_scenario.installed_pkg_files()
+    assert len(calls) == 1
+    installed_names = calls[0]
     assert set(installed_names) == {
         "pipewire-full-ffmpeg-git-1.0-1-x86_64.pkg.tar.zst",
         "pipewire-full-vulkan-git-1.0-1-x86_64.pkg.tar.zst",
     }
-    # Crucially, the un-installed split sub-packages must NOT be in the install set.
+    # Crucially, the un-installed split sub-packages must NOT be installed.
     assert "libpipewire-full-git-1.0-1-x86_64.pkg.tar.zst" not in installed_names
     assert "pipewire-full-git-1.0-1-x86_64.pkg.tar.zst" not in installed_names
 
@@ -1014,110 +1045,39 @@ def test_split_pkgbase_only_installs_installed_subpkgnames(tmp_path):
 # --install-only: install pre-built artifacts without re-running makepkg.
 # ---------------------------------------------------------------------------
 
-def test_install_only_installs_existing_artifact_without_building(tmp_path):
-    """--install-only: locate the artifact in PKGDEST and install it; never call build_run."""
-    pkg_dir = tmp_path / "htop"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+def test_install_only_installs_existing_artifact_without_building(update_scenario):
+    """--install-only: locate the artifact in PKGDEST and install it; never build."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.use_pkgdest()
+    update_scenario.add_artifact("htop-3.4.1-1-x86_64.pkg.tar.zst", "htop")
 
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    existing_pkg = pkgdest / "htop-3.4.1-1-x86_64.pkg.tar.zst"
-    existing_pkg.touch()
+    update_scenario.run(
+        _make_args(install_only=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
 
-    state_data = {
-        "htop": {
-            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "htop", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args(install_only=True)
-    parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"htop": {"name": "htop", "source": "aur"}})
-    installed = {"htop": "3.3.0-1"}
-
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    build_calls = []
-
-    def fake_build_run(*a, **kw):
-        build_calls.append(a)
-        raise AssertionError("build_run must not be called with --install-only")
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert build_calls == []
-    assert install_calls == [["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
+    # --install-only must never invoke the build seam.
+    assert update_scenario.builds == []
+    assert update_scenario.installed_pkg_files() == [
+        ["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
 
 
-def test_install_only_skips_when_artifact_missing(tmp_path):
-    """--install-only: PKGBUILD newer than installed but no artifact in PKGDEST → skip, no install."""
-    pkg_dir = tmp_path / "htop"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+def test_install_only_skips_when_artifact_missing(update_scenario):
+    """--install-only: PKGBUILD newer than installed but no matching artifact in
+    PKGDEST → skip, no install."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.use_pkgdest()
+    # Only an older artifact exists; nothing matches the 3.4.1 build.
+    update_scenario.add_artifact("htop-3.3.0-1-x86_64.pkg.tar.zst", "htop")
 
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    # Note: NO matching artifact at 3.4.1; only an older one.
-    (pkgdest / "htop-3.3.0-1-x86_64.pkg.tar.zst").touch()
+    update_scenario.run(
+        _make_args(install_only=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
 
-    state_data = {
-        "htop": {
-            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "htop", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args(install_only=True)
-    parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"htop": {"name": "htop", "source": "aur"}})
-    installed = {"htop": "3.3.0-1"}
-
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    # Nothing eligible → no install call at all.
-    assert install_calls == []
+    assert update_scenario.builds == []
+    # Nothing eligible → no install transaction at all.
+    assert update_scenario.installed_pkg_files() == []
 
 
 def test_install_only_rejects_incompatible_flags():
@@ -1139,178 +1099,74 @@ def test_install_only_rejects_incompatible_flags():
 # lookup and pick the newest by vercmp.
 # ---------------------------------------------------------------------------
 
-def test_already_built_vcs_falls_back_to_newest_pkgname_match(tmp_path):
+def test_already_built_vcs_falls_back_to_newest_pkgname_match(update_scenario):
     """VCS package: AlreadyBuilt → static pkgbuild_ver doesn't match the
     bumped filename (0.1.0-1 vs 0.1.0.r45.g1234567-1); helper must fall
     back to a pkgname-only glob and queue the newest artifact for install.
     """
-    from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "0.1.0.r45.g1234567-1")
+    update_scenario.use_pkgdest()
+    update_scenario.add_artifact(
+        "neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst", "neovim-git")
+    update_scenario.build_raises_already_built("neovim-git")
 
-    pkg_dir = tmp_path / "neovim-git"
-    pkg_dir.mkdir()
-    pkgbuild = pkg_dir / "PKGBUILD"
-    pkgbuild.write_text("pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
-
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    bumped_pkg = pkgdest / "neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"
-    bumped_pkg.touch()
-
-    state_data = {
-        "neovim-git": {
-            "pkgver": "0.1.0.r10.gaaaaaaa", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "neovim-git", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args(devel=True)
-    parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "0.1.0", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"neovim-git": {"name": "neovim-git", "source": "aur"}})
     installed = {"neovim-git": "0.1.0.r10.gaaaaaaa-1"}
+    update_scenario.run(
+        _make_args(devel=True), installed=installed, foreign=installed,
+    )
 
-    def fake_build_run(*a, **kw):
-        raise AlreadyBuilt(pkgbuild)
-
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.build_core.collect_makedeps", return_value=[]),
-        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.build_core.snapshot_pkg_dir", return_value=frozenset()),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="0.1.0.r45.g1234567-1"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert install_calls == [["neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"]]
+    assert update_scenario.installed_pkg_files() == [
+        ["neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"]]
 
 
-def test_install_only_vcs_picks_newest_artifact_in_pkgdest(tmp_path):
+def test_install_only_vcs_picks_newest_artifact_in_pkgdest(update_scenario):
     """--install-only on a VCS package: static pkgbuild_ver mismatches the
     artifact filename; the helper must fall back to a pkgname-only glob
     and select the newest by vercmp, while excluding artifacts not strictly
     newer than installed.
     """
-    pkg_dir = tmp_path / "neovim-git"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "0.1.0.r45.g1234567-1")
+    update_scenario.use_pkgdest()
+    # Two artifacts: an older one (== installed, skip) and a newer target.
+    update_scenario.add_artifact(
+        "neovim-git-0.1.0.r10.gaaaaaaa-1-x86_64.pkg.tar.zst", "neovim-git")
+    update_scenario.add_artifact(
+        "neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst", "neovim-git")
 
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    # Two artifacts in PKGDEST: an older one (== installed, skip) and a
-    # newer one (the intended target).
-    (pkgdest / "neovim-git-0.1.0.r10.gaaaaaaa-1-x86_64.pkg.tar.zst").touch()
-    newest = pkgdest / "neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"
-    newest.touch()
-
-    state_data = {
-        "neovim-git": {
-            "pkgver": "0.1.0.r10.gaaaaaaa", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "neovim-git", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args(install_only=True, devel=True)
-    parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "0.1.0", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"neovim-git": {"name": "neovim-git", "source": "aur"}})
     installed = {"neovim-git": "0.1.0.r10.gaaaaaaa-1"}
+    update_scenario.run(
+        _make_args(install_only=True, devel=True),
+        installed=installed, foreign=installed,
+    )
 
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="0.1.0.r45.g1234567-1"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert install_calls == [["neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"]]
+    assert update_scenario.builds == []
+    assert update_scenario.installed_pkg_files() == [
+        ["neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"]]
 
 
-def test_install_only_vcs_skips_when_only_older_artifacts_present(tmp_path):
+def test_install_only_vcs_skips_when_only_older_artifacts_present(update_scenario):
     """--install-only on a VCS package: only an artifact == installed exists,
     so the helper's installed_ver guard rejects it and nothing installs."""
-    pkg_dir = tmp_path / "neovim-git"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
-
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "0.1.0.r45.g1234567-1")
+    update_scenario.use_pkgdest()
     # Only an artifact at the same version as installed → not strictly newer.
-    (pkgdest / "neovim-git-0.1.0.r10.gaaaaaaa-1-x86_64.pkg.tar.zst").touch()
+    update_scenario.add_artifact(
+        "neovim-git-0.1.0.r10.gaaaaaaa-1-x86_64.pkg.tar.zst", "neovim-git")
 
-    state_data = {
-        "neovim-git": {
-            "pkgver": "0.1.0.r10.gaaaaaaa", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "neovim-git", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args(install_only=True, devel=True)
-    parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "0.1.0", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"neovim-git": {"name": "neovim-git", "source": "aur"}})
     installed = {"neovim-git": "0.1.0.r10.gaaaaaaa-1"}
+    update_scenario.run(
+        _make_args(install_only=True, devel=True),
+        installed=installed, foreign=installed,
+    )
 
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="0.1.0.r45.g1234567-1"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert install_calls == []
+    assert update_scenario.builds == []
+    assert update_scenario.installed_pkg_files() == []
 
 
 # ---------------------------------------------------------------------------
