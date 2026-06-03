@@ -349,3 +349,149 @@ def _ctx(patches):
         for p in patches:
             stack.enter_context(p)
         yield
+
+
+# ---------------------------------------------------------------------------
+# make_build_options — shared BuildOptions factory for pipeline stages (P1b)
+# ---------------------------------------------------------------------------
+#
+# These lock in field-for-field parity with the BuildOptions each stage used to
+# hand-assemble, so the factory extraction stays behavior-preserving and a
+# future field move is caught here rather than at runtime.
+
+from sysforge.build_core import make_build_options  # noqa: E402
+from sysforge.pipeline.stages.base import RunOptions  # noqa: E402
+
+
+def _run_options(**kw):
+    """A RunOptions with distinctive non-default values for the four fields the
+    factory maps, so a dropped/renamed mapping shows up as a wrong value."""
+    base = dict(
+        no_pkg_logs=True,            # → pkg_log=False
+        persist_log=True,
+        state_dir=Path("/tmp/sf-state-parity"),
+        abi_check=True,
+        log_dir=Path("/tmp/sf-logs"),
+    )
+    base.update(kw)
+    return RunOptions(**base)
+
+
+def test_make_build_options_kernel_parity():
+    opts = _run_options()
+    bo = make_build_options(
+        "kernel", opts,
+        log_dir=opts.log_dir,
+        profile_conf="prof.toml",
+        update=False,
+        interactive=True,
+        cc_override="/usr/bin/clang",
+        cxx_override="/usr/bin/clang++",
+        source="local",
+        toolchain_variant="pgo_llvm",
+    )
+    # Common mapping
+    assert bo.pkg_log is False          # not no_pkg_logs (True)
+    assert bo.persist_log is True
+    assert bo.state_dir == Path("/tmp/sf-state-parity")
+    assert bo.abi_check is True
+    # Kernel stage constants
+    assert bo.owner_stage == "kernel"
+    assert bo.no_install is True
+    # Per-call overrides
+    assert bo.update is False
+    assert bo.interactive is True
+    assert bo.cc_override == "/usr/bin/clang"
+    assert bo.source == "local"
+    assert bo.toolchain_variant == "pgo_llvm"
+    assert bo.log_dir == Path("/tmp/sf-logs")
+    assert bo.profile_conf == "prof.toml"
+
+
+def test_make_build_options_toolchain_parity():
+    opts = _run_options()
+    bo = make_build_options(
+        "toolchain", opts,
+        extra_flags=["-x"],
+        compiler_flags_extra="-O3",
+        linker_flags_extra="-fuse-ld=lld",
+        cc_override="cc",
+        cxx_override="cxx",
+        init_session=False,
+        update=True,
+        strip_full_lto=True,
+        extra_env={"K": "V"},
+        strip_flags=frozenset({"-i"}),
+        toolchain_variant="pgo_llvm",
+        owner_stage="toolchain",
+    )
+    assert bo.pkg_log is False
+    assert bo.persist_log is True
+    assert bo.state_dir == Path("/tmp/sf-state-parity")
+    assert bo.abi_check is True
+    # Toolchain stage constant
+    assert bo.pgo_managed is True
+    # Toolchain does NOT set log_dir / profile_conf / source / no_install —
+    # they must keep their BuildOptions defaults.
+    assert bo.log_dir is None
+    assert bo.profile_conf is None
+    assert bo.source is None
+    assert bo.no_install is False
+    # owner_stage override wins
+    assert bo.owner_stage == "toolchain"
+    assert bo.pgo_managed is True
+    assert bo.strip_full_lto is True
+    assert bo.extra_env == {"K": "V"}
+
+
+def test_make_build_options_packages_parity():
+    opts = _run_options()
+    bo = make_build_options(
+        "packages", opts,
+        log_dir=opts.log_dir,
+        profile_conf="p.toml",
+        update=True,
+        cc_override="cc",
+        cxx_override="cxx",
+        ld_override="ld",
+        source="aur",
+        toolchain_variant="gcc",
+    )
+    assert bo.pkg_log is False
+    assert bo.persist_log is True
+    assert bo.state_dir == Path("/tmp/sf-state-parity")
+    assert bo.abi_check is True
+    # packages has no stage constants — these stay default
+    assert bo.owner_stage is None
+    assert bo.no_install is False
+    assert bo.pgo_managed is False
+    assert bo.init_session is True      # not set → default
+    assert bo.ld_override == "ld"
+    assert bo.source == "aur"
+
+
+def test_make_build_options_override_wins_over_stage_default():
+    """An explicit override beats the stage constant (e.g. kernel building a
+    package it does install, or stamping a different owner)."""
+    opts = _run_options()
+    bo = make_build_options("kernel", opts, no_install=False, owner_stage="other")
+    assert bo.no_install is False
+    assert bo.owner_stage == "other"
+
+
+def test_make_build_options_abi_check_defaults_false_when_absent():
+    """A run-options object lacking abi_check degrades to False, not error."""
+    opts = SimpleNamespace(no_pkg_logs=False, persist_log=False, state_dir=None)
+    bo = make_build_options("packages", opts)
+    assert bo.abi_check is False
+    assert bo.pkg_log is True
+
+
+def test_make_build_options_unknown_stage_raises():
+    opts = _run_options()
+    try:
+        make_build_options("nonesuch", opts)
+    except ValueError as e:
+        assert "nonesuch" in str(e)
+    else:
+        raise AssertionError("expected ValueError for unknown stage")

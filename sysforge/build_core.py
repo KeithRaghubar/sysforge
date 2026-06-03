@@ -326,6 +326,56 @@ def install_built(built_pkg_files: list[Path]) -> tuple[list[Path], bool]:
 
 
 # ---------------------------------------------------------------------------
+# Shared BuildOptions factory for pipeline stages
+# ---------------------------------------------------------------------------
+
+# Constant BuildOptions fields per install-bearing pipeline stage. A stage
+# declares only the fields that are *always* the same for it; per-call values
+# (cc_override, update, source, toolchain_variant, extra_flags, …) are passed
+# as overrides to make_build_options(). Kernel's ``no_install=True`` is the
+# build/install split that lets Gate 2 audit the resolved config pre-install;
+# toolchain's ``pgo_managed=True`` marks its makepkg runs as PGO-orchestrated.
+_STAGE_BUILD_DEFAULTS: dict[str, dict] = {
+    "kernel": {"owner_stage": "kernel", "no_install": True},
+    "toolchain": {"pgo_managed": True},
+    "packages": {},
+}
+
+
+def make_build_options(stage: str, options, **overrides):
+    """Assemble a ``BuildOptions`` for a pipeline stage's makepkg invocation.
+
+    Maps the fields common to every stage's run-options object — ``no_pkg_logs``
+    → ``pkg_log``, plus ``persist_log`` / ``state_dir`` / ``abi_check`` — then
+    layers in the stage's constant defaults from ``_STAGE_BUILD_DEFAULTS`` and
+    finally the caller's per-call ``overrides`` (which win over both). Fields
+    that differ per stage or per package — ``profile_conf``, ``log_dir``,
+    ``update``, ``cc_override`` / ``cxx_override`` / ``ld_override``, ``source``,
+    ``toolchain_variant``, ``extra_flags``, … — are passed explicitly as
+    overrides by the caller; anything a stage omits keeps its ``BuildOptions``
+    default.
+
+    This centralizes the three install-bearing stages' (``kernel`` /
+    ``toolchain`` / ``packages``) hand-assembly so a stage-wide default lives in
+    exactly one place. ``abi_check`` is read via ``getattr`` so a run-options
+    object without the attribute degrades to ``False`` rather than raising.
+    """
+    from sysforge.primitives.makepkg_wrapper import BuildOptions
+
+    if stage not in _STAGE_BUILD_DEFAULTS:
+        raise ValueError(f"unknown build stage {stage!r}")
+    fields: dict = {
+        "pkg_log": not options.no_pkg_logs,
+        "persist_log": options.persist_log,
+        "state_dir": options.state_dir,
+        "abi_check": getattr(options, "abi_check", False),
+    }
+    fields.update(_STAGE_BUILD_DEFAULTS[stage])
+    fields.update(overrides)
+    return BuildOptions(**fields)
+
+
+# ---------------------------------------------------------------------------
 # Build + install
 # ---------------------------------------------------------------------------
 

@@ -104,7 +104,8 @@ from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
 from sysforge.primitives import toolchain_safety
 from sysforge.primitives.pacman import batch_install_pkgs, cached_pkg_files_for
-from sysforge.primitives.makepkg_wrapper import run as makepkg_run, BuildOptions
+from sysforge.primitives.makepkg_wrapper import run as makepkg_run
+from sysforge.build_core import make_build_options
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import lift_for_child
 from sysforge.primitives.stage_sentinel import sentinel_scope
@@ -577,22 +578,18 @@ def _build_pkg(
                 f"instrumentation sequence: {dropped}",
             )
     combined_flags = list(extra_flags or []) + user_flags
-    makepkg_run(pkgbuild_path, options=BuildOptions(
+    makepkg_run(pkgbuild_path, options=make_build_options(
+        "toolchain", options,
         extra_flags=combined_flags,
         compiler_flags_extra=compiler_flags_extra,
         linker_flags_extra=linker_flags_extra,
-        pkg_log=not options.no_pkg_logs,
-        persist_log=options.persist_log,
         cc_override=cc,
         cxx_override=cxx,
         init_session=init_session,
         update=not options.no_update,
         strip_full_lto=pgo_build,
         extra_env=pgo_env,
-        state_dir=options.state_dir,
-        abi_check=getattr(options, "abi_check", False),
         strip_flags=strip_flags,
-        pgo_managed=True,
         toolchain_variant=toolchain_variant,
         owner_stage=owner_stage,
     ))

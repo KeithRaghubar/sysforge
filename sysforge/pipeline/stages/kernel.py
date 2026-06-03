@@ -67,10 +67,10 @@ from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.paths import KERNEL_PATH
 from sysforge.primitives.makepkg_wrapper import (
     AlreadyBuilt,
-    BuildOptions,
     install_built_packages,
     run as makepkg_run,
 )
+from sysforge.build_core import make_build_options
 from sysforge.primitives.source_sync import (
     STATUS_DIVERGED,
     STATUS_FAILED,
@@ -1182,21 +1182,16 @@ class KernelStage(Stage):
             else:
                 _log.ui(f"Building kernel (no install): {pkgname} from {pkgbuild}")
                 try:
-                    makepkg_run(pkgbuild, options=BuildOptions(
-                        pkg_log=not options.no_pkg_logs,
-                        persist_log=options.persist_log,
+                    makepkg_run(pkgbuild, options=make_build_options(
+                        "kernel", options,
                         log_dir=options.log_dir,
                         profile_conf=getattr(options, "profile_conf", None) or config.get("profile_conf"),
                         update=(not options.no_update) and not synced,
                         interactive=interactive,
                         cc_override=cc,
                         cxx_override=cxx,
-                        abi_check=options.abi_check,
-                        state_dir=options.state_dir,
                         source=source,
-                        owner_stage="kernel",
                         toolchain_variant=variant if variant != "system" else None,
-                        no_install=True,
                     ))
                 except AlreadyBuilt:
                     _log.info(
