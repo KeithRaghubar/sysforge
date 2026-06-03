@@ -871,7 +871,7 @@ def test_cmd_doctor_suggest_renders_candidate_line(tmp_path, monkeypatch, capsys
 def test_cmd_doctor_suggest_no_candidate_line(tmp_path, monkeypatch, capsys):
     """
     Empty install candidate list — every plausible owner was filtered out
-    by the installed_names check (the bug Keith reported: doctor used to
+    by the installed_names check (the reported bug: doctor used to
     re-recommend installing already-installed packages). The user-facing
     line points at ldconfig instead of repeating the install suggestion.
     """

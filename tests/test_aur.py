@@ -1047,7 +1047,7 @@ def test_classify_ahead_only(tmp_path):
 def test_classify_diverged_upstream_only(tmp_path):
     """Upstream force-pushed; no local commits authored by local user.
 
-    The exact reproduction of Keith's LLVM workstation state.
+    The exact reproduction of an LLVM workstation state.
     """
     local = _seed_upstream_and_local(tmp_path, rewrite_upstream=True)
     state, n_local, n_upstream = classify_head_vs_upstream(local)
