@@ -14,6 +14,20 @@ from sysforge import log
 
 _flag_log = log.get_logger("FLAG")
 
+# makepkg's install flags. Used to detect when a build invocation will hand
+# the artifact to pacman -U. Both _invoke_with_retry (for sudo-timeout
+# recovery) and cli._cmd_build (for packages.toml auto-tracking) consult
+# this set. Kept in sync with pacman.BATCH_STRIP_FLAGS, which strips the
+# same flags during update/converge batch runs.
+INSTALL_FLAGS = frozenset({"-i", "--install"})
+
+# makepkg's dependency-sync flags. Stripped whenever sysforge has already
+# satisfied deps itself and must stop makepkg from invoking ``sudo pacman -S``:
+# the update/converge batch path (via pacman.BATCH_STRIP_FLAGS) pre-installs
+# repo makedeps in one shot, and the toolchain stage's staged-deps passes
+# satisfy ``llvm=<ver>`` from a stage prefix that isn't published anywhere.
+SYNC_FLAGS = frozenset({"--syncdeps", "-s"})
+
 
 def expand_makepkg_flags(flags_str) -> list:
     """

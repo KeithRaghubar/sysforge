@@ -104,7 +104,7 @@ from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
 from sysforge.primitives import toolchain_safety
 from sysforge.primitives.pacman import batch_install_pkgs, cached_pkg_files_for
-from sysforge.primitives.makepkg_wrapper import SYNC_FLAGS
+from sysforge.primitives.makepkg_flags import SYNC_FLAGS
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 from sysforge.build_core import make_build_options
 from sysforge.primitives.prompt import is_interactive, prompt_choice

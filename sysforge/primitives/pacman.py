@@ -35,7 +35,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.aur_resolve import _looks_unresolved, _strip_version
-from sysforge.primitives.makepkg_wrapper import INSTALL_FLAGS, SYNC_FLAGS
+from sysforge.primitives.makepkg_flags import INSTALL_FLAGS, SYNC_FLAGS
 
 _log = log.get_logger("PACMAN")
 

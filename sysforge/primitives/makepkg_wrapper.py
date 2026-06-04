@@ -45,6 +45,7 @@ from sysforge.primitives.makepkg_pgo import (
     _try_load_toml,
     PGOBuildSkipped,
 )
+from sysforge.primitives.makepkg_flags import INSTALL_FLAGS
 from sysforge.primitives.makepkg_flags import expand_makepkg_flags  # noqa: F401  (re-export)
 from sysforge.primitives.pkgbuild_patcher import (
     apply_patch_pkgbuild,
@@ -104,20 +105,6 @@ from sysforge.primitives.profile import (
 # ---------------------------------------------------------------------------
 # Flag string utilities
 # ---------------------------------------------------------------------------
-
-# makepkg's install flags. Used to detect when a build invocation will hand
-# the artifact to pacman -U. Both _invoke_with_retry (for sudo-timeout
-# recovery) and cli._cmd_build (for packages.toml auto-tracking) consult
-# this set. Kept in sync with pacman.BATCH_STRIP_FLAGS, which strips the
-# same flags during update/converge batch runs.
-INSTALL_FLAGS = frozenset({"-i", "--install"})
-
-# makepkg's dependency-sync flags. Stripped whenever sysforge has already
-# satisfied deps itself and must stop makepkg from invoking ``sudo pacman -S``:
-# the update/converge batch path (via pacman.BATCH_STRIP_FLAGS) pre-installs
-# repo makedeps in one shot, and the toolchain stage's staged-deps passes
-# satisfy ``llvm=<ver>`` from a stage prefix that isn't published anywhere.
-SYNC_FLAGS = frozenset({"--syncdeps", "-s"})
 
 # Heartbeat cadence for invoke_makepkg's pty loop. Ninja attached to a pty
 # uses \r to redraw a single status line in place and rarely emits \n during
