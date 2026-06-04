@@ -35,6 +35,7 @@ import sysforge.primitives.dep_analysis as dep_analysis
 import sysforge.primitives.failure as failure
 import sysforge.primitives.makepkg_conf as makepkg_conf
 import sysforge.primitives.makepkg_env as makepkg_env
+import sysforge.primitives.makepkg_invoke as makepkg_invoke
 import sysforge.primitives.makepkg_flags as makepkg_flags
 import sysforge.primitives.makepkg_wrapper as makepkg_wrapper
 import sysforge.primitives.pacman as pacman
@@ -97,25 +98,34 @@ def test_makepkg_conf_tags():
     assert makepkg_conf._kernel_log._tag == "[KERNEL]"
 
 
+def test_makepkg_invoke_tags():
+    # P2b.5: invoke_makepkg / _invoke_with_retry relocated to makepkg_invoke
+    # (owns [MAKEPKG]). Still emits [BUILD]/[ENV]/[FLAG] inline until collapse.
+    assert makepkg_invoke._makepkg_log._tag == "[MAKEPKG]"
+    assert makepkg_invoke._build_log._tag   == "[BUILD]"
+    assert makepkg_invoke._env_log._tag     == "[ENV]"
+    assert makepkg_invoke._flag_log._tag    == "[FLAG]"
+
+
 def test_makepkg_wrapper_tags():
-    # ABI / CACHE / PATCH emission relocated to abi_check / cache_probe /
-    # pkgbuild_patcher (P2a); CONF relocated to makepkg_conf (P2b.4). The
-    # remaining tags are the orchestrator's own + the not-yet-split sites.
+    # ABI / CACHE / PATCH relocated (P2a); CONF -> makepkg_conf (P2b.4);
+    # MAKEPKG -> makepkg_invoke (P2b.5). The remaining tags are the
+    # orchestrator's own + the not-yet-split sites.
     assert makepkg_wrapper._build_log._tag   == "[BUILD]"
     assert makepkg_wrapper._env_log._tag     == "[ENV]"
     assert makepkg_wrapper._flag_log._tag    == "[FLAG]"
     assert makepkg_wrapper._git_log._tag     == "[GIT]"
     assert makepkg_wrapper._kernel_log._tag  == "[KERNEL]"
-    assert makepkg_wrapper._makepkg_log._tag == "[MAKEPKG]"
     assert makepkg_wrapper._pgo_log._tag     == "[PGO]"
 
 
 def test_makepkg_wrapper_relocated_tags_gone():
     # Guard the relocations: relocated loggers must not reappear in the orchestrator.
-    assert not hasattr(makepkg_wrapper, "_abi_log")    # P2a
-    assert not hasattr(makepkg_wrapper, "_cache_log")  # P2a
-    assert not hasattr(makepkg_wrapper, "_patch_log")  # P2a
-    assert not hasattr(makepkg_wrapper, "_conf_log")   # P2b.4
+    assert not hasattr(makepkg_wrapper, "_abi_log")     # P2a
+    assert not hasattr(makepkg_wrapper, "_cache_log")   # P2a
+    assert not hasattr(makepkg_wrapper, "_patch_log")   # P2a
+    assert not hasattr(makepkg_wrapper, "_conf_log")    # P2b.4
+    assert not hasattr(makepkg_wrapper, "_makepkg_log") # P2b.5
 
 
 def test_profile_tags():

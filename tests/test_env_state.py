@@ -44,11 +44,11 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sysforge.primitives.makepkg_wrapper import (
+from sysforge.primitives.makepkg_env import resolve_env_vars
+from sysforge.primitives.makepkg_invoke import (
     AlreadyBuilt,
     ToolchainMismatchError,
     invoke_makepkg,
-    resolve_env_vars,
 )
 
 
@@ -94,9 +94,9 @@ def _capture_invoke(pkgbuild_path, conf_path, resolved_profile, **kwargs):
     }
 
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+        with patch("sysforge.primitives.makepkg_invoke.subprocess.Popen",
                    side_effect=fake_popen):
-            with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+            with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                        side_effect=fake_run_with_pty):
                 invoke_makepkg(pkgbuild_path, conf_path, resolved_profile, **kwargs)
 
@@ -156,9 +156,9 @@ def _patch_makepkg(captured, *, lines=(), returncode=0):
     """Patch both subprocess.Popen (interactive branch) and run_with_pty
     (non-interactive branch). Whichever code path the invoke takes,
     `captured` ends up with cmd and env."""
-    with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+    with patch("sysforge.primitives.makepkg_invoke.subprocess.Popen",
                side_effect=_fake_popen_factory(captured)):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_fake_pty_factory(captured, lines=lines, returncode=returncode)):
             yield
 
@@ -360,7 +360,7 @@ def _capture_popen_kwargs(pkgbuild_path, conf_path, resolved_profile, **kwargs):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root", "USER": "testuser", "LANG": "C"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+        with patch("sysforge.primitives.makepkg_invoke.subprocess.Popen",
                    side_effect=fake_popen):
             invoke_makepkg(pkgbuild_path, conf_path, resolved_profile, **kwargs)
     return captured.get("kwargs", {})
@@ -396,9 +396,9 @@ def test_noninteractive_uses_pty(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root", "USER": "testuser", "LANG": "C"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=fake_pty):
-            with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen") as popen:
+            with patch("sysforge.primitives.makepkg_invoke.subprocess.Popen") as popen:
                 invoke_makepkg(pb, conf, {}, interactive=False)
                 assert not popen.called, "non-interactive must NOT call subprocess.Popen directly"
 
@@ -447,7 +447,7 @@ def test_toolchain_mismatch_raises_on_flto_thin_rejection(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 2)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -476,7 +476,7 @@ def test_toolchain_mismatch_raises_on_unrecognized_thin_flag(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 2)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -506,7 +506,7 @@ def test_toolchain_mismatch_raises_on_curly_quoted_error(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 2)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -535,7 +535,7 @@ def test_toolchain_mismatch_not_raised_on_unrelated_failure(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 1)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -562,7 +562,7 @@ def test_toolchain_mismatch_not_raised_on_success(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 0)):
             invoke_makepkg(pb, conf, {})  # must not raise
 
@@ -583,7 +583,7 @@ def test_already_built_raises_on_exit_13(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 13)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -613,7 +613,7 @@ def test_already_built_raises_on_message_match(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 1)):
             try:
                 invoke_makepkg(pb, conf, {})

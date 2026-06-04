@@ -267,8 +267,8 @@ def test_invoke_retry_sudo_reauth_and_install(tmp_path):
     pacman_result = MagicMock(returncode=0)
 
     with (
-        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", side_effect=fail),
-        patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
+        patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", side_effect=fail),
+        patch("sysforge.primitives.makepkg_invoke.subprocess.run",
               side_effect=[sudo_v_result, pacman_result]) as mock_run,
         patch("builtins.input", return_value="s"),
     ):
@@ -290,8 +290,8 @@ def test_invoke_retry_sudo_install_fails_then_abort(tmp_path):
     pacman_fail = MagicMock(returncode=1)
 
     with (
-        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", side_effect=fail),
-        patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
+        patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", side_effect=fail),
+        patch("sysforge.primitives.makepkg_invoke.subprocess.run",
               side_effect=[MagicMock(returncode=0), pacman_fail]),
         patch("builtins.input", side_effect=["s", "abort"]),
         pytest.raises(RuntimeError, match="build_failed"),
@@ -307,7 +307,7 @@ def test_invoke_retry_abort_with_built_packages(tmp_path):
     fail = subprocess.CalledProcessError(1, "makepkg")
 
     with (
-        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", side_effect=fail),
+        patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", side_effect=fail),
         patch("builtins.input", return_value="abort"),
         pytest.raises(RuntimeError, match="build_failed"),
     ):
@@ -323,7 +323,7 @@ def test_invoke_retry_enter_retries_build_with_packages(tmp_path):
     invoke = MagicMock(side_effect=[fail, None])
 
     with (
-        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", invoke),
+        patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", invoke),
         patch("builtins.input", return_value=""),
     ):
         _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {}, extra_flags=["--install"])
@@ -339,7 +339,7 @@ def test_invoke_retry_no_packages_prompts_fix_pkgbuild(tmp_path):
     invoke = MagicMock(side_effect=[fail, None])
 
     with (
-        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", invoke),
+        patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", invoke),
         patch("builtins.input", return_value="") as mock_input,
     ):
         _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {})
@@ -357,7 +357,7 @@ def test_invoke_retry_batch_mode_ignores_packages(tmp_path):
     fail = subprocess.CalledProcessError(1, "makepkg")
 
     with (
-        patch("sysforge.primitives.makepkg_wrapper.invoke_makepkg", side_effect=fail),
+        patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", side_effect=fail),
         pytest.raises(RuntimeError, match="build_failed"),
     ):
         _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {"batch": True})
