@@ -33,6 +33,7 @@ import sysforge.primitives.cache_probe as cache_probe
 import sysforge.primitives.config as config
 import sysforge.primitives.dep_analysis as dep_analysis
 import sysforge.primitives.failure as failure
+import sysforge.primitives.makepkg_flags as makepkg_flags
 import sysforge.primitives.makepkg_wrapper as makepkg_wrapper
 import sysforge.primitives.pacman as pacman
 import sysforge.primitives.pkgbuild_patcher as pkgbuild_patcher
@@ -73,6 +74,11 @@ def test_version_tag():          assert version._log._tag          == "[VERSION]
 # ---------------------------------------------------------------------------
 # Multi-tag modules — named loggers (_<tag>_log)
 # ---------------------------------------------------------------------------
+
+def test_makepkg_flags_tag():
+    # P2b.1: flag-string manipulation extracted to makepkg_flags (owns [FLAG]).
+    assert makepkg_flags._flag_log._tag == "[FLAG]"
+
 
 def test_makepkg_wrapper_tags():
     # ABI / CACHE / PATCH emission relocated to abi_check / cache_probe /

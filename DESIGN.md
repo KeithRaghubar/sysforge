@@ -118,6 +118,7 @@ sysforge/
 │       ├── pkgbuild_patcher.py        # PKGBUILD mutation + flag extraction
 │       ├── prompt.py                  # shared interactive-prompt helpers (every stage uses these)
 │       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
+│       ├── makepkg_flags.py           # makepkg flag-string transforms (owns [FLAG] tag)
 │       ├── pty_runner.py              # spawn subprocess on a pty (preserves cargo's live progress bar)
 │       ├── aur_resolve.py             # recursive AUR dependency resolution + topo sort
 │       ├── dep_analysis.py            # pre-build soname dependency checks
@@ -1038,6 +1039,8 @@ The guard is applied to the controller only — makepkg itself is launched throu
 ### `makepkg_wrapper.py`
 
 Build execution. Public API: `run(pkgbuild_path, options: BuildOptions | None = None)` where `BuildOptions` is a dataclass with all build options defaulted. Call sites construct `BuildOptions(field=value, ...)` with only what they need; adding a new option only requires a new field in `BuildOptions` and handling in `run()` — unrelated call sites don't change.
+
+**Decomposition (in progress).** The flag-string transforms (`expand_makepkg_flags`, the `-fuse-ld=` linker detect/inject/replace, full-LTO and lld-flag strips, lib32 `-march` scrub) live in `makepkg_flags.py`, which owns the `[FLAG]` tag. `makepkg_wrapper` re-exports `expand_makepkg_flags` so the CLI/`update`/`converge` import sites are unchanged. Further focused modules (conf emission, PGO, makepkg invocation) are being split out the same way, leaving `makepkg_wrapper` a thin `[BUILD]` orchestrator — see the module tree.
 
 High-level flow:
 1. Parse PKGBUILD via `pkgbuild_meta.py`
