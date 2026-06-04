@@ -8,12 +8,13 @@ lib32 ``-march`` scrub, and PGO/kernel flag handling.  Yielded as a context
 manager that writes the temp conf on entry and removes it on exit.  Owns the
 ``[CONF]`` tag.
 
-Decomposition note: this module still emits ``[FLAG]``/``[PGO]``/``[KERNEL]``
-inline for the flag/pgo/kernel-specific conf decisions made here.  Those collapse
-to their owning modules (``makepkg_flags`` / ``makepkg_pgo``) in the follow-up
-step; for now the flag transforms are *called* from ``makepkg_flags`` but the
-surrounding ``[FLAG]`` warnings are emitted here.  Re-exported from
-``makepkg_wrapper`` as ``emit_makepkg_conf``.
+All conf-assembly narration — including the linker guard, the GCC+LTO guard,
+the lib32 ``-march`` scrub, and PGO/kernel flag adjustments — is emitted under
+``[CONF]``: these are decisions *this* module makes while assembling a correct
+conf.  The flag-string transforms themselves stay pure in ``makepkg_flags``
+(called here as ``(cleaned, stripped)`` returns), so ``makepkg_flags`` keeps
+``[FLAG]`` for its own generic flag work and this module owns a single tag.
+Re-exported from ``makepkg_wrapper`` as ``emit_makepkg_conf``.
 """
 import contextlib
 import os
@@ -34,9 +35,6 @@ from sysforge.primitives.makepkg_flags import (
 from sysforge.primitives.profile import CONF_KEY_MAP, KERNEL_CLEAN_KEYS, SYSFORGE_KEYS
 
 _conf_log = log.get_logger("CONF")
-_flag_log = log.get_logger("FLAG")
-_kernel_log = log.get_logger("KERNEL")
-_pgo_log = log.get_logger("PGO")
 
 
 @contextlib.contextmanager
@@ -134,7 +132,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         profile_overrides[key] = val
 
     if kernel_build:
-        _kernel_log.info("Kernel build: omitting profile flag keys from makepkg.conf "
+        _conf_log.info("Kernel build: omitting profile flag keys from makepkg.conf "
                   "(CFLAGS/CXXFLAGS/LDFLAGS/CPPFLAGS/DEBUG_*); system conf values preserved")
 
     # Load system conf baseline
@@ -143,13 +141,13 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     # Apply CLI toolchain overrides on top of profile values
     if cc_override is not None:
         profile_overrides["CC"] = cc_override
-        _flag_log.info(f"CC overridden via --cc: {cc_override}")
+        _conf_log.info(f"CC overridden via --cc: {cc_override}")
     if cxx_override is not None:
         profile_overrides["CXX"] = cxx_override
-        _flag_log.info(f"CXX overridden via --cxx: {cxx_override}")
+        _conf_log.info(f"CXX overridden via --cxx: {cxx_override}")
     if ld_override is not None:
         if kernel_build:
-            _kernel_log.info(f"--ld={ld_override!r} ignored for kernel build (use LLVM=1 for lld)")
+            _conf_log.info(f"--ld={ld_override!r} ignored for kernel build (use LLVM=1 for lld)")
         else:
             current_ldflags = profile_overrides.get("LDFLAGS", "")
             profile_overrides["LDFLAGS"] = _inject_linker(current_ldflags, ld_override)
@@ -164,7 +162,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         _sd_ldflags = _sd_ldflags or ""
         if not _detect_linker_from_ldflags(_sd_ldflags) and shutil.which("lld"):
             profile_overrides["LDFLAGS"] = _inject_linker(_sd_ldflags, "lld")
-            _flag_log.info(
+            _conf_log.info(
                 f"[VARIANT_LD] variant={toolchain_variant!r}: defaulting -fuse-ld=lld "
                 "(no linker declared in LDFLAGS, lld available)"
             )
@@ -194,7 +192,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         effective_linker = declared_linker or "ld"
 
         if declared_linker and not shutil.which(declared_linker):
-            _flag_log.warn(f"Declared linker '{declared_linker}' not found on PATH — treating effective linker as 'ld'")
+            _conf_log.warn(f"Declared linker '{declared_linker}' not found on PATH — treating effective linker as 'ld'")
             effective_linker = "ld"
 
         # Only strip lld-only flags from LDFLAGS we own (profile_overrides). The
@@ -204,9 +202,9 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         if effective_linker != "lld" and _ldflags_source == "profile":
             cleaned, stripped_tokens = _strip_lld_flags(profile_overrides["LDFLAGS"])
             if stripped_tokens:
-                _flag_log.warn(f"Effective linker is '{effective_linker}' (not lld) — stripping lld-specific flags from LDFLAGS")
+                _conf_log.warn(f"Effective linker is '{effective_linker}' (not lld) — stripping lld-specific flags from LDFLAGS")
                 for tok in stripped_tokens:
-                    _flag_log.warn(f"Stripped lld-only flag: {tok}")
+                    _conf_log.warn(f"Stripped lld-only flag: {tok}")
                 profile_overrides["LDFLAGS"] = cleaned
 
         # RUSTFLAGS linker reconciliation: if RUSTFLAGS declares a different
@@ -216,7 +214,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         if "RUSTFLAGS" in profile_overrides:
             rust_linker = _detect_linker_from_rustflags(profile_overrides["RUSTFLAGS"])
             if rust_linker and rust_linker != effective_linker:
-                _flag_log.warn(
+                _conf_log.warn(
                     f"RUSTFLAGS linker '{rust_linker}' conflicts with "
                     f"LDFLAGS effective linker '{effective_linker}' — "
                     f"overriding RUSTFLAGS to use '{effective_linker}'")
@@ -259,7 +257,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 profile_overrides[key] = val.replace("-flto=thin", "-flto")
                 _thin_lto_rewritten = True
         if _thin_lto_rewritten:
-            _flag_log.warn(
+            _conf_log.warn(
                 f"{_gcc_reason} — rewriting -flto=thin to -flto "
                 f"(GCC does not support thin LTO)")
 
@@ -289,7 +287,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             tokens = inner.split()
             new_tokens = ["!lto" if t == "lto" else t for t in tokens]
             profile_overrides["OPTIONS"] = "(" + " ".join(new_tokens) + ")"
-        _flag_log.warn(
+        _conf_log.warn(
             f"{_gcc_reason} with linker '{effective_linker}' — "
             f"disabling LTO (GCC LTO bitcode is incompatible with lld)")
 
@@ -302,7 +300,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             if key in profile_overrides:
                 cleaned, stripped_toks = _strip_full_lto(profile_overrides[key])
                 if stripped_toks:
-                    _pgo_log.warn(
+                    _conf_log.warn(
                               f"Stripped full-LTO flag(s) from {key} (incompatible with IR PGO): "
                               f"{' '.join(stripped_toks)}")
                     profile_overrides[key] = cleaned
@@ -310,7 +308,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         # build time (LTOFLAGS is appended to CFLAGS/CXXFLAGS/LDFLAGS by makepkg
         # when OPTIONS contains lto, bypassing the stripping above).
         profile_overrides["LTOFLAGS"] = ""
-        _pgo_log.info("Cleared LTOFLAGS for PGO pass (LTO disabled)")
+        _conf_log.info("Cleared LTOFLAGS for PGO pass (LTO disabled)")
 
     # Per-invocation compiler flag injection (e.g. PGO generate/use flags).
     # Runs after the linker guard so these flags are never treated as lld-specific.
@@ -329,7 +327,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             if key == "CXXFLAGS" and "$CFLAGS" in base:
                 continue
             profile_overrides[key] = (base + " " + compiler_flags_extra).strip()
-        _pgo_log.info(f"Injecting into CFLAGS/CXXFLAGS/LDFLAGS: {compiler_flags_extra!r}")
+        _conf_log.info(f"Injecting into CFLAGS/CXXFLAGS/LDFLAGS: {compiler_flags_extra!r}")
 
     # Linker-only flag injection (e.g. profile runtime library for PGO Pass 2).
     # Unlike compiler_flags_extra, these flags only go to LDFLAGS — adding -l/-L
@@ -344,7 +342,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         else:
             base = ""
         profile_overrides[key] = (base + " " + linker_flags_extra).strip()
-        _pgo_log.info(f"Injecting into LDFLAGS: {linker_flags_extra!r}")
+        _conf_log.info(f"Injecting into LDFLAGS: {linker_flags_extra!r}")
 
     # lib32 guards (profile overrides): strip 64-bit-only -march tokens from
     # CFLAGS/CXXFLAGS, and lld --icf=* tokens from LDFLAGS. The icf scrub is
@@ -358,7 +356,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             if key in profile_overrides:
                 cleaned, stripped_tokens = _scrub_lib32_arch_flags(profile_overrides[key])
                 if stripped_tokens:
-                    _flag_log.info(
+                    _conf_log.info(
                         f"lib32 build: stripped 64-bit-only -march tokens from "
                         f"profile {key}: {stripped_tokens}"
                     )
@@ -366,7 +364,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         if "LDFLAGS" in profile_overrides:
             cleaned, stripped_tokens = _strip_lld_flags(profile_overrides["LDFLAGS"])
             if stripped_tokens:
-                _flag_log.info(
+                _conf_log.info(
                     f"lib32 build: stripped lld --icf flag(s) from profile "
                     f"LDFLAGS: {stripped_tokens}"
                 )
@@ -396,7 +394,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 inner = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
                 cleaned, stripped_tokens = _scrub_lib32_arch_flags(inner)
                 if stripped_tokens:
-                    _flag_log.info(
+                    _conf_log.info(
                         f"lib32 build: stripped 64-bit-only -march tokens from "
                         f"system {key}: {stripped_tokens}"
                     )
@@ -407,7 +405,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 inner = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
                 cleaned, stripped_tokens = _strip_lld_flags(inner)
                 if stripped_tokens:
-                    _flag_log.info(
+                    _conf_log.info(
                         f"lib32 build: stripped lld --icf flag(s) from "
                         f"system {key}: {stripped_tokens}"
                     )

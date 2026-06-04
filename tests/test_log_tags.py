@@ -89,13 +89,15 @@ def test_makepkg_env_tag():
 
 
 def test_makepkg_conf_tags():
-    # P2b.4: emit_makepkg_conf relocated to makepkg_conf (owns [CONF]). It still
-    # emits [FLAG]/[PGO]/[KERNEL] inline for conf-specific decisions until the
-    # collapse step folds those into their owning modules.
-    assert makepkg_conf._conf_log._tag   == "[CONF]"
-    assert makepkg_conf._flag_log._tag   == "[FLAG]"
-    assert makepkg_conf._pgo_log._tag    == "[PGO]"
-    assert makepkg_conf._kernel_log._tag == "[KERNEL]"
+    # P2b.4: emit_makepkg_conf relocated to makepkg_conf (owns [CONF]).
+    # P2b.6a: collapsed to a single [CONF] tag — the inline [FLAG]/[PGO]/[KERNEL]
+    # conf-assembly narration was re-tagged to [CONF] (the pure flag transforms
+    # stay in makepkg_flags, which keeps [FLAG]).
+    assert makepkg_conf._conf_log._tag == "[CONF]"
+    # Guard the collapse: the per-concern loggers must not reappear.
+    assert not hasattr(makepkg_conf, "_flag_log")    # P2b.6a → [CONF]
+    assert not hasattr(makepkg_conf, "_pgo_log")     # P2b.6a → [CONF]
+    assert not hasattr(makepkg_conf, "_kernel_log")  # P2b.6a → [CONF]
 
 
 def test_makepkg_invoke_tags():
