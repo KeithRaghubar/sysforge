@@ -33,6 +33,7 @@ import sysforge.primitives.cache_probe as cache_probe
 import sysforge.primitives.config as config
 import sysforge.primitives.dep_analysis as dep_analysis
 import sysforge.primitives.failure as failure
+import sysforge.primitives.makepkg_conf as makepkg_conf
 import sysforge.primitives.makepkg_env as makepkg_env
 import sysforge.primitives.makepkg_flags as makepkg_flags
 import sysforge.primitives.makepkg_wrapper as makepkg_wrapper
@@ -86,11 +87,21 @@ def test_makepkg_env_tag():
     assert makepkg_env._env_log._tag == "[ENV]"
 
 
+def test_makepkg_conf_tags():
+    # P2b.4: emit_makepkg_conf relocated to makepkg_conf (owns [CONF]). It still
+    # emits [FLAG]/[PGO]/[KERNEL] inline for conf-specific decisions until the
+    # collapse step folds those into their owning modules.
+    assert makepkg_conf._conf_log._tag   == "[CONF]"
+    assert makepkg_conf._flag_log._tag   == "[FLAG]"
+    assert makepkg_conf._pgo_log._tag    == "[PGO]"
+    assert makepkg_conf._kernel_log._tag == "[KERNEL]"
+
+
 def test_makepkg_wrapper_tags():
     # ABI / CACHE / PATCH emission relocated to abi_check / cache_probe /
-    # pkgbuild_patcher (asserted on those modules above) — P2a borrowed-tag move.
+    # pkgbuild_patcher (P2a); CONF relocated to makepkg_conf (P2b.4). The
+    # remaining tags are the orchestrator's own + the not-yet-split sites.
     assert makepkg_wrapper._build_log._tag   == "[BUILD]"
-    assert makepkg_wrapper._conf_log._tag    == "[CONF]"
     assert makepkg_wrapper._env_log._tag     == "[ENV]"
     assert makepkg_wrapper._flag_log._tag    == "[FLAG]"
     assert makepkg_wrapper._git_log._tag     == "[GIT]"
@@ -100,10 +111,11 @@ def test_makepkg_wrapper_tags():
 
 
 def test_makepkg_wrapper_relocated_tags_gone():
-    # Guard the P2a relocation: the borrowed loggers must not reappear.
-    assert not hasattr(makepkg_wrapper, "_abi_log")
-    assert not hasattr(makepkg_wrapper, "_cache_log")
-    assert not hasattr(makepkg_wrapper, "_patch_log")
+    # Guard the relocations: relocated loggers must not reappear in the orchestrator.
+    assert not hasattr(makepkg_wrapper, "_abi_log")    # P2a
+    assert not hasattr(makepkg_wrapper, "_cache_log")  # P2a
+    assert not hasattr(makepkg_wrapper, "_patch_log")  # P2a
+    assert not hasattr(makepkg_wrapper, "_conf_log")   # P2b.4
 
 
 def test_profile_tags():
