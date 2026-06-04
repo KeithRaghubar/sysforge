@@ -120,6 +120,7 @@ sysforge/
 │       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
 │       ├── makepkg_flags.py           # makepkg flag-string transforms (owns [FLAG] tag)
 │       ├── makepkg_artifacts.py       # built .pkg.tar* discovery + filename→version parse (pure, no tag)
+│       ├── makepkg_pgo.py             # PGO profdata state resolution (pure; [PGO] emissions migrate here later)
 │       ├── pty_runner.py              # spawn subprocess on a pty (preserves cargo's live progress bar)
 │       ├── aur_resolve.py             # recursive AUR dependency resolution + topo sort
 │       ├── dep_analysis.py            # pre-build soname dependency checks
@@ -1041,7 +1042,7 @@ The guard is applied to the controller only — makepkg itself is launched throu
 
 Build execution. Public API: `run(pkgbuild_path, options: BuildOptions | None = None)` where `BuildOptions` is a dataclass with all build options defaulted. Call sites construct `BuildOptions(field=value, ...)` with only what they need; adding a new option only requires a new field in `BuildOptions` and handling in `run()` — unrelated call sites don't change.
 
-**Decomposition (in progress).** The flag-string transforms (`expand_makepkg_flags`, the `-fuse-ld=` linker detect/inject/replace, full-LTO and lld-flag strips, lib32 `-march` scrub) live in `makepkg_flags.py`, which owns the `[FLAG]` tag. The built-artifact helpers (`_find_built_packages`, `_parse_built_pkg_filename`) live in `makepkg_artifacts.py` (pure, no tag) — the canonical post-build version source consumed by `build_core`/`pacman`/`vcs_pkgver`. `makepkg_wrapper` re-exports the public symbols (`expand_makepkg_flags`, `_parse_built_pkg_filename`, …) so all import sites are unchanged. Further focused modules (conf emission, PGO, makepkg invocation) are being split out the same way, leaving `makepkg_wrapper` a thin `[BUILD]` orchestrator — see the module tree.
+**Decomposition (in progress).** The flag-string transforms (`expand_makepkg_flags`, the `-fuse-ld=` linker detect/inject/replace, full-LTO and lld-flag strips, lib32 `-march` scrub) live in `makepkg_flags.py`, which owns the `[FLAG]` tag. The built-artifact helpers (`_find_built_packages`, `_parse_built_pkg_filename`) live in `makepkg_artifacts.py` (pure, no tag) — the canonical post-build version source consumed by `build_core`/`pacman`/`vcs_pkgver`. The PGO profdata-state resolver (`_resolve_pgo_state`, `PGOBuildSkipped`, `_try_load_toml`, `_DEFAULT_PGO_STORE`) lives in `makepkg_pgo.py` (pure state — the `[PGO]` emission sites still in `run`/conf migrate here when those split). `makepkg_wrapper` re-exports the public symbols (`expand_makepkg_flags`, `_parse_built_pkg_filename`, `_resolve_pgo_state`, `PGOBuildSkipped`, …) so all import sites are unchanged. Further focused modules (conf emission, PGO, makepkg invocation) are being split out the same way, leaving `makepkg_wrapper` a thin `[BUILD]` orchestrator — see the module tree.
 
 High-level flow:
 1. Parse PKGBUILD via `pkgbuild_meta.py`
