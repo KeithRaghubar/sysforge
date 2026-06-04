@@ -75,17 +75,23 @@ def test_version_tag():          assert version._log._tag          == "[VERSION]
 # ---------------------------------------------------------------------------
 
 def test_makepkg_wrapper_tags():
-    assert makepkg_wrapper._abi_log._tag     == "[ABI]"
+    # ABI / CACHE / PATCH emission relocated to abi_check / cache_probe /
+    # pkgbuild_patcher (asserted on those modules above) — P2a borrowed-tag move.
     assert makepkg_wrapper._build_log._tag   == "[BUILD]"
-    assert makepkg_wrapper._cache_log._tag   == "[CACHE]"
     assert makepkg_wrapper._conf_log._tag    == "[CONF]"
     assert makepkg_wrapper._env_log._tag     == "[ENV]"
     assert makepkg_wrapper._flag_log._tag    == "[FLAG]"
     assert makepkg_wrapper._git_log._tag     == "[GIT]"
     assert makepkg_wrapper._kernel_log._tag  == "[KERNEL]"
     assert makepkg_wrapper._makepkg_log._tag == "[MAKEPKG]"
-    assert makepkg_wrapper._patch_log._tag   == "[PATCH]"
     assert makepkg_wrapper._pgo_log._tag     == "[PGO]"
+
+
+def test_makepkg_wrapper_relocated_tags_gone():
+    # Guard the P2a relocation: the borrowed loggers must not reappear.
+    assert not hasattr(makepkg_wrapper, "_abi_log")
+    assert not hasattr(makepkg_wrapper, "_cache_log")
+    assert not hasattr(makepkg_wrapper, "_patch_log")
 
 
 def test_profile_tags():

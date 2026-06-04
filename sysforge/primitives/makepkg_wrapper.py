@@ -44,6 +44,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_noninteractive_kconfig,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
+    warn_artifacts_left,
     write_extracted_profile,
 )
 from sysforge.primitives.prompt import prompt_choice
@@ -55,8 +56,8 @@ from sysforge.primitives.cache_probe import (
     emit_system_probes,
     probe_ccache,
     probe_sccache,
-    probe_thinlto_cache,
     record_build_result,
+    report_thinlto_cache,
     reset_session,
 )
 from sysforge.primitives.aur import import_pgp_keys
@@ -67,16 +68,15 @@ from sysforge.primitives.source_sync import (
 from sysforge.primitives.dep_analysis import run_dep_analysis
 from sysforge.primitives.failure import handle_failure
 from sysforge import log
-_abi_log     = log.get_logger("ABI")
+# ABI / CACHE / PATCH tags are emitted by their owning modules (abi_check.py,
+# cache_probe.py, pkgbuild_patcher.py) — this orchestrator delegates to them.
 _build_log   = log.get_logger("BUILD")
-_cache_log   = log.get_logger("CACHE")
 _conf_log    = log.get_logger("CONF")
 _env_log     = log.get_logger("ENV")
 _flag_log    = log.get_logger("FLAG")
 _git_log     = log.get_logger("GIT")
 _kernel_log  = log.get_logger("KERNEL")
 _makepkg_log = log.get_logger("MAKEPKG")
-_patch_log   = log.get_logger("PATCH")
 _pgo_log     = log.get_logger("PGO")
 from sysforge.primitives.profile import (
     CONF_KEY_MAP,
@@ -1353,17 +1353,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     inherited_env = {k: v for k, v in os.environ.items() if k in ("CC", "CXX", "LD")}
     patch_subshell_env_reset(pkgbuild_path, toolchain_env, inherited_env=inherited_env)
 
-    # Probe ThinLTO cache dir (informational, once per build)
-    ldflags = resolved_profile.get("LDFLAGS", "")
-    if ldflags:
-        thinlto = probe_thinlto_cache(ldflags)
-        if thinlto:
-            if thinlto["exists"]:
-                from sysforge.primitives.cache_probe import _fmt_bytes
-                _cache_log.info(f"ThinLTO cache: {_fmt_bytes(thinlto['size_bytes'])} "
-                          f"in {thinlto['files']} files ({thinlto['path']})")
-            else:
-                _cache_log.info(f"ThinLTO cache dir configured but not yet created: {thinlto['path']}")
+    # Probe ThinLTO cache dir (informational, once per build) — owned by cache_probe.py
+    report_thinlto_cache(resolved_profile.get("LDFLAGS", ""))
 
     # Snapshot cache state before build for per-build delta
     before_cc = probe_ccache()
@@ -1514,10 +1505,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             if success:
                 cleanup_patch_artifacts(pkgbuild_path.parent / "PKGBUILD")
             else:
-                artifacts = "PKGBUILD.sysforge"
-                if extracted_profile:
-                    artifacts += " and pkgbuild_extracted_profile.toml"
-                _patch_log.warn(f"Build failed — leaving {artifacts} in place for diagnosis")
+                warn_artifacts_left(bool(extracted_profile))
         else:
             if success:
                 if pkgbuild_path.exists():
@@ -1891,22 +1879,10 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                         "(prior run residue; current build produced none)"
                     )
 
-        # Post-build ABI check (non-fatal)
+        # Post-build ABI check (non-fatal) — owned by abi_check.py
         if options.abi_check:
-            try:
-                from sysforge.primitives.abi_check import check_package_abi
-                built_pkgs = _find_built_packages(pkgbuild_path.resolve().parent)
-                if not built_pkgs:
-                    _abi_log.info("No built packages found for ABI check")
-                for pkg in built_pkgs:
-                    issues = check_package_abi(pkg)
-                    if issues:
-                        for issue in issues:
-                            _abi_log.warn(issue)
-                    else:
-                        _abi_log.info(f"{pkg.name}: OK")
-            except Exception as e:
-                _abi_log.warn(f"ABI check failed: {e}")
+            from sysforge.primitives.abi_check import report_post_build_abi
+            report_post_build_abi(_find_built_packages(pkgbuild_path.resolve().parent))
 
         # Record build metadata for `sysforge update` (non-fatal)
         try:

@@ -270,6 +270,26 @@ def probe_thinlto_cache(ldflags: str) -> dict | None:
         return {"path": cache_dir, "exists": True, "size_bytes": 0, "files": 0}
 
 
+def report_thinlto_cache(ldflags: str) -> None:
+    """Emit a one-line ``[CACHE]`` INFO summary of the ThinLTO cache configured
+    in ``ldflags`` — its size if the dir exists, a not-yet-created note
+    otherwise.  No-op when no ThinLTO cache dir is configured.  Called once per
+    build by the build orchestrator and once per run by
+    :func:`emit_system_probes`, so the cache-reporting emission has a single
+    home in this module rather than being duplicated at the call sites.
+    """
+    if not ldflags:
+        return
+    thinlto = probe_thinlto_cache(ldflags)
+    if not thinlto:
+        return
+    if thinlto["exists"]:
+        _log.info(f"ThinLTO cache: {_fmt_bytes(thinlto['size_bytes'])} "
+                  f"in {thinlto['files']} files ({thinlto['path']})")
+    else:
+        _log.info(f"ThinLTO cache dir configured but not yet created: {thinlto['path']}")
+
+
 def emit_system_probes(ldflags: str = "") -> None:
     """
     Emit [CACHE] INFO lines for system-level caches.
@@ -284,14 +304,7 @@ def emit_system_probes(ldflags: str = "") -> None:
         _log.info(f"pacman cache: {pacman['count']} packages, "
                   f"{_fmt_bytes(pacman['size_bytes'])} ({pacman['path']})")
 
-    if ldflags:
-        thinlto = probe_thinlto_cache(ldflags)
-        if thinlto:
-            if thinlto["exists"]:
-                _log.info(f"ThinLTO cache: {_fmt_bytes(thinlto['size_bytes'])} "
-                          f"in {thinlto['files']} files ({thinlto['path']})")
-            else:
-                _log.info(f"ThinLTO cache dir configured but not yet created: {thinlto['path']}")
+    report_thinlto_cache(ldflags)
 
 
 # ---------------------------------------------------------------------------
