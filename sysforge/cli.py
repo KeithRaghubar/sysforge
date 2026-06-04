@@ -28,6 +28,7 @@ _log = log.get_logger("CLI")
 from sysforge import build_core
 from sysforge.converge import ConvergeVerb
 from sysforge.doctor import DoctorVerb
+from sysforge.env_cmd import EnvVerb
 from sysforge.fetch import FetchVerb
 from sysforge.log_cmd import LogVerb
 from sysforge.packages_cmd import (
@@ -191,21 +192,6 @@ class BuildVerb(Verb):
         )
         if outcome.failed_pkgs or outcome.install_failed:
             return ExecResult(exit_code=1)
-        return ExecResult()
-
-
-class EnvVerb(Verb):
-    """Read-only: print the inherited env chain and divergences."""
-
-    name = "env"
-    requires_sentinel = False
-
-    def pre_check(self, args) -> PreCheckResult:
-        return PreCheckResult()
-
-    def execute(self, args, pre: PreCheckResult) -> ExecResult:
-        from sysforge.primitives.env_chain import collect_env_chain, format_env_chain
-        print(format_env_chain(collect_env_chain(), verbosity=log.get_verbosity()))
         return ExecResult()
 
 
