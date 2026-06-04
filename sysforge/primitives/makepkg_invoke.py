@@ -7,11 +7,15 @@ its failures (clang-flag-rejected-by-gcc → ToolchainMismatchError; already-bui
 hand the already-built artifact to ``pacman -U`` instead of rebuilding.  Owns the
 ``[MAKEPKG]`` tag.
 
-Decomposition note: still emits ``[BUILD]``/``[ENV]``/``[FLAG]`` inline for build
-status, the shell-env strip, and the one linker note made during invocation.
-Those consolidate to their owning modules in the collapse step.  ``invoke_makepkg``
-/ ``_invoke_with_retry`` / ``_build_failed_error`` and the ``ToolchainMismatchError``
-/ ``AlreadyBuilt`` exceptions are re-exported from ``makepkg_wrapper``.
+All narration here — the inherited-shell-env scrub, build-status lines, the
+toolchain-mismatch detection, and the retry prompts — is emitted under
+``[MAKEPKG]``: every one describes this module's single job of launching
+makepkg correctly and classifying its outcome (P2b.6b collapse).  The pure
+flag transforms and env resolvers it draws on stay in ``makepkg_flags`` /
+``makepkg_env``, which keep their own ``[FLAG]`` / ``[ENV]`` tags.
+``invoke_makepkg`` / ``_invoke_with_retry`` / ``_build_failed_error`` and the
+``ToolchainMismatchError`` / ``AlreadyBuilt`` exceptions are re-exported from
+``makepkg_wrapper``.
 """
 import os
 import subprocess
@@ -27,9 +31,6 @@ from sysforge.primitives.prompt import prompt_choice
 from sysforge.primitives.pty_runner import run_with_pty
 from sysforge.primitives.resource_guard import lift_for_child
 
-_build_log   = log.get_logger("BUILD")
-_env_log     = log.get_logger("ENV")
-_flag_log    = log.get_logger("FLAG")
 _makepkg_log = log.get_logger("MAKEPKG")
 
 
@@ -96,7 +97,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     _strip_keys = CONF_KEY_MAP.get("makepkg", set()) | CONF_KEY_MAP.get("toolchain", set())
     for k in sorted(_strip_keys):
         if k in env:
-            _env_log.info(f"Stripped from shell env (superseded by profile): {k}={env.pop(k)!r}")
+            _makepkg_log.info(f"Stripped from shell env (superseded by profile): {k}={env.pop(k)!r}")
 
     # LLVM_PROFILE_FILE is only meaningful during PGO pass 2, where the
     # toolchain stage injects it via extra_env.  If inherited from the shell
@@ -104,7 +105,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # files into an unrelated directory.
     _llvm_pf = env.pop("LLVM_PROFILE_FILE", None)
     if _llvm_pf:
-        _env_log.info(f"Stripped inherited LLVM_PROFILE_FILE={_llvm_pf!r} (only set during PGO pass 2)")
+        _makepkg_log.info(f"Stripped inherited LLVM_PROFILE_FILE={_llvm_pf!r} (only set during PGO pass 2)")
 
     env["MAKEPKG_CONF"] = str(conf_path)
 
@@ -122,25 +123,25 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     if extra_env:
         for k, v in sorted(extra_env.items()):
             if k in env:
-                _env_log.warn(f"Overriding shell {k}={env[k]!r} with profile value {v!r}")
+                _makepkg_log.warn(f"Overriding shell {k}={env[k]!r} with profile value {v!r}")
         env.update(extra_env)
 
     flags = list(resolved_profile.get("makepkg_flags", []))
     if interactive:
         flags = [f for f in flags if f != "--noconfirm"]
-        _build_log.info("--interactive: stripped --noconfirm from profile flags")
+        _makepkg_log.info("--interactive: stripped --noconfirm from profile flags")
     if extra_flags:
         flags += extra_flags
-        _build_log.info(f"Appending CLI flags: {extra_flags}")
+        _makepkg_log.info(f"Appending CLI flags: {extra_flags}")
     if strip_flags:
         before = flags[:]
         flags = [f for f in flags if f not in strip_flags]
         removed = [f for f in before if f not in flags]
         if removed:
-            _build_log.info(f"Batch mode: stripped flags {removed}")
+            _makepkg_log.info(f"Batch mode: stripped flags {removed}")
     cmd = ["makepkg", "-p", pkgbuild_path.name] + flags
 
-    _build_log.info(f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
+    _makepkg_log.info(f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
 
     # Interactive branch: inherit the parent's stdio so unbuffered prompts
     # (pacman conflict, sudo password, gpg signing key) reach the terminal
@@ -158,7 +159,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             if returncode == 13:
                 raise AlreadyBuilt(pkgbuild_path)
             if returncode == 8:
-                _build_log.error("Dependency resolution failed.")
+                _makepkg_log.error("Dependency resolution failed.")
             cpe = subprocess.CalledProcessError(returncode, "makepkg")
             # Interactive mode inherits the TTY, so makepkg's stdout was never
             # captured. Recover a diagnosis from the build's side-car logs
@@ -173,10 +174,10 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 diag_dir = _effective_build_dir(pkgbuild_path, resolved_profile, env)
                 _suggestions = _build_diagnose([], diag_dir)
                 if _suggestions:
-                    _build_log.info(_render_diag_suggestions(_suggestions))
+                    _makepkg_log.info(_render_diag_suggestions(_suggestions))
                     cpe.diagnosis = _suggestions
             except Exception as _diag_e:
-                _build_log.debug(f"interactive postflight diagnosis skipped: {_diag_e}")
+                _makepkg_log.debug(f"interactive postflight diagnosis skipped: {_diag_e}")
             cpe.captured_output = []
             raise cpe
         return
@@ -256,28 +257,28 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # Exit code 8 = E_INSTALL_FAILED (pacman failed to install deps).
         # Also triggered when we collected explicit "target not found" lines.
         if returncode == 8 or missing_deps:
-            _build_log.error("Dependency resolution failed.")
+            _makepkg_log.error("Dependency resolution failed.")
             for dep in missing_deps:
-                _build_log.error(f"  {dep}")
-            _build_log.warn(
+                _makepkg_log.error(f"  {dep}")
+            _makepkg_log.warn(
                 "This usually means related PKGBUILDs are at different versions. "
                 "Run 'git pull --rebase' in each package directory to sync them, "
                 "then retry with -m '-f' to force a rebuild.")
         elif failed_stage == "prepare":
-            _build_log.info("prepare() failed — likely an upstream issue "
+            _makepkg_log.info("prepare() failed — likely an upstream issue "
                       "(patch conflict, changed upstream state, or fetch error); "
                       "sysforge does not modify prepare()")
         elif failed_stage == "build":
-            _build_log.info("build() failed — could be upstream or a flag/toolchain "
+            _makepkg_log.info("build() failed — could be upstream or a flag/toolchain "
                       "incompatibility from the active sysforge profile")
         elif failed_stage == "package":
-            _build_log.info("package() failed — likely an upstream issue; "
+            _makepkg_log.info("package() failed — likely an upstream issue; "
                       "sysforge does not modify package()")
         else:
-            _build_log.info("re-run with -vvv to capture full makepkg output "
+            _makepkg_log.info("re-run with -vvv to capture full makepkg output "
                       "in the log for diagnosis")
         if toolchain_mismatch:
-            _flag_log.warn(
+            _makepkg_log.warn(
                 "Detected clang-only compiler flag rejected by GCC — "
                 "the package's build system likely invokes a hardcoded gcc/g++"
             )
@@ -302,9 +303,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 active_rust_toolchain=os.environ.get("RUSTUP_TOOLCHAIN"),
             )
             if _suggestions:
-                _build_log.info(_render_diag_suggestions(_suggestions))
+                _makepkg_log.info(_render_diag_suggestions(_suggestions))
         except Exception as _diag_e:  # diagnosis must never mask the real failure
-            _build_log.debug(f"postflight diagnosis skipped: {_diag_e}")
+            _makepkg_log.debug(f"postflight diagnosis skipped: {_diag_e}")
 
         cpe = subprocess.CalledProcessError(returncode, "makepkg")
         cpe.captured_output = captured_lines  # consumed by auto_repair
@@ -348,7 +349,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
             # before falling back to normal batch-mode failure handling.
             raise
         except subprocess.CalledProcessError as e:
-            _build_log.error(f"Build failed in batch mode, aborting: {e}")
+            _makepkg_log.error(f"Build failed in batch mode, aborting: {e}")
             raise _build_failed_error(e)
     else:
         while True:
@@ -361,8 +362,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                 # guard instead of prompting the user for manual correction.
                 raise
             except subprocess.CalledProcessError as e:
-                _build_log.error(f"Build failed: {e}")
-                _build_log.info(f"PKGBUILD location: {pkgbuild_path}")
+                _makepkg_log.error(f"Build failed: {e}")
+                _makepkg_log.info(f"PKGBUILD location: {pkgbuild_path}")
 
                 installing = extra_flags and any(f in INSTALL_FLAGS for f in extra_flags)
                 built_pkgs = (
@@ -370,11 +371,11 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                     if installing else []
                 )
                 if built_pkgs:
-                    _build_log.ui(
+                    _makepkg_log.ui(
                             "Built packages found — build likely succeeded but "
                             "install failed (sudo timeout?):")
                     for p in built_pkgs:
-                        _build_log.ui(f"  {p.name}")
+                        _makepkg_log.ui(f"  {p.name}")
                     from sysforge.ui import progress as _ui_progress
                     _ui_progress.clear()
                     # Empty input (Enter) → "" → falls through to retry the
@@ -386,20 +387,20 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                         choices=("s", "abort"),
                         default="",
                         eof_default="abort",
-                        tag="BUILD",
+                        tag="MAKEPKG",
                     )
                     if response == "s":
                         while True:
-                            _build_log.ui("Refreshing sudo credentials...")
+                            _makepkg_log.ui("Refreshing sudo credentials...")
                             subprocess.run(["sudo", "-v"])
                             result = subprocess.run(
                                 ["sudo", "pacman", "-U", "--noconfirm"]
                                 + [str(p) for p in built_pkgs]
                             )
                             if result.returncode == 0:
-                                _build_log.ui("Install succeeded.")
+                                _makepkg_log.ui("Install succeeded.")
                                 return
-                            _build_log.error(
+                            _makepkg_log.error(
                                        f"pacman -U failed (exit {result.returncode})")
                             from sysforge.ui import progress as _ui_progress
                             _ui_progress.clear()
@@ -408,7 +409,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                 choices=("s", "abort"),
                                 default="abort",
                                 eof_default="abort",
-                                tag="BUILD",
+                                tag="MAKEPKG",
                             )
                             if retry != "s":
                                 raise _build_failed_error(
@@ -420,7 +421,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                             e, "[build_failed] Aborted by user after build failure"
                         )
                     # anything else: fall through to retry the full build
-                    _build_log.info("Retrying build...")
+                    _makepkg_log.info("Retrying build...")
                 else:
                     from sysforge.ui import progress as _ui_progress
                     _ui_progress.clear()
@@ -431,10 +432,10 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                         choices=("abort",),
                         default="",
                         eof_default="abort",
-                        tag="BUILD",
+                        tag="MAKEPKG",
                     )
                     if response == "abort":
                         raise _build_failed_error(
                             e, "[build_failed] Aborted by user after build failure"
                         )
-                    _build_log.info("Retrying build...")
+                    _makepkg_log.info("Retrying build...")

@@ -102,11 +102,16 @@ def test_makepkg_conf_tags():
 
 def test_makepkg_invoke_tags():
     # P2b.5: invoke_makepkg / _invoke_with_retry relocated to makepkg_invoke
-    # (owns [MAKEPKG]). Still emits [BUILD]/[ENV]/[FLAG] inline until collapse.
+    # (owns [MAKEPKG]).
+    # P2b.6b: collapsed to a single [MAKEPKG] tag — the inline [BUILD]/[ENV]/
+    # [FLAG] narration (build status, shell-env scrub, toolchain-mismatch note,
+    # retry prompts) was re-tagged to [MAKEPKG]; the pure transforms/resolvers
+    # stay in makepkg_flags/makepkg_env, which keep [FLAG]/[ENV].
     assert makepkg_invoke._makepkg_log._tag == "[MAKEPKG]"
-    assert makepkg_invoke._build_log._tag   == "[BUILD]"
-    assert makepkg_invoke._env_log._tag     == "[ENV]"
-    assert makepkg_invoke._flag_log._tag    == "[FLAG]"
+    # Guard the collapse: the per-concern loggers must not reappear.
+    assert not hasattr(makepkg_invoke, "_build_log")  # P2b.6b → [MAKEPKG]
+    assert not hasattr(makepkg_invoke, "_env_log")    # P2b.6b → [MAKEPKG]
+    assert not hasattr(makepkg_invoke, "_flag_log")   # P2b.6b → [MAKEPKG]
 
 
 def test_makepkg_wrapper_tags():
