@@ -97,11 +97,7 @@ from sysforge import log
 # ABI / CACHE / PATCH tags are emitted by their owning modules (abi_check.py,
 # cache_probe.py, pkgbuild_patcher.py); CONF lives in makepkg_conf.py — this
 # orchestrator delegates to them.
-_build_log   = log.get_logger("BUILD")
-_flag_log    = log.get_logger("FLAG")
-_git_log     = log.get_logger("GIT")
-_kernel_log  = log.get_logger("KERNEL")
-_pgo_log     = log.get_logger("PGO")
+_build_log = log.get_logger("BUILD")
 from sysforge.primitives.profile import (
     CONF_KEY_MAP,
     get_build_mode,
@@ -295,9 +291,9 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             compiler_name = Path(effective_cc).name if effective_cc else ""
             if compiler_name.startswith("clang"):
                 extra_env.update({"LLVM": "1", "LLVM_IAS": "1"})
-                _kernel_log.info(f"Detected clang ({effective_cc!r}): injecting LLVM=1 LLVM_IAS=1")
+                _build_log.info(f"Detected clang ({effective_cc!r}): injecting LLVM=1 LLVM_IAS=1")
             else:
-                _kernel_log.info(f"Non-clang toolchain ({effective_cc!r} → 'gcc'): GCC kernel build")
+                _build_log.info(f"Non-clang toolchain ({effective_cc!r} → 'gcc'): GCC kernel build")
 
         # ── Pre-flight: .SRCINFO drift regeneration ─────────────────────
         from sysforge.primitives import auto_repair as _ar
@@ -343,12 +339,12 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                 break
             except ToolchainMismatchError as e:
                 if _reactive_retry_used:
-                    _flag_log.error(
+                    _build_log.error(
                         "Toolchain mismatch persists after auto-retry — "
                         "aborting (check the PKGBUILD and profile flags)"
                     )
                     raise _build_failed_error(e)
-                _flag_log.warn(
+                _build_log.warn(
                     "Auto-retrying build with GCC-compatible flags "
                     "(rewriting clang-only flags like -flto=thin)"
                 )
@@ -492,10 +488,10 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             force_fetch=True,
         ))
         if result.status in (STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED):
-            _git_log.fatal(f"source sync failed for {pkgbuild_dir.name}: "
+            _build_log.fatal(f"source sync failed for {pkgbuild_dir.name}: "
                            f"{result.error or result.status}")
         if result.status == STATUS_DIVERGED:
-            _git_log.warn(
+            _build_log.warn(
                 f"{pkgbuild_dir.name}: upstream diverged — building with local PKGBUILD"
             )
     else:
@@ -517,7 +513,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         or pkgbuild_path.parent.name.startswith("lib32-")
     )
     if pkgbuild_has_hardcoded_gcc:
-        _flag_log.info(
+        _build_log.info(
             "PKGBUILD treated as hardcoded-gcc (build-time function invokes "
             "gcc/g++ or pkgname is lib32-*) — GCC flag guard will be applied "
             "even if the active profile sets CC=clang"
@@ -559,7 +555,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     if options.compiler_flags_extra
                     else pgo_flag
                 )
-                _pgo_log.info(f"Reusing profdata for PGO build: {pgo_info}")
+                _build_log.info(f"Reusing profdata for PGO build: {pgo_info}")
             else:
                 reason = pgo_info
                 if sys.stdin.isatty():
@@ -571,12 +567,12 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                         choices=("p", "plain", "s"),
                         default="s",
                         eof_default="s",
-                        tag="PGO",
+                        tag="BUILD",
                         level="WARN",
                     )
                 else:
                     choice = "s"
-                    _pgo_log.warn(
+                    _build_log.warn(
                         f"Non-interactive: skipping pgo_llvm_toolchain build for "
                         f"{pkgname} ({reason})",
                     )
@@ -585,7 +581,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                         f"[PGO] Skipped {pkgname!r}: {reason}. "
                         "Run 'sysforge run toolchain' to regenerate profdata."
                     )
-                _pgo_log.warn(f"{pkgname}: Building without PGO: {reason}")
+                _build_log.warn(f"{pkgname}: Building without PGO: {reason}")
 
         extracted_profile = None
         if build_mode in ("patched_pkgbuild", "kernel"):
@@ -679,7 +675,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 ]
                 if _fresh_profraw:
                     _total_bytes = sum(p.stat().st_size for p in _fresh_profraw)
-                    _pgo_log.fatal(
+                    _build_log.fatal(
                         f"{len(_fresh_profraw)} stale .profraw files "
                         f"({_total_bytes / 1024 / 1024:.1f} MiB) in {_pgo_store} — "
                         "instrumented LLVM binaries may be installed on this system. "
@@ -693,7 +689,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                             _f.unlink()
                         except OSError:
                             pass
-                    _pgo_log.info(
+                    _build_log.info(
                         f"Purged {len(_orphan_profraw)} orphaned .profraw file(s) "
                         f"({_orphan_bytes / 1024 / 1024:.1f} MiB) from {_pgo_store} "
                         "(prior run residue; current build produced none)"

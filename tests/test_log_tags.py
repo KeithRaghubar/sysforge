@@ -115,14 +115,12 @@ def test_makepkg_invoke_tags():
 
 
 def test_makepkg_wrapper_tags():
-    # ABI / CACHE / PATCH relocated (P2a); CONF -> makepkg_conf (P2b.4);
-    # MAKEPKG -> makepkg_invoke + ENV -> makepkg_env/invoke (P2b.5). The
-    # remaining tags are the orchestrator's own + the not-yet-split sites.
-    assert makepkg_wrapper._build_log._tag   == "[BUILD]"
-    assert makepkg_wrapper._flag_log._tag    == "[FLAG]"
-    assert makepkg_wrapper._git_log._tag     == "[GIT]"
-    assert makepkg_wrapper._kernel_log._tag  == "[KERNEL]"
-    assert makepkg_wrapper._pgo_log._tag     == "[PGO]"
+    # P2b.6c: the orchestrator is single-tag [BUILD]. Its residual FLAG/GIT/
+    # KERNEL/PGO narration (GCC-mismatch retry loop, source-sync result, kernel
+    # LLVM=1 injection, PGO multi-pass coordination) was orchestration narration
+    # and collapsed to [BUILD]; the pure concerns keep their own homes
+    # (makepkg_flags [FLAG], kernel stage [KERNEL], aur [GIT]).
+    assert makepkg_wrapper._build_log._tag == "[BUILD]"
 
 
 def test_makepkg_wrapper_relocated_tags_gone():
@@ -133,6 +131,11 @@ def test_makepkg_wrapper_relocated_tags_gone():
     assert not hasattr(makepkg_wrapper, "_conf_log")    # P2b.4
     assert not hasattr(makepkg_wrapper, "_makepkg_log") # P2b.5
     assert not hasattr(makepkg_wrapper, "_env_log")     # P2b.5 (ENV fully relocated)
+    # P2b.6c: residual concern loggers collapsed into [BUILD].
+    assert not hasattr(makepkg_wrapper, "_flag_log")    # P2b.6c → [BUILD]
+    assert not hasattr(makepkg_wrapper, "_git_log")     # P2b.6c → [BUILD]
+    assert not hasattr(makepkg_wrapper, "_kernel_log")  # P2b.6c → [BUILD]
+    assert not hasattr(makepkg_wrapper, "_pgo_log")     # P2b.6c → [BUILD]
 
 
 def test_profile_tags():
