@@ -93,7 +93,7 @@ Three layers:
 sysforge/
 ├── sysforge/
 │   ├── __init__.py
-│   ├── cli.py                         # CLI entry point and subcommand wiring
+│   ├── cli.py                         # CLI entry: argv preprocessing + argparse parser construction + verb dispatch (verb classes live in their per-command modules)
 │   ├── log.py                         # structured logging (stderr + optional file output)
 │   ├── ui/
 │   │   ├── __init__.py
@@ -102,12 +102,20 @@ sysforge/
 │   ├── resolve.py                     # sysforge resolve subcommand
 │   ├── update.py                      # sysforge update subcommand
 │   ├── build_core.py                  # shared build engine behind `build` + `update` (dep prep, build loop, install)
+│   ├── build_cmd.py                   # sysforge build subcommand (BuildVerb; routes through build_core)
+│   ├── run_cmd.py                     # sysforge run namespace verbs (pipeline/hardware/reconfigure/toolchain/packages/kernel)
+│   ├── env_cmd.py                     # sysforge env subcommand (read-only env-chain inspector)
+│   ├── completions_cmd.py             # sysforge completions data sink (consumed by _sysforge)
 │   ├── converge.py                    # sysforge converge subcommand (flag drift detection)
 │   ├── doctor.py                      # sysforge doctor subcommand (ABI/linkage health check)
 │   ├── fetch.py                       # sysforge fetch subcommand (download PKGBUILDs, no build)
 │   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove)
 │   ├── state_cmd.py                   # sysforge state namespace (list/repair) — build_state.toml
 │   ├── setup_cmd.py                   # sysforge setup subcommand (pacman IgnoreGroup = sf-build guard)
+│   ├── verbs/
+│   │   ├── base.py                    # Verb ABC + PreCheckResult/ExecResult result types
+│   │   ├── runner.py                  # run_verb dispatch + sentinel wrapping
+│   │   └── helpers.py                 # shared verb helpers (load_config_with_overrides)
 │   └── primitives/
 │       ├── paths.py                   # config path constants + resolve_packages_path()
 │       ├── stage_ownership.py         # stage→package ownership registry (update skip bootstrap)
@@ -712,7 +720,7 @@ The kernel and packages stage sentinels close the audit gap where an interrupted
 
 ## CLI Verb Framework
 
-Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `resolve`, `env`, `setup`, `log`, `packages …`, `state …`, `run …`) is implemented as a `Verb` subclass in `sysforge/verbs/base.py` and dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` is unchanged — `args.func` is now a `Verb` factory rather than a bare function, and `main()` resolves it via `sys.exit(run_verb(args.func(), args))`.
+Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `resolve`, `env`, `setup`, `log`, `completions`, `packages …`, `state …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `completions_cmd.py`, `converge.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(run_verb(args.verb_cls(), args))`.
 
 **Three-phase contract.** Each verb implements:
 
