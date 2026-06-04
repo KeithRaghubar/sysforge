@@ -38,6 +38,10 @@ from sysforge.primitives.pkgbuild_meta import has_hardcoded_gcc, parse_pkgbuild
 # Flag-string manipulation lives in makepkg_flags (owns the [FLAG] tag).
 # Re-exported here so emit_makepkg_conf and the CLI/update/converge call sites
 # that import `expand_makepkg_flags` from makepkg_wrapper keep working.
+from sysforge.primitives.makepkg_artifacts import (
+    _find_built_packages,
+    _parse_built_pkg_filename,
+)
 from sysforge.primitives.makepkg_flags import expand_makepkg_flags  # noqa: F401  (re-export)
 from sysforge.primitives.makepkg_flags import (
     _detect_linker_from_ldflags,
@@ -901,16 +905,6 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         raise cpe
 
 
-def _find_built_packages(build_dir: Path) -> list:
-    """Return .pkg.tar* files in build_dir (excludes .sig files).
-
-    Matches both compressed (.pkg.tar.zst, .pkg.tar.xz) and uncompressed
-    (.pkg.tar) packages — the latter is produced when PKGEXT='.pkg.tar'.
-    """
-    return [p for p in Path(build_dir).glob("*.pkg.tar*")
-            if not p.name.endswith(".sig")]
-
-
 def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
     """Install the .pkg.tar* artifacts in ``pkgbuild_dir`` via ``pacman -U``.
 
@@ -934,47 +928,6 @@ def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
     if result.returncode != 0:
         raise RuntimeError(f"pacman -U failed (exit {result.returncode})")
     return pkgs
-
-
-# Trailing compression suffix is optional: PKGEXT='.pkg.tar' produces
-# uncompressed package files, and `makepkg --packagelist` always prints
-# names that match the configured PKGEXT.
-_PKG_FILENAME_EXT = re.compile(r"\.pkg\.tar(?:\.[^.]+)?$")
-
-
-def _parse_built_pkg_filename(pkgname: str, filename: str) -> tuple[str, str, str] | None:
-    """
-    Parse a built Arch package filename into ``(epoch, pkgver, pkgrel)``.
-
-    Expected form: ``<pkgname>-[epoch:]<pkgver>-<pkgrel>-<arch>.pkg.tar[.<ext>]``.
-    Returns None if the filename does not match this layout for ``pkgname``.
-
-    This is the canonical post-build source of truth for a package's version:
-    the filename always carries the fully resolved values, whereas the static
-    PKGBUILD parser intentionally leaves shell parameter-expansion forms like
-    ``${_ver/[a-z]/.${_ver//[0-9.]/}}`` untouched. Anchoring on the known
-    ``pkgname`` is required because pkgnames may themselves contain hyphens
-    (e.g. ``openssl-1.1``).
-    """
-    m = _PKG_FILENAME_EXT.search(filename)
-    if not m:
-        return None
-    stem = filename[:m.start()]
-    prefix = pkgname + "-"
-    if not stem.startswith(prefix):
-        return None
-    rest = stem[len(prefix):]
-    try:
-        ver_rel, _arch = rest.rsplit("-", 1)
-        ver_part, pkgrel = ver_rel.rsplit("-", 1)
-    except ValueError:
-        return None
-    epoch = "0"
-    if ":" in ver_part:
-        epoch, _, ver_part = ver_part.partition(":")
-    if not ver_part or not pkgrel:
-        return None
-    return (epoch, ver_part, pkgrel)
 
 
 def _build_failed_error(cause: Exception, message: str | None = None) -> RuntimeError:
