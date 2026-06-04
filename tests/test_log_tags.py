@@ -109,10 +109,9 @@ def test_makepkg_invoke_tags():
 
 def test_makepkg_wrapper_tags():
     # ABI / CACHE / PATCH relocated (P2a); CONF -> makepkg_conf (P2b.4);
-    # MAKEPKG -> makepkg_invoke (P2b.5). The remaining tags are the
-    # orchestrator's own + the not-yet-split sites.
+    # MAKEPKG -> makepkg_invoke + ENV -> makepkg_env/invoke (P2b.5). The
+    # remaining tags are the orchestrator's own + the not-yet-split sites.
     assert makepkg_wrapper._build_log._tag   == "[BUILD]"
-    assert makepkg_wrapper._env_log._tag     == "[ENV]"
     assert makepkg_wrapper._flag_log._tag    == "[FLAG]"
     assert makepkg_wrapper._git_log._tag     == "[GIT]"
     assert makepkg_wrapper._kernel_log._tag  == "[KERNEL]"
@@ -126,6 +125,7 @@ def test_makepkg_wrapper_relocated_tags_gone():
     assert not hasattr(makepkg_wrapper, "_patch_log")   # P2a
     assert not hasattr(makepkg_wrapper, "_conf_log")    # P2b.4
     assert not hasattr(makepkg_wrapper, "_makepkg_log") # P2b.5
+    assert not hasattr(makepkg_wrapper, "_env_log")     # P2b.5 (ENV fully relocated)
 
 
 def test_profile_tags():

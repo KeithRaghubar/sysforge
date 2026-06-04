@@ -98,7 +98,6 @@ from sysforge import log
 # cache_probe.py, pkgbuild_patcher.py); CONF lives in makepkg_conf.py — this
 # orchestrator delegates to them.
 _build_log   = log.get_logger("BUILD")
-_env_log     = log.get_logger("ENV")
 _flag_log    = log.get_logger("FLAG")
 _git_log     = log.get_logger("GIT")
 _kernel_log  = log.get_logger("KERNEL")
