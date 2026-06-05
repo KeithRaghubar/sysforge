@@ -18,8 +18,9 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.update import (
-    _is_vcs, _check_one_pkgbase, _sync_sources, _assemble_package_set,
+    _check_one_pkgbase, _sync_sources, _assemble_package_set,
 )
+from sysforge.update_common import _is_vcs
 from sysforge.primitives.pacman import get_installed_version, get_foreign_packages
 from sysforge.primitives.build_state import BuildState
 
