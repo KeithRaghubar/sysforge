@@ -522,60 +522,40 @@ def test_installed_aur_without_override_uses_defaults(update_scenario, capsys):
     assert pkgbase in combined
 
 
-def test_foreign_split_package_resolves_pkgbase_from_local_db(tmp_path):
+def test_foreign_split_package_resolves_pkgbase_from_local_db(
+        update_scenario, no_network, monkeypatch):
     """Foreign split-package subnames (e.g. linux-custom-headers) collapse to
     their parent pkgbase via pacman's local DB %BASE%, even when not in AUR.
     AUR RPC must NOT be called when the local DB already resolves the base."""
     pkgbase = "linux-custom"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(
+    update_scenario.add_pkg(
+        pkgbase,
         f"pkgbase={pkgbase}\n"
         f"pkgname=({pkgbase} {pkgbase}-headers)\n"
-        f"pkgver=6.19.12.arch1\npkgrel=1\n"
+        f"pkgver=6.19.12.arch1\npkgrel=1\n",
     )
 
-    parsed = {"globals": {
-        "pkgbase": pkgbase,
-        "pkgname": [pkgbase, f"{pkgbase}-headers"],
-        "pkgver": "6.19.12.arch1", "pkgrel": "1", "epoch": "0",
-    }}
+    # Fake pacman local DB recording %BASE%=linux-custom for both subpackages,
+    # so the real get_pkgbase resolves the split parent without any AUR access.
+    local_db = update_scenario.src_root.parent / "pacman-local"
+    for sub in (pkgbase, f"{pkgbase}-headers"):
+        d = local_db / f"{sub}-6.19.11-1"
+        d.mkdir(parents=True)
+        (d / "desc").write_text(f"%NAME%\n{sub}\n%BASE%\n{pkgbase}\n")
+    monkeypatch.setattr("sysforge.primitives.pacman._LOCAL_DB_ROOT", local_db)
 
-    foreign = {pkgbase: "6.19.12.arch1-1", f"{pkgbase}-headers": "6.19.12.arch1-1"}
+    # Would-rebuild (installed 6.19.11 < PKGBUILD 6.19.12) so a single build proves
+    # both subpackages collapsed into one pkgbase group; no_network proves the
+    # local-DB resolution avoided any AUR RPC.
+    with patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+               update_scenario.src_root.parent / "no-kernel-toml"):
+        builds = update_scenario.run(
+            _make_args(),
+            installed={pkgbase: "6.19.11-1", f"{pkgbase}-headers": "6.19.11-1"},
+            foreign={pkgbase: "6.19.11-1", f"{pkgbase}-headers": "6.19.11-1"},
+        )
 
-    def fake_get_pkgbase(name, root=None):
-        if name in foreign:
-            return pkgbase
-        return None
-
-    results = []
-    with (
-        # Isolate from the workstation's real kernel.toml (which names
-        # linux-custom and would route it through the stage-owned skip).
-        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "no-kernel-toml"),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.get_pkgbase", side_effect=fake_get_pkgbase),
-        patch("sysforge.update.aur_info") as mock_aur_info,
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    # Both subpackages collapse into the single linux-custom pkgbase group.
-    assert {r.pkgbase for r in results} == {pkgbase}
-    # AUR RPC must not be called — local DB already supplied %BASE%.
-    mock_aur_info.assert_not_called()
+    assert len(builds) == 1
 
 
 def test_repo_package_without_override_is_not_iterated(fake_run, state_dir):
