@@ -37,7 +37,6 @@ import re
 import sys
 import tomllib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
@@ -87,6 +86,7 @@ from sysforge.pipeline.state import (
     resolve_state_dir,
 )
 from sysforge.packages_cmd import entry_is_inert
+from sysforge.update_result import _UpdateResult
 
 
 _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
@@ -211,21 +211,6 @@ _SYNC_STATUS_TO_ACTION = {
     STATUS_PURGE_REFUSED: "PURGE_REFUSED",
 }
 _SYNC_BLOCKING_STATUSES = frozenset(_SYNC_STATUS_TO_ACTION)
-
-
-@dataclass
-class _UpdateResult:
-    pkgbase: str
-    pkgnames: list
-    # Actions: UP_TO_DATE, NEEDS_REBUILD, NEEDS_PACMAN_UPGRADE, DEVEL,
-    # DEVEL_EVAL_FAILED, DOWNGRADE, PULL_FAILED, RATE_LIMITED, PURGE_REFUSED,
-    # SKIPPED_NO_CHECKUPDATES.
-    action: str
-    installed_ver: str | None
-    pkgbuild_ver: str | None
-    pkgbuild_path: Path | None
-    has_build_record: bool = True
-    source: str | None = None
 
 
 def _is_vcs(pkgbase: str) -> bool:
