@@ -1480,200 +1480,114 @@ def test_explicit_pkgname_overrides_stage_owned_skip(update_scenario):
 # Stage-owned packages — toolchain ownership filter (LLVM suite)
 # ---------------------------------------------------------------------------
 
-def _toolchain_owned_setup(tmp_path, args_extra=None, *, owner_in_state=False,
-                           compiler="llvm", enabled=True, toolchain_toml_present=True):
-    """Build the patches+args needed to exercise the toolchain stage-owned
-    filter for an LLVM-suite package (``llvm``).
-
-    Mirrors ``_stage_owned_setup`` but for the toolchain stage:
-      - ``owner_in_state``: toolchain stage has stamped ``owner_stage="toolchain"``.
-      - ``toolchain_toml_present`` + ``enabled`` + ``compiler``: drive the
-        ``stage_ownership`` config bootstrap fallback (active only for
-        enabled + compiler="llvm").
-    """
-    pkgbase = "llvm"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(
-        f"pkgname={pkgbase}\npkgver=22.1.6\npkgrel=1\n"
-    )
-
-    foreign = {pkgbase: "22.1.6-1"}
-    state_data: dict = {
-        pkgbase: {
-            "pkgver": "22.1.6", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-            "build_mode": "pgo_llvm_toolchain",
-        }
-    }
-    if owner_in_state:
-        state_data[pkgbase]["owner_stage"] = "toolchain"
-
-    args = _make_args(**(args_extra or {}))
-
-    toolchain_path = tmp_path / "toolchain.toml"
-    if toolchain_toml_present:
-        body = f"enabled = {str(enabled).lower()}\n"
-        if compiler is not None:
-            body += f'compiler = "{compiler}"\n'
-        toolchain_path.write_text(body)
-
-    results: list = []
-
-    def capture(res_list, a):
-        results.extend(res_list)
-
-    return (pkgbase, pkg_dir, foreign, state_data, args, toolchain_path,
-            results, capture)
-
-
-def test_toolchain_owned_llvm_skipped_by_default(tmp_path, capsys):
+def test_toolchain_owned_llvm_skipped_by_default(update_scenario, capsys):
     """An LLVM-suite package matched via the toolchain.toml (enabled + llvm)
-    bootstrap fallback is skipped + info-logged, even with no owner_stage stamp."""
-    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
-     capture) = _toolchain_owned_setup(tmp_path)
+    bootstrap fallback is skipped + info-logged, even with no owner_stage stamp.
 
+    Would-rebuild (installed 22.1.5 < PKGBUILD 22.1.6) so an empty build list
+    proves the skip.
+    """
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
+    toolchain_path.write_text('enabled = true\ncompiler = "llvm"\n')
     with (
-        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
         patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.get_pkgbase", return_value=pkgbase),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(),
+            installed={"llvm": "22.1.5-1"},
+            foreign={"llvm": "22.1.5-1"},
+        )
 
-    assert pkgbase not in {r.pkgbase for r in results}
+    assert builds == []  # toolchain-owned → skipped
     captured = capsys.readouterr()
     assert "toolchain-stage package" in captured.err
     assert "run `sysforge run toolchain`" in captured.err
 
 
-def test_toolchain_owned_via_build_state_marker_skipped(tmp_path):
+def test_toolchain_owned_via_build_state_marker_skipped(update_scenario):
     """The owner_stage="toolchain" marker is honored even without toolchain.toml."""
-    (pkgbase, _, foreign, state_data, args, _toolchain_path, results,
-     capture) = _toolchain_owned_setup(
-        tmp_path, owner_in_state=True, toolchain_toml_present=False,
-    )
-
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    update_scenario.record("llvm", "22.1.6", "1", owner_stage="toolchain")
     with (
-        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
         # Nonexistent toolchain.toml so the bootstrap fallback is inactive —
         # only the build_state marker should drive the skip.
-        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", tmp_path / "nope-toolchain.toml"),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH",
+              update_scenario.src_root.parent / "nope-toolchain.toml"),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(),
+            installed={"llvm": "22.1.5-1"},
+            foreign={"llvm": "22.1.5-1"},
+        )
 
-    assert pkgbase not in {r.pkgbase for r in results}
+    assert builds == []  # build_state owner_stage marker → skipped
 
 
-def test_toolchain_gcc_compiler_does_not_skip_llvm(tmp_path):
+def test_toolchain_gcc_compiler_does_not_skip_llvm(update_scenario):
     """Dual-toolchain parity: with toolchain.toml compiler="gcc" the fallback is
     inactive (register-only path owns no LLVM), so the LLVM package is NOT
     skipped — it flows through to the build set."""
-    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
-     capture) = _toolchain_owned_setup(tmp_path, compiler="gcc")
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "22.1.6",
-                          "pkgrel": "1", "epoch": "0"}}
-
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
+    toolchain_path.write_text('enabled = true\ncompiler = "gcc"\n')
     with (
-        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
         patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.vercmp", return_value=0),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(),
+            installed={"llvm": "22.1.5-1"},
+            foreign={"llvm": "22.1.5-1"},
+        )
 
-    assert pkgbase in {r.pkgbase for r in results}
+    assert len(builds) == 1  # gcc toolchain owns no LLVM → not skipped → builds
 
 
-def test_include_stage_owned_includes_toolchain_llvm(tmp_path):
+def test_include_stage_owned_includes_toolchain_llvm(update_scenario):
     """--include-stage-owned overrides the toolchain skip (compiler=llvm)."""
-    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
-     capture) = _toolchain_owned_setup(
-        tmp_path, args_extra={"include_stage_owned": True},
-    )
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "22.1.6",
-                          "pkgrel": "1", "epoch": "0"}}
-
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
+    toolchain_path.write_text('enabled = true\ncompiler = "llvm"\n')
     with (
-        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
         patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.vercmp", return_value=0),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(include_stage_owned=True),
+            installed={"llvm": "22.1.5-1"},
+            foreign={"llvm": "22.1.5-1"},
+        )
 
-    assert pkgbase in {r.pkgbase for r in results}
+    assert len(builds) == 1  # skip overridden → builds
 
 
-def test_explicit_pkgname_overrides_toolchain_skip(tmp_path):
+def test_explicit_pkgname_overrides_toolchain_skip(update_scenario):
     """Naming the LLVM package on the CLI opts it back in for that run."""
-    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
-     capture) = _toolchain_owned_setup(
-        tmp_path, args_extra={"pkgnames": ["llvm"]},
-    )
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "22.1.6",
-                          "pkgrel": "1", "epoch": "0"}}
-
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
+    toolchain_path.write_text('enabled = true\ncompiler = "llvm"\n')
     with (
-        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
         patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.vercmp", return_value=0),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(pkgnames=["llvm"]),
+            installed={"llvm": "22.1.5-1"},
+            foreign={"llvm": "22.1.5-1"},
+        )
 
-    assert pkgbase in {r.pkgbase for r in results}
+    assert len(builds) == 1  # explicit pkgname opts back in → builds
 
 
-def test_toolchain_owned_spirv_skipped_via_configured_list(tmp_path, capsys):
+def test_toolchain_owned_spirv_skipped_via_configured_list(update_scenario, capsys):
     """spirv-llvm-translator is NOT matched by is_llvm_pkgbase (prefix set), so
     only the toolchain.toml [packages] configured-set union skips it. This pins
     the ownership broadening: a configured-but-unmatched member is skipped."""
@@ -1682,45 +1596,26 @@ def test_toolchain_owned_spirv_skipped_via_configured_list(tmp_path, capsys):
     pkgbase = "spirv-llvm-translator"
     assert not is_llvm_pkgbase(pkgbase)  # the gap the broadening closes
 
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\npkgver=19.1.5\npkgrel=1\n")
-    foreign = {pkgbase: "19.1.5-1"}
-    state_data = {
-        pkgbase: {
-            "pkgver": "19.1.5", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
+    update_scenario.add_pkg(pkgbase, f"pkgname={pkgbase}\npkgver=19.1.5\npkgrel=1\n")
     # toolchain.toml owns LLVM (enabled + llvm) and lists spirv in non_pgo.
-    toolchain_path = tmp_path / "toolchain.toml"
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
     toolchain_path.write_text(
         'enabled = true\ncompiler = "llvm"\n'
         '[packages]\npgo = ["llvm"]\n'
         'non_pgo = ["clang", "spirv-llvm-translator"]\nlib32 = []\n'
     )
-    args = _make_args()
-    results: list = []
-
     with (
-        patch("sysforge.primitives.stage_ownership.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
         patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.get_pkgbase", return_value=pkgbase),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary",
-                   side_effect=lambda res, a: results.extend(res)):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(),
+            installed={pkgbase: "19.1.4-1"},
+            foreign={pkgbase: "19.1.4-1"},
+        )
 
-    assert pkgbase not in {r.pkgbase for r in results}
+    assert builds == []  # configured-list ownership → skipped
     assert "toolchain-stage package" in capsys.readouterr().err
 
 
