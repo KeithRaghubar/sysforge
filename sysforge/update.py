@@ -48,8 +48,7 @@ from sysforge.primitives.vcs_pkgver import evaluate_vcs_pkgver, peek_upstream_co
 from sysforge.primitives.aur import fetch_aur_name_cache, aur_info
 from sysforge.primitives.source_sync import (
     SyncRequest, SyncResult,
-    STATUS_DIVERGED, STATUS_FAILED, STATUS_PURGE_REFUSED, STATUS_RATE_LIMITED,
-    get_scheduler,
+    STATUS_DIVERGED, STATUS_PURGE_REFUSED, get_scheduler,
 )
 from sysforge.primitives.config import (
     load_config, load_sysforge_toml,
@@ -88,9 +87,9 @@ from sysforge.pipeline.state import (
 from sysforge.packages_cmd import entry_is_inert
 from sysforge.update_result import _UpdateResult
 from sysforge.update_summary import _print_summary
-
-
-_VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
+from sysforge.update_common import (
+    _SYNC_BLOCKING_STATUSES, _SYNC_STATUS_TO_ACTION, _is_vcs,
+)
 
 
 # Escape sequences to restore the terminal after an interrupted child that
@@ -200,22 +199,6 @@ def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
     if rendered:
         print(rendered)
     return True
-
-# Sync statuses that block the package from proceeding to build, and the
-# user-facing action each maps to in the update summary. Statuses absent
-# from this map (UP_TO_DATE, FETCHED, CLONED, DIVERGED, SKIPPED_OFFLINE,
-# SKIPPED_NO_TRACKING) are non-blocking — the build proceeds against the
-# local PKGBUILD.
-_SYNC_STATUS_TO_ACTION = {
-    STATUS_FAILED: "PULL_FAILED",
-    STATUS_RATE_LIMITED: "RATE_LIMITED",
-    STATUS_PURGE_REFUSED: "PURGE_REFUSED",
-}
-_SYNC_BLOCKING_STATUSES = frozenset(_SYNC_STATUS_TO_ACTION)
-
-
-def _is_vcs(pkgbase: str) -> bool:
-    return any(pkgbase.endswith(s) for s in _VCS_SUFFIXES)
 
 
 # ---------------------------------------------------------------------------
