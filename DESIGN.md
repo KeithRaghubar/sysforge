@@ -934,7 +934,7 @@ All report output (headers, issue lines, summary) flows through `log.ui` (→ st
 
 Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--hardware`, `--toolchain`, `--pacman`, `--state`, `--boot`, `--services`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db), `--apply` (drift-rebuild bridge), `--no-confirm`, `--dry-run`. New axes register in `_SYSTEM_AXIS_ORDER` / `_AXIS_FLAGS` / `_system_axes` with a `_collect_<axis>_findings` producer (looked up through module globals so tests can monkeypatch them).
 
-Log tag: `[DOC]`. Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — see the `provides_lookup.py` subsection for the public API. NEEDED-soname extraction reuses `abi_check.needed_sonames` (public since doctor calls it directly for ABI-issue suggestions). System-state probes live in `sysforge/primitives/graphics_probe.py` — log tag `[GFX]`, public API `check_system_graphics(config, *, gpu_vendors=None)`; invoked from `cmd_doctor` when `--graphics` is set.
+Log tag: `[DOCTOR]` (was `[DOC]` before P3.4). Primitive lookup helper lives in `sysforge/primitives/provides_lookup.py` — see the `provides_lookup.py` subsection for the public API. NEEDED-soname extraction reuses `abi_check.needed_sonames` (public since doctor calls it directly for ABI-issue suggestions). System-state probes live in `sysforge/primitives/graphics_probe.py` — log tag `[GFX]`, public API `check_system_graphics(config, *, gpu_vendors=None)`; invoked from `cmd_doctor` when `--graphics` is set.
 
 ### `setup_cmd.py`
 
@@ -1752,8 +1752,9 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 | `[CACHE]` | ccache/sccache passive monitoring (per-build hit/miss delta, system probes) |
 | `[CONF]` | Temp makepkg.conf generation, active consumes set |
 | `[ENV]` | Env var routing; per-key shell strip (INFO); skipped keys not in active_consumes (INFO); unclassified profile key warnings (WARN) |
-| `[FLAG]` | Flag-string transforms in `makepkg_flags` (linker detect/inject/replace, full-LTO & lld-flag strips, lib32 `-march` scrub); profile flag resolution (conflict-group firing, token replacement). Conf-time flag adjustments (CLI `--cc`/`--cxx`/`--ld`, linker guard) log under `[CONF]` (P2b.6a) |
-| `[GIT]` | Source-sync / git status in `aur` manifest operations. The build orchestrator's own source-sync result logs under `[BUILD]` (P2b.6c) |
+| `[FLAG]` | Flag-string transforms in `makepkg_flags` (linker detect/inject/replace, full-LTO & lld-flag strips, lib32 `-march` scrub). Conf-time flag adjustments (CLI `--cc`/`--cxx`/`--ld`, linker guard) log under `[CONF]` (P2b.6a); profile append-merge flag logging (conflict-group firing, token replacement) moved to `[PROFILE]` (P3.1) |
+| `[GIT]` | Local git plumbing in `git_ops` — fetch/compare, dirty detection, safe purge (split out of `aur` in P2e). The build orchestrator's own source-sync result logs under `[BUILD]` (P2b.6c) |
+| `[BUILD_PREP]` | Pre-build source acquisition — pkgctl checkout + validpgpkey import (`build_prep`; split from `[BUILD]` in P3.2) |
 | `[KERNEL]` | Kernel stage: lsmod snapshot, kconfig fragment, build, post-install. The build orchestrator's kernel `LLVM=1` injection logs under `[BUILD]` (P2b.6c) |
 | `[MAKEPKG]` | makepkg subprocess invocation + sudo-timeout retry: build status, inherited-shell-env scrub, toolchain-mismatch note, retry prompts (P2b.6b) |
 | `[PATCH]` | PKGBUILD flag extraction, patching, artifact lifecycle; noninteractive kconfig target replacement |
@@ -1765,20 +1766,19 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 | Tag | Covers |
 |---|---|
 | `[CONFIG]` | Config file loading (`profiles.toml`: flag profiles, conflict groups, consumes inference) |
-| `[GROUPS]` | Package group resolution |
-| `[PROFILE]` | Profile resolution, rule matching, extends chain |
+| `[PROFILE]` | Profile resolution, rule matching, extends chain, group resolution, consumes inference, and append-merge — the per-facet `[CONF]`/`[FLAG]`/`[GROUPS]` loggers collapsed into one `[PROFILE]` in P3.1 |
 | `[STATE]` | Pipeline state directory resolution |
 
 **AUR / package management:**
 
 | Tag | Covers |
 |---|---|
-| `[AUR]` | AUR name cache lifecycle, clone operations |
+| `[AUR]` | AUR name cache lifecycle, clone operations, and RPC queries (the separate `[MANIFEST]` tag collapsed into `[AUR]` in P3.5) |
+| `[AUR_RESOLVE]` | Transitive AUR dependency-graph resolution / build order (`aur_resolve`; split from the `resolve` verb's `[RESOLVE]` in P3.3) |
 | `[DEP]` | Soname dependency graph checks |
-| `[DOC]` | `sysforge doctor` — installed-package depends + linkage health check |
+| `[DOCTOR]` | `sysforge doctor` — installed-package depends + linkage health check (was `[DOC]` before P3.4) |
 | `[FAILURE]` | Failure scenario dispatch |
 | `[GFX]` | `graphics_probe` — system-state graphics checks (kernel params, compositor protocols, driver skew) |
-| `[MANIFEST]` | AUR RPC queries |
 | `[PACMAN]` | pacman database and install operations |
 | `[PROV]` | `provides_lookup` — reverse soname → package via `pacman -Fq` |
 | `[VERSION]` | Package version comparison |
@@ -1800,8 +1800,9 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 | Tag | Covers |
 |---|---|
-| `[CLI]` | CLI entry point (invocation logging) |
+| `[CLI]` | CLI entry point (invocation logging). The `build` verb logs under `[BUILD]` like the rest of the build subsystem (P3.3) |
 | `[CONVERGE]` | `sysforge converge` — drift detection and rebuild |
+| `[ENV_CHAIN]` | `sysforge env` — OS environment-inheritance chain snapshot (distinct from `[ENV]` build-env routing; P3.3) |
 | `[FETCH]` | `sysforge fetch` — PKGBUILD download/update |
 | `[UPDATE]` | `sysforge update` — version check and rebuild |
 
@@ -2070,7 +2071,7 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 **`[env_precedence]` config table — design cancelled.** The original design proposed a priority stack (wrapper profile = 100, makepkg.conf = 80, shell passthrough = 20, PKGBUILD export = 10) and an `[env_precedence]` TOML table to configure it. This design is superseded. The current model is simpler and more predictable: build tool vars (`CC`, `CFLAGS`, `LDFLAGS`, etc.) are stripped from the inherited shell env in `invoke_makepkg` before makepkg runs — the temp conf is the sole authority for all makepkg-managed keys. Shell env bleed-through is not a configurable priority; it is prevented entirely. SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are exempt — they are SysForge's own interface, not build tool vars, and are not stripped. The `[env_precedence]` table will not be implemented.
 
-**`[FLAG]` tag — partial coverage.** Emitted for: CLI toolchain overrides (`--cc`, `--cxx`, `--ld`), linker token replacement and injection, linker guard stripping, RUSTFLAGS linker reconciliation, GCC thin-LTO rewrite, GCC+lld LTO disabling, conflict group firing (logs group name, evicted tokens, inserted token), and prefix-match token replacement during `merge_extends`. Not emitted for: `apply_patch_pkgbuild` token changes (those use `[PATCH]`).
+**`[FLAG]` tag — partial coverage.** Emitted for: CLI toolchain overrides (`--cc`, `--cxx`, `--ld`), linker token replacement and injection, linker guard stripping, RUSTFLAGS linker reconciliation, GCC thin-LTO rewrite, GCC+lld LTO disabling. Profile-side append-merge logging — conflict-group firing (group name, evicted tokens, inserted token) and prefix-match token replacement during `merge_extends` — moved to `[PROFILE]` in P3.1. Not emitted for: `apply_patch_pkgbuild` token changes (those use `[PATCH]`).
 
 **`[CACHE]` ThinLTO probe is per-build, not per-run.** `emit_system_probes()` (ld.so mtime, pacman cache size) runs once at the start of each pipeline or build invocation. ThinLTO cache size is probed inside `_run_build()` because it requires the resolved profile's LDFLAGS — those are per-package, not available at run start. So ThinLTO appears in `[CACHE]` lines once per package that configures `--thinlto-cache-dir=` in its LDFLAGS. The emission itself lives in `cache_probe.report_thinlto_cache(ldflags)` — the single home for the `[CACHE]` ThinLTO line, called by both `emit_system_probes()` and the build orchestrator so `makepkg_wrapper` never spells the message itself. (P2a: the `[CACHE]`/`[ABI]`/`[PATCH]` tags are owned by `cache_probe`/`abi_check`/`pkgbuild_patcher` respectively; the build orchestrator delegates via `report_thinlto_cache` / `abi_check.report_post_build_abi` / `pkgbuild_patcher.warn_artifacts_left` and no longer holds those loggers.)
 
