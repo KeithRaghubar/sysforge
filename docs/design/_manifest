@@ -15,6 +15,14 @@
 06-config-layer.md
 07-pipeline-layer.md
 08-cli-verb-framework.md
+verbs/00-verbs.md
+verbs/fetch.md
+verbs/resolve.md
+verbs/update.md
+verbs/converge.md
+verbs/doctor.md
+verbs/setup.md
+verbs/state.md
 09-primitives-layer.md
 10-flag-profile-system.md
 11-makepkg-wrapper.md
