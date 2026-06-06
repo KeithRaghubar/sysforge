@@ -182,6 +182,13 @@ preflight_fresh() {
         echo "ERROR: shipped-file checks failed — fix the findings above and re-run." >&2
         exit 1
     fi
+    # De-personalization gate. Fails if personal identity/path tokens leak into
+    # the published surface (docs, source comments, shipped configs). Legitimate
+    # attribution (copyright/maintainer/--author) is allowed.
+    if ! make --no-print-directory check-personal >&2; then
+        echo "ERROR: de-personalization checks failed — fix the findings above and re-run." >&2
+        exit 1
+    fi
 }
 
 preflight_resume() {
