@@ -163,4 +163,6 @@ def test_git_ops_tags():
 
 
 def test_build_prep_tags():
-    assert build_prep._log._tag == "[BUILD]"
+    # P3.2: pre-build acquisition (pkgctl checkout + GPG keys) is not the build
+    # itself — retagged off the build subsystem's [BUILD] to its own module name.
+    assert build_prep._log._tag == "[BUILD_PREP]"

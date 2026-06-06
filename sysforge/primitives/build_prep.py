@@ -26,7 +26,11 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives.git_ops import purge_src
 
-_log = log.get_logger("BUILD")
+# [BUILD_PREP], not [BUILD]: this module does pre-build *acquisition* (clone the
+# packaging repo via pkgctl, import validpgpkeys) — it never compiles anything.
+# The build subsystem ([BUILD]: build_core + makepkg_wrapper) owns the build
+# itself; sharing its tag here was a leftover from when this code lived in aur.py.
+_log = log.get_logger("BUILD_PREP")
 
 
 def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
