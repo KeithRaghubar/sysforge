@@ -31,6 +31,7 @@ Multi-tag modules use named loggers: _<tag>_log (e.g. _conf_log, _build_log).
 import sysforge.build_cmd as build_cmd
 import sysforge.cli as cli
 import sysforge.converge as converge
+import sysforge.doctor as doctor
 import sysforge.fetch as fetch
 import sysforge.packages_cmd as packages_cmd
 import sysforge.pipeline.runner as runner
@@ -95,6 +96,7 @@ def test_version_tag():          assert version._log._tag          == "[VERSION]
 # makepkg_wrapper), the same way the update verb's modules share [UPDATE].
 def test_build_cmd_tag():        assert build_cmd._log._tag        == "[BUILD]"
 def test_aur_resolve_tag():      assert aur_resolve._log._tag      == "[AUR_RESOLVE]"
+def test_doctor_tag():           assert doctor._log._tag           == "[DOCTOR]"
 
 
 # ---------------------------------------------------------------------------

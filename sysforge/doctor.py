@@ -50,7 +50,10 @@ from sysforge.primitives.provides_lookup import (
     suggest_for_soname,
 )
 
-_log = log.get_logger("DOC")
+# [DOCTOR], matching the verb name (the runner derives the same tag from
+# verb.name at dispatch) — [DOC] read like "documentation" and broke the
+# every-verb-module-logs-under-its-verb-name convention.
+_log = log.get_logger("DOCTOR")
 
 
 # Issue-string soname extractors. Kept close to the formatters in
