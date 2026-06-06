@@ -16,8 +16,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
+
+# Placeholder line (in docs/design/00-header.md) replaced by the generated
+# Table of Contents, derived from the `##` section headings in the assembled
+# document. Keeps the TOC in sync automatically as sections move/rename.
+_TOC_MARKER = "<!--TOC-->"
 
 _BANNER = (
     "<!-- GENERATED FILE -- do not edit directly.\n"
@@ -43,12 +49,44 @@ def _manifest_files(repo: Path) -> list[Path]:
     return files
 
 
+def _slugify(title: str) -> str:
+    """GitHub-style heading anchor: lowercase, drop punctuation, spaces->hyphens."""
+    s = title.strip().lower()
+    s = re.sub(r"[^\w\s-]", "", s)   # drop everything but word chars, space, hyphen
+    s = re.sub(r"\s+", "-", s)
+    return s
+
+
+def _generate_toc(body: str) -> str:
+    """Build a numbered TOC from the `## ` section headings in body.
+
+    Skips fenced code blocks (``` ... ```), the TOC heading itself, and any
+    deeper headings (### and below) -- the TOC indexes top-level sections only.
+    """
+    headings: list[str] = []
+    in_code = False
+    for line in body.splitlines():
+        if line.lstrip().startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        m = re.match(r"^## (.+)$", line)   # exactly two hashes (### won't match)
+        if not m:
+            continue
+        title = m.group(1).strip()
+        if title.lower() == "table of contents":
+            continue
+        headings.append(title)
+    return "\n".join(
+        f"{i}. [{t}](#{_slugify(t)})" for i, t in enumerate(headings, 1)
+    )
+
+
 def render(repo: Path) -> str:
-    """Return the full generated DESIGN.md text (banner + concatenated sources)."""
-    parts = [_BANNER]
-    for path in _manifest_files(repo):
-        parts.append(path.read_text(encoding="utf-8"))
-    return "".join(parts)
+    """Return the full generated DESIGN.md text (banner + sources + injected TOC)."""
+    body = _BANNER + "".join(p.read_text(encoding="utf-8") for p in _manifest_files(repo))
+    return body.replace(_TOC_MARKER, _generate_toc(body))
 
 
 def main() -> int:

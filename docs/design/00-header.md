@@ -8,27 +8,7 @@ Current release is **<!--version-->v1.2.0<!--/version-->**. v0.1.0 shipped the p
 
 ## Table of Contents
 
-1. [Philosophy](#philosophy)
-2. [Distribution Model](#distribution-model)
-3. [Architecture Overview](#architecture-overview)
-4. [Directory Structure](#directory-structure)
-5. [Package Manifest](#package-manifest)
-6. [Config Layer](#config-layer)
-7. [Pipeline Layer](#pipeline-layer)
-8. [CLI Verb Framework](#cli-verb-framework)
-9. [Primitives Layer](#primitives-layer)
-10. [Flag Profile System](#flag-profile-system)
-11. [Makepkg Wrapper](#makepkg-wrapper)
-12. [Logging](#logging)
-13. [Man Pages](#man-pages)
-14. [Hardware Detection](#hardware-detection)
-15. [Cache Management](#cache-management)
-16. [Graphics Stack Build Order](#graphics-stack-build-order)
-17. [Release Plan](#release-plan)
-18. [Re-converge](#re-converge)
-19. [Known Gaps](#known-gaps)
-20. [V1.x Roadmap](#v1x-roadmap)
-21. [V2 Roadmap](#v2-roadmap)
+<!--TOC-->
 
 ---
 
