@@ -8,14 +8,13 @@ Public API:
     aur_clone(name, dest, *, ref=...) -> None              git clone from AUR into dest
     pkgctl_checkout(name, dest)       -> None              pkgctl repo clone into dest
     import_pgp_keys(pkgmeta)          -> None              recv any missing validpgpkeys
-    git_fetch_and_compare(dir, ...)   -> GitFetchOutcome   shallow fetch + HEAD compare (no destructive ops)
-    git_is_dirty(pkgbuild_dir)        -> bool              True if git repo has uncommitted changes
-    purge_src(pkgbuild_dir)           -> None              rm -rf pkgbuild_dir; fatal if git_is_dirty
     fetch_aur_name_cache()            -> Path | None       refresh ~/.config/sysforge/cache/aur-packages.txt
 
-Also exports TRANSIENT_GIT_ERRORS / RATE_LIMIT_GIT_ERRORS string tuples and
-``is_transient_git_error()`` / ``is_rate_limit_error()`` classifiers for
-callers that need to distinguish network flakes from AUR throttling.
+Local git plumbing (``git_fetch_and_compare`` / ``git_is_dirty`` /
+``purge_src`` / ``classify_head_vs_upstream`` and the
+``TRANSIENT_GIT_ERRORS`` / ``RATE_LIMIT_GIT_ERRORS`` classifiers) now lives in
+``primitives.git_ops``; it is re-exported from this module so existing
+``from sysforge.primitives.aur import …`` call sites are unchanged.
 """
 import gzip
 import json
@@ -28,15 +27,57 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.paths import USER_CACHE_DIR
+
+# Local git plumbing was split out into primitives.git_ops; re-export its
+# public surface so existing ``from sysforge.primitives.aur import …`` imports
+# and ``patch("sysforge.primitives.aur.<name>")`` targets keep working. The
+# names are listed in __all__ below, which marks them as an intentional
+# re-export for the linter.
+from sysforge.primitives.git_ops import (
+    GitFetchOutcome,
+    RATE_LIMIT_GIT_ERRORS,
+    TRANSIENT_GIT_ERRORS,
+    classify_head_vs_upstream,
+    git_fetch_and_compare,
+    git_is_dirty,
+    is_rate_limit_error,
+    is_transient_git_error,
+    purge_src,
+)
+
 _aur_log      = log.get_logger("AUR")
 _build_log    = log.get_logger("BUILD")
-_git_log      = log.get_logger("GIT")
 _manifest_log = log.get_logger("MANIFEST")
+
+__all__ = [
+    # AUR RPC / cache / clone / checkout — this module's own surface.
+    "aur_info",
+    "fetch_aur_name_cache",
+    "repo_packages",
+    "is_repo_package",
+    "pkgctl_checkout",
+    "import_pgp_keys",
+    "aur_clone",
+    "AUR_RPC_URL",
+    "AUR_GIT_BASE",
+    "AUR_PACKAGES_URL",
+    "AUR_CACHE_PATH",
+    "AUR_CACHE_MAX_AGE",
+    # Re-exported from primitives.git_ops (kept importable from here).
+    "GitFetchOutcome",
+    "git_fetch_and_compare",
+    "classify_head_vs_upstream",
+    "git_is_dirty",
+    "purge_src",
+    "is_transient_git_error",
+    "is_rate_limit_error",
+    "TRANSIENT_GIT_ERRORS",
+    "RATE_LIMIT_GIT_ERRORS",
+]
 
 
 AUR_RPC_URL       = "https://aur.archlinux.org/rpc/v5/info"
@@ -248,486 +289,6 @@ def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:
         _build_log.warn(f"GPG: keyserver fetch failed:\n{r.stderr.strip()}")
     else:
         _build_log.info("GPG: keyserver fetch succeeded")
-
-
-@dataclass
-class GitFetchOutcome:
-    """Result of a non-destructive shallow fetch + HEAD compare.
-
-    ``status`` values:
-      - ``not_a_repo``  — dir isn't a git repo; no action taken.
-      - ``no_tracking`` — no upstream configured; no action taken.
-      - ``up_to_date``  — HEAD already matches FETCH_HEAD.
-      - ``fetched``     — FF-merged FETCH_HEAD onto HEAD.
-      - ``diverged``    — can't fast-forward (divergent history or dirty
-                          working tree). Local PKGBUILD is kept untouched.
-                          Caller can surface and skip; user must rerun with
-                          ``--cleansrc`` if they want the destructive reset.
-      - ``rate_limited`` — git returned 429/503/502. No working-tree change.
-      - ``failed``      — transient or unknown error. No working-tree change.
-    """
-    status: str
-    head_before: str | None
-    head_after: str | None
-    error: str | None = None
-
-
-def git_fetch_and_compare(
-    pkgbuild_dir: Path,
-    *,
-    timeout: int | None = 30,
-    limiter=None,
-) -> GitFetchOutcome:
-    """Shallow-fetch upstream and report the outcome without destructive ops.
-
-    Replaces the old `git pull --rebase` flow. Never runs `rebase --abort`,
-    `reset --hard`, or `purge_src`; divergence is surfaced via the
-    ``diverged`` status so the caller (typically the sync scheduler) can
-    decide whether to skip the package or trigger an opt-in recovery.
-
-    When ``limiter`` is provided, the git invocation goes through
-    ``rate_limit.run_throttled_git`` so the Retry-After window is enforced
-    across RPC and git paths.
-    """
-    timeout = timeout or None  # 0 → disable
-
-    def _run(cmd: list[str]):
-        if limiter is not None:
-            from sysforge.primitives.rate_limit import run_throttled_git
-            return run_throttled_git(cmd, limiter, timeout=timeout)
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-
-    # 1. Is this a git repo at all?
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
-        capture_output=True,
-    )
-    if r.returncode != 0:
-        return GitFetchOutcome(status="not_a_repo", head_before=None, head_after=None)
-
-    # 2. Is there a tracking branch?
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse",
-         "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        _git_log.info(f"{pkgbuild_dir.name}: no tracking branch — skipping fetch")
-        return GitFetchOutcome(status="no_tracking", head_before=None, head_after=None)
-
-    tracking = r.stdout.strip()
-    # tracking looks like "origin/master" — split once, right-hand side is the branch.
-    if "/" in tracking:
-        remote, _, branch = tracking.partition("/")
-    else:
-        remote, branch = "origin", tracking
-
-    head_before = _rev_parse(pkgbuild_dir, "HEAD")
-
-    _git_log.info(f"Fetching {pkgbuild_dir.name} from {tracking}")
-
-    # 3. Shallow fetch.
-    try:
-        r = _run(["git", "-C", str(pkgbuild_dir), "fetch",
-                  "--depth=1", remote, branch])
-    except subprocess.TimeoutExpired:
-        err = f"git fetch timed out after {timeout}s"
-        _git_log.warn(f"{pkgbuild_dir.name}: {err}")
-        return GitFetchOutcome(
-            status="failed", head_before=head_before, head_after=None, error=err,
-        )
-
-    if r.returncode != 0:
-        combined = ((r.stdout or "") + (r.stderr or "")).strip()
-        status = "rate_limited" if is_rate_limit_error(combined) else "failed"
-        _git_log.warn(f"{pkgbuild_dir.name}: git fetch failed: {combined.splitlines()[0] if combined else 'no output'}")
-        return GitFetchOutcome(
-            status=status, head_before=head_before, head_after=None, error=combined,
-        )
-
-    fetch_head = _rev_parse(pkgbuild_dir, "FETCH_HEAD")
-    if fetch_head is None or head_before is None:
-        return GitFetchOutcome(
-            status="failed", head_before=head_before, head_after=fetch_head,
-            error="could not resolve HEAD / FETCH_HEAD after fetch",
-        )
-
-    # 4. Up-to-date?
-    if head_before == fetch_head:
-        return GitFetchOutcome(
-            status="up_to_date", head_before=head_before, head_after=head_before,
-        )
-
-    # 5. Can we fast-forward? (HEAD is ancestor of FETCH_HEAD AND working tree is clean)
-    ancestor = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "merge-base",
-         "--is-ancestor", "HEAD", "FETCH_HEAD"],
-        capture_output=True,
-    )
-    if ancestor.returncode != 0 or git_is_dirty(pkgbuild_dir):
-        err = (
-            f"divergent: HEAD {head_before[:10]} vs FETCH_HEAD {fetch_head[:10]}"
-            if ancestor.returncode != 0
-            else "working tree has local modifications"
-        )
-        _git_log.warn(f"{pkgbuild_dir.name}: {err} — keeping local PKGBUILD")
-        return GitFetchOutcome(
-            status="diverged", head_before=head_before, head_after=fetch_head,
-            error=err,
-        )
-
-    # 6. Fast-forward merge.
-    merge = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "merge", "--ff-only", "FETCH_HEAD"],
-        capture_output=True, text=True,
-    )
-    if merge.returncode != 0:
-        combined = ((merge.stdout or "") + (merge.stderr or "")).strip()
-        _git_log.warn(f"{pkgbuild_dir.name}: ff-merge failed: {combined}")
-        return GitFetchOutcome(
-            status="failed", head_before=head_before, head_after=fetch_head,
-            error=combined,
-        )
-
-    new_head = _rev_parse(pkgbuild_dir, "HEAD") or fetch_head
-    _git_log.info(f"  {pkgbuild_dir.name}: {head_before[:10]} → {new_head[:10]}")
-    return GitFetchOutcome(
-        status="fetched", head_before=head_before, head_after=new_head,
-    )
-
-
-def _rev_parse(pkgbuild_dir: Path, ref: str) -> str | None:
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", ref],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        return None
-    return r.stdout.strip() or None
-
-
-def _local_user_email(pkgbuild_dir: Path) -> str | None:
-    """Return ``git config user.email`` for ``pkgbuild_dir`` (repo or global).
-
-    Empty string / missing config → None. Whitespace is stripped.
-    """
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "config", "--get", "user.email"],
-        capture_output=True, text=True,
-    )
-    if r.returncode == 0 and r.stdout.strip():
-        return r.stdout.strip()
-    return None
-
-
-def classify_head_vs_upstream(
-    pkgbuild_dir: Path,
-) -> tuple[str, int, int]:
-    """Classify HEAD relative to its upstream tracking branch.
-
-    Returns ``(state, n_local, n_upstream)`` where ``state`` is one of:
-
-    * ``"not_a_repo"``        — directory has no ``.git``.
-    * ``"no_head"``            — git repo exists but ``HEAD`` is unresolvable
-      (empty clone, ``.git/`` only). Trivially safe to purge.
-    * ``"no_tracking"``        — ``@{u}`` does not resolve. Treated as a
-      local-only repo by ``git_is_dirty``.
-    * ``"clean"``              — HEAD == upstream.
-    * ``"behind"``             — HEAD is a strict ancestor of upstream
-      (local repo just out of date).
-    * ``"ahead"``              — upstream is a strict ancestor of HEAD
-      (operator has unpushed commits).
-    * ``"diverged_user"``      — HEAD and upstream share a common ancestor
-      but neither is descendant of the other, **and** at least one of the
-      ``@{u}..HEAD`` commits is authored by ``git config user.email``.
-    * ``"diverged_upstream"``  — same divergent shape, but no commits in
-      ``@{u}..HEAD`` are authored by the local user. Most likely the
-      upstream rewrote history (force-push); the local clone is logically
-      in-sync, just out of date. Treated as not-dirty.
-
-    ``n_local`` / ``n_upstream`` are commit counts for ``@{u}..HEAD`` and
-    ``HEAD..@{u}`` respectively (both 0 for ``clean``; ``n_local`` is the
-    "ahead" count for ``ahead``).
-    """
-    is_repo = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
-        capture_output=True,
-    ).returncode == 0
-    if not is_repo:
-        return "not_a_repo", 0, 0
-
-    has_head = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--verify", "--quiet", "HEAD"],
-        capture_output=True,
-    ).returncode == 0
-    if not has_head:
-        return "no_head", 0, 0
-
-    upstream = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse",
-         "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-        capture_output=True, text=True,
-    )
-    if upstream.returncode != 0:
-        return "no_tracking", 0, 0
-
-    def _count(spec: str) -> int:
-        r = subprocess.run(
-            ["git", "-C", str(pkgbuild_dir), "rev-list", "--count", spec],
-            capture_output=True, text=True,
-        )
-        if r.returncode != 0:
-            return 0
-        n = r.stdout.strip()
-        return int(n) if n.isdigit() else 0
-
-    n_local = _count("@{u}..HEAD")
-    n_upstream = _count("HEAD..@{u}")
-
-    if n_local == 0 and n_upstream == 0:
-        return "clean", 0, 0
-    if n_local == 0:
-        return "behind", 0, n_upstream
-    if n_upstream == 0:
-        return "ahead", n_local, 0
-
-    # Divergent histories — split on authorship.
-    local_email = _local_user_email(pkgbuild_dir)
-    if not local_email:
-        # No local identity to attribute commits to: be conservative and
-        # treat any divergent commit as the operator's work.
-        return "diverged_user", n_local, n_upstream
-
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "log",
-         "--format=%ae", "@{u}..HEAD"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        return "diverged_user", n_local, n_upstream
-    authors = {line.strip().lower() for line in r.stdout.splitlines() if line.strip()}
-    if local_email.lower() in authors:
-        return "diverged_user", n_local, n_upstream
-    return "diverged_upstream", n_local, n_upstream
-
-
-# A VCS packaging repo's PKGBUILD and .SRCINFO are routinely rewritten by
-# makepkg's ``pkgver()`` flow (updates ``pkgver=`` and may reset
-# ``pkgrel=1``). Those auto-bumps are not operator work and must not block
-# ``--cleansrc`` for ``-git``/``-svn``/``-hg``/``-bzr`` packages.
-_PKGVER_LINE_RE = _re.compile(r"^[+-]\s*(pkgver|pkgrel)\s*=\s*\S.*$")
-_VCS_IGNORABLE_PATHS = frozenset({"PKGBUILD", ".SRCINFO"})
-
-
-def _diff_is_pkgver_only(pkgbuild_dir: Path, path: str) -> bool:
-    """Return True iff ``git diff -U0`` for ``path`` only touches pkgver/pkgrel lines.
-
-    Used by ``git_is_dirty(..., is_vcs=True)`` to ignore makepkg's pkgver()
-    auto-bump pattern on VCS packaging repos. Fail-safe: any git error or
-    unexpected diff line makes this return False so the surrounding dirty
-    check keeps protecting the operator's work.
-    """
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir),
-         "diff", "-U0", "--no-color", "--", path],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        return False
-    saw_content = False
-    for line in r.stdout.splitlines():
-        if not line:
-            continue
-        # Skip diff metadata: file headers and hunk markers.
-        if line.startswith(("diff ", "index ", "--- ", "+++ ", "@@ ")):
-            continue
-        if line.startswith(("+", "-")):
-            if not _PKGVER_LINE_RE.match(line):
-                return False
-            saw_content = True
-    return saw_content
-
-
-def _uncommitted_dirty_paths(pkgbuild_dir: Path, *, is_vcs: bool) -> list[str]:
-    """Return the list of modified-tracked paths that count as dirty.
-
-    With ``is_vcs=True`` the helper filters out PKGBUILD/.SRCINFO entries
-    whose diff is restricted to pkgver=/pkgrel= line changes (makepkg's
-    pkgver() auto-bump). Returns an empty list on git error.
-    """
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "status",
-         "--short", "--untracked-files=no"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0 or not r.stdout.strip():
-        return []
-    paths: list[str] = []
-    for line in r.stdout.splitlines():
-        # Porcelain v1 short format: ``XY <path>`` where XY is two status
-        # chars, then a single space, then the path (rename targets use
-        # ``-> new`` but ``--short`` keeps both names on one line).
-        if len(line) < 4:
-            continue
-        path = line[3:].strip()
-        if not path:
-            continue
-        # Strip the rename-source half if present (``old -> new``); the
-        # destination is what makepkg / the operator actually wrote.
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1].strip()
-        if is_vcs and path in _VCS_IGNORABLE_PATHS \
-                and _diff_is_pkgver_only(pkgbuild_dir, path):
-            continue
-        paths.append(path)
-    return paths
-
-
-def git_is_dirty(pkgbuild_dir: Path, *, is_vcs: bool = False) -> bool:
-    """
-    Return True if pkgbuild_dir is a git repo with local modifications, defined as:
-
-    1. Uncommitted changes — staged or unstaged modifications to tracked files.
-       (Untracked files such as build artifacts are intentionally ignored.)
-    2. Ahead-of-upstream commits — commits on HEAD not on the tracking branch
-       (true unpushed work).
-    3. ``diverged_user`` — divergent histories where the local user authored
-       at least one of the ``@{u}..HEAD`` commits.
-    4. No tracking branch — the repo is entirely local with no upstream to
-       compare against, so it is treated as dirty by definition.
-
-    Empty repos (no HEAD), clean trees, ``behind`` (out of date but no local
-    work), and ``diverged_upstream`` (force-pushed upstream, no local commits
-    authored by the user) are all reported as not dirty.
-
-    Pass ``is_vcs=True`` for VCS packaging repos (``-git``/``-svn``/``-hg``/
-    ``-bzr``) where makepkg's ``pkgver()`` flow auto-rewrites the working-tree
-    ``PKGBUILD``/``.SRCINFO`` (updating ``pkgver=`` and possibly resetting
-    ``pkgrel=1``). Those mechanical auto-bumps are filtered out of the
-    uncommitted-tracked check; deliberate edits to other lines / other files
-    still count. The head-vs-upstream classification is unchanged.
-
-    Returns False if the directory is not a git repo or is clean and fully in sync
-    with its tracking branch.
-    """
-    state, _, _ = classify_head_vs_upstream(pkgbuild_dir)
-    if state in ("not_a_repo", "no_head"):
-        return False
-
-    # Uncommitted-tracked check is independent of the head-vs-upstream
-    # classification — a clean classification can still co-exist with
-    # uncommitted edits to PKGBUILD.
-    if _uncommitted_dirty_paths(pkgbuild_dir, is_vcs=is_vcs):
-        return True
-
-    return state in ("no_tracking", "ahead", "diverged_user")
-
-
-def _purge_refusal_message(pkgbuild_dir: Path, *, is_vcs: bool) -> str | None:
-    """Return the operator-facing reason for refusing to purge, or None.
-
-    Concrete causes (named in the message):
-      * uncommitted tracked changes — lists the paths so the operator knows
-        which file is protecting the repo.
-      * ahead-of-upstream commits.
-      * diverged_user (force-pushed upstream **with** local-user commits).
-      * no upstream tracking branch.
-    """
-    state, n_local, _ = classify_head_vs_upstream(pkgbuild_dir)
-    if state in ("not_a_repo", "no_head"):
-        return None
-
-    dirty_paths = _uncommitted_dirty_paths(pkgbuild_dir, is_vcs=is_vcs)
-    causes: list[str] = []
-    if dirty_paths:
-        causes.append(
-            "uncommitted tracked changes ("
-            + ", ".join(sorted(dirty_paths)) + ")"
-        )
-    if state == "ahead":
-        causes.append(f"{n_local} unpushed commit(s) ahead of upstream")
-    elif state == "diverged_user":
-        causes.append("diverged history with local-user-authored commits")
-    elif state == "no_tracking":
-        causes.append("no upstream tracking branch")
-
-    if not causes:
-        return None
-    return (
-        f"refusing to purge {pkgbuild_dir}: " + "; ".join(causes)
-        + " — commit/discard the change or pass --cleansrc-force"
-    )
-
-
-def purge_src(
-    pkgbuild_dir: Path, *, force: bool = False, is_vcs: bool = False,
-) -> None:
-    """
-    Remove pkgbuild_dir to allow a fresh clone on the next build.
-
-    Refuses (raises RuntimeError) if the directory is a git repo with local
-    work that would be destroyed: uncommitted tracked changes, unpushed
-    commits, diverged history with local-user commits, or no upstream
-    tracking branch (entirely-local repo). The error message names the
-    actual cause so the operator can fix it precisely.
-
-    Pass ``is_vcs=True`` for ``-git``/``-svn``/``-hg``/``-bzr`` packaging
-    repos so makepkg's ``pkgver()`` auto-bump of PKGBUILD/.SRCINFO does
-    not falsely block the purge. See ``git_is_dirty`` for the filter rule.
-
-    Pass ``force=True`` to bypass the dirty-tree guard and purge unconditionally
-    — the caller has already decided the local work is not worth preserving
-    (e.g. ``--cleansrc-force`` after upstream rewrote history).
-
-    A non-existent directory is a no-op. A non-git directory is purged
-    unconditionally — it has no commit history to protect.
-    """
-    if not pkgbuild_dir.exists():
-        return
-
-    is_git = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
-        capture_output=True,
-    ).returncode == 0
-
-    if is_git and not force:
-        reason = _purge_refusal_message(pkgbuild_dir, is_vcs=is_vcs)
-        if reason is not None:
-            raise RuntimeError(reason)
-
-    suffix = " (forced)" if force else ""
-    _git_log.warn(f"purging {pkgbuild_dir} for clean re-clone{suffix}")
-    shutil.rmtree(pkgbuild_dir)
-
-
-TRANSIENT_GIT_ERRORS = (
-    "Connection reset",
-    "Recv failure",
-    "Could not resolve host",
-    "TLS connection",
-    "early EOF",
-    "unexpected eof",  # OpenSSL 3.x: peer closed without close_notify
-    "RPC failed",
-)
-
-# Hard-stop errors: AUR is explicitly refusing us. Retrying extends the
-# penalty window, so callers must break immediately instead of looping.
-RATE_LIMIT_GIT_ERRORS = (
-    "error: 429",
-    "Too Many Requests",
-    "error: 503",
-    "error: 502",
-)
-
-
-def is_transient_git_error(err: str) -> bool:
-    """True for network flakes worth retrying (not rate limits)."""
-    return "timed out" in err or any(m in err for m in TRANSIENT_GIT_ERRORS)
-
-
-def is_rate_limit_error(err: str) -> bool:
-    """True when the server is explicitly throttling (429/503/502)."""
-    return any(m in err for m in RATE_LIMIT_GIT_ERRORS)
 
 
 def aur_clone(

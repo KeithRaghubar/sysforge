@@ -33,6 +33,7 @@ import sysforge.primitives.cache_probe as cache_probe
 import sysforge.primitives.config as config
 import sysforge.primitives.dep_analysis as dep_analysis
 import sysforge.primitives.failure as failure
+import sysforge.primitives.git_ops as git_ops
 import sysforge.primitives.makepkg_conf as makepkg_conf
 import sysforge.primitives.makepkg_env as makepkg_env
 import sysforge.primitives.makepkg_invoke as makepkg_invoke
@@ -148,5 +149,8 @@ def test_profile_tags():
 def test_aur_tags():
     assert aur._aur_log._tag      == "[AUR]"
     assert aur._build_log._tag    == "[BUILD]"
-    assert aur._git_log._tag      == "[GIT]"
     assert aur._manifest_log._tag == "[MANIFEST]"
+
+
+def test_git_ops_tags():
+    assert git_ops._log._tag == "[GIT]"
