@@ -146,7 +146,7 @@ def detect_orphan_artifacts(
     are intentionally NOT classified — the caller can't safely tell whether
     they're stale or kept on purpose (e.g. a build of a kernel branch with
     local commits the user wants to keep around for later install). The
-    rule per Keith's spec: if ``--prune`` wouldn't safely delete it, don't
+    guiding rule: if ``--prune`` wouldn't safely delete it, don't
     list it. ``.sig`` files are ignored.
     """
     from sysforge.primitives.version import vercmp  # avoid import cycle at module load
