@@ -53,8 +53,10 @@ from sysforge.primitives.git_ops import (
 )
 from sysforge.primitives.build_prep import import_pgp_keys, pkgctl_checkout
 
-_aur_log      = log.get_logger("AUR")
-_manifest_log = log.get_logger("MANIFEST")
+# One module, one tag. The RPC-query/clone narration previously logged under a
+# separate [MANIFEST] tag, but it is the same concern as the name-cache refresh
+# (talking to the AUR) — collapsed to a single [AUR] in P3.5.
+_log          = log.get_logger("AUR")
 
 __all__ = [
     # AUR RPC / cache / clone / checkout — this module's own surface.
@@ -112,12 +114,12 @@ def aur_info(names: list[str]) -> dict[str, dict]:
         with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT) as resp:
             data = json.loads(resp.read().decode())
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
-        _manifest_log.warn(f"AUR RPC query failed: {e}")
+        _log.warn(f"AUR RPC query failed: {e}")
         return {}
 
     results = data.get("results", [])
     found = {r["Name"]: r for r in results}
-    _manifest_log.info(f"AUR RPC: {len(found)}/{len(names)} found")
+    _log.info(f"AUR RPC: {len(found)}/{len(names)} found")
     return found
 
 
@@ -134,20 +136,20 @@ def fetch_aur_name_cache(force: bool = False) -> Path | None:
     if not force and cache.exists():
         age = time.time() - cache.stat().st_mtime
         if age < AUR_CACHE_MAX_AGE:
-            _aur_log.info(f"name cache is fresh ({int(age)}s old) — skipping refresh")
+            _log.info(f"name cache is fresh ({int(age)}s old) — skipping refresh")
             return cache
 
-    _aur_log.info(f"refreshing AUR name cache → {cache}")
+    _log.info(f"refreshing AUR name cache → {cache}")
     try:
         with urllib.request.urlopen(AUR_PACKAGES_URL, timeout=_REQUEST_TIMEOUT) as resp:
             raw = resp.read()
         names = gzip.decompress(raw).decode().splitlines()
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text("\n".join(n for n in names if n) + "\n")
-        _aur_log.info(f"AUR name cache updated: {len(names)} packages")
+        _log.info(f"AUR name cache updated: {len(names)} packages")
         return cache
     except (urllib.error.URLError, OSError, EOFError) as e:
-        _aur_log.warn(f"failed to refresh AUR name cache: {e}")
+        _log.warn(f"failed to refresh AUR name cache: {e}")
         return None
 
 
@@ -202,7 +204,7 @@ def aur_clone(
     if ref:
         extra += ["--branch", ref]
 
-    _manifest_log.info(f"Cloning {name!r} from AUR → {dest}")
+    _log.info(f"Cloning {name!r} from AUR → {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     for attempt in range(2):
@@ -216,7 +218,7 @@ def aur_clone(
         except subprocess.TimeoutExpired:
             shutil.rmtree(dest, ignore_errors=True)
             if attempt == 0:
-                _manifest_log.warn(
+                _log.warn(
                     f"{name!r}: AUR clone timed out after {timeout}s, retrying..."
                 )
                 time.sleep(2)
@@ -235,7 +237,7 @@ def aur_clone(
         # Rate limits are a hard "stop retrying" — any retry extends the window.
         if attempt == 0 and transient and not rate_limited:
             shutil.rmtree(dest, ignore_errors=True)
-            _manifest_log.warn(f"{name!r}: AUR clone hit transient error, retrying...")
+            _log.warn(f"{name!r}: AUR clone hit transient error, retrying...")
             time.sleep(2)
             continue
 

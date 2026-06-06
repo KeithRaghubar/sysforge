@@ -18,6 +18,9 @@ Phase 3 (re-tag to module/verb names; collapse cross-file tag reuse):
   - env_chain          [ENV_CHAIN]    (P3.3: env-inheritance diag ≠ makepkg_env [ENV];
                                        function-local logger, so no module-level _log)
   - aur_resolve._log   [AUR_RESOLVE]  (P3.3: AUR dep-graph ≠ resolve verb [RESOLVE])
+  - doctor._log        [DOCTOR]       (P3.4: was [DOC]; match the verb name)
+  - aur._log           [AUR]          (P3.5: collapsed [AUR]+[MANIFEST] → one;
+                                       aur.py was the last multi-logger module)
 
 Intentional cross-file tag sharing (one cohesive concept spanning modules — kept,
 mirroring the verb-tag convention in verbs/runner.py):
@@ -176,9 +179,12 @@ def test_profile_tag():
     assert not hasattr(profile, "_profile_log") # P3.1 → [PROFILE]
 
 
-def test_aur_tags():
-    assert aur._aur_log._tag      == "[AUR]"
-    assert aur._manifest_log._tag == "[MANIFEST]"
+def test_aur_tag():
+    # P3.5: aur.py is one concern (talking to the AUR) — the RPC/clone narration
+    # that logged under a separate [MANIFEST] collapsed into the single [AUR].
+    assert aur._log._tag == "[AUR]"
+    assert not hasattr(aur, "_aur_log")       # P3.5 → [AUR]
+    assert not hasattr(aur, "_manifest_log")  # P3.5 → [AUR]
 
 
 def test_git_ops_tags():
