@@ -1,3 +1,8 @@
+<!-- GENERATED FILE -- do not edit directly.
+     Source of truth: the modular files under docs/design/ (see
+     docs/design/index.md and docs/design/_manifest). Edit those, then run
+     `make design`; `make check-design` guards against drift. -->
+
 # SysForge Design Document
 
 SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles, tracks build state for update detection, and automates the full build lifecycle — from fetching PKGBUILDs to installing profiled packages. Pacman owns the package database; SysForge owns the build configuration layer above it.

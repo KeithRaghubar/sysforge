@@ -189,6 +189,12 @@ preflight_fresh() {
         echo "ERROR: de-personalization checks failed — fix the findings above and re-run." >&2
         exit 1
     fi
+    # DESIGN.md drift gate. DESIGN.md is generated from docs/design/; fail if the
+    # committed copy is stale (mirrors the manpage freshness check).
+    if ! make --no-print-directory check-design >&2; then
+        echo "ERROR: DESIGN.md is stale — run 'make design' and commit the result." >&2
+        exit 1
+    fi
 }
 
 preflight_resume() {

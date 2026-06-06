@@ -1,5 +1,5 @@
 .PHONY: all dev venv build install clean distclean test test-x lint coverage man \
-        check-shipped check-personal pre-release \
+        check-shipped check-personal design check-design pre-release \
         release-major release-minor release-patch \
         vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
@@ -64,9 +64,20 @@ check-shipped:
 check-personal:
 	uv run --no-sync python tools/check_personal.py
 
-# Composite gate: lint + tests + shipped-file consistency + impersonal docs.
-# Run before kicking off `make release-{major,minor,patch}`.
-pre-release: lint test check-shipped check-personal
+# Regenerate DESIGN.md from the modular sources under docs/design/ (concatenated
+# per docs/design/_manifest under a generated banner). DESIGN.md is generated --
+# edit the sources, then run this.
+design:
+	uv run --no-sync python tools/build_design.py
+
+# DESIGN.md drift gate (mirrors the manpage check). Fails if the committed
+# DESIGN.md is out of date with its docs/design/ sources. Wired into preflight.
+check-design:
+	uv run --no-sync python tools/build_design.py --check
+
+# Composite gate: lint + tests + shipped-file consistency + impersonal docs +
+# DESIGN.md freshness. Run before kicking off `make release-{major,minor,patch}`.
+pre-release: lint test check-shipped check-personal check-design
 
 release-major:
 	bash tools/release.sh --bump=major

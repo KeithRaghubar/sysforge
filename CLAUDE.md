@@ -1,6 +1,6 @@
 # SysForge — Claude Code Context
 
-Read DESIGN.md before proposing architecture or API changes. It is the source of truth for module layout, public APIs, CLI structure, feature status, and known gaps. Do not duplicate it here.
+Read DESIGN.md before proposing architecture or API changes. It is the source of truth for module layout, public APIs, CLI structure, feature status, and known gaps. Do not duplicate it here. **DESIGN.md is generated** — its source is the modular files under `docs/design/` (assembled by `make design` per `docs/design/_manifest`, guarded by `make check-design`). Edit the `docs/design/*.md` sources, not `DESIGN.md` directly; see `docs/design/index.md`.
 
 Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Config: TOML. The Makefile is the canonical entry point: `make test` / `make test-v` / `make lint` / `make release-{major,minor,patch}` / `make vm-*`. Don't invoke `pytest` directly.
 
@@ -18,7 +18,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 
 ## Project Conventions
 
-- **Doc update order**: DESIGN.md is the source of truth — update it first, then README.md, then CLAUDE.md. Don't update downstream docs without a corresponding DESIGN.md change.
+- **Doc update order**: the design docs are the source of truth — update the relevant `docs/design/*.md` source first (then run `make design` to regenerate DESIGN.md), then README.md, then CLAUDE.md. Don't edit the generated DESIGN.md directly, and don't update downstream docs without a corresponding `docs/design/` change.
 - **Completions stay in lockstep with the CLI**: `completions/_sysforge` is updated in the same change as the CLI surface, not as a follow-up.
 - **PKGBUILD parsing/detection/patching**: cross-check against `PKGBUILD(5)` before changing — easy to miss spec details (e.g. array vs string fields, escape rules). Arch-specific array families (`makedepends_x86_64`, `depends_aarch64`, etc.) are merged into their canonical key during `parse_pkgbuild`; downstream consumers (`resolve_consumes`, `match_rules`) see the merged list and never read the `_<arch>` keys directly. If a new array family is added to the PKGBUILD(5) spec, extend `_ARCH_ARRAY_FAMILIES` in `pkgbuild_meta.py`. The static parser also resolves bash brace expansion (`python-{build,installer,wheel}`) and array-parameter splices (`depends=("${_pydeps[@]/#/python-}")` via `_expand_array_refs`) against captured array globals — but it never sources the PKGBUILD, so command substitution / conditionals stay un-evaluated. Those survive as literal `${...}`/`$(...)` tokens; the AUR resolver (`aur_resolve._resolve_deps`) detects them via `_looks_unresolved` and falls back to AUR RPC `.SRCINFO` metadata for dep discovery, and the same guard (also in `pacman.collect_makedeps`) keeps junk tokens out of `pacman -S`/AUR queries. Don't hand unparsed tokens to pacman or add a parallel discovery path — extend `_apply_array_transform` for a new array-transform form, or rely on the RPC rescue.
 - **lib32-* flag scrubs live at conf emit, not the profile**: `emit_makepkg_conf(is_lib32=True)` strips `-march=native` and `-march=x86-64*` ISA levels from CFLAGS/CXXFLAGS **and** lld `--icf=*` tokens from LDFLAGS for `lib32-*` builds, at both the profile-override site and the system-conf passthrough (mirrored pair). The icf scrub is **unconditional on the effective linker** — 32-bit identical-code-folding breaks links for some lib32 packages (e.g. `lib32-lzo`) even under lld — unlike the linker-gated lld-flag strip (which only fires when the effective linker ≠ lld). Both guards exist because `[profiles.bare]` (the priority-30 destination for lib32-*) is silent on these keys and would otherwise let the system conf's host-arch flags pass through to an i686 build. Don't add an i686 march/icf per-profile rule — keep the scrubs centralised, and reuse `_strip_lld_flags` for any new lld-only token.
@@ -59,4 +59,4 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 ## Interaction Preferences
 
 - Be direct. Own mistakes and fix them immediately.
-- When a design decision is made, update DESIGN.md immediately in the same turn — don't wait to be reminded.
+- When a design decision is made, update the relevant `docs/design/*.md` source (and run `make design`) immediately in the same turn — don't wait to be reminded.
