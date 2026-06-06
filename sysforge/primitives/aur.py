@@ -1,28 +1,30 @@
 """
-aur.py — AUR RPC queries, git clone, pkgctl checkout, and GPG key import
+aur.py — AUR RPC queries, git clone, and AUR name-cache refresh
 
 Public API:
     repo_packages(names)              -> set[str]          subset of names present in pacman sync DBs
     is_repo_package(name)             -> bool              True if name is in pacman sync DBs
     aur_info(names)                   -> dict[str, dict]   batch AUR RPC v5 query (name → result)
     aur_clone(name, dest, *, ref=...) -> None              git clone from AUR into dest
-    pkgctl_checkout(name, dest)       -> None              pkgctl repo clone into dest
-    import_pgp_keys(pkgmeta)          -> None              recv any missing validpgpkeys
     fetch_aur_name_cache()            -> Path | None       refresh ~/.config/sysforge/cache/aur-packages.txt
 
-Local git plumbing (``git_fetch_and_compare`` / ``git_is_dirty`` /
-``purge_src`` / ``classify_head_vs_upstream`` and the
-``TRANSIENT_GIT_ERRORS`` / ``RATE_LIMIT_GIT_ERRORS`` classifiers) now lives in
-``primitives.git_ops``; it is re-exported from this module so existing
-``from sysforge.primitives.aur import …`` call sites are unchanged.
+Two neighbouring concerns were split into their own modules and are re-exported
+from here so existing ``from sysforge.primitives.aur import …`` call sites and
+``patch("sysforge.primitives.aur.<name>")`` targets are unchanged:
+
+  * local git plumbing — ``git_fetch_and_compare`` / ``git_is_dirty`` /
+    ``purge_src`` / ``classify_head_vs_upstream`` and the
+    ``TRANSIENT_GIT_ERRORS`` / ``RATE_LIMIT_GIT_ERRORS`` classifiers —
+    now lives in ``primitives.git_ops``.
+  * pre-build source acquisition — ``pkgctl_checkout`` (pkgctl repo clone)
+    and ``import_pgp_keys`` (validpgpkey setup) — now lives in
+    ``primitives.build_prep``.
 """
 import gzip
 import json
-import os
 import re as _re
 import shutil
 import subprocess
-import threading
 import time
 import urllib.error
 import urllib.parse
@@ -32,11 +34,12 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives.paths import USER_CACHE_DIR
 
-# Local git plumbing was split out into primitives.git_ops; re-export its
-# public surface so existing ``from sysforge.primitives.aur import …`` imports
-# and ``patch("sysforge.primitives.aur.<name>")`` targets keep working. The
-# names are listed in __all__ below, which marks them as an intentional
-# re-export for the linter.
+# git_ops (local git plumbing) and build_prep (pkgctl checkout + GPG key import)
+# were split out of this module; re-export their public surface so existing
+# ``from sysforge.primitives.aur import …`` imports and
+# ``patch("sysforge.primitives.aur.<name>")`` targets keep working. The names
+# are listed in __all__ below, which marks them as an intentional re-export for
+# the linter.
 from sysforge.primitives.git_ops import (
     GitFetchOutcome,
     RATE_LIMIT_GIT_ERRORS,
@@ -48,9 +51,9 @@ from sysforge.primitives.git_ops import (
     is_transient_git_error,
     purge_src,
 )
+from sysforge.primitives.build_prep import import_pgp_keys, pkgctl_checkout
 
 _aur_log      = log.get_logger("AUR")
-_build_log    = log.get_logger("BUILD")
 _manifest_log = log.get_logger("MANIFEST")
 
 __all__ = [
@@ -169,126 +172,6 @@ def is_repo_package(name: str) -> bool:
     """Return True if name exists in any pacman sync DB."""
     result = subprocess.run(["pacman", "-Si", name], capture_output=True)
     return result.returncode == 0
-
-
-def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
-    """
-    Clone the official Arch Linux packaging repo for name into dest via pkgctl.
-
-    pkgctl repo clone <name> run in dest.parent creates dest.parent/<name>/PKGBUILD.
-    Raises RuntimeError on failure or timeout.
-
-    Output is streamed line-by-line to the build log so progress is visible at
-    -vvv on slow networks (cloning from gitlab.archlinux.org can take minutes).
-
-    If ``dest`` exists but has no PKGBUILD, it's a leftover from an aborted
-    prior clone — pkgctl exits 0 with "Skip cloning: Directory exists" in
-    that case, silently masking the missing checkout. Purge first so the
-    re-clone runs (purge_src refuses if the leftover has uncommitted work).
-    """
-    timeout = timeout or None  # 0 → disable
-    if (dest.exists()
-            and (dest / ".git").exists()
-            and not (dest / "PKGBUILD").exists()):
-        purge_src(dest)
-    _build_log.info(f"Checking out {name!r} from official repos → {dest}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        proc = subprocess.Popen(
-            ["pkgctl", "repo", "clone", "--protocol=https", name],
-            cwd=str(dest.parent),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
-    except FileNotFoundError:
-        raise RuntimeError(
-            "pkgctl not found on PATH. Install it with: sudo pacman -S --needed devtools"
-        )
-
-    output_lines: list[str] = []
-    proc_stdout = proc.stdout
-    assert proc_stdout is not None  # set above by stdout=subprocess.PIPE
-
-    def _drain():
-        for line in proc_stdout:
-            stripped = line.rstrip()
-            output_lines.append(stripped)
-            _build_log.debug(stripped)
-
-    drainer = threading.Thread(target=_drain, daemon=True)
-    drainer.start()
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        drainer.join(timeout=1)
-        shutil.rmtree(dest, ignore_errors=True)
-        raise RuntimeError(
-            f"pkgctl checkout timed out after {timeout}s for {name!r}. "
-            "Increase [git] clone_timeout in sysforge.toml on slow networks."
-        )
-    drainer.join(timeout=1)
-
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"pkgctl checkout failed for {name!r}:\n" + "\n".join(output_lines).strip()
-        )
-
-
-def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:
-    """
-    Ensure all validpgpkeys in pkgmeta are present in the GPG keyring.
-
-    Strategy (in order):
-    1. Import any bundled .asc files from keys/pgp/ next to the PKGBUILD.
-    2. Check which validpgpkeys are still missing from the keyring.
-    3. Fetch any remaining missing keys via gpg --recv-keys.
-
-    Import/fetch failures are logged as warnings — makepkg will surface a
-    clearer error if a key is still absent when signature verification runs.
-    """
-    keys = pkgmeta.get("globals", {}).get("validpgpkeys", [])
-    if not keys:
-        return
-
-    _build_log.info(f"GPG: {len(keys)} validpgpkey(s) required")
-
-    # Step 1: import bundled keys from keys/pgp/ if present
-    keys_dir = pkgbuild_path.parent / "keys" / "pgp"
-    if keys_dir.is_dir():
-        asc_files = sorted(keys_dir.glob("*.asc"))
-        if asc_files:
-            _build_log.info(f"GPG: importing {len(asc_files)} bundled key(s) from {keys_dir}")
-            r = subprocess.run(
-                ["gpg", "--import", *[str(f) for f in asc_files]],
-                capture_output=True, text=True,
-            )
-            if r.returncode != 0:
-                _build_log.warn(f"GPG: bundled import failed:\n{r.stderr.strip()}")
-            else:
-                _build_log.info("GPG: bundled import succeeded")
-
-    # Step 2: check which keys are still missing
-    missing = [
-        key for key in keys
-        if subprocess.run(["gpg", "--list-keys", key], capture_output=True).returncode != 0
-    ]
-
-    if not missing:
-        _build_log.info(f"GPG: all {len(keys)} key(s) present in keyring")
-        return
-
-    # Step 3: fetch remaining keys from keyserver
-    _build_log.info(f"GPG: {len(missing)}/{len(keys)} key(s) missing, fetching via keyserver")
-    r = subprocess.run(["gpg", "--recv-keys", *missing], capture_output=True, text=True)
-    if r.returncode != 0:
-        _build_log.warn(f"GPG: keyserver fetch failed:\n{r.stderr.strip()}")
-    else:
-        _build_log.info("GPG: keyserver fetch succeeded")
 
 
 def aur_clone(

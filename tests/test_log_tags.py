@@ -29,6 +29,7 @@ import sysforge.pipeline.stages.toolchain as toolchain
 import sysforge.pipeline.state as state
 import sysforge.primitives.abi_check as abi_check
 import sysforge.primitives.aur as aur
+import sysforge.primitives.build_prep as build_prep
 import sysforge.primitives.cache_probe as cache_probe
 import sysforge.primitives.config as config
 import sysforge.primitives.dep_analysis as dep_analysis
@@ -148,9 +149,12 @@ def test_profile_tags():
 
 def test_aur_tags():
     assert aur._aur_log._tag      == "[AUR]"
-    assert aur._build_log._tag    == "[BUILD]"
     assert aur._manifest_log._tag == "[MANIFEST]"
 
 
 def test_git_ops_tags():
     assert git_ops._log._tag == "[GIT]"
+
+
+def test_build_prep_tags():
+    assert build_prep._log._tag == "[BUILD]"
