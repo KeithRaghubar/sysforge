@@ -11,8 +11,24 @@ Tag decisions recorded here:
   - pkgbuild_patcher   [PATCH] only   (stray [BUILD] on line 115 fixed to [PATCH])
   - toolchain._log     [TOOLCHAIN]    ([PGO] appears only in message text, not as tag)
 
+Phase 3 (re-tag to module/verb names; collapse cross-file tag reuse):
+  - profile._log       [PROFILE]      (P3.1: collapsed CONF/FLAG/GROUPS/PROFILE → one)
+  - build_prep._log    [BUILD_PREP]   (P3.2: pre-build acquisition, not the build)
+  - build_cmd._log     [BUILD]        (P3.3: build verb logs under its verb name)
+  - env_chain          [ENV_CHAIN]    (P3.3: env-inheritance diag ≠ makepkg_env [ENV];
+                                       function-local logger, so no module-level _log)
+  - aur_resolve._log   [AUR_RESOLVE]  (P3.3: AUR dep-graph ≠ resolve verb [RESOLVE])
+
+Intentional cross-file tag sharing (one cohesive concept spanning modules — kept,
+mirroring the verb-tag convention in verbs/runner.py):
+  - [UPDATE]   update.py + update_{assemble,sync,version,...}    (the update verb)
+  - [BUILD]    build_cmd + build_core + makepkg_wrapper          (the build subsystem)
+  - [LLVM]     llvm_state + llvm_targets                         (LLVM toolchain build)
+  - [PACKAGES] packages_cmd + pipeline.stages.packages           (packages.toml domain)
+
 Multi-tag modules use named loggers: _<tag>_log (e.g. _conf_log, _build_log).
 """
+import sysforge.build_cmd as build_cmd
 import sysforge.cli as cli
 import sysforge.converge as converge
 import sysforge.fetch as fetch
@@ -29,6 +45,7 @@ import sysforge.pipeline.stages.toolchain as toolchain
 import sysforge.pipeline.state as state
 import sysforge.primitives.abi_check as abi_check
 import sysforge.primitives.aur as aur
+import sysforge.primitives.aur_resolve as aur_resolve
 import sysforge.primitives.build_prep as build_prep
 import sysforge.primitives.cache_probe as cache_probe
 import sysforge.primitives.config as config
@@ -74,6 +91,10 @@ def test_failure_tag():          assert failure._log._tag          == "[FAILURE]
 def test_pacman_tag():           assert pacman._log._tag           == "[PACMAN]"
 def test_pkgbuild_patcher_tag(): assert pkgbuild_patcher._log._tag == "[PATCH]"
 def test_version_tag():          assert version._log._tag          == "[VERSION]"
+# P3.3: the build verb shares [BUILD] with the build subsystem (build_core +
+# makepkg_wrapper), the same way the update verb's modules share [UPDATE].
+def test_build_cmd_tag():        assert build_cmd._log._tag        == "[BUILD]"
+def test_aur_resolve_tag():      assert aur_resolve._log._tag      == "[AUR_RESOLVE]"
 
 
 # ---------------------------------------------------------------------------

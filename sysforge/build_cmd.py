@@ -17,9 +17,10 @@ from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
 from sysforge.verbs import ExecResult, PreCheckResult, Verb
 from sysforge.verbs.helpers import load_config_with_overrides
 
-# Transitional: BuildVerb logs under [CLI] (the tag it used inline in cli.py).
-# Phase 3 rationalizes verb tags; until then this preserves the prior output.
-_log = log.get_logger("CLI")
+# The build verb logs under its own name, matching every other verb command
+# module (update -> [UPDATE], packages -> [PACKAGES], converge -> [CONVERGE])
+# and the [BUILD] tag the verb runner derives from verb.name at dispatch.
+_log = log.get_logger("BUILD")
 
 
 def _cleansrc_target_dir(pkg: str, config: dict) -> Path | None:

@@ -24,7 +24,10 @@ from sysforge.primitives.aur import aur_info, repo_packages
 from sysforge.primitives.config import find_pkgbuild
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
-_log = log.get_logger("RESOLVE")
+# [AUR_RESOLVE], not [RESOLVE]: this resolves the transitive AUR *dependency
+# graph* (build order), a different operation from the `resolve` verb's
+# profile/rule debugging — they share the word, not the concern.
+_log = log.get_logger("AUR_RESOLVE")
 
 # Version constraint operators, longest first so >= matches before >
 _VERSION_OPS = (">=", "<=", "!=", "=", ">", "<")
