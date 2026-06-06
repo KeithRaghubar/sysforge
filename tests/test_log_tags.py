@@ -140,11 +140,17 @@ def test_makepkg_wrapper_relocated_tags_gone():
     assert not hasattr(makepkg_wrapper, "_pgo_log")     # P2b.6c → [BUILD]
 
 
-def test_profile_tags():
-    assert profile._conf_log._tag    == "[CONF]"
-    assert profile._flag_log._tag    == "[FLAG]"
-    assert profile._groups_log._tag  == "[GROUPS]"
-    assert profile._profile_log._tag == "[PROFILE]"
+def test_profile_tag():
+    # P3.1: profile.py is one module, one concern (the resolve pipeline) — its
+    # four historical facet loggers (CONF/FLAG/GROUPS/PROFILE) collapsed to a
+    # single [PROFILE]. CONF/FLAG remain owned by the makepkg subsystem
+    # (makepkg_conf/makepkg_flags), so the cross-file reuse is gone too.
+    assert profile._log._tag == "[PROFILE]"
+    # Guard the collapse: the per-facet loggers must not reappear.
+    assert not hasattr(profile, "_conf_log")    # P3.1 → [PROFILE]
+    assert not hasattr(profile, "_flag_log")    # P3.1 → [PROFILE]
+    assert not hasattr(profile, "_groups_log")  # P3.1 → [PROFILE]
+    assert not hasattr(profile, "_profile_log") # P3.1 → [PROFILE]
 
 
 def test_aur_tags():
