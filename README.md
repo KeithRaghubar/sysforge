@@ -4,7 +4,7 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 
 The default build profile uses the system gcc; LLVM (clang/lld) is fully supported but opt-in — install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `CC=clang`/`CXX=clang++` in a user profile, or use `sysforge run toolchain --compiler=llvm`.
 
-**Current status:** <!--version-->v1.2.0<!--/version-->. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `converge`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are opt-in (`enabled = false` by default in their respective `.toml` files) — building a custom toolchain or kernel is a deliberate choice; users who want the system compiler and a stock pacman kernel leave them disabled.
+**Current status:** <!--version-->v1.2.0<!--/version-->. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are opt-in (`enabled = false` by default in their respective `.toml` files) — building a custom toolchain or kernel is a deliberate choice; users who want the system compiler and a stock pacman kernel leave them disabled. `sysforge converge` is deprecated — its flag-drift detection is folded into `sysforge update` (reported by default; `--rebuild-on-flag-drift` rebuilds drifted packages, `--offline --dry-run` is the read-only report).
 
 ---
 
@@ -65,7 +65,7 @@ sysforge update --cleansrc
 #    or after a manual makepkg run. Implies --offline.
 sysforge update --install-only
 
-# 8b. LLVM safety pre-flight. fetch / update / build / converge surface
+# 8b. LLVM safety pre-flight. fetch / update / build surface
 #     each LLVM-toolchain pkgbase in scope (variant, origin, dirty/diverged
 #     state, install version, resolved build_mode) before acting; suppress
 #     with --no-llvm-preflight or [safety] llvm_preflight = false in

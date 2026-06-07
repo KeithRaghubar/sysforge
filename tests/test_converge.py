@@ -5,19 +5,23 @@ primitives.
 Covers:
   - serialize_flags (profile.py)
   - flags_string in build_state record/reload
-  - _diff_flags (converge.py)
+  - diff_flags (now in primitives/flag_drift.py; imported here as _diff_flags)
   - cmd_converge: IN_SYNC, DRIFTED, NO_FLAGS, NO_PKGBUILD, PACMAN_ONLY
   - --apply path (makepkg_wrapper called for DRIFTED packages)
+
+Note: flag-drift detection moved to primitives/flag_drift.py (shared with
+`sysforge update` Phase 4.3); see test_flag_drift.py for the primitive's own
+unit tests. converge is deprecated and delegates to that primitive.
 """
 import tomllib
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import pytest
 
 from sysforge.primitives.profile import serialize_flags, SYSFORGE_KEYS
 from sysforge.primitives.build_state import BuildState
-from sysforge.converge import _diff_flags, cmd_converge
+from sysforge.primitives.flag_drift import diff_flags as _diff_flags
+from sysforge.converge import cmd_converge
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +203,31 @@ _BARE_FLAGS = serialize_flags({"CFLAGS": "-O2"})
 # cmd_converge — status cases
 # ---------------------------------------------------------------------------
 
+def test_converge_emits_deprecation_notice(tmp_path, capsys):
+    """The deprecated verb still runs, but warns (on stderr) to use `update`."""
+    _make_pkgbuild(tmp_path, "htop")
+    _make_state(tmp_path, {
+        "htop": {
+            "pkgbase": "htop",
+            "pkgbuild_dir": str(tmp_path / "htop"),
+            "build_mode": "profiled",
+            "flags_string": _BARE_FLAGS,
+        }
+    })
+    args = _make_args(tmp_path)
+
+    with patch("sysforge.converge.load_config", return_value=_MINIMAL_CONFIG), \
+         patch("sysforge.converge.load_conflict_groups", return_value={}):
+        cmd_converge(args)
+
+    err = capsys.readouterr().err
+    assert "deprecated" in err.lower()
+    assert "sysforge update" in err
+    # Detection still works (notice is non-fatal): htop is in sync.
+
+
 def test_converge_in_sync(tmp_path, capsys):
-    pb = _make_pkgbuild(tmp_path, "htop")
+    _make_pkgbuild(tmp_path, "htop")
     _make_state(tmp_path, {
         "htop": {
             "pkgbase": "htop",
@@ -221,7 +248,7 @@ def test_converge_in_sync(tmp_path, capsys):
 
 
 def test_converge_drifted(tmp_path, capsys):
-    pb = _make_pkgbuild(tmp_path, "mesa")
+    _make_pkgbuild(tmp_path, "mesa")
     _make_state(tmp_path, {
         "mesa": {
             "pkgbase": "mesa",
@@ -251,7 +278,7 @@ def test_converge_drifted(tmp_path, capsys):
 
 
 def test_converge_no_flags(tmp_path, capsys):
-    pb = _make_pkgbuild(tmp_path, "htop")
+    _make_pkgbuild(tmp_path, "htop")
     _make_state(tmp_path, {
         "htop": {
             "pkgbase": "htop",
@@ -371,7 +398,7 @@ def test_converge_pkgname_filter_unknown_warns_and_skips(tmp_path, capsys):
 
 
 def test_converge_apply_rebuilds_drifted(tmp_path, capsys):
-    pb = _make_pkgbuild(tmp_path, "mesa")
+    _make_pkgbuild(tmp_path, "mesa")
     _make_state(tmp_path, {
         "mesa": {
             "pkgbase": "mesa",
@@ -403,7 +430,7 @@ def test_converge_apply_rebuilds_drifted(tmp_path, capsys):
 
 
 def test_converge_apply_skips_in_sync(tmp_path, capsys):
-    pb = _make_pkgbuild(tmp_path, "htop")
+    _make_pkgbuild(tmp_path, "htop")
     _make_state(tmp_path, {
         "htop": {
             "pkgbase": "htop",
@@ -425,8 +452,8 @@ def test_converge_apply_skips_in_sync(tmp_path, capsys):
 
 def test_converge_summary_counts(tmp_path, capsys):
     """Summary line includes correct drifted/in-sync counts."""
-    pb_htop  = _make_pkgbuild(tmp_path, "htop")
-    pb_mesa  = _make_pkgbuild(tmp_path, "mesa")
+    _make_pkgbuild(tmp_path, "htop")
+    _make_pkgbuild(tmp_path, "mesa")
     _make_state(tmp_path, {
         "htop": {
             "pkgbase": "htop", "pkgbuild_dir": str(tmp_path / "htop"),

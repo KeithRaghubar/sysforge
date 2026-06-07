@@ -1,5 +1,7 @@
 ### `converge.py`
 
+> **Deprecated.** Flag-drift detection has been folded into `sysforge update` (Phase 4.3) — it is reported there by default, with `--rebuild-on-flag-drift` (or the `--rebuild-on-drift` umbrella) replacing `converge --apply`, and `sysforge update --offline --dry-run` giving the network-free read-only report. The `converge` verb still works for one release cycle but emits a deprecation notice on every run and will be removed. Both surfaces share `primitives/flag_drift.resolve_flag_drift`, so behaviour cannot diverge during the window. See §`update.py` → *Phase 4.3 — Flag drift*.
+
 Implements `sysforge converge` — the flag drift detector. Algorithm:
 
 1. Load `build_state.toml`. Group by `pkgbase`.

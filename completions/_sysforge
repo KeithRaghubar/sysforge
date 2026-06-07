@@ -37,7 +37,7 @@ _sysforge_commands() {
     'fetch:download PKGBUILD(s) into pkgbuild_src_dir without building'
     'update:check for and rebuild outdated sysforge-managed packages'
     'resolve:show which profile would apply to a package'
-    'converge:rebuild packages that have drifted from their profile'
+    'converge:(deprecated) flag-drift detect/repair — folded into update'
     'doctor:health-check installed package depends + linkage'
     'packages:manage packages.toml override entries (list, add, remove)'
     'state:inspect or repair build_state.toml (list, repair, orphans)'
@@ -148,8 +148,10 @@ _sysforge_update() {
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--no-toolchain-preflight[skip toolchain pre-flight (rust/cmake/meson + lib32 cross targets)]' \
     '--include-stage-owned[include packages owned by a pipeline stage (e.g. kernel-stage linux-custom)]' \
-    '--explain-drift[list packages built under a different toolchain variant than is active now, then exit]' \
+    '--explain-drift[list drifted packages (toolchain-variant + flag drift, with per-key diff), then exit]' \
     '--rebuild-on-toolchain-drift[promote UP_TO_DATE packages with toolchain drift to NEEDS_REBUILD]' \
+    '--rebuild-on-flag-drift[promote UP_TO_DATE packages with flag drift to NEEDS_REBUILD (replaces converge --apply)]' \
+    '--rebuild-on-drift[rebuild anything drifted: both toolchain and flag drift]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate profiles.toml]:file:_files' \

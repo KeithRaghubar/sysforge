@@ -430,6 +430,113 @@ def test_dry_run_no_build(update_scenario):
     assert builds == []
 
 
+# ---------------------------------------------------------------------------
+# Phase 4.3 — flag drift (folds in the deprecated `converge`)
+# ---------------------------------------------------------------------------
+
+def _seed_flag_drift(scenario, *, stored_flags="CFLAGS=-this-is-stale"):
+    """htop is version-current but recorded with stale flags -> flag-drifted.
+
+    Returns the (installed, foreign) maps for the run.
+    """
+    scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    scenario.record("htop", "3.4.1", "1", flags_string=stored_flags)
+    return {"htop": "3.4.1-1"}, {"htop": "3.4.1-1"}
+
+
+def test_flag_drift_reported_but_not_rebuilt_by_default(update_scenario, capsys):
+    """Version-current but flag-drifted -> reported, never rebuilt without a flag."""
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(), installed=installed, foreign=foreign,
+    )
+    assert builds == []  # detection only — no opt-in flag passed
+    captured = capsys.readouterr()
+    assert "flag drift" in (captured.out + captured.err).lower()
+
+
+def test_offline_dry_run_flag_drift_is_network_free(update_scenario, capsys):
+    """`update --offline --dry-run` is the read-only flag-drift report (no network)."""
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(offline=True, dry_run=True), installed=installed, foreign=foreign,
+    )
+    assert builds == []
+    captured = capsys.readouterr()
+    assert "flag drift" in (captured.out + captured.err).lower()
+    # offline must not have triggered any git fetch/clone against sources.
+    assert not any(
+        "git" in c and ("fetch" in c or "clone" in c)
+        for c in update_scenario.fake_run.commands
+    )
+
+
+def test_explain_drift_lists_flag_drift_and_exits(update_scenario, capsys):
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(explain_drift=True), installed=installed, foreign=foreign,
+    )
+    assert builds == []  # --explain-drift exits before Phase 5
+    out = capsys.readouterr().out
+    assert "different flags" in out
+    assert "htop" in out
+
+
+def test_rebuild_on_flag_drift_promotes_to_rebuild(update_scenario):
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    assert len(builds) == 1
+    pkgbuild_path = builds[0][0][0] if builds[0][0] else builds[0][1]["pkgbuild_path"]
+    assert "htop" in str(pkgbuild_path)
+
+
+def test_rebuild_on_drift_umbrella_covers_flag_drift(update_scenario):
+    """--rebuild-on-drift opts into both axes, so flag drift rebuilds too."""
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(rebuild_on_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    assert len(builds) == 1
+
+
+def test_flag_drift_rebuild_installs_through_phase6_filter(update_scenario):
+    """A promoted flag-drift rebuild flows through Phase 5/6: built artifact is
+    installed, gated by filter_pkgs_to_installed (htop is installed -> kept)."""
+    update_scenario.use_pkgdest()
+    installed, foreign = _seed_flag_drift(update_scenario)
+    update_scenario.build_produces(
+        "htop", {"htop-3.4.1-1-x86_64.pkg.tar.zst": "htop"},
+    )
+    update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    installed_files = [f for call in update_scenario.installed_pkg_files() for f in call]
+    assert any("htop-3.4.1-1" in f for f in installed_files)
+
+
+def test_not_profiled_package_is_not_flag_drift_checked(update_scenario, capsys):
+    """A pacman-mode (non-profiled) package is never a flag-drift candidate."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    # build_mode pacman (not profiled) -> outside flag-drift scope
+    from sysforge.primitives.build_state import BuildState
+    bs = BuildState(update_scenario.state_dir)
+    bs.record("htop", "3.4.1", "1", "0", "htop",
+              update_scenario.src_root / "htop", build_mode="pacman",
+              flags_string="CFLAGS=-stale")
+    bs.save()
+    builds = update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed={"htop": "3.4.1-1"}, foreign={"htop": "3.4.1-1"},
+    )
+    assert builds == []
+    assert "flag drift" not in capsys.readouterr().out.lower()
+
+
 def test_devel_flag_triggers_vcs_rebuild(update_scenario):
     """--devel + resolved pkgver newer than installed → build runs once."""
     update_scenario.add_pkg(
