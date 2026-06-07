@@ -44,11 +44,11 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sysforge.primitives.makepkg_wrapper import (
+from sysforge.primitives.makepkg_env import resolve_env_vars
+from sysforge.primitives.makepkg_invoke import (
     AlreadyBuilt,
     ToolchainMismatchError,
     invoke_makepkg,
-    resolve_env_vars,
 )
 
 
@@ -94,9 +94,9 @@ def _capture_invoke(pkgbuild_path, conf_path, resolved_profile, **kwargs):
     }
 
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+        with patch("sysforge.primitives.makepkg_invoke.subprocess.Popen",
                    side_effect=fake_popen):
-            with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+            with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                        side_effect=fake_run_with_pty):
                 invoke_makepkg(pkgbuild_path, conf_path, resolved_profile, **kwargs)
 
@@ -156,9 +156,9 @@ def _patch_makepkg(captured, *, lines=(), returncode=0):
     """Patch both subprocess.Popen (interactive branch) and run_with_pty
     (non-interactive branch). Whichever code path the invoke takes,
     `captured` ends up with cmd and env."""
-    with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+    with patch("sysforge.primitives.makepkg_invoke.subprocess.Popen",
                side_effect=_fake_popen_factory(captured)):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_fake_pty_factory(captured, lines=lines, returncode=returncode)):
             yield
 
@@ -360,7 +360,7 @@ def _capture_popen_kwargs(pkgbuild_path, conf_path, resolved_profile, **kwargs):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root", "USER": "testuser", "LANG": "C"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen",
+        with patch("sysforge.primitives.makepkg_invoke.subprocess.Popen",
                    side_effect=fake_popen):
             invoke_makepkg(pkgbuild_path, conf_path, resolved_profile, **kwargs)
     return captured.get("kwargs", {})
@@ -396,9 +396,9 @@ def test_noninteractive_uses_pty(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root", "USER": "testuser", "LANG": "C"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=fake_pty):
-            with patch("sysforge.primitives.makepkg_wrapper.subprocess.Popen") as popen:
+            with patch("sysforge.primitives.makepkg_invoke.subprocess.Popen") as popen:
                 invoke_makepkg(pb, conf, {}, interactive=False)
                 assert not popen.called, "non-interactive must NOT call subprocess.Popen directly"
 
@@ -447,7 +447,7 @@ def test_toolchain_mismatch_raises_on_flto_thin_rejection(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 2)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -476,7 +476,7 @@ def test_toolchain_mismatch_raises_on_unrecognized_thin_flag(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 2)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -506,7 +506,7 @@ def test_toolchain_mismatch_raises_on_curly_quoted_error(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 2)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -535,7 +535,7 @@ def test_toolchain_mismatch_not_raised_on_unrelated_failure(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 1)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -562,7 +562,7 @@ def test_toolchain_mismatch_not_raised_on_success(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 0)):
             invoke_makepkg(pb, conf, {})  # must not raise
 
@@ -583,7 +583,7 @@ def test_already_built_raises_on_exit_13(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 13)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -613,7 +613,7 @@ def test_already_built_raises_on_message_match(tmp_path):
 
     clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
     with patch.dict(os.environ, clean_env, clear=True):
-        with patch("sysforge.primitives.makepkg_wrapper.run_with_pty",
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
                    side_effect=_pty_with_lines(output, 1)):
             try:
                 invoke_makepkg(pb, conf, {})
@@ -788,145 +788,96 @@ def _make_update_args(**overrides):
     return SimpleNamespace(**defaults)
 
 
-def _run_update_capture_build_calls(args, pkgbuild_path):
+def _run_update_capture_build_calls(update_scenario, args):
     """
-    Run cmd_update with a single fake package that needs rebuilding.
-    Returns the list of kwargs dicts from each build_run call.
+    Run the real cmd_update through the update_scenario harness with a single
+    foreign package that needs rebuilding (installed 0.9 < PKGBUILD 1.0), and
+    return the list of BuildOptions (as ``vars()`` dicts) passed to each faked
+    build — so the -C/--cleanbuild and strip-flag handling can be asserted on
+    ``extra_flags`` / ``strip_flags`` without any sysforge.update.* patching.
     """
-    from sysforge.update import cmd_update
-
-    pkgbase = "testpkg"
-    build_calls = []
-
-    fake_entry = {
-        "pkgbase": pkgbase,
-        "pkgbuild_dir": str(pkgbuild_path.parent),
-        "pkgver": "0.9",
-        "pkgrel": "1",
-        "epoch": None,
-        "build_mode": "profiled",
-        "flags_string": "",
-        "built_at": "2026-01-01T00:00:00",
-    }
-
-    def fake_build_run(_path, options=None):
-        build_calls.append(vars(options) if options is not None else {})
-
-    def fake_parse_pkgbuild(_path):
-        return {"globals": {"pkgver": "1.0", "pkgrel": "1"}}
-
-    fake_overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with patch("sysforge.update.BuildState") as MockBS, \
-         patch("sysforge.update.fetch_aur_name_cache"), \
-         patch("sysforge.update.resolve_state_dir",
-               return_value=(Path("/tmp/sf-state-test"), False)), \
-         patch("sysforge.update.load_config", return_value={}), \
-         patch("sysforge.update._load_overrides",
-               return_value=fake_overrides), \
-         patch("sysforge.update.parse_pkgbuild",
-               side_effect=fake_parse_pkgbuild), \
-         patch("sysforge.update.get_all_installed_packages",
-               return_value={pkgbase: "0.9-1"}), \
-         patch("sysforge.update.get_foreign_packages",
-               return_value={pkgbase: "0.9-1"}), \
-         patch("sysforge.update.vercmp", return_value=1), \
-         patch("sysforge.build_core.collect_makedeps", return_value=[]), \
-         patch("sysforge.build_core.filter_missing_deps", return_value=[]), \
-         patch("sysforge.update.get_pkgdest", return_value=None), \
-         patch("sysforge.build_core.snapshot_pkg_dir", return_value=[]), \
-         patch("sysforge.build_core.batch_install_pkgs", return_value=True), \
-         patch("sysforge.primitives.makepkg_wrapper.run",
-               side_effect=fake_build_run), \
-         patch("sysforge.primitives.cache_probe.reset_session"), \
-         patch("sysforge.primitives.cache_probe.emit_session_report"):
-
-        bs_instance = MagicMock()
-        bs_instance.all_packages.return_value = {pkgbase: fake_entry}
-        MockBS.return_value = bs_instance
-
-        cmd_update(args)
-
-    return build_calls
+    update_scenario.add_pkg("testpkg", "pkgname=testpkg\npkgver=1.0\npkgrel=1\n")
+    update_scenario.run(
+        args,
+        installed={"testpkg": "0.9-1"},
+        foreign={"testpkg": "0.9-1"},
+    )
+    calls = []
+    for a, k in update_scenario.builds:
+        options = a[1] if len(a) > 1 else k.get("options")
+        calls.append(vars(options) if options is not None else {})
+    return calls
 
 
-def test_update_default_adds_cleanbuild_flag(tmp_path):
-    pb = _fake_pkgbuild(tmp_path)
+def test_update_default_adds_cleanbuild_flag(update_scenario):
     args = _make_update_args()
-    calls = _run_update_capture_build_calls(args, pb)
+    calls = _run_update_capture_build_calls(update_scenario, args)
     assert calls, "build_run should have been called once"
     extra_flags = calls[0].get("extra_flags") or []
     assert "-C" in extra_flags
 
 
-def test_update_no_cleanbuild_removes_c_from_extra_flags(tmp_path):
-    pb = _fake_pkgbuild(tmp_path)
+def test_update_no_cleanbuild_removes_c_from_extra_flags(update_scenario):
     args = _make_update_args(no_cleanbuild=True)
-    calls = _run_update_capture_build_calls(args, pb)
+    calls = _run_update_capture_build_calls(update_scenario, args)
     assert calls
     extra_flags = calls[0].get("extra_flags") or []
     assert "-C" not in extra_flags
     assert "--cleanbuild" not in extra_flags
 
 
-def test_update_syncdeps_always_in_strip_flags(tmp_path):
-    pb = _fake_pkgbuild(tmp_path)
+def test_update_syncdeps_always_in_strip_flags(update_scenario):
     args = _make_update_args()
-    calls = _run_update_capture_build_calls(args, pb)
+    calls = _run_update_capture_build_calls(update_scenario, args)
     assert calls
     strip = calls[0].get("strip_flags") or set()
     assert "--syncdeps" in strip
     assert "-s" in strip
 
 
-def test_update_install_always_in_strip_flags(tmp_path):
-    pb = _fake_pkgbuild(tmp_path)
+def test_update_install_always_in_strip_flags(update_scenario):
     args = _make_update_args()
-    calls = _run_update_capture_build_calls(args, pb)
+    calls = _run_update_capture_build_calls(update_scenario, args)
     assert calls
     strip = calls[0].get("strip_flags") or set()
     assert "--install" in strip
     assert "-i" in strip
 
 
-def test_update_no_cleanbuild_adds_cleanbuild_to_strip_flags(tmp_path):
+def test_update_no_cleanbuild_adds_cleanbuild_to_strip_flags(update_scenario):
     """--no-cleanbuild must also strip --cleanbuild/-C from profile makepkg_flags."""
-    pb = _fake_pkgbuild(tmp_path)
     args = _make_update_args(no_cleanbuild=True)
-    calls = _run_update_capture_build_calls(args, pb)
+    calls = _run_update_capture_build_calls(update_scenario, args)
     assert calls
     strip = calls[0].get("strip_flags") or set()
     assert "--cleanbuild" in strip
     assert "-C" in strip
 
 
-def test_update_default_does_not_strip_cleanbuild_from_profile(tmp_path):
+def test_update_default_does_not_strip_cleanbuild_from_profile(update_scenario):
     """Default run: strip_flags must NOT contain --cleanbuild/-C.
     The -C is added via extra_flags, not stripped from profile."""
-    pb = _fake_pkgbuild(tmp_path)
     args = _make_update_args(no_cleanbuild=False)
-    calls = _run_update_capture_build_calls(args, pb)
+    calls = _run_update_capture_build_calls(update_scenario, args)
     assert calls
     strip = calls[0].get("strip_flags") or set()
     assert "--cleanbuild" not in strip
     assert "-C" not in strip
 
 
-def test_update_makepkg_m_flags_forwarded(tmp_path):
-    pb = _fake_pkgbuild(tmp_path)
+def test_update_makepkg_m_flags_forwarded(update_scenario):
     args = _make_update_args(makepkg="--log --force")
-    calls = _run_update_capture_build_calls(args, pb)
+    calls = _run_update_capture_build_calls(update_scenario, args)
     assert calls
     extra_flags = calls[0].get("extra_flags") or []
     assert "--log" in extra_flags
     assert "--force" in extra_flags
 
 
-def test_update_makepkg_m_combined_short_flags_expanded(tmp_path):
+def test_update_makepkg_m_combined_short_flags_expanded(update_scenario):
     """Combined short flags like -lf are expanded to [-l, -f]."""
-    pb = _fake_pkgbuild(tmp_path)
     args = _make_update_args(makepkg="-lf")
-    calls = _run_update_capture_build_calls(args, pb)
+    calls = _run_update_capture_build_calls(update_scenario, args)
     assert calls
     extra_flags = calls[0].get("extra_flags") or []
     assert "-l" in extra_flags

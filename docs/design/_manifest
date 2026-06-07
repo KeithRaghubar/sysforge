@@ -1,0 +1,37 @@
+# Canonical order for assembling DESIGN.md from the modular sources.
+# One path (relative to docs/design/) per line; blank lines and #-comments
+# ignored. `make design` concatenates these in order under a generated banner;
+# `make check-design` fails if the committed DESIGN.md drifts from the result.
+#
+# This is currently a section-mirrored split of the original layer-organized
+# DESIGN.md (stage 1: lossless pipeline). Subsequent steps reorganize these into
+# verbs/ and modules/ and cross-cutting/ files and update this manifest in step.
+00-header.md
+01-philosophy.md
+02-distribution-model.md
+03-architecture-overview.md
+04-directory-structure.md
+05-package-manifest.md
+06-config-layer.md
+07-pipeline-layer.md
+08-cli-verb-framework.md
+verbs/00-verbs.md
+verbs/fetch.md
+verbs/resolve.md
+verbs/update.md
+verbs/converge.md
+verbs/doctor.md
+verbs/setup.md
+verbs/state.md
+09-primitives-layer.md
+10-flag-profile-system.md
+11-makepkg-wrapper.md
+12-logging.md
+13-man-pages.md
+14-hardware-detection.md
+15-cache-management.md
+16-graphics-stack.md
+17-release-plan.md
+18-reconverge.md
+19-known-gaps.md
+20-roadmap.md

@@ -37,24 +37,18 @@ import re
 import sys
 import tomllib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
 _log = log.get_logger("UPDATE")
 from sysforge.primitives.build_state import BuildState, group_by_pkgbase
-from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-from sysforge.primitives.vcs_pkgver import evaluate_vcs_pkgver, peek_upstream_commit
-from sysforge.primitives.aur import fetch_aur_name_cache, aur_info
+from sysforge.primitives.aur import fetch_aur_name_cache
 from sysforge.primitives.source_sync import (
-    SyncRequest, SyncResult,
-    STATUS_DIVERGED, STATUS_FAILED, STATUS_PURGE_REFUSED, STATUS_RATE_LIMITED,
-    get_scheduler,
+    STATUS_PURGE_REFUSED, get_scheduler,
 )
 from sysforge.primitives.config import (
-    load_config, load_sysforge_toml,
-    load_conflict_groups, load_consumes_inference,
+    load_config, load_conflict_groups, load_consumes_inference,
 )
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
@@ -63,96 +57,21 @@ from sysforge.primitives.llvm_state import (
 from sysforge.primitives.profile import (
     match_rules, resolve_profile, resolve_consumes,
 )
+from sysforge.primitives.flag_drift import (
+    STATUS_PARSE_ERROR,
+    resolve_flag_drift,
+)
 from sysforge.primitives.toolchain_preflight import (
     collect_required_toolchains,
     run_preflight as run_toolchain_preflight,
     render_preflight as render_toolchain_preflight,
     auto_remediate as auto_remediate_toolchain,
 )
-from sysforge.primitives.paths import KERNEL_PATH, TOOLCHAIN_PATH, resolve_packages_path
-from sysforge.primitives.pkgbuild_patcher import is_llvm_pkgbase
-
-
-def _kernel_stage_pkgbase() -> str | None:
-    """Return the kernel-stage pkgbase from kernel.toml, or None if absent.
-
-    Used as the bootstrap fallback in ``sysforge update``: before the kernel
-    stage has run (and stamped ``owner_stage = "kernel"`` into build_state),
-    we still need to know which installed package belongs to the kernel
-    stage so it can be skipped from the update sweep. Read directly each
-    call — kernel.toml is small, and update runs aren't hot-path enough to
-    justify caching.
-    """
-    if not KERNEL_PATH.exists():
-        return None
-    try:
-        with open(KERNEL_PATH, "rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return None
-    pkg = data.get("pkgname")
-    if isinstance(pkg, str) and pkg:
-        return pkg
-    return None
-
-
-def _toolchain_owns_llvm() -> bool:
-    """Return True if the toolchain stage owns the LLVM suite on this system.
-
-    The toolchain bootstrap fallback in ``sysforge update`` (analogue of
-    ``_kernel_stage_pkgbase``): before the toolchain stage has run (and stamped
-    ``owner_stage = "toolchain"`` into build_state) — and for entries written by
-    older code that predates the field — we still need to skip LLVM packages so
-    ``update`` doesn't rebuild what ``sysforge run toolchain`` owns. Ownership
-    only applies when toolchain.toml is enabled *and* ``compiler = "llvm"``: the
-    default/unset ``gcc`` path is register-only and builds no LLVM, so stock
-    pacman LLVM stays pacman-class and is left alone. Read directly each call —
-    toolchain.toml is small and update isn't a hot path.
-    """
-    if not TOOLCHAIN_PATH.exists():
-        return False
-    try:
-        with open(TOOLCHAIN_PATH, "rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return False
-    # compiler defaults to "gcc" when unset (register-only — owns no LLVM).
-    return data.get("enabled") is True and (data.get("compiler") or "gcc") == "llvm"
-
-
-def _toolchain_owned_pkgbases() -> set[str]:
-    """Return the explicit package names the toolchain stage builds.
-
-    Reads ``toolchain.toml [packages]`` (the ``pgo`` + ``non_pgo`` + ``lib32``
-    lists) so ownership covers members that ``is_llvm_pkgbase`` does not match
-    by prefix — notably ``spirv-llvm-translator`` (and any custom-listed
-    package). Unioned with ``is_llvm_pkgbase`` in the update skip loop so split
-    members (llvm-libs/polly under pkgbase llvm) stay covered too. Empty set
-    when toolchain.toml is absent/unreadable or has no [packages] table; the
-    caller only consults this when ``_toolchain_owns_llvm()`` is already True.
-    """
-    if not TOOLCHAIN_PATH.exists():
-        return set()
-    try:
-        with open(TOOLCHAIN_PATH, "rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return set()
-    pkgs = data.get("packages", {}) or {}
-    owned: set[str] = set()
-    for key in ("pgo", "non_pgo", "lib32"):
-        for name in pkgs.get(key, []) or []:
-            if isinstance(name, str) and name:
-                owned.add(name)
-    return owned
-
-
+from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
 from sysforge.primitives.pacman import (
     get_pkgdest,
     get_all_installed_packages,
-    get_foreign_packages,
-    get_pkgbase,
     checkupdates_map,
 )
 from sysforge import build_core
@@ -163,9 +82,11 @@ from sysforge.pipeline.state import (
     resolve_state_dir,
 )
 from sysforge.packages_cmd import entry_is_inert
-
-
-_VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
+from sysforge.update_result import _UpdateResult
+from sysforge.update_summary import _print_summary
+from sysforge.update_version import _check_one_pkgbase
+from sysforge.update_assemble import _assemble_package_set
+from sysforge.update_sync import _sync_sources
 
 
 # Escape sequences to restore the terminal after an interrupted child that
@@ -276,37 +197,6 @@ def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
         print(rendered)
     return True
 
-# Sync statuses that block the package from proceeding to build, and the
-# user-facing action each maps to in the update summary. Statuses absent
-# from this map (UP_TO_DATE, FETCHED, CLONED, DIVERGED, SKIPPED_OFFLINE,
-# SKIPPED_NO_TRACKING) are non-blocking — the build proceeds against the
-# local PKGBUILD.
-_SYNC_STATUS_TO_ACTION = {
-    STATUS_FAILED: "PULL_FAILED",
-    STATUS_RATE_LIMITED: "RATE_LIMITED",
-    STATUS_PURGE_REFUSED: "PURGE_REFUSED",
-}
-_SYNC_BLOCKING_STATUSES = frozenset(_SYNC_STATUS_TO_ACTION)
-
-
-@dataclass
-class _UpdateResult:
-    pkgbase: str
-    pkgnames: list
-    # Actions: UP_TO_DATE, NEEDS_REBUILD, NEEDS_PACMAN_UPGRADE, DEVEL,
-    # DEVEL_EVAL_FAILED, DOWNGRADE, PULL_FAILED, RATE_LIMITED, PURGE_REFUSED,
-    # SKIPPED_NO_CHECKUPDATES.
-    action: str
-    installed_ver: str | None
-    pkgbuild_ver: str | None
-    pkgbuild_path: Path | None
-    has_build_record: bool = True
-    source: str | None = None
-
-
-def _is_vcs(pkgbase: str) -> bool:
-    return any(pkgbase.endswith(s) for s in _VCS_SUFFIXES)
-
 
 # ---------------------------------------------------------------------------
 # packages.toml loader
@@ -353,598 +243,6 @@ def _load_overrides(path: Path) -> tuple[dict, dict[str, dict]]:
         return build_cfg, overrides
     except Exception:
         return {}, {}
-
-
-# ---------------------------------------------------------------------------
-# Phase 1: Package set assembly
-# ---------------------------------------------------------------------------
-
-def _assemble_package_set(
-    args, bs: BuildState, config: dict,
-    build_cfg: dict, overrides_by_name: dict[str, dict],
-) -> tuple[dict[str, dict], set[str]]:
-    """Phase 1: build the unified {pkgname: entry} dict from the live install set.
-
-    Iteration scope:
-      - Every installed foreign package (`pacman -Qm`) — always.
-      - Installed repo packages whose override entry sets a behavior-changing
-        field (``pkgbuild_patch``, ``cache``, ``reason``). A bare
-        ``source = "repo"`` entry is inert metadata and is *not* a trigger
-        (matches the `sysforge packages add` validator).
-      - When ``[build] repo_mode = "profiled"`` in packages.toml, every
-        installed repo package is iterated as well (the version-check phase
-        compares against ``pkgctl repo clone``-resolved PKGBUILDs from the
-        Arch packaging repo). Designed for users who maintain a fully
-        profiled system and want repo-side version drift surfaced alongside
-        AUR drift in a single ``sysforge update`` run. The deprecated
-        ``update_repo_profiled = true`` is normalised to this by the loader.
-
-    `overrides_by_name` is applied as an overlay (`source`, `pkgbuild_patch`,
-    `cache`, `reason`); installed packages with no override use defaults.
-    Override entries whose package is not currently installed are inert
-    rules and are not iterated.
-
-    Returns (packages, unrecorded_names).
-    """
-    build_state_pkgs = bs.all_packages()
-
-    pkgbuild_src_dir_raw = (
-        build_cfg.get("pkgbuild_src_dir")
-        or config.get("paths", {}).get("pkgbuild_src_dir")
-    )
-    pkgbuild_src_dir_base = Path(pkgbuild_src_dir_raw).expanduser() if pkgbuild_src_dir_raw else None
-
-    foreign = set(get_foreign_packages().keys())
-    # Behavior-changing overrides (pkgbuild_patch / cache / reason) are what
-    # pull a non-foreign package into update scope. `source` alone is inert
-    # metadata per the `packages add` contract.
-    behavior_overridden = {
-        name for name, ov in overrides_by_name.items()
-        if not entry_is_inert(ov)
-    }
-    repo_mode_profiled = build_cfg.get("repo_mode") == "profiled"
-
-    # Live install set: every installed foreign + every non-foreign package
-    # carrying a behavior-changing override. With repo_mode = "profiled",
-    # also pull in every installed repo package.
-    all_installed = get_all_installed_packages()
-    target_names = {n for n in all_installed
-                    if n in foreign
-                    or n in behavior_overridden
-                    or (repo_mode_profiled and n not in foreign)}
-
-    # Stage-owned packages: skipped by default so `sysforge update` doesn't
-    # double-process kernel-owned packages alongside `sysforge run kernel`.
-    # Authoritative source is ``owner_stage`` recorded in build_state by the
-    # owning stage; the kernel.toml bootstrap fallback covers the first run
-    # before any stamp exists. ``--include-stage-owned`` overrides the skip
-    # (also includes packages explicitly named on the command line).
-    include_stage_owned = bool(getattr(args, "include_stage_owned", False))
-    filter_names: list[str] = getattr(args, "pkgnames", None) or []
-    explicit_set = set(filter_names)
-    stage_owned: dict[str, str] = {}
-    if not include_stage_owned:
-        for name in target_names:
-            owner = (build_state_pkgs.get(name) or {}).get("owner_stage")
-            if owner:
-                stage_owned[name] = owner
-        kernel_pkgbase = _kernel_stage_pkgbase()
-        if kernel_pkgbase:
-            for name in target_names:
-                if name in stage_owned:
-                    continue
-                # Match the pkgbase recorded in build_state (set by makepkg
-                # for split packages), falling back to pacman's offline
-                # `%BASE%` lookup so packages built before this field
-                # existed are still classified correctly.
-                entry = build_state_pkgs.get(name) or {}
-                base = entry.get("pkgbase") or get_pkgbase(name) or name
-                if name == kernel_pkgbase or base == kernel_pkgbase:
-                    stage_owned[name] = "kernel"
-        # Toolchain bootstrap fallback: when toolchain.toml owns LLVM
-        # (enabled + compiler="llvm"), every in-scope LLVM-suite package is
-        # toolchain-owned even if it predates the owner_stage stamp. Same
-        # name/pkgbase resolution as the kernel fallback so split packages
-        # (e.g. llvm-libs/polly under pkgbase llvm) are caught. Ownership is
-        # the union of is_llvm_pkgbase (prefix match: llvm/clang/compiler-rt/
-        # lld + lib32) and the explicit toolchain.toml [packages] lists, so
-        # configured-but-unmatched members like spirv-llvm-translator (and any
-        # custom-listed package) are skipped too — not just the prefix set.
-        if _toolchain_owns_llvm():
-            configured = _toolchain_owned_pkgbases()
-            for name in target_names:
-                if name in stage_owned:
-                    continue
-                entry = build_state_pkgs.get(name) or {}
-                base = entry.get("pkgbase") or get_pkgbase(name) or name
-                if (is_llvm_pkgbase(name) or is_llvm_pkgbase(base)
-                        or name in configured or base in configured):
-                    stage_owned[name] = "toolchain"
-        # Explicit names on the command line are an opt-in for that package.
-        for name in list(stage_owned):
-            if name in explicit_set:
-                del stage_owned[name]
-        if stage_owned:
-            by_stage: dict[str, list[str]] = {}
-            for name, stage in stage_owned.items():
-                by_stage.setdefault(stage, []).append(name)
-            for stage, names in by_stage.items():
-                _log.info(
-                    f"skipping {len(names)} {stage}-stage package(s): "
-                    f"{', '.join(sorted(names))} — run `sysforge run {stage}` "
-                    "to update (or pass --include-stage-owned)"
-                )
-            target_names -= set(stage_owned)
-
-    packages: dict[str, dict] = {}
-    unrecorded_names: set[str] = set()
-
-    def _resolve_source(name: str, override: dict, bs_entry: dict | None) -> str | None:
-        """build_state > override > pacman-foreign inference (non-foreign → repo).
-
-        build_state is consulted first so a previously-built package keeps
-        its recorded origin across runs (no flipping if the override is
-        removed or pacman reclassifies). Override and inference are the
-        fallback for packages with no build record yet.
-        """
-        if bs_entry is not None:
-            bs_source = bs_entry.get("source")
-            if bs_source:
-                return bs_source
-        ov = override.get("source")
-        if ov:
-            return ov
-        if name not in foreign:
-            # Non-foreign installed package routed through sysforge update —
-            # must come from a repo, so pkgctl is the sync path.
-            return "repo"
-        return None
-
-    def _resolve_repo_class(name: str, source: str | None) -> str | None:
-        """Sub-classify repo-source packages: "source" vs "pacman".
-
-        Only meaningful when ``source == "repo"``. Returns:
-          - ``"source"`` if the package has a behavior-changing override
-            (``pkgbuild_patch`` / ``cache`` / ``reason``) — it goes through
-            pkgctl-clone + makepkg, same as before.
-          - ``"pacman"`` if it has no override and is in scope only because
-            ``repo_mode = "profiled"`` is set. These skip source sync and
-            get version-checked via the batched ``checkupdates`` call;
-            upgrades are deferred to a single ``sudo pacman -Syu`` at the
-            end of the update.
-          - ``None`` for non-repo sources (aur/git) — those follow the
-            existing path.
-        """
-        if source != "repo":
-            return None
-        if name in behavior_overridden:
-            return "source"
-        return "pacman"
-
-    for name in target_names:
-        override = overrides_by_name.get(name, {})
-        bs_entry = build_state_pkgs.get(name)
-        resolved_source = _resolve_source(name, override, bs_entry)
-        resolved_repo_class = _resolve_repo_class(name, resolved_source)
-
-        if bs_entry is not None and bs_entry.get("build_mode", "profiled") != "pacman":
-            pkg = dict(bs_entry)
-            if resolved_source and "source" not in pkg:
-                pkg["source"] = resolved_source
-            if resolved_repo_class:
-                pkg["repo_class"] = resolved_repo_class
-            packages[name] = pkg
-        else:
-            unrecorded_names.add(name)
-            pkgdir = str(pkgbuild_src_dir_base / name) if pkgbuild_src_dir_base else ""
-            entry: dict = {
-                "pkgbase": name,
-                "pkgbuild_dir": pkgdir,
-            }
-            if resolved_source:
-                entry["source"] = resolved_source
-            if resolved_repo_class:
-                entry["repo_class"] = resolved_repo_class
-            packages[name] = entry
-
-    # Resolve pkgbase for unrecorded packages from pacman's local DB first.
-    # Works offline for any installed package (repo or foreign) — including
-    # custom-built split packages that aren't in AUR (e.g. linux-custom-headers
-    # → pkgbase linux-custom). Falls through to AUR RPC below for entries
-    # where %BASE% wasn't recorded.
-    if unrecorded_names and pkgbuild_src_dir_base:
-        for name in unrecorded_names:
-            real_base = get_pkgbase(name)
-            if real_base and real_base != name:
-                packages[name]["pkgbase"] = real_base
-                packages[name]["pkgbuild_dir"] = str(pkgbuild_src_dir_base / real_base)
-
-    # AUR RPC fallback for unrecorded packages whose pkgbase still equals their
-    # pkgname (local DB had no %BASE% — older pacman or stripped metadata).
-    offline = getattr(args, "offline", False)
-    if unrecorded_names and pkgbuild_src_dir_base and not offline:
-        aur_unrecorded = [n for n in unrecorded_names
-                          if packages[n].get("source") != "repo"
-                          and packages[n].get("pkgbase") == n]
-        if aur_unrecorded:
-            aur_results = aur_info(aur_unrecorded)
-            for name in aur_unrecorded:
-                info = aur_results.get(name)
-                if info and info.get("PackageBase") and info["PackageBase"] != name:
-                    real_base = info["PackageBase"]
-                    packages[name]["pkgbase"] = real_base
-                    packages[name]["pkgbuild_dir"] = str(pkgbuild_src_dir_base / real_base)
-
-    # Filter to specific packages when names are given on the command line
-    filter_names: list[str] = getattr(args, "pkgnames", None) or []
-    if filter_names:
-        unknown = [n for n in filter_names if n not in packages]
-        if unknown:
-            for name in unknown:
-                _log.warn(f"{name}: not in update scope (not installed, or repo package without an override) — skipping")
-        filter_set = set(filter_names)
-        packages = {k: v for k, v in packages.items() if k in filter_set}
-
-    return packages, unrecorded_names
-
-
-# ---------------------------------------------------------------------------
-# Phase 2: Source sync (pull + clone + cleansrc + recovery)
-# ---------------------------------------------------------------------------
-
-def _sync_sources(
-    pkgbase_map: dict[str, list],
-    pkgbase_entry: dict[str, dict],
-    args,
-) -> dict[str, tuple[str, str]]:
-    """Ensure every package has an up-to-date local PKGBUILD.
-
-    Delegates to ``SourceSyncScheduler``: one batched AUR RPC call, then
-    sequential shallow fetches for pkgbases whose Version/LastModified/HEAD
-    have drifted from ``source_meta.toml``. Returns
-    ``{pkgbase: (status, error_message)}`` for packages that blocked on sync;
-    the status is a ``STATUS_*`` constant from source_sync that determines
-    the per-package action shown in the update summary.
-    """
-    offline = getattr(args, "offline", False)
-    dry_run = getattr(args, "dry_run", False)
-    cleansrc_force = getattr(args, "cleansrc_force", False) and not dry_run
-    cleansrc = (cleansrc_force or getattr(args, "cleansrc", False)) and not dry_run
-    force_devel = getattr(args, "devel", False)
-
-    state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
-    sysforge_toml = load_sysforge_toml()
-    git_cfg = sysforge_toml.get("git", {})
-    aur_cfg = sysforge_toml.get("aur", {})
-    # Accept legacy pull_timeout as an alias for fetch_timeout.
-    fetch_timeout = git_cfg.get("fetch_timeout", git_cfg.get("pull_timeout", 30))
-    clone_timeout = git_cfg.get("clone_timeout", 60)
-
-    scheduler = get_scheduler(
-        state_dir=state_dir,
-        offline=offline,
-        cleansrc=cleansrc,
-        cleansrc_force=cleansrc_force,
-        force_devel=force_devel,
-        min_fetch_interval_ms=aur_cfg.get("min_fetch_interval_ms", 500),
-        rate_limit_abort_s=aur_cfg.get("rate_limit_abort_s", 120.0),
-        fetch_timeout=fetch_timeout,
-        clone_timeout=clone_timeout,
-    )
-
-    if offline and not cleansrc:
-        return {}
-
-    reqs: list[SyncRequest] = []
-    seen_dirs: set[str] = set()
-    for pkgbase in sorted(pkgbase_map):
-        entry = pkgbase_entry[pkgbase]
-        source = entry.get("source", "aur")
-        # Pacman-class repo packages skip source sync entirely — their
-        # upgrade detection runs through ``checkupdates_map`` in Phase 3
-        # and the upgrade itself is dispatched as one ``sudo pacman -Syu``
-        # after the source-build loop. Avoids hundreds of pkgctl/git
-        # fetches for packages that ultimately follow the pacman path.
-        if entry.get("repo_class") == "pacman":
-            continue
-        # VCS packages without ``--devel`` are skipped at the build step
-        # (action ``DEVEL``), so source sync — including ``--cleansrc``
-        # purge + re-clone — is wasted work. Filter them out here so the
-        # progress tracker, status summary, and ``purge_src`` never touch
-        # ``-git`` / ``-svn`` / ``-hg`` / ``-bzr`` trees unless the user
-        # explicitly asked to rebuild them.
-        if _is_vcs(pkgbase) and not force_devel:
-            continue
-        pkgbuild_dir = Path(entry["pkgbuild_dir"])
-        resolved = str(pkgbuild_dir)
-        if resolved in seen_dirs:
-            continue
-        seen_dirs.add(resolved)
-        reqs.append(SyncRequest(
-            pkgbase=pkgbase, pkgbuild_dir=pkgbuild_dir, source=source,
-        ))
-
-    # Prime the RPC batch once so every subsequent request() can hit the
-    # short-circuit path. Without this the scheduler only runs _ensure_rpc
-    # inside sync_many(), and the per-request loop below would fetch every
-    # package on every run.
-    aur_bases = [r.pkgbase for r in reqs if r.source in ("aur", "git")]
-    if aur_bases:
-        scheduler._ensure_rpc(aur_bases)
-
-    from sysforge.ui import progress as _ui_progress
-    results: dict[str, SyncResult] = {}
-    with _ui_progress.tracker(len(reqs), "source sync") as _tick:
-        for req in reqs:
-            _tick(req.pkgbase)
-            results[req.pkgbase] = scheduler.request(req)
-
-    # Summarise per-status counts once at INFO for operator visibility.
-    by_status: dict[str, int] = {}
-    for r in results.values():
-        by_status[r.status] = by_status.get(r.status, 0) + 1
-    if by_status:
-        _log.info("source sync: "
-                  + ", ".join(f"{k}={v}" for k, v in sorted(by_status.items())))
-
-    scheduler.close()
-
-    sync_failures: dict[str, tuple[str, str]] = {}
-    for pkgbase, result in results.items():
-        if result.status in _SYNC_BLOCKING_STATUSES:
-            sync_failures[pkgbase] = (result.status, result.error or result.status)
-        elif result.status == STATUS_DIVERGED:
-            # Divergence is not a hard failure: local PKGBUILD is kept; build
-            # proceeds against it. Surface as a warning, not a blocker.
-            _log.warn(
-                f"{pkgbase}: {result.error or 'divergent upstream'} — "
-                "build will use the local PKGBUILD; rerun with --cleansrc "
-                "to discard local edits and re-clone"
-            )
-    return sync_failures
-
-
-# ---------------------------------------------------------------------------
-# Phase 3: Version check (called from ThreadPoolExecutor)
-# ---------------------------------------------------------------------------
-
-_UNRESOLVED_EXPANSION = re.compile(r"[${}]")
-
-
-def _check_one_pkgbase(
-    pkgbase: str,
-    pkgnames: list[str],
-    entry: dict,
-    sync_failures: dict[str, tuple[str, str]],
-    all_installed: dict[str, str],
-    unrecorded_names: set[str],
-    skip_sync_check: bool,
-    rpc_version_by_base: dict[str, str],
-    force_devel: bool = False,
-    built_upstream_commit: str | None = None,
-    pacman_updates_map: dict[str, str] | None = None,
-) -> _UpdateResult | None:
-    """Check a single pkgbase and return an _UpdateResult, or None on skip.
-
-    Pacman-class repo packages (``entry["repo_class"] == "pacman"``) take a
-    fast path: no PKGBUILD parse, no clone — installed-vs-checkupdates
-    vercmp only. The slow PKGBUILD-parse path below runs for AUR/git and
-    override-tagged repo packages.
-    """
-    has_record = not any(pn in unrecorded_names for pn in pkgnames)
-    source = entry.get("source")
-
-    # Pacman fast-path: checkupdates already told us if a repo upgrade is
-    # pending. The pkgbuild_dir doesn't need to exist (we never source-build
-    # this class), so this branch precedes the directory existence check.
-    if entry.get("repo_class") == "pacman":
-        installed_ver: str | None = None
-        for pn in pkgnames:
-            ver = all_installed.get(pn)
-            if ver is not None:
-                installed_ver = ver
-                break
-        if installed_ver is None:
-            return None
-        if pacman_updates_map is None:
-            # checkupdates unavailable; can't decide. Surface once, skip
-            # action so the package shows up in the summary as deferred.
-            return _UpdateResult(
-                pkgbase=pkgbase, pkgnames=pkgnames,
-                action="SKIPPED_NO_CHECKUPDATES",
-                installed_ver=installed_ver, pkgbuild_ver=None,
-                pkgbuild_path=None, has_build_record=has_record, source=source,
-            )
-        # checkupdates lists each pkgname (not pkgbase) that needs upgrade.
-        # Pick the newest mapped version across this pkgbase's pkgnames.
-        new_ver: str | None = None
-        for pn in pkgnames:
-            mapped = pacman_updates_map.get(pn)
-            if mapped is None:
-                continue
-            if new_ver is None or vercmp(mapped, new_ver) > 0:
-                new_ver = mapped
-        if new_ver is None:
-            return _UpdateResult(
-                pkgbase=pkgbase, pkgnames=pkgnames, action="UP_TO_DATE",
-                installed_ver=installed_ver, pkgbuild_ver=installed_ver,
-                pkgbuild_path=None, has_build_record=has_record, source=source,
-            )
-        return _UpdateResult(
-            pkgbase=pkgbase, pkgnames=pkgnames, action="NEEDS_PACMAN_UPGRADE",
-            installed_ver=installed_ver, pkgbuild_ver=new_ver,
-            pkgbuild_path=None, has_build_record=has_record, source=source,
-        )
-
-    # VCS fast-path: without ``--devel`` we never resolve or rebuild VCS
-    # packages, so the PKGBUILD parse, the pkgbuild_dir existence probe, and
-    # the sync-failure log are all wasted work. Return DEVEL straight from
-    # the installed version. Mirrors the source-sync filter in
-    # ``_sync_sources`` — both edges of the build pipeline ignore VCS dirs
-    # entirely when ``--devel`` is absent.
-    if _is_vcs(pkgbase) and not force_devel:
-        devel_installed_ver = next(
-            (all_installed[pn] for pn in pkgnames if pn in all_installed), None,
-        )
-        if devel_installed_ver is None:
-            return None
-        return _UpdateResult(
-            pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL",
-            installed_ver=devel_installed_ver, pkgbuild_ver=None,
-            pkgbuild_path=None, has_build_record=has_record, source=source,
-        )
-
-    pkgbuild_dir = Path(entry["pkgbuild_dir"])
-
-    if not pkgbuild_dir.is_dir():
-        _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
-        return None
-
-    pkgbuild_path = pkgbuild_dir / "PKGBUILD"
-    if not pkgbuild_path.exists():
-        _log.warn(f"{pkgbase}: PKGBUILD not found at {pkgbuild_path} — skipping")
-        return None
-
-    if not skip_sync_check and pkgbase in sync_failures:
-        status, msg = sync_failures[pkgbase]
-        _log.error(msg)
-        action = _SYNC_STATUS_TO_ACTION.get(status, "PULL_FAILED")
-        return _UpdateResult(
-            pkgbase=pkgbase, pkgnames=pkgnames, action=action,
-            installed_ver=None, pkgbuild_ver=None, pkgbuild_path=pkgbuild_path,
-            has_build_record=has_record, source=source,
-        )
-
-    try:
-        pkgmeta = parse_pkgbuild(pkgbuild_path)
-    except Exception as e:
-        _log.warn(f"{pkgbase}: failed to parse PKGBUILD: {e} — skipping")
-        return None
-
-    globals_ = pkgmeta.get("globals", {})
-    pkgbuild_ver = format_version(globals_)
-
-    # Static PKGBUILD parser can't evaluate bash parameter expansion
-    # (${var//-/_}, ${var/[a-z]/.sfx}, etc.). When pkgver still contains
-    # shell metacharacters, fall back to the AUR RPC version we already
-    # cached in source_meta.toml — it's the authoritative released version
-    # and is vercmp-ready (already includes pkgrel and any epoch prefix).
-    if _UNRESOLVED_EXPANSION.search(pkgbuild_ver):
-        rpc_ver = rpc_version_by_base.get(pkgbase)
-        if rpc_ver:
-            pkgbuild_ver = rpc_ver
-        else:
-            _log.warn(
-                f"{pkgbase}: pkgver '{pkgbuild_ver}' has unresolved shell "
-                "expansion and no cached RPC version — skipping"
-            )
-            return None
-
-    # Live-install-set iteration guarantees every pkgbase reaching here has
-    # at least one installed sub-package; pick that version for vercmp.
-    installed_ver: str | None = None
-    for pn in pkgnames:
-        ver = all_installed.get(pn)
-        if ver is not None:
-            installed_ver = ver
-            break
-    assert installed_ver is not None, f"{pkgbase}: no installed pkgname in {pkgnames}"
-
-    # VCS packages under --devel: static pkgver is just the seed; the real
-    # version comes from running pkgver() against the fetched upstream
-    # sources. The --devel-off case short-circuits at the top of this
-    # function (no PKGBUILD parse, no source sync) — anything reaching this
-    # branch is opt-in --devel work.
-    if _is_vcs(pkgbase):
-        # Cheap short-circuit: if the upstream HEAD still matches the SHA we
-        # built last time (recorded in build_state.toml), skip the full
-        # ``makepkg -od --nobuild`` resolve. peek_upstream_commit returns
-        # None for multi-git-source / unparseable PKGBUILDs / network errors,
-        # and we fall through to the canonical path in that case.
-        if built_upstream_commit is not None:
-            current_commit = peek_upstream_commit(pkgbuild_dir)
-            if current_commit is not None and current_commit == built_upstream_commit:
-                return _UpdateResult(
-                    pkgbase=pkgbase, pkgnames=pkgnames, action="UP_TO_DATE",
-                    installed_ver=installed_ver, pkgbuild_ver=installed_ver,
-                    pkgbuild_path=pkgbuild_path, has_build_record=has_record,
-                    source=source,
-                )
-
-        resolved = evaluate_vcs_pkgver(pkgbuild_dir)
-        if resolved is None:
-            _log.warn(
-                f"{pkgbase}: pkgver() evaluation failed — skipping rebuild "
-                "(re-run --devel after the upstream/network issue clears)"
-            )
-            return _UpdateResult(
-                pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL_EVAL_FAILED",
-                installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
-                pkgbuild_path=pkgbuild_path, has_build_record=has_record,
-                source=source,
-            )
-
-        try:
-            cmp = vercmp(resolved, installed_ver)
-        except RuntimeError as e:
-            _log.warn(f"{pkgbase}: vercmp failed on resolved {resolved!r}: {e} — skipping")
-            return _UpdateResult(
-                pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL_EVAL_FAILED",
-                installed_ver=installed_ver, pkgbuild_ver=resolved,
-                pkgbuild_path=pkgbuild_path, has_build_record=has_record,
-                source=source,
-            )
-
-        if cmp > 0:
-            action = "NEEDS_REBUILD"
-        elif cmp == 0:
-            action = "UP_TO_DATE"
-        else:
-            action = "DOWNGRADE"
-            _log.warn(f"{pkgbase}: resolved {resolved} is older than installed {installed_ver}")
-        return _UpdateResult(
-            pkgbase=pkgbase, pkgnames=pkgnames, action=action,
-            installed_ver=installed_ver, pkgbuild_ver=resolved,
-            pkgbuild_path=pkgbuild_path, has_build_record=has_record,
-            source=source,
-        )
-
-    try:
-        cmp = vercmp(pkgbuild_ver, installed_ver)
-    except RuntimeError as e:
-        _log.warn(f"{pkgbase}: version comparison failed: {e} — skipping")
-        return None
-
-    # Drift observability: when the installed version matches what sysforge
-    # built last time but the on-disk PKGBUILD now describes a different
-    # version, surface that upstream PKGBUILD has moved. The action is still
-    # whatever vercmp says — this is purely informational (-v only).
-    bs_pkgver = entry.get("pkgver")
-    bs_pkgrel = entry.get("pkgrel")
-    bs_epoch = entry.get("epoch", "0")
-    if bs_pkgver is not None and bs_pkgrel is not None:
-        bs_ver = f"{bs_epoch}:{bs_pkgver}-{bs_pkgrel}" if bs_epoch and bs_epoch != "0" \
-            else f"{bs_pkgver}-{bs_pkgrel}"
-        if installed_ver == bs_ver and pkgbuild_ver != bs_ver:
-            _log.info(
-                f"{pkgbase}: PKGBUILD on disk ({pkgbuild_ver}) differs from "
-                f"last built ({bs_ver}) — upstream PKGBUILD has moved"
-            )
-
-    if cmp > 0:
-        action = "NEEDS_REBUILD"
-    elif cmp == 0:
-        action = "UP_TO_DATE"
-    else:
-        action = "DOWNGRADE"
-        _log.warn(f"{pkgbase}: PKGBUILD {pkgbuild_ver} is older than installed {installed_ver}")
-
-    return _UpdateResult(
-        pkgbase=pkgbase, pkgnames=pkgnames, action=action,
-        installed_ver=installed_ver, pkgbuild_ver=pkgbuild_ver,
-        pkgbuild_path=pkgbuild_path, has_build_record=has_record,
-        source=source,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1218,6 +516,49 @@ def _cmd_update_body(args) -> None:
             "--explain-drift to list."
         )
 
+    # ── Phase 4.3: Flag drift ─────────────────────────────────────────────
+    # Re-resolve the current profile for each profiled package and diff the
+    # serialized flags against what was recorded at build time. Same
+    # detect-and-report contract as toolchain drift above: surfaced always,
+    # listed under --explain-drift, rebuilt only via --rebuild-on-flag-drift.
+    # This is the canonical home for flag-drift detection — the `converge` verb
+    # is deprecated and delegates to the same primitive (resolve_flag_drift).
+    # Conflict groups are loaded lazily so a run with no profiled packages
+    # pays nothing.
+    flag_drifted: list[tuple[str, list[str]]] = []  # (pkgbase, diff lines)
+    _flag_seen: set[str] = set()
+    _flag_cgroups = None
+    for r in results:
+        if r.pkgbase in _flag_seen:
+            continue
+        _flag_seen.add(r.pkgbase)
+        entry = None
+        for name in r.pkgnames:
+            entry = bs.get(name)
+            if entry is not None:
+                break
+        if not entry or entry.get("build_mode") != "profiled":
+            continue
+        if _flag_cgroups is None:
+            _flag_cgroups = load_conflict_groups()
+        fd = resolve_flag_drift(entry, config, _flag_cgroups)
+        if fd.status == STATUS_PARSE_ERROR:
+            _log.warn(
+                f"flag drift: {r.pkgbase} — failed to parse PKGBUILD: {fd.error}"
+            )
+            continue
+        if fd.drifted:
+            flag_drifted.append((r.pkgbase, fd.diffs))
+
+    if flag_drifted:
+        sample = ", ".join(pb for pb, _ in flag_drifted[:3])
+        more = f" (+{len(flag_drifted) - 3} more)" if len(flag_drifted) > 3 else ""
+        _log.ui(
+            f"flag drift: {len(flag_drifted)} package(s) resolve to different "
+            f"flags than when built: {sample}{more}. "
+            "Pass --rebuild-on-flag-drift to rebuild, or --explain-drift to list."
+        )
+
     if getattr(args, "explain_drift", False):
         if not drifted:
             print(
@@ -1232,12 +573,26 @@ def _cmd_update_body(args) -> None:
             )
             for pkgbase, rec_variant in sorted(drifted):
                 print(f"  {pkgbase:<40}  recorded={rec_variant}")
+        if not flag_drifted:
+            print("[SYSFORGE] No flag drift.")
+        else:
+            print(
+                f"[SYSFORGE] {len(flag_drifted)} package(s) resolve to "
+                "different flags than when built:"
+            )
+            for pkgbase, diffs in sorted(flag_drifted):
+                print(f"  {pkgbase}")
+                for line in diffs:
+                    print(line)
         return
 
     if getattr(args, "dry_run", False):
         return
 
-    if getattr(args, "rebuild_on_toolchain_drift", False) and drifted:
+    # --rebuild-on-drift is the umbrella that opts into both drift axes.
+    _rebuild_all_drift = getattr(args, "rebuild_on_drift", False)
+
+    if (getattr(args, "rebuild_on_toolchain_drift", False) or _rebuild_all_drift) and drifted:
         drifted_bases = {pb for pb, _ in drifted}
         promoted = 0
         unbuildable = 0
@@ -1258,6 +613,28 @@ def _cmd_update_body(args) -> None:
                 f"--rebuild-on-toolchain-drift: {unbuildable} drifted "
                 "package(s) have no resolvable PKGBUILD (likely pacman-class) "
                 "— skipped"
+            )
+
+    if (getattr(args, "rebuild_on_flag_drift", False) or _rebuild_all_drift) and flag_drifted:
+        flag_bases = {pb for pb, _ in flag_drifted}
+        promoted = 0
+        unbuildable = 0
+        for r in results:
+            if r.pkgbase in flag_bases and r.action == "UP_TO_DATE":
+                if r.pkgbuild_path is None:
+                    unbuildable += 1
+                    continue
+                r.action = "NEEDS_REBUILD"
+                promoted += 1
+        if promoted:
+            _log.ui(
+                f"--rebuild-on-flag-drift: promoted {promoted} "
+                "UP_TO_DATE package(s) to NEEDS_REBUILD"
+            )
+        if unbuildable:
+            _log.warn(
+                f"--rebuild-on-flag-drift: {unbuildable} drifted "
+                "package(s) have no resolvable PKGBUILD — skipped"
             )
 
     # ── Phase 5: Build ────────────────────────────────────────────────────
@@ -1440,93 +817,6 @@ def _cmd_update_body(args) -> None:
     # may have dropped this run; the start-of-cmd_update consume already
     # surfaced anything left by transactions outside sysforge.
     _consume_pacman_hook_sentinels(silent=True)
-
-
-# ---------------------------------------------------------------------------
-# Summary display
-# ---------------------------------------------------------------------------
-
-# (tag, count_label, line_template) per action. line_template is formatted
-# with the _UpdateResult fields plus a trailing {star} ("" or " *"). Order
-# here is the order each action appears in summary header + per-package
-# section.
-_ACTION_FORMATS: dict[str, tuple[str, str, str]] = {
-    "NEEDS_REBUILD":     ("NEEDS_REBUILD",     "need rebuild",
-                          "{pkgbase}: {installed_ver} → {pkgbuild_ver}{star}"),
-    "NEEDS_PACMAN_UPGRADE": ("NEEDS_PACMAN", "need pacman upgrade",
-                          "{pkgbase}: {installed_ver} → {pkgbuild_ver} (pacman -Syu){star}"),
-    "UP_TO_DATE":        ("UP_TO_DATE",        "up to date",
-                          "{pkgbase}: {pkgbuild_ver}{star}"),
-    "DEVEL":             ("DEVEL",             "devel",
-                          "{pkgbase}: skipped (use --devel to rebuild){star}"),
-    "DEVEL_EVAL_FAILED": ("DEVEL_EVAL_FAILED", "devel-eval-failed",
-                          "{pkgbase}: pkgver() resolution failed (skipped){star}"),
-    "DOWNGRADE":         ("DOWNGRADE",         "downgrade",
-                          "{pkgbase}: installed {installed_ver} > pkgbuild {pkgbuild_ver} (skipped){star}"),
-    "PULL_FAILED":       ("PULL_FAILED",       "pull failed",
-                          "{pkgbase}: git pull failed (skipped){star}"),
-    "RATE_LIMITED":      ("RATE_LIMITED",      "rate-limited",
-                          "{pkgbase}: AUR rate-limited (skipped, retry later){star}"),
-    "PURGE_REFUSED":     ("PURGE_REFUSED",     "purge refused",
-                          "{pkgbase}: --cleansrc refused (local work present, skipped){star}"),
-    "SKIPPED_NO_CHECKUPDATES": ("NO_CHECKUPDATES", "skipped (no checkupdates)",
-                          "{pkgbase}: checkupdates unavailable, install pacman-contrib{star}"),
-}
-
-# Actions that are always printed per-package regardless of verbosity.
-# Everything else only appears under -v / verbose mode.
-_ALWAYS_VERBOSE_ACTIONS = frozenset({
-    "NEEDS_REBUILD", "NEEDS_PACMAN_UPGRADE", "DOWNGRADE",
-})
-
-
-def _print_summary(results: list[_UpdateResult], args) -> None:
-    if not results:
-        print("[SYSFORGE] No packages to check.")
-        return
-
-    verbose = bool(getattr(args, "verbose", 0))
-
-    # Totals header
-    counts: dict[str, int] = {}
-    no_record_count = 0
-    for r in results:
-        counts[r.action] = counts.get(r.action, 0) + 1
-        if not r.has_build_record:
-            no_record_count += 1
-
-    parts = [f"{len(results)} packages"]
-    for action, (_tag, label, _tmpl) in _ACTION_FORMATS.items():
-        n = counts.get(action, 0)
-        if n:
-            parts.append(f"{n} {label}")
-    if no_record_count:
-        parts.append(f"{no_record_count} no build record")
-
-    print(f"\n  Checking {', '.join(parts)}")
-    print()
-
-    for r in results:
-        if not verbose and r.action not in _ALWAYS_VERBOSE_ACTIONS:
-            continue
-        fmt = _ACTION_FORMATS.get(r.action)
-        if fmt is None:
-            continue
-        tag, _label, tmpl = fmt
-        star = " *" if not r.has_build_record else ""
-        line = tmpl.format(
-            pkgbase=r.pkgbase,
-            installed_ver=r.installed_ver,
-            pkgbuild_ver=r.pkgbuild_ver,
-            star=star,
-        )
-        print(f"  [{tag}]{' ' * max(1, 17 - len(tag) - 2)}{line}")
-
-    if not verbose and any(r.action not in _ALWAYS_VERBOSE_ACTIONS for r in results):
-        print("  (run with -v to list each skipped/up-to-date package)")
-    if no_record_count:
-        print("\n  * = no build record")
-    print()
 
 
 # ---------------------------------------------------------------------------

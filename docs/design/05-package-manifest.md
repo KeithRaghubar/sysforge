@@ -1,0 +1,60 @@
+## Package Manifest
+
+`packages.toml` is the **declared system manifest**. It plays two roles depending on context:
+
+1. **Bootstrap (pipeline `run packages` stage):** every entry is installed. The manifest *is* the install list, because the system has nothing installed yet beyond the pacstrap base.
+2. **Steady-state (`sysforge update`, `sysforge build`):** entries act as **build-rule overrides** applied to the live install set. Pacman owns the install set; `build_state.toml` mirrors it. An entry whose package is not currently installed is an inert rule, not a "missing" item.
+
+This dual role is intentional: the manifest captures your declared intent, but at steady-state we respect the live system rather than reconciling against the manifest.
+
+The orthogonality of the two roles means:
+- An entry for `mesa-git` can stay in the manifest even if you've rolled back to repo `mesa` — it's an inert rule at steady-state, but the next pipeline bootstrap of a fresh system would still install it.
+- An installed AUR package without an entry uses default rules — `sysforge update` still walks it via `pacman -Qm`, just with no overrides applied.
+- `profiles.toml` and the manifest stay orthogonal: sourcing/patching choices vs. compiler flag tuning.
+
+Each entry overrides at most these fields (all optional except `name`):
+- `source` — `repo` (pacman) vs `aur`. Optional metadata; classification falls through to pacman / AUR RPC if omitted. Set explicitly only when classification is ambiguous or you want to force routing. `source` alone is **inert** and does not trigger any sysforge command path (matches the `packages add` validator); pair it with a behavior-changing field (`pkgbuild_patch`, `cache`, `reason`) if you want the entry to take effect.
+- `pkgbuild_patch` *(bool)* — if `true`, the PKGBUILD patching library runs on this package before build.
+- `cache` *(bool)* — `false` disables ccache/sccache for this package (required for PGO stages).
+
+```toml
+[build]
+pkgbuild_src_dir = "~/src"   # PKGBUILD source tree; auto-cloned if absent
+repo_mode = "profiled"       # default for repo packages: "pacman" | "profiled"
+
+[[package]]
+name = "mesa-git"
+pkgbuild_patch = true        # override: patch flags before building
+
+[[package]]
+name = "llvm"
+cache = false                # override: never cache instrumented PGO objects
+```
+
+An entry with only `name` and no override fields has no effect on the build. `sysforge packages add` rejects such calls.
+
+### `[build]` global section
+
+- `pkgbuild_src_dir` — directory holding pre-cloned PKGBUILDs (`<pkgbuild_src_dir>/<name>/PKGBUILD`). Missing AUR clones are auto-fetched here on demand.
+- `repo_mode` — default build mode for repo-source packages: `"pacman"` (install via `pacman -S --needed`) or `"profiled"` (build from PKGBUILD with sysforge flag profiles). Per-package `pkgbuild_patch = true` overrides to profiled regardless. `sysforge update` walks repo packages only when a per-package override sets a behavior-changing field (`pkgbuild_patch`, `cache`, `reason`), or when `repo_mode = "profiled"` is set globally — in which case every installed repo package is in scope, but only the overridden subset is source-built; the remainder takes a fast pacman path (`checkupdates` for upgrade detection, one terminal `sudo pacman -Syu` after the source-build loop). This avoids the per-package `pkgctl repo clone` that would otherwise fire for every installed repo package and is what makes the "track everything" mode tolerable on a maintained workstation. The legacy `update_repo_profiled = true` flag is a deprecated alias for `repo_mode = "profiled"` — the loader normalises it with a one-shot warning.
+
+### Manifest lifecycle commands
+
+`sysforge packages` is a small namespace for managing override entries:
+
+- **`packages list`** (default when no subcommand) — tabulates entries: name and any override fields set. `--orphans` lists entries whose package is not currently installed (informational only; entries are still valid rules).
+- **`packages add <pkg> [--source ...] [--pkgbuild-patch] [--no-cache] [--reason TEXT]`** — adds or updates an override entry. Requires at least one of `--pkgbuild-patch`, `--no-cache`, `--reason` (the *behavior-changing* override fields); calls with only `<pkg>` or `<pkg> --source` are rejected. `--source` is metadata that pins routing (`repo` vs `aur`) — it doesn't satisfy validation on its own, since classification arrives at the same value automatically. Entries with no behavior-changing override are auto-pruned on the next `packages.toml` write-back (`add` or `remove`).
+- **`packages remove <pkg>`** — removes the `[[package]]` block for the named entry using line-level manipulation; preserves all surrounding comments and section headers.
+
+All subcommands accept `--packages FILE` to target a specific file (default: `/etc/sysforge/packages.toml`).
+
+`build_state.toml` inspection and repair has its own namespace — see `sysforge state` (`state list`, `state repair`).
+
+Valid per-entry fields: `name`, `source`, `pkgbuild_patch`, `cache`. Unknown fields are ignored.
+
+### `-march=native` strategy
+
+SysForge uses `-march=native` rather than hardcoding CPU-specific flags. Optimization becomes a compile-time concern — it works across CPU families without separate logic. If a package is incompatible with native tuning, a higher-priority rule pointing to the `bare` profile overrides `-march` for that package only.
+
+---
+

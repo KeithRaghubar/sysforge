@@ -730,3 +730,17 @@ def cleanup_patch_artifacts(pkgbuild_path):
         if target.exists():
             target.unlink()
             _log.info(f"Removed artifact: {target}")
+
+
+def warn_artifacts_left(has_extracted_profile: bool) -> None:
+    """Log (under the PATCH tag) that patch artifacts are being kept after a
+    failed build for diagnosis.
+
+    The failure-side counterpart to :func:`cleanup_patch_artifacts`: this module
+    owns the artifact names, so the build orchestrator delegates the message
+    here instead of re-spelling ``PKGBUILD.sysforge`` itself.
+    """
+    artifacts = "PKGBUILD.sysforge"
+    if has_extracted_profile:
+        artifacts += " and pkgbuild_extracted_profile.toml"
+    _log.warn(f"Build failed — leaving {artifacts} in place for diagnosis")

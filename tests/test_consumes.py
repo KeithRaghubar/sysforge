@@ -12,22 +12,19 @@ Covers:
     when rust not in consumes, RUSTFLAGS included when rust IS in consumes,
     fallback (active_consumes=None) writes all non-internal keys
 """
-import contextlib
 import os
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.primitives.makepkg_wrapper import (
-    CONF_KEY_MAP,
-    SYSFORGE_KEYS,
     emit_makepkg_conf,
     load_consumes_inference,
     resolve_consumes,
 )
+from sysforge.primitives.profile import CONF_KEY_MAP, SYSFORGE_KEYS
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -254,7 +251,8 @@ if __name__ == "__main__":
             passed += 1
         except Exception as e:
             print(f"  FAIL  {t.__name__}: {e}")
-            import traceback; traceback.print_exc()
+            import traceback
+            traceback.print_exc()
             failed += 1
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)

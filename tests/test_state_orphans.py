@@ -54,7 +54,7 @@ def test_no_orphans_message(tmp_path, capsys):
 
 
 def test_uninstalled_packages_not_listed(tmp_path, capsys):
-    """Per Keith's spec: PKGDEST builds for not-installed packages must NOT
+    """Per spec: PKGDEST builds for not-installed packages must NOT
     appear (they could be kernel builds with local commits the user wants
     to keep around for later install)."""
     pkgdest = tmp_path / "builds"

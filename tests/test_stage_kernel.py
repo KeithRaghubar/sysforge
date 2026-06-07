@@ -4,6 +4,8 @@ test_stage_kernel.py — unit tests for the kernel stage.
 Covers all pure-logic functions. Subprocess calls (lsmod, mkinitcpio,
 bootctl, makepkg) are mocked — nothing real runs.
 """
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +23,24 @@ from sysforge.pipeline.stages.kernel import (
 from sysforge.pipeline.state import PipelineState
 from sysforge.primitives import device_probe, kernel_safety
 import sysforge.pipeline.stages.kernel as _km
+
+
+@contextmanager
+def _capture_logs():
+    """Capture SysForge log output at its stable primitive seam (``sysforge.log.*``).
+
+    The stage emits through a module-level ``_log = get_logger(...)`` whose
+    ``warn``/``info``/``ui`` methods forward to ``sysforge.log.{warn,info,ui}``.
+    Patching there — rather than the stage's ``_log`` binding — keeps these
+    assertions valid when the stage module is decomposed (the ``_log`` object
+    moves) or re-tagged (the tag string changes), since we assert on the message
+    text, not the logger identity. Module funcs take ``(tag, message)``, so the
+    message is ``call.args[1]``.
+    """
+    with patch("sysforge.log.warn") as w, \
+         patch("sysforge.log.info") as i, \
+         patch("sysforge.log.ui") as u:
+        yield SimpleNamespace(warn=w, info=i, ui=u)
 
 
 # ---------------------------------------------------------------------------
@@ -384,10 +404,10 @@ def test_write_kconfig_fragment_conflict_emits_warn(tmp_path):
     }
     config = {"hardware_profile": str(hw)}
 
-    with patch("sysforge.pipeline.stages.kernel._log") as mock_log:
+    with _capture_logs() as logs:
         _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
-        warn_calls = [str(c) for c in mock_log.warn.call_args_list]
-        assert any("CONFIG_MZEN3" in c and "manual override wins" in c for c in warn_calls)
+    assert any("CONFIG_MZEN3" in m and "manual override wins" in m
+               for m in _warn_messages(logs))
 
 def test_write_kconfig_fragment_dry_run_no_file(tmp_path):
     builds = tmp_path / "builds"
@@ -1372,7 +1392,7 @@ def _state_with_variant(tmp_path, variant, cc=None, cxx=None):
 
 
 def _run_kernel_with_state(tmp_path, kernel_cfg_state, opts_override=None):
-    """Run KernelStage in a fully-mocked environment, returning the captured mock_log."""
+    """Run KernelStage in a fully-mocked environment, returning the captured logs."""
     import sysforge.pipeline.stages.kernel as _km
 
     builds = tmp_path / "builds"
@@ -1381,7 +1401,7 @@ def _run_kernel_with_state(tmp_path, kernel_cfg_state, opts_override=None):
     opts = opts_override or make_options(state_dir=tmp_path / "state")
 
     with patch.object(_km, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel._log") as mock_log, \
+         _capture_logs() as logs, \
          patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
          patch("sysforge.pipeline.stages.kernel._probe_installed_bootloader",
@@ -1389,15 +1409,15 @@ def _run_kernel_with_state(tmp_path, kernel_cfg_state, opts_override=None):
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
 
-    return mock_log
+    return logs
 
 
-def _warn_messages(mock_log):
-    return [str(c.args[0]) for c in mock_log.warn.call_args_list]
+def _warn_messages(logs):
+    return [str(c.args[1]) for c in logs.warn.call_args_list]
 
 
-def _info_messages(mock_log):
-    return [str(c.args[0]) for c in mock_log.info.call_args_list]
+def _info_messages(logs):
+    return [str(c.args[1]) for c in logs.info.call_args_list]
 
 
 def test_run_logs_pgo_llvm_nudge_when_compiler_unset(tmp_path):
@@ -1406,10 +1426,10 @@ def test_run_logs_pgo_llvm_nudge_when_compiler_unset(tmp_path):
     state = _state_with_variant(tmp_path, "pgo_llvm",
                                 cc="/usr/bin/clang", cxx="/usr/bin/clang++")
     p = make_kernel_toml(tmp_path, builds)
-    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+    logs = _run_kernel_with_state(tmp_path, (state, p))
 
-    assert any("pgo_llvm" in m and "PGO clang" in m for m in _warn_messages(mock_log)), \
-        f"expected pgo_llvm nudge, got warns: {_warn_messages(mock_log)}"
+    assert any("pgo_llvm" in m and "PGO clang" in m for m in _warn_messages(logs)), \
+        f"expected pgo_llvm nudge, got warns: {_warn_messages(logs)}"
 
 
 def test_run_logs_stock_llvm_info_when_compiler_unset(tmp_path):
@@ -1418,12 +1438,12 @@ def test_run_logs_stock_llvm_info_when_compiler_unset(tmp_path):
     state = _state_with_variant(tmp_path, "stock_llvm",
                                 cc="/usr/bin/clang", cxx="/usr/bin/clang++")
     p = make_kernel_toml(tmp_path, builds)
-    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+    logs = _run_kernel_with_state(tmp_path, (state, p))
 
-    assert any("stock_llvm" in m and "inherit clang" in m for m in _info_messages(mock_log)), \
-        f"expected stock_llvm info, got infos: {_info_messages(mock_log)}"
+    assert any("stock_llvm" in m and "inherit clang" in m for m in _info_messages(logs)), \
+        f"expected stock_llvm info, got infos: {_info_messages(logs)}"
     # pgo_llvm warn must NOT fire
-    assert not any("pgo_llvm" in m and "PGO clang" in m for m in _warn_messages(mock_log))
+    assert not any("pgo_llvm" in m and "PGO clang" in m for m in _warn_messages(logs))
 
 
 def test_run_no_nudge_when_compiler_explicit(tmp_path):
@@ -1441,10 +1461,10 @@ def test_run_no_nudge_when_compiler_explicit(tmp_path):
         'bootloader = "systemd-boot"\n'
         'compiler = "gcc"\n'
     )
-    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+    logs = _run_kernel_with_state(tmp_path, (state, p))
 
     assert not any("PGO clang" in m or "inherit clang" in m
-                   for m in _warn_messages(mock_log) + _info_messages(mock_log))
+                   for m in _warn_messages(logs) + _info_messages(logs))
 
 
 def test_run_no_nudge_for_gcc_variant(tmp_path):
@@ -1453,9 +1473,9 @@ def test_run_no_nudge_for_gcc_variant(tmp_path):
     state = _state_with_variant(tmp_path, "gcc",
                                 cc="/usr/bin/gcc", cxx="/usr/bin/g++")
     p = make_kernel_toml(tmp_path, builds)
-    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+    logs = _run_kernel_with_state(tmp_path, (state, p))
 
-    assert not any("inherit" in m for m in _warn_messages(mock_log) + _info_messages(mock_log))
+    assert not any("inherit" in m for m in _warn_messages(logs) + _info_messages(logs))
 
 
 def test_run_no_nudge_for_system_variant(tmp_path):
@@ -1464,9 +1484,9 @@ def test_run_no_nudge_for_system_variant(tmp_path):
     make_pkgbuild(builds, "linux-git")
     state = PipelineState(tmp_path / "state")  # no set_stage_result → variant=system
     p = make_kernel_toml(tmp_path, builds)
-    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+    logs = _run_kernel_with_state(tmp_path, (state, p))
 
-    assert not any("inherit" in m for m in _warn_messages(mock_log) + _info_messages(mock_log))
+    assert not any("inherit" in m for m in _warn_messages(logs) + _info_messages(logs))
 
 
 # ---------------------------------------------------------------------------
@@ -1492,11 +1512,11 @@ def test_run_warns_on_variant_drift(tmp_path):
     state = _state_with_variant(tmp_path, "pgo_llvm",
                                 cc="/usr/bin/clang", cxx="/usr/bin/clang++")
     p = make_kernel_toml(tmp_path, builds)
-    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+    logs = _run_kernel_with_state(tmp_path, (state, p))
 
-    drift = [m for m in _warn_messages(mock_log)
+    drift = [m for m in _warn_messages(logs)
              if "stock_llvm" in m and "pgo_llvm" in m and "Rebuilding" in m]
-    assert drift, f"expected drift warn, got warns: {_warn_messages(mock_log)}"
+    assert drift, f"expected drift warn, got warns: {_warn_messages(logs)}"
 
 
 def test_run_silent_when_variants_match(tmp_path):
@@ -1507,9 +1527,9 @@ def test_run_silent_when_variants_match(tmp_path):
     state = _state_with_variant(tmp_path, "pgo_llvm",
                                 cc="/usr/bin/clang", cxx="/usr/bin/clang++")
     p = make_kernel_toml(tmp_path, builds)
-    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+    logs = _run_kernel_with_state(tmp_path, (state, p))
 
-    assert not any("Rebuilding will switch toolchains" in m for m in _warn_messages(mock_log))
+    assert not any("Rebuilding will switch toolchains" in m for m in _warn_messages(logs))
 
 
 def test_run_silent_when_recorded_variant_absent(tmp_path):
@@ -1520,9 +1540,9 @@ def test_run_silent_when_recorded_variant_absent(tmp_path):
     state = _state_with_variant(tmp_path, "pgo_llvm",
                                 cc="/usr/bin/clang", cxx="/usr/bin/clang++")
     p = make_kernel_toml(tmp_path, builds)
-    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+    logs = _run_kernel_with_state(tmp_path, (state, p))
 
-    assert not any("Rebuilding will switch toolchains" in m for m in _warn_messages(mock_log))
+    assert not any("Rebuilding will switch toolchains" in m for m in _warn_messages(logs))
 
 
 # ---------------------------------------------------------------------------
@@ -1569,7 +1589,7 @@ def test_run_warns_when_bootloader_mismatch(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel._log") as mock_log, \
+         _capture_logs() as logs, \
          patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
          patch("sysforge.pipeline.stages.kernel._probe_installed_bootloader",
@@ -1577,9 +1597,9 @@ def test_run_warns_when_bootloader_mismatch(tmp_path):
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
 
-    mismatch = [m for m in _warn_messages(mock_log)
+    mismatch = [m for m in _warn_messages(logs)
                 if "bootloader = 'grub'" in m and "not detected" in m]
-    assert mismatch, f"expected bootloader mismatch warn, got: {_warn_messages(mock_log)}"
+    assert mismatch, f"expected bootloader mismatch warn, got: {_warn_messages(logs)}"
 
 
 # ---------------------------------------------------------------------------
@@ -1630,8 +1650,8 @@ def test_validate_pkgname_typo_raises(tmp_path):
         _validate_pkgname_matches_pkgbuild(pb, "linux-custm")
 
 
-def _ui_messages(mock_log):
-    return [str(c.args[0]) for c in mock_log.ui.call_args_list]
+def _ui_messages(logs):
+    return [str(c.args[1]) for c in logs.ui.call_args_list]
 
 
 # ---------------------------------------------------------------------------
@@ -1645,9 +1665,9 @@ def test_dry_run_emits_resolution_summary(tmp_path):
                                 cc="/usr/bin/clang", cxx="/usr/bin/clang++")
     p = make_kernel_toml(tmp_path, builds)
     opts = make_options(state_dir=tmp_path / "state", dry_run=True)
-    mock_log = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
+    logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
 
-    ui = _ui_messages(mock_log)
+    ui = _ui_messages(logs)
     assert any("Kernel build plan:" in m for m in ui), f"no summary header in {ui}"
     assert any("compiler:" in m for m in ui)
     assert any("variant:" in m and "pgo_llvm" in m for m in ui)
@@ -1669,9 +1689,9 @@ def test_resolution_summary_names_compiler_origin(tmp_path):
         'compiler = "llvm"\n'
     )
     opts = make_options(state_dir=tmp_path / "state", dry_run=True)
-    mock_log = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
+    logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
 
-    ui = _ui_messages(mock_log)
+    ui = _ui_messages(logs)
     assert any("compiler:" in m and "llvm" in m and "kernel.toml" in m for m in ui), \
         f"compiler origin not surfaced: {ui}"
 
@@ -1765,10 +1785,10 @@ def test_interactive_run_emits_nudge(tmp_path):
     make_pkgbuild(builds, "linux-git")
     state = PipelineState(tmp_path / "state")
     p = make_kernel_toml(tmp_path, builds)  # interactive defaults to True
-    mock_log = _run_kernel_with_state(tmp_path, (state, p))
+    logs = _run_kernel_with_state(tmp_path, (state, p))
 
-    assert any("Running interactively" in m for m in _info_messages(mock_log)), \
-        f"expected interactive nudge, got: {_info_messages(mock_log)}"
+    assert any("Running interactively" in m for m in _info_messages(logs)), \
+        f"expected interactive nudge, got: {_info_messages(logs)}"
 
 
 def test_non_interactive_run_omits_nudge(tmp_path):
@@ -1778,9 +1798,9 @@ def test_non_interactive_run_omits_nudge(tmp_path):
     p = make_kernel_toml(tmp_path, builds)
     opts = make_options(state_dir=tmp_path / "state")
     opts.non_interactive = True
-    mock_log = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
+    logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
 
-    assert not any("Running interactively" in m for m in _info_messages(mock_log))
+    assert not any("Running interactively" in m for m in _info_messages(logs))
 
 
 def test_dry_run_omits_interactive_nudge(tmp_path):
@@ -1789,9 +1809,9 @@ def test_dry_run_omits_interactive_nudge(tmp_path):
     state = PipelineState(tmp_path / "state")
     p = make_kernel_toml(tmp_path, builds)
     opts = make_options(state_dir=tmp_path / "state", dry_run=True)
-    mock_log = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
+    logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
 
-    assert not any("Running interactively" in m for m in _info_messages(mock_log))
+    assert not any("Running interactively" in m for m in _info_messages(logs))
 
 
 # ---------------------------------------------------------------------------

@@ -692,7 +692,9 @@ def log_env_chain(level: str = "debug") -> EnvChainSnapshot:
     from sysforge import log as _log
     snap = collect_env_chain()
     rendered = format_env_chain(snap, verbosity=_log.get_verbosity())
-    logger = _log.get_logger("ENV")
+    # [ENV_CHAIN]: the OS env-inheritance diagnostic, distinct from makepkg_env's
+    # [ENV] (compiler/build env-var resolution) — same word, different concern.
+    logger = _log.get_logger("ENV_CHAIN")
     emit = getattr(logger, level.lower(), logger.debug)
     emit(rendered)
     return snap

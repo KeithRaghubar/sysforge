@@ -1,5 +1,5 @@
-.PHONY: all dev venv build install clean distclean test test-x lint man \
-        check-shipped pre-release \
+.PHONY: all dev venv build install clean distclean test test-x lint coverage man \
+        check-shipped check-personal design check-design pre-release \
         release-major release-minor release-patch \
         vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
@@ -40,6 +40,17 @@ test-x:
 lint:
 	ruff check sysforge/
 
+# Coverage report. Layers pytest-cov into an ephemeral uv overlay (same
+# `uv run --no-sync` pattern as check-shipped/man) so nothing is added to
+# the system or the venv. Prints a term summary and writes coverage.json;
+# the ratchet baseline lives in tests/COVERAGE_BASELINE.md.
+coverage:
+	uv run --no-sync --with pytest-cov pytest \
+	  --cov=sysforge \
+	  --cov-report=term-missing:skip-covered \
+	  --cov-report=json:coverage.json \
+	  -o addopts="" -q
+
 # Pre-release shipped-file validator. Runs the seven check groups in
 # tools/check_shipped.py (configs, pkgbuild, pkgbuild_parity, hooks,
 # completions, versions, manpage). tools/release.sh invokes this from
@@ -47,9 +58,26 @@ lint:
 check-shipped:
 	uv run --no-sync python tools/check_shipped.py
 
-# Composite gate: lint + tests + shipped-file consistency. Run before
-# kicking off `make release-{major,minor,patch}`.
-pre-release: lint test check-shipped
+# De-personalization gate. Fails if personal identity/path tokens leak into the
+# published surface (docs, source comments, shipped configs); legitimate
+# attribution (copyright/maintainer/--author) and the repo URL are allowed.
+check-personal:
+	uv run --no-sync python tools/check_personal.py
+
+# Regenerate DESIGN.md from the modular sources under docs/design/ (concatenated
+# per docs/design/_manifest under a generated banner). DESIGN.md is generated --
+# edit the sources, then run this.
+design:
+	uv run --no-sync python tools/build_design.py
+
+# DESIGN.md drift gate (mirrors the manpage check). Fails if the committed
+# DESIGN.md is out of date with its docs/design/ sources. Wired into preflight.
+check-design:
+	uv run --no-sync python tools/build_design.py --check
+
+# Composite gate: lint + tests + shipped-file consistency + impersonal docs +
+# DESIGN.md freshness. Run before kicking off `make release-{major,minor,patch}`.
+pre-release: lint test check-shipped check-personal check-design
 
 release-major:
 	bash tools/release.sh --bump=major
@@ -72,7 +100,7 @@ man:
 	  --output man/sysforge.1
 
 clean:
-	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/
+	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/ .coverage coverage.json
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 distclean: clean

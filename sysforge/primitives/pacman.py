@@ -35,7 +35,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.aur_resolve import _looks_unresolved, _strip_version
-from sysforge.primitives.makepkg_wrapper import INSTALL_FLAGS
+from sysforge.primitives.makepkg_flags import INSTALL_FLAGS, SYNC_FLAGS
 
 _log = log.get_logger("PACMAN")
 
@@ -105,7 +105,7 @@ def _get_alpm_handle():
 
 # Flags stripped from each per-package makepkg call during batch update/converge.
 # Deps are pre-installed in one shot; packages are installed in one shot at the end.
-BATCH_STRIP_FLAGS = frozenset({"--syncdeps", "-s"}) | INSTALL_FLAGS
+BATCH_STRIP_FLAGS = SYNC_FLAGS | INSTALL_FLAGS
 
 # Always clean the build tree on update — prevents stale $srcdir from a previous
 # failed run causing patch-already-applied errors in prepare().
@@ -146,7 +146,7 @@ def detect_orphan_artifacts(
     are intentionally NOT classified — the caller can't safely tell whether
     they're stale or kept on purpose (e.g. a build of a kernel branch with
     local commits the user wants to keep around for later install). The
-    rule per Keith's spec: if ``--prune`` wouldn't safely delete it, don't
+    guiding rule: if ``--prune`` wouldn't safely delete it, don't
     list it. ``.sig`` files are ignored.
     """
     from sysforge.primitives.version import vercmp  # avoid import cycle at module load

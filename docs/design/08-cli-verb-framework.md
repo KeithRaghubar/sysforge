@@ -1,0 +1,55 @@
+## CLI Verb Framework
+
+Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `resolve`, `env`, `setup`, `log`, `completions`, `packages …`, `state …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `completions_cmd.py`, `converge.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(run_verb(args.verb_cls(), args))`.
+
+**Three-phase contract.** Each verb implements:
+
+- `pre_check(args) -> PreCheckResult` — validate args, load config, run preflights (LLVM safety, dirty-state guards, sudo checks). No state mutation. Returns one of three terminal shapes:
+  - **proceed**: `skip_reason=None, blocker=None`, optional `ctx` dict carried into later phases.
+  - **skip** (success short-circuit): `skip_reason="…"` — verb exits 0 with the reason logged.
+  - **block** (failure short-circuit): `blocker="…", exit_code=N` — verb exits non-zero with the message logged.
+- `execute(args, pre) -> ExecResult` — do the work. May mutate state. `ExecResult.exit_code` propagates to the process; `ExecResult.artifacts` is a free-form dict for `post_validate` to read.
+- `post_validate(args, pre, result) -> None` — verify post-conditions, write final state, raise `RuntimeError` on failure. Default is a no-op.
+
+**Result types** (`PreCheckResult` and `ExecResult`) are plain dataclasses with `ctx` / `artifacts` dicts; the runner does not inspect their contents. This keeps phase boundaries loose enough for ad-hoc data flow within a verb without inventing a per-verb context class.
+
+**Sentinel handling.** Verbs whose `execute` mutates the live system set `requires_sentinel = True`. The runner wraps `execute + post_validate` in `sentinel_scope(state_dir, verb.name, recovery_cmd=…, retry_cmd=…, **metadata)` from `primitives/stage_sentinel.py`. On entry, the sentinel writes `stage_in_progress.toml`; on normal completion (both phases pass), it clears. On `RuntimeError` or `CleanExitRequested`, the sentinel is left in place so the next sysforge invocation blocks at the CLI-entry recovery prompt. `sentinel_scope` also installs an `InterruptScope`, so verbs participate in the same first-Ctrl-C-defers-to-safe-boundary behaviour as the toolchain stage. The toolchain pipeline stage uses the same primitive — there is one implementation, shared.
+
+**Read-only verbs** (`env`, `resolve`, `log`, `state list`, `state orphans` without `--prune`, `state failed` without `--clear`/`--clear-all`, `packages list`, `doctor` without `--apply`) implement `execute` (the work is printing) and return `ExecResult()`; `post_validate` defaults to no-op and `requires_sentinel = False`. They use the same dispatch path as mutating verbs — no second code path.
+
+**Error model.**
+- `RuntimeError` raised from any phase → `_log.error(msg)`, return 1. Sentinel preserved if active.
+- `SystemExit` → propagate verbatim (lets tests and signal handlers see the raw exit).
+- `CleanExitRequested` → caught inside `sentinel_scope`, logged, re-raised as `RuntimeError` with the verb's `retry_cmd` and `recovery_cmd` in the message; sentinel preserved.
+
+**Per-verb phase mapping** (current shape; phases reflect where each piece of work lives, not which primitives it calls):
+
+| Verb | pre_check | execute | post_validate | sentinel |
+|------|-----------|---------|---------------|----------|
+| `build` | load config + LLVM preflight + `--cleansrc` validation | `build_core.build_and_install` (dep prep → build loop → install) | (build_state written by makepkg_wrapper) | yes |
+| `update` | `--install-only` conflict check + config + state load + pacman-hook sentinel consumption | assemble → sync → vercmp → summary → `build_core.build_and_install` | (build_state written inline) | yes |
+| `fetch` | load config + LLVM preflight | scheduler sync per pkg | non-blocker SyncResult statuses verified | no |
+| `converge` | load state + filter + conflict-group load | drift compare; optional rebuild | (build_state written by rebuild path) | only with `--apply` |
+| `doctor` | load config + target expansion | depends/soname/ABI scan | invoke `BuildVerb` flow when `--apply` | delegated |
+| `resolve` | load config | match rules + print | null | no |
+| `env` | null | collect + format + print env chain | null | no |
+| `setup` | read pacman.conf | check + patch IgnoreGroup | re-read confirms write | no |
+| `log` | null | resolve unified/per-pkg log path; page through `$PAGER` | null | no |
+| `packages {list,add,remove}` | load packages.toml + validate override fields | rewrite TOML | null | no |
+| `state {list,repair,orphans}` | load state dir | inspect / repair / prune | null | `repair` only |
+| `run …` namespace | build `RunOptions` | delegate to `pipeline.run_pipeline` / `run_stage_standalone` | pipeline framework | (pipeline owns it) |
+
+**Why not unify with the pipeline `Stage` contract?** Stages already presume multi-stage DAG semantics, per-stage checkpoints, and an opinionated `PipelineState`. Most CLI verbs are single-shot and don't want a pipeline state file. The verb framework reuses `sentinel_scope` for install-bearing protection but otherwise stays independent, so `sysforge env` is not paying for pipeline machinery it doesn't need. The `run` namespace verbs are exactly the thin shim from CLI → pipeline.
+
+### Shared build engine (`build_core.py`)
+
+`build` is a strict subset of `update`: both route their actual building through one engine in `sysforge/build_core.py`, so the two paths cannot drift the way they once did (a `build` that left makepkg's `-s`/`--syncdeps` in place would have makepkg run `pacman -S` on an AUR-only dependency and fail, while `update` stripped those flags and pre-resolved every dep itself). `update` extends the shared core with the things that are genuinely its own — version checking, source-sync scheduling, `--install-only`, toolchain pre-flight, the bulk `pacman -Syu`, and the run summary — but the dependency prep, the per-package makepkg invocation, and the install are identical code.
+
+- **`build_and_install(targets, *, sync_source, …) -> BuildOutcome`** — the engine. Runs `prepare_deps`, then a per-package build loop, then `install_built`, returning the built/failed/pgo-skipped lists and the install-failed flag. Each makepkg call uses `strip_flags = BATCH_STRIP_FLAGS` (`{-s, --syncdeps, -i, --install}`) and `force_batch` when non-interactive, so makepkg never resolves deps via pacman and never installs inline — sysforge owns both. `targets` is any object exposing `pkgbase`/`pkgnames`/`pkgbuild_path`/`source` (`update._UpdateResult` qualifies directly; `build` builds a `BuildTarget` from the parsed PKGBUILD via `target_from_pkgbuild`).
+- **`prepare_deps(pkgbuild_paths, config, *, building_names, …)`** — pre-installs missing repo makedeps in one `pacman -S` transaction (`batch_install_makedeps`) and builds AUR/local deps in topo order (`resolve_aur_deps_batch` + `build_resolved_deps`), excluding the packages about to be built themselves. The repo arm **filters the missing set to sync-repo packages first** (`aur.repo_packages`, the same classifier the AUR resolver uses) — an AUR-only makedep mixed into the `pacman -S` transaction makes pacman abort with "target not found" and install *none* of the repo makedeps either, so AUR makedeps are excluded here and left to the AUR arm. Both arms are best-effort — a failure warns and lets the build proceed, surfacing a genuinely-missing dep as a per-package build failure with a diagnosis rather than aborting the whole batch up front.
+- **`install_built(built_pkg_files) -> (files, install_failed)`** — dedupe, re-fetch the installed set (makedep/AUR pre-install may have expanded it), `filter_pkgs_to_installed` for split-pkgbase safety, then one `pacman -U`. Reused by `update`'s `--install-only` artifact-scan branch.
+- **`sync_source`** is the single deliberate caller difference: `update` passes `False` (Phase 2 already synced sources through the scheduler), `build` passes `not --no-update` to keep its inline per-package source sync (which itself routes through `source_sync.get_scheduler()` inside `makepkg_wrapper.run`). `_find_existing_artifacts` and `_record_build_failure` live here too (moved from `update.py`) since both the engine and `update`'s install-only scan use them.
+- **`make_build_options(stage, options, **overrides) -> BuildOptions`** — the shared factory the three install-bearing pipeline stages (`kernel`/`toolchain`/`packages`) use instead of hand-assembling a `BuildOptions`. It maps the fields common to every stage's `RunOptions` (`no_pkg_logs` → `pkg_log`, plus `persist_log`/`state_dir`/`abi_check`, the last via `getattr` so a run-options object without it degrades to `False`), layers in the stage's constant defaults from `_STAGE_BUILD_DEFAULTS` (`kernel` → `owner_stage="kernel"` + `no_install=True`; `toolchain` → `pgo_managed=True`; `packages` → none), then applies the caller's per-call `overrides` (which win over both). Fields that differ per stage or per package — `profile_conf`, `log_dir`, `update`, `cc`/`cxx`/`ld_override`, `source`, `toolchain_variant`, `extra_flags`, … — are passed explicitly as overrides; anything a stage omits keeps its `BuildOptions` default (so `toolchain` not passing `log_dir` keeps it `None`). This is where a stage-wide default like the kernel build/install split lives, rather than being repeated at each call site.
+
+---
+

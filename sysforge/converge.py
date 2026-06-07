@@ -32,9 +32,11 @@ from sysforge.primitives.pacman import (
     get_pkgdest,
     snapshot_pkg_dir,
 )
-from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
-from sysforge.primitives.profile import get_build_mode, match_rules, resolve_profile, serialize_flags
+from sysforge.primitives.flag_drift import (
+    STATUS_NOT_PROFILED,
+    STATUS_PARSE_ERROR,
+    resolve_flag_drift,
+)
 from sysforge.pipeline.state import resolve_state_dir
 
 
@@ -55,42 +57,18 @@ class _ConvergeResult:
 
 
 # ---------------------------------------------------------------------------
-# Flags diff
-# ---------------------------------------------------------------------------
-
-def _diff_flags(stored: str, current: str) -> list[str]:
-    """
-    Return human-readable diff lines between two flags strings.
-    Format per changed key: "  KEY: <old> → <new>" or "  +KEY: <new>" / "  -KEY: <old>".
-    """
-    def _parse(s: str) -> dict[str, str]:
-        result = {}
-        for line in s.splitlines():
-            if "=" in line:
-                k, _, v = line.partition("=")
-                result[k.strip()] = v
-        return result
-
-    old = _parse(stored)
-    new = _parse(current)
-    all_keys = sorted(set(old) | set(new))
-    diffs = []
-    for key in all_keys:
-        if key not in old:
-            diffs.append(f"  +{key}: {new[key]!r}")
-        elif key not in new:
-            diffs.append(f"  -{key}: {old[key]!r}")
-        elif old[key] != new[key]:
-            diffs.append(f"  {key}: {old[key]!r} → {new[key]!r}")
-    return diffs
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def cmd_converge(args) -> None:
-    """Entry point for `sysforge converge`."""
+    """Entry point for `sysforge converge` (deprecated — see `sysforge update`)."""
+    print(
+        "[SYSFORGE] Warning: `sysforge converge` is deprecated and will be "
+        "removed in a future release. Use `sysforge update` instead — flag "
+        "drift is now reported by default; add --rebuild-on-flag-drift to "
+        "rebuild drifted packages.",
+        file=sys.stderr,
+    )
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
     bs = BuildState(state_dir)
     packages = bs.all_packages()
@@ -123,61 +101,24 @@ def cmd_converge(args) -> None:
 
     results: list[_ConvergeResult] = []
 
+    # Detection delegates to the shared primitive (also used by `sysforge
+    # update`'s Phase 4.3). The neutral NOT_PROFILED status maps to converge's
+    # historical PACMAN_ONLY label (omitted from output); every other status is
+    # shared verbatim.
     for pkgbase, pkgnames in sorted(pkgbase_map.items()):
         entry = pkgbase_entry[pkgbase]
-
-        if entry.get("build_mode") != "profiled":
-            results.append(_ConvergeResult(
-                pkgbase=pkgbase, pkgnames=pkgnames, status="PACMAN_ONLY",
-            ))
-            continue
-
-        pkgbuild_path = Path(entry["pkgbuild_dir"]) / "PKGBUILD"
-        if not pkgbuild_path.exists():
-            results.append(_ConvergeResult(
-                pkgbase=pkgbase, pkgnames=pkgnames, status="NO_PKGBUILD",
-                pkgbuild_path=pkgbuild_path,
-            ))
-            continue
-
-        stored_flags = entry.get("flags_string")
-        if not stored_flags:
-            results.append(_ConvergeResult(
-                pkgbase=pkgbase, pkgnames=pkgnames, status="NO_FLAGS",
-                pkgbuild_path=pkgbuild_path,
-            ))
-            continue
-
-        try:
-            pkgmeta = parse_pkgbuild(pkgbuild_path)
-        except Exception as e:
-            _log.warn(f"{pkgbase}: failed to parse PKGBUILD: {e}")
-            results.append(_ConvergeResult(
-                pkgbase=pkgbase, pkgnames=pkgnames, status="PARSE_ERROR",
-                pkgbuild_path=pkgbuild_path,
-            ))
-            continue
-
-        matched = match_rules(pkgmeta, config.get("rules", []))
-        build_mode = get_build_mode(matched, config)
-        extracted_profile = None
-        if build_mode in ("patched_pkgbuild", "kernel"):
-            extracted_profile = extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
-        resolved = resolve_profile(pkgmeta, matched, config, conflict_groups,
-                                   extracted_profile=extracted_profile)
-        current_flags = serialize_flags(resolved)
-
-        diffs = _diff_flags(stored_flags, current_flags)
-        status = "DRIFTED" if diffs else "IN_SYNC"
-
+        drift = resolve_flag_drift(entry, config, conflict_groups)
+        if drift.status == STATUS_PARSE_ERROR:
+            _log.warn(f"{pkgbase}: failed to parse PKGBUILD: {drift.error}")
+        status = "PACMAN_ONLY" if drift.status == STATUS_NOT_PROFILED else drift.status
         results.append(_ConvergeResult(
             pkgbase=pkgbase,
             pkgnames=pkgnames,
             status=status,
-            pkgbuild_path=pkgbuild_path,
-            stored_flags=stored_flags,
-            current_flags=current_flags,
-            diffs=diffs,
+            pkgbuild_path=drift.pkgbuild_path,
+            stored_flags=drift.stored_flags,
+            current_flags=drift.current_flags,
+            diffs=drift.diffs,
         ))
 
     _print_summary(results)

@@ -512,12 +512,15 @@ def test_pkgctl_checkout_streams_output_to_log(tmp_path):
             "Receiving objects: 100% (123/123), done.\n",
         ],
     )
-    debug_calls = []
     with patch("subprocess.Popen", side_effect=factory), \
-         patch("sysforge.primitives.aur._build_log") as mock_log:
-        mock_log.debug.side_effect = lambda msg: debug_calls.append(msg)
+         patch("sysforge.log.debug") as mock_debug:
         pkgctl_checkout("htop", tmp_path / "htop")
 
+    # Assert at the stable primitive seam: Logger.debug(msg) forwards to
+    # sysforge.log.debug(tag, msg), so the message is call.args[1]. Patching
+    # there — not aur's _build_log binding — keeps this valid when the aur
+    # module is decomposed (Phase 2e) or re-tagged (Phase 3).
+    debug_calls = [c.args[1] for c in mock_debug.call_args_list]
     assert "==> Cloning htop ..." in debug_calls
     assert "Cloning into 'htop'..." in debug_calls
     assert "Receiving objects: 100% (123/123), done." in debug_calls
@@ -1044,7 +1047,7 @@ def test_classify_ahead_only(tmp_path):
 def test_classify_diverged_upstream_only(tmp_path):
     """Upstream force-pushed; no local commits authored by local user.
 
-    The exact reproduction of Keith's LLVM workstation state.
+    The exact reproduction of an LLVM workstation state.
     """
     local = _seed_upstream_and_local(tmp_path, rewrite_upstream=True)
     state, n_local, n_upstream = classify_head_vs_upstream(local)
@@ -1097,10 +1100,13 @@ def test_purge_src_force_logs_forced_marker(tmp_path):
     local = _seed_upstream_and_local(
         tmp_path, local_extra=1, local_authored_extra=True,
     )
-    with patch("sysforge.primitives.aur._git_log") as mock_log:
+    # Assert at the stable primitive seam (sysforge.log.warn), not aur's
+    # _git_log binding, so this survives aur decomposition (Phase 2e) /
+    # re-tag (Phase 3). Logger.warn(msg) forwards to warn(tag, msg) → args[1].
+    with patch("sysforge.log.warn") as mock_warn:
         purge_src(local, force=True)
-    msg = mock_log.warn.call_args.args[0]
-    assert "(forced)" in msg
+    warn_msgs = [c.args[1] for c in mock_warn.call_args_list]
+    assert any("(forced)" in m for m in warn_msgs)
 
 
 def _bump_pkgver_line(repo: Path, *, file: str = "PKGBUILD",

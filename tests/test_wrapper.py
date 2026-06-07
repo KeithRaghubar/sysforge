@@ -83,7 +83,7 @@ def test_rule_match(rule_index, alias, expected):
 def test_effective_build_dir_uses_builddir(tmp_path):
     """With BUILDDIR set, the diagnosis dir is $BUILDDIR/<pkgbase> (where the
     meson/cmake side-car logs live), not the in-place PKGBUILD dir."""
-    from sysforge.primitives.makepkg_wrapper import _effective_build_dir
+    from sysforge.primitives.makepkg_env import _effective_build_dir
 
     builddir = tmp_path / "builds"
     pkgdir = tmp_path / "src" / "wayland-protocols-git"
@@ -100,7 +100,7 @@ def test_effective_build_dir_uses_builddir(tmp_path):
 
 def test_effective_build_dir_falls_back_to_pkgbuild_dir(tmp_path):
     """When the BUILDDIR candidate has no src/, fall back to the PKGBUILD dir."""
-    from sysforge.primitives.makepkg_wrapper import _effective_build_dir
+    from sysforge.primitives.makepkg_env import _effective_build_dir
 
     pkgdir = tmp_path / "src" / "foo-git"
     pkgdir.mkdir(parents=True)

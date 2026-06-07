@@ -370,7 +370,7 @@ class TestDetectOrphanArtifacts:
         assert result == {"superseded": []}
 
     def test_uninstalled_pkgname_is_not_classified(self, tmp_path):
-        """Per Keith's spec: --prune wouldn't safely delete builds for
+        """Per spec: --prune wouldn't safely delete builds for
         not-installed packages (could be a kept-on-purpose kernel build, etc.),
         so don't list them as orphans."""
         self._mk_pkg(tmp_path, "ghostpkg", "1.0")

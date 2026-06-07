@@ -2009,7 +2009,7 @@ def test_verify_llvm_install_detects_version_mismatch():
     from sysforge.pipeline.stages.toolchain import _verify_llvm_install
 
     # llvm-libs at 22.0.1, the rest at 22.0.0 — the exact failure mode
-    # Keith hit (interrupted Pass-1 install of llvm-libs).
+    # observed in practice (interrupted Pass-1 install of llvm-libs).
     pacman_output = (
         "llvm 22.0.0-1\n"
         "llvm-libs 22.0.1-1\n"
@@ -2170,7 +2170,7 @@ def test_check_llvm_link_resolution_detects_non_usr_lib():
     from sysforge.pipeline.stages.toolchain import _check_llvm_link_resolution
 
     ldd_clang = (
-        "\tlibLLVM-22.so => /home/keith/.local/lib/libLLVM-22.so (0x00007f01)\n"
+        "\tlibLLVM-22.so => /home/user/.local/lib/libLLVM-22.so (0x00007f01)\n"
     )
 
     def fake_run(cmd, **kwargs):

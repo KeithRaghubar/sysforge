@@ -26,7 +26,7 @@ validpgpkeys=('474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard <tstell
 )
 
 # Utilizing LLVM_DISTRIBUTION_COMPONENTS to avoid
-# installing static libraries; inspired by Gentoo
+# installing static libraries; inspired by source-based distros
 _get_distribution_components() {
   local target
   ninja -t targets | grep -Po 'install-\K.*(?=-stripped:)' | while read -r target; do

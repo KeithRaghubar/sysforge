@@ -1,0 +1,473 @@
+## Primitives Layer
+
+All modules independently testable. ~1280 pytest tests (`make test` from repo root).
+
+### `log.py`
+
+Structured logging module. Output goes to stderr (verbosity-gated) and optionally to log files (always full verbosity). File handles are module-level globals managed by `open_unified_log`/`close_unified_log` and `open_pkg_log`/`close_pkg_log`. All file write errors are silently swallowed so file I/O can never interrupt a build.
+
+```
+[SYSFORGE][LEVEL][TAG] message
+```
+
+Four levels: `error` (always shown), `warn` (`-v`), `info` (`-vv`), `debug` (`-vvv`). Set once at CLI entry with `log.set_verbosity(args.verbose)`.
+
+Modules obtain a bound `Logger` instance via `log.get_logger("TAG")`, which stores the tag and exposes the same `ui`/`error`/`warn`/`info`/`debug`/`newline`/`prompt_prefix` interface as the module-level functions. Modules with multiple logging subsystems (e.g. `makepkg_wrapper.py`, `profile.py`, `aur.py`) create multiple named loggers at module level (`_conf_log`, `_build_log`, etc.). Module-level helpers (`open_unified_log`, `close_unified_log`, `open_pkg_log`, `close_pkg_log`, `set_verbosity`, `set_dry_run_mode`) are called directly on the `log` module.
+
+**ANSI colour.** The LEVEL token is coloured by severity (bold red for `ERROR`, yellow for `WARN`, dim for `DEBUG`; `INFO` stays plain) and the TAG is cyan. Colour is applied only when the output stream is a TTY and the `NO_COLOR` environment variable is unset — so `sysforge … | cat`, redirections to files, and CI logs stay plain automatically. File logs (`sysforge.log`, `sysforge_<pkg>.log`) are never coloured regardless of terminal state. `ui/progress.py` consults the same `NO_COLOR` / TTY signals before engaging its scroll-region renderer.
+
+**Viewing logs.** `sysforge log` (no args) pages the unified log at `<state_dir>/sysforge.log`; `sysforge log <pkg>` pages the per-package log at `<pkgbuild_src_dir>/<pkg>/sysforge_<pkg>.log`. Both pipe through `$PAGER` (default `less -RFX`) via the shared `primitives/pager.py:maybe_pager` context manager (also used by `state list` and `state orphans`). Missing files surface as a non-zero exit with the searched path — no AUR clone fallback, so a typo never causes a network operation. Tab-completion uses `sysforge completions local` (dirs under `pkgbuild_src_dir` containing a PKGBUILD).
+
+### `ui/progress.py`
+
+Bottom-anchored status line for batch operations (`[3/10] building htop`). Dual-mode renderer picked once at `progress.init()` (called from `cli.main` right after `log.set_verbosity`):
+
+- **TTY mode** — DECSTBM scroll region (`ESC[1;N-1r`) reserves the last row; other output (including subprocess output that inherits the TTY — `makepkg`, `git`, `pacman`) scrolls above it. `SIGWINCH` is wired to re-establish the region and redraw the last status on resize. An `atexit` hook releases the region on interpreter shutdown.
+- **Plain mode** — selected when any of the following is true: `sys.stderr` is not a TTY, `_DRY_RUN`, `TERM=dumb`, `TERM=""`, `CI` set, or `NO_COLOR` set. Emits `[PROGRESS] [i/n] label` through `log.ui()` so the same data reaches logs and pipes without ANSI garbage.
+
+Public API: `init()`, `shutdown()`, `render(current, total, label)`, `clear()`, and a `tracker(total, prefix)` context manager that yields a `tick(label)` callable (auto-clears on exit). `clear()` must be called before any `input()` prompt inside a batch loop so the prompt doesn't land inside the scroll region; the next `tick()` re-establishes the region automatically. Reservation is lazy: entering a tracker alone touches nothing — the first `tick()` call establishes the region.
+
+Integration sites: `sysforge/pipeline/stages/packages.py` (build loop), `sysforge/primitives/aur_resolve.py::build_resolved_deps` (AUR deps), `sysforge/update.py` (sequential source sync via `source_sync` + threaded version check + build loop), `sysforge/fetch.py` (fetch loop). Interactive-prompt call sites in `pipeline/stages/packages.py` and `primitives/makepkg_wrapper.py` each call `progress.clear()` before invoking `prompt.prompt_choice()`.
+
+### `prompt.py`
+
+Single shared interactive-prompt helper. Every stage that needs user input goes through `prompt.prompt_text()` (free-form) or `prompt.prompt_choice()` (fixed-set), so the behaviour on empty input, unrecognized input, and EOF is consistent across the codebase. `is_interactive()` wraps `sys.stdin.isatty()` for stages that need to gate prompts on a TTY.
+
+Key contract:
+
+- `prompt_choice` re-prompts with a visible warning on unrecognized input (so typos / jibberish never silently fall through to the default), unless the call site passes `retry_on_invalid=False` — used for destructive / mutate-confirm prompts where any non-confirming input must abort (partition.py's literal-`yes` confirmation; the `[y/N]` confirms in `state orphans --prune`, `doctor --apply` rebuild, and `auto_repair`'s checksum-mismatch `updpkgsums` retry). These three previously used a bare `input()` with a hand-rolled `EOFError` guard; routing them through `prompt_choice` also picks up the captured-stdin `OSError`-as-EOF handling for free.
+- `eof_default` is a separate kwarg from `default`. Most sites pass neither (EOF returns `default`). `toolchain.py`'s GCC-build override and `_confirm_or_abort` deliberately set `eof_default="y"` to preserve their long-standing "EOF means proceed unattended" semantic.
+- Both helpers catch `EOFError` *and* `OSError`, since pytest's captured stdin and other unreadable-stdin scenarios raise the latter.
+- Optional `tag`/`level` kwargs reuse `log.prompt_prefix(level, tag)` so prompts keep the standard `[SYSFORGE][LEVEL][TAG] ` format.
+
+Call sites: `pipeline/stages/reconfigure.py` (11), `pipeline/stages/packages.py` (`_prompt_failed_packages`), `pipeline/stages/toolchain.py` (3), `pipeline/stages/partition.py` (1), `setup_cmd.py` (1), `primitives/makepkg_wrapper.py` (4). No stage may call `input()` directly.
+
+### `paths.py`
+
+Pure constants module — the canonical directory of every config file sysforge reads. `CONFIG_BASE` is derived from `$SYSFORGE_CONFIG_DIR` (falling back to `/etc/sysforge`), and the resolved path lists (`CONFIG_PATHS`, `CONFLICT_GROUP_PATHS`, `CONSUMES_INFERENCE_PATHS`) layer the user file (`~/.config/sysforge/…`) over the system file in `extends_system` order. The sole helper is `resolve_packages_path(config)`, which returns the `packages.toml` path the rest of the codebase should use (honouring `--packages` overrides in `config`). No I/O here — just path strings.
+
+### `config.py`
+
+TOML config loading and path resolution. Public API:
+- `load_config(config_paths=None)` — loads `profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
+- `load_conflict_groups(paths=None)` — extracts the `[append_conflict_groups]` table from `profiles.toml`
+- `load_consumes_inference(paths=None)` — extracts the `[consumes_inference]` table from `profiles.toml`
+- `find_pkgbuild(pkg, config=None)` — resolves a bare package name, directory path, or PKGBUILD path to an absolute PKGBUILD path. Search order: (1) direct path or directory (resolves `dir/PKGBUILD`), (2) `<cwd>/<name>/PKGBUILD`, (3) `<config [paths] pkgbuild_src_dir>/<name>/PKGBUILD`, (4) auto-clone if not found locally — repo packages via `pkgctl repo clone --protocol=https`, AUR packages are routed through `get_scheduler().request(SyncRequest(...))` so the clone is deduplicated with any concurrent update/fetch request and shares the same rate-limit budget. Used by `sysforge build`, `sysforge resolve`, and the packages stage.
+
+`[paths] pkgbuild_src_dir` in `profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
+- `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles backslash line continuation (e.g. `CFLAGS="... \\\n  -flag"`) and multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines. Merges user conf (`$XDG_CONFIG_HOME/pacman/makepkg.conf`, `~/.makepkg.conf`) on top of system conf.
+
+### `env_chain.py`
+
+Snapshots and validates the runtime environment chain sysforge inherits, so any command can answer "what env do I see, where did it come from, and which sources disagree?" without manual `env`/`set` archaeology. Public API:
+
+- `collect_env_chain()` — returns an `EnvChainSnapshot` carrying grouped runtime vars (sysforge/toolchain/makepkg/python/desktop/shell), the parent process chain walked via `/proc`, a shell-init-file presence map, a flat `sources` dict (one entry per parseable contributor), and the collection cost in ms.
+- `compute_divergences(snap)` — returns `{var: {source_name: value}}` for every var whose declared values disagree across sources, or where a source declares a value the runtime doesn't carry.
+- `format_env_chain(snap, *, verbosity=0)` — renders the snapshot as human-readable text. Always appends a `mismatches:` block. At `verbosity >= 2` (`-vv`) each grouped var carries an inline `[differs from …]` annotation alongside its value.
+- `validate_env_chain(snap)` — non-fatal warnings (e.g. `SYSFORGE_STATE_DIR` unset, no `VIRTUAL_ENV`).
+- `log_env_chain(level="debug")` — collect + format + emit via `log.get_logger("ENV")`. Called from `cli.main()` at every command's startup so the unified log always captures the env chain.
+
+**Sources read** (parsed once per invocation):
+
+| Source name        | Origin                                                 |
+|--------------------|--------------------------------------------------------|
+| `runtime`          | `os.environ` — the inherited view                      |
+| `etc_environment`  | `/etc/environment` — bare `KEY=value` lines            |
+| `pam_env_default`  | `/etc/security/pam_env.conf` DEFAULT field             |
+| `pam_env_override` | `/etc/security/pam_env.conf` OVERRIDE field            |
+| `system_zshenv` / `user_zshenv`     | `/etc/zsh/zshenv`, `~/.zshenv`        |
+| `system_zprofile` / `user_zprofile` | `/etc/zsh/zprofile`, `~/.zprofile`    |
+| `etc_profile` / `user_profile`      | `/etc/profile`, `~/.profile`          |
+| `system_zshrc` / `user_zshrc`       | `/etc/zsh/zshrc`, `~/.zshrc`          |
+| `system_zlogin` / `user_zlogin`     | `/etc/zsh/zlogin`, `~/.zlogin`        |
+| `systemd_user`     | `systemctl --user show-environment` (skipped without `XDG_RUNTIME_DIR`) |
+| `sysforge_config`  | resolved `[defaults]` profile from `profiles.toml`, flattened via `profile.merge_extends` + `profile.serialize_flags` |
+
+Init-file parsing is regex-based (`export KEY=value`, `KEY=value; export KEY`, plus bare assignments only for `/etc/environment` and `pam_env`). Values containing `$(`, backtick, or `${VAR}` are tagged `<expansion: …>` and counted in `parse_caveats` per source — we do not source files in a subshell because `direnv` / ssh-agent loaders / similar would execute as side effects of every sysforge command.
+
+**Cost.** Collection runs on every sysforge invocation, not only `-vvv` — verbosity gates console output, not collection. Total budget is ~35–75ms in a typical user session, dominated by the `systemctl --user show-environment` subprocess (~25–60ms); the rest is file reads + TOML decode + flag serialization. When `XDG_RUNTIME_DIR` is unset (cron, CI, non-graphical SSH), the subprocess is skipped entirely and the budget drops to ~10ms. `snap.cost_ms` is rendered on the final line of `format_env_chain` for ongoing measurement.
+
+`sysforge env` is the explicit user-facing verb (prints the formatted snapshot at the active verbosity); the startup hook in `cli.main()` ensures the same snapshot lands in every unified log even when the user runs an unrelated verb. `toolchain.toml` is *not* a source — it declares LLVM/PGO stages, not env vars, so including it would invent semantics that aren't there.
+
+### `pacman.py`
+
+All pacman and batch-install shared operations. Public API:
+- `get_pkgdest()` — resolves the `PKGDEST` directory from makepkg.conf
+- `snapshot_pkg_dir(pkgdest)` — records the set of `.pkg.tar.*` files currently in pkgdest before a build
+- `batch_install_pkgs(pkgdest, pre_snapshot, ...)` — diffs the post-build pkgdest against the snapshot and installs all new packages in a single `sudo pacman -U`
+- `read_pkgname_from_file(path)` — extracts `pkgname` from a built `.pkg.tar.*` via `bsdtar -xOqf <path> .PKGINFO`; returns `None` on failure
+- `filter_pkgs_to_installed(paths, installed)` — partitions pkg-file paths into `(keep, dropped)` by whether their `pkgname` is in the current installed set; used by `update`/`converge` so split-pkgbase rebuilds don't add sub-packages the user never installed
+- `collect_makedeps(pkgmeta)` / `filter_missing_deps(deps)` / `batch_install_makedeps(deps)` — makedependency helpers
+- `get_installed_version(name)` — `pacman -Q <name>`; returns version string or `None`
+- `get_all_installed_packages()` — `pacman -Q`; returns `{name: version}`
+- `get_foreign_packages()` — `pacman -Qm`; returns names not from any sync DB
+- `get_pacman_sync_version(name)` — `pacman -Si <name>`; returns version from sync DB or `None`
+
+The five read-only queries above (`get_installed_version`, `get_all_installed_packages`, `get_foreign_packages`, `get_pacman_sync_version`, `filter_missing_deps`) check for an importable `pyalpm` and route through libalpm bindings when available — direct local-DB and sync-DB access is faster than spawning a `pacman` subprocess per call. The fallback path is the original subprocess shell-out, so installs without `pyalpm` are unaffected. `pyalpm` is shipped as `[project.optional-dependencies] extra` (`uv sync --extra extra`) or installed via the system package. `SYSFORGE_PACMAN_NO_PYALPM=1` forces the subprocess path even when pyalpm is present (used by `tests/conftest.py` so existing subprocess-mocking tests keep driving the query). Mutating paths (`pacman -U`, `pacman -S --needed`) and the `pacman -Fq` files-DB lookup in `provides_lookup.py` remain subprocess-based.
+
+Constants: `BATCH_STRIP_FLAGS` (flags removed from per-build makepkg calls during batch install — composed as `SYNC_FLAGS | INSTALL_FLAGS`, the two flag families defined in `makepkg_flags.py`), `BATCH_EXTRA_FLAGS`. `SYNC_FLAGS` (`{--syncdeps, -s}`) is the single source of truth for the dep-sync strip — reused by the toolchain stage's staged-deps passes (§`run toolchain` Dep resolution) so the two sites that suppress makepkg's `pacman -S` share one name. Both `INSTALL_FLAGS` and `SYNC_FLAGS` live in `makepkg_flags.py` (their natural home — flag-family constants); `pacman`/`toolchain` import them from there, and `makepkg_wrapper` re-exports `INSTALL_FLAGS` for back-compat.
+
+**Pacman PostTransaction hooks.** Three libalpm hooks under `/usr/share/libalpm/hooks/sysforge-{kernel,toolchain,buildstate}.hook` invoke `/usr/lib/sysforge/pacman-hook-helper.sh` to drop a sentinel into `/var/lib/sysforge/sentinels/`. Targets: kernel hook fires on `linux*` (inclusive of `linux-firmware` and `linux-headers`); toolchain hook fires on `llvm*`, `clang`, `lld`, `compiler-rt`, `gcc`, `gcc-libs` and the lib32 variants; buildstate hook fires on `*`. The helper is failsafe — every error path exits 0 so it cannot break a pacman transaction. `cmd_update` calls `_consume_pacman_hook_sentinels()` at entry: kernel/toolchain sentinels become `_log.warn` reminders, then unlink; buildstate is unlinked silently because the existing `BuildState.sync_with_installed()` already runs. The sentinel directory is created via tmpfiles.d and pre-created during the bootstrap configure stage; the consumer skips silently when the directory is absent so older installs that predate the hooks still work.
+
+### `profile.py`
+
+Profile resolution and rule matching. Public API:
+- `merge_extends` — resolves the full `extends` chain into a flat profile dict, applying `[profiles.x.append]` token-level merges with conflict groups
+- `match_rules` — evaluates all match fields against a parsed PKGBUILD. `pkgnames` rules match against both `pkgname` and `pkgbase` — split packages (e.g. kernels) set `pkgbase` to the canonical name and `pkgname` to an array of unexpanded sub-package names; matching on `pkgbase` ensures rules like `pkgnames = ["linux-custom"]` work correctly.
+- `resolve_profile` — selects the winning rule by priority; optionally injects `pkgbuild_extracted` as the chain root
+- `resolve_groups` — accumulates package groups from PKGBUILD, defaults, and all matched rules
+- `resolve_consumes` — determines which conf types the build needs
+- `serialize_flags(profile)` — serializes a resolved profile to a newline-separated `KEY=value` string for storage in `build_state.toml`
+- `get_build_mode(profile)` — extracts the `build_mode` string from a resolved profile
+
+Public constants: `CONF_KEY_MAP` (maps conf delivery channel → set of profile keys), `SYSFORGE_KEYS` (internal keys never written to any conf file), `KERNEL_CLEAN_KEYS` (flag keys stripped from makepkg.conf for kernel builds).
+
+### `pkgbuild_meta.py`
+
+Static parser for PKGBUILD metadata. Does **not** source or execute the PKGBUILD.
+
+**Reliably parseable:** `pkgname`, `pkgver`, `pkgrel`, `epoch`, `groups`, `depends`, `makedepends`, `provides`, and all standard scalar/array globals. Function bodies extracted and stored under `functions`.
+
+**Not statically parseable:** computed values (`pkgver=$(...)`, conditional metadata, `depends+=()` inside functions).
+
+**Implementation notes:**
+- Comment stripping respects quoting
+- Function extraction uses brace-depth tracking; `${}` expansions skipped to prevent brace confusion
+- Functions matched only at line boundaries; names support hyphens for split packages like `package_lib32-llvm`
+- Known limitation: heredocs containing bare `{` or `}` will confuse the depth tracker; rare in PKGBUILDs, deferred
+
+**Brace expansion** (`_expand_braces`, in `_parse_array_items`). Unquoted array tokens are bash-brace-expanded as they are parsed, so `makedepends=(python-{build,installer,wheel})` yields three items, not one bogus `python-{build,installer,wheel}`. Comma lists, sequence expressions (`{1..3}`, `{a..c}`), nesting, and multiple groups (cartesian product) are handled; a group with no top-level comma and no sequence stays literal (`{foo}`), as in bash. Quoted tokens are kept verbatim and `${...}` parameter expansions are skipped whole (their internal commas are never split) — variable expansion runs afterward (`_apply_var_expansion`). Without this, a brace-listed dependency reached `pacman -T`/`pacman -S` as one unresolvable name, which (combined with the repo/AUR makedep split in `build_core.prepare_deps`) is the proton-cachyos build-failure class this closes.
+
+**Array-parameter expansion** (`_expand_array_refs` / `_apply_array_transform`). A dependency array may splice another array via bash parameter expansion — e.g. afdko's `_pydeps=(... ufonormalizer ...)` with `depends=(python "${_pydeps[@]/#/python-}")`. The static parser already captures `_pydeps` as its own array global, so this pass resolves the reference by symbol-table lookup (no shell sourcing): for any array item of the form `${name[@]<transform>}` (or `[*]`) it splices in `name`'s elements, applying the transform — `""` (verbatim), `/#/PREFIX` (prepend, the afdko case), `/%/SUFFIX` (append), and `/PAT/REPL` / `//PAT/REPL` (literal replace). An unknown array name, an unsupported transform (slices, anchored `/#PAT/`, glob metacharacters), or a non-array-ref token is **left verbatim** — the same conservatism as variable expansion below. Runs in the post-pass pipeline after `_merge_arch_arrays` (so arch-suffixed array-refs resolve too) and before `_apply_var_expansion` (so spliced items still get `$var` substitution). Without this, `${_pydeps[@]/#/python-}` survived as one bogus dependency token and `python-ufonormalizer` was dropped from the AUR dep graph, so a later `makepkg --syncdeps` aborted with "target not found"; any residual `${...}` token that this pass cannot resolve is detected downstream by `aur_resolve._looks_unresolved` (which both triggers the RPC-metadata rescue for discovery and keeps the junk token out of `pacman`/AUR queries).
+
+**Arch-specific array merging** (`_merge_arch_arrays`). PKGBUILD(5) defines arch-suffixed variants of seven array families (`depends`, `makedepends`, `checkdepends`, `optdepends`, `provides`, `conflicts`, `replaces`) — e.g. `makedepends_x86_64=()`. The runtime appends these to the canonical array when CARCH matches; the static parser sees every variant unconditionally and merges them into the canonical key (dedup, order-preserving, plain entries first). The arch-suffixed key is retained for callers that need to read it. Without this pass, consumes inference and `match_rules` would silently miss entries declared only under an arch suffix (e.g. `lib32-rust` in `makedepends_x86_64`), so the i686 cross-probe and rust flag injection would not fire.
+
+**Variable expansion** (`_apply_var_expansion`). After extracting globals the parser substitutes simple `$var` / `${var}` references using other scalar globals, iterating to a fixed point (bounded at 8 iterations). This handles common patterns like `_pkgname=foo; pkgname="$_pkgname-git"` and split packages written as `pkgname=("$pkgbase" "$pkgbase-headers")`. Shell parameter-expansion forms (`${var:-default}`, `${var%suffix}`, `${var#prefix}`, `${var//a/b}`) are intentionally **not** touched — the regex matches only `${name}` with a closing brace and no operators, so these expressions are preserved verbatim. Unresolved references (e.g. a `$var` whose definition lives inside a function body, not in globals) are also preserved verbatim rather than silently wiped. Without this pass, PKGBUILDs defining `pkgname` via a shell variable produced build_state entries keyed by the literal reference string (`["$_pkgname-git"]`), which made `sysforge update` silently miss those packages because `pacman -Q` knows them by their real names.
+
+**Unresolvable `pkgver` fallback.** Some PKGBUILDs (`1password`, `openssl-1.0`, `openssl-1.1`) compute `pkgver` via bash parameter-expansion forms the static parser cannot evaluate (`pkgver=${_tarver//-/_}`, `pkgver=${_ver/[a-z]/.${_ver//[0-9.]/}}`). `format_version` then returns literal shell text, which `vercmp` sorts high against any real installed version — causing the package to be perpetually flagged `NEEDS_REBUILD`. `_check_one_pkgbase` in `update.py` detects this case (regex `[${}]` in the formatted string) and falls back to the AUR RPC `Version` cached in `source_meta.toml`, which is vercmp-ready (already `[epoch:]pkgver-pkgrel`). When no cached RPC version exists the package is skipped with a warning rather than compared against gibberish.
+
+### `pkgbuild_patcher.py`
+
+All PKGBUILD mutation. Active when `build_mode = "patched_pkgbuild"` or `"kernel"` on the resolved profile.
+
+**Flag extraction** (`extract_pkgbuild_profile`) scans all function bodies and extracts bare, `export`, and `+=` assignments to known flag variables. Strips self-references (`$CFLAGS` in CFLAGS), skips complex bash expressions (e.g. `${CFLAGS/-g /-g1 }`), expands packed `-Wl,a,b,c` tokens into individual sub-tokens. Returns a synthetic profile dict used as the implicit chain root in `merge_extends` — forming the chain: `pkgbuild_extracted → bare → standard → optimized`.
+
+**Conditional block handling** (`_extract_conditional_blocks`) finds `if...fi` blocks containing extractable key assignments using depth-tracked scanning. Entire blocks are removed from the patched PKGBUILD, never partially.
+
+**Patching** (`apply_patch_pkgbuild`) writes `PKGBUILD.sysforge` with all managed flag assignments and conditional blocks removed. The original is untouched. Artifacts persist on build failure for diagnosis; `cleanup_patch_artifacts` removes them on success. On failure, the warning only mentions `pkgbuild_extracted_profile.toml` if it was actually written (non-empty extraction).
+
+Inline `make VAR=val` and `cmake -DKEY=val` lines are only removed when the key is in `_EXTRACTABLE_KEYS` — keys that sysforge manages. This prevents accidental removal of kernel build commands like `make LOCALVERSION=...` or `make INSTALL_MOD_PATH=...` which are real build invocations, not flag assignments.
+
+**Noninteractive kconfig patching** (`patch_noninteractive_kconfig`) replaces interactive kconfig targets (`oldconfig`, `nconfig`, `menuconfig`, `xconfig`, `gconfig`) with `make olddefconfig` in an already-patched PKGBUILD file. Called by the kernel stage after normal patching; modifies `PKGBUILD.sysforge` in place. Preserves `VAR=val` arguments before the target and trailing comments.
+
+**Subshell toolchain env reset** (`patch_subshell_env_reset`) injects `unset CC CXX LD` at the top of every subshell function body (`funcname() (...)`) in `PKGBUILD.sysforge`. Subshell functions are isolated helper builds (musl bootstrap, embedded grub, wimboot, etc.) that should use the system-default compiler and linker, not the sysforge profile toolchain or inherited shell overrides. Without this, `CC=clang` from the profile and `LD=ld.lld` from the shell env leak into sub-builds that expect gcc/ld.bfd and produce broken toolchain wrappers or linker script failures. Considers two sources: profile toolchain keys (CC, CXX) and inherited shell env (CC, CXX, LD). Only injects when at least one key differs from the system default (gcc/g++/ld). Called from `_run_build` after PKGBUILD.sysforge is created, on all build paths (both patched and group-only).
+
+**LLVM target filtering** (`patch_llvm_targets` + `is_llvm_pkgbase`) injects `-DLLVM_TARGETS_TO_BUILD="<list>"` into the cmake invocation of LLVM-toolchain PKGBUILDs (`llvm`, `clang`, `compiler-rt`, `lld`, lib32 variants — gated by `is_llvm_pkgbase` on `pkgbase`). The patcher is invoked at the end of `apply_patch_pkgbuild`. The target list is resolved by `primitives/llvm_targets.resolve_llvm_targets` in this order: `[llvm] targets` in `toolchain.toml` (explicit override; `targets = []` disables filtering) → `[hardware] llvm_targets` in `hardware_profile.toml` (autodetected from `uname -m` + `gpu_vendors`) → `None` (no filtering, build all targets). Idempotent: re-running on a PKGBUILD already carrying the same value is a no-op; replacing an existing `-DLLVM_TARGETS_TO_BUILD=` arg preserves the upstream PKGBUILD style. On a no-cmake-found PKGBUILD (upstream switched to meson), logs a warn and leaves the file unchanged. The `LLVM_EXPERIMENTAL_TARGETS_TO_BUILD` flag is intentionally untouched.
+
+### `llvm_state.py`
+
+Sole entry point for inspecting LLVM-toolchain source trees before a command touches them. Surfaces, per LLVM pkgbase in scope: variant, source origin (`repo` / `aur` / `user` / `missing`), dirty state with reason, divergence vs upstream (cheap path: compare HEAD against `SourceMetaCache.head_commit`; opt-in `probe_fetch=True` runs `git_fetch_and_compare`), pacman install origin + version, parsed PKGBUILD version, and the resolved `build_mode` from rule matching. PGO profdata mismatch is cross-checked via `makepkg_wrapper._resolve_pgo_state` for any pkgbase with `build_mode = "pgo_llvm_toolchain"`.
+
+Public API: `is_llvm_in_scope(pkgnames)`, `collect_llvm_state(pkgnames, config, *, probe_fetch=False, offline=False)`, `render_preflight(report, *, verbose=False)`, `evaluate_strict(report, *, allow_dirty=False)`. Read-only — never clones, never mutates. PKGBUILD resolution mirrors steps 1-3 of `config.find_pkgbuild` without the auto-clone branch.
+
+Wiring: `fetch` / `update` / `build` / `converge` render the report informationally (suppress with `--no-llvm-preflight` or `[safety] llvm_preflight = false`). `run toolchain` calls `evaluate_strict` after `_resolve_all_pkgbuilds` and refuses-by-default on dirty or diverged trees; bypass per-run with `--allow-dirty-llvm`, or actually overwrite the local trees with `--cleansrc-force` (which uses the new dirty classifier so trees in the `diverged_upstream` state — upstream force-pushed, no local commits authored by the local git user — are reported as clean and don't even need the bypass). The dirty-reason string distinguishes `"N commits ahead of upstream"` (`ahead`, real unpushed work) from `"diverged from upstream (N local / M upstream)"` (`diverged_user`, the histories have a common ancestor but the local user authored at least one commit on the local side). PGO profdata version mismatches are never bypassable — building against stale profdata silently corrupts the output.
+
+Reuses (do not duplicate from caller code): `pkgbuild_patcher.is_llvm_pkgbase`, `aur.git_is_dirty`, `aur.git_fetch_and_compare`, `source_meta.SourceMetaCache.get`, `pkgbuild_meta.parse_pkgbuild`, `version.format_version`, `pacman.get_foreign_packages` / `get_installed_version`, `profile.match_rules` / `get_build_mode`, `makepkg_wrapper._resolve_pgo_state`. Log tag: `[LLVM]`.
+
+### `toolchain_preflight.py`
+
+Batch-time toolchain availability check, runs in `cmd_update` after `to_build` is finalised and before `batch_install_makedeps` (the helper is `update._toolchain_preflight_for_batch`). For every package in the batch the helper resolves the active `consumes` set (`profile.resolve_consumes` over `parse_pkgbuild` + `match_rules` + `resolve_profile`), then reduces those plus the lib32-* subset **and the set of resolved compilers** (`resolved["CC"]`/`["CXX"]`) to a required-toolchain token set via `collect_required_toolchains`. Token grammar: `rust:native`, `rust:cross:<target>`, `rust:cross:<target>@<toolchain>`, `cmake`, `meson`, `cc:<name>`.
+
+**Compiler-health probe (`cc:<name>`).** `_probe_cc` verifies the resolved compiler actually *runs* (`<cc> --version`) and, for clang, that the whole LLVM lockstep suite shares one pkgver (`pacman -Q`). A half-installed / mismatched LLVM toolchain — clang built against a libLLVM that no longer exports a symbol it needs, or a partial upgrade that leaves some suite members behind — makes clang fail to even start with a dynamic-link symbol error (`undefined symbol: LLVMInitialize…Target`). Without this probe that surfaces only as N separate per-package `Unknown compiler(s): [['clang']]` failures with no captured cause; with it, the batch aborts up front with a `sudo pacman -Syu …` / `sysforge run toolchain` remediation. The skew arm sweeps **every installed member** of `LLVM_LOCKSTEP_SUITE` (`llvm`, `llvm-libs`, `clang`, `lld`, `compiler-rt`, `polly`, `openmp`) comparing pkgver only (pkgrel is stripped — a packaging bump like `lld 22.1.5-3` next to `clang 22.1.5-1` is not a skew), so a stranded `compiler-rt` is caught and the suggested `pacman -Syu` lists every member that needs resyncing rather than a hardcoded four. `spirv-llvm-translator` (its own version scheme) and `lib32-*` (separate multilib lineage / epoch) are deliberately excluded. `LLVM_LOCKSTEP_SUITE` is the single source of truth, shared with the toolchain stage's `_verify_llvm_install` (`_LLVM_VERSION_MATCH_SET` imports it) so the everyday-`update` probe and the post-install verifier never diverge — the probe stays a lightweight primitives-layer check rather than importing the pipeline-layer verifier. The pinned `@<toolchain>` form is emitted when the package's PKGBUILD exports `RUSTUP_TOOLCHAIN=<name>` inside `build()` / `check()` (regex scan over the parsed function body — `lib32-gstreamer` pins `stable` this way and would otherwise be probed against the workstation default). Currently only `rust:cross:i686-unknown-linux-gnu[@...]` is emitted (any lib32-* package with `rust` in consumes); other cross targets plug in at `collect_required_toolchains` when added.
+
+Probes are sub-second: `rust:native` is `rustc --version`, `rust:cross:<target>[@<toolchain>]` writes a `fn main(){}` to a tempdir and runs `rustc --target <target> --emit=metadata` with `RUSTUP_TOOLCHAIN=<toolchain>` overlayed on the env when a pin is present. `--emit=metadata` skips codegen/linking but still requires the std crate, which is exactly the hurdle meson's own rust sanity check fails on when the i686 target is missing from the toolchain the build will use. Without a pin the probe uses `$RUSTUP_TOOLCHAIN` or `rustup show active-toolchain` for the effective toolchain name.
+
+Auto-remediation: failures with `auto_remediable=True` (currently `rustup target add` only) get an interactive y/n prompt via `primitives.prompt.prompt_choice`; on accept the command is executed and the failed probe is re-run. Non-interactive runs (`--non-interactive`, `--noconfirm`, or no TTY) print the fix block and exit 1 instead. Per-package profile-resolution failures are caught and warned — preflight is best-effort and never blocks a build the real wrapper could still succeed at.
+
+Public API: `collect_required_toolchains(per_pkg, lib32_pkgs, rust_toolchain_pins=None, compilers=None)`, `run_preflight(required)`, `render_preflight(report)`, `auto_remediate(report, *, non_interactive=False)`. Wiring: `update` only, behind `--no-toolchain-preflight`. The companion `primitives.build_diag.diagnose` runs in `makepkg_wrapper.invoke_makepkg` on non-zero exit and matches known failure signatures (E0463 missing std crate, gstreamer PTP-no-rust, meson "Unknown options" → stale build dir, `cuda:host-gcc-too-new` → nvcc rejecting a system gcc newer than the CUDA toolkit supports, `toolchain:llvm-broken` → a clang/libLLVM mismatch where clang can't run, matched on `undefined symbol: LLVMInitialize…` / `symbol lookup error: …clang` / meson's `Unknown compiler(s): [['clang']]`) in the captured output and any `meson-logs/meson-log.txt` **or `CMakeFiles/CMakeError.log`** under the build directory; deduped on signature, never masks the real error. The CUDA matcher reads the toolkit's `crt/host_config.h` `#if __GNUC__ > N` gate and the highest installed `/usr/bin/g++-≤N` to emit a concrete `NVCC_APPEND_FLAGS='-ccbin …'` fix. Each `FixSuggestion`'s `signature`/`fix_cmd` is also carried up the exception (`.diagnosis`) and persisted to `build_state.toml`'s `[failures]` table by `sysforge update` (see §`build_state.py`). **Interactive builds** inherit the TTY so makepkg's stdout is never captured; on failure `invoke_makepkg` instead runs `diagnose([], _effective_build_dir(...))` over the side-car logs (resolving `$BUILDDIR/<pkgbase>` when `BUILDDIR` redirects the build out-of-tree) and threads the result through the user-abort RuntimeError, so `state failed` records a real signature rather than "Aborted by user". Log tags: `[PREFLIGHT]`, `[DIAG]`.
+
+### `dep_analysis.py`
+
+Pre-build dependency checks. Runs before `_run_build` in `makepkg_wrapper.run()`. Two check categories:
+
+**Soname checks** (`check_soname_deps`): filters `.so` and `.so=N` entries from `depends`, parses ldconfig -p output, and checks presence and major version. `libcap.so=2` means libcap.so.2 must be present in ldconfig's cache. Version constraint checking (pacman -Q / vercmp) was intentionally omitted — makepkg already does this and any pre-check adds false-positive risk without meaningful value.
+
+**Makedep runtime probes** (`check_makedep_runtime`): tests makedepends with known runtime requirements beyond package installation. Currently probes: `libguestfs` (appliance boot via `guestfish add /dev/null : run` with `LIBGUESTFS_DEBUG=1`). Each probe runs with a 15-second timeout; failure or timeout triggers diagnostic parsing. For libguestfs, `_diagnose_guestfs` parses the debug output for known patterns (e.g. "waiting for root UUID") and cross-references `/proc/config.gz` to identify the exact missing kernel config options (e.g. `CONFIG_SCSI_VIRTIO=m`). Version constraints on makedepends are stripped before lookup. Packages not in `_PROBED_MAKEDEPS` are silently skipped. Not-installed packages (FileNotFoundError) are skipped.
+
+All functions accept injectable callables for testing. Non-fatal by default; configurable via `abi_mismatch` and `makedep_probe_failed` in `[failure_handling]`.
+
+The soname match predicate (`soname_satisfied(entry, available_set)`) is exposed at module scope so `doctor.py` can reuse the `libfoo.so` / `libfoo.so=N` matching rules without duplicating them. `soname_available(entry, ldconfig_set, *, lib32=False)` wraps it with a filesystem fallback for stale `/etc/ld.so.cache`: when the in-cache check misses, the resolved library directories (`/usr/lib`, `/usr/lib32`, plus absolute paths from `/etc/ld.so.conf.d/*.conf`) are scanned (lru-cached per process) and the same predicate is applied. `check_soname_deps` and `doctor._check_depends` both use `soname_available` so a freshly-installed package isn't reported as missing while waiting on the post-install hook to rerun `ldconfig`.
+
+`dep_analysis.py` validates shared-library ABI for packages that are already installed. Resolving what to install in the first place is the job of `aur_resolve.py` below.
+
+### `aur_resolve.py`
+
+Recursive AUR dependency resolution. `makepkg --syncdeps` installs missing `depends`/`makedepends` via `pacman -S`; pacman has no AUR visibility, so any AUR-only dep that is not already installed will fail the build. `aur_resolve.py` resolves the full dep tree up front, topologically orders it, and builds the missing AUR deps before the target.
+
+Public API:
+- `resolve_aur_deps(pkgbuild_path, config) -> list[ResolvedDep]` — full recursive resolution for a single package
+- `resolve_aur_deps_batch(pkgbuild_paths, config) -> list[ResolvedDep]` — batch resolution for multiple packages (de-duplicated, single topo-sorted build order)
+- `build_resolved_deps(deps, ...)` — build + install the resolved list in order; shared by every call site
+
+Resolution algorithm:
+1. Parse `depends` + `makedepends` from the PKGBUILD.
+2. Strip version constraints (`>=`, `<=`, `=`, `>`, `<`).
+3. Filter out already-installed packages (`pacman -T`).
+4. Filter out repo-satisfiable packages (`repo_packages()` batch check).
+5. Query AUR for the remainder (`aur_info()` batch).
+6. For each AUR dep found: fetch its PKGBUILD (`find_pkgbuild`) so the build step has a local tree, then discover *its* deps and recurse from step 1. Discovery prefers the static parse of the cloned PKGBUILD, but falls back to authoritative AUR RPC `.SRCINFO` metadata (already fully shell-evaluated) when the static parse fails or still carries an un-evaluated token (`_deps_need_rpc_rescue` / `_looks_unresolved` — `$`, backtick, `[@]`, `$(`). This is what catches deps the static parser cannot expand, e.g. afdko's `depends=("${_pydeps[@]/#/python-}")` or any command-substitution dep; without the rescue the transitive AUR dep (`python-ufonormalizer`) is dropped and `makepkg --syncdeps` later aborts on it. The build still uses the local clone, so a locally-patched PKGBUILD is honoured.
+7. Deps not found in AUR or repos → warn and let makepkg fail naturally. A token that is still un-evaluated shell syntax after step 6 is skipped by the same `_looks_unresolved` guard so it never reaches `pacman`/AUR as a bogus name (the guard is also applied in `pacman.collect_makedeps` for the top-level repo arm).
+8. DFS topological sort with cycle detection (error on cycles).
+9. Skip packages already installed at a satisfying version (`pacman -Q`) unless `-f`/`--force` is passed.
+
+Build execution: iterate the topo-sorted list in order. Each dep gets full profile resolution (flag profiles, PKGBUILD patching) — same as any sysforge-managed build. Each dep is installed immediately after building so subsequent deps can link against it.
+
+Integration points:
+- **`sysforge build`** — resolve before building. `--track-deps` builds resolved AUR deps in topo order before the target.
+- **`run packages` stage** — resolve before building each AUR/profiled package. `--track-deps` behaves the same.
+- **`sysforge update`** — resolve after `collect_makedeps()`, before `batch_install_makedeps()`. AUR deps are built and installed first, then the main batch proceeds.
+- **`sysforge converge`** intentionally does **not** invoke `aur_resolve.py`. Converge operates only on packages already recorded in `build_state.toml`; their AUR deps are assumed to already be present.
+- **`sysforge resolve --deps <pkg>`** — standalone dry-run inspection. Shows the full dep tree with build order, AUR vs repo classification, and which deps are already installed.
+
+### `abi_check.py`
+
+Post-build ABI compatibility checker. For each shared library (`.so.*`) in a built package, cross-references strong undefined versioned symbol requirements (`nm -D` `U sym@VER`) against the exported versioned symbols of its NEEDED runtime libraries (`readelf -d`) as currently resolved by `ldconfig -p`. Catches ABI breakage at build time — e.g. a library built against `libfoo` exporting `sym@@FOO_2.0` when the installed `libfoo` still only exports `sym@@FOO_1.0`.
+
+Two-layer API:
+- `check_so_files(so_paths, *, benign_sink=None) -> list[str]` — pure .so-level core. Takes any list of on-disk shared libraries and returns warning strings for unsatisfied versioned symbols and missing NEEDED sonames. Used both by the build path (through `check_package_abi`) and by `doctor.py` on installed `.so` files. `benign_sink`, when a list is passed, accumulates `"<so>: <sym>@<ver>"` entries for demoted optional-symbol cases (see *symbol-version precision* below) so the caller can render one summary line instead of per-symbol noise.
+- `check_package_abi(pkg_path: Path) -> list[str]` — archive wrapper. Lists `.so.*` members with `bsdtar -t`, extracts them with `bsdtar -x` to a temp dir, calls `check_so_files`. Invoked from `makepkg_wrapper.run()` when `--abi-check` is passed to `sysforge build`.
+
+Symbol names are demangled through `c++filt` for readability. Missing NEEDED sonames (NEEDED lib not in `ldconfig -p`) produce a distinct warning from undefined versioned symbols. Packages with no shared libraries return an empty list (no-op).
+
+**Symbol-version precision (false-positive control).** Resolution models the dynamic linker's actual semantics rather than a naive `@@`-only union, which previously produced thousands of spurious findings on a healthy lib32 stack:
+- *Non-default exports.* `_parse_nm_exports` captures exports at **both** the default form (`sym@@VER`) and the non-default form (`sym@VER`, single `@`) — the glibc back-compat pattern (`realpath@GLIBC_2.2.5`, `dlopen@GLIBC_2.1`). The linker resolves an undefined `sym@VER` against any defined `sym@VER`; the old `@@`-only export regex under-reported real exports and flagged ~889 satisfied symbols on lib32 alone.
+- *Verneed binding.* `_parse_verneed` reads `.gnu.version_r` (`readelf --version-info`), mapping each required version to the NEEDED soname(s) the linker recorded. A required version bound to **no** NEEDED soname is host/loader-provided (RTLD_GLOBAL, executable-provided plugin symbols) and is **not** flagged. Verneed drives the host/loader **skip** decision and missing-lib attribution only — *satisfaction is still checked against the union of all NEEDED exports*, because glibc-family libs (`libc`/`librt`/`libpthread`/`libdl`) have merged over time and a binary's recorded Verneed soname may no longer be the actual exporter.
+- *Optional LLVM target-init demotion.* When the bound lib defines the required version node but not the specific symbol, and the symbol is an optional LLVM target-registration entry point (`_is_optional_llvm_target_init`: `LLVMInitialize<Target>{Target,TargetInfo,TargetMC,AsmParser,AsmPrinter,Disassembler}@LLVM_*`), it is demoted to `benign_sink` + an info log rather than reported. libLLVM is routinely built with a reduced `LLVM_TARGETS_TO_BUILD` (notably multilib lib32-llvm: X86/NVPTX only), so Mesa gallium drivers reference target-init symbols for un-built backends (AMDGPU, AArch64, ARM, …); each is lazily bound and only dereferenced when that GPU target is the active driver. A genuine symbol-within-version break (e.g. a C++ stdlib `_ZNSt*@LLVM_*` from a PGO toolchain leak) does **not** match the pattern and stays a hard finding — see the *Pre-install ABI hazard check* under the toolchain stage, which guards that case independently.
+
+**Arch-aware ldconfig lookups.** The ldconfig map is keyed by `(soname, ELF class)` rather than soname alone, because `ldconfig -p` lists both 32-bit and 64-bit variants of common sonames (e.g. `libc.so.6`) and first-hit-wins would collapse them. Each `.so` under check has its ELF class determined via `readelf -h` and NEEDED references are resolved against libs of matching arch. Without this, lib32 packages produce a flood of false-positive "undefined symbol" findings because their `unsigned int`-mangled requirements don't match the 64-bit `libc`'s `unsigned long`-mangled exports.
+
+**Shim-library allowlist.** A small set of compat shims shipped by glibc (`libnsl.so.1`, `libc_malloc_debug.so`, `libc_malloc_debug.so.0`) are skipped by `_is_shim_lib`. Their "undefined" symbols are intentional: `libnsl`'s RPC API is implemented by `libtirpc` at runtime (not declared as NEEDED), and `libc_malloc_debug` uses weak-hook override patterns. Without this filter, every `doctor` run reports ~44 findings per glibc that bury the real signal.
+
+**Vendored-binary package skip list.** `_ABI_CHECK_SKIP_PACKAGES` (public predicate `is_abi_check_skipped_package(pkgname)`) names packages that ship prebuilt vendored binaries which will never link cleanly against current system libs (e.g. `steam` carries its own CEF runtime, libcurl, etc. under `/usr/lib/steam/`). `doctor.py` skips the ABI/linkage check for these packages and emits a one-line `[ABI] skipped: vendored prebuilt binaries` note; the depends check still runs since depends drift on these is actionable. Applies at package granularity, not soname — a floor-level noise filter for `doctor --all` / `doctor -s <metapackage>` runs whose closures include these packages.
+
+### `provides_lookup.py`
+
+Reverse soname → package lookup backed by `pacman -Fq`. Used by `sysforge doctor --suggest` to convert a missing/broken soname (e.g. `libavcodec.so.62`) into the repo package(s) that would supply it. Public API:
+
+- `files_db_present()` — true when `/var/lib/pacman/sync/*.files` is synced (from `pacman -Fy`). Callers short-circuit lookup when false.
+- `suggest_for_soname(entry, *, lib32=False, installed_names=None)` — returns candidate `repo/pkg` strings for a soname entry, honouring `lib32` context (queries `usr/lib32/<soname>` vs `usr/lib/<soname>`). When `installed_names` is supplied, candidates whose bare pkgname (the part after the optional `repo/` prefix) is in the set are dropped — the load-bearing filter that stops `doctor --suggest` from re-recommending packages the user already has installed.
+
+Log tag: `[PROV]`. Pure read-only — never runs `pacman -Fy`; emits a single `run sudo pacman -Fy` warning if the files db is absent.
+
+### `failure.py`
+
+Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_analysis` to avoid circular imports.
+
+`handle_failure(scenario, message, config, fallback=None)` dispatches to `abort`, `error`, `warn_and_fallback`, or `fallback` based on `[failure_handling]` config. `profile_missing` and `tempfile_write_failed` always abort regardless of config.
+
+### `resource_guard.py`
+
+Caps the sysforge controller process's virtual address space so a runaway long-running build session (days of pipeline work) cannot balloon memory. Public API:
+
+- `install()` — called once at CLI entry. Sets `RLIMIT_AS` to 2 GiB on the Python process.
+- `lift_for_child()` — returns a `preexec_fn` that restores the address-space limit to `RLIM_INFINITY` for a child process. Used as `preexec_fn=resource_guard.lift_for_child()` on `subprocess` calls whose children legitimately need more than 2 GiB (notably `llvm-profdata merge` in the toolchain stage, which mmaps the full profraw set).
+
+The guard is applied to the controller only — makepkg itself is launched through normal subprocess invocation and inherits whatever the shell granted, so it is not affected unless explicitly opted in via `lift_for_child`.
+
+### `makepkg_wrapper.py`
+
+Build execution. Public API: `run(pkgbuild_path, options: BuildOptions | None = None)` where `BuildOptions` is a dataclass with all build options defaulted. Call sites construct `BuildOptions(field=value, ...)` with only what they need; adding a new option only requires a new field in `BuildOptions` and handling in `run()` — unrelated call sites don't change.
+
+**Decomposition (complete).** The flag-string transforms (`expand_makepkg_flags`, the `-fuse-ld=` linker detect/inject/replace, full-LTO and lld-flag strips, lib32 `-march` scrub) live in `makepkg_flags.py`, which owns the `[FLAG]` tag. The built-artifact helpers (`_find_built_packages`, `_parse_built_pkg_filename`) live in `makepkg_artifacts.py` (pure, no tag) — the canonical post-build version source consumed by `build_core`/`pacman`/`vcs_pkgver`. The PGO profdata-state resolver (`_resolve_pgo_state`, `PGOBuildSkipped`, `_try_load_toml`, `_DEFAULT_PGO_STORE`) lives in `makepkg_pgo.py` (pure state, no logger — the conf/`run` PGO narration was collapsed into `[CONF]`/`[BUILD]` in P2b.6a/6c rather than migrated here, since the orchestration is interwoven with the build flow). The subprocess-env resolver (`resolve_env_vars`, `_effective_build_dir`) lives in `makepkg_env.py`, which owns the `[ENV]` tag (the three `[ENV]` sites still inside `invoke_makepkg` move with it at the invoke split). The temp-`makepkg.conf` emission context manager (`emit_makepkg_conf`) lives in `makepkg_conf.py`, which owns `[CONF]` and is the first relocation to *drop* a tag from the orchestrator (CONF gone from `makepkg_wrapper`). Its conf-assembly narration (linker guard, GCC+LTO guard, lib32 `-march` scrub, PGO/kernel flag adjustments) emits under `[CONF]` — these are decisions this module makes while assembling a correct conf; the pure flag transforms stay in `makepkg_flags` (called as `(cleaned, stripped)` returns), so the module is single-tag (P2b.6a collapse). The orchestrator re-imports `emit_makepkg_conf` (used by `_run_build`), which also re-exports it for the direct-import test surface. The makepkg invocation + sudo-timeout retry (`invoke_makepkg`, `_invoke_with_retry`, `_build_failed_error`, and the `ToolchainMismatchError`/`AlreadyBuilt` exceptions) lives in `makepkg_invoke.py`, which owns `[MAKEPKG]` — all its narration (build status, the inherited-shell-env scrub, the toolchain-mismatch note, the retry prompts) emits under `[MAKEPKG]` as the single job of launching makepkg and classifying its outcome (P2b.6b collapse); the pure transforms/resolvers it draws on stay in `makepkg_flags`/`makepkg_env`. The orchestrator re-imports all five (used by `_run_build`) and re-exports them. After these splits `makepkg_wrapper` is the ~770-line `[BUILD]` orchestrator (`_run_build`/`run`/`BuildOptions` + `install_built_packages`/`_maybe_patch_llvm_targets`), down from ~1960, emitting a single `[BUILD]` tag. P2b.6c collapsed its residual FLAG/GIT/KERNEL/PGO narration — the GCC-mismatch retry loop, the source-sync result, the kernel `LLVM=1` injection, and the PGO multi-pass coordination are all build-orchestration decisions, so they log under `[BUILD]`; the pure concerns keep their own homes (`makepkg_flags` `[FLAG]`, kernel stage `[KERNEL]`, `aur` `[GIT]`). `INSTALL_FLAGS`/`SYNC_FLAGS` moved to `makepkg_flags.py` to break the orchestrator↔invoke import cycle. `makepkg_wrapper` re-exports the public symbols (`expand_makepkg_flags`, `_parse_built_pkg_filename`, `_resolve_pgo_state`, `PGOBuildSkipped`, …) so all import sites are unchanged. The result is a thin `[BUILD]` orchestrator over six focused single-tag/pure modules — see the module tree.
+
+High-level flow:
+1. Parse PKGBUILD via `pkgbuild_meta.py`
+2. Match rules, resolve profile (injecting `pkgbuild_extracted` root if patching)
+3. Resolve consumes and groups
+4. Import GPG keys via `aur.import_pgp_keys` (bundled `keys/pgp/*.asc` first, keyserver fallback)
+5. Run pre-build soname dep analysis
+6. If `patched_pkgbuild` or `kernel` mode: extract PKGBUILD flags, write extracted profile, apply patch
+7. If `kernel` mode and not `interactive`: patch interactive kconfig targets in `PKGBUILD.sysforge` to `olddefconfig`
+8. If `kernel` mode: detect effective CC; if clang, inject `LLVM=1 LLVM_IAS=1` into build env
+9. Emit complete temp `makepkg.conf` (merged system conf + profile overrides; kernel mode omits `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`CPPFLAGS`/`DEBUG_*` profile overrides — system conf values preserved verbatim)
+10. Resolve env vars for subprocess injection
+11. Invoke `makepkg -p PKGBUILD.sysforge` with temp conf and injected env
+
+**System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
+
+**Flag guards in `emit_makepkg_conf`:** before writing the conf, several scrubs run so a known-broken flag never reaches makepkg:
+- **Linker guard** — when the effective linker (from `-fuse-ld=` in profile-then-system `LDFLAGS`) is not `lld`, lld-only tokens (`--icf=all/safe/none`, bare or inside `-Wl,…`) are stripped from *profile-override* `LDFLAGS` via `_strip_lld_flags` so configure-time link tests against the system linker don't break.
+- **GCC+LTO guard** — GCC's `.gnu.lto_*` bitcode is incompatible with lld; when the effective compiler is GCC, `-flto=thin` is rewritten to `-flto`, and if the linker is lld, LTO is disabled entirely (clear `LTOFLAGS`, strip `-flto*`, flip `lto`→`!lto` in `OPTIONS`).
+- **lib32 guards** — for `is_lib32=True` builds, 64-bit-only `-march=` tokens are scrubbed from `CFLAGS`/`CXXFLAGS` and lld `--icf=*` tokens from `LDFLAGS`, at **both** the profile-override site and the system-conf passthrough. The icf scrub is **unconditional on the effective linker** (unlike the linker guard above): 32-bit identical-code-folding breaks links for some lib32 packages (e.g. `lib32-lzo`) even when lld is active. This keeps the `bare` profile (priority-30 destination for `lib32-*`, silent on these keys) from letting the system conf's host-arch flags through to an i686 build — the guard lives at conf emission, not in a per-profile rule.
+
+**Makepkg flag passthrough:** makepkg short flags can be passed directly on the command line (`sysforge build ventoy -sfCci`) or explicitly via `-m "-sfci"`. Implicit passthrough applies to `build`, `update`, and `converge` — the preprocessing layer (`_extract_implicit_makepkg_flags`) rewrites bare flags into `-m` form before argparse runs. Excluded from implicit passthrough: `-h`, `-V`, `-p`, `-m`, `-D` (conflict with sysforge flags or take a value argument; `-v` is already hoisted). Combined short flags are expanded: `-sfci` → `[-s, -f, -c, -i]`.
+
+**Subprocess stdio:** the non-interactive branch routes makepkg's stdout+stderr through `pty_runner.run_with_pty` so child tools that gate live UI on `isatty()` (cargo's "Building [n/m]" bar, configure-script spinners) still emit their progress animation. Bytes are forwarded verbatim to `sys.stdout.buffer` when sysforge itself is on a tty so the user sees the animation alongside the bottom-anchored `[SYSFORGE][PROGRESS]` indicator. The same byte stream is decoded and split on `\n` into lines for failure classification (`prepare`/`build`/`package`), missing-dep collection (`target not found:`), already-built detection, and clang→GCC toolchain-mismatch pattern matching (curly-quote tolerant). In verbose mode (`-vvv`) or when sysforge stdout is piped (`sysforge update | tee log.txt`), byte forwarding is suppressed; only the decoded lines reach the user, keeping captured logs free of `\r`/ANSI noise. A `MAKEPKG_HEARTBEAT_S`-cadence (default 30 s) idle callback writes `[heartbeat] <latest>` entries to the per-package log when no `\n` has crossed the boundary in that window — surfacing ninja's `\r`-redrawn `[X/Y] Building ...` status so a long compile phase doesn't look hung under `-vvv` / `sysforge log <pkg>`. The interactive branch still uses `subprocess.Popen` with inherited stdio so unbuffered prompts (sudo, gpg signing keys, pacman conflict resolution) reach the terminal immediately.
+
+### `pty_runner.py`
+
+Standalone helper: spawns a subprocess attached to a pty so child tools observe a tty on stdout+stderr. Reads raw bytes from the master fd, optionally forwards them verbatim to `sys.stdout.buffer` (preserving `\r`-based progress redraws), and delivers decoded lines to a callback for parent-side pattern matching. Splits lines on `\n` only — `\r` is left in place mid-line so cargo's redraws aren't shredded into spurious "lines". An optional `idle_callback` fires every `idle_timeout_s` seconds when no full line has been delivered; it receives `buf.split("\r")[-1]` (the latest in-place redraw segment) or `None` if the child is silent, without consuming the buffer — subsequent `\n` still delivers the original inter-newline content unchanged. The read loop wakes via `select(master_fd, …, idle_timeout_s)`, so the heartbeat is idle-driven (no spin). Handles SIGWINCH (chains to the previously installed handler so `ui/progress._on_sigwinch` continues to fire), EIO on child exit, and UTF-8 codepoints split across read boundaries (incremental decoder with `errors="replace"`). stdin is inherited from the parent so TTY-only prompts (sudo) keep working. Used by `makepkg_wrapper.py`'s non-interactive build path; reusable for any subprocess where preserving child-side ANSI animation matters.
+
+### `cache_probe.py`
+
+Passive monitoring of ccache/sccache/ThinLTO caches. Emits the `[CACHE]` log-tag lines that bracket each `makepkg` invocation with pre/post hit-miss deltas and, once per run, the ld.so cache mtime, pacman cache file count/size, and (per-package) the ThinLTO cache dir size extracted from `--thinlto-cache-dir=` in LDFLAGS. Never enables or disables caches — policy for that lives in `[cache]` of `profiles.toml`.
+
+Public API covers three axes:
+- **Per-build stats** — snapshot ccache/sccache counters before and after a build (`ccache --print-stats --format=tab`, `sccache --show-stats`), compute the delta, log hit rate when compilations occurred, say "no compilations recorded" when delta is zero.
+- **System probes** — `emit_system_probes()` for the once-per-run ld.so / pacman cache measurements.
+- **Session report** — the structured `--cache-report` summary accumulates per-package deltas and prints a totals block at end of run, regardless of verbosity (the only output that bypasses `-v` gating).
+
+Each probe is skipped cleanly if the underlying binary is absent (e.g. sccache not installed).
+
+### `aur.py`
+
+AUR RPC queries, package source detection, git/pkgctl clone helpers, and GPG key import. Network-facing primitives optionally accept a `RateLimiter` (from `rate_limit.py`) so the scheduler can throttle RPC and git-fetch traffic under a single budget.
+
+- `repo_packages(names)` — single `pacman -Si name1 name2 ...` invocation; returns the subset of names present in any sync DB. Use for batch classification (O(1) subprocesses). Parses stdout for `Name : <pkg>` lines; packages not found produce errors to stderr only.
+- `is_repo_package(name)` — single-name wrapper around pacman -Si; returns `True` if found in any sync DB. Used by `find_pkgbuild` to route auto-clone: repo packages → `pkgctl_checkout`, AUR → `aur_clone`.
+- `aur_info(names)` — single batch `GET https://aur.archlinux.org/rpc/v5/info?arg[]=…` for all names; returns `{name: result_dict}`. Silent on network/JSON errors (returns `{}`).
+- `aur_clone(name, dest, *, ref=None, depth=None)` — `git clone https://aur.archlinux.org/<name>.git <dest>`; optional `ref` / `depth` support shallow / branch-pinned clones. Raises `RuntimeError` on failure.
+- `git_fetch_and_compare(pkgbuild_dir, *, timeout=30, limiter=None)` — shallow (`--depth=1`) fetch of the tracked upstream followed by a HEAD compare. **Non-destructive**: never runs a merge/rebase/reset; returns a `GitFetchOutcome(status, head_before, head_after, error)` where `status ∈ {"up_to_date", "fetched", "diverged", "failed", "skipped_no_tracking"}`. Divergence (local commits or a force-push upstream) is reported, not auto-recovered — the scheduler leaves the work-tree intact and surfaces the status upward. Honours the limiter's `wait_before_fetch()` / `Retry-After` budget when supplied.
+- `is_transient_git_error(stderr)` / `is_rate_limit_error(stderr)` — shared stderr classifiers used by both the scheduler and legacy retry paths.
+- `_classify_head_vs_upstream(pkgbuild_dir)` — single classifier consumed by both `git_is_dirty` and `llvm_state._dirty_reason`. Returns `(state, n_local, n_upstream)` where `state ∈ {"not_a_repo", "no_head", "no_tracking", "clean", "behind", "ahead", "diverged_user", "diverged_upstream"}`. The two `diverged_*` states distinguish "upstream rewrote history (force-push), no local commits authored by the local git user" (`diverged_upstream` → not dirty) from "HEAD and upstream have a common ancestor but at least one of HEAD's divergent commits is authored by the local user" (`diverged_user` → dirty). The local user identity is read from `git -C <dir> config user.email` (with global fallback). `ahead` = HEAD is a strict descendant of upstream; `behind` = HEAD is an ancestor of upstream (the only "out of date but clean" case).
+- `git_is_dirty(pkgbuild_dir)` — wrapper over the classifier: returns `True` for `no_tracking`, `ahead`, `diverged_user` (plus uncommitted tracked changes detected separately via `git status`); returns `False` for `clean`, `behind`, `no_head`, `not_a_repo`, `diverged_upstream`. Untracked files (build artifacts) are intentionally ignored. The `diverged_upstream` exemption fixes the false-positive on workstations whose Arch packaging clones get force-pushed every release.
+- `purge_src(pkgbuild_dir, *, force=False)` — `rm -rf` the directory after a `git_is_dirty` safety check. Raises `RuntimeError` if the clone holds local work that would be destroyed; non-git directories are purged unconditionally; non-existent paths are a silent no-op. `force=True` skips the dirty check and purges unconditionally — used by the `--cleansrc-force` CLI path. Used by `sysforge build --cleansrc[/-force]`, `sysforge update --cleansrc[/-force]`, `sysforge fetch --cleansrc[/-force]`, `sysforge run toolchain --cleansrc[/-force]`, and the source-sync recovery paths.
+- `pkgctl_checkout(name, dest, *, timeout=60)` — `pkgctl repo clone --protocol=https <name>` run in `dest.parent`; fetches official Arch packaging repo. Output is streamed line-by-line to `_build_log.debug` so progress is visible at `-vvv` (cloning from gitlab.archlinux.org can take minutes on a fresh checkout). Raises `RuntimeError` on failure or timeout. `find_pkgbuild` passes `[git] clone_timeout` from `sysforge.toml`; `0` disables.
+- `import_pgp_keys(pkgmeta, pkgbuild_path)` — ensures all `validpgpkeys` listed in the PKGBUILD are in the GPG keyring before `makepkg` runs. Strategy: (1) import any bundled `.asc` files from `keys/pgp/` alongside the PKGBUILD, (2) check which keys are still missing via `gpg --list-keys`, (3) fetch remaining via `gpg --recv-keys`. Import failures are logged as warnings — makepkg surfaces a clearer error if a key is still absent at verification time.
+- `fetch_aur_name_cache(force=False)` — downloads `https://aur.archlinux.org/packages.gz` and extracts it to `~/.config/sysforge/cache/aur-packages.txt`. Skips the download if the cache is less than 24 hours old unless `force=True`. Called as a side effect of `sysforge update`; read by `sysforge completions packages` to provide AUR package name completion.
+
+`sysforge completions packages` — outputs local pkgbuild_src_dir packages + pacman sync DB names + AUR cache. Used by zsh completion for `build`, `packages add`. Caps output via `grep -m N "^$PREFIX"` in the completion script to avoid rendering thousands of entries; shows `zle -M` message when limit exceeded.
+
+`sysforge completions local` — outputs only locally-cloned packages from `pkgbuild_src_dir` (no network). Used by zsh completion for `resolve` (only packages with a local PKGBUILD can be resolved without triggering a download).
+
+`sysforge completions manifest` — outputs only names from the active `packages.toml`. Used by zsh completion for `packages remove` (only valid to remove what's already there).
+
+### `rate_limit.py`
+
+Shared token-bucket rate limiter for AUR RPC calls and git fetches. One `RateLimiter` instance lives inside the `SourceSyncScheduler` singleton so every AUR-facing primitive shares a single budget.
+
+- `RateLimiter(min_git_interval_s=0.5, default_retry_after_s=60.0)` — tracks two monotonic clocks: `not_before` (global penalty window, set when the server issues `Retry-After`) and `last_git_fetch` (used to enforce `min_git_interval_s` between consecutive fetches). `wait_before_rpc()` / `wait_before_fetch()` block until both windows have elapsed; `apply_retry_after(seconds, source=…)` extends the penalty window; `remaining_penalty_s()` returns the penalty tail so callers can abort early if it exceeds `rate_limit_abort_s`.
+- `parse_retry_after(header)` — parses RFC 7231 `Retry-After` in both delta-seconds and HTTP-date forms.
+- `http_get_with_rate_limit(url, limiter, *, timeout=10)` — wraps `urllib.request.urlopen`, honours the limiter, and on HTTP 429/503 raises `RateLimited(seconds)` after calling `apply_retry_after`.
+- `run_throttled_git(cmd, limiter, *, timeout=None)` — runs a git subprocess under `wait_before_fetch()`; scans stderr with `RATE_LIMIT_GIT_ERRORS` (`error: 429`, `Too Many Requests`, `error: 503`, `error: 502`) and raises `RateLimited` when the remote pushed back.
+- `RateLimited(seconds)` — exception carrying the `Retry-After` value; unhandled instances propagate up to the scheduler which short-circuits the remaining batch.
+
+### `source_meta.py`
+
+Per-package AUR RPC + git snapshot cache. Backed by `<state_dir>/source_meta.toml` (atomic write-then-rename, same pattern as `build_state.py`).
+
+- `SourceMetaCache(state_dir)` — loads the TOML on construction (silent fallback to empty cache if schema version mismatches).
+- `get(pkgbase)` / `all()` / `delete(pkgbase)` — read/remove entries.
+- `update(pkgbase, *, rpc_version=None, rpc_last_modified=None, rpc_package_base=None, head_commit=None, is_vcs=None, pkgbuild_sha256=None, last_fetch_at=None)` — merges keyword fields into the entry; `None` means "leave unchanged". Writes are buffered — `save()` flushes once per process via `atexit`.
+- `mark_rpc_sync(timestamp=None)` / `last_rpc_at()` — tracks the last batched `aur_info` call so the scheduler can decide whether a fresh RPC is needed.
+
+Schema (`SCHEMA_VERSION = 1`): `rpc_version`, `rpc_last_modified` (Unix timestamp from the AUR RPC), `rpc_package_base`, `head_commit`, `is_vcs`, `pkgbuild_sha256`, `last_fetch_at` (ISO 8601 UTC).
+
+### `source_sync.py`
+
+Process-wide scheduler that enforces the "one RPC call, zero git fetches on steady state" rule. Replaces the old four-sub-phase source-sync block in `sysforge update`.
+
+Public types:
+- `SyncRequest(pkgbase, pkgbuild_dir, source="aur", force_fetch=False)` — input. `source` is one of `"aur" | "repo" | "git" | "local"`. `"aur"` and `"git"` follow the same code path today (AUR RPC + `aur_clone` + `git_fetch_and_compare`); `"repo"` uses `pkgctl_checkout` against gitlab.archlinux.org; `"local"` short-circuits the scheduler entirely — no RPC, no clone, no fetch — for hand-maintained PKGBUILDs with no upstream remote (e.g. the kernel stage's `linux-custom`). A local-source request whose directory doesn't exist returns `STATUS_FAILED` (operator-fixable).
+- `SyncResult(pkgbase, status, head_before=None, head_after=None, error=None)` — output. Status constants: `STATUS_UP_TO_DATE`, `STATUS_FETCHED`, `STATUS_CLONED`, `STATUS_DIVERGED`, `STATUS_RATE_LIMITED`, `STATUS_FAILED`, `STATUS_SKIPPED_OFFLINE`, `STATUS_SKIPPED_NO_TRACKING`, `STATUS_SKIPPED_LOCAL`, `STATUS_PURGE_REFUSED`.
+
+Flow per request:
+1. **RPC gate.** On the first AUR-source request of a batch, fire one `aur_info([…all AUR names…])` call and cache the results in `SourceMetaCache`.
+2. **Short-circuit.** If the cached `rpc_version` / `rpc_last_modified` match the local HEAD's recorded values **and** the package is not a VCS `-git` / `-svn` / `-hg` / `-bzr` (forced-fetch) type **and** `force_fetch=False`, return `STATUS_UP_TO_DATE` without touching the network. This is the common-case path.
+3. **Clone.** If the dir is missing or not a git repo, dispatch via the limiter — `pkgctl_checkout` for `source="repo"` (Arch packaging repo via `gitlab.archlinux.org`), `aur_clone` for `source="aur"`/`"git"`. The repo path is never translated to `STATUS_RATE_LIMITED` (gitlab.archlinux.org doesn't enforce AUR's 429/503 budget).
+4. **Fetch.** Otherwise call `git_fetch_and_compare` — shallow fetch + HEAD compare, never merges or rebases. Works for both AUR and repo sources because pkgctl-cloned dirs are plain git repos with a tracking branch.
+5. **Divergence.** `STATUS_DIVERGED` is *reported*, not fixed: the work-tree is untouched, the build continues against the local PKGBUILD, and the operator decides whether to `--cleansrc` next run.
+6. **Rate limit.** `RateLimited` aborts the remaining batch via `_abort_remaining`, which populates pending results with `STATUS_RATE_LIMITED` so the UI can show per-package status instead of a single global error.
+
+Singletons:
+- `get_scheduler(*, state_dir=None, offline=False, cleansrc=False, cleansrc_force=False, force_devel=False, min_fetch_interval_ms=None, rate_limit_abort_s=None, fetch_timeout=None, clone_timeout=None)` — returns the process-wide scheduler, constructing it on first call. Subsequent calls with the same args are memoised; dedup keys: `(pkgbase)` — any given pkgbase is synced at most once per process. `cleansrc_force=True` implies `cleansrc=True` and propagates to `purge_src(force=True)` so `STATUS_PURGE_REFUSED` cannot occur — the operator has explicitly opted in to overwriting local work. `force_devel` only gates the forced-fetch behaviour for VCS pkgbases that *reach* the scheduler; the higher-level filter in `update.py:_sync_sources` is what keeps VCS pkgbases out of the request batch entirely when `--devel` is off (so `--cleansrc` never purges a `-git` tree the user hasn't opted in to rebuild).
+- `reset_scheduler()` — test-only hook. Tests that need fresh state call this between runs.
+
+### `build_state.py`
+
+Build state persistence. `/var/lib/sysforge/build_state.toml` is a **superset of `pacman -Q`** — every installed package has an entry, regardless of whether sysforge built it. The `build_mode` field distinguishes them:
+
+- `"profiled"` — built by sysforge; carries `pkgver`, `pkgrel`, `epoch`, `pkgbase`, `pkgbuild_dir`, `flags_string` (serialized resolved compiler flags, newline-separated `KEY=value` lines), `built_at` (ISO 8601 UTC timestamp), and optionally `built_upstream_commit` (40-char SHA of the just-built upstream tree, populated only for single-git-source VCS packages — read by `sysforge update --devel` to short-circuit `pkgver()` resolution via `git ls-remote`; absent for non-VCS, multi-git-source, or any PKGBUILD whose `source=()` has unresolved bash interpolation), `source` (`"aur"` / `"repo"` / `"git"` / `"local"` — the origin classification at build time, read by `sysforge update`'s source resolver so previously-built packages keep their origin across runs instead of being re-derived from live pacman + overrides every invocation; absent for back-compat entries written before the field existed; `"local"` means a hand-maintained PKGBUILD with no upstream remote, source-sync is skipped for it), `owner_stage` (e.g. `"kernel"` or `"toolchain"` — set by a pipeline stage that owns the package's lifecycle, so `sysforge update` skips it by default and points the user at the owning stage; `--include-stage-owned` overrides the skip; both the kernel and toolchain stages stamp it, each with a config-file bootstrap fallback in `primitives/stage_ownership.py` for the pre-first-build window), and `toolchain_variant` (`"gcc"` / `"stock_llvm"` / `"pgo_llvm"` — the active toolchain identity at build time, read by `sysforge update` to detect toolchain drift; absent for back-compat entries and for builds that ran with no toolchain stage configured). `source`, `owner_stage`, and `toolchain_variant` are *sticky* — `BuildState.record()` preserves the prior value when the caller doesn't pass one, so a rebuild through a code path that doesn't know about them won't erase the provenance. Split packages (multiple `pkgname` from one `pkgbase`) each get their own entry, all pointing at the same `pkgbuild_dir`.
+- `"pacman"` — installed via pacman, not built through sysforge. Carries only `pkgver`, `pkgrel`, `epoch` parsed from `pacman -Q`; `pkgbase`, `pkgbuild_dir`, and `flags_string` are absent. Synthesised by `sync_with_installed()`.
+- `"pgo_llvm_toolchain"` — LLVM toolchain packages built with profdata reuse: `makepkg_wrapper` injects `-fprofile-use=<saved-profdata>` when a compatible `clang.profdata` exists, otherwise prompts plain build / skip (default skip). See **PGO toolchain packages** below.
+
+`BuildState.sync_with_installed(installed)` keeps the file in lockstep with `pacman -Q`: it adds a pacman-mode entry for every newly installed package and prunes entries for packages that are no longer installed. The prune pass also removes zombie entries left by pre-superset parser runs — e.g. legacy keys containing literal `$_pkgname` that can never match a `pacman -Q` name. `sysforge update` calls this at the start of every run and saves if anything changed.
+
+Read by `sysforge update` for version drift detection (every installed AUR package is iterated regardless of `build_mode`; profiled entries carry the prior `pkgver` for change-detection, pacman-mode entries are checked against PKGBUILD freshness) and by `sysforge converge` for flag drift detection (profiled entries only; pacman-mode entries are silently skipped). Follows the same atomic write-then-rename pattern as `pipeline/state.py`. Records must carry `build_mode`; the previous compatibility fallback that treated missing `build_mode` as profiled was removed.
+
+On the write path, after a successful build `makepkg_wrapper.py` derives `pkgver`/`pkgrel`/`epoch` from the produced `.pkg.tar.*` filenames rather than the static PKGBUILD parse. The static parser intentionally leaves shell parameter-expansion forms (e.g. `${_ver/[a-z]/.${_ver//[0-9.]/}}`) untouched so it never produces a misleading partial substitution, but a built package's filename always carries the fully resolved version. Falling back to filenames prevents profiled entries from storing literal `$...` strings that would mismatch every subsequent vercmp and cause the package to be flagged for rebuild on every `sysforge update` run.
+
+**Build failures** live in a reserved top-level `[failures]` table (keyed by pkgbase), held apart from the per-package install mirror so `all_packages()` / `sync_with_installed()` stay a clean superset of `pacman -Q` (the `failures` key is popped into a private dict on load and re-serialized separately; a package literally named `failures` would collide but none exists in practice). Each entry carries `failed_at` (ISO 8601 UTC), `error` (the failure message tail — last ~6 lines / 600 chars), and optionally `pkgver`, `signature`, and `fix_cmd` (the latter two from `build_diag` postflight diagnosis when a known pattern matched). API: `record_failure(pkgbase, *, error, pkgver=None, signature=None, fix_cmd=None, failed_at=None)`, `clear_failure(pkgbase) -> bool`, `all_failures() -> {pkgbase: record}`. A successful `record()` calls `clear_failure(pkgbase)` so the failure list self-heals on the next good build. `sysforge update`'s build fan-out records failures via `_record_build_failure` (opening a fresh `BuildState` so loop-time success writes aren't clobbered, and pulling `signature`/`fix_cmd` from the exception's `.diagnosis`, attached by `makepkg_wrapper`). Surfaced by `sysforge state failed`.
+
+Public helpers: `parse_pacman_version(ver_str)` splits a `[epoch:]pkgver-pkgrel` string into a `(epoch, pkgver, pkgrel)` tuple; used by `sync_with_installed()`.
+
+### `version.py`
+
+Version comparison utilities. `vercmp(a, b)` wraps the system `vercmp` binary and returns -1/0/1 (negative/zero/positive output from vercmp is clamped). `format_version(globals_)` assembles an `[epoch:]pkgver-pkgrel` string from parsed PKGBUILD globals, omitting the epoch prefix when it is `"0"` or absent.
+
+### `vcs_pkgver.py`
+
+`evaluate_vcs_pkgver(pkgbuild_dir, *, timeout=300) -> str | None` resolves a VCS PKGBUILD's effective `[epoch:]pkgver-pkgrel` by running `pkgver()` against the fetched upstream sources. Two-step makepkg invocation: (1) `makepkg -od --nobuild --noprepare --nodeps --skippgpcheck --noconfirm` updates VCS sources and runs `pkgver()`; (2) `makepkg --packagelist` prints the resolved filename, which is parsed via `_parse_built_pkg_filename` (the same helper `_find_existing_artifacts` uses) into `(epoch, pkgver, pkgrel)`. Returns `None` on any failure — non-zero exit, timeout, missing makepkg, unparseable output — with a WARN logged. Caller policy in `update.py`: `None` → `DEVEL_EVAL_FAILED` action, package skipped (not rebuilt). Used by `sysforge update --devel` to vercmp upstream-resolved against installed and only rebuild genuinely-stale VCS packages.
+
+`peek_upstream_commit(pkgbuild_dir, *, timeout=30) -> str | None` and `read_built_upstream_commit(pkgbuild_dir, *, timeout=10) -> str | None` are the two halves of the `--devel` short-circuit cache. Both share a private `_single_git_source(globals_)` helper that parses `source=()` from `parse_pkgbuild`'s output, recognises `git+<url>`, `git://...`, and `<name>::<either>` forms (with `#commit=`/`#tag=`/`#branch=`/`#fragment=` fragments), and returns `(clone_name, url, fragment)` only when the PKGBUILD has exactly one git source and no remaining `${...}` interpolation. `peek_upstream_commit` runs `git ls-remote <url> <ref>` (or returns immediately for a `commit=<sha>` pin) to get the current upstream tip without fetching the working tree. `read_built_upstream_commit` runs `git -C <pkgbuild_dir>/src/<clone_name> rev-parse HEAD` to capture the SHA of the just-built tree, called from `makepkg_wrapper.py` immediately after a successful build so the SHA is persisted to `build_state.toml` as `built_upstream_commit`. Either helper returns `None` for multi-git-source / non-git / unresolved-variable / parse-failure / subprocess-failure cases, in which case the caller falls through to the canonical `evaluate_vcs_pkgver` slow path. The strict semantic — only-on-successful-build writes — means pre-existing build_state entries lacking the field stay slow until the package is naturally rebuilt; this is intentional, to keep the field's meaning unambiguous (it is the commit we built, not the commit we last observed).
+
+### `diagnostics.py`
+
+The unified diagnostic vocabulary: one `Finding` dataclass + the renderer, exit-code reducer, severity normaliser, adapters, and axis runner described in the `doctor.py` framework note above. Lives in `primitives/` so any layer can produce `Finding`s; it must never import the `pipeline` layer (pipeline-layer checks are adapted by their callers, not here). Public API: `Finding`; `SEV_ERROR`/`SEV_WARN`/`SEV_INFO`, `normalize_severity`, `severity_rank`; `adapt(category, obj)` / `adapt_many`; `from_toolchain_check(check, *, category)`; `from_fix_suggestion(suggestion, *, category)`; `error_count(findings)`; `Axis(name, label, run, clean_msg)`, `run_axes(axes)`; `render_axis(logger, label, findings, *, clean_msg, quiet)`. Log tag: `[DIAG]`. The `system_probe` / `state_probe` / `runtime_probe` axes return `Finding` objects directly (they import `diagnostics`); the older probes keep their own dataclasses and are adapted at the boundary.
+
+### `system_probe.py`
+
+Read-only pacman / system-integrity checks for `doctor --pacman`. Public API: `collect_system_findings() -> list[Finding]`. Internal checks: `_check_db_consistency` (`pacman -Dk`), `_check_stale_lock` (`/var/lib/pacman/db.lck`), `_check_pacfiles` (`*.pacnew`/`*.pacsave` under `_ETC`), `_check_orphans` (`pacman -Qtdq`). Strictly local-database — never issues a sync (`-Sy`), so a `doctor` run cannot change the installed package set. Module-level `_PACMAN_DB_LOCK` / `_ETC` are repointable for tests.
+
+### `state_probe.py`
+
+Read-only inspection of sysforge's own persisted state for `doctor --state`. Public API: `collect_state_findings(state_dir=None, installed=None) -> list[Finding]`. Surfaces `BuildState.all_failures()` (each a `warn` carrying the stored `build_diag` signature/`fix_cmd`), an interrupted stage sentinel via `StageSentinel.get_active()` (an `error` with the recorded `recovery_cmd`), and build-state drift computed from `BuildState.all_packages()` vs the live pacman db (an `info` for zombie entries). Never calls `BuildState.save()` or the recovering `stage_sentinel.check_and_recover_stale_sentinel` — drift is computed without mutating the in-memory state. Source-sync `STATUS_*` is omitted (the scheduler cache is per-process; a standalone `doctor` has none).
+
+### `runtime_probe.py`
+
+Read-only services / runtime-health checks for `doctor --services`. Public API: `collect_runtime_findings() -> list[Finding]`. `_check_failed_units` (`systemctl --failed` → one `error` per unit) and `_check_missing_firmware` (best-effort `journalctl -k -b` parse for "Direct firmware load … failed" → one deduped `warn`). DKMS health is checked in the `boot` axis (running kernel), not here, to avoid double-reporting. Every external command is guarded so an absent tool or permission error yields no findings (`run_axes` isolates exceptions as a backstop).
+
+### `graphics_probe.py`
+
+Read-only system-state checks for graphics stack health. Complements `doctor.py`'s package-walk: the package walk catches ABI/linkage drift; `graphics_probe` catches misconfiguration the ABI walk is structurally blind to (kernel-module parameters, compositor protocol advertisements, Steam client config, driver kmod/userspace version skew). Each check is a small pure probe that reads `/sys`, `/proc/cmdline`, `pacman -Q`, `lsmod`, `wayland-info`, or `~/.steam/root/config/config.vdf` — no writes, no side effects.
+
+Public API: `check_system_graphics(config, *, gpu_vendors=None) -> list[GraphicsFinding]`. `GraphicsFinding` is a frozen dataclass with `severity` (`SEV_ERROR` | `SEV_WARN` | `SEV_INFO`), `check_id`, `message`, `remediation`. Vendor-gated checks run only when `gpu_vendors` includes the relevant vendor; caller may pass an explicit list or let the function auto-detect via hardware profile / `lspci` fallback.
+
+Check inventory (v1):
+
+| `check_id` | Probe | Gating | Severity when failing |
+|---|---|---|---|
+| `nvidia_modeset` | `/sys/module/nvidia_drm/parameters/modeset`, falls back to `/proc/cmdline` | `nvidia` vendor | error |
+| `nvidia_fbdev` | `/sys/module/nvidia_drm/parameters/fbdev` — required when kernel ≥ 6.11 | `nvidia` vendor + kernel ≥ 6.11 | warn |
+| `nvidia_driver_skew` | compare `nvidia-*-dkms` / `nvidia-utils` / `lib32-nvidia-utils` versions from `pacman -Q` | `nvidia` vendor | error |
+| `nvidia_module_loaded` | `lsmod` for `nvidia` | `nvidia` vendor | error |
+| `multilib_enabled` | grep `/etc/pacman.conf` for `[multilib]` | any GPU vendor | warn |
+| `session_type` | `$XDG_SESSION_TYPE` + `$XDG_CURRENT_DESKTOP` | always | info (context only) |
+| `xwayland_present` | `pacman -Q xorg-xwayland` when session is Wayland | Wayland session | error |
+| `explicit_sync_protocol` | `wayland-info` — look for `wp_linux_drm_syncobj_manager_v1` (or legacy `zwp_linux_explicit_synchronization_v1`) in advertised globals | Wayland session + `nvidia` vendor | error |
+| `steam_gpu_accel` | parse `~/.steam/root/config/config.vdf` for `GPUAccelerationEnabled "1"` | Steam installed | warn |
+
+The explicit-sync check is the load-bearing one for NVIDIA-on-Wayland black-window breakage: when the compositor doesn't advertise `wp_linux_drm_syncobj_manager_v1`, XWayland games on NVIDIA fall back to implicit sync which is known-broken on the NVIDIA explicit-sync driver path. Note: the registry global is `wp_linux_drm_syncobj_manager_v1` — the protocol-document name `linux-drm-syncobj-v1` (i.e. the bare `wp_linux_drm_syncobj_v1` substring) never appears as an advertised global.
+
+Log tag: `[GFX]`. No writes, no sudo, no network.
+
+### `device_probe.py`
+
+Full PCI/USB device inventory plus a driver-coverage check. Read-only; same `_run`/`_read_text`/frozen-finding idiom as `graphics_probe.py`. Walks `/sys/bus/{pci,usb}/devices`, reading each device's `modalias`, class, and the `driver` symlink (the bound-driver signal validates the *running* kernel). The device→module link is resolved against a complete reference kernel's `modules.alias` + `modules.builtin.modinfo` via `fnmatch` (exactly modprobe's matching), cached per reference dir; `find_reference_modules_dir()` picks the newest installed stock kernel (excludes any `custom` modules dir) so a custom kernel that omitted a driver doesn't hide its own gap. A curated `_MODULE_TO_KCONFIG` table maps common modules (audio/NIC/NVMe/USB/GPU) to their `CONFIG_*`; unknown modules degrade to "module name only".
+
+Public API: `enumerate_devices(buses=("pci","usb")) -> list[Device]`; `check_unsupported_devices(*, devices=None) -> list[DeviceFinding]` (flags functional — non-bridge/hub — devices with no driver and a known expected module); `find_reference_modules_dir() -> Path | None`. `Device` carries `bus`/`address`/`modalias`/`class_id`/`description`/`driver`/`expected_modules`/`suggested_kconfig`; `DeviceFinding` mirrors `GraphicsFinding`. Consumers: the hardware stage (`[[devices]]` inventory + WARNs), `doctor --hardware`, and `kernel_safety.audit_resolved_config` (device-driver coverage). Filesystem roots (`_SYS_BUS`, `_MODULES_BASE`) are module-level for test repointing.
+
+### `kernel_safety.py`
+
+Guardrails so the kernel stage can never leave the machine unbootable (see §Kernel stage boot-safety for the policy). Pure/read-only, fixture-testable via module-level path constants (`_BOOT_DIR`, `_PROC_MOUNTS`, `_CRYPTTAB`, `_MDSTAT`, `_MKINITCPIO_CONF`). `KernelFinding` adds `is_brick: bool` to the finding shape — True means "unbootable / dangerous to install"; the kernel stage hard-fails on those and warns on the rest.
+
+Public API:
+- `parse_kconfig(path)` / `parse_kconfig_text(text)` — the shared `.config` line parser (`CONFIG_X=y|m`, `# CONFIG_X is not set` → `n`); also reused by `dep_analysis._parse_kernel_config` for the running kernel.
+- `detect_root_topology() -> RootTopology` — root FS, storage transport, and crypt/LVM/RAID stacking from `/proc/mounts` + `lsblk -s` (+ `/etc/crypttab`, `/proc/mdstat`).
+- `audit_resolved_config(config, topology=None, devices=None) -> list[KernelFinding]` — the one validator: boot-critical symbols (root FS, root storage controller, core boot infra, systemd prereqs, console) keyed off topology, plus device-driver coverage from `device_probe` Devices. Accepts a `.config` path or a pre-parsed dict.
+- `find_fallback_kernels(exclude_pkg=None)` / `verify_boot_artifacts(pkgname, bootloader)` / `check_dkms_for_kernel(kver)` / `list_dkms_modules()` / `check_mkinitcpio_hooks(topology)` / `check_boot_mount_space(min_mb=200)` — the Gate 1/Gate 3 fact-gatherers (fallback presence, post-install vmlinuz+initramfs+boot-entry, DKMS rebuild coverage, mkinitcpio HOOKS vs topology, `/boot` headroom).
+
+The primitive must not import the pipeline layer; the kernel stage owns the abort/warn decisions.
+
+---
+

@@ -18,10 +18,11 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.update import (
-    _is_vcs, cmd_update,
-    _check_one_pkgbase, _sync_sources,
+    _check_one_pkgbase, _sync_sources, _assemble_package_set,
 )
+from sysforge.update_common import _is_vcs
 from sysforge.primitives.pacman import get_installed_version, get_foreign_packages
+from sysforge.primitives.build_state import BuildState
 
 
 # ---------------------------------------------------------------------------
@@ -88,100 +89,72 @@ def _make_args(**kwargs):
     return SimpleNamespace(**defaults)
 
 
+
+
 # ---------------------------------------------------------------------------
 # cmd_update — empty state
 # ---------------------------------------------------------------------------
 
-def test_empty_install_set_exits_cleanly(capsys):
+def test_empty_install_set_exits_cleanly(update_scenario, capsys):
     """No foreign packages and no repo-source overrides → nothing in scope."""
-    with patch("sysforge.update.BuildState") as MockBS, \
-         patch("sysforge.update.load_config", return_value={}), \
-         patch("sysforge.update._load_overrides", return_value=({}, {})), \
-         patch("sysforge.update.get_all_installed_packages", return_value={}), \
-         patch("sysforge.update.get_foreign_packages", return_value={}):
-        MockBS.return_value.all_packages.return_value = {}
-        cmd_update(_make_args())
+    update_scenario.run(_make_args(), installed={}, foreign={})
     captured = capsys.readouterr()
-    assert "No installed packages in scope" in captured.err
+    assert "No installed packages in scope" in (captured.out + captured.err)
 
 
 # ---------------------------------------------------------------------------
 # cmd_update — version checks
 # ---------------------------------------------------------------------------
 
-def _run_update_with_package(tmp_path, pkgbase, pkgver_installed, pkgver_pkgbuild,
-                              args_extra=None):
-    """
-    Helper: set up a fake PKGBUILD in tmp_path, a build state entry, and run cmd_update.
-    Returns list of _UpdateResult.
-    """
+# ---------------------------------------------------------------------------
+# Version decision — _check_one_pkgbase called directly with a real PKGBUILD
+# on disk (real parse_pkgbuild + real vercmp; no module-global patching).
+# ---------------------------------------------------------------------------
+
+def _decide(tmp_path, pkgbase, installed, pkgbuild_body, **kw):
     pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    pkgbuild = pkg_dir / "PKGBUILD"
-    pkgbuild.write_text(f"pkgname={pkgbase}\npkgver={pkgver_pkgbuild}\npkgrel=1\n")
-
-    state_data = {
-        pkgbase: {
-            "pkgver": pkgver_installed.split("-")[0],
-            "pkgrel": pkgver_installed.split("-")[1] if "-" in pkgver_installed else "1",
-            "epoch": "0",
-            "pkgbase": pkgbase,
-            "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-
-    args = _make_args(**(args_extra or {}))
-
-    parsed_globals = {
-        "pkgname": pkgbase,
-        "pkgver": pkgver_pkgbuild,
-        "pkgrel": "1",
-        "epoch": "0",
-    }
-
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value={"globals": parsed_globals}),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: pkgver_installed}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: pkgver_installed}),
-        patch("sysforge.update.vercmp") as mock_vercmp,
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        # vercmp: 1 if pkgbuild > installed, 0 if equal, -1 if pkgbuild < installed
-        pkgbuild_ver = f"{pkgver_pkgbuild}-1"
-        mock_vercmp.side_effect = lambda a, b: 1 if a == pkgbuild_ver and a != b else (0 if a == b else -1)
-
-        results = []
-        orig_print_summary = __import__("sysforge.update", fromlist=["_print_summary"])._print_summary
-
-        def capture_summary(res_list, a):
-            results.extend(res_list)
-            orig_print_summary(res_list, a)
-
-        with patch("sysforge.update._print_summary", side_effect=capture_summary):
-            cmd_update(args)
-
-    return results
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    (pkg_dir / "PKGBUILD").write_text(pkgbuild_body)
+    return _check_one_pkgbase(
+        pkgbase=pkgbase,
+        pkgnames=[pkgbase],
+        entry={"pkgbuild_dir": str(pkg_dir), "source": "aur"},
+        sync_failures={},
+        all_installed={pkgbase: installed},
+        unrecorded_names=set(),
+        skip_sync_check=True,
+        rpc_version_by_base={},
+        **kw,
+    )
 
 
-def test_check_needs_rebuild(tmp_path, capsys):
-    results = _run_update_with_package(tmp_path, "htop", "3.3.0-1", "3.4.1")
-    actions = [r.action for r in results]
-    assert "NEEDS_REBUILD" in actions
+def test_check_needs_rebuild(tmp_path):
+    r = _decide(tmp_path, "htop", "3.3.0-1", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    assert r.action == "NEEDS_REBUILD"
+    assert r.installed_ver == "3.3.0-1"
+    assert r.pkgbuild_ver == "3.4.1-1"
 
 
-def test_check_up_to_date(tmp_path, capsys):
-    results = _run_update_with_package(tmp_path, "htop", "3.4.1-1", "3.4.1")
-    actions = [r.action for r in results]
-    assert "UP_TO_DATE" in actions
+def test_check_up_to_date(tmp_path):
+    r = _decide(tmp_path, "htop", "3.4.1-1", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    assert r.action == "UP_TO_DATE"
+
+
+def test_check_pkgrel_bump_needs_rebuild(tmp_path):
+    r = _decide(tmp_path, "htop", "3.4.1-1", "pkgname=htop\npkgver=3.4.1\npkgrel=2\n")
+    assert r.action == "NEEDS_REBUILD"
+
+
+def test_check_epoch_dominates(tmp_path):
+    r = _decide(tmp_path, "htop", "9.9-1",
+                "pkgname=htop\nepoch=1\npkgver=1.0\npkgrel=1\n")
+    assert r.action == "NEEDS_REBUILD"
+    assert r.pkgbuild_ver == "1:1.0-1"
+
+
+def test_check_downgrade_flagged(tmp_path):
+    r = _decide(tmp_path, "htop", "3.4.1-1", "pkgname=htop\npkgver=3.3.0\npkgrel=1\n")
+    assert r.action == "DOWNGRADE"
 
 
 # ---------------------------------------------------------------------------
@@ -248,334 +221,154 @@ def test_unresolved_pkgver_without_cache_is_skipped(tmp_path):
 # silently ignored (no NOT_INSTALLED action under the new model).
 # ---------------------------------------------------------------------------
 
-def test_uninstalled_override_is_silently_skipped(tmp_path, capsys):
+def test_uninstalled_override_is_silently_skipped(fake_run, state_dir):
     """An override entry for a package that isn't installed is inert — not
-    iterated, no NOT_INSTALLED action emitted, no source sync attempted."""
-    pkg_dir = tmp_path / "mesa-git"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=mesa-git\npkgver=1\npkgrel=1\n")
-
-    # mesa (repo) is installed; mesa-git (override) is not.
-    overrides = ({}, {"mesa-git": {"name": "mesa-git", "source": "aur"}})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"mesa": "1:25.3.1-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update._sync_sources", return_value={}) as mock_sync,
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    actions = [r.action for r in results]
-    assert "NOT_INSTALLED" not in actions
-    assert "mesa-git" not in {r.pkgbase for r in results}
-    sync_map = mock_sync.call_args.args[0] if mock_sync.call_args else {}
-    assert "mesa-git" not in sync_map
+    pulled into scope (so no NOT_INSTALLED action, no source sync)."""
+    # mesa (repo) is installed; mesa-git (override target) is not.
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="mesa 1:25.3.1-1\n")
+    overrides = {"mesa-git": {"name": "mesa-git", "source": "aur"}}
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {}, overrides,
+    )
+    assert packages == {}
+    assert "mesa-git" not in packages
 
 
-def test_installed_aur_without_override_uses_defaults(tmp_path):
-    """AUR package installed but with no override entry → walked with defaults."""
-    pkgbase = "yay"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\npkgver=12.3.3\npkgrel=1\n")
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "12.3.3", "pkgrel": "1", "epoch": "0"}}
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),  # no overrides
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "12.3.3-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "12.3.3-1"}),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert {r.pkgbase for r in results} == {pkgbase}
+def test_installed_aur_without_override_uses_defaults(update_scenario, capsys):
+    """AUR package installed but with no override entry → walked with defaults
+    (in scope, version-checked, reported as up to date)."""
+    pkgbase = "example-aur-pkg"
+    update_scenario.add_pkg(
+        pkgbase, f"pkgname={pkgbase}\npkgver=12.3.3\npkgrel=1\n")
+    update_scenario.run(
+        _make_args(verbose=1),
+        installed={pkgbase: "12.3.3-1"}, foreign={pkgbase: "12.3.3-1"},
+    )
+    combined = "".join(capsys.readouterr())
+    # The package is iterated (1 package checked) and found up to date.
+    assert "1 packages" in combined
+    assert "1 up to date" in combined
+    assert pkgbase in combined
 
 
-def test_foreign_split_package_resolves_pkgbase_from_local_db(tmp_path):
+def test_foreign_split_package_resolves_pkgbase_from_local_db(
+        update_scenario, no_network, monkeypatch):
     """Foreign split-package subnames (e.g. linux-custom-headers) collapse to
     their parent pkgbase via pacman's local DB %BASE%, even when not in AUR.
     AUR RPC must NOT be called when the local DB already resolves the base."""
     pkgbase = "linux-custom"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(
+    update_scenario.add_pkg(
+        pkgbase,
         f"pkgbase={pkgbase}\n"
         f"pkgname=({pkgbase} {pkgbase}-headers)\n"
-        f"pkgver=6.19.12.arch1\npkgrel=1\n"
+        f"pkgver=6.19.12.arch1\npkgrel=1\n",
     )
 
-    parsed = {"globals": {
-        "pkgbase": pkgbase,
-        "pkgname": [pkgbase, f"{pkgbase}-headers"],
-        "pkgver": "6.19.12.arch1", "pkgrel": "1", "epoch": "0",
-    }}
+    # Fake pacman local DB recording %BASE%=linux-custom for both subpackages,
+    # so the real get_pkgbase resolves the split parent without any AUR access.
+    local_db = update_scenario.src_root.parent / "pacman-local"
+    for sub in (pkgbase, f"{pkgbase}-headers"):
+        d = local_db / f"{sub}-6.19.11-1"
+        d.mkdir(parents=True)
+        (d / "desc").write_text(f"%NAME%\n{sub}\n%BASE%\n{pkgbase}\n")
+    monkeypatch.setattr("sysforge.primitives.pacman._LOCAL_DB_ROOT", local_db)
 
-    foreign = {pkgbase: "6.19.12.arch1-1", f"{pkgbase}-headers": "6.19.12.arch1-1"}
+    # Would-rebuild (installed 6.19.11 < PKGBUILD 6.19.12) so a single build proves
+    # both subpackages collapsed into one pkgbase group; no_network proves the
+    # local-DB resolution avoided any AUR RPC.
+    with patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+               update_scenario.src_root.parent / "no-kernel-toml"):
+        builds = update_scenario.run(
+            _make_args(),
+            installed={pkgbase: "6.19.11-1", f"{pkgbase}-headers": "6.19.11-1"},
+            foreign={pkgbase: "6.19.11-1", f"{pkgbase}-headers": "6.19.11-1"},
+        )
 
-    def fake_get_pkgbase(name, root=None):
-        if name in foreign:
-            return pkgbase
-        return None
-
-    results = []
-    with (
-        # Isolate from the workstation's real kernel.toml (which names
-        # linux-custom and would route it through the stage-owned skip).
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "no-kernel-toml"),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.get_pkgbase", side_effect=fake_get_pkgbase),
-        patch("sysforge.update.aur_info") as mock_aur_info,
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    # Both subpackages collapse into the single linux-custom pkgbase group.
-    assert {r.pkgbase for r in results} == {pkgbase}
-    # AUR RPC must not be called — local DB already supplied %BASE%.
-    mock_aur_info.assert_not_called()
+    assert len(builds) == 1
 
 
-def test_repo_package_without_override_is_not_iterated(tmp_path):
+def test_repo_package_without_override_is_not_iterated(fake_run, state_dir):
     """A repo (non-foreign) package with no override → out of scope."""
-    overrides = ({}, {})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        # mesa is installed (a repo package), no foreign packages.
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"mesa": "1:25.3.1-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert {r.pkgbase for r in results} == set()
+    # mesa is an installed repo package; no foreign packages.
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="mesa 1:25.3.1-1\n")
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {}, {},
+    )
+    assert packages == {}
 
 
-def test_repo_package_with_override_is_iterated(tmp_path):
-    """A repo package WITH a behavior-changing override → walked.
+def test_repo_package_with_override_is_iterated(fake_run, state_dir):
+    """A repo package WITH a behavior-changing override → in scope.
 
     The override only takes effect because it sets ``cache = False`` (a
     behavior-changing field). A bare ``source = "repo"`` entry by itself is
     inert metadata — see ``test_bare_source_only_override_is_inert``.
     """
     pkgbase = "llvm"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\npkgver=20.1.0\npkgrel=1\n")
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "20.1.0", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "repo", "cache": False}})
-
-    results = []
-    with (
-        # Isolate from the workstation's real toolchain.toml (enabled + llvm),
-        # which would otherwise route `llvm` through the toolchain stage-owned skip.
-        patch("sysforge.update.TOOLCHAIN_PATH", tmp_path / "no-toolchain-toml"),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        # llvm is installed via repo (not foreign), but the override pulls it in.
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "20.1.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert {r.pkgbase for r in results} == {pkgbase}
-
-
-def test_repo_mode_profiled_walks_installed_repo_packages(tmp_path):
-    """
-    With `[build] repo_mode = "profiled"`, every installed repo package is
-    iterated alongside foreign packages. No per-package override needed;
-    the toml key opts the entire repo surface in.
-    """
-    pkgbase = "firefox"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(
-        f"pkgname={pkgbase}\npkgver=131.0\npkgrel=1\n"
+    # llvm is an installed repo package (not foreign); the cache=False override
+    # pulls it into scope. include_stage_owned bypasses the toolchain
+    # stage-owned skip without neutralising the workstation's toolchain.toml.
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout=f"{pkgbase} 20.1.0-1\n")
+    overrides = {pkgbase: {"name": pkgbase, "source": "repo", "cache": False}}
+    packages, _ = _assemble_package_set(
+        _make_args(include_stage_owned=True), BuildState(state_dir), {}, {}, overrides,
     )
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "131.0",
-                          "pkgrel": "1", "epoch": "0"}}
-    overrides = ({"repo_mode": "profiled"}, {})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "131.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert {r.pkgbase for r in results} == {pkgbase}
+    assert set(packages) == {pkgbase}
 
 
-def test_repo_mode_pacman_skips_repo_packages(tmp_path):
-    """
-    Default (repo_mode unset / "pacman"): a repo package without a
-    behavior-changing override stays out of scope. Confirms the gate is
-    load-bearing.
-    """
-    overrides = ({"repo_mode": "pacman"}, {})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"firefox": "131.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert results == []
+def test_repo_mode_profiled_walks_installed_repo_packages(fake_run, state_dir):
+    """With ``[build] repo_mode = "profiled"``, every installed repo package is
+    iterated alongside foreign packages — no per-package override needed."""
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="firefox 131.0-1\n")
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {"repo_mode": "profiled"}, {},
+    )
+    assert set(packages) == {"firefox"}
 
 
-def test_bare_source_only_override_is_inert(tmp_path):
+def test_repo_mode_pacman_skips_repo_packages(fake_run, state_dir):
+    """Default (repo_mode "pacman"): a repo package without a behavior-changing
+    override stays out of scope. Confirms the gate is load-bearing."""
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="firefox 131.0-1\n")
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {"repo_mode": "pacman"}, {},
+    )
+    assert packages == {}
+
+
+def test_bare_source_only_override_is_inert(fake_run, state_dir):
     """
     Regression: a `[[package]]` entry with only `name` + `source = "repo"`
     is inert metadata, not a trigger. The pipewire-style entry that
     surfaced this bug must not pull the package into update scope.
     """
     # Inert override on a repo package, no behavior-changing field set.
-    overrides = ({}, {"pipewire": {"name": "pipewire", "source": "repo"}})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"pipewire": "1:1.6.5-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert results == []
-
-
-def test_update_repo_profiled_alias_is_normalised(tmp_path):
-    """
-    Legacy `[build] update_repo_profiled = true` is normalised to
-    `repo_mode = "profiled"` by the loader, so packages get walked just
-    like the canonical key. (Functional alias test; the deprecation
-    warning itself is asserted in test__load_overrides_warns_*.)
-    """
-    pkgbase = "firefox"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(
-        f"pkgname={pkgbase}\npkgver=131.0\npkgrel=1\n"
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="pipewire 1:1.6.5-1\n")
+    overrides = {"pipewire": {"name": "pipewire", "source": "repo"}}
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {}, overrides,
     )
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "131.0",
-                          "pkgrel": "1", "epoch": "0"}}
-    # _load_overrides normalises this in its real path; here we hand the
-    # already-normalised build_cfg to the mock to assert the consumer side.
-    overrides = ({"repo_mode": "profiled"}, {})
+    assert packages == {}
 
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "131.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = {}
 
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert {r.pkgbase for r in results} == {pkgbase}
+def test_update_repo_profiled_alias_is_normalised(fake_run, state_dir):
+    """The consumer side of the legacy ``update_repo_profiled`` alias: once
+    ``_load_overrides`` has normalised it to ``repo_mode = "profiled"`` (the
+    normalisation itself is asserted in
+    ``test_load_overrides_normalises_deprecated_update_repo_profiled``), the
+    package set walks repo packages exactly like the canonical key."""
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="firefox 131.0-1\n")
+    packages, _ = _assemble_package_set(
+        _make_args(), BuildState(state_dir), {}, {"repo_mode": "profiled"}, {},
+    )
+    assert set(packages) == {"firefox"}
 
 
 def test_load_overrides_warns_on_inert_entries(tmp_path, capsys):
@@ -620,471 +413,294 @@ def test_load_overrides_normalises_deprecated_update_repo_profiled(tmp_path, cap
 # ---------------------------------------------------------------------------
 
 def test_vcs_installed_is_devel(tmp_path):
-    """Installed VCS package → DEVEL (rebuildable with --devel)."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    results = []
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args())
-
-    assert any(r.action == "DEVEL" for r in results)
+    """Installed VCS package without --devel → DEVEL (rebuildable with --devel)."""
+    r = _decide(tmp_path, "neovim-git", "r1234.gabcdef-1",
+                "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    assert r.action == "DEVEL"
 
 
-def test_dry_run_no_build(tmp_path):
-    pkgbase = "htop"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "3.3.0-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "3.3.0-1"}),
-        patch("sysforge.update.vercmp", return_value=1),
-        patch("sysforge.primitives.makepkg_wrapper.run") as mock_build,
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(_make_args(dry_run=True))
-
-    mock_build.assert_not_called()
+def test_dry_run_no_build(update_scenario):
+    # htop installed at 3.3.0-1, PKGBUILD at 3.4.1 -> NEEDS_REBUILD, but
+    # --dry-run must not invoke the build.
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    builds = update_scenario.run(
+        _make_args(dry_run=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    assert builds == []
 
 
-def test_devel_flag_triggers_vcs_rebuild(tmp_path):
+# ---------------------------------------------------------------------------
+# Phase 4.3 — flag drift (folds in the deprecated `converge`)
+# ---------------------------------------------------------------------------
+
+def _seed_flag_drift(scenario, *, stored_flags="CFLAGS=-this-is-stale"):
+    """htop is version-current but recorded with stale flags -> flag-drifted.
+
+    Returns the (installed, foreign) maps for the run.
+    """
+    scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    scenario.record("htop", "3.4.1", "1", flags_string=stored_flags)
+    return {"htop": "3.4.1-1"}, {"htop": "3.4.1-1"}
+
+
+def test_flag_drift_reported_but_not_rebuilt_by_default(update_scenario, capsys):
+    """Version-current but flag-drifted -> reported, never rebuilt without a flag."""
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(), installed=installed, foreign=foreign,
+    )
+    assert builds == []  # detection only — no opt-in flag passed
+    captured = capsys.readouterr()
+    assert "flag drift" in (captured.out + captured.err).lower()
+
+
+def test_offline_dry_run_flag_drift_is_network_free(update_scenario, capsys):
+    """`update --offline --dry-run` is the read-only flag-drift report (no network)."""
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(offline=True, dry_run=True), installed=installed, foreign=foreign,
+    )
+    assert builds == []
+    captured = capsys.readouterr()
+    assert "flag drift" in (captured.out + captured.err).lower()
+    # offline must not have triggered any git fetch/clone against sources.
+    assert not any(
+        "git" in c and ("fetch" in c or "clone" in c)
+        for c in update_scenario.fake_run.commands
+    )
+
+
+def test_explain_drift_lists_flag_drift_and_exits(update_scenario, capsys):
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(explain_drift=True), installed=installed, foreign=foreign,
+    )
+    assert builds == []  # --explain-drift exits before Phase 5
+    out = capsys.readouterr().out
+    assert "different flags" in out
+    assert "htop" in out
+
+
+def test_rebuild_on_flag_drift_promotes_to_rebuild(update_scenario):
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    assert len(builds) == 1
+    pkgbuild_path = builds[0][0][0] if builds[0][0] else builds[0][1]["pkgbuild_path"]
+    assert "htop" in str(pkgbuild_path)
+
+
+def test_rebuild_on_drift_umbrella_covers_flag_drift(update_scenario):
+    """--rebuild-on-drift opts into both axes, so flag drift rebuilds too."""
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(rebuild_on_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    assert len(builds) == 1
+
+
+def test_flag_drift_rebuild_installs_through_phase6_filter(update_scenario):
+    """A promoted flag-drift rebuild flows through Phase 5/6: built artifact is
+    installed, gated by filter_pkgs_to_installed (htop is installed -> kept)."""
+    update_scenario.use_pkgdest()
+    installed, foreign = _seed_flag_drift(update_scenario)
+    update_scenario.build_produces(
+        "htop", {"htop-3.4.1-1-x86_64.pkg.tar.zst": "htop"},
+    )
+    update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    installed_files = [f for call in update_scenario.installed_pkg_files() for f in call]
+    assert any("htop-3.4.1-1" in f for f in installed_files)
+
+
+def test_not_profiled_package_is_not_flag_drift_checked(update_scenario, capsys):
+    """A pacman-mode (non-profiled) package is never a flag-drift candidate."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    # build_mode pacman (not profiled) -> outside flag-drift scope
+    from sysforge.primitives.build_state import BuildState
+    bs = BuildState(update_scenario.state_dir)
+    bs.record("htop", "3.4.1", "1", "0", "htop",
+              update_scenario.src_root / "htop", build_mode="pacman",
+              flags_string="CFLAGS=-stale")
+    bs.save()
+    builds = update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed={"htop": "3.4.1-1"}, foreign={"htop": "3.4.1-1"},
+    )
+    assert builds == []
+    assert "flag drift" not in capsys.readouterr().out.lower()
+
+
+def test_devel_flag_triggers_vcs_rebuild(update_scenario):
     """--devel + resolved pkgver newer than installed → build runs once."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="r5678.g9999999-1"),
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-
-        def fake_run(*a, **kw):
-            call_count.append(1)
-
-        mw.run = fake_run
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert len(call_count) == 1
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "r5678.g9999999-1")
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert len(builds) == 1
 
 
-def test_devel_skips_uptodate_vcs(tmp_path):
+def test_devel_skips_uptodate_vcs(update_scenario):
     """--devel + resolved pkgver equal to installed → build does NOT run."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="r1234.gabcdef-1"),
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-
-        def fake_run(*a, **kw):
-            call_count.append(1)
-
-        mw.run = fake_run
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert len(call_count) == 0
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "r1234.gabcdef-1")
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert builds == []
 
 
-def test_devel_short_circuits_when_upstream_unmoved(tmp_path):
-    """--devel + cached SHA matches ls-remote → evaluate_vcs_pkgver skipped."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    cached_sha = "f00dbabe" + "0" * 32  # 40 hex chars
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-            "built_upstream_commit": cached_sha,
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
+def test_devel_short_circuits_when_upstream_unmoved(update_scenario):
+    """--devel + cached SHA matches the source's commit= pin → the expensive
+    evaluate_vcs_pkgver (makepkg) pass is skipped and nothing rebuilds.
 
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.peek_upstream_commit", return_value=cached_sha) as peek,
-        patch("sysforge.update.evaluate_vcs_pkgver") as evaluate,
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        MockBS.return_value.get.side_effect = lambda name: state_data.get(name)
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-        mw.run = lambda *a, **kw: call_count.append(1)
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert peek.called, "peek_upstream_commit must run when cache is populated"
-    assert not evaluate.called, "evaluate_vcs_pkgver must be skipped on cache hit"
-    assert len(call_count) == 0, "no build should run for an UP_TO_DATE pkgbase"
+    The PKGBUILD pins ``#commit=<sha>``, which peek_upstream_commit resolves
+    in-process (no ls-remote). When it matches the recorded
+    built_upstream_commit, _check_one_pkgbase returns UP_TO_DATE directly."""
+    sha = "f00dbabe" + "0" * 32  # 40 hex chars
+    update_scenario.add_pkg(
+        "neovim-git",
+        "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n"
+        f'source=("neovim::git+https://example.invalid/n.git#commit={sha}")\n',
+    )
+    update_scenario.record("neovim-git", "r1234.gabcdef", "1",
+                           built_upstream_commit=sha)
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert builds == []
+    # The cache hit must skip the makepkg-based evaluate_vcs_pkgver pass.
+    assert not any("--packagelist" in c for c in update_scenario.fake_run.commands)
 
 
-def test_devel_full_resolve_on_lsremote_miss(tmp_path):
-    """--devel + cached SHA differs from ls-remote → falls through to evaluate."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
+def test_devel_full_resolve_on_lsremote_miss(update_scenario):
+    """--devel + cached SHA differs from the source's commit= pin → the peek
+    short-circuit misses, so the full evaluate_vcs_pkgver pass runs and a newer
+    resolved pkgver triggers one build."""
     cached_sha = "a" * 40
     new_sha = "b" * 40
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-            "built_upstream_commit": cached_sha,
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.peek_upstream_commit", return_value=new_sha),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="r5678.gfedcba0-1") as evaluate,
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        MockBS.return_value.get.side_effect = lambda name: state_data.get(name)
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-        mw.run = lambda *a, **kw: call_count.append(1)
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert evaluate.called, "evaluate_vcs_pkgver must run on cache miss"
-    assert len(call_count) == 1, "newer resolved pkgver should trigger one build"
+    update_scenario.add_pkg(
+        "neovim-git",
+        "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n"
+        f'source=("neovim::git+https://example.invalid/n.git#commit={new_sha}")\n',
+    )
+    update_scenario.record("neovim-git", "r1234.gabcdef", "1",
+                           built_upstream_commit=cached_sha)
+    update_scenario.fake_vcs_pkgver("neovim-git", "r5678.gfedcba0-1")  # newer
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert len(builds) == 1
+    assert any("--packagelist" in c for c in update_scenario.fake_run.commands)
 
 
-def test_devel_full_resolve_when_no_cached_commit(tmp_path):
-    """--devel + bs entry lacks built_upstream_commit → no peek, evaluate runs."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-            # no built_upstream_commit
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.peek_upstream_commit") as peek,
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="r1234.gabcdef-1") as evaluate,
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        MockBS.return_value.get.side_effect = lambda name: state_data.get(name)
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-        mw.run = lambda *a, **kw: call_count.append(1)
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert not peek.called, "peek_upstream_commit must be skipped without cached SHA"
-    assert evaluate.called, "evaluate_vcs_pkgver must run when cache is empty"
-    assert len(call_count) == 0, "resolved == installed should not rebuild"
+def test_devel_full_resolve_when_no_cached_commit(update_scenario):
+    """--devel + no recorded built_upstream_commit → no peek, evaluate runs."""
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "r1234.gabcdef-1")  # == installed
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert builds == []  # resolved == installed
+    # With no cached SHA, the full makepkg-based resolve must run.
+    assert any("--packagelist" in c for c in update_scenario.fake_run.commands)
 
 
-def test_devel_skips_when_pkgver_eval_fails(tmp_path, capsys):
-    """--devel + pkgver() resolution returns None → skip with WARN, no build."""
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
+def test_devel_skips_when_pkgver_eval_fails(update_scenario, capsys):
+    """--devel + pkgver() resolution returns None → skip with WARN, no build.
 
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.evaluate_vcs_pkgver", return_value=None),
-        patch("sysforge.primitives.cache_probe.reset_session"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        mw_run_orig = mw.run
-        call_count = []
-
-        def fake_run(*a, **kw):
-            call_count.append(1)
-
-        mw.run = fake_run
-        try:
-            cmd_update(_make_args(devel=True))
-        finally:
-            mw.run = mw_run_orig
-
-    assert len(call_count) == 0
-    out = capsys.readouterr()
-    combined = out.out + out.err
+    With no fake_vcs_pkgver programmed, the real evaluate_vcs_pkgver runs but
+    `makepkg --packagelist` yields nothing, so it returns None."""
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert builds == []
+    combined = "".join(capsys.readouterr())
     assert "DEVEL_EVAL_FAILED" in combined or "pkgver() evaluation failed" in combined
 
 
-def test_no_devel_skips_vcs_build(tmp_path):
-    pkgbase = "neovim-git"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\n")
-    state_data = {
-        pkgbase: {
-            "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "r1234.gabcdef", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {pkgbase: {"name": pkgbase, "source": "aur"}})
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={pkgbase: "r1234.gabcdef-1"}),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        import sysforge.primitives.makepkg_wrapper as mw
-        call_count = []
-        mw_run_orig = mw.run
-
-        def fake_run(*a, **kw):
-            call_count.append(1)
-
-        mw.run = fake_run
-        try:
-            cmd_update(_make_args(devel=False))
-        finally:
-            mw.run = mw_run_orig
-
-    assert len(call_count) == 0
+def test_no_devel_skips_vcs_build(update_scenario):
+    """Without --devel an installed VCS package is DEVEL-classified only — it
+    is never rebuilt."""
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    builds = update_scenario.run(
+        _make_args(devel=False),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert builds == []
 
 
 def test_check_one_pkgbase_vcs_no_devel_skips_parse(tmp_path):
-    """Without --devel, _check_one_pkgbase returns DEVEL without parsing the
-    PKGBUILD or probing pkgbuild_dir. The pkgbuild_dir intentionally does not
-    exist, and parse_pkgbuild is patched to raise — neither must fire.
+    """Without --devel, _check_one_pkgbase returns DEVEL via the VCS fast-path,
+    before the pkgbuild_dir probe or PKGBUILD parse. The dir intentionally does
+    not exist — reaching the probe would return None, not DEVEL, so a DEVEL
+    result proves neither the probe nor the parse ran.
     """
-    pkgbase = "neovim-git"
-    entry = {"pkgbuild_dir": str(tmp_path / "does-not-exist" / pkgbase)}
-
-    with patch(
-        "sysforge.update.parse_pkgbuild",
-        side_effect=AssertionError("parse_pkgbuild must not be called"),
-    ):
-        result = _check_one_pkgbase(
-            pkgbase=pkgbase,
-            pkgnames=[pkgbase],
-            entry=entry,
-            sync_failures={},
-            all_installed={pkgbase: "r1234.gabcdef-1"},
-            unrecorded_names=set(),
-            skip_sync_check=False,
-            rpc_version_by_base={},
-            force_devel=False,
-        )
-
-    assert result is not None
+    result = _check_one_pkgbase(
+        pkgbase="neovim-git",
+        pkgnames=["neovim-git"],
+        entry={"pkgbuild_dir": str(tmp_path / "does-not-exist" / "neovim-git")},
+        sync_failures={},
+        all_installed={"neovim-git": "r1234.gabcdef-1"},
+        unrecorded_names=set(),
+        skip_sync_check=False,
+        rpc_version_by_base={},
+        force_devel=False,
+    )
     assert result.action == "DEVEL"
     assert result.installed_ver == "r1234.gabcdef-1"
     assert result.pkgbuild_ver is None
     assert result.pkgbuild_path is None
 
 
-def test_sync_sources_skips_vcs_without_devel(tmp_path):
+def test_sync_sources_skips_vcs_without_devel(tmp_path, monkeypatch):
     """``_sync_sources`` omits ``-git`` pkgbases when ``--devel`` is off, even
     under ``--cleansrc`` — purge_src/aur_clone must never see those dirs.
     """
-    from sysforge.primitives.source_sync import (
-        STATUS_UP_TO_DATE, SyncResult,
-    )
+    from sysforge.primitives import source_sync
+    from sysforge.primitives.source_sync import STATUS_UP_TO_DATE, SyncResult
 
-    htop_dir = tmp_path / "htop"
-    htop_dir.mkdir()
-    (htop_dir / "PKGBUILD").write_text("pkgname=htop\n")
-    mesa_dir = tmp_path / "mesa-git"
-    mesa_dir.mkdir()
-    (mesa_dir / "PKGBUILD").write_text("pkgname=mesa-git\n")
+    for name in ("htop", "mesa-git"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "PKGBUILD").write_text(f"pkgname={name}\n")
 
     pkgbase_map = {"htop": ["htop"], "mesa-git": ["mesa-git"]}
     pkgbase_entry = {
-        "htop": {"pkgbuild_dir": str(htop_dir), "source": "aur"},
-        "mesa-git": {"pkgbuild_dir": str(mesa_dir), "source": "aur"},
+        "htop": {"pkgbuild_dir": str(tmp_path / "htop"), "source": "aur"},
+        "mesa-git": {"pkgbuild_dir": str(tmp_path / "mesa-git"), "source": "aur"},
     }
 
     seen: list[str] = []
 
     class _FakeScheduler:
+        offline = cleansrc = cleansrc_force = force_devel = False
         cache = MagicMock()
         def _ensure_rpc(self, bases):  # noqa: ARG002
             pass
@@ -1094,45 +710,37 @@ def test_sync_sources_skips_vcs_without_devel(tmp_path):
         def close(self):
             pass
 
-    args = _make_args(
-        offline=False, cleansrc=True, cleansrc_force=False, devel=False,
-        state_dir=str(tmp_path),
-    )
-
-    with (
-        patch("sysforge.update.get_scheduler", return_value=_FakeScheduler()),
-        patch("sysforge.update.load_sysforge_toml", return_value={}),
-        patch("sysforge.update.resolve_state_dir",
-              return_value=(tmp_path, "test")),
-    ):
-        failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
+    # Inject at the source_sync singleton so update's bound get_scheduler()
+    # returns the fake without patching sysforge.update.*.
+    monkeypatch.setattr(source_sync, "_scheduler", _FakeScheduler())
+    args = _make_args(offline=False, cleansrc=True, cleansrc_force=False,
+                      devel=False, state_dir=str(tmp_path))
+    failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
 
     assert seen == ["htop"]
     assert failures == {}
 
 
-def test_sync_sources_includes_vcs_under_devel(tmp_path):
+def test_sync_sources_includes_vcs_under_devel(tmp_path, monkeypatch):
     """With ``--devel`` the VCS filter is bypassed — both pkgbases are synced."""
-    from sysforge.primitives.source_sync import (
-        STATUS_UP_TO_DATE, SyncResult,
-    )
+    from sysforge.primitives import source_sync
+    from sysforge.primitives.source_sync import STATUS_UP_TO_DATE, SyncResult
 
-    htop_dir = tmp_path / "htop"
-    htop_dir.mkdir()
-    (htop_dir / "PKGBUILD").write_text("pkgname=htop\n")
-    mesa_dir = tmp_path / "mesa-git"
-    mesa_dir.mkdir()
-    (mesa_dir / "PKGBUILD").write_text("pkgname=mesa-git\n")
+    for name in ("htop", "mesa-git"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "PKGBUILD").write_text(f"pkgname={name}\n")
 
     pkgbase_map = {"htop": ["htop"], "mesa-git": ["mesa-git"]}
     pkgbase_entry = {
-        "htop": {"pkgbuild_dir": str(htop_dir), "source": "aur"},
-        "mesa-git": {"pkgbuild_dir": str(mesa_dir), "source": "aur"},
+        "htop": {"pkgbuild_dir": str(tmp_path / "htop"), "source": "aur"},
+        "mesa-git": {"pkgbuild_dir": str(tmp_path / "mesa-git"), "source": "aur"},
     }
 
     seen: list[str] = []
 
     class _FakeScheduler:
+        offline = cleansrc = cleansrc_force = force_devel = False
         cache = MagicMock()
         def _ensure_rpc(self, bases):  # noqa: ARG002
             pass
@@ -1142,79 +750,36 @@ def test_sync_sources_includes_vcs_under_devel(tmp_path):
         def close(self):
             pass
 
-    args = _make_args(
-        offline=False, cleansrc=False, cleansrc_force=False, devel=True,
-        state_dir=str(tmp_path),
-    )
-
-    with (
-        patch("sysforge.update.get_scheduler", return_value=_FakeScheduler()),
-        patch("sysforge.update.load_sysforge_toml", return_value={}),
-        patch("sysforge.update.resolve_state_dir",
-              return_value=(tmp_path, "test")),
-    ):
-        _sync_sources(pkgbase_map, pkgbase_entry, args)
+    monkeypatch.setattr(source_sync, "_scheduler", _FakeScheduler())
+    args = _make_args(offline=False, cleansrc=False, cleansrc_force=False,
+                      devel=True, state_dir=str(tmp_path))
+    _sync_sources(pkgbase_map, pkgbase_entry, args)
 
     assert sorted(seen) == ["htop", "mesa-git"]
 
 
-def test_pull_failure_continues_to_next_package(tmp_path):
-    pkg1_dir = tmp_path / "htop"
-    pkg1_dir.mkdir()
-    (pkg1_dir / "PKGBUILD").write_text("pkgname=htop\n")
-
-    pkg2_dir = tmp_path / "neovim"
-    pkg2_dir.mkdir()
-    (pkg2_dir / "PKGBUILD").write_text("pkgname=neovim\n")
-
-    state_data = {
-        "htop": {
-            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "htop", "pkgbuild_dir": str(pkg1_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        },
-        "neovim": {
-            "pkgver": "0.9.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "neovim", "pkgbuild_dir": str(pkg2_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        },
-    }
-
-    parsed_neovim = {"globals": {"pkgname": "neovim", "pkgver": "0.9.0", "pkgrel": "1", "epoch": "0"}}
-
-    args = _make_args(offline=False)
-    results = []
-
-    overrides = ({}, {
-        "htop": {"name": "htop", "source": "aur"},
-        "neovim": {"name": "neovim", "source": "aur"},
-    })
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        # Simulate the scheduler reporting htop failed and neovim up-to-date.
-        patch("sysforge.update._sync_sources",
-              return_value={"htop": ("failed", "git fetch failed")}),
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed_neovim),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"htop": "0.9.0-1", "neovim": "0.9.0-1"}),
-        patch("sysforge.update.get_foreign_packages",
-              return_value={"htop": "0.9.0-1", "neovim": "0.9.0-1"}),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
-
-    actions = {r.pkgbase: r.action for r in results}
-    assert actions.get("htop") == "PULL_FAILED"
-    assert actions.get("neovim") == "UP_TO_DATE"
+def test_pull_failure_continues_to_next_package(update_scenario, capsys):
+    """A source-sync failure for one pkgbase doesn't block the rest: htop's
+    sync failure surfaces (PULL_FAILED), while neovim is still version-checked
+    and found up to date."""
+    from sysforge.primitives.source_sync import STATUS_FAILED
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=0.9.0\npkgrel=1\n")
+    update_scenario.add_pkg("neovim", "pkgname=neovim\npkgver=0.9.0\npkgrel=1\n")
+    update_scenario.fake_sync({"htop": (STATUS_FAILED, "git fetch failed")})
+    update_scenario.run(
+        _make_args(offline=False),
+        installed={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
+        foreign={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
+    )
+    combined = "".join(capsys.readouterr())
+    # htop's sync failure surfaces (PULL_FAILED) ...
+    assert "git fetch failed" in combined
+    assert "1 pull failed" in combined
+    # ... and the run is NOT aborted by it: neovim is still version-checked
+    # (counted up to date) and the run reaches a clean finish. Both packages
+    # are at the installed version, so there is nothing to rebuild.
+    assert "1 up to date" in combined
+    assert "Nothing to rebuild" in combined
 
 
 # ---------------------------------------------------------------------------
@@ -1253,155 +818,65 @@ def test_get_foreign_packages_empty_output():
 # sub-packages when only 2 were installed, silently adding 14 new packages.
 # ---------------------------------------------------------------------------
 
-def test_already_built_installs_existing_artifact(tmp_path):
+def test_already_built_installs_existing_artifact(update_scenario):
     """makepkg AlreadyBuilt → locate existing .pkg.tar and install, not fail.
 
     Regression: makepkg's "A package has already been built" was treated as a
     build failure even though PKGDEST already held the right artifact.
     """
-    from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.use_pkgdest()
+    update_scenario.add_artifact("htop-3.4.1-1-x86_64.pkg.tar.zst", "htop")
+    update_scenario.build_raises_already_built("htop")
 
-    pkg_dir = tmp_path / "htop"
-    pkg_dir.mkdir()
-    pkgbuild = pkg_dir / "PKGBUILD"
-    pkgbuild.write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.run(
+        _make_args(),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
 
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    existing_pkg = pkgdest / "htop-3.4.1-1-x86_64.pkg.tar.zst"
-    existing_pkg.touch()
-
-    state_data = {
-        "htop": {
-            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "htop", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args()
-    parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"htop": {"name": "htop", "source": "aur"}})
-    installed = {"htop": "3.3.0-1"}
-
-    def fake_build_run(*a, **kw):
-        raise AlreadyBuilt(pkgbuild)
-
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.build_core.collect_makedeps", return_value=[]),
-        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.build_core.snapshot_pkg_dir", return_value=frozenset()),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert install_calls == [["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
+    assert update_scenario.installed_pkg_files() == [
+        ["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
 
 
-def test_split_pkgbase_only_installs_installed_subpkgnames(tmp_path):
-    pkg_dir = tmp_path / "pipewire-full-git"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=pipewire-full-git\n")
-
-    # Build emits 4 pkg files for 4 split pkgnames; only 2 are installed.
-    built_files = [
-        pkg_dir / "pipewire-full-git-1.0-1-x86_64.pkg.tar.zst",
-        pkg_dir / "pipewire-full-ffmpeg-git-1.0-1-x86_64.pkg.tar.zst",
-        pkg_dir / "pipewire-full-vulkan-git-1.0-1-x86_64.pkg.tar.zst",
-        pkg_dir / "libpipewire-full-git-1.0-1-x86_64.pkg.tar.zst",
-    ]
-
-    def fake_build_run(*a, **kw):
-        # Stamp mtime after build_start so snapshot_pkg_dir's mtime filter keeps them.
-        import time
-        time.sleep(0.01)
-        for f in built_files:
-            f.touch()
-
-    state_data = {
-        "pipewire-full-ffmpeg-git": {
-            "pkgver": "1.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "pipewire-full-git", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        },
-        "pipewire-full-vulkan-git": {
-            "pkgver": "1.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "pipewire-full-git", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        },
-    }
-    args = _make_args(devel=True)
-    parsed = {"globals": {"pkgname": "pipewire-full-git", "pkgver": "1.0", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {
-        "pipewire-full-ffmpeg-git": {"name": "pipewire-full-ffmpeg-git", "source": "aur"},
-        "pipewire-full-vulkan-git": {"name": "pipewire-full-vulkan-git", "source": "aur"},
+def test_split_pkgbase_only_installs_installed_subpkgnames(update_scenario):
+    """A split-pkgbase build emits a .pkg.tar per sub-package, but only the
+    sub-packages the user already has installed get queued for install."""
+    update_scenario.add_pkg(
+        "pipewire-full-git",
+        "pkgname=pipewire-full-git\npkgver=1.0\npkgrel=1\n",
+    )
+    # --devel resolves a newer VCS version, so the pkgbase rebuilds.
+    update_scenario.fake_vcs_pkgver("pipewire-full-git", "1.0.r1.gffffff-1")
+    update_scenario.use_pkgdest()
+    # Both installed sub-packages are recorded under the shared pkgbase.
+    update_scenario.record("pipewire-full-ffmpeg-git", "1.0", "1",
+                           pkgbase="pipewire-full-git")
+    update_scenario.record("pipewire-full-vulkan-git", "1.0", "1",
+                           pkgbase="pipewire-full-git")
+    # The build emits all four split artifacts into PKGDEST.
+    update_scenario.build_produces("pipewire-full-git", {
+        "pipewire-full-git-1.0-1-x86_64.pkg.tar.zst": "pipewire-full-git",
+        "pipewire-full-ffmpeg-git-1.0-1-x86_64.pkg.tar.zst": "pipewire-full-ffmpeg-git",
+        "pipewire-full-vulkan-git-1.0-1-x86_64.pkg.tar.zst": "pipewire-full-vulkan-git",
+        "libpipewire-full-git-1.0-1-x86_64.pkg.tar.zst": "libpipewire-full-git",
     })
+
     installed = {
         "pipewire-full-ffmpeg-git": "1.0-1",
         "pipewire-full-vulkan-git": "1.0-1",
     }
+    update_scenario.run(
+        _make_args(devel=True), installed=installed, foreign=installed,
+    )
 
-    def fake_read_pkgname(path):
-        stem = Path(path).name
-        for pn in ["pipewire-full-ffmpeg-git", "pipewire-full-vulkan-git",
-                   "libpipewire-full-git", "pipewire-full-git"]:
-            if stem.startswith(pn + "-"):
-                return pn
-        return None
-
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.build_core.collect_makedeps", return_value=[]),
-        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
-        patch("sysforge.update.get_pkgdest", return_value=None),
-        patch("sysforge.build_core.snapshot_pkg_dir", return_value=frozenset(built_files)),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", side_effect=fake_read_pkgname),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
-        patch("sysforge.update.evaluate_vcs_pkgver", return_value="1.0.r1.gffffff-1"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert len(install_calls) == 1
-    installed_names = install_calls[0]
+    calls = update_scenario.installed_pkg_files()
+    assert len(calls) == 1
+    installed_names = calls[0]
     assert set(installed_names) == {
         "pipewire-full-ffmpeg-git-1.0-1-x86_64.pkg.tar.zst",
         "pipewire-full-vulkan-git-1.0-1-x86_64.pkg.tar.zst",
     }
-    # Crucially, the un-installed split sub-packages must NOT be in the install set.
+    # Crucially, the un-installed split sub-packages must NOT be installed.
     assert "libpipewire-full-git-1.0-1-x86_64.pkg.tar.zst" not in installed_names
     assert "pipewire-full-git-1.0-1-x86_64.pkg.tar.zst" not in installed_names
 
@@ -1410,110 +885,39 @@ def test_split_pkgbase_only_installs_installed_subpkgnames(tmp_path):
 # --install-only: install pre-built artifacts without re-running makepkg.
 # ---------------------------------------------------------------------------
 
-def test_install_only_installs_existing_artifact_without_building(tmp_path):
-    """--install-only: locate the artifact in PKGDEST and install it; never call build_run."""
-    pkg_dir = tmp_path / "htop"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+def test_install_only_installs_existing_artifact_without_building(update_scenario):
+    """--install-only: locate the artifact in PKGDEST and install it; never build."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.use_pkgdest()
+    update_scenario.add_artifact("htop-3.4.1-1-x86_64.pkg.tar.zst", "htop")
 
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    existing_pkg = pkgdest / "htop-3.4.1-1-x86_64.pkg.tar.zst"
-    existing_pkg.touch()
+    update_scenario.run(
+        _make_args(install_only=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
 
-    state_data = {
-        "htop": {
-            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "htop", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args(install_only=True)
-    parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"htop": {"name": "htop", "source": "aur"}})
-    installed = {"htop": "3.3.0-1"}
-
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    build_calls = []
-
-    def fake_build_run(*a, **kw):
-        build_calls.append(a)
-        raise AssertionError("build_run must not be called with --install-only")
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert build_calls == []
-    assert install_calls == [["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
+    # --install-only must never invoke the build seam.
+    assert update_scenario.builds == []
+    assert update_scenario.installed_pkg_files() == [
+        ["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
 
 
-def test_install_only_skips_when_artifact_missing(tmp_path):
-    """--install-only: PKGBUILD newer than installed but no artifact in PKGDEST → skip, no install."""
-    pkg_dir = tmp_path / "htop"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+def test_install_only_skips_when_artifact_missing(update_scenario):
+    """--install-only: PKGBUILD newer than installed but no matching artifact in
+    PKGDEST → skip, no install."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.use_pkgdest()
+    # Only an older artifact exists; nothing matches the 3.4.1 build.
+    update_scenario.add_artifact("htop-3.3.0-1-x86_64.pkg.tar.zst", "htop")
 
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    # Note: NO matching artifact at 3.4.1; only an older one.
-    (pkgdest / "htop-3.3.0-1-x86_64.pkg.tar.zst").touch()
+    update_scenario.run(
+        _make_args(install_only=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
 
-    state_data = {
-        "htop": {
-            "pkgver": "3.3.0", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "htop", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args(install_only=True)
-    parsed = {"globals": {"pkgname": "htop", "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"htop": {"name": "htop", "source": "aur"}})
-    installed = {"htop": "3.3.0-1"}
-
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="htop"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    # Nothing eligible → no install call at all.
-    assert install_calls == []
+    assert update_scenario.builds == []
+    # Nothing eligible → no install transaction at all.
+    assert update_scenario.installed_pkg_files() == []
 
 
 def test_install_only_rejects_incompatible_flags():
@@ -1535,178 +939,74 @@ def test_install_only_rejects_incompatible_flags():
 # lookup and pick the newest by vercmp.
 # ---------------------------------------------------------------------------
 
-def test_already_built_vcs_falls_back_to_newest_pkgname_match(tmp_path):
+def test_already_built_vcs_falls_back_to_newest_pkgname_match(update_scenario):
     """VCS package: AlreadyBuilt → static pkgbuild_ver doesn't match the
     bumped filename (0.1.0-1 vs 0.1.0.r45.g1234567-1); helper must fall
     back to a pkgname-only glob and queue the newest artifact for install.
     """
-    from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "0.1.0.r45.g1234567-1")
+    update_scenario.use_pkgdest()
+    update_scenario.add_artifact(
+        "neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst", "neovim-git")
+    update_scenario.build_raises_already_built("neovim-git")
 
-    pkg_dir = tmp_path / "neovim-git"
-    pkg_dir.mkdir()
-    pkgbuild = pkg_dir / "PKGBUILD"
-    pkgbuild.write_text("pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
-
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    bumped_pkg = pkgdest / "neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"
-    bumped_pkg.touch()
-
-    state_data = {
-        "neovim-git": {
-            "pkgver": "0.1.0.r10.gaaaaaaa", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "neovim-git", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args(devel=True)
-    parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "0.1.0", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"neovim-git": {"name": "neovim-git", "source": "aur"}})
     installed = {"neovim-git": "0.1.0.r10.gaaaaaaa-1"}
+    update_scenario.run(
+        _make_args(devel=True), installed=installed, foreign=installed,
+    )
 
-    def fake_build_run(*a, **kw):
-        raise AlreadyBuilt(pkgbuild)
-
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.build_core.collect_makedeps", return_value=[]),
-        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.build_core.snapshot_pkg_dir", return_value=frozenset()),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch", return_value=[]),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_build_run),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="0.1.0.r45.g1234567-1"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert install_calls == [["neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"]]
+    assert update_scenario.installed_pkg_files() == [
+        ["neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"]]
 
 
-def test_install_only_vcs_picks_newest_artifact_in_pkgdest(tmp_path):
+def test_install_only_vcs_picks_newest_artifact_in_pkgdest(update_scenario):
     """--install-only on a VCS package: static pkgbuild_ver mismatches the
     artifact filename; the helper must fall back to a pkgname-only glob
     and select the newest by vercmp, while excluding artifacts not strictly
     newer than installed.
     """
-    pkg_dir = tmp_path / "neovim-git"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "0.1.0.r45.g1234567-1")
+    update_scenario.use_pkgdest()
+    # Two artifacts: an older one (== installed, skip) and a newer target.
+    update_scenario.add_artifact(
+        "neovim-git-0.1.0.r10.gaaaaaaa-1-x86_64.pkg.tar.zst", "neovim-git")
+    update_scenario.add_artifact(
+        "neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst", "neovim-git")
 
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    # Two artifacts in PKGDEST: an older one (== installed, skip) and a
-    # newer one (the intended target).
-    (pkgdest / "neovim-git-0.1.0.r10.gaaaaaaa-1-x86_64.pkg.tar.zst").touch()
-    newest = pkgdest / "neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"
-    newest.touch()
-
-    state_data = {
-        "neovim-git": {
-            "pkgver": "0.1.0.r10.gaaaaaaa", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "neovim-git", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args(install_only=True, devel=True)
-    parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "0.1.0", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"neovim-git": {"name": "neovim-git", "source": "aur"}})
     installed = {"neovim-git": "0.1.0.r10.gaaaaaaa-1"}
+    update_scenario.run(
+        _make_args(install_only=True, devel=True),
+        installed=installed, foreign=installed,
+    )
 
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="0.1.0.r45.g1234567-1"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert install_calls == [["neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"]]
+    assert update_scenario.builds == []
+    assert update_scenario.installed_pkg_files() == [
+        ["neovim-git-0.1.0.r45.g1234567-1-x86_64.pkg.tar.zst"]]
 
 
-def test_install_only_vcs_skips_when_only_older_artifacts_present(tmp_path):
+def test_install_only_vcs_skips_when_only_older_artifacts_present(update_scenario):
     """--install-only on a VCS package: only an artifact == installed exists,
     so the helper's installed_ver guard rejects it and nothing installs."""
-    pkg_dir = tmp_path / "neovim-git"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text("pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
-
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=0.1.0\npkgrel=1\n")
+    update_scenario.fake_vcs_pkgver("neovim-git", "0.1.0.r45.g1234567-1")
+    update_scenario.use_pkgdest()
     # Only an artifact at the same version as installed → not strictly newer.
-    (pkgdest / "neovim-git-0.1.0.r10.gaaaaaaa-1-x86_64.pkg.tar.zst").touch()
+    update_scenario.add_artifact(
+        "neovim-git-0.1.0.r10.gaaaaaaa-1-x86_64.pkg.tar.zst", "neovim-git")
 
-    state_data = {
-        "neovim-git": {
-            "pkgver": "0.1.0.r10.gaaaaaaa", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "neovim-git", "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
-    args = _make_args(install_only=True, devel=True)
-    parsed = {"globals": {"pkgname": "neovim-git", "pkgver": "0.1.0", "pkgrel": "1", "epoch": "0"}}
-    overrides = ({}, {"neovim-git": {"name": "neovim-git", "source": "aur"}})
     installed = {"neovim-git": "0.1.0.r10.gaaaaaaa-1"}
+    update_scenario.run(
+        _make_args(install_only=True, devel=True),
+        installed=installed, foreign=installed,
+    )
 
-    install_calls = []
-
-    def fake_install(pkg_paths):
-        install_calls.append([Path(p).name for p in pkg_paths])
-        return True
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages", return_value=installed),
-        patch("sysforge.build_core.get_all_installed_packages", return_value=installed),
-        patch("sysforge.update.get_foreign_packages", return_value=installed),
-        patch("sysforge.update.get_pkgdest", return_value=pkgdest),
-        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="neovim-git"),
-        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=AssertionError("no build")),
-        patch("sysforge.update.evaluate_vcs_pkgver",
-              return_value="0.1.0.r45.g1234567-1"),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        cmd_update(args)
-
-    assert install_calls == []
+    assert update_scenario.builds == []
+    assert update_scenario.installed_pkg_files() == []
 
 
 # ---------------------------------------------------------------------------
@@ -1813,603 +1113,298 @@ def test_print_summary_verbose_shows_all_lines(capsys):
 # repo_mode = "profiled" → pacman-class fast path
 # ---------------------------------------------------------------------------
 
-def _run_profiled_repo_update(
-    tmp_path,
-    pkgbase: str,
-    installed_ver: str,
-    *,
-    override: dict | None = None,
-    checkupdates_result,
-    parse_pkgbuild_mock=None,
-    pacman_run_mock=None,
-    args_extra: dict | None = None,
-):
-    """Helper for repo_mode = 'profiled' tests.
-
-    Drives ``cmd_update`` against a single installed repo package with
-    ``repo_mode = "profiled"``, mocking out checkupdates and (optionally)
-    the source-sync and PKGBUILD parse paths. Returns the captured
-    ``_UpdateResult`` list and the list of ``subprocess.run`` call args
-    seen by the bulk-pacman dispatch site (the ``import subprocess as _subprocess``
-    inside cmd_update).
-    """
-    overrides_dict: dict = {pkgbase: override} if override else {}
-    overrides = ({"repo_mode": "profiled"}, overrides_dict)
-
-    # Source-class repo packages need a PKGBUILD on disk + parse_pkgbuild mock.
-    if override and not (override.keys() & {"pkgbuild_patch", "cache", "reason"}):
-        # treat as inert → leave alone
-        pass
-    if override and ({"pkgbuild_patch", "cache", "reason"} & override.keys()):
-        pkg_dir = tmp_path / pkgbase
-        pkg_dir.mkdir(exist_ok=True)
-        (pkg_dir / "PKGBUILD").write_text(
-            f"pkgname={pkgbase}\npkgver={installed_ver.rsplit('-', 1)[0]}\npkgrel=1\n"
-        )
-
-    args = _make_args(**(args_extra or {}))
-    args.offline = False  # checkupdates needs offline=False to run
-
-    results: list = []
-
-    with (
-        # Isolate from the workstation's real toolchain.toml (enabled + llvm),
-        # which would route an `llvm` package through the toolchain stage-owned
-        # skip and out of scope.
-        patch("sysforge.update.TOOLCHAIN_PATH", tmp_path / "no-toolchain-toml"),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={pkgbase: installed_ver}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update.fetch_aur_name_cache"),
-        patch("sysforge.update._sync_sources", return_value={}),
-        patch("sysforge.update.checkupdates_map", return_value=checkupdates_result),
-        patch("sysforge.update.collect_llvm_state") as mock_llvm,
-        patch(
-            "sysforge.update.parse_pkgbuild",
-            new=parse_pkgbuild_mock or MagicMock(
-                return_value={"globals": {"pkgname": pkgbase, "pkgver": "0", "pkgrel": "1", "epoch": "0"}}
-            ),
-        ),
-        patch("sysforge.update.vercmp", side_effect=_string_vercmp),
-        patch("sysforge.update._toolchain_preflight_for_batch", return_value=True),
-        patch("sysforge.build_core.collect_makedeps", return_value=[]),
-        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
-        patch("sysforge.build_core.batch_install_pkgs", return_value=True),
-        patch("subprocess.run", side_effect=pacman_run_mock or _ok_subprocess),
-    ):
-        mock_llvm.return_value = MagicMock(states=[])
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
-
-    return results
+def _syu_fired(scenario):
+    """True iff the bulk ``sudo pacman -Syu`` repo-upgrade transaction ran."""
+    return any("pacman -Syu" in c for c in scenario.fake_run.commands)
 
 
-def _string_vercmp(a: str, b: str) -> int:
-    """Stand-in for `vercmp` that does string comparison.
-
-    Sufficient for tests that use simple monotone versions like
-    "1.0.0-1" vs "1.0.1-1".
-    """
-    if a == b:
-        return 0
-    return 1 if a > b else -1
+def _checkupdates_called(scenario):
+    """True iff the ``checkupdates`` repo-upgrade probe was invoked."""
+    return any("checkupdates" in c for c in scenario.fake_run.commands)
 
 
-def _ok_subprocess(*a, **kw):
-    """Fallback subprocess.run mock — always returns rc=0."""
-    return MagicMock(returncode=0, stdout="", stderr="")
-
-
-def test_repo_pacman_class_flags_needs_pacman_upgrade(tmp_path):
-    """repo_mode=profiled + no override + checkupdates newer → NEEDS_PACMAN_UPGRADE."""
-    parse_mock = MagicMock()
-    pacman_calls: list = []
-
-    def trace_subprocess(*args, **kwargs):
-        pacman_calls.append(args[0] if args else kwargs.get("args"))
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    results = _run_profiled_repo_update(
-        tmp_path, "firefox", "130.0-1",
-        checkupdates_result={"firefox": "131.0-1"},
-        parse_pkgbuild_mock=parse_mock,
-        pacman_run_mock=trace_subprocess,
+def test_repo_pacman_class_flags_needs_pacman_upgrade(update_scenario, capsys):
+    """repo_mode=profiled + no override + checkupdates newer → the package is
+    flagged for a pacman upgrade and the bulk pacman -Syu fires (no source build)."""
+    update_scenario.set_repo_mode("profiled")
+    update_scenario.fake_sync()  # neutralize the real source-sync scheduler
+    update_scenario.fake_checkupdates({"firefox": "131.0-1"})
+    update_scenario.run(
+        _make_args(offline=False),
+        installed={"firefox": "130.0-1"}, foreign={},
     )
-
-    actions = [r.action for r in results]
-    assert actions == ["NEEDS_PACMAN_UPGRADE"]
-    # Fast path: no PKGBUILD parse for pacman-class entries.
-    parse_mock.assert_not_called()
-    # The bulk pacman -Syu should fire exactly once.
-    syu_calls = [c for c in pacman_calls
-                 if isinstance(c, list) and "pacman" in c and "-Syu" in c]
-    assert len(syu_calls) == 1
+    combined = "".join(capsys.readouterr())
+    assert "1 need pacman upgrade" in combined
+    # Pacman fast path: deferred to one bulk -Syu, no source build.
+    assert update_scenario.builds == []
+    assert _syu_fired(update_scenario)
 
 
-def test_repo_pacman_class_up_to_date_when_not_in_checkupdates(tmp_path):
-    """repo_mode=profiled + no override + nothing in checkupdates → UP_TO_DATE, no pacman -Syu."""
-    pacman_calls: list = []
-
-    def trace_subprocess(*args, **kwargs):
-        pacman_calls.append(args[0] if args else kwargs.get("args"))
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    results = _run_profiled_repo_update(
-        tmp_path, "firefox", "131.0-1",
-        checkupdates_result={},  # No upgrades pending
-        pacman_run_mock=trace_subprocess,
+def test_repo_pacman_class_up_to_date_when_not_in_checkupdates(update_scenario, capsys):
+    """repo_mode=profiled + nothing pending in checkupdates → UP_TO_DATE, no -Syu."""
+    update_scenario.set_repo_mode("profiled")
+    update_scenario.fake_sync()
+    update_scenario.fake_checkupdates({})  # ran, nothing pending
+    update_scenario.run(
+        _make_args(offline=False),
+        installed={"firefox": "131.0-1"}, foreign={},
     )
-
-    actions = [r.action for r in results]
-    assert actions == ["UP_TO_DATE"]
-    # No upgrade pending → no pacman -Syu invocation.
-    syu_calls = [c for c in pacman_calls
-                 if isinstance(c, list) and "pacman" in c and "-Syu" in c]
-    assert syu_calls == []
+    combined = "".join(capsys.readouterr())
+    assert "1 up to date" in combined
+    assert not _syu_fired(update_scenario)
 
 
-def test_repo_pacman_class_skipped_when_checkupdates_missing(tmp_path):
-    """repo_mode=profiled + checkupdates returns None (binary missing) → SKIPPED_NO_CHECKUPDATES."""
-    pacman_calls: list = []
-
-    def trace_subprocess(*args, **kwargs):
-        pacman_calls.append(args[0] if args else kwargs.get("args"))
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    results = _run_profiled_repo_update(
-        tmp_path, "firefox", "131.0-1",
-        checkupdates_result=None,  # pacman-contrib not installed
-        pacman_run_mock=trace_subprocess,
+def test_repo_pacman_class_skipped_when_checkupdates_missing(update_scenario, capsys):
+    """repo_mode=profiled + checkupdates errors (binary unavailable) →
+    SKIPPED_NO_CHECKUPDATES surfaces and nothing is upgraded."""
+    update_scenario.set_repo_mode("profiled")
+    update_scenario.fake_sync()
+    update_scenario.fake_checkupdates(None)  # fast path unavailable
+    update_scenario.run(
+        _make_args(offline=False, verbose=1),
+        installed={"firefox": "131.0-1"}, foreign={},
     )
-
-    actions = [r.action for r in results]
-    assert actions == ["SKIPPED_NO_CHECKUPDATES"]
-    # No -Syu dispatched because no NEEDS_PACMAN_UPGRADE entry exists.
-    syu_calls = [c for c in pacman_calls
-                 if isinstance(c, list) and "pacman" in c and "-Syu" in c]
-    assert syu_calls == []
+    combined = "".join(capsys.readouterr())
+    assert "skipped (no checkupdates)" in combined
+    assert not _syu_fired(update_scenario)
 
 
-def test_repo_source_class_still_goes_through_pkgbuild_parse(tmp_path):
-    """repo_mode=profiled + override (pkgbuild_patch=True) → source-build path, NOT pacman fast path."""
-    parse_mock = MagicMock(return_value={
-        "globals": {"pkgname": "llvm", "pkgver": "20.1.0", "pkgrel": "1", "epoch": "0"},
-    })
-
-    results = _run_profiled_repo_update(
-        tmp_path, "llvm", "20.1.0-1",
-        override={"name": "llvm", "source": "repo", "pkgbuild_patch": True},
-        # Should be ignored because override pulls us through the source path.
-        checkupdates_result={"llvm": "20.2.0-1"},
-        parse_pkgbuild_mock=parse_mock,
-        args_extra={"dry_run": True},  # stop before actual build
+def test_repo_source_class_still_goes_through_pkgbuild_parse(update_scenario, capsys):
+    """repo_mode=profiled + a behavior-changing override (pkgbuild_patch) →
+    source path (real PKGBUILD parse + vercmp), NOT the pacman fast path:
+    checkupdates is never consulted for a source-class package."""
+    update_scenario.set_repo_mode("profiled")
+    update_scenario.add_override("firefox", source="repo", pkgbuild_patch=True)
+    update_scenario.add_pkg("firefox", "pkgname=firefox\npkgver=131.0\npkgrel=1\n")
+    update_scenario.fake_sync()
+    # Programmed but must be ignored — the override forces the source path.
+    update_scenario.fake_checkupdates({"firefox": "132.0-1"})
+    update_scenario.run(
+        _make_args(offline=False, dry_run=True),
+        installed={"firefox": "131.0-1"}, foreign={},
     )
-
-    actions = [r.action for r in results]
-    # PKGBUILD parsed → vercmp says equal → UP_TO_DATE (not NEEDS_PACMAN_UPGRADE)
-    assert actions == ["UP_TO_DATE"]
-    parse_mock.assert_called()
-
-
-def test_offline_skips_checkupdates_call(tmp_path):
-    """--offline → checkupdates is not invoked; pacman-class entries report UP_TO_DATE."""
-    overrides = ({"repo_mode": "profiled"}, {})
-    results: list = []
-
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"firefox": "131.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update._sync_sources", return_value={}),
-        patch("sysforge.update.checkupdates_map") as mock_cu,
-        patch("sysforge.update.collect_llvm_state") as mock_llvm,
-    ):
-        mock_llvm.return_value = MagicMock(states=[])
-        MockBS.return_value.all_packages.return_value = {}
-
-        def capture(res_list, a):
-            results.extend(res_list)
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(_make_args(offline=True))
-
-    mock_cu.assert_not_called()
+    combined = "".join(capsys.readouterr())
+    # Real parse + vercmp say equal → up to date, and no pacman fast path.
+    assert "1 up to date" in combined
+    assert not _checkupdates_called(update_scenario)
+    assert not _syu_fired(update_scenario)
 
 
-def test_default_mode_does_not_call_checkupdates(tmp_path):
-    """repo_mode unset (default = pacman) → no pacman-class entries, no checkupdates call."""
-    overrides = ({}, {})  # no repo_mode key, no overrides
+def test_offline_skips_checkupdates_call(update_scenario, capsys):
+    """--offline → checkupdates is never invoked even in profiled repo mode."""
+    update_scenario.set_repo_mode("profiled")
+    update_scenario.fake_sync()
+    update_scenario.fake_checkupdates({"firefox": "131.0-1"})
+    update_scenario.run(
+        _make_args(offline=True),
+        installed={"firefox": "130.0-1"}, foreign={},
+    )
+    assert not _checkupdates_called(update_scenario)
+    assert not _syu_fired(update_scenario)
 
-    with (
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config", return_value={}),
-        patch("sysforge.update._load_overrides", return_value=overrides),
-        patch("sysforge.update.get_all_installed_packages",
-              return_value={"firefox": "131.0-1"}),
-        patch("sysforge.update.get_foreign_packages", return_value={}),
-        patch("sysforge.update.checkupdates_map") as mock_cu,
-    ):
-        MockBS.return_value.all_packages.return_value = {}
-        with patch("sysforge.update._print_summary"):
-            cmd_update(_make_args())
 
-    mock_cu.assert_not_called()
+def test_default_mode_does_not_call_checkupdates(update_scenario):
+    """repo_mode unset (default pacman) → no pacman-class entries in scope, so
+    checkupdates is never invoked."""
+    update_scenario.fake_sync()
+    update_scenario.fake_checkupdates({"firefox": "131.0-1"})
+    update_scenario.run(
+        _make_args(offline=False),
+        installed={"firefox": "131.0-1"}, foreign={},
+    )
+    assert not _checkupdates_called(update_scenario)
 
 
 # ---------------------------------------------------------------------------
 # Stage-owned packages — kernel ownership filter
 # ---------------------------------------------------------------------------
 
-def _stage_owned_setup(tmp_path, args_extra=None, *, owner_in_state=False,
-                      kernel_toml_present=True):
-    """Build the patches+args needed to exercise the stage-owned filter for
-    `linux-custom`.
+def test_kernel_owned_package_skipped_by_default(update_scenario, capsys):
+    """linux-custom matched via kernel.toml bootstrap is skipped + info-logged.
 
-    Two ownership signals are switchable:
-      - ``owner_in_state``: kernel stage has stamped ``owner_stage = "kernel"``.
-      - ``kernel_toml_present``: the bootstrap fallback (read kernel.toml's
-        pkgname) finds the package.
+    The package is set up as a would-rebuild (installed 6.12 < PKGBUILD 6.13),
+    so an empty build list unambiguously proves the stage-owned skip rather than
+    an up-to-date no-op.
     """
-    pkgbase = "linux-custom"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(
-        f"pkgname={pkgbase}\npkgver=6.13\npkgrel=1\n"
-    )
-
-    foreign = {pkgbase: "6.13-1"}
-    state_data: dict = {}
-    if owner_in_state:
-        state_data[pkgbase] = {
-            "pkgver": "6.13", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-            "source": "local", "owner_stage": "kernel",
-        }
-
-    args = _make_args(**(args_extra or {}))
-
-    kernel_path = tmp_path / "kernel.toml"
-    if kernel_toml_present:
-        kernel_path.write_text(
-            'enabled = true\n'
-            f'pkgname = "{pkgbase}"\n'
-            f'pkgbuild_src_dir = "{tmp_path}"\n'
+    update_scenario.add_pkg("linux-custom", "pkgname=linux-custom\npkgver=6.13\npkgrel=1\n")
+    kernel_path = update_scenario.src_root.parent / "kernel.toml"
+    kernel_path.write_text(
+        'enabled = true\npkgname = "linux-custom"\n'
+        f'pkgbuild_src_dir = "{update_scenario.src_root}"\n')
+    with patch("sysforge.primitives.stage_ownership.KERNEL_PATH", kernel_path):
+        builds = update_scenario.run(
+            _make_args(),
+            installed={"linux-custom": "6.12-1"},
+            foreign={"linux-custom": "6.12-1"},
         )
 
-    results: list = []
-
-    def capture(res_list, a):
-        results.extend(res_list)
-
-    return pkgbase, pkg_dir, foreign, state_data, args, kernel_path, results, capture
-
-
-def test_kernel_owned_package_skipped_by_default(tmp_path, capsys):
-    """linux-custom matched via kernel.toml bootstrap is skipped + info-logged."""
-    (pkgbase, _, foreign, state_data, args, kernel_path, results,
-     capture) = _stage_owned_setup(tmp_path)
-
-    with (
-        patch("sysforge.update.KERNEL_PATH", kernel_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.get_pkgbase", return_value=pkgbase),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
-
-    # linux-custom must NOT appear in the result set
-    assert pkgbase not in {r.pkgbase for r in results}
-    # And the skip notice fired on stderr (sysforge's custom logger writes there).
+    assert builds == []  # stage-owned → skipped (the would-rebuild package never built)
     captured = capsys.readouterr()
     assert "kernel-stage package" in captured.err
     assert "linux-custom" in captured.err
 
 
-def test_kernel_owned_via_build_state_marker_skipped(tmp_path):
+def test_kernel_owned_via_build_state_marker_skipped(update_scenario):
     """The owner_stage marker in build_state is honored even without kernel.toml."""
-    (pkgbase, _, foreign, state_data, args, _kernel_path, results,
-     capture) = _stage_owned_setup(
-        tmp_path, owner_in_state=True, kernel_toml_present=False,
-    )
+    update_scenario.add_pkg("linux-custom", "pkgname=linux-custom\npkgver=6.13\npkgrel=1\n")
+    # The kernel stage stamped owner_stage="kernel"; no kernel.toml bootstrap.
+    update_scenario.record("linux-custom", "6.13", "1",
+                           source="local", owner_stage="kernel")
+    with patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+               update_scenario.src_root.parent / "nope.toml"):
+        builds = update_scenario.run(
+            _make_args(),
+            installed={"linux-custom": "6.12-1"},
+            foreign={"linux-custom": "6.12-1"},
+        )
 
-    with (
-        # KERNEL_PATH points at a nonexistent file so the bootstrap fallback
-        # is inactive — only the build_state marker should drive the skip.
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope.toml"),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
-
-    assert pkgbase not in {r.pkgbase for r in results}
+    assert builds == []  # build_state marker → skipped
 
 
-def test_include_stage_owned_flag_includes_kernel_package(tmp_path):
-    """--include-stage-owned overrides the skip."""
-    (pkgbase, _, foreign, state_data, args, kernel_path, results,
-     capture) = _stage_owned_setup(
-        tmp_path, args_extra={"include_stage_owned": True},
-        owner_in_state=True,
-    )
+def test_include_stage_owned_flag_includes_kernel_package(update_scenario):
+    """--include-stage-owned overrides the skip → the package builds."""
+    update_scenario.add_pkg("linux-custom", "pkgname=linux-custom\npkgver=6.13\npkgrel=1\n")
+    update_scenario.record("linux-custom", "6.13", "1",
+                           source="local", owner_stage="kernel")
+    with patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+               update_scenario.src_root.parent / "nope.toml"):
+        builds = update_scenario.run(
+            _make_args(include_stage_owned=True),
+            installed={"linux-custom": "6.12-1"},
+            foreign={"linux-custom": "6.12-1"},
+        )
 
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "6.13",
-                          "pkgrel": "1", "epoch": "0"}}
-
-    with (
-        patch("sysforge.update.KERNEL_PATH", kernel_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
-
-    assert pkgbase in {r.pkgbase for r in results}
+    assert len(builds) == 1  # skip overridden → the would-rebuild package builds
 
 
-def test_explicit_pkgname_overrides_stage_owned_skip(tmp_path):
+def test_explicit_pkgname_overrides_stage_owned_skip(update_scenario):
     """Naming a stage-owned package on the CLI opts it back in for that run."""
-    (pkgbase, _, foreign, state_data, args, kernel_path, results,
-     capture) = _stage_owned_setup(
-        tmp_path, args_extra={"pkgnames": ["linux-custom"]},
-        owner_in_state=True,
-    )
+    update_scenario.add_pkg("linux-custom", "pkgname=linux-custom\npkgver=6.13\npkgrel=1\n")
+    update_scenario.record("linux-custom", "6.13", "1",
+                           source="local", owner_stage="kernel")
+    with patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+               update_scenario.src_root.parent / "nope.toml"):
+        builds = update_scenario.run(
+            _make_args(pkgnames=["linux-custom"]),
+            installed={"linux-custom": "6.12-1"},
+            foreign={"linux-custom": "6.12-1"},
+        )
 
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "6.13",
-                          "pkgrel": "1", "epoch": "0"}}
-
-    with (
-        patch("sysforge.update.KERNEL_PATH", kernel_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.vercmp", return_value=0),
-    ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
-
-    assert pkgbase in {r.pkgbase for r in results}
+    assert len(builds) == 1  # explicit pkgname opts back in → builds
 
 
 # ---------------------------------------------------------------------------
 # Stage-owned packages — toolchain ownership filter (LLVM suite)
 # ---------------------------------------------------------------------------
 
-def _toolchain_owned_setup(tmp_path, args_extra=None, *, owner_in_state=False,
-                           compiler="llvm", enabled=True, toolchain_toml_present=True):
-    """Build the patches+args needed to exercise the toolchain stage-owned
-    filter for an LLVM-suite package (``llvm``).
-
-    Mirrors ``_stage_owned_setup`` but for the toolchain stage:
-      - ``owner_in_state``: toolchain stage has stamped ``owner_stage="toolchain"``.
-      - ``toolchain_toml_present`` + ``enabled`` + ``compiler``: drive the
-        ``_toolchain_owns_llvm()`` bootstrap fallback (active only for
-        enabled + compiler="llvm").
-    """
-    pkgbase = "llvm"
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(
-        f"pkgname={pkgbase}\npkgver=22.1.6\npkgrel=1\n"
-    )
-
-    foreign = {pkgbase: "22.1.6-1"}
-    state_data: dict = {
-        pkgbase: {
-            "pkgver": "22.1.6", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-            "build_mode": "pgo_llvm_toolchain",
-        }
-    }
-    if owner_in_state:
-        state_data[pkgbase]["owner_stage"] = "toolchain"
-
-    args = _make_args(**(args_extra or {}))
-
-    toolchain_path = tmp_path / "toolchain.toml"
-    if toolchain_toml_present:
-        body = f"enabled = {str(enabled).lower()}\n"
-        if compiler is not None:
-            body += f'compiler = "{compiler}"\n'
-        toolchain_path.write_text(body)
-
-    results: list = []
-
-    def capture(res_list, a):
-        results.extend(res_list)
-
-    return (pkgbase, pkg_dir, foreign, state_data, args, toolchain_path,
-            results, capture)
-
-
-def test_toolchain_owned_llvm_skipped_by_default(tmp_path, capsys):
+def test_toolchain_owned_llvm_skipped_by_default(update_scenario, capsys):
     """An LLVM-suite package matched via the toolchain.toml (enabled + llvm)
-    bootstrap fallback is skipped + info-logged, even with no owner_stage stamp."""
-    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
-     capture) = _toolchain_owned_setup(tmp_path)
+    bootstrap fallback is skipped + info-logged, even with no owner_stage stamp.
 
+    Would-rebuild (installed 22.1.5 < PKGBUILD 22.1.6) so an empty build list
+    proves the skip.
+    """
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
+    toolchain_path.write_text('enabled = true\ncompiler = "llvm"\n')
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
-        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.get_pkgbase", return_value=pkgbase),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(),
+            installed={"llvm": "22.1.5-1"},
+            foreign={"llvm": "22.1.5-1"},
+        )
 
-    assert pkgbase not in {r.pkgbase for r in results}
+    assert builds == []  # toolchain-owned → skipped
     captured = capsys.readouterr()
     assert "toolchain-stage package" in captured.err
     assert "run `sysforge run toolchain`" in captured.err
 
 
-def test_toolchain_owned_via_build_state_marker_skipped(tmp_path):
+def test_toolchain_owned_via_build_state_marker_skipped(update_scenario):
     """The owner_stage="toolchain" marker is honored even without toolchain.toml."""
-    (pkgbase, _, foreign, state_data, args, _toolchain_path, results,
-     capture) = _toolchain_owned_setup(
-        tmp_path, owner_in_state=True, toolchain_toml_present=False,
-    )
-
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    update_scenario.record("llvm", "22.1.6", "1", owner_stage="toolchain")
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
         # Nonexistent toolchain.toml so the bootstrap fallback is inactive —
         # only the build_state marker should drive the skip.
-        patch("sysforge.update.TOOLCHAIN_PATH", tmp_path / "nope-toolchain.toml"),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH",
+              update_scenario.src_root.parent / "nope-toolchain.toml"),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(),
+            installed={"llvm": "22.1.5-1"},
+            foreign={"llvm": "22.1.5-1"},
+        )
 
-    assert pkgbase not in {r.pkgbase for r in results}
+    assert builds == []  # build_state owner_stage marker → skipped
 
 
-def test_toolchain_gcc_compiler_does_not_skip_llvm(tmp_path):
+def test_toolchain_gcc_compiler_does_not_skip_llvm(update_scenario):
     """Dual-toolchain parity: with toolchain.toml compiler="gcc" the fallback is
     inactive (register-only path owns no LLVM), so the LLVM package is NOT
     skipped — it flows through to the build set."""
-    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
-     capture) = _toolchain_owned_setup(tmp_path, compiler="gcc")
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "22.1.6",
-                          "pkgrel": "1", "epoch": "0"}}
-
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
+    toolchain_path.write_text('enabled = true\ncompiler = "gcc"\n')
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
-        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.vercmp", return_value=0),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(),
+            installed={"llvm": "22.1.5-1"},
+            foreign={"llvm": "22.1.5-1"},
+        )
 
-    assert pkgbase in {r.pkgbase for r in results}
+    assert len(builds) == 1  # gcc toolchain owns no LLVM → not skipped → builds
 
 
-def test_include_stage_owned_includes_toolchain_llvm(tmp_path):
+def test_include_stage_owned_includes_toolchain_llvm(update_scenario):
     """--include-stage-owned overrides the toolchain skip (compiler=llvm)."""
-    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
-     capture) = _toolchain_owned_setup(
-        tmp_path, args_extra={"include_stage_owned": True},
-    )
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "22.1.6",
-                          "pkgrel": "1", "epoch": "0"}}
-
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
+    toolchain_path.write_text('enabled = true\ncompiler = "llvm"\n')
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
-        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.vercmp", return_value=0),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(include_stage_owned=True),
+            installed={"llvm": "22.1.5-1"},
+            foreign={"llvm": "22.1.5-1"},
+        )
 
-    assert pkgbase in {r.pkgbase for r in results}
+    assert len(builds) == 1  # skip overridden → builds
 
 
-def test_explicit_pkgname_overrides_toolchain_skip(tmp_path):
+def test_explicit_pkgname_overrides_toolchain_skip(update_scenario):
     """Naming the LLVM package on the CLI opts it back in for that run."""
-    (pkgbase, _, foreign, state_data, args, toolchain_path, results,
-     capture) = _toolchain_owned_setup(
-        tmp_path, args_extra={"pkgnames": ["llvm"]},
-    )
-
-    parsed = {"globals": {"pkgname": pkgbase, "pkgver": "22.1.6",
-                          "pkgrel": "1", "epoch": "0"}}
-
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
+    toolchain_path.write_text('enabled = true\ncompiler = "llvm"\n')
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
-        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.parse_pkgbuild", return_value=parsed),
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.vercmp", return_value=0),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary", side_effect=capture):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(pkgnames=["llvm"]),
+            installed={"llvm": "22.1.5-1"},
+            foreign={"llvm": "22.1.5-1"},
+        )
 
-    assert pkgbase in {r.pkgbase for r in results}
+    assert len(builds) == 1  # explicit pkgname opts back in → builds
 
 
-def test_toolchain_owned_spirv_skipped_via_configured_list(tmp_path, capsys):
+def test_toolchain_owned_spirv_skipped_via_configured_list(update_scenario, capsys):
     """spirv-llvm-translator is NOT matched by is_llvm_pkgbase (prefix set), so
     only the toolchain.toml [packages] configured-set union skips it. This pins
     the ownership broadening: a configured-but-unmatched member is skipped."""
@@ -2418,45 +1413,26 @@ def test_toolchain_owned_spirv_skipped_via_configured_list(tmp_path, capsys):
     pkgbase = "spirv-llvm-translator"
     assert not is_llvm_pkgbase(pkgbase)  # the gap the broadening closes
 
-    pkg_dir = tmp_path / pkgbase
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").write_text(f"pkgname={pkgbase}\npkgver=19.1.5\npkgrel=1\n")
-    foreign = {pkgbase: "19.1.5-1"}
-    state_data = {
-        pkgbase: {
-            "pkgver": "19.1.5", "pkgrel": "1", "epoch": "0",
-            "pkgbase": pkgbase, "pkgbuild_dir": str(pkg_dir),
-            "built_at": "2026-03-17T10:00:00Z",
-        }
-    }
+    update_scenario.add_pkg(pkgbase, f"pkgname={pkgbase}\npkgver=19.1.5\npkgrel=1\n")
     # toolchain.toml owns LLVM (enabled + llvm) and lists spirv in non_pgo.
-    toolchain_path = tmp_path / "toolchain.toml"
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
     toolchain_path.write_text(
         'enabled = true\ncompiler = "llvm"\n'
         '[packages]\npgo = ["llvm"]\n'
         'non_pgo = ["clang", "spirv-llvm-translator"]\nlib32 = []\n'
     )
-    args = _make_args()
-    results: list = []
-
     with (
-        patch("sysforge.update.KERNEL_PATH", tmp_path / "nope-kernel.toml"),
-        patch("sysforge.update.TOOLCHAIN_PATH", toolchain_path),
-        patch("sysforge.update.BuildState") as MockBS,
-        patch("sysforge.update.resolve_state_dir", return_value=(tmp_path, "test")),
-        patch("sysforge.update.load_config",
-              return_value={"paths": {"pkgbuild_src_dir": str(tmp_path)}}),
-        patch("sysforge.update._load_overrides", return_value=({}, {})),
-        patch("sysforge.update.get_all_installed_packages", return_value=foreign),
-        patch("sysforge.update.get_foreign_packages", return_value=foreign),
-        patch("sysforge.update.get_pkgbase", return_value=pkgbase),
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
     ):
-        MockBS.return_value.all_packages.return_value = state_data
-        with patch("sysforge.update._print_summary",
-                   side_effect=lambda res, a: results.extend(res)):
-            cmd_update(args)
+        builds = update_scenario.run(
+            _make_args(),
+            installed={pkgbase: "19.1.4-1"},
+            foreign={pkgbase: "19.1.4-1"},
+        )
 
-    assert pkgbase not in {r.pkgbase for r in results}
+    assert builds == []  # configured-list ownership → skipped
     assert "toolchain-stage package" in capsys.readouterr().err
 
 
@@ -2468,7 +1444,6 @@ def test_record_build_failure_persists_diagnosis(tmp_path):
     from types import SimpleNamespace
 
     from sysforge.primitives.build_diag import FixSuggestion
-    from sysforge.primitives.build_state import BuildState
     from sysforge.build_core import _record_build_failure
 
     result = SimpleNamespace(pkgbase="gpu-burn-git", pkgbuild_ver="r93.a113ce7")
@@ -2491,7 +1466,6 @@ def test_record_build_failure_persists_diagnosis(tmp_path):
 def test_record_build_failure_without_diagnosis(tmp_path):
     from types import SimpleNamespace
 
-    from sysforge.primitives.build_state import BuildState
     from sysforge.build_core import _record_build_failure
 
     result = SimpleNamespace(pkgbase="foo-git", pkgbuild_ver=None)

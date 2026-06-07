@@ -543,3 +543,25 @@ def check_package_abi(pkg_path: Path) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="sysforge-abi-") as tmpdir:
         extracted = _extract_sos(pkg_path, so_members, Path(tmpdir))
         return check_so_files(extracted)
+
+
+def report_post_build_abi(built_pkgs: list) -> None:
+    """Run non-fatal post-build ABI checks on freshly built packages.
+
+    Advisory only: each finding is logged under the ABI tag and any error is
+    swallowed (the build already succeeded, so a checker failure must not turn
+    a green build red).  Called by the build orchestrator after a successful
+    build when ``BuildOptions.abi_check`` is set.
+    """
+    try:
+        if not built_pkgs:
+            _log.info("No built packages found for ABI check")
+        for pkg in built_pkgs:
+            issues = check_package_abi(pkg)
+            if issues:
+                for issue in issues:
+                    _log.warn(issue)
+            else:
+                _log.info(f"{pkg.name}: OK")
+    except Exception as e:
+        _log.warn(f"ABI check failed: {e}")

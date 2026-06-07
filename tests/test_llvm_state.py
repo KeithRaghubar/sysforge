@@ -183,7 +183,7 @@ def test_classify_origin_repo_via_sentinel(src_root):
 
 def test_classify_origin_user_custom_remote(src_root):
     pkg = src_root / "llvm"
-    _init_repo(pkg, remote_url="git@github.com:keith/llvm-fork.git")
+    _init_repo(pkg, remote_url="git@github.com:example/llvm-fork.git")
     origin, _url = llvm_state._classify_origin(pkg)
     assert origin == "user"
 

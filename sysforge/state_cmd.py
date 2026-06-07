@@ -20,6 +20,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from sysforge.primitives.pager import maybe_pager as _maybe_pager
+from sysforge.primitives.prompt import prompt_choice
 
 
 def cmd_state_list(args):
@@ -330,11 +331,11 @@ def cmd_state_orphans(args):
         return
 
     if not getattr(args, "no_confirm", False):
-        try:
-            answer = input(f"\nDelete {len(superseded)} file(s)? [y/N] ")
-        except EOFError:
-            answer = ""
-        if answer.strip().lower() not in {"y", "yes"}:
+        answer = prompt_choice(
+            f"\nDelete {len(superseded)} file(s)? [y/N] ", ["y", "yes"],
+            default="", retry_on_invalid=False,
+        )
+        if answer not in {"y", "yes"}:
             print("Aborted.")
             return
 
