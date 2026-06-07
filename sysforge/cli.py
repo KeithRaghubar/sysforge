@@ -4,8 +4,9 @@ cli.py — SysForge command-line interface
 Top-level commands:
     sysforge build <pkg>    Build a package using its matched profile
     sysforge update         Check for and rebuild outdated sysforge-managed packages
+                            (also reports flag/toolchain drift; --rebuild-on-*-drift to act)
     sysforge resolve <pkg>  Show which profile would be applied to a package
-    sysforge converge       Rebuild packages that have drifted from their profile
+    sysforge converge       (deprecated) Flag-drift detect/repair — folded into `sysforge update`
     sysforge doctor [PKG]   Health-check installed package depends + linkage
 
 Namespaces:
@@ -305,9 +306,11 @@ def _add_update_parser(sub):
              "stage's `linux-sysforge`). Skipped by default; the owning stage "
              "(`sysforge run kernel`) is the canonical update path.")
     p.add_argument("--explain-drift", action="store_true", dest="explain_drift",
-        help="List packages whose recorded toolchain_variant differs from "
-             "the currently active toolchain (gcc / stock_llvm / pgo_llvm) "
-             "and exit. Informational; no source sync, no rebuild.")
+        help="List drifted packages and exit, across both axes: toolchain "
+             "drift (recorded toolchain_variant differs from the active "
+             "gcc / stock_llvm / pgo_llvm) and flag drift (profiled packages "
+             "whose flags now resolve differently than when built, with a "
+             "per-key diff). Informational; no source sync, no rebuild.")
     p.add_argument("--rebuild-on-toolchain-drift", action="store_true",
         dest="rebuild_on_toolchain_drift",
         help="Treat toolchain-variant drift as an upgrade trigger: packages "
@@ -315,6 +318,17 @@ def _add_update_parser(sub):
              "to the rebuild queue. Off by default — drift is reported but "
              "not acted on, since most C/C++ packages don't measurably "
              "benefit from a re-stamp.")
+    p.add_argument("--rebuild-on-flag-drift", action="store_true",
+        dest="rebuild_on_flag_drift",
+        help="Treat flag drift as an upgrade trigger: profiled packages whose "
+             "flags now resolve differently than when built are added to the "
+             "rebuild queue. Off by default — flag drift is reported but not "
+             "acted on, since one profile edit can drift every profiled "
+             "package. (Replaces `sysforge converge --apply`.)")
+    p.add_argument("--rebuild-on-drift", action="store_true",
+        dest="rebuild_on_drift",
+        help="Umbrella for both --rebuild-on-toolchain-drift and "
+             "--rebuild-on-flag-drift: rebuild anything that has drifted.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit update to these package names (default: all sysforge-managed packages).")
     p.set_defaults(verb_cls=UpdateVerb)
@@ -337,7 +351,8 @@ def _add_resolve_parser(sub):
 
 def _add_converge_parser(sub):
     p = sub.add_parser("converge",
-        help="Detect and repair packages whose build flags have drifted from the current profile.")
+        help="(deprecated) Detect/repair flag drift — use `sysforge update` "
+             "(--rebuild-on-flag-drift) instead.")
     p.add_argument("--apply", action="store_true",
         help="Rebuild all DRIFTED packages with the current profile.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",

@@ -57,6 +57,10 @@ from sysforge.primitives.llvm_state import (
 from sysforge.primitives.profile import (
     match_rules, resolve_profile, resolve_consumes,
 )
+from sysforge.primitives.flag_drift import (
+    STATUS_PARSE_ERROR,
+    resolve_flag_drift,
+)
 from sysforge.primitives.toolchain_preflight import (
     collect_required_toolchains,
     run_preflight as run_toolchain_preflight,
@@ -512,6 +516,49 @@ def _cmd_update_body(args) -> None:
             "--explain-drift to list."
         )
 
+    # ── Phase 4.3: Flag drift ─────────────────────────────────────────────
+    # Re-resolve the current profile for each profiled package and diff the
+    # serialized flags against what was recorded at build time. Same
+    # detect-and-report contract as toolchain drift above: surfaced always,
+    # listed under --explain-drift, rebuilt only via --rebuild-on-flag-drift.
+    # This is the canonical home for flag-drift detection — the `converge` verb
+    # is deprecated and delegates to the same primitive (resolve_flag_drift).
+    # Conflict groups are loaded lazily so a run with no profiled packages
+    # pays nothing.
+    flag_drifted: list[tuple[str, list[str]]] = []  # (pkgbase, diff lines)
+    _flag_seen: set[str] = set()
+    _flag_cgroups = None
+    for r in results:
+        if r.pkgbase in _flag_seen:
+            continue
+        _flag_seen.add(r.pkgbase)
+        entry = None
+        for name in r.pkgnames:
+            entry = bs.get(name)
+            if entry is not None:
+                break
+        if not entry or entry.get("build_mode") != "profiled":
+            continue
+        if _flag_cgroups is None:
+            _flag_cgroups = load_conflict_groups()
+        fd = resolve_flag_drift(entry, config, _flag_cgroups)
+        if fd.status == STATUS_PARSE_ERROR:
+            _log.warn(
+                f"flag drift: {r.pkgbase} — failed to parse PKGBUILD: {fd.error}"
+            )
+            continue
+        if fd.drifted:
+            flag_drifted.append((r.pkgbase, fd.diffs))
+
+    if flag_drifted:
+        sample = ", ".join(pb for pb, _ in flag_drifted[:3])
+        more = f" (+{len(flag_drifted) - 3} more)" if len(flag_drifted) > 3 else ""
+        _log.ui(
+            f"flag drift: {len(flag_drifted)} package(s) resolve to different "
+            f"flags than when built: {sample}{more}. "
+            "Pass --rebuild-on-flag-drift to rebuild, or --explain-drift to list."
+        )
+
     if getattr(args, "explain_drift", False):
         if not drifted:
             print(
@@ -526,12 +573,26 @@ def _cmd_update_body(args) -> None:
             )
             for pkgbase, rec_variant in sorted(drifted):
                 print(f"  {pkgbase:<40}  recorded={rec_variant}")
+        if not flag_drifted:
+            print("[SYSFORGE] No flag drift.")
+        else:
+            print(
+                f"[SYSFORGE] {len(flag_drifted)} package(s) resolve to "
+                "different flags than when built:"
+            )
+            for pkgbase, diffs in sorted(flag_drifted):
+                print(f"  {pkgbase}")
+                for line in diffs:
+                    print(line)
         return
 
     if getattr(args, "dry_run", False):
         return
 
-    if getattr(args, "rebuild_on_toolchain_drift", False) and drifted:
+    # --rebuild-on-drift is the umbrella that opts into both drift axes.
+    _rebuild_all_drift = getattr(args, "rebuild_on_drift", False)
+
+    if (getattr(args, "rebuild_on_toolchain_drift", False) or _rebuild_all_drift) and drifted:
         drifted_bases = {pb for pb, _ in drifted}
         promoted = 0
         unbuildable = 0
@@ -552,6 +613,28 @@ def _cmd_update_body(args) -> None:
                 f"--rebuild-on-toolchain-drift: {unbuildable} drifted "
                 "package(s) have no resolvable PKGBUILD (likely pacman-class) "
                 "— skipped"
+            )
+
+    if (getattr(args, "rebuild_on_flag_drift", False) or _rebuild_all_drift) and flag_drifted:
+        flag_bases = {pb for pb, _ in flag_drifted}
+        promoted = 0
+        unbuildable = 0
+        for r in results:
+            if r.pkgbase in flag_bases and r.action == "UP_TO_DATE":
+                if r.pkgbuild_path is None:
+                    unbuildable += 1
+                    continue
+                r.action = "NEEDS_REBUILD"
+                promoted += 1
+        if promoted:
+            _log.ui(
+                f"--rebuild-on-flag-drift: promoted {promoted} "
+                "UP_TO_DATE package(s) to NEEDS_REBUILD"
+            )
+        if unbuildable:
+            _log.warn(
+                f"--rebuild-on-flag-drift: {unbuildable} drifted "
+                "package(s) have no resolvable PKGBUILD — skipped"
             )
 
     # ── Phase 5: Build ────────────────────────────────────────────────────
