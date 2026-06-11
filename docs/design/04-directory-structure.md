@@ -19,7 +19,6 @@ sysforge/
 │   ├── run_cmd.py                     # sysforge run namespace verbs (pipeline/hardware/reconfigure/toolchain/packages/kernel)
 │   ├── env_cmd.py                     # sysforge env subcommand (read-only env-chain inspector)
 │   ├── completions_cmd.py             # sysforge completions data sink (consumed by _sysforge)
-│   ├── converge.py                    # sysforge converge subcommand (flag drift detection)
 │   ├── doctor.py                      # sysforge doctor subcommand (ABI/linkage health check)
 │   ├── fetch.py                       # sysforge fetch subcommand (download PKGBUILDs, no build)
 │   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove)
@@ -119,7 +118,6 @@ sysforge/
 │   ├── test_system_conf.py
 │   ├── test_update.py
 │   ├── test_build_state.py
-│   ├── test_converge.py
 │   ├── test_version.py
 │   └── test_wrapper.py
 ├── completions/

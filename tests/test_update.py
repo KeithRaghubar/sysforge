@@ -357,20 +357,6 @@ def test_bare_source_only_override_is_inert(fake_run, state_dir):
     assert packages == {}
 
 
-def test_update_repo_profiled_alias_is_normalised(fake_run, state_dir):
-    """The consumer side of the legacy ``update_repo_profiled`` alias: once
-    ``_load_overrides`` has normalised it to ``repo_mode = "profiled"`` (the
-    normalisation itself is asserted in
-    ``test_load_overrides_normalises_deprecated_update_repo_profiled``), the
-    package set walks repo packages exactly like the canonical key."""
-    fake_run.respond(["pacman", "-Qm"], stdout="")
-    fake_run.respond(["pacman", "-Q"], stdout="firefox 131.0-1\n")
-    packages, _ = _assemble_package_set(
-        _make_args(), BuildState(state_dir), {}, {"repo_mode": "profiled"}, {},
-    )
-    assert set(packages) == {"firefox"}
-
-
 def test_load_overrides_warns_on_inert_entries(tmp_path, capsys):
     """
     `_load_overrides` emits a warn line for any inert `[[package]]` entry
@@ -389,23 +375,6 @@ def test_load_overrides_warns_on_inert_entries(tmp_path, capsys):
     assert "pipewire" in err and "inert" in err
     # llvm has a behavior-changing field (cache=false); no warning for it.
     assert "llvm" not in err or "inert" not in err.split("llvm", 1)[1]
-
-
-def test_load_overrides_normalises_deprecated_update_repo_profiled(tmp_path, capsys):
-    """
-    `[build] update_repo_profiled = true` is normalised to
-    `repo_mode = "profiled"` with a one-shot deprecation warning.
-    """
-    from sysforge.update import _load_overrides
-    p = tmp_path / "packages.toml"
-    p.write_text(
-        '[build]\nupdate_repo_profiled = true\n'
-    )
-    build_cfg, _ = _load_overrides(p)
-    assert build_cfg.get("repo_mode") == "profiled"
-    assert "update_repo_profiled" not in build_cfg
-    err = capsys.readouterr().err
-    assert "update_repo_profiled" in err and "deprecated" in err
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +400,7 @@ def test_dry_run_no_build(update_scenario):
 
 
 # ---------------------------------------------------------------------------
-# Phase 4.3 — flag drift (folds in the deprecated `converge`)
+# Phase 4.3 — flag drift (canonical surface; absorbed the removed `converge`)
 # ---------------------------------------------------------------------------
 
 def _seed_flag_drift(scenario, *, stored_flags="CFLAGS=-this-is-stale"):
@@ -535,6 +504,73 @@ def test_not_profiled_package_is_not_flag_drift_checked(update_scenario, capsys)
     )
     assert builds == []
     assert "flag drift" not in capsys.readouterr().out.lower()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.3 fold — profiled build_state entries outside update's package walk
+# (e.g. a repo-class package recorded by `sysforge build` with repo_mode
+# unset). Coverage absorbed from the removed `converge` verb.
+# ---------------------------------------------------------------------------
+
+def _seed_out_of_walk_drift(scenario):
+    """ripgrep: installed (pacman -Q) but not foreign and no override, so
+    update's walk never iterates it — only the Phase 4.3 fold sees its
+    profiled build_state entry. Recorded flags are stale -> drifted."""
+    scenario.add_pkg("ripgrep", "pkgname=ripgrep\npkgver=14.0.0\npkgrel=1\n")
+    scenario.record("ripgrep", "14.0.0", "1",
+                    flags_string="CFLAGS=-this-is-stale")
+    return {"ripgrep": "14.0.0-1"}, {}
+
+
+def test_fold_reports_drift_for_out_of_walk_entry(update_scenario, capsys):
+    installed, foreign = _seed_out_of_walk_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(), installed=installed, foreign=foreign,
+    )
+    assert builds == []  # detect/report only
+    captured = capsys.readouterr()
+    assert "flag drift" in (captured.out + captured.err).lower()
+
+
+def test_fold_explain_drift_lists_out_of_walk_entry(update_scenario, capsys):
+    installed, foreign = _seed_out_of_walk_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(explain_drift=True), installed=installed, foreign=foreign,
+    )
+    assert builds == []
+    out = capsys.readouterr().out
+    assert "different flags" in out
+    assert "ripgrep" in out
+
+
+def test_fold_entry_not_promoted_but_hinted(update_scenario, capsys):
+    """--rebuild-on-flag-drift can't queue an out-of-walk entry (no result row
+    to promote); it must say so and point at `sysforge build` instead."""
+    installed, foreign = _seed_out_of_walk_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True,
+                   verbose=1),
+        installed=installed, foreign=foreign,
+    )
+    assert builds == []  # never queued — there is no walk entry to promote
+    text = (lambda c: c.out + c.err)(capsys.readouterr())
+    assert "outside this run's package walk" in text
+    assert "sysforge build" in text
+
+
+def test_fold_respects_pkgnames_filter(update_scenario, capsys):
+    """`sysforge update htop` must not drag unrelated build_state entries
+    into the drift report."""
+    installed, foreign = _seed_out_of_walk_drift(update_scenario)
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    installed["htop"] = "3.4.1-1"
+    foreign["htop"] = "3.4.1-1"
+    builds = update_scenario.run(
+        _make_args(pkgnames=["htop"]), installed=installed, foreign=foreign,
+    )
+    assert builds == []
+    out = capsys.readouterr().out
+    assert "ripgrep" not in out
 
 
 def test_devel_flag_triggers_vcs_rebuild(update_scenario):

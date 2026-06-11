@@ -47,6 +47,13 @@ from sysforge.primitives.pacman import (
     get_all_installed_packages,
 )
 from sysforge.primitives.aur import repo_packages
+# Module-top (not lazy) so tests can monkeypatch
+# ``sysforge.build_core.review_target`` to drive gate decisions.
+from sysforge.primitives.pkgbuild_review import (
+    DECISION_ABORT,
+    DECISION_SKIP,
+    review_target,
+)
 
 _log = log.get_logger("BUILD")
 
@@ -78,6 +85,10 @@ class BuildOutcome:
     pgo_skipped_pkgs: list[str] = field(default_factory=list)
     built_pkg_files: list[Path] = field(default_factory=list)
     install_failed: bool = False
+    # PKGBUILD review gate results: packages the user dropped at the prompt,
+    # and whether the whole run was aborted there (nothing built/installed).
+    review_skipped: list[str] = field(default_factory=list)
+    aborted: bool = False
 
 
 def target_from_pkgbuild(pkgbuild_path) -> BuildTarget:
@@ -409,6 +420,7 @@ def build_and_install(
     extra_flags: list | None = None,
     active_variant: str | None = None,
     pkgdest: Path | None = None,
+    review: bool = True,
 ) -> BuildOutcome:
     """Resolve deps, build every target, then bulk-install — the shared core.
 
@@ -422,6 +434,12 @@ def build_and_install(
     ``False`` (Phase 2 already synced sources via the scheduler); ``build``
     passes ``not --no-update`` to keep its inline per-package source sync, which
     already routes through ``source_sync.get_scheduler()`` inside ``run()``.
+
+    ``review`` enables the PKGBUILD review gate (one home, both verbs): each
+    target whose clone HEAD differs from its recorded ``reviewed_commit`` is
+    presented for review *before* dep prep and the build loop, so a skip never
+    installs that package's makedeps and an abort leaves nothing built or
+    installed. Disabled via ``--no-review`` / ``[build] review = false``.
     """
     outcome = BuildOutcome()
     if not targets:
@@ -437,6 +455,59 @@ def build_and_install(
     )
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
     reset_session()
+
+    # ── PKGBUILD review gate ──────────────────────────────────────────────
+    # For the `build` path (sync_source=True) the wrapper's inline sync hasn't
+    # run yet, so pre-sync each target through the scheduler — the wrapper's
+    # later request dedups against the scheduler cache, and the gate sees the
+    # post-fetch HEAD instead of reviewing a stale clone. Best-effort: real
+    # sync failures still surface through the wrapper's own request.
+    if review and sync_source:
+        from sysforge.primitives.source_sync import SyncRequest, get_scheduler
+        scheduler = get_scheduler()
+        for t in targets:
+            try:
+                scheduler.request(SyncRequest(
+                    pkgbase=t.pkgbase,
+                    pkgbuild_dir=Path(t.pkgbuild_path).parent,
+                    source=getattr(t, "source", None) or "aur",
+                ))
+            except Exception as e:
+                _log.debug(f"review pre-sync {t.pkgbase}: {e}")
+    if review:
+        if state_dir is None:
+            from sysforge.pipeline.state import resolve_state_dir
+            _review_state_dir, _ = resolve_state_dir(None)
+        else:
+            _review_state_dir = state_dir
+        bs_review = BuildState(_review_state_dir)
+        kept = []
+        for t in targets:
+            entry = None
+            for pn in (getattr(t, "pkgnames", None) or []):
+                entry = bs_review.get(pn)
+                if entry is not None:
+                    break
+            decision = review_target(
+                t.pkgbase,
+                Path(t.pkgbuild_path).parent,
+                (entry or {}).get("reviewed_commit"),
+            )
+            if decision == DECISION_ABORT:
+                _log.ui(
+                    "[SYSFORGE] Aborted at PKGBUILD review — "
+                    "nothing was built or installed."
+                )
+                outcome.aborted = True
+                return outcome
+            if decision == DECISION_SKIP:
+                _log.ui(f"[SYSFORGE] {t.pkgbase}: skipped at PKGBUILD review")
+                outcome.review_skipped.append(t.pkgbase)
+                continue
+            kept.append(t)  # accept | clean | no_git
+        targets = kept
+        if not targets:
+            return outcome
 
     pkgbuild_paths = [t.pkgbuild_path for t in targets if t.pkgbuild_path]
     building_names = {t.pkgbase for t in targets}

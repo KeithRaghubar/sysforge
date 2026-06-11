@@ -34,7 +34,14 @@ repo_mode = "profiled"  # "pacman" (default) | "profiled" — how repo-source pa
 #                       #              `checkupdates` and one terminal `sudo pacman -Syu`
 #                       #              after the source builds. Requires pacman-contrib.
 #                       # per-package pkgbuild_patch = true overrides to source-build regardless
-# (Deprecated: `update_repo_profiled = true` is normalised to repo_mode = "profiled".)
+# review = true         # PKGBUILD review gate: diff prompt before building changed
+#                       # sources (view/accept/skip/abort). false disables; --no-review
+#                       # disables per run. Non-interactive runs auto-accept + warn.
+
+# [group.<name>]        # named package set; expands into [[package]] entries at
+# packages = ["a", "b"] # load time. Optional per-group defaults (source /
+#                       # pkgbuild_patch / cache) inherit to members; an explicit
+#                       # [[package]] entry for the same name wins outright.
 
 
 # =============================================================================

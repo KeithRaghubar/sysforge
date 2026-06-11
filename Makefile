@@ -17,9 +17,8 @@ all: test
 # ---------------------------------------------------------------------------
 
 dev:
-	@pacman -Qq python-pytest ruff >/dev/null 2>&1 \
-	    || sudo pacman -S --needed python-pytest ruff
-	@uv pip install --quiet argparse-manpage
+	@pacman -Qq python-pytest ruff scdoc >/dev/null 2>&1 \
+	    || sudo pacman -S --needed python-pytest ruff scdoc
 	uv pip install -e .
 
 venv:
@@ -88,16 +87,16 @@ release-minor:
 release-patch:
 	bash tools/release.sh --bump=patch
 
+# scdoc hybrid: hand-written prose in man/sysforge.1.scd.in, COMMANDS
+# sections generated from the argparse tree by tools/gen_options.py.
+# man/sysforge.1.scd is an intermediate (gitignored); man/sysforge.1 is
+# committed. COLUMNS pinned for reproducible argparse help wrapping.
 man:
 	mkdir -p man
-	COLUMNS=80 PYTHONPATH=. uv run --no-sync argparse-manpage \
-	  --module sysforge.cli \
-	  --function _build_parser \
-	  --author "Keith Raghubar" \
-	  --author-email "aur.archlinux.org.buckskin000@passmail.net" \
-	  --project-name sysforge \
-	  --url "https://github.com/KeithRaghubar/sysforge" \
-	  --output man/sysforge.1
+	COLUMNS=80 PYTHONPATH=. uv run --no-sync python tools/gen_options.py \
+	  --template man/sysforge.1.scd.in \
+	  --out man/sysforge.1.scd
+	scdoc < man/sysforge.1.scd > man/sysforge.1
 
 clean:
 	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/ .coverage coverage.json

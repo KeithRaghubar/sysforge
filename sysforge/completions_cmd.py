@@ -9,7 +9,7 @@ argparse surface lives in ``cli._build_parser``.
 """
 from pathlib import Path
 
-from sysforge.primitives.config import load_config
+from sysforge.primitives.config import expand_package_groups, load_config
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.verbs import ExecResult, PreCheckResult, Verb
 
@@ -63,7 +63,7 @@ class CompletionsVerb(Verb):
             if pkg_path.exists():
                 with open(pkg_path, "rb") as _f:
                     data = _tomllib.load(_f)
-                for entry in data.get("package", []):
+                for entry in expand_package_groups(data):
                     name = entry.get("name")
                     if name:
                         print(name)

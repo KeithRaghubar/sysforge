@@ -543,7 +543,7 @@ def serialize_flags(resolved_profile: dict) -> str:
 
     Format: sorted KEY=value lines, one per key, excluding sysforge-internal keys.
     Lists are joined with a single space. Used by build_state.toml flags_string
-    and by converge to detect when a profile change affects a package's flags.
+    and by flag_drift to detect when a profile change affects a package's flags.
     """
     parts = []
     for key in sorted(resolved_profile):
@@ -564,7 +564,7 @@ def get_build_mode(matched_rules, config) -> str | None:
 
     Walks the extends chain of the winning profile looking for a build_mode
     key. Returns None if no build_mode is found or no rules matched.
-    Used by converge to determine whether extract_pkgbuild_profile is needed
+    Used by flag_drift to determine whether extract_pkgbuild_profile is needed
     for the drift check.
     """
     profiles = config.get("profiles", {})

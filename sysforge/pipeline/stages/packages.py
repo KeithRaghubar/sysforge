@@ -37,7 +37,7 @@ _log = log.get_logger("PACKAGES")
 from pathlib import Path
 
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives.config import find_pkgbuild
+from sysforge.primitives.config import expand_package_groups, find_pkgbuild
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 from sysforge.build_core import make_build_options
@@ -67,7 +67,7 @@ def _load_packages(config):
         data = tomllib.load(f)
 
     build_cfg = data.get("build", {})
-    packages = data.get("package", [])
+    packages = expand_package_groups(data)
 
     repo_mode = build_cfg.get("repo_mode", "pacman")
     if repo_mode not in ("pacman", "profiled"):

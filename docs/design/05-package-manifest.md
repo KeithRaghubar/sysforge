@@ -36,7 +36,26 @@ An entry with only `name` and no override fields has no effect on the build. `sy
 ### `[build]` global section
 
 - `pkgbuild_src_dir` — directory holding pre-cloned PKGBUILDs (`<pkgbuild_src_dir>/<name>/PKGBUILD`). Missing AUR clones are auto-fetched here on demand.
-- `repo_mode` — default build mode for repo-source packages: `"pacman"` (install via `pacman -S --needed`) or `"profiled"` (build from PKGBUILD with sysforge flag profiles). Per-package `pkgbuild_patch = true` overrides to profiled regardless. `sysforge update` walks repo packages only when a per-package override sets a behavior-changing field (`pkgbuild_patch`, `cache`, `reason`), or when `repo_mode = "profiled"` is set globally — in which case every installed repo package is in scope, but only the overridden subset is source-built; the remainder takes a fast pacman path (`checkupdates` for upgrade detection, one terminal `sudo pacman -Syu` after the source-build loop). This avoids the per-package `pkgctl repo clone` that would otherwise fire for every installed repo package and is what makes the "track everything" mode tolerable on a maintained workstation. The legacy `update_repo_profiled = true` flag is a deprecated alias for `repo_mode = "profiled"` — the loader normalises it with a one-shot warning.
+- `repo_mode` — default build mode for repo-source packages: `"pacman"` (install via `pacman -S --needed`) or `"profiled"` (build from PKGBUILD with sysforge flag profiles). Per-package `pkgbuild_patch = true` overrides to profiled regardless. `sysforge update` walks repo packages only when a per-package override sets a behavior-changing field (`pkgbuild_patch`, `cache`, `reason`), or when `repo_mode = "profiled"` is set globally — in which case every installed repo package is in scope, but only the overridden subset is source-built; the remainder takes a fast pacman path (`checkupdates` for upgrade detection, one terminal `sudo pacman -Syu` after the source-build loop). This avoids the per-package `pkgctl repo clone` that would otherwise fire for every installed repo package and is what makes the "track everything" mode tolerable on a maintained workstation.
+
+### Package groups
+
+`[group.<name>]` tables declare named sets that expand into `[[package]]`-equivalent entries at load time, so a desktop stack (e.g. 20+ git packages) can be tracked without enumerating every member as its own block:
+
+```toml
+[group.cosmic]
+packages = ["cosmic-session-git", "cosmic-comp-git", "cosmic-settings-git"]
+# Optional defaults inherited by every member:
+# pkgbuild_patch = true
+```
+
+Expansion semantics (single expansion point: `primitives/config.expand_package_groups` — every manifest consumer routes through it; do not re-expand `[group.*]` elsewhere):
+
+- Each member becomes a synthetic entry carrying its group defaults plus `group = "<name>"` marking its origin.
+- An explicit `[[package]]` entry for the same name wins **outright** over the group entry — no field merge — so a member can be individually overridden.
+- The first group to claim a name wins over later groups.
+- Bootstrap (`run packages`): members are installed like any entry. Steady-state (`sysforge update`): members participate as overrides; a member with no group defaults is legitimately inert (its meaning is the bootstrap set) and is exempt from the inert-override warning that hand-written entries get.
+- `packages list` shows groups as written in the file (name, member count, defaults, members), after the explicit-entry table. Groups are hand-edited TOML; `packages add`/`remove` manage explicit entries only.
 
 ### Manifest lifecycle commands
 

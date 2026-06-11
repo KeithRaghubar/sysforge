@@ -165,7 +165,8 @@ def cmd_packages_list(args):
 
     data = _load_toml(path)
     entries = data.get("package", [])
-    if not entries:
+    groups = data.get("group", {}) or {}
+    if not entries and not groups:
         print(f"No packages defined in {path}")
         return
 
@@ -177,24 +178,41 @@ def cmd_packages_list(args):
             print(f"No orphan entries in {path} — all override targets are installed.")
             return
 
-    max_name = max(len(e.get("name", "")) for e in entries)
-    max_src = max(len(e.get("source", "")) for e in entries)
+    if entries:
+        max_name = max(len(e.get("name", "")) for e in entries)
+        max_src = max(len(e.get("source", "")) for e in entries)
 
-    header = f"  {'NAME':<{max_name}}  {'SOURCE':<{max_src}}  OVERRIDES"
-    print(header)
-    print("  " + "-" * (len(header) - 2))
-    for e in entries:
-        name = e.get("name", "")
-        source = e.get("source", "")
-        flags = []
-        if e.get("pkgbuild_patch"):
-            flags.append("pkgbuild_patch")
-        if e.get("cache") is False:
-            flags.append("cache=false")
-        if e.get("reason"):
-            flags.append(f"reason={e['reason']!r}")
-        flag_str = ", ".join(flags)
-        print(f"  {name:<{max_name}}  {source:<{max_src}}  {flag_str}")
+        header = f"  {'NAME':<{max_name}}  {'SOURCE':<{max_src}}  OVERRIDES"
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for e in entries:
+            name = e.get("name", "")
+            source = e.get("source", "")
+            flags = []
+            if e.get("pkgbuild_patch"):
+                flags.append("pkgbuild_patch")
+            if e.get("cache") is False:
+                flags.append("cache=false")
+            if e.get("reason"):
+                flags.append(f"reason={e['reason']!r}")
+            flag_str = ", ".join(flags)
+            print(f"  {name:<{max_name}}  {source:<{max_src}}  {flag_str}")
+
+    # [group.*] tables expand at load time (config.expand_package_groups);
+    # list them as written so the file view stays faithful. Skipped under
+    # --orphans, which is an explicit-entry cleanup tool.
+    if groups and not getattr(args, "orphans", False):
+        for gname, g in sorted(groups.items()):
+            if not isinstance(g, dict):
+                continue
+            members = g.get("packages", [])
+            defaults = ", ".join(
+                f"{k}={v!r}" for k, v in sorted(g.items()) if k != "packages"
+            )
+            print(f"\n  [group.{gname}]  {len(members)} package(s)"
+                  + (f"  defaults: {defaults}" if defaults else ""))
+            for m in members:
+                print(f"    {m}")
 
 
 # ---------------------------------------------------------------------------

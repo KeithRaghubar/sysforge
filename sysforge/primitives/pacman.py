@@ -2,7 +2,7 @@
 pacman.py — shared pacman query and batch build/install operations
 
 Single home for all subprocess-level pacman interaction and batch build
-infrastructure shared across update, converge, and other commands that
+infrastructure shared across update, build, and other commands that
 build and install packages in batch.
 
 Public API:
@@ -104,7 +104,7 @@ def _get_alpm_handle():
 # Batch build flags
 # ---------------------------------------------------------------------------
 
-# Flags stripped from each per-package makepkg call during batch update/converge.
+# Flags stripped from each per-package makepkg call during batch update/build.
 # Deps are pre-installed in one shot; packages are installed in one shot at the end.
 BATCH_STRIP_FLAGS = SYNC_FLAGS | INSTALL_FLAGS
 

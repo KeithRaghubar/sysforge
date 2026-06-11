@@ -57,8 +57,7 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
     """Detect and offer recovery for a stale stage-in-progress sentinel.
 
     Called from CLI entry for every install-bearing command (build,
-    update, converge, run pipeline, run toolchain, run packages,
-    run kernel). If a sentinel from a prior interrupted run is present,
+    update, run pipeline, run toolchain, run packages, run kernel). If a sentinel from a prior interrupted run is present,
     surfaces what was in flight and prompts the operator with the stage's
     recorded ``recovery_cmd`` (e.g. ``sudo pacman -S llvm llvm-libs ...``).
 

@@ -1,13 +1,14 @@
 """
 test_flag_drift.py — unit tests for primitives/flag_drift.py.
 
-flag_drift is the shared engine for flag-drift detection used by both
-`sysforge update` (Phase 4.3) and the deprecated `sysforge converge` verb.
-These tests drive the primitive directly against real PKGBUILD parsing +
-profile resolution; only the deliberately-unparseable case fakes parse_pkgbuild.
+flag_drift is the engine behind `sysforge update`'s Phase 4.3, the canonical
+flag-drift surface. These tests drive the primitive directly against real
+PKGBUILD parsing + profile resolution; only the deliberately-unparseable case
+fakes parse_pkgbuild. serialize_flags (profile.py) is covered here too — it
+produces the flags_string this module diffs against.
 """
 
-from sysforge.primitives.profile import serialize_flags
+from sysforge.primitives.profile import SYSFORGE_KEYS, serialize_flags
 from sysforge.primitives.flag_drift import (
     STATUS_DRIFTED,
     STATUS_IN_SYNC,
@@ -37,8 +38,54 @@ def _pkgbuild(tmp_path, name="htop"):
 
 
 # ---------------------------------------------------------------------------
+# serialize_flags — produces the flags_string recorded in build_state.toml
+# ---------------------------------------------------------------------------
+
+def test_serialize_flags_sorts_keys():
+    profile = {"CXXFLAGS": "-O3", "CFLAGS": "-O2", "LDFLAGS": "-Wl,-O1"}
+    result = serialize_flags(profile)
+    lines = result.splitlines()
+    assert lines == ["CFLAGS=-O2", "CXXFLAGS=-O3", "LDFLAGS=-Wl,-O1"]
+
+
+def test_serialize_flags_excludes_sysforge_keys():
+    profile = {"CFLAGS": "-O3", "build_mode": "kernel", "batch": True, "makepkg_flags": []}
+    result = serialize_flags(profile)
+    assert "build_mode" not in result
+    assert "batch" not in result
+    assert "makepkg_flags" not in result
+    assert "CFLAGS=-O3" in result
+
+
+def test_serialize_flags_list_values_joined():
+    profile = {"makepkg_flags": ["--noconfirm", "--noprogressbar"]}
+    result = serialize_flags(profile)
+    # makepkg_flags is a sysforge key, so it's excluded
+    assert result == ""
+
+
+def test_serialize_flags_non_sysforge_list():
+    profile = {"CFLAGS": "-O3", "custom_list": ["a", "b", "c"]}
+    result = serialize_flags(profile)
+    assert "custom_list=a b c" in result
+
+
+def test_serialize_flags_empty_profile():
+    assert serialize_flags({}) == ""
+
+
+def test_serialize_flags_only_sysforge_keys():
+    profile = {k: "x" for k in SYSFORGE_KEYS}
+    assert serialize_flags(profile) == ""
+
+
+# ---------------------------------------------------------------------------
 # diff_flags
 # ---------------------------------------------------------------------------
+
+def test_diff_flags_empty_strings():
+    assert diff_flags("", "") == []
+
 
 def test_diff_flags_identical_is_empty():
     s = "CFLAGS=-O2\nLDFLAGS=-fuse-ld=lld"

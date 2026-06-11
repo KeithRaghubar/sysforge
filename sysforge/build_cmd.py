@@ -18,7 +18,7 @@ from sysforge.verbs import ExecResult, PreCheckResult, Verb
 from sysforge.verbs.helpers import load_config_with_overrides
 
 # The build verb logs under its own name, matching every other verb command
-# module (update -> [UPDATE], packages -> [PACKAGES], converge -> [CONVERGE])
+# module (update -> [UPDATE], packages -> [PACKAGES])
 # and the [BUILD] tag the verb runner derives from verb.name at dispatch.
 _log = log.get_logger("BUILD")
 
@@ -41,7 +41,7 @@ def _cleansrc_target_dir(pkg: str, config: dict) -> Path | None:
 
 
 def _pkg_to_name(p: str) -> str:
-    """Best-effort extraction of a pkgname from a build/converge positional.
+    """Best-effort extraction of a pkgname from a build positional.
 
     Accepts a bare name, a directory, or a path to a PKGBUILD; falls back
     to the input string when no clearer name is available. Used only by the
@@ -61,6 +61,23 @@ def _render_llvm_preflight(names: list[str], config: dict) -> None:
     report = collect_llvm_state(names, config)
     if report.states:
         print(render_preflight(report))
+
+
+def _review_config_enabled(config) -> bool:
+    """packages.toml ``[build] review`` default for the review gate.
+
+    True unless the file exists and explicitly sets ``review = false`` —
+    a missing or unreadable packages.toml must not disable the gate.
+    """
+    import tomllib
+
+    from sysforge.primitives.paths import resolve_packages_path
+    try:
+        path = resolve_packages_path(config)
+        with open(path, "rb") as f:
+            return tomllib.load(f).get("build", {}).get("review", True) is not False
+    except Exception:
+        return True
 
 
 class BuildVerb(Verb):
@@ -138,7 +155,15 @@ class BuildVerb(Verb):
             abi_check=args.abi_check,
             extra_flags=extra_flags,
             active_variant=active_variant,
+            review=(
+                not getattr(args, "no_review", False)
+                and _review_config_enabled(config)
+            ),
         )
+        if outcome.aborted:
+            # User aborted at the PKGBUILD review gate; build_core already
+            # printed the abort line. Exit 2 mirrors the sentinel-refusal code.
+            return ExecResult(exit_code=2)
         if outcome.failed_pkgs or outcome.install_failed:
             return ExecResult(exit_code=1)
         return ExecResult()

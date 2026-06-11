@@ -35,6 +35,7 @@ _log = log.get_logger("RECONFIGURE")
 from sysforge.pipeline.stages.base import BootstrapRebootRequired, Stage
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.primitives.config import (
+    expand_package_groups,
     load_config,
     load_conflict_groups,
     load_sysforge_toml,
@@ -829,7 +830,7 @@ def _step_build_mode(config, state, options, editor: str) -> str:
 
     build_cfg = data.get("build", {})
     repo_mode = build_cfg.get("repo_mode", "pacman")
-    packages  = data.get("package", [])
+    packages  = expand_package_groups(data)
     patched   = [p["name"] for p in packages if p.get("pkgbuild_patch")]
 
     _log.ui(f"  File:       {pkg_path}")
@@ -994,7 +995,7 @@ def _step_disk(config, state, options, editor: str) -> str:
             with open(pkg_path, "rb") as f:
                 data = tomllib.load(f)
             n_aur = sum(
-                1 for p in data.get("package", [])
+                1 for p in expand_package_groups(data)
                 if p.get("source", "aur") in ("aur", "git")
             )
     except (OSError, tomllib.TOMLDecodeError) as e:
@@ -1148,7 +1149,7 @@ def _step_preview(config, state, options, editor: str) -> str:
     try:
         with open(pkg_path, "rb") as f:
             pkg_data = tomllib.load(f)
-        packages  = pkg_data.get("package", [])
+        packages  = expand_package_groups(pkg_data)
         build_cfg = pkg_data.get("build", {})
     except Exception as e:
         _log.warn(f"  Could not load packages.toml: {e}")

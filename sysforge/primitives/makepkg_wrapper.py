@@ -39,7 +39,7 @@ from sysforge.primitives.config import (
 from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.pkgbuild_meta import has_hardcoded_gcc, parse_pkgbuild
 # Flag-string manipulation lives in makepkg_flags (owns the [FLAG] tag).
-# Re-exported here so emit_makepkg_conf and the CLI/update/converge call sites
+# Re-exported here so emit_makepkg_conf and the CLI/update call sites
 # that import `expand_makepkg_flags` from makepkg_wrapper keep working.
 from sysforge.primitives.makepkg_artifacts import (
     _find_built_packages,
@@ -736,6 +736,14 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     if parsed is not None:
                         filename_versions[name] = parsed
 
+            # The clone HEAD of the build that just succeeded becomes the
+            # review baseline: the PKGBUILD review gate (pkgbuild_review.py)
+            # diffs future HEADs against it. Stamped here — the single
+            # record site — so dep builds and pipeline stages are covered
+            # without every caller threading the value. None (non-git dir)
+            # leaves any prior value sticky.
+            from sysforge.primitives.pkgbuild_review import head_commit as _review_head
+            _reviewed = _review_head(pkgbuild_path.parent)
             for name in pkgnames:
                 ep, ver, rel = filename_versions.get(name, (
                     globals_.get("epoch", "0"),
@@ -755,6 +763,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     source=options.source,
                     owner_stage=options.owner_stage,
                     toolchain_variant=options.toolchain_variant,
+                    reviewed_commit=_reviewed,
                 )
             bs.save()
             _build_log.info(f"Recorded build state for {pkgbase!r}")

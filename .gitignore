@@ -24,3 +24,4 @@ __pycache__/
 dist/
 pkg/
 src/
+man/sysforge.1.scd

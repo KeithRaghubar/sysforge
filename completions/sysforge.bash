@@ -17,7 +17,7 @@ _sysforge() {
         cword=$COMP_CWORD
     fi
 
-    local commands="build fetch update resolve converge doctor packages state run setup env"
+    local commands="build fetch update resolve doctor packages state run setup env"
 
     # Locate the top-level verb (first non-flag arg after `sysforge`) and an
     # optional subverb (first non-flag arg after the verb).
@@ -51,7 +51,6 @@ _sysforge() {
         fetch)       _sysforge_fetch       ;;
         update)      _sysforge_update      ;;
         resolve)     _sysforge_resolve     ;;
-        converge)    _sysforge_converge    ;;
         doctor)      _sysforge_doctor      ;;
         packages)    _sysforge_packages    ;;
         state)       _sysforge_state       ;;
@@ -139,7 +138,8 @@ _sysforge_build() {
     _sysforge_flag_arg && return
     local flags="-m --makepkg --interactive --profile-conf --cc --cxx --ld \
         --no-pkg-log --log-dir --persist-log --cache-report --abi-check \
-        --no-update --cleansrc --cleansrc-force --no-llvm-preflight --state-dir"
+        --no-update --cleansrc --cleansrc-force --no-llvm-preflight \
+        --no-review --state-dir"
     if [[ $cur == -* ]]; then
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
     else
@@ -161,7 +161,7 @@ _sysforge_update() {
     _sysforge_flag_arg && return
     local flags="--packages --dry-run --devel --offline --install-only --interactive \
         --no-cleanbuild --cleansrc --cleansrc-force --no-llvm-preflight \
-        --no-toolchain-preflight --include-stage-owned \
+        --no-review --no-toolchain-preflight --include-stage-owned \
         --explain-drift --rebuild-on-toolchain-drift --rebuild-on-flag-drift --rebuild-on-drift \
         -m --makepkg --state-dir --profile-conf --cache-report \
         --no-pkg-log --persist-log --log-dir"
@@ -179,17 +179,6 @@ _sysforge_resolve() {
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
     else
         _sysforge_local_pkg_names
-    fi
-}
-
-_sysforge_converge() {
-    _sysforge_flag_arg && return
-    local flags="--apply --state-dir --profile-conf --no-pkg-log --persist-log \
-        --log-dir --cache-report --no-llvm-preflight"
-    if [[ $cur == -* ]]; then
-        COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
-    else
-        _sysforge_state_names
     fi
 }
 

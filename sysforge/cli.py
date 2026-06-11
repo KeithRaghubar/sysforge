@@ -6,7 +6,6 @@ Top-level commands:
     sysforge update         Check for and rebuild outdated sysforge-managed packages
                             (also reports flag/toolchain drift; --rebuild-on-*-drift to act)
     sysforge resolve <pkg>  Show which profile would be applied to a package
-    sysforge converge       (deprecated) Flag-drift detect/repair — folded into `sysforge update`
     sysforge doctor [PKG]   Health-check installed package depends + linkage
 
 Namespaces:
@@ -28,7 +27,6 @@ _log = log.get_logger("CLI")
 
 from sysforge.build_cmd import BuildVerb
 from sysforge.completions_cmd import CompletionsVerb
-from sysforge.converge import ConvergeVerb
 from sysforge.doctor import DoctorVerb
 from sysforge.env_cmd import EnvVerb
 from sysforge.fetch import FetchVerb
@@ -88,12 +86,12 @@ def _hoist_verbosity_flags(argv):
 _PASSTHROUGH_EXCLUDE = frozenset("hVpmD")
 
 # Subcommands that accept makepkg flag passthrough.
-_MAKEPKG_SUBCOMMANDS = frozenset({"build", "update", "converge"})
+_MAKEPKG_SUBCOMMANDS = frozenset({"build", "update"})
 
 
 def _extract_implicit_makepkg_flags(argv):
     """
-    Detect bare makepkg-style short flags on build/update/converge and rewrite
+    Detect bare makepkg-style short flags on build/update and rewrite
     them into explicit ``-m`` form so the rest of the pipeline handles them
     uniformly.
 
@@ -217,6 +215,10 @@ def _add_build_parser(sub):
              "and the local commits have no value to preserve.")
     p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
         help="Suppress the LLVM source pre-flight summary.")
+    p.add_argument("--no-review", action="store_true", dest="no_review",
+        help="Skip the PKGBUILD review gate (full source-tree diff prompt for "
+             "packages whose source changed since the last accepted build). "
+             "Also configurable via [build] review = false in packages.toml.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
     p.set_defaults(verb_cls=BuildVerb)
@@ -298,6 +300,11 @@ def _add_update_parser(sub):
              "every release) and local commits have no value to preserve.")
     p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
         help="Suppress the LLVM source pre-flight summary.")
+    p.add_argument("--no-review", action="store_true", dest="no_review",
+        help="Skip the PKGBUILD review gate (full source-tree diff prompt for "
+             "packages whose source changed since the last accepted build). "
+             "Also configurable via [build] review = false in packages.toml. "
+             "Non-interactive runs auto-accept with a warning regardless.")
     p.add_argument("--no-toolchain-preflight", action="store_true", dest="no_toolchain_preflight",
         help="Skip the toolchain pre-flight (rust/cmake/meson availability + "
              "lib32 cross targets) that normally runs before the build loop.")
@@ -324,7 +331,7 @@ def _add_update_parser(sub):
              "flags now resolve differently than when built are added to the "
              "rebuild queue. Off by default — flag drift is reported but not "
              "acted on, since one profile edit can drift every profiled "
-             "package. (Replaces `sysforge converge --apply`.)")
+             "package.")
     p.add_argument("--rebuild-on-drift", action="store_true",
         dest="rebuild_on_drift",
         help="Umbrella for both --rebuild-on-toolchain-drift and "
@@ -347,34 +354,6 @@ def _add_resolve_parser(sub):
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
         help="Path to a profiles.toml to use instead of the default.")
     p.set_defaults(verb_cls=ResolveVerb)
-
-
-def _add_converge_parser(sub):
-    p = sub.add_parser("converge",
-        help="(deprecated) Detect/repair flag drift — use `sysforge update` "
-             "(--rebuild-on-flag-drift) instead.")
-    p.add_argument("--apply", action="store_true",
-        help="Rebuild all DRIFTED packages with the current profile.")
-    p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
-        help="Override state directory for build_state.toml.")
-    p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
-        help="Path to a profiles.toml to use instead of the default.")
-    p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
-        help="Disable per-package log files (only relevant with --apply).")
-    p.add_argument("--persist-log", action="store_true", dest="persist_log",
-        help="Keep log files after successful completion (only relevant with --apply).")
-    p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
-        help="Directory for per-package log files (only relevant with --apply).")
-    p.add_argument("--makepkg", "-m", metavar="FLAGS",
-        help="Extra flags passed to makepkg during --apply rebuilds (e.g. -m '-C' to cleanbuild). "
-             "-f is always injected automatically.")
-    p.add_argument("--cache-report", action="store_true", dest="cache_report",
-        help="Print a structured cache summary after --apply runs.")
-    p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
-        help="Suppress the LLVM source pre-flight summary.")
-    p.add_argument("pkgnames", metavar="PKG", nargs="*",
-        help="Limit drift check to these package names (default: all build_state-recorded packages).")
-    p.set_defaults(verb_cls=ConvergeVerb)
 
 
 def _add_doctor_parser(sub):
@@ -784,7 +763,8 @@ def _add_run_parser(sub):
 # ---------------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Return the top-level ArgumentParser. Called by main() and by argparse-manpage."""
+    """Return the top-level ArgumentParser. Called by main(), tools/gen_options.py
+    (man-page COMMANDS generation), and tools/check_shipped.py (completions parity)."""
     from sysforge import __version__
     parser = argparse.ArgumentParser(
         prog="sysforge",
@@ -812,7 +792,6 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_fetch_parser(sub)
     _add_update_parser(sub)
     _add_resolve_parser(sub)
-    _add_converge_parser(sub)
     _add_doctor_parser(sub)
     _add_packages_parser(sub)
     _add_state_parser(sub)
@@ -833,15 +812,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _INSTALL_BEARING_COMMANDS = frozenset(
-    {"build", "update", "converge", "run", "setup"}
+    {"build", "update", "run", "setup"}
 )
 
 
 def _gate_sentinel_check(args) -> bool:
     """True when ``cli.main`` should call ``check_and_recover_stale_sentinel``.
 
-    Install-bearing commands (``build``/``update``/``converge``/``run``/
-    ``setup``) gate on a stale sentinel, except when the invocation is
+    Install-bearing commands (``build``/``update``/``run``/``setup``)
+    gate on a stale sentinel, except when the invocation is
     explicitly read-only (``--dry-run``). The inner verb-runner sentinel
     scope already opts out under ``--dry-run`` (see ``UpdateVerb.pre_check``);
     keeping the outer CLI gate in lockstep avoids blocking ``sysforge update

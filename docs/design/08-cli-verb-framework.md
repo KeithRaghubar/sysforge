@@ -1,6 +1,6 @@
 ## CLI Verb Framework
 
-Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `resolve`, `env`, `setup`, `log`, `completions`, `packages …`, `state …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `completions_cmd.py`, `converge.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(run_verb(args.verb_cls(), args))`.
+Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`, `setup`, `log`, `completions`, `packages …`, `state …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `completions_cmd.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(run_verb(args.verb_cls(), args))`.
 
 **Three-phase contract.** Each verb implements:
 
@@ -29,7 +29,6 @@ Every top-level CLI verb (`build`, `update`, `fetch`, `converge`, `doctor`, `res
 | `build` | load config + LLVM preflight + `--cleansrc` validation | `build_core.build_and_install` (dep prep → build loop → install) | (build_state written by makepkg_wrapper) | yes |
 | `update` | `--install-only` conflict check + config + state load + pacman-hook sentinel consumption | assemble → sync → vercmp → summary → `build_core.build_and_install` | (build_state written inline) | yes |
 | `fetch` | load config + LLVM preflight | scheduler sync per pkg | non-blocker SyncResult statuses verified | no |
-| `converge` | load state + filter + conflict-group load | drift compare; optional rebuild | (build_state written by rebuild path) | only with `--apply` |
 | `doctor` | load config + target expansion | depends/soname/ABI scan | invoke `BuildVerb` flow when `--apply` | delegated |
 | `resolve` | load config | match rules + print | null | no |
 | `env` | null | collect + format + print env chain | null | no |

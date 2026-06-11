@@ -17,7 +17,6 @@ _sysforge() {
         fetch)    _sysforge_fetch    ;;
         update)   _sysforge_update   ;;
         resolve)  _sysforge_resolve  ;;
-        converge) _sysforge_converge ;;
         doctor)   _sysforge_doctor   ;;
         packages) _sysforge_packages ;;
         state)    _sysforge_state    ;;
@@ -37,7 +36,6 @@ _sysforge_commands() {
     'fetch:download PKGBUILD(s) into pkgbuild_src_dir without building'
     'update:check for and rebuild outdated sysforge-managed packages'
     'resolve:show which profile would apply to a package'
-    'converge:(deprecated) flag-drift detect/repair — folded into update'
     'doctor:health-check installed package depends + linkage'
     'packages:manage packages.toml override entries (list, add, remove)'
     'state:inspect or repair build_state.toml (list, repair, orphans)'
@@ -118,6 +116,7 @@ _sysforge_build() {
     '--cleansrc[purge src dir and re-clone before building (refuses if local work present)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
+    '--no-review[skip the PKGBUILD review gate (source-change diff prompt)]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '*: :_sysforge_pkg_or_file' \
   && return
@@ -146,11 +145,12 @@ _sysforge_update() {
     '--cleansrc[purge src dirs and re-clone before building (only for packages needing rebuild)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
+    '--no-review[skip the PKGBUILD review gate (source-change diff prompt)]' \
     '--no-toolchain-preflight[skip toolchain pre-flight (rust/cmake/meson + lib32 cross targets)]' \
     '--include-stage-owned[include packages owned by a pipeline stage (e.g. kernel-stage linux-custom)]' \
     '--explain-drift[list drifted packages (toolchain-variant + flag drift, with per-key diff), then exit]' \
     '--rebuild-on-toolchain-drift[promote UP_TO_DATE packages with toolchain drift to NEEDS_REBUILD]' \
-    '--rebuild-on-flag-drift[promote UP_TO_DATE packages with flag drift to NEEDS_REBUILD (replaces converge --apply)]' \
+    '--rebuild-on-flag-drift[promote UP_TO_DATE packages with flag drift to NEEDS_REBUILD]' \
     '--rebuild-on-drift[rebuild anything drifted: both toolchain and flag drift]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--state-dir[override state directory]:directory:_files -/' \
@@ -172,21 +172,6 @@ _sysforge_resolve() {
     '1: :_sysforge_local_pkg_names'
 }
 
-
-_sysforge_converge() {
-  _arguments \
-    '--apply[rebuild all packages whose flags have drifted from the current profile]' \
-    '--state-dir[override state directory]:directory:_files -/' \
-    '--profile-conf[alternate profiles.toml]:file:_files' \
-    '--no-pkg-log[disable per-package log files (only relevant with --apply)]' \
-    '--persist-log[keep log files after completion (only relevant with --apply)]' \
-    '--log-dir[directory for per-package log files]:directory:_files -/' \
-    '--cache-report[print ccache/sccache summary after --apply]' \
-    '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
-    '*: :_sysforge_state_names' \
-  && return
-  _sysforge_makepkg_flags
-}
 
 _sysforge_doctor() {
   _arguments \

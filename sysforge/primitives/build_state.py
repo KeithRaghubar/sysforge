@@ -151,7 +151,8 @@ class BuildState:
                built_upstream_commit: str | None = None,
                source: str | None = None,
                owner_stage: str | None = None,
-               toolchain_variant: str | None = None) -> None:
+               toolchain_variant: str | None = None,
+               reviewed_commit: str | None = None) -> None:
         """Record build metadata for a single package name.
 
         ``built_at`` defaults to now; callers performing a repair pass may
@@ -183,6 +184,12 @@ class BuildState:
         as candidates for rebuild. Sticky like ``source``/``owner_stage``:
         callers that don't know the variant (repair/backfill paths)
         preserve any prior value instead of erasing it.
+
+        ``reviewed_commit`` is the source clone's HEAD at the time of a
+        successful build — the baseline for the PKGBUILD review gate
+        (``primitives/pkgbuild_review.py``): a later build whose clone HEAD
+        differs prompts for review of the intervening diff. None for local
+        (non-git) PKGBUILDs. Sticky like the other provenance fields.
         """
         entry = {
             "pkgver": pkgver,
@@ -219,6 +226,10 @@ class BuildState:
             entry["toolchain_variant"] = toolchain_variant
         elif "toolchain_variant" in prior:
             entry["toolchain_variant"] = prior["toolchain_variant"]
+        if reviewed_commit is not None:
+            entry["reviewed_commit"] = reviewed_commit
+        elif "reviewed_commit" in prior:
+            entry["reviewed_commit"] = prior["reviewed_commit"]
         self._data[pkgname] = entry
         # A successful build clears any recorded failure for this pkgbase so
         # `sysforge state failed` self-heals on the next good build.
@@ -316,7 +327,7 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant"):
+            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant", "reviewed_commit"):
                 if key in entry:
                     val = _toml_escape(entry[key])
                     lines.append(f'{key} = "{val}"')

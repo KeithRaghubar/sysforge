@@ -42,9 +42,35 @@
 #                          #              `IgnoreGroup = sf-build` line from `sysforge setup`
 #                          #              protects them from being clobbered.
 #                          # per-package pkgbuild_patch = true overrides to "profiled" regardless
-# # (Deprecated: `update_repo_profiled = true` is normalised to repo_mode = "profiled".)
 # # Requires `pacman-contrib` for the checkupdates fast path; without it,
 # # pacman-class packages are reported as SKIPPED_NO_CHECKUPDATES.
+# review = true            # PKGBUILD review gate: before building a package whose
+#                          # source changed since the last accepted build, show the
+#                          # full source-tree diff and prompt (view/accept/skip/abort).
+#                          # false disables the gate; --no-review disables per run.
+#                          # Non-interactive runs auto-accept with a warning.
+
+
+# =============================================================================
+# Package groups — named sets that expand into [[package]] entries at load
+# time, so a desktop stack can be tracked without enumerating every member.
+#
+#   [group.<name>]
+#   packages = ["pkg-a", "pkg-b"]   # required: member package names
+#   # Optional defaults inherited by every member (an explicit [[package]]
+#   # entry for the same name wins outright):
+#   # source = "aur"
+#   # pkgbuild_patch = true
+#   # cache = false
+#
+# Members are installed by `run packages` (bootstrap) like any entry; at
+# steady-state (`sysforge update`) a member with no defaults is an inert
+# override, exactly like a bare [[package]] entry — no warning is emitted
+# for group members.
+# =============================================================================
+
+# [group.cosmic]
+# packages = ["cosmic-session-git", "cosmic-comp-git", "cosmic-settings-git"]
 
 
 # =============================================================================

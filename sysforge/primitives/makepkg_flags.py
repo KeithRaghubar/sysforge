@@ -8,7 +8,7 @@ string (or list), optionally reporting what it changed under the ``[FLAG]`` tag.
 
 Owns the ``[FLAG]`` log tag.  Consumed by the conf-emission layer
 (``makepkg_conf.emit_makepkg_conf``) and re-exported from ``makepkg_wrapper``
-for the CLI/update/converge call sites that expand the raw flags string.
+for the CLI/update call sites that expand the raw flags string.
 """
 from sysforge import log
 
@@ -18,12 +18,12 @@ _flag_log = log.get_logger("FLAG")
 # the artifact to pacman -U. Both _invoke_with_retry (for sudo-timeout
 # recovery) and cli._cmd_build (for packages.toml auto-tracking) consult
 # this set. Kept in sync with pacman.BATCH_STRIP_FLAGS, which strips the
-# same flags during update/converge batch runs.
+# same flags during update/build batch runs.
 INSTALL_FLAGS = frozenset({"-i", "--install"})
 
 # makepkg's dependency-sync flags. Stripped whenever sysforge has already
 # satisfied deps itself and must stop makepkg from invoking ``sudo pacman -S``:
-# the update/converge batch path (via pacman.BATCH_STRIP_FLAGS) pre-installs
+# the update/build batch path (via pacman.BATCH_STRIP_FLAGS) pre-installs
 # repo makedeps in one shot, and the toolchain stage's staged-deps passes
 # satisfy ``llvm=<ver>`` from a stage prefix that isn't published anywhere.
 SYNC_FLAGS = frozenset({"--syncdeps", "-s"})

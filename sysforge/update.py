@@ -48,7 +48,8 @@ from sysforge.primitives.source_sync import (
     STATUS_PURGE_REFUSED, get_scheduler,
 )
 from sysforge.primitives.config import (
-    load_config, load_conflict_groups, load_consumes_inference,
+    expand_package_groups, load_config, load_conflict_groups,
+    load_consumes_inference,
 )
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
@@ -209,10 +210,8 @@ def _load_overrides(path: Path) -> tuple[dict, dict[str, dict]]:
     [[package]] entry dict. Entries are *overrides* applied to the live
     install set — they do not declare what should be installed.
 
-    Normalises the deprecated `update_repo_profiled = true` key into
-    `repo_mode = "profiled"` (with a one-shot warning) and emits a warn
-    for any inert override entry (no behavior-changing field set) — those
-    have no effect and should be removed.
+    Emits a warn for any inert override entry (no behavior-changing field
+    set) — those have no effect and should be removed.
 
     Returns ({}, {}) if the file does not exist or cannot be parsed.
     """
@@ -222,20 +221,16 @@ def _load_overrides(path: Path) -> tuple[dict, dict[str, dict]]:
         with open(path, "rb") as f:
             data = tomllib.load(f)
         build_cfg = dict(data.get("build", {}))
-        if "update_repo_profiled" in build_cfg:
-            _log.warn(
-                "[build] update_repo_profiled is deprecated; "
-                'use [build] repo_mode = "profiled" instead'
-            )
-            if build_cfg.pop("update_repo_profiled") is True:
-                build_cfg.setdefault("repo_mode", "profiled")
         overrides: dict[str, dict] = {}
-        for entry in data.get("package", []):
+        for entry in expand_package_groups(data):
             name = entry.get("name")
             if not name:
                 continue
             overrides[name] = entry
-            if entry_is_inert(entry):
+            # Group-derived entries without defaults are legitimately inert at
+            # steady-state (their meaning is the bootstrap install set) — only
+            # hand-written [[package]] entries get the cleanup nudge.
+            if entry_is_inert(entry) and "group" not in entry:
                 _log.warn(
                     f"{name}: inert override (no behavior-changing field) — "
                     "has no effect; remove or add pkgbuild_patch/cache/reason"
@@ -386,18 +381,33 @@ def _cmd_update_body(args) -> None:
     packages_path = resolve_packages_path(config)
     build_cfg, overrides_by_name = _load_overrides(packages_path)
 
+    # PKGBUILD review gate (runs inside build_core.build_and_install): on by
+    # default, off via --no-review or [build] review = false in packages.toml.
+    review_enabled = (
+        not getattr(args, "no_review", False)
+        and build_cfg.get("review", True) is not False
+    )
+
     # ── Phase 1: Package set assembly ─────────────────────────────────────
     packages, unrecorded_names = _assemble_package_set(
         args, bs, config, build_cfg, overrides_by_name,
     )
 
     if not packages:
-        print(
-            "[SYSFORGE] No installed packages in scope (no foreign packages, "
-            "and no repo packages with overrides in packages.toml).",
-            file=sys.stderr,
+        # Keep going when profiled build_state entries exist: Phase 4.3's
+        # build-state-wide fold still owes them drift detection (repo-class
+        # packages recorded by `sysforge build` with no override). Every
+        # phase in between no-ops on an empty package set.
+        _has_profiled_entries = any(
+            e.get("build_mode") == "profiled" for e in bs.all_packages().values()
         )
-        return
+        if not _has_profiled_entries:
+            print(
+                "[SYSFORGE] No installed packages in scope (no foreign packages, "
+                "and no repo packages with overrides in packages.toml).",
+                file=sys.stderr,
+            )
+            return
 
     pkgbase_map, pkgbase_entry = group_by_pkgbase(packages)
 
@@ -521,8 +531,8 @@ def _cmd_update_body(args) -> None:
     # serialized flags against what was recorded at build time. Same
     # detect-and-report contract as toolchain drift above: surfaced always,
     # listed under --explain-drift, rebuilt only via --rebuild-on-flag-drift.
-    # This is the canonical home for flag-drift detection — the `converge` verb
-    # is deprecated and delegates to the same primitive (resolve_flag_drift).
+    # This is the canonical home for flag-drift detection (the shared engine
+    # is resolve_flag_drift in primitives/flag_drift.py).
     # Conflict groups are loaded lazily so a run with no profiled packages
     # pays nothing.
     flag_drifted: list[tuple[str, list[str]]] = []  # (pkgbase, diff lines)
@@ -549,6 +559,36 @@ def _cmd_update_body(args) -> None:
             continue
         if fd.drifted:
             flag_drifted.append((r.pkgbase, fd.diffs))
+
+    # Build-state-wide coverage (absorbed from the removed `converge` verb):
+    # profiled build_state entries outside this run's package walk — e.g.
+    # repo-class packages recorded by `sysforge build` when repo_mode is not
+    # "profiled" — still get drift detection. Detect/report and
+    # --explain-drift only: promotion to NEEDS_REBUILD needs an entry in this
+    # run's walk, so out-of-walk drifters get a `sysforge build` hint instead.
+    _fold_filter = set(getattr(args, "pkgnames", None) or [])
+    fold_drifted: set[str] = set()
+    _fold_map, _fold_entry = group_by_pkgbase(bs.all_packages())
+    for pkgbase, pkgnames in sorted(_fold_map.items()):
+        if pkgbase in _flag_seen:
+            continue
+        _flag_seen.add(pkgbase)
+        if _fold_filter and not (_fold_filter & ({pkgbase} | set(pkgnames))):
+            continue
+        entry = _fold_entry[pkgbase]
+        if entry.get("build_mode") != "profiled":
+            continue
+        if _flag_cgroups is None:
+            _flag_cgroups = load_conflict_groups()
+        fd = resolve_flag_drift(entry, config, _flag_cgroups)
+        if fd.status == STATUS_PARSE_ERROR:
+            _log.warn(
+                f"flag drift: {pkgbase} — failed to parse PKGBUILD: {fd.error}"
+            )
+            continue
+        if fd.drifted:
+            flag_drifted.append((pkgbase, fd.diffs))
+            fold_drifted.add(pkgbase)
 
     if flag_drifted:
         sample = ", ".join(pb for pb, _ in flag_drifted[:3])
@@ -636,6 +676,15 @@ def _cmd_update_body(args) -> None:
                 f"--rebuild-on-flag-drift: {unbuildable} drifted "
                 "package(s) have no resolvable PKGBUILD — skipped"
             )
+        if fold_drifted:
+            names = ", ".join(sorted(fold_drifted)[:3])
+            more = f" (+{len(fold_drifted) - 3} more)" if len(fold_drifted) > 3 else ""
+            _log.warn(
+                f"--rebuild-on-flag-drift: {len(fold_drifted)} drifted "
+                f"package(s) are outside this run's package walk and were not "
+                f"queued: {names}{more}. Rebuild with `sysforge build <pkg>` "
+                "(or the owning pipeline stage)."
+            )
 
     # ── Phase 5: Build ────────────────────────────────────────────────────
     # _check_one_pkgbase already resolved VCS pkgver() under --devel and set
@@ -662,6 +711,7 @@ def _cmd_update_body(args) -> None:
     built_pkgs: list[str] = []
     failed_pkgs: list[str] = []
     pgo_skipped_pkgs: list[str] = []
+    review_skipped_pkgs: list[str] = []
     install_failed = False
 
     if not to_build:
@@ -735,10 +785,16 @@ def _cmd_update_body(args) -> None:
             ),
             active_variant=active_variant,
             pkgdest=pkgdest,
+            review=review_enabled,
         )
+        if outcome.aborted:
+            # User aborted at the PKGBUILD review gate — build_core already
+            # printed the abort line; nothing was built or installed.
+            return
         built_pkgs = outcome.built_pkgs
         failed_pkgs = outcome.failed_pkgs
         pgo_skipped_pkgs = outcome.pgo_skipped_pkgs
+        review_skipped_pkgs = outcome.review_skipped
         built_pkg_files = outcome.built_pkg_files
         install_failed = outcome.install_failed
         if not built_pkg_files and built_pkgs:
@@ -774,7 +830,10 @@ def _cmd_update_body(args) -> None:
     # Sync failures from cleansrc refusals count as build failures.
     failed_pkgs.extend(sorted(cleansrc_failures))
 
-    skipped = len(results) - len(to_build) - len(pending_pacman_upgrade)
+    # review_skipped_pkgs are inside to_build (they reached the gate), so add
+    # them back into the skipped count.
+    skipped = (len(results) - len(to_build) - len(pending_pacman_upgrade)
+               + len(review_skipped_pkgs))
     if install_only:
         skipped += len(to_build) - len(built_pkgs) - len(failed_pkgs)
     built_label = "installed" if install_only else "built"

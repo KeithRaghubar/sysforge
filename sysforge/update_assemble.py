@@ -45,8 +45,7 @@ def _assemble_package_set(
         compares against ``pkgctl repo clone``-resolved PKGBUILDs from the
         Arch packaging repo). Designed for users who maintain a fully
         profiled system and want repo-side version drift surfaced alongside
-        AUR drift in a single ``sysforge update`` run. The deprecated
-        ``update_repo_profiled = true`` is normalised to this by the loader.
+        AUR drift in a single ``sysforge update`` run.
 
     `overrides_by_name` is applied as an overlay (`source`, `pkgbuild_patch`,
     `cache`, `reason`); installed packages with no override use defaults.

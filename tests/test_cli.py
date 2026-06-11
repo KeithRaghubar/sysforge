@@ -227,11 +227,6 @@ def test_implicit_update_subcommand():
     assert result == ["update", "-m", "-sf"]
 
 
-def test_implicit_converge_subcommand():
-    result = _extract_implicit_makepkg_flags(["converge", "-f"])
-    assert result == ["converge", "-m", "-f"]
-
-
 def test_implicit_merge_with_explicit_m():
     result = _extract_implicit_makepkg_flags(["build", "pkg", "-m", "--noconfirm", "-sf"])
     assert result == ["build", "pkg", "-m", "--noconfirm -sf", ]
@@ -276,14 +271,14 @@ def test_dry_run_skips_entry_sentinel_check():
     outer CLI gate should match so the two stay in sync.
     """
     from sysforge.cli import _gate_sentinel_check
-    for cmd in ("build", "update", "converge", "run", "setup"):
+    for cmd in ("build", "update", "run", "setup"):
         assert _gate_sentinel_check(_gate_args(command=cmd, dry_run=True)) is False
 
 
 def test_non_dry_run_still_hits_entry_sentinel_check():
     """Mutating invocations (no --dry-run) must still gate on the sentinel."""
     from sysforge.cli import _gate_sentinel_check
-    for cmd in ("build", "update", "converge", "run", "setup"):
+    for cmd in ("build", "update", "run", "setup"):
         assert _gate_sentinel_check(_gate_args(command=cmd, dry_run=False)) is True
 
 

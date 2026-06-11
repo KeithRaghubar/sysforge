@@ -116,6 +116,35 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
     )
 
 
+def expand_package_groups(data: dict) -> list[dict]:
+    """Return packages.toml ``[[package]]`` entries with ``[group.*]`` expanded.
+
+    A ``[group.<name>]`` table declares ``packages = ["a", "b", ...]`` plus
+    optional per-group defaults (``source`` / ``pkgbuild_patch`` / ``cache`` /
+    ``reason``) inherited by every member. Expansion appends one synthetic
+    entry per member carrying ``group = "<name>"`` to mark its origin; an
+    explicit ``[[package]]`` entry for the same name wins outright (no field
+    merge), and the first group to claim a name wins over later groups.
+
+    This is the single expansion point for every manifest consumer (pipeline
+    packages stage, update overrides, completions, packages list, reconfigure
+    summaries) — do not re-expand ``[group.*]`` anywhere else.
+    """
+    entries = list(data.get("package", []))
+    groups = data.get("group", {}) or {}
+    seen = {e.get("name") for e in entries}
+    for gname, gtable in groups.items():
+        if not isinstance(gtable, dict):
+            continue
+        defaults = {k: v for k, v in gtable.items() if k != "packages"}
+        for name in gtable.get("packages", []):
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            entries.append({"name": name, **defaults, "group": gname})
+    return entries
+
+
 def load_config(config_paths=None) -> dict:
     """
     Load profiles.toml from CONFIG_PATHS (user, then system).

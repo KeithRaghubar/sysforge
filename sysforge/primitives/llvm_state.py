@@ -20,9 +20,9 @@ Public API:
     evaluate_strict(report, *, allow_dirty=False)        -> list[str]
 
 Wiring:
-    fetch / update / build / converge — informational render only.
-    run toolchain                     — render + ``evaluate_strict``; on
-                                        blockers, refuse-by-default.
+    fetch / update / build — informational render only.
+    run toolchain          — render + ``evaluate_strict``; on
+                             blockers, refuse-by-default.
 """
 from __future__ import annotations
 

@@ -33,7 +33,6 @@ Multi-tag modules use named loggers: _<tag>_log (e.g. _conf_log, _build_log).
 """
 import sysforge.build_cmd as build_cmd
 import sysforge.cli as cli
-import sysforge.converge as converge
 import sysforge.doctor as doctor
 import sysforge.fetch as fetch
 import sysforge.packages_cmd as packages_cmd
@@ -73,7 +72,6 @@ import sysforge.update as update
 # ---------------------------------------------------------------------------
 
 def test_cli_tag():              assert cli._log._tag              == "[CLI]"
-def test_converge_tag():         assert converge._log._tag         == "[CONVERGE]"
 def test_fetch_tag():            assert fetch._log._tag            == "[FETCH]"
 def test_update_tag():           assert update._log._tag           == "[UPDATE]"
 def test_packages_cmd_tag():     assert packages_cmd._log._tag     == "[PACKAGES]"

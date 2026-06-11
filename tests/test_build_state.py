@@ -596,3 +596,62 @@ def test_error_is_truncated(tmp_path):
     assert stored.count("\n") <= 5
     assert "line 49" in stored
     assert "line 0" not in stored
+
+
+# ---------------------------------------------------------------------------
+# flags_string (recorded for flag-drift detection — see primitives/flag_drift)
+# ---------------------------------------------------------------------------
+
+def test_build_state_records_flags_string(tmp_path):
+    bs = BuildState(tmp_path)
+    fs = "CFLAGS=-O3\nCXXFLAGS=-O3\nLDFLAGS=-Wl,-O1"
+    bs.record(pkgname="htop", pkgver="3.4.1", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=tmp_path,
+              build_mode="profiled", flags_string=fs)
+    entry = bs.get("htop")
+    assert entry["flags_string"] == fs
+
+
+def test_build_state_flags_string_persisted(tmp_path):
+    bs = BuildState(tmp_path)
+    fs = "CFLAGS=-O3\nLDFLAGS=-Wl,-O1"
+    bs.record(pkgname="htop", pkgver="3.4.1", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=tmp_path,
+              build_mode="profiled", flags_string=fs)
+    bs.save()
+
+    bs2 = BuildState(tmp_path)
+    assert bs2.get("htop")["flags_string"] == fs
+
+
+def test_build_state_flags_string_valid_toml(tmp_path):
+    """flags_string with newlines must serialize to valid TOML."""
+    bs = BuildState(tmp_path)
+    fs = "CFLAGS=-O3\nCXXFLAGS=-O3"
+    bs.record(pkgname="mesa", pkgver="24.0.0", pkgrel="1", epoch="0",
+              pkgbase="mesa", pkgbuild_dir=tmp_path,
+              build_mode="profiled", flags_string=fs)
+    bs.save()
+    with open(bs.path, "rb") as f:
+        data = tomllib.load(f)
+    assert data["mesa"]["flags_string"] == fs
+
+
+def test_reviewed_commit_recorded_and_sticky(tmp_path):
+    """reviewed_commit persists like the other provenance fields: a later
+    record() that doesn't know it (e.g. a pipeline-stage rebuild) must not
+    erase it, and an explicit new value replaces it."""
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=tmp_path,
+              build_mode="profiled", reviewed_commit="aaa111")
+    assert bs.get("htop")["reviewed_commit"] == "aaa111"
+    # Unaware rebuild: no reviewed_commit passed -> prior value preserved.
+    bs.record(pkgname="htop", pkgver="2", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=tmp_path, build_mode="profiled")
+    assert bs.get("htop")["reviewed_commit"] == "aaa111"
+    # Aware rebuild: explicit value replaces.
+    bs.record(pkgname="htop", pkgver="3", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=tmp_path,
+              build_mode="profiled", reviewed_commit="bbb222")
+    assert bs.get("htop")["reviewed_commit"] == "bbb222"

@@ -19,7 +19,6 @@ verbs/00-verbs.md
 verbs/fetch.md
 verbs/resolve.md
 verbs/update.md
-verbs/converge.md
 verbs/doctor.md
 verbs/setup.md
 verbs/state.md

@@ -8,11 +8,10 @@ a fresh build *would* apply diverge from what was recorded — "flag drift". Thi
 module re-resolves the current profile for one recorded package and diffs it
 against the stored string.
 
-Shared by ``sysforge update`` (the canonical drift surface, Phase 4.3) and the
-deprecated ``sysforge converge`` verb. Pure primitive: it re-resolves through the
+The engine behind ``sysforge update``'s Phase 4.3, the canonical flag-drift
+surface. Pure primitive: it re-resolves through the
 profile / PKGBUILD primitives, never imports the pipeline layer, and never logs —
-the caller decides how to surface each outcome (``update`` under ``[UPDATE]``,
-``converge`` under ``[CONVERGE]``).
+the caller decides how to surface each outcome (``update`` under ``[UPDATE]``).
 
 Public API:
     diff_flags(stored, current) -> list[str]

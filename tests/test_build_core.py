@@ -556,3 +556,106 @@ def test_make_build_options_unknown_stage_raises():
         assert "nonesuch" in str(e)
     else:
         raise AssertionError("expected ValueError for unknown stage")
+
+
+# ---------------------------------------------------------------------------
+# build_and_install — PKGBUILD review gate
+# ---------------------------------------------------------------------------
+
+from sysforge.build_core import DECISION_ABORT, DECISION_SKIP  # noqa: E402
+from sysforge.primitives.build_state import BuildState  # noqa: E402
+
+
+def _run_gated(targets, *, decisions=None, review=True, state_dir=None,
+               run_capture=None):
+    """Drive build_and_install with the gate decision function stubbed and
+    the build/install externals from _patch_build_env neutralised."""
+    calls = []
+
+    def _fake_run(pkgbuild_path, options=None):
+        calls.append(Path(pkgbuild_path))
+
+    def _decide(pkgbase, pkgbuild_dir, reviewed_commit):
+        if run_capture is not None:
+            run_capture.append((pkgbase, reviewed_commit))
+        return decisions[pkgbase]
+
+    with contextlib.ExitStack() as stack:
+        for p in _patch_build_env(
+            run_side_effect=_fake_run,
+            snapshot_return=[],
+            install_capture=lambda files: True,
+        ):
+            stack.enter_context(p)
+        rt = stack.enter_context(
+            patch("sysforge.build_core.review_target",
+                  side_effect=_decide if decisions is not None else None))
+        outcome = build_core.build_and_install(
+            targets, config={}, sync_source=False,
+            review=review, state_dir=state_dir,
+        )
+    return outcome, calls, rt
+
+
+def test_review_gate_skip_drops_target_keeps_rest(tmp_path):
+    foo = _make_target(tmp_path, "foo")
+    bar = _make_target(tmp_path, "bar")
+    outcome, calls, _ = _run_gated(
+        [foo, bar],
+        decisions={"foo": DECISION_SKIP, "bar": "accept"},
+        state_dir=tmp_path / "state",
+    )
+    assert outcome.review_skipped == ["foo"]
+    assert not outcome.aborted
+    assert calls == [bar.pkgbuild_path]  # only bar reached makepkg
+
+
+def test_review_gate_abort_builds_nothing(tmp_path):
+    foo = _make_target(tmp_path, "foo")
+    bar = _make_target(tmp_path, "bar")
+    outcome, calls, _ = _run_gated(
+        [foo, bar],
+        decisions={"foo": DECISION_ABORT, "bar": "accept"},
+        state_dir=tmp_path / "state",
+    )
+    assert outcome.aborted
+    assert calls == []  # nothing built
+    assert outcome.built_pkgs == [] and outcome.built_pkg_files == []
+
+
+def test_review_gate_all_skipped_short_circuits(tmp_path):
+    foo = _make_target(tmp_path, "foo")
+    outcome, calls, _ = _run_gated(
+        [foo],
+        decisions={"foo": DECISION_SKIP},
+        state_dir=tmp_path / "state",
+    )
+    assert outcome.review_skipped == ["foo"]
+    assert calls == []
+
+
+def test_review_disabled_never_consults_gate(tmp_path):
+    foo = _make_target(tmp_path, "foo")
+    outcome, calls, rt = _run_gated(
+        [foo], decisions=None, review=False, state_dir=tmp_path / "state",
+    )
+    rt.assert_not_called()
+    assert calls == [foo.pkgbuild_path]
+
+
+def test_review_gate_passes_recorded_reviewed_commit(tmp_path):
+    """The gate looks up reviewed_commit from build_state by pkgname."""
+    state_dir = tmp_path / "state"
+    bs = BuildState(state_dir)
+    bs.record(pkgname="foo", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="foo", pkgbuild_dir=tmp_path / "foo",
+              build_mode="profiled", reviewed_commit="abc123")
+    bs.save()
+    seen = []
+    _run_gated(
+        [_make_target(tmp_path, "foo")],
+        decisions={"foo": "accept"},
+        state_dir=state_dir,
+        run_capture=seen,
+    )
+    assert seen == [("foo", "abc123")]
