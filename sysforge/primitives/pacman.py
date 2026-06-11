@@ -16,6 +16,7 @@ Public API:
     read_pkgname_from_file(path)    → str | None
     filter_pkgs_to_installed(paths, installed) → (keep, dropped)
     collect_makedeps(pkgbuild_paths) → list
+    collect_builddeps(pkgbuild_paths) → list
     filter_missing_deps(deps)       → list
     batch_install_makedeps(deps)    → None
     get_installed_version(pkgname)  → str | None
@@ -362,26 +363,53 @@ def batch_install_pkgs(pkg_paths: list) -> bool:
 # Makedep handling
 # ---------------------------------------------------------------------------
 
-def collect_makedeps(pkgbuild_paths: list) -> list:
-    """Parse PKGBUILDs and return a sorted unique list of their makedepends."""
+# PKGBUILD globals keys that name packages which must be installed before a
+# `-s`-stripped batch build can proceed. makepkg checks runtime ``depends`` as
+# well as ``makedepends``/``checkdepends`` before building (see /usr/bin/makepkg
+# "Checking runtime dependencies…"); with ``-s`` stripped it does not install
+# them, so every one must already be present or the build aborts (exit 8).
+_BUILD_DEP_KEYS = ("depends", "makedepends", "checkdepends")
+
+
+def _collect_dep_names(pkgbuild_paths: list, keys) -> list:
+    """Parse PKGBUILDs and return a sorted unique list of names from ``keys``.
+
+    Version constraints are stripped ("cmake>=3.16" → "cmake") and any token the
+    static parser left as un-evaluated shell syntax is skipped so it is never
+    handed to the repo ``pacman -S`` transaction as a bogus name.
+    """
     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
     deps: set = set()
     for path in pkgbuild_paths:
         try:
-            pkgmeta = parse_pkgbuild(path)
-            raw = pkgmeta.get("globals", {}).get("makedepends", [])
-            if isinstance(raw, str):
-                raw = [raw]
-            # Strip version constraints (e.g. "cmake>=3.16" → "cmake"); skip any
-            # token the static parser left as un-evaluated shell syntax so it is
-            # never handed to the repo `pacman -S` transaction as a bogus name.
-            for dep in raw:
-                if _looks_unresolved(dep):
-                    continue
-                deps.add(_strip_version(dep))
+            globals_ = parse_pkgbuild(path).get("globals", {})
+            for key in keys:
+                raw = globals_.get(key, [])
+                if isinstance(raw, str):
+                    raw = [raw]
+                for dep in raw:
+                    if _looks_unresolved(dep):
+                        continue
+                    deps.add(_strip_version(dep))
         except (OSError, KeyError, ValueError) as e:
-            _log.warn(f"makedeps parse error ({Path(path).parent.name}): {e}")
+            _log.warn(f"deps parse error ({Path(path).parent.name}): {e}")
     return sorted(deps)
+
+
+def collect_makedeps(pkgbuild_paths: list) -> list:
+    """Parse PKGBUILDs and return a sorted unique list of their makedepends."""
+    return _collect_dep_names(pkgbuild_paths, ("makedepends",))
+
+
+def collect_builddeps(pkgbuild_paths: list) -> list:
+    """Parse PKGBUILDs and return their depends + makedepends + checkdepends.
+
+    The full set of packages makepkg requires present before building. Used by
+    ``build_core.prepare_deps`` so the ``-s``-stripped batch build does not abort
+    on a missing repo runtime ``depends`` (makepkg checks those too, not only
+    makedepends).
+    """
+    return _collect_dep_names(pkgbuild_paths, _BUILD_DEP_KEYS)
 
 
 def filter_missing_deps(deps: list) -> list:

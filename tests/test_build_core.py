@@ -81,7 +81,7 @@ def test_prepare_deps_preinstalls_makedeps_and_builds_aur(tmp_path):
         SimpleNamespace(name="python-ufonormalizer", source="aur"),
     ]
     with (
-        patch("sysforge.build_core.collect_makedeps",
+        patch("sysforge.build_core.collect_builddeps",
               return_value=["lib32-foo", "python-ufonormalizer"]),
         patch("sysforge.build_core.filter_missing_deps",
               return_value=["lib32-foo", "python-ufonormalizer"]),
@@ -120,7 +120,7 @@ def test_prepare_deps_excludes_aur_makedeps_from_pacman(tmp_path):
         "fontforge", "python-pefile", "python-setuptools-scm", "xorg-util-macros",
     }
     with (
-        patch("sysforge.build_core.collect_makedeps", return_value=missing),
+        patch("sysforge.build_core.collect_builddeps", return_value=missing),
         patch("sysforge.build_core.filter_missing_deps", return_value=missing),
         patch("sysforge.build_core.repo_packages", return_value=repo_subset),
         patch("sysforge.build_core.batch_install_makedeps") as mk_install,
@@ -136,12 +136,42 @@ def test_prepare_deps_excludes_aur_makedeps_from_pacman(tmp_path):
     assert "afdko" not in passed and "mingw-w64-tools" not in passed
 
 
+def test_prepare_deps_preinstalls_repo_runtime_depends(tmp_path):
+    """Regression for the pyside6/proton-cachyos failure: the repo arm must
+    pre-install repo *runtime* depends, not only makedepends. The per-package
+    makepkg call runs with -s stripped, and makepkg checks runtime ``depends``
+    before building (exit 8 if missing), so a repo runtime dep like ``pyside6``
+    must reach ``pacman -S``. collect_builddeps returns depends+makedepends+
+    checkdepends; an AUR runtime dep must still be left to the AUR arm."""
+    target = _make_target(tmp_path, "proton-cachyos")
+    # A repo runtime dep (pyside6) + a repo makedep (cmake) + an AUR runtime dep.
+    build_deps = ["pyside6", "cmake", "python-ufonormalizer"]
+    with (
+        patch("sysforge.build_core.collect_builddeps", return_value=build_deps),
+        patch("sysforge.build_core.filter_missing_deps", return_value=build_deps),
+        # pyside6 + cmake are in sync repos; python-ufonormalizer is AUR-only.
+        patch("sysforge.build_core.repo_packages",
+              return_value={"pyside6", "cmake"}),
+        patch("sysforge.build_core.batch_install_makedeps") as mk_install,
+        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
+              return_value=[]),
+        patch("sysforge.primitives.aur_resolve.build_resolved_deps"),
+    ):
+        build_core.prepare_deps([target.pkgbuild_path], {})
+
+    # The repo runtime dep is pre-installed alongside the repo makedep; the
+    # AUR-only dep is not in the pacman -S transaction.
+    mk_install.assert_called_once_with(["cmake", "pyside6"])
+    passed = mk_install.call_args.args[0]
+    assert "python-ufonormalizer" not in passed
+
+
 def test_prepare_deps_makedep_failure_is_nonfatal(tmp_path):
     """A failed makedep pre-install warns and still resolves AUR deps —
     it must not abort the batch."""
     target = _make_target(tmp_path)
     with (
-        patch("sysforge.build_core.collect_makedeps", return_value=["x"]),
+        patch("sysforge.build_core.collect_builddeps", return_value=["x"]),
         patch("sysforge.build_core.filter_missing_deps", return_value=["x"]),
         patch("sysforge.build_core.repo_packages", return_value={"x"}),
         patch("sysforge.build_core.batch_install_makedeps",
@@ -155,7 +185,7 @@ def test_prepare_deps_makedep_failure_is_nonfatal(tmp_path):
 
 
 def test_prepare_deps_noop_on_empty():
-    with patch("sysforge.build_core.collect_makedeps") as cm:
+    with patch("sysforge.build_core.collect_builddeps") as cm:
         build_core.prepare_deps([], {})
     cm.assert_not_called()
 
@@ -335,6 +365,37 @@ def test_install_built_reports_install_failure(tmp_path):
     ):
         _, failed = build_core.install_built([a])
     assert failed is True
+
+
+def test_install_built_installs_requested_fresh_pkg(tmp_path):
+    """Regression for ``build`` not installing a freshly-built package: a
+    pkgname the user explicitly asked to build must be installed even when it is
+    not yet on the system. With a real filter_pkgs_to_installed and nothing
+    installed, the artifact is dropped by default but kept via always_install."""
+    from sysforge.primitives.pacman import filter_pkgs_to_installed
+
+    art = tmp_path / "proton-cachyos-1-1-x86_64.pkg.tar.zst"
+    art.touch()
+    installs = []
+    patches = [
+        patch("sysforge.build_core.get_all_installed_packages", return_value={}),
+        patch("sysforge.build_core.filter_pkgs_to_installed", filter_pkgs_to_installed),
+        patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="proton-cachyos"),
+        patch("sysforge.build_core.batch_install_pkgs",
+              side_effect=lambda paths: installs.append(list(paths)) or True),
+    ]
+    # Default: a not-yet-installed package is dropped (split-pkgbase safety).
+    with _ctx(patches):
+        kept, _ = build_core.install_built([art])
+    assert kept == [] and installs == []
+
+    # Explicitly requested: installed even though not on the system.
+    installs.clear()
+    with _ctx(patches):
+        kept, _ = build_core.install_built(
+            [art], always_install={"proton-cachyos"},
+        )
+    assert kept == [art] and installs == [[art]]
 
 
 # ---------------------------------------------------------------------------

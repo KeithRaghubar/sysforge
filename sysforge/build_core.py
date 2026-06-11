@@ -23,7 +23,7 @@ Public API:
     BuildTarget, BuildOutcome
     prepare_deps(pkgbuild_paths, config, ...)
     build_and_install(targets, ...) -> BuildOutcome
-    install_built(built_pkg_files) -> tuple[list[Path], bool]
+    install_built(built_pkg_files, *, always_install=frozenset()) -> tuple[list[Path], bool]
     _find_existing_artifacts(...)        # also consumed by update's install_only scan
     _record_build_failure(state_dir, target, exc)
 """
@@ -41,7 +41,7 @@ from sysforge.primitives.pacman import (
     snapshot_pkg_dir,
     batch_install_pkgs,
     filter_pkgs_to_installed,
-    collect_makedeps,
+    collect_builddeps,
     filter_missing_deps,
     batch_install_makedeps,
     get_all_installed_packages,
@@ -240,11 +240,14 @@ def prepare_deps(
     if not pkgbuild_paths:
         return
 
-    # Repo makedeps — one sudo transaction. Restrict to sync-repo packages so
-    # AUR makedeps don't poison the pacman -S transaction (they're built by the
-    # AUR arm below).
-    makedeps = collect_makedeps(pkgbuild_paths)
-    missing_deps = filter_missing_deps(makedeps)
+    # Repo build deps — one sudo transaction. This collects depends +
+    # makedepends + checkdepends, not just makedepends: the per-package makepkg
+    # call below runs with -s stripped, and makepkg checks runtime ``depends``
+    # before building too, so a missing repo runtime dep would abort the build
+    # (exit 8). Restrict to sync-repo packages so AUR deps don't poison the
+    # pacman -S transaction (they're built by the AUR arm below).
+    build_deps = collect_builddeps(pkgbuild_paths)
+    missing_deps = filter_missing_deps(build_deps)
     repo_missing = sorted(repo_packages(missing_deps)) if missing_deps else []
     if repo_missing:
         try:
@@ -285,14 +288,21 @@ def prepare_deps(
 # Install
 # ---------------------------------------------------------------------------
 
-def install_built(built_pkg_files: list[Path]) -> tuple[list[Path], bool]:
-    """Dedupe, filter to currently-installed pkgnames, and bulk ``pacman -U``.
+def install_built(
+    built_pkg_files: list[Path],
+    *,
+    always_install: "frozenset[str] | set[str]" = frozenset(),
+) -> tuple[list[Path], bool]:
+    """Dedupe, filter to the install keep-set, and bulk ``pacman -U``.
 
     Returns ``(deduped_files, install_failed)``. The currently-installed set is
     re-fetched here because makedep + AUR-dep pre-install may have expanded it
     since the caller last looked. Split-pkgbase safety: makepkg emits one
     .pkg.tar per pkgname in the PKGBUILD, but we only install the sub-packages
-    the user already has on the system.
+    the user already has on the system **plus** ``always_install`` — the
+    pkgnames the user explicitly asked to build. Without the latter a fresh
+    ``sysforge build <new-pkg>`` would build the artifact and then drop it
+    (its pkgname isn't installed yet), so the package never gets installed.
     """
     seen: set = set()
     deduped: list[Path] = []
@@ -304,9 +314,9 @@ def install_built(built_pkg_files: list[Path]) -> tuple[list[Path], bool]:
 
     install_failed = False
     if built_pkg_files:
-        currently_installed = set(get_all_installed_packages().keys())
+        keep_names = set(get_all_installed_packages().keys()) | set(always_install)
         built_pkg_files, dropped = filter_pkgs_to_installed(
-            built_pkg_files, currently_installed
+            built_pkg_files, keep_names
         )
         if dropped:
             _log.info(
@@ -513,8 +523,14 @@ def build_and_install(
                 outcome.failed_pkgs.append(target.pkgbase)
                 _record_build_failure(state_dir, target, e)
 
+    # The pkgnames the user explicitly asked to build are always installed,
+    # even if not currently on the system (a fresh build). For ``update`` these
+    # are already-installed packages, so the union is a no-op there.
+    requested = {
+        pn for t in targets for pn in (getattr(t, "pkgnames", None) or [])
+    }
     outcome.built_pkg_files, outcome.install_failed = install_built(
-        outcome.built_pkg_files
+        outcome.built_pkg_files, always_install=requested
     )
 
     if cache_report:

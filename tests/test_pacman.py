@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 
 from sysforge.primitives.pacman import (
     cached_pkg_files_for,
+    collect_builddeps,
     collect_makedeps,
     detect_orphan_artifacts,
     filter_missing_deps,
@@ -64,6 +65,59 @@ class TestCollectMakedeps:
         bad.write_text("this is not valid\n")
         result = collect_makedeps([bad])
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# collect_builddeps — depends + makedepends + checkdepends (the full set
+# makepkg requires present before a -s-stripped build)
+# ---------------------------------------------------------------------------
+
+class TestCollectBuilddeps:
+
+    def _write(self, tmp_path, name, *, depends=(), makedepends=(), checkdepends=()):
+        d = tmp_path / name
+        d.mkdir()
+        p = d / "PKGBUILD"
+
+        def arr(key, vals):
+            return f"{key}=({' '.join(repr(v) for v in vals)})\n" if vals else ""
+
+        p.write_text(
+            f"pkgname={name}\n"
+            + arr("depends", depends)
+            + arr("makedepends", makedepends)
+            + arr("checkdepends", checkdepends)
+        )
+        return p
+
+    def test_unions_all_three_arrays(self, tmp_path):
+        p = self._write(
+            tmp_path, "foo",
+            depends=["pyside6", "glibc"],
+            makedepends=["cmake"],
+            checkdepends=["python-pytest"],
+        )
+        result = collect_builddeps([p])
+        assert set(result) == {"pyside6", "glibc", "cmake", "python-pytest"}
+
+    def test_includes_runtime_depends_unlike_makedeps(self, tmp_path):
+        """The whole point of the pyside6 fix: a repo runtime dep is collected
+        by collect_builddeps even though collect_makedeps never sees it."""
+        p = self._write(tmp_path, "foo", depends=["pyside6"], makedepends=["cmake"])
+        assert "pyside6" in collect_builddeps([p])
+        assert "pyside6" not in collect_makedeps([p])
+
+    def test_strips_versions_and_skips_unresolved(self, tmp_path):
+        p = self._write(
+            tmp_path, "foo",
+            depends=["glibc>=2.0", "${_pydeps[@]/#/python-}"],
+            makedepends=["cmake>=3.16"],
+        )
+        result = collect_builddeps([p])
+        assert "glibc" in result and "cmake" in result
+        assert not any(">=" in d for d in result)
+        # The un-evaluated shell token is dropped, never handed to pacman -S.
+        assert not any("$" in d or "{" in d for d in result)
 
 
 # ---------------------------------------------------------------------------

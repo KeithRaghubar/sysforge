@@ -97,7 +97,7 @@ All pacman and batch-install shared operations. Public API:
 - `batch_install_pkgs(pkgdest, pre_snapshot, ...)` — diffs the post-build pkgdest against the snapshot and installs all new packages in a single `sudo pacman -U`
 - `read_pkgname_from_file(path)` — extracts `pkgname` from a built `.pkg.tar.*` via `bsdtar -xOqf <path> .PKGINFO`; returns `None` on failure
 - `filter_pkgs_to_installed(paths, installed)` — partitions pkg-file paths into `(keep, dropped)` by whether their `pkgname` is in the current installed set; used by `update`/`converge` so split-pkgbase rebuilds don't add sub-packages the user never installed
-- `collect_makedeps(pkgmeta)` / `filter_missing_deps(deps)` / `batch_install_makedeps(deps)` — makedependency helpers
+- `collect_makedeps(paths)` (makedepends only) / `collect_builddeps(paths)` (`depends` + `makedepends` + `checkdepends`) / `filter_missing_deps(deps)` / `batch_install_makedeps(deps)` — build-dependency helpers. `prepare_deps`' repo arm uses `collect_builddeps`: the `-s`-stripped batch build needs runtime `depends` present too, not only makedepends. Both collectors share `_collect_dep_names`, which version-strips and skips un-evaluated shell tokens (`_looks_unresolved`)
 - `get_installed_version(name)` — `pacman -Q <name>`; returns version string or `None`
 - `get_all_installed_packages()` — `pacman -Q`; returns `{name: version}`
 - `get_foreign_packages()` — `pacman -Qm`; returns names not from any sync DB
@@ -216,7 +216,7 @@ Resolution algorithm:
 4. Filter out repo-satisfiable packages (`repo_packages()` batch check).
 5. Query AUR for the remainder (`aur_info()` batch).
 6. For each AUR dep found: fetch its PKGBUILD (`find_pkgbuild`) so the build step has a local tree, then discover *its* deps and recurse from step 1. Discovery prefers the static parse of the cloned PKGBUILD, but falls back to authoritative AUR RPC `.SRCINFO` metadata (already fully shell-evaluated) when the static parse fails or still carries an un-evaluated token (`_deps_need_rpc_rescue` / `_looks_unresolved` — `$`, backtick, `[@]`, `$(`). This is what catches deps the static parser cannot expand, e.g. afdko's `depends=("${_pydeps[@]/#/python-}")` or any command-substitution dep; without the rescue the transitive AUR dep (`python-ufonormalizer`) is dropped and `makepkg --syncdeps` later aborts on it. The build still uses the local clone, so a locally-patched PKGBUILD is honoured.
-7. Deps not found in AUR or repos → warn and let makepkg fail naturally. A token that is still un-evaluated shell syntax after step 6 is skipped by the same `_looks_unresolved` guard so it never reaches `pacman`/AUR as a bogus name (the guard is also applied in `pacman.collect_makedeps` for the top-level repo arm).
+7. Deps not found in AUR or repos → warn and let makepkg fail naturally. A token that is still un-evaluated shell syntax after step 6 is skipped by the same `_looks_unresolved` guard so it never reaches `pacman`/AUR as a bogus name (the guard is also applied in `pacman._collect_dep_names` — shared by `collect_makedeps`/`collect_builddeps` — for the top-level repo arm).
 8. DFS topological sort with cycle detection (error on cycles).
 9. Skip packages already installed at a satisfying version (`pacman -Q`) unless `-f`/`--force` is passed.
 
@@ -225,7 +225,7 @@ Build execution: iterate the topo-sorted list in order. Each dep gets full profi
 Integration points:
 - **`sysforge build`** — resolve before building. `--track-deps` builds resolved AUR deps in topo order before the target.
 - **`run packages` stage** — resolve before building each AUR/profiled package. `--track-deps` behaves the same.
-- **`sysforge update`** — resolve after `collect_makedeps()`, before `batch_install_makedeps()`. AUR deps are built and installed first, then the main batch proceeds.
+- **`sysforge update`** — resolve after `collect_builddeps()`, before `batch_install_makedeps()`. AUR deps are built and installed first, then the main batch proceeds.
 - **`sysforge converge`** intentionally does **not** invoke `aur_resolve.py`. Converge operates only on packages already recorded in `build_state.toml`; their AUR deps are assumed to already be present.
 - **`sysforge resolve --deps <pkg>`** — standalone dry-run inspection. Shows the full dep tree with build order, AUR vs repo classification, and which deps are already installed.
 
