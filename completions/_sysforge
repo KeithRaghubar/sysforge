@@ -101,7 +101,7 @@ _sysforge_makepkg_flags() {
 
 _sysforge_build() {
   _arguments \
-    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags]:flags' \
+    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags (usually optional: bare short flags pass through)]:flags' \
     '--interactive[strip --noconfirm from makepkg_flags]' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
     '--cc[override C compiler for this build]:compiler' \
@@ -152,7 +152,7 @@ _sysforge_update() {
     '--rebuild-on-toolchain-drift[promote UP_TO_DATE packages with toolchain drift to NEEDS_REBUILD]' \
     '--rebuild-on-flag-drift[promote UP_TO_DATE packages with flag drift to NEEDS_REBUILD]' \
     '--rebuild-on-drift[rebuild anything drifted: both toolchain and flag drift]' \
-    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
+    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags (usually optional: bare short flags pass through)]:flags' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
     '--cache-report[print ccache/sccache summary after run]' \

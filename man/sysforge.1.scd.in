@@ -66,39 +66,55 @@ recovery command.
 /etc/sysforge/profiles.toml
 	Flag profiles, match rules, conflict groups, and paths
 	(pkgbuild_src_dir). Overridable per run with *--profile-conf*.
+	Read by: *build*, *fetch*, *update*, *resolve*, *doctor*, *env*,
+	and the *run* stages.
 
 /etc/sysforge/packages.toml
 	Package manifest: build-rule overrides applied to the live install
 	set, the [build] table (repo_mode, review, pkgbuild_src_dir), and the
 	bootstrap install list. Managed by *sysforge packages*.
+	Read by: *build*, *update*, *run packages*, *run pipeline*,
+	*run reconfigure*.
 
 /etc/sysforge/sysforge.toml
 	General settings: UI, git, failure_handling (auto-repair behaviour
 	per scenario), safety.
+	Read by: *build*, *fetch*, *update* (git/clone settings),
+	*run toolchain*, *run pipeline*, *run reconfigure*.
 
 /etc/sysforge/toolchain.toml, /etc/sysforge/kernel.toml
 	Opt-in toolchain and kernel stage configuration (enabled = false by
 	default in both).
+	Read by: *run toolchain* / *run kernel*, *run pipeline*,
+	*run reconfigure*, and *doctor* on the matching axes.
 
 build_state.toml (under the state directory)
 	Per-package build records (a superset of pacman -Q) plus the table
 	of recorded build failures. Inspect with *sysforge state*; the state
 	directory resolves from *--state-dir*, $SYSFORGE_STATE_DIR, or the
 	default /var/lib/sysforge.
+	Read by: *state* (read/write), *build*, *update*, *doctor*, and the
+	install-bearing *run* stages.
 
 # ENVIRONMENT
 
 SYSFORGE_STATE_DIR
 	Override the state directory (pipeline state, build_state.toml,
-	logs, sentinels).
+	logs, sentinels). Read by every command that touches build state:
+	*build*, *update*, *state*, *log*, *doctor*, and the *run* stages.
 
 SYSFORGE_CONFIG_DIR
 	Override the configuration directory searched before
-	/etc/sysforge.
+	/etc/sysforge. Read by every command that loads a config file (see
+	FILES).
+
+SYSFORGE_EDITOR
+	Editor for the interactive config review in *run reconfigure*.
+	Falls back to $EDITOR, then $VISUAL.
 
 PAGER
 	Pager for *sysforge log*, *state* listings, and PKGBUILD review
-	diffs (falls back to less -RFX, then more).
+	diffs in *build*/*update* (falls back to less -RFX, then more).
 
 # EXIT STATUS
 

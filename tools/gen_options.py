@@ -27,6 +27,78 @@ from sysforge.cli import _build_parser  # noqa: E402
 
 MARKER = "@OPTIONS@"
 
+# Per-command configuration/environment summary, rendered as a trailer after
+# each command's option blocks. Values are raw scdoc (not escaped). Keyed by
+# the qualified command name; commands without an entry get no trailer. The
+# FILES / ENVIRONMENT sections of the template carry the inverse index
+# ("Read by: ...") — update both when a verb gains or loses a config source.
+_VERB_CONFIG: dict[str, tuple[str, str]] = {
+    "build": (
+        "profiles.toml, packages.toml ([build]), sysforge.toml ([git])",
+        "$SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $PAGER (review diffs)",
+    ),
+    "fetch": (
+        "profiles.toml ([paths]), sysforge.toml ([git])",
+        "$SYSFORGE_CONFIG_DIR",
+    ),
+    "update": (
+        "profiles.toml, packages.toml, sysforge.toml ([git], "
+        "failure\\_handling)",
+        "$SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $PAGER (review diffs)",
+    ),
+    "resolve": (
+        "profiles.toml",
+        "$SYSFORGE_CONFIG_DIR",
+    ),
+    "doctor": (
+        "profiles.toml; toolchain.toml and kernel.toml on their axes",
+        "$SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR",
+    ),
+    "packages": (
+        "packages.toml (read/write)",
+        "$SYSFORGE_CONFIG_DIR",
+    ),
+    "state": (
+        "build\\_state.toml under the state directory",
+        "$SYSFORGE_STATE_DIR, $PAGER",
+    ),
+    "env": (
+        "profiles.toml",
+        "$SYSFORGE_CONFIG_DIR",
+    ),
+    "log": (
+        "per-package logs under the state directory",
+        "$SYSFORGE_STATE_DIR, $PAGER",
+    ),
+    "run pipeline": (
+        "profiles.toml, packages.toml, toolchain.toml, kernel.toml, "
+        "sysforge.toml (per stage reached)",
+        "$SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR",
+    ),
+    "run hardware": (
+        "writes the hardware profile under the state directory",
+        "$SYSFORGE_STATE_DIR",
+    ),
+    "run reconfigure": (
+        "profiles.toml, packages.toml, toolchain.toml, kernel.toml, "
+        "sysforge.toml (reviewed interactively)",
+        "$SYSFORGE_STATE_DIR, $SYSFORGE_EDITOR (then $EDITOR, $VISUAL)",
+    ),
+    "run toolchain": (
+        "toolchain.toml, profiles.toml, sysforge.toml ([git], [aur], "
+        "[safety])",
+        "$SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $RUSTUP_TOOLCHAIN",
+    ),
+    "run packages": (
+        "packages.toml, profiles.toml",
+        "$SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR",
+    ),
+    "run kernel": (
+        "kernel.toml, profiles.toml",
+        "$SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR",
+    ),
+}
+
 
 def _esc(text: str) -> str:
     """Escape scdoc formatting characters in argparse help text."""
@@ -97,6 +169,10 @@ def _command_section(name, parser, help_txt) -> list[str]:
         if a.nargs != 0:  # store/append take a value; store_true/count don't
             head += f" _{a.metavar or a.dest.upper()}_"
         lines += [head, f"\t{_esc(a.help or '')}", ""]
+    if name in _VERB_CONFIG:
+        config_txt, env_txt = _VERB_CONFIG[name]
+        lines += [f"*Configuration:* {config_txt}", "",
+                  f"*Environment:* {env_txt}", ""]
     return lines
 
 

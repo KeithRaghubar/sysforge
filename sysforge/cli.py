@@ -98,9 +98,10 @@ def _extract_implicit_makepkg_flags(argv):
     sysforge build ventoy -sfCci  →  sysforge build ventoy -m -sfCci
 
     A token qualifies when it starts with ``-`` (not ``--``), is longer than
-    one character, and every letter after the dash is a valid makepkg short
-    flag not in _PASSTHROUGH_EXCLUDE.  If ``-m`` / ``--makepkg`` is already
-    present the implicit flags are still collected and merged.
+    one character, and no letter after the dash is in _PASSTHROUGH_EXCLUDE
+    (letters are not validated against makepkg's flag set — makepkg rejects
+    unknown flags itself).  If ``-m`` / ``--makepkg`` is already present the
+    implicit flags are still collected and merged.
     """
     sub_idx = None
     for i, tok in enumerate(argv):
@@ -176,8 +177,11 @@ def _add_build_parser(sub):
     )
     p.add_argument("--makepkg", "-m", metavar="FLAGS",
         help="Additional makepkg flags, appended after profile makepkg_flags. "
-             "Combined short flags are expanded: -sfci becomes -s -f -c -i. "
-             "Example: sysforge build PKGBUILD -m '-sfci'",
+             "Usually optional: bare makepkg short flags are forwarded "
+             "implicitly (sysforge build PKGBUILD -sfc works without -m). "
+             "-m is only needed for makepkg long flags (e.g. --skippgpcheck), "
+             "flags that take a value (-p, -D), or flags sysforge claims for "
+             "itself (-h, -V).",
     )
     p.add_argument("--interactive", action="store_true",
         help="Strip --noconfirm from profile makepkg_flags and hand stdout/stderr "
@@ -281,8 +285,11 @@ def _add_update_parser(sub):
     p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
         help="Directory for per-package log files.")
     p.add_argument("--makepkg", "-m", metavar="FLAGS",
-        help="Extra flags passed verbatim to makepkg (e.g. -m '-f' to force rebuild). "
-             "Combined short flags are expanded: -sfci becomes -s -f -c -i.")
+        help="Extra flags passed verbatim to makepkg. Usually optional: bare "
+             "makepkg short flags are forwarded implicitly (sysforge update -f "
+             "works without -m). -m is only needed for makepkg long flags "
+             "(e.g. --skippgpcheck), flags that take a value (-p, -D), or "
+             "flags sysforge claims for itself (-h, -V).")
     p.add_argument("--interactive", action="store_true",
         help="Pause on build failures to allow manual correction (default: log failure and continue).")
     p.add_argument("--no-cleanbuild", action="store_true", dest="no_cleanbuild",
@@ -629,6 +636,8 @@ def _add_run_parser(sub):
     p_toolchain.add_argument("--makepkg", "-m", metavar="FLAGS",
         help="Additional makepkg flags appended to each build. "
              "Example: -m '-f' to force rebuild of already-built packages. "
+             "Unlike build/update, -m is required here — bare makepkg flags "
+             "are not forwarded implicitly on run subcommands. "
              "Install flags (-i/--install) are ignored; the toolchain controls "
              "which passes install to the system.")
     p_toolchain.add_argument("--persist-log", action="store_true", dest="persist_log",

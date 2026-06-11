@@ -80,7 +80,7 @@ One or more packages to build (path, directory, or bare package name).\&
 .RE
 \fB--makepkg\fR, \fB-m\fR \fIFLAGS\fR
 .RS 4
-Additional makepkg flags, appended after profile makepkg_flags.\& Combined short flags are expanded: -sfci becomes -s -f -c -i.\& Example: sysforge build PKGBUILD -m '\&-sfci'\&
+Additional makepkg flags, appended after profile makepkg_flags.\& Usually optional: bare makepkg short flags are forwarded implicitly (sysforge build PKGBUILD -sfc works without -m).\& -m is only needed for makepkg long flags (e.\&g.\& --skippgpcheck), flags that take a value (-p, -D), or flags sysforge claims for itself (-h, -V).\&
 .PP
 .RE
 \fB--interactive\fR
@@ -163,6 +163,10 @@ Skip the PKGBUILD review gate (full source-tree diff prompt for packages whose s
 Override state directory for build_state.\&toml.\&
 .PP
 .RE
+\fBConfiguration:\fR profiles.\&toml, packages.\&toml ([build]), sysforge.\&toml ([git])
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $PAGER (review diffs)
+.PP
 .SS fetch
 .PP
 \fBsysforge fetch\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
@@ -199,6 +203,10 @@ Suppress the LLVM source pre-flight summary.\&
 Path to a profiles.\&toml to use instead of the default.\&
 .PP
 .RE
+\fBConfiguration:\fR profiles.\&toml ([paths]), sysforge.\&toml ([git])
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
+.PP
 .SS update
 .PP
 \fBsysforge update\fR [\fIOPTIONS\fR] \fI[PKG.\&.\&.\&]\fR
@@ -267,7 +275,7 @@ Directory for per-package log files.\&
 .RE
 \fB--makepkg\fR, \fB-m\fR \fIFLAGS\fR
 .RS 4
-Extra flags passed verbatim to makepkg (e.\&g.\& -m '\&-f'\& to force rebuild).\& Combined short flags are expanded: -sfci becomes -s -f -c -i.\&
+Extra flags passed verbatim to makepkg.\& Usually optional: bare makepkg short flags are forwarded implicitly (sysforge update -f works without -m).\& -m is only needed for makepkg long flags (e.\&g.\& --skippgpcheck), flags that take a value (-p, -D), or flags sysforge claims for itself (-h, -V).\&
 .PP
 .RE
 \fB--interactive\fR
@@ -330,6 +338,10 @@ Treat flag drift as an upgrade trigger: profiled packages whose flags now resolv
 Umbrella for both --rebuild-on-toolchain-drift and --rebuild-on-flag-drift: rebuild anything that has drifted.\&
 .PP
 .RE
+\fBConfiguration:\fR profiles.\&toml, packages.\&toml, sysforge.\&toml ([git], failure_handling)
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $PAGER (review diffs)
+.PP
 .SS resolve
 .PP
 \fBsysforge resolve\fR [\fIOPTIONS\fR] \fIPKG\fR
@@ -356,6 +368,10 @@ Show transitive dependency tree with build order instead of profile info.\&
 Path to a profiles.\&toml to use instead of the default.\&
 .PP
 .RE
+\fBConfiguration:\fR profiles.\&toml
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
+.PP
 .SS doctor
 .PP
 \fBsysforge doctor\fR [\fIOPTIONS\fR] \fI[PKG.\&.\&.\&]\fR
@@ -442,6 +458,10 @@ Skip the y/N prompt before --apply rebuilds.\&
 Report what --apply would rebuild without invoking the build.\&
 .PP
 .RE
+\fBConfiguration:\fR profiles.\&toml; toolchain.\&toml and kernel.\&toml on their axes
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
+.PP
 .SS packages
 .PP
 \fBsysforge packages\fR [\fIOPTIONS\fR] \fISUBCOMMAND\fR
@@ -458,6 +478,10 @@ Path to packages.\&toml (default: /home/keith/src/sysforge/tests/data/etc/sysfor
 With list: show only entries whose package is not currently installed.\&
 .PP
 .RE
+\fBConfiguration:\fR packages.\&toml (read/write)
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
+.PP
 .SS packages list
 .PP
 \fBsysforge packages list\fR [\fIOPTIONS\fR]
@@ -531,6 +555,10 @@ Path to packages.\&toml.\&
 \fBsysforge state\fR \fISUBCOMMAND\fR
 .PP
 Inspect or repair build_state.\&toml (live install-state mirror).\&
+.PP
+\fBConfiguration:\fR build_state.\&toml under the state directory
+.PP
+\fBEnvironment:\fR $SYSFORGE_STATE_DIR, $PAGER
 .PP
 .SS state list
 .PP
@@ -698,6 +726,10 @@ Run a post-build ABI compatibility check on built shared libraries.\&
 Skip git pull --rebase before each build.\&
 .PP
 .RE
+\fBConfiguration:\fR profiles.\&toml, packages.\&toml, toolchain.\&toml, kernel.\&toml, sysforge.\&toml (per stage reached)
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
+.PP
 .SS run hardware
 .PP
 \fBsysforge run hardware\fR [\fIOPTIONS\fR]
@@ -714,6 +746,10 @@ Show what would be written without writing.\&
 Override state directory.\&
 .PP
 .RE
+\fBConfiguration:\fR writes the hardware profile under the state directory
+.PP
+\fBEnvironment:\fR $SYSFORGE_STATE_DIR
+.PP
 .SS run reconfigure
 .PP
 \fBsysforge run reconfigure\fR [\fIOPTIONS\fR]
@@ -735,6 +771,10 @@ Path to packages.\&toml (used by disk and preview steps).\&
 Override state directory.\&
 .PP
 .RE
+\fBConfiguration:\fR profiles.\&toml, packages.\&toml, toolchain.\&toml, kernel.\&toml, sysforge.\&toml (reviewed interactively)
+.PP
+\fBEnvironment:\fR $SYSFORGE_STATE_DIR, $SYSFORGE_EDITOR (then $EDITOR, $VISUAL)
+.PP
 .SS run toolchain
 .PP
 \fBsysforge run toolchain\fR [\fIOPTIONS\fR]
@@ -753,7 +793,7 @@ Skip git pull --rebase before each build.\&
 .RE
 \fB--makepkg\fR, \fB-m\fR \fIFLAGS\fR
 .RS 4
-Additional makepkg flags appended to each build.\& Example: -m '\&-f'\& to force rebuild of already-built packages.\& Install flags (-i/--install) are ignored; the toolchain controls which passes install to the system.\&
+Additional makepkg flags appended to each build.\& Example: -m '\&-f'\& to force rebuild of already-built packages.\& Unlike build/update, -m is required here — bare makepkg flags are not forwarded implicitly on run subcommands.\& Install flags (-i/--install) are ignored; the toolchain controls which passes install to the system.\&
 .PP
 .RE
 \fB--persist-log\fR
@@ -811,6 +851,10 @@ Purge each toolchain package'\&s src dir and re-clone before building.\& Refuses
 Like --cleansrc but bypasses the dirty/diverged guard and overwrites every local toolchain tree unconditionally.\& Use when the upstream rewrote history (e.\&g.\& Arch packaging repos force-push every release) and local commits have no value.\&
 .PP
 .RE
+\fBConfiguration:\fR toolchain.\&toml, profiles.\&toml, sysforge.\&toml ([git], [aur], [safety])
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $RUSTUP_TOOLCHAIN
+.PP
 .SS run packages
 .PP
 \fBsysforge run packages\fR [\fIOPTIONS\fR]
@@ -872,6 +916,10 @@ Override state directory.\&
 Path to a profiles.\&toml to use instead of the default.\&
 .PP
 .RE
+\fBConfiguration:\fR packages.\&toml, profiles.\&toml
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
+.PP
 .SS run kernel
 .PP
 \fBsysforge run kernel\fR [\fIOPTIONS\fR]
@@ -958,6 +1006,10 @@ Override the boot-safety guarantee that a fallback kernel (stock linux/linux-lts
 Override the pre-install boot-critical kconfig audit (Gate 2).\& By default a built kernel that drops the root filesystem / storage controller / core boot infra aborts before install; this flag installs it anyway.\& Dangerous — can leave the system unbootable.\&
 .PP
 .RE
+\fBConfiguration:\fR kernel.\&toml, profiles.\&toml
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
+.PP
 .SS setup
 .PP
 \fBsysforge setup\fR [\fIOPTIONS\fR]
@@ -974,6 +1026,10 @@ Path to pacman.\&conf (default: /etc/pacman.\&conf).\&
 \fBsysforge env\fR
 .PP
 Print the inherited env chain, all contributing sources (shell init files, systemd-user, PAM env, sysforge [defaults] profile), and a mismatches block when sources disagree.\& -vv adds inline per-var divergence annotations.\&
+.PP
+\fBConfiguration:\fR profiles.\&toml
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
 .PP
 .SS log
 .PP
@@ -996,12 +1052,18 @@ Override state directory (used to locate the unified log).\&
 Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
 .PP
 .RE
+\fBConfiguration:\fR per-package logs under the state directory
+.PP
+\fBEnvironment:\fR $SYSFORGE_STATE_DIR, $PAGER
+.PP
 .SH FILES
 .PP
 /etc/sysforge/profiles.\&toml
 .RS 4
 Flag profiles, match rules, conflict groups, and paths
 (pkgbuild_src_dir).\& Overridable per run with \fB--profile-conf\fR.\&
+Read by: \fBbuild\fR, \fBfetch\fR, \fBupdate\fR, \fBresolve\fR, \fBdoctor\fR, \fBenv\fR,
+and the \fBrun\fR stages.\&
 .PP
 .RE
 /etc/sysforge/packages.\&toml
@@ -1009,18 +1071,24 @@ Flag profiles, match rules, conflict groups, and paths
 Package manifest: build-rule overrides applied to the live install
 set, the [build] table (repo_mode, review, pkgbuild_src_dir), and the
 bootstrap install list.\& Managed by \fBsysforge packages\fR.\&
+Read by: \fBbuild\fR, \fBupdate\fR, \fBrun packages\fR, \fBrun pipeline\fR,
+\fBrun reconfigure\fR.\&
 .PP
 .RE
 /etc/sysforge/sysforge.\&toml
 .RS 4
 General settings: UI, git, failure_handling (auto-repair behaviour
 per scenario), safety.\&
+Read by: \fBbuild\fR, \fBfetch\fR, \fBupdate\fR (git/clone settings),
+\fBrun toolchain\fR, \fBrun pipeline\fR, \fBrun reconfigure\fR.\&
 .PP
 .RE
 /etc/sysforge/toolchain.\&toml, /etc/sysforge/kernel.\&toml
 .RS 4
 Opt-in toolchain and kernel stage configuration (enabled = false by
 default in both).\&
+Read by: \fBrun toolchain\fR / \fBrun kernel\fR, \fBrun pipeline\fR,
+\fBrun reconfigure\fR, and \fBdoctor\fR on the matching axes.\&
 .PP
 .RE
 build_state.\&toml (under the state directory)
@@ -1029,6 +1097,8 @@ Per-package build records (a superset of pacman -Q) plus the table
 of recorded build failures.\& Inspect with \fBsysforge state\fR; the state
 directory resolves from \fB--state-dir\fR, $SYSFORGE_STATE_DIR, or the
 default /var/lib/sysforge.\&
+Read by: \fBstate\fR (read/write), \fBbuild\fR, \fBupdate\fR, \fBdoctor\fR, and the
+install-bearing \fBrun\fR stages.\&
 .PP
 .RE
 .SH ENVIRONMENT
@@ -1036,19 +1106,27 @@ default /var/lib/sysforge.\&
 SYSFORGE_STATE_DIR
 .RS 4
 Override the state directory (pipeline state, build_state.\&toml,
-logs, sentinels).\&
+logs, sentinels).\& Read by every command that touches build state:
+\fBbuild\fR, \fBupdate\fR, \fBstate\fR, \fBlog\fR, \fBdoctor\fR, and the \fBrun\fR stages.\&
 .PP
 .RE
 SYSFORGE_CONFIG_DIR
 .RS 4
 Override the configuration directory searched before
-/etc/sysforge.\&
+/etc/sysforge.\& Read by every command that loads a config file (see
+FILES).\&
+.PP
+.RE
+SYSFORGE_EDITOR
+.RS 4
+Editor for the interactive config review in \fBrun reconfigure\fR.\&
+Falls back to $EDITOR, then $VISUAL.\&
 .PP
 .RE
 PAGER
 .RS 4
 Pager for \fBsysforge log\fR, \fBstate\fR listings, and PKGBUILD review
-diffs (falls back to less -RFX, then more).\&
+diffs in \fBbuild\fR/\fBupdate\fR (falls back to less -RFX, then more).\&
 .PP
 .RE
 .SH EXIT STATUS
