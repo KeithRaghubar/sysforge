@@ -22,6 +22,7 @@ def _reset_progress_state():
     progress._mode = None
     progress._reserved = False
     progress._last_status = None
+    progress._phase = None
 
 
 @pytest.fixture(autouse=True)
@@ -208,5 +209,62 @@ def test_render_reestablishes_after_clear(monkeypatch):
     written = buf.getvalue()
     assert "\x1b[1;" in written  # region re-established
     assert "2/2" in written
+
+
+# --- phase() ------------------------------------------------------------------
+
+def test_phase_paints_uncounted_status_tty(monkeypatch):
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("loading state")
+    written = buf.getvalue()
+    assert "\x1b[1;" in written  # region established
+    assert "[SYSFORGE][PROGRESS] loading state" in written
+    assert "[0/" not in written  # no counter
+
+
+def test_phase_none_clears_and_releases(monkeypatch):
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("loading state")
+    progress.phase(None)
+    assert progress._phase is None
+    assert progress._reserved is False
+    assert "\x1b[r" in buf.getvalue()
+
+
+def test_tracker_restores_enclosing_phase_on_exit(monkeypatch):
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("dep prep")
+    buf.truncate(0)
+    buf.seek(0)
+    with progress.tracker(1, "building") as tick:
+        tick("a")
+    # Tracker exit repaints the phase instead of releasing the region.
+    assert progress._reserved is True
+    assert "\x1b[r" not in buf.getvalue()
+    written = buf.getvalue()
+    assert written.rindex("dep prep") > written.rindex("building")
+
+
+def test_tracker_still_releases_without_phase(monkeypatch):
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    with progress.tracker(1, "building") as tick:
+        tick("a")
+    assert progress._reserved is False
+    assert "\x1b[r" in buf.getvalue()
+
+
+def test_phase_plain_mode_dedupes_repeats(monkeypatch):
+    _fake_plain_stderr(monkeypatch)
+    progress.init()
+    seen = []
+    monkeypatch.setattr(log, "ui", lambda tag, msg: seen.append(msg))
+    progress.phase("version check")
+    progress.phase("version check")
+    progress.phase("drift check")
+    assert seen == ["[PROGRESS] version check", "[PROGRESS] drift check"]
 
 

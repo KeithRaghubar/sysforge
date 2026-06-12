@@ -81,6 +81,39 @@ def _hoist_verbosity_flags(argv):
     return verbose_tokens + rest
 
 
+# Global flags hoisted before the subcommand by _hoist_global_flags.
+# Maps flag → whether it consumes a following value token.
+_GLOBAL_HOIST_FLAGS = {
+    "--py-profile": False,
+    "--py-profile-out": True,
+    "--timings": False,
+}
+
+
+def _hoist_global_flags(argv):
+    """
+    Move the global flags in _GLOBAL_HOIST_FLAGS (and their value tokens /
+    --flag=value forms) to before the subcommand, mirroring
+    _hoist_verbosity_flags so users can place them anywhere.
+
+    sysforge update --py-profile  →  sysforge --py-profile update
+    """
+    hoisted = []
+    rest = []
+    toks = iter(argv)
+    for tok in toks:
+        flag = tok.split("=", 1)[0]
+        if flag in _GLOBAL_HOIST_FLAGS:
+            hoisted.append(tok)
+            if _GLOBAL_HOIST_FLAGS[flag] and "=" not in tok:
+                value = next(toks, None)
+                if value is not None:
+                    hoisted.append(value)
+        else:
+            rest.append(tok)
+    return hoisted + rest
+
+
 # Flags that sysforge handles or that take a value arg — exclude from implicit
 # passthrough.  -v is already stripped by _hoist_verbosity_flags.
 _PASSTHROUGH_EXCLUDE = frozenset("hVpmD")
@@ -307,11 +340,15 @@ def _add_update_parser(sub):
              "every release) and local commits have no value to preserve.")
     p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
         help="Suppress the LLVM source pre-flight summary.")
-    p.add_argument("--no-review", action="store_true", dest="no_review",
-        help="Skip the PKGBUILD review gate (full source-tree diff prompt for "
-             "packages whose source changed since the last accepted build). "
-             "Also configurable via [build] review = false in packages.toml. "
-             "Non-interactive runs auto-accept with a warning regardless.")
+    review_group = p.add_mutually_exclusive_group()
+    review_group.add_argument("--review", action="store_true", dest="review",
+        help="Prompt to review the full source-tree diff for packages whose "
+             "source changed since the last accepted build. By default update "
+             "auto-accepts changes with a logged notice so batch runs stay "
+             "unattended; use `sysforge build` or this flag to inspect diffs.")
+    review_group.add_argument("--no-review", action="store_true", dest="no_review",
+        help="Skip the PKGBUILD review gate entirely (no auto-accept notices). "
+             "Also configurable via [build] review = false in packages.toml.")
     p.add_argument("--no-toolchain-preflight", action="store_true", dest="no_toolchain_preflight",
         help="Skip the toolchain pre-flight (rust/cmake/meson availability + "
              "lib32 cross targets) that normally runs before the build loop.")
@@ -794,6 +831,29 @@ def _build_parser() -> argparse.ArgumentParser:
             "-vvv adds debug output."
         ),
     )
+    parser.add_argument(
+        "--py-profile",
+        action="store_true",
+        dest="py_profile",
+        help=(
+            "Run the verb under cProfile and print the top functions "
+            "(by cumulative time) to stderr at exit."
+        ),
+    )
+    parser.add_argument(
+        "--py-profile-out",
+        metavar="FILE",
+        dest="py_profile_out",
+        help=(
+            "Write raw cProfile stats to FILE for later analysis "
+            "(pstats/snakeviz). Implies --py-profile."
+        ),
+    )
+    parser.add_argument(
+        "--timings",
+        action="store_true",
+        help="Print a wall-clock phase timing report after build/update runs.",
+    )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True
 
@@ -876,7 +936,9 @@ def main():
     _install_resource_guard()
     migrate_legacy_user_dirs()
     sys.argv[1:] = _patch_makepkg_argv(
-        _extract_implicit_makepkg_flags(_hoist_verbosity_flags(sys.argv[1:]))
+        _extract_implicit_makepkg_flags(
+            _hoist_global_flags(_hoist_verbosity_flags(sys.argv[1:]))
+        )
     )
     parser = _build_parser()
     args = parser.parse_args()
@@ -917,4 +979,24 @@ def main():
     if verb_cls is None:
         _log.error("No verb dispatcher set for this command — argparse misconfiguration")
         sys.exit(2)
-    sys.exit(run_verb(verb_cls(), args))
+    sys.exit(_dispatch(verb_cls, args))
+
+
+def _dispatch(verb_cls, args) -> int:
+    """Run the verb, optionally under cProfile (--py-profile/--py-profile-out)."""
+    if not (args.py_profile or args.py_profile_out):
+        return run_verb(verb_cls(), args)
+    import cProfile
+    import pstats
+    prof = cProfile.Profile()
+    prof.enable()
+    try:
+        return run_verb(verb_cls(), args)
+    finally:
+        # Verbs may sys.exit() inside execute — emit stats regardless.
+        prof.disable()
+        from sysforge.ui import progress
+        progress.clear()
+        if args.py_profile_out:
+            prof.dump_stats(args.py_profile_out)
+        pstats.Stats(prof, stream=sys.stderr).sort_stats("cumulative").print_stats(25)

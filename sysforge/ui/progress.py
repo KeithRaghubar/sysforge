@@ -15,12 +15,20 @@ Public API:
     init()                  once at CLI entry, after log.set_verbosity
     shutdown()              release the terminal; idempotent; atexit-registered
     render(i, n, label)     paint a status (reserves region on first call)
+    phase(label)            paint an uncounted phase status that persists
+                            across tracker() scopes; phase(None) clears it
     clear()                 release the region (call before input())
     tracker(total, prefix)  context manager yielding a tick(label) callable
 
 Reservation is lazy: entering tracker() alone touches nothing; the first
 tick() establishes the region. Short-running invocations that never tick
 leave the terminal untouched.
+
+A phase set via phase() outlives any nested tracker(): when the tracker
+exits it repaints the phase instead of releasing the region, so the bottom
+line stays populated between counted batches. clear() still releases the
+region unconditionally (the call-before-input() safety valve); the next
+render()/phase() re-establishes it.
 """
 import atexit
 import contextlib
@@ -41,6 +49,7 @@ _CLEAR_LINE = _ESC + "[2K"
 _mode: Optional[str] = None
 _reserved: bool = False
 _last_status: Optional[str] = None
+_phase: Optional[str] = None
 _rows: int = 0
 _cols: int = 0
 _sigwinch_installed: bool = False
@@ -154,6 +163,38 @@ def render(current: int, total: int, label: str) -> None:
         _paint(text)
 
 
+def phase(label: Optional[str]) -> None:
+    """Paint an uncounted phase status; ``phase(None)`` clears it.
+
+    The phase persists across nested tracker() scopes — tracker exit
+    repaints it instead of releasing the region. Repeated calls with the
+    same label are deduped in plain mode so log output stays one line per
+    phase change.
+    """
+    global _phase, _last_status
+    if _mode is None:
+        init()
+    if label is None:
+        _phase = None
+        _last_status = None
+        clear()
+        return
+    deduped = label == _phase
+    _phase = label
+    if _mode == "plain":
+        if not deduped:
+            msg = f"[PROGRESS] {label}"
+            log.ui("[PROGRESS]", msg)
+            _last_status = msg
+        return
+    text = f"[SYSFORGE][PROGRESS] {label}"
+    _last_status = text
+    if not _reserved:
+        _establish_region()
+    if _reserved:
+        _paint(text)
+
+
 def clear() -> None:
     """Release the reserved region. Safe to call unconditionally."""
     if _mode == "tty":
@@ -187,5 +228,15 @@ def tracker(total: int, prefix: str) -> Iterator[Callable[[str], None]]:
     try:
         yield tick
     finally:
-        clear()
-        _last_status = None
+        if _phase is not None:
+            # An enclosing phase owns the bottom line — hand it back
+            # instead of releasing the region between batches.
+            label = _phase
+            if _mode == "tty":
+                _last_status = f"[SYSFORGE][PROGRESS] {label}"
+                if _reserved:
+                    _paint(_last_status)
+            # Plain mode: the phase line was already logged; don't repeat it.
+        else:
+            clear()
+            _last_status = None

@@ -352,3 +352,111 @@ def test_strip_venv_from_path_noop_when_venv_bin_absent(monkeypatch):
     # function bails before the pop when no PATH entry matched.
     assert os.environ["PATH"] == "/usr/bin:/usr/local/bin"
     assert os.environ.get("VIRTUAL_ENV") == venv_root
+
+
+# ---------------------------------------------------------------------------
+# _hoist_global_flags
+# ---------------------------------------------------------------------------
+
+def test_hoist_global_py_profile_after_subcommand():
+    from sysforge.cli import _hoist_global_flags
+    result = _hoist_global_flags(["update", "--py-profile"])
+    assert result == ["--py-profile", "update"]
+
+
+def test_hoist_global_py_profile_out_with_value_token():
+    from sysforge.cli import _hoist_global_flags
+    result = _hoist_global_flags(["update", "--py-profile-out", "out.prof", "--dry-run"])
+    assert result == ["--py-profile-out", "out.prof", "update", "--dry-run"]
+
+
+def test_hoist_global_py_profile_out_equals_form():
+    from sysforge.cli import _hoist_global_flags
+    result = _hoist_global_flags(["build", "PKGBUILD", "--py-profile-out=out.prof"])
+    assert result == ["--py-profile-out=out.prof", "build", "PKGBUILD"]
+
+
+def test_hoist_global_timings():
+    from sysforge.cli import _hoist_global_flags
+    result = _hoist_global_flags(["update", "--timings"])
+    assert result == ["--timings", "update"]
+
+
+def test_hoist_global_no_flags_passthrough():
+    from sysforge.cli import _hoist_global_flags
+    result = _hoist_global_flags(["build", "PKGBUILD", "--interactive"])
+    assert result == ["build", "PKGBUILD", "--interactive"]
+
+
+def test_hoist_global_composes_with_verbosity_hoist():
+    from sysforge.cli import _hoist_global_flags
+    result = _hoist_global_flags(_hoist_verbosity_flags(["update", "-vv", "--timings"]))
+    assert result == ["--timings", "-vv", "update"]
+
+
+# ---------------------------------------------------------------------------
+# global profiling flags: parser defaults + _dispatch
+# ---------------------------------------------------------------------------
+
+def test_parser_profiling_flag_defaults():
+    from sysforge.cli import _build_parser
+    args = _build_parser().parse_args(["state", "list"])
+    assert args.py_profile is False
+    assert args.py_profile_out is None
+    assert args.timings is False
+
+
+def test_parser_profiling_flags_set():
+    from sysforge.cli import _build_parser
+    args = _build_parser().parse_args(
+        ["--py-profile", "--py-profile-out", "out.prof", "--timings", "state", "list"]
+    )
+    assert args.py_profile is True
+    assert args.py_profile_out == "out.prof"
+    assert args.timings is True
+
+
+class _FakeArgs:
+    def __init__(self, py_profile=False, py_profile_out=None):
+        self.py_profile = py_profile
+        self.py_profile_out = py_profile_out
+
+
+def test_dispatch_plain_skips_profiler(monkeypatch, capsys):
+    import sysforge.cli as cli
+    monkeypatch.setattr(cli, "run_verb", lambda verb, args: 0)
+    assert cli._dispatch(object, _FakeArgs()) == 0
+    assert "cumulative" not in capsys.readouterr().err
+
+
+def test_dispatch_py_profile_prints_stats_to_stderr(monkeypatch, capsys):
+    import sysforge.cli as cli
+    monkeypatch.setattr(cli, "run_verb", lambda verb, args: 0)
+    assert cli._dispatch(object, _FakeArgs(py_profile=True)) == 0
+    err = capsys.readouterr().err
+    assert "cumulative" in err
+    assert "function calls" in err
+
+
+def test_dispatch_py_profile_out_writes_dump(monkeypatch, tmp_path):
+    import sysforge.cli as cli
+    monkeypatch.setattr(cli, "run_verb", lambda verb, args: 0)
+    out = tmp_path / "stats.prof"
+    cli._dispatch(object, _FakeArgs(py_profile_out=str(out)))
+    assert out.exists()
+    import pstats
+    pstats.Stats(str(out))  # loadable dump
+
+
+def test_dispatch_emits_stats_on_sys_exit(monkeypatch, tmp_path):
+    import pytest
+    import sysforge.cli as cli
+
+    def _exiting_run_verb(verb, args):
+        raise SystemExit(3)
+
+    monkeypatch.setattr(cli, "run_verb", _exiting_run_verb)
+    out = tmp_path / "stats.prof"
+    with pytest.raises(SystemExit):
+        cli._dispatch(object, _FakeArgs(py_profile_out=str(out)))
+    assert out.exists()

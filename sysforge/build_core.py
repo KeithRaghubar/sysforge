@@ -34,6 +34,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.build_state import BuildState
+from sysforge.primitives.timing import PhaseRecord, PhaseTimer
 from sysforge.primitives.version import vercmp
 from sysforge.primitives.pacman import (
     BATCH_STRIP_FLAGS,
@@ -54,6 +55,7 @@ from sysforge.primitives.pkgbuild_review import (
     DECISION_SKIP,
     review_target,
 )
+from sysforge.ui import progress as _ui_progress
 
 _log = log.get_logger("BUILD")
 
@@ -89,6 +91,10 @@ class BuildOutcome:
     # and whether the whole run was aborted there (nothing built/installed).
     review_skipped: list[str] = field(default_factory=list)
     aborted: bool = False
+    # Wall-clock phase durations (dep prep / per-package builds / install) —
+    # aliases the PhaseTimer's records list, so callers without their own
+    # timer can still render a report from the outcome.
+    phase_records: list[PhaseRecord] = field(default_factory=list)
 
 
 def target_from_pkgbuild(pkgbuild_path) -> BuildTarget:
@@ -420,7 +426,8 @@ def build_and_install(
     extra_flags: list | None = None,
     active_variant: str | None = None,
     pkgdest: Path | None = None,
-    review: bool = True,
+    review: str = "prompt",
+    timer: PhaseTimer | None = None,
 ) -> BuildOutcome:
     """Resolve deps, build every target, then bulk-install — the shared core.
 
@@ -435,13 +442,20 @@ def build_and_install(
     passes ``not --no-update`` to keep its inline per-package source sync, which
     already routes through ``source_sync.get_scheduler()`` inside ``run()``.
 
-    ``review`` enables the PKGBUILD review gate (one home, both verbs): each
-    target whose clone HEAD differs from its recorded ``reviewed_commit`` is
-    presented for review *before* dep prep and the build loop, so a skip never
-    installs that package's makedeps and an abort leaves nothing built or
-    installed. Disabled via ``--no-review`` / ``[build] review = false``.
+    ``review`` selects the PKGBUILD review gate mode (one home, both verbs):
+    ``"prompt"`` presents each target whose clone HEAD differs from its
+    recorded ``reviewed_commit`` for review *before* dep prep and the build
+    loop, so a skip never installs that package's makedeps and an abort
+    leaves nothing built or installed; ``"auto"`` runs the same comparison
+    but auto-accepts changes with a logged notice (the ``update`` default);
+    ``"off"`` skips the gate entirely (``--no-review`` /
+    ``[build] review = false``).
     """
     outcome = BuildOutcome()
+    if timer is None:
+        timer = PhaseTimer()
+    # Alias (not copy) so records appended after any return still surface.
+    outcome.phase_records = timer.records
     if not targets:
         return outcome
 
@@ -462,8 +476,10 @@ def build_and_install(
     # later request dedups against the scheduler cache, and the gate sees the
     # post-fetch HEAD instead of reviewing a stale clone. Best-effort: real
     # sync failures still surface through the wrapper's own request.
-    if review and sync_source:
+    review_active = review in ("prompt", "auto")
+    if review_active and sync_source:
         from sysforge.primitives.source_sync import SyncRequest, get_scheduler
+        _ui_progress.phase("syncing sources")
         scheduler = get_scheduler()
         for t in targets:
             try:
@@ -474,13 +490,17 @@ def build_and_install(
                 ))
             except Exception as e:
                 _log.debug(f"review pre-sync {t.pkgbase}: {e}")
-    if review:
+    if review_active:
         if state_dir is None:
             from sysforge.pipeline.state import resolve_state_dir
             _review_state_dir, _ = resolve_state_dir(None)
         else:
             _review_state_dir = state_dir
         bs_review = BuildState(_review_state_dir)
+        if review == "prompt":
+            # The prompt reads single keypresses — hand the bottom row back
+            # to the terminal first (mirrors makepkg_wrapper's prompts).
+            _ui_progress.clear()
         kept = []
         for t in targets:
             entry = None
@@ -492,6 +512,7 @@ def build_and_install(
                 t.pkgbase,
                 Path(t.pkgbuild_path).parent,
                 (entry or {}).get("reviewed_commit"),
+                interactive=(review == "prompt"),
             )
             if decision == DECISION_ABORT:
                 _log.ui(
@@ -511,16 +532,18 @@ def build_and_install(
 
     pkgbuild_paths = [t.pkgbuild_path for t in targets if t.pkgbuild_path]
     building_names = {t.pkgbase for t in targets}
-    prepare_deps(
-        pkgbuild_paths,
-        config,
-        building_names=building_names,
-        profile_conf=profile_conf,
-        cc=cc,
-        cxx=cxx,
-        ld=ld,
-        state_dir=state_dir,
-    )
+    _ui_progress.phase("resolving dependencies")
+    with timer.phase("dep prep"):
+        prepare_deps(
+            pkgbuild_paths,
+            config,
+            building_names=building_names,
+            profile_conf=profile_conf,
+            cc=cc,
+            cxx=cxx,
+            ld=ld,
+            state_dir=state_dir,
+        )
 
     # Cleanbuild (-C) prevents a stale $srcdir from a prior failed run causing
     # patch-already-applied errors in prepare(). When the caller opts out we
@@ -532,67 +555,67 @@ def build_and_install(
         else BATCH_STRIP_FLAGS
     )
 
-    from sysforge.ui import progress as _ui_progress
     with _ui_progress.tracker(len(targets), "building") as _tick:
         for target in targets:
             _tick(target.pkgbase)
             search_dir = pkgdest if pkgdest else target.pkgbuild_path.parent
             build_start = time.time()
-            try:
-                build_run(target.pkgbuild_path, options=BuildOptions(
-                    pkg_log=pkg_log,
-                    persist_log=persist_log,
-                    log_dir=log_dir,
-                    profile_conf=profile_conf,
-                    cc_override=cc,
-                    cxx_override=cxx,
-                    ld_override=ld,
-                    cache_report=False,
-                    abi_check=abi_check,
-                    init_session=(
-                        not outcome.built_pkgs and not outcome.failed_pkgs
-                    ),
-                    update=sync_source,
-                    state_dir=state_dir,
-                    extra_flags=batch_flags,
-                    strip_flags=strip_flags,
-                    interactive=interactive,
-                    force_batch=not interactive,
-                    source=target.source,
-                    toolchain_variant=active_variant,
-                ))
-                new_pkgs = sorted(
-                    p for p in snapshot_pkg_dir(search_dir)
-                    if p.stat().st_mtime >= build_start
-                )
-                outcome.built_pkg_files.extend(new_pkgs)
-                outcome.built_pkgs.append(target.pkgbase)
-            except PGOBuildSkipped as e:
-                _log.warn(str(e))
-                outcome.pgo_skipped_pkgs.append(target.pkgbase)
-            except AlreadyBuilt:
-                existing = _find_existing_artifacts(
-                    search_dir, target.pkgnames, target.pkgbuild_ver,
-                )
-                if existing:
-                    _log.info(
-                        f"{target.pkgbase}: package already built — "
-                        "installing existing artifact"
+            with timer.phase(f"build: {target.pkgbase}"):
+                try:
+                    build_run(target.pkgbuild_path, options=BuildOptions(
+                        pkg_log=pkg_log,
+                        persist_log=persist_log,
+                        log_dir=log_dir,
+                        profile_conf=profile_conf,
+                        cc_override=cc,
+                        cxx_override=cxx,
+                        ld_override=ld,
+                        cache_report=False,
+                        abi_check=abi_check,
+                        init_session=(
+                            not outcome.built_pkgs and not outcome.failed_pkgs
+                        ),
+                        update=sync_source,
+                        state_dir=state_dir,
+                        extra_flags=batch_flags,
+                        strip_flags=strip_flags,
+                        interactive=interactive,
+                        force_batch=not interactive,
+                        source=target.source,
+                        toolchain_variant=active_variant,
+                    ))
+                    new_pkgs = sorted(
+                        p for p in snapshot_pkg_dir(search_dir)
+                        if p.stat().st_mtime >= build_start
                     )
-                    outcome.built_pkg_files.extend(existing)
+                    outcome.built_pkg_files.extend(new_pkgs)
                     outcome.built_pkgs.append(target.pkgbase)
-                else:
-                    msg = (
-                        f"makepkg reported already built but no matching "
-                        f".pkg.tar found in {search_dir}"
+                except PGOBuildSkipped as e:
+                    _log.warn(str(e))
+                    outcome.pgo_skipped_pkgs.append(target.pkgbase)
+                except AlreadyBuilt:
+                    existing = _find_existing_artifacts(
+                        search_dir, target.pkgnames, target.pkgbuild_ver,
                     )
-                    _log.error(f"{target.pkgbase}: {msg}")
+                    if existing:
+                        _log.info(
+                            f"{target.pkgbase}: package already built — "
+                            "installing existing artifact"
+                        )
+                        outcome.built_pkg_files.extend(existing)
+                        outcome.built_pkgs.append(target.pkgbase)
+                    else:
+                        msg = (
+                            f"makepkg reported already built but no matching "
+                            f".pkg.tar found in {search_dir}"
+                        )
+                        _log.error(f"{target.pkgbase}: {msg}")
+                        outcome.failed_pkgs.append(target.pkgbase)
+                        _record_build_failure(state_dir, target, msg)
+                except (RuntimeError, SystemExit) as e:
+                    _log.error(f"Build failed for {target.pkgbase!r}: {e}")
                     outcome.failed_pkgs.append(target.pkgbase)
-                    _record_build_failure(state_dir, target, msg)
-            except (RuntimeError, SystemExit) as e:
-                _log.error(f"Build failed for {target.pkgbase!r}: {e}")
-                outcome.failed_pkgs.append(target.pkgbase)
-                _record_build_failure(state_dir, target, e)
+                    _record_build_failure(state_dir, target, e)
 
     # The pkgnames the user explicitly asked to build are always installed,
     # even if not currently on the system (a fresh build). For ``update`` these
@@ -600,9 +623,13 @@ def build_and_install(
     requested = {
         pn for t in targets for pn in (getattr(t, "pkgnames", None) or [])
     }
-    outcome.built_pkg_files, outcome.install_failed = install_built(
-        outcome.built_pkg_files, always_install=requested
-    )
+    if outcome.built_pkg_files:
+        _ui_progress.phase("installing built packages")
+    with timer.phase("install"):
+        outcome.built_pkg_files, outcome.install_failed = install_built(
+            outcome.built_pkg_files, always_install=requested
+        )
+    _ui_progress.phase(None)
 
     if cache_report:
         emit_session_report()

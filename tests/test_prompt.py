@@ -1,15 +1,19 @@
 """
 test_prompt.py — unit tests for sysforge.primitives.prompt.
 
-Covers `is_interactive`, `prompt_text`, and `prompt_choice`. All input is
-driven through `monkeypatch.setattr("builtins.input", ...)` so tests never
-read real stdin.
+Covers `is_interactive`, `prompt_text`, `prompt_choice`, and `prompt_key`.
+All input is driven through `monkeypatch.setattr("builtins.input", ...)` so
+tests never read real stdin — `prompt_key` exercises its line-input fallback
+(pytest's captured stdin is not a TTY).
 """
 from unittest.mock import patch
+
+import pytest
 
 from sysforge.primitives.prompt import (
     is_interactive,
     prompt_choice,
+    prompt_key,
     prompt_text,
 )
 
@@ -196,3 +200,43 @@ def test_prompt_choice_tag_prefix(monkeypatch):
     monkeypatch.setattr("builtins.input", fake_input)
     prompt_choice("Q? ", choices=("y", "n"), tag="STAGE", level="WARN")
     assert captured == ["[SYSFORGE][WARN][STAGE] Q? "]
+
+
+# ---------------------------------------------------------------------------
+# prompt_key (line-input fallback path — pytest's stdin is not a TTY)
+# ---------------------------------------------------------------------------
+
+def test_prompt_key_returns_first_char_lowercased(monkeypatch):
+    _scripted_input(monkeypatch, ["Accept"])
+    assert prompt_key("Q? ") == "a"
+
+
+def test_prompt_key_empty_line_returns_empty(monkeypatch):
+    """Bare Enter is 'no answer' — distinct from EOF, so callers re-prompt."""
+    _scripted_input(monkeypatch, [""])
+    assert prompt_key("Q? ") == ""
+
+
+def test_prompt_key_eof_raises(monkeypatch):
+    _eof_input(monkeypatch)
+    with pytest.raises(EOFError):
+        prompt_key("Q? ")
+
+
+def test_prompt_key_oserror_raises_eof(monkeypatch):
+    """Captured/unreadable stdin surfaces as EOFError, same as line prompts."""
+    _eof_input(monkeypatch, OSError)
+    with pytest.raises(EOFError):
+        prompt_key("Q? ")
+
+
+def test_prompt_key_tag_prefix(monkeypatch):
+    captured = []
+
+    def fake_input(prompt: str = "") -> str:
+        captured.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    prompt_key("Q? ", tag="REVIEW", level="UI")
+    assert captured == ["[SYSFORGE][UI][REVIEW] Q? "]

@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026-06-11"
+.TH "sysforge" "1" "2026-06-12"
 .PP
 .PP
 .SH NAME
@@ -63,6 +63,28 @@ independent).\&
 \fB-V\fR, \fB--version\fR
 .RS 4
 Print the sysforge version and exit.\&
+.PP
+.RE
+\fB--py-profile\fR
+.RS 4
+Run the verb under the Python profiler (cProfile) and print the top
+functions by cumulative time to stderr at exit.\& Position independent.\&
+Profiles sysforge'\&s own runtime only; subprocess work (makepkg, pacman,
+git) appears as wait time — use \fB--timings\fR for wall-clock phase costs.\&
+.PP
+.RE
+\fB--py-profile-out\fR \fIFILE\fR
+.RS 4
+Write raw cProfile stats to \fIFILE\fR for later analysis (pstats,
+snakeviz).\& Implies \fB--py-profile\fR.\&
+.PP
+.RE
+\fB--timings\fR
+.RS 4
+Print a wall-clock phase timing report (source sync, version check,
+drift detection, per-package builds, install, pacman -Syu) after
+\fBbuild\fR and \fBupdate\fR runs.\& Without the flag the report is still
+written to the log at info level.\&
 .PP
 .RE
 .SH COMMANDS
@@ -303,9 +325,14 @@ Like --cleansrc but bypasses the dirty/diverged guard and overwrites every local
 Suppress the LLVM source pre-flight summary.\&
 .PP
 .RE
+\fB--review\fR
+.RS 4
+Prompt to review the full source-tree diff for packages whose source changed since the last accepted build.\& By default update auto-accepts changes with a logged notice so batch runs stay unattended; use `sysforge build` or this flag to inspect diffs.\&
+.PP
+.RE
 \fB--no-review\fR
 .RS 4
-Skip the PKGBUILD review gate (full source-tree diff prompt for packages whose source changed since the last accepted build).\& Also configurable via [build] review = false in packages.\&toml.\& Non-interactive runs auto-accept with a warning regardless.\&
+Skip the PKGBUILD review gate entirely (no auto-accept notices).\& Also configurable via [build] review = false in packages.\&toml.\&
 .PP
 .RE
 \fB--no-toolchain-preflight\fR

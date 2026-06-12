@@ -4,7 +4,7 @@ SysForge is an AUR helper for Arch Linux with compiler optimization as a first-c
 
 The default build profile uses the system gcc; LLVM (clang/lld) is fully supported but opt-in — install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `CC=clang`/`CXX=clang++` in a user profile, or use `sysforge run toolchain --compiler=llvm`.
 
-**Current status:** <!--version-->v1.2.0<!--/version-->. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are opt-in (`enabled = false` by default in their respective `.toml` files) — building a custom toolchain or kernel is a deliberate choice; users who want the system compiler and a stock pacman kernel leave them disabled. Flag drift is reported by `sysforge update` by default (`--rebuild-on-flag-drift` rebuilds drifted packages; `--offline --dry-run` is the read-only report). Before building a package whose source changed since the last accepted build, the PKGBUILD review gate shows the full source-tree diff and prompts (view / accept / skip / abort) — disable with `--no-review` or `[build] review = false` in packages.toml; unattended runs auto-accept with a warning.
+**Current status:** <!--version-->v1.2.0<!--/version-->. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are opt-in (`enabled = false` by default in their respective `.toml` files) — building a custom toolchain or kernel is a deliberate choice; users who want the system compiler and a stock pacman kernel leave them disabled. Flag drift is reported by `sysforge update` by default (`--rebuild-on-flag-drift` rebuilds drifted packages; `--offline --dry-run` is the read-only report). Before building a package whose source changed since the last accepted build, the PKGBUILD review gate runs: `sysforge build` shows the full source-tree diff and prompts (view / accept / skip / abort, single keypress); `sysforge update` auto-accepts with a logged notice so batch runs stay unattended (`--review` opts into the prompt). Disable entirely with `--no-review` or `[build] review = false` in packages.toml.
 
 ---
 
@@ -52,6 +52,15 @@ sysforge update --dry-run
 # 6b. Default summary shows aggregated counts; -v expands each skipped or
 #     up-to-date package to a per-line reason (rate-limited, devel, etc.).
 sysforge update -v
+
+# 6c. Performance introspection (global flags, position independent).
+#     --timings prints a wall-clock phase report (source sync, version check,
+#     drift detection, per-package builds, install, pacman -Syu) after build
+#     and update runs. --py-profile runs the verb under Python's cProfile and
+#     prints the top functions to stderr at exit; --py-profile-out FILE also
+#     dumps raw stats for pstats/snakeviz.
+sysforge --timings update
+sysforge --py-profile update --dry-run
 
 # 7. Same as `update`, plus discard divergent local clones (force-pushed
 #    upstream or local-only commits). --cleansrc refuses any clone that has

@@ -39,7 +39,7 @@ _sysforge() {
 
     if [[ -z $verb ]]; then
         if [[ $cur == -* ]]; then
-            COMPREPLY=( $(compgen -W "-v --verbose" -- "$cur") )
+            COMPREPLY=( $(compgen -W "-v --verbose --py-profile --py-profile-out --timings" -- "$cur") )
         else
             COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
         fi
@@ -161,7 +161,7 @@ _sysforge_update() {
     _sysforge_flag_arg && return
     local flags="--packages --dry-run --devel --offline --install-only --interactive \
         --no-cleanbuild --cleansrc --cleansrc-force --no-llvm-preflight \
-        --no-review --no-toolchain-preflight --include-stage-owned \
+        --review --no-review --no-toolchain-preflight --include-stage-owned \
         --explain-drift --rebuild-on-toolchain-drift --rebuild-on-flag-drift --rebuild-on-drift \
         -m --makepkg --state-dir --profile-conf --cache-report \
         --no-pkg-log --persist-log --log-dir"

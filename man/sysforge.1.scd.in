@@ -57,6 +57,22 @@ recovery command.
 *-V*, *--version*
 	Print the sysforge version and exit.
 
+*--py-profile*
+	Run the verb under the Python profiler (cProfile) and print the top
+	functions by cumulative time to stderr at exit. Position independent.
+	Profiles sysforge's own runtime only; subprocess work (makepkg, pacman,
+	git) appears as wait time — use *--timings* for wall-clock phase costs.
+
+*--py-profile-out* _FILE_
+	Write raw cProfile stats to _FILE_ for later analysis (pstats,
+	snakeviz). Implies *--py-profile*.
+
+*--timings*
+	Print a wall-clock phase timing report (source sync, version check,
+	drift detection, per-package builds, install, pacman -Syu) after
+	*build* and *update* runs. Without the flag the report is still
+	written to the log at info level.
+
 # COMMANDS
 
 @OPTIONS@

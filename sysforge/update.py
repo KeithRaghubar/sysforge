@@ -41,6 +41,7 @@ from pathlib import Path
 
 from sysforge import log
 _log = log.get_logger("UPDATE")
+from sysforge.ui import progress as _ui_progress  # noqa: E402
 from sysforge.primitives.build_state import BuildState, group_by_pkgbase
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.aur import fetch_aur_name_cache
@@ -70,6 +71,7 @@ from sysforge.primitives.toolchain_preflight import (
 )
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
+from sysforge.primitives.timing import PhaseTimer, render_report
 from sysforge.primitives.pacman import (
     get_pkgdest,
     get_all_installed_packages,
@@ -328,8 +330,21 @@ def cmd_update(args) -> None:
                 pass
 
 
+def _emit_timings(timer: PhaseTimer, args) -> None:
+    """Render the phase wall-clock report under [UPDATE].
+
+    Always written at info level (lands in the unified log); promoted to UI
+    output when --timings is set."""
+    timer.stop()  # close any open start()-phase on early-exit paths
+    emit = _log.ui if getattr(args, "timings", False) else _log.info
+    for line in render_report(timer, title="Phase timings"):
+        emit(line)
+
+
 def _cmd_update_body(args) -> None:
     # ── Phase 0: Init ─────────────────────────────────────────────────────
+    _ui_progress.phase("loading state and config")
+    timer = PhaseTimer()
     install_only = getattr(args, "install_only", False)
     offline = getattr(args, "offline", False) or install_only
     if install_only:
@@ -381,14 +396,20 @@ def _cmd_update_body(args) -> None:
     packages_path = resolve_packages_path(config)
     build_cfg, overrides_by_name = _load_overrides(packages_path)
 
-    # PKGBUILD review gate (runs inside build_core.build_and_install): on by
-    # default, off via --no-review or [build] review = false in packages.toml.
-    review_enabled = (
-        not getattr(args, "no_review", False)
-        and build_cfg.get("review", True) is not False
-    )
+    # PKGBUILD review gate mode (runs inside build_core.build_and_install):
+    # "auto" by default — changed sources are auto-accepted with a logged
+    # notice so a plain `update` stays unattended. --review opts into the
+    # interactive diff prompt; --no-review / [build] review = false in
+    # packages.toml skips the gate entirely.
+    if getattr(args, "no_review", False) or build_cfg.get("review", True) is False:
+        review_mode = "off"
+    elif getattr(args, "review", False):
+        review_mode = "prompt"
+    else:
+        review_mode = "auto"
 
     # ── Phase 1: Package set assembly ─────────────────────────────────────
+    _ui_progress.phase("assembling package set")
     packages, unrecorded_names = _assemble_package_set(
         args, bs, config, build_cfg, overrides_by_name,
     )
@@ -427,7 +448,8 @@ def _cmd_update_body(args) -> None:
     }
 
     # ── Phase 2: Source sync ──────────────────────────────────────────────
-    sync_failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
+    with timer.phase("source sync"):
+        sync_failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
 
     # Pacman fast-path: one ``checkupdates`` call covers every pacman-class
     # repo package in scope. Only run it when at least one pacman-class
@@ -469,6 +491,7 @@ def _cmd_update_body(args) -> None:
                     if sha:
                         built_commit_by_base[pkgbase] = sha
                         break
+    timer.start("version check")
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(
@@ -481,16 +504,21 @@ def _cmd_update_body(args) -> None:
             ): pkgbase
             for pkgbase, pkgnames in sorted(pkgbase_map.items())
         }
-        for fut in as_completed(futures):
-            result = fut.result()
-            if result is not None:
-                results.append(result)
+        with _ui_progress.tracker(len(futures), "version check") as _tick:
+            for fut in as_completed(futures):
+                _tick(futures[fut])
+                result = fut.result()
+                if result is not None:
+                    results.append(result)
 
     results.sort(key=lambda r: r.pkgbase)
+    timer.stop()
 
     # ── Phase 4: Summary + dry-run gate ───────────────────────────────────
     _print_summary(results, args)
 
+    _ui_progress.phase("checking toolchain and flag drift")
+    timer.start("drift detection")
     # ── Phase 4.25: Toolchain-variant drift ───────────────────────────────
     # Compare each result's recorded toolchain_variant (from build_state)
     # against the active toolchain. Drift means "the installed binary was
@@ -624,9 +652,11 @@ def _cmd_update_body(args) -> None:
                 print(f"  {pkgbase}")
                 for line in diffs:
                     print(line)
+        _emit_timings(timer, args)
         return
 
     if getattr(args, "dry_run", False):
+        _emit_timings(timer, args)
         return
 
     # --rebuild-on-drift is the umbrella that opts into both drift axes.
@@ -686,6 +716,8 @@ def _cmd_update_body(args) -> None:
                 "(or the owning pipeline stage)."
             )
 
+    timer.stop()
+
     # ── Phase 5: Build ────────────────────────────────────────────────────
     # _check_one_pkgbase already resolved VCS pkgver() under --devel and set
     # NEEDS_REBUILD / UP_TO_DATE / DEVEL_EVAL_FAILED accordingly. The plain
@@ -703,7 +735,9 @@ def _cmd_update_body(args) -> None:
         to_build = [r for r in to_build if r.pkgbase not in sync_failures]
 
     if not to_build and not pending_pacman_upgrade:
+        _ui_progress.phase(None)
         print("[SYSFORGE] Nothing to rebuild.")
+        _emit_timings(timer, args)
         return
 
     pkgdest = get_pkgdest()
@@ -724,7 +758,6 @@ def _cmd_update_body(args) -> None:
         # no makepkg invocation. For each result the version-check filter has
         # already proved is newer than installed, look for a matching artifact
         # at exactly that pkgbuild_ver in PKGDEST and queue it for install.
-        from sysforge.ui import progress as _ui_progress
         with _ui_progress.tracker(len(to_build), "scanning") as _tick:
             for result in to_build:
                 _tick(result.pkgbase)
@@ -757,6 +790,7 @@ def _cmd_update_body(args) -> None:
         # for lib32-* packages) before any makepkg runs. Auto-remediates a
         # missing `rustup target add ...` when run interactively; otherwise
         # prints a fix block and aborts the batch.
+        _ui_progress.phase("toolchain preflight")
         if not _toolchain_preflight_for_batch(to_build, config, args):
             print("[SYSFORGE] Toolchain pre-flight failed — aborting batch.",
                   file=sys.stderr)
@@ -785,7 +819,8 @@ def _cmd_update_body(args) -> None:
             ),
             active_variant=active_variant,
             pkgdest=pkgdest,
-            review=review_enabled,
+            review=review_mode,
+            timer=timer,
         )
         if outcome.aborted:
             # User aborted at the PKGBUILD review gate — build_core already
@@ -807,6 +842,9 @@ def _cmd_update_body(args) -> None:
     # invoke a single transaction even though the version-check already
     # listed specific packages — running -Syu is what the user would do
     # by hand and stays consistent with `pacman -Syu` semantics.
+    # Hand the bottom row back before pacman -Syu — it's fully interactive
+    # (confirmation prompt, its own progress bars).
+    _ui_progress.phase(None)
     pacman_upgrade_pkgs = sorted(r.pkgbase for r in pending_pacman_upgrade)
     pacman_upgrade_failed = False
     if pacman_upgrade_pkgs and not offline:
@@ -819,7 +857,8 @@ def _cmd_update_body(args) -> None:
             f"package(s): {' '.join(pacman_upgrade_pkgs)}"
         )
         import subprocess as _subprocess
-        rc = _subprocess.run(cmd).returncode
+        with timer.phase("pacman -Syu"):
+            rc = _subprocess.run(cmd).returncode
         if rc != 0:
             _log.error(f"pacman -Syu exited {rc}")
             pacman_upgrade_failed = True
@@ -863,6 +902,8 @@ def _cmd_update_body(args) -> None:
             f"  PGO-skipped: {' '.join(pgo_skipped_pkgs)}"
             " (run 'sysforge run toolchain' to rebuild profdata)"
         )
+
+    _emit_timings(timer, args)
 
     if unified_log_active:
         log.close_unified_log(

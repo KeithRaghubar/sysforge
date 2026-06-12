@@ -6,11 +6,13 @@ empty input, unrecognized input, and EOF is consistent across the codebase.
 The prompt prefix follows the standard ``[SYSFORGE][LEVEL][TAG]`` format
 produced by :func:`sysforge.log.prompt_prefix`.
 
-Two functions are provided:
+Three functions are provided:
 
 * :func:`prompt_text`   — free-form single-line input with a default.
 * :func:`prompt_choice` — single-token choice from a fixed lowercase set,
   re-prompts on unrecognized input by default.
+* :func:`prompt_key`    — single keypress (no Enter) read in cbreak mode,
+  falling back to line input when stdin is not a real terminal.
 
 Plus :func:`is_interactive` for stages that need to gate prompts on a TTY.
 """
@@ -104,3 +106,75 @@ def prompt_choice(
             f"Unrecognized input {raw!r}. "
             f"Valid: {'/'.join(choices_t)} (or ↵ for default)."
         )
+
+
+def prompt_key(
+    msg: str,
+    *,
+    tag: str | None = None,
+    level: str = "UI",
+) -> str:
+    """Prompt for a single keypress — no Enter required.
+
+    Reads one character from stdin in cbreak mode, echoes it followed by a
+    newline (so the transcript still shows what was answered), and returns
+    it lowercased. The caller owns choice validation and any re-prompt loop,
+    matching :func:`prompt_choice`'s contract.
+
+    Fallback: when stdin is not a real terminal (pipes, captured stdin in
+    tests) or raw-mode setup fails, degrades to line-based ``input()`` and
+    returns the first character of the stripped line.
+
+    Control keys: Ctrl-C raises ``KeyboardInterrupt`` (cbreak mode delivers
+    it as ``\\x03`` rather than a signal); Ctrl-D / EOF / unreadable stdin
+    raise ``EOFError`` so callers hit the same abort path as line prompts.
+    A bare Enter (or empty line in fallback mode) returns ``""`` — "no
+    answer", distinct from EOF — so callers can re-prompt.
+    """
+    full = _format_prefix(tag, level) + msg
+
+    def _fallback(prompt: str) -> str:
+        try:
+            raw = input(prompt).strip().lower()
+        except OSError as e:
+            # pytest's captured stdin and other unreadable-stdin scenarios.
+            raise EOFError from e
+        return raw[:1]
+
+    if not sys.stdin.isatty():
+        return _fallback(full)
+    try:
+        import termios
+        import tty
+    except ImportError:
+        return _fallback(full)
+    sys.stdout.write(full)
+    sys.stdout.flush()
+    try:
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+    except (termios.error, OSError, ValueError):
+        # Covers pytest's captured stdin (fileno() raises
+        # io.UnsupportedOperation) and any tty that refuses raw mode.
+        return _fallback("")
+    try:
+        tty.setcbreak(fd)
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    if ch == "\x03":
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        raise KeyboardInterrupt
+    if ch in ("", "\x04"):
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        raise EOFError
+    if ch in ("\r", "\n"):
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return ""
+    echo = ch if ch.isprintable() else ""
+    sys.stdout.write(f"{echo}\n")
+    sys.stdout.flush()
+    return ch.lower()

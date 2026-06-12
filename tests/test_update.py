@@ -399,6 +399,34 @@ def test_dry_run_no_build(update_scenario):
     assert builds == []
 
 
+def test_timings_flag_emits_phase_report(update_scenario, capsys):
+    """--timings promotes the phase wall-clock report to UI output."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.run(
+        _make_args(dry_run=True, timings=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "Phase timings" in out
+    assert "version check" in out
+
+
+def test_no_timings_flag_keeps_report_at_info_level(update_scenario, capsys):
+    """Without --timings the report stays at info level, not promoted to UI."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.run(
+        _make_args(dry_run=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    captured = capsys.readouterr()
+    report_lines = [
+        line for line in (captured.out + captured.err).splitlines()
+        if "Phase timings" in line
+    ]
+    assert report_lines and all("[INFO]" in line for line in report_lines)
+
+
 # ---------------------------------------------------------------------------
 # Phase 4.3 — flag drift (canonical surface; absorbed the removed `converge`)
 # ---------------------------------------------------------------------------

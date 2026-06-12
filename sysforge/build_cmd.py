@@ -63,6 +63,20 @@ def _render_llvm_preflight(names: list[str], config: dict) -> None:
         print(render_preflight(report))
 
 
+def _report_timings(outcome, args) -> None:
+    """Render the phase-timing report from the outcome under [BUILD].
+
+    Always written at info level (lands in the unified log); promoted to UI
+    output when --timings is set.
+    """
+    from sysforge.primitives.timing import PhaseTimer, render_report
+
+    timer = PhaseTimer(records=outcome.phase_records)
+    emit = _log.ui if getattr(args, "timings", False) else _log.info
+    for line in render_report(timer, title="Build phase timings"):
+        emit(line)
+
+
 def _review_config_enabled(config) -> bool:
     """packages.toml ``[build] review`` default for the review gate.
 
@@ -156,10 +170,13 @@ class BuildVerb(Verb):
             extra_flags=extra_flags,
             active_variant=active_variant,
             review=(
-                not getattr(args, "no_review", False)
+                "prompt"
+                if not getattr(args, "no_review", False)
                 and _review_config_enabled(config)
+                else "off"
             ),
         )
+        _report_timings(outcome, args)
         if outcome.aborted:
             # User aborted at the PKGBUILD review gate; build_core already
             # printed the abort line. Exit 2 mirrors the sentinel-refusal code.

@@ -26,16 +26,21 @@ upstream changes arrive as commits via source sync, while uncommitted local
 edits are user-authored (the STATUS_DIVERGED build-with-local-PKGBUILD case)
 and are deliberately not re-presented to their author.
 
-Non-interactive runs (stdin or stdout not a TTY) auto-accept with a warning —
-an unattended ``sysforge update`` must not hang on a prompt. Callers disable
-the gate entirely via ``--no-review`` / ``[build] review = false``.
+Auto-accept paths (no prompt, decision logged per package):
+  * non-interactive runs (stdin or stdout not a TTY) — an unattended
+    ``sysforge update`` must not hang on a prompt;
+  * callers passing ``interactive=False`` — ``sysforge update`` defaults to
+    this so routine batch updates stay unattended; ``--review`` opts back in.
+Callers disable the gate entirely via ``--no-review`` /
+``[build] review = false``.
 
 Owns the ``[REVIEW]`` log tag.
 
 Public API:
     head_commit(pkgbuild_dir)            -> str | None
     commit_exists(pkgbuild_dir, sha)     -> bool
-    review_target(pkgbase, pkgbuild_dir, reviewed_commit) -> str (DECISION_*)
+    review_target(pkgbase, pkgbuild_dir, reviewed_commit,
+                  interactive=True)      -> str (DECISION_*)
 """
 import subprocess
 import sys
@@ -46,6 +51,7 @@ from sysforge import log
 _log = log.get_logger("REVIEW")
 
 from sysforge.primitives.pager import maybe_pager  # noqa: E402
+from sysforge.primitives.prompt import prompt_key  # noqa: E402
 
 # git's well-known empty-tree object id: the diff base for a first review
 # (no reviewed_commit recorded), so a brand-new clone gets a full-content
@@ -92,10 +98,13 @@ def review_target(
     pkgbase: str,
     pkgbuild_dir: Path,
     reviewed_commit: str | None,
+    interactive: bool = True,
 ) -> str:
     """Run the review gate for one package; return a DECISION_* constant.
 
-    Pure with respect to build state — the caller persists the accepted HEAD.
+    ``interactive=False`` auto-accepts source changes with a logged notice
+    instead of prompting (the ``sysforge update`` default). Pure with
+    respect to build state — the caller persists the accepted HEAD.
     """
     head = head_commit(pkgbuild_dir)
     if head is None:
@@ -116,6 +125,12 @@ def review_target(
         base = _EMPTY_TREE
         what = f"first review of this source (full content, HEAD {_short(head)})"
 
+    if not interactive:
+        _log.ui(
+            f"auto-accepted: {pkgbase} — {what}; "
+            "rerun with --review to inspect the diff"
+        )
+        return DECISION_ACCEPT
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         _log.warn(
             f"{pkgbase}: {what} — auto-accepting (non-interactive run); "
@@ -130,10 +145,10 @@ def review_target(
 
     while True:
         try:
-            answer = input(
+            answer = prompt_key(
                 "[REVIEW] [v]iew diff / [a]ccept / [s]kip package / "
                 "a[b]ort run? "
-            ).strip().lower()
+            )
         except (EOFError, KeyboardInterrupt):
             # No answer is not consent — fail to the safe side.
             print()

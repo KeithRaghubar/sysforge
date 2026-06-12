@@ -7,6 +7,9 @@ _sysforge() {
   _arguments -C \
     '(-V --version)'{-V,--version}'[print sysforge version and exit]' \
     '(-v --verbose)'{-v,--verbose}'[increase verbosity (repeat for more: -vv, -vvv)]' \
+    '--py-profile[run the verb under cProfile, print top functions at exit]' \
+    '--py-profile-out[write raw cProfile stats to FILE]:file:_files' \
+    '--timings[print phase wall-clock timing report after build/update]' \
     '1: :_sysforge_commands' \
     '*:: :->args'
 
@@ -145,7 +148,8 @@ _sysforge_update() {
     '--cleansrc[purge src dirs and re-clone before building (only for packages needing rebuild)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
-    '--no-review[skip the PKGBUILD review gate (source-change diff prompt)]' \
+    '(--no-review)--review[prompt to review source-change diffs (default: auto-accept with a logged notice)]' \
+    '(--review)--no-review[skip the PKGBUILD review gate entirely (no auto-accept notices)]' \
     '--no-toolchain-preflight[skip toolchain pre-flight (rust/cmake/meson + lib32 cross targets)]' \
     '--include-stage-owned[include packages owned by a pipeline stage (e.g. kernel-stage linux-custom)]' \
     '--explain-drift[list drifted packages (toolchain-variant + flag drift, with per-key diff), then exit]' \

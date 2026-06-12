@@ -106,6 +106,25 @@ def test_non_tty_auto_accepts_change(tmp_path):
     assert review_target("htop", d, old) == DECISION_ACCEPT
 
 
+def test_interactive_false_auto_accepts_without_prompt(tmp_path, monkeypatch, capsys):
+    """interactive=False (`update`'s auto mode) auto-accepts a changed HEAD
+    with a logged notice and never reads input — even on a TTY."""
+    d = _repo(tmp_path)
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
+    # A TTY that would prompt in interactive mode must not be consulted.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda *a: (_ for _ in ()).throw(AssertionError("prompted")),
+    )
+    assert review_target("htop", d, old, interactive=False) == DECISION_ACCEPT
+    captured = capsys.readouterr()
+    assert "auto-accepted: htop" in captured.out + captured.err
+    assert "--review" in captured.out + captured.err
+
+
 # ---------------------------------------------------------------------------
 # review_target — interactive prompt
 # ---------------------------------------------------------------------------

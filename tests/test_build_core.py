@@ -334,6 +334,56 @@ def test_build_and_install_empty_targets_is_noop():
     assert outcome.built_pkgs == []
 
 
+def test_build_and_install_records_phase_timings(tmp_path):
+    """The outcome carries dep-prep / per-package / install phase records."""
+    target = _make_target(tmp_path)
+    artifact = target.pkgbuild_path.parent / "foo-1-1-x86_64.pkg.tar.zst"
+
+    def fake_run(pkgbuild_path, options=None):
+        _touch_future(artifact)
+
+    with _ctx(_patch_build_env(
+        run_side_effect=fake_run,
+        snapshot_return=frozenset({artifact}),
+        install_capture=lambda paths: True,
+    )):
+        outcome = build_core.build_and_install(
+            [target], config={}, sync_source=False,
+        )
+
+    assert [r.name for r in outcome.phase_records] == [
+        "dep prep", "build: foo", "install",
+    ]
+    assert all(r.duration_ms >= 0 for r in outcome.phase_records)
+
+
+def test_build_and_install_accumulates_on_caller_timer(tmp_path):
+    """A caller-supplied PhaseTimer (the update path) collects the records."""
+    from sysforge.primitives.timing import PhaseRecord, PhaseTimer
+
+    target = _make_target(tmp_path)
+    artifact = target.pkgbuild_path.parent / "foo-1-1-x86_64.pkg.tar.zst"
+
+    def fake_run(pkgbuild_path, options=None):
+        _touch_future(artifact)
+
+    timer = PhaseTimer(records=[PhaseRecord("source sync", 5)])
+    with _ctx(_patch_build_env(
+        run_side_effect=fake_run,
+        snapshot_return=frozenset({artifact}),
+        install_capture=lambda paths: True,
+    )):
+        outcome = build_core.build_and_install(
+            [target], config={}, sync_source=False, timer=timer,
+        )
+
+    assert [r.name for r in timer.records] == [
+        "source sync", "dep prep", "build: foo", "install",
+    ]
+    # outcome aliases the same records list
+    assert outcome.phase_records is timer.records
+
+
 # ---------------------------------------------------------------------------
 # install_built
 # ---------------------------------------------------------------------------
@@ -566,7 +616,7 @@ from sysforge.build_core import DECISION_ABORT, DECISION_SKIP  # noqa: E402
 from sysforge.primitives.build_state import BuildState  # noqa: E402
 
 
-def _run_gated(targets, *, decisions=None, review=True, state_dir=None,
+def _run_gated(targets, *, decisions=None, review="prompt", state_dir=None,
                run_capture=None):
     """Drive build_and_install with the gate decision function stubbed and
     the build/install externals from _patch_build_env neutralised."""
@@ -575,9 +625,9 @@ def _run_gated(targets, *, decisions=None, review=True, state_dir=None,
     def _fake_run(pkgbuild_path, options=None):
         calls.append(Path(pkgbuild_path))
 
-    def _decide(pkgbase, pkgbuild_dir, reviewed_commit):
+    def _decide(pkgbase, pkgbuild_dir, reviewed_commit, interactive=True):
         if run_capture is not None:
-            run_capture.append((pkgbase, reviewed_commit))
+            run_capture.append((pkgbase, reviewed_commit, interactive))
         return decisions[pkgbase]
 
     with contextlib.ExitStack() as stack:
@@ -637,9 +687,25 @@ def test_review_gate_all_skipped_short_circuits(tmp_path):
 def test_review_disabled_never_consults_gate(tmp_path):
     foo = _make_target(tmp_path, "foo")
     outcome, calls, rt = _run_gated(
-        [foo], decisions=None, review=False, state_dir=tmp_path / "state",
+        [foo], decisions=None, review="off", state_dir=tmp_path / "state",
     )
     rt.assert_not_called()
+    assert calls == [foo.pkgbuild_path]
+
+
+def test_review_auto_mode_passes_interactive_false(tmp_path):
+    """review="auto" (the `update` default) consults the gate with
+    interactive=False so changes auto-accept instead of prompting."""
+    foo = _make_target(tmp_path, "foo")
+    seen = []
+    outcome, calls, _ = _run_gated(
+        [foo],
+        decisions={"foo": "accept"},
+        review="auto",
+        state_dir=tmp_path / "state",
+        run_capture=seen,
+    )
+    assert seen == [("foo", None, False)]
     assert calls == [foo.pkgbuild_path]
 
 
@@ -658,4 +724,4 @@ def test_review_gate_passes_recorded_reviewed_commit(tmp_path):
         state_dir=state_dir,
         run_capture=seen,
     )
-    assert seen == [("foo", "abc123")]
+    assert seen == [("foo", "abc123", True)]
