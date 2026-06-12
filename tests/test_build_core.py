@@ -205,6 +205,9 @@ def _patch_build_env(*, run_side_effect, snapshot_return, install_capture):
         patch("sysforge.build_core.filter_pkgs_to_installed",
               side_effect=lambda files, inst: (list(files), [])),
         patch("sysforge.build_core.batch_install_pkgs", side_effect=install_capture),
+        # Isolate from the host's makepkg.conf — a real PKGDEST would
+        # redirect every search_dir away from the tmp_path PKGBUILD dirs.
+        patch("sysforge.build_core.get_pkgdest", return_value=None),
         patch("sysforge.primitives.cache_probe.reset_session"),
         patch("sysforge.primitives.cache_probe.emit_session_report"),
     ]
@@ -382,6 +385,257 @@ def test_build_and_install_accumulates_on_caller_timer(tmp_path):
     ]
     # outcome aliases the same records list
     assert outcome.phase_records is timer.records
+
+
+# ---------------------------------------------------------------------------
+# Intra-batch dependency ordering + just-in-time install
+# ---------------------------------------------------------------------------
+
+def _write_target(tmp_path, pkgbase, body):
+    """Target whose PKGBUILD has real depends/provides content — the ordering
+    pass re-parses the file, so the text must carry the arrays."""
+    pkgdir = tmp_path / pkgbase
+    pkgdir.mkdir(exist_ok=True)
+    (pkgdir / "PKGBUILD").write_text(body)
+    return build_core.target_from_pkgbuild(pkgdir / "PKGBUILD")
+
+
+def _ordered_build_env(events):
+    """Patch stack that records ("build", pkgbase) / ("install", [filenames])
+    events in execution order, with per-target artifact dirs (no shared
+    snapshot, unlike _patch_build_env)."""
+    def fake_run(pkgbuild_path, options=None):
+        base = Path(pkgbuild_path).parent.name
+        events.append(("build", base))
+        _touch_future(
+            Path(pkgbuild_path).parent / f"{base}-1-1-x86_64.pkg.tar.zst"
+        )
+
+    def fake_install(paths):
+        events.append(("install", sorted(p.name for p in paths)))
+        return True
+
+    return [
+        patch("sysforge.build_core.prepare_deps"),
+        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run),
+        patch("sysforge.build_core.snapshot_pkg_dir",
+              side_effect=lambda d: frozenset(Path(d).glob("*.pkg.tar*"))),
+        patch("sysforge.build_core.get_all_installed_packages", return_value={}),
+        patch("sysforge.build_core.filter_pkgs_to_installed",
+              side_effect=lambda files, inst: (list(files), [])),
+        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.build_core.get_pkgdest", return_value=None),
+        patch("sysforge.primitives.cache_probe.reset_session"),
+        patch("sysforge.primitives.cache_probe.emit_session_report"),
+    ]
+
+
+def test_intra_batch_dep_builds_and_installs_before_dependent(tmp_path):
+    """Alphabetical-adversarial: 'aa-loader' makedepends on 'zz-headers',
+    which sorts after it. The dep must build first AND be installed before
+    the dependent's build starts (the Vulkan 1.4.354 stale-headers failure:
+    deferred bulk install left the sibling configuring against the old
+    installed version)."""
+    loader = _write_target(
+        tmp_path, "aa-loader",
+        "pkgname=aa-loader\nmakedepends=('zz-headers' 'cmake')\n",
+    )
+    headers = _write_target(tmp_path, "zz-headers", "pkgname=zz-headers\n")
+
+    events = []
+    with _ctx(_ordered_build_env(events)):
+        outcome = build_core.build_and_install(
+            [loader, headers], config={}, sync_source=False,
+        )
+
+    assert events == [
+        ("build", "zz-headers"),
+        ("install", ["zz-headers-1-1-x86_64.pkg.tar.zst"]),
+        ("build", "aa-loader"),
+        ("install", ["aa-loader-1-1-x86_64.pkg.tar.zst"]),
+    ]
+    assert outcome.built_pkgs == ["zz-headers", "aa-loader"]
+    assert outcome.install_failed is False
+    # Each artifact reported exactly once (JIT-installed files are not
+    # re-installed by the final bulk pass).
+    assert sorted(p.name for p in outcome.built_pkg_files) == [
+        "aa-loader-1-1-x86_64.pkg.tar.zst",
+        "zz-headers-1-1-x86_64.pkg.tar.zst",
+    ]
+
+
+def test_intra_batch_edge_via_provides_with_version_constraint(tmp_path):
+    """The dep name usually targets a *provides* of the sibling (vulkan-headers
+    is provided by vulkan-headers-git), and carries a version constraint."""
+    loader = _write_target(
+        tmp_path, "aa-loader-git",
+        "pkgname=aa-loader-git\nmakedepends=('vulkan-headers>=1.4.354')\n",
+    )
+    headers = _write_target(
+        tmp_path, "zz-headers-git",
+        "pkgname=zz-headers-git\nprovides=('vulkan-headers=1.4.354')\n",
+    )
+
+    events = []
+    with _ctx(_ordered_build_env(events)):
+        outcome = build_core.build_and_install(
+            [loader, headers], config={}, sync_source=False,
+        )
+
+    assert [e for e in events if e[0] == "build"] == [
+        ("build", "zz-headers-git"), ("build", "aa-loader-git"),
+    ]
+    assert outcome.built_pkgs == ["zz-headers-git", "aa-loader-git"]
+
+
+def test_intra_batch_edge_via_soname_provides(tmp_path):
+    """Soname deps (libvulkan.so) match a sibling's soname provides — the
+    vulkan-validation-layers → vulkan-icd-loader edge."""
+    layers = _write_target(
+        tmp_path, "aa-layers-git",
+        "pkgname=aa-layers-git\ndepends=('libvulkan.so')\n",
+    )
+    icd = _write_target(
+        tmp_path, "zz-icd-git",
+        "pkgname=zz-icd-git\nprovides=('libvulkan.so')\n",
+    )
+
+    events = []
+    with _ctx(_ordered_build_env(events)):
+        outcome = build_core.build_and_install(
+            [layers, icd], config={}, sync_source=False,
+        )
+
+    assert outcome.built_pkgs == ["zz-icd-git", "aa-layers-git"]
+
+
+def test_intra_batch_cycle_warns_and_keeps_original_order(tmp_path):
+    a = _write_target(
+        tmp_path, "aa-pkg", "pkgname=aa-pkg\ndepends=('zz-pkg')\n",
+    )
+    z = _write_target(
+        tmp_path, "zz-pkg", "pkgname=zz-pkg\ndepends=('aa-pkg')\n",
+    )
+
+    events = []
+    with _ctx(_ordered_build_env(events)):
+        outcome = build_core.build_and_install(
+            [a, z], config={}, sync_source=False,
+        )
+
+    # Original order preserved on a cycle; both still build.
+    assert [e for e in events if e[0] == "build"] == [
+        ("build", "aa-pkg"), ("build", "zz-pkg"),
+    ]
+    assert outcome.built_pkgs == ["aa-pkg", "zz-pkg"]
+
+
+def test_intra_batch_no_edges_keeps_order_and_single_install(tmp_path):
+    """Regression guard: unrelated targets keep their order and get exactly
+    one (final) bulk install — no JIT churn."""
+    targets = [
+        _write_target(tmp_path, name, f"pkgname={name}\n")
+        for name in ("ccc", "aaa", "bbb")
+    ]
+
+    events = []
+    with _ctx(_ordered_build_env(events)):
+        outcome = build_core.build_and_install(
+            targets, config={}, sync_source=False,
+        )
+
+    assert events == [
+        ("build", "ccc"),
+        ("build", "aaa"),
+        ("build", "bbb"),
+        ("install", [
+            "aaa-1-1-x86_64.pkg.tar.zst",
+            "bbb-1-1-x86_64.pkg.tar.zst",
+            "ccc-1-1-x86_64.pkg.tar.zst",
+        ]),
+    ]
+    assert outcome.built_pkgs == ["ccc", "aaa", "bbb"]
+
+
+def test_intra_batch_failed_dep_dependent_still_builds(tmp_path):
+    """A failed intra-batch dep only warns — the dependent builds against the
+    installed version and any failure of its own is recorded normally."""
+    loader = _write_target(
+        tmp_path, "aa-loader",
+        "pkgname=aa-loader\nmakedepends=('zz-headers')\n",
+    )
+    headers = _write_target(tmp_path, "zz-headers", "pkgname=zz-headers\n")
+
+    events = []
+    env = _ordered_build_env(events)
+
+    def failing_run(pkgbuild_path, options=None):
+        base = Path(pkgbuild_path).parent.name
+        events.append(("build", base))
+        if base == "zz-headers":
+            raise RuntimeError("compile blew up")
+        _touch_future(
+            Path(pkgbuild_path).parent / f"{base}-1-1-x86_64.pkg.tar.zst"
+        )
+
+    env[1] = patch(
+        "sysforge.primitives.makepkg_wrapper.run", side_effect=failing_run
+    )
+    with _ctx(env + [
+        patch("sysforge.build_core._record_build_failure"),
+    ]):
+        outcome = build_core.build_and_install(
+            [loader, headers], config={}, sync_source=False,
+        )
+
+    assert outcome.failed_pkgs == ["zz-headers"]
+    assert outcome.built_pkgs == ["aa-loader"]
+    # No artifact from the failed dep: only the dependent's final install.
+    assert events == [
+        ("build", "zz-headers"),
+        ("build", "aa-loader"),
+        ("install", ["aa-loader-1-1-x86_64.pkg.tar.zst"]),
+    ]
+
+
+def test_build_and_install_resolves_system_pkgdest(tmp_path):
+    """When the system makepkg.conf sets PKGDEST, artifacts land there — the
+    snapshot (and hence JIT + final install) must search it even when the
+    caller doesn't pass ``pkgdest`` (the `build` verb doesn't; only `update`
+    resolved it, so `sysforge build` silently installed nothing)."""
+    target = _make_target(tmp_path, "foo")
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    artifact = pkgdest / "foo-1-1-x86_64.pkg.tar.zst"
+
+    snapshot_dirs = []
+
+    def fake_run(pkgbuild_path, options=None):
+        _touch_future(artifact)
+
+    installs = []
+    with _ctx([
+        patch("sysforge.build_core.prepare_deps"),
+        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run),
+        patch("sysforge.build_core.snapshot_pkg_dir",
+              side_effect=lambda d: snapshot_dirs.append(Path(d))
+              or frozenset(Path(d).glob("*.pkg.tar*"))),
+        patch("sysforge.build_core.get_all_installed_packages", return_value={}),
+        patch("sysforge.build_core.filter_pkgs_to_installed",
+              side_effect=lambda files, inst: (list(files), [])),
+        patch("sysforge.build_core.batch_install_pkgs",
+              side_effect=lambda paths: installs.append(list(paths)) or True),
+        patch("sysforge.build_core.get_pkgdest", return_value=pkgdest),
+        patch("sysforge.primitives.cache_probe.reset_session"),
+        patch("sysforge.primitives.cache_probe.emit_session_report"),
+    ]):
+        outcome = build_core.build_and_install(
+            [target], config={}, sync_source=False,
+        )
+
+    assert snapshot_dirs == [pkgdest]          # searched PKGDEST, not srcdir
+    assert installs == [[artifact]]
+    assert outcome.built_pkgs == ["foo"]
 
 
 # ---------------------------------------------------------------------------

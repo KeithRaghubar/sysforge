@@ -28,7 +28,7 @@ from sysforge.primitives.makepkg_env import _effective_build_dir
 from sysforge.primitives.makepkg_flags import INSTALL_FLAGS
 from sysforge.primitives.profile import CONF_KEY_MAP
 from sysforge.primitives.prompt import prompt_choice
-from sysforge.primitives.pty_runner import run_with_pty
+from sysforge.primitives.pty_runner import run_with_pty, strip_ansi
 from sysforge.primitives.resource_guard import lift_for_child
 
 _makepkg_log = log.get_logger("MAKEPKG")
@@ -203,6 +203,12 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
     def _on_line(stripped: str) -> None:
         nonlocal failed_stage, toolchain_mismatch, already_built
+        # The pty makes the child think it has a terminal, so compilers embed
+        # color/erase/OSC-8-hyperlink escapes *inside* diagnostic tokens (GCC
+        # hyperlinks the quoted option name). Strip them before any substring
+        # match, capture, or logging — raw bytes still reach the terminal via
+        # forward_bytes.
+        stripped = strip_ansi(stripped)
         captured_lines.append(stripped)
         if "A failure occurred in prepare()." in stripped:
             failed_stage = "prepare"
@@ -233,7 +239,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # [SYSFORGE][DEBUG][MAKEPKG] prefix and ends up in the per-package log
         # automatically — visible at -vvv on the terminal, always in the file.
         if latest:
-            _makepkg_log.debug(f"[heartbeat] {latest}")
+            _makepkg_log.debug(f"[heartbeat] {strip_ansi(latest)}")
         else:
             _makepkg_log.debug(f"[heartbeat] no output for ~{MAKEPKG_HEARTBEAT_S:.0f}s")
 

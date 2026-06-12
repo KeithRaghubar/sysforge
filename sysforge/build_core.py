@@ -46,6 +46,7 @@ from sysforge.primitives.pacman import (
     filter_missing_deps,
     batch_install_makedeps,
     get_all_installed_packages,
+    get_pkgdest,
 )
 from sysforge.primitives.aur import repo_packages
 # Module-top (not lazy) so tests can monkeypatch
@@ -406,6 +407,88 @@ def make_build_options(stage: str, options, **overrides):
 # Build + install
 # ---------------------------------------------------------------------------
 
+def _order_targets_by_intra_deps(targets) -> tuple[list, dict[str, set[str]]]:
+    """Topologically order batch targets so a member that build-depends on
+    another member builds after it.
+
+    The recursive AUR resolver only orders *missing* deps — a batch sibling
+    that is already installed (at a stale version) never creates an edge, so
+    an alphabetical batch can configure against the old installed version of
+    a sibling whose new version sits unbuilt later in the batch (the Vulkan
+    1.4.354 headers/loader failure). Edges are derived from each target's
+    ``depends`` + ``makedepends`` + ``checkdepends`` matched against every
+    other target's ``pkgname``s and ``provides`` (version constraints
+    stripped; soname provides like ``libvulkan.so`` participate — the parse
+    is purely intra-batch, nothing external is queried).
+
+    Returns ``(ordered_targets, intra_deps)`` where ``intra_deps`` maps a
+    pkgbase to the batch pkgbases it depends on — the build loop uses it to
+    install a freshly built dep before its dependent configures. On a
+    dependency cycle the original order is kept (warned), matching the
+    pre-ordering behaviour.
+    """
+    from graphlib import CycleError, TopologicalSorter
+
+    from sysforge.primitives.aur_resolve import _looks_unresolved, _strip_version
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    if len(targets) < 2:
+        return list(targets), {}
+
+    by_pkgbase = {t.pkgbase: t for t in targets}
+    provider_of: dict[str, str] = {}
+    metas: dict[str, dict] = {}
+    for t in targets:
+        try:
+            globals_ = parse_pkgbuild(t.pkgbuild_path).get("globals", {})
+        except Exception as e:
+            _log.debug(f"intra-batch dep parse failed for {t.pkgbase}: {e}")
+            globals_ = {}
+        metas[t.pkgbase] = globals_
+        for pn in (getattr(t, "pkgnames", None) or []):
+            provider_of.setdefault(pn, t.pkgbase)
+        for prov in globals_.get("provides", []) or []:
+            if _looks_unresolved(prov):
+                continue
+            provider_of.setdefault(_strip_version(prov), t.pkgbase)
+
+    intra_deps: dict[str, set[str]] = {}
+    for t in targets:
+        dep_bases: set[str] = set()
+        for key in ("depends", "makedepends", "checkdepends"):
+            for spec in metas[t.pkgbase].get(key, []) or []:
+                if _looks_unresolved(spec):
+                    continue
+                dep_base = provider_of.get(_strip_version(spec))
+                if dep_base is not None and dep_base != t.pkgbase:
+                    dep_bases.add(dep_base)
+        if dep_bases:
+            intra_deps[t.pkgbase] = dep_bases
+
+    if not intra_deps:
+        return list(targets), {}
+
+    sorter = TopologicalSorter()
+    for t in targets:  # insertion order keeps unrelated members stable
+        sorter.add(t.pkgbase, *sorted(intra_deps.get(t.pkgbase, ())))
+    try:
+        ordered_names = list(sorter.static_order())
+    except CycleError as e:
+        _log.warn(
+            f"intra-batch dependency cycle ({' -> '.join(e.args[1])}) — "
+            "keeping original build order"
+        )
+        return list(targets), intra_deps
+
+    ordered = [by_pkgbase[n] for n in ordered_names if n in by_pkgbase]
+    if [t.pkgbase for t in ordered] != [t.pkgbase for t in targets]:
+        _log.info(
+            "Reordered batch for intra-batch deps: "
+            + " ".join(t.pkgbase for t in ordered)
+        )
+    return ordered, intra_deps
+
+
 def build_and_install(
     targets,
     *,
@@ -530,6 +613,28 @@ def build_and_install(
         if not targets:
             return outcome
 
+    # Artifacts land in PKGDEST when the system makepkg.conf sets one — the
+    # snapshot/AlreadyBuilt scans must look there, not in the PKGBUILD dir.
+    # Resolved here (not per caller) so `build` and `update` cannot drift:
+    # `update` passes its own resolved value; a caller passing None gets the
+    # same system-conf lookup.
+    if pkgdest is None:
+        pkgdest = get_pkgdest()
+
+    # ── Intra-batch dependency ordering ───────────────────────────────────
+    # A batch member whose new version is a build dep of another member must
+    # build *and install* first — the dependent would otherwise configure
+    # against the stale installed version (prepare_deps only handles missing
+    # deps; installed siblings never create an edge there).
+    targets, intra_deps = _order_targets_by_intra_deps(targets)
+
+    # The pkgnames the user explicitly asked to build are always installed,
+    # even if not currently on the system (a fresh build). For ``update`` these
+    # are already-installed packages, so the union is a no-op there.
+    requested = {
+        pn for t in targets for pn in (getattr(t, "pkgnames", None) or [])
+    }
+
     pkgbuild_paths = [t.pkgbuild_path for t in targets if t.pkgbuild_path]
     building_names = {t.pkgbase for t in targets}
     _ui_progress.phase("resolving dependencies")
@@ -555,9 +660,49 @@ def build_and_install(
         else BATCH_STRIP_FLAGS
     )
 
+    built_files_by_pkgbase: dict[str, list[Path]] = {}
+    # Files handed to the just-in-time install (skipped by the final bulk
+    # install) vs. the subset it actually installed (filter-survivors, kept
+    # for outcome reporting).
+    jit_handled: set[Path] = set()
+    jit_files: list[Path] = []
+
     with _ui_progress.tracker(len(targets), "building") as _tick:
         for target in targets:
             _tick(target.pkgbase)
+            # ── Just-in-time install of intra-batch deps ──────────────────
+            # Deferred bulk install would leave this target configuring
+            # against the stale installed version of a sibling we just
+            # rebuilt — install the sibling's artifacts now. A failed sibling
+            # only warns: the dependent may still build against the
+            # installed version, and its own failure gets recorded normally.
+            dep_bases = intra_deps.get(target.pkgbase, set())
+            if dep_bases:
+                failed_deps = dep_bases & set(outcome.failed_pkgs)
+                if failed_deps:
+                    _log.warn(
+                        f"{target.pkgbase}: intra-batch dep(s) "
+                        f"{', '.join(sorted(failed_deps))} failed to build — "
+                        "building against the installed version"
+                    )
+                pending = [
+                    f for dep in sorted(dep_bases)
+                    for f in built_files_by_pkgbase.get(dep, [])
+                    if f not in jit_handled
+                ]
+                if pending:
+                    _log.info(
+                        f"{target.pkgbase}: installing intra-batch dep(s) "
+                        f"before building: {', '.join(sorted(dep_bases))}"
+                    )
+                    with timer.phase(f"install deps: {target.pkgbase}"):
+                        installed_files, jit_failed = install_built(
+                            pending, always_install=requested
+                        )
+                    jit_handled.update(pending)
+                    jit_files.extend(installed_files)
+                    if jit_failed:
+                        outcome.install_failed = True
             search_dir = pkgdest if pkgdest else target.pkgbuild_path.parent
             build_start = time.time()
             with timer.phase(f"build: {target.pkgbase}"):
@@ -589,6 +734,7 @@ def build_and_install(
                         if p.stat().st_mtime >= build_start
                     )
                     outcome.built_pkg_files.extend(new_pkgs)
+                    built_files_by_pkgbase[target.pkgbase] = new_pkgs
                     outcome.built_pkgs.append(target.pkgbase)
                 except PGOBuildSkipped as e:
                     _log.warn(str(e))
@@ -603,6 +749,7 @@ def build_and_install(
                             "installing existing artifact"
                         )
                         outcome.built_pkg_files.extend(existing)
+                        built_files_by_pkgbase[target.pkgbase] = list(existing)
                         outcome.built_pkgs.append(target.pkgbase)
                     else:
                         msg = (
@@ -617,18 +764,19 @@ def build_and_install(
                     outcome.failed_pkgs.append(target.pkgbase)
                     _record_build_failure(state_dir, target, e)
 
-    # The pkgnames the user explicitly asked to build are always installed,
-    # even if not currently on the system (a fresh build). For ``update`` these
-    # are already-installed packages, so the union is a no-op there.
-    requested = {
-        pn for t in targets for pn in (getattr(t, "pkgnames", None) or [])
-    }
-    if outcome.built_pkg_files:
+    # Final bulk install: everything built this run except files the
+    # just-in-time path already installed (re-running pacman -U on those
+    # would only re-trigger hooks). ``install_failed`` accumulates across
+    # both paths.
+    remaining = [f for f in outcome.built_pkg_files if f not in jit_handled]
+    if remaining:
         _ui_progress.phase("installing built packages")
     with timer.phase("install"):
-        outcome.built_pkg_files, outcome.install_failed = install_built(
-            outcome.built_pkg_files, always_install=requested
+        installed_now, final_failed = install_built(
+            remaining, always_install=requested
         )
+    outcome.built_pkg_files = jit_files + installed_now
+    outcome.install_failed = outcome.install_failed or final_failed
     _ui_progress.phase(None)
 
     if cache_report:

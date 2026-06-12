@@ -520,6 +520,42 @@ def test_toolchain_mismatch_raises_on_curly_quoted_error(tmp_path):
     assert raised == "mismatch"
 
 
+def test_toolchain_mismatch_raised_despite_ansi_escapes(tmp_path):
+    """GCC >= 16 under a pty wraps the quoted option name in an OSC-8
+    hyperlink and erase-line sequences, splitting '-flto=' mid-token.
+    Classification must strip escapes before matching (gpu-burn regression:
+    the reactive GCC fallback never fired, so the build hard-failed)."""
+    import subprocess as _sp
+
+    pb = _fake_pkgbuild(tmp_path)
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+
+    # Byte-faithful reconstruction of the gpu-burn-git failure line.
+    output = [
+        "cc1plus: error: unrecognized argument to ‘\x1b[K"
+        "\x1b]8;;https://gcc.gnu.org/onlinedocs/gcc-16.1.0/gcc/"
+        "Optimize-Options.html#index-flto\x1b\\-flto=\x1b]8;;\x1b\\"
+        "\x1b[K’ option: ‘\x1b[Kthin\x1b[K’\n",
+        "==> ERROR: A failure occurred in build().\n",
+    ]
+
+    clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/root"}
+    with patch.dict(os.environ, clean_env, clear=True):
+        with patch("sysforge.primitives.makepkg_invoke.run_with_pty",
+                   side_effect=_pty_with_lines(output, 2)):
+            try:
+                invoke_makepkg(pb, conf, {})
+            except ToolchainMismatchError:
+                raised = "mismatch"
+            except _sp.CalledProcessError:
+                raised = "generic"
+            else:
+                raised = "none"
+
+    assert raised == "mismatch"
+
+
 def test_toolchain_mismatch_not_raised_on_unrelated_failure(tmp_path):
     """Non-matching errors raise plain CalledProcessError, not ToolchainMismatchError."""
     import subprocess as _sp

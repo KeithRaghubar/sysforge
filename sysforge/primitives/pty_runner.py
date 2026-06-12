@@ -32,6 +32,7 @@ import errno
 import fcntl
 import os
 import pty
+import re
 import select
 import shutil
 import signal
@@ -43,6 +44,27 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
+
+# Terminal escape sequences a pty child may embed in its output. Because the
+# child sees a tty, compilers emit SGR colors, erase-line (CSI K), and OSC-8
+# hyperlinks even in "non-interactive" builds — GCC >= 16 wraps quoted option
+# names in OSC-8 links, splitting the visible text mid-token. Order matters:
+# OSC must precede the bare two-byte branch (ESC ] would otherwise match it).
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"  # OSC (hyperlinks, titles), BEL/ST-terminated
+    r"|\x1b\[[0-9;:?]*[ -/]*[@-~]"         # CSI (SGR colors, erase-line K)
+    r"|\x1b[@-Z\\-_]"                      # remaining two-byte C1 escapes
+)
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI/OSC terminal escape sequences from *text*.
+
+    Use this before substring-matching pty-captured output: escape bytes can
+    sit inside the token being matched (e.g. GCC's OSC-8-hyperlinked
+    ``'-flto='``), so patterns must run against the visible text only.
+    """
+    return _ANSI_ESCAPE_RE.sub("", text)
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:

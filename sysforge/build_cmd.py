@@ -77,6 +77,33 @@ def _report_timings(outcome, args) -> None:
         emit(line)
 
 
+def _print_build_summary(outcome) -> None:
+    """End-of-run totals for multi-package builds, mirroring ``update``'s
+    summary block. Single-package runs skip it — the per-package build/install
+    narration already tells the whole story there."""
+    parts = [
+        f"{len(outcome.built_pkgs)} built",
+        f"{len(outcome.failed_pkgs)} failed",
+    ]
+    if outcome.review_skipped:
+        parts.append(f"{len(outcome.review_skipped)} skipped at review")
+    if outcome.pgo_skipped_pkgs:
+        parts.append(f"{len(outcome.pgo_skipped_pkgs)} pgo-skipped")
+    suffix = " (install FAILED)" if outcome.install_failed else ""
+    _log.ui(f"\n[SYSFORGE] Build complete: {', '.join(parts)}{suffix}.")
+    if outcome.built_pkgs:
+        _log.ui(f"  Built:       {' '.join(outcome.built_pkgs)}")
+    if outcome.failed_pkgs:
+        _log.ui(f"  Failed:      {' '.join(outcome.failed_pkgs)}")
+    if outcome.review_skipped:
+        _log.ui(f"  Skipped:     {' '.join(outcome.review_skipped)} (PKGBUILD review)")
+    if outcome.pgo_skipped_pkgs:
+        _log.ui(
+            f"  PGO-skipped: {' '.join(outcome.pgo_skipped_pkgs)}"
+            " (run 'sysforge run toolchain' to rebuild profdata)"
+        )
+
+
 def _review_config_enabled(config) -> bool:
     """packages.toml ``[build] review`` default for the review gate.
 
@@ -176,6 +203,8 @@ class BuildVerb(Verb):
                 else "off"
             ),
         )
+        if len(targets) > 1 and not outcome.aborted:
+            _print_build_summary(outcome)
         _report_timings(outcome, args)
         if outcome.aborted:
             # User aborted at the PKGBUILD review gate; build_core already

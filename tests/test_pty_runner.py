@@ -9,7 +9,7 @@ import sys
 import threading
 from types import SimpleNamespace
 
-from sysforge.primitives.pty_runner import run_with_pty
+from sysforge.primitives.pty_runner import run_with_pty, strip_ansi
 
 
 def _capture_stdout_buffer(monkeypatch) -> io.BytesIO:
@@ -188,3 +188,31 @@ def test_idle_callback_fires_with_none_on_silence(tmp_path):
     )
     assert rc == 0
     assert None in idle
+
+
+def test_strip_ansi_removes_osc8_hyperlinks_inside_tokens():
+    """GCC >= 16 wraps quoted option names in OSC-8 hyperlinks under a pty;
+    the visible token must survive contiguously for substring matching."""
+    line = (
+        "cc1plus: error: unrecognized argument to ‘\x1b[K"
+        "\x1b]8;;https://gcc.gnu.org/onlinedocs/gcc-16.1.0/gcc/"
+        "Optimize-Options.html#index-flto\x1b\\-flto=\x1b]8;;\x1b\\"
+        "\x1b[K’ option: ‘\x1b[Kthin\x1b[K’"
+    )
+    assert strip_ansi(line) == (
+        "cc1plus: error: unrecognized argument to "
+        "‘-flto=’ option: ‘thin’"
+    )
+
+
+def test_strip_ansi_removes_csi_and_plain_text_passthrough():
+    # SGR colors + erase-line, as makepkg emits them.
+    assert strip_ansi("\x1b[1m\x1b[31m==> ERROR:\x1b[0m done") == "==> ERROR: done"
+    # Text without escapes is returned unchanged.
+    assert strip_ansi("plain text 'quoted'") == "plain text 'quoted'"
+
+
+def test_strip_ansi_tolerates_unterminated_osc():
+    # An OSC split across read chunks can reach the matcher unterminated;
+    # stripping must not swallow the rest of the line or raise.
+    assert strip_ansi("before \x1b]8;;https://example.com") == "before "
