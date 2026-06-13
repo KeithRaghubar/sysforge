@@ -37,7 +37,11 @@ _log = log.get_logger("PACKAGES")
 from pathlib import Path
 
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives.config import expand_package_groups, find_pkgbuild
+from sysforge.primitives.config import (
+    expand_package_groups,
+    find_pkgbuild,
+    resolve_pkgbuild_src_dir,
+)
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 from sysforge.build_core import make_build_options
@@ -90,10 +94,7 @@ def _resolve_pkgbuild(name, build_cfg, config):
 
     Raises RuntimeError (wrapping FileNotFoundError) if nothing is found.
     """
-    pkgbuild_src_dir = (
-        build_cfg.get("pkgbuild_src_dir")
-        or config.get("paths", {}).get("pkgbuild_src_dir")
-    )
+    pkgbuild_src_dir = resolve_pkgbuild_src_dir(config, build_cfg)
     lookup_config = {"paths": {"pkgbuild_src_dir": pkgbuild_src_dir}} if pkgbuild_src_dir else None
     try:
         return find_pkgbuild(name, lookup_config)

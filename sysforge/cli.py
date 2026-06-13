@@ -814,7 +814,7 @@ def _build_parser() -> argparse.ArgumentParser:
     from sysforge import __version__
     parser = argparse.ArgumentParser(
         prog="sysforge",
-        description="Arch Linux AUR helper with compiler-optimized builds.",
+        description="Arch Linux build and maintenance suite with compiler-optimized builds.",
     )
     parser.add_argument(
         "-V", "--version",

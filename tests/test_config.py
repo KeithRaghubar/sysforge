@@ -369,3 +369,58 @@ class TestFindPkgbuild:
 
         assert observed_parent_exists.get("before") is True
         assert result == (src_dir / "htop" / "PKGBUILD").resolve()
+
+
+# ---------------------------------------------------------------------------
+# resolve_pkgbuild_src_dir — dual-key resolution + mismatch warning
+# ---------------------------------------------------------------------------
+
+class TestResolvePkgbuildSrcDir:
+    @pytest.fixture(autouse=True)
+    def _reset_warn_guard(self):
+        import sysforge.primitives.config as cfg
+        cfg._src_dir_mismatch_warned = False
+        yield
+        cfg._src_dir_mismatch_warned = False
+
+    def test_build_key_wins(self):
+        from sysforge.primitives.config import resolve_pkgbuild_src_dir
+        config = {"paths": {"pkgbuild_src_dir": "~/other"}}
+        assert resolve_pkgbuild_src_dir(
+            config, {"pkgbuild_src_dir": "~/src"}) == "~/src"
+
+    def test_paths_fallback(self):
+        from sysforge.primitives.config import resolve_pkgbuild_src_dir
+        config = {"paths": {"pkgbuild_src_dir": "~/src"}}
+        assert resolve_pkgbuild_src_dir(config, {}) == "~/src"
+        assert resolve_pkgbuild_src_dir(config, None) == "~/src"
+
+    def test_neither_set_is_none(self):
+        from sysforge.primitives.config import resolve_pkgbuild_src_dir
+        assert resolve_pkgbuild_src_dir({}, {}) is None
+
+    def test_mismatch_warns_once(self, capsys):
+        from sysforge.primitives.config import resolve_pkgbuild_src_dir
+        config = {"paths": {"pkgbuild_src_dir": "~/other"}}
+        build_cfg = {"pkgbuild_src_dir": "~/src"}
+        resolve_pkgbuild_src_dir(config, build_cfg)
+        out = capsys.readouterr()
+        assert "mismatch" in out.out + out.err
+        # Second call is silent — per-run warning, not per-package.
+        resolve_pkgbuild_src_dir(config, build_cfg)
+        out2 = capsys.readouterr()
+        assert "mismatch" not in out2.out + out2.err
+
+    def test_equal_values_silent(self, capsys):
+        from sysforge.primitives.config import resolve_pkgbuild_src_dir
+        config = {"paths": {"pkgbuild_src_dir": "~/src"}}
+        assert resolve_pkgbuild_src_dir(
+            config, {"pkgbuild_src_dir": "~/src"}) == "~/src"
+        out = capsys.readouterr()
+        assert "mismatch" not in out.out + out.err
+
+    def test_one_key_set_silent(self, capsys):
+        from sysforge.primitives.config import resolve_pkgbuild_src_dir
+        resolve_pkgbuild_src_dir({}, {"pkgbuild_src_dir": "~/src"})
+        out = capsys.readouterr()
+        assert "mismatch" not in out.out + out.err

@@ -186,8 +186,141 @@ def test_prepare_deps_makedep_failure_is_nonfatal(tmp_path):
 
 def test_prepare_deps_noop_on_empty():
     with patch("sysforge.build_core.collect_builddeps") as cm:
-        build_core.prepare_deps([], {})
+        assert build_core.prepare_deps([], {}) is True
     cm.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# prepare_deps — dependency review gate
+# ---------------------------------------------------------------------------
+
+def _dep_gate_patches(aur_deps):
+    """Patch stack for the dep-gate tests: no repo deps, canned AUR deps."""
+    return [
+        patch("sysforge.build_core.collect_builddeps", return_value=[]),
+        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
+        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
+              return_value=aur_deps),
+    ]
+
+
+def test_prepare_deps_review_abort_returns_false(tmp_path):
+    """A dep-gate abort stops before any dep build and reports False."""
+    target = _make_target(tmp_path)
+    dep = SimpleNamespace(
+        name="libdep", source="aur",
+        pkgbuild_path=tmp_path / "libdep" / "PKGBUILD",
+    )
+    with contextlib.ExitStack() as stack:
+        for p in _dep_gate_patches([dep]):
+            stack.enter_context(p)
+        build_aur = stack.enter_context(
+            patch("sysforge.primitives.aur_resolve.build_resolved_deps"))
+        rd = stack.enter_context(
+            patch("sysforge.build_core.review_deps",
+                  return_value=build_core.DECISION_ABORT))
+        proceed = build_core.prepare_deps(
+            [target.pkgbuild_path], {},
+            state_dir=tmp_path / "state", review="prompt",
+        )
+    assert proceed is False
+    rd.assert_called_once()
+    build_aur.assert_not_called()
+
+
+def test_prepare_deps_review_accept_builds_deps(tmp_path):
+    """Accept (or clean) proceeds to build_resolved_deps; the gate sees the
+    recorded reviewed_commit and the prompt-mode interactive flag."""
+    from sysforge.primitives.build_state import BuildState
+    state_dir = tmp_path / "state"
+    bs = BuildState(state_dir)
+    bs.record(pkgname="libdep", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="libdep", pkgbuild_dir=tmp_path / "libdep",
+              build_mode="profiled", reviewed_commit="dep123")
+    bs.save()
+    target = _make_target(tmp_path)
+    dep = SimpleNamespace(
+        name="libdep", source="aur",
+        pkgbuild_path=tmp_path / "libdep" / "PKGBUILD",
+    )
+    with contextlib.ExitStack() as stack:
+        for p in _dep_gate_patches([dep]):
+            stack.enter_context(p)
+        build_aur = stack.enter_context(
+            patch("sysforge.primitives.aur_resolve.build_resolved_deps"))
+        rd = stack.enter_context(
+            patch("sysforge.build_core.review_deps", return_value="accept"))
+        proceed = build_core.prepare_deps(
+            [target.pkgbuild_path], {},
+            state_dir=state_dir, review="prompt",
+        )
+    assert proceed is True
+    build_aur.assert_called_once()
+    (entries,), kwargs = rd.call_args
+    assert entries == [("libdep", tmp_path / "libdep", "dep123")]
+    assert kwargs == {"interactive": True}
+
+
+def test_prepare_deps_review_auto_passes_interactive_false(tmp_path):
+    """update's auto mode consults the dep gate with interactive=False."""
+    target = _make_target(tmp_path)
+    dep = SimpleNamespace(
+        name="libdep", source="aur",
+        pkgbuild_path=tmp_path / "libdep" / "PKGBUILD",
+    )
+    with contextlib.ExitStack() as stack:
+        for p in _dep_gate_patches([dep]):
+            stack.enter_context(p)
+        stack.enter_context(
+            patch("sysforge.primitives.aur_resolve.build_resolved_deps"))
+        rd = stack.enter_context(
+            patch("sysforge.build_core.review_deps", return_value="accept"))
+        build_core.prepare_deps(
+            [target.pkgbuild_path], {},
+            state_dir=tmp_path / "state", review="auto",
+        )
+    assert rd.call_args.kwargs == {"interactive": False}
+
+
+def test_prepare_deps_review_off_never_consults_gate(tmp_path):
+    target = _make_target(tmp_path)
+    dep = SimpleNamespace(
+        name="libdep", source="aur",
+        pkgbuild_path=tmp_path / "libdep" / "PKGBUILD",
+    )
+    with contextlib.ExitStack() as stack:
+        for p in _dep_gate_patches([dep]):
+            stack.enter_context(p)
+        stack.enter_context(
+            patch("sysforge.primitives.aur_resolve.build_resolved_deps"))
+        rd = stack.enter_context(patch("sysforge.build_core.review_deps"))
+        proceed = build_core.prepare_deps(
+            [target.pkgbuild_path], {},
+            state_dir=tmp_path / "state",  # review defaults to "off"
+        )
+    assert proceed is True
+    rd.assert_not_called()
+
+
+def test_build_and_install_dep_review_abort_propagates(tmp_path):
+    """A False from prepare_deps surfaces as outcome.aborted with nothing
+    built or installed — same clean-return contract as the target gate."""
+    target = _make_target(tmp_path)
+    with contextlib.ExitStack() as stack:
+        for p in _patch_build_env(
+            run_side_effect=lambda *a, **k: None,
+            snapshot_return=[],
+            install_capture=lambda files: True,
+        ):
+            stack.enter_context(p)
+        stack.enter_context(
+            patch("sysforge.build_core.prepare_deps", return_value=False))
+        outcome = build_core.build_and_install(
+            [target], config={}, sync_source=False,
+            review="auto", state_dir=tmp_path / "state",
+        )
+    assert outcome.aborted
+    assert outcome.built_pkgs == [] and outcome.built_pkg_files == []
 
 
 # ---------------------------------------------------------------------------

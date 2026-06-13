@@ -54,6 +54,7 @@ from sysforge.primitives.aur import repo_packages
 from sysforge.primitives.pkgbuild_review import (
     DECISION_ABORT,
     DECISION_SKIP,
+    review_deps,
     review_target,
 )
 from sysforge.ui import progress as _ui_progress
@@ -235,8 +236,13 @@ def prepare_deps(
     cxx: str | None = None,
     ld: str | None = None,
     state_dir: Path | None = None,
-) -> None:
+    review: str = "off",
+) -> bool:
     """Pre-install missing repo makedeps, then resolve + build AUR/local deps.
+
+    Returns ``True`` to proceed, ``False`` when the user aborted the run at the
+    dependency review gate (the caller treats this like a target-gate abort:
+    clean return, nothing built or installed by the build loop).
 
     This is what frees the per-package makepkg invocation from having to sync
     deps itself (``-s`` is stripped below): every repo makedep is installed in
@@ -256,7 +262,7 @@ def prepare_deps(
     diagnosis, rather than aborting the whole batch up front).
     """
     if not pkgbuild_paths:
-        return
+        return True
 
     # Repo build deps — one sudo transaction. This collects depends +
     # makedepends + checkdepends, not just makedepends: the per-package makepkg
@@ -285,6 +291,38 @@ def prepare_deps(
     try:
         aur_deps = resolve_aur_deps_batch(pkgbuild_paths, config, fetch=True)
         aur_deps = [d for d in aur_deps if d.name not in building_names]
+        # Dependency review gate — batched, all-or-nothing (no per-dep skip:
+        # dropping a dep breaks its dependent). Mirrors the target gate's
+        # modes; reviewed_commit stamps already exist for dep builds because
+        # makepkg_wrapper records them unconditionally.
+        buildable = [
+            d for d in aur_deps
+            if d.source == "aur" and getattr(d, "pkgbuild_path", None)
+        ] if review in ("prompt", "auto") else []
+        if buildable:
+            if state_dir is None:
+                from sysforge.pipeline.state import resolve_state_dir
+                _dep_state_dir, _ = resolve_state_dir(None)
+            else:
+                _dep_state_dir = state_dir
+            bs_deps = BuildState(_dep_state_dir)
+            if review == "prompt":
+                # Hand the bottom row back to the terminal before the
+                # single-keypress prompt (mirrors the target gate).
+                _ui_progress.clear()
+            decision = review_deps(
+                [
+                    (
+                        d.name,
+                        Path(d.pkgbuild_path).parent,
+                        (bs_deps.get(d.name) or {}).get("reviewed_commit"),
+                    )
+                    for d in buildable
+                ],
+                interactive=(review == "prompt"),
+            )
+            if decision == DECISION_ABORT:
+                return False
         if aur_deps:
             build_resolved_deps(
                 aur_deps,
@@ -300,6 +338,7 @@ def prepare_deps(
             "[SYSFORGE] Warning: AUR dep resolution failed — "
             "some builds may fail"
         )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +678,7 @@ def build_and_install(
     building_names = {t.pkgbase for t in targets}
     _ui_progress.phase("resolving dependencies")
     with timer.phase("dep prep"):
-        prepare_deps(
+        proceed = prepare_deps(
             pkgbuild_paths,
             config,
             building_names=building_names,
@@ -648,7 +687,15 @@ def build_and_install(
             cxx=cxx,
             ld=ld,
             state_dir=state_dir,
+            review=review,
         )
+    if not proceed:
+        _log.ui(
+            "[SYSFORGE] Aborted at dependency PKGBUILD review — "
+            "nothing was built or installed."
+        )
+        outcome.aborted = True
+        return outcome
 
     # Cleanbuild (-C) prevents a stale $srcdir from a prior failed run causing
     # patch-already-applied errors in prepare(). When the caller opts out we

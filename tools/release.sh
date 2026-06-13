@@ -173,6 +173,14 @@ preflight_fresh() {
         echo "ERROR: tag $TAG already exists on origin" >&2
         exit 1
     fi
+    # Release-notes gate. Every release ships curated notes; the file is
+    # committed in Phase 1 and referenced by the gh-release step in Phase 4.
+    if [[ ! -f "docs/release-notes/$TAG.md" ]]; then
+        echo "ERROR: docs/release-notes/$TAG.md is missing." >&2
+        echo "       Draft it first — run /release-notes in Claude Code, or write it by hand" >&2
+        echo "       (sections: Highlights / Breaking changes / Fixes / Internal)." >&2
+        exit 1
+    fi
     # Shipped-file consistency gate. Validates every shipped TOML schema,
     # PKGBUILD install graph, hook->helper parity, completions<->CLI parity,
     # version markers (subsumes the prior README/DESIGN grep checks), and
@@ -243,7 +251,8 @@ Phase 1 — bump, commit, tag:
   - rewrite README.md, DESIGN.md   <!--version-->v$NEW<!--/version-->
   - regenerate uv.lock             (uv lock)
   - regenerate man/sysforge.1      (make man)
-  - git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1
+  - include release notes          docs/release-notes/$TAG.md
+  - git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 docs/release-notes/$TAG.md
   - git commit -m "release: $TAG"
   - git tag $TAG
 
@@ -338,13 +347,13 @@ if [[ "$RESUME" -eq 0 ]]; then
 
     # Commit + tag
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1
+        git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 "docs/release-notes/$TAG.md"
         git commit -m "release: $TAG"
         git tag "$TAG"
         echo "    committed: release: $TAG"
         echo "    tagged:    $TAG"
     else
-        echo "    [dry-run] git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1"
+        echo "    [dry-run] git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 docs/release-notes/$TAG.md"
         echo "    [dry-run] git commit -m \"release: $TAG\""
         echo "    [dry-run] git tag $TAG"
     fi
@@ -482,4 +491,8 @@ cat <<EOF
     cp PKGBUILD-git /tmp/aur-sysforge-git/PKGBUILD
     cp .SRCINFO-git /tmp/aur-sysforge-git/.SRCINFO
     cd /tmp/aur-sysforge-git && git add -A && git commit -m "Update to $NEW" && git push
+
+4. Publish the GitHub release (uses the notes committed in Phase 1):
+
+    gh release create $TAG --title "sysforge $TAG" --notes-file docs/release-notes/$TAG.md
 EOF

@@ -11,6 +11,7 @@ Public API:
     load_consumes_inference(paths=None)    -> dict
     load_sysforge_toml()                   -> dict
     find_pkgbuild(pkg, config=None)        -> Path   (AUR clone on miss if pkgbuild_src_dir set)
+    resolve_pkgbuild_src_dir(config, build_cfg=None) -> str | None
 """
 import pprint
 import tomllib
@@ -37,6 +38,37 @@ def load_sysforge_toml() -> dict:
     except (OSError, tomllib.TOMLDecodeError) as e:
         _log.warn(f"Could not load {SYSFORGE_TOML_PATH}: {e}")
         return {}
+
+
+# One-time guard for the dual-key mismatch warning below — the resolver is
+# called per package in some paths and the warning is per-run information.
+_src_dir_mismatch_warned = False
+
+
+def resolve_pkgbuild_src_dir(config: dict | None, build_cfg: dict | None = None) -> str | None:
+    """Effective ``pkgbuild_src_dir``: packages.toml ``[build]`` wins over
+    profiles.toml ``[paths]``.
+
+    The two keys are allowed to differ (separate configs, separate owners),
+    but a silent mismatch means builds and updates can read PKGBUILDs from
+    different trees — so when both are set and point at different directories,
+    warn once per run naming both values.
+    """
+    global _src_dir_mismatch_warned
+    build_val = (build_cfg or {}).get("pkgbuild_src_dir")
+    paths_val = (config or {}).get("paths", {}).get("pkgbuild_src_dir")
+    if (
+        build_val and paths_val
+        and not _src_dir_mismatch_warned
+        and Path(build_val).expanduser() != Path(paths_val).expanduser()
+    ):
+        _src_dir_mismatch_warned = True
+        _log.warn(
+            "pkgbuild_src_dir mismatch: packages.toml [build] sets "
+            f"{build_val!r} but profiles.toml [paths] sets {paths_val!r} — "
+            f"using {build_val!r} ([build] takes precedence)"
+        )
+    return build_val or paths_val
 
 
 def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:

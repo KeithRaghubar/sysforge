@@ -21,6 +21,7 @@ from sysforge.primitives.pkgbuild_review import (
     DECISION_SKIP,
     head_commit,
     commit_exists,
+    review_deps,
     review_target,
 )
 
@@ -223,3 +224,98 @@ def test_vanished_reviewed_commit_falls_back_to_full_review(
     assert review_target("htop", d, "0" * 40) == DECISION_ACCEPT
     out = capsys.readouterr().out
     assert "first review" in out
+
+
+# ---------------------------------------------------------------------------
+# review_deps — batched dependency gate
+# ---------------------------------------------------------------------------
+
+def test_review_deps_clean_when_nothing_changed(tmp_path):
+    d = _repo(tmp_path, "libdep")
+    assert review_deps([("libdep", d, head_commit(d))]) == DECISION_CLEAN
+
+
+def test_review_deps_skips_non_git_dirs(tmp_path):
+    plain = tmp_path / "local-dep"
+    plain.mkdir()
+    (plain / "PKGBUILD").write_text("pkgname=local-dep\n")
+    assert review_deps([("local-dep", plain, None)]) == DECISION_CLEAN
+
+
+def test_review_deps_auto_accepts_when_not_interactive(tmp_path, capsys):
+    """update's auto mode: one batched notice naming the changed deps."""
+    d = _repo(tmp_path, "libdep")
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=libdep\npkgver=2.0\n")
+    assert review_deps([("libdep", d, old)], interactive=False) == DECISION_ACCEPT
+    out = capsys.readouterr()
+    assert "libdep" in out.out + out.err
+    assert "auto-accepted" in out.out + out.err
+
+
+def test_review_deps_non_tty_auto_accepts(tmp_path):
+    """pytest's stdin/stdout are not TTYs — the unattended path."""
+    d = _repo(tmp_path, "libdep")
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=libdep\npkgver=2.0\n")
+    assert review_deps([("libdep", d, old)]) == DECISION_ACCEPT
+
+
+def test_review_deps_prompt_accept_all(tmp_path, monkeypatch, capsys):
+    a = _repo(tmp_path, "depa")
+    olda = head_commit(a)
+    _commit(a, "PKGBUILD", "pkgname=depa\npkgver=2.0\n")
+    b = _repo(tmp_path, "depb")  # unchanged — must not appear in the summary
+    _tty(monkeypatch, ["a"])
+    deps = [("depa", a, olda), ("depb", b, head_commit(b))]
+    assert review_deps(deps) == DECISION_ACCEPT
+    out = capsys.readouterr().out
+    assert "depa" in out
+    assert "1 dependency source change" in out
+
+
+def test_review_deps_prompt_abort(tmp_path, monkeypatch):
+    d = _repo(tmp_path, "libdep")
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=libdep\npkgver=2.0\n")
+    _tty(monkeypatch, ["b"])
+    assert review_deps([("libdep", d, old)]) == DECISION_ABORT
+
+
+def test_review_deps_prompt_view_then_accept(tmp_path, monkeypatch, capsys):
+    """'v' pages every changed dep's full patch, then re-prompts."""
+    d = _repo(tmp_path, "libdep")
+    old = head_commit(d)
+    _commit(d, "evil.install", "post_install() { :; }\n")
+
+    @contextmanager
+    def _no_pager(use_pager):
+        yield
+
+    monkeypatch.setattr(
+        "sysforge.primitives.pkgbuild_review.maybe_pager", _no_pager)
+    _tty(monkeypatch, ["v", "a"])
+    assert review_deps([("libdep", d, old)]) == DECISION_ACCEPT
+    out = capsys.readouterr().out
+    assert "evil.install" in out
+    assert "post_install" in out
+
+
+def test_review_deps_first_build_uses_empty_tree(tmp_path, monkeypatch, capsys):
+    """A dep with no recorded reviewed_commit gets a full-content review."""
+    d = _repo(tmp_path, "libdep")
+    _tty(monkeypatch, ["a"])
+    assert review_deps([("libdep", d, None)]) == DECISION_ACCEPT
+    assert "first review" in capsys.readouterr().out
+
+
+def test_review_deps_eof_aborts(tmp_path, monkeypatch):
+    """No answer is not consent — same contract as review_target."""
+    d = _repo(tmp_path, "libdep")
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=libdep\npkgver=2.0\n")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr(
+        "builtins.input", lambda *a: (_ for _ in ()).throw(EOFError))
+    assert review_deps([("libdep", d, old)]) == DECISION_ABORT

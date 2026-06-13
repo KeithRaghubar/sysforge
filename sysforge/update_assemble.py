@@ -22,6 +22,7 @@ from sysforge.primitives.pacman import (
     get_pkgbase,
 )
 from sysforge.primitives.aur import aur_info
+from sysforge.primitives.config import resolve_pkgbuild_src_dir
 from sysforge.primitives.stage_ownership import load_stage_ownership
 from sysforge.packages_cmd import entry_is_inert
 
@@ -56,10 +57,7 @@ def _assemble_package_set(
     """
     build_state_pkgs = bs.all_packages()
 
-    pkgbuild_src_dir_raw = (
-        build_cfg.get("pkgbuild_src_dir")
-        or config.get("paths", {}).get("pkgbuild_src_dir")
-    )
+    pkgbuild_src_dir_raw = resolve_pkgbuild_src_dir(config, build_cfg)
     pkgbuild_src_dir_base = Path(pkgbuild_src_dir_raw).expanduser() if pkgbuild_src_dir_raw else None
 
     foreign = set(get_foreign_packages().keys())

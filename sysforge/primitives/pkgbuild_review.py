@@ -41,6 +41,7 @@ Public API:
     commit_exists(pkgbuild_dir, sha)     -> bool
     review_target(pkgbase, pkgbuild_dir, reviewed_commit,
                   interactive=True)      -> str (DECISION_*)
+    review_deps(deps, interactive=True)  -> str (accept | abort | clean)
 """
 import subprocess
 import sys
@@ -164,5 +165,91 @@ def review_target(
             return DECISION_ACCEPT
         elif answer == "s":
             return DECISION_SKIP
+        elif answer == "b":
+            return DECISION_ABORT
+
+
+def _changed_since_review(
+    pkgbuild_dir: Path, reviewed_commit: str | None,
+) -> tuple[str, str] | None:
+    """Return ``(base, head)`` when the clone changed since review, else None.
+
+    None covers both the clean case and non-git dirs — neither needs review.
+    A missing reviewed_commit (or one rewritten away by a re-clone) falls back
+    to the empty tree, same as :func:`review_target`.
+    """
+    head = head_commit(pkgbuild_dir)
+    if head is None or reviewed_commit == head:
+        return None
+    if reviewed_commit and commit_exists(pkgbuild_dir, reviewed_commit):
+        return reviewed_commit, head
+    return _EMPTY_TREE, head
+
+
+def review_deps(
+    deps: list[tuple[str, Path, str | None]],
+    interactive: bool = True,
+) -> str:
+    """Batched review gate for AUR dependency PKGBUILDs.
+
+    ``deps`` is ``[(name, pkgbuild_dir, reviewed_commit), ...]`` — the AUR
+    dependencies about to be built by the dep arm. Unlike the per-target gate
+    there is no skip option: dropping a dependency breaks the package that
+    needs it, so the decision is all-or-nothing — DECISION_ACCEPT or
+    DECISION_ABORT (DECISION_CLEAN when nothing changed).
+
+    Auto paths mirror :func:`review_target`: ``interactive=False`` auto-accepts
+    with one batched notice; a non-TTY run auto-accepts with a warning.
+    """
+    changed: list[tuple[str, Path, str, str]] = []
+    for name, pkgbuild_dir, reviewed_commit in deps:
+        pair = _changed_since_review(pkgbuild_dir, reviewed_commit)
+        if pair is not None:
+            changed.append((name, pkgbuild_dir, pair[0], pair[1]))
+    if not changed:
+        return DECISION_CLEAN
+
+    names = ", ".join(c[0] for c in changed)
+    if not interactive:
+        _log.ui(
+            f"auto-accepted {len(changed)} dependency source change(s): "
+            f"{names}; rerun with --review to inspect the diffs"
+        )
+        return DECISION_ACCEPT
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        _log.warn(
+            f"{len(changed)} dependency source change(s) auto-accepted "
+            f"(non-interactive run): {names}"
+        )
+        return DECISION_ACCEPT
+
+    print(f"\n[REVIEW] {len(changed)} dependency source change(s):")
+    for name, pkgbuild_dir, base, head in changed:
+        what = (
+            f"{_short(base)} → {_short(head)}" if base != _EMPTY_TREE
+            else f"first review (full content, HEAD {_short(head)})"
+        )
+        stat = _git(pkgbuild_dir, "diff", "--shortstat", base, head) or ""
+        print(f"  {name}: {what}{'  —' + stat.rstrip() if stat.strip() else ''}")
+
+    while True:
+        try:
+            answer = prompt_key(
+                "[REVIEW] [v]iew diffs / [a]ccept all / a[b]ort run? "
+            )
+        except (EOFError, KeyboardInterrupt):
+            # No answer is not consent — fail to the safe side.
+            print()
+            return DECISION_ABORT
+        if answer == "v":
+            for name, pkgbuild_dir, base, head in changed:
+                patch = _git(pkgbuild_dir, "diff", base, head)
+                if patch is None:
+                    _log.warn(f"{name}: git diff failed — cannot display patch")
+                    continue
+                with maybe_pager(True):
+                    print(f"### {name}\n{patch}")
+        elif answer == "a":
+            return DECISION_ACCEPT
         elif answer == "b":
             return DECISION_ABORT
