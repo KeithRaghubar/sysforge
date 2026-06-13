@@ -65,7 +65,11 @@ def _detect_mode() -> str:
         return "plain"
     if os.environ.get("CI"):
         return "plain"
-    if os.environ.get("NO_COLOR"):
+    # Defer the colour decision to the single authority: NO_COLOR, FORCE_COLOR
+    # and --color=never/auto all resolve there. stderr is already known to be a
+    # TTY here, so use_color()'s TTY rung is satisfied and this reduces to the
+    # mode/env gate.
+    if not log.use_color():
         return "plain"
     return "tty"
 

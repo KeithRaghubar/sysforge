@@ -6,6 +6,7 @@ Lists / clears the [failures] table of build_state.toml.
 from pathlib import Path
 from types import SimpleNamespace
 
+from sysforge import log
 from sysforge.primitives.build_state import BuildState
 from sysforge.state_cmd import cmd_state_failed
 
@@ -43,6 +44,25 @@ def test_lists_failure_with_fix(tmp_path, capsys):
     assert "cuda:host-gcc-too-new" in out
     assert "fix: NVCC_APPEND_FLAGS='-ccbin /usr/bin/g++-15'" in out
     assert "1 failed package(s)" in out
+
+
+def test_failed_table_colourised_when_enabled(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(log, "_COLOR_MODE", "always")
+    state_dir = tmp_path / "state"
+    _seed_failure(
+        state_dir, "gpu-burn-git",
+        error="[build_failed] nvcc exit 4",
+        signature="cuda:host-gcc-too-new",
+        fix_cmd="export FOO=bar",
+    )
+    cmd_state_failed(_args(state_dir))
+    out = capsys.readouterr().out
+    # The failed pkgbase is painted red; the fix hint green. Reset codes present.
+    assert log._ANSI_RED in out
+    assert log._ANSI_GREEN in out
+    # Content survives colourisation unbroken.
+    assert "gpu-burn-git" in out
+    assert "fix: export FOO=bar" in out
 
 
 def test_clear_one(tmp_path, capsys):

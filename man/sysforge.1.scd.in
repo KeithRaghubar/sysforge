@@ -73,6 +73,13 @@ recovery command.
 	*build* and *update* runs. Without the flag the report is still
 	written to the log at info level.
 
+*--color* _auto_|_always_|_never_
+	Colorize output. _auto_ (the default) colours when writing to a
+	terminal and honours the *NO_COLOR* and *FORCE_COLOR* environment
+	variables; _always_ forces colour on (useful when piping into a pager
+	such as *less -R*); _never_ disables it. Overrides the *[ui] color*
+	key in _sysforge.toml_.
+
 # COMMANDS
 
 @OPTIONS@

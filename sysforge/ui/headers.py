@@ -20,17 +20,15 @@ from __future__ import annotations
 import shutil
 from importlib.metadata import PackageNotFoundError, version
 
+from sysforge.log import bold as _bold
+from sysforge.log import cyan as _cyan
+from sysforge.log import dim as _dim
+from sysforge.log import green as _green
 from sysforge.log import use_color
 
 _RULE_GLYPH = "═"
 _MIN_WIDTH = 40
 _MAX_WIDTH = 100
-
-_ANSI_RESET = "\033[0m"
-_ANSI_BOLD = "\033[1m"
-_ANSI_CYAN = "\033[36m"
-_ANSI_DIM = "\033[2m"
-_ANSI_GREEN = "\033[32m"
 
 
 def _width() -> int:
@@ -40,21 +38,7 @@ def _width() -> int:
 
 def _rule() -> str:
     bar = _RULE_GLYPH * _width()
-    if use_color():
-        return f"{_ANSI_BOLD}{_ANSI_CYAN}{bar}{_ANSI_RESET}"
-    return bar
-
-
-def _bold(text: str) -> str:
-    return f"{_ANSI_BOLD}{text}{_ANSI_RESET}" if use_color() else text
-
-
-def _dim(text: str) -> str:
-    return f"{_ANSI_DIM}{text}{_ANSI_RESET}" if use_color() else text
-
-
-def _green(text: str) -> str:
-    return f"{_ANSI_GREEN}{text}{_ANSI_RESET}" if use_color() else text
+    return _bold(_cyan(bar))
 
 
 def _sysforge_version() -> str:

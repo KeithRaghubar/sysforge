@@ -68,6 +68,13 @@ sysforge update -v
 sysforge --timings update
 sysforge --py-profile update --dry-run
 
+# 6d. Colour control (global flag, position independent). --color=auto (the
+#     default) colours when writing to a terminal and honours NO_COLOR /
+#     FORCE_COLOR; --color=always forces colour on (e.g. piping into a pager);
+#     --color=never disables it. Persist a default with [ui] color in
+#     sysforge.toml; the flag overrides it.
+sysforge --color=always doctor | less -R
+
 # 7. Same as `update`, plus discard divergent local clones (force-pushed
 #    upstream or local-only commits). --cleansrc refuses any clone that has
 #    uncommitted changes, unpushed commits, or no upstream — those packages

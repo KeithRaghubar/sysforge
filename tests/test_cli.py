@@ -394,6 +394,65 @@ def test_hoist_global_composes_with_verbosity_hoist():
     assert result == ["--timings", "-vv", "update"]
 
 
+def test_hoist_global_color_value_token():
+    from sysforge.cli import _hoist_global_flags
+    result = _hoist_global_flags(["build", "foo", "--color", "never"])
+    assert result == ["--color", "never", "build", "foo"]
+
+
+def test_hoist_global_color_equals_form():
+    from sysforge.cli import _hoist_global_flags
+    result = _hoist_global_flags(["update", "--color=always"])
+    assert result == ["--color=always", "update"]
+
+
+# ---------------------------------------------------------------------------
+# --color flag + [ui] color config resolution
+# ---------------------------------------------------------------------------
+
+def test_parser_accepts_color_choices():
+    from sysforge.cli import _build_parser
+    parser = _build_parser()
+    args = parser.parse_args(["--color", "always", "doctor"])
+    assert args.color == "always"
+    # Default is None so the config can supply the value when the flag is absent.
+    args = parser.parse_args(["doctor"])
+    assert args.color is None
+
+
+def test_resolve_color_mode_flag_wins_over_config(monkeypatch):
+    import sysforge.cli as cli
+    monkeypatch.setattr(
+        "sysforge.primitives.config.load_sysforge_toml",
+        lambda: {"ui": {"color": "never"}},
+    )
+    assert cli._resolve_color_mode("always") == "always"
+
+
+def test_resolve_color_mode_config_when_no_flag(monkeypatch):
+    import sysforge.cli as cli
+    monkeypatch.setattr(
+        "sysforge.primitives.config.load_sysforge_toml",
+        lambda: {"ui": {"color": "never"}},
+    )
+    assert cli._resolve_color_mode(None) == "never"
+
+
+def test_resolve_color_mode_defaults_to_auto(monkeypatch):
+    import sysforge.cli as cli
+    monkeypatch.setattr(
+        "sysforge.primitives.config.load_sysforge_toml",
+        lambda: {},
+    )
+    assert cli._resolve_color_mode(None) == "auto"
+    # A junk config value also degrades to auto rather than propagating.
+    monkeypatch.setattr(
+        "sysforge.primitives.config.load_sysforge_toml",
+        lambda: {"ui": {"color": "rainbow"}},
+    )
+    assert cli._resolve_color_mode(None) == "auto"
+
+
 # ---------------------------------------------------------------------------
 # global profiling flags: parser defaults + _dispatch
 # ---------------------------------------------------------------------------

@@ -49,17 +49,23 @@ from typing import NoReturn
 
 _VERBOSITY = 0
 _DRY_RUN = False
+_COLOR_MODE = "auto"  # one of {"auto", "always", "never"}; see use_color()
 _unified_log_fh = None
 _pkg_log_fh = None
 
 # ---------------------------------------------------------------------------
-# ANSI colour support (TTY + NO_COLOR gated)
+# ANSI colour support — the single colour authority for all sysforge output.
+#
+# Every output site (structured logging here, ui/headers, ui/progress, doctor
+# findings, state tables, build summaries, the review diff) gates on use_color()
+# and wraps text with the helpers below — no site hand-writes escape codes.
 # ---------------------------------------------------------------------------
 
 _ANSI_RESET  = "\033[0m"
 _ANSI_BOLD   = "\033[1m"
 _ANSI_DIM    = "\033[2m"
 _ANSI_RED    = "\033[31m"
+_ANSI_GREEN  = "\033[32m"
 _ANSI_YELLOW = "\033[33m"
 _ANSI_CYAN   = "\033[36m"
 
@@ -91,6 +97,18 @@ def set_dry_run_mode() -> None:
     _DRY_RUN = True
 
 
+def set_color_mode(mode: str) -> None:
+    """Set the global colour mode consulted by :func:`use_color`.
+
+    ``mode`` is one of ``"auto"`` (TTY + NO_COLOR/FORCE_COLOR gated), ``"always"``
+    (force colour on, even when piped — e.g. into a pager), or ``"never"`` (force
+    plain). An unrecognised value degrades to ``"auto"`` rather than raising, so a
+    bad config/CLI value never aborts startup.
+    """
+    global _COLOR_MODE
+    _COLOR_MODE = mode if mode in ("auto", "always", "never") else "auto"
+
+
 def get_verbosity() -> int:
     return _VERBOSITY
 
@@ -102,15 +120,59 @@ def _out():
 def use_color() -> bool:
     """Return True iff the active output stream should receive ANSI colour.
 
-    Gated by the NO_COLOR standard (any non-empty value disables) and by
-    whether the destination is a TTY. Checked per-call so redirecting output
-    mid-run is respected and test captures (pytest's capsys) stay plain.
+    Precedence (single source of truth for the whole codebase):
+      * colour mode ``"never"`` → False; ``"always"`` → True. An explicit mode
+        wins over the environment, so ``--color=always`` colours output even when
+        it is piped (e.g. into a pager or a colour-aware tool).
+      * mode ``"auto"`` (the default): NO_COLOR (any non-empty value) disables;
+        FORCE_COLOR (any non-empty value) forces on; otherwise colour follows
+        whether the destination is a TTY.
+
+    Checked per-call so redirecting output mid-run is respected and test captures
+    (pytest's capsys) stay plain.
     """
+    if _COLOR_MODE == "never":
+        return False
+    if _COLOR_MODE == "always":
+        return True
     if os.environ.get("NO_COLOR"):
         return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
     stream = _out()
     isatty = getattr(stream, "isatty", None)
     return bool(isatty and isatty())
+
+
+# Shared colour helpers — wrap *text* in an SGR sequence when use_color() is on,
+# otherwise return it unchanged. The whole codebase routes through these so the
+# gating stays in one place; no caller hand-writes escape codes.
+def _wrap(text: str, sgr: str) -> str:
+    return f"{sgr}{text}{_ANSI_RESET}" if use_color() else text
+
+
+def bold(text: str) -> str:
+    return _wrap(text, _ANSI_BOLD)
+
+
+def dim(text: str) -> str:
+    return _wrap(text, _ANSI_DIM)
+
+
+def red(text: str) -> str:
+    return _wrap(text, _ANSI_RED)
+
+
+def green(text: str) -> str:
+    return _wrap(text, _ANSI_GREEN)
+
+
+def yellow(text: str) -> str:
+    return _wrap(text, _ANSI_YELLOW)
+
+
+def cyan(text: str) -> str:
+    return _wrap(text, _ANSI_CYAN)
 
 
 def _format_line(level: str, tag: str, message: str) -> str:

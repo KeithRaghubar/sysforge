@@ -5,7 +5,11 @@
 # Override individual values by creating this file or editing it in place.
 # =============================================================================
 
-# [ui]
+[ui]
+# Colorize output: "auto" colours when writing to a terminal and honours
+# NO_COLOR / FORCE_COLOR; "always" forces colour on (e.g. piping into a pager);
+# "never" disables it. The --color CLI flag overrides this.
+color = "auto"
 # editor = "vim"       # Override $EDITOR for sysforge reconfigure
 
 [git]

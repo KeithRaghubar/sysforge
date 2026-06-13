@@ -95,6 +95,21 @@ def _short(sha: str) -> str:
     return sha[:7] if sha else "(none)"
 
 
+def _color_flag() -> str:
+    """git ``--color`` argument matching the active colour gate.
+
+    The diff is captured through a pipe (so git would default to plain) and then
+    paged through ``less -R`` (which passes ANSI through), so colour is decided
+    here up front: ``always`` when :func:`log.use_color` is on, ``never`` so
+    ``--color=never`` / NO_COLOR / non-TTY runs stay plain.
+    """
+    return "--color=always" if log.use_color() else "--color=never"
+
+
+def _tag() -> str:
+    return log.cyan("[REVIEW]")
+
+
 def review_target(
     pkgbase: str,
     pkgbuild_dir: Path,
@@ -139,15 +154,15 @@ def review_target(
         )
         return DECISION_ACCEPT
 
-    stat = _git(pkgbuild_dir, "diff", "--stat", base, head) or ""
-    print(f"\n[REVIEW] {pkgbase}: {what}")
+    stat = _git(pkgbuild_dir, "diff", _color_flag(), "--stat", base, head) or ""
+    print(f"\n{_tag()} {pkgbase}: {what}")
     if stat:
         print(stat.rstrip())
 
     while True:
         try:
             answer = prompt_key(
-                "[REVIEW] [v]iew diff / [a]ccept / [s]kip package / "
+                f"{_tag()} [v]iew diff / [a]ccept / [s]kip package / "
                 "a[b]ort run? "
             )
         except (EOFError, KeyboardInterrupt):
@@ -155,7 +170,7 @@ def review_target(
             print()
             return DECISION_ABORT
         if answer == "v":
-            patch = _git(pkgbuild_dir, "diff", base, head)
+            patch = _git(pkgbuild_dir, "diff", _color_flag(), base, head)
             if patch is None:
                 _log.warn(f"{pkgbase}: git diff failed — cannot display patch")
                 continue
@@ -223,19 +238,19 @@ def review_deps(
         )
         return DECISION_ACCEPT
 
-    print(f"\n[REVIEW] {len(changed)} dependency source change(s):")
+    print(f"\n{_tag()} {len(changed)} dependency source change(s):")
     for name, pkgbuild_dir, base, head in changed:
         what = (
             f"{_short(base)} → {_short(head)}" if base != _EMPTY_TREE
             else f"first review (full content, HEAD {_short(head)})"
         )
-        stat = _git(pkgbuild_dir, "diff", "--shortstat", base, head) or ""
+        stat = _git(pkgbuild_dir, "diff", _color_flag(), "--shortstat", base, head) or ""
         print(f"  {name}: {what}{'  —' + stat.rstrip() if stat.strip() else ''}")
 
     while True:
         try:
             answer = prompt_key(
-                "[REVIEW] [v]iew diffs / [a]ccept all / a[b]ort run? "
+                f"{_tag()} [v]iew diffs / [a]ccept all / a[b]ort run? "
             )
         except (EOFError, KeyboardInterrupt):
             # No answer is not consent — fail to the safe side.
@@ -243,7 +258,7 @@ def review_deps(
             return DECISION_ABORT
         if answer == "v":
             for name, pkgbuild_dir, base, head in changed:
-                patch = _git(pkgbuild_dir, "diff", base, head)
+                patch = _git(pkgbuild_dir, "diff", _color_flag(), base, head)
                 if patch is None:
                     _log.warn(f"{name}: git diff failed — cannot display patch")
                     continue

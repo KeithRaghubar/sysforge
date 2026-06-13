@@ -89,7 +89,23 @@ _GLOBAL_HOIST_FLAGS = {
     "--py-profile": False,
     "--py-profile-out": True,
     "--timings": False,
+    "--color": True,
 }
+
+
+def _resolve_color_mode(flag_value):
+    """Resolve the effective colour mode: ``--color`` flag > ``[ui] color`` config
+    > ``"auto"``. Any unexpected config value degrades to ``"auto"`` (log.set_color_mode
+    also guards this), and a missing/unreadable config never aborts startup.
+    """
+    if flag_value:
+        return flag_value
+    try:
+        from sysforge.primitives.config import load_sysforge_toml
+        cfg = (load_sysforge_toml().get("ui", {}) or {}).get("color")
+    except Exception:
+        cfg = None
+    return cfg if cfg in ("auto", "always", "never") else "auto"
 
 
 def _hoist_global_flags(argv):
@@ -866,6 +882,17 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print a wall-clock phase timing report after build/update runs.",
     )
+    parser.add_argument(
+        "--color",
+        choices=["auto", "always", "never"],
+        default=None,
+        help=(
+            "Colorize output. 'auto' (default) colours when writing to a "
+            "terminal and honours NO_COLOR/FORCE_COLOR; 'always' forces colour "
+            "on (e.g. when piping into a pager); 'never' disables it. Overrides "
+            "the [ui] color config key."
+        ),
+    )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True
 
@@ -955,6 +982,7 @@ def main():
     parser = _build_parser()
     args = parser.parse_args()
     log.set_verbosity(args.verbose)
+    log.set_color_mode(_resolve_color_mode(getattr(args, "color", None)))
     if getattr(args, "dry_run", False):
         log.set_dry_run_mode()
     # Snapshot inherited env at startup — DEBUG-only on stderr (-vvv), always

@@ -87,6 +87,15 @@ drift detection, per-package builds, install, pacman -Syu) after
 written to the log at info level.\&
 .PP
 .RE
+\fB--color\fR \fIauto\fR|\fIalways\fR|\fInever\fR
+.RS 4
+Colorize output.\& \fIauto\fR (the default) colours when writing to a
+terminal and honours the \fBNO_COLOR\fR and \fBFORCE_COLOR\fR environment
+variables; \fIalways\fR forces colour on (useful when piping into a pager
+such as \fBless -R\fR); \fInever\fR disables it.\& Overrides the \fB[ui] color\fR
+key in \fIsysforge.\&toml\fR.\&
+.PP
+.RE
 .SH COMMANDS
 .PP
 .SS build

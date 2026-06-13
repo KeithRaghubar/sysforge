@@ -591,3 +591,59 @@ def test_file_log_has_no_ansi_even_on_tty(tmp_path, monkeypatch):
     assert "yellowline" in content
     assert "plainline" in content
     assert "\033[" not in content
+
+
+# ---------------------------------------------------------------------------
+# Colour mode — --color / [ui] color precedence over TTY + env
+# ---------------------------------------------------------------------------
+
+def test_color_mode_always_beats_no_color_and_non_tty(monkeypatch):
+    # --color=always forces colour on even with NO_COLOR set and a non-TTY sink.
+    monkeypatch.setattr(log, "_COLOR_MODE", "always")
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(log, "_out", lambda: object())  # no isatty → non-TTY
+    assert log.use_color() is True
+
+
+def test_color_mode_never_beats_tty_and_force_color(monkeypatch):
+    # --color=never forces colour off even on a TTY with FORCE_COLOR set.
+    monkeypatch.setattr(log, "_COLOR_MODE", "never")
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
+    assert log.use_color() is False
+
+
+def test_color_mode_auto_honors_force_color_on_non_tty(monkeypatch):
+    # auto: FORCE_COLOR forces colour on even when the sink isn't a TTY.
+    monkeypatch.setattr(log, "_COLOR_MODE", "auto")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setattr(log, "_out", lambda: object())
+    assert log.use_color() is True
+
+
+def test_color_mode_auto_no_color_beats_force_color(monkeypatch):
+    # auto: NO_COLOR is checked before FORCE_COLOR, so it wins when both are set.
+    monkeypatch.setattr(log, "_COLOR_MODE", "auto")
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setattr(log, "_out", lambda: _FakeTTY())
+    assert log.use_color() is False
+
+
+def test_set_color_mode_rejects_unknown_value(monkeypatch):
+    monkeypatch.setattr(log, "_COLOR_MODE", "auto")
+    log.set_color_mode("bogus")
+    assert log._COLOR_MODE == "auto"
+    log.set_color_mode("never")
+    assert log._COLOR_MODE == "never"
+
+
+def test_color_helpers_wrap_only_when_enabled(monkeypatch):
+    monkeypatch.setattr(log, "_COLOR_MODE", "always")
+    assert log.red("x") == f"{log._ANSI_RED}x{log._ANSI_RESET}"
+    assert log.green("x") == f"{log._ANSI_GREEN}x{log._ANSI_RESET}"
+    assert log.bold("x") == f"{log._ANSI_BOLD}x{log._ANSI_RESET}"
+    monkeypatch.setattr(log, "_COLOR_MODE", "never")
+    for fn in (log.red, log.green, log.yellow, log.cyan, log.bold, log.dim):
+        assert fn("x") == "x"

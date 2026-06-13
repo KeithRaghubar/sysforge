@@ -89,17 +89,17 @@ def _print_build_summary(outcome) -> None:
         parts.append(f"{len(outcome.review_skipped)} skipped at review")
     if outcome.pgo_skipped_pkgs:
         parts.append(f"{len(outcome.pgo_skipped_pkgs)} pgo-skipped")
-    suffix = " (install FAILED)" if outcome.install_failed else ""
-    _log.ui(f"\n[SYSFORGE] Build complete: {', '.join(parts)}{suffix}.")
+    suffix = log.red(" (install FAILED)") if outcome.install_failed else ""
+    _log.ui(f"\n[SYSFORGE] {log.bold('Build complete')}: {', '.join(parts)}{suffix}.")
     if outcome.built_pkgs:
-        _log.ui(f"  Built:       {' '.join(outcome.built_pkgs)}")
+        _log.ui(f"  {log.green('Built:')}       {' '.join(outcome.built_pkgs)}")
     if outcome.failed_pkgs:
-        _log.ui(f"  Failed:      {' '.join(outcome.failed_pkgs)}")
+        _log.ui(f"  {log.red('Failed:')}      {' '.join(outcome.failed_pkgs)}")
     if outcome.review_skipped:
-        _log.ui(f"  Skipped:     {' '.join(outcome.review_skipped)} (PKGBUILD review)")
+        _log.ui(f"  {log.dim('Skipped:')}     {' '.join(outcome.review_skipped)} (PKGBUILD review)")
     if outcome.pgo_skipped_pkgs:
         _log.ui(
-            f"  PGO-skipped: {' '.join(outcome.pgo_skipped_pkgs)}"
+            f"  {log.dim('PGO-skipped:')} {' '.join(outcome.pgo_skipped_pkgs)}"
             " (run 'sysforge run toolchain' to rebuild profdata)"
         )
 

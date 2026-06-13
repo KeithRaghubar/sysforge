@@ -10,6 +10,7 @@ _sysforge() {
     '--py-profile[run the verb under cProfile, print top functions at exit]' \
     '--py-profile-out[write raw cProfile stats to FILE]:file:_files' \
     '--timings[print phase wall-clock timing report after build/update]' \
+    '--color[colorize output]:when:(auto always never)' \
     '1: :_sysforge_commands' \
     '*:: :->args'
 

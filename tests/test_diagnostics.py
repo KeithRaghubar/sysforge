@@ -160,3 +160,23 @@ def test_render_axis_emits_findings_and_counts_errors(capsys):
     # Most-severe first: the error line precedes the warning line.
     assert out.index("err_id") < out.index("warn_id")
     assert rc == 1
+
+
+def test_render_axis_colours_severity_when_enabled(capsys, monkeypatch):
+    monkeypatch.setattr(log, "_COLOR_MODE", "always")
+    logger = log.get_logger("TEST")
+    findings = [
+        diag.Finding("hw", diag.SEV_ERROR, "err_id", "an error", "do y"),
+        diag.Finding("hw", diag.SEV_WARN, "warn_id", "a warning"),
+    ]
+    diag.render_axis(logger, "hardware checks", findings)
+    out = capsys.readouterr().err
+    # ERROR token wrapped in red, WARN in yellow; the remediation arrow in green.
+    assert f"{log._ANSI_RED}ERROR{log._ANSI_RESET}" in out
+    assert f"{log._ANSI_YELLOW}WARN{log._ANSI_RESET}" in out
+    assert f"{log._ANSI_GREEN}→{log._ANSI_RESET}" in out
+
+
+def test_color_severity_plain_when_disabled(monkeypatch):
+    monkeypatch.setattr(log, "_COLOR_MODE", "never")
+    assert diag._color_severity(diag.SEV_ERROR) == "ERROR"

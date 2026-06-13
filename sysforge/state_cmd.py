@@ -19,6 +19,7 @@ Public API:
 from collections import defaultdict
 from pathlib import Path
 
+from sysforge import log
 from sysforge.primitives.pager import maybe_pager as _maybe_pager
 from sysforge.primitives.prompt import prompt_choice
 
@@ -70,8 +71,8 @@ def cmd_state_list(args):
             f"  {'NAME':<{max_name}}  {'PKGBASE':<{max_base}}  "
             f"{'VERSION':<{max_ver}}  {'MODE':<{max_mode}}  PKGBUILD_DIR"
         )
-        print(header)
-        print("  " + "-" * (len(header) - 2))
+        print(log.bold(header))
+        print("  " + log.dim("-" * (len(header) - 2)))
         for name, base, ver, mode, pdir in rows:
             print(
                 f"  {name:<{max_name}}  {base:<{max_base}}  "
@@ -406,18 +407,19 @@ def cmd_state_failed(args):
             f"  {'PKGBASE':<{max_base}}  {'FAILED_AT':<{max_when}}  "
             f"{'SIGNATURE':<{max_sig}}  ERROR"
         )
-        print(header)
-        print("  " + "-" * (len(header) - 2))
+        print(log.bold(header))
+        print("  " + log.dim("-" * (len(header) - 2)))
         for base, when, sig, err, fix in rows:
             err_short = err if len(err) <= 80 else err[:77] + "..."
+            # Colour after padding so the escape codes don't skew column widths.
             print(
-                f"  {base:<{max_base}}  {when:<{max_when}}  "
+                f"  {log.red(f'{base:<{max_base}}')}  {when:<{max_when}}  "
                 f"{sig:<{max_sig}}  {err_short}"
             )
             if fix:
                 print(
                     f"  {'':<{max_base}}  {'':<{max_when}}  "
-                    f"{'':<{max_sig}}  fix: {fix}"
+                    f"{'':<{max_sig}}  {log.green(f'fix: {fix}')}"
                 )
         print(f"\n  {len(rows)} failed package(s)")
         print(

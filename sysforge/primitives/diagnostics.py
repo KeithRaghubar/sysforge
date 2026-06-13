@@ -203,6 +203,20 @@ def run_axes(axes: Iterable[Axis]) -> dict[str, list[Finding]]:
 # Rendering
 # ---------------------------------------------------------------------------
 
+_SEVERITY_COLOR = {
+    SEV_ERROR: log.red,
+    SEV_WARN: log.yellow,
+    SEV_INFO: log.dim,
+}
+
+
+def _color_severity(severity: str) -> str:
+    """Return the upper-cased severity token, colourized by its level."""
+    token = severity.upper()
+    paint = _SEVERITY_COLOR.get(normalize_severity(severity))
+    return paint(token) if paint else token
+
+
 def render_axis(
     logger: log.Logger,
     label: str,
@@ -232,9 +246,10 @@ def render_axis(
     ordered = sorted(findings, key=lambda f: severity_rank(f.severity), reverse=True)
     errors = 0
     for f in ordered:
-        logger.ui(f"  [{f.severity.upper()}] {f.check_id}: {f.message}")
+        sev = _color_severity(f.severity)
+        logger.ui(f"  [{sev}] {f.check_id}: {f.message}")
         if f.remediation:
-            logger.ui(f"      → {f.remediation}")
+            logger.ui(f"      {log.green('→')} {f.remediation}")
         if f.is_error:
             errors += 1
     logger.ui(f"{label}: {len(findings)} finding(s), {errors} error(s).")

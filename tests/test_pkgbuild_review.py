@@ -177,6 +177,52 @@ def test_prompt_view_then_accept(tmp_path, monkeypatch, capsys):
     assert "post_install" in out
 
 
+def _stub_pager(monkeypatch):
+    @contextmanager
+    def _no_pager(use_pager):
+        yield
+    monkeypatch.setattr(
+        "sysforge.primitives.pkgbuild_review.maybe_pager", _no_pager)
+
+
+def test_view_diff_coloured_when_color_on(tmp_path, monkeypatch, capsys):
+    """With colour forced on, the paged patch carries ANSI from git --color=always."""
+    from sysforge import log
+    monkeypatch.setattr(log, "_COLOR_MODE", "always")
+    d = _repo(tmp_path)
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
+    _stub_pager(monkeypatch)
+    _tty(monkeypatch, ["v", "a"])
+    assert review_target("htop", d, old) == DECISION_ACCEPT
+    out = capsys.readouterr().out
+    assert "\033[" in out  # git emitted SGR colour codes
+
+
+def test_view_diff_plain_when_color_off(tmp_path, monkeypatch, capsys):
+    """--color=never keeps the patch plain even on a (faked) interactive TTY."""
+    from sysforge import log
+    monkeypatch.setattr(log, "_COLOR_MODE", "never")
+    d = _repo(tmp_path)
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
+    _stub_pager(monkeypatch)
+    _tty(monkeypatch, ["v", "a"])
+    assert review_target("htop", d, old) == DECISION_ACCEPT
+    out = capsys.readouterr().out
+    assert "\033[" not in out
+    assert "pkgver" in out  # patch still shown, just uncoloured
+
+
+def test_color_flag_tracks_use_color(monkeypatch):
+    from sysforge import log
+    from sysforge.primitives.pkgbuild_review import _color_flag
+    monkeypatch.setattr(log, "_COLOR_MODE", "always")
+    assert _color_flag() == "--color=always"
+    monkeypatch.setattr(log, "_COLOR_MODE", "never")
+    assert _color_flag() == "--color=never"
+
+
 def test_prompt_reprompts_on_invalid_input(tmp_path, monkeypatch):
     d = _repo(tmp_path)
     old = head_commit(d)

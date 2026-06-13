@@ -5,7 +5,9 @@
 # Override individual values by creating this file or editing it in place.
 # =============================================================================
 
-# [ui]
+[ui]
+# Colorize output: "auto" | "always" | "never". The --color CLI flag overrides this.
+color = "auto"
 # editor = "vim"       # Override $EDITOR for sysforge reconfigure
 
 [git]

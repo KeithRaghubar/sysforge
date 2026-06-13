@@ -807,6 +807,8 @@ Three top-level flags expose sysforge's own runtime performance (stdlib only, no
 - **`--py-profile-out FILE`** — additionally `dump_stats(FILE)` for pstats/snakeviz; implies `--py-profile`. A separate flag (rather than an optional argument) so `sysforge --py-profile update` can't swallow the subcommand as a filename.
 - **`--timings`** — promotes the wall-clock phase report to UI output after `build`/`update` runs. The phases are recorded unconditionally via `primitives/timing.PhaseTimer` (see §Primitives Layer → `timing.py`) and always written to the log at info level; the flag only changes where the report surfaces. `update` times source sync, version check, drift detection, and `pacman -Syu` around the engine; `build_core.build_and_install` records `dep prep`, per-package `build: <pkgbase>`, just-in-time `install deps: <pkgbase>` (when an intra-batch dep is installed ahead of a dependent), and `install` onto the caller's timer (or its own, exposed as `BuildOutcome.phase_records`).
 
+A fourth global flag, **`--color=auto|always|never`**, is hoisted the same way (it carries a value token). It feeds the colour authority described in §Logging → Colour: `cli._resolve_color_mode` resolves `--color` flag > `[ui] color` config > `"auto"` and calls `log.set_color_mode()` once at startup. `auto` honours `NO_COLOR`/`FORCE_COLOR` and TTY detection; `always`/`never` force the decision (so colour survives a pager pipe, e.g. the coloured PKGBUILD review diff).
+
 **Why not unify with the pipeline `Stage` contract?** Stages already presume multi-stage DAG semantics, per-stage checkpoints, and an opinionated `PipelineState`. Most CLI verbs are single-shot and don't want a pipeline state file. The verb framework reuses `sentinel_scope` for install-bearing protection but otherwise stays independent, so `sysforge env` is not paying for pipeline machinery it doesn't need. The `run` namespace verbs are exactly the thin shim from CLI → pipeline.
 
 ### Shared build engine (`build_core.py`)
@@ -1764,6 +1766,17 @@ Verbosity controlled by `-v`/`-vv`/`-vvv` on the CLI:
 - `-vvv`: adds `[DEBUG]` — full body dumps of every loaded config, resolved profile, conflict groups, inference map, and temp makepkg.conf
 
 Set once at CLI entry via `log.set_verbosity(args.verbose)`. Tests run at verbosity 2 (all messages visible).
+
+### Colour
+
+`log.py` is the single colour authority for the whole codebase. `log.use_color()` is the one gate every output site consults, and `log.bold()` / `dim()` / `red()` / `green()` / `yellow()` / `cyan()` are the shared helpers that wrap text only when the gate is on — no site hand-writes escape codes. `ui/headers.py` and `ui/progress.py` import these rather than carrying their own ANSI constants.
+
+Resolution precedence in `use_color()`:
+
+1. Colour **mode** (`log.set_color_mode`, set once at CLI entry): `"never"` → off; `"always"` → on (beats the environment, so colour survives being piped into a pager or colour-aware tool).
+2. Mode `"auto"` (default): `NO_COLOR` (any non-empty value) disables; then `FORCE_COLOR` (any non-empty value) forces on; otherwise colour follows whether the active stream is a TTY.
+
+The mode is resolved at startup as **`--color=auto|always|never` flag > `[ui] color` config (`sysforge.toml`) > `"auto"`** (`cli._resolve_color_mode`); a junk value degrades to `"auto"`. File logs are always written plain regardless of the gate. Because the decision is per-call, output piped through the pager is coloured up front (the review diff passes `git diff --color=always` when the gate is on, then `less -R` carries the ANSI through).
 
 ### File logging
 

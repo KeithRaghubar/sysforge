@@ -37,9 +37,14 @@ _sysforge() {
         esac
     done
 
+    if [[ $prev == "--color" ]]; then
+        COMPREPLY=( $(compgen -W "auto always never" -- "$cur") )
+        return 0
+    fi
+
     if [[ -z $verb ]]; then
         if [[ $cur == -* ]]; then
-            COMPREPLY=( $(compgen -W "-v --verbose --py-profile --py-profile-out --timings" -- "$cur") )
+            COMPREPLY=( $(compgen -W "-v --verbose --py-profile --py-profile-out --timings --color" -- "$cur") )
         else
             COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
         fi
