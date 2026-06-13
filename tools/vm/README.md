@@ -211,6 +211,9 @@ make vm-snapshot
 # Boot normally (changes persist — use when you want to keep state)
 make vm-boot
 
+# Boot the installed disk with a VNC display (to see a graphical desktop)
+make vm-boot-gui   # then: gvncviewer localhost
+
 # SSH into a running VM
 make vm-ssh        # builder user (makepkg / sysforge work)
 make vm-ssh-root   # root (admin tasks)
@@ -249,9 +252,11 @@ Then `make vm-stop` and re-run `make vm-snapshot` for the next ephemeral run.
 
 ## Notes
 
-- VM runs headless — no display window. All access is via SSH.
-- ISO install is the exception: `make vm-iso` enables VNC on `localhost:5900`.
-  Use `gvncviewer localhost` to reach the console.
+- VM runs headless by default — no display window. All access is via SSH.
+- Two targets enable a VNC display on `localhost:5900` (reach it with
+  `gvncviewer localhost`): `make vm-iso` for the interactive Arch install, and
+  `make vm-boot-gui` to boot the already-installed disk with a display (e.g. to
+  see a desktop environment render). All other boot targets stay headless.
 - SSH is forwarded: `host:10022 → VM:22`
 - SSH host keys are stored in `~/.local/share/sysforge-vm/known_hosts` —
   isolated from `~/.ssh/known_hosts`. Delete it after a VM reinstall.

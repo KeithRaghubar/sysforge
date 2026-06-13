@@ -5,6 +5,7 @@
 #   ./tools/vm/boot.sh              # boot normally (changes persist)
 #   ./tools/vm/boot.sh --snapshot   # boot in ephemeral mode, discard changes on exit
 #   ./tools/vm/boot.sh --iso        # boot from Arch ISO for initial install
+#   ./tools/vm/boot.sh --gui        # boot installed disk with a VNC display
 #
 # All modes run QEMU with -daemonize: the script exits as soon as the VM has
 # initialized, and the VM continues running in the background. Use
@@ -18,8 +19,10 @@
 # Normal boots run headless (no window). Access the installed VM via SSH:
 #   ssh -p 10022 root@localhost
 #
-# ISO mode (--iso) opens a VNC display for interactive install access:
+# ISO mode (--iso) and GUI mode (--gui) open a VNC display:
 #   gvncviewer localhost
+# --iso is for the interactive Arch install; --gui boots the already-installed
+# disk with a display so a desktop environment is visible.
 #
 # QEMU monitor (for loadvm, info snapshots, etc.):
 #   make vm-monitor               (wraps socat to ~/.local/share/sysforge-vm/qemu-monitor.sock)
@@ -48,11 +51,13 @@ SSH_PORT=10022   # host port forwarded to VM :22
 
 SNAPSHOT=0
 USE_ISO=0
+USE_GUI=0
 
 for arg in "$@"; do
     case "$arg" in
         --snapshot) SNAPSHOT=1 ;;
         --iso)      USE_ISO=1 ;;
+        --gui)      USE_GUI=1 ;;
         *) echo "Unknown argument: $arg" >&2; exit 1 ;;
     esac
 done
@@ -157,6 +162,19 @@ if [[ $USE_ISO -eq 1 ]]; then
     )
     echo "Booting from Arch ISO: $ISO_PATH"
     echo "  Console: gvncviewer localhost"
+    echo "  Stop:    make vm-stop (or 'quit' in make vm-monitor)"
+elif [[ $USE_GUI -eq 1 ]]; then
+    # Boot the installed disk with a VNC display so a graphical desktop is
+    # visible. Reuses the ISO path's display mechanism: the base args carry
+    # -display none, and QEMU honors the last -display, so this VNC wins.
+    QEMU_ARGS+=(
+        -vga virtio
+        -display "vnc=127.0.0.1:0"
+    )
+    echo "VM running with GUI (VNC display on 127.0.0.1:$VNC_PORT)."
+    echo "  Console: gvncviewer localhost"
+    echo "  SSH:     ssh -p $SSH_PORT root@localhost"
+    echo "  Monitor: make vm-monitor"
     echo "  Stop:    make vm-stop (or 'quit' in make vm-monitor)"
 else
     echo "VM running headless."

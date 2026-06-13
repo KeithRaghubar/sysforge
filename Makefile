@@ -1,7 +1,7 @@
 .PHONY: all dev venv build install clean distclean test test-x lint coverage man \
         check-shipped check-personal design check-design pre-release \
         release-major release-minor release-patch \
-        vm-deps vm-image vm-boot vm-snapshot vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
+        vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
@@ -125,6 +125,11 @@ vm-image:
 
 vm-boot:
 	./tools/vm/boot.sh
+
+# Like vm-boot, but with a VNC display so a graphical desktop is visible.
+# Connect with: gvncviewer localhost   (gtk-vnc — installed by vm-deps)
+vm-boot-gui:
+	./tools/vm/boot.sh --gui
 
 vm-snapshot:
 	./tools/vm/boot.sh --snapshot
