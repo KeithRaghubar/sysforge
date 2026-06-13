@@ -18,7 +18,14 @@ Public API:
     phase(label)            paint an uncounted phase status that persists
                             across tracker() scopes; phase(None) clears it
     clear()                 release the region (call before input())
-    tracker(total, prefix)  context manager yielding a tick(label) callable
+    tracker(total, prefix)  context manager yielding a tick(label) callable.
+                            The callable also carries:
+                              tick.note(text)  repaint at the current count
+                                               with a one-off label (no
+                                               increment) — for a transient
+                                               sub-step overlay
+                              tick.resume()    repaint the last tick state,
+                                               undoing a prior note()
 
 Reservation is lazy: entering tracker() alone touches nothing; the first
 tick() establishes the region. Short-running invocations that never tick
@@ -36,9 +43,22 @@ import os
 import shutil
 import signal
 import sys
-from typing import Callable, Iterator, Optional
+from typing import Iterator, Optional, Protocol
 
 from sysforge import log
+
+
+class Tick(Protocol):
+    """Callable yielded by :func:`tracker`.
+
+    Calling it (``tick(label)``) advances the counter and repaints. ``note``
+    and ``resume`` overlay a transient sub-step onto the same ``[i/total]``
+    counter without advancing it.
+    """
+
+    def __call__(self, label: str) -> None: ...
+    def note(self, text: str) -> None: ...
+    def resume(self) -> None: ...
 
 _ESC = "\x1b"
 _SAVE = _ESC + "7"
@@ -206,7 +226,7 @@ def clear() -> None:
 
 
 @contextlib.contextmanager
-def tracker(total: int, prefix: str) -> Iterator[Callable[[str], None]]:
+def tracker(total: int, prefix: str) -> Iterator[Tick]:
     """Yield a tick(label) callable. Releases the region on exit.
 
         with progress.tracker(len(items), "building") as tick:
@@ -216,15 +236,35 @@ def tracker(total: int, prefix: str) -> Iterator[Callable[[str], None]]:
 
     Paints a 0/total placeholder on entry so users see immediate feedback
     even when the first tick is far away (e.g. a batch of slow git pulls).
+
+    The yielded ``tick`` also carries ``tick.note(text)`` (repaint at the
+    current count with a one-off label, no increment) and ``tick.resume()``
+    (repaint the last ``tick`` state) so a caller can overlay a transient
+    sub-step — e.g. a just-in-time dep install between two counted builds —
+    onto the same ``[i/total]`` counter without advancing it.
     """
     global _last_status
     if _mode is None:
         init()
-    counter = {"i": 0}
 
-    def tick(label: str) -> None:
-        counter["i"] += 1
-        render(counter["i"], total, f"{prefix} · {label}")
+    class _Tick:
+        def __init__(self) -> None:
+            self.i = 0
+            self.label = ""
+
+        def __call__(self, label: str) -> None:
+            self.i += 1
+            self.label = label
+            render(self.i, total, f"{prefix} · {label}")
+
+        def note(self, text: str) -> None:
+            render(self.i, total, text)
+
+        def resume(self) -> None:
+            if self.i:
+                render(self.i, total, f"{prefix} · {self.label}")
+
+    tick = _Tick()
 
     if total > 0:
         render(0, total, f"{prefix} · starting...")

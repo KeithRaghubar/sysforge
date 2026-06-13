@@ -732,20 +732,34 @@ def build_and_install(
                         f"{', '.join(sorted(failed_deps))} failed to build — "
                         "building against the installed version"
                     )
+                pending_bases = [
+                    dep for dep in sorted(dep_bases)
+                    if any(
+                        f not in jit_handled
+                        for f in built_files_by_pkgbase.get(dep, [])
+                    )
+                ]
                 pending = [
-                    f for dep in sorted(dep_bases)
+                    f for dep in pending_bases
                     for f in built_files_by_pkgbase.get(dep, [])
                     if f not in jit_handled
                 ]
                 if pending:
                     _log.info(
                         f"{target.pkgbase}: installing intra-batch dep(s) "
-                        f"before building: {', '.join(sorted(dep_bases))}"
+                        f"before building: {', '.join(pending_bases)}"
+                    )
+                    # Overlay the JIT install onto the build counter without
+                    # advancing it, then hand the line back to "building".
+                    _tick.note(
+                        f"installing {len(pending_bases)} intra-batch dep(s) "
+                        f"for {target.pkgbase}"
                     )
                     with timer.phase(f"install deps: {target.pkgbase}"):
                         installed_files, jit_failed = install_built(
                             pending, always_install=requested
                         )
+                    _tick.resume()
                     jit_handled.update(pending)
                     jit_files.extend(installed_files)
                     if jit_failed:

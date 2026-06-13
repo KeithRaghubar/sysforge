@@ -169,6 +169,36 @@ def test_tracker_increments_counter(monkeypatch):
     ]
 
 
+def test_tracker_note_and_resume(monkeypatch):
+    _fake_plain_stderr(monkeypatch)
+    progress.init()
+    seen = []
+    monkeypatch.setattr(progress, "render", lambda i, n, label: seen.append((i, n, label)))
+    with progress.tracker(3, "building") as tick:
+        tick("htop")
+        # Overlay a transient sub-step at the current count (no increment) ...
+        tick.note("installing 2 intra-batch dep(s) for htop")
+        # ... then hand the line back to the last tick state.
+        tick.resume()
+    assert seen == [
+        (0, 3, "building · starting..."),
+        (1, 3, "building · htop"),
+        (1, 3, "installing 2 intra-batch dep(s) for htop"),
+        (1, 3, "building · htop"),
+    ]
+
+
+def test_tracker_resume_before_first_tick_is_noop(monkeypatch):
+    _fake_plain_stderr(monkeypatch)
+    progress.init()
+    seen = []
+    monkeypatch.setattr(progress, "render", lambda i, n, label: seen.append((i, n, label)))
+    with progress.tracker(2, "building") as tick:
+        tick.resume()  # no tick yet — must not repaint
+    # Only the entry placeholder; resume() emitted nothing.
+    assert seen == [(0, 2, "building · starting...")]
+
+
 def test_tracker_releases_region_on_exit(monkeypatch):
     buf = _fake_tty_stderr(monkeypatch)
     progress.init()
