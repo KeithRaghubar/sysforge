@@ -198,7 +198,7 @@ _sysforge_packages() {
         if [[ $cur == -* ]]; then
             COMPREPLY=( $(compgen -W "--packages --orphans" -- "$cur") )
         else
-            COMPREPLY=( $(compgen -W "list add remove" -- "$cur") )
+            COMPREPLY=( $(compgen -W "list add add-group remove" -- "$cur") )
         fi
         return
     fi
@@ -211,6 +211,13 @@ _sysforge_packages() {
                 COMPREPLY=( $(compgen -W "--packages --source --pkgbuild-patch --no-cache --reason" -- "$cur") )
             else
                 _sysforge_pkg_names
+            fi
+            ;;
+        add-group)
+            if [[ $cur == -* ]]; then
+                COMPREPLY=( $(compgen -W "--packages" -- "$cur") )
+            else
+                COMPREPLY=( $(compgen -W "gnome kde" -- "$cur") )
             fi
             ;;
         remove)

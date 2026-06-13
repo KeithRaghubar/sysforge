@@ -11,12 +11,13 @@ Available steps:
   1  editor      Editor selection (SYSFORGE_EDITOR → sysforge.toml → $EDITOR → $VISUAL → detected)
   2  config      Config file review (flag_profiles, packages, toolchain, kernel, hardware_profile)
   3  build_mode  View/set packages.toml repo_mode (pacman | profiled)
-  4  makepkg     System makepkg.conf review (MAKEFLAGS, BUILDDIR, PKGDEST, flags)
-  5  sudo        User / sudo verification
-  6  disk        Disk space check
-  7  network     Network connectivity probe (AUR, GitHub, mirrors)
-  8  gpg         GPG keyring bootstrap (global key store import, refresh option)
-  9  preview     Build preview (tentative profiles for all packages.toml entries)
+  4  desktop     Pick a curated desktop environment (GNOME | KDE) as a packages.toml group
+  5  makepkg     System makepkg.conf review (MAKEFLAGS, BUILDDIR, PKGDEST, flags)
+  6  sudo        User / sudo verification
+  7  disk        Disk space check
+  8  network     Network connectivity probe (AUR, GitHub, mirrors)
+  9  gpg         GPG keyring bootstrap (global key store import, refresh option)
+  10 preview     Build preview (tentative profiles for all packages.toml entries)
 
 Non-interactive / dry_run:
   All steps run without prompting. dry_run additionally skips writes
@@ -48,6 +49,7 @@ from sysforge.primitives.paths import (
     TOOLCHAIN_PATH,
     resolve_packages_path,
 )
+from sysforge.primitives.pkg_catalog import select_desktop, write_desktop_group
 from sysforge.primitives.prompt import (
     is_interactive as _interactive,
     prompt_text as _prompt,
@@ -67,6 +69,8 @@ _STEPS = [
      "Review profiles.toml, packages.toml, toolchain.toml, kernel.toml, hardware_profile.toml"),
     ("build_mode", "Build mode",
      "View/set packages.toml repo_mode (pacman | profiled); show per-package pkgbuild_patch overrides"),
+    ("desktop",    "Desktop environment",
+     "Pick a curated desktop environment (GNOME / KDE) to install as a packages.toml group"),
     ("makepkg",    "makepkg.conf review",
      "Review /etc/makepkg.conf — MAKEFLAGS, BUILDDIR, PKGDEST, flag baselines"),
     ("sudo",       "User / sudo verification",
@@ -875,6 +879,35 @@ def _step_build_mode(config, state, options, editor: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Step: desktop environment
+# ---------------------------------------------------------------------------
+
+def _step_desktop(config, state, options, editor: str) -> str:  # noqa: ARG001
+    """Offer a curated desktop-environment package group and write it as a
+    ``[group.<de>]`` table into packages.toml. Reuses the shared selection
+    prompt + writer in :mod:`sysforge.primitives.pkg_catalog`."""
+    _log.ui("─── Desktop environment ─────────────────────────────")
+
+    pkg_path = resolve_packages_path(config)
+    choice = select_desktop(interactive=_interactive(), preselected=None)
+    if not choice:
+        _log.ui("  No desktop environment selected.")
+        return editor
+
+    if options.dry_run:
+        _log.ui(f"  [dry-run] would write [group.{choice}] to {pkg_path}")
+        return editor
+
+    try:
+        write_desktop_group(pkg_path, choice)
+        _log.ui(f"  Wrote [group.{choice}] to {pkg_path} — install with 'sysforge run packages'.")
+    except OSError as e:
+        _log.warn(f"  Could not write {pkg_path}: {e}")
+
+    return editor
+
+
+# ---------------------------------------------------------------------------
 # Step: makepkg.conf review
 # ---------------------------------------------------------------------------
 
@@ -1247,6 +1280,7 @@ _STEP_FNS = {
     "editor":     _step_editor,
     "config":     _step_config,
     "build_mode": _step_build_mode,
+    "desktop":    _step_desktop,
     "makepkg":    _step_makepkg,
     "sudo":       _step_sudo,
     "disk":       _step_disk,

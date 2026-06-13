@@ -6,9 +6,10 @@ build-rule overrides applied to the live install set at steady-state (and
 serves as the install list during pipeline bootstrap; see DESIGN.md
 §Package Manifest).
 
-    list    — show stored overrides
-    add     — add or update an override entry
-    remove  — remove an override entry
+    list       — show stored overrides
+    add        — add or update an override entry
+    add-group  — write a curated desktop-environment package group
+    remove     — remove an override entry
 
 `build_state.toml` inspection lives under the separate `sysforge state`
 namespace.
@@ -16,6 +17,7 @@ namespace.
 Public API:
     cmd_packages_list(args)
     cmd_packages_add(args)
+    cmd_packages_add_group(args)
     cmd_packages_remove(args)
 """
 import sys
@@ -283,6 +285,25 @@ def cmd_packages_add(args):
 
 
 # ---------------------------------------------------------------------------
+# packages add-group
+# ---------------------------------------------------------------------------
+
+def cmd_packages_add_group(args):
+    """Write a curated desktop-environment package group into packages.toml.
+
+    Delegates the catalog + ``[group.*]`` writing to
+    :mod:`sysforge.primitives.pkg_catalog` (the same code path the configure
+    stage and reconfigure step use) so all three surfaces stay in lockstep.
+    """
+    from sysforge.primitives.pkg_catalog import write_desktop_group
+
+    de = args.desktop
+    path = _resolve_packages_file(getattr(args, "packages", None))
+    write_desktop_group(path, de)
+    print(f"Wrote [group.{de}] to {path}. Install with: sysforge run packages")
+
+
+# ---------------------------------------------------------------------------
 # packages remove
 # ---------------------------------------------------------------------------
 
@@ -350,6 +371,24 @@ class PackagesAddVerb(Verb):
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         cmd_packages_add(args)
+        return ExecResult()
+
+
+class PackagesAddGroupVerb(Verb):
+    """Write a curated desktop-environment package group into packages.toml.
+
+    No sentinel: like the other packages subcommands, this only edits the
+    config file — the packages stage installs the group later.
+    """
+
+    name = "packages-add-group"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_packages_add_group(args)
         return ExecResult()
 
 

@@ -67,3 +67,22 @@ root_fs = "ext4"
 # countries = ["Canada"]
 protocol = "https"
 age      = 12
+
+
+# =============================================================================
+# Desktop environment (stage 4 — optional)
+# =============================================================================
+#
+# Pick a curated desktop environment to install as a packages.toml [group.*]
+# table; the packages stage installs it later in the same pipeline. Supported
+# values: "gnome" | "kde".
+#
+#   - set here       → installed non-interactively (unattended installs)
+#   - unset + a TTY  → the configure stage prompts
+#   - unset, no TTY  → no desktop is installed
+#
+# You can also add one any time on a running system with:
+#   sysforge packages add-group gnome
+#
+# [desktop]
+# environment = "gnome"

@@ -32,11 +32,13 @@ from sysforge.env_cmd import EnvVerb
 from sysforge.fetch import FetchVerb
 from sysforge.log_cmd import LogVerb
 from sysforge.packages_cmd import (
+    PackagesAddGroupVerb,
     PackagesAddVerb,
     PackagesListVerb,
     PackagesRemoveVerb,
 )
 from sysforge.primitives.paths import PACKAGES_PATH
+from sysforge.primitives.pkg_catalog import valid_desktops
 from sysforge.resolve import ResolveVerb
 from sysforge.run_cmd import (
     RunHardwareVerb,
@@ -476,7 +478,7 @@ def _add_doctor_parser(sub):
 def _add_packages_parser(sub):
     """packages namespace: list (default) / add / remove."""
     p = sub.add_parser("packages",
-        help="Manage packages.toml override entries (list, add, remove).")
+        help="Manage packages.toml override entries (list, add, add-group, remove).")
     # --packages on the parent so bare 'sysforge packages' and
     # 'sysforge packages --packages foo.toml' both work
     p.add_argument("--packages", metavar="FILE", dest="packages",
@@ -512,6 +514,16 @@ def _add_packages_parser(sub):
     p_add.add_argument("--packages", metavar="FILE", dest="packages",
         help="Path to packages.toml.")
     p_add.set_defaults(verb_cls=PackagesAddVerb)
+
+    # add-group
+    p_group = pkg_sub.add_parser("add-group",
+        help="Write a curated desktop-environment package group "
+             "(installs via 'sysforge run packages').")
+    p_group.add_argument("desktop", metavar="DESKTOP", choices=valid_desktops(),
+        help=f"Desktop environment to add ({' | '.join(valid_desktops())}).")
+    p_group.add_argument("--packages", metavar="FILE", dest="packages",
+        help="Path to packages.toml.")
+    p_group.set_defaults(verb_cls=PackagesAddGroupVerb)
 
     # remove
     p_remove = pkg_sub.add_parser("remove", help="Remove an override entry.")

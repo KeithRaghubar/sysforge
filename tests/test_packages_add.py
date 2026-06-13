@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sysforge.packages_cmd import (
     cmd_packages_add,
+    cmd_packages_add_group,
     cmd_packages_remove,
     entry_is_inert,
     _rewrite_packages_toml,
@@ -172,3 +173,28 @@ def test_remove_missing_entry_is_fatal(tmp_path, capsys):
     _seed(path, '[build]\npkgbuild_src_dir = "~/src"\n')
     with pytest.raises(SystemExit):
         cmd_packages_remove(_args("ghost", path))
+
+
+# ---------------------------------------------------------------------------
+# add-group
+# ---------------------------------------------------------------------------
+
+def _group_args(desktop, packages):
+    return SimpleNamespace(desktop=desktop, packages=str(packages))
+
+
+def test_add_group_writes_group(tmp_path, capsys):
+    import tomllib
+    path = tmp_path / "packages.toml"
+    _seed(path, '[build]\npkgbuild_src_dir = "~/src"\n')
+    cmd_packages_add_group(_group_args("gnome", path))
+    data = tomllib.loads(path.read_text())
+    assert "gnome" in data.get("group", {})
+    assert "Wrote [group.gnome]" in capsys.readouterr().out
+
+
+def test_add_group_creates_missing_file(tmp_path):
+    import tomllib
+    path = tmp_path / "packages.toml"
+    cmd_packages_add_group(_group_args("kde", path))
+    assert "kde" in tomllib.loads(path.read_text()).get("group", {})

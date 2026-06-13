@@ -493,7 +493,7 @@ Report what --apply would rebuild without invoking the build.\&
 .PP
 \fBsysforge packages\fR [\fIOPTIONS\fR] \fISUBCOMMAND\fR
 .PP
-Manage packages.\&toml override entries (list, add, remove).\&
+Manage packages.\&toml override entries (list, add, add-group, remove).\&
 .PP
 \fB--packages\fR \fIFILE\fR
 .RS 4
@@ -554,6 +554,22 @@ Disable ccache/sccache for this package (required for PGO).\&
 \fB--reason\fR \fITEXT\fR
 .RS 4
 Free-form note attached to the entry.\&
+.PP
+.RE
+\fB--packages\fR \fIFILE\fR
+.RS 4
+Path to packages.\&toml.\&
+.PP
+.RE
+.SS packages add-group
+.PP
+\fBsysforge packages add-group\fR [\fIOPTIONS\fR] \fIDESKTOP\fR
+.PP
+Write a curated desktop-environment package group (installs via '\&sysforge run packages'\&).\&
+.PP
+\fBDESKTOP\fR
+.RS 4
+Desktop environment to add (gnome | kde).\&
 .PP
 .RE
 \fB--packages\fR \fIFILE\fR

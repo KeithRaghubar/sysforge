@@ -162,6 +162,33 @@ class TestLoadBootstrap:
         with pytest.raises(RuntimeError, match="parse error"):
             load_bootstrap(f)
 
+    def _minimal(self, extra: str = "") -> str:
+        return textwrap.dedent("""\
+            target = "/mnt"
+            [partition]
+            device = "/dev/sda"
+            [system]
+            hostname = "h"
+            locale   = "en_US.UTF-8"
+            timezone = "UTC"
+        """) + extra
+
+    def test_desktop_unset_defaults_none(self, tmp_path):
+        f = tmp_path / "bootstrap.toml"
+        f.write_text(self._minimal())
+        assert load_bootstrap(f).desktop is None
+
+    def test_desktop_valid_parsed(self, tmp_path):
+        f = tmp_path / "bootstrap.toml"
+        f.write_text(self._minimal('[desktop]\nenvironment = "gnome"\n'))
+        assert load_bootstrap(f).desktop == "gnome"
+
+    def test_desktop_invalid_raises(self, tmp_path):
+        f = tmp_path / "bootstrap.toml"
+        f.write_text(self._minimal('[desktop]\nenvironment = "bogus"\n'))
+        with pytest.raises(RuntimeError, match="desktop"):
+            load_bootstrap(f)
+
 
 # ---------------------------------------------------------------------------
 # Hardware stage — CPU detection

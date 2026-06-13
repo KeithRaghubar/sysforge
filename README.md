@@ -112,6 +112,7 @@ sysforge run toolchain --allow-dirty-llvm
 sysforge packages list
 sysforge packages list --orphans     # entries whose package isn't installed
 sysforge packages add mesa-git --pkgbuild-patch
+sysforge packages add-group gnome    # write a curated desktop group (gnome | kde)
 sysforge packages remove mesa-git
 
 # 9b. Inspect / repair build_state.toml (the live install-state mirror)
@@ -227,6 +228,8 @@ source = "repo"
 name   = "neovim-git"
 source = "aur"
 ```
+
+For a graphical desktop, you don't have to enumerate every package: `sysforge packages add-group gnome` (or `kde`) writes a curated desktop group. During a fresh install the configure stage offers the same choice interactively, or reads it from `bootstrap.toml [desktop] environment` for unattended installs.
 
 For a custom kernel like `linux-sysforge` (the shipped default name), configure it in `kernel.toml` instead of `packages.toml` — the kernel stage owns its lifecycle, and `sysforge update` will skip kernel-stage packages by default (use `--include-stage-owned` to override or just name them on the command line).
 

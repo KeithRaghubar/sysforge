@@ -67,6 +67,11 @@
 # steady-state (`sysforge update`) a member with no defaults is an inert
 # override, exactly like a bare [[package]] entry — no warning is emitted
 # for group members.
+#
+# Curated desktop-environment groups can be written without hand-editing TOML:
+#   sysforge packages add-group gnome      # or: kde
+# The bootstrap configure stage offers the same selection (or reads it from
+# bootstrap.toml [desktop] environment for unattended installs).
 # =============================================================================
 
 # [group.cosmic]

@@ -27,6 +27,7 @@ from sysforge.pipeline.stages.reconfigure import (
     _select_new_editor,
     _set_repo_mode,
     _step_build_mode,
+    _step_desktop,
     _step_preview,
     _try_install_editor,
 )
@@ -101,6 +102,62 @@ def test_build_mode_step_order():
     keys = list(_STEP_KEYS)
     assert keys.index("build_mode") == keys.index("config") + 1
     assert keys.index("build_mode") < keys.index("makepkg")
+
+
+def test_desktop_registered():
+    assert "desktop" in _STEP_KEYS
+    assert "desktop" in _STEP_FNS
+
+
+def test_desktop_step_order():
+    """desktop sits right after build_mode."""
+    keys = list(_STEP_KEYS)
+    assert keys.index("desktop") == keys.index("build_mode") + 1
+
+
+def test_step_desktop_writes_selected_group(tmp_path):
+    pkg_path = make_packages_toml(tmp_path, _BASIC_TOML)
+    config = {"paths": {"packages": str(pkg_path)}}
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.resolve_packages_path",
+        return_value=pkg_path,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.select_desktop",
+        return_value="gnome",
+    ):
+        _step_desktop(config, None, make_options(), "vi")
+    data = tomllib.loads(pkg_path.read_text())
+    assert "gnome" in data.get("group", {})
+    # Pre-existing entries survive.
+    assert any(e["name"] == "htop" for e in data.get("package", []))
+
+
+def test_step_desktop_no_selection_is_noop(tmp_path):
+    pkg_path = make_packages_toml(tmp_path, _BASIC_TOML)
+    before = pkg_path.read_text()
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.resolve_packages_path",
+        return_value=pkg_path,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.select_desktop",
+        return_value=None,
+    ):
+        _step_desktop({}, None, make_options(), "vi")
+    assert pkg_path.read_text() == before
+
+
+def test_step_desktop_dry_run_does_not_write(tmp_path):
+    pkg_path = make_packages_toml(tmp_path, _BASIC_TOML)
+    before = pkg_path.read_text()
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.resolve_packages_path",
+        return_value=pkg_path,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.select_desktop",
+        return_value="kde",
+    ):
+        _step_desktop({}, None, make_options(dry_run=True), "vi")
+    assert pkg_path.read_text() == before
 
 
 # ---------------------------------------------------------------------------

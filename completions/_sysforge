@@ -216,9 +216,10 @@ _sysforge_packages() {
   case $state in
     args)
       case $words[1] in
-        list)   _sysforge_packages_list   ;;
-        add)    _sysforge_packages_add    ;;
-        remove) _sysforge_packages_remove ;;
+        list)      _sysforge_packages_list      ;;
+        add)       _sysforge_packages_add       ;;
+        add-group) _sysforge_packages_add_group ;;
+        remove)    _sysforge_packages_remove    ;;
       esac
       ;;
   esac
@@ -228,6 +229,7 @@ _sysforge_packages_subcommands() {
   local subcommands=(
     'list:show override entries in packages.toml'
     'add:add or update an override entry'
+    'add-group:write a curated desktop-environment package group'
     'remove:remove an override entry'
   )
   _describe 'subcommand' subcommands
@@ -247,6 +249,12 @@ _sysforge_packages_add() {
     '--no-cache[disable ccache/sccache for this package (required for PGO)]' \
     '--reason[free-form note attached to the entry]:text' \
     '1: :_sysforge_pkg_names'
+}
+
+_sysforge_packages_add_group() {
+  _arguments \
+    '--packages[path to packages.toml]:file:_files' \
+    '1:desktop:(gnome kde)'
 }
 
 _sysforge_packages_remove() {

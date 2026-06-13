@@ -12,6 +12,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.paths import BOOTSTRAP_PATH
+from sysforge.primitives.pkg_catalog import valid_desktops
 
 _log = log.get_logger("BOOTSTRAP")
 
@@ -38,6 +39,7 @@ class BootstrapConfig:
     username: str = "builder"
     user_password: str | None = None
     shell: str = "bash"
+    desktop: str | None = None
 
 
 def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
@@ -63,6 +65,7 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     partition = data.get("partition", {})
     system = data.get("system", {})
     mirror = data.get("mirror", {})
+    desktop_tbl = data.get("desktop", {})
 
     # Required fields
     def _require(section: dict, key: str, section_name: str) -> str:
@@ -95,6 +98,7 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     username = raw_username or "builder"
     user_password = system.get("user_password") or None
     shell = system.get("shell", "bash")
+    desktop = desktop_tbl.get("environment") or None
 
     if root_fs not in _VALID_ROOT_FS:
         raise RuntimeError(
@@ -106,6 +110,12 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
         raise RuntimeError(
             f"bootstrap.toml: invalid shell {shell!r}. "
             f"Supported values: {', '.join(sorted(_VALID_SHELLS))}."
+        )
+
+    if desktop is not None and desktop not in valid_desktops():
+        raise RuntimeError(
+            f"bootstrap.toml: invalid [desktop].environment {desktop!r}. "
+            f"Supported values: {', '.join(valid_desktops())}."
         )
 
     if _ZONEINFO_DIR.exists() and not (_ZONEINFO_DIR / timezone).exists():
@@ -138,4 +148,5 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
         username=username,
         user_password=user_password,
         shell=shell,
+        desktop=desktop,
     )

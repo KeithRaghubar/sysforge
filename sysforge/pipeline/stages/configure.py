@@ -22,6 +22,8 @@ bootstrap.toml optional fields:
   [mirror] countries           list    reflector --country values
   [mirror] protocol            string  reflector --protocol (default: "https")
   [mirror] age                 int     reflector --latest N (default: 12)
+  [desktop] environment        string  desktop package group to install (gnome | kde);
+                                       interactive prompt when unset on a TTY
 
 These steps are intentionally separated from reconfigure (stage 5) because
 they are destructive on a live running system if re-applied carelessly.
@@ -40,6 +42,8 @@ from sysforge import log
 _log = log.get_logger("CONFIGURE")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import load_bootstrap, BootstrapConfig
+from sysforge.primitives.pkg_catalog import select_desktop, write_desktop_group
+from sysforge.primitives.prompt import is_interactive
 from sysforge.primitives.run import run_or_raise
 
 
@@ -501,6 +505,25 @@ def _copy_config_files(cfg: BootstrapConfig) -> None:
     _log.ui("Config files copied to target /etc/sysforge/")
 
 
+def _configure_desktop(cfg: BootstrapConfig) -> None:
+    """Optionally select a desktop-environment package group.
+
+    Resolution lives in :func:`pkg_catalog.select_desktop`: bootstrap.toml
+    ``[desktop] environment`` wins non-interactively; otherwise a TTY run
+    prompts; a non-TTY run with no preselection skips (so unattended installs
+    never block). The chosen group is written into the *target's* packages.toml
+    (already copied by :func:`_copy_config_files`) so the later packages stage
+    installs it.
+    """
+    choice = select_desktop(interactive=is_interactive(), preselected=cfg.desktop)
+    if not choice:
+        _log.info("Desktop: none selected.")
+        return
+    pkgs_path = Path(cfg.target) / "etc/sysforge/packages.toml"
+    write_desktop_group(pkgs_path, choice)
+    _log.ui(f"Desktop: wrote [group.{choice}] to {pkgs_path} (installs in the packages stage).")
+
+
 def _write_resume_reminder(cfg: BootstrapConfig) -> None:
     """Write a login-shell reminder to resume the pipeline after reboot."""
     dest = Path(cfg.target) / _RESUME_REMINDER_PATH
@@ -606,6 +629,10 @@ class ConfigureStage(Stage):
             if cfg.shell != "bash":
                 _log.ui(f"[dry-run] would set default shell: {cfg.shell}")
             _log.ui("[dry-run] would copy /etc/sysforge/ to target")
+            if cfg.desktop:
+                _log.ui(f"[dry-run] would select desktop: {cfg.desktop} (writes [group.{cfg.desktop}])")
+            else:
+                _log.ui("[dry-run] would prompt for a desktop environment (interactive only)")
             _log.ui("[dry-run] would create /var/lib/sysforge (mode 0777)")
             _log.ui("[dry-run] would build sysforge in target via makepkg and install with pacman -U (tracked)")
             _log.ui("[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
@@ -625,6 +652,7 @@ class ConfigureStage(Stage):
         _configure_shell(cfg)
         _set_default_shell(cfg)
         _copy_config_files(cfg)
+        _configure_desktop(cfg)
         _create_state_dir(cfg)
         # Write the resume reminder before the (potentially fragile) sysforge
         # install. If install fails, the user still has a login-time breadcrumb
