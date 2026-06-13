@@ -1,10 +1,16 @@
 # SysForge
 
-SysForge is an AUR helper for Arch Linux with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
+SysForge is an Arch Linux build and maintenance suite with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
 The default build profile uses the system gcc; LLVM (clang/lld) is fully supported but opt-in — install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `CC=clang`/`CXX=clang++` in a user profile, or use `sysforge run toolchain --compiler=llvm`.
 
-**Current status:** <!--version-->v1.2.0<!--/version-->. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are opt-in (`enabled = false` by default in their respective `.toml` files) — building a custom toolchain or kernel is a deliberate choice; users who want the system compiler and a stock pacman kernel leave them disabled. Flag drift is reported by `sysforge update` by default (`--rebuild-on-flag-drift` rebuilds drifted packages; `--offline --dry-run` is the read-only report). Before building a package whose source changed since the last accepted build, the PKGBUILD review gate runs: `sysforge build` shows the full source-tree diff and prompts (view / accept / skip / abort, single keypress); `sysforge update` auto-accepts with a logged notice so batch runs stay unattended (`--review` opts into the prompt). Disable entirely with `--no-review` or `[build] review = false` in packages.toml.
+**Current status:** <!--version-->v1.2.0<!--/version-->. All commands implemented and usable. Userspace AUR management (`build`, `fetch`, `update`, `resolve`, `doctor`, `setup`, `packages`, `run pipeline/reconfigure/packages`) plus full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) for fresh installs from the Arch ISO. `run toolchain` and `run kernel` are opt-in (`enabled = false` by default in their respective `.toml` files) — building a custom toolchain or kernel is a deliberate choice; users who want the system compiler and a stock pacman kernel leave them disabled. Flag drift is reported by `sysforge update` by default (`--rebuild-on-flag-drift` rebuilds drifted packages; `--offline --dry-run` is the read-only report). Before building a package whose source changed since the last accepted build, the PKGBUILD review gate runs: `sysforge build` shows the full source-tree diff and prompts (view / accept / skip / abort, single keypress); `sysforge update` auto-accepts with a logged notice so batch runs stay unattended (`--review` opts into the prompt). AUR dependencies are gated too, with a batched summary and a single accept-all/abort prompt. Disable entirely with `--no-review` or `[build] review = false` in packages.toml.
+
+---
+
+## About
+
+SysForge started as a tool to streamline its author's own Arch Linux build and maintenance workflow on a daily-driver machine, and grew into a general-purpose suite. The codebase is developed essentially end-to-end with Claude Code, but it is deliberately structured to stay hand-editable: the modular design docs under `docs/design/` are the source of truth, every module has a documented owner and API, and the full test suite gates every change. Feedback of any kind is welcome via GitHub issues, and contributions are accepted — see [Contributing](#contributing).
 
 ---
 
@@ -295,7 +301,7 @@ Completes subcommands, all flags, and package names (local `pkgbuild_src_dir` + 
 
 ## Contributing
 
-SysForge is a personal project and is not currently accepting contributions. Issues and feedback are welcome via GitHub.
+Issues are the best channel for bug reports and feedback; pull requests are welcome too. See [CONTRIBUTING.md](CONTRIBUTING.md) for how the project is developed and what a good PR looks like.
 
 ---
 

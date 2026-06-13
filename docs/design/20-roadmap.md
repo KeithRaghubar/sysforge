@@ -20,15 +20,15 @@ Post-v1.0 enhancements that build on existing infrastructure. Not required for t
 
 ## V2 Roadmap
 
-V2 goal: advanced AUR helper features beyond the v1.0 scope.
+V2 goal: advanced build-and-maintenance features beyond the v1.0 scope.
 
 ### Landed in v2.0
 
-- **PKGBUILD review** *(landed)* — interactive review gate before building any package whose source changed since the last accepted build. One home in `build_core.build_and_install` (covers `build` and `update`); full source-tree diff (PKGBUILD + `.install` + patches) against the recorded `reviewed_commit`, with view/accept/skip/abort prompt, empty-tree fallback for first builds and re-clones, non-TTY auto-accept with warning, `--no-review` / `[build] review = false` escape hatches. See §`pkgbuild_review.py`. Dependency PKGBUILDs are not yet gated — tracked in Known Gaps.
+- **PKGBUILD review** *(landed)* — interactive review gate before building any package whose source changed since the last accepted build. One home in `build_core.build_and_install` (covers `build` and `update`); full source-tree diff (PKGBUILD + `.install` + patches) against the recorded `reviewed_commit`, with view/accept/skip/abort prompt, empty-tree fallback for first builds and re-clones, non-TTY auto-accept with warning, `--no-review` / `[build] review = false` escape hatches. See §`pkgbuild_review.py`.
+- **Dependency-PKGBUILD review** *(landed)* — the review gate also covers AUR dependencies built by `prepare_deps`: a batched summary (short shas + diffstat per changed dep) with a single view-all/accept-all/abort prompt (no per-dep skip — dropping a dep breaks its dependent). Same `review` mode as the target gate; abort propagates as the same clean `BuildOutcome(aborted=True)` return. See §`pkgbuild_review.py` → *Dependency gate*.
 - **Package groups** *(landed)* — `[group.<name>]` tables in packages.toml expand into `[[package]]`-equivalent entries at load time via the single expansion point `config.expand_package_groups` (consumed by the packages stage, update overrides, completions, `packages list`, reconfigure summaries). Optional per-group defaults inherit to members; explicit entries win outright. See §Package Manifest → *Package groups*.
 - **`converge` verb removed; `update_repo_profiled` alias removed** *(landed)* — the one-release deprecation windows closed. Converge's build-state-wide flag-drift coverage was folded into `sysforge update` Phase 4.3 (out-of-walk profiled entries are detect/report-only with a `sysforge build` hint; an empty walk with profiled entries no longer early-exits).
 
 ### V2.x candidates
 
 - **System maintenance scope expansion** — grow sysforge beyond build/package management into a unified system-maintenance helper: track and manage user-owned system artifacts that currently live ad-hoc across `~/scripts`, `/etc/systemd/system/`, `/etc/pacman.d/hooks/`, etc. Candidate primitives: inventory of tracked files, source-of-truth dir under repo control, install/sync command, drift detection vs filesystem, integration with the existing config/profile/manifest layers.
-- **Dependency-PKGBUILD review** — extend the review gate to AUR dependencies built by `prepare_deps` (needs a batched-summary UX; see Known Gaps).
