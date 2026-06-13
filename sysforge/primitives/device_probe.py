@@ -18,7 +18,7 @@ All probes are read-only and degrade silently when an input is missing
 shrinks the result, it never errors. Mirrors ``graphics_probe.py``.
 
 Public API:
-    enumerate_devices(buses=("pci", "usb")) -> list[Device]
+    enumerate_devices(buses=("pci", "usb"), kconfig_map=None) -> list[Device]
     check_unsupported_devices(*, devices=None, ref_dir=None) -> list[DeviceFinding]
     find_reference_modules_dir() -> Path | None
 """
@@ -82,10 +82,12 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
 # ---------------------------------------------------------------------------
 # module → CONFIG_* curated table
 #
-# Best-effort: there is no shipped runtime module→kconfig database (the kernel
-# source tree is only a transient PKGBUILD checkout), so this maps the common
-# subsystems whose absence is most likely to leave a desktop/server device
-# dead. Unknown modules degrade to "module name only" (empty suggested_kconfig).
+# The vetted core mapping: the common subsystems whose absence is most likely
+# to leave a desktop/server device dead. Broad coverage comes from the
+# tree-derived ``kbuild_map`` cache (parsed from the kernel srcdir at build
+# time) passed in via ``kconfig_map``; this table always wins on overlap and
+# is the only mapping when no cache exists yet. Unknown modules degrade to
+# "module name only" (empty suggested_kconfig).
 # Keys are the underscore module names as they appear in modules.alias.
 # ---------------------------------------------------------------------------
 
@@ -273,11 +275,19 @@ def resolve_expected_modules(modalias: str, ref_dir: Path | None) -> list[str]:
     return seen
 
 
-def _suggested_kconfig(modules: list[str]) -> list[str]:
-    """Map resolved modules to CONFIG_* via the curated table (dedup, ordered)."""
+def _suggested_kconfig(
+    modules: list[str],
+    extra_map: dict[str, str] | None = None,
+) -> list[str]:
+    """Map resolved modules to CONFIG_* (dedup, ordered).
+
+    The curated table wins (its entries are vetted); ``extra_map`` — typically
+    a tree-derived ``kbuild_map`` cache — extends coverage to modules the
+    table doesn't know.
+    """
     out: list[str] = []
     for m in modules:
-        opt = _MODULE_TO_KCONFIG.get(m)
+        opt = _MODULE_TO_KCONFIG.get(m) or (extra_map or {}).get(m)
         if opt and opt not in out:
             out.append(opt)
     return out
@@ -335,12 +345,17 @@ def _usb_description(dev_dir: Path) -> str:
     return joined
 
 
-def enumerate_devices(buses: tuple[str, ...] = ("pci", "usb")) -> list[Device]:
+def enumerate_devices(
+    buses: tuple[str, ...] = ("pci", "usb"),
+    kconfig_map: dict[str, str] | None = None,
+) -> list[Device]:
     """Walk /sys/bus/<bus>/devices and build the device inventory.
 
     For each device: modalias, class, the bound-driver symlink, a human
     description, and (when a reference modules dir exists) the expected
-    module(s) and suggested CONFIG_*.
+    module(s) and suggested CONFIG_*. ``kconfig_map`` (a loaded ``kbuild_map``
+    cache) widens the module→CONFIG_* step beyond the curated table; omitted,
+    behavior is curated-only as before.
     """
     ref_dir = find_reference_modules_dir()
     pci_names = _pci_descriptions() if "pci" in buses else {}
@@ -367,7 +382,7 @@ def enumerate_devices(buses: tuple[str, ...] = ("pci", "usb")) -> list[Device]:
 
             driver = _device_driver(dev_dir)
             expected = resolve_expected_modules(modalias, ref_dir)
-            suggested = _suggested_kconfig(expected)
+            suggested = _suggested_kconfig(expected, kconfig_map)
 
             devices.append(Device(
                 bus=bus,

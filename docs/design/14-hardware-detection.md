@@ -37,11 +37,17 @@ CONFIG_BLK_DEV_NVME   = "y"
 CONFIG_ARM64          = "n"
 CONFIG_ARCH_QCOM      = "n"
 # (and the rest of _ARCH_OWNED_KCONFIG minus the host's own domain)
+
+[kconfig_devices]
+# device-driven modular drivers for present devices, all "m" — see
+# §Device-driven kconfig below
+CONFIG_SND_HDA_INTEL  = "m"
+CONFIG_IGC            = "m"
 ```
 
 Written atomically (write-then-rename) to `<state_dir>/hardware_profile.toml`. The file has four readers:
 
-- **`pipeline/stages/kernel.py`** — `_load_hardware_kconfig()` consumes `[kconfig]`; entries flow into the `sysforge.config` fragment merged into `.config` via `merge_config.sh`. Absence is non-fatal (entries skipped with an INFO log).
+- **`pipeline/stages/kernel.py`** — `_load_hardware_kconfig()` consumes `[kconfig]` and `[kconfig_devices]`; entries flow into the `sysforge.config` fragment merged into `.config` via `merge_config.sh` (precedence: manual `[[kconfig]]` > `[kconfig]` > `[kconfig_devices]`; the device table is gated by `kernel.toml device_kconfig`, default true). Absence is non-fatal (entries skipped with an INFO log).
 - **`primitives/llvm_targets.py`** — `_read_hardware_targets()` consumes `[hardware] llvm_targets`; resolves the `LLVM_TARGETS_TO_BUILD` cmake arg injected by `pkgbuild_patcher.patch_llvm_targets`.
 - **`pipeline/stages/reconfigure.py`** — surfaces the file in the pre-build config review so the user can hand-edit before kernel build.
 - **`commands/doctor.py`** — consumes `[hardware] gpu_vendors` to scope the `doctor --graphics` health checks.
@@ -55,7 +61,13 @@ In addition to the positive `=y` enables above, the hardware stage emits an `=n`
 
 `_arch_disable_kconfig(host_arch)` resolves the host domain, then iterates every *other* domain in the registry and emits `{CONFIG_X: "n"}`. Keys appearing in the host's own domain set are filtered out as a defensive guard (no clobber if a future kconfig key gains a presence in multiple domains). Unknown `host_arch` returns an empty dict and logs a WARN.
 
-The `=n` entries land in the same `[kconfig]` table as the existing `=y` enables, so the kernel stage's existing merge path — `merged = {**hw_kconfig, **manual_kconfig}` — applies unchanged. A user cross-compiling or otherwise wanting an arch-disabled key re-enabled puts an explicit `[[kconfig]] option = "CONFIG_ARM64" value = "y"` in `kernel.toml`; the existing manual-override-wins-with-WARN behaviour at `pipeline/stages/kernel.py:344-346` extends to arch-disable entries.
+The `=n` entries land in the same `[kconfig]` table as the existing `=y` enables, so the kernel stage's existing merge path — `merged = {**device_kconfig, **hw_kconfig, **manual_kconfig}` — applies unchanged. A user cross-compiling or otherwise wanting an arch-disabled key re-enabled puts an explicit `[[kconfig]] option = "CONFIG_ARM64" value = "y"` in `kernel.toml`; the existing manual-override-wins-with-WARN behaviour in `_write_kconfig_fragment` extends to arch-disable entries.
+
+### Device-driven kconfig (`[kconfig_devices]`)
+
+The scalar `[kconfig]` heuristics cover CPU/GPU/NVMe; `[kconfig_devices]` covers everything else that is physically present. The stage takes the union of all enumerated devices' `suggested_kconfig` (see `device_probe.py` — modalias → expected module → `CONFIG_*`), subtracts any symbol the heuristic `[kconfig]` table already owns (so e.g. a nouveau-bound NVIDIA GPU can't re-enable the heuristic's `CONFIG_DRM_NOUVEAU = "n"`), and emits the rest as `"m"` — modular drivers don't load unless the hardware is present, so this is the safe default for device coverage.
+
+The module→`CONFIG_*` resolution is two-layered: `device_probe`'s curated `_MODULE_TO_KCONFIG` table (vetted, always wins) plus the **kbuild map cache** (`<state_dir>/kbuild_module_map.json`, see §`kbuild_map.py`). The cache is harvested by the kernel stage's Gate 2 from the just-built source tree — the resolved `.config`'s parent is the version-exact tree, the only reliable place the kbuild Makefiles exist on disk (installed headers don't ship the nested driver Makefiles). The loop is self-improving: the first kernel build runs with curated-only coverage, Gate 2 caches the full tree-derived map, and every later hardware-stage run / fragment write resolves near-totally. The fold is consumed by the kernel stage's fragment merge at the lowest precedence (manual > hardware > device) and can be disabled wholesale with `kernel.toml device_kconfig = false`.
 
 ### Tested hardware scope
 

@@ -18,14 +18,25 @@ kernel.toml structure:
                                        # remote to sync from. Set to "aur"/"git" if the
                                        # kernel PKGBUILD is a clone of an AUR/git remote.
 
+  device_kconfig   = true          # merge device-driven [kconfig_devices]
+                                   # entries from hardware_profile.toml into
+                                   # the fragment (default true)
+
   [[kconfig]]                      # manual kconfig overrides (optional)
   option = "CONFIG_HZ_1000"        # must match CONFIG_[A-Z0-9_]+
   value  = "y"                     # y | m | n | non-empty string (for string/int options)
 
 kconfig fragment:
-  Hardware-driven kconfig comes from hardware_profile.toml [kconfig] table
-  (emitted by the hardware stage). Manual overrides from kernel.toml [[kconfig]]
-  are merged on top — manual wins on conflict with a WARN.
+  Hardware-driven kconfig comes from hardware_profile.toml [kconfig] table,
+  and device-driven entries from its [kconfig_devices] table (both emitted by
+  the hardware stage; the latter gated by device_kconfig above). Manual
+  overrides from kernel.toml [[kconfig]] are merged on top — precedence is
+  manual > hardware > device; manual wins on conflict with a WARN.
+
+  Gate 2 harvests the just-built tree's kbuild module→CONFIG_* map (the
+  resolved .config's parent is the version-exact source tree) into
+  <state_dir>/kbuild_module_map.json — the hardware stage loads that cache to
+  widen [kconfig_devices] beyond device_probe's curated table on later runs.
 
   The combined fragment is written to <pkgbuild_src_dir>/<pkgname>/sysforge.config
   before makepkg runs. The PKGBUILD must merge this into its .config;
@@ -62,7 +73,7 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("KERNEL")
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives import device_probe, kernel_safety
+from sysforge.primitives import device_probe, kbuild_map, kernel_safety
 from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.paths import KERNEL_PATH
 from sysforge.primitives.makepkg_wrapper import (
@@ -511,34 +522,37 @@ def _validate_manual_kconfig(entries):
 
 def _load_hardware_kconfig(config):
     """
-    Load [kconfig] table from hardware_profile.toml.
-    Returns dict {option: value}, or empty dict if hardware profile is absent.
-    hardware_profile.toml is emitted by the hardware stage; its absence is not
-    an error here — kconfig entries are simply skipped with an INFO log.
+    Load the [kconfig] and [kconfig_devices] tables from hardware_profile.toml.
+    Returns (kconfig, device_kconfig) dicts {option: value}; both empty if the
+    hardware profile is absent. hardware_profile.toml is emitted by the
+    hardware stage; its absence is not an error here — kconfig entries are
+    simply skipped with an INFO log.
     """
     hw_path = config.get("hardware_profile")
     if not hw_path:
         _log.ui(
             "No hardware_profile configured — hardware kconfig entries skipped (hardware stage not run)",
         )
-        return {}
+        return {}, {}
 
     hw_path = Path(hw_path).expanduser()
     if not hw_path.exists():
         _log.ui(
             f"hardware_profile.toml not found at {hw_path} — hardware kconfig entries skipped",
         )
-        return {}
+        return {}, {}
 
     with open(hw_path, "rb") as f:
         hw = tomllib.load(f)
 
     kconfig = hw.get("kconfig", {})
-    if kconfig:
+    device_kconfig = hw.get("kconfig_devices", {})
+    if kconfig or device_kconfig:
         _log.ui(
-            f"Loaded {len(kconfig)} kconfig entry/entries from hardware_profile.toml",
+            f"Loaded {len(kconfig)} hardware + {len(device_kconfig)} device "
+            "kconfig entry/entries from hardware_profile.toml",
         )
-    return kconfig
+    return kconfig, device_kconfig
 
 
 def _format_kconfig_line(option, value):
@@ -555,22 +569,32 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None):
     Build and write the sysforge.config fragment to the PKGBUILD directory.
 
     Sources (in merge order, later wins):
-      1. hardware_profile.toml [kconfig]  — hardware-driven, set by hardware stage
-      2. kernel.toml [[kconfig]]          — manual overrides, validated
+      1. hardware_profile.toml [kconfig_devices] — device-driven (tree-derived
+         map ∪ curated table), set by hardware stage; gated by kernel.toml
+         ``device_kconfig`` (default true)
+      2. hardware_profile.toml [kconfig]         — hardware-driven, set by hardware stage
+      3. kernel.toml [[kconfig]]                 — manual overrides, validated
 
-    Conflicts between the two sources are logged as WARN; manual wins.
-    If no entries exist from either source, no fragment is written.
+    Manual-vs-hardware conflicts are logged as WARN; manual wins. Device
+    entries are machine-derived advisories — a hardware/manual entry overrides
+    them silently. If no entries exist from any source, no fragment is written.
 
     ``provenance`` (optional) is a one-line toolchain trail (e.g.
     "toolchain variant: pgo_llvm  cc: /usr/bin/clang") stamped into the
     fragment header so a ``.config`` diff between two builds carries the
     toolchain identity that produced it.
 
-    Returns ``(path | None, hw_count, manual_count)`` — path is None when no
-    fragment was written (no entries, or dry-run).
+    Returns ``(path | None, hw_count, manual_count, device_count)`` — path is
+    None when no fragment was written (no entries, or dry-run).
     """
-    # Load and validate both sources
-    hw_kconfig = _load_hardware_kconfig(config)
+    # Load and validate the sources
+    hw_kconfig, device_kconfig = _load_hardware_kconfig(config)
+    if device_kconfig and not bool(kernel_cfg.get("device_kconfig", True)):
+        _log.info(
+            f"device_kconfig = false — skipping {len(device_kconfig)} "
+            "device-driven kconfig entry/entries",
+        )
+        device_kconfig = {}
     manual_entries = kernel_cfg.get("kconfig", [])
     manual_kconfig = _validate_manual_kconfig(manual_entries) if manual_entries else {}
 
@@ -582,12 +606,12 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None):
                 f"kernel.toml={manual_val!r} — manual override wins",
             )
 
-    # Merge: hardware base, manual on top
-    merged = {**hw_kconfig, **manual_kconfig}
+    # Merge: device base, hardware above it, manual on top
+    merged = {**device_kconfig, **hw_kconfig, **manual_kconfig}
 
     if not merged:
         _log.ui("No kconfig entries from any source — skipping fragment")
-        return None, 0, 0
+        return None, 0, 0, 0
 
     pkgbuild = _pkgbuild_path(kernel_cfg)
     fragment_path = pkgbuild.parent / "sysforge.config"
@@ -601,28 +625,34 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None):
     lines.append("")
     hw_count = 0
     manual_count = 0
+    device_count = 0
     for option, value in merged.items():
-        source = "manual" if option in manual_kconfig else "hardware"
+        if option in manual_kconfig:
+            source = "manual"
+            manual_count += 1
+        elif option in hw_kconfig:
+            source = "hardware"
+            hw_count += 1
+        else:
+            source = "device"
+            device_count += 1
         lines.append(f"# source: {source}")
         lines.append(_format_kconfig_line(option, value))
-        if source == "manual":
-            manual_count += 1
-        else:
-            hw_count += 1
 
+    counts = f"{hw_count} hardware, {device_count} device, {manual_count} manual"
     if dry_run:
         _log.ui(
-            f"[dry-run] would write kconfig fragment ({hw_count} hardware, {manual_count} manual): {fragment_path}",
+            f"[dry-run] would write kconfig fragment ({counts}): {fragment_path}",
         )
         for line in lines:
             _log.ui(f"  {line}")
-        return None, hw_count, manual_count
+        return None, hw_count, manual_count, device_count
 
     fragment_path.write_text("\n".join(lines) + "\n")
     _log.ui(
-        f"Wrote kconfig fragment: {fragment_path} ({hw_count} hardware, {manual_count} manual)",
+        f"Wrote kconfig fragment: {fragment_path} ({counts})",
     )
-    return fragment_path, hw_count, manual_count
+    return fragment_path, hw_count, manual_count, device_count
 
 
 def _resolve_base_config(kernel_cfg):
@@ -858,12 +888,19 @@ def _built_kernel_release(config_path):
     return text or None
 
 
-def _gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit):
+def _gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None):
     """Audit the resolved .config before install. Raises on brick unless skipped.
 
     Runs *outside* the install sentinel: a brick abort here leaves the system
     completely untouched (nothing installed, no sentinel set), so the running
     kernel stays bootable.
+
+    The resolved .config's parent is the version-exact kernel source tree, so
+    this is also where the kbuild module→CONFIG_* map is harvested: it widens
+    this audit's device coverage beyond the curated table and (when
+    ``state_dir`` is given) is cached for the hardware stage / the next
+    fragment write. The parse is best-effort — any failure degrades to the
+    curated-only audit, never blocks the gate.
     """
     config_path = _resolve_built_config(pkgbuild_dir)
     if config_path is None:
@@ -874,7 +911,29 @@ def _gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit):
         return
 
     _log.ui(f"Gate 2: auditing resolved kernel config {config_path}")
-    devices = device_probe.enumerate_devices()
+
+    kconfig_map = None
+    try:
+        kconfig_map = kbuild_map.parse_kbuild_tree(config_path.parent)
+    except Exception as exc:
+        _log.warn(
+            f"Gate 2: kbuild module→kconfig parse failed ({exc}) — "
+            "auditing with the curated table only"
+        )
+    if kconfig_map and state_dir is not None:
+        cache_path = Path(state_dir) / kbuild_map.KBUILD_MAP_FILENAME
+        try:
+            kbuild_map.save_map(
+                cache_path, kconfig_map, _built_kernel_release(config_path),
+            )
+            _log.info(
+                f"Cached kbuild module→kconfig map "
+                f"({len(kconfig_map)} modules): {cache_path}"
+            )
+        except OSError as exc:
+            _log.warn(f"could not cache kbuild map at {cache_path}: {exc}")
+
+    devices = device_probe.enumerate_devices(kconfig_map=kconfig_map)
     findings = kernel_safety.audit_resolved_config(config_path, topology, devices)
     bricks = [f for f in findings if f.is_brick]
 
@@ -940,7 +999,8 @@ def _gate3_verify(pkgbuild_dir, pkgname, bootloader):
 def _log_resolution_summary(
     *, pkgname, compiler, compiler_origin, cc, cxx, variant, bootloader,
     bootloader_installed, source, kconfig_target, base_config_source,
-    hw_kconfig_count, manual_kconfig_count, kernel_cfg, skip_boot_audit,
+    hw_kconfig_count, manual_kconfig_count, device_kconfig_count,
+    kernel_cfg, skip_boot_audit,
 ):
     """Emit one labelled block of the resolved kernel-build plan.
 
@@ -965,7 +1025,10 @@ def _log_resolution_summary(
     _log.ui(f"  variant:    {variant}")
     _log.ui(f"  bootloader: {bootloader}{boot_note}")
     _log.ui(f"  source:     {source}")
-    _log.ui(f"  kconfig:    {kconfig_target} ({hw_kconfig_count} hardware, {manual_kconfig_count} manual)")
+    _log.ui(
+        f"  kconfig:    {kconfig_target} ({hw_kconfig_count} hardware, "
+        f"{device_kconfig_count} device, {manual_kconfig_count} manual)"
+    )
     _log.ui(f"  base cfg:   {base_config_source}")
     _log.ui(f"  gates:      {gates}")
 
@@ -1113,8 +1176,10 @@ class KernelStage(Stage):
         # the toolchain provenance (C2). Still before the build, which reads
         # sysforge.config in the PKGBUILD's prepare().
         provenance = f"toolchain variant: {variant}  cc: {cc or '-'}"
-        _, hw_kconfig_count, manual_kconfig_count = _write_kconfig_fragment(
-            kernel_cfg, config, options.dry_run, provenance=provenance,
+        _, hw_kconfig_count, manual_kconfig_count, device_kconfig_count = (
+            _write_kconfig_fragment(
+                kernel_cfg, config, options.dry_run, provenance=provenance,
+            )
         )
 
         kconfig_target = "make nconfig (user-supplied)" if interactive else "make olddefconfig (patched)"
@@ -1148,6 +1213,7 @@ class KernelStage(Stage):
             base_config_source=base_config_source,
             hw_kconfig_count=hw_kconfig_count,
             manual_kconfig_count=manual_kconfig_count,
+            device_kconfig_count=device_kconfig_count,
             kernel_cfg=kernel_cfg,
             skip_boot_audit=skip_boot_audit,
         )
@@ -1199,7 +1265,10 @@ class KernelStage(Stage):
                     )
 
                 # Gate 2 — resolved-.config audit (raises on brick, pre-install).
-                _gate2_audit(pkgbuild.parent, topology, skip_boot_audit=skip_boot_audit)
+                _gate2_audit(
+                    pkgbuild.parent, topology,
+                    skip_boot_audit=skip_boot_audit, state_dir=state_dir,
+                )
 
             # Install + boot wiring are the mutation window — wrap them in the
             # sentinel so an interrupted install / mkinitcpio / bootloader regen

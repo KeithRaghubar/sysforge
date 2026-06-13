@@ -79,6 +79,16 @@ def test_suggested_kconfig_unknown_module_degrades():
     assert dp._suggested_kconfig(["some_obscure_mod"]) == []
 
 
+def test_suggested_kconfig_extra_map_extends():
+    extra = {"some_obscure_mod": "CONFIG_OBSCURE"}
+    assert dp._suggested_kconfig(["some_obscure_mod"], extra) == ["CONFIG_OBSCURE"]
+
+
+def test_suggested_kconfig_curated_wins_over_extra():
+    extra = {"nvme": "CONFIG_FROM_TREE"}
+    assert dp._suggested_kconfig(["nvme"], extra) == ["CONFIG_BLK_DEV_NVME"]
+
+
 # ---------------------------------------------------------------------------
 # functional-device filter (false-positive guard)
 # ---------------------------------------------------------------------------
@@ -159,6 +169,22 @@ def test_enumerate_bound_device_has_driver(tmp_path, monkeypatch):
 
     devs = dp.enumerate_devices(buses=("pci",))
     assert devs[0].driver == "snd_hda_intel"
+
+
+def test_enumerate_threads_kconfig_map(tmp_path, monkeypatch):
+    bus_root = tmp_path / "sys" / "bus"
+    _make_pci_device(bus_root, "0000:0d:00.4", _AMD_HDA, "0x040300")
+    ref = _make_ref_dir(tmp_path)
+    monkeypatch.setattr(dp, "_SYS_BUS", bus_root)
+    monkeypatch.setattr(dp, "find_reference_modules_dir", lambda: ref)
+    monkeypatch.setattr(dp, "_pci_descriptions", lambda: {})
+    # Empty the curated table so only the tree-derived map can answer —
+    # proves the kwarg reaches the suggestion step.
+    monkeypatch.setattr(dp, "_MODULE_TO_KCONFIG", {})
+
+    devs = dp.enumerate_devices(
+        buses=("pci",), kconfig_map={"snd_hda_intel": "CONFIG_SND_HDA_INTEL"})
+    assert devs[0].suggested_kconfig == ["CONFIG_SND_HDA_INTEL"]
 
 
 # ---------------------------------------------------------------------------

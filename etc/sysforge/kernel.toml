@@ -103,11 +103,21 @@ pkgname = "linux-sysforge"      # base package name (must match the PKGBUILD pkg
 # kconfig — kernel config fragment
 #
 # Entries are written to a sysforge.config fragment and applied via
-# scripts/config before the build. Manual entries override hardware_profile
-# entries on conflict (with a warning).
+# scripts/config before the build. Precedence (highest first): manual entries
+# below > hardware_profile [kconfig] > hardware_profile [kconfig_devices];
+# manual overrides warn on conflict.
 #
 # [kconfig]
 # CONFIG_HZ_1000 = "y"
 # CONFIG_NO_HZ_FULL = "y"
 # CONFIG_PREEMPT = "y"
 # ---------------------------------------------------------------------------
+
+# device_kconfig = true          # default: true — merge the hardware stage's
+#                                # device-driven [kconfig_devices] entries
+#                                # (modular drivers, "=m", for devices present
+#                                # on this machine) into the fragment. Coverage
+#                                # widens automatically after the first kernel
+#                                # build (Gate 2 caches the source tree's
+#                                # module→kconfig map). Set false to build the
+#                                # fragment from [kconfig] + manual entries only.

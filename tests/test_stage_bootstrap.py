@@ -385,6 +385,29 @@ class TestWriteHardwareProfile:
         assert d["suggested_kconfig"] == ["CONFIG_SND_HDA_INTEL"]
         assert data["kconfig"]["CONFIG_MZEN3"] == "y"
 
+    def test_device_kconfig_table_emitted(self, tmp_path):
+        out = tmp_path / "hardware_profile.toml"
+        hw = {"cpu_vendor": "AuthenticAMD", "cpu_family": 25, "cpu_model": 33,
+              "gpu_vendors": [], "nvme": True}
+        _write_hardware_profile(out, hw, {"CONFIG_BLK_DEV_NVME": "y"},
+                                dry_run=False,
+                                device_kconfig={"CONFIG_IGC": "m"})
+        import tomllib
+        with open(out, "rb") as f:
+            data = tomllib.load(f)
+        assert data["kconfig_devices"] == {"CONFIG_IGC": "m"}
+        assert data["kconfig"]["CONFIG_BLK_DEV_NVME"] == "y"
+
+    def test_no_device_kconfig_omits_section(self, tmp_path):
+        out = tmp_path / "hardware_profile.toml"
+        hw = {"cpu_vendor": "AuthenticAMD", "cpu_family": 25, "cpu_model": 33,
+              "gpu_vendors": [], "nvme": False}
+        _write_hardware_profile(out, hw, {}, dry_run=False, device_kconfig={})
+        import tomllib
+        with open(out, "rb") as f:
+            data = tomllib.load(f)
+        assert "kconfig_devices" not in data
+
 
 # ---------------------------------------------------------------------------
 # Hardware stage — architecture-aware kconfig disable
@@ -555,6 +578,69 @@ class TestHardwareStageRun:
             stage.run({}, MagicMock(), options)
 
         assert not (tmp_path / "hardware_profile.toml").exists()
+
+    def test_run_emits_device_kconfig_deduped(self, tmp_path):
+        """Device suggested_kconfig is folded into [kconfig_devices] as =m,
+        minus anything the heuristic [kconfig] already owns (the NVMe symbol
+        here, present as =y via lspci detection)."""
+        stage = HardwareStage()
+        options = make_options(state_dir=tmp_path)
+        from sysforge.primitives.device_probe import Device
+        fake_devices = [
+            Device(bus="pci", address="0000:0d:00.4",
+                   modalias="pci:v00001022d00001487", class_id="0x040300",
+                   description="AMD HD Audio", driver=None,
+                   expected_modules=["snd_hda_intel"],
+                   suggested_kconfig=["CONFIG_SND_HDA_INTEL"]),
+            Device(bus="pci", address="0000:01:00.0",
+                   modalias="pci:v0000144Dd0000A80A", class_id="0x010802",
+                   description="Samsung NVMe", driver="nvme",
+                   expected_modules=["nvme"],
+                   suggested_kconfig=["CONFIG_BLK_DEV_NVME"]),
+        ]
+        with patch("sysforge.pipeline.stages.hardware.subprocess.run") as mock_run, \
+             patch("sysforge.pipeline.stages.hardware.resolve_state_dir",
+                   return_value=(tmp_path, "test")), \
+             patch("sysforge.primitives.device_probe.enumerate_devices",
+                   return_value=fake_devices), \
+             patch("pathlib.Path.read_text", return_value=_AMD_ZEN3_CPUINFO):
+
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=_LSPCI_NVIDIA + "\n" + _LSPCI_NVME
+            )
+            stage.run({}, MagicMock(), options)
+
+        import tomllib
+        with open(tmp_path / "hardware_profile.toml", "rb") as f:
+            data = tomllib.load(f)
+        assert data["kconfig"]["CONFIG_BLK_DEV_NVME"] == "y"
+        assert data["kconfig_devices"] == {"CONFIG_SND_HDA_INTEL": "m"}
+
+    def test_run_loads_kbuild_cache_into_probe(self, tmp_path):
+        """A cached kbuild map in the state dir is handed to the device probe
+        so module→CONFIG_* coverage widens beyond the curated table."""
+        from sysforge.primitives import kbuild_map
+        stage = HardwareStage()
+        options = make_options(state_dir=tmp_path)
+        kbuild_map.save_map(tmp_path / kbuild_map.KBUILD_MAP_FILENAME,
+                            {"igc": "CONFIG_IGC"}, "6.10.0-test")
+
+        captured = {}
+        def fake_enumerate(*a, **k):
+            captured.update(k)
+            return []
+        # No Path.read_text patch here — load_map must read the real cache
+        # file; /proc/cpuinfo is read for real (any host cpuinfo parses).
+        with patch("sysforge.pipeline.stages.hardware.subprocess.run") as mock_run, \
+             patch("sysforge.pipeline.stages.hardware.resolve_state_dir",
+                   return_value=(tmp_path, "test")), \
+             patch("sysforge.primitives.device_probe.enumerate_devices",
+                   side_effect=fake_enumerate):
+
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            stage.run({}, MagicMock(), options)
+
+        assert captured.get("kconfig_map") == {"igc": "CONFIG_IGC"}
 
 
 # ---------------------------------------------------------------------------

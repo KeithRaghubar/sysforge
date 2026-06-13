@@ -21,7 +21,7 @@ from sysforge.pipeline.stages.kernel import (
     _write_kconfig_fragment,
 )
 from sysforge.pipeline.state import PipelineState
-from sysforge.primitives import device_probe, kernel_safety
+from sysforge.primitives import device_probe, kbuild_map, kernel_safety
 import sysforge.pipeline.stages.kernel as _km
 
 
@@ -129,7 +129,7 @@ def make_kernel_toml(tmp_path, pkgbuild_dir, pkgname="linux-git",
     return p
 
 
-def make_hardware_profile(tmp_path, kconfig=None, extra=None):
+def make_hardware_profile(tmp_path, kconfig=None, extra=None, kconfig_devices=None):
     lines = []
     if extra:
         for k, v in extra.items():
@@ -137,6 +137,10 @@ def make_hardware_profile(tmp_path, kconfig=None, extra=None):
     if kconfig:
         lines.append("[kconfig]")
         for option, value in kconfig.items():
+            lines.append(f'{option} = "{value}"')
+    if kconfig_devices:
+        lines.append("[kconfig_devices]")
+        for option, value in kconfig_devices.items():
             lines.append(f'{option} = "{value}"')
     p = tmp_path / "hardware_profile.toml"
     p.write_text("\n".join(lines) + "\n")
@@ -218,18 +222,18 @@ def test_validate_kconfig_duplicate_option():
 
 def test_load_hardware_kconfig_no_path_configured():
     result = _load_hardware_kconfig({})
-    assert result == {}
+    assert result == ({}, {})
 
 def test_load_hardware_kconfig_file_absent(tmp_path):
     config = {"hardware_profile": str(tmp_path / "nonexistent.toml")}
     result = _load_hardware_kconfig(config)
-    assert result == {}
+    assert result == ({}, {})
 
 def test_load_hardware_kconfig_no_kconfig_section(tmp_path):
     hw = tmp_path / "hardware_profile.toml"
     hw.write_text('nvidia_gpu = true\n')
     result = _load_hardware_kconfig({"hardware_profile": str(hw)})
-    assert result == {}
+    assert result == ({}, {})
 
 def test_load_hardware_kconfig_returns_kconfig_table(tmp_path):
     hw = make_hardware_profile(tmp_path,
@@ -237,16 +241,25 @@ def test_load_hardware_kconfig_returns_kconfig_table(tmp_path):
         kconfig={"CONFIG_MZEN3": "y", "CONFIG_NOUVEAU": "n"},
     )
     result = _load_hardware_kconfig({"hardware_profile": str(hw)})
-    assert result == {"CONFIG_MZEN3": "y", "CONFIG_NOUVEAU": "n"}
+    assert result == ({"CONFIG_MZEN3": "y", "CONFIG_NOUVEAU": "n"}, {})
 
 def test_load_hardware_kconfig_ignores_non_kconfig_keys(tmp_path):
     hw = make_hardware_profile(tmp_path,
         extra={"nvidia_gpu": True, "amd_cpu": True},
         kconfig={"CONFIG_MZEN3": "y"},
     )
+    kconfig, device_kconfig = _load_hardware_kconfig({"hardware_profile": str(hw)})
+    assert "nvidia_gpu" not in kconfig
+    assert kconfig == {"CONFIG_MZEN3": "y"}
+    assert device_kconfig == {}
+
+def test_load_hardware_kconfig_returns_device_table(tmp_path):
+    hw = make_hardware_profile(tmp_path,
+        kconfig={"CONFIG_MZEN3": "y"},
+        kconfig_devices={"CONFIG_IGC": "m"},
+    )
     result = _load_hardware_kconfig({"hardware_profile": str(hw)})
-    assert "nvidia_gpu" not in result
-    assert result == {"CONFIG_MZEN3": "y"}
+    assert result == ({"CONFIG_MZEN3": "y"}, {"CONFIG_IGC": "m"})
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +336,7 @@ def test_write_kconfig_fragment_no_entries_is_noop(tmp_path):
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
-    result, _, _ = _write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
+    result, _, _, _ = _write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
     assert result is None
     assert not (builds / "linux-git" / "sysforge.config").exists()
 
@@ -334,7 +347,7 @@ def test_write_kconfig_fragment_hardware_only(tmp_path):
     kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
     config = {"hardware_profile": str(hw)}
 
-    result, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
+    result, _, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
 
     assert result is not None
     content = result.read_text()
@@ -351,7 +364,7 @@ def test_write_kconfig_fragment_manual_only(tmp_path):
         "kconfig": [{"option": "CONFIG_HZ_1000", "value": "y"}],
     }
 
-    result, _, _ = _write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
+    result, _, _, _ = _write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
 
     assert result is not None
     content = result.read_text()
@@ -369,7 +382,7 @@ def test_write_kconfig_fragment_merge_hw_and_manual(tmp_path):
     }
     config = {"hardware_profile": str(hw)}
 
-    result, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
+    result, _, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
 
     content = result.read_text()
     assert "CONFIG_MZEN3=y" in content
@@ -386,7 +399,7 @@ def test_write_kconfig_fragment_manual_wins_conflict(tmp_path):
     }
     config = {"hardware_profile": str(hw)}
 
-    result, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
+    result, _, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
 
     content = result.read_text()
     # manual value wins — n, not y
@@ -416,7 +429,7 @@ def test_write_kconfig_fragment_dry_run_no_file(tmp_path):
     kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
     config = {"hardware_profile": str(hw)}
 
-    result, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=True)
+    result, _, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=True)
 
     assert result is None
     assert not (builds / "linux-git" / "sysforge.config").exists()
@@ -439,11 +452,107 @@ def test_write_kconfig_fragment_file_has_header(tmp_path):
     kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
     config = {"hardware_profile": str(hw)}
 
-    result, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
+    result, _, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
 
     content = result.read_text()
     assert "Generated by SysForge" in content
     assert "merge_config.sh" in content
+
+
+# ---------------------------------------------------------------------------
+# _write_kconfig_fragment — device-driven [kconfig_devices]
+# ---------------------------------------------------------------------------
+
+def test_write_kconfig_fragment_device_entries_merged(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    hw = make_hardware_profile(tmp_path,
+        kconfig={"CONFIG_MZEN3": "y"},
+        kconfig_devices={"CONFIG_IGC": "m"},
+    )
+    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
+    config = {"hardware_profile": str(hw)}
+
+    result, hw_count, manual_count, device_count = _write_kconfig_fragment(
+        kernel_cfg, config, dry_run=False)
+
+    content = result.read_text()
+    assert "CONFIG_IGC=m" in content
+    assert "# source: device" in content
+    assert (hw_count, manual_count, device_count) == (1, 0, 1)
+
+def test_write_kconfig_fragment_device_only(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    hw = make_hardware_profile(tmp_path, kconfig_devices={"CONFIG_IGC": "m"})
+    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
+    config = {"hardware_profile": str(hw)}
+
+    result, _, _, device_count = _write_kconfig_fragment(
+        kernel_cfg, config, dry_run=False)
+
+    assert result is not None
+    assert device_count == 1
+
+def test_write_kconfig_fragment_hardware_wins_over_device(tmp_path):
+    # A stale [kconfig_devices] overlap (e.g. nouveau =m for a present NVIDIA
+    # GPU) must not override the heuristic [kconfig] disable.
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    hw = make_hardware_profile(tmp_path,
+        kconfig={"CONFIG_DRM_NOUVEAU": "n"},
+        kconfig_devices={"CONFIG_DRM_NOUVEAU": "m"},
+    )
+    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
+    config = {"hardware_profile": str(hw)}
+
+    result, hw_count, _, device_count = _write_kconfig_fragment(
+        kernel_cfg, config, dry_run=False)
+
+    content = result.read_text()
+    assert "# CONFIG_DRM_NOUVEAU is not set" in content
+    assert "CONFIG_DRM_NOUVEAU=m" not in content
+    assert (hw_count, device_count) == (1, 0)
+
+def test_write_kconfig_fragment_manual_wins_over_device(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    hw = make_hardware_profile(tmp_path, kconfig_devices={"CONFIG_IGC": "m"})
+    kernel_cfg = {
+        "pkgname": "linux-git",
+        "pkgbuild_src_dir": str(builds),
+        "kconfig": [{"option": "CONFIG_IGC", "value": "n"}],
+    }
+    config = {"hardware_profile": str(hw)}
+
+    result, _, manual_count, device_count = _write_kconfig_fragment(
+        kernel_cfg, config, dry_run=False)
+
+    content = result.read_text()
+    assert "# CONFIG_IGC is not set" in content
+    assert "CONFIG_IGC=m" not in content
+    assert (manual_count, device_count) == (1, 0)
+
+def test_write_kconfig_fragment_device_kconfig_false_skips(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    hw = make_hardware_profile(tmp_path,
+        kconfig={"CONFIG_MZEN3": "y"},
+        kconfig_devices={"CONFIG_IGC": "m"},
+    )
+    kernel_cfg = {
+        "pkgname": "linux-git",
+        "pkgbuild_src_dir": str(builds),
+        "device_kconfig": False,
+    }
+    config = {"hardware_profile": str(hw)}
+
+    result, _, _, device_count = _write_kconfig_fragment(
+        kernel_cfg, config, dry_run=False)
+
+    content = result.read_text()
+    assert "CONFIG_IGC" not in content
+    assert device_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1173,6 +1282,45 @@ def test_gate2_skip_boot_audit_installs_anyway(tmp_path, monkeypatch):
     install_mock.assert_called_once()
 
 
+def test_gate2_harvests_kbuild_map_to_state_dir(tmp_path, monkeypatch):
+    """Gate 2 parses the built tree (the resolved .config's parent is the
+    version-exact source tree), hands the map to the device audit, and caches
+    it in the state dir for later hardware-stage runs."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    tree = tmp_path / "kbuild" / "src" / "linux-6.10"
+    (tree / "drivers" / "nvme" / "host").mkdir(parents=True)
+    (tree / ".config").write_text("CONFIG_EXT4_FS=y\n")
+    (tree / "drivers" / "nvme" / "host" / "Makefile").write_text(
+        "obj-$(CONFIG_BLK_DEV_NVME) += nvme.o\n")
+    (tree / "include" / "config").mkdir(parents=True)
+    (tree / "include" / "config" / "kernel.release").write_text("6.10.0-test\n")
+
+    captured = {}
+    def fake_enumerate(*a, **k):
+        captured.update(k)
+        return []
+    monkeypatch.setattr(device_probe, "enumerate_devices", fake_enumerate)
+    monkeypatch.setattr(_km, "_resolve_built_config", lambda d: tree / ".config")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    # The audit's device enumeration received the tree-derived map …
+    assert captured.get("kconfig_map") == {"nvme": "CONFIG_BLK_DEV_NVME"}
+    # … and the cache landed in the state dir with provenance.
+    cache = tmp_path / "state" / kbuild_map.KBUILD_MAP_FILENAME
+    assert kbuild_map.load_map(cache) == (
+        {"nvme": "CONFIG_BLK_DEV_NVME"}, "6.10.0-test",
+    )
+
+
 def test_gate3_unbootable_artifacts_raise_after_install(tmp_path, monkeypatch):
     from sysforge.primitives.kernel_safety import KernelFinding, SEV_ERROR
     builds = tmp_path / "builds"
@@ -1756,7 +1904,7 @@ def test_kconfig_fragment_header_carries_provenance(tmp_path):
     kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
     config = {"hardware_profile": str(hw)}
 
-    path, _, _ = _write_kconfig_fragment(
+    path, _, _, _ = _write_kconfig_fragment(
         kernel_cfg, config, dry_run=False,
         provenance="toolchain variant: pgo_llvm  cc: /usr/bin/clang",
     )
@@ -1771,7 +1919,7 @@ def test_kconfig_fragment_no_provenance_when_omitted(tmp_path):
     kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
     config = {"hardware_profile": str(hw)}
 
-    path, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
+    path, _, _, _ = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
     content = path.read_text()
     assert "toolchain variant:" not in content
 
