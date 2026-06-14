@@ -31,10 +31,10 @@ from these sources.
 | `14-hardware-detection.md` | Hardware Detection |
 | `15-cache-management.md` | Cache Management |
 | `16-graphics-stack.md` | Graphics Stack Build Order |
-| `17-release-plan.md` | Release Plan |
-| `18-reconverge.md` | Re-converge |
+| `17-release-plan.md` | Release Process |
+| `18-reconverge.md` | Drift detection |
 | `19-known-gaps.md` | Known Gaps |
-| `20-roadmap.md` | V1.x + V2 Roadmap |
+| `20-roadmap.md` | Roadmap |
 | `21-standards.md` | Standards & Specifications |
 
 ## Planned reorganization

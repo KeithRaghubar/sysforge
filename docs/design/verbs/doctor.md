@@ -64,14 +64,14 @@ Foreign-package origin tags carry an extra `[untracked]` suffix when the pkgname
 
 All report output (headers, issue lines, summary) flows through `log.ui` (→ stderr + unified log file) so external callers that scrape the unified log see doctor findings.
 
-**`--apply` bridge.** `--apply` (implies `--suggest`) hands the REBUILD-classified candidates to `sysforge update` for actual rebuild. Drift-rebuild only in v1.x: install candidates (not yet installed) are surfaced as `→ run: sysforge build <pkg>` informational lines but never invoked. Repo packages outside `sysforge update`'s scope (no behavior-changing override, no `repo_mode = "profiled"`) are surfaced as `→ run: sudo pacman -S <pkg>` and skipped. Foreign packages — and repo packages eligible under `repo_mode = "profiled"` — are gathered into a single eligible list, the user is prompted (`--no-confirm` skips), and `cmd_update` is invoked with that list as the positional pkgname filter. `--dry-run` reports the rebuild list without invoking the build. `--apply`'s exit code dominates the doctor exit — a successful rebuild produces exit 0 even if doctor surfaced issues. The bridge is intentionally thin: rather than extracting `update.py`'s build loop into a separate primitive, doctor synthesizes a `cmd_update` args namespace and reuses the existing path verbatim.
+**`--apply` bridge.** `--apply` (implies `--suggest`) hands the REBUILD-classified candidates to `sysforge update` for actual rebuild. Drift-rebuild only: install candidates (not yet installed) are surfaced as `→ run: sysforge build <pkg>` informational lines but never invoked. Repo packages outside `sysforge update`'s scope (no behavior-changing override, no `repo_mode = "profiled"`) are surfaced as `→ run: sudo pacman -S <pkg>` and skipped. Foreign packages — and repo packages eligible under `repo_mode = "profiled"` — are gathered into a single eligible list, the user is prompted (`--no-confirm` skips), and `cmd_update` is invoked with that list as the positional pkgname filter. `--dry-run` reports the rebuild list without invoking the build. `--apply`'s exit code dominates the doctor exit — a successful rebuild produces exit 0 even if doctor surfaced issues. The bridge is intentionally thin: rather than extracting `update.py`'s build loop into a separate primitive, doctor synthesizes a `cmd_update` args namespace and reuses the existing path verbatim.
 
 > **Real-world status (2026-05-02): unit-tested only.** The unit tests
 > (`tests/test_doctor.py::test_apply_*`) mock `cmd_update` entirely, so the
 > end-to-end "doctor finds drift → update rebuilds → install succeeds" path
-> has not been exercised against a live system yet. Treat the v1.x release
-> as "ships --apply behind tested-by-mock semantics"; full integration
-> verification is pending the next session.
+> has not been exercised against a live system yet. Treat `--apply` as
+> shipping behind tested-by-mock semantics; full integration verification
+> is pending.
 
 Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--hardware`, `--toolchain`, `--pacman`, `--state`, `--boot`, `--services`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db), `--apply` (drift-rebuild bridge), `--no-confirm`, `--dry-run`. New axes register in `_SYSTEM_AXIS_ORDER` / `_AXIS_FLAGS` / `_system_axes` with a `_collect_<axis>_findings` producer (looked up through module globals so tests can monkeypatch them).
 

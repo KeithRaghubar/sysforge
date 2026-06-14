@@ -220,7 +220,6 @@ To make a *pre-install* hard-fail possible, the build is **split from the instal
 Walks `packages.toml` in order:
 - `source = "repo"` → `sudo pacman -S --needed --noconfirm`
 - `source = "aur"` / `"git"` → `_resolve_pkgbuild()` → `makepkg_wrapper.run()`. PKGBUILD lookup order: `packages.toml [build] pkgbuild_src_dir` → `profiles.toml [paths] pkgbuild_src_dir` → AUR clone.
-- Hardware-gated packages skipped if `hardware_profile.toml` is absent or key is missing
 - Non-fatal per-package failures: build continues, failures recorded in state
 - Summary at end: `Total | Built | Failed | Skipped`
 

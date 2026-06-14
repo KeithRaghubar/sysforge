@@ -7,7 +7,7 @@
 
 SysForge is an Arch Linux build and maintenance suite with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles, tracks build state for update detection, and automates the full build lifecycle — from fetching PKGBUILDs to installing profiled packages. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-Current release is **<!--version-->v1.2.0<!--/version-->**. v0.1.0 shipped the profiled AUR helper surface (install, update, and manage AUR and custom packages with system-tuned profiled builds); v0.2.0 added VM tooling and install-path fixes on top; v1.0 rounds out the system-bootstrapper milestone — the full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) is implemented and a fresh Arch install is automated from the ISO. See the [Release Plan](#release-plan) for the shipped-vs-remaining breakdown.
+SysForge manages the profiled AUR-helper surface (install, update, and manage AUR and custom packages with system-tuned profiled builds) and a full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) that automates a fresh Arch install from the ISO. Current release is **<!--version-->v1.2.0<!--/version-->**; per-release changes are recorded in `docs/release-notes/`.
 
 ---
 
@@ -30,12 +30,11 @@ Current release is **<!--version-->v1.2.0<!--/version-->**. v0.1.0 shipped the p
 15. [Hardware Detection](#hardware-detection)
 16. [Cache Management](#cache-management)
 17. [Graphics Stack Build Order](#graphics-stack-build-order)
-18. [Release Plan](#release-plan)
-19. [Re-converge](#re-converge)
+18. [Release Process](#release-process)
+19. [Drift detection](#drift-detection)
 20. [Known Gaps](#known-gaps)
-21. [V1.x Roadmap](#v1x-roadmap)
-22. [V2 Roadmap](#v2-roadmap)
-23. [Standards & Specifications](#standards-specifications)
+21. [Roadmap](#roadmap)
+22. [Standards & Specifications](#standards-specifications)
 
 ---
 
@@ -621,7 +620,6 @@ To make a *pre-install* hard-fail possible, the build is **split from the instal
 Walks `packages.toml` in order:
 - `source = "repo"` → `sudo pacman -S --needed --noconfirm`
 - `source = "aur"` / `"git"` → `_resolve_pkgbuild()` → `makepkg_wrapper.run()`. PKGBUILD lookup order: `packages.toml [build] pkgbuild_src_dir` → `profiles.toml [paths] pkgbuild_src_dir` → AUR clone.
-- Hardware-gated packages skipped if `hardware_profile.toml` is absent or key is missing
 - Non-fatal per-package failures: build continues, failures recorded in state
 - Summary at end: `Total | Built | Failed | Skipped`
 
@@ -966,14 +964,14 @@ Foreign-package origin tags carry an extra `[untracked]` suffix when the pkgname
 
 All report output (headers, issue lines, summary) flows through `log.ui` (→ stderr + unified log file) so external callers that scrape the unified log see doctor findings.
 
-**`--apply` bridge.** `--apply` (implies `--suggest`) hands the REBUILD-classified candidates to `sysforge update` for actual rebuild. Drift-rebuild only in v1.x: install candidates (not yet installed) are surfaced as `→ run: sysforge build <pkg>` informational lines but never invoked. Repo packages outside `sysforge update`'s scope (no behavior-changing override, no `repo_mode = "profiled"`) are surfaced as `→ run: sudo pacman -S <pkg>` and skipped. Foreign packages — and repo packages eligible under `repo_mode = "profiled"` — are gathered into a single eligible list, the user is prompted (`--no-confirm` skips), and `cmd_update` is invoked with that list as the positional pkgname filter. `--dry-run` reports the rebuild list without invoking the build. `--apply`'s exit code dominates the doctor exit — a successful rebuild produces exit 0 even if doctor surfaced issues. The bridge is intentionally thin: rather than extracting `update.py`'s build loop into a separate primitive, doctor synthesizes a `cmd_update` args namespace and reuses the existing path verbatim.
+**`--apply` bridge.** `--apply` (implies `--suggest`) hands the REBUILD-classified candidates to `sysforge update` for actual rebuild. Drift-rebuild only: install candidates (not yet installed) are surfaced as `→ run: sysforge build <pkg>` informational lines but never invoked. Repo packages outside `sysforge update`'s scope (no behavior-changing override, no `repo_mode = "profiled"`) are surfaced as `→ run: sudo pacman -S <pkg>` and skipped. Foreign packages — and repo packages eligible under `repo_mode = "profiled"` — are gathered into a single eligible list, the user is prompted (`--no-confirm` skips), and `cmd_update` is invoked with that list as the positional pkgname filter. `--dry-run` reports the rebuild list without invoking the build. `--apply`'s exit code dominates the doctor exit — a successful rebuild produces exit 0 even if doctor surfaced issues. The bridge is intentionally thin: rather than extracting `update.py`'s build loop into a separate primitive, doctor synthesizes a `cmd_update` args namespace and reuses the existing path verbatim.
 
 > **Real-world status (2026-05-02): unit-tested only.** The unit tests
 > (`tests/test_doctor.py::test_apply_*`) mock `cmd_update` entirely, so the
 > end-to-end "doctor finds drift → update rebuilds → install succeeds" path
-> has not been exercised against a live system yet. Treat the v1.x release
-> as "ships --apply behind tested-by-mock semantics"; full integration
-> verification is pending the next session.
+> has not been exercised against a live system yet. Treat `--apply` as
+> shipping behind tested-by-mock semantics; full integration verification
+> is pending.
 
 Public API: `cmd_doctor(args)`. Positional `[PKG ...]` and flags `--graphics`, `--hardware`, `--toolchain`, `--pacman`, `--state`, `--boot`, `--services`, `--all`, `--repo`, `--shallow`, `--quiet` (suppress clean lines, show only issues), `--suggest` / `-s` (inline + end-of-run candidate lookup via files db), `--apply` (drift-rebuild bridge), `--no-confirm`, `--dry-run`. New axes register in `_SYSTEM_AXIS_ORDER` / `_AXIS_FLAGS` / `_system_axes` with a `_collect_<axis>_findings` producer (looked up through module globals so tests can monkeypatch them).
 
@@ -1409,7 +1407,7 @@ Public helpers: `parse_pacman_version(ver_str)` splits a `[epoch:]pkgver-pkgrel`
 
 ### `pkgbuild_review.py`
 
-The PKGBUILD review gate (landed v2.0). Before a package is built, compares the source clone's HEAD against the `reviewed_commit` recorded in `build_state.toml` (the clone HEAD at the last successful build — stamped sticky by `makepkg_wrapper`'s single `record()` site, so dep builds and pipeline stages are covered without caller threading) and, on a difference, shows the **full source-tree diff** — not just the PKGBUILD, so changes hiding in `.install` files, patches, or new sources are visible — and prompts: `[v]iew` (full patch through `pager.maybe_pager`) / `[a]ccept` / `[s]kip package` / `a[b]ort run`. The prompt reads a single keypress via `prompt.prompt_key` — no Enter needed. EOF/Ctrl-C at the prompt aborts (no answer is not consent). A package with no recorded `reviewed_commit`, or whose recorded sha vanished (purge + re-clone), is reviewed against git's empty tree — a full-content review. The comparison is commit-based (recorded → HEAD), deliberately not worktree-based: upstream changes arrive as commits via source sync, while uncommitted local edits are user-authored (the STATUS_DIVERGED case) and are not re-presented to their author. Auto-accept paths (logged, never prompt): non-interactive runs (stdin or stdout not a TTY), and callers passing `interactive=False` — `sysforge update`'s default mode. Owns the `[REVIEW]` tag. API: `head_commit(dir)`, `commit_exists(dir, sha)`, `review_target(pkgbase, dir, reviewed_commit, interactive=True) -> DECISION_*`, `review_deps(deps, interactive=True) -> DECISION_*`.
+The PKGBUILD review gate. Before a package is built, compares the source clone's HEAD against the `reviewed_commit` recorded in `build_state.toml` (the clone HEAD at the last successful build — stamped sticky by `makepkg_wrapper`'s single `record()` site, so dep builds and pipeline stages are covered without caller threading) and, on a difference, shows the **full source-tree diff** — not just the PKGBUILD, so changes hiding in `.install` files, patches, or new sources are visible — and prompts: `[v]iew` (full patch through `pager.maybe_pager`) / `[a]ccept` / `[s]kip package` / `a[b]ort run`. The prompt reads a single keypress via `prompt.prompt_key` — no Enter needed. EOF/Ctrl-C at the prompt aborts (no answer is not consent). A package with no recorded `reviewed_commit`, or whose recorded sha vanished (purge + re-clone), is reviewed against git's empty tree — a full-content review. The comparison is commit-based (recorded → HEAD), deliberately not worktree-based: upstream changes arrive as commits via source sync, while uncommitted local edits are user-authored (the STATUS_DIVERGED case) and are not re-presented to their author. Auto-accept paths (logged, never prompt): non-interactive runs (stdin or stdout not a TTY), and callers passing `interactive=False` — `sysforge update`'s default mode. Owns the `[REVIEW]` tag. API: `head_commit(dir)`, `commit_exists(dir, sha)`, `review_target(pkgbase, dir, reviewed_commit, interactive=True) -> DECISION_*`, `review_deps(deps, interactive=True) -> DECISION_*`.
 
 **Dependency gate (`review_deps`)** — the batched counterpart for AUR dependency PKGBUILDs built by `prepare_deps`. Takes `[(name, pkgbuild_dir, reviewed_commit), ...]`, runs the same HEAD-vs-reviewed-commit comparison per dep (empty-tree fallback included), and presents the changed ones as one summary block (short shas + `git diff --shortstat`) with a single prompt: `[v]iew diffs` (each dep's full patch through the pager) / `[a]ccept all` / `a[b]ort run`. Deliberately **no per-dep skip** — dropping a dependency breaks the package that needs it, so the decision is all-or-nothing. Auto paths mirror `review_target`: `interactive=False` emits one batched `auto-accepted N dependency change(s)` notice; non-TTY runs auto-accept with a warning. Returns `DECISION_CLEAN` when nothing changed.
 
@@ -1891,7 +1889,7 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 ## Man Pages
 
-**Current (v2.0) — scdoc hybrid.** `man/sysforge.1` is rendered from a hand-written scdoc template plus auto-generated per-command sections:
+**Current — scdoc hybrid.** `man/sysforge.1` is rendered from a hand-written scdoc template plus auto-generated per-command sections:
 
 ```
 tools/gen_options.py --template man/sysforge.1.scd.in --out man/sysforge.1.scd
@@ -1905,8 +1903,6 @@ scdoc < man/sysforge.1.scd > man/sysforge.1
 - Release gate: the `manpage` group in `tools/check_shipped.py` reruns the exact same two-step pipeline into temp files and diffs against the committed page (`.TH` date header normalised), so option-help drift in `cli.py` without a `make man` commit blocks the release.
 
 This gives hand-crafted prose with OPTIONS that stay automatically in sync with the CLI — editing flag help in `cli.py` and running `make man` is the whole workflow.
-
-**History:** v0.1.0–v1.x generated the entire page with `argparse-manpage` from the parser tree. The scdoc hybrid (planned since v1.0) replaced it in v2.0.
 
 ---
 ## Hardware Detection
@@ -2069,14 +2065,10 @@ Build in this order to satisfy dependencies correctly:
 
 ---
 
-## Release Plan
+## Release Process
 
-- **GitHub:** public from day one; source of truth for all code
-- **v0.1.0** (shipped) — profiled AUR helper. Userspace commands stable under real use: `build`, `fetch`, `update`, `resolve`, `doctor`, `converge`, `setup`, `packages` (list/add/remove/sync), `run pipeline`, `run reconfigure`, `run packages`. The `run toolchain` and `run kernel` stages shipped in this release; they were temporarily reclassified as experimental in v1.0 pending more testing and re-promoted in v1.x — see notes below. Marks the AUR publication milestone.
-- **v0.2.0** (shipped) — follow-up release on the v0.1.0 surface: VM tooling (`tools/vm/`, `make vm-*` targets), install-path fixes for fresh Arch systems on Python 3.14, bulk-operation progress indicator, VCS detection and paging fixes, `doctor --graphics` scope refinement.
-- **v1.0** (shipped) — system bootstrapper. Stages 1–4 fully implemented (partition, base_install, hardware, configure). Configure stage installs systemd-boot, enables NetworkManager/sshd, creates primary user with sudo, writes shell dotfiles, sets passwords, and sets the configured default login shell. Build-state persistence, `pacman -Q` superset coverage, and coloured CLI output all landed in 2026-04. v1.0 also reclassified `run toolchain`, `run kernel`, and the `sysforge update` PGO-toolchain profdata-reuse path (`build_mode = "pgo_llvm_toolchain"`) as **experimental, deferred post-1.0**: those code paths shipped but emitted a runtime `[WARN]` and were recommended-off for 1.0 users. The reclassification was lifted in v1.x once the implementations stabilised. Default `compiler` resolution is `gcc`; LLVM is opt-in. The shipped `[profiles.standard]` uses the system gcc/binutils; LLVM components (`clang`, `lld`, `llvm`, `compiler-rt`) are `optdepends` on the sysforge PKGBUILD and only required by the opt-in LLVM profile and `run toolchain --compiler=llvm`. Published to AUR via `tools/release.sh`.
-- **v2.0** (pending release) — breaking cleanups plus the flagship trust feature. Removed the deprecated `converge` verb (its build-state-wide flag-drift coverage folded into `sysforge update` Phase 4.3 as the fold pass) and the legacy `update_repo_profiled` alias. Added the **PKGBUILD review gate** (full source-tree diff prompt before building any package whose source changed since the last accepted build; `--no-review` / `[build] review = false` escape hatches), **package groups** (`[group.*]` manifest tables expanding at load time), and the **scdoc-hybrid man page** (hand-written prose + generated COMMANDS sections; `argparse-manpage` dropped entirely). Build-failure auto-repair had already landed quietly in v1.x and is documented under Makepkg Wrapper.
-- **v1.x:** `repo_mode = "profiled"` support in `sysforge update`; wrapping `pacman -Syu` inside `sysforge update` for a full AUR-helper experience; man page migration from `argparse-manpage` to a scdoc hybrid (hand-written narrative + auto-generated OPTIONS — see Man Pages section below); package groups (named DE sets for opt-in without enumerating every package); rule priority auto-calculation (CSS-specificity-style scoring from rule conditions); configure stage additions (btrfs snapshots, ccache/sccache init check, build time estimates); LLVM target filtering from hardware detection. The toolchain and kernel stages (and the `pgo_llvm_toolchain` update path) have been re-promoted from experimental — see the V1.x Roadmap *Landed* list below.
+- **GitHub:** public from day one; source of truth for all code.
+- **Per-release change history** lives in `docs/release-notes/vX.Y.Z.md` (see *Release notes* below). This section documents the *process* that cuts a release, not the history of past ones.
 
 ### AUR publishing process
 
@@ -2087,11 +2079,11 @@ Releases are driven by three Makefile targets — `make release-major`, `make re
 3. **Post-tag artifacts.** Fetches the GitHub tarball sha256, updates `sha256sums=` in `PKGBUILD`, **validates both `PKGBUILD` and `PKGBUILD-git` in a clean chroot**, regenerates `.SRCINFO` and `.SRCINFO-git` (both gitignored — local artifacts only), and makes a second `release: vX.Y.Z sha256` commit (the `.SRCINFO` files do not get committed).
 4. **Final instructions.** Prints `git push origin main`, the `git clone`/`cp`/`commit`/`push` sequence for the `sysforge` and `sysforge-git` AUR repos, and the `gh release create vX.Y.Z --notes-file docs/release-notes/vX.Y.Z.md` command for the GitHub release. The user runs those manually.
 
-**Release notes.** Every release ships curated notes at `docs/release-notes/vX.Y.Z.md` (sections: Highlights / Breaking changes / Fixes / Internal — see `docs/release-notes/v2.0.0.md` for the format). The pre-flight in `tools/release.sh` **hard-fails** when the notes file for the target version is missing, mirroring the check-shipped/check-personal/check-design gates; Phase 1 commits the file as part of the `release: vX.Y.Z` commit, and Phase 4 prints the `gh release create` command that publishes it. Notes are drafted from `git log <last-tag>..HEAD` plus this Release Plan's framing — inside a Claude Code session the `/release-notes` repo skill does this (a hookify rule reminds before any `make release-*` invocation); outside one, write the file by hand.
+**Release notes.** Every release ships curated notes at `docs/release-notes/vX.Y.Z.md` (sections: Highlights / Breaking changes / Fixes / Internal — see `docs/release-notes/v2.0.0.md` for the format). The pre-flight in `tools/release.sh` **hard-fails** when the notes file for the target version is missing, mirroring the check-shipped/check-personal/check-design gates; Phase 1 commits the file as part of the `release: vX.Y.Z` commit, and Phase 4 prints the `gh release create` command that publishes it. Notes are drafted from `git log <last-tag>..HEAD` plus this section's framing — inside a Claude Code session the `/release-notes` repo skill does this (a hookify rule reminds before any `make release-*` invocation); outside one, write the file by hand.
 
 If interrupted between phases (Ctrl-C at the push pause, or a transient failure), re-running the same `make release-*` command resumes correctly: the script detects that the tag for the *current* `pyproject.toml` version already exists at HEAD and skips Phase 1.
 
-The version markers in `README.md` and `DESIGN.md` are HTML comments (`<!--version-->vX.Y.Z<!--/version-->`) so they render invisibly. Only the marked token rotates per release — historical version mentions in prose (`v0.1.0`, `v0.2.0`, `v1.0`, `v1.x`) are deliberately not wrapped and stay frozen. The `versions` check group below enforces lockstep across all marker locations; release pre-flight refuses to run if the markers (or the `pkgver` lines, or any other version-bearing field) are out of sync.
+The version markers in `README.md` and `DESIGN.md` wrap the single live version token (`<!--version-->vX.Y.Z<!--/version-->`); only it rotates per release. Each document must carry exactly one such marker. The `versions` check group below enforces lockstep across all marker locations; release pre-flight refuses to run if the markers (or the `pkgver` lines, or any other version-bearing field) are out of sync.
 
 **Shipped-file pre-release checks.** Phase 1 of `tools/release.sh` (and the standalone `make check-shipped` / `make pre-release` targets) gate on `tools/check_shipped.py`, which validates every artifact the PKGBUILD ships:
 
@@ -2135,7 +2127,7 @@ Escape hatches:
 
 ---
 
-## Re-converge
+## Drift detection
 
 `sysforge update` is the primary drift surface — it detects **two** drift axes (version and flag), with `sysforge doctor` completing the picture for ABI drift:
 
@@ -2149,13 +2141,13 @@ Escape hatches:
 
 **Stale-profraw post-build check.** After every non-PGO-managed build, `makepkg_wrapper.run()` globs `pgo_store` for `*.profraw` files. Any file with `mtime >= build_start - 1s` is treated as **fresh** — it was written by the build just completed, which means an instrumented LLVM is still installed on the system and the build was leaking profile data. The wrapper fatals, telling the user to reinstall `llvm`/`llvm-libs` or run `sysforge run toolchain`. Files strictly older than `build_start` are **orphans** left behind by a prior failed or partial toolchain run whose instrumented binaries the user has since cleaned up; these are unlinked in place and an info line is logged. The split makes the safety net self-healing: once the system is clean, the next build purges the residue automatically instead of requiring manual cleanup of `pgo_store`.
 
-The former standalone flag-drift verb (`converge`) was removed in v2.0 after a one-release deprecation window: `converge --apply` is replaced by `sysforge update --rebuild-on-flag-drift`, the no-network read-only report by `sysforge update --offline --dry-run`, and its build-state-wide coverage by Phase 4.3's fold (see §`update.py` → *Phase 4.3 — Flag drift*).
+Build-state-wide flag-drift coverage (profiled entries outside the walk) is handled by Phase 4.3's fold — detect/report-only, with a `sysforge build` hint for rebuilds (see §`update.py` → *Phase 4.3 — Flag drift*).
 
 `build_state.toml` is the shared source of truth for both drift axes. Written by `makepkg_wrapper.run()` after each successful build.
 
 **`sysforge doctor`** completes the picture — it is read-only and catches the drift class the others don't: **ABI / linkage drift** on already-installed packages, e.g. a partial graphics-stack rebuild leaving `steam` linked against a `libfoo.so.N` that the system no longer exposes. See the `doctor.py` subsection for the full algorithm. Together: `update` → version + flag drift, `doctor` → ABI drift.
 
-DAG stages are categorised as **bootstrap-only** (partition, base_install, configure) or **repeatable** (hardware, reconfigure, toolchain, packages, kernel). Only repeatable stages participate in re-converge runs. `hardware` is repeatable because re-detecting after a hardware change (e.g. GPU swap) is safe and needs no root.
+DAG stages are categorised as **bootstrap-only** (partition, base_install, configure) or **repeatable** (hardware, reconfigure, toolchain, packages, kernel). Only repeatable stages participate in drift-driven rebuild runs. `hardware` is repeatable because re-detecting after a hardware change (e.g. GPU swap) is safe and needs no root.
 
 ---
 
@@ -2167,46 +2159,19 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 **`sysforge build` already routes repo packages through `pkgctl_checkout` automatically.** `find_pkgbuild` (`primitives/config.py:91`) checks `is_repo_package()` before AUR-clone fallback, so `sysforge build firefox` Just Works for any repo package — no `repo_mode` plumbing required on the build side.
 
-**`repo_mode = "profiled"` is the canonical repo-handling key.** The `[build] repo_mode = "pacman" | "profiled"` setting in `packages.toml` is parsed and honoured by `run packages` / `run pipeline` (repo packages with `repo_mode = "profiled"`, or per-package `pkgbuild_patch = true`, are built from source via `_build_aur()` using `find_pkgbuild` → `pkgctl_checkout`) and by `sysforge update` (which iterates every installed repo package under the same key). `sysforge build` consults `find_pkgbuild` independently. (The legacy `update_repo_profiled` alias was removed in v2.0.)
+**`repo_mode = "profiled"` is the canonical repo-handling key.** The `[build] repo_mode = "pacman" | "profiled"` setting in `packages.toml` is parsed and honoured by `run packages` / `run pipeline` (repo packages with `repo_mode = "profiled"`, or per-package `pkgbuild_patch = true`, are built from source via `_build_aur()` using `find_pkgbuild` → `pkgctl_checkout`) and by `sysforge update` (which iterates every installed repo package under the same key). `sysforge build` consults `find_pkgbuild` independently.
 
 **`[env_precedence]` config table — design cancelled.** The original design proposed a priority stack (wrapper profile = 100, makepkg.conf = 80, shell passthrough = 20, PKGBUILD export = 10) and an `[env_precedence]` TOML table to configure it. This design is superseded. The current model is simpler and more predictable: build tool vars (`CC`, `CFLAGS`, `LDFLAGS`, etc.) are stripped from the inherited shell env in `invoke_makepkg` before makepkg runs — the temp conf is the sole authority for all makepkg-managed keys. Shell env bleed-through is not a configurable priority; it is prevented entirely. SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are exempt — they are SysForge's own interface, not build tool vars, and are not stripped. The `[env_precedence]` table will not be implemented.
 
 ---
 
-## V1.x Roadmap
+## Roadmap
 
-Post-v1.0 enhancements that build on existing infrastructure. Not required for the v1.0 release.
+Forward-looking enhancements that build on existing infrastructure. Each is a candidate, not a commitment, and none is required for current functionality. Shipped work is recorded in `docs/release-notes/`, not here.
 
 - **Rule priority auto-calculation** — auto-calculate a baseline specificity score from rule conditions (mirrors CSS specificity: more AND'd conditions = higher weight), with manual `priority` override for ties. Deferred until enough real rules exist to validate whether auto-priority causes ordering problems in practice.
 - **Configure stage additions** — btrfs snapshot before build runs, ccache/sccache initialisation check, estimated build time heuristic.
-- **Graphics runtime debugging refinement** — tighten the graphics/doctor diagnostics surface (exact scope TBD). Tracked as a follow-up to the 1.0 doctor work; not blocking but a candidate when revisiting graphics-related code.
-
-### Landed in v1.x
-
-- **Build-failure auto-repair** *(landed)* — `primitives/auto_repair.py` registry (vendored deps via meson wraps/git submodules, PGP key import, `.SRCINFO` drift regeneration, checksum mismatch) wired into `_run_build`'s retry loop; at-most-once-per-scenario, `[failure_handling]` behaviour config, `prompt_user` for checksum repair (aborts in batch mode — supply-chain safety). See Makepkg Wrapper §Build-failure auto-repair.
-- **Toolchain / kernel stages re-promoted from experimental** *(landed)* — Stages 6 (toolchain) and 8 (kernel), plus the `sysforge update` `build_mode = "pgo_llvm_toolchain"` profdata-reuse path, no longer emit the runtime `[WARN]` at entry and are no longer flagged as deferred post-1.0. Default `enabled = false` is preserved in both `toolchain.toml` and `kernel.toml` — building a custom toolchain or kernel remains an opt-in decision rather than the experimental framing that previously gated it. The implementations (4-pass PGO bootstrap, kconfig merge, bootloader updates, profdata version sidecar) were stable enough through v1.x iteration to drop the warning surface.
-- **LLVM target filtering** *(landed)* — Hardware stage emits `host_arch` and an autodetected `llvm_targets` list (CPU backend from `uname -m`, GPU backends from `gpu_vendors`: `amd`→`AMDGPU`, `nvidia`→`NVPTX`; Intel contributes nothing because the Mesa Intel drivers don't depend on an LLVM backend). `pkgbuild_patcher.patch_llvm_targets` injects `-DLLVM_TARGETS_TO_BUILD="<list>"` into the cmake invocation of any LLVM-toolchain PKGBUILD (`llvm`, `clang`, `compiler-rt`, `lld`, lib32 variants). Resolution order: `[llvm] targets` in `toolchain.toml` (explicit override; empty list disables filtering) → `hardware_profile.toml [hardware] llvm_targets` (autodetect) → no filtering. The `LLVM_EXPERIMENTAL_TARGETS_TO_BUILD` flag is left untouched so opt-in experimental backends still build.
-- **Verbose skip messaging in `sysforge update`** *(landed)* — `_sync_sources` now stores `(status, error)` tuples in `sync_failures`, and `_check_one_pkgbase` dispatches on the status to emit one of `PULL_FAILED` (genuine clone/fetch error), `RATE_LIMITED` (`STATUS_RATE_LIMITED`), or `PURGE_REFUSED` (`STATUS_PURGE_REFUSED`). The summary header always lists per-category counts (`5 need rebuild, 30 up to date, 7 skipped (3 rate-limited, 2 devel, 1 pull failed, 1 purge refused)`); per-package detail is suppressed by default for non-actionable statuses (UP_TO_DATE / DEVEL / RATE_LIMITED / PURGE_REFUSED / PULL_FAILED) and surfaced under `-v`. `NEEDS_REBUILD` and `DOWNGRADE` always render per-package because they are actionable. STATUS_DIVERGED remains a warn-level informational, not a skip — the build proceeds against the local PKGBUILD (DESIGN.md §`source_sync.py`).
-- **Pacman integration** *(landed, both paths)* —
-  - *pyalpm read path*: `primitives/pacman.py` wraps `get_installed_version`, `get_all_installed_packages`, `get_foreign_packages`, `get_pacman_sync_version`, and `filter_missing_deps` with libalpm bindings when `pyalpm` is importable. Installed via `[project.optional-dependencies] extra = ["pyalpm>=0.10.6"]` (`uv sync --extra extra`) or as a system package. The pyalpm handle is memoized; sync DB names are parsed from `/etc/pacman.conf` section headers (Include / SigLevel are ignored — read-only enumeration only). Set `SYSFORGE_PACMAN_NO_PYALPM=1` to force the subprocess path for parity testing — used by `tests/conftest.py` so existing subprocess-mocking tests keep working. Mutating paths (`pacman -U`, `pacman -S --needed`) and the `pacman -Fq` files-DB lookup remain subprocess-based.
-  - *PostTransaction hooks*: three `.hook` files under `/usr/share/libalpm/hooks/` (`sysforge-kernel.hook`, `sysforge-toolchain.hook`, `sysforge-buildstate.hook`) invoke `/usr/lib/sysforge/pacman-hook-helper.sh` to drop sentinels under `/var/lib/sysforge/sentinels/`. The kernel hook fires on `linux*` (intentionally inclusive of `linux-firmware` / `linux-headers`); the toolchain hook fires on `llvm*`, `clang`, `lld`, `compiler-rt`, `gcc`, `gcc-libs`, and the lib32 variants; the buildstate hook fires on `*` and serves as a build-state staleness signal. `cmd_update` calls `_consume_pacman_hook_sentinels()` at entry: kernel/toolchain sentinels become `_log.warn` reminders; the buildstate sentinel is consumed silently because the existing `BuildState.sync_with_installed()` pass already runs. The helper is failsafe (every error path exits 0 to avoid breaking pacman transactions). The sentinel directory is shipped via `tmpfiles.d` and pre-created during the bootstrap configure stage so older installs that predate the hooks still work — and so the consumer skips silently when the directory is absent.
-
----
-
-## V2 Roadmap
-
-V2 goal: advanced build-and-maintenance features beyond the v1.0 scope.
-
-### Landed in v2.0
-
-- **PKGBUILD review** *(landed)* — interactive review gate before building any package whose source changed since the last accepted build. One home in `build_core.build_and_install` (covers `build` and `update`); full source-tree diff (PKGBUILD + `.install` + patches) against the recorded `reviewed_commit`, with view/accept/skip/abort prompt, empty-tree fallback for first builds and re-clones, non-TTY auto-accept with warning, `--no-review` / `[build] review = false` escape hatches. See §`pkgbuild_review.py`.
-- **Dependency-PKGBUILD review** *(landed)* — the review gate also covers AUR dependencies built by `prepare_deps`: a batched summary (short shas + diffstat per changed dep) with a single view-all/accept-all/abort prompt (no per-dep skip — dropping a dep breaks its dependent). Same `review` mode as the target gate; abort propagates as the same clean `BuildOutcome(aborted=True)` return. See §`pkgbuild_review.py` → *Dependency gate*.
-- **Package groups** *(landed)* — `[group.<name>]` tables in packages.toml expand into `[[package]]`-equivalent entries at load time via the single expansion point `config.expand_package_groups` (consumed by the packages stage, update overrides, completions, `packages list`, reconfigure summaries). Optional per-group defaults inherit to members; explicit entries win outright. See §Package Manifest → *Package groups*.
-- **`converge` verb removed; `update_repo_profiled` alias removed** *(landed)* — the one-release deprecation windows closed. Converge's build-state-wide flag-drift coverage was folded into `sysforge update` Phase 4.3 (out-of-walk profiled entries are detect/report-only with a `sysforge build` hint; an empty walk with profiled entries no longer early-exits).
-- **Guided desktop-environment groups** *(landed)* — a curated catalog of desktop-environment package groups (`gnome`, `kde`) in `primitives/pkg_catalog.py`, with one shared selection prompt + `[group.*]` writer surfaced three ways: `sysforge packages add-group <de>`, an interactive prompt in the configure stage (driven by `bootstrap.toml [desktop] environment` for unattended installs), and a `desktop` step in `run reconfigure`. Replaces hand-editing `packages.toml` for the common "give me a GUI" case. This is the first slice of the V1.x *Configure stage additions* item below.
-
-### V2.x candidates
-
+- **Graphics runtime debugging refinement** — tighten the graphics/doctor diagnostics surface (exact scope TBD). A candidate when revisiting graphics-related code; not blocking.
 - **System maintenance scope expansion** — grow sysforge beyond build/package management into a unified system-maintenance helper: track and manage user-owned system artifacts that currently live ad-hoc across `~/scripts`, `/etc/systemd/system/`, `/etc/pacman.d/hooks/`, etc. Candidate primitives: inventory of tracked files, source-of-truth dir under repo control, install/sync command, drift detection vs filesystem, integration with the existing config/profile/manifest layers.
 ## Standards & Specifications
 

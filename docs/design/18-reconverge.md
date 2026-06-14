@@ -1,4 +1,4 @@
-## Re-converge
+## Drift detection
 
 `sysforge update` is the primary drift surface — it detects **two** drift axes (version and flag), with `sysforge doctor` completing the picture for ABI drift:
 
@@ -12,13 +12,13 @@
 
 **Stale-profraw post-build check.** After every non-PGO-managed build, `makepkg_wrapper.run()` globs `pgo_store` for `*.profraw` files. Any file with `mtime >= build_start - 1s` is treated as **fresh** — it was written by the build just completed, which means an instrumented LLVM is still installed on the system and the build was leaking profile data. The wrapper fatals, telling the user to reinstall `llvm`/`llvm-libs` or run `sysforge run toolchain`. Files strictly older than `build_start` are **orphans** left behind by a prior failed or partial toolchain run whose instrumented binaries the user has since cleaned up; these are unlinked in place and an info line is logged. The split makes the safety net self-healing: once the system is clean, the next build purges the residue automatically instead of requiring manual cleanup of `pgo_store`.
 
-The former standalone flag-drift verb (`converge`) was removed in v2.0 after a one-release deprecation window: `converge --apply` is replaced by `sysforge update --rebuild-on-flag-drift`, the no-network read-only report by `sysforge update --offline --dry-run`, and its build-state-wide coverage by Phase 4.3's fold (see §`update.py` → *Phase 4.3 — Flag drift*).
+Build-state-wide flag-drift coverage (profiled entries outside the walk) is handled by Phase 4.3's fold — detect/report-only, with a `sysforge build` hint for rebuilds (see §`update.py` → *Phase 4.3 — Flag drift*).
 
 `build_state.toml` is the shared source of truth for both drift axes. Written by `makepkg_wrapper.run()` after each successful build.
 
 **`sysforge doctor`** completes the picture — it is read-only and catches the drift class the others don't: **ABI / linkage drift** on already-installed packages, e.g. a partial graphics-stack rebuild leaving `steam` linked against a `libfoo.so.N` that the system no longer exposes. See the `doctor.py` subsection for the full algorithm. Together: `update` → version + flag drift, `doctor` → ABI drift.
 
-DAG stages are categorised as **bootstrap-only** (partition, base_install, configure) or **repeatable** (hardware, reconfigure, toolchain, packages, kernel). Only repeatable stages participate in re-converge runs. `hardware` is repeatable because re-detecting after a hardware change (e.g. GPU swap) is safe and needs no root.
+DAG stages are categorised as **bootstrap-only** (partition, base_install, configure) or **repeatable** (hardware, reconfigure, toolchain, packages, kernel). Only repeatable stages participate in drift-driven rebuild runs. `hardware` is repeatable because re-detecting after a hardware change (e.g. GPU swap) is safe and needs no root.
 
 ---
 

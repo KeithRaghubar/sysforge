@@ -1,6 +1,6 @@
 ## Man Pages
 
-**Current (v2.0) — scdoc hybrid.** `man/sysforge.1` is rendered from a hand-written scdoc template plus auto-generated per-command sections:
+**Current — scdoc hybrid.** `man/sysforge.1` is rendered from a hand-written scdoc template plus auto-generated per-command sections:
 
 ```
 tools/gen_options.py --template man/sysforge.1.scd.in --out man/sysforge.1.scd
@@ -14,7 +14,5 @@ scdoc < man/sysforge.1.scd > man/sysforge.1
 - Release gate: the `manpage` group in `tools/check_shipped.py` reruns the exact same two-step pipeline into temp files and diffs against the committed page (`.TH` date header normalised), so option-help drift in `cli.py` without a `make man` commit blocks the release.
 
 This gives hand-crafted prose with OPTIONS that stay automatically in sync with the CLI — editing flag help in `cli.py` and running `make man` is the whole workflow.
-
-**History:** v0.1.0–v1.x generated the entire page with `argparse-manpage` from the parser tree. The scdoc hybrid (planned since v1.0) replaced it in v2.0.
 
 ---
