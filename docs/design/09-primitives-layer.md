@@ -259,9 +259,10 @@ Symbol names are demangled through `c++filt` for readability. Missing NEEDED son
 Reverse soname → package lookup backed by `pacman -Fq`. Used by `sysforge doctor --suggest` to convert a missing/broken soname (e.g. `libavcodec.so.62`) into the repo package(s) that would supply it. Public API:
 
 - `files_db_present()` — true when `/var/lib/pacman/sync/*.files` is synced (from `pacman -Fy`). Callers short-circuit lookup when false.
+- `sync_files_db()` — runs `sudo pacman -Fy`; returns success. **Install-bearing** (touches the system) — read-only callers (`doctor`) must gate on `files_db_present()` instead and must not call this. Its one caller is the reconfigure editor-install flow, which self-heals an unsynced files db before mapping an editor binary to its package.
 - `suggest_for_soname(entry, *, lib32=False, installed_names=None)` — returns candidate `repo/pkg` strings for a soname entry, honouring `lib32` context (queries `usr/lib32/<soname>` vs `usr/lib/<soname>`). When `installed_names` is supplied, candidates whose bare pkgname (the part after the optional `repo/` prefix) is in the set are dropped — the load-bearing filter that stops `doctor --suggest` from re-recommending packages the user already has installed.
 
-Log tag: `[PROV]`. Pure read-only — never runs `pacman -Fy`; emits a single `run sudo pacman -Fy` warning if the files db is absent.
+Log tag: `[PROV]`. The `suggest_*` / `files_db_present` queries are pure read-only; only `sync_files_db()` mutates (the editor-install flow's explicit opt-in). `doctor --suggest` stays read-only — it emits a single `run sudo pacman -Fy` warning when the files db is absent rather than syncing.
 
 ### `failure.py`
 

@@ -55,6 +55,7 @@ from sysforge.primitives.paths import (
     resolve_packages_path,
 )
 from sysforge.primitives.pkg_catalog import select_desktop, write_desktop_group
+from sysforge.primitives.provides_lookup import files_db_present, sync_files_db
 from sysforge.primitives.prompt import (
     is_interactive as _interactive,
     prompt_text as _prompt,
@@ -328,18 +329,34 @@ def _packages_providing(editor_cmd: str) -> list[str]:
     return pkgs
 
 
-def _choose_install_package(editor_cmd: str) -> str | None:
+def _choose_install_package(editor_cmd: str, options=None) -> str | None:
     """
     Pick a pacman package to install for ``editor_cmd`` without making the user
     memorize the bin→package mapping (``nvim`` is provided by ``neovim``, etc.).
 
     - one candidate     → confirm and install
     - multiple matches  → numbered picker
-    - no matches        → fall back to a typed package name (with a hint to sync
-      the files DB), validated against ``pacman -Si``
+    - no matches        → fall back to a typed package name, validated against
+      ``pacman -Si``
+
+    The bin→package lookup needs pacman's files database. If it has never been
+    synced, sync it automatically (``sudo pacman -Fy``) rather than dead-ending
+    the flow with a "run it yourself" hint — except under ``--dry-run``, where
+    the sync is reported but not run.
 
     Returns the chosen package name, or ``None`` if the user cancelled.
     """
+    if not files_db_present():
+        if options is not None and getattr(options, "dry_run", False):
+            _log.ui("  [dry-run] would sync the pacman files db (sudo pacman -Fy)")
+        else:
+            _log.ui("  Syncing the pacman files db (sudo pacman -Fy)…")
+            if not sync_files_db():
+                _log.warn(
+                    "  Could not sync the files db; "
+                    "package auto-detection may be incomplete."
+                )
+
     candidates = _packages_providing(editor_cmd)
 
     if len(candidates) == 1:
@@ -371,8 +388,7 @@ def _choose_install_package(editor_cmd: str) -> str | None:
             _log.warn(f"  Invalid selection: {raw!r}")
 
     _log.ui(
-        f"  pacman has no package providing /usr/bin/{editor_cmd}. "
-        f"(If the files DB is stale, run 'sudo pacman -Fy' and retry.)"
+        f"  pacman has no package providing /usr/bin/{editor_cmd}."
     )
     pkg_name = _prompt("  Pacman package name to install [Enter to cancel]: ")
     if not pkg_name:
@@ -400,7 +416,7 @@ def _try_install_editor(editor_cmd: str, options) -> bool:
     on user cancel, no match without a manual fallback, install error, missing
     binary post-install, or dry-run.
     """
-    pkg_name = _choose_install_package(editor_cmd)
+    pkg_name = _choose_install_package(editor_cmd, options)
     if pkg_name is None:
         return False
 

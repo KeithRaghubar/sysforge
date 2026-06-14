@@ -202,6 +202,26 @@ def _run_reflector(cfg: BootstrapConfig) -> None:
         _log.ui("Mirrorlist updated.")
 
 
+def _sync_pacman_dbs(cfg: BootstrapConfig) -> None:
+    """Refresh pacman's package and files databases against the fresh mirrorlist.
+
+    Runs ``pacman -Sy`` then ``pacman -Fy`` inside the chroot. Seeding the files
+    db here means the reconfigure editor picker can map an editor binary to its
+    package on first boot without a separate sync. Both are best-effort
+    (``check=False``) — a transient mirror failure must not abort the configure
+    stage; the editor picker self-heals with its own ``pacman -Fy`` later.
+    """
+    for label, flag in (("package", "-Sy"), ("files", "-Fy")):
+        result = _chroot(cfg.target, ["pacman", flag], check=False)
+        if result.returncode != 0:
+            _log.warn(
+                f"pacman {flag} exited {result.returncode} — "
+                f"{label} db may be unsynced"
+            )
+        else:
+            _log.ui(f"pacman {label} db synced ({flag}).")
+
+
 def _install_bootloader(cfg: BootstrapConfig) -> None:
     """Install systemd-boot and write a minimal loader entry."""
     _chroot(cfg.target, ["bootctl", "install"])
@@ -651,6 +671,7 @@ class ConfigureStage(Stage):
             _log.ui(f"[dry-run] ParallelDownloads: {cfg.parallel_downloads}")
             if cfg.mirror_countries:
                 _log.ui(f"[dry-run] reflector countries: {cfg.mirror_countries}")
+            _log.ui("[dry-run] would sync pacman dbs: pacman -Sy, pacman -Fy")
             _log.ui("[dry-run] would install bootloader: systemd-boot")
             _log.ui("[dry-run] would enable: NetworkManager, sshd")
             _log.ui("[dry-run] would configure: PermitRootLogin yes")
@@ -677,6 +698,7 @@ class ConfigureStage(Stage):
         _set_pacman_parallel_downloads(cfg)
         _set_makepkg_conf(cfg)
         _run_reflector(cfg)
+        _sync_pacman_dbs(cfg)
         _install_bootloader(cfg)
         _enable_services(cfg)
         _configure_sshd(cfg)

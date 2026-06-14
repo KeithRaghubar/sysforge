@@ -34,6 +34,22 @@ from sysforge.pipeline.stages.reconfigure import (
 
 
 # ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _files_db_present():
+    """Default the pacman files db to "present" so editor-picker tests never
+    trigger a real `sudo pacman -Fy`. Tests that exercise the auto-sync path
+    override this with their own patch."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.files_db_present",
+        return_value=True,
+    ):
+        yield
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -724,6 +740,62 @@ def test_choose_install_package_no_match_blank_cancels():
         return_value="",
     ):
         assert _choose_install_package("some-editor") is None
+
+
+def test_choose_install_package_syncs_files_db_when_absent():
+    """Files db never synced → auto-run `sudo pacman -Fy` before the lookup."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.files_db_present",
+        return_value=False,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sync_files_db",
+        return_value=True,
+    ) as sync_mock, patch(
+        "sysforge.pipeline.stages.reconfigure._packages_providing",
+        return_value=["neovim"],
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="y",
+    ):
+        assert _choose_install_package("nvim") == "neovim"
+    sync_mock.assert_called_once()
+
+
+def test_choose_install_package_skips_sync_when_files_db_present():
+    """Files db already present → no sync attempt."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.files_db_present",
+        return_value=True,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sync_files_db",
+    ) as sync_mock, patch(
+        "sysforge.pipeline.stages.reconfigure._packages_providing",
+        return_value=["neovim"],
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="y",
+    ):
+        assert _choose_install_package("nvim") == "neovim"
+    sync_mock.assert_not_called()
+
+
+def test_choose_install_package_dry_run_does_not_sync():
+    """Dry-run reports the sync but never runs it."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.files_db_present",
+        return_value=False,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sync_files_db",
+    ) as sync_mock, patch(
+        "sysforge.pipeline.stages.reconfigure._packages_providing",
+        return_value=["neovim"],
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="y",
+    ):
+        opts = make_options(dry_run=True)
+        assert _choose_install_package("nvim", opts) == "neovim"
+    sync_mock.assert_not_called()
 
 
 def test_try_install_editor_cancelled_picker_returns_false():

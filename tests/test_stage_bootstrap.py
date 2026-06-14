@@ -28,6 +28,7 @@ from sysforge.pipeline.stages.configure import (
     _set_keymap,
     _set_makepkg_conf,
     _set_pacman_parallel_downloads,
+    _sync_pacman_dbs,
 )
 from sysforge.pipeline.stages.base_install import BaseInstallStage, _BASE_PACKAGES
 from sysforge.pipeline.stages.partition import PartitionStage, _partition_disk
@@ -735,6 +736,31 @@ class TestSetTimezone:
         calls = [c.args[1] for c in mock_chroot.call_args_list]
         assert any("America/New_York" in " ".join(c) for c in calls)
         assert any("hwclock" in c for c in calls)
+
+
+class TestSyncPacmanDbs:
+    def test_runs_sy_then_fy_in_chroot(self, tmp_path):
+        cfg = make_cfg(target=str(tmp_path))
+        with patch(
+            "sysforge.pipeline.stages.configure._chroot",
+            return_value=MagicMock(returncode=0),
+        ) as mock_chroot:
+            _sync_pacman_dbs(cfg)
+        cmds = [c.args[1] for c in mock_chroot.call_args_list]
+        assert ["pacman", "-Sy"] in cmds
+        assert ["pacman", "-Fy"] in cmds
+        # Both are best-effort — never aborts the chroot.
+        for c in mock_chroot.call_args_list:
+            assert c.kwargs.get("check") is False
+
+    def test_nonzero_exit_warns_but_does_not_raise(self, tmp_path):
+        cfg = make_cfg(target=str(tmp_path))
+        with patch(
+            "sysforge.pipeline.stages.configure._chroot",
+            return_value=MagicMock(returncode=1),
+        ):
+            # A transient mirror failure must not abort configure.
+            _sync_pacman_dbs(cfg)
 
 
 class TestSetKeymap:

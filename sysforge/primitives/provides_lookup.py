@@ -17,6 +17,7 @@ Public API:
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -39,6 +40,24 @@ def files_db_present() -> bool:
     if not _FILES_DB_DIR.is_dir():
         return False
     return any(_FILES_DB_DIR.glob("*.files"))
+
+
+def sync_files_db() -> bool:
+    """Sync the pacman files database (``sudo pacman -Fy``).
+
+    Returns True on success. This is **install-bearing** (touches the system
+    via sudo); read-only callers such as ``doctor`` must use
+    :func:`files_db_present` to gate behaviour and must not call this. The
+    intended caller is the reconfigure editor-install flow, which needs the
+    files db to map an editor binary to its providing package.
+    """
+    if not shutil.which("pacman"):
+        return False
+    try:
+        result = subprocess.run(["sudo", "pacman", "-Fy"])
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0
 
 
 def _soname_query_path(entry: str, lib32: bool) -> str | None:

@@ -64,6 +64,7 @@ environment = "gnome"   # optional — "gnome" | "kde"; installs a curated
 **Configure stage (stage 4)** runs all one-time system identity steps inside `arch-chroot`:
 - Hostname (`/etc/hostname`), locale (`locale-gen`), timezone (`ln -sf /usr/share/zoneinfo/...`), keymap (`/etc/vconsole.conf`), `ParallelDownloads` in `pacman.conf`
 - Reflector mirrorlist (skipped gracefully if `reflector` absent in chroot)
+- Pacman db refresh against the fresh mirrorlist: `pacman -Sy` then `pacman -Fy` (`_sync_pacman_dbs`, best-effort — a transient mirror failure warns but never aborts configure). Seeding the **files** db here lets the reconfigure editor picker map an editor binary to its package on first boot without a separate sync.
 - systemd-boot: `bootctl install`, `loader.conf`, `entries/arch.conf` (uses `root=LABEL=root`)
 - `systemctl enable NetworkManager` + `systemctl enable sshd`
 - `PermitRootLogin yes` in `/etc/ssh/sshd_config`
