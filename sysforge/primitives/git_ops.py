@@ -111,10 +111,26 @@ def git_fetch_and_compare(
 
     _log.info(f"Fetching {pkgbuild_dir.name} from {tracking}")
 
-    # 3. Shallow fetch.
+    # 3. Full-history fetch.
+    #
+    # A ``--depth=1`` fetch grafts the fetched tip as a parent-less root and
+    # marks the whole repo shallow, which makes the ``merge-base
+    # --is-ancestor`` fast-forward check below — and the ``rev-list`` counts
+    # in ``classify_head_vs_upstream`` — see no shared history, so every
+    # routine upstream advance falsely reports ``diverged``. Packaging repos
+    # carry only PKGBUILD/metadata, so a full fetch is cheap; ``--unshallow``
+    # also self-heals any repo previously shallowed by the old ``--depth=1``
+    # path.
+    shallow = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--is-shallow-repository"],
+        capture_output=True, text=True,
+    ).stdout.strip() == "true"
+    fetch_cmd = ["git", "-C", str(pkgbuild_dir), "fetch"]
+    if shallow:
+        fetch_cmd.append("--unshallow")
+    fetch_cmd += [remote, branch]
     try:
-        r = _run(["git", "-C", str(pkgbuild_dir), "fetch",
-                  "--depth=1", remote, branch])
+        r = _run(fetch_cmd)
     except subprocess.TimeoutExpired:
         err = f"git fetch timed out after {timeout}s"
         _log.warn(f"{pkgbuild_dir.name}: {err}")
@@ -296,21 +312,21 @@ def classify_head_vs_upstream(
     return "diverged_upstream", n_local, n_upstream
 
 
-# A VCS packaging repo's PKGBUILD and .SRCINFO are routinely rewritten by
-# makepkg's ``pkgver()`` flow (updates ``pkgver=`` and may reset
-# ``pkgrel=1``). Those auto-bumps are not operator work and must not block
-# ``--cleansrc`` for ``-git``/``-svn``/``-hg``/``-bzr`` packages.
+# A VCS packaging repo's PKGBUILD is routinely rewritten by makepkg's
+# ``pkgver()`` flow (updates ``pkgver=`` and may reset ``pkgrel=1``). That
+# auto-bump is not operator work and must not block ``--cleansrc`` for
+# ``-git``/``-svn``/``-hg``/``-bzr`` packages. ``.SRCINFO`` is handled
+# separately (treated as a generated artifact — see ``_uncommitted_dirty_paths``).
 _PKGVER_LINE_RE = _re.compile(r"^[+-]\s*(pkgver|pkgrel)\s*=\s*\S.*$")
-_VCS_IGNORABLE_PATHS = frozenset({"PKGBUILD", ".SRCINFO"})
 
 
 def _diff_is_pkgver_only(pkgbuild_dir: Path, path: str) -> bool:
     """Return True iff ``git diff -U0`` for ``path`` only touches pkgver/pkgrel lines.
 
     Used by ``git_is_dirty(..., is_vcs=True)`` to ignore makepkg's pkgver()
-    auto-bump pattern on VCS packaging repos. Fail-safe: any git error or
-    unexpected diff line makes this return False so the surrounding dirty
-    check keeps protecting the operator's work.
+    auto-bump pattern in the PKGBUILD of a VCS packaging repo. Fail-safe: any
+    git error or unexpected diff line makes this return False so the
+    surrounding dirty check keeps protecting the operator's work.
     """
     r = subprocess.run(
         ["git", "-C", str(pkgbuild_dir),
@@ -336,9 +352,10 @@ def _diff_is_pkgver_only(pkgbuild_dir: Path, path: str) -> bool:
 def _uncommitted_dirty_paths(pkgbuild_dir: Path, *, is_vcs: bool) -> list[str]:
     """Return the list of modified-tracked paths that count as dirty.
 
-    With ``is_vcs=True`` the helper filters out PKGBUILD/.SRCINFO entries
-    whose diff is restricted to pkgver=/pkgrel= line changes (makepkg's
-    pkgver() auto-bump). Returns an empty list on git error.
+    With ``is_vcs=True`` the helper ignores two classes of makepkg-generated
+    churn on VCS packaging repos: a PKGBUILD whose diff is restricted to
+    pkgver=/pkgrel= lines (the pkgver() auto-bump), and any change to the
+    generated ``.SRCINFO``. Returns an empty list on git error.
     """
     r = subprocess.run(
         ["git", "-C", str(pkgbuild_dir), "status",
@@ -361,7 +378,16 @@ def _uncommitted_dirty_paths(pkgbuild_dir: Path, *, is_vcs: bool) -> list[str]:
         # destination is what makepkg / the operator actually wrote.
         if " -> " in path:
             path = path.split(" -> ", 1)[1].strip()
-        if is_vcs and path in _VCS_IGNORABLE_PATHS \
+        if is_vcs and path == ".SRCINFO":
+            # .SRCINFO is a generated artifact (makepkg --printsrcinfo). For
+            # VCS packages makepkg's pkgver() rewrites not just pkgver/pkgrel
+            # but every version-pinned depends/provides line, so a line-level
+            # filter can't distinguish a mechanical bump from a real edit.
+            # Operators don't meaningfully hand-edit .SRCINFO without also
+            # editing PKGBUILD (caught below), so treat any .SRCINFO change as
+            # not operator work.
+            continue
+        if is_vcs and path == "PKGBUILD" \
                 and _diff_is_pkgver_only(pkgbuild_dir, path):
             continue
         paths.append(path)
@@ -387,10 +413,11 @@ def git_is_dirty(pkgbuild_dir: Path, *, is_vcs: bool = False) -> bool:
 
     Pass ``is_vcs=True`` for VCS packaging repos (``-git``/``-svn``/``-hg``/
     ``-bzr``) where makepkg's ``pkgver()`` flow auto-rewrites the working-tree
-    ``PKGBUILD``/``.SRCINFO`` (updating ``pkgver=`` and possibly resetting
-    ``pkgrel=1``). Those mechanical auto-bumps are filtered out of the
-    uncommitted-tracked check; deliberate edits to other lines / other files
-    still count. The head-vs-upstream classification is unchanged.
+    ``PKGBUILD`` (updating ``pkgver=`` and possibly resetting ``pkgrel=1``)
+    and regenerates ``.SRCINFO``. The PKGBUILD pkgver/pkgrel auto-bump and any
+    ``.SRCINFO`` change (a generated artifact) are filtered out of the
+    uncommitted-tracked check; deliberate edits to other PKGBUILD lines /
+    other files still count. The head-vs-upstream classification is unchanged.
 
     Returns False if the directory is not a git repo or is clean and fully in sync
     with its tracking branch.
@@ -457,8 +484,9 @@ def purge_src(
     actual cause so the operator can fix it precisely.
 
     Pass ``is_vcs=True`` for ``-git``/``-svn``/``-hg``/``-bzr`` packaging
-    repos so makepkg's ``pkgver()`` auto-bump of PKGBUILD/.SRCINFO does
-    not falsely block the purge. See ``git_is_dirty`` for the filter rule.
+    repos so makepkg's ``pkgver()`` auto-bump of PKGBUILD and its regenerated
+    ``.SRCINFO`` do not falsely block the purge. See ``git_is_dirty`` for the
+    filter rule.
 
     Pass ``force=True`` to bypass the dirty-tree guard and purge unconditionally
     — the caller has already decided the local work is not worth preserving

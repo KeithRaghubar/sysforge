@@ -19,6 +19,12 @@ pull_timeout = 30
 # Set to 0 to disable the timeout (wait indefinitely).
 clone_timeout = 60
 
+[build]
+# Python interpreter for PKGBUILD build() steps; pinned ahead of any
+# pyenv/asdf/conda shim on PATH. unset/"system" → /usr/bin/python (default);
+# "3.12" → /usr/bin/python3.12; or an absolute path. See etc/sysforge/sysforge.toml.
+# python = "system"
+
 [failure_handling]
 # Build-failure auto-repair (DESIGN.md §1242).
 vendored_deps_missing = "auto_repair"

@@ -1207,6 +1207,42 @@ def test_git_is_dirty_vcs_ignores_srcinfo_bump(tmp_path):
     assert git_is_dirty(local, is_vcs=True) is False
 
 
+def test_git_is_dirty_vcs_ignores_srcinfo_version_pinned_deps(tmp_path):
+    """.SRCINFO is a generated artifact: makepkg's pkgver() rewrites version-
+    pinned depends/provides lines too (gsettings-desktop-schemas-git case),
+    not just pkgver/pkgrel. The whole file is ignored under is_vcs.
+    """
+    local = _seed_vcs_pkgbuild(tmp_path)
+    # Seed a richer .SRCINFO with version-pinned depends/provides, commit it as
+    # the baseline, then mutate every version-bearing line as makepkg would.
+    (local / ".SRCINFO").write_text(
+        "pkgbase = foo-git\n"
+        "\tpkgver = 48.alpha+r1770+gcc8c6237a\n"
+        "\tpkgrel = 2\n"
+        "\tdepends = bar=48.0\n"
+        "\tprovides = foo=48.0\n"
+    )
+    _git("add", ".SRCINFO", cwd=local)
+    subprocess.run(
+        ["git", "-C", str(local), "-c", "user.email=local@example.test",
+         "-c", "user.name=local", "commit", "-m", "rich srcinfo"],
+        check=True, capture_output=True,
+    )
+    _git("push", "origin", "main", cwd=local)
+    (local / ".SRCINFO").write_text(
+        "pkgbase = foo-git\n"
+        "\tpkgver = 50.1+r1928+gfbed4880e\n"
+        "\tpkgrel = 1\n"
+        "\tdepends = bar=50.1\n"
+        "\tprovides = foo=50.1\n"
+    )
+    # depends/provides changed (not just pkgver/pkgrel) — the old pkgver-only
+    # filter flagged this as dirty; the generated-artifact rule does not.
+    assert git_is_dirty(local, is_vcs=True) is False
+    # Without is_vcs it still counts as dirty (back-compat).
+    assert git_is_dirty(local) is True
+
+
 def test_git_is_dirty_vcs_still_dirty_on_real_pkgbuild_edit(tmp_path):
     """A non-pkgver/pkgrel line edit to PKGBUILD still counts as dirty."""
     local = _seed_vcs_pkgbuild(tmp_path)
@@ -1353,6 +1389,8 @@ def test_git_fetch_and_compare_up_to_date(tmp_path):
             return _cp(stdout=".git")
         if "@{u}" in cmd_str:
             return _cp(stdout="origin/main")
+        if "--is-shallow-repository" in cmd_str:
+            return _cp(stdout="false")
         if cmd[3:5] == ["rev-parse", "HEAD"] or cmd[3:5] == ["rev-parse", "FETCH_HEAD"]:
             return _cp(stdout=head)
         if "fetch" in cmd:
@@ -1379,6 +1417,8 @@ def test_git_fetch_and_compare_fetched_fast_forward(tmp_path):
             return _cp(stdout=".git")
         if "@{u}" in cmd_str:
             return _cp(stdout="origin/main")
+        if "--is-shallow-repository" in cmd_str:
+            return _cp(stdout="false")
         if cmd[3:6] == ["rev-parse", "--verify", "--quiet"]:
             return _cp()  # HEAD exists (empty-repo probe in git_is_dirty)
         if cmd[3:5] == ["rev-parse", "HEAD"]:
@@ -1502,6 +1542,74 @@ def test_git_fetch_and_compare_uses_git_dash_c(tmp_path):
 
     for cmd in calls:
         assert cmd[:3] == ["git", "-C", str(tmp_path)]
+
+
+def _fetch_cmds(calls):
+    return [c for c in calls if "fetch" in c]
+
+
+def test_git_fetch_and_compare_full_fetch_no_depth(tmp_path):
+    """A non-shallow repo fetches full history — never with --depth=1.
+
+    --depth=1 grafts the fetched tip as a parent-less root, which made every
+    routine upstream advance falsely report 'diverged'.
+    """
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return _cp(stdout=".git")
+        if "@{u}" in cmd_str:
+            return _cp(stdout="origin/main")
+        if "--is-shallow-repository" in cmd_str:
+            return _cp(stdout="false")
+        if cmd[3:5] == ["rev-parse", "HEAD"]:
+            return _cp(stdout="a" * 40)
+        if cmd[3:5] == ["rev-parse", "FETCH_HEAD"]:
+            return _cp(stdout="a" * 40)
+        if "fetch" in cmd:
+            return _cp()
+        return _cp()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        git_fetch_and_compare(tmp_path)
+
+    fetches = _fetch_cmds(calls)
+    assert fetches, "expected a fetch command"
+    for cmd in fetches:
+        assert "--depth=1" not in cmd
+        assert "--unshallow" not in cmd  # repo was not shallow
+
+
+def test_git_fetch_and_compare_unshallows_shallow_repo(tmp_path):
+    """A repo left shallow by the old --depth=1 path is healed via --unshallow."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        cmd_str = " ".join(cmd)
+        if "--git-dir" in cmd_str:
+            return _cp(stdout=".git")
+        if "@{u}" in cmd_str:
+            return _cp(stdout="origin/main")
+        if "--is-shallow-repository" in cmd_str:
+            return _cp(stdout="true")  # previously shallowed
+        if cmd[3:5] == ["rev-parse", "HEAD"]:
+            return _cp(stdout="a" * 40)
+        if cmd[3:5] == ["rev-parse", "FETCH_HEAD"]:
+            return _cp(stdout="a" * 40)
+        if "fetch" in cmd:
+            return _cp()
+        return _cp()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        git_fetch_and_compare(tmp_path)
+
+    fetches = _fetch_cmds(calls)
+    assert fetches, "expected a fetch command"
+    assert any("--unshallow" in cmd for cmd in fetches)
 
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,11 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.makepkg_artifacts import _find_built_packages
-from sysforge.primitives.makepkg_env import _effective_build_dir, _logdest_tail
+from sysforge.primitives.makepkg_env import (
+    _effective_build_dir,
+    _logdest_tail,
+    resolve_build_python,
+)
 from sysforge.primitives.makepkg_flags import INSTALL_FLAGS
 from sysforge.primitives.profile import CONF_KEY_MAP
 from sysforge.primitives.prompt import prompt_choice
@@ -129,6 +133,16 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             if k in env:
                 _makepkg_log.warn(f"Overriding shell {k}={env[k]!r} with profile value {v!r}")
         env.update(extra_env)
+
+    # Pin the configured build python ahead of any interpreter version-manager
+    # shim (pyenv/asdf/conda) on the inherited PATH, so a bare ``python`` in a
+    # PKGBUILD's build() resolves to the interpreter its ``python-*``
+    # makedepends were installed against (the system python by default) rather
+    # than a shim that lacks them. Default ([build] python unset) = the system
+    # python; the choice is logged at DEBUG by ``resolve_build_python``.
+    _build_python = resolve_build_python()
+    if _build_python is not None:
+        env["PATH"] = str(_build_python.parent) + os.pathsep + env.get("PATH", "")
 
     flags = list(resolved_profile.get("makepkg_flags", []))
     if interactive:

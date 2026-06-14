@@ -45,7 +45,9 @@ sysforge build neovim-git -m "-si"
 # 4. Check for and rebuild any outdated installed AUR packages
 #    (Source sync is RPC-first: one batched AUR `info` call, and a git
 #     fetch per package only when the cached version/LastModified differs
-#     from the local HEAD. Steady-state runs do zero git fetches.)
+#     from the local HEAD. Steady-state runs do zero git fetches. A clean
+#     clone is fast-forwarded — or, if upstream rewrote history, reset — to
+#     track upstream automatically, so routine updates never need --cleansrc.)
 sysforge update
 
 # 5. Rebuild VCS packages too. Each VCS package's pkgver() is resolved against
@@ -77,11 +79,13 @@ sysforge --py-profile update --dry-run
 #     sysforge.toml; the flag overrides it.
 sysforge --color=always doctor | less -R
 
-# 7. Same as `update`, plus discard divergent local clones (force-pushed
-#    upstream or local-only commits). --cleansrc refuses any clone that has
-#    uncommitted changes, unpushed commits, or no upstream — those packages
-#    are reported as failed and the run continues. --cleansrc also bypasses
-#    the RPC short-circuit and re-clones every AUR package from scratch.
+# 7. Heavy escape hatch: purge and re-clone every AUR package from scratch
+#    (mainly for a corrupted local tree — routine updates auto-track upstream,
+#    see step 4). --cleansrc refuses any clone that has real local work
+#    (uncommitted non-pkgver edits, unpushed commits, or no upstream) — those
+#    packages are reported as failed and the run continues. It also bypasses
+#    the RPC short-circuit. makepkg's pkgver() auto-bump of PKGBUILD/.SRCINFO
+#    on -git packages is treated as mechanical churn and does not block it.
 sysforge update --cleansrc
 
 # 8. Install already-built artifacts from PKGDEST without re-running makepkg.

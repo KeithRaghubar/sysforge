@@ -259,10 +259,41 @@ def test_repo_source_diverged_dirty_tree_stays_diverged(tmp_path):
     assert result.status == STATUS_DIVERGED
 
 
-def test_aur_source_diverged_never_auto_resets(tmp_path):
+def test_aur_source_diverged_clean_tree_resets_to_upstream(tmp_path):
     """
-    The auto-refresh is repo-only — AUR clones can carry user commits
-    (e.g. local pkgver bumps), so divergence must stay a warning.
+    A clean AUR clone whose upstream rewrote history (force-push / amend —
+    common on the AUR) is reset to track upstream instead of demanding
+    --cleansrc. The dirty gate (git_is_dirty) is what protects real local
+    work, so a truly clean tree auto-refreshes for AUR sources too.
+    """
+    pkg = _make_repo(tmp_path, "neovim-git")
+    sched = _scheduler(tmp_path)
+    outcome = GitFetchOutcome(
+        status="diverged", head_before="oldlocal", head_after="newupstream",
+        error="divergent: HEAD oldlocal vs FETCH_HEAD newupstream",
+    )
+    with patch("sysforge.primitives.source_sync._head_commit", return_value="oldlocal"), \
+         patch("sysforge.primitives.source_sync.git_fetch_and_compare", return_value=outcome), \
+         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False) as dirty, \
+         patch("sysforge.primitives.source_sync._reset_hard_fetch_head",
+               return_value="newupstream") as reset:
+        result = sched.request(SyncRequest(
+            pkgbase="neovim-git", pkgbuild_dir=pkg, source="aur",
+        ))
+
+    reset.assert_called_once_with(pkg)
+    # The VCS-aware dirty check is used (so makepkg's pkgver auto-bump of
+    # PKGBUILD/.SRCINFO doesn't block the reset).
+    dirty.assert_called_once_with(pkg, is_vcs=True)
+    assert result.status == "fetched"
+    assert result.head_after == "newupstream"
+
+
+def test_aur_source_diverged_dirty_tree_stays_diverged(tmp_path):
+    """
+    A dirty AUR clone carries real operator work (e.g. a hand-edited
+    PKGBUILD) — divergence stays sticky and --cleansrc remains the explicit
+    escape hatch.
     """
     pkg = _make_repo(tmp_path, "neovim-git")
     sched = _scheduler(tmp_path)
@@ -272,7 +303,7 @@ def test_aur_source_diverged_never_auto_resets(tmp_path):
     )
     with patch("sysforge.primitives.source_sync._head_commit", return_value="local"), \
          patch("sysforge.primitives.source_sync.git_fetch_and_compare", return_value=outcome), \
-         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
+         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=True), \
          patch("sysforge.primitives.source_sync._reset_hard_fetch_head") as reset:
         result = sched.request(SyncRequest(
             pkgbase="neovim-git", pkgbuild_dir=pkg, source="aur",

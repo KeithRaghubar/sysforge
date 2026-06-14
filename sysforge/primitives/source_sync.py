@@ -320,8 +320,7 @@ class SourceSyncScheduler:
                 head_before=local_head, head_after=local_head,
             )
 
-        return self._fetch(pkgbase, pkgbuild_dir, rpc_entry,
-                           source=req.source)
+        return self._fetch(pkgbase, pkgbuild_dir, rpc_entry)
 
     def _can_short_circuit(
         self, rpc_entry: dict | None, meta: dict | None, local_head: str | None,
@@ -376,7 +375,6 @@ class SourceSyncScheduler:
 
     def _fetch(
         self, pkgbase: str, pkgbuild_dir: Path, rpc_entry: dict | None,
-        *, source: str = "aur",
     ) -> SyncResult:
         outcome: GitFetchOutcome = git_fetch_and_compare(
             pkgbuild_dir, timeout=self.fetch_timeout, limiter=self.limiter,
@@ -391,14 +389,15 @@ class SourceSyncScheduler:
                 error=outcome.error,
             )
 
-        # Repo packages (pkgctl checkouts) don't carry user commits worth
-        # preserving — they only ever diverge because pkgctl's automatic
-        # staging branch drifted from upstream. When the working tree is
-        # clean, hard-reset to FETCH_HEAD so the local PKGBUILD tracks
-        # gitlab.archlinux.org. Dirty trees are still respected (user has
-        # edits) and stay in DIVERGED.
-        if (outcome.status == STATUS_DIVERGED and source == "repo"
-                and not git_is_dirty(pkgbuild_dir)):
+        # A packaging repo's job is to mirror upstream; it only diverges
+        # without operator work when upstream rewrote history (force-push /
+        # amend — common on the AUR — or pkgctl's staging branch drifting for
+        # repo packages). When the working tree is clean per the VCS-aware
+        # dirty check, hard-reset to FETCH_HEAD so the local PKGBUILD tracks
+        # upstream instead of demanding ``--cleansrc``. Dirty trees carry real
+        # operator edits and are respected — they stay in DIVERGED.
+        if (outcome.status == STATUS_DIVERGED
+                and not git_is_dirty(pkgbuild_dir, is_vcs=_is_vcs(pkgbase))):
             new_head = _reset_hard_fetch_head(pkgbuild_dir)
             if new_head is not None:
                 outcome = GitFetchOutcome(
@@ -407,8 +406,8 @@ class SourceSyncScheduler:
                     head_after=new_head,
                 )
                 _log.info(
-                    f"{pkgbase}: repo clone diverged; reset to upstream "
-                    f"{new_head[:10]}"
+                    f"{pkgbase}: upstream history diverged on a clean tree; "
+                    f"reset to upstream {new_head[:10]}"
                 )
 
         if outcome.status in ("up_to_date", "fetched"):

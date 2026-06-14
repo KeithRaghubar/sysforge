@@ -21,6 +21,18 @@ pull_timeout = 30
 # Set to 0 to disable the timeout (wait indefinitely).
 clone_timeout = 60
 
+[build]
+# Which python interpreter PKGBUILD build() steps should use. A bare `python`
+# in a PKGBUILD resolves via PATH, so an active version manager (pyenv / asdf /
+# conda) can shadow the system python with one that lacks the package's
+# `python-*` makedepends. sysforge pins this interpreter ahead of those shims.
+#
+#   unset / "system"  → the system python (/usr/bin/python). Default.
+#   "3.12"            → /usr/bin/python3.12
+#   "/path/to/python" → that absolute path
+# The resolved interpreter is logged at DEBUG.
+# python = "system"
+
 # [failure_handling]
 # Per-scenario behaviour for build-failure auto-repair (DESIGN.md §1242).
 # Values: "auto_repair" | "auto_repair_with_warning" | "prompt_user" |

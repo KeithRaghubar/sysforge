@@ -23,6 +23,69 @@ from sysforge.primitives.profile import CONF_KEY_MAP, SYSFORGE_KEYS
 
 _env_log = log.get_logger("ENV")
 
+# FHS location of the distro python; preferred over ``shutil.which`` so the
+# "system default" never resolves to a pyenv/asdf/conda shim that happens to
+# sit ahead of /usr/bin on PATH.
+_SYSTEM_PYTHON = Path("/usr/bin/python")
+
+
+def _is_exec(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def resolve_build_python(cfg: dict | None = None) -> Path | None:
+    """Resolve the python interpreter PKGBUILD ``build()`` steps should use.
+
+    Reads ``[build] python`` from ``sysforge.toml`` (pass ``cfg`` to override
+    for tests). Accepted values:
+
+      * unset / ``"system"``   → the system default ``/usr/bin/python``.
+      * a bare version ``"3.12"`` → ``/usr/bin/python3.12``.
+      * an absolute path       → used verbatim.
+
+    Returns the resolved :class:`Path` to an executable interpreter, or
+    ``None`` when even the system default is missing (the caller then leaves
+    ``PATH`` untouched). An explicit setting that doesn't resolve to an
+    executable warns once and falls back to the system default.
+
+    The point is to pin a deterministic ``python`` ahead of any interpreter
+    version-manager shim (pyenv/asdf/conda) on the inherited ``PATH``, so a
+    bare ``python``/``python3`` in a PKGBUILD resolves to the interpreter the
+    package's ``python-*`` makedepends were installed against (the system one
+    by default) — not a shim that lacks them.
+    """
+    if cfg is None:
+        from sysforge.primitives.config import load_sysforge_toml
+        cfg = load_sysforge_toml()
+    setting = (cfg.get("build") or {}).get("python")
+
+    candidate: Path | None = None
+    if setting and str(setting).strip().lower() != "system":
+        raw = str(setting).strip()
+        if os.path.isabs(raw):
+            candidate = Path(raw)
+        elif all(part.isdigit() for part in raw.split(".")):
+            candidate = Path(f"/usr/bin/python{raw}")
+        else:
+            # Bare interpreter name (e.g. "python3.12") — resolve under /usr/bin.
+            candidate = Path("/usr/bin") / raw
+        if candidate is not None and not _is_exec(candidate):
+            _env_log.warn(
+                f"[build] python = {setting!r} did not resolve to an "
+                f"executable ({candidate}); falling back to the system python"
+            )
+            candidate = None
+
+    if candidate is None:
+        candidate = _SYSTEM_PYTHON if _is_exec(_SYSTEM_PYTHON) else None
+        if candidate is None:
+            alt = Path("/usr/bin/python3")
+            candidate = alt if _is_exec(alt) else None
+
+    if candidate is not None:
+        _env_log.debug(f"build python: {candidate}")
+    return candidate
+
 
 def resolve_env_vars(resolved_profile, active_consumes=None):
     """
