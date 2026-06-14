@@ -108,7 +108,7 @@ def prompt_choice(
             return default
         _log.warn(
             f"Unrecognized input {raw!r}. "
-            f"Valid: {'/'.join(choices_t)} (or ↵ for default)."
+            f"Valid: {'/'.join(choices_t)} (or Enter for default)."
         )
 
 

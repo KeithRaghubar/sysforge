@@ -230,7 +230,7 @@ def _select_steps(options) -> list[str]:
     while True:
         raw = _prompt(
             "[RECONFIGURE] Steps to run "
-            "[↵ for all, '0' to cancel, or e.g. '1 3', '2-5', 'network gpg']: "
+            "[Enter for all, '0' to cancel, or e.g. '1 3', '2-5', 'network gpg']: "
         )
         steps, invalid = _parse_step_selection(raw)
 
@@ -249,7 +249,7 @@ def _select_steps(options) -> list[str]:
                 f"  Unrecognized input: {' '.join(invalid)}. "
                 f"Valid step names: {', '.join(_STEP_KEYS)}. "
                 f"Valid numbers: 1-{len(_STEP_KEYS)} (or ranges like '2-5'). "
-                f"Press ↵ for all, '0' to cancel."
+                f"Press Enter for all, '0' to cancel."
             )
             continue
 
@@ -356,7 +356,7 @@ def _choose_install_package(editor_cmd: str) -> str | None:
             _log.ui(f"    [{i}] {pkg}")
         while True:
             raw = _prompt(
-                f"  Pick a package [1-{len(candidates)}, ↵ to cancel]: "
+                f"  Pick a package [1-{len(candidates)}, Enter to cancel]: "
             )
             if not raw:
                 return None
@@ -370,7 +370,7 @@ def _choose_install_package(editor_cmd: str) -> str | None:
         f"  pacman has no package providing /usr/bin/{editor_cmd}. "
         f"(If the files DB is stale, run 'sudo pacman -Fy' and retry.)"
     )
-    pkg_name = _prompt("  Pacman package name to install [↵ to cancel]: ")
+    pkg_name = _prompt("  Pacman package name to install [Enter to cancel]: ")
     if not pkg_name:
         return None
     check = subprocess.run(
@@ -450,7 +450,7 @@ def _select_new_editor(prev_editor: str, have_prev: bool, options) -> str | None
                 return None  # user kept the current editor
         else:
             new_editor = _prompt(
-                "  Enter editor command (e.g. nano, vi; ↵ to skip): "
+                "  Enter editor command (e.g. nano, vi; Enter to skip): "
             )
             if not new_editor:
                 _log.ui("  No editor selected — config file edits will be skipped.")
@@ -463,7 +463,7 @@ def _select_new_editor(prev_editor: str, have_prev: bool, options) -> str | None
 
         _log.ui(f"  {new_editor!r} not found in PATH.")
         action = _prompt_choice(
-            "  [i]nstall via pacman / [r]e-enter editor / [↵] cancel: ",
+            "  [i]nstall via pacman / [r]e-enter editor / [Enter] cancel: ",
             choices=("i", "r"),
         )
         if action == "r":
@@ -588,7 +588,7 @@ def _step_editor(config, state, options, editor: str) -> str:
 
     if have_editor:
         choice = _prompt_choice(
-            f"  Editor: {editor} (from {source}). Change? [e]dit / [↵] keep: ",
+            f"  Editor: {editor} (from {source}). Change? [e]dit / [Enter] keep: ",
             choices=("e",),
         )
         if choice != "e":
@@ -709,7 +709,7 @@ def _review_config_file(
         return
 
     if _prompt_choice(
-        f"    {label} ({path.name}) — [e]dit / [↵] skip: ",
+        f"    {label} ({path.name}) — [e]dit / [Enter] skip: ",
         choices=("e",),
     ) != "e":
         return
@@ -859,7 +859,7 @@ def _step_build_mode(config, state, options, editor: str) -> str:
         return editor
 
     choice = _prompt_choice(
-        f"  Change repo_mode from {repo_mode!r}? [p]acman / [r]profiled / [↵] keep: ",
+        f"  Change repo_mode from {repo_mode!r}? [p]acman / [r]profiled / [Enter] keep: ",
         choices=("p", "r", "pacman", "profiled"),
     )
 
@@ -950,7 +950,7 @@ def _offer_makepkg_defaults(conf: dict, conf_path: Path) -> None:
         default = _git_packager_default()
         suffix = f" [{default}]" if default else ""
         value = _prompt(
-            f"  Set PACKAGER (↵ to skip){suffix}: ", default=default,
+            f"  Set PACKAGER (Enter to skip){suffix}: ", default=default,
         ).strip()
         if value:
             pending["PACKAGER"] = value
@@ -958,7 +958,7 @@ def _offer_makepkg_defaults(conf: dict, conf_path: Path) -> None:
     if "MAKEFLAGS" not in conf:
         suggest = f"-j{os.cpu_count() or 1}"
         if _prompt_choice(
-            f"  Set MAKEFLAGS={suggest} for parallel builds? [y/↵ skip]: ",
+            f"  Set MAKEFLAGS={suggest} for parallel builds? [y/Enter skip]: ",
             choices=("y",),
         ) == "y":
             pending["MAKEFLAGS"] = suggest
@@ -1016,7 +1016,7 @@ def _step_makepkg(config, state, options, editor: str) -> str:
     if _interactive() and not options.dry_run:
         _offer_makepkg_defaults(conf, conf_path)
         if _prompt_choice(
-            "  Edit /etc/makepkg.conf? (requires sudo) [e/↵ skip]: ",
+            "  Edit /etc/makepkg.conf? (requires sudo) [e/Enter skip]: ",
             choices=("e",),
         ) == "e":
             if not _editor_usable(editor):

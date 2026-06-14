@@ -137,7 +137,7 @@ def select_desktop(*, interactive: bool, preselected: str | None) -> str | None:
         _log.ui(f"  [{i}] {entry.display_name}  ({', '.join(entry.packages)})")
     while True:
         raw = prompt_text(
-            f"  Pick a desktop [1-{len(entries)}, ↵ to skip]: ",
+            f"  Pick a desktop [1-{len(entries)}, Enter to skip]: ",
             tag="DESKTOP",
         )
         if not raw:
