@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 env_cmd.py — ``sysforge env`` verb.
 

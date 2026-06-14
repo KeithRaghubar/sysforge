@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 verbs/helpers.py — shared helpers for CLI verb implementations.
 

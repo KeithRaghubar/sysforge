@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 stages/hardware.py — stage 3: hardware detection
 
@@ -418,7 +422,7 @@ class HardwareStage(Stage):
 
         # --- CPU ---
         try:
-            cpuinfo = Path("/proc/cpuinfo").read_text()
+            cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8")
         except OSError as e:
             raise RuntimeError(f"[HARDWARE] Cannot read /proc/cpuinfo: {e}")
 

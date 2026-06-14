@@ -1,0 +1,29 @@
+version = 1
+
+# Files that do not (or cannot) carry an inline SPDX header are licensed in bulk
+# here. First-party Python source under sysforge/ and tools/ carries per-file
+# SPDX headers instead. See docs/design/21-standards.md (REUSE/SPDX).
+
+[[annotations]]
+path = [
+    "tests/**",
+    "docs/**",
+    "completions/**",
+    "man/**",
+    "etc/**",
+    "tools/*.sh",
+    "tools/vm/**",
+    "**.md",
+    "**.toml",
+    "**.lock",
+    "**.json",
+    "PKGBUILD",
+    "PKGBUILD-git",
+    ".SRCINFO",
+    "Makefile",
+    ".gitignore",
+    "LICENSE",
+    ".claude/**",
+]
+SPDX-FileCopyrightText = "2026 Keith Raghubar"
+SPDX-License-Identifier = "MIT"

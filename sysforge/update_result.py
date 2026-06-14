@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 update_result.py — the per-package result type for ``sysforge update``.
 

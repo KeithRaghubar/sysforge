@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 gen_options.py — generate the COMMANDS sections of sysforge(1) from argparse.
 
@@ -188,7 +193,7 @@ def main() -> int:
         body_lines += _command_section(name, sub, help_txt)
     body = "\n".join(body_lines).rstrip() + "\n"
 
-    template = Path(ns.template).read_text()
+    template = Path(ns.template).read_text(encoding="utf-8")
     if MARKER not in template:
         print(f"error: marker {MARKER} not found in {ns.template}",
               file=sys.stderr)
@@ -196,7 +201,7 @@ def main() -> int:
     rendered = template.replace(MARKER + "\n", body, 1)
     if MARKER in rendered:  # marker had no trailing newline form
         rendered = rendered.replace(MARKER, body, 1)
-    Path(ns.out).write_text(rendered)
+    Path(ns.out).write_text(rendered, encoding="utf-8")
     return 0
 
 

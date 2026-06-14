@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 stages/configure.py — stage 4: bootstrap configuration
 
@@ -325,7 +329,7 @@ _PKGVER_RE = re.compile(r"^pkgver\s*=\s*['\"]?([^'\"\s]+)['\"]?\s*$", re.MULTILI
 
 def _read_pkgver(pkgbuild: Path) -> str:
     """Extract pkgver from a PKGBUILD. Raise RuntimeError if not found."""
-    text = pkgbuild.read_text()
+    text = pkgbuild.read_text(encoding="utf-8")
     match = _PKGVER_RE.search(text)
     if not match:
         raise RuntimeError(f"[CONFIGURE] could not parse pkgver from {pkgbuild}")

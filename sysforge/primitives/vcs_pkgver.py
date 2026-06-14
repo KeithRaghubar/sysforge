@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 vcs_pkgver.py — resolve effective [epoch:]pkgver-pkgrel for a VCS PKGBUILD.
 

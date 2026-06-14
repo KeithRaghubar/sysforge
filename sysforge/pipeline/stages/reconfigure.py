@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 stages/reconfigure.py — stage 5: pre-build checkpoint
 
@@ -790,7 +794,7 @@ def _set_repo_mode(pkg_path: Path, mode: str) -> None:
     2. Insert after [build] header if not found.
     3. Append a new [build] section if none exists.
     """
-    text = pkg_path.read_text()
+    text = pkg_path.read_text(encoding="utf-8")
 
     new_text, n = re.subn(
         r'^(repo_mode\s*=\s*)"[^"]*"',
@@ -799,7 +803,7 @@ def _set_repo_mode(pkg_path: Path, mode: str) -> None:
         flags=re.MULTILINE,
     )
     if n:
-        pkg_path.write_text(new_text)
+        pkg_path.write_text(new_text, encoding="utf-8")
         return
 
     # Insert immediately after [build] header
@@ -810,11 +814,11 @@ def _set_repo_mode(pkg_path: Path, mode: str) -> None:
         count=1,
     )
     if new_text != text:
-        pkg_path.write_text(new_text)
+        pkg_path.write_text(new_text, encoding="utf-8")
         return
 
     # No [build] section — append one
-    pkg_path.write_text(text.rstrip("\n") + f'\n\n[build]\nrepo_mode = "{mode}"\n')
+    pkg_path.write_text(text.rstrip("\n") + f'\n\n[build]\nrepo_mode = "{mode}"\n', encoding="utf-8")
 
 
 def _step_build_mode(config, state, options, editor: str) -> str:
@@ -1082,7 +1086,7 @@ def _step_network(config, state, options, editor: str) -> str:
     ]
 
     try:
-        for line in Path("/etc/pacman.d/mirrorlist").read_text().splitlines():
+        for line in Path("/etc/pacman.d/mirrorlist").read_text(encoding="utf-8").splitlines():
             if line.strip().startswith("Server"):
                 m = re.search(r"https?://([^/]+)/", line)
                 if m:

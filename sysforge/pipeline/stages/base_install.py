@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 stages/base_install.py — stage 2: base system install
 
@@ -97,7 +101,7 @@ def _generate_fstab(target: str, dry_run: bool) -> None:
     result = run_or_raise(cmd, tag="BASE_INSTALL", operation="genfstab")
 
     fstab_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(fstab_path, "a") as f:
+    with open(fstab_path, "a", encoding="utf-8") as f:
         f.write(result.stdout)
 
     _log.ui("fstab written.")

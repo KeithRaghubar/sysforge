@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """Phase 2 of ``update``: source synchronisation.
 
 ``_sync_sources`` ensures every in-scope package has an up-to-date local

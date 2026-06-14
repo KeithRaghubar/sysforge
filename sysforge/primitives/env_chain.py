@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 env_chain.py — snapshot, relay, and diff the runtime env chain sysforge sees.
 
@@ -238,7 +242,7 @@ def _parse_shell_init_file(
     ``(kv, caveats)`` where caveats counts lines that look assignment-like
     but were skipped (e.g. arithmetic, function bodies)."""
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return {}, 0
     kv: dict[str, str] = {}
@@ -276,7 +280,7 @@ def _read_pam_env() -> tuple[dict[str, str], dict[str, str], int]:
     """
     path = Path("/etc/security/pam_env.conf")
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return {}, {}, 0
     defaults: dict[str, str] = {}
@@ -367,7 +371,7 @@ def _read_process_chain(start_pid: int | None = None, *, max_depth: int = 12) ->
     chain: list[ProcessLink] = []
     for _ in range(max_depth):
         try:
-            status = Path(f"/proc/{pid}/status").read_text()
+            status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
         except OSError:
             break
         ppid = 0
@@ -376,7 +380,7 @@ def _read_process_chain(start_pid: int | None = None, *, max_depth: int = 12) ->
                 ppid = int(line.split()[1])
                 break
         try:
-            comm = Path(f"/proc/{pid}/comm").read_text().strip()
+            comm = Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
         except OSError:
             comm = "?"
         try:
@@ -388,7 +392,7 @@ def _read_process_chain(start_pid: int | None = None, *, max_depth: int = 12) ->
         if ppid in (0, 1) or ppid == pid:
             if ppid == 1:
                 try:
-                    comm1 = Path("/proc/1/comm").read_text().strip()
+                    comm1 = Path("/proc/1/comm").read_text(encoding="utf-8").strip()
                 except OSError:
                     comm1 = "init"
                 chain.append(ProcessLink(pid=1, comm=comm1, cmdline=""))
@@ -525,7 +529,8 @@ def validate_env_chain(snap: EnvChainSnapshot) -> list[str]:
     if snap.sysforge.get("SYSFORGE_STATE_DIR") is None:
         warnings.append(
             "SYSFORGE_STATE_DIR is unset — sysforge will use the XDG fallback "
-            "(~/.config/sysforge/state). If this is unexpected, your shell init "
+            "($XDG_STATE_HOME/sysforge, default ~/.local/state/sysforge). If "
+            "this is unexpected, your shell init "
             "files may not be exporting it for this kind of shell (login vs "
             "interactive vs non-interactive)."
         )

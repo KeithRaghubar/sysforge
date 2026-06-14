@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 log.py — SysForge structured logging
 
@@ -238,7 +242,7 @@ def open_pkg_log(path, argv=None) -> None:
     global _pkg_log_fh
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    _pkg_log_fh = open(path, "a", buffering=1)
+    _pkg_log_fh = open(path, "a", encoding="utf-8", buffering=1)
     _write_to_files(_session_header(f"sysforge build {path.parent.name}"), raw=True)
     if argv:
         _write_to_files(f"# invocation: {' '.join(str(a) for a in argv)}\n", raw=True)

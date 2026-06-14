@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 tools/check_shipped.py - pre-release validator for shipped artifacts.
 
@@ -133,7 +138,7 @@ def _audit_shipped_toml(path: Path, repo: Path) -> list[Finding]:
         return [Finding("configs", "warn", rel,
                         f"no schema allowlist for {name} - extend _KNOWN_SECTIONS")]
     try:
-        data = tomllib.loads(path.read_text())
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:
         return [Finding("configs", "error", rel, f"TOML parse error: {e}")]
 
@@ -477,7 +482,13 @@ def check_versions(repo: Path) -> list[Finding]:
     pyp = repo / "pyproject.toml"
     if not pyp.exists():
         return [Finding("versions", "error", "pyproject.toml", "missing")]
-    target = tomllib.loads(pyp.read_text())["project"]["version"]
+    target = tomllib.loads(pyp.read_text(encoding="utf-8"))["project"]["version"]
+
+    # SemVer 2.0.0: the released project version must be strict X.Y.Z — numeric
+    # major.minor.patch with no pre-release or build-metadata suffix.
+    if not re.fullmatch(r"\d+\.\d+\.\d+", target):
+        findings.append(Finding("versions", "error", "pyproject.toml",
+                                f"version {target!r} is not strict SemVer X.Y.Z"))
 
     pkgbuild = repo / "PKGBUILD"
     if pkgbuild.exists():
@@ -491,12 +502,16 @@ def check_versions(repo: Path) -> list[Finding]:
 
     pkgbuild_git = repo / "PKGBUILD-git"
     if pkgbuild_git.exists():
-        gm = re.search(r"^pkgver=(\S+)", pkgbuild_git.read_text(), re.MULTILINE)
+        gm = re.search(r"^pkgver=(\S+)", pkgbuild_git.read_text(encoding="utf-8"), re.MULTILINE)
         if gm:
             leading = gm.group(1).split(".r", 1)[0]
             if leading != target:
                 findings.append(Finding("versions", "error", "PKGBUILD-git",
                                         f"pkgver leading {leading!r} != pyproject {target}"))
+            # VCS suffix grammar: X.Y.Z.rN.gHASH (the committed template form).
+            if not re.fullmatch(r"\d+\.\d+\.\d+\.r\d+\.g[0-9a-f]+", gm.group(1)):
+                findings.append(Finding("versions", "error", "PKGBUILD-git",
+                                        f"pkgver {gm.group(1)!r} not in X.Y.Z.rN.gHASH form"))
 
     # Markers carry a literal `vX.Y.Z` semver. Documentation may also embed
     # `<!--version-->vX.Y.Z<!--/version-->` verbatim as a syntax example;
@@ -543,7 +558,7 @@ def check_manpage(repo: Path) -> list[Finding]:
         return [Finding("manpage", "warn", "man/sysforge.1",
                         "scdoc not installed - skipping regen-diff")]
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".scd", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(encoding="utf-8", mode="w", suffix=".scd", delete=False) as tmp:
         scd_path = Path(tmp.name)
     try:
         env = {**os.environ}
@@ -567,7 +582,7 @@ def check_manpage(repo: Path) -> list[Finding]:
             return [Finding("manpage", "error", "man/sysforge.1",
                             f"gen_options.py failed: {res.stderr.strip()[:200]}")]
         scd_res = subprocess.run(
-            ["scdoc"], input=scd_path.read_text(),
+            ["scdoc"], input=scd_path.read_text(encoding="utf-8"),
             capture_output=True, text=True,
         )
         if scd_res.returncode != 0:

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 build_core.py — the shared source-build pipeline behind ``build`` and ``update``.
 

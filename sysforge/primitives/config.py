@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 config.py — SysForge config file loading
 
@@ -400,7 +404,7 @@ def _parse_one_makepkg_conf(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except PermissionError:
         _log.warn(f"Cannot read {path} — skipping")
         return {}

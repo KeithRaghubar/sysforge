@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 build_diag.py — postflight failure-log diagnostics.
 
@@ -200,7 +204,7 @@ def _cuda_max_gcc_major() -> int | None:
     paths.extend(_CUDA_HOST_CONFIG_PATHS)
     for p in paths:
         try:
-            txt = Path(p).read_text(errors="replace")
+            txt = Path(p).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         m = re.search(r"__GNUC__\s*>\s*(\d+)", txt)

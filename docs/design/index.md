@@ -35,6 +35,7 @@ from these sources.
 | `18-reconverge.md` | Re-converge |
 | `19-known-gaps.md` | Known Gaps |
 | `20-roadmap.md` | V1.x + V2 Roadmap |
+| `21-standards.md` | Standards & Specifications |
 
 ## Planned reorganization
 

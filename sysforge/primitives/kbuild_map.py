@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 kbuild_map.py — module→CONFIG_* map derived from a kernel source tree
 
@@ -136,7 +140,7 @@ def save_map(path: Path, mapping: dict[str, str], kernel_release: str | None) ->
 def load_map(path: Path) -> tuple[dict[str, str], str] | None:
     """Load a saved map; None when missing, corrupt, or the wrong shape."""
     try:
-        payload = json.loads(Path(path).read_text())
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (FileNotFoundError, PermissionError, OSError, ValueError):
         return None
     if not isinstance(payload, dict):

@@ -1,5 +1,5 @@
 .PHONY: all dev venv build install clean distclean test test-x lint coverage man \
-        check-shipped check-personal design check-design pre-release \
+        check-shipped check-personal check-standards design check-design pre-release \
         release-major release-minor release-patch \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
@@ -30,11 +30,13 @@ build:
 install:
 	makepkg -si
 
+# Pass extra pytest args via ARGS, e.g.
+#   make test ARGS="tests/test_standards_compliance.py -q"
 test:
-	pytest
+	pytest $(ARGS)
 
 test-x:
-	pytest -x
+	pytest -x $(ARGS)
 
 lint:
 	ruff check sysforge/
@@ -74,9 +76,18 @@ design:
 check-design:
 	uv run --no-sync python tools/build_design.py --check
 
+# Standards-compliance gate. Runs the mechanically-checkable groups in
+# tools/check_standards.py (paths/XDG-FHS, SPDX/REUSE, Keep a Changelog
+# headings, UTF-8 encoding). The behavioural subset (NO_COLOR, --version,
+# stdout/stderr, RFC 3339, reproducibility) is covered by `make test`
+# (tests/test_standards_compliance.py). Source of truth: docs/design/21-standards.md.
+check-standards:
+	uv run --no-sync --with reuse python tools/check_standards.py
+
 # Composite gate: lint + tests + shipped-file consistency + impersonal docs +
-# DESIGN.md freshness. Run before kicking off `make release-{major,minor,patch}`.
-pre-release: lint test check-shipped check-personal check-design
+# DESIGN.md freshness + standards compliance. Run before kicking off
+# `make release-{major,minor,patch}`.
+pre-release: lint test check-shipped check-personal check-design check-standards
 
 release-major:
 	bash tools/release.sh --bump=major

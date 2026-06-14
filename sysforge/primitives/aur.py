@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 aur.py — AUR RPC queries, git clone, and AUR name-cache refresh
 
@@ -6,7 +10,7 @@ Public API:
     is_repo_package(name)             -> bool              True if name is in pacman sync DBs
     aur_info(names)                   -> dict[str, dict]   batch AUR RPC v5 query (name → result)
     aur_clone(name, dest, *, ref=...) -> None              git clone from AUR into dest
-    fetch_aur_name_cache()            -> Path | None       refresh ~/.config/sysforge/cache/aur-packages.txt
+    fetch_aur_name_cache()            -> Path | None       refresh ~/.cache/sysforge/aur-packages.txt
 
 Two neighbouring concerns were split into their own modules and are re-exported
 from here so existing ``from sysforge.primitives.aur import …`` call sites and
@@ -125,7 +129,7 @@ def aur_info(names: list[str]) -> dict[str, dict]:
 
 def fetch_aur_name_cache(force: bool = False) -> Path | None:
     """
-    Download the AUR package name list (packages.gz) to ~/.config/sysforge/cache/aur-packages.txt.
+    Download the AUR package name list (packages.gz) to ~/.cache/sysforge/aur-packages.txt.
 
     Skips the download if the cache file is less than AUR_CACHE_MAX_AGE seconds old,
     unless force=True.  Returns the cache path on success, None on failure.

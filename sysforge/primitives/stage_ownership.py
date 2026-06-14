@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """Stage-ownership registry — which pipeline stage owns a given package.
 
 A package is *stage-owned* when a long-running pipeline stage (``run kernel`` /

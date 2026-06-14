@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """check_personal.py -- de-personalization lint gate (refactor Phase 4).
 
 Fails if personal *identity* or *personal-path* tokens leak into the surface
@@ -46,9 +51,13 @@ _DENY: list[tuple[re.Pattern[str], str]] = [
 ]
 
 # A line that trips a deny pattern is EXEMPT if it is an attribution line --
-# copyright notices, PKGBUILD Maintainer fields, and the manpage --author arg
-# are supposed to carry the real name.
-_ALLOW = re.compile(r"(?i)\bcopyright\b|\bmaintainer\b|--author")
+# copyright notices, PKGBUILD Maintainer fields, the manpage --author arg, and
+# SPDX-FileCopyrightText/SPDX-FileContributor headers are supposed to carry the
+# real name. (SPDX-FileCopyrightText is not matched by \bcopyright\b because the
+# word boundary fails inside "FileCopyrightText".)
+_ALLOW = re.compile(
+    r"(?i)\bcopyright\b|\bmaintainer\b|--author|SPDX-File(?:CopyrightText|Contributor)"
+)
 
 # Internal workflow tooling sysforge never ships (Claude Code config, rolling
 # handoffs) is out of scope -- same rationale the plan gives for excluding

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 makepkg_wrapper.py — build orchestrator + public facade
 
@@ -54,10 +58,10 @@ from sysforge.primitives.makepkg_invoke import (
     _invoke_with_retry,
 )
 from sysforge.primitives.makepkg_pgo import (
-    _DEFAULT_PGO_STORE,
     _resolve_pgo_state,
     _try_load_toml,
     PGOBuildSkipped,
+    resolve_pgo_store,
 )
 from sysforge.primitives.makepkg_flags import INSTALL_FLAGS
 from sysforge.primitives.makepkg_flags import expand_makepkg_flags  # noqa: F401  (re-export)
@@ -658,11 +662,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         # a still-instrumented system.
         if not options.pgo_managed:
             _tcfg = _try_load_toml(TOOLCHAIN_PATH) if TOOLCHAIN_PATH.exists() else None
-            _pgo_store = Path(
-                _tcfg.get("pgo_store", _DEFAULT_PGO_STORE)
-                if _tcfg is not None
-                else _DEFAULT_PGO_STORE
-            )
+            _pgo_store = resolve_pgo_store(_tcfg)
             if _pgo_store.is_dir():
                 _all_profraw = list(_pgo_store.glob("**/*.profraw"))
                 # 1s slack absorbs filesystem mtime rounding on second-granularity fs.

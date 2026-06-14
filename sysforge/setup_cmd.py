@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 setup_cmd.py — first-time sysforge configuration
 
@@ -93,7 +97,7 @@ def _write_conf(path: Path, text: str) -> bool:
     Write text to path. Returns True on success, False on PermissionError.
     """
     try:
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         return True
     except PermissionError:
         return False
@@ -141,7 +145,7 @@ def cmd_setup(args) -> None:
         )
         return
 
-    conf_text = conf_path.read_text()
+    conf_text = conf_path.read_text(encoding="utf-8")
 
     if _check_ignore_group(conf_text):
         print(f"[SYSFORGE] Already configured: IgnoreGroup = {_IGNORE_GROUP} is present in {conf_path}.")

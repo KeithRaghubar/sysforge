@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 system_probe.py — pacman / system-integrity diagnostics (doctor ``pacman`` axis).
 

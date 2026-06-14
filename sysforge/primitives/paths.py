@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 paths.py — centralised path constants for sysforge config files
 
@@ -5,8 +9,11 @@ All /etc/sysforge/* paths live here.  CONFIG_BASE is derived from the
 SYSFORGE_CONFIG_DIR env var (default: "/"), allowing tests and
 alternate installs to relocate config lookup.
 
-User-side paths share a single root (~/.config/sysforge) for config
-overrides, regenerable cache, and fallback runtime state.
+User-side paths follow the XDG Base Directory Specification: config lives
+under $XDG_CONFIG_HOME (default ~/.config), regenerable cache under
+$XDG_CACHE_HOME (default ~/.cache), and fallback runtime state under
+$XDG_STATE_HOME (default ~/.local/state) — three separate roots, each
+honouring its env var when set.
 """
 import os
 import shutil
@@ -14,9 +21,16 @@ from pathlib import Path
 
 CONFIG_BASE = Path(os.environ.get("SYSFORGE_CONFIG_DIR", "/"))
 
-USER_CONFIG_DIR = Path.home() / ".config/sysforge"
-USER_CACHE_DIR  = USER_CONFIG_DIR / "cache"
-USER_STATE_DIR  = USER_CONFIG_DIR / "state"
+
+def _xdg_base(env: str, default_rel: str) -> Path:
+    """Return the XDG base dir from `env`, or ~/`default_rel` when unset/empty."""
+    val = os.environ.get(env)
+    return Path(val) if val else Path.home() / default_rel
+
+
+USER_CONFIG_DIR = _xdg_base("XDG_CONFIG_HOME", ".config")      / "sysforge"
+USER_CACHE_DIR  = _xdg_base("XDG_CACHE_HOME",  ".cache")       / "sysforge"
+USER_STATE_DIR  = _xdg_base("XDG_STATE_HOME",  ".local/state") / "sysforge"
 
 # profiles.toml search order (user, then system)
 # Holds [paths] [defaults] [profiles.*] [[rules]] plus the consolidated
@@ -31,7 +45,7 @@ PACKAGES_PATH = CONFIG_BASE / "etc/sysforge/packages.toml"
 KERNEL_PATH = CONFIG_BASE / "etc/sysforge/kernel.toml"
 TOOLCHAIN_PATH = CONFIG_BASE / "etc/sysforge/toolchain.toml"
 SYSFORGE_TOML_PATH = CONFIG_BASE / "etc/sysforge/sysforge.toml"
-BOOTSTRAP_PATH = Path("/etc/sysforge/bootstrap.toml")
+BOOTSTRAP_PATH = CONFIG_BASE / "etc/sysforge/bootstrap.toml"
 
 
 def resolve_packages_path(config: dict) -> Path:
@@ -43,14 +57,16 @@ def resolve_packages_path(config: dict) -> Path:
 
 
 _LEGACY_USER_DIRS = (
-    (Path.home() / ".cache/sysforge",       USER_CACHE_DIR),
-    (Path.home() / ".local/state/sysforge", USER_STATE_DIR),
+    (Path.home() / ".config/sysforge/cache", USER_CACHE_DIR),
+    (Path.home() / ".config/sysforge/state", USER_STATE_DIR),
 )
 
 
 def migrate_legacy_user_dirs() -> None:
-    """Best-effort one-shot move of ~/.cache/sysforge and ~/.local/state/sysforge
-    into ~/.config/sysforge/{cache,state}. Idempotent; never raises."""
+    """Best-effort one-shot move of the legacy consolidated dirs
+    ~/.config/sysforge/{cache,state} into their XDG-correct homes
+    ($XDG_CACHE_HOME/sysforge and $XDG_STATE_HOME/sysforge, default
+    ~/.cache/sysforge and ~/.local/state/sysforge). Idempotent; never raises."""
     from sysforge import log
     _log = log.get_logger("PATHS")
 

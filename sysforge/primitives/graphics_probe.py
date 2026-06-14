@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 graphics_probe.py — system-state graphics/windowing health checks
 
@@ -47,7 +51,7 @@ class GraphicsFinding:
 def _read_text(path: Path) -> str | None:
     """Read a small file; return None on permission error or missing."""
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
     except (FileNotFoundError, PermissionError, IsADirectoryError, OSError):
         return None
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 makepkg_conf.py — temp makepkg.conf emission
 
@@ -425,7 +429,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 conf_lines.append(f'{key}="{val}"')
 
     with tempfile.NamedTemporaryFile(
-        mode="w",
+        encoding="utf-8", mode="w",
         prefix="sysforge_makepkg_",
         suffix=".conf",
         delete=False,

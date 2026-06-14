@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 pkgbuild_meta.py — static PKGBUILD parser
 
@@ -503,7 +507,7 @@ def parse_pkgbuild(path):
     depends+=() inside functions. The wrapper falls back to the default
     profile when parsing fails.
     """
-    text = _strip_comments(open(path).read())
+    text = _strip_comments(open(path, encoding="utf-8").read())
     result = {"globals": {}, "functions": {}}
     result["functions"], global_text = _extract_functions(text)
     result["globals"].update(_extract_arrays(global_text))

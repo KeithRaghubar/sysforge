@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 log_cmd.py — `sysforge log [PKG]` verb.
 
@@ -63,7 +67,7 @@ def cmd_log(args) -> int:
     use_pager = not getattr(args, "no_pager", False)
     with maybe_pager(use_pager):
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     print(line, end="")
         except BrokenPipeError:

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 toolchain_safety.py — guardrails so the LLVM toolchain stage can never leave
 the live ``/usr`` compiler broken.
@@ -464,7 +468,7 @@ def check_multilib_enabled(lib32_in_scope: bool) -> ToolchainFinding | None:
     if not _PACMAN_CONF.is_file():
         return None
     try:
-        text = _PACMAN_CONF.read_text()
+        text = _PACMAN_CONF.read_text(encoding="utf-8")
     except OSError:
         return None
     for line in text.splitlines():

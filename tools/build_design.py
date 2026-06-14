@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """build_design.py -- generate DESIGN.md from the modular docs/design/ sources.
 
 DESIGN.md is a GENERATED aggregate: the source of truth is the set of focused

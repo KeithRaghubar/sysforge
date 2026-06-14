@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """Phase 1 of ``update``: package-set assembly.
 
 ``_assemble_package_set`` turns the live install set into the unified

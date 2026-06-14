@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 pkgbuild_patcher.py — PKGBUILD mutation and flag extraction
 

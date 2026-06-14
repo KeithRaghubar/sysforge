@@ -203,6 +203,13 @@ preflight_fresh() {
         echo "ERROR: DESIGN.md is stale — run 'make design' and commit the result." >&2
         exit 1
     fi
+    # Standards-compliance gate. Validates the mechanically-checkable committed
+    # standards (XDG/FHS paths, SPDX/REUSE licensing, Keep a Changelog headings,
+    # UTF-8 encoding) documented in docs/design/21-standards.md.
+    if ! make --no-print-directory check-standards >&2; then
+        echo "ERROR: standards checks failed — fix the findings above and re-run." >&2
+        exit 1
+    fi
 }
 
 preflight_resume() {

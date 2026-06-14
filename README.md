@@ -305,13 +305,21 @@ sudo cp completions/_sysforge /usr/share/zsh/site-functions/
 fpath=($(pwd)/completions $fpath) && compinit
 ```
 
-Completes subcommands, all flags, and package names (local `pkgbuild_src_dir` + pacman sync DB + AUR cache if present at `~/.config/sysforge/cache/aur-packages.txt`).
+Completes subcommands, all flags, and package names (local `pkgbuild_src_dir` + pacman sync DB + AUR cache if present at `~/.cache/sysforge/aur-packages.txt`).
 
 ---
 
 ## Contributing
 
 Issues are the best channel for bug reports and feedback; pull requests are welcome too. See [CONTRIBUTING.md](CONTRIBUTING.md) for how the project is developed and what a good PR looks like.
+
+---
+
+## Standards & compliance
+
+SysForge follows the established Linux/Python ecosystem conventions rather than inventing its own. Its own files live where the specs say they should: configuration under `$XDG_CONFIG_HOME` (default `~/.config/sysforge`), cache under `$XDG_CACHE_HOME` (`~/.cache/sysforge`), and state under `$XDG_STATE_HOME` (`~/.local/state/sysforge`), per the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/); system paths follow the FHS. The CLI follows POSIX/GNU conventions, honours `NO_COLOR`/`FORCE_COLOR`, splits diagnostics (stderr) from output (stdout), and emits RFC 3339 timestamps. Releases are [SemVer](https://semver.org/), notes follow [Keep a Changelog](https://keepachangelog.com/), and the tree is [REUSE](https://reuse.software/)/SPDX-annotated (MIT).
+
+The full list — each standard with its scope, status, and how it's enforced — is in [DESIGN.md](DESIGN.md) (§Standards & Specifications). A release gate (`make check-standards` plus behavioural tests) verifies the checkable subset before every release.
 
 ---
 

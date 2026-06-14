@@ -128,6 +128,29 @@ def test_load_toolchain_config_bad_toml_raises(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# resolve_pgo_store — toolchain.toml > SYSFORGE_PGO_STORE > FHS default
+# ---------------------------------------------------------------------------
+
+def test_resolve_pgo_store_default_is_var_cache(monkeypatch):
+    from sysforge.primitives.makepkg_pgo import resolve_pgo_store
+    monkeypatch.delenv("SYSFORGE_PGO_STORE", raising=False)
+    assert resolve_pgo_store(None) == Path("/var/cache/sysforge/llvm-pgo")
+    assert resolve_pgo_store({}) == Path("/var/cache/sysforge/llvm-pgo")
+
+
+def test_resolve_pgo_store_env_override(monkeypatch):
+    from sysforge.primitives.makepkg_pgo import resolve_pgo_store
+    monkeypatch.setenv("SYSFORGE_PGO_STORE", "/tmp/env-pgo")
+    assert resolve_pgo_store(None) == Path("/tmp/env-pgo")
+
+
+def test_resolve_pgo_store_config_wins_over_env(monkeypatch):
+    from sysforge.primitives.makepkg_pgo import resolve_pgo_store
+    monkeypatch.setenv("SYSFORGE_PGO_STORE", "/tmp/env-pgo")
+    assert resolve_pgo_store({"pgo_store": "/cfg/pgo"}) == Path("/cfg/pgo")
+
+
+# ---------------------------------------------------------------------------
 # _package_lists
 # ---------------------------------------------------------------------------
 

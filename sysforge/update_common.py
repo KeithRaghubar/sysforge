@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """Shared leaf for the update pipeline's cross-phase constants and predicates.
 
 These symbols are needed by more than one update phase module (the version

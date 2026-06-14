@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 build_lock.py — advisory cross-process lock for build-bearing scopes.
 
@@ -36,7 +40,7 @@ def build_lock(lock_path: Path, *, label: str):
         except BlockingIOError:
             holder = ""
             try:
-                with open(lock_path) as f:
+                with open(lock_path, encoding="utf-8") as f:
                     holder = f.read().strip()
             except OSError:
                 pass

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """Phase 3 of ``update``: per-pkgbase version check.
 
 ``_check_one_pkgbase`` decides, for a single pkgbase, whether an upgrade/

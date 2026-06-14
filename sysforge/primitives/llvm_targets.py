@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 llvm_targets.py — resolve the LLVM_TARGETS_TO_BUILD list for a build.
 

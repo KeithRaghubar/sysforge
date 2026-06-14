@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 source_meta.py — persistent PKGBUILD metadata cache for `sysforge update`.
 

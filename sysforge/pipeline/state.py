@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 state.py — pipeline checkpoint state
 
@@ -9,6 +13,8 @@ State dir resolution (highest priority first):
   1. Explicit Path passed at construction (from --state-dir CLI flag)
   2. SYSFORGE_STATE_DIR environment variable
   3. /var/lib/sysforge (default)
+  4. XDG fallback when /var/lib/sysforge is not writable: $XDG_STATE_HOME/sysforge
+     (default ~/.local/state/sysforge), per the XDG Base Directory Specification
 
 Public API:
     PipelineState(state_dir)
@@ -44,7 +50,8 @@ def resolve_state_dir(cli_override=None):
     Logs both CLI and env sources whenever present.
 
     If the system default (/var/lib/sysforge) is not writable (e.g. running
-    from source without root), falls back to ~/.config/sysforge/state and logs
+    from source without root), falls back to the XDG state dir
+    ($XDG_STATE_HOME/sysforge, default ~/.local/state/sysforge) and logs
     a one-time info message so the location is transparent.
     """
     env_val = os.environ.get("SYSFORGE_STATE_DIR")

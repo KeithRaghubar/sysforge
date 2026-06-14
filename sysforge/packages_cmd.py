@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 packages_cmd.py — packages.toml lifecycle management
 
@@ -114,7 +118,7 @@ def _rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | Non
     - Always: auto-prune any [[package]] block that contains no
       behavior-changing override field (see OVERRIDE_FIELDS).
     """
-    text = path.read_text() if path.exists() else ""
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
     lines = text.splitlines(keepends=True)
 
     if append:
@@ -153,7 +157,7 @@ def _rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | Non
         keep_lines.append("\n") if not keep_lines[-1].endswith("\n") else None
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(keep_lines))
+    path.write_text("".join(keep_lines), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 dep_analysis.py — pre-build dependency analysis
 
@@ -277,7 +281,7 @@ def read_running_kconfig_text() -> str | None:
         with gzip.open(config_path, "rt") as f:
             return f.read()
     if boot_config.exists():
-        return boot_config.read_text()
+        return boot_config.read_text(encoding="utf-8")
     return None
 
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 stages/toolchain.py — stage 6: LLVM toolchain build (GCC is register-only)
 
@@ -19,7 +23,7 @@ toolchain.toml structure:
   pgo         = true     # only meaningful when compiler = "llvm"; ignored for gcc
   skip_build  = false    # LLVM only: register clang paths without building
   pgo_staging = "/var/tmp/sysforge-llvm-stage2"   # staging dir for pass-2 binaries
-  pgo_store   = "/var/tmp/sysforge-llvm-pgo"      # dir for profraw/profdata files
+  pgo_store   = "/var/cache/sysforge/llvm-pgo"    # dir for profraw/profdata files
 
   [packages]
   pgo     = ["llvm", "llvm-libs"]
@@ -103,6 +107,7 @@ from sysforge.primitives.llvm_state import (
 from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
 from sysforge.primitives import toolchain_safety
+from sysforge.primitives.makepkg_pgo import resolve_pgo_store
 from sysforge.primitives.pacman import batch_install_pkgs, cached_pkg_files_for
 from sysforge.primitives.makepkg_flags import SYNC_FLAGS
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
@@ -235,7 +240,9 @@ _DEFAULT_LLVM_LIB32 = [
 ]
 _DEFAULT_STAGING_1 = "/var/tmp/sysforge-llvm-stage1"
 _DEFAULT_STAGING = "/var/tmp/sysforge-llvm-stage2"
-_DEFAULT_PGO_STORE = "/var/tmp/sysforge-llvm-pgo"
+# pgo_store resolution (toolchain.toml > SYSFORGE_PGO_STORE > /var/cache default)
+# lives in primitives.makepkg_pgo.resolve_pgo_store — the one home shared with
+# the reader (_resolve_pgo_state) and the wrapper's orphan-profraw guard.
 
 # Makepkg flags permitted through to PGO builds from user -m input.
 # Only force-rebuild is safe; flags that alter build flow (e.g. --noextract,
@@ -2448,7 +2455,7 @@ class ToolchainStage(Stage):
         pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
         staging1 = Path(tcfg.get("pgo_staging1", _DEFAULT_STAGING_1))
         staging = Path(tcfg.get("pgo_staging", _DEFAULT_STAGING))
-        pgo_store = Path(tcfg.get("pgo_store", _DEFAULT_PGO_STORE))
+        pgo_store = resolve_pgo_store(tcfg)
 
         # GCC path: never build from source. Register system gcc paths so
         # downstream stages (packages, kernel) pick them up; stock gcc-libs
@@ -2577,7 +2584,7 @@ class ToolchainStage(Stage):
 
         # Advisory lock around the whole build → audit → snapshot → install
         # window, mirroring the kernel stage's kernel-build.lock. Guards the
-        # PGO /var/tmp staging dirs + pgo_store (and the non-PGO build area) so
+        # PGO /var/tmp staging dirs + pgo_store cache (and the non-PGO build area) so
         # two concurrent `sysforge run toolchain` runs can't clobber each
         # other. Skipped in dry-run (the lock file would be a side effect).
         _lock = (

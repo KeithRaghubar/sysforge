@@ -3,9 +3,7 @@ test_pipeline_state.py — unit tests for PipelineState read/write.
 
 Uses a temporary directory for all state file operations.
 """
-import tempfile
 import tomllib
-from pathlib import Path
 
 import pytest
 
@@ -176,3 +174,16 @@ def test_resolve_cli_override_beats_env(monkeypatch, tmp_path):
     path, source = resolve_state_dir(cli_override=str(tmp_path))
     assert source == "--state-dir"
     assert path == tmp_path
+
+def test_resolve_xdg_fallback_when_var_lib_not_writable(monkeypatch):
+    """When /var/lib/sysforge is not writable, fall back to the XDG state dir
+    ($XDG_STATE_HOME/sysforge), not the old ~/.config consolidation."""
+    monkeypatch.delenv("SYSFORGE_STATE_DIR", raising=False)
+    import sysforge.pipeline.state as _state_mod
+    monkeypatch.setattr(_state_mod, "_state_dir_is_writable", lambda p: False)
+    path, source = resolve_state_dir()
+    assert source == "xdg-fallback"
+    assert path == _state_mod._FALLBACK_STATE_DIR
+    # XDG-correct: under a state root, never under ~/.config.
+    assert ".config/sysforge" not in str(path)
+    assert str(path).endswith("/sysforge")

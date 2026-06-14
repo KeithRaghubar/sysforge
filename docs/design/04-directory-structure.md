@@ -143,10 +143,14 @@ sysforge/
 /usr/share/sysforge/
     bootstrap.toml.example           # starter template for manual hand-edit setups
 /usr/bin/sysforge
-~/.config/sysforge/
+~/.config/sysforge/                  # $XDG_CONFIG_HOME/sysforge
     profiles.toml                    # user overrides (optional; merges with system via extends_system)
-    cache/aur-packages.txt           # AUR name cache (regenerable, refreshed every 24h)
-    state/                           # fallback runtime state when /var/lib/sysforge is not writable
+~/.cache/sysforge/                   # $XDG_CACHE_HOME/sysforge
+    aur-packages.txt                 # AUR name cache (regenerable, refreshed every 24h)
+~/.local/state/sysforge/             # $XDG_STATE_HOME/sysforge
+    (state files)                    # fallback runtime state when /var/lib/sysforge is not writable
+/var/cache/sysforge/                 # regenerable build cache (override via SYSFORGE_PGO_STORE)
+    llvm-pgo/                        # LLVM PGO profraw/profdata store
 /var/lib/sysforge/
     pipeline_state.toml              # pipeline checkpoint state (created at runtime)
     build_state.toml                 # per-package build metadata (created at runtime, by sysforge build/update)

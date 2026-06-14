@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 diagnostics.py — one ``Finding`` type, one renderer, one axis runner.
 

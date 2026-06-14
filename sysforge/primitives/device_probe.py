@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 device_probe.py — full PCI/USB device inventory + driver-coverage probe
 
@@ -66,7 +70,7 @@ class DeviceFinding:
 def _read_text(path: Path) -> str | None:
     """Read a small file; return None on permission error or missing."""
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
     except (FileNotFoundError, PermissionError, IsADirectoryError, OSError):
         return None
 

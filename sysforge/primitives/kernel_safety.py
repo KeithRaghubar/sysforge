@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 kernel_safety.py — guardrails so the kernel stage can never leave the
 machine unbootable.
@@ -67,7 +71,7 @@ class RootTopology:
 
 def _read_text(path: Path) -> str | None:
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
     except (FileNotFoundError, PermissionError, IsADirectoryError, OSError):
         return None
 

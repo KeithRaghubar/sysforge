@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 runtime_probe.py — services / runtime-health diagnostics (doctor ``services`` axis).
 

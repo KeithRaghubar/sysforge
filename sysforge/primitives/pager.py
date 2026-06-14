@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
 pager.py — pipe ``print()`` through ``$PAGER`` when stdout is a TTY.
 
