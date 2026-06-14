@@ -328,6 +328,55 @@ def test_collect_boot_findings_clean_with_fallback(monkeypatch):
     assert doctor._collect_boot_findings() == []
 
 
+def test_with_reboot_hint_appends_and_selects():
+    from sysforge.primitives import diagnostics as diag
+    keep = diag.Finding("boot", diag.SEV_WARN, "boot_vmlinuz_missing",
+                        "image gone", remediation="reinstall")
+    tag = diag.Finding("boot", diag.SEV_WARN, "dkms:nvidia",
+                       "not built", remediation="dkms install")
+    out = doctor._with_reboot_hint([keep, tag],
+                                   only=lambda f: f.check_id.startswith("dkms:"))
+    by_id = {f.check_id: f for f in out}
+    # Selected finding keeps its remediation and gains the caveat.
+    assert by_id["dkms:nvidia"].remediation.startswith("dkms install — ")
+    assert "reboot" in by_id["dkms:nvidia"].remediation
+    # Non-matching finding is untouched.
+    assert by_id["boot_vmlinuz_missing"].remediation == "reinstall"
+
+
+def test_with_reboot_hint_handles_empty_remediation():
+    from sysforge.primitives import diagnostics as diag
+    f = diag.Finding("hardware", diag.SEV_WARN, "missing_driver", "no driver")
+    (out,) = doctor._with_reboot_hint([f])
+    assert out.remediation == doctor._REBOOT_HINT
+
+
+def test_collect_boot_findings_dkms_carries_reboot_hint(monkeypatch):
+    from sysforge.primitives import kernel_safety
+    dkms = kernel_safety.KernelFinding(
+        kernel_safety.SEV_WARN, "dkms:nvidia",
+        "DKMS module 'nvidia' is not built", "dkms install", is_brick=False)
+    _patch_kernel_safety(monkeypatch, kernels=["linux", "linux-lts"], dkms=[dkms])
+    findings = doctor._collect_boot_findings()
+    hit = [f for f in findings if f.check_id == "dkms:nvidia"]
+    assert len(hit) == 1
+    assert "reboot" in hit[0].remediation
+
+
+def test_collect_services_findings_firmware_carries_reboot_hint(monkeypatch):
+    from sysforge.primitives import diagnostics as diag
+    from sysforge.primitives import runtime_probe
+    fw = diag.Finding("services", diag.SEV_WARN, "missing_firmware",
+                      "firmware not loaded", remediation="install firmware")
+    unit = diag.Finding("services", diag.SEV_ERROR, "failed_unit:foo.service",
+                        "failed", remediation="inspect")
+    monkeypatch.setattr(runtime_probe, "collect_runtime_findings",
+                        lambda: [fw, unit])
+    out = {f.check_id: f for f in doctor._collect_services_findings()}
+    assert "reboot" in out["missing_firmware"].remediation
+    assert out["failed_unit:foo.service"].remediation == "inspect"
+
+
 # ---------------------------------------------------------------------------
 # cmd_doctor --hardware
 # ---------------------------------------------------------------------------

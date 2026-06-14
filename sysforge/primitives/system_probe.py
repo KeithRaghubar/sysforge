@@ -95,8 +95,8 @@ def _check_pacfiles() -> list[diag.Finding]:
     return [diag.Finding(
         "pacman", diag.SEV_WARN, "pacnew_unmerged",
         f"{len(found)} unmerged pacman config file(s) under /etc:\n    {sample}{more}",
-        remediation="review and merge each (e.g. with `pacdiff`), then remove the "
-                    ".pacnew/.pacsave",
+        remediation="review and merge each with `pacdiff` (from pacman-contrib), "
+                    "then remove the .pacnew/.pacsave",
     )]
 
 

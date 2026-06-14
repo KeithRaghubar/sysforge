@@ -31,6 +31,8 @@ import re
 import subprocess
 import tomllib
 from collections import deque
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from sysforge import log
@@ -546,6 +548,34 @@ def _print_report(pkgname: str, version: str | None,
 # here and an entry in ``_SYSTEM_AXIS_ORDER`` / ``_system_axes``.
 # ---------------------------------------------------------------------------
 
+# Findings derived from the *running* kernel or the current boot (not the
+# kernel/initramfs just built or installed) won't change until reboot — doctor
+# re-probes live every run, but the live truth here is the booted kernel. Tag
+# them so a user who applied a fix and re-ran doctor understands why the line
+# persists. Annotated at the doctor boundary only: the underlying probes are
+# reused by the kernel/toolchain stages, where the audited config is the
+# just-built one and this caveat would be wrong.
+_REBOOT_HINT = ("reflects the *running* kernel / current boot — "
+                "reboot, then re-run doctor, to clear")
+
+
+def _with_reboot_hint(
+    findings: list[diag.Finding],
+    *,
+    only: Callable[[diag.Finding], bool] | None = None,
+) -> list[diag.Finding]:
+    """Append the reboot caveat to each finding's remediation (or just those
+    matching ``only``), preserving any existing remediation text."""
+    out: list[diag.Finding] = []
+    for f in findings:
+        if only is not None and not only(f):
+            out.append(f)
+            continue
+        tail = f"{f.remediation} — {_REBOOT_HINT}" if f.remediation else _REBOOT_HINT
+        out.append(replace(f, remediation=tail))
+    return out
+
+
 def _collect_toolchain_findings(config) -> list[diag.Finding]:
     """Configured-vs-installed toolchain provenance (custom LLVM requested but
     stock repo LLVM installed, or PGO profdata skew). Built on
@@ -566,7 +596,8 @@ def _collect_hardware_findings() -> list[diag.Finding]:
     running_cfg = _parse_kernel_config()
     if running_cfg:
         findings += kernel_safety.audit_resolved_config(running_cfg, devices=devices)
-    return diag.adapt_many("hardware", findings)
+    # The whole axis reads the running kernel's config + bound drivers.
+    return _with_reboot_hint(diag.adapt_many("hardware", findings))
 
 
 def _collect_graphics_findings(config) -> list[diag.Finding]:
@@ -596,7 +627,10 @@ def _collect_services_findings() -> list[diag.Finding]:
     """Live service/driver runtime health: failed systemd units, firmware a
     driver requested but could not load. See ``primitives/runtime_probe.py``."""
     from sysforge.primitives import runtime_probe
-    return runtime_probe.collect_runtime_findings()
+    # Failed units are live; firmware-load failures are from this boot's log.
+    return _with_reboot_hint(
+        runtime_probe.collect_runtime_findings(),
+        only=lambda f: f.check_id == "missing_firmware")
 
 
 def _collect_boot_findings() -> list[diag.Finding]:
@@ -633,7 +667,9 @@ def _collect_boot_findings() -> list[diag.Finding]:
         pass
 
     out += diag.adapt_many("boot", kfindings)
-    return out
+    # Boot-artifact / /boot-space findings are filesystem-live (clear on the
+    # next run); only the DKMS check is scoped to the running kernel.
+    return _with_reboot_hint(out, only=lambda f: f.check_id.startswith("dkms:"))
 
 
 # Canonical order the axes render in.

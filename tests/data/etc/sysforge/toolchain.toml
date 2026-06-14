@@ -22,9 +22,13 @@ skip_build = false
 # Needs ~500 MB free during pass 2.
 # pgo_store = "/var/tmp/sysforge-llvm-pgo"
 
-# Build-safety Gate 1 (LLVM path). See etc/sysforge/toolchain.toml for docs.
-# min_build_free_gb = 40   # min free GiB per build filesystem (override: --skip-build-space-check)
-# require_multilib  = true # require [multilib] when any lib32-* is in scope
+# Build-safety Gate 1 (LLVM path only — the GCC path is register-only and skips
+# all gates). The two keys below are *settable config keys shown at their
+# defaults* — leave them commented to keep the default, or uncomment to override.
+# min_build_free_gb = 40   # default 40. Min free GiB per build filesystem
+#                          # (one-off override: --skip-build-space-check).
+# require_multilib  = true # default true. Require [multilib] when any lib32-*
+#                          # is in scope (no CLI equivalent — config only).
 
 # ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed
