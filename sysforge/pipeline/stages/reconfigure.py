@@ -44,6 +44,7 @@ from sysforge.primitives.config import (
     load_config,
     load_conflict_groups,
     load_sysforge_toml,
+    set_makepkg_conf_keys,
 )
 from sysforge.primitives.paths import (
     CONFIG_BASE,
@@ -915,6 +916,70 @@ def _step_desktop(config, state, options, editor: str) -> str:  # noqa: ARG001
 # Step: makepkg.conf review
 # ---------------------------------------------------------------------------
 
+def _git_packager_default() -> str:
+    """Best-effort ``Name <email>`` from git config, or '' when unavailable."""
+    def _get(key: str) -> str:
+        try:
+            r = subprocess.run(
+                ["git", "config", "--get", key],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return r.stdout.strip() if r.returncode == 0 else ""
+
+    name = _get("user.name")
+    email = _get("user.email")
+    if name and email:
+        return f"{name} <{email}>"
+    return name or ""
+
+
+def _offer_makepkg_defaults(conf: dict, conf_path: Path) -> None:
+    """Offer to fill in PACKAGER / MAKEFLAGS when missing or left at default.
+
+    A fresh ``/etc/makepkg.conf`` ships ``PACKAGER="Unknown Packager"`` and no
+    ``MAKEFLAGS``, so every locally built package is stamped anonymously and
+    builds run single-threaded. Writes the system conf via a sudo ``cp`` of a
+    staged temp file (mirroring the editor path's privilege model).
+    """
+    pending: dict[str, str] = {}
+
+    packager = conf.get("PACKAGER", "").strip().strip("\"'")
+    if not packager or packager == "Unknown Packager":
+        default = _git_packager_default()
+        suffix = f" [{default}]" if default else ""
+        value = _prompt(
+            f"  Set PACKAGER (↵ to skip){suffix}: ", default=default,
+        ).strip()
+        if value:
+            pending["PACKAGER"] = value
+
+    if "MAKEFLAGS" not in conf:
+        suggest = f"-j{os.cpu_count() or 1}"
+        if _prompt_choice(
+            f"  Set MAKEFLAGS={suggest} for parallel builds? [y/↵ skip]: ",
+            choices=("y",),
+        ) == "y":
+            pending["MAKEFLAGS"] = suggest
+
+    if not pending:
+        return
+
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(suffix=".makepkg.conf")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        set_makepkg_conf_keys(conf_path, pending, dest=tmp)
+        _log.info(f"  Writing (sudo): {', '.join(pending)} → {conf_path}")
+        rc = subprocess.run(["sudo", "cp", str(tmp), str(conf_path)]).returncode
+        if rc != 0:
+            _log.warn(f"  sudo cp exited {rc} — {conf_path} unchanged")
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _step_makepkg(config, state, options, editor: str) -> str:
     _log.ui("─── System makepkg.conf ─────────────────────────────")
 
@@ -949,6 +1014,7 @@ def _step_makepkg(config, state, options, editor: str) -> str:
                 pass
 
     if _interactive() and not options.dry_run:
+        _offer_makepkg_defaults(conf, conf_path)
         if _prompt_choice(
             "  Edit /etc/makepkg.conf? (requires sudo) [e/↵ skip]: ",
             choices=("e",),

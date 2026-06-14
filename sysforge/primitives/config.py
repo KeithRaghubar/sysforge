@@ -451,6 +451,70 @@ def _parse_one_makepkg_conf(path: Path) -> dict:
     return result
 
 
+def _rewrite_makepkg_conf_text(text: str, mapping: dict[str, str]) -> str:
+    """Return ``text`` with each ``KEY`` in ``mapping`` set to its value.
+
+    An existing active ``KEY=...`` assignment is replaced in place; otherwise a
+    commented ``#KEY=...`` line is uncommented and set; otherwise the
+    assignment is appended. Values are written quoted (``KEY="value"``). All
+    other lines are preserved verbatim.
+    """
+    lines = text.splitlines()
+    remaining = dict(mapping)
+
+    active_re = {
+        k: _re.compile(rf"^([ \t]*)(?:export[ \t]+)?{_re.escape(k)}[ \t]*=")
+        for k in mapping
+    }
+    commented_re = {
+        k: _re.compile(rf"^([ \t]*)#[ \t]*(?:export[ \t]+)?{_re.escape(k)}[ \t]*=")
+        for k in mapping
+    }
+
+    # Pass 1: replace active assignments.
+    for i, line in enumerate(lines):
+        for key in list(remaining):
+            m = active_re[key].match(line)
+            if m:
+                lines[i] = f'{m.group(1)}{key}="{remaining.pop(key)}"'
+                break
+
+    # Pass 2: uncomment-and-set a commented assignment for any key still unset.
+    for i, line in enumerate(lines):
+        for key in list(remaining):
+            m = commented_re[key].match(line)
+            if m:
+                lines[i] = f'{m.group(1)}{key}="{remaining.pop(key)}"'
+                break
+
+    # Pass 3: append anything still unset.
+    if remaining:
+        if lines and lines[-1].strip():
+            lines.append("")
+        for key, value in remaining.items():
+            lines.append(f'{key}="{value}"')
+
+    return "\n".join(lines) + "\n"
+
+
+def set_makepkg_conf_keys(path, mapping: dict[str, str], dest=None) -> str:
+    """Read ``path``, set each key in ``mapping``, write the result to ``dest``.
+
+    ``dest`` defaults to ``path`` (in-place). Passing a separate ``dest`` lets a
+    caller read a root-owned ``/etc/makepkg.conf`` and stage the rewrite to a
+    user-writable temp file for a later ``sudo cp``. Returns the rewritten text.
+    """
+    path = Path(path)
+    dest = Path(dest) if dest is not None else path
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    new_text = _rewrite_makepkg_conf_text(text, mapping)
+    dest.write_text(new_text, encoding="utf-8")
+    return new_text
+
+
 def parse_system_makepkg_conf(path=None):
     """
     Parse makepkg.conf into a dict of {key: raw_value_string}.

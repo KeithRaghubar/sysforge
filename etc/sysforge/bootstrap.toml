@@ -86,3 +86,18 @@ age      = 12
 #
 # [desktop]
 # environment = "gnome"
+
+
+# =============================================================================
+# makepkg defaults (stage 4 — optional)
+# =============================================================================
+#
+# Stamp common makepkg.conf settings into the target /etc/makepkg.conf during
+# the configure stage. A fresh makepkg.conf ships PACKAGER="Unknown Packager"
+# and no MAKEFLAGS (single-threaded builds), so set these for unattended
+# installs. On a running system, the `sysforge reconfigure` makepkg step offers
+# the same settings interactively.
+#
+# [makepkg]
+# packager  = "Your Name <you@example.com>"
+# makeflags = "-j8"

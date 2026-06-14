@@ -83,7 +83,7 @@ _KNOWN_SECTIONS: dict[str, set[str]] = {
     "packages.toml":  {"build", "package", "group"},
     "kernel.toml":    {"kconfig"},
     "toolchain.toml": {"packages", "llvm"},
-    "bootstrap.toml": {"partition", "system", "mirror"},
+    "bootstrap.toml": {"partition", "system", "mirror", "desktop", "makepkg"},
 }
 
 # Top-level scalar keys (in addition to sections).

@@ -28,6 +28,8 @@ bootstrap.toml optional fields:
   [mirror] age                 int     reflector --latest N (default: 12)
   [desktop] environment        string  desktop package group to install (gnome | kde);
                                        interactive prompt when unset on a TTY
+  [makepkg] packager           string  PACKAGER written to target /etc/makepkg.conf
+  [makepkg] makeflags          string  MAKEFLAGS written to target /etc/makepkg.conf
 
 These steps are intentionally separated from reconfigure (stage 5) because
 they are destructive on a live running system if re-applied carelessly.
@@ -115,6 +117,32 @@ def _set_keymap(cfg: BootstrapConfig) -> None:
     vconsole = Path(cfg.target) / "etc/vconsole.conf"
     vconsole.write_text(f"KEYMAP={cfg.keymap}\n")
     _log.ui(f"Keymap: {cfg.keymap}")
+
+
+def _set_makepkg_conf(cfg: BootstrapConfig) -> None:
+    """Apply optional [makepkg] bootstrap keys to the target /etc/makepkg.conf.
+
+    Unattended counterpart to the reconfigure makepkg step: stamps PACKAGER and
+    MAKEFLAGS so a fresh install doesn't ship 'Unknown Packager' / single-thread
+    builds. No-op when neither key is set. Runs as root against the mounted
+    target, so a direct write (no sudo) is correct.
+    """
+    pending: dict[str, str] = {}
+    if cfg.makepkg_packager:
+        pending["PACKAGER"] = cfg.makepkg_packager
+    if cfg.makepkg_makeflags:
+        pending["MAKEFLAGS"] = cfg.makepkg_makeflags
+    if not pending:
+        return
+
+    conf_path = Path(cfg.target) / "etc/makepkg.conf"
+    if not conf_path.exists():
+        _log.warn(f"{conf_path} not found — skipping [makepkg] settings")
+        return
+
+    from sysforge.primitives.config import set_makepkg_conf_keys
+    set_makepkg_conf_keys(conf_path, pending)
+    _log.ui(f"makepkg.conf: set {', '.join(pending)}")
 
 
 def _set_pacman_parallel_downloads(cfg: BootstrapConfig) -> None:
@@ -647,6 +675,7 @@ class ConfigureStage(Stage):
         _set_timezone(cfg)
         _set_keymap(cfg)
         _set_pacman_parallel_downloads(cfg)
+        _set_makepkg_conf(cfg)
         _run_reflector(cfg)
         _install_bootloader(cfg)
         _enable_services(cfg)

@@ -26,6 +26,7 @@ from sysforge.pipeline.stages.configure import (
     _set_locale,
     _set_timezone,
     _set_keymap,
+    _set_makepkg_conf,
     _set_pacman_parallel_downloads,
 )
 from sysforge.pipeline.stages.base_install import BaseInstallStage, _BASE_PACKAGES
@@ -188,6 +189,22 @@ class TestLoadBootstrap:
         f.write_text(self._minimal('[desktop]\nenvironment = "bogus"\n'))
         with pytest.raises(RuntimeError, match="desktop"):
             load_bootstrap(f)
+
+    def test_makepkg_unset_defaults_none(self, tmp_path):
+        f = tmp_path / "bootstrap.toml"
+        f.write_text(self._minimal())
+        cfg = load_bootstrap(f)
+        assert cfg.makepkg_packager is None
+        assert cfg.makepkg_makeflags is None
+
+    def test_makepkg_keys_parsed(self, tmp_path):
+        f = tmp_path / "bootstrap.toml"
+        f.write_text(self._minimal(
+            '[makepkg]\npackager = "Me <me@x>"\nmakeflags = "-j8"\n'
+        ))
+        cfg = load_bootstrap(f)
+        assert cfg.makepkg_packager == "Me <me@x>"
+        assert cfg.makepkg_makeflags == "-j8"
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +769,40 @@ class TestSetPacmanParallelDownloads:
         cfg = make_cfg(target=str(tmp_path), parallel_downloads=8)
         _set_pacman_parallel_downloads(cfg)
         assert "ParallelDownloads = 8" in conf.read_text()
+
+
+class TestSetMakepkgConf:
+    def _conf(self, tmp_path):
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        conf = etc / "makepkg.conf"
+        conf.write_text('PACKAGER="Unknown Packager"\n#MAKEFLAGS="-j2"\n')
+        return conf
+
+    def test_no_keys_is_noop(self, tmp_path):
+        conf = self._conf(tmp_path)
+        before = conf.read_text()
+        _set_makepkg_conf(make_cfg(target=str(tmp_path)))
+        assert conf.read_text() == before
+
+    def test_writes_packager_and_makeflags(self, tmp_path):
+        conf = self._conf(tmp_path)
+        cfg = make_cfg(
+            target=str(tmp_path),
+            makepkg_packager="Me <me@x>",
+            makepkg_makeflags="-j8",
+        )
+        _set_makepkg_conf(cfg)
+        text = conf.read_text()
+        assert 'PACKAGER="Me <me@x>"' in text
+        assert 'MAKEFLAGS="-j8"' in text
+        assert "Unknown Packager" not in text
+
+    def test_missing_conf_is_skipped(self, tmp_path):
+        # No etc/makepkg.conf present → warn + skip, no crash.
+        cfg = make_cfg(target=str(tmp_path), makepkg_packager="Me <me@x>")
+        _set_makepkg_conf(cfg)
+        assert not (tmp_path / "etc" / "makepkg.conf").exists()
 
 
 # ---------------------------------------------------------------------------

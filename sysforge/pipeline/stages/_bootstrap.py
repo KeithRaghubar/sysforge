@@ -44,6 +44,8 @@ class BootstrapConfig:
     user_password: str | None = None
     shell: str = "bash"
     desktop: str | None = None
+    makepkg_packager: str | None = None
+    makepkg_makeflags: str | None = None
 
 
 def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
@@ -70,6 +72,7 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     system = data.get("system", {})
     mirror = data.get("mirror", {})
     desktop_tbl = data.get("desktop", {})
+    makepkg_tbl = data.get("makepkg", {})
 
     # Required fields
     def _require(section: dict, key: str, section_name: str) -> str:
@@ -103,6 +106,8 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     user_password = system.get("user_password") or None
     shell = system.get("shell", "bash")
     desktop = desktop_tbl.get("environment") or None
+    makepkg_packager = makepkg_tbl.get("packager") or None
+    makepkg_makeflags = makepkg_tbl.get("makeflags") or None
 
     if root_fs not in _VALID_ROOT_FS:
         raise RuntimeError(
@@ -153,4 +158,6 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
         user_password=user_password,
         shell=shell,
         desktop=desktop,
+        makepkg_packager=makepkg_packager,
+        makepkg_makeflags=makepkg_makeflags,
     )
