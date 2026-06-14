@@ -280,9 +280,11 @@ won't clip the bottom rows the way the VNC display can.
   `gvncviewer localhost`): `make vm-iso` for the interactive Arch install, and
   `make vm-boot-gui` to boot the already-installed disk with a display (e.g. to
   see a desktop environment render). All other boot targets stay headless. The
-  VNC framebuffer is pinned to 1280x720 so the gvncviewer window (no scrollbar,
-  no scaling) doesn't clip the bottom rows; for reliable text prompts prefer
-  `make vm-console`.
+  VNC framebuffer is pinned to 1280x720 (via `virtio-vga,edid=on,xres=…,yres=…`)
+  so the gvncviewer window (no scrollbar, no scaling) doesn't clip the bottom
+  rows, and so the guest re-selects that resolution when gvncviewer disconnects
+  and reconnects rather than dropping to a default; for reliable text prompts
+  prefer `make vm-console`.
 - SSH is forwarded: `host:10022 → VM:22`
 - SSH host keys are stored in `~/.local/share/sysforge-vm/known_hosts` —
   isolated from `~/.ssh/known_hosts`. Delete it after a VM reinstall.

@@ -188,7 +188,11 @@ if [[ $USE_ISO -eq 1 ]]; then
         # Geometry is pinned (virtio-vga = device form of -vga virtio, with
         # xres/yres) so the gvncviewer window fits the host screen without
         # clipping the bottom rows — gvncviewer has no scrollbar or scaling.
-        -device "virtio-vga,xres=1280,yres=720"
+        # edid=on advertises the pinned mode as the preferred EDID resolution,
+        # so the guest re-selects 1280x720 when gvncviewer disconnects and
+        # reconnects (without it the virtio-gpu connector renegotiates to a
+        # default on reconnect).
+        -device "virtio-vga,edid=on,xres=1280,yres=720"
         -display "vnc=127.0.0.1:0"
     )
     echo "Booting from Arch ISO: $ISO_PATH"
@@ -200,9 +204,9 @@ elif [[ $USE_GUI -eq 1 ]]; then
     # visible. Reuses the ISO path's display mechanism: the base args carry
     # -display none, and QEMU honors the last -display, so this VNC wins.
     QEMU_ARGS+=(
-        # Geometry pinned so gvncviewer doesn't clip the bottom rows — see the
-        # --iso branch above for the rationale.
-        -device "virtio-vga,xres=1280,yres=720"
+        # Geometry pinned (+ edid=on for resolution persistence across
+        # gvncviewer reconnects) — see the --iso branch above for the rationale.
+        -device "virtio-vga,edid=on,xres=1280,yres=720"
         -display "vnc=127.0.0.1:0"
     )
     echo "VM running with GUI (VNC display on 127.0.0.1:$VNC_PORT)."
