@@ -251,6 +251,16 @@ sysforge/
     sysforge.log                     # unified log (created at runtime, cleared on success)
 ```
 
+#### makepkg-owned paths (not sysforge dirs)
+
+The PKGBUILD source tree, build workspace, and package output directory are **makepkg's domain**, not sysforge XDG/FHS dirs, so they fall outside the `paths.py` discipline of §21-standards:
+
+- **`pkgbuild_src_dir`** (`~/src` by default, `[paths] pkgbuild_src_dir` in `profiles.toml`) — production PKGBUILD checkouts. FHS-style user source code, deliberately *not* under `$XDG_*` (it is not regenerable cache).
+- **`BUILDDIR`** (`$HOME/builds` by default, set in `[profiles.bare]`) — makepkg's build workspace. Kept as a top-level `~/builds` rather than `$XDG_CACHE_HOME/sysforge` on purpose: it is a **shared** workspace the user also builds in manually (sysforge does not own it), and `~/src`/`~/builds` form a matched pair of user working dirs. It is fully user-overridable via the `BUILDDIR` profile key or `/etc/makepkg.conf`; sysforge resolves the effective value through `pacman.get_builddir()` (env → system conf), never assuming the default.
+- **`PKGDEST` / `SRCDEST` / `LOGDEST`** — left to makepkg/`/etc/makepkg.conf`; sysforge never writes a default and reads them via `pacman.get_pkgdest()` / `get_srcdest()` / `get_logdest()` when it needs to locate an artifact, source, or log.
+
+The optional `[makepkg]` table in `bootstrap.toml` (`packager`, `makeflags`) lets an unattended install stamp `PACKAGER` / `MAKEFLAGS` into the target `/etc/makepkg.conf` during the configure stage; on a running system the `reconfigure` makepkg step offers the same interactively.
+
 ---
 
 ## Package Manifest
@@ -1059,6 +1069,7 @@ TOML config loading and path resolution. Public API:
 `[paths] pkgbuild_src_dir` in `profiles.toml` is the user-configured root for local PKGBUILDs (`~/src` by default). Auto-clone also targets this directory.
 - `resolve_pkgbuild_src_dir(config, build_cfg=None)` — the one home for the dual-key resolution: packages.toml `[build] pkgbuild_src_dir` wins over profiles.toml `[paths] pkgbuild_src_dir`. When both are set and point at different directories it warns once per run naming both values (the keys are allowed to differ, but a silent mismatch means builds and updates could read PKGBUILDs from different trees). Consumed by `update_assemble` and the packages stage's `_resolve_pkgbuild`; single-key readers (`build_cmd`, `log_cmd`, `completions_cmd`) read `[paths]` directly and don't need it.
 - `parse_system_makepkg_conf(path=None)` — parses `/etc/makepkg.conf` into `{key: raw_value_string}` for use in temp conf generation. Handles backslash line continuation (e.g. `CFLAGS="... \\\n  -flag"`) and multiline bash array values (e.g. `VCSCLIENTS=(...)` spanning multiple lines) by tracking paren depth across lines. Merges user conf (`$XDG_CONFIG_HOME/pacman/makepkg.conf`, `~/.makepkg.conf`) on top of system conf.
+- `set_makepkg_conf_keys(path, mapping, dest=None)` — the one home for *writing* makepkg.conf keys. Replaces an existing active `KEY=...` assignment in place, else uncomments a `#KEY=...` line, else appends; all other lines verbatim. Values are written quoted. `dest` defaults to `path` (in-place); a separate `dest` lets a caller read a root-owned `/etc/makepkg.conf` and stage the rewrite to a user-writable temp file for a later `sudo cp` (the reconfigure path). The configure stage's unattended `[makepkg]` write and reconfigure's interactive PACKAGER/MAKEFLAGS offer both route through it — don't hand-roll a second makepkg.conf writer. Pure transform exposed as `_rewrite_makepkg_conf_text(text, mapping)` for testing.
 
 ### `env_chain.py`
 
@@ -1095,7 +1106,7 @@ Init-file parsing is regex-based (`export KEY=value`, `KEY=value; export KEY`, p
 ### `pacman.py`
 
 All pacman and batch-install shared operations. Public API:
-- `get_pkgdest()` — resolves the `PKGDEST` directory from makepkg.conf
+- `get_pkgdest()` / `get_builddir()` / `get_srcdest()` / `get_logdest()` — resolve the corresponding makepkg path variable via the shared `_resolve_makepkg_path(key)` helper, which mirrors makepkg's own precedence: **environment first** (`os.environ`), then the layered `parse_system_makepkg_conf()` (`/etc/makepkg.conf` → user conf), quotes stripped and `~`/`$VARS` expanded, else `None`. These are the single home for "where did makepkg put / read this?" — any new code that needs to *locate* a built artifact, build tree, downloaded source, or build log must call them rather than assuming `~/builds` / the PKGBUILD dir / a hardcoded default (a recurring bug class). `BUILDDIR` resolution in particular feeds `makepkg_env._effective_build_dir` (side-car log diagnosis) and `kernel._resolve_built_config` (resolved `.config` discovery), both of which must honour a `BUILDDIR` set only in `/etc/makepkg.conf`.
 - `snapshot_pkg_dir(pkgdest)` — records the set of `.pkg.tar.*` files currently in pkgdest before a build
 - `batch_install_pkgs(pkgdest, pre_snapshot, ...)` — diffs the post-build pkgdest against the snapshot and installs all new packages in a single `sudo pacman -U`
 - `read_pkgname_from_file(path)` — extracts `pkgname` from a built `.pkg.tar.*` via `bsdtar -xOqf <path> .PKGINFO`; returns `None` on failure
@@ -1715,6 +1726,8 @@ To make the pattern scan work for every build mode, `invoke_makepkg` uses a `Pop
 > **Status: implemented (all 4 scenarios).** Lives in `sysforge/primitives/auto_repair.py`. `_run_build`'s outer loop catches `CalledProcessError`, walks `auto_repair.REGISTRY`, and on the first match runs the corresponding repair before retrying.
 
 `invoke_makepkg`'s line-tee captures every stdout line into `captured_lines` and attaches the list to the raised `CalledProcessError` (and `ToolchainMismatchError`) as `captured_output`. `_run_build` wraps that buffer in a `BuildOutputAccumulator` (lines + optional `srcdir` for on-disk inspection) and feeds it to `auto_repair.apply_first_match`. Each scenario's `detect(accum)` returns a `MatchInfo` (or `None`); on match the wrapper consults `[failure_handling]` for the per-scenario behaviour, runs `repair(pkgbuild_dir, info)`, and re-enters the build loop. The set of already-fired scenarios is tracked per build (`_repaired_scenarios`) so a misdetected error cannot loop — once a scenario fires it is excluded from subsequent matches in the same build.
+
+**Interactive-failure diagnosis (BUILDDIR/LOGDEST-aware).** In the interactive branch makepkg inherits the TTY, so `captured_output` is empty and the auto-repair scan above is unavailable. `makepkg_invoke` instead recovers a best-effort `build_diag.diagnose` signature from on-disk artifacts: `makepkg_env._effective_build_dir(pkgbuild_path, resolved_profile)` locates the meson/cmake side-car logs (`meson-log.txt`, `CMakeError.log`) under `$BUILDDIR/<pkgbase>/src`, and `makepkg_env._logdest_tail(pkgbuild_path)` reads the tail of the newest `$LOGDEST/<pkgbase>-*.log` (makepkg's captured stdout when `OPTIONS+=log`). Both `BUILDDIR` and `LOGDEST` are resolved through `pacman.get_builddir()` / `pacman.get_logdest()` — env first, then the layered system `makepkg.conf` — so a user who configures these only in `/etc/makepkg.conf` still gets a diagnosis. Don't read `os.environ["BUILDDIR"]` or assume `~/builds` directly here.
 
 Configuration extends `[failure_handling]` with four scenario keys:
 
