@@ -59,6 +59,7 @@ from sysforge.primitives.prompt import (
     is_interactive as _interactive,
     prompt_text as _prompt,
     prompt_choice as _prompt_choice,
+    prompt_key as _prompt_key,
 )
 
 def _pipeline_stages() -> list[tuple[str, str]]:
@@ -355,9 +356,12 @@ def _choose_install_package(editor_cmd: str) -> str | None:
         for i, pkg in enumerate(candidates, 1):
             _log.ui(f"    [{i}] {pkg}")
         while True:
-            raw = _prompt(
-                f"  Pick a package [1-{len(candidates)}, Enter to cancel]: "
-            )
+            try:
+                raw = _prompt_key(
+                    f"  Pick a package [1-{len(candidates)}, Enter to cancel]: "
+                )
+            except EOFError:
+                return None
             if not raw:
                 return None
             if raw.isdigit():

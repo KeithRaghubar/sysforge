@@ -34,7 +34,7 @@ from sysforge import log
 from sysforge.primitives.prompt import (
     is_interactive,
     prompt_choice,
-    prompt_text,
+    prompt_key,
 )
 
 _log = log.get_logger("CATALOG")
@@ -136,10 +136,13 @@ def select_desktop(*, interactive: bool, preselected: str | None) -> str | None:
     for i, entry in enumerate(entries, 1):
         _log.ui(f"  [{i}] {entry.display_name}  ({', '.join(entry.packages)})")
     while True:
-        raw = prompt_text(
-            f"  Pick a desktop [1-{len(entries)}, Enter to skip]: ",
-            tag="DESKTOP",
-        )
+        try:
+            raw = prompt_key(
+                f"  Pick a desktop [1-{len(entries)}, Enter to skip]: ",
+                tag="DESKTOP",
+            )
+        except EOFError:
+            return None
         if not raw:
             return None
         if raw.isdigit():

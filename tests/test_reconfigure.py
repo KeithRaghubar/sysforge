@@ -662,7 +662,7 @@ def test_choose_install_package_multi_match_picks_by_index():
         "sysforge.pipeline.stages.reconfigure._packages_providing",
         return_value=["nano", "orbiton-nano"],
     ), patch(
-        "sysforge.pipeline.stages.reconfigure._prompt",
+        "sysforge.pipeline.stages.reconfigure._prompt_key",
         return_value="2",
     ):
         assert _choose_install_package("nano") == "orbiton-nano"
@@ -674,7 +674,7 @@ def test_choose_install_package_multi_match_blank_cancels():
         "sysforge.pipeline.stages.reconfigure._packages_providing",
         return_value=["nano", "orbiton-nano"],
     ), patch(
-        "sysforge.pipeline.stages.reconfigure._prompt",
+        "sysforge.pipeline.stages.reconfigure._prompt_key",
         return_value="",
     ):
         assert _choose_install_package("nano") is None

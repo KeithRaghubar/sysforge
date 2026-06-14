@@ -87,14 +87,14 @@ class TestSelectDesktop:
     def test_prompt_accept_then_pick(self, monkeypatch):
         monkeypatch.setattr(pkg_catalog, "is_interactive", lambda: True)
         monkeypatch.setattr(pkg_catalog, "prompt_choice", lambda *a, **k: "y")
-        monkeypatch.setattr(pkg_catalog, "prompt_text", lambda *a, **k: "1")
+        monkeypatch.setattr(pkg_catalog, "prompt_key", lambda *a, **k: "1")
         choice = select_desktop(interactive=True, preselected=None)
         assert choice == list(DESKTOP_CATALOG)[0]
 
     def test_prompt_accept_then_skip(self, monkeypatch):
         monkeypatch.setattr(pkg_catalog, "is_interactive", lambda: True)
         monkeypatch.setattr(pkg_catalog, "prompt_choice", lambda *a, **k: "y")
-        monkeypatch.setattr(pkg_catalog, "prompt_text", lambda *a, **k: "")
+        monkeypatch.setattr(pkg_catalog, "prompt_key", lambda *a, **k: "")
         assert select_desktop(interactive=True, preselected=None) is None
 
 
