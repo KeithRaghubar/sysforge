@@ -80,10 +80,21 @@ def test_keeps_hardware_facts(tmp_path):
 
 
 def test_excludes_tests_and_internal_dirs(tmp_path):
-    # A personal token inside an excluded dir (.remember/.claude/tests) is ignored.
-    for sub in (".remember", ".claude", "tests"):
+    # A personal token inside an excluded dir is ignored: .remember/ (rolling
+    # handoffs), tests/ (fixtures), and .claude/worktrees/ (local checkouts).
+    for sub in (".remember", "tests", ".claude/worktrees"):
         d = tmp_path / sub
-        d.mkdir()
+        d.mkdir(parents=True)
         (d / "x.md").write_text("Keith's private note\n")
     r = run(tmp_path)
     assert r.returncode == 0, r.stdout
+
+
+def test_scans_shared_claude_config(tmp_path):
+    # The committed .claude/ subset (hooks, agents, skills, hookify rules) IS
+    # scanned now that it travels with the repo -- PII there must be caught.
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/hookify.x.local.md").write_text("Keith's private note\n")
+    r = run(tmp_path)
+    assert r.returncode == 1
+    assert "personal possessive" in r.stdout

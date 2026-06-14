@@ -15,7 +15,14 @@
 .SRCINFO
 .SRCINFO-git
 
-.claude/
+# Claude workspace: share reusable checks/hooks/agents/skills + hookify rules.
+# Keep the per-machine allowlist, local worktrees, and rolling history private.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/agents/
+!.claude/skills/
+!.claude/hookify.*.md
 .remember/
 .venv/
 .coverage

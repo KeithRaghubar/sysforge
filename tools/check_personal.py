@@ -26,10 +26,14 @@ by the deny patterns -- they match a lowercase "/keith/" namespace, not the
 "KeithRaghubar" org slug.
 
 Scanned: *.md (README, DESIGN, CLAUDE, docs/**), *.py (sysforge/, tools/),
-shipped etc/sysforge/*.toml, *.sh and *.hook. Excluded: .git, .venv,
-.remember/ (rolling handoffs), tests/ (fixtures genericized separately),
-LICENSE (copyright), the generated man/sysforge.1 (its inputs are scanned
-instead), and this checker itself (it holds the deny tokens as literals).
+shipped etc/sysforge/*.toml, *.sh and *.hook -- including the committed subset
+of .claude/ (hooks, agents, skills, hookify rules), which travels with the repo
+and must read impersonally. Excluded: .git, .venv, .remember/ (rolling
+handoffs), .claude/worktrees/ (local git-worktree checkouts), tests/ (fixtures
+genericized separately), LICENSE (copyright), the generated man/sysforge.1 (its
+inputs are scanned instead), and this checker itself (it holds the deny tokens
+as literals). Note .json (e.g. .claude/settings.local.json) is not a scanned
+suffix and is gitignored, so the per-machine allowlist never reaches the gate.
 """
 from __future__ import annotations
 
@@ -59,11 +63,13 @@ _ALLOW = re.compile(
     r"(?i)\bcopyright\b|\bmaintainer\b|--author|SPDX-File(?:CopyrightText|Contributor)"
 )
 
-# Internal workflow tooling sysforge never ships (Claude Code config, rolling
-# handoffs) is out of scope -- same rationale the plan gives for excluding
-# .remember/ and the plan files: not published, handled by convention.
+# Generated/transient trees and never-published workflow state are out of scope.
+# `.claude/` IS scanned (its shared subset -- hooks, agents, skills, hookify
+# rules -- is committed and must stay impersonal), but `worktrees` skips the
+# local git-worktree checkouts under `.claude/worktrees/` (full repo copies),
+# and `.remember/` (rolling handoffs) stays excluded by convention.
 _EXCLUDE_DIRS = {
-    ".git", ".venv", "venv", ".remember", ".claude", "node_modules",
+    ".git", ".venv", "venv", ".remember", "worktrees", "node_modules",
     "__pycache__", ".pytest_cache", ".ruff_cache", "htmlcov", "builds", "tests",
 }
 # Generated artifacts / legal text / this checker -- excluded outright.

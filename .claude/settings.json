@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make test)",
+      "Bash(make test-v)",
+      "Bash(bash -n *)",
+      "Bash(pacman -Q *)",
+      "Bash(ruff check *)",
+      "Bash(sysforge doctor *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/ruff-on-edit.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
