@@ -133,22 +133,60 @@ def _check_not_mounted(device: str, target: str) -> None:
 # Confirmation prompt
 # ---------------------------------------------------------------------------
 
+# Column interior widths (dashes between connectors): Part, Size, FS, Mount.
+# Every border, divider, header, and row in the plan table is derived from this
+# single spec so the box can never drift out of alignment (the recurring bug).
+_COLS = (7, 12, 10, 26)
+_W = sum(_COLS) + len(_COLS) - 1  # full-width interior = 58
+
+
+def _pad(text: str, width: int) -> str:
+    """Left-justify into width; truncate over-long content so the box never breaks."""
+    return text[:width].ljust(width)
+
+
+def _cap(left: str, right: str) -> str:
+    """Full-width rule with no column connectors (top/bottom caps & full dividers)."""
+    return "  " + left + "─" * _W + right
+
+
+def _coldiv(left: str, mid: str, right: str) -> str:
+    """Column divider/border carrying ┬ / ┼ / ┴ connectors."""
+    return "  " + left + mid.join("─" * w for w in _COLS) + right
+
+
+def _fullrow(text: str) -> str:
+    """Full-width content row (title, Device, Target)."""
+    return "  │" + _pad(text, _W) + "│"
+
+
+def _colrow(cells: tuple[str, ...]) -> str:
+    """Column content row; each cell padded/truncated to its column width."""
+    return "  │" + "│".join(_pad(c, w) for c, w in zip(cells, _COLS)) + "│"
+
+
+def _plan_table(cfg: BootstrapConfig) -> list[str]:
+    """Build the partition-plan box table as a list of equal-width lines."""
+    return [
+        _cap("┌", "┐"),
+        _fullrow("  SysForge — Partition plan"),
+        _cap("├", "┤"),
+        _fullrow(f"  Device : {cfg.device}"),
+        _fullrow(f"  Target : {cfg.target}"),
+        _coldiv("├", "┬", "┤"),
+        _colrow(("  Part", " Size", " FS", " Mount")),
+        _coldiv("├", "┼", "┤"),
+        _colrow(("  1", f" {cfg.esp_size_mib} MiB", " fat32", f" {cfg.target}/boot")),
+        _colrow(("  2", " remaining", f" {cfg.root_fs}", f" {cfg.target}")),
+        _coldiv("└", "┴", "┘"),
+    ]
+
+
 def _confirm(cfg: BootstrapConfig) -> None:
     """Print the partition plan and require explicit confirmation."""
     print()
-    print("  ┌─────────────────────────────────────────────────────────┐")
-    print("  │  SysForge — Partition plan                              │")
-    print("  ├─────────────────────────────────────────────────────────┤")
-    print(f"  │  Device : {cfg.device:<47}│")
-    print(f"  │  Target : {cfg.target:<47}│")
-    print("  ├───────┬────────────┬──────────┬──────────────────────────┤")
-    print("  │  Part │ Size       │ FS       │ Mount                    │")
-    print("  ├───────┼────────────┼──────────┼──────────────────────────┤")
-    _size1 = f" {cfg.esp_size_mib} MiB"
-    _boot  = f"{cfg.target}/boot"
-    print(f"  │  1    │{_size1:<12}│ fat32    │ {_boot:<25}│")
-    print(f"  │  2    │ remaining  │ {cfg.root_fs:<8} │ {cfg.target:<24} │")
-    print("  └───────┴────────────┴──────────┴──────────────────────────┘")
+    for line in _plan_table(cfg):
+        print(line)
     print()
     print(f"  WARNING: All data on {cfg.device} will be destroyed.")
     print()
