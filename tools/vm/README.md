@@ -9,13 +9,9 @@ work that requires a real system (mkinitcpio, bootloader, actual kernel boot).
 make vm-deps
 ```
 
-Installs: `qemu-desktop`, `edk2-ovmf`
-
-Also install `gvncviewer` for the ISO install step:
-
-```bash
-sudo pacman -S gtk-vnc
-```
+Installs: `qemu-desktop`, `edk2-ovmf`, `gtk-vnc` (provides `gvncviewer` for the
+ISO install / GUI steps), and `socat` (used by `vm-monitor`, `vm-console`,
+`vm-savevm`, `vm-stop`).
 
 ## Directory layout
 
@@ -101,6 +97,23 @@ make vm-savevm NAME=clean
 ```
 
 This is your reset point. Every test run can start from here.
+
+### 4a. Enable the serial console (existing VM only)
+
+New installs get `console=ttyS0` baked into the bootloader entries by step 3's
+`archinstall-config.json`. A VM installed *before* that change needs it added
+once, in-guest (it's systemd-boot loader-entry state, not settable from the host):
+
+```bash
+make vm-ssh-root
+# Inside the VM:
+sed -i '/^options /{/console=ttyS0/!s/$/ console=tty0 console=ttyS0,115200/}' /boot/loader/entries/*.conf
+reboot
+```
+
+After this, `make vm-console` reaches a login prompt on the serial console.
+`systemd` auto-starts `serial-getty@ttyS0` once the cmdline names the port — no
+explicit `systemctl enable` is needed. Re-save your clean snapshot afterward.
 
 > **Why a wrapper instead of typing `savevm clean` in the monitor?** Plain
 > `savevm` over SLIRP user-mode networking emits
@@ -250,13 +263,26 @@ Then `make vm-stop` and re-run `make vm-snapshot` for the next ephemeral run.
 7. `quit` in monitor — changes discarded
 8. Repeat from step 1 for the next iteration
 
+If a stage reboots the VM and resumes on the console (before SSH is back), read
+its prompts with `make vm-console` rather than `gvncviewer` — the serial console
+won't clip the bottom rows the way the VNC display can.
+
 ## Notes
 
-- VM runs headless by default — no display window. All access is via SSH.
+- VM runs headless by default — no display window. Primary access is via SSH;
+  `make vm-console` is the text-mode fallback when SSH isn't reachable.
+- Every boot exposes a **serial console** on a host socket. Attach with
+  `make vm-console` (detach with `Ctrl-]`) to read interactive text prompts —
+  e.g. the configure stage — when SSH isn't available (post-reboot, mid-pipeline).
+  Requires `console=ttyS0` on the guest cmdline; new installs get this
+  automatically (step 3 bakes it in), existing VMs need the one-time step 4a.
 - Two targets enable a VNC display on `localhost:5900` (reach it with
   `gvncviewer localhost`): `make vm-iso` for the interactive Arch install, and
   `make vm-boot-gui` to boot the already-installed disk with a display (e.g. to
-  see a desktop environment render). All other boot targets stay headless.
+  see a desktop environment render). All other boot targets stay headless. The
+  VNC framebuffer is pinned to 1280x720 so the gvncviewer window (no scrollbar,
+  no scaling) doesn't clip the bottom rows; for reliable text prompts prefer
+  `make vm-console`.
 - SSH is forwarded: `host:10022 → VM:22`
 - SSH host keys are stored in `~/.local/share/sysforge-vm/known_hosts` —
   isolated from `~/.ssh/known_hosts`. Delete it after a VM reinstall.

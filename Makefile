@@ -121,8 +121,8 @@ distclean: clean
 # ---------------------------------------------------------------------------
 
 vm-deps:
-	@pacman -Qq qemu-desktop edk2-ovmf gtk-vnc >/dev/null 2>&1 \
-	    || sudo pacman -S --needed qemu-desktop edk2-ovmf gtk-vnc
+	@pacman -Qq qemu-desktop edk2-ovmf gtk-vnc socat >/dev/null 2>&1 \
+	    || sudo pacman -S --needed qemu-desktop edk2-ovmf gtk-vnc socat
 
 vm-image:
 	mkdir -p $(VM_DIR)
@@ -160,6 +160,14 @@ vm-ssh-root:
 vm-monitor:
 	socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
 
+# Attach to the VM's serial console over the host socket. Use for reading
+# interactive prompts (e.g. the configure stage) when SSH isn't available
+# (post-reboot, mid-pipeline). Detach with Ctrl-] (the socat escape).
+# Requires console=ttyS0 on the guest cmdline — see tools/vm/README.md.
+vm-console:
+	@test -S "$(VM_DIR)/serial.sock" || { echo "VM not running (no serial socket at $(VM_DIR)/serial.sock). Start it with 'make vm-boot'."; exit 1; }
+	socat -,raw,echo=0,escape=0x1d UNIX-CONNECT:$(VM_DIR)/serial.sock
+
 # savevm wrapper that works around the libslirp BOOTP VMState bug.
 # Plain `savevm` over user-mode networking emits
 #   warning: Slirp: Save of field slirp_bootpclient/macaddr failed
@@ -187,7 +195,7 @@ vm-stop:
 vm-clean:
 	@if [ -f "$(VM_DISK)" ]; then \
 		echo "Removing VM disk image: $(VM_DISK)"; \
-		rm -f $(VM_DISK) $(VM_DIR)/OVMF_VARS.4m.fd $(VM_DIR)/OVMF_VARS.4m.qcow2 $(VM_DIR)/known_hosts $(VM_DIR)/qemu.pid $(VM_DIR)/qemu-monitor.sock; \
+		rm -f $(VM_DISK) $(VM_DIR)/OVMF_VARS.4m.fd $(VM_DIR)/OVMF_VARS.4m.qcow2 $(VM_DIR)/known_hosts $(VM_DIR)/qemu.pid $(VM_DIR)/qemu-monitor.sock $(VM_DIR)/serial.sock; \
 	else \
 		echo "No disk image found at $(VM_DISK)"; \
 	fi

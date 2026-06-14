@@ -113,6 +113,15 @@ QEMU_ARGS=(
     # Connect with: socat - UNIX-CONNECT:"$VM_DIR/qemu-monitor.sock"
     -monitor "unix:$VM_DIR/qemu-monitor.sock,server,nowait"
 
+    # Serial console exposed over a host socket — read text-mode prompts (e.g.
+    # the configure stage) without a display, when SSH isn't available
+    # (post-reboot, mid-pipeline). Connect with `make vm-console`. Mirrors the
+    # monitor-socket pattern above. A socket chardev (not mon:stdio) is required
+    # because the VM runs -daemonize. Carries output once the guest cmdline has
+    # console=ttyS0 (see tools/vm/README.md).
+    -chardev "socket,id=ser0,path=$VM_DIR/serial.sock,server=on,wait=off"
+    -serial chardev:ser0
+
     # Background after init; pidfile lets `make vm-stop` find the process.
     -daemonize
     -pidfile "$VM_DIR/qemu.pid"
@@ -132,6 +141,7 @@ if [[ -f "$VM_DIR/qemu.pid" ]]; then
     fi
     rm -f "$VM_DIR/qemu.pid"
     rm -f "$VM_DIR/qemu-monitor.sock"
+    rm -f "$VM_DIR/serial.sock"
 fi
 
 if [[ $SNAPSHOT -eq 1 ]]; then
@@ -156,29 +166,37 @@ if [[ $USE_ISO -eq 1 ]]; then
     QEMU_ARGS+=(
         -cdrom "$ISO_PATH"
         -boot order=dc
-        # VNC display for interactive ISO install (normal boots are headless)
-        -vga virtio
+        # VNC display for interactive ISO install (normal boots are headless).
+        # Geometry is pinned (virtio-vga = device form of -vga virtio, with
+        # xres/yres) so the gvncviewer window fits the host screen without
+        # clipping the bottom rows — gvncviewer has no scrollbar or scaling.
+        -device "virtio-vga,xres=1280,yres=720"
         -display "vnc=127.0.0.1:0"
     )
     echo "Booting from Arch ISO: $ISO_PATH"
     echo "  Console: gvncviewer localhost"
+    echo "  Serial:  make vm-console"
     echo "  Stop:    make vm-stop (or 'quit' in make vm-monitor)"
 elif [[ $USE_GUI -eq 1 ]]; then
     # Boot the installed disk with a VNC display so a graphical desktop is
     # visible. Reuses the ISO path's display mechanism: the base args carry
     # -display none, and QEMU honors the last -display, so this VNC wins.
     QEMU_ARGS+=(
-        -vga virtio
+        # Geometry pinned so gvncviewer doesn't clip the bottom rows — see the
+        # --iso branch above for the rationale.
+        -device "virtio-vga,xres=1280,yres=720"
         -display "vnc=127.0.0.1:0"
     )
     echo "VM running with GUI (VNC display on 127.0.0.1:$VNC_PORT)."
     echo "  Console: gvncviewer localhost"
+    echo "  Serial:  make vm-console"
     echo "  SSH:     ssh -p $SSH_PORT root@localhost"
     echo "  Monitor: make vm-monitor"
     echo "  Stop:    make vm-stop (or 'quit' in make vm-monitor)"
 else
     echo "VM running headless."
     echo "  SSH:     ssh -p $SSH_PORT root@localhost"
+    echo "  Serial:  make vm-console"
     echo "  Monitor: make vm-monitor"
     echo "  Stop:    make vm-stop (or 'quit' in make vm-monitor)"
 fi

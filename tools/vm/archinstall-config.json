@@ -98,7 +98,8 @@
     ],
     "custom_commands": [
         "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
-        "sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config"
+        "sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config",
+        "sed -i '/^options /{/console=ttyS0/!s/$/ console=tty0 console=ttyS0,115200/}' /boot/loader/entries/*.conf"
     ],
     "script": "guided",
     "services": ["sshd", "NetworkManager"],
