@@ -507,6 +507,36 @@ def test_mismatch_profdata_skew_flags_error():
     assert [f.check_id for f in result] == ["toolchain_pgo_profdata_skew"]
 
 
+def test_mismatch_skip_build_suppresses_stock_install():
+    """skip_build = true registers installed clang as-is — stock LLVM is a
+    deliberate choice, not a mismatch; the probe is skipped like the gcc path."""
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    report = _report(_state(pkgbase="llvm", install_origin="repo"))
+    with patch("sysforge.primitives.llvm_state.collect_llvm_state",
+               return_value=report) as mock_collect:
+        result = detect_toolchain_config_mismatch(
+            {}, toolchain_cfg={"enabled": True, "compiler": "llvm",
+                               "pgo": True, "skip_build": True})
+    assert result == ()
+    mock_collect.assert_not_called()
+
+
+def test_mismatch_skip_build_suppresses_profdata_skew():
+    """skip_build = true also suppresses the profdata-skew finding — the stage
+    never rebuilds, so a stale profile is not actionable."""
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    report = _report(_state(pkgbase="llvm", install_origin="foreign",
+                            pgo_profdata_mismatch=True))
+    with patch("sysforge.primitives.llvm_state.collect_llvm_state",
+               return_value=report):
+        result = detect_toolchain_config_mismatch(
+            {}, toolchain_cfg={"enabled": True, "compiler": "llvm",
+                               "pgo": True, "skip_build": True})
+    assert result == ()
+
+
 def test_mismatch_collect_failure_is_silent():
     """Provenance reporting must never throw — a failed snapshot → no findings."""
     from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch

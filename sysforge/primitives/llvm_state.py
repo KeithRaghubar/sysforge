@@ -484,6 +484,12 @@ def detect_toolchain_config_mismatch(
     # compiler defaults to "gcc" when unset (register-only — owns no LLVM).
     if cfg.get("enabled") is not True or (cfg.get("compiler") or "gcc") != "llvm":
         return ()
+    # skip_build = true means "register the installed clang as-is, don't build"
+    # (pipeline/stages/toolchain.py). Stock-vs-custom is then a deliberate choice,
+    # not a provenance mismatch — and the "run sysforge run toolchain" remediation
+    # would be wrong (skip_build doesn't build). Suppress like the gcc path.
+    if cfg.get("skip_build", False):
+        return ()
     pgo = bool(cfg.get("pgo", True))  # PGO defaults on for the llvm path
 
     # Lazy import: the lockstep suite is the single source of truth for which
