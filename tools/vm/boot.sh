@@ -130,19 +130,37 @@ QEMU_ARGS=(
     -rtc base=localtime
 )
 
-# Refuse to launch if a VM is already running; otherwise QEMU fails on socket
-# / port bind with an opaque error. Stale pidfiles (process died without
-# cleanup) are removed so the launch can proceed.
+# Refuse to launch if a VM is already running; otherwise QEMU fails on socket /
+# port bind with an opaque error. Detection has two arms: the pidfile (fast
+# path), and a port probe that catches an orphaned qemu whose pidfile went
+# missing — e.g. `make vm-stop` removes the pidfile unconditionally after its
+# monitor `quit`, so a `quit` that didn't actually stop qemu leaves a live
+# process with no pidfile. The SSH forward port is in the base QEMU_ARGS for
+# every mode, so probing it catches headless/gui/iso/snapshot alike.
+RUNNING_PID=""
 if [[ -f "$VM_DIR/qemu.pid" ]]; then
     EXISTING_PID="$(cat "$VM_DIR/qemu.pid" 2>/dev/null || true)"
     if [[ -n "$EXISTING_PID" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-        echo "VM already running (PID $EXISTING_PID). Use 'make vm-stop' first." >&2
-        exit 1
+        RUNNING_PID="$EXISTING_PID"
     fi
-    rm -f "$VM_DIR/qemu.pid"
-    rm -f "$VM_DIR/qemu-monitor.sock"
-    rm -f "$VM_DIR/serial.sock"
 fi
+if [[ -z "$RUNNING_PID" ]] && command -v ss >/dev/null 2>&1; then
+    PORT_PID="$(ss -ltnpH "sport = :$SSH_PORT" 2>/dev/null \
+                  | grep -oP 'pid=\K[0-9]+' | head -n1 || true)"
+    if [[ -n "$PORT_PID" ]] && kill -0 "$PORT_PID" 2>/dev/null; then
+        RUNNING_PID="$PORT_PID"
+    fi
+fi
+if [[ -n "$RUNNING_PID" ]]; then
+    echo "VM already running (PID $RUNNING_PID, host port $SSH_PORT in use). Use 'make vm-stop' first." >&2
+    exit 1
+fi
+
+# No VM running — clear any stale pidfile/sockets from a previous run (an
+# orphaned process that was killed, or a `make vm-stop` that removed only the
+# pidfile). Unconditional: gating these behind pidfile existence left stale
+# sockets behind when the pidfile was already gone, which QEMU then can't bind.
+rm -f "$VM_DIR/qemu.pid" "$VM_DIR/qemu-monitor.sock" "$VM_DIR/serial.sock"
 
 if [[ $SNAPSHOT -eq 1 ]]; then
     QEMU_ARGS+=(-snapshot)

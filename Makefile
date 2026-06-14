@@ -181,16 +181,46 @@ vm-savevm:
 	  | socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
 	@echo "Saved snapshot '$(NAME)'. Verify with: make vm-monitor → info snapshots"
 
+# Stop the VM and only clear state once the process is *confirmed* gone.
+# Resolution mirrors boot.sh: pidfile first, then an `ss` port probe so an
+# orphan whose pidfile vanished is still found. Escalates monitor quit ->
+# SIGTERM -> SIGKILL, waiting between each, and removes the pidfile/sockets
+# only after the PID is dead — never unconditionally, which is what created the
+# orphan (live qemu, no pidfile) that boot.sh then had to recover from.
 vm-stop:
-	@if [ -f "$(VM_DIR)/qemu.pid" ] && kill -0 "$$(cat $(VM_DIR)/qemu.pid)" 2>/dev/null; then \
-		echo "Stopping VM via monitor..."; \
-		echo "quit" | socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock 2>/dev/null \
-		  || kill "$$(cat $(VM_DIR)/qemu.pid)"; \
-		rm -f $(VM_DIR)/qemu.pid; \
-	else \
+	@VM_DIR="$(VM_DIR)"; pid=""; \
+	if [ -f "$$VM_DIR/qemu.pid" ]; then \
+		p="$$(cat "$$VM_DIR/qemu.pid" 2>/dev/null)"; \
+		if [ -n "$$p" ] && kill -0 "$$p" 2>/dev/null; then pid="$$p"; fi; \
+	fi; \
+	if [ -z "$$pid" ] && command -v ss >/dev/null 2>&1; then \
+		p="$$(ss -ltnpH 'sport = :10022' 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -n1)"; \
+		if [ -n "$$p" ] && kill -0 "$$p" 2>/dev/null; then pid="$$p"; fi; \
+	fi; \
+	if [ -z "$$pid" ]; then \
 		echo "No running VM"; \
-		rm -f $(VM_DIR)/qemu.pid; \
-	fi
+		rm -f "$$VM_DIR/qemu.pid" "$$VM_DIR/qemu-monitor.sock" "$$VM_DIR/serial.sock"; \
+		exit 0; \
+	fi; \
+	echo "Stopping VM (PID $$pid) via monitor..."; \
+	echo "quit" | socat - UNIX-CONNECT:"$$VM_DIR/qemu-monitor.sock" 2>/dev/null || true; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$$pid" 2>/dev/null || break; sleep 0.5; done; \
+	if kill -0 "$$pid" 2>/dev/null; then \
+		echo "Monitor quit didn't stop it; sending SIGTERM..."; \
+		kill "$$pid" 2>/dev/null || true; \
+		for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$$pid" 2>/dev/null || break; sleep 0.5; done; \
+	fi; \
+	if kill -0 "$$pid" 2>/dev/null; then \
+		echo "Still alive; sending SIGKILL..."; \
+		kill -9 "$$pid" 2>/dev/null || true; \
+		sleep 0.5; \
+	fi; \
+	if kill -0 "$$pid" 2>/dev/null; then \
+		echo "WARNING: PID $$pid still alive after SIGKILL; leaving pidfile/sockets in place." >&2; \
+		exit 1; \
+	fi; \
+	rm -f "$$VM_DIR/qemu.pid" "$$VM_DIR/qemu-monitor.sock" "$$VM_DIR/serial.sock"; \
+	echo "VM stopped."
 
 vm-clean:
 	@if [ -f "$(VM_DISK)" ]; then \
