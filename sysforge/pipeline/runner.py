@@ -36,6 +36,7 @@ from sysforge.primitives.cache_probe import (
     emit_system_probes,
     reset_session,
 )
+from sysforge.ui import progress
 from sysforge.ui.headers import (
     closing_lines,
     stage_complete_line,
@@ -110,6 +111,7 @@ def run_stage_standalone(stage, config, options):
             _log.info(f"[dry-run] would run stage: {stage.name} — {stage.description}")
         else:
             _log.info(f"── Stage: {stage.name} ── {stage.description}")
+            progress.phase(stage.name)
             stage.run(config, state, options)
             if not stage.stateless:
                 try:
@@ -236,6 +238,7 @@ def run_pipeline(config, options, stages=None):
             state.mark_running(stage.name)
             state.save()
 
+            progress.phase(stage.name)
             try:
                 stage.run(config, state, options)
                 state.mark_done(stage.name)

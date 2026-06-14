@@ -102,6 +102,44 @@ def test_runtime_error_in_phase_returns_one(phase):
 
 
 # ---------------------------------------------------------------------------
+# Universal startup progress phase
+# ---------------------------------------------------------------------------
+
+class _PhaseRecorder:
+    """Drop-in for ``runner.progress`` that records phase() calls."""
+
+    def __init__(self):
+        self.calls = []
+
+    def phase(self, label):
+        self.calls.append(label)
+
+
+@pytest.mark.parametrize(
+    "pre_result, raise_in, name, expected_label",
+    [
+        (None, None, "test", "test: starting…"),
+        (PreCheckResult(skip_reason="nope"), None, "test", "test: starting…"),
+        (PreCheckResult(blocker="bad", exit_code=2), None, "test", "test: starting…"),
+        (None, "execute", "test", "test: starting…"),
+        (None, None, "run-toolchain", "toolchain: starting…"),
+    ],
+)
+def test_startup_phase_painted_and_cleared(
+    monkeypatch, pre_result, raise_in, name, expected_label
+):
+    """Every dispatch path paints a humanized startup phase then clears it."""
+    rec = _PhaseRecorder()
+    monkeypatch.setattr("sysforge.verbs.runner.progress", rec)
+    v = _CountingVerb(pre_result=pre_result, raise_in=raise_in)
+    v.name = name
+    run_verb(v, _args(state_dir=None))
+    # First call paints the startup label; the run always ends by clearing.
+    assert rec.calls[0] == expected_label
+    assert rec.calls[-1] is None
+
+
+# ---------------------------------------------------------------------------
 # Sentinel handoff
 # ---------------------------------------------------------------------------
 

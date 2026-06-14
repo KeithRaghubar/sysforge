@@ -33,6 +33,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.stage_sentinel import sentinel_scope
+from sysforge.ui import progress
 from sysforge.verbs.base import Verb
 
 
@@ -42,10 +43,26 @@ def run_verb(verb: Verb, args) -> int:
     Returns the process exit code (0 on success, 1 on RuntimeError,
     custom exit code on pre-check block, or the verb's own
     ``ExecResult.exit_code`` on success).
+
+    A generic startup phase is painted on entry so the bottom-anchored
+    progress indicator is live for *every* verb from dispatch onward
+    (filling the otherwise-blank startup window), and cleared on every
+    exit path. Verbs that paint their own richer phases (e.g. ``update``)
+    override the generic label seamlessly via the single shared phase
+    state.
     """
     tag = (verb.name or "VERB").upper()
     _log = log.get_logger(tag)
 
+    label = (verb.name or "verb").removeprefix("run-")
+    progress.phase(f"{label}: starting…")
+    try:
+        return _run_verb_inner(verb, args, _log)
+    finally:
+        progress.phase(None)
+
+
+def _run_verb_inner(verb: Verb, args, _log) -> int:
     try:
         pre = verb.pre_check(args)
     except RuntimeError as e:
