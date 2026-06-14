@@ -17,7 +17,7 @@ _sysforge() {
         cword=$COMP_CWORD
     fi
 
-    local commands="build fetch update resolve doctor packages state run setup env"
+    local commands="build fetch update resolve doctor packages state run setup env log"
 
     # Locate the top-level verb (first non-flag arg after `sysforge`) and an
     # optional subverb (first non-flag arg after the verb).
