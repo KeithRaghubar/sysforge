@@ -13,6 +13,9 @@ Public API:
     BATCH_STRIP_FLAGS                          — frozenset
     BATCH_EXTRA_FLAGS                          — list[str]
     get_pkgdest()                   → Path | None
+    get_builddir()                  → Path | None
+    get_srcdest()                   → Path | None
+    get_logdest()                   → Path | None
     snapshot_pkg_dir(directory)     → frozenset
     get_pacman_cache_dirs()         → list[Path]
     cached_pkg_files_for(names)     → dict[str, Path | None]
@@ -121,17 +124,55 @@ BATCH_EXTRA_FLAGS = ["-C"]
 # PKGDEST
 # ---------------------------------------------------------------------------
 
+def _resolve_makepkg_path(key: str) -> Path | None:
+    """Resolve a makepkg path variable, mirroring makepkg's own precedence.
+
+    makepkg lets the environment override ``makepkg.conf``, so we check
+    ``os.environ`` first, then the layered system conf (``/etc/makepkg.conf``
+    → ``$XDG_CONFIG_HOME/pacman/makepkg.conf`` → ``~/.makepkg.conf``). Quotes
+    are stripped and ``~``/``$VARS`` expanded. Returns ``None`` when unset
+    everywhere so callers can fall back to their own default.
+    """
+    raw = os.environ.get(key, "")
+    if not raw:
+        try:
+            from sysforge.primitives.config import parse_system_makepkg_conf
+            raw = parse_system_makepkg_conf().get(key, "")
+        except Exception:
+            raw = ""
+    raw = raw.strip().strip("\"'")
+    if not raw:
+        return None
+    return Path(os.path.expanduser(os.path.expandvars(raw)))
+
+
 def get_pkgdest() -> Path | None:
-    """Return PKGDEST from the layered system makepkg.conf, or None if unset."""
-    try:
-        from sysforge.primitives.config import parse_system_makepkg_conf
-        sys_conf = parse_system_makepkg_conf()
-        raw = sys_conf.get("PKGDEST", "").strip().strip("\"'")
-        if raw:
-            return Path(raw).expanduser()
-    except Exception:
-        pass
-    return None
+    """Return PKGDEST from the env or layered system makepkg.conf, or None."""
+    return _resolve_makepkg_path("PKGDEST")
+
+
+def get_builddir() -> Path | None:
+    """Return BUILDDIR from the env or layered system makepkg.conf, or None.
+
+    This is the directory makepkg builds under (``$BUILDDIR/<pkgbase>``); when
+    unset, makepkg builds in-place in the PKGBUILD directory, so callers append
+    their own fallback.
+    """
+    return _resolve_makepkg_path("BUILDDIR")
+
+
+def get_srcdest() -> Path | None:
+    """Return SRCDEST from the env or layered system makepkg.conf, or None."""
+    return _resolve_makepkg_path("SRCDEST")
+
+
+def get_logdest() -> Path | None:
+    """Return LOGDEST from the env or layered system makepkg.conf, or None.
+
+    With ``OPTIONS+=log``, makepkg writes per-package build logs here rather
+    than in the build directory.
+    """
+    return _resolve_makepkg_path("LOGDEST")
 
 
 def detect_orphan_artifacts(

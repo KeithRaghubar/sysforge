@@ -93,7 +93,7 @@ def test_effective_build_dir_uses_builddir(tmp_path):
     (real / "src").mkdir(parents=True)
 
     got = _effective_build_dir(
-        pkgdir / "PKGBUILD", {"BUILDDIR": str(builddir)}, {}
+        pkgdir / "PKGBUILD", {"BUILDDIR": str(builddir)}
     )
     assert got == real
 
@@ -105,7 +105,7 @@ def test_effective_build_dir_falls_back_to_pkgbuild_dir(tmp_path):
     pkgdir = tmp_path / "src" / "foo-git"
     pkgdir.mkdir(parents=True)
     got = _effective_build_dir(
-        pkgdir / "PKGBUILD", {"BUILDDIR": str(tmp_path / "builds")}, {}
+        pkgdir / "PKGBUILD", {"BUILDDIR": str(tmp_path / "builds")}
     )
     assert got == pkgdir
 

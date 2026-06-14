@@ -96,7 +96,7 @@ Init-file parsing is regex-based (`export KEY=value`, `KEY=value; export KEY`, p
 ### `pacman.py`
 
 All pacman and batch-install shared operations. Public API:
-- `get_pkgdest()` — resolves the `PKGDEST` directory from makepkg.conf
+- `get_pkgdest()` / `get_builddir()` / `get_srcdest()` / `get_logdest()` — resolve the corresponding makepkg path variable via the shared `_resolve_makepkg_path(key)` helper, which mirrors makepkg's own precedence: **environment first** (`os.environ`), then the layered `parse_system_makepkg_conf()` (`/etc/makepkg.conf` → user conf), quotes stripped and `~`/`$VARS` expanded, else `None`. These are the single home for "where did makepkg put / read this?" — any new code that needs to *locate* a built artifact, build tree, downloaded source, or build log must call them rather than assuming `~/builds` / the PKGBUILD dir / a hardcoded default (a recurring bug class). `BUILDDIR` resolution in particular feeds `makepkg_env._effective_build_dir` (side-car log diagnosis) and `kernel._resolve_built_config` (resolved `.config` discovery), both of which must honour a `BUILDDIR` set only in `/etc/makepkg.conf`.
 - `snapshot_pkg_dir(pkgdest)` — records the set of `.pkg.tar.*` files currently in pkgdest before a build
 - `batch_install_pkgs(pkgdest, pre_snapshot, ...)` — diffs the post-build pkgdest against the snapshot and installs all new packages in a single `sudo pacman -U`
 - `read_pkgname_from_file(path)` — extracts `pkgname` from a built `.pkg.tar.*` via `bsdtar -xOqf <path> .PKGINFO`; returns `None` on failure

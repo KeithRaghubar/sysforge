@@ -83,20 +83,59 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
     return result
 
 
-def _effective_build_dir(pkgbuild_path, resolved_profile, env) -> Path:
+def _effective_build_dir(pkgbuild_path, resolved_profile) -> Path:
     """Return the directory makepkg actually built in, for side-car diagnosis.
 
-    With ``BUILDDIR`` set in the profile (or env), makepkg builds under
-    ``$BUILDDIR/<pkgbase>`` rather than in-place, so the meson/cmake logs live
-    there — not under the PKGBUILD dir. Best-effort: uses the PKGBUILD dir name
-    as the pkgbase (true for AUR ``-git`` checkouts) and falls back to the
-    PKGBUILD dir when that candidate doesn't exist.
+    With ``BUILDDIR`` set in the profile, env, or system ``makepkg.conf``,
+    makepkg builds under ``$BUILDDIR/<pkgbase>`` rather than in-place, so the
+    meson/cmake logs live there — not under the PKGBUILD dir. Best-effort: uses
+    the PKGBUILD dir name as the pkgbase (true for AUR ``-git`` checkouts) and
+    falls back to the PKGBUILD dir when that candidate doesn't exist.
     """
+    from sysforge.primitives.pacman import get_builddir
+
     pkgbuild_dir = Path(pkgbuild_path).parent
-    builddir = resolved_profile.get("BUILDDIR") or env.get("BUILDDIR")
+    # Per-build profile override wins; otherwise resolve from env/system
+    # makepkg.conf (a user may set BUILDDIR only in /etc/makepkg.conf).
+    builddir = resolved_profile.get("BUILDDIR") or get_builddir()
     if builddir:
         expanded = Path(os.path.expanduser(os.path.expandvars(str(builddir))))
         candidate = expanded / pkgbuild_dir.name
         if (candidate / "src").is_dir():
             return candidate
     return pkgbuild_dir
+
+
+def _logdest_tail(pkgbuild_path, max_bytes: int = 256 * 1024) -> list[str]:
+    """Return the tail lines of the newest ``LOGDEST`` build log for diagnosis.
+
+    With ``OPTIONS+=log``, makepkg writes the full build output to
+    ``$LOGDEST/<pkgbase>-<ver>-<arch>-<stage>.log`` instead of the terminal.
+    In the interactive failure path makepkg's stdout was never captured, so
+    that file is the only record of *why* the build failed. Best-effort:
+    matches on the PKGBUILD dir name as the pkgbase, returns ``[]`` when
+    ``LOGDEST`` is unset or no matching log exists.
+    """
+    from sysforge.primitives.pacman import get_logdest
+
+    logdest = get_logdest()
+    if logdest is None or not logdest.is_dir():
+        return []
+    pkgbase = Path(pkgbuild_path).parent.name
+    hits = sorted(
+        logdest.glob(f"{pkgbase}-*.log"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not hits:
+        return []
+    newest = hits[0]
+    try:
+        with newest.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - max_bytes))
+            data = fh.read()
+    except OSError:
+        return []
+    return data.decode("utf-8", errors="replace").splitlines()

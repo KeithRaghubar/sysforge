@@ -28,7 +28,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.makepkg_artifacts import _find_built_packages
-from sysforge.primitives.makepkg_env import _effective_build_dir
+from sysforge.primitives.makepkg_env import _effective_build_dir, _logdest_tail
 from sysforge.primitives.makepkg_flags import INSTALL_FLAGS
 from sysforge.primitives.profile import CONF_KEY_MAP
 from sysforge.primitives.prompt import prompt_choice
@@ -175,8 +175,12 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                     diagnose as _build_diagnose,
                     render_suggestions as _render_diag_suggestions,
                 )
-                diag_dir = _effective_build_dir(pkgbuild_path, resolved_profile, env)
-                _suggestions = _build_diagnose([], diag_dir)
+                diag_dir = _effective_build_dir(pkgbuild_path, resolved_profile)
+                # Interactive stdout was never captured; recover the build
+                # output from the LOGDEST log (if OPTIONS+=log) so the matchers
+                # have text beyond the meson/cmake side-cars.
+                _log_lines = _logdest_tail(pkgbuild_path)
+                _suggestions = _build_diagnose(_log_lines, diag_dir)
                 if _suggestions:
                     _makepkg_log.info(_render_diag_suggestions(_suggestions))
                     cpe.diagnosis = _suggestions

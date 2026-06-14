@@ -69,7 +69,6 @@ Post-install steps (run after makepkg succeeds):
 """
 
 import contextlib
-import os
 import subprocess
 import tomllib
 from pathlib import Path
@@ -858,15 +857,17 @@ def _resolve_built_config(pkgbuild_dir):
     """Locate the resolved .config left in the kernel build tree.
 
     The kernel src lives under ``<build>/src/``; ``<build>`` is the makepkg
-    BUILDDIR (``$BUILDDIR/<pkgbase>`` or ``~/builds/<pkgbase>``) or the
-    PKGBUILD dir itself. Returns the newest matching ``.config`` or None.
+    BUILDDIR (``$BUILDDIR/<pkgbase>``, resolved from env or system
+    ``makepkg.conf``) or the PKGBUILD dir itself. Returns the newest matching
+    ``.config`` or None.
     """
+    from sysforge.primitives.pacman import get_builddir
+
     pkgbuild_dir = Path(pkgbuild_dir)
     roots = []
-    builddir = os.environ.get("BUILDDIR")
+    builddir = get_builddir()
     if builddir:
-        roots.append(Path(builddir).expanduser() / pkgbuild_dir.name)
-    roots.append(Path("~/builds").expanduser() / pkgbuild_dir.name)
+        roots.append(builddir / pkgbuild_dir.name)
     roots.append(pkgbuild_dir)
 
     configs = []
