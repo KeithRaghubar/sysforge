@@ -1,5 +1,6 @@
 .PHONY: all dev venv build install clean distclean test test-x lint coverage man \
         check-shipped check-personal check-standards design check-design pre-release \
+        sync-config \
         release-major release-minor release-patch \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
@@ -83,6 +84,13 @@ check-design:
 # (tests/test_standards_compliance.py). Source of truth: docs/design/21-standards.md.
 check-standards:
 	uv run --no-sync --with reuse python tools/check_standards.py
+
+# Merge new shipped defaults (etc/sysforge/) into the live config dir
+# ($SYSFORGE_CONFIG_DIR/etc/sysforge). Add-only: injects new keys/sections/
+# comments, never overwrites existing values. tomlkit is dev-only (ephemeral
+# uv overlay). Preview with ARGS="--dry-run"; retarget with ARGS="--target DIR".
+sync-config:
+	uv run --no-sync --with tomlkit python tools/sync_config.py $(ARGS)
 
 # Composite gate: lint + tests + shipped-file consistency + impersonal docs +
 # DESIGN.md freshness + standards compliance. Run before kicking off

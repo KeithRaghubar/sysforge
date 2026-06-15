@@ -8,7 +8,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Language: Python, Conf
 
 - Ryzen 7 5800X3D, RTX 5070, Arch Linux, COSMIC on Wayland, nvidia-open-dkms
 - `pkgbuild_src_dir = ~/src` (sources); builds at `~/builds`
-- `etc/sysforge/` = shipped defaults (installed by PKGBUILD); `tests/data/etc/sysforge/` = the maintainer's live config for dev/testing. Separate dirs, not symlinked — update both explicitly when a change affects both.
+- `etc/sysforge/` = shipped defaults (installed by PKGBUILD); `tests/data/etc/sysforge/` = git-tracked **test fixtures** (kept in shipped↔fixture parity by `make check-shipped`; `tests/conftest.py` *forces* `SYSFORGE_CONFIG_DIR` to this dir so a developer shell can't leak its own value into the suite). Personal live config is a **separate untracked dir** (e.g. `~/sf-config/etc/sysforge`) that the shell's `SYSFORGE_CONFIG_DIR` points at; adopt new shipped defaults into it with `make sync-config` (add-only, comment-preserving, never overwrites existing values — see DESIGN.md §Config Layer → *Adopting new shipped defaults*). When a change affects both shipped defaults and fixtures, update both explicitly.
 
 ## Known Bugs & Gotchas
 

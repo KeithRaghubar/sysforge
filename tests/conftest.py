@@ -15,7 +15,12 @@ import pytest
 TESTS_DIR = Path(__file__).parent
 TEST_DATA = TESTS_DIR / "data"
 
-os.environ.setdefault("SYSFORGE_CONFIG_DIR", str(TEST_DATA))
+# Force (not setdefault) the fixture dir: a developer shell may export its own
+# SYSFORGE_CONFIG_DIR pointing at a personal config dir (e.g. ~/sf-config), and
+# the suite must always resolve the tracked tests/data fixtures regardless.
+# Per-test config variation patches file *contents* (see update_scenario), not
+# this env var, so pinning it is safe.
+os.environ["SYSFORGE_CONFIG_DIR"] = str(TEST_DATA)
 
 # Force the subprocess fallback in primitives.pacman so existing tests that
 # mock subprocess.run continue to drive the query. The pyalpm fast path is
