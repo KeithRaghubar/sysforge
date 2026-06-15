@@ -213,9 +213,9 @@ makepkg_flags = ["--noconfirm", "--syncdeps", "--rmdeps", "--install", "--noprog
 # priority = 20
 # append_groups = ["pgo"]
 
-# Example: custom kernel
+# Example: custom kernel (pkgnames must match kernel.toml's pkgname default)
 # [[rules]]
-# pkgnames = ["linux-custom"]
+# pkgnames = ["linux-sysforge"]
 # profile  = "kernel"
 # priority = 20
 

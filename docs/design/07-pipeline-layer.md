@@ -169,7 +169,7 @@ If no source provides any kconfig entries, no fragment is written. The fragment 
 
 **Base config (`base_config`):**
 
-The fragment is an *overlay* — it does not define the build's starting `.config`. `base_config` selects that base: `"pkgbuild"` (default, no-op — the PKGBUILD provides its own base), `"running"` (the running kernel's config, read via `dep_analysis.read_running_kconfig_text` from `/proc/config.gz` then `/boot/config-$(uname -r)`), or a path to a `.config` file. For `"running"`/`<path>`, sysforge writes the resolved config to `<pkgbuild_src_dir>/<srcdir>/sysforge.base.config` before the build (dry-run aware). The cooperation contract mirrors the fragment: a compatible PKGBUILD's `prepare()` copies `sysforge.base.config` to `.config` (then runs `make olddefconfig`) **before** merging `sysforge.config`. sysforge never mutates tracked source files. A `"running"` source that resolves to nothing (no `/proc/config.gz`, no `/boot/config-*`) warns and falls back to the PKGBUILD base; an unknown non-path value raises. The resolved source appears in the "Kernel build plan:" summary (`base cfg:` line).
+The fragment is an *overlay* — it does not define the build's starting `.config`. `base_config` selects that base: `"pkgbuild"` (default, no-op — the PKGBUILD provides its own base), `"running"` (the running kernel's config, read via `dep_analysis.read_running_kconfig_text` from `/proc/config.gz` then `/boot/config-$(uname -r)`), or a path to a `.config` file. Resolution order: the `--base-config` CLI flag > `kernel.toml base_config` > the `"pkgbuild"` default (mirroring `--compiler`/`--bootloader`). For `"running"`/`<path>`, sysforge writes the resolved config to `<pkgbuild_src_dir>/<srcdir>/sysforge.base.config` before the build (dry-run aware). The cooperation contract mirrors the fragment: a compatible PKGBUILD's `prepare()` copies `sysforge.base.config` to `.config` (then runs `make olddefconfig`) **before** merging `sysforge.config`. sysforge never mutates tracked source files. A `"running"` source that resolves to nothing (no `/proc/config.gz`, no `/boot/config-*`) warns and falls back to the PKGBUILD base; an unknown non-path value raises. The resolved source appears in the "Kernel build plan:" summary (`base cfg:` line).
 
 **lsmod snapshot:**
 
@@ -205,7 +205,7 @@ To make a *pre-install* hard-fail possible, the build is **split from the instal
 
 **CLI surface (`sysforge run kernel`):**
 
-`--dry-run`, `--no-update`, `--cleansrc`, `--cleansrc-force`, `--non-interactive`, `--compiler {gcc,llvm}`, `--bootloader {systemd-boot,grub,none}`, `--allow-no-fallback`, `--skip-boot-audit`, `--no-pkg-logs`, `--persist-log`, `--log-dir`, `--cache-report`, `--abi-check`, `--state-dir`, `--profile-conf`.
+`--dry-run`, `--no-update`, `--cleansrc`, `--cleansrc-force`, `--non-interactive`, `--compiler {gcc,llvm}`, `--bootloader {systemd-boot,grub,none}`, `--base-config {pkgbuild,running,<path>}`, `--allow-no-fallback`, `--skip-boot-audit`, `--no-pkg-logs`, `--persist-log`, `--log-dir`, `--cache-report`, `--abi-check`, `--state-dir`, `--profile-conf`.
 
 **Post-install steps** (run after the artifact is installed):
 1. `sudo mkinitcpio -P`

@@ -807,6 +807,12 @@ def _add_run_parser(sub):
              "kernel.toml compiler > toolchain-stage pipeline state.")
     p_kernel.add_argument("--bootloader", choices=["systemd-boot", "grub", "none"], dest="bootloader",
         help="Override kernel.toml bootloader for this invocation (systemd-boot is the default).")
+    p_kernel.add_argument("--base-config", metavar="SRC", dest="base_config",
+        help="Override kernel.toml base_config for this run: the starting .config "
+             "before the sysforge.config fragment overlay. One of 'pkgbuild' "
+             "(the PKGBUILD's own base), 'running' (the running kernel's config), "
+             "or a path to a .config file. Resolution order: this flag > "
+             "kernel.toml base_config > 'pkgbuild' default.")
     p_kernel.add_argument("--no-pkg-logs", action="store_true", dest="no_pkg_logs",
         help="Disable per-package log files.")
     p_kernel.add_argument("--persist-log", action="store_true", dest="persist_log",

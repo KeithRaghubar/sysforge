@@ -658,11 +658,13 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None):
     return fragment_path, hw_count, manual_count, device_count
 
 
-def _resolve_base_config(kernel_cfg):
+def _resolve_base_config(kernel_cfg, options=None):
     """Resolve the base ``.config`` text to seed before the fragment merge.
 
-    ``kernel.toml base_config`` selects where the build's *starting* ``.config``
-    comes from (the ``sysforge.config`` fragment is overlaid on top of it):
+    The base config selects where the build's *starting* ``.config`` comes from
+    (the ``sysforge.config`` fragment is overlaid on top of it). Resolution
+    order: ``--base-config`` CLI flag (``options.base_config``) > ``kernel.toml
+    base_config`` > the ``"pkgbuild"`` default. The resolved value is one of:
 
       * ``"pkgbuild"`` (default) — no seeding; the PKGBUILD provides its own base.
       * ``"running"``            — the running kernel's config (``/proc/config.gz``
@@ -673,10 +675,12 @@ def _resolve_base_config(kernel_cfg):
     ``"pkgbuild"`` default or when a ``"running"`` source is unavailable (warned).
     Unknown non-path values raise.
     """
-    raw = kernel_cfg.get("base_config", "pkgbuild")
+    cli = getattr(options, "base_config", None)
+    raw = cli or kernel_cfg.get("base_config", "pkgbuild")
+    src = "--base-config" if cli else "kernel.toml base_config"
     if not isinstance(raw, str) or not raw:
         raise RuntimeError(
-            f"[KERNEL] invalid kernel.toml base_config {raw!r}: expected "
+            f"[KERNEL] invalid {src} {raw!r}: expected "
             '"pkgbuild", "running", or a path to a kernel .config file'
         )
     if raw == "pkgbuild":
@@ -696,12 +700,12 @@ def _resolve_base_config(kernel_cfg):
     path = Path(raw).expanduser()
     if not path.is_file():
         raise RuntimeError(
-            f"[KERNEL] kernel.toml base_config path does not exist: {path}"
+            f"[KERNEL] {src} path does not exist: {path}"
         )
     return raw, path.read_text()
 
 
-def _write_base_config(kernel_cfg, dry_run):
+def _write_base_config(kernel_cfg, dry_run, options=None):
     """Resolve ``base_config`` and, when not ``"pkgbuild"``, write the chosen base
     ``.config`` to ``<pkgbuild_dir>/sysforge.base.config``.
 
@@ -709,9 +713,10 @@ def _write_base_config(kernel_cfg, dry_run):
     the PKGBUILD's ``prepare()`` copies ``sysforge.base.config`` to ``.config``
     (then runs ``make olddefconfig``) *before* merging ``sysforge.config``. This
     keeps sysforge from mutating tracked source files. Returns the source label
-    for the resolution summary.
+    for the resolution summary. ``options`` carries the ``--base-config`` CLI
+    override (see ``_resolve_base_config``).
     """
-    source_label, text = _resolve_base_config(kernel_cfg)
+    source_label, text = _resolve_base_config(kernel_cfg, options)
     if text is None:
         return source_label
     pkgbuild = _pkgbuild_path(kernel_cfg)
@@ -1173,7 +1178,7 @@ class KernelStage(Stage):
         # Base .config seeding — written before the fragment so the build order
         # is base → fragment overlay. "pkgbuild" (default) is a no-op; "running"
         # or a path seeds sysforge.base.config for the PKGBUILD to copy to .config.
-        base_config_source = _write_base_config(kernel_cfg, options.dry_run)
+        base_config_source = _write_base_config(kernel_cfg, options.dry_run, options)
 
         # kconfig fragment — requires hardware_profile.toml (hardware stage).
         # Written after the source sync so a --cleansrc re-clone doesn't wipe

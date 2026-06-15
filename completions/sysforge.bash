@@ -97,6 +97,10 @@ _sysforge_flag_arg() {
             COMPREPLY=( $(compgen -W "systemd-boot grub none" -- "$cur") )
             return 0
             ;;
+        --base-config)
+            COMPREPLY=( $(compgen -W "pkgbuild running" -- "$cur") )
+            return 0
+            ;;
         --source)
             COMPREPLY=( $(compgen -W "repo aur local" -- "$cur") )
             return 0
@@ -293,7 +297,7 @@ _sysforge_run() {
         kernel)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update --cleansrc --cleansrc-force \
-                --non-interactive --compiler --bootloader \
+                --non-interactive --compiler --bootloader --base-config \
                 --allow-no-fallback --skip-boot-audit --no-pkg-logs \
                 --persist-log --log-dir --cache-report --abi-check \
                 --state-dir --profile-conf" -- "$cur") )

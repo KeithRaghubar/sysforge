@@ -168,6 +168,7 @@ class RunKernelVerb(_RunVerbBase):
             non_interactive=getattr(args, "non_interactive", False),
             bootloader=getattr(args, "bootloader", None),
             compiler=getattr(args, "compiler", None),
+            base_config=getattr(args, "base_config", None),
             allow_no_fallback=getattr(args, "allow_no_fallback", False),
             skip_boot_audit=getattr(args, "skip_boot_audit", False),
         )

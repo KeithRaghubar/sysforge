@@ -2073,6 +2073,48 @@ def test_resolve_base_config_invalid_value_raises():
         _resolve_base_config({"base_config": ""})
 
 
+def test_resolve_base_config_cli_overrides_config(monkeypatch):
+    # --base-config wins over kernel.toml base_config.
+    from sysforge.pipeline.stages.kernel import _resolve_base_config
+
+    monkeypatch.setattr(
+        "sysforge.primitives.dep_analysis.read_running_kconfig_text",
+        lambda: "CONFIG_FOO=y\n")
+    opts = SimpleNamespace(base_config="running")
+    label, text = _resolve_base_config({"base_config": "pkgbuild"}, opts)
+    assert label == "running"
+    assert text == "CONFIG_FOO=y\n"
+
+
+def test_resolve_base_config_cli_none_falls_back_to_config():
+    # options with base_config=None defers to the kernel.toml value.
+    from sysforge.pipeline.stages.kernel import _resolve_base_config
+
+    opts = SimpleNamespace(base_config=None)
+    label, text = _resolve_base_config({"base_config": "pkgbuild"}, opts)
+    assert label == "pkgbuild"
+    assert text is None
+
+
+def test_resolve_base_config_cli_path(tmp_path):
+    from sysforge.pipeline.stages.kernel import _resolve_base_config
+
+    cfg_file = tmp_path / "cli.config"
+    cfg_file.write_text("CONFIG_CLI=y\n")
+    opts = SimpleNamespace(base_config=str(cfg_file))
+    label, text = _resolve_base_config({"base_config": "pkgbuild"}, opts)
+    assert text == "CONFIG_CLI=y\n"
+
+
+def test_resolve_base_config_cli_missing_path_raises(tmp_path):
+    # A bad CLI value is reported against --base-config, not kernel.toml.
+    from sysforge.pipeline.stages.kernel import _resolve_base_config
+
+    opts = SimpleNamespace(base_config=str(tmp_path / "nope.config"))
+    with pytest.raises(RuntimeError, match="--base-config path does not exist"):
+        _resolve_base_config({}, opts)
+
+
 def test_write_base_config_writes_file(tmp_path, monkeypatch):
     from sysforge.pipeline.stages.kernel import _write_base_config
 

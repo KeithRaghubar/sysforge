@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026-06-13"
+.TH "sysforge" "1" "2026-06-15"
 .PP
 .PP
 .SH NAME
@@ -1011,6 +1011,11 @@ Kernel-stage compiler override (gcc or llvm).\& Independent of the global toolch
 \fB--bootloader\fR \fIBOOTLOADER\fR
 .RS 4
 Override kernel.\&toml bootloader for this invocation (systemd-boot is the default).\&
+.PP
+.RE
+\fB--base-config\fR \fISRC\fR
+.RS 4
+Override kernel.\&toml base_config for this run: the starting .\&config before the sysforge.\&config fragment overlay.\& One of '\&pkgbuild'\& (the PKGBUILD'\&s own base), '\&running'\& (the running kernel'\&s config), or a path to a .\&config file.\& Resolution order: this flag > kernel.\&toml base_config > '\&pkgbuild'\& default.\&
 .PP
 .RE
 \fB--no-pkg-logs\fR

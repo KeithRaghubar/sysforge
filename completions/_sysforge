@@ -431,6 +431,7 @@ _sysforge_run_kernel() {
     '--non-interactive[disable interactive kconfig and patch interactive targets to olddefconfig]' \
     '--compiler[kernel-stage compiler override]:compiler:(gcc llvm)' \
     '--bootloader[override kernel.toml bootloader]:bootloader:(systemd-boot grub none)' \
+    '--base-config[override kernel.toml base_config (pkgbuild|running|<path>)]:source:(pkgbuild running)' \
     '--allow-no-fallback[override the fallback-kernel guarantee (Gate 1)]' \
     '--skip-boot-audit[override the pre-install boot-critical kconfig audit (Gate 2) — dangerous]' \
     '--no-pkg-logs[disable per-package log files]' \
