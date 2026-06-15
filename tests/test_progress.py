@@ -287,6 +287,26 @@ def test_tracker_still_releases_without_phase(monkeypatch):
     assert "\x1b[r" in buf.getvalue()
 
 
+def test_tty_region_ops_preserve_cursor(monkeypatch):
+    # Regression: in a fresh shell (content near the top, empty rows below),
+    # establishing/releasing the DECSTBM region must not drag the logical
+    # cursor to the screen bottom — otherwise the empty gap is stranded as
+    # scrollback blank lines. The guarantee is structural: every region
+    # mutation is bracketed by a save (ESC7) / restore (ESC8) pair.
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("starting")   # establishes the region
+    progress.phase(None)         # releases it
+    written = buf.getvalue()
+    # Region was actually set and reset (guards against the test going no-op).
+    assert "\x1b[1;" in written and progress._RESET_REGION in written
+    # Saves and restores are balanced — no cursor move escapes its bracket.
+    assert written.count(progress._SAVE) == written.count(progress._RESTORE)
+    # The teardown leaves the cursor restored (last op is a restore), not
+    # parked at the absolute bottom row.
+    assert written.rstrip().endswith(progress._RESTORE)
+
+
 def test_phase_plain_mode_dedupes_repeats(monkeypatch):
     _fake_plain_stderr(monkeypatch)
     progress.init()

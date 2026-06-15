@@ -119,8 +119,15 @@ def _establish_region() -> None:
     _refresh_size()
     if _rows < 3:
         return
+    # Setting the DECSTBM region homes the cursor to the region top-left as a
+    # side effect; bracket it with save/restore so the caller's logical cursor
+    # (real content position) is never dragged. Leaving the cursor where the
+    # content is — rather than parking it at the region bottom — is what keeps a
+    # fresh shell (content at top, empty rows below) from stranding the empty
+    # gap as scrollback when the region is later released.
+    _write(_SAVE)
     _write(f"{_ESC}[1;{_rows - 1}r")
-    _write(f"{_ESC}[{_rows - 1};1H")
+    _write(_RESTORE)
     _reserved = True
 
 
@@ -128,8 +135,14 @@ def _release_region() -> None:
     global _reserved
     if not _reserved:
         return
+    # Resetting the region also homes the cursor, and clearing the bar drives it
+    # to the absolute bottom row — bracket both with save/restore so the shell
+    # resumes from the real content row, not the bottom of an otherwise-empty
+    # screen (the stranded-blank-lines bug).
+    _write(_SAVE)
     _write(_RESET_REGION)
     _write(f"{_ESC}[{_rows};1H{_CLEAR_LINE}")
+    _write(_RESTORE)
     _reserved = False
 
 
