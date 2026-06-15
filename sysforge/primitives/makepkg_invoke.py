@@ -266,6 +266,12 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             _makepkg_log.debug(f"[heartbeat] no output for ~{MAKEPKG_HEARTBEAT_S:.0f}s")
 
     forward_bytes = (not verbose_log) and sys.stdout.isatty()
+    # makepkg's child tools (cargo/ninja/cmake) do their own full-screen cursor
+    # addressing. Size the child's pty one row shorter than the terminal (the
+    # rows the progress bar reserves) so the child confines its redraws/scrolling
+    # to the region above the bar and never collapses output onto the bar row —
+    # the bar stays permanently visible during the build.
+    from sysforge.ui import progress
     returncode = run_with_pty(
         cmd, cwd=build_dir, env=env,
         line_callback=_on_line,
@@ -273,6 +279,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         preexec_fn=lift_for_child,
         idle_callback=_on_idle,
         idle_timeout_s=MAKEPKG_HEARTBEAT_S,
+        reserve_bottom_rows=progress.reserved_rows(),
     )
 
     if returncode != 0:
@@ -404,8 +411,6 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                             "install failed (sudo timeout?):")
                     for p in built_pkgs:
                         _makepkg_log.ui(f"  {p.name}")
-                    from sysforge.ui import progress as _ui_progress
-                    _ui_progress.clear()
                     # Empty input (Enter) → "" → falls through to retry the
                     # full build below; "s" → install built packages with
                     # fresh sudo; "abort" → stop.
@@ -430,8 +435,6 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                 return
                             _makepkg_log.error(
                                        f"pacman -U failed (exit {result.returncode})")
-                            from sysforge.ui import progress as _ui_progress
-                            _ui_progress.clear()
                             retry = prompt_choice(
                                 "Retry install? [s]udo re-auth again, or 'abort': ",
                                 choices=("s", "abort"),
@@ -451,8 +454,6 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                     # anything else: fall through to retry the full build
                     _makepkg_log.info("Retrying build...")
                 else:
-                    from sysforge.ui import progress as _ui_progress
-                    _ui_progress.clear()
                     # Empty input → "" → retry; "abort" → stop.
                     response = prompt_choice(
                         "Manually correct the PKGBUILD and press Enter to retry, "

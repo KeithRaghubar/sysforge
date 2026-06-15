@@ -287,6 +287,75 @@ def test_tracker_still_releases_without_phase(monkeypatch):
     assert "\x1b[r" in buf.getvalue()
 
 
+def test_suspend_for_prompt_keeps_region(monkeypatch):
+    # suspend_for_prompt() blanks the bar line in place but must NOT reset the
+    # scroll region (no ESC[r) and must keep _reserved True — the prompt then
+    # prints in the live content flow, and the next render repaints the bar.
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("building")   # reserve + paint
+    buf.truncate(0)
+    buf.seek(0)
+    progress.suspend_for_prompt()
+    written = buf.getvalue()
+    assert progress._RESET_REGION not in written   # region NOT released
+    assert progress._reserved is True
+    assert progress._CLEAR_LINE in written          # bar line blanked
+    # Balanced cursor save/restore — the content cursor is left untouched.
+    assert written.count(progress._SAVE) == written.count(progress._RESTORE)
+
+
+def test_suspend_for_prompt_safe_without_region(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.suspend_for_prompt()  # no region reserved — must be a no-op
+
+
+def test_suspended_releases_then_restores_region(monkeypatch):
+    # suspended() fully releases the region for the body (so a TTY-inheriting
+    # subprocess gets a clean terminal) and re-establishes + repaints on exit.
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("building")
+    assert progress._reserved is True
+    buf.truncate(0)
+    buf.seek(0)
+    with progress.suspended():
+        # Inside the body the region is released (full clear).
+        assert progress._reserved is False
+        assert progress._RESET_REGION in buf.getvalue()
+    # On exit the region is re-established and the bar repainted.
+    assert progress._reserved is True
+    assert "building" in buf.getvalue()
+
+
+def test_suspended_noop_without_region(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    with progress.suspended():  # nothing reserved — clean no-op
+        assert progress._reserved is False
+    assert progress._reserved is False
+
+
+def test_reserved_rows_one_when_region_active(monkeypatch):
+    # A pty child is sized to terminal_height - reserved_rows() so it never
+    # touches the bar row — must report 1 while the bar holds the bottom row.
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    assert progress.reserved_rows() == 0      # nothing reserved yet
+    progress.phase("building")
+    assert progress.reserved_rows() == 1      # bar holds the bottom row
+    progress.clear()
+    assert progress.reserved_rows() == 0      # released
+
+
+def test_reserved_rows_zero_in_plain_mode(monkeypatch):
+    _fake_plain_stderr(monkeypatch)
+    progress.init()
+    progress.phase("building")
+    assert progress.reserved_rows() == 0      # no scroll region in plain mode
+
+
 def test_tty_region_ops_preserve_cursor(monkeypatch):
     # Regression: in a fresh shell (content near the top, empty rows below),
     # establishing/releasing the DECSTBM region must not drag the logical
@@ -305,6 +374,29 @@ def test_tty_region_ops_preserve_cursor(monkeypatch):
     # The teardown leaves the cursor restored (last op is a restore), not
     # parked at the absolute bottom row.
     assert written.rstrip().endswith(progress._RESTORE)
+
+
+def test_establish_scroll_reserves_bar_row(monkeypatch):
+    # Establishing the region must land the cursor INSIDE [1, N-1] regardless of
+    # where the prompt started — otherwise a bottom-of-screen prompt leaves the
+    # cursor below the region and output collapses onto the bottom row. The
+    # "scroll up one to reserve" choreography: save → jump to bottom row → index
+    # (ESC D, scroll up one) → set region → restore → cursor-up one.
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("starting")   # establishes the region
+    written = buf.getvalue()
+    # Each step is present, in order, before the region is set.
+    bottom_jump = f"\x1b[{progress._rows};1H"
+    i_save = written.index(progress._SAVE)
+    i_jump = written.index(bottom_jump, i_save)
+    i_index = written.index(progress._INDEX, i_jump)
+    i_region = written.index(f"\x1b[1;{progress._rows - 1}r", i_index)
+    i_restore = written.index(progress._RESTORE, i_region)
+    i_up = written.index("\x1b[1A", i_restore)
+    assert i_save < i_jump < i_index < i_region < i_restore < i_up
+    # Cursor handling stays balanced.
+    assert written.count(progress._SAVE) == written.count(progress._RESTORE)
 
 
 def test_phase_plain_mode_dedupes_repeats(monkeypatch):

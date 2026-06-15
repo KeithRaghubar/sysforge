@@ -563,8 +563,6 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             else:
                 reason = pgo_info
                 if sys.stdin.isatty():
-                    from sysforge.ui import progress as _ui_progress
-                    _ui_progress.clear()
                     choice = prompt_choice(
                         f"{pkgname}: PGO profdata unavailable ({reason})."
                         " [p]lain build or [s]kip? [S]: ",

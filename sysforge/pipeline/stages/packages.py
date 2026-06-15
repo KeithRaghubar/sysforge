@@ -128,8 +128,6 @@ def _prompt_failed_packages(failed_names, errors, options):
 
     _log.warn("\nOptions:\n  [r] Retry all failed\n  [s] Skip all failed\n  [c] Choose per package\n  [a] Abort")
 
-    from sysforge.ui import progress as _ui_progress
-    _ui_progress.clear()
     choice = prompt_choice(
         "Choice [r/s/c/a]: ",
         choices=("r", "s", "c", "a"),
@@ -147,7 +145,6 @@ def _prompt_failed_packages(failed_names, errors, options):
     retry, skip = set(), set()
     for name in failed_names:
         err = errors.get(name, "unknown error")
-        _ui_progress.clear()
         ans = prompt_choice(
             f"  {name} ({err}) — [r]etry / [s]kip / [a]bort: ",
             choices=("r", "s", "a"),

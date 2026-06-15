@@ -19,6 +19,13 @@ Three functions are provided:
   falling back to line input when stdin is not a real terminal.
 
 Plus :func:`is_interactive` for stages that need to gate prompts on a TTY.
+
+Every helper blanks the bottom-anchored progress bar
+(``progress.suspend_for_prompt()``) before reading input, so an interactive
+prompt never collides with stale status text. Call sites no longer manage this
+themselves — this is the single home for that guarantee. The scroll region
+survives (the prompt prints in the normal content flow); the next
+``render()``/``phase()``/tick repaints the bar once the caller resumes.
 """
 from __future__ import annotations
 
@@ -26,6 +33,7 @@ import sys
 from typing import Iterable
 
 from sysforge import log
+from sysforge.ui import progress
 
 _log = log.get_logger("PROMPT")
 
@@ -59,6 +67,7 @@ def prompt_text(
     and any other unreadable-stdin scenario should fall back gracefully too.
     """
     full = _format_prefix(tag, level) + msg
+    progress.suspend_for_prompt()
     try:
         raw = input(full).strip()
     except (EOFError, OSError):
@@ -93,6 +102,7 @@ def prompt_choice(
     """
     choices_t = tuple(c.lower() for c in choices)
     full = _format_prefix(tag, level) + msg
+    progress.suspend_for_prompt()
     while True:
         try:
             raw = input(full).strip().lower()
@@ -136,6 +146,7 @@ def prompt_key(
     answer", distinct from EOF — so callers can re-prompt.
     """
     full = _format_prefix(tag, level) + msg
+    progress.suspend_for_prompt()
 
     def _fallback(prompt: str) -> str:
         try:

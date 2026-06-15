@@ -5,6 +5,7 @@ These tests spawn small bash/python subprocesses, so they require a working
 shell on PATH but no sysforge state.
 """
 import io
+import os
 import sys
 import threading
 from types import SimpleNamespace
@@ -80,6 +81,47 @@ def test_isatty_in_child(tmp_path):
     )
     assert rc == 0
     assert lines == ["True"]
+
+
+def _child_rows_cmd() -> list[str]:
+    return [
+        sys.executable, "-c",
+        "import os, sys; print(os.get_terminal_size(sys.stdout.fileno()).lines)",
+    ]
+
+
+def test_no_reserve_gives_child_full_height(tmp_path, monkeypatch):
+    # With reserve_bottom_rows defaulting to 0 the child sees the full terminal.
+    monkeypatch.setattr(
+        "sysforge.primitives.pty_runner.shutil.get_terminal_size",
+        lambda fallback=(80, 24): os.terminal_size((80, 30)),
+    )
+    lines: list[str] = []
+    rc = run_with_pty(
+        _child_rows_cmd(),
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lines.append, forward_bytes=False,
+    )
+    assert rc == 0
+    assert lines == ["30"]
+
+
+def test_reserve_bottom_rows_shrinks_child_winsize(tmp_path, monkeypatch):
+    # The progress bar reserves the bottom row; the child must be sized one row
+    # shorter so its full-screen redraws never touch the bar row.
+    monkeypatch.setattr(
+        "sysforge.primitives.pty_runner.shutil.get_terminal_size",
+        lambda fallback=(80, 24): os.terminal_size((80, 30)),
+    )
+    lines: list[str] = []
+    rc = run_with_pty(
+        _child_rows_cmd(),
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lines.append, forward_bytes=False,
+        reserve_bottom_rows=1,
+    )
+    assert rc == 0
+    assert lines == ["29"]
 
 
 def test_returns_nonzero(tmp_path):

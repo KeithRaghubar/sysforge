@@ -240,3 +240,53 @@ def test_prompt_key_tag_prefix(monkeypatch):
     monkeypatch.setattr("builtins.input", fake_input)
     prompt_key("Q? ", tag="REVIEW", level="UI")
     assert captured == ["[SYSFORGE][UI][REVIEW] Q? "]
+
+
+# ---------------------------------------------------------------------------
+# Progress-bar suspend before prompting
+#
+# Every helper must blank the bottom-anchored progress bar before reading
+# input, so a prompt never collides with stale status text (the
+# `sysforge run toolchain` overlap bug). It uses suspend_for_prompt() (blank
+# in place, keep the region) rather than clear() (full release), because the
+# region-reset cursor-restore left prompts rendering off-view on some
+# terminals. The suspend must happen *before* input is read.
+# ---------------------------------------------------------------------------
+
+def _record_suspend_order(monkeypatch):
+    """Patch suspend_for_prompt and builtins.input to record call order."""
+    order: list[str] = []
+
+    def fake_suspend() -> None:
+        order.append("suspend")
+
+    def fake_input(prompt: str = "") -> str:
+        order.append("input")
+        return ""
+
+    monkeypatch.setattr(
+        "sysforge.primitives.prompt.progress.suspend_for_prompt", fake_suspend
+    )
+    monkeypatch.setattr("builtins.input", fake_input)
+    return order
+
+
+def test_prompt_text_suspends_bar_before_input(monkeypatch):
+    order = _record_suspend_order(monkeypatch)
+    prompt_text("Q: ")
+    assert order == ["suspend", "input"]
+
+
+def test_prompt_choice_suspends_bar_before_input(monkeypatch):
+    order = _record_suspend_order(monkeypatch)
+    prompt_choice("Q? ", choices=("y", "n"), default="n")
+    # One suspend, before the (single) input read; the retry loop doesn't
+    # re-reserve the region, so a single suspend up front is sufficient.
+    assert order == ["suspend", "input"]
+
+
+def test_prompt_key_suspends_bar_before_input(monkeypatch):
+    order = _record_suspend_order(monkeypatch)
+    # Non-TTY stdin (pytest) → line-input fallback, which goes through input().
+    prompt_key("Q? ")
+    assert order == ["suspend", "input"]

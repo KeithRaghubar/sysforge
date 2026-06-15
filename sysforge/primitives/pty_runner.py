@@ -88,9 +88,17 @@ def run_with_pty(
     preexec_fn: Optional[Callable[[], None]] = None,
     idle_callback: Optional[Callable[[Optional[str]], None]] = None,
     idle_timeout_s: float = 30.0,
+    reserve_bottom_rows: int = 0,
 ) -> int:
     """Spawn cmd with stdout+stderr attached to a pty. Returns the child's
     return code. stdin is inherited from the parent (DEVNULL if unavailable).
+
+    ``reserve_bottom_rows`` shrinks the child's pty by that many rows (the
+    parent's progress bar reserves the bottom row via a DECSTBM region). The
+    child then believes the screen is that much shorter and confines its
+    full-screen redraws/scrolling to the rows above the bar — so the bar stays
+    permanently visible during the build instead of the child scrolling over
+    it. Pass ``progress.reserved_rows()``.
 
     If idle_callback is set, it is invoked when no line has been delivered for
     idle_timeout_s seconds. It receives either the latest ``\\r``-overwritten
@@ -100,7 +108,7 @@ def run_with_pty(
     master_fd, slave_fd = pty.openpty()
 
     sz = shutil.get_terminal_size(fallback=(80, 24))
-    _set_winsize(slave_fd, sz.lines, sz.columns)
+    _set_winsize(slave_fd, max(1, sz.lines - reserve_bottom_rows), sz.columns)
 
     try:
         stdin_arg = sys.stdin.fileno() if sys.stdin and sys.stdin.fileno() >= 0 else subprocess.DEVNULL
@@ -112,7 +120,7 @@ def run_with_pty(
 
     def _on_winch(sig, frame):
         new_sz = shutil.get_terminal_size(fallback=(80, 24))
-        _set_winsize(master_fd, new_sz.lines, new_sz.columns)
+        _set_winsize(master_fd, max(1, new_sz.lines - reserve_bottom_rows), new_sz.columns)
         if callable(prev_winch):
             prev_winch(sig, frame)
 
