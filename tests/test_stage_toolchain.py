@@ -32,6 +32,7 @@ from sysforge.pipeline.stages.toolchain import (
     _PROFRAW_SETTLE_SECS,
     _collect_pgo_packages,
     _dump_stage_dynsym_evidence,
+    _ensure_pgo_store_writable,
     _has_llvm_cmake_config,
     _pgo_install,
     _pgo_pass1_stage,
@@ -1427,6 +1428,48 @@ def test_has_llvm_cmake_config_false(tmp_path):
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout=listing, stderr="")
         assert _has_llvm_cmake_config(pkg) is False
+
+
+# ---------------------------------------------------------------------------
+# _ensure_pgo_store_writable
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_pgo_store_writable_user_path_no_sudo(tmp_path):
+    """A user-writable pgo_store is created directly, never touching sudo."""
+    pgo_store = tmp_path / "pgo" / "llvm-pgo"
+    with patch("subprocess.run") as mock_run:
+        _ensure_pgo_store_writable(pgo_store, dry_run=False)
+    assert pgo_store.is_dir()
+    mock_run.assert_not_called()
+
+
+def test_ensure_pgo_store_writable_dry_run_noop(tmp_path):
+    """Dry-run creates nothing and never shells out."""
+    pgo_store = tmp_path / "pgo" / "llvm-pgo"
+    with patch("subprocess.run") as mock_run:
+        _ensure_pgo_store_writable(pgo_store, dry_run=True)
+    assert not pgo_store.exists()
+    mock_run.assert_not_called()
+
+
+def test_ensure_pgo_store_writable_root_owned_falls_back_to_sudo(tmp_path, monkeypatch):
+    """A root-owned ancestor (mkdir raises EACCES) triggers sudo mkdir + chown
+    to the invoking user."""
+    pgo_store = tmp_path / "cache" / "sysforge" / "llvm-pgo"
+    monkeypatch.setenv("SUDO_USER", "buildbot")
+
+    def raise_eacces(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    with patch("pathlib.Path.mkdir", side_effect=raise_eacces), \
+         patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        _ensure_pgo_store_writable(pgo_store, dry_run=False)
+
+    calls = [c.args[0] for c in mock_run.call_args_list]
+    assert ["sudo", "mkdir", "-p", str(pgo_store)] in calls
+    assert ["sudo", "chown", "-R", "buildbot:", str(pgo_store)] in calls
 
 
 def test_pgo_pass1_stage_extracts_all_packages(tmp_path):

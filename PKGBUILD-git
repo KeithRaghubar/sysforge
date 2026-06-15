@@ -84,10 +84,14 @@ package() {
 
     # State directory (pipeline state, build state, logs) + sentinel subdir
     # consumed by `sysforge update` from the libalpm hooks below.
+    # /var/cache/sysforge holds the regenerable PGO profdata store, written
+    # by the unprivileged toolchain build — 0777 so makepkg can populate it
+    # without sudo (mirrors the runtime sudo-provisioning fallback).
     install -Dm644 /dev/null "$pkgdir/usr/lib/tmpfiles.d/sysforge.conf"
     {
         printf 'd /var/lib/sysforge 0777 root root -\n'
         printf 'd /var/lib/sysforge/sentinels 0777 root root -\n'
+        printf 'd /var/cache/sysforge 0777 root root -\n'
     } > "$pkgdir/usr/lib/tmpfiles.d/sysforge.conf"
 
     # Pacman PostTransaction hooks: kernel/toolchain reminders +

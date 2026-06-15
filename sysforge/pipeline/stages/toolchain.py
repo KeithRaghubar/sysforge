@@ -87,6 +87,7 @@ Compiler propagation:
 """
 
 import contextlib
+import getpass
 import os
 import subprocess
 import sys
@@ -914,6 +915,38 @@ def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> No
         raise RuntimeError(
             f"[TOOLCHAIN] pacman -U failed (exit {result.returncode}) for {label}"
         )
+
+
+def _ensure_pgo_store_writable(pgo_store: Path, dry_run: bool) -> None:
+    """Create ``pgo_store`` and make it writable by the unprivileged build user.
+
+    The 4-pass PGO build runs makepkg *unprivileged*, and the instrumented
+    binaries write ``.profraw`` files directly into ``pgo_store``. The FHS
+    default (``/var/cache/sysforge/llvm-pgo``) lives under a root-owned tree, so
+    a plain ``mkdir`` fails with ``EACCES`` — and the shipped ``tmpfiles.d`` only
+    provisions ``/var/lib/sysforge``, never ``/var/cache/sysforge`` (and a
+    run-from-repo dev setup installs no tmpfiles at all). When the user can't
+    create the tree directly, fall back to ``sudo`` to create it and hand
+    ownership to the invoking user so the build can write into it.
+
+    A user-configured / env-override ``pgo_store`` that already resolves to a
+    user-writable location takes the fast path and never touches sudo.
+    """
+    if dry_run:
+        return
+    try:
+        pgo_store.mkdir(parents=True, exist_ok=True)
+        if os.access(pgo_store, os.W_OK):
+            return
+    except PermissionError:
+        pass
+    # Root-owned ancestor: create with sudo, then chown to the build user
+    # (SUDO_USER when sysforge itself was launched under sudo, else the
+    # current login) using the user's login group.
+    user = os.environ.get("SUDO_USER") or os.environ.get("USER") or getpass.getuser()
+    _log.info(f"[PGO] Provisioning root-owned pgo_store via sudo: {pgo_store}")
+    subprocess.run(["sudo", "mkdir", "-p", str(pgo_store)], check=True)
+    subprocess.run(["sudo", "chown", "-R", f"{user}:", str(pgo_store)], check=True)
 
 
 def _has_llvm_cmake_config(pkg_file: Path) -> bool:
@@ -1856,7 +1889,7 @@ def _build_llvm_pgo_inner(
         if pgo_store.exists():
             _log.info(f"[PGO] Purging stale pgo_store: {pgo_store}")
             _shutil.rmtree(pgo_store)
-        pgo_store.mkdir(parents=True, exist_ok=True)
+        _ensure_pgo_store_writable(pgo_store, options.dry_run)
 
     # Sudo keepalive for the build sequence. _pgo_install() calls sudo
     # directly from sysforge, so the keepalive's `sudo -v` refreshes the correct

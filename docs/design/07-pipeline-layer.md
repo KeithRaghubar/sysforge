@@ -244,7 +244,8 @@ pgo_staging1 = "/var/tmp/sysforge-llvm-stage1"
 pgo_staging  = "/var/tmp/sysforge-llvm-stage2"
 
 # PGO data dir: profraw files written here during Pass 2, merged to clang.profdata
-pgo_store   = "/var/tmp/sysforge-llvm-pgo"
+# (FHS default /var/cache/sysforge/llvm-pgo; override via toolchain.toml or SYSFORGE_PGO_STORE)
+pgo_store   = "/var/cache/sysforge/llvm-pgo"
 
 # Build-safety Gate 1 (LLVM path only; see Build-safety gates below)
 min_build_free_gb = 40    # min free GiB per build filesystem (override: --skip-build-space-check)
@@ -310,7 +311,7 @@ The sequence is **four builds** (Pass 1a, Pass 1b, Pass 2, Pass 3) that produce 
 **Confirmation gating (PGO).** Unlike the rest of sysforge (which is automation-focused), the LLVM PGO sub-flow is fragile enough that wrong profdata silently mis-optimises the resulting compiler. Four decision points in `_build_llvm_pgo` therefore prompt the user before destructive or long-running work, all sharing a single `_pgo_confirm` helper:
 
 1. **Reuse vs rebuild** — when compatible profdata is found, prompt `[Y/n]` to reuse; declining triggers a full 4-pass rebuild (and continues into prompts 2–3).
-2. **Purge `staging/` and `pgo_store/`** — prompt `[y/N]` before `rmtree`; declining aborts PGO.
+2. **Purge `staging/` and `pgo_store/`** — prompt `[y/N]` before `rmtree`; declining aborts PGO. After the purge, `pgo_store` is recreated via `_ensure_pgo_store_writable`: the FHS default lives under root-owned `/var/cache`, and the unprivileged makepkg passes write `.profraw` directly into it, so when a plain `mkdir` hits `EACCES` the helper falls back to `sudo mkdir -p` + `sudo chown -R <user>:` (the installed `tmpfiles.d` provisions `/var/cache/sysforge` 0777 for package installs, but a run-from-repo dev setup has no tmpfiles, hence the runtime fallback). A user-writable / env-override `pgo_store` takes the direct path and never touches sudo.
 3. **4-pass start** — prompt `[y/N]` before launching the ~2–3 hour 4-pass sequence; declining aborts PGO.
 4. **Suspicious Pass-2 profdata size** (`< 10 MiB`) — prompt `[y/N]` to continue into Pass 3; declining aborts before Pass 3 so the user can investigate instrumentation.
 

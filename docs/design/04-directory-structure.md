@@ -149,8 +149,8 @@ sysforge/
     aur-packages.txt                 # AUR name cache (regenerable, refreshed every 24h)
 ~/.local/state/sysforge/             # $XDG_STATE_HOME/sysforge
     (state files)                    # fallback runtime state when /var/lib/sysforge is not writable
-/var/cache/sysforge/                 # regenerable build cache (override via SYSFORGE_PGO_STORE)
-    llvm-pgo/                        # LLVM PGO profraw/profdata store
+/var/cache/sysforge/                 # regenerable build cache (override via SYSFORGE_PGO_STORE); provisioned 0777 by tmpfiles.d, sudo-created at runtime if absent
+    llvm-pgo/                        # LLVM PGO profraw/profdata store (written by unprivileged makepkg)
 /var/lib/sysforge/
     pipeline_state.toml              # pipeline checkpoint state (created at runtime)
     build_state.toml                 # per-package build metadata (created at runtime, by sysforge build/update)
