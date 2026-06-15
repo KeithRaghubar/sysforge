@@ -35,6 +35,7 @@ from sysforge.primitives.makepkg_flags import (
     _scrub_lib32_arch_flags,
     _strip_full_lto,
     _strip_lld_flags,
+    _strip_pgo_flags,
 )
 from sysforge.primitives.profile import CONF_KEY_MAP, KERNEL_CLEAN_KEYS, SYSFORGE_KEYS
 
@@ -373,6 +374,21 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                     f"LDFLAGS: {stripped_tokens}"
                 )
                 profile_overrides["LDFLAGS"] = cleaned
+        # Strip PGO profile flags: the toolchain stage injects
+        # -fprofile-use=<store>/clang.profdata into CFLAGS/CXXFLAGS/LDFLAGS via
+        # compiler_flags_extra (above), but the profile is trained on the x86_64
+        # clang self-build and is meaningless for an i686 (-m32) build — clang
+        # discards it (-Wbackend-plugin "count discarded"). This runs after the
+        # injection so it catches the injected flag regardless of source.
+        for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
+            if key in profile_overrides:
+                cleaned, stripped_tokens = _strip_pgo_flags(profile_overrides[key])
+                if stripped_tokens:
+                    _conf_log.info(
+                        f"lib32 build: stripped PGO profile flag(s) from "
+                        f"profile {key}: {stripped_tokens}"
+                    )
+                    profile_overrides[key] = cleaned
 
     # Build output lines: system conf keys in their original raw form,
     # profile-overridden keys substituted inline, new profile keys appended.

@@ -195,3 +195,34 @@ def _scrub_lib32_arch_flags(flags_val: str) -> tuple[str, list[str]]:
         else:
             out_tokens.append(token)
     return " ".join(out_tokens), stripped
+
+
+# PGO profile flags (clang IR-PGO and frontend-instr variants). The toolchain
+# stage injects ``-fprofile-use=<store>/clang.profdata`` for the PGO build; it is
+# trained on the x86_64 clang self-build and is meaningless for an i686 (-m32)
+# lib32-* build (clang discards it with -Wbackend-plugin "count discarded").
+_PGO_FLAG_PREFIXES = (
+    "-fprofile-use",
+    "-fprofile-instr-use",
+    "-fprofile-generate",
+    "-fprofile-instr-generate",
+    "-fcs-profile-generate",
+)
+
+
+def _strip_pgo_flags(flags_val: str) -> tuple[str, list[str]]:
+    """Strip PGO profile-use/-generate flags from a flag string.
+
+    Matches both bare (``-fprofile-use``) and valued (``-fprofile-use=PATH``)
+    forms across the IR-PGO and frontend-instr variants. Returns
+    ``(cleaned, stripped_tokens)``. Used only for lib32-* builds — a foreign-arch
+    profile must never reach the i686 build.
+    """
+    stripped: list[str] = []
+    out_tokens: list[str] = []
+    for token in flags_val.split():
+        if any(token == p or token.startswith(p + "=") for p in _PGO_FLAG_PREFIXES):
+            stripped.append(token)
+        else:
+            out_tokens.append(token)
+    return " ".join(out_tokens), stripped

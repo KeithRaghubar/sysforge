@@ -111,9 +111,17 @@ class StageOwnership:
         base = pkgbase or name
         if self.kernel_pkgbase and self.kernel_pkgbase in (name, base):
             return "kernel"
+        # Implicit LLVM-suite prefix ownership covers only the 64-bit suite.
+        # lib32-* LLVM packages are NOT built by the toolchain stage by default
+        # (they share the all-target 64-bit headers and must not have their
+        # LLVM_TARGETS_TO_BUILD reduced — see pipeline/stages/toolchain.py
+        # ::_DEFAULT_LLVM_LIB32). They build via `sysforge update` instead, so the
+        # prefix match must not claim them or update would skip them with nothing
+        # building them. They are toolchain-owned only when explicitly opted back
+        # in via `[packages] lib32` (the toolchain_configured path below).
         if self.toolchain_active and (
-            is_llvm_pkgbase(name)
-            or is_llvm_pkgbase(base)
+            (is_llvm_pkgbase(name) and not name.startswith("lib32-"))
+            or (is_llvm_pkgbase(base) and not base.startswith("lib32-"))
             or name in self.toolchain_configured
             or base in self.toolchain_configured
         ):

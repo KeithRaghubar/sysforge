@@ -150,6 +150,44 @@ def test_cuda_matcher_no_false_positive_on_flto_thin():
 
 
 # ---------------------------------------------------------------------------
+# lib32 reduced-target libLLVM link failure
+# ---------------------------------------------------------------------------
+
+# The real lib32-clang failure: clang-nvlink-wrapper links against a reduced
+# /usr/lib32/libLLVM.so (X86;NVPTX) but references all-target init symbols from
+# the shared all-target 64-bit headers.
+_LIB32_LLVM_LINK_FAIL = (
+    "[1531/1567] Linking CXX executable bin/clang-nvlink-wrapper\n"
+    "FAILED: bin/clang-nvlink-wrapper\n"
+    ": && /usr/bin/clang++ -O3 -m32 ... -o bin/clang-nvlink-wrapper "
+    "lib32/libclangBasic.a /usr/lib32/libLLVM.so.22.1 && :\n"
+    "ld.lld: error: undefined symbol: LLVMInitializeAArch64AsmParser\n"
+    ">>> referenced by ClangNVLinkWrapper.cpp\n"
+    "ld.lld: error: undefined symbol: LLVMInitializeBPFAsmParser\n"
+    "clang++: error: linker command failed with exit code 1\n"
+)
+
+
+def test_lib32_reduced_target_llvm_matches():
+    out = diagnose(_lines(_LIB32_LLVM_LINK_FAIL), None)
+    assert [s.signature for s in out] == ["toolchain:lib32-reduced-target"]
+    # The misleading generic "version skew / pacman -Syu" suggestion is suppressed.
+    assert all(s.signature != "toolchain:llvm-broken" for s in out)
+    assert "lib32" in out[0].message
+
+
+def test_runtime_llvm_skew_still_generic():
+    """A runtime symbol-lookup failure (clang can't start) — NOT a lib32 link
+    failure — must still get the generic broken-toolchain suggestion."""
+    log = (
+        "clang: symbol lookup error: /usr/bin/clang: undefined symbol: "
+        "LLVMInitializeX86TargetInfo\n"
+    )
+    out = diagnose(_lines(log), None)
+    assert [s.signature for s in out] == ["toolchain:llvm-broken"]
+
+
+# ---------------------------------------------------------------------------
 # Side-car log discovery
 # ---------------------------------------------------------------------------
 

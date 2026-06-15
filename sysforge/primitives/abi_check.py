@@ -69,11 +69,13 @@ _RE_NEEDED = re.compile(r"\(NEEDED\)\s+Shared library:\s+\[([^\]]+)\]")
 _RE_VERNEED_FILE = re.compile(r"\bFile:\s+(\S+)")
 _RE_VERNEED_NAME = re.compile(r"\bName:\s+(\S+)")
 
-# LLVM optional target-init entry points. libLLVM is routinely built with a
-# reduced LLVM_TARGETS_TO_BUILD (notably the multilib lib32-llvm, which ships
-# only X86/NVPTX), so target-registration symbols for un-built backends —
+# LLVM optional target-init entry points. A libLLVM built with a reduced
+# LLVM_TARGETS_TO_BUILD (e.g. a hand-built or older lib32-llvm restricted to
+# X86/NVPTX — sysforge itself no longer reduces lib32's target set; see the
+# toolchain stage's _maybe_patch_llvm_targets lib32 exemption) leaves
+# target-registration symbols for un-built backends —
 # LLVMInitialize<Target>{Target,TargetInfo,TargetMC,AsmParser,AsmPrinter,
-# Disassembler} — are simply absent. Mesa's gallium drivers reference all of
+# Disassembler} — simply absent. Mesa's gallium drivers reference all of
 # them, but each is lazily bound and only dereferenced when that GPU target is
 # the active driver, so the absence is benign on hardware that never selects it.
 # When such a symbol is missing but its version node IS present in the bound

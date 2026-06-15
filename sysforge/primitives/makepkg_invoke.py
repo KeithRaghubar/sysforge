@@ -50,6 +50,13 @@ _makepkg_log = log.get_logger("MAKEPKG")
 # segment (or a "no output" marker) at this cadence.
 MAKEPKG_HEARTBEAT_S = 30.0
 
+# On a build failure at normal verbosity the live stream only reaches the
+# terminal (forward_bytes) — the per-package log gets heartbeats, not the real
+# error. Persist this many trailing lines of captured output to the log on
+# failure so the failing block (e.g. ninja's `FAILED:` lines) is diagnosable
+# after the fact without a manual re-run.
+MAKEPKG_FAILURE_TAIL_LINES = 80
+
 # Substrings in makepkg output that identify a clang-only flag rejected by
 # GCC. When any of these appears on stderr/stdout alongside a non-zero exit,
 # invoke_makepkg raises ToolchainMismatchError so _run_build can retry once
@@ -283,6 +290,23 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     )
 
     if returncode != 0:
+        # Persist the tail of real makepkg/ninja output to the per-package log.
+        # At normal verbosity the live stream only reaches the terminal
+        # (forward_bytes) and the log gets heartbeats, so without this the actual
+        # failing block (e.g. ninja's `FAILED:` lines) never lands on disk and the
+        # failure can't be diagnosed after the fact. Logged at DEBUG so it goes to
+        # the per-package log file without re-spamming the console; at -vvv every
+        # line was already logged, so skip. Exit 13 (already-built) is not a real
+        # failure — no tail needed there.
+        if not verbose_log and returncode != 13 and not already_built and captured_lines:
+            tail = captured_lines[-MAKEPKG_FAILURE_TAIL_LINES:]
+            _makepkg_log.debug(
+                f"--- last {len(tail)} line(s) of makepkg output "
+                f"(build failed, exit {returncode}) ---"
+            )
+            for _line in tail:
+                _makepkg_log.debug(_line)
+            _makepkg_log.debug("--- end captured makepkg output ---")
         # Exit code 13 = E_ALREADY_BUILT (matching .pkg.tar already in PKGDEST).
         # Also detect via output match for chroot wrappers that may rewrite the
         # exit code. Caller (update.py) installs the existing artifact instead
@@ -310,8 +334,8 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             _makepkg_log.info("package() failed — likely an upstream issue; "
                       "sysforge does not modify package()")
         else:
-            _makepkg_log.info("re-run with -vvv to capture full makepkg output "
-                      "in the log for diagnosis")
+            _makepkg_log.info("see the captured output tail in the per-package log "
+                      "for the failing block (or re-run with -vvv for full output)")
         if toolchain_mismatch:
             _makepkg_log.warn(
                 "Detected clang-only compiler flag rejected by GCC — "

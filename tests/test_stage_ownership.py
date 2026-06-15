@@ -123,6 +123,30 @@ def test_toolchain_owns_configured_non_prefix_package(tmp_path):
     assert "spirv-llvm-translator" in snap.owned_pkgbases()
 
 
+def test_toolchain_does_not_own_lib32_by_default(tmp_path):
+    """lib32-* LLVM packages are NOT built by the toolchain stage by default, so
+    the prefix match must not claim them — otherwise `update` would skip them
+    with nothing building them. They flow through `sysforge update` instead."""
+    with _configs(tmp_path, toolchain=_TC_LLVM):
+        snap = load_stage_ownership()
+    for pkg in ("lib32-llvm", "lib32-clang", "lib32-llvm-libs"):
+        assert snap.owner_of(pkg) is None, pkg
+    # The 64-bit suite is still owned.
+    assert snap.owner_of("llvm") == "toolchain"
+
+
+def test_toolchain_owns_lib32_when_explicitly_configured(tmp_path):
+    """A user can still opt lib32 back into the toolchain pass via [packages]
+    lib32 — then those names are toolchain-owned through the configured path."""
+    toml = _TC_LLVM + '[packages]\nlib32 = ["lib32-llvm", "lib32-clang"]\n'
+    with _configs(tmp_path, toolchain=toml):
+        snap = load_stage_ownership()
+    assert snap.owner_of("lib32-llvm") == "toolchain"
+    assert snap.owner_of("lib32-clang") == "toolchain"
+    # A lib32 package NOT listed is still not owned.
+    assert snap.owner_of("lib32-llvm-libs") is None
+
+
 def test_toolchain_gcc_compiler_owns_no_llvm(tmp_path):
     """Register-only gcc path builds no LLVM — stock pacman LLVM is left alone."""
     with _configs(tmp_path, toolchain='enabled = true\ncompiler = "gcc"\n'):

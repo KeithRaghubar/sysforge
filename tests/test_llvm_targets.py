@@ -235,6 +235,20 @@ def test_maybe_patch_llvm_targets_skips_non_llvm(tmp_path):
     assert "LLVM_TARGETS_TO_BUILD" not in pkgbuild.read_text()
 
 
+def test_maybe_patch_llvm_targets_skips_lib32(tmp_path):
+    """lib32-* LLVM packages must NOT have their target set reduced — they share
+    the all-target 64-bit headers, so a reduced LLVM_TARGETS_TO_BUILD breaks
+    lib32-clang's offload-tool links. The patcher leaves them untouched."""
+    pkgbuild, state_dir = _llvm_path_with_hw(tmp_path, ["X86", "NVPTX"])
+    pkgmeta = {"globals": {"pkgname": ["lib32-llvm", "lib32-llvm-libs"]}}
+    with patch(
+        "sysforge.primitives.makepkg_wrapper.TOOLCHAIN_PATH",
+        tmp_path / "missing-toolchain.toml",
+    ):
+        _maybe_patch_llvm_targets(pkgbuild, pkgmeta, state_dir_override=state_dir)
+    assert "LLVM_TARGETS_TO_BUILD" not in pkgbuild.read_text()
+
+
 def test_maybe_patch_llvm_targets_falls_back_to_live_detect(tmp_path):
     """Round-3: LLVM pkgbase + missing hardware_profile.toml → live detection
     (uname/lspci) is used and the patch IS applied. This is the round-2 silent

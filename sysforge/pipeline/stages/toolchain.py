@@ -233,12 +233,27 @@ def _sync_pkgbuild_dirs(
 
 _DEFAULT_LLVM_PGO = ["llvm", "llvm-libs"]
 _DEFAULT_LLVM_NON_PGO = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
-_DEFAULT_LLVM_LIB32 = [
+# The canonical lib32 LLVM suite. Kept for documentation / opt-in, but NOT built
+# by the toolchain stage by default (see _DEFAULT_LLVM_LIB32 below).
+_LLVM_LIB32_SUITE = [
     "lib32-llvm",
     "lib32-llvm-libs",
     "lib32-clang",
     "lib32-spirv-llvm-translator",
 ]
+# lib32 is intentionally NOT part of the toolchain pass by default. lib32 ships no
+# headers of its own and compiles against the all-target 64-bit /usr/include/llvm
+# headers, so reducing its LLVM_TARGETS_TO_BUILD (which the toolchain target filter
+# does for the host's GPU/CPU) leaves lib32-llvm without the target-init symbols
+# lib32-clang's offload tools (clang-nvlink-wrapper / clang-sycl-linker) reference
+# from those headers — a hard link failure. PGO is also useless here: an
+# x86_64-trained profile is discarded by the i686 build, and lib32 libLLVM is a
+# cold path. lib32 builds correctly via `sysforge update` (repo, full targets, no
+# PGO). A user can opt lib32 back into the toolchain pass with
+# `[packages] lib32 = [...]`; the target-filter exemption (makepkg_wrapper
+# ._maybe_patch_llvm_targets) and the lib32 PGO scrub (makepkg_conf) keep that
+# path correct.
+_DEFAULT_LLVM_LIB32: list[str] = []
 _DEFAULT_STAGING_1 = "/var/tmp/sysforge-llvm-stage1"
 _DEFAULT_STAGING = "/var/tmp/sysforge-llvm-stage2"
 # pgo_store resolution (toolchain.toml > SYSFORGE_PGO_STORE > /var/cache default)

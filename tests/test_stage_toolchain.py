@@ -2401,6 +2401,7 @@ def _run_pgo(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None,
          patch("sysforge.pipeline.stages.toolchain.makepkg_run",
                side_effect=_pgo_fake_run_factory(pgo_store, call_log)), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_pass1_stage"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
          patch("subprocess.run", side_effect=_fake_subprocess_factory(profdata_size)), \

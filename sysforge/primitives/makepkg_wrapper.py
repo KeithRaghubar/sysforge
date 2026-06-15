@@ -179,7 +179,17 @@ def _maybe_patch_llvm_targets(
     the patcher to a specific state dir (CLI ``--state-dir``); it just
     isn't load-bearing anymore.
     """
-    if not is_llvm_pkgbase(_pkgname_from_meta(pkgmeta)):
+    pkgname = _pkgname_from_meta(pkgmeta)
+    if not is_llvm_pkgbase(pkgname):
+        return
+    # lib32-* LLVM packages must NOT have their target set reduced. They ship no
+    # headers of their own and compile against the all-target 64-bit
+    # /usr/include/llvm headers, so a reduced LLVM_TARGETS_TO_BUILD leaves
+    # lib32-llvm without the target-init symbols lib32-clang's offload tools
+    # (clang-nvlink-wrapper / clang-sycl-linker) reference from those headers — a
+    # hard link failure. Always build all targets for lib32; let the upstream
+    # PKGBUILD decide (stock lib32-llvm builds the full set).
+    if pkgname.startswith("lib32-"):
         return
     from sysforge.pipeline.state import resolve_state_dir
     from sysforge.primitives.llvm_targets import resolve_or_detect_llvm_targets

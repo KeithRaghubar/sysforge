@@ -289,9 +289,41 @@ _RE_LLVM_UNDEF_SYMBOL = re.compile(r"undefined symbol: LLVMInitialize\w+")
 _RE_CLANG_SYMBOL_LOOKUP = re.compile(r"symbol lookup error: \S*clang")
 _RE_MESON_UNKNOWN_CLANG = re.compile(r"Unknown compiler\(s\): \[\['clang'?'?\]\]")
 
+# A *link-time* undefined LLVMInitialize* symbol against a lib32 libLLVM is a
+# different beast from a runtime clang/llvm-libs skew: lib32-llvm was built with a
+# reduced LLVM_TARGETS_TO_BUILD, but lib32-clang compiles its offload tools
+# (clang-nvlink-wrapper / clang-sycl-linker, via InitializeAllTargetInfos()) against
+# the all-target 64-bit /usr/include/llvm headers, so the missing backends can't
+# link. Matched more specifically than the generic broken-toolchain case below.
+_RE_LD_LLVM_TARGET_UNDEF = re.compile(r"ld\.lld: error: undefined symbol: LLVMInitialize\w+")
+_RE_LIB32_LLVM_SIGNAL = re.compile(r"/usr/lib32/libLLVM|lib32/libLLVM|(?<!\S)-m32(?!\S)")
+
+
+def _match_lib32_reduced_target_llvm(text: str, active: str | None) -> FixSuggestion | None:
+    del active
+    if not (_RE_LD_LLVM_TARGET_UNDEF.search(text) and _RE_LIB32_LLVM_SIGNAL.search(text)):
+        return None
+    return FixSuggestion(
+        signature="toolchain:lib32-reduced-target",
+        message=(
+            "lib32 libLLVM was built with a reduced LLVM_TARGETS_TO_BUILD, but "
+            "lib32-clang compiles its offload tools against the all-target 64-bit "
+            "/usr/include/llvm headers — the un-built target backends can't link"
+        ),
+        fix_cmd=(
+            "build lib32-llvm/lib32-clang with the full target set: via sysforge, "
+            "build lib32-* through `sysforge update` (not the toolchain stage) so "
+            "LLVM_TARGETS_TO_BUILD is not reduced for them"
+        ),
+    )
+
 
 def _match_broken_llvm_toolchain(text: str, active: str | None) -> FixSuggestion | None:
     del active
+    # Defer to the lib32 reduced-target matcher for that (link-time) pattern —
+    # the generic "clang cannot run / version skew" message would mislead.
+    if _RE_LD_LLVM_TARGET_UNDEF.search(text) and _RE_LIB32_LLVM_SIGNAL.search(text):
+        return None
     if not (
         _RE_LLVM_UNDEF_SYMBOL.search(text)
         or _RE_CLANG_SYMBOL_LOOKUP.search(text)
@@ -317,6 +349,7 @@ _MATCHERS = (
     _match_gst_ptp,
     _match_meson_unknown_opts,
     _match_cuda_host_gcc,
+    _match_lib32_reduced_target_llvm,
     _match_broken_llvm_toolchain,
 )
 

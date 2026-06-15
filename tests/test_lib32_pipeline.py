@@ -55,6 +55,12 @@ PROFILES = {
         "CFLAGS": "-march=native -O2 -pipe",
         "RUSTFLAGS": "-C opt-level=3 -C target-cpu=native",
     },
+    "gcc": {
+        "extends": "bare",
+        "CC": "gcc",
+        "CXX": "g++",
+        "CFLAGS": "-march=native -O2 -pipe",
+    },
 }
 
 RUSTUP_PIN_RE = re.compile(r"RUSTUP_TOOLCHAIN[ \t]*=[ \t]*[\"']?([^\s\"';#]+)")
@@ -251,6 +257,73 @@ def test_step5_lib32_scrubs_march_native_from_profile_override():
     # But other CFLAGS content survives.
     assert "-O2" in cflags_line
     assert "-pipe" in cflags_line
+
+
+# ---------------------------------------------------------------------------
+# Step 5 (cont.): lib32 PGO scrub — strip -fprofile-use from CFLAGS/CXXFLAGS/
+# LDFLAGS.
+#
+# The toolchain stage injects -fprofile-use=<store>/clang.profdata via
+# compiler_flags_extra. That profile is trained on the x86_64 clang self-build
+# and is discarded by an i686 (-m32) build, so it must never reach a lib32-*
+# build. The scrub runs after the compiler_flags_extra injection, so it catches
+# the injected flag. gcc + clang parity: the scrub is compiler-agnostic but the
+# injection happens on both PGO paths, so both are covered.
+# ---------------------------------------------------------------------------
+
+_PGO_FLAG = "-fprofile-use=/var/cache/sysforge/llvm-pgo/clang.profdata"
+
+
+def _emit_lib32_with_pgo(tmp, profile_name):
+    system_conf = _write_system_conf(tmp, "-O2 -pipe")
+    resolved = merge_extends(profile_name, PROFILES, conflict_groups={})
+    with emit_makepkg_conf(
+        resolved, frozenset({"makepkg", "env"}),
+        system_conf_path=str(system_conf),
+        is_lib32=True,
+        compiler_flags_extra=_PGO_FLAG,
+    ) as conf_path:
+        return Path(conf_path).read_text()
+
+
+def _flag_lines(text):
+    return {
+        key: next((ln for ln in text.splitlines() if ln.startswith(f"{key}=")), "")
+        for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS")
+    }
+
+
+def test_step5_lib32_scrubs_pgo_flag_clang_path():
+    """clang profile (CC=clang): injected -fprofile-use is scrubbed from all
+    three flag vars for a lib32 build."""
+    with tempfile.TemporaryDirectory() as d:
+        text = _emit_lib32_with_pgo(Path(d), "standard")
+    for key, line in _flag_lines(text).items():
+        assert "-fprofile-use" not in line, f"{key} still carries the PGO flag: {line}"
+
+
+def test_step5_lib32_scrubs_pgo_flag_gcc_path():
+    """gcc profile (CC=gcc): the scrub is compiler-agnostic and still fires."""
+    with tempfile.TemporaryDirectory() as d:
+        text = _emit_lib32_with_pgo(Path(d), "gcc")
+    for key, line in _flag_lines(text).items():
+        assert "-fprofile-use" not in line, f"{key} still carries the PGO flag: {line}"
+
+
+def test_step5_non_lib32_keeps_pgo_flag():
+    """Default is_lib32=False must leave the injected -fprofile-use intact
+    (the 64-bit PGO build genuinely uses it)."""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        system_conf = _write_system_conf(tmp, "-O2 -pipe")
+        resolved = merge_extends("standard", PROFILES, conflict_groups={})
+        with emit_makepkg_conf(
+            resolved, frozenset({"makepkg", "env"}),
+            system_conf_path=str(system_conf),
+            compiler_flags_extra=_PGO_FLAG,
+        ) as conf_path:
+            text = Path(conf_path).read_text()
+    assert "-fprofile-use" in text
 
 
 # ---------------------------------------------------------------------------
