@@ -1402,6 +1402,21 @@ def test_dump_stage_dynsym_evidence_returns_none_when_staging_missing(tmp_path):
     assert not (dest_dir / "llvm_abi_hazard.log").exists()
 
 
+def test_dump_stage_dynsym_evidence_returns_none_when_dest_dir_none(tmp_path):
+    """Unset state dir (None) → returns None instead of raising TypeError.
+
+    Regression: the Gate-3 failure path passed ``options.state_dir`` which is
+    None whenever --state-dir isn't on the CLI, crashing on ``Path(None)``.
+    """
+    staging = tmp_path / "stage2"
+    libdir = staging / "usr/lib"
+    libdir.mkdir(parents=True)
+    (libdir / "libLLVM.so.22.1").touch()
+
+    out = _dump_stage_dynsym_evidence(staging, None)
+    assert out is None
+
+
 # ---------------------------------------------------------------------------
 # _has_llvm_cmake_config / _pgo_pass1_stage
 # ---------------------------------------------------------------------------

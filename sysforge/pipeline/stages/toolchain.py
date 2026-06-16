@@ -1572,7 +1572,7 @@ def _check_llvm_link_resolution() -> list[str]:
 
 
 def _dump_stage_dynsym_evidence(
-    staging: Path, dest_dir: Path | str
+    staging: Path, dest_dir: Path | str | None
 ) -> Path | None:
     """Dump stage2 ``libLLVM.so.*`` dynamic symbols for post-mortem inspection.
 
@@ -1585,6 +1585,8 @@ def _dump_stage_dynsym_evidence(
     the suspect ``.so`` is missing, or ``nm`` failed.
     """
     if not staging.exists():
+        return None
+    if dest_dir is None:
         return None
     candidates = sorted((staging / "usr/lib").glob("libLLVM.so.*"))
     so = next((p for p in candidates if p.is_file()), None)
@@ -2852,7 +2854,7 @@ class ToolchainStage(Stage):
                     issues = _verify_llvm_install(expected_targets=expected_targets)
                     if issues:
                         evidence_path = (
-                            _dump_stage_dynsym_evidence(staging, options.state_dir)
+                            _dump_stage_dynsym_evidence(staging, state.path.parent)
                             if pgo
                             else None
                         )
