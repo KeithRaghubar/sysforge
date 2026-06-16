@@ -19,6 +19,7 @@ from sysforge.pipeline.stages.toolchain import (
     _extract_pass2_to_staging,
     _build_pass,
     _build_llvm_single,
+    _build_llvm_pgo_inner,
     _do_profraw_merge,
     _profraw_merge_daemon,
     _merge_profraw,
@@ -706,6 +707,149 @@ def test_build_llvm_single_stamps_owner_stage(tmp_path):
     assert captured["variant"] == "stock_llvm"
 
 
+def test_pass3_non_pgo_links_against_staged_optimized_libllvm_reuse(tmp_path):
+    """Regression: in the profdata-reuse fast path, the non-pgo suite (clang, …)
+    must build against the freshly-built OPTIMIZED libLLVM staged in stage3, NOT
+    the live /usr libLLVM. Otherwise libclang-cpp records `_ZNSt*@LLVM_<ver>`
+    against a libLLVM that the -fprofile-use build no longer exports (it inlines
+    the stdlib symbol away), bricking the live clang at the first symbol lookup —
+    the exact failure this split exists to prevent.
+    """
+    builds = tmp_path / "builds"
+    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
+    non_pgo_map = {"clang": make_pkgbuild(builds, "clang")}
+    staging1, staging, staging3 = (
+        tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3"
+    )
+    pgo_store = tmp_path / "pgo_store"
+    pgo_store.mkdir()
+    profdata = pgo_store / "clang.profdata"
+    profdata.write_bytes(b"fake")
+
+    options = make_options(
+        dry_run=False, rebuild_profdata=False, state_dir=tmp_path / "state"
+    )
+
+    calls = []
+
+    def fake_build_pass(label, pkgbuild_map, options, **kw):
+        calls.append({
+            "pkgs": set(pkgbuild_map.keys()),
+            "cfe": kw.get("compiler_flags_extra"),
+            "env": dict(kw.get("pgo_env") or {}),
+            "owner_stage": kw.get("owner_stage"),
+            "cc": kw.get("cc"),
+        })
+
+    extract_mock = MagicMock()
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "_validate_pgo_environment"), \
+         patch(T + "_check_existing_profdata", return_value=("ready", str(profdata))), \
+         patch(T + "_pgo_confirm"), \
+         patch(T + "_build_pass", side_effect=fake_build_pass), \
+         patch(T + "_extract_pass2_to_staging", extract_mock), \
+         patch(T + "_remove_staging"), \
+         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
+        _build_llvm_pgo_inner(
+            pgo_map, non_pgo_map, {},
+            staging1, staging, staging3, pgo_store, options,
+        )
+
+    # Exactly two sub-passes: 3a (pgo) then 3b (non_pgo). No 3c (lib32 empty).
+    assert len(calls) == 2
+    pgo_call, non_pgo_call = calls[0], calls[1]
+    assert pgo_call["pkgs"] == {"llvm"}
+    assert non_pgo_call["pkgs"] == {"clang"}
+
+    # 3a builds llvm itself — no find_package(LLVM) redirect on the reuse path
+    # (system clang, no staged cc).
+    assert "CMAKE_PREFIX_PATH" not in pgo_call["env"]
+
+    # 3b — the fix: clang/lld link against the staged OPTIMIZED libLLVM.
+    assert non_pgo_call["env"]["CMAKE_PREFIX_PATH"] == f"{staging3}/usr"
+    assert "LD_LIBRARY_PATH" not in non_pgo_call["env"], (
+        "host clang compiles the source; it must NOT be forced to LOAD the "
+        "staged libLLVM (mirror Pass 1b)"
+    )
+    assert non_pgo_call["env"]["LLVM_PROFILE_FILE"] == ""
+
+    for c in calls:
+        assert c["owner_stage"] == "toolchain"
+        assert c["cfe"] == f"-fprofile-use={profdata}"
+
+    # The optimized libLLVM was staged into stage3 *before* clang built.
+    extract_mock.assert_any_call(pgo_map, staging3, False)
+
+
+def test_pass3_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
+    """Same coherence guarantee on the full 4-pass path (rebuild_profdata=True):
+    Pass 3b builds the non-pgo suite against stage3's optimized libLLVM, after a
+    pgo sub-pass (3a) optimized llvm/llvm-libs with -fprofile-use.
+    """
+    builds = tmp_path / "builds"
+    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
+    non_pgo_map = {"clang": make_pkgbuild(builds, "clang")}
+    staging1, staging, staging3 = (
+        tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3"
+    )
+    pgo_store = tmp_path / "pgo_store"
+    pgo_store.mkdir()
+    # _merge_profraw returns this; kept OUTSIDE pgo_store (the fresh-build purge
+    # wipes pgo_store) and sized past _PGO_PROFDATA_MIN_BYTES so the
+    # "suspicious profdata" prompt does not fire.
+    profdata = tmp_path / "clang.profdata"
+    profdata.write_bytes(b"x" * (_PGO_PROFDATA_MIN_BYTES + 1))
+
+    options = make_options(
+        dry_run=False, rebuild_profdata=True, state_dir=tmp_path / "state"
+    )
+
+    calls = []
+
+    def fake_build_pass(label, pkgbuild_map, options, **kw):
+        calls.append({
+            "pkgs": set(pkgbuild_map.keys()),
+            "cfe": kw.get("compiler_flags_extra"),
+            "env": dict(kw.get("pgo_env") or {}),
+        })
+
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "_validate_pgo_environment"), \
+         patch(T + "_pgo_confirm"), \
+         patch(T + "_pgo_pass1_stage"), \
+         patch(T + "_profile_runtime_ldflag", return_value=None), \
+         patch(T + "_profraw_merge_daemon"), \
+         patch(T + "_merge_profraw", return_value=profdata), \
+         patch(T + "_write_profdata_version"), \
+         patch(T + "_ensure_pgo_store_writable"), \
+         patch(T + "_extract_pass2_to_staging"), \
+         patch(T + "_remove_staging"), \
+         patch(T + "_build_pass", side_effect=fake_build_pass), \
+         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
+        _build_llvm_pgo_inner(
+            pgo_map, non_pgo_map, {},
+            staging1, staging, staging3, pgo_store, options,
+        )
+
+    # Pass 3b is the sub-pass steered at stage3.
+    pass3b = [
+        c for c in calls
+        if c["env"].get("CMAKE_PREFIX_PATH") == f"{staging3}/usr"
+    ]
+    assert len(pass3b) == 1
+    assert pass3b[0]["pkgs"] == {"clang"}
+    assert "LD_LIBRARY_PATH" not in pass3b[0]["env"]
+    assert pass3b[0]["cfe"] == f"-fprofile-use={profdata}"
+
+    # A pgo sub-pass (3a) optimized llvm with -fprofile-use beforehand (Pass 1a
+    # also touches llvm but with -fprofile-generate, so filter on the flag).
+    pgo_opt = [
+        c for c in calls
+        if c["pkgs"] == {"llvm"} and (c["cfe"] or "").startswith("-fprofile-use=")
+    ]
+    assert pgo_opt, "Pass 3a must optimize llvm/llvm-libs with -fprofile-use"
+
+
 def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     """Verify makepkg_wrapper.run is called once per package per pass with correct PGO flags."""
     staging   = tmp_path / "staging"
@@ -762,11 +906,15 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
 
-    # 3 calls: pass1 (system CC), pass2 (clang CC), pass3 (staged CC)
+    # non_pgo=[] here, so Pass 3 is a single pgo-only sub-pass (3a): no non_pgo
+    # suite to stage against → no 3b/3c. 3 makepkg calls: pass 1a (system CC),
+    # pass 2 (stage1 clang), pass 3a (system CC fallback — no staged cc here).
+    # The non_pgo coherent-staging (3b → stage3) is covered by the dedicated
+    # test_pass3_non_pgo_links_against_staged_optimized_libllvm_* tests.
     assert len(call_log) == 3
-    assert call_log[0]["cc"] is None                        # pass 1: system
+    assert call_log[0]["cc"] is None                        # pass 1a: system
     assert call_log[1]["cc"] == "/usr/bin/clang"            # pass 2: pass-1 clang
-    assert call_log[2]["cc"].endswith("/usr/bin/clang")     # pass 3: staged clang
+    assert call_log[2]["cc"].endswith("/usr/bin/clang")     # pass 3a: system fallback
     # All PGO passes force a clean build and overwrite PKGDEST artifacts from
     # the prior pass (--force); none pass --install (install is via _pgo_install)
     assert "--cleanbuild" in call_log[0]["flags"]
@@ -809,17 +957,19 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     )
     pass3_env = call_log[2]["env"]
     assert pass3_env.get("LLVM_PROFILE_FILE") == "", \
-        "Pass 3 must clear LLVM_PROFILE_FILE so Pass-2 training env doesn't leak"
-    # System-clang fallback path (the test setup does not materialise
-    # staged_cc): _stage_env must NOT be injected.  System /usr/bin/clang is
-    # linked against the live /usr libLLVM (full target list); redirecting
-    # dyld at stage2's stripped LLVM_TARGETS_TO_BUILD-restricted libLLVM
-    # via LD_LIBRARY_PATH triggers symbol lookup errors for missing target
-    # init functions (e.g. LLVMInitializeBPFTarget).
+        "Pass 3a must clear LLVM_PROFILE_FILE so Pass-2 training env doesn't leak"
+    # Pass 3a (pgo sub-pass) on the system-clang fallback (the test setup does
+    # not materialise staged_cc): _stage_env must NOT be injected. System
+    # /usr/bin/clang is linked against the live /usr libLLVM (full target list);
+    # redirecting dyld at stage2's stripped LLVM_TARGETS_TO_BUILD-restricted
+    # libLLVM via LD_LIBRARY_PATH triggers symbol lookup errors for missing
+    # target init functions (e.g. LLVMInitializeBPFTarget). (The non_pgo
+    # sub-pass 3b DOES redirect cmake — at stage3, the final shipped libLLVM
+    # with full configured targets — but there is no non_pgo here.)
     assert "LD_LIBRARY_PATH" not in pass3_env, \
-        "Pass 3 must NOT redirect dyld at stage2 when falling back to system clang"
+        "Pass 3a must NOT redirect dyld at stage2 when falling back to system clang"
     assert "CMAKE_PREFIX_PATH" not in pass3_env, \
-        "Pass 3 must NOT redirect cmake at stage2 when falling back to system clang"
+        "Pass 3a (pgo sub-pass) does not redirect cmake; only 3b does, at stage3"
 
     # Sidecar is written after Pass 2 (not after Pass 3 install) so an aborted
     # Pass 3 still leaves recoverable profdata.  The major is derived from the

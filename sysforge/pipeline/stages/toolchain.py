@@ -74,10 +74,18 @@ LLVM PGO bootstrap (4 passes, only when pgo = true):
   Pass 3  — CC=staged clang from stage2 if available, else system clang.
             CFLAGS/LDFLAGS += -fprofile-use=<profdata>; LTO disabled via
             LTOFLAGS="" (ThinLTO + IR PGO causes non-PIC vtable relocations
-            in lld's ThinLTO codegen for libLLVM.so).  Installs all packages
-            (pgo + non_pgo + lib32) via _pgo_install(); staging prefixes
-            removed on success.  Profdata preserved with a version sidecar
-            (clang.profdata.version) for reuse by sysforge update.
+            in lld's ThinLTO codegen for libLLVM.so).  Built in coherent
+            sub-passes so the non-pgo suite links against the libLLVM that
+            ships, NOT the live /usr one (the std::-symbol-re-export profile
+            flips between stock/instrumented and -fprofile-use builds, so a
+            mismatch dangles libclang-cpp's _ZNSt*@LLVM_* requirements):
+            3a builds pgo (llvm/llvm-libs) and stages the optimized result
+            to stage3; 3b builds non_pgo (clang, lld, …) with
+            CMAKE_PREFIX_PATH=<stage3>/usr; 3c builds lib32 likewise.  All
+            packages then installed (pgo + non_pgo + lib32) via
+            _pgo_install(); staging prefixes removed on success.  Profdata
+            preserved with a version sidecar (clang.profdata.version) for
+            reuse by sysforge update.
 
   A sudo keepalive thread refreshes credentials every _SUDO_KEEPALIVE_INTERVAL
   seconds throughout all four passes.
@@ -256,6 +264,11 @@ _LLVM_LIB32_SUITE = [
 _DEFAULT_LLVM_LIB32: list[str] = []
 _DEFAULT_STAGING_1 = "/var/tmp/sysforge-llvm-stage1"
 _DEFAULT_STAGING = "/var/tmp/sysforge-llvm-stage2"
+# Pass-3 staging prefix. Holds the *final optimized* libLLVM (+ headers + cmake
+# configs) so the non-pgo suite (clang, lld, …) links against the exact libLLVM
+# that ships — guaranteeing ABI coherence. Distinct from stage2 (the Pass-2
+# training binaries) so the two never conflate. See _build_llvm_pgo_inner Pass 3.
+_DEFAULT_STAGING_3 = "/var/tmp/sysforge-llvm-stage3"
 # pgo_store resolution (toolchain.toml > SYSFORGE_PGO_STORE > /var/cache default)
 # lives in primitives.makepkg_pgo.resolve_pgo_store — the one home shared with
 # the reader (_resolve_pgo_state) and the wrapper's orphan-profraw guard.
@@ -1765,6 +1778,7 @@ def _build_llvm_pgo_inner(
     lib32_map: dict[str, Path],
     staging1: Path,
     staging: Path,
+    staging3: Path,
     pgo_store: Path,
     options,
 ) -> tuple[dict[str, Path], str, str, str, str]:
@@ -1804,7 +1818,17 @@ def _build_llvm_pgo_inner(
     Pass 3:  CC=staged clang from stage2 if available, else system clang.
              CFLAGS/LDFLAGS += -fprofile-use; LTO disabled via LTOFLAGS=""
              (ThinLTO + IR PGO causes non-PIC vtable relocations in lld's
-             ThinLTO codegen for libLLVM.so); install pgo + non_pgo + lib32.
+             ThinLTO codegen for libLLVM.so).  Built in coherent sub-passes
+             so the non-pgo suite links against the libLLVM that ships (not
+             the live /usr one): 3a builds pgo (llvm/llvm-libs) and stages the
+             optimized result into ``staging3``; 3b builds non_pgo (clang,
+             lld, …) with CMAKE_PREFIX_PATH=<staging3>/usr so
+             find_package(LLVM) resolves the just-built libLLVM; 3c builds
+             lib32 likewise.  Without this, clang/libclang-cpp records
+             ``_M_assign@LLVM_<ver>`` (the live libLLVM re-exports the C++
+             stdlib) while the shipped -fprofile-use libLLVM inlines it away
+             and exports nothing — a runtime symbol-lookup brick.  All
+             packages installed (pgo + non_pgo + lib32) by the caller.
              Staging prefixes removed on success.  Profdata preserved with a
              version sidecar (clang.profdata.version) for reuse by sysforge update.
 
@@ -1866,11 +1890,12 @@ def _build_llvm_pgo_inner(
 
         # Prompt #2 — purge staging/pgo_store. rmtree is silently destructive
         # of partial Pass-1/Pass-3 staging from a prior failed run, so gate it.
-        if staging1.exists() or staging.exists() or pgo_store.exists():
+        if staging1.exists() or staging.exists() or staging3.exists() or pgo_store.exists():
             _pgo_confirm(
                 f"Purge staging dirs and pgo_store to start fresh 4-pass build?\n"
                 f"  stage1:    {staging1}\n"
                 f"  stage2:    {staging}\n"
+                f"  stage3:    {staging3}\n"
                 f"  pgo_store: {pgo_store}\n"
                 "[y/N]:",
                 default="n",
@@ -1903,6 +1928,9 @@ def _build_llvm_pgo_inner(
         if staging.exists():
             _log.info(f"[PGO] Purging stale staging: {staging}")
             _shutil.rmtree(staging)
+        if staging3.exists():
+            _log.info(f"[PGO] Purging stale stage3: {staging3}")
+            _shutil.rmtree(staging3)
         if pgo_store.exists():
             _log.info(f"[PGO] Purging stale pgo_store: {pgo_store}")
             _shutil.rmtree(pgo_store)
@@ -2155,43 +2183,104 @@ def _build_llvm_pgo_inner(
             pass3_cc, pass3_cxx = staged_cc, staged_cxx
 
         all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
-        pass3_label = (
-            "PGO optimize · all packages (reusing profdata)"
-            if skip_profgen
-            else "PGO 4/4 · optimize all packages"
-        )
-        # Pass 3 env: clear LLVM_PROFILE_FILE so any inherited Pass-2 training
-        # path doesn't get reused.  Only when CC is the staged clang from
-        # stage2 do we also redirect cmake/dyld at stage2 — that clang's
-        # NEEDED libLLVM is stage2's libLLVM, so the redirect is ABI-coherent.
-        # System /usr/bin/clang on the system-clang fallback is linked against
-        # the live /usr libLLVM (full target list) and must NOT be steered at
-        # stage2's stripped (LLVM_TARGETS_TO_BUILD-restricted) libLLVM via
-        # LD_LIBRARY_PATH — that recreates the version-skew failure mode the
-        # Pass 1b comments warn about (symbol lookup errors for missing target
-        # init functions like LLVMInitializeBPFTarget).
-        pass3_env: dict[str, str] = {"LLVM_PROFILE_FILE": ""}
+        opt = "reusing profdata" if skip_profgen else "PGO 4/4"
+        profile_use = f"-fprofile-use={profdata_path}"
+        # Pass 3 is split into coherent sub-passes (3a pgo → stage3 → 3b non_pgo
+        # → 3c lib32) so the non-pgo suite links against the *final optimized*
+        # libLLVM that ships, NOT the live /usr one. The std::-symbol re-export
+        # profile flips between stock/instrumented builds (an out-of-line weak
+        # copy of e.g. std::string::_M_assign is emitted and globbed into
+        # LLVM_<ver> by the `global: *` version script) and -fprofile-use builds
+        # (inlined away → imported from libstdc++ as @GLIBCXX_*). If clang links
+        # against an exporting libLLVM but the run ships a non-exporting one,
+        # libclang-cpp dangles `_ZNSt*@LLVM_<ver>` and the live clang bricks at
+        # the first symbol lookup. Building 3b against staging3 makes clang record
+        # its true ABI (@GLIBCXX_*), coherent with the shipped libLLVM.
+
+        # 3a — optimize the pgo packages (llvm/llvm-libs). Clear
+        # LLVM_PROFILE_FILE so the Pass-2 training path doesn't leak; redirect
+        # cmake/dyld at stage2 ONLY when CC is stage2's staged clang (its NEEDED
+        # libLLVM is stage2's, so the redirect is ABI-coherent). System
+        # /usr/bin/clang on the fallback must NOT be steered at stage2's
+        # target-stripped libLLVM via LD_LIBRARY_PATH (missing target-init
+        # symbols like LLVMInitializeBPFTarget). No profile-runtime LDFLAGS: the
+        # pgo build is -fprofile-use (non-instrumented), so no __llvm_profile_*.
+        pass3a_env: dict[str, str] = {"LLVM_PROFILE_FILE": ""}
         if using_staged_cc:
-            pass3_env.update(_stage_env(staging))
-        # Phase 2: Pass 3 builds against stage2's non-instrumented LLVM, so
-        # find_package(LLVM) sees no __llvm_profile_* references — no
-        # profile-runtime injection here.  Leaving linker_flags_extra unset
-        # also prevents the Pass 1b/Pass 2 residual flag from leaking into
-        # the final optimized binaries.
+            pass3a_env.update(_stage_env(staging))
         _build_pass(
-            pass3_label,
-            all_pass3,
+            f"PGO optimize · llvm/llvm-libs ({opt})",
+            pgo_map,
             options,
             cc=pass3_cc,
             cxx=pass3_cxx,
             install=False,
-            compiler_flags_extra=f"-fprofile-use={profdata_path}",
+            compiler_flags_extra=profile_use,
             pgo_build=True,
-            pgo_env=pass3_env,
+            pgo_env=pass3a_env,
             staged_deps=True,
             toolchain_variant="pgo_llvm",
             owner_stage="toolchain",
         )
+
+        # Stage the just-built OPTIMIZED libLLVM (+ headers + cmake configs) so
+        # the non-pgo / lib32 sub-passes resolve find_package(LLVM) against the
+        # exact libLLVM that ships. staging3 IS the final artifact (full
+        # configured targets) — unlike stage2 (training) — so steering clang at
+        # it is correct and is the whole point of the split.
+        if non_pgo_map or lib32_map:
+            _remove_staging(staging3)
+            _extract_pass2_to_staging(pgo_map, staging3, options.dry_run)
+
+        # 3b — build the non-pgo suite (clang, lld, …) against staging3's
+        # libLLVM. Set ONLY CMAKE_PREFIX_PATH (mirror Pass 1b): the host clang
+        # compiles the source, it must not be forced to *load* the staged libLLVM
+        # via LD_LIBRARY_PATH.
+        if non_pgo_map:
+            pass3b_env = {
+                "LLVM_PROFILE_FILE": "",
+                "CMAKE_PREFIX_PATH": f"{staging3}/usr",
+            }
+            _build_pass(
+                f"PGO optimize · clang/lld/... against shipped libLLVM ({opt})",
+                non_pgo_map,
+                options,
+                cc=pass3_cc,
+                cxx=pass3_cxx,
+                install=False,
+                compiler_flags_extra=profile_use,
+                pgo_build=True,
+                pgo_env=pass3b_env,
+                staged_deps=True,
+                toolchain_variant="pgo_llvm",
+                owner_stage="toolchain",
+            )
+            # Stage the new clang/lld so a lib32 sub-pass can resolve them too.
+            if lib32_map:
+                _extract_pass2_to_staging(non_pgo_map, staging3, options.dry_run)
+
+        # 3c — lib32 against staging3 (usually empty; lib32 dropped from PGO in
+        # d191a89). Same CMAKE_PREFIX_PATH steering.
+        if lib32_map:
+            pass3c_env = {
+                "LLVM_PROFILE_FILE": "",
+                "CMAKE_PREFIX_PATH": f"{staging3}/usr",
+            }
+            _build_pass(
+                f"PGO optimize · lib32 against shipped libLLVM ({opt})",
+                lib32_map,
+                options,
+                cc=pass3_cc,
+                cxx=pass3_cxx,
+                install=False,
+                compiler_flags_extra=profile_use,
+                pgo_build=True,
+                pgo_env=pass3c_env,
+                staged_deps=True,
+                toolchain_variant="pgo_llvm",
+                owner_stage="toolchain",
+            )
+
         # Pass 3 is built but NOT installed here — the caller runs the Gate-2
         # ABI audit on the built packages, snapshots the current suite, then
         # installs inside the sentinel via _pgo_install. Keeping the install
@@ -2582,7 +2671,7 @@ def _snapshot_recovery_cmd(snapshot: dict[str, "Path | None"]) -> str:
 
 def _log_toolchain_resolution_summary(
     *, compiler, pgo, variant, pgo_pkgs, non_pgo_pkgs, lib32_pkgs,
-    staging1, staging, pgo_store, tcfg, options, snapshot,
+    staging1, staging, staging3, pgo_store, tcfg, options, snapshot,
 ) -> None:
     """Emit one labelled block of the resolved toolchain-build plan.
 
@@ -2611,6 +2700,7 @@ def _log_toolchain_resolution_summary(
     if pgo:
         _log.ui(f"  staging1:   {staging1}")
         _log.ui(f"  staging2:   {staging}")
+        _log.ui(f"  staging3:   {staging3}")
         _log.ui(f"  pgo_store:  {pgo_store}")
     _log.ui(f"  gates:      {gates}")
     _log.ui(f"  snapshot:   {cached}/{len(snapshot)} suite package(s) cached for offline rollback")
@@ -2661,6 +2751,7 @@ class ToolchainStage(Stage):
         pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
         staging1 = Path(tcfg.get("pgo_staging1", _DEFAULT_STAGING_1))
         staging = Path(tcfg.get("pgo_staging", _DEFAULT_STAGING))
+        staging3 = Path(tcfg.get("pgo_staging3", _DEFAULT_STAGING_3))
         pgo_store = resolve_pgo_store(tcfg)
 
         # GCC path: never build from source. Register system gcc paths so
@@ -2767,7 +2858,7 @@ class ToolchainStage(Stage):
         _log_toolchain_resolution_summary(
             compiler=compiler, pgo=pgo, variant=variant,
             pgo_pkgs=pgo_pkgs, non_pgo_pkgs=non_pgo_pkgs, lib32_pkgs=lib32_pkgs,
-            staging1=staging1, staging=staging, pgo_store=pgo_store,
+            staging1=staging1, staging=staging, staging3=staging3, pgo_store=pgo_store,
             tcfg=tcfg, options=options, snapshot=snapshot,
         )
 
@@ -2814,7 +2905,7 @@ class ToolchainStage(Stage):
             if pgo:
                 built_map, cc, cxx, ld, variant = _build_llvm_pgo_inner(
                     pgo_map, non_pgo_map, lib32_map,
-                    staging1, staging, pgo_store, options,
+                    staging1, staging, staging3, pgo_store, options,
                 )
             else:
                 built_map, cc, cxx, ld, variant = _build_llvm_single(
@@ -2881,9 +2972,12 @@ class ToolchainStage(Stage):
                             "be inconsistent. Stage sentinel left in place — restore with: "
                             f"{_snapshot_recovery_cmd(snapshot)}"
                         )
-                    # Verify passed — safe to wipe the stage2 prefix (PGO only).
+                    # Verify passed — safe to wipe the stage2/stage3 prefixes
+                    # (PGO only). stage3 held the optimized libLLVM that the
+                    # non-pgo sub-pass linked against; it is no longer needed.
                     if pgo:
                         _remove_staging(staging)
+                        _remove_staging(staging3)
 
         # Toolchain is installed and Gate-3-verified. Rebuild the libLLVM
         # consumers captured by the pre-build soname gate so the live system is
