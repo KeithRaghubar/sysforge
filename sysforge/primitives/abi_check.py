@@ -103,8 +103,8 @@ _RE_LDCONFIG = re.compile(r"^\s+(\S+)\s+\(([^)]+)\)\s+=>\s+(\S+)$", re.MULTILINE
 def _list_sos_in_pkg(pkg_path: Path) -> list[str]:
     """Return archive member paths for shared libraries in the package."""
     result = subprocess.run(
-        ["bsdtar", "-t", str(pkg_path)],
-        capture_output=True, text=True, check=False,
+        ["bsdtar", "-t", "-f", str(pkg_path)],
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         _log.warn(f"bsdtar list failed for {pkg_path.name}: {result.stderr.strip()}")
@@ -125,7 +125,7 @@ def _extract_sos(pkg_path: Path, members: list[str], dest: Path) -> list[Path]:
         return []
     result = subprocess.run(
         ["bsdtar", "-x", "-f", str(pkg_path), "-C", str(dest)] + members,
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         _log.warn(f"bsdtar extract failed: {result.stderr.strip()}")
@@ -167,7 +167,7 @@ def _undefined_versioned(so_path: Path) -> set[tuple[str, str]]:
     """Return set of (symbol, version) pairs that are undefined with a version requirement."""
     result = subprocess.run(
         ["nm", "-D", str(so_path)],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         return set()
@@ -178,7 +178,7 @@ def needed_sonames(so_path: Path) -> list[str]:
     """Return NEEDED sonames from the dynamic section of so_path."""
     result = subprocess.run(
         ["readelf", "-d", str(so_path)],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         return []
@@ -221,7 +221,7 @@ def _verneed_map(so_path: Path) -> dict[str, set[str]]:
     """Return {version_name: {bound NEEDED soname}} for so_path, or {} on failure."""
     result = subprocess.run(
         ["readelf", "--version-info", str(so_path)],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         return {}
@@ -243,7 +243,7 @@ def _elf_class(so_path: Path) -> str:
     """Return 'ELF32' or 'ELF64' for so_path; empty string on failure."""
     result = subprocess.run(
         ["readelf", "-h", str(so_path)],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         return ""
@@ -276,7 +276,7 @@ def _build_ldconfig_map() -> dict[tuple[str, str], str]:
     """
     result = subprocess.run(
         ["ldconfig", "-p"],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         return {}
@@ -324,7 +324,7 @@ def _exported_versioned(lib_path: str,
         return cache[lib_path]
     result = subprocess.run(
         ["nm", "-D", lib_path],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     exports: set[tuple[str, str]] = set()
     if result.returncode == 0:
@@ -339,7 +339,7 @@ def _demangle(symbols: list[str]) -> dict[str, str]:
         return {}
     result = subprocess.run(
         ["c++filt"] + symbols,
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         return {s: s for s in symbols}

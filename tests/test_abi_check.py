@@ -14,6 +14,7 @@ Covers:
                            missing NEEDED lib in ldconfig, bsdtar failure
 """
 import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -85,6 +86,29 @@ def test_list_sos_returns_empty_when_no_sos():
                return_value=_mock_run(listing)):
         result = _list_sos_in_pkg(Path("pkg.tar.zst"))
     assert result == []
+
+
+def test_list_sos_passes_archive_with_f_and_closes_stdin():
+    """Regression: bsdtar must get -f <path> (path is the archive, not a member
+    pattern) and stdin redirected to DEVNULL. Without -f, bsdtar reads the
+    archive from stdin and blocks forever on the controlling TTY (Gate 2 hang)."""
+    pkg = Path("pkg.tar.zst")
+    mock = MagicMock(return_value=_mock_run("usr/lib/libfoo.so.1\n"))
+    with patch("sysforge.primitives.abi_check.subprocess.run", mock):
+        _list_sos_in_pkg(pkg)
+
+    argv = mock.call_args.args[0]
+    assert "bsdtar" == argv[0]
+    # The package path must be the archive operand, immediately preceded by -f
+    # (whether spelled "-tf" or "-t -f").
+    assert str(pkg) in argv
+    path_idx = argv.index(str(pkg))
+    preceding = argv[path_idx - 1]
+    assert preceding == "-f" or (preceding.startswith("-") and "f" in preceding), (
+        f"package path not introduced by -f: {argv!r}"
+    )
+    # stdin must be closed so a future flag mistake errors instead of hanging.
+    assert mock.call_args.kwargs.get("stdin") == subprocess.DEVNULL
 
 
 # ---------------------------------------------------------------------------
