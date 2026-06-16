@@ -24,6 +24,7 @@ Capabilities:
   - scan_abi_hazards               — _ZNSt*@LLVM_* C++-stdlib-in-LLVM-ns symbols
   - detect_residual_instrumentation— stale -fprofile-generate LLVM libs (advisory)
   - check_pkgver_lockstep          — PKGBUILD pkgver skew across lockstep members
+  - assess_libllvm_soname_impact   — impending libLLVM soname bump + broken consumers
   - check_build_space              — staging/pgo_store/builddir filesystems have headroom
   - check_multilib_enabled         — [multilib] present when a lib32-* is in scope
 
@@ -35,6 +36,7 @@ warns on the rest.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -68,6 +70,22 @@ class ToolchainFinding:
     message: str
     remediation: str = ""
     is_brick: bool = False  # True → live toolchain broken / build will fail
+
+
+@dataclass(frozen=True)
+class SonameImpact:
+    """Facts about an impending libLLVM soname change and who it would break.
+
+    ``old_soname`` / ``new_soname`` are the bare versioned filenames
+    (``libLLVM.so.22.1`` → ``libLLVM.so.23.0``); ``consumers`` is the sorted,
+    deduped list of installed pkgbases that link the *old* soname and would be
+    left with a dangling ``NEEDED`` until rebuilt. Only ever constructed when
+    the soname actually changes AND at least one consumer remains after
+    excluding the LLVM suite + the packages being built this run.
+    """
+    old_soname: str
+    new_soname: str
+    consumers: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +397,92 @@ def check_pkgver_lockstep(
         "--cleansrc), or pass --allow-version-skew to override.",
         is_brick=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# libLLVM soname-change impact — pre-build reverse-dependency assessment
+# ---------------------------------------------------------------------------
+
+_LIBLLVM_SO_RE = re.compile(r"(?:^|/)libLLVM\.so\.(?P<ver>\d+\.\d+)$")
+
+
+def _installed_libllvm_soname() -> str | None:
+    """Return the installed ``libLLVM.so.<major>.<minor>`` filename, or None.
+
+    Read authoritatively from the on-disk file list of the installed
+    ``llvm-libs`` package (``pacman -Ql`` equivalent), picking the versioned
+    runtime object — not the unversioned ``libLLVM.so`` dev symlink. None when
+    ``llvm-libs`` is not installed (fresh system: nothing to break) or no
+    versioned object is recorded.
+    """
+    from sysforge.primitives import pacman
+
+    for path in pacman.get_package_files("llvm-libs"):
+        m = _LIBLLVM_SO_RE.search(path)
+        if m:
+            return f"libLLVM.so.{m.group('ver')}"
+    return None
+
+
+def assess_libllvm_soname_impact(
+    target_pkgver: str, *, exclude: set[str],
+) -> SonameImpact | None:
+    """Detect an impending libLLVM soname change and enumerate broken consumers.
+
+    ``target_pkgver`` is the pkgver parsed from the about-to-be-built llvm
+    PKGBUILD (e.g. ``22.1.5``); the new soname is ``libLLVM.so.<major>.<minor>``
+    of its first two components. The *installed* soname is read from the live
+    ``llvm-libs`` file list (authoritative — independent of any version scheme
+    assumption). Returns None when:
+
+      - ``llvm-libs`` is not installed (nothing on the system to break),
+      - the target pkgver has no major.minor (parse failure),
+      - the soname is unchanged (the common same-version PGO-refresh case), or
+      - no installed consumer links the old soname after ``exclude`` is applied.
+
+    Otherwise it walks every installed package's recorded ``%DEPENDS%`` for an
+    auto-generated ``libLLVM.so=<major.minor>`` soname dep matching the *old*
+    soname (reusing :data:`dep_analysis._SONAME_RE`), collapses each hit to its
+    pkgbase, drops anything in ``exclude`` (the LLVM lockstep suite + the names
+    being built this run — they are rebuilt here already), and returns the
+    deduped, sorted consumer list in a :class:`SonameImpact`.
+
+    Pure facts only: every external read is guarded and degrades to "no impact"
+    (None) rather than raising — the stage owns the abort/warn/prompt policy.
+    """
+    from sysforge.primitives import pacman
+    from sysforge.primitives.dep_analysis import _SONAME_RE
+
+    parts = (target_pkgver or "").split(".")
+    if len(parts) < 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    target_mm = f"{parts[0]}.{parts[1]}"
+    new_soname = f"libLLVM.so.{target_mm}"
+
+    old_soname = _installed_libllvm_soname()
+    if old_soname is None:
+        return None
+    old_mm = old_soname[len("libLLVM.so."):]
+    if old_mm == target_mm:
+        return None  # same-version rebuild — ABI-identical, nothing to do
+
+    consumers: set[str] = set()
+    try:
+        installed = pacman.get_all_installed_packages()
+    except Exception:
+        return None
+    for name in installed:
+        for dep in pacman.get_package_depends(name):
+            m = _SONAME_RE.match(dep)
+            if m and m.group("base") == "libLLVM.so" and m.group("ver") == old_mm:
+                pkgbase = pacman.get_pkgbase(name) or name
+                if pkgbase not in exclude:
+                    consumers.add(pkgbase)
+                break
+
+    if not consumers:
+        return None
+    return SonameImpact(old_soname, new_soname, sorted(consumers))
 
 
 # ---------------------------------------------------------------------------

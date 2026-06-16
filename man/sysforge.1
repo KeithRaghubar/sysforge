@@ -893,6 +893,11 @@ Override the pre-build Gate-1 abort when the in-tree LLVM PKGBUILDs disagree on 
 Override the pre-build Gate-1 abort when a filesystem hosting the staging dirs / pgo_store / build output lacks min_build_free_gb free (default 40 GiB).\& Dangerous — the multi-hour LLVM build may fail partway with no space left.\&
 .PP
 .RE
+\fB--rebuild-soname-consumers\fR \fIREBUILD_SONAME_CONSUMERS\fR
+.RS 4
+What to do when the built libLLVM changes its soname and would break installed consumers (mesa, etc.\&): '\&prompt'\& (default) warns and asks before building; '\&auto'\& approves and rebuilds them after install; '\&off'\& builds the toolchain but leaves consumers for you to rebuild.\& Overrides toolchain.\&toml rebuild_soname_consumers.\&
+.PP
+.RE
 \fB--cleansrc\fR
 .RS 4
 Purge each toolchain package'\&s src dir and re-clone before building.\& Refuses (per package) if the existing clone has uncommitted changes, ahead-of-upstream commits, or no upstream.\&

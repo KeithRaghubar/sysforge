@@ -401,6 +401,7 @@ _sysforge_run_toolchain() {
     '--allow-dirty-llvm[bypass the LLVM safety pre-flight refusal on dirty/diverged trees]' \
     '--allow-version-skew[override the Gate-1 abort on PKGBUILD pkgver skew across the lockstep suite]' \
     '--skip-build-space-check[override the Gate-1 build-filesystem free-space check]' \
+    '--rebuild-soname-consumers[prompt|auto|off: rebuild installed libLLVM consumers (mesa, …) on a soname bump]:mode:(prompt auto off)' \
     '--cleansrc[purge each toolchain src dir and re-clone (refuses if local work present)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
   && return

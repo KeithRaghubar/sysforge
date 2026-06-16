@@ -323,3 +323,120 @@ def test_detect_residual_instrumentation_instrumented_shared_lib_warns(tmp_path,
     assert len(findings) == 1
     assert not findings[0].is_brick  # advisory
     assert "instrumented" in findings[0].message
+
+
+# ---------------------------------------------------------------------------
+# assess_libllvm_soname_impact — pre-build reverse-dependency assessment
+# ---------------------------------------------------------------------------
+
+def _patch_pacman(monkeypatch, *, llvm_libs_files, installed, depends, pkgbase=None):
+    """Wire the pacman DB readers assess_libllvm_soname_impact draws from."""
+    from sysforge.primitives import pacman
+    monkeypatch.setattr(
+        pacman, "get_package_files",
+        lambda name: llvm_libs_files if name == "llvm-libs" else [],
+    )
+    monkeypatch.setattr(pacman, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman, "get_package_depends", lambda name: depends.get(name, []))
+    monkeypatch.setattr(pacman, "get_pkgbase", lambda name: (pkgbase or {}).get(name))
+
+
+def test_soname_impact_same_version_no_impact(monkeypatch):
+    # Installed libLLVM.so.22.1; target pkgver 22.1.5 → same major.minor.
+    _patch_pacman(
+        monkeypatch,
+        llvm_libs_files=["usr/lib/libLLVM.so", "usr/lib/libLLVM.so.22.1"],
+        installed={"mesa": "1"},
+        depends={"mesa": ["libLLVM.so=22.1-64"]},
+    )
+    assert ts.assess_libllvm_soname_impact("22.1.5", exclude=set()) is None
+
+
+def test_soname_impact_llvm_libs_absent_no_impact(monkeypatch):
+    # No installed llvm-libs → nothing on the system to break.
+    _patch_pacman(
+        monkeypatch,
+        llvm_libs_files=[],
+        installed={"mesa": "1"},
+        depends={"mesa": ["libLLVM.so=22.1-64"]},
+    )
+    assert ts.assess_libllvm_soname_impact("23.0.0", exclude=set()) is None
+
+
+def test_soname_impact_unparseable_pkgver_no_impact(monkeypatch):
+    _patch_pacman(
+        monkeypatch,
+        llvm_libs_files=["usr/lib/libLLVM.so.22.1"],
+        installed={"mesa": "1"},
+        depends={"mesa": ["libLLVM.so=22.1-64"]},
+    )
+    assert ts.assess_libllvm_soname_impact("git", exclude=set()) is None
+
+
+def test_soname_impact_version_bump_lists_consumers(monkeypatch):
+    # 22.1 → 23.0 soname bump. mesa links old soname; clang is a suite member
+    # (excluded); libfoo links a *different* old soname and must not match.
+    _patch_pacman(
+        monkeypatch,
+        llvm_libs_files=["usr/lib/libLLVM.so.22.1"],
+        installed={"mesa": "1", "clang": "1", "llvm-libs": "1", "libfoo": "1"},
+        depends={
+            "mesa": ["libLLVM.so=22.1-64", "libdrm.so=2-64"],
+            "clang": ["libLLVM.so=22.1-64"],
+            "llvm-libs": [],
+            "libfoo": ["libLLVM.so=21.1-64"],  # older soname — not the one bumping
+        },
+    )
+    exclude = set(ts.LLVM_LOCKSTEP_SUITE)
+    impact = ts.assess_libllvm_soname_impact("23.0.1", exclude=exclude)
+    assert impact is not None
+    assert impact.old_soname == "libLLVM.so.22.1"
+    assert impact.new_soname == "libLLVM.so.23.0"
+    assert impact.consumers == ["mesa"]  # clang excluded, libfoo wrong soname
+
+
+def test_soname_impact_excludes_in_scope_build_names(monkeypatch):
+    # A consumer that is itself in the build scope this run must be dropped.
+    _patch_pacman(
+        monkeypatch,
+        llvm_libs_files=["usr/lib/libLLVM.so.22.1"],
+        installed={"mesa": "1", "spirv-llvm-translator": "1"},
+        depends={
+            "mesa": ["libLLVM.so=22.1-64"],
+            "spirv-llvm-translator": ["libLLVM.so=22.1-64"],
+        },
+    )
+    exclude = set(ts.LLVM_LOCKSTEP_SUITE) | {"spirv-llvm-translator"}
+    impact = ts.assess_libllvm_soname_impact("23.0.0", exclude=exclude)
+    assert impact is not None
+    assert impact.consumers == ["mesa"]
+
+
+def test_soname_impact_collapses_split_subpkg_to_pkgbase(monkeypatch):
+    # An installed split subpackage links the old soname; it collapses to its
+    # pkgbase so the rebuild targets the base, deduped against a sibling.
+    _patch_pacman(
+        monkeypatch,
+        llvm_libs_files=["usr/lib/libLLVM.so.22.1"],
+        installed={"vulkan-radeon": "1", "libva-mesa-driver": "1"},
+        depends={
+            "vulkan-radeon": ["libLLVM.so=22.1-64"],
+            "libva-mesa-driver": ["libLLVM.so=22.1-64"],
+        },
+        pkgbase={"vulkan-radeon": "mesa", "libva-mesa-driver": "mesa"},
+    )
+    impact = ts.assess_libllvm_soname_impact("23.0.0", exclude=set(ts.LLVM_LOCKSTEP_SUITE))
+    assert impact is not None
+    assert impact.consumers == ["mesa"]  # both subpkgs → one pkgbase
+
+
+def test_soname_impact_no_consumers_after_exclude_no_impact(monkeypatch):
+    # Soname bumps but the only linker is a suite member → no impact.
+    _patch_pacman(
+        monkeypatch,
+        llvm_libs_files=["usr/lib/libLLVM.so.22.1"],
+        installed={"clang": "1"},
+        depends={"clang": ["libLLVM.so=22.1-64"]},
+    )
+    impact = ts.assess_libllvm_soname_impact("23.0.0", exclude=set(ts.LLVM_LOCKSTEP_SUITE))
+    assert impact is None

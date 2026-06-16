@@ -29,6 +29,10 @@ skip_build = false
 #                          # (one-off override: --skip-build-space-check).
 # require_multilib  = true # default true. Require [multilib] when any lib32-*
 #                          # is in scope (no CLI equivalent — config only).
+# rebuild_soname_consumers = "prompt"  # default "prompt". prompt|auto|off for
+#                          # rebuilding installed libLLVM consumers (mesa, …)
+#                          # when an LLVM version bump changes the soname.
+#                          # CLI override: --rebuild-soname-consumers.
 
 # ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed

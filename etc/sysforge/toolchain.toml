@@ -57,6 +57,20 @@ enabled = false
 # lists no lib32 packages — the check is already a no-op then).
 # require_multilib = true
 
+# What to do when the built libLLVM changes its soname (an LLVM version bump,
+# e.g. libLLVM.so.22.1 → libLLVM.so.23.0) and would break installed consumers
+# that link the old soname (mesa's radeonsi/radv/llvmpipe drivers, and others).
+# A same-version PGO rebuild never changes the soname, so this only fires on a
+# version bump. Modes (CLI --rebuild-soname-consumers overrides this key):
+#   "prompt" (default) — pre-build, warn + list consumers + ask before building;
+#                        approving rebuilds them after install, declining aborts.
+#                        Non-interactive runs abort (no silent breakage).
+#   "auto"             — approve without prompting and rebuild consumers after
+#                        the toolchain install (use for unattended runs).
+#   "off"              — build the new toolchain but leave consumers for you to
+#                        rebuild manually (`sysforge build <pkgs>`).
+# rebuild_soname_consumers = "prompt"
+
 # ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed
 #

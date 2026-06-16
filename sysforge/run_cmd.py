@@ -117,6 +117,7 @@ class RunToolchainVerb(_RunVerbBase):
             allow_dirty_llvm=args.allow_dirty_llvm,
             allow_version_skew=getattr(args, "allow_version_skew", False),
             skip_build_space_check=getattr(args, "skip_build_space_check", False),
+            rebuild_soname_consumers=getattr(args, "rebuild_soname_consumers", None),
         )
         run_stage_standalone(ToolchainStage(), config, options)
         return ExecResult()

@@ -99,7 +99,8 @@ _KNOWN_TOP_KEYS: dict[str, set[str]] = {
                        "device_kconfig"},
     "toolchain.toml": {"enabled", "compiler", "pgo", "skip_build",
                        "pgo_staging", "pgo_store",
-                       "min_build_free_gb", "require_multilib"},
+                       "min_build_free_gb", "require_multilib",
+                       "rebuild_soname_consumers"},
     "bootstrap.toml": {"target"},
 }
 

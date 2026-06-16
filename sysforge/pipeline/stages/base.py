@@ -60,6 +60,7 @@ class RunOptions:
     # Toolchain Gate-1 overrides (mirror kernel's allow_no_fallback/skip_boot_audit)
     allow_version_skew: bool = False     # toolchain: override the PKGBUILD pkgver-skew brick (Gate 1)
     skip_build_space_check: bool = False # toolchain: override the build-space-headroom brick (Gate 1)
+    rebuild_soname_consumers: str | None = None  # toolchain: prompt|auto|off for libLLVM soname-bump consumer rebuild (CLI override of toolchain.toml)
     # Execution context
     standalone: bool = False         # True when running a single stage outside the pipeline
 

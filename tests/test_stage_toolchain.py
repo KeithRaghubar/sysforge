@@ -42,6 +42,8 @@ from sysforge.pipeline.stages.toolchain import (
     _sudo_keepalive_daemon,
     _SUDO_KEEPALIVE_INTERVAL,
     _PGO_PROFDATA_MIN_BYTES,
+    _gate_soname_consumers,
+    _rebuild_soname_consumers,
 )
 from sysforge.pipeline.state import PipelineState
 from sysforge.pipeline.stages.base import RunOptions
@@ -3144,3 +3146,197 @@ def test_gcc_register_only_skips_all_gates(tmp_path, monkeypatch):
     assert state.get_stage_result("toolchain")["variant"] == "gcc"
     assert gate_calls == []  # no gate ran on the register-only path
     makepkg_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _gate_soname_consumers — pre-build libLLVM soname gate (policy)
+# ---------------------------------------------------------------------------
+
+def _impact(consumers=("mesa",)):
+    from sysforge.primitives.toolchain_safety import SonameImpact
+    return SonameImpact("libLLVM.so.22.1", "libLLVM.so.23.0", list(consumers))
+
+
+def _gate_map(tmp_path):
+    """A pkgbuild_map whose 'llvm' parses to a real pkgver."""
+    return {"llvm": make_pkgbuild(tmp_path, "llvm")}
+
+
+def test_gate_soname_no_impact_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
+        lambda ver, *, exclude: None,
+    )
+    opts = make_options(dry_run=False)
+    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, {}) == []
+
+
+def test_gate_soname_dry_run_previews_no_rebuild(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
+        lambda ver, *, exclude: _impact(),
+    )
+    opts = make_options(dry_run=True)
+    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, {}) == []
+
+
+def test_gate_soname_off_mode_warns_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
+        lambda ver, *, exclude: _impact(),
+    )
+    opts = make_options(dry_run=False)
+    tcfg = {"rebuild_soname_consumers": "off"}
+    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, tcfg) == []
+
+
+def test_gate_soname_auto_mode_returns_consumers(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
+        lambda ver, *, exclude: _impact(("mesa", "julia")),
+    )
+    opts = make_options(dry_run=False)
+    tcfg = {"rebuild_soname_consumers": "auto"}
+    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, tcfg) == ["mesa", "julia"]
+
+
+def test_gate_soname_prompt_non_tty_aborts(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
+        lambda ver, *, exclude: _impact(),
+    )
+    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.is_interactive", lambda: False)
+    opts = make_options(dry_run=False)
+    with pytest.raises(RuntimeError, match="non-interactive"):
+        _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, {})
+
+
+def test_gate_soname_prompt_approve_returns_consumers(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
+        lambda ver, *, exclude: _impact(),
+    )
+    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain.prompt_choice", lambda *a, **k: "y"
+    )
+    opts = make_options(dry_run=False)
+    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, {}) == ["mesa"]
+
+
+def test_gate_soname_prompt_decline_aborts(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
+        lambda ver, *, exclude: _impact(),
+    )
+    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain.prompt_choice", lambda *a, **k: "n"
+    )
+    opts = make_options(dry_run=False)
+    with pytest.raises(RuntimeError, match="not approved"):
+        _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, {})
+
+
+def test_gate_soname_cli_flag_overrides_config(tmp_path, monkeypatch):
+    # CLI --rebuild-soname-consumers=off beats toolchain.toml auto.
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
+        lambda ver, *, exclude: _impact(),
+    )
+    opts = make_options(dry_run=False, rebuild_soname_consumers="off")
+    tcfg = {"rebuild_soname_consumers": "auto"}
+    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, tcfg) == []
+
+
+def test_gate_soname_exclude_passed_to_assessor(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_assess(ver, *, exclude):
+        captured["exclude"] = exclude
+        return None
+
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact", fake_assess
+    )
+    opts = make_options(dry_run=False)
+    _gate_soname_consumers(_gate_map(tmp_path), ["llvm", "lib32-llvm"], opts, {})
+    # LLVM lockstep suite + in-scope build names are all excluded.
+    from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
+    assert set(LLVM_LOCKSTEP_SUITE) <= captured["exclude"]
+    assert {"llvm", "lib32-llvm"} <= captured["exclude"]
+
+
+# ---------------------------------------------------------------------------
+# _rebuild_soname_consumers — post-Gate-3 consumer rebuild (outside sentinel)
+# ---------------------------------------------------------------------------
+
+def _patch_rebuild(monkeypatch, outcome, *, resolve_fail=()):
+    from sysforge import build_core
+
+    def fake_find(pkg, config):
+        if pkg in resolve_fail:
+            raise FileNotFoundError(pkg)
+        return Path(f"/src/{pkg}/PKGBUILD")
+
+    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.find_pkgbuild", fake_find)
+    monkeypatch.setattr(
+        build_core, "target_from_pkgbuild",
+        lambda p: MagicMock(pkgbase=p.parent.name),
+    )
+    monkeypatch.setattr(build_core, "build_and_install", lambda *a, **k: outcome)
+    monkeypatch.setattr("sysforge.pipeline.state.get_toolchain_variant", lambda s: "pgo_llvm")
+
+
+def test_rebuild_consumers_success(tmp_path, monkeypatch):
+    from sysforge.build_core import BuildOutcome
+    out = BuildOutcome(built_pkgs=["mesa"])
+    _patch_rebuild(monkeypatch, out)
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path)
+    # No raise == success.
+    _rebuild_soname_consumers(["mesa"], {}, opts, state)
+
+
+def test_rebuild_consumers_build_failure_raises_with_manual_cmd(tmp_path, monkeypatch):
+    from sysforge.build_core import BuildOutcome
+    out = BuildOutcome(built_pkgs=[], failed_pkgs=["mesa"])
+    _patch_rebuild(monkeypatch, out)
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path)
+    with pytest.raises(RuntimeError, match="sysforge build mesa"):
+        _rebuild_soname_consumers(["mesa"], {}, opts, state)
+
+
+def test_rebuild_consumers_all_unresolved_raises(tmp_path, monkeypatch):
+    from sysforge.build_core import BuildOutcome
+    out = BuildOutcome(built_pkgs=[])
+    _patch_rebuild(monkeypatch, out, resolve_fail=("mesa",))
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path)
+    with pytest.raises(RuntimeError, match="could be resolved for rebuild"):
+        _rebuild_soname_consumers(["mesa"], {}, opts, state)
+
+
+# ---------------------------------------------------------------------------
+# Dual-toolchain parity: the gcc register-only path never assesses soname
+# ---------------------------------------------------------------------------
+
+def test_toolchain_stage_gcc_never_assesses_soname(tmp_path, monkeypatch):
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
+
+    def _boom(*a, **k):
+        raise AssertionError("gcc path must not assess libLLVM soname")
+
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact", _boom
+    )
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
+    options = make_options(dry_run=False)
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run(config, state, options)
+
+    assert state.get_stage_result("toolchain")["variant"] == "gcc"

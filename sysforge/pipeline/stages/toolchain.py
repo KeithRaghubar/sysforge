@@ -2340,6 +2340,162 @@ def _parse_pkgbuild_pkgvers(pkgbuild_map: dict[str, Path]) -> dict[str, str]:
     return out
 
 
+def _gate_soname_consumers(
+    pkgbuild_map: dict[str, Path], all_names: list[str], options, tcfg,
+) -> list[str]:
+    """Pre-build libLLVM soname gate. Returns consumer pkgbases to rebuild.
+
+    Sits between Gate 1 and the build (the approval point — the soname is known
+    from the resolved PKGBUILD pkgver before any makepkg runs). When the
+    about-to-be-built libLLVM changes the soname, it warns + lists the installed
+    packages that link the *old* soname (mesa et al.) and applies the
+    ``rebuild_soname_consumers`` mode (CLI flag > toolchain.toml > ``prompt``):
+
+      - ``prompt`` (default): TTY → y/N prompt; approving returns the consumers
+        for rebuild after Gate 3, declining is a clean abort. Non-TTY → abort
+        (never silently break the system; points at ``=auto``/``=off``).
+      - ``auto``: no prompt, returns the consumers for rebuild.
+      - ``off``: warns loudly + prints the manual ``sysforge build`` command,
+        proceeds with the toolchain build but rebuilds nothing (returns []).
+
+    Dry-run previews the impact without prompting or rebuilding (returns []).
+    Returns [] whenever there is no soname change or no affected consumer.
+    """
+    mode = (
+        getattr(options, "rebuild_soname_consumers", None)
+        or tcfg.get("rebuild_soname_consumers")
+        or "prompt"
+    )
+    pkgvers = _parse_pkgbuild_pkgvers(pkgbuild_map)
+    target_ver = pkgvers.get("llvm") or next(
+        (v for n, v in pkgvers.items() if n in LLVM_LOCKSTEP_SUITE), ""
+    )
+    if not target_ver:
+        return []
+
+    impact = toolchain_safety.assess_libllvm_soname_impact(
+        target_ver, exclude=set(LLVM_LOCKSTEP_SUITE) | set(all_names),
+    )
+    if impact is None:
+        return []
+
+    _log.warn(
+        f"libLLVM soname will change: {impact.old_soname} → {impact.new_soname}. "
+        f"{len(impact.consumers)} installed package(s) link the old soname and "
+        "would break until rebuilt:"
+    )
+    for name in impact.consumers:
+        _log.warn(f"  - {name}")
+
+    manual_cmd = "sysforge build " + " ".join(impact.consumers)
+
+    if options.dry_run:
+        _log.ui(
+            f"[dry-run] would rebuild {len(impact.consumers)} consumer(s) "
+            "after the toolchain install"
+        )
+        return []
+
+    if mode == "off":
+        _log.warn(
+            "rebuild_soname_consumers=off — building the new toolchain WITHOUT "
+            f"rebuilding these consumers. Rebuild them yourself afterwards: {manual_cmd}"
+        )
+        return []
+
+    if mode == "auto":
+        _log.ui(
+            f"rebuild_soname_consumers=auto — will rebuild {len(impact.consumers)} "
+            "consumer(s) after the toolchain install"
+        )
+        return impact.consumers
+
+    # mode == "prompt"
+    if not is_interactive():
+        raise RuntimeError(
+            "[TOOLCHAIN] Building this libLLVM would change its soname and break "
+            f"{len(impact.consumers)} installed package(s), and this is a "
+            "non-interactive run. Re-run with --rebuild-soname-consumers=auto to "
+            "approve the rebuild, or =off to proceed without it."
+        )
+    choice = prompt_choice(
+        f"Proceed with the toolchain build and rebuild {len(impact.consumers)} "
+        "affected package(s) afterwards? [y/N]: ",
+        choices=("y", "yes", "n"),
+        default="n",
+        eof_default="n",
+        tag="TOOLCHAIN",
+        level="WARN",
+    )
+    if choice not in ("y", "yes"):
+        raise RuntimeError(
+            "[TOOLCHAIN] Aborted — libLLVM soname change not approved. Nothing "
+            "was built or installed."
+        )
+    return impact.consumers
+
+
+def _rebuild_soname_consumers(consumers: list[str], config, options, state) -> None:
+    """Rebuild installed libLLVM consumers after a soname-bumping install.
+
+    Runs OUTSIDE the toolchain sentinel, after Gate 3 passed — a consumer
+    rebuild failure must NOT roll back the (intended) toolchain bump. Resolves
+    each consumer pkgbase to a build target (``find_pkgbuild`` auto-clones repo
+    packages like mesa into ``pkgbuild_src_dir``) and routes them through the
+    shared build engine with the user's normal profile so they re-link against
+    the just-installed libLLVM. On any failure, raises with the manual rebuild
+    command; the toolchain itself stays healthy.
+    """
+    from sysforge import build_core
+    from sysforge.pipeline.state import get_toolchain_variant
+
+    manual_cmd = "sysforge build " + " ".join(consumers)
+    _log.ui(
+        f"Rebuilding {len(consumers)} libLLVM consumer(s) against the new "
+        f"soname: {', '.join(consumers)}"
+    )
+
+    targets = []
+    unresolved: list[str] = []
+    for pkg in consumers:
+        try:
+            pkgbuild = find_pkgbuild(pkg, config)
+        except Exception as e:
+            _log.warn(f"  could not resolve PKGBUILD for {pkg}: {e}")
+            unresolved.append(pkg)
+            continue
+        targets.append(build_core.target_from_pkgbuild(pkgbuild))
+
+    if not targets:
+        raise RuntimeError(
+            "[TOOLCHAIN] The new toolchain is installed and healthy, but none of "
+            f"the {len(consumers)} libLLVM consumer(s) could be resolved for "
+            f"rebuild. Rebuild them manually: {manual_cmd}"
+        )
+
+    outcome = build_core.build_and_install(
+        targets,
+        config=config,
+        sync_source=True,
+        state_dir=options.state_dir,
+        active_variant=get_toolchain_variant(state),
+        abi_check=True,
+        review="auto",
+    )
+    failed = list(outcome.failed_pkgs) + unresolved
+    if outcome.install_failed or outcome.aborted or failed:
+        detail = ", ".join(failed) if failed else "the install step"
+        raise RuntimeError(
+            "[TOOLCHAIN] The new toolchain installed cleanly, but rebuilding its "
+            f"consumers did not fully succeed ({detail}). Finish the rebuild so "
+            f"installed packages link the new libLLVM: {manual_cmd}"
+        )
+    _log.ui(
+        f"Rebuilt {len(outcome.built_pkgs)} consumer(s) against the new "
+        "libLLVM soname."
+    )
+
+
 def _gate2_audit(built_map: dict[str, Path], *, dry_run: bool) -> None:
     """Scan the built ``.pkg.tar*`` for the std::-bound-to-LLVM ABI hazard.
 
@@ -2621,6 +2777,15 @@ class ToolchainStage(Stage):
             pkgbuild_map, options, tcfg, snapshot=snapshot,
         )
 
+        # Pre-build soname gate: if the about-to-be-built libLLVM bumps the
+        # soname, warn + list the installed consumers that would break and
+        # (per rebuild_soname_consumers mode) require approval up front. The
+        # captured consumers are rebuilt after Gate 3 so there is no
+        # post-install shock. Returns [] when nothing changes / dry-run / off.
+        soname_consumers = _gate_soname_consumers(
+            pkgbuild_map, all_names, options, tcfg,
+        )
+
         # Prompt for confirmation (interactive only)
         try:
             import sys as _sys
@@ -2717,6 +2882,14 @@ class ToolchainStage(Stage):
                     # Verify passed — safe to wipe the stage2 prefix (PGO only).
                     if pgo:
                         _remove_staging(staging)
+
+        # Toolchain is installed and Gate-3-verified. Rebuild the libLLVM
+        # consumers captured by the pre-build soname gate so the live system is
+        # left coherent (mesa et al. re-link the new soname). OUTSIDE the
+        # sentinel — a consumer rebuild failure must not roll back the intended
+        # toolchain bump; it surfaces as an actionable error instead.
+        if soname_consumers and not options.dry_run:
+            _rebuild_soname_consumers(soname_consumers, config, options, state)
 
         # Write compiler paths + variant to pipeline state for downstream
         # stages. ``variant`` is the canonical signal consumers read via

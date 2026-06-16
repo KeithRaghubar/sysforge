@@ -744,6 +744,14 @@ def _add_run_parser(sub):
              "staging dirs / pgo_store / build output lacks min_build_free_gb "
              "free (default 40 GiB). Dangerous — the multi-hour LLVM build may "
              "fail partway with no space left.")
+    p_toolchain.add_argument("--rebuild-soname-consumers",
+        dest="rebuild_soname_consumers", choices=("prompt", "auto", "off"),
+        default=None,
+        help="What to do when the built libLLVM changes its soname and would "
+             "break installed consumers (mesa, etc.): 'prompt' (default) warns "
+             "and asks before building; 'auto' approves and rebuilds them after "
+             "install; 'off' builds the toolchain but leaves consumers for you "
+             "to rebuild. Overrides toolchain.toml rebuild_soname_consumers.")
     p_toolchain.add_argument("--cleansrc", action="store_true", dest="cleansrc",
         help="Purge each toolchain package's src dir and re-clone before "
              "building. Refuses (per package) if the existing clone has "
