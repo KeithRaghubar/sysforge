@@ -24,6 +24,7 @@ from sysforge.pipeline.stages.toolchain import (
     _profraw_merge_daemon,
     _merge_profraw,
     _remove_staging,
+    _assert_staging_has_llvm_cmake,
     _DEFAULT_LLVM_PGO,
     _DEFAULT_LLVM_NON_PGO,
     _DEFAULT_LLVM_LIB32,
@@ -434,6 +435,64 @@ def test_extract_pass2_tar_failure_raises(tmp_path):
             _extract_pass2_to_staging(pkgbuild_map, staging, dry_run=False)
 
 
+def test_extract_pass2_split_pkgname_does_not_swallow_sibling(tmp_path):
+    """Regression: name="llvm" must NOT match the split sibling "llvm-libs-…".
+
+    The pgo_map for the split package has two keys (``llvm`` + ``llvm-libs``)
+    pointing at the same PKGBUILD. A plain ``f"{name}-*"`` glob matches
+    ``llvm-libs-…`` for name="llvm", and the mtime tiebreak then staged
+    llvm-libs for BOTH keys — so the ``llvm`` (dev) package carrying
+    LLVMConfig.cmake/headers never reached staging3 and Pass 3b's
+    find_package(LLVM) silently fell back to the live /usr libLLVM (the Gate-3
+    brick). The glob is version-anchored to prevent this; llvm-libs is made the
+    newer artifact here so the old code would mis-select it.
+    """
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    pkg_llvm = pkgdest / "llvm-22.1.6-1-x86_64.pkg.tar"
+    pkg_libs = pkgdest / "llvm-libs-22.1.6-1-x86_64.pkg.tar"
+    pkg_llvm.touch()
+    pkg_libs.touch()
+    # Make llvm-libs strictly newer so a non-anchored glob's max(mtime) would
+    # pick it for the "llvm" key — the exact failure being guarded against.
+    os.utime(pkg_llvm, (1000, 1000))
+    os.utime(pkg_libs, (2000, 2000))
+
+    pb = tmp_path / "llvm" / "PKGBUILD"
+    pb.parent.mkdir()
+    pb.touch()
+    # Same PKGBUILD for both split keys, mirroring the real pgo_map.
+    pkgbuild_map = {"llvm": pb, "llvm-libs": pb}
+    staging = tmp_path / "staging"
+
+    extracted: list[str] = []
+
+    def _fake_run(cmd, *a, **k):
+        # Capture the .pkg.tar* path handed to tar for each extraction.
+        for tok in cmd:
+            if isinstance(tok, str) and ".pkg.tar" in tok:
+                extracted.append(Path(tok).name)
+        res = MagicMock()
+        res.returncode = 0
+        return res
+
+    with patch("sysforge.primitives.config.parse_system_makepkg_conf",
+               return_value={"PKGDEST": str(pkgdest)}), \
+         patch("subprocess.run", side_effect=_fake_run):
+        _extract_pass2_to_staging(pkgbuild_map, staging, dry_run=False)
+
+    # Each key must stage its own artifact: llvm → llvm-, llvm-libs → llvm-libs-.
+    assert pkg_llvm.name in extracted, (
+        f"the 'llvm' package was never staged (got {extracted}) — "
+        "staging3 would lack LLVMConfig.cmake/headers"
+    )
+    assert pkg_libs.name in extracted
+    assert extracted.count(pkg_libs.name) == 1, (
+        f"llvm-libs staged more than once (got {extracted}) — "
+        "the 'llvm' key swallowed the sibling artifact"
+    )
+
+
 # ---------------------------------------------------------------------------
 # _remove_staging
 # ---------------------------------------------------------------------------
@@ -748,6 +807,7 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_reuse(tmp_path):
          patch(T + "_pgo_confirm"), \
          patch(T + "_build_pass", side_effect=fake_build_pass), \
          patch(T + "_extract_pass2_to_staging", extract_mock), \
+         patch(T + "_assert_staging_has_llvm_cmake"), \
          patch(T + "_remove_staging"), \
          patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
         _build_llvm_pgo_inner(
@@ -823,6 +883,7 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
          patch(T + "_write_profdata_version"), \
          patch(T + "_ensure_pgo_store_writable"), \
          patch(T + "_extract_pass2_to_staging"), \
+         patch(T + "_assert_staging_has_llvm_cmake"), \
          patch(T + "_remove_staging"), \
          patch(T + "_build_pass", side_effect=fake_build_pass), \
          patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
@@ -1510,44 +1571,67 @@ def test_gate2_audit_clean_build_passes(tmp_path, monkeypatch):
     _gate2_audit({"clang": pkg_dir / "PKGBUILD"}, dry_run=False)  # must not raise
 
 
-def test_dump_stage_dynsym_evidence_writes_log(tmp_path):
-    """Helper writes nm output to <dest>/llvm_abi_hazard.log with a filtered header."""
-    staging = tmp_path / "stage2"
-    libdir = staging / "usr/lib"
-    libdir.mkdir(parents=True)
-    so = libdir / "libLLVM.so.22.1"
-    so.touch()
+def _make_so(base, name):
+    libdir = base / "usr/lib"
+    libdir.mkdir(parents=True, exist_ok=True)
+    (libdir / name).touch()
 
-    nm_out = (
-        "0000000000111111 T LLVMCreateModule\n"
-        "0000000000222222 T _ZNSt7__cxx1112basic_string_M_assign\n"
-        "0000000000333333 T _ZNSt7__cxx1112basic_string_M_append\n"
-    )
+
+def test_dump_stage_dynsym_evidence_writes_brick_diff(tmp_path):
+    """Evidence is the @LLVM_*-versioned std symbols a consumer demands that the
+    installed libLLVM does not provide (the brick), plus a note when staging3
+    DOES export them (the shipped libLLVM diverged from what 3b linked against).
+    """
+    install_root = tmp_path / "root"
+    _make_so(install_root, "libLLVM.so.22.1")
+    _make_so(install_root, "libclang-cpp.so.22.1")
+    staging3 = tmp_path / "stage3"
+    _make_so(staging3, "libLLVM.so.22.1")
 
     def fake_run(cmd, **kwargs):
+        so = cmd[3]
+        undefined = "--undefined-only" in cmd
         result = MagicMock()
         result.returncode = 0
-        result.stdout = nm_out
         result.stderr = ""
+        if "libclang-cpp" in so and undefined:
+            result.stdout = (
+                "                 U _ZNSt7providedSym@LLVM_22.1\n"
+                "                 U _ZNSt7missingSym@LLVM_22.1\n"
+            )
+        elif str(staging3) in so and not undefined:
+            result.stdout = "0000000000333333 W _ZNSt7missingSym@@LLVM_22.1\n"
+        elif not undefined:  # installed libLLVM defined-only
+            result.stdout = (
+                "0000000000111111 T LLVMCreateModule\n"
+                "0000000000222222 W _ZNSt7providedSym@@LLVM_22.1\n"
+            )
+        else:
+            result.stdout = ""
         return result
 
     dest_dir = tmp_path / "state"
     with patch("subprocess.run", side_effect=fake_run):
-        out = _dump_stage_dynsym_evidence(staging, dest_dir)
+        out = _dump_stage_dynsym_evidence(staging3, dest_dir, install_root=install_root)
 
     assert out is not None
     assert out == dest_dir / "llvm_abi_hazard.log"
     text = out.read_text()
-    assert "Suspicious symbols (C++ stdlib exports, 2 found)" in text
-    assert "_ZNSt7__cxx1112basic_string_M_assign" in text
-    assert "LLVMCreateModule" in text  # full dump also present
+    assert "installed libLLVM:" in text
+    assert "brick cause" in text
+    assert "_ZNSt7missingSym@LLVM_22.1" in text
+    # provided-and-demanded symbol is NOT flagged as missing
+    assert "_ZNSt7missingSym@LLVM_22.1" in text
+    assert "ARE exported by" in text  # staging3 had it → divergence note
+    assert "_ZNSt7providedSym" in text  # full dump section present
 
 
-def test_dump_stage_dynsym_evidence_returns_none_when_staging_missing(tmp_path):
-    """No staging dir on disk → returns None, doesn't crash, doesn't write."""
-    staging = tmp_path / "stage2-gone"
+def test_dump_stage_dynsym_evidence_returns_none_when_no_installed_libllvm(tmp_path):
+    """No installed libLLVM under install_root → returns None, writes nothing."""
+    install_root = tmp_path / "root"
+    (install_root / "usr/lib").mkdir(parents=True)
     dest_dir = tmp_path / "state"
-    out = _dump_stage_dynsym_evidence(staging, dest_dir)
+    out = _dump_stage_dynsym_evidence(tmp_path / "stage3", dest_dir, install_root=install_root)
     assert out is None
     assert not (dest_dir / "llvm_abi_hazard.log").exists()
 
@@ -1555,16 +1639,30 @@ def test_dump_stage_dynsym_evidence_returns_none_when_staging_missing(tmp_path):
 def test_dump_stage_dynsym_evidence_returns_none_when_dest_dir_none(tmp_path):
     """Unset state dir (None) → returns None instead of raising TypeError.
 
-    Regression: the Gate-3 failure path passed ``options.state_dir`` which is
+    Regression: the Gate-3 failure path passes ``options.state_dir`` which is
     None whenever --state-dir isn't on the CLI, crashing on ``Path(None)``.
     """
-    staging = tmp_path / "stage2"
-    libdir = staging / "usr/lib"
-    libdir.mkdir(parents=True)
-    (libdir / "libLLVM.so.22.1").touch()
-
-    out = _dump_stage_dynsym_evidence(staging, None)
+    install_root = tmp_path / "root"
+    _make_so(install_root, "libLLVM.so.22.1")
+    out = _dump_stage_dynsym_evidence(tmp_path / "stage3", None, install_root=install_root)
     assert out is None
+
+
+def test_assert_staging_has_llvm_cmake_raises_when_missing(tmp_path):
+    """staging without LLVMConfig.cmake → fail fast (the root-cause guard)."""
+    staging = tmp_path / "stage3"
+    (staging / "usr/lib").mkdir(parents=True)  # libLLVM only, no cmake config
+    with pytest.raises(RuntimeError, match="Pass-3 staging is incomplete"):
+        _assert_staging_has_llvm_cmake(staging)
+
+
+def test_assert_staging_has_llvm_cmake_passes_when_present(tmp_path):
+    """staging with LLVMConfig.cmake → no raise."""
+    staging = tmp_path / "stage3"
+    cfg = staging / "usr/lib/cmake/llvm"
+    cfg.mkdir(parents=True)
+    (cfg / "LLVMConfig.cmake").touch()
+    _assert_staging_has_llvm_cmake(staging)  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -2571,6 +2669,7 @@ def _run_pgo(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None,
          patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_pass1_stage"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._assert_staging_has_llvm_cmake"), \
          patch("subprocess.run", side_effect=_fake_subprocess_factory(profdata_size)), \
          patch("sys.stdin.isatty", return_value=False), \
          patch("sysforge.pipeline.stages.toolchain._validate_pgo_environment"), \

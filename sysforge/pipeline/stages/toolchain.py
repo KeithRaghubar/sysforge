@@ -758,9 +758,18 @@ def _extract_pass2_to_staging(
         for d in search_dirs:
             # *.pkg.tar* matches both compressed (.pkg.tar.zst) and
             # uncompressed (.pkg.tar) packages (PKGEXT='.pkg.tar').
-            # Sort by mtime descending and take only the newest to avoid
-            # extracting stale packages from previous runs in PKGDEST.
-            candidates = [p for p in d.glob(f"{name}-*.pkg.tar*")
+            # The version segment is anchored with [0-9] (pkgver/epoch always
+            # starts with a digit) so a shorter pkgname does NOT swallow a
+            # longer sibling that shares its prefix — critically, name="llvm"
+            # must not match the split sibling "llvm-libs-…" (a plain
+            # f"{name}-*" glob does, and the mtime tiebreak below would then
+            # stage llvm-libs for the "llvm" key, leaving staging3 without
+            # LLVMConfig.cmake/headers and silently defeating the Pass-3 split).
+            # Same version-anchored idiom as pacman.cached_pkg_files_for and
+            # build_core._find_existing_artifacts. Sort by mtime descending and
+            # take only the newest to avoid extracting stale packages from
+            # previous runs in PKGDEST.
+            candidates = [p for p in d.glob(f"{name}-[0-9]*-*.pkg.tar*")
                           if not p.name.endswith(".sig")]
             if candidates:
                 pkgs = [max(candidates, key=lambda p: p.stat().st_mtime)]
@@ -774,6 +783,26 @@ def _extract_pass2_to_staging(
         for pkg_file in pkgs:
             _extract_pkg_to_staging(pkg_file, staging)
         _log.ui(f"  {name}: staged")
+
+
+def _assert_staging_has_llvm_cmake(staging: Path) -> None:
+    """Fail fast when ``staging`` lacks ``usr/lib/cmake/llvm/LLVMConfig.cmake``.
+
+    Pass 3b/3c steer ``find_package(LLVM)`` at ``<staging>/usr`` via
+    ``CMAKE_PREFIX_PATH``. If the cmake config is missing — e.g. the split
+    ``llvm`` (dev) artifact was not staged, only ``llvm-libs`` — find_package
+    silently falls back to the system ``/usr`` LLVM, so the non-pgo suite links
+    against the wrong libLLVM and bricks at Gate 3. Catching it here turns a
+    multi-hour build + failed install into an immediate, actionable abort.
+    """
+    cfg = staging / "usr/lib/cmake/llvm/LLVMConfig.cmake"
+    if not cfg.exists():
+        raise RuntimeError(
+            f"[TOOLCHAIN] Pass-3 staging is incomplete: {cfg} is missing. The "
+            "optimized 'llvm' dev package (cmake config + headers) was not "
+            "staged, so clang/lld would link against the live /usr libLLVM "
+            "instead of the libLLVM being shipped. Aborting before install."
+        )
 
 
 def _remove_staging(staging: Path) -> None:
@@ -1584,49 +1613,125 @@ def _check_llvm_link_resolution() -> list[str]:
     return issues
 
 
-def _dump_stage_dynsym_evidence(
-    staging: Path, dest_dir: Path | str | None
-) -> Path | None:
-    """Dump stage2 ``libLLVM.so.*`` dynamic symbols for post-mortem inspection.
+def _nm_dynsyms(so: Path, *, undefined: bool) -> list[str]:
+    """Return ``nm -D`` symbol names (with their ``@version`` suffix) from ``so``.
 
-    Called from the post-install verify failure path. Writes
-    ``nm -D --defined-only`` of the suspected leak source to
-    ``<state_dir>/llvm_abi_hazard.log`` with a filtered "suspicious symbols"
-    header listing every line matching ``_ZNSt`` — direct evidence of which
-    C++ stdlib exports leaked into stage2's libLLVM under the LLVM version
-    namespace. Returns the log path on success; ``None`` if staging is gone,
-    the suspect ``.so`` is missing, or ``nm`` failed.
+    ``undefined=True`` lists undefined references (``U``); otherwise defined
+    exports (``--defined-only``). Returns ``[]`` if ``nm`` is missing or fails.
     """
-    if not staging.exists():
-        return None
-    if dest_dir is None:
-        return None
-    candidates = sorted((staging / "usr/lib").glob("libLLVM.so.*"))
-    so = next((p for p in candidates if p.is_file()), None)
-    if so is None:
-        return None
+    flag = "--undefined-only" if undefined else "--defined-only"
     try:
         proc = subprocess.run(
-            ["nm", "-D", "--defined-only", str(so)],
+            ["nm", "-D", flag, str(so)],
             capture_output=True, text=True, check=False,
         )
     except FileNotFoundError:
-        return None
+        return []
     if proc.returncode != 0:
+        return []
+    return [parts[-1] for parts in (ln.split() for ln in proc.stdout.splitlines()) if parts]
+
+
+def _first_so(base: Path, name_glob: str) -> Path | None:
+    """First regular (non-symlink) ``base/usr/lib/<name_glob>`` match."""
+    for p in sorted((base / "usr/lib").glob(name_glob)):
+        if p.is_file() and not p.is_symlink():
+            return p
+    return None
+
+
+def _dump_stage_dynsym_evidence(
+    staging3: Path,
+    dest_dir: Path | str | None,
+    *,
+    install_root: Path = Path("/"),
+) -> Path | None:
+    """Capture Gate-3 symbol-version brick evidence to ``llvm_abi_hazard.log``.
+
+    The brick is a C++ stdlib symbol bound to libLLVM's ``LLVM_<ver>`` version
+    node: a consumer (``libclang-cpp`` / ``liblldCommon``) carries an *undefined*
+    ``_ZNSt*@LLVM_<ver>`` reference that the *installed* ``libLLVM`` does not
+    export. The actionable evidence is the **difference** between what the
+    installed consumers demand under ``@LLVM_*`` and what the installed
+    ``libLLVM`` provides — read straight from the live ``/usr`` files that
+    bricked, not from a staging prefix (the previous stage2 dump captured an
+    unrelated, often stale, library and never contained the brick symbols).
+
+    ``staging3`` (the libLLVM Pass 3b linked against) is included for contrast:
+    if it exports the missing symbols but the installed ``libLLVM`` does not, the
+    split staged the wrong/incomplete libLLVM (e.g. a missing ``LLVMConfig.cmake``
+    sent ``find_package(LLVM)`` back to ``/usr``). Returns the log path, or
+    ``None`` when the dest is unset or no ``libLLVM`` is installed.
+    """
+    if dest_dir is None:
         return None
-    suspicious = [ln for ln in proc.stdout.splitlines() if "_ZNSt" in ln]
+    installed_libllvm = _first_so(install_root, "libLLVM.so.*")
+    if installed_libllvm is None:
+        return None
+
+    def _llvm_std(syms: list[str]) -> set[str]:
+        # Normalise @@ (defined) and @ (undefined) so the two sets compare;
+        # keep only C++ stdlib symbols bound to an LLVM version node.
+        return {
+            s.replace("@@", "@")
+            for s in syms
+            if "_ZNSt" in s and "@LLVM_" in s
+        }
+
+    provided = _llvm_std(_nm_dynsyms(installed_libllvm, undefined=False))
+    staged_libllvm = _first_so(staging3, "libLLVM.so.*")
+    staged_provided = (
+        _llvm_std(_nm_dynsyms(staged_libllvm, undefined=False))
+        if staged_libllvm is not None
+        else set()
+    )
+
+    lines: list[str] = [
+        "# Gate-3 ABI brick evidence — C++ stdlib symbols bound to LLVM_<ver>",
+        f"# installed libLLVM: {installed_libllvm}  "
+        f"({len(provided)} _ZNSt*@LLVM_* exports)",
+        f"# staged   libLLVM: {staged_libllvm or '(absent)'}  "
+        f"({len(staged_provided)} _ZNSt*@LLVM_* exports)",
+        "",
+    ]
+    for so in (
+        _first_so(install_root, "libclang-cpp.so.*"),
+        _first_so(install_root, "liblldCommon.so.*"),
+    ):
+        if so is None:
+            continue
+        demanded = _llvm_std(_nm_dynsyms(so, undefined=True))
+        missing = sorted(demanded - provided)
+        lines.append(
+            f"## {so}: {len(demanded)} _ZNSt*@LLVM_* undefined refs, "
+            f"{len(missing)} NOT provided by installed libLLVM"
+        )
+        if missing:
+            lines.append(
+                "# >>> brick cause: demanded under @LLVM_* but absent in installed libLLVM:"
+            )
+            lines.extend(missing)
+            in_staged = [m for m in missing if m in staged_provided]
+            if in_staged:
+                lines.append(
+                    f"# note: {len(in_staged)}/{len(missing)} of these ARE exported by "
+                    "the staged (staging3) libLLVM — the shipped libLLVM differs "
+                    "from what Pass 3b linked against:"
+                )
+                lines.extend(in_staged)
+        lines.append("")
+
+    lines.append(
+        f"# Full nm -D --defined-only {installed_libllvm} (_ZNSt* only):"
+    )
+    lines.extend(
+        sorted(s for s in _nm_dynsyms(installed_libllvm, undefined=False) if "_ZNSt" in s)
+    )
+
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
     out = dest / "llvm_abi_hazard.log"
-    body = (
-        f"# Diagnostic dump from stage2 libLLVM: {so}\n"
-        f"# Suspicious symbols (C++ stdlib exports, {len(suspicious)} found):\n"
-        + "\n".join(suspicious)
-        + ("\n" if suspicious else "")
-        + "# Full nm -D --defined-only output:\n"
-        + proc.stdout
-    )
-    out.write_text(body)
+    out.write_text("\n".join(lines) + "\n")
     return out
 
 
@@ -2231,6 +2336,13 @@ def _build_llvm_pgo_inner(
         if non_pgo_map or lib32_map:
             _remove_staging(staging3)
             _extract_pass2_to_staging(pgo_map, staging3, options.dry_run)
+            # Fail fast if the split-package 'llvm' (cmake config + headers) did
+            # not reach staging3: without LLVMConfig.cmake, the 3b/3c
+            # find_package(LLVM) silently falls back to the live /usr libLLVM and
+            # the non-pgo suite links against the wrong libLLVM → Gate-3
+            # symbol-version brick. Cheaper to catch here than after install.
+            if not options.dry_run:
+                _assert_staging_has_llvm_cmake(staging3)
 
         # 3b — build the non-pgo suite (clang, lld, …) against staging3's
         # libLLVM. Set ONLY CMAKE_PREFIX_PATH (mirror Pass 1b): the host clang
@@ -2299,9 +2411,9 @@ def _build_llvm_pgo_inner(
     # Sidecar is written after Pass 2 (above), not here — see comment there.
     # Staging is intentionally NOT removed here: the caller's Gate-3
     # _verify_llvm_install runs after install, and on a verify failure the
-    # stage2 prefix is needed by _dump_stage_dynsym_evidence to capture which
-    # exports leaked into stage2's libLLVM. Staging is removed by the caller
-    # after Gate 3 passes (or after a successful rollback).
+    # staging3 prefix is needed by _dump_stage_dynsym_evidence to contrast the
+    # libLLVM Pass 3b linked against with the (bricked) installed one. Staging
+    # is removed by the caller after Gate 3 passes (or a successful rollback).
     return all_pass3, "/usr/bin/clang", "/usr/bin/clang++", "lld", "pgo_llvm"
 
 
@@ -2945,7 +3057,7 @@ class ToolchainStage(Stage):
                     issues = _verify_llvm_install(expected_targets=expected_targets)
                     if issues:
                         evidence_path = (
-                            _dump_stage_dynsym_evidence(staging, state.path.parent)
+                            _dump_stage_dynsym_evidence(staging3, state.path.parent)
                             if pgo
                             else None
                         )
