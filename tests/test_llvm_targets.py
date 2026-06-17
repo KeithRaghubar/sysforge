@@ -4,17 +4,25 @@ pkgbuild_patcher injection that consumes it.
 """
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 from sysforge.primitives.llvm_targets import resolve_llvm_targets
 from sysforge.primitives.makepkg_wrapper import _maybe_patch_llvm_targets
+from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.pkgbuild_patcher import (
+    PkgbuildPatchError,
+    _find_cmake_configure_anchor,
     is_llvm_pkgbase,
+    patch_llvm_dir,
     patch_llvm_targets,
+    validate_patched_pkgbuild,
 )
 
 
@@ -196,6 +204,148 @@ def test_patch_empty_targets_is_noop(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# patch_llvm_dir — force find_package(LLVM) at a staged libLLVM prefix
+# (toolchain PGO passes 1b/3b/3c). Mirrors patch_llvm_targets.
+# ---------------------------------------------------------------------------
+
+_STAGED_LLVM_DIR = "/var/tmp/sysforge-llvm-stage3/usr/lib/cmake/llvm"
+
+
+def test_patch_llvm_dir_injects_after_cmake(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_PKGBUILD_NO_TARGETS)
+    changed = patch_llvm_dir(p, _STAGED_LLVM_DIR)
+    assert changed is True
+    new = p.read_text()
+    assert f'-DLLVM_DIR="{_STAGED_LLVM_DIR}"' in new
+    # Existing cmake args preserved.
+    assert "-DCMAKE_BUILD_TYPE=Release" in new
+
+
+def test_patch_llvm_dir_idempotent(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_PKGBUILD_NO_TARGETS)
+    patch_llvm_dir(p, _STAGED_LLVM_DIR)
+    snapshot = p.read_text()
+    second = patch_llvm_dir(p, _STAGED_LLVM_DIR)
+    assert second is False
+    assert p.read_text() == snapshot
+
+
+def test_patch_llvm_dir_replaces_when_present(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(
+        'pkgname=clang\nbuild() {\n'
+        '  cmake .. -DLLVM_DIR="/usr/lib/cmake/llvm"\n}\n'
+    )
+    changed = patch_llvm_dir(p, _STAGED_LLVM_DIR)
+    assert changed is True
+    new = p.read_text()
+    assert f'-DLLVM_DIR="{_STAGED_LLVM_DIR}"' in new
+    assert '/usr/lib/cmake/llvm"' not in new.replace(_STAGED_LLVM_DIR, "")
+
+
+def test_patch_llvm_dir_no_cmake_skips(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_PKGBUILD_NO_CMAKE)
+    changed = patch_llvm_dir(p, _STAGED_LLVM_DIR)
+    assert changed is False
+    assert p.read_text() == _PKGBUILD_NO_CMAKE
+
+
+def test_patch_llvm_dir_empty_is_noop(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_PKGBUILD_NO_TARGETS)
+    changed = patch_llvm_dir(p, "")
+    assert changed is False
+    assert p.read_text() == _PKGBUILD_NO_TARGETS
+
+
+def test_patch_llvm_dir_not_confused_by_distribution_components(tmp_path):
+    """-DLLVM_DISTRIBUTION_COMPONENTS=… must not be mistaken for LLVM_DIR."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(
+        'pkgname=clang\nbuild() {\n'
+        '  cmake .. -DLLVM_DISTRIBUTION_COMPONENTS="clang;clang-resource-headers"\n}\n'
+    )
+    changed = patch_llvm_dir(p, _STAGED_LLVM_DIR)
+    assert changed is True
+    new = p.read_text()
+    assert f'-DLLVM_DIR="{_STAGED_LLVM_DIR}"' in new
+    # The distribution-components arg is untouched.
+    assert '-DLLVM_DISTRIBUTION_COMPONENTS="clang;clang-resource-headers"' in new
+
+
+# ---------------------------------------------------------------------------
+# Composition: targets + dir injected on the same cmake invocation must stay
+# on one logical command (both injectors run on the toolchain non-pgo passes).
+# ---------------------------------------------------------------------------
+
+def _logical_lines(text: str) -> list[str]:
+    """Join bash line-continuations (`\\` + newline) into single logical lines."""
+    return text.replace("\\\n", " ").splitlines()
+
+
+def _assert_no_orphaned_cmake_arg(text: str):
+    """Every `-D` arg must ride a `cmake` command, not stand alone (which bash
+    would run as a command -> 'command not found', exit 4)."""
+    logical = _logical_lines(text)
+    orphans = [ln for ln in logical if ln.strip().startswith("-D")]
+    assert not orphans, f"orphaned -D arg(s) not attached to cmake: {orphans!r}"
+
+
+def test_patch_targets_then_dir_compose_single_line_cmake(tmp_path):
+    """Regression: applying patch_llvm_targets then patch_llvm_dir to the Arch
+    single-line `cmake .. "${cmake_args[@]}"` shape must keep BOTH -D args on the
+    one cmake command. The buggy version spliced the 2nd injection into the 1st's
+    continuation, orphaning -DLLVM_TARGETS_TO_BUILD (PKGBUILD line: command not
+    found, build() exit 4)."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text('pkgname=clang\nbuild() {\n  cmake .. "${cmake_args[@]}"\n  ninja\n}\n')
+    # Production order: targets first (via _maybe_patch_llvm_targets), then dir.
+    assert patch_llvm_targets(p, ["X86", "NVPTX"]) is True
+    assert patch_llvm_dir(p, _STAGED_LLVM_DIR) is True
+    text = p.read_text()
+    _assert_no_orphaned_cmake_arg(text)
+    cmake_logical = [ln for ln in _logical_lines(text) if ln.lstrip().startswith("cmake ")]
+    assert len(cmake_logical) == 1
+    assert '-DLLVM_TARGETS_TO_BUILD="X86;NVPTX"' in cmake_logical[0]
+    assert f'-DLLVM_DIR="{_STAGED_LLVM_DIR}"' in cmake_logical[0]
+
+
+def test_patch_dir_then_targets_compose_order_independent(tmp_path):
+    """Composition must hold regardless of injection order."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text('pkgname=clang\nbuild() {\n  cmake .. "${cmake_args[@]}"\n  ninja\n}\n')
+    assert patch_llvm_dir(p, _STAGED_LLVM_DIR) is True
+    assert patch_llvm_targets(p, ["X86", "NVPTX"]) is True
+    text = p.read_text()
+    _assert_no_orphaned_cmake_arg(text)
+    cmake_logical = [ln for ln in _logical_lines(text) if ln.lstrip().startswith("cmake ")]
+    assert len(cmake_logical) == 1
+    assert '-DLLVM_TARGETS_TO_BUILD="X86;NVPTX"' in cmake_logical[0]
+    assert f'-DLLVM_DIR="{_STAGED_LLVM_DIR}"' in cmake_logical[0]
+
+
+def test_patch_compose_on_multiline_cmake(tmp_path):
+    """A `\\`-continued multi-line cmake invocation: both injections append after
+    the statement's true end, never splitting an existing continuation."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_PKGBUILD_NO_TARGETS)   # multi-line `cmake -B build -S . \ ...`
+    assert patch_llvm_targets(p, ["X86", "NVPTX"]) is True
+    assert patch_llvm_dir(p, _STAGED_LLVM_DIR) is True
+    text = p.read_text()
+    _assert_no_orphaned_cmake_arg(text)
+    cmake_logical = [ln for ln in _logical_lines(text) if ln.lstrip().startswith("cmake ")]
+    assert len(cmake_logical) == 1
+    # Upstream args preserved alongside both injected ones.
+    assert "-DCMAKE_BUILD_TYPE=Release" in cmake_logical[0]
+    assert "-DLLVM_HOST_TRIPLE=x86_64-pc-linux-gnu" in cmake_logical[0]
+    assert '-DLLVM_TARGETS_TO_BUILD="X86;NVPTX"' in cmake_logical[0]
+    assert f'-DLLVM_DIR="{_STAGED_LLVM_DIR}"' in cmake_logical[0]
+
+
+# ---------------------------------------------------------------------------
 # _maybe_patch_llvm_targets — wiring used by both `update --patch-pkgbuild`
 # and `run toolchain` paths in makepkg_wrapper._run_build.
 # ---------------------------------------------------------------------------
@@ -342,3 +492,126 @@ def test_resolve_or_detect_lspci_failure_is_non_fatal(tmp_path):
             tmp_path / "missing-tc.toml", tmp_path / "missing-hw.toml",
         )
     assert result == ["X86"]
+
+
+# ---------------------------------------------------------------------------
+# _find_cmake_configure_anchor — structurally-correct cmake-command selection
+# ---------------------------------------------------------------------------
+
+def test_anchor_skips_bare_dep_array_cmake():
+    """A bare `cmake` element in a multi-line `makedepends=(...)` array must NOT
+    be chosen as the injection anchor — this is the spirv-llvm-translator
+    exit-12 brick (a `-D…` arg spliced into the dependency array)."""
+    text = (
+        "makedepends=(\n  cmake\n  ninja\n)\n"
+        "build() {\n  cmake -S . -B build -G Ninja\n}\n"
+    )
+    m = _find_cmake_configure_anchor(text)
+    assert m is not None
+    # The chosen anchor is the real command (it has same-line args), never the
+    # bare array element.
+    assert "-S . -B build" in m.group("rest")
+
+
+def test_anchor_skips_action_mode_cmake():
+    """`cmake --build` / `cmake --install` ignore -D cache args; the anchor must
+    fall through to the configure invocation even when an action-mode call comes
+    first in source order."""
+    text = (
+        "build() {\n"
+        "  cmake --build build\n"      # action-mode, first — must be skipped
+        "  cmake -S . -B build\n"      # the configure call we want
+        "}\n"
+    )
+    m = _find_cmake_configure_anchor(text)
+    assert m is not None
+    assert m.group("rest").startswith("-S")
+
+
+def test_anchor_none_when_no_cmake_command():
+    """No cmake *command* (only a build system swap) → no anchor."""
+    assert _find_cmake_configure_anchor("build() {\n  meson setup build\n}\n") is None
+
+
+# ---------------------------------------------------------------------------
+# validate_patched_pkgbuild — fast, build-free post-patch structural gate.
+# G1: dependency/identity arrays unchanged. G2: managed -D args ride a cmake cmd.
+# ---------------------------------------------------------------------------
+
+_FIXTURES = Path(__file__).parent / "data" / "PKGBUILDs"
+
+
+def test_validate_real_spirv_fixture_round_trip(tmp_path):
+    """End-to-end on the real regression shape: injecting -DLLVM_DIR into the
+    spirv fixture must leave makedepends intact (anchor lands on the real cmake
+    command), and validation passes."""
+    original = _FIXTURES / "spirv-llvm-translator.PKGBUILD"
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(original.read_text())
+    assert patch_llvm_dir(patched, _STAGED_LLVM_DIR) is True
+    validate_patched_pkgbuild(original, patched)  # must not raise
+    meta = parse_pkgbuild(patched)["globals"]
+    assert meta["makedepends"] == ["cmake", "git", "llvm", "ninja", "spirv-headers"]
+    assert f'-DLLVM_DIR="{_STAGED_LLVM_DIR}"' in patched.read_text()
+
+
+def test_validate_g1_rejects_dep_array_corruption(tmp_path):
+    """G1: a -D arg that landed inside makedepends=() (the pre-fix spirv brick)
+    changes the parsed dependency array → PkgbuildPatchError."""
+    original = tmp_path / "PKGBUILD"
+    original.write_text(
+        "pkgname=foo\nmakedepends=(\n  cmake\n  ninja\n)\n"
+        "build() {\n  cmake -S . -B build\n}\n"
+    )
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(
+        'pkgname=foo\nmakedepends=(\n  cmake \\\n    -DLLVM_DIR="/x"\n  ninja\n)\n'
+        "build() {\n  cmake -S . -B build\n}\n"
+    )
+    with pytest.raises(PkgbuildPatchError, match="makedepends"):
+        validate_patched_pkgbuild(original, patched)
+
+
+def test_validate_g2_rejects_orphaned_arg(tmp_path):
+    """G2: a -D arg orphaned as its own command (the clang composition exit-4
+    brick) is caught even though the dependency arrays are untouched."""
+    original = tmp_path / "PKGBUILD"
+    original.write_text('pkgname=clang\nbuild() {\n  cmake .. "${cmake_args[@]}"\n}\n')
+    patched = tmp_path / "PKGBUILD.sysforge"
+    # `\ \` is an escaped backslash → the statement ends and -DLLVM_TARGETS_TO_BUILD
+    # becomes a standalone command line.
+    patched.write_text(
+        'pkgname=clang\nbuild() {\n'
+        '  cmake .. "${cmake_args[@]}" \\ \\\n'
+        '      -DLLVM_DIR="/x"\n'
+        '      -DLLVM_TARGETS_TO_BUILD="X86"\n'
+        '}\n'
+    )
+    with pytest.raises(PkgbuildPatchError, match="not attached to a cmake"):
+        validate_patched_pkgbuild(original, patched)
+
+
+def test_validate_passes_on_clean_injection(tmp_path):
+    """Both real injectors on the Arch single-line cmake shape produce a file
+    that passes both gates."""
+    original = tmp_path / "PKGBUILD"
+    original.write_text(
+        "pkgname=clang\nmakedepends=('llvm' 'cmake')\n"
+        'build() {\n  cmake .. "${cmake_args[@]}"\n}\n'
+    )
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(original.read_text())
+    assert patch_llvm_targets(patched, ["X86", "NVPTX"]) is True
+    assert patch_llvm_dir(patched, _STAGED_LLVM_DIR) is True
+    validate_patched_pkgbuild(original, patched)  # must not raise
+
+
+def test_validate_allows_legitimate_dash_d_array_elements(tmp_path):
+    """G2 must not false-positive on legitimate `-D …` *array elements*: the
+    spirv fixture's `cmake_options=(-D … )` block carries many of them. Only the
+    two managed injected tokens are checked, so the array elements are ignored."""
+    original = _FIXTURES / "spirv-llvm-translator.PKGBUILD"
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(original.read_text())
+    assert patch_llvm_dir(patched, _STAGED_LLVM_DIR) is True
+    validate_patched_pkgbuild(original, patched)  # must not raise

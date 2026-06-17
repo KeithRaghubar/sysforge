@@ -653,10 +653,30 @@ _LLVM_TARGETS_RE = re.compile(
     r'-DLLVM_TARGETS_TO_BUILD(?::[A-Z]+)?=(?:"[^"]*"|\'[^\']*\'|\S+)'
 )
 
-# A line that opens or continues a cmake invocation. We use this as the
-# anchor for inserting -DLLVM_TARGETS_TO_BUILD when the upstream PKGBUILD
-# does not already set it.
-_CMAKE_INVOCATION_RE = re.compile(r"^([ \t]*)cmake\b", re.MULTILINE)
+# A cmake *command* invocation: leading indent, the `cmake` word, then
+# horizontal whitespace and at least one same-line argument. We anchor `-D…`
+# injections on this.
+#
+# `[ \t]+` (not `\s+`) is load-bearing: `\s` spans newlines, so the old bare
+# `^([ \t]*)cmake\b` form matched a lone `cmake` element inside a *multi-line*
+# `makedepends=(...)` array (e.g. spirv-llvm-translator) — the injector then
+# spliced `-DLLVM_DIR=…` into the dependency array (makepkg exit 12). Requiring a
+# same-line argument means a bare dep-array `cmake` token is correctly skipped,
+# while real invocations (`cmake ..`, `cmake -S … -B build`) still match.
+# (`cmake_options=(` was already safe — `\b` / the required space both stop at `_`.)
+_CMAKE_COMMAND_RE = re.compile(r"^([ \t]*)cmake[ \t]+(?P<rest>\S.*)$", re.MULTILINE)
+
+# cmake action-mode invocations that ignore -D cache args (build / install /
+# script / query). A `-D…` injection must anchor on the *configure* call, not
+# `cmake --build build`, so these are skipped when picking the anchor.
+_CMAKE_ACTION_MODE = ("--build", "--install", "--open", "--version", "-E", "-P")
+
+# Matches `-DLLVM_DIR=...` (optional :PATH/:STRING type tag and optional
+# surrounding quotes). Anchored on the full `LLVM_DIR=` token so it never
+# matches `-DLLVM_DISTRIBUTION_COMPONENTS=` and friends.
+_LLVM_DIR_RE = re.compile(
+    r'-DLLVM_DIR(?::[A-Z]+)?=(?:"[^"]*"|\'[^\']*\'|\S+)'
+)
 
 
 def is_llvm_pkgbase(pkgbase: str | None) -> bool:
@@ -665,6 +685,64 @@ def is_llvm_pkgbase(pkgbase: str | None) -> bool:
         return False
     return any(pkgbase == p or pkgbase.startswith(p + "-")
                for p in _LLVM_PKGBASE_PATTERNS)
+
+
+def _line_is_continued(line: str) -> bool:
+    """True if ``line`` ends in a bash line-continuation (an *odd* run of ``\\``).
+
+    ``foo \\`` continues; ``foo \\\\`` (an escaped backslash) does not. Counting
+    trailing backslashes and testing parity is the correct test.
+    """
+    trailing = len(line) - len(line.rstrip("\\"))
+    return trailing % 2 == 1
+
+
+def _cmake_statement_end(text: str, search_from: int) -> int:
+    """Index of the newline that terminates the (possibly ``\\``-continued) cmake
+    statement beginning at/after ``search_from``.
+
+    A cmake invocation may already span several lines via ``\\`` continuations —
+    either in the upstream PKGBUILD or because an earlier injection appended an
+    arg. Inserting a new ``-D`` arg at the *first* newline after ``cmake`` would
+    splice it into the middle of that chain and orphan everything below it (bash
+    then runs the orphaned ``-D…`` as a command → "command not found"). So we walk
+    forward over continued lines and return the first newline whose line does
+    **not** continue — the true end of the statement, where a new continuation
+    appends cleanly. Returns ``len(text)`` when the statement runs to EOF.
+    """
+    pos = search_from
+    while True:
+        nl = text.find("\n", pos)
+        if nl == -1:
+            return len(text)
+        if _line_is_continued(text[pos:nl]):
+            pos = nl + 1
+            continue
+        return nl
+
+
+def _find_cmake_configure_anchor(text: str):
+    """Return the regex match for the cmake *configure* invocation to anchor a
+    ``-D…`` injection on, or ``None`` if the PKGBUILD has no such command.
+
+    Only matches ``cmake`` used as a command with same-line arguments — so a bare
+    ``cmake`` element inside a multi-line ``makedepends=(...)`` array is never
+    chosen (the spirv-llvm-translator exit-12 brick) — and skips cmake
+    action-mode invocations (``cmake --build`` / ``--install`` / ``-E`` …) which
+    ignore the ``-D`` cache args. Returns the first surviving match: the
+    configure call.
+
+    The match's ``group(1)`` is the indent. Callers must pass ``match.start()``
+    (not ``.end()``) to :func:`_cmake_statement_end` so that a trailing ``\\`` on
+    the cmake line *itself* is seen as a continuation.
+    """
+    for m in _CMAKE_COMMAND_RE.finditer(text):
+        rest = m.group("rest").lstrip()
+        if any(rest == flag or rest.startswith(flag + " ")
+               for flag in _CMAKE_ACTION_MODE):
+            continue
+        return m
+    return None
 
 
 def patch_llvm_targets(patched_path, targets: list[str]) -> bool:
@@ -695,24 +773,159 @@ def patch_llvm_targets(patched_path, targets: list[str]) -> bool:
         _log.info(f"Replaced LLVM_TARGETS_TO_BUILD: {existing.group(0)!r} → {replacement!r}")
         return True
 
-    # (2) Insert after the first cmake invocation line. We append the new
+    # (2) Insert after the cmake *configure* invocation line. We append the new
     # arg as a continuation: indentation matched, trailing backslash so
     # the next line stays part of the same shell statement.
-    cmake_match = _CMAKE_INVOCATION_RE.search(text)
+    cmake_match = _find_cmake_configure_anchor(text)
     if not cmake_match:
         _log.warn("LLVM target filtering requested but no cmake invocation "
                   "found in PKGBUILD — leaving unmodified")
         return False
 
     indent = cmake_match.group(1)
-    line_end = text.find("\n", cmake_match.end())
-    if line_end == -1:
-        line_end = len(text)
+    # Append at the *true* end of the (possibly already \-continued) cmake
+    # statement — not the first newline — so a second injection composes with the
+    # first instead of splitting its continuation and orphaning an arg. Scan from
+    # the start of the cmake line so a trailing \ on that line is itself seen.
+    line_end = _cmake_statement_end(text, cmake_match.start())
     insertion = f" \\\n{indent}    {replacement}"
     new_text = text[:line_end] + insertion + text[line_end:]
     patched_path.write_text(new_text)
     _log.info(f"Injected {replacement} after cmake invocation")
     return True
+
+
+def patch_llvm_dir(patched_path, llvm_dir: str) -> bool:
+    """Inject or replace ``-DLLVM_DIR="<dir>"`` in the cmake invocation of an
+    already-written PKGBUILD.sysforge.
+
+    Used by the toolchain stage's staged PGO passes (1b/3b/3c) to force
+    ``find_package(LLVM CONFIG)`` at the staged libLLVM prefix
+    (``<staging>/usr/lib/cmake/llvm``) instead of the live ``/usr`` one.
+    ``LLVM_DIR`` is the highest-precedence config-mode override — checked before
+    any ``CMAKE_PREFIX_PATH`` / system search — so it bypasses the env-var search
+    that otherwise silently resolves /usr and makes clang/lld link the wrong
+    libLLVM (the Gate-3 ``_ZNSt*@LLVM_*`` brick). As a cmake **cache** variable
+    it persists in CMakeCache.txt across the PKGBUILD's repeated ``cmake ..``
+    configure calls, so injecting after the first invocation is sufficient
+    (mirrors :func:`patch_llvm_targets`).
+
+    Idempotent: re-running with the same dir is a no-op. On a no-cmake-found
+    PKGBUILD, logs a warning and returns False. Returns True when modified.
+    """
+    if not llvm_dir:
+        return False
+    replacement = f'-DLLVM_DIR="{llvm_dir}"'
+
+    patched_path = Path(patched_path)
+    text = patched_path.read_text()
+
+    # (1) Already present? — replace if value differs, no-op if same.
+    existing = _LLVM_DIR_RE.search(text)
+    if existing:
+        if existing.group(0) == replacement:
+            return False
+        new_text = _LLVM_DIR_RE.sub(replacement, text, count=1)
+        patched_path.write_text(new_text)
+        _log.info(f"Replaced LLVM_DIR: {existing.group(0)!r} → {replacement!r}")
+        return True
+
+    # (2) Insert after the cmake *configure* invocation line (continuation form).
+    cmake_match = _find_cmake_configure_anchor(text)
+    if not cmake_match:
+        _log.warn("LLVM_DIR steering requested but no cmake invocation found "
+                  "in PKGBUILD — leaving unmodified")
+        return False
+
+    indent = cmake_match.group(1)
+    # Append at the *true* end of the (possibly already \-continued) cmake
+    # statement — not the first newline — so a second injection composes with the
+    # first instead of splitting its continuation and orphaning an arg. Scan from
+    # the start of the cmake line so a trailing \ on that line is itself seen.
+    line_end = _cmake_statement_end(text, cmake_match.start())
+    insertion = f" \\\n{indent}    {replacement}"
+    new_text = text[:line_end] + insertion + text[line_end:]
+    patched_path.write_text(new_text)
+    _log.info(f"Injected {replacement} after cmake invocation")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Post-patch validation gate
+#
+# Both recent multi-hour PGO bricks were *patched-PKGBUILD* defects that only
+# surfaced deep into a makepkg build: a `-D…` arg spliced into a `makedepends=()`
+# array (spirv-llvm-translator, makepkg exit 12) and a `-D…` arg orphaned as its
+# own command (clang composition, build() exit 4). validate_patched_pkgbuild runs
+# in milliseconds after patching and turns both classes into an up-front abort.
+# ---------------------------------------------------------------------------
+
+class PkgbuildPatchError(Exception):
+    """A patched PKGBUILD failed post-patch validation — applying it would
+    corrupt the build (raised *before* makepkg runs, so nothing is built)."""
+
+
+# Globals that sysforge patching must never alter. `groups` is intentionally
+# excluded: patch_pkgbuild_groups rewrites it by design.
+_INVARIANT_GLOBALS = (
+    "pkgname", "pkgbase", "pkgver", "pkgrel", "epoch",
+    "depends", "makedepends", "checkdepends", "optdepends",
+    "provides", "conflicts", "replaces",
+)
+
+# cmake-arg tokens sysforge injects. Each must end up attached to a cmake
+# command; checking only these (never injected into arrays) means legitimate
+# `-D …` *array elements* like `cmake_options=(-D FOO=ON)` are not flagged.
+_MANAGED_CMAKE_TOKENS = ("-DLLVM_TARGETS_TO_BUILD=", "-DLLVM_DIR=")
+
+
+def validate_patched_pkgbuild(original_path, patched_path) -> None:
+    """Fast, build-free structural validation of a fully-patched PKGBUILD.sysforge.
+
+    Raises :class:`PkgbuildPatchError` if a patch corrupted the file in a way that
+    would otherwise only surface hours into a makepkg build. Two checks:
+
+    **G1 — dependency/identity arrays are invariant.** Re-parses both files via
+    :func:`pkgbuild_meta.parse_pkgbuild` and requires every key in
+    ``_INVARIANT_GLOBALS`` to be unchanged. Catches a ``-D…`` injection that
+    landed inside a ``makedepends=(...)`` array (the spirv-llvm-translator
+    exit-12 brick), and any future patcher that mangles a dependency array.
+
+    **G2 — managed ``-D…`` args ride a cmake command.** Joins ``\\``-continuations
+    and, for each managed token actually present, requires its logical line to
+    begin with ``cmake``. Catches a ``-D…`` arg orphaned as its own command (the
+    clang composition exit-4 brick).
+
+    Intended to be called only when a cmake-arg injection actually ran (the
+    toolchain LLVM path), where the dependency-array invariant strictly holds.
+    """
+    from sysforge.primitives import pkgbuild_meta
+    orig = pkgbuild_meta.parse_pkgbuild(original_path).get("globals", {})
+    patched = pkgbuild_meta.parse_pkgbuild(patched_path).get("globals", {})
+    for key in _INVARIANT_GLOBALS:
+        if orig.get(key) != patched.get(key):
+            msg = (
+                f"patch altered '{key}' — a dependency/identity field that must "
+                f"never change: {orig.get(key)!r} -> {patched.get(key)!r}. A cmake "
+                f"arg injection most likely anchored on a dependency-array entry."
+            )
+            _log.error(msg)
+            raise PkgbuildPatchError(msg)
+
+    # G2: join `\`-continuations so an injected arg shares its cmake's logical line.
+    joined = Path(patched_path).read_text().replace("\\\n", " ")
+    for line in joined.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("cmake"):
+            continue
+        for token in _MANAGED_CMAKE_TOKENS:
+            if token in stripped:
+                msg = (
+                    f"injected cmake arg is not attached to a cmake command: "
+                    f"{stripped[:80]!r}. Anchor/continuation bug in the injector."
+                )
+                _log.error(msg)
+                raise PkgbuildPatchError(msg)
 
 
 # ---------------------------------------------------------------------------

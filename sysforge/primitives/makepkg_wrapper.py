@@ -70,10 +70,12 @@ from sysforge.primitives.pkgbuild_patcher import (
     cleanup_patch_artifacts,
     extract_pkgbuild_profile,
     is_llvm_pkgbase,
+    patch_llvm_dir,
     patch_llvm_targets,
     patch_noninteractive_kconfig,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
+    validate_patched_pkgbuild,
     warn_artifacts_left,
     write_extracted_profile,
 )
@@ -160,8 +162,11 @@ def _pkgname_from_meta(pkgmeta: dict | None) -> str:
 
 def _maybe_patch_llvm_targets(
     pkgbuild_path, pkgmeta, state_dir_override: Path | None = None
-) -> None:
+) -> bool:
     """Inject ``-DLLVM_TARGETS_TO_BUILD=...`` for LLVM-toolchain PKGBUILDs.
+
+    Returns ``True`` when the PKGBUILD was modified (an injection occurred),
+    ``False`` otherwise — the caller uses this to gate the post-patch validation.
 
     Applies regardless of build_mode — covers ``update --patch-pkgbuild``,
     kernel mode, and ``run toolchain`` PGO/plain builds uniformly. Resolution
@@ -181,7 +186,7 @@ def _maybe_patch_llvm_targets(
     """
     pkgname = _pkgname_from_meta(pkgmeta)
     if not is_llvm_pkgbase(pkgname):
-        return
+        return False
     # lib32-* LLVM packages must NOT have their target set reduced. They ship no
     # headers of their own and compile against the all-target 64-bit
     # /usr/include/llvm headers, so a reduced LLVM_TARGETS_TO_BUILD leaves
@@ -190,7 +195,7 @@ def _maybe_patch_llvm_targets(
     # hard link failure. Always build all targets for lib32; let the upstream
     # PKGBUILD decide (stock lib32-llvm builds the full set).
     if pkgname.startswith("lib32-"):
-        return
+        return False
     from sysforge.pipeline.state import resolve_state_dir
     from sysforge.primitives.llvm_targets import resolve_or_detect_llvm_targets
     state_dir, _ = resolve_state_dir(state_dir_override)
@@ -200,14 +205,14 @@ def _maybe_patch_llvm_targets(
         # Either user explicitly disabled filtering ([llvm] targets = []),
         # or live detection couldn't classify the host (unsupported arch).
         # Either way, no patch — let the upstream PKGBUILD decide.
-        return
+        return False
     used_live = not hw_profile.is_file()
     if used_live:
         _build_log.info(
             f"LLVM target filter: no hardware_profile.toml at {hw_profile} — "
             f"using live detection result {targets}",
         )
-    patch_llvm_targets(pkgbuild_path, targets)
+    return patch_llvm_targets(pkgbuild_path, targets)
 
 
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
@@ -222,7 +227,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                strip_flags=None,
                pkgbuild_has_hardcoded_gcc: bool = False,
                state_dir: Path | None = None,
-               toolchain_variant: str | None = None):
+               toolchain_variant: str | None = None,
+               cmake_llvm_dir: str | None = None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -238,13 +244,26 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
       - If the effective CC resolves to clang, LLVM=1 and LLVM_IAS=1 are
         injected into the build environment.
     """
+    # Keep the original (upstream) PKGBUILD path so the post-patch validation
+    # can prove the dependency arrays survived patching unchanged.
+    original_pkgbuild_path = pkgbuild_path
     if extracted_profile is not None:
         # patch_pkgbuild / kernel mode: use patched copy with flags stripped
         pkgbuild_path = apply_patch_pkgbuild(pkgbuild_path, pkgmeta or {"globals": {}})
     else:
         pkgbuild_path = patch_pkgbuild_groups(pkgbuild_path, groups)
 
-    _maybe_patch_llvm_targets(pkgbuild_path, pkgmeta, state_dir_override=state_dir)
+    cmake_injected = _maybe_patch_llvm_targets(
+        pkgbuild_path, pkgmeta, state_dir_override=state_dir
+    )
+
+    # Force find_package(LLVM CONFIG) at the staged libLLVM prefix for the
+    # toolchain stage's staged PGO passes (1b/3b/3c). CMAKE_PREFIX_PATH alone
+    # (set in the build env) is silently losing to /usr, so clang/lld link the
+    # live libLLVM instead of the one that ships → Gate-3 _ZNSt*@LLVM_* brick.
+    # -DLLVM_DIR is the highest-precedence config-mode override.
+    if cmake_llvm_dir:
+        cmake_injected = patch_llvm_dir(pkgbuild_path, cmake_llvm_dir) or cmake_injected
 
     if kernel_build and not interactive:
         patch_noninteractive_kconfig(pkgbuild_path)
@@ -256,6 +275,13 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     toolchain_env = {k: v for k, v in resolved_profile.items() if k in toolchain_keys}
     inherited_env = {k: v for k, v in os.environ.items() if k in ("CC", "CXX", "LD")}
     patch_subshell_env_reset(pkgbuild_path, toolchain_env, inherited_env=inherited_env)
+
+    # Fail fast on a corrupt cmake-arg injection (a `-D…` spliced into a dep
+    # array, or orphaned as its own command) — both have only ever surfaced hours
+    # into a build. Scoped to the injection path: the dependency-array invariant
+    # strictly holds there. Raises PkgbuildPatchError, which aborts the build.
+    if cmake_injected:
+        validate_patched_pkgbuild(original_pkgbuild_path, pkgbuild_path)
 
     # Probe ThinLTO cache dir (informational, once per build) — owned by cache_probe.py
     report_thinlto_cache(resolved_profile.get("LDFLAGS", ""))
@@ -459,6 +485,7 @@ class BuildOptions:
     source: str | None = None  # "aur" | "repo" | "git" | "local" — persisted in build_state
     owner_stage: str | None = None  # e.g. "kernel" — persisted so `sysforge update` skips by default
     toolchain_variant: str | None = None  # "gcc" | "stock_llvm" | "pgo_llvm" — persisted so `sysforge update` can flag drift
+    cmake_llvm_dir: str | None = None  # force -DLLVM_DIR at a staged libLLVM prefix (toolchain PGO passes 1b/3b/3c)
 
 
 # ---------------------------------------------------------------------------
@@ -655,6 +682,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
                 state_dir=options.state_dir,
                 toolchain_variant=options.toolchain_variant,
+                cmake_llvm_dir=options.cmake_llvm_dir,
             )
         build_success = True
 
