@@ -123,6 +123,13 @@ def _extract_sos(pkg_path: Path, members: list[str], dest: Path) -> list[Path]:
     """Extract the given archive members to dest, return their extracted paths."""
     if not members:
         return []
+    # bsdtar's -C chdir's into dest and fails ("could not chdir to '<dest>'") if
+    # it does not exist. check_package_abi passes an existing TemporaryDirectory,
+    # but scan_abi_hazards passes a per-package subdir (tmp/pkg.name) to avoid
+    # same-named .so collisions across packages — create it here so the audit
+    # actually extracts (otherwise Gate 2 sees zero shared objects and passes
+    # vacuously). exist_ok keeps the existing-dir caller working.
+    dest.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         ["bsdtar", "-x", "-f", str(pkg_path), "-C", str(dest)] + members,
         capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,

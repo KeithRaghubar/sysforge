@@ -25,6 +25,7 @@ from sysforge.primitives.abi_check import (
     _build_ldconfig_map,
     _demangle,
     _exported_versioned,
+    _extract_sos,
     _is_optional_llvm_target_init,
     _is_shim_lib,
     _list_sos_in_pkg,
@@ -109,6 +110,40 @@ def test_list_sos_passes_archive_with_f_and_closes_stdin():
     )
     # stdin must be closed so a future flag mistake errors instead of hanging.
     assert mock.call_args.kwargs.get("stdin") == subprocess.DEVNULL
+
+
+# ---------------------------------------------------------------------------
+# _extract_sos
+# ---------------------------------------------------------------------------
+
+def test_extract_sos_creates_missing_dest_before_bsdtar(tmp_path):
+    """Regression: _extract_sos must create dest before bsdtar -C (which fails
+    'could not chdir to <dest>' on a missing dir). scan_abi_hazards passes a
+    per-package subdir that does not exist, so Gate 2 silently extracted nothing
+    and passed vacuously — letting the PGO Gate-3 brick slip past pre-install
+    detection. check_package_abi was unaffected (it passes an existing tmpdir).
+    """
+    dest = tmp_path / "sub" / "clang.pkg.tar"   # nested, does NOT exist yet
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        # The dir must already exist by the time bsdtar -C runs.
+        seen["dest_exists"] = dest.is_dir()
+        return MagicMock(returncode=0, stderr="")
+
+    with patch("sysforge.primitives.abi_check.subprocess.run", side_effect=fake_run):
+        _extract_sos(Path("clang.pkg.tar"), ["usr/lib/libclang-cpp.so.22.1"], dest)
+
+    assert seen["dest_exists"] is True
+
+
+def test_extract_sos_empty_members_no_subprocess(tmp_path):
+    """No .so members → no bsdtar call, no dir created (early return)."""
+    dest = tmp_path / "sub"
+    with patch("sysforge.primitives.abi_check.subprocess.run") as mock:
+        out = _extract_sos(Path("pkg.pkg.tar"), [], dest)
+    assert out == []
+    mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

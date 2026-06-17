@@ -585,6 +585,7 @@ def _build_pkg(
     strip_flags: frozenset | set | None = None,
     toolchain_variant: str | None = None,
     owner_stage: str | None = None,
+    cmake_llvm_dir: str | None = None,
 ) -> None:
     """Build one package via makepkg_wrapper.run().
 
@@ -629,6 +630,7 @@ def _build_pkg(
         strip_flags=strip_flags,
         toolchain_variant=toolchain_variant,
         owner_stage=owner_stage,
+        cmake_llvm_dir=cmake_llvm_dir,
     ))
 
 
@@ -646,6 +648,7 @@ def _build_pass(
     staged_deps: bool = False,
     toolchain_variant: str | None = None,
     owner_stage: str | None = None,
+    cmake_llvm_dir: str | None = None,
 ) -> None:
     """Build all packages in pkgbuild_map for one pass.
 
@@ -695,6 +698,7 @@ def _build_pass(
                 strip_flags=strip_flags,
                 toolchain_variant=toolchain_variant,
                 owner_stage=owner_stage,
+                cmake_llvm_dir=cmake_llvm_dir,
             )
             first = False
 
@@ -933,6 +937,43 @@ def _collect_pgo_packages(pkgbuild_map: dict[str, Path]) -> list[Path]:
             if p.exists() and not p.name.endswith(".sig"):
                 packages.append(p)
     return packages
+
+
+def _assert_pass_links_shipped_libllvm(
+    pkgbuild_map: dict[str, Path], *, label: str, dry_run: bool
+) -> None:
+    """Fail fast when a just-built non-pgo pass linked the wrong libLLVM.
+
+    After Pass 3b/3c (clang/lld/… built against the staged *shipped* libLLVM but
+    not yet installed), scan the produced ``.pkg.tar*`` for the
+    std::-bound-to-LLVM hazard (any ``_ZNSt*@LLVM_*`` undefined ref). A
+    correctly-steered build binds its C++ stdlib symbols to libstdc++
+    (``@GLIBCXX_*``) and yields zero such refs; a non-empty result means
+    ``find_package(LLVM)`` resolved the live ``/usr`` libLLVM despite
+    ``-DLLVM_DIR``/``CMAKE_PREFIX_PATH`` — the Gate-3 brick in the making.
+    Raising here aborts **before install** (no sentinel, no rollback) and names
+    the offending pass. Reuses :func:`toolchain_safety.scan_abi_hazards` (the
+    same check Gate 2 runs over the full set) — no parallel symbol differ.
+    """
+    if dry_run:
+        return
+    pkgs = _collect_pgo_packages(pkgbuild_map)
+    if not pkgs:
+        return
+    findings = toolchain_safety.scan_abi_hazards(pkgs)
+    if findings:
+        joined = "\n".join(f"  - {f.message}" for f in findings)
+        raise RuntimeError(
+            f"[TOOLCHAIN] {label}: the built suite linked C++ stdlib symbols "
+            "against the live /usr libLLVM instead of the staged libLLVM that "
+            "ships — the Pass-3 split was defeated (find_package(LLVM) ignored "
+            "the staged prefix despite -DLLVM_DIR). Nothing was installed; the "
+            "live toolchain is untouched.\n"
+            f"{joined}\n"
+            "Verify the staged 'llvm' dev package (cmake config + headers) "
+            "reached the staging prefix, then rerun (optionally with "
+            "--rebuild-profdata)."
+        )
 
 
 def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> None:
@@ -1632,12 +1673,38 @@ def _nm_dynsyms(so: Path, *, undefined: bool) -> list[str]:
     return [parts[-1] for parts in (ln.split() for ln in proc.stdout.splitlines()) if parts]
 
 
-def _first_so(base: Path, name_glob: str) -> Path | None:
-    """First regular (non-symlink) ``base/usr/lib/<name_glob>`` match."""
-    for p in sorted((base / "usr/lib").glob(name_glob)):
-        if p.is_file() and not p.is_symlink():
-            return p
-    return None
+def _so_ver(path: Path) -> tuple[int, ...]:
+    """Numeric version tuple parsed from a ``lib*.so.<ver>`` filename (() if none).
+
+    ``libLLVM.so.22.1`` → ``(22, 1)``; stops at the first non-numeric component
+    so a plain ``lib*.so`` symlink yields ``()``. Used to compare sonames
+    numerically rather than lexically (``.21.1`` must not sort ahead of ``.9``).
+    """
+    marker = ".so."
+    idx = path.name.rfind(marker)
+    if idx == -1:
+        return ()
+    out: list[int] = []
+    for part in path.name[idx + len(marker):].split("."):
+        if not part.isdigit():
+            break
+        out.append(int(part))
+    return tuple(out)
+
+
+def _newest_so(base: Path, name_glob: str) -> Path | None:
+    """Highest-versioned regular ``base/usr/lib/<name_glob>`` match.
+
+    Unlike :func:`_first_so` (lexical first), this picks the newest soname, so a
+    compat package's older library (e.g. ``llvm21-libs``'s ``libLLVM.so.21.1``
+    sitting alongside ``llvm-libs``'s ``libLLVM.so.22.1``) never shadows the
+    real, just-installed one.
+    """
+    cands = [p for p in (base / "usr/lib").glob(name_glob)
+             if p.is_file() and not p.is_symlink()]
+    if not cands:
+        return None
+    return max(cands, key=_so_ver)
 
 
 def _dump_stage_dynsym_evidence(
@@ -1665,7 +1732,29 @@ def _dump_stage_dynsym_evidence(
     """
     if dest_dir is None:
         return None
-    installed_libllvm = _first_so(install_root, "libLLVM.so.*")
+
+    # Consumers that bind C++ stdlib into the LLVM version namespace and brick.
+    consumers = [
+        c for c in (
+            _newest_so(install_root, "libclang-cpp.so.*"),
+            _newest_so(install_root, "liblldCommon.so.*"),
+        )
+        if c is not None
+    ]
+    # Select the installed libLLVM whose soname matches what the (newest)
+    # consumers link — NOT the lexical-first glob, which picks a compat package's
+    # older libLLVM.so.<old> (e.g. llvm21-libs' .21.1) ahead of the just-built
+    # .22.1 and reports a false "0 NOT provided" all-clear. clang/llvm are in
+    # version lockstep, so the consumer soname version == the wanted libLLVM one.
+    target_ver = max((_so_ver(c) for c in consumers), default=())
+    installed_libllvm: Path | None = None
+    if target_ver:
+        cand = (install_root / "usr/lib"
+                / f"libLLVM.so.{'.'.join(str(x) for x in target_ver)}")
+        if cand.is_file():
+            installed_libllvm = cand
+    if installed_libllvm is None:
+        installed_libllvm = _newest_so(install_root, "libLLVM.so.*")
     if installed_libllvm is None:
         return None
 
@@ -1679,7 +1768,7 @@ def _dump_stage_dynsym_evidence(
         }
 
     provided = _llvm_std(_nm_dynsyms(installed_libllvm, undefined=False))
-    staged_libllvm = _first_so(staging3, "libLLVM.so.*")
+    staged_libllvm = _newest_so(staging3, "libLLVM.so.*")
     staged_provided = (
         _llvm_std(_nm_dynsyms(staged_libllvm, undefined=False))
         if staged_libllvm is not None
@@ -1694,12 +1783,7 @@ def _dump_stage_dynsym_evidence(
         f"({len(staged_provided)} _ZNSt*@LLVM_* exports)",
         "",
     ]
-    for so in (
-        _first_so(install_root, "libclang-cpp.so.*"),
-        _first_so(install_root, "liblldCommon.so.*"),
-    ):
-        if so is None:
-            continue
+    for so in consumers:
         demanded = _llvm_std(_nm_dynsyms(so, undefined=True))
         missing = sorted(demanded - provided)
         lines.append(
@@ -2141,6 +2225,7 @@ def _build_llvm_pgo_inner(
                 pgo_build=True,
                 pgo_env=pass1b_env,
                 staged_deps=True,
+                cmake_llvm_dir=f"{staging1}/usr/lib/cmake/llvm",
             )
             _extract_pass2_to_staging(non_pgo_map, staging1, options.dry_run)
             _log.ui(f"[PGO] 2/4 complete (stage1 self-sufficient at {staging1})")
@@ -2366,6 +2451,13 @@ def _build_llvm_pgo_inner(
                 staged_deps=True,
                 toolchain_variant="pgo_llvm",
                 owner_stage="toolchain",
+                cmake_llvm_dir=f"{staging3}/usr/lib/cmake/llvm",
+            )
+            # Verify the split actually held: clang/lld must have linked the
+            # staged shipped libLLVM, not the live /usr one. Abort before install
+            # (no sentinel, no rollback) if a std::-bound-to-LLVM ref leaked.
+            _assert_pass_links_shipped_libllvm(
+                non_pgo_map, label="Pass 3b", dry_run=options.dry_run,
             )
             # Stage the new clang/lld so a lib32 sub-pass can resolve them too.
             if lib32_map:
@@ -2391,6 +2483,10 @@ def _build_llvm_pgo_inner(
                 staged_deps=True,
                 toolchain_variant="pgo_llvm",
                 owner_stage="toolchain",
+                cmake_llvm_dir=f"{staging3}/usr/lib/cmake/llvm",
+            )
+            _assert_pass_links_shipped_libllvm(
+                lib32_map, label="Pass 3c (lib32)", dry_run=options.dry_run,
             )
 
         # Pass 3 is built but NOT installed here — the caller runs the Gate-2

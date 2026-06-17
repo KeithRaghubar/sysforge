@@ -34,6 +34,9 @@ from sysforge.pipeline.stages.toolchain import (
     _PROFRAW_SETTLE_SECS,
     _collect_pgo_packages,
     _dump_stage_dynsym_evidence,
+    _assert_pass_links_shipped_libllvm,
+    _so_ver,
+    _newest_so,
     _ensure_pgo_store_writable,
     _has_llvm_cmake_config,
     _pgo_install,
@@ -798,6 +801,7 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_reuse(tmp_path):
             "env": dict(kw.get("pgo_env") or {}),
             "owner_stage": kw.get("owner_stage"),
             "cc": kw.get("cc"),
+            "cmake_llvm_dir": kw.get("cmake_llvm_dir"),
         })
 
     extract_mock = MagicMock()
@@ -832,6 +836,11 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_reuse(tmp_path):
         "staged libLLVM (mirror Pass 1b)"
     )
     assert non_pgo_call["env"]["LLVM_PROFILE_FILE"] == ""
+    # 3b also forces -DLLVM_DIR at the staged cmake config so find_package(LLVM)
+    # cannot fall back to /usr (env CMAKE_PREFIX_PATH alone was losing to /usr).
+    assert non_pgo_call["cmake_llvm_dir"] == f"{staging3}/usr/lib/cmake/llvm"
+    # 3a builds llvm itself — no LLVM_DIR steering (it IS the libLLVM).
+    assert pgo_call["cmake_llvm_dir"] is None
 
     for c in calls:
         assert c["owner_stage"] == "toolchain"
@@ -871,6 +880,7 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
             "pkgs": set(pkgbuild_map.keys()),
             "cfe": kw.get("compiler_flags_extra"),
             "env": dict(kw.get("pgo_env") or {}),
+            "cmake_llvm_dir": kw.get("cmake_llvm_dir"),
         })
 
     T = "sysforge.pipeline.stages.toolchain."
@@ -901,6 +911,21 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
     assert pass3b[0]["pkgs"] == {"clang"}
     assert "LD_LIBRARY_PATH" not in pass3b[0]["env"]
     assert pass3b[0]["cfe"] == f"-fprofile-use={profdata}"
+    assert pass3b[0]["cmake_llvm_dir"] == f"{staging3}/usr/lib/cmake/llvm"
+
+    # Pass 1b (bootstrap clang against stage1) is also LLVM_DIR-steered, at
+    # stage1's cmake config — so the training clang links stage1's libLLVM too.
+    # (Pass 2 shares CMAKE_PREFIX_PATH=stage1 via _stage_env but is the mixed
+    # pgo+non_pgo training pass and gets NO -DLLVM_DIR, so filter on it.)
+    pass1b = [
+        c for c in calls
+        if c["cmake_llvm_dir"] == f"{staging1}/usr/lib/cmake/llvm"
+    ]
+    assert len(pass1b) == 1
+    assert pass1b[0]["pkgs"] == {"clang"}
+    # The mixed Pass-2 training pass is NOT LLVM_DIR-steered.
+    pass2 = [c for c in calls if c["pkgs"] == {"clang", "llvm"}]
+    assert pass2 and all(c["cmake_llvm_dir"] is None for c in pass2)
 
     # A pgo sub-pass (3a) optimized llvm with -fprofile-use beforehand (Pass 1a
     # also touches llvm but with -fprofile-generate, so filter on the flag).
@@ -1646,6 +1671,148 @@ def test_dump_stage_dynsym_evidence_returns_none_when_dest_dir_none(tmp_path):
     _make_so(install_root, "libLLVM.so.22.1")
     out = _dump_stage_dynsym_evidence(tmp_path / "stage3", None, install_root=install_root)
     assert out is None
+
+
+def test_dump_stage_dynsym_evidence_ignores_compat_libllvm(tmp_path):
+    """A compat package's older libLLVM.so.<old> (e.g. llvm21-libs alongside
+    llvm-libs) must NOT be picked as 'the installed libLLVM'. The lexical-first
+    glob did exactly that and reported a false '0 NOT provided' all-clear while
+    clang actually dangled against the real .22.1. The diff must run against the
+    libLLVM the consumers link (matched by soname version), not the compat one.
+    """
+    install_root = tmp_path / "root"
+    _make_so(install_root, "libLLVM.so.21.1")   # compat (llvm21-libs)
+    _make_so(install_root, "libLLVM.so.22.1")   # real (llvm-libs)
+    _make_so(install_root, "libclang-cpp.so.22.1")
+    staging3 = tmp_path / "stage3"
+    _make_so(staging3, "libLLVM.so.22.1")
+
+    def fake_run(cmd, **kwargs):
+        so = cmd[3]
+        undefined = "--undefined-only" in cmd
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        if "libclang-cpp" in so and undefined:
+            result.stdout = "                 U _ZNSt7missingSym@LLVM_22.1\n"
+        elif so.endswith("libLLVM.so.22.1") and not undefined:
+            # The REAL libLLVM does not export the demanded symbol → brick.
+            result.stdout = "0000000000111111 T LLVMCreateModule\n"
+        elif so.endswith("libLLVM.so.21.1") and not undefined:
+            # The compat libLLVM *does* export it — if (wrongly) selected, the
+            # diff would show 0 missing and hide the brick.
+            result.stdout = "0000000000222222 W _ZNSt7missingSym@@LLVM_21.1\n"
+        else:
+            result.stdout = ""
+        return result
+
+    dest_dir = tmp_path / "state"
+    with patch("subprocess.run", side_effect=fake_run):
+        out = _dump_stage_dynsym_evidence(staging3, dest_dir, install_root=install_root)
+
+    assert out is not None
+    text = out.read_text()
+    # The diff ran against the real .22.1 (matched to the consumer), not .21.1.
+    assert "libLLVM.so.22.1" in text
+    assert "brick cause" in text
+    assert "_ZNSt7missingSym@LLVM_22.1" in text
+
+
+# ---------------------------------------------------------------------------
+# _so_ver / _newest_so — numeric soname selection (compat-package safe)
+# ---------------------------------------------------------------------------
+
+def test_so_ver_parses_numeric_version():
+    assert _so_ver(Path("libLLVM.so.22.1")) == (22, 1)
+    assert _so_ver(Path("libLLVM.so.9.0")) == (9, 0)
+    assert _so_ver(Path("libLLVM.so")) == ()          # bare dev symlink name
+    assert _so_ver(Path("libfoo.so.1.2.3")) == (1, 2, 3)
+
+
+def test_newest_so_picks_highest_not_lexical_first(tmp_path):
+    """Numeric, not lexical: .22.1 wins over .21.1 and .9.0 (which sorts last
+    lexically). Symlinks are skipped so the unversioned dev symlink never wins.
+    """
+    lib = tmp_path / "usr/lib"
+    lib.mkdir(parents=True)
+    for n in ("libLLVM.so.21.1", "libLLVM.so.22.1", "libLLVM.so.9.0"):
+        (lib / n).touch()
+    (lib / "libLLVM.so").symlink_to("libLLVM.so.22.1")
+    assert _newest_so(tmp_path, "libLLVM.so.*").name == "libLLVM.so.22.1"
+
+
+def test_newest_so_none_when_absent(tmp_path):
+    (tmp_path / "usr/lib").mkdir(parents=True)
+    assert _newest_so(tmp_path, "libLLVM.so.*") is None
+
+
+# ---------------------------------------------------------------------------
+# _assert_pass_links_shipped_libllvm — Pass-3b post-build link assertion
+# ---------------------------------------------------------------------------
+
+def test_assert_pass_links_shipped_libllvm_raises_on_dangling(tmp_path, monkeypatch):
+    """A built consumer with a _ZNSt*@LLVM_* undefined ref means the pass linked
+    the live /usr libLLVM (split defeated) → abort before install.
+    """
+    from sysforge.primitives import toolchain_safety as _ts
+    pb = make_pkgbuild(tmp_path / "builds", "clang")
+    hazard = [_ts.ToolchainFinding(
+        _ts.SEV_ERROR, "abi_hazard",
+        "clang-x.pkg.tar: libclang-cpp.so: _ZNSt7foo@LLVM_22.1 (should be GLIBCXX_*)",
+        is_brick=True,
+    )]
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
+        lambda m: [tmp_path / "clang.pkg.tar"],
+    )
+    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: hazard)
+    with pytest.raises(RuntimeError, match="staged libLLVM"):
+        _assert_pass_links_shipped_libllvm(
+            {"clang": pb}, label="Pass 3b", dry_run=False,
+        )
+
+
+def test_assert_pass_links_shipped_libllvm_clean_passes(tmp_path, monkeypatch):
+    """No dangling refs → no raise (the correctly-steered build)."""
+    from sysforge.primitives import toolchain_safety as _ts
+    pb = make_pkgbuild(tmp_path / "builds", "clang")
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
+        lambda m: [tmp_path / "clang.pkg.tar"],
+    )
+    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: [])
+    _assert_pass_links_shipped_libllvm({"clang": pb}, label="Pass 3b", dry_run=False)
+
+
+def test_assert_pass_links_shipped_libllvm_noop_when_no_pkgs(tmp_path, monkeypatch):
+    """No built packages resolved → no scan, no raise (degrade gracefully)."""
+    from sysforge.primitives import toolchain_safety as _ts
+    pb = make_pkgbuild(tmp_path / "builds", "clang")
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._collect_pgo_packages", lambda m: [],
+    )
+    called = {"scan": False}
+
+    def _spy(pkgs):
+        called["scan"] = True
+        return []
+    monkeypatch.setattr(_ts, "scan_abi_hazards", _spy)
+    _assert_pass_links_shipped_libllvm({"clang": pb}, label="Pass 3b", dry_run=False)
+    assert called["scan"] is False
+
+
+def test_assert_pass_links_shipped_libllvm_dry_run_skips(tmp_path, monkeypatch):
+    """dry_run → never touches the artifacts (nothing was built)."""
+    from sysforge.primitives import toolchain_safety as _ts
+    pb = make_pkgbuild(tmp_path / "builds", "clang")
+
+    def _boom(m):
+        raise AssertionError("must not resolve packages in dry-run")
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._collect_pgo_packages", _boom,
+    )
+    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: [])
+    _assert_pass_links_shipped_libllvm({"clang": pb}, label="Pass 3b", dry_run=True)
 
 
 def test_assert_staging_has_llvm_cmake_raises_when_missing(tmp_path):
