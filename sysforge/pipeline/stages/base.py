@@ -55,6 +55,7 @@ class RunOptions:
     # PGO profdata
     rebuild_profdata: bool = False   # force full 4-pass PGO even if compatible profdata exists
     auto_pgo: bool = False           # bypass PGO confirmation prompts (required for non-TTY PGO)
+    reuse_built: bool = False        # toolchain: consult the Pass-3 build cache to skip unchanged rebuilds
     # LLVM safety pre-flight
     allow_dirty_llvm: bool = False   # bypass refuse-on-dirty/diverged for the toolchain stage
     # Toolchain Gate-1 overrides (mirror kernel's allow_no_fallback/skip_boot_audit)
