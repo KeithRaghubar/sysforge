@@ -49,7 +49,10 @@ from sysforge.pipeline.stages.toolchain import (
     _PGO_PROFDATA_MIN_BYTES,
     _gate_soname_consumers,
     _rebuild_soname_consumers,
+    _ReuseCtx,
+    _pkg_fingerprint,
 )
+from sysforge.primitives import build_fingerprint as bf
 from sysforge.pipeline.state import PipelineState
 from sysforge.pipeline.stages.base import RunOptions
 
@@ -76,6 +79,14 @@ def make_pkgbuild(pkgbuild_dir: Path, name: str) -> Path:
     pb = d / "PKGBUILD"
     pb.write_text(f"pkgname={name}\npkgver=1.0\npkgrel=1\n")
     return pb
+
+
+def _make_artifact(d: Path, name: str, ver: str = "1.0-1") -> Path:
+    """Create a fake makepkg artifact (build_fingerprint reuse tests)."""
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{name}-{ver}-x86_64.pkg.tar.zst"
+    p.write_bytes(b"pkg")
+    return p
 
 
 @pytest.fixture(autouse=True)
@@ -803,6 +814,7 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_reuse(tmp_path):
             "cc": kw.get("cc"),
             "cmake_llvm_dir": kw.get("cmake_llvm_dir"),
         })
+        return {}  # real _build_pass returns {pkgbase: fingerprint}
 
     extract_mock = MagicMock()
     T = "sysforge.pipeline.stages.toolchain."
@@ -882,6 +894,7 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
             "env": dict(kw.get("pgo_env") or {}),
             "cmake_llvm_dir": kw.get("cmake_llvm_dir"),
         })
+        return {}  # real _build_pass returns {pkgbase: fingerprint}
 
     T = "sysforge.pipeline.stages.toolchain."
     with patch(T + "_validate_pgo_environment"), \
@@ -2301,6 +2314,120 @@ def test_build_pass_default_keeps_syncdeps_for_pass1a(tmp_path):
     rec = captured[0]
     assert "--nodeps" not in rec["extra_flags"]
     assert rec["strip_flags"] is None
+
+
+# ---------------------------------------------------------------------------
+# _build_pass — opt-in input-fingerprint reuse (Pass 3)
+# ---------------------------------------------------------------------------
+
+def _reuse_ctx(tmp_path, *, pass_id="3a", consult=False, config_digest="d",
+               profdata_sha="p", staged_dep_fps=None):
+    return _ReuseCtx(
+        pass_id=pass_id,
+        cache=bf.load_cache(tmp_path / "build_cache.json"),
+        cache_path=tmp_path / "build_cache.json",
+        config_digest=config_digest,
+        profdata_sha=profdata_sha,
+        pkgdest=None,  # search the per-package build dir
+        consult=consult,
+        staged_dep_fps=staged_dep_fps or [],
+    )
+
+
+def test_build_pass_without_reuse_returns_empty_and_builds(tmp_path):
+    """No reuse ctx (passes 1a/1b/2, single-pass, gcc path): unchanged behavior."""
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    calls = []
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=lambda pb, options=None: calls.append(pb)):
+        result = _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
+                             install=False, pgo_build=True)
+    assert result == {}
+    assert len(calls) == 1
+    assert not (tmp_path / "build_cache.json").exists()  # no cache I/O
+
+
+def test_build_pass_records_cache_without_consulting(tmp_path):
+    """consult=False still populates the cache (so a later resume can use it)."""
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    _make_artifact(tmp_path / "llvm", "llvm")
+    ctx = _reuse_ctx(tmp_path, consult=False)
+    calls = []
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=lambda pb, options=None: calls.append(pb)):
+        result = _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
+                             install=False, pgo_build=True, reuse=ctx)
+    assert len(calls) == 1               # built
+    assert "llvm" in result              # fingerprint returned
+    cache = bf.load_cache(tmp_path / "build_cache.json")
+    assert bf.cache_key("3a", "llvm") in cache  # recorded for next run
+
+
+def test_build_pass_skips_build_on_cache_hit(tmp_path):
+    """consult=True with a matching, present artifact: makepkg is NOT invoked."""
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    _make_artifact(tmp_path / "llvm", "llvm")
+
+    # First run populates the cache (not opted in).
+    ctx1 = _reuse_ctx(tmp_path, consult=False)
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=lambda pb, options=None: None):
+        _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
+                    install=False, pgo_build=True, reuse=ctx1)
+
+    # Resume opted in: identical inputs → cache hit → no rebuild.
+    ctx2 = _reuse_ctx(tmp_path, consult=True)
+    calls = []
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=lambda pb, options=None: calls.append(pb)):
+        result = _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
+                             install=False, pgo_build=True, reuse=ctx2)
+    assert calls == []          # build skipped
+    assert "llvm" in result     # fingerprint still reported (for Merkle chain)
+
+
+def test_build_pass_rebuilds_when_input_changes(tmp_path):
+    """consult=True but a changed input (config_digest) → fingerprint miss → build."""
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    _make_artifact(tmp_path / "llvm", "llvm")
+
+    ctx1 = _reuse_ctx(tmp_path, consult=False, config_digest="OLD")
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=lambda pb, options=None: None):
+        _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
+                    install=False, pgo_build=True, reuse=ctx1)
+
+    ctx2 = _reuse_ctx(tmp_path, consult=True, config_digest="NEW")  # config changed
+    calls = []
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=lambda pb, options=None: calls.append(pb)):
+        _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
+                    install=False, pgo_build=True, reuse=ctx2)
+    assert len(calls) == 1  # rebuilt — never reuses across a config change
+
+
+def test_build_pass_dry_run_does_no_cache_io(tmp_path):
+    """dry-run never consults or writes the cache (no artifacts to validate)."""
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    ctx = _reuse_ctx(tmp_path, consult=True)
+    calls = []
+    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+               side_effect=lambda pb, options=None: calls.append(pb)):
+        result = _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=True),
+                             install=False, pgo_build=True, reuse=ctx)
+    assert calls == []
+    assert result == {}
+    assert not (tmp_path / "build_cache.json").exists()
+
+
+def test_pkg_fingerprint_merkle_chain_changes(tmp_path):
+    """A consumer's fingerprint shifts when a staged dep's fingerprint shifts."""
+    pkgbuild = make_pkgbuild(tmp_path, "clang")
+    ctx_v1 = _reuse_ctx(tmp_path, pass_id="3b", staged_dep_fps=["fp-llvm-v1"])
+    ctx_v2 = _reuse_ctx(tmp_path, pass_id="3b", staged_dep_fps=["fp-llvm-v2"])
+    _, fp1 = _pkg_fingerprint(ctx_v1, "clang", pkgbuild, None, "-fp=/p", None, None, [])
+    _, fp2 = _pkg_fingerprint(ctx_v2, "clang", pkgbuild, None, "-fp=/p", None, None, [])
+    assert fp1 != fp2
 
 
 # ---------------------------------------------------------------------------

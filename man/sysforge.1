@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026-06-15"
+.TH "sysforge" "1" "2026-06-18"
 .PP
 .PP
 .SH NAME
@@ -871,6 +871,11 @@ Override state directory.\&
 \fB--rebuild-profdata\fR
 .RS 4
 Force a full 4-pass PGO build even if compatible profdata already exists.\&
+.PP
+.RE
+\fB--reuse-built\fR
+.RS 4
+Skip rebuilding a Pass-3 PGO package whose inputs are unchanged (PKGBUILD, source commit, profdata, flags, compiler, dep versions) and whose built artifact is still on disk.\& Lets a rerun after a late-package failure reuse the already-optimized llvm/llvm-libs instead of rebuilding them.\& Opt-in; overrides toolchain.\&toml reuse_unchanged.\& Any input change or missing artifact rebuilds.\&
 .PP
 .RE
 \fB--auto-pgo\fR

@@ -397,6 +397,7 @@ _sysforge_run_toolchain() {
     '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--rebuild-profdata[force a full 3-pass PGO build even if profdata exists]' \
+    '--reuse-built[opt-in: reuse unchanged Pass-3 PGO packages from cache instead of rebuilding]' \
     '--auto-pgo[bypass PGO confirmation prompts; required for non-interactive PGO]' \
     '--allow-dirty-llvm[bypass the LLVM safety pre-flight refusal on dirty/diverged trees]' \
     '--allow-version-skew[override the Gate-1 abort on PKGBUILD pkgver skew across the lockstep suite]' \

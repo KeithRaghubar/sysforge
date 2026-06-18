@@ -719,6 +719,13 @@ def _add_run_parser(sub):
         help="Override state directory.")
     p_toolchain.add_argument("--rebuild-profdata", action="store_true", dest="rebuild_profdata",
         help="Force a full 4-pass PGO build even if compatible profdata already exists.")
+    p_toolchain.add_argument("--reuse-built", action="store_true", dest="reuse_built",
+        help="Skip rebuilding a Pass-3 PGO package whose inputs are unchanged "
+             "(PKGBUILD, source commit, profdata, flags, compiler, dep versions) "
+             "and whose built artifact is still on disk. Lets a rerun after a "
+             "late-package failure reuse the already-optimized llvm/llvm-libs "
+             "instead of rebuilding them. Opt-in; overrides toolchain.toml "
+             "reuse_unchanged. Any input change or missing artifact rebuilds.")
     p_toolchain.add_argument("--auto-pgo", action="store_true", dest="auto_pgo",
         help="Bypass the PGO confirmation prompts (profdata reuse, staging/pgo_store "
              "purge, 4-pass start, suspicious profdata size). Required for non-interactive "

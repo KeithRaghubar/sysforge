@@ -71,6 +71,17 @@ enabled = false
 #                        rebuild manually (`sysforge build <pkgs>`).
 # rebuild_soname_consumers = "prompt"
 
+# Opt-in input-fingerprint reuse for the multi-package PGO build (Pass 3 only).
+# When true (or with --reuse-built), a Pass-3 package whose inputs are unchanged
+# — PKGBUILD content, source commit, profdata, resolved flags, compiler identity,
+# and installed build-dep versions — and whose built artifact is still on disk is
+# NOT rebuilt; the cached artifact is reused. This lets a rerun after a late
+# package failure (e.g. spirv-llvm-translator) skip re-optimizing the identical
+# llvm/llvm-libs. Any input change, config edit, or missing artifact forces a
+# rebuild — it never reuses a stale build. Off by default (a fresh 4-pass build
+# always rebuilds everything; --rebuild-profdata also bypasses the cache).
+# reuse_unchanged = false
+
 # ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed
 #

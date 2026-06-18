@@ -100,7 +100,7 @@ _KNOWN_TOP_KEYS: dict[str, set[str]] = {
     "toolchain.toml": {"enabled", "compiler", "pgo", "skip_build",
                        "pgo_staging", "pgo_store",
                        "min_build_free_gb", "require_multilib",
-                       "rebuild_soname_consumers"},
+                       "rebuild_soname_consumers", "reuse_unchanged"},
     "bootstrap.toml": {"target"},
 }
 
