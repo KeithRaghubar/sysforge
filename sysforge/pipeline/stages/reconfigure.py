@@ -47,7 +47,7 @@ from sysforge.primitives.config import (
     set_makepkg_conf_keys,
 )
 from sysforge.primitives.paths import (
-    CONFIG_BASE,
+    CONFIG_DIR,
     KERNEL_PATH,
     PACKAGES_PATH,
     SYSFORGE_TOML_PATH,
@@ -776,7 +776,7 @@ def _step_config(config, state, options, editor: str) -> str:
 
     _review_config_file(
         "profiles.toml",
-        CONFIG_BASE / "etc/sysforge/profiles.toml",
+        CONFIG_DIR / "profiles.toml",
         editor, options.dry_run,
         validate_fn=_validate_flag_profiles,
     )
@@ -1216,7 +1216,7 @@ def _step_gpg(config, state, options, editor: str) -> str:
     key_count = r.stdout.count("\npub:") if r.returncode == 0 else 0
     _log.ui(f"  GPG keyring: {key_count} public key(s)")
 
-    global_keys_dir = CONFIG_BASE / "etc/sysforge/keys/pgp"
+    global_keys_dir = CONFIG_DIR / "keys/pgp"
     if global_keys_dir.is_dir():
         asc_files = sorted(global_keys_dir.glob("*.asc"))
         if asc_files:
@@ -1416,7 +1416,7 @@ def _validate_all_configs(config) -> None:
         except tomllib.TOMLDecodeError as e:
             raise RuntimeError(f"[RECONFIGURE] {pkg_path}: TOML parse error: {e}")
 
-    profiles_path = CONFIG_BASE / "profiles.toml"
+    profiles_path = CONFIG_DIR / "profiles.toml"
     if profiles_path.exists():
         try:
             cfg = load_config(config_paths=[profiles_path])

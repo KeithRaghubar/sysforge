@@ -5,9 +5,13 @@
 """
 paths.py — centralised path constants for sysforge config files
 
-All /etc/sysforge/* paths live here.  CONFIG_BASE is derived from the
-SYSFORGE_CONFIG_DIR env var (default: "/"), allowing tests and
-alternate installs to relocate config lookup.
+CONFIG_DIR is the directory that *directly contains* the sysforge TOML files.
+It is the SYSFORGE_CONFIG_DIR env var when set (so a from-repo dev setup can
+point at e.g. ~/sf-config and keep the files right there, mirroring how
+SYSFORGE_STATE_DIR holds state files directly), else the FHS system location
+/etc/sysforge. The env var is the *config dir itself*, NOT an FHS root prefix —
+sysforge no longer composes an `etc/sysforge` subpath under it. The installed
+system (env unset) is unaffected: it resolves to /etc/sysforge as before.
 
 User-side paths follow the XDG Base Directory Specification: config lives
 under $XDG_CONFIG_HOME (default ~/.config), regenerable cache under
@@ -19,7 +23,10 @@ import os
 import shutil
 from pathlib import Path
 
-CONFIG_BASE = Path(os.environ.get("SYSFORGE_CONFIG_DIR", "/"))
+# The config dir holds the TOML files directly (env override) or falls back to
+# the FHS system path. Empty-string env is treated as unset.
+_CONFIG_DIR_ENV = os.environ.get("SYSFORGE_CONFIG_DIR")
+CONFIG_DIR = Path(_CONFIG_DIR_ENV) if _CONFIG_DIR_ENV else Path("/etc/sysforge")
 
 
 def _xdg_base(env: str, default_rel: str) -> Path:
@@ -37,15 +44,15 @@ USER_STATE_DIR  = _xdg_base("XDG_STATE_HOME",  ".local/state") / "sysforge"
 # [append_conflict_groups] and [consumes_inference] sections.
 CONFIG_PATHS = [
     USER_CONFIG_DIR / "profiles.toml",
-    CONFIG_BASE / "etc/sysforge/profiles.toml",
+    CONFIG_DIR / "profiles.toml",
 ]
 
 # Individual config files
-PACKAGES_PATH = CONFIG_BASE / "etc/sysforge/packages.toml"
-KERNEL_PATH = CONFIG_BASE / "etc/sysforge/kernel.toml"
-TOOLCHAIN_PATH = CONFIG_BASE / "etc/sysforge/toolchain.toml"
-SYSFORGE_TOML_PATH = CONFIG_BASE / "etc/sysforge/sysforge.toml"
-BOOTSTRAP_PATH = CONFIG_BASE / "etc/sysforge/bootstrap.toml"
+PACKAGES_PATH = CONFIG_DIR / "packages.toml"
+KERNEL_PATH = CONFIG_DIR / "kernel.toml"
+TOOLCHAIN_PATH = CONFIG_DIR / "toolchain.toml"
+SYSFORGE_TOML_PATH = CONFIG_DIR / "sysforge.toml"
+BOOTSTRAP_PATH = CONFIG_DIR / "bootstrap.toml"
 
 
 def resolve_packages_path(config: dict) -> Path:

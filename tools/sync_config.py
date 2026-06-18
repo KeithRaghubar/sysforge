@@ -26,9 +26,10 @@ Usage:
     python tools/sync_config.py [--dry-run] [--target DIR]
 
     --target DIR  live config dir to update (the dir that *contains* the
-                  TOML files). Default: $SYSFORGE_CONFIG_DIR/etc/sysforge,
-                  mirroring sysforge.primitives.paths.CONFIG_BASE resolution
-                  (falls back to /etc/sysforge when SYSFORGE_CONFIG_DIR unset).
+                  TOML files). Default: $SYSFORGE_CONFIG_DIR itself,
+                  mirroring sysforge.primitives.paths.CONFIG_DIR resolution
+                  (the env var is the config dir directly; falls back to
+                  /etc/sysforge when SYSFORGE_CONFIG_DIR unset).
     --dry-run     report what would change; write nothing.
 """
 from __future__ import annotations
@@ -50,8 +51,10 @@ SKIP = {"bootstrap.toml"}
 
 
 def _default_target() -> Path:
-    base = Path(os.environ.get("SYSFORGE_CONFIG_DIR", "/"))
-    return base / "etc/sysforge"
+    # SYSFORGE_CONFIG_DIR is the config dir itself (mirrors paths.CONFIG_DIR),
+    # not an FHS root prefix; fall back to the FHS system path when unset.
+    val = os.environ.get("SYSFORGE_CONFIG_DIR")
+    return Path(val) if val else Path("/etc/sysforge")
 
 
 def _is_section(item) -> bool:
