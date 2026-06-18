@@ -100,7 +100,7 @@ _KNOWN_TOP_KEYS: dict[str, set[str]] = {
     "toolchain.toml": {"enabled", "compiler", "pgo", "skip_build",
                        "pgo_staging", "pgo_store",
                        "min_build_free_gb", "require_multilib",
-                       "rebuild_soname_consumers"},
+                       "rebuild_soname_consumers", "reuse_unchanged"},
     "bootstrap.toml": {"target"},
 }
 
@@ -166,15 +166,16 @@ def _strict_load_smoke(repo: Path) -> list[Finding]:
     """Run the runtime config loaders against the shipped files.
 
     Drops cached sysforge modules and re-imports with SYSFORGE_CONFIG_DIR
-    pointing at `repo` so CONFIG_BASE in paths.py resolves correctly. Safe
-    to call from a subprocess; risky in-process if other code holds onto
-    sysforge module references.
+    pointing at the shipped config dir (`repo/etc/sysforge`) so CONFIG_DIR in
+    paths.py resolves to the shipped files (the env var is the config dir
+    itself, not an FHS root prefix). Safe to call from a subprocess; risky
+    in-process if other code holds onto sysforge module references.
     """
     findings: list[Finding] = []
     saved_env = os.environ.get("SYSFORGE_CONFIG_DIR")
     saved_modules = {k: v for k, v in sys.modules.items() if k.startswith("sysforge")}
 
-    os.environ["SYSFORGE_CONFIG_DIR"] = str(repo)
+    os.environ["SYSFORGE_CONFIG_DIR"] = str(repo / "etc/sysforge")
     for mod in list(sys.modules):
         if mod.startswith("sysforge"):
             del sys.modules[mod]

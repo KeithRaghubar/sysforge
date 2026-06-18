@@ -74,16 +74,26 @@ def test_user_dirs_honor_xdg_env(reload_paths, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# BOOTSTRAP_PATH follows SYSFORGE_CONFIG_DIR (FHS nit)
+# CONFIG_DIR / config paths follow SYSFORGE_CONFIG_DIR directly
 # ---------------------------------------------------------------------------
 
-def test_bootstrap_path_follows_config_dir(reload_paths, tmp_path):
+def test_config_dir_is_env_dir_directly(reload_paths, tmp_path):
+    """SYSFORGE_CONFIG_DIR is the config dir itself, not an FHS root prefix —
+    the TOML files live directly under it (no etc/sysforge subpath)."""
     p = reload_paths({"SYSFORGE_CONFIG_DIR": tmp_path})
-    assert p.BOOTSTRAP_PATH == tmp_path / "etc/sysforge/bootstrap.toml"
+    assert p.CONFIG_DIR == tmp_path
+    assert p.BOOTSTRAP_PATH == tmp_path / "bootstrap.toml"
+    assert p.PACKAGES_PATH == tmp_path / "packages.toml"
+    assert p.KERNEL_PATH == tmp_path / "kernel.toml"
+    assert p.TOOLCHAIN_PATH == tmp_path / "toolchain.toml"
+    assert p.SYSFORGE_TOML_PATH == tmp_path / "sysforge.toml"
+    assert p.CONFIG_PATHS[-1] == tmp_path / "profiles.toml"
 
 
-def test_bootstrap_path_default_root(reload_paths):
-    p = reload_paths({})  # SYSFORGE_CONFIG_DIR unset → CONFIG_BASE == "/"
+def test_config_dir_default_is_fhs_etc(reload_paths):
+    """SYSFORGE_CONFIG_DIR unset → the FHS system path /etc/sysforge."""
+    p = reload_paths({})
+    assert p.CONFIG_DIR == p.Path("/etc/sysforge")
     assert p.BOOTSTRAP_PATH == p.Path("/etc/sysforge/bootstrap.toml")
 
 

@@ -299,7 +299,7 @@ def test_systemd_user_skipped_without_xdg_runtime(monkeypatch):
 
 
 def test_sysforge_config_source_uses_defaults_profile(tmp_path, monkeypatch):
-    config_dir = tmp_path / "etc" / "sysforge"
+    config_dir = tmp_path / "sysforge-conf"
     config_dir.mkdir(parents=True)
     (config_dir / "profiles.toml").write_text(
         '[defaults]\n'
@@ -313,7 +313,7 @@ def test_sysforge_config_source_uses_defaults_profile(tmp_path, monkeypatch):
         'extends = "bare"\n'
         'CFLAGS = "-O2"\n'
     )
-    monkeypatch.setenv("SYSFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("SYSFORGE_CONFIG_DIR", str(config_dir))
     # paths.CONFIG_PATHS is bound at import; reload to pick up the new env.
     import importlib
     import sysforge.primitives.paths as _paths_mod

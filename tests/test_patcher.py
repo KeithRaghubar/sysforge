@@ -35,6 +35,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     load_extracted_profile,
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
+    patch_kernel_kconfig_apply,
     patch_noninteractive_kconfig,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
@@ -476,6 +477,108 @@ def test_patch_noninteractive_kconfig_preserves_non_kconfig_make(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# patch_kernel_kconfig_apply (fragment merge + interactive nconfig injection)
+# ---------------------------------------------------------------------------
+
+_STOCK_PREPARE = (
+    "prepare() {\n"
+    "  cd $_srcname\n"
+    "  cp ../config.$CARCH .config\n"
+    "  make olddefconfig\n"
+    "  make -s kernelrelease > version\n"
+    "}\n"
+)
+
+
+def test_kconfig_apply_injects_merge_and_nconfig_when_interactive(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    patch_kernel_kconfig_apply(pb, interactive=True)
+    text = pb.read_text()
+    assert "merge_config.sh -m .config \"$startdir/sysforge.config\"" in text
+    assert "make nconfig" in text
+    # Merge is injected after the anchor (make olddefconfig), before nconfig.
+    assert text.index("make olddefconfig") < text.index("merge_config.sh")
+    assert text.index("merge_config.sh") < text.index("make nconfig")
+
+
+def test_kconfig_apply_injects_merge_without_nconfig_when_noninteractive(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    patch_kernel_kconfig_apply(pb, interactive=False)
+    text = pb.read_text()
+    assert "merge_config.sh" in text
+    assert "make nconfig" not in text
+
+
+def test_kconfig_apply_skips_sysforge_aware_pkgbuild(tmp_path):
+    """A PKGBUILD that already calls merge_config.sh is left untouched."""
+    aware = (
+        "prepare() {\n"
+        "  cd $_srcname\n"
+        "  cp ../config.$CARCH .config\n"
+        "  ./scripts/kconfig/merge_config.sh -m .config ../sysforge.config\n"
+        "  make olddefconfig\n"
+        "}\n"
+    )
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(aware)
+    patch_kernel_kconfig_apply(pb, interactive=True)
+    assert pb.read_text() == aware  # no injection
+
+
+def test_kconfig_apply_does_not_duplicate_existing_interactive_target(tmp_path):
+    """If the PKGBUILD already has an interactive target, don't add a 2nd one —
+    just inject the fragment merge before it."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(
+        "prepare() {\n"
+        "  cp ../config.$CARCH .config\n"
+        "  make olddefconfig\n"
+        "  make nconfig\n"
+        "}\n"
+    )
+    patch_kernel_kconfig_apply(pb, interactive=True)
+    text = pb.read_text()
+    assert text.count("make nconfig") == 1
+    assert "merge_config.sh" in text
+
+
+def test_kconfig_apply_falls_back_to_config_seed_anchor(tmp_path):
+    """No make-config line, but a `cp … .config` seed is a valid anchor."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(
+        "prepare() {\n"
+        "  cp ../config.$CARCH .config\n"
+        "  make -s kernelrelease > version\n"
+        "}\n"
+    )
+    patch_kernel_kconfig_apply(pb, interactive=False)
+    text = pb.read_text()
+    assert "merge_config.sh" in text
+    # injected right after the .config seed
+    assert text.index(".config\n") < text.index("merge_config.sh")
+
+
+def test_kconfig_apply_no_anchor_is_noop(tmp_path):
+    """No anchor at all → no injection (warned), file unchanged."""
+    original = "prepare() {\n  echo nothing to configure\n}\n"
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(original)
+    patch_kernel_kconfig_apply(pb, interactive=True)
+    assert pb.read_text() == original
+
+
+def test_kconfig_apply_preserves_anchor_indentation(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("prepare() {\n\tmake olddefconfig\n}\n")
+    patch_kernel_kconfig_apply(pb, interactive=False)
+    text = pb.read_text()
+    # injected block carries the anchor's tab indentation
+    assert "\n\tif [ -f \"$startdir/sysforge.config\" ]; then" in text
+
+
+# ---------------------------------------------------------------------------
 # patch_pkgbuild_groups
 # ---------------------------------------------------------------------------
 
@@ -565,8 +668,9 @@ def test_subshell_env_reset_injects_unset():
         assert "unset CC CXX" in text
         # unset should be inside the subshell function, not in build()
         lines = text.splitlines()
-        unset_idx = next(i for i, l in enumerate(lines) if "unset CC CXX" in l)
-        func_idx = next(i for i, l in enumerate(lines) if "_build_musl32" in l and "(" in l)
+        unset_idx = next(i for i, ln in enumerate(lines) if "unset CC CXX" in ln)
+        func_idx = next(
+            i for i, ln in enumerate(lines) if "_build_musl32" in ln and "(" in ln)
         assert unset_idx == func_idx + 1
 
 

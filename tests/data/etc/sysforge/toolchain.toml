@@ -33,6 +33,9 @@ skip_build = false
 #                          # rebuilding installed libLLVM consumers (mesa, …)
 #                          # when an LLVM version bump changes the soname.
 #                          # CLI override: --rebuild-soname-consumers.
+# reuse_unchanged = false  # default false. Opt-in: reuse a Pass-3 PGO package
+#                          # whose inputs + on-disk artifact are unchanged
+#                          # instead of rebuilding. CLI override: --reuse-built.
 
 # ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed

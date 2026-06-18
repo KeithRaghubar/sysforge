@@ -86,9 +86,12 @@ check-standards:
 	uv run --no-sync --with reuse python tools/check_standards.py
 
 # Merge new shipped defaults (etc/sysforge/) into the live config dir
-# ($SYSFORGE_CONFIG_DIR/etc/sysforge). Add-only: injects new keys/sections/
-# comments, never overwrites existing values. tomlkit is dev-only (ephemeral
-# uv overlay). Preview with ARGS="--dry-run"; retarget with ARGS="--target DIR".
+# ($SYSFORGE_CONFIG_DIR itself, else /etc/sysforge). Add-only: injects new
+# keys/sections/comments, never overwrites existing values. Pure comment /
+# commented-example drift the key-merge can't carry is dropped beside the
+# target as <name>.sfnew (pacnew-style) to diff & adopt. tomlkit is dev-only
+# (ephemeral uv overlay). Preview with ARGS="--dry-run"; retarget with
+# ARGS="--target DIR".
 sync-config:
 	uv run --no-sync --with tomlkit python tools/sync_config.py $(ARGS)
 

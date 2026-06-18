@@ -284,7 +284,7 @@ _sysforge_run() {
         toolchain)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update -m --makepkg --persist-log --cache-report \
-                --abi-check --state-dir --rebuild-profdata --auto-pgo \
+                --abi-check --state-dir --rebuild-profdata --reuse-built --auto-pgo \
                 --allow-dirty-llvm --allow-version-skew --skip-build-space-check \
                 --rebuild-soname-consumers --cleansrc --cleansrc-force" -- "$cur") )
             ;;

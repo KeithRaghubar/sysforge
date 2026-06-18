@@ -1,26 +1,29 @@
 """
 conftest.py — shared pytest configuration for SysForge tests.
 
-Sets SYSFORGE_CONFIG_DIR to point at tests/data before any module imports,
-so load_config() and other path-sensitive functions resolve test fixtures
-rather than /etc/sysforge.
+Sets SYSFORGE_CONFIG_DIR to point at the tracked fixture config dir
+(tests/data/etc/sysforge) before any module imports, so load_config() and
+other path-sensitive functions resolve test fixtures rather than
+/etc/sysforge. SYSFORGE_CONFIG_DIR is the config dir *itself* (the dir that
+directly holds the TOML files), not an FHS root prefix.
 """
 import os
 from pathlib import Path
 
 import pytest
 
-# Must be set before importing any sysforge module that reads CONFIG_BASE
+# Must be set before importing any sysforge module that reads CONFIG_DIR
 # at import time.
 TESTS_DIR = Path(__file__).parent
 TEST_DATA = TESTS_DIR / "data"
+FIXTURE_CONFIG_DIR = TEST_DATA / "etc/sysforge"
 
 # Force (not setdefault) the fixture dir: a developer shell may export its own
 # SYSFORGE_CONFIG_DIR pointing at a personal config dir (e.g. ~/sf-config), and
 # the suite must always resolve the tracked tests/data fixtures regardless.
 # Per-test config variation patches file *contents* (see update_scenario), not
 # this env var, so pinning it is safe.
-os.environ["SYSFORGE_CONFIG_DIR"] = str(TEST_DATA)
+os.environ["SYSFORGE_CONFIG_DIR"] = str(FIXTURE_CONFIG_DIR)
 
 # Force the subprocess fallback in primitives.pacman so existing tests that
 # mock subprocess.run continue to drive the query. The pyalpm fast path is

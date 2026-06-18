@@ -101,6 +101,7 @@ import subprocess
 import sys
 import threading
 import tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sysforge import log
@@ -115,9 +116,13 @@ from sysforge.primitives.llvm_state import (
 )
 from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
-from sysforge.primitives import toolchain_safety
+from sysforge.primitives import build_fingerprint, toolchain_safety
 from sysforge.primitives.makepkg_pgo import resolve_pgo_store
-from sysforge.primitives.pacman import batch_install_pkgs, cached_pkg_files_for
+from sysforge.primitives.pacman import (
+    batch_install_pkgs,
+    cached_pkg_files_for,
+    get_pkgdest,
+)
 from sysforge.primitives.makepkg_flags import SYNC_FLAGS
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 from sysforge.build_core import make_build_options
@@ -570,6 +575,99 @@ def _confirm_or_abort(state_dir) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Pass-3 input-fingerprint reuse (opt-in). See primitives/build_fingerprint.py
+# and DESIGN.md §Toolchain stage → Pass-3 input-fingerprint reuse.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _ReuseCtx:
+    """Per-sub-pass context for input-fingerprint build reuse (Pass 3 only).
+
+    ``consult`` gates whether a fingerprint match *skips* the build (opt-in via
+    ``--reuse-built`` / ``reuse_unchanged``); the cache is *written* regardless
+    so a first, non-opted-in run still populates it for a later resume.
+    ``staged_dep_fps`` carries the prior sub-pass's fingerprints (Merkle chain:
+    3b/3c fold in 3a's so a rebuilt libLLVM forces its consumers to rebuild).
+    """
+    pass_id: str
+    cache: dict
+    cache_path: Path
+    config_digest: str
+    profdata_sha: str | None
+    pkgdest: Path | None
+    consult: bool
+    staged_dep_fps: list[str] = field(default_factory=list)
+
+
+def _dep_versions_from_globals(globals_: dict) -> dict[str, str | None]:
+    """Installed versions of a PKGBUILD's build deps, for fingerprinting.
+
+    Takes already-parsed PKGBUILD globals, collects depends+makedepends+
+    checkdepends (arch arrays already merged by ``parse_pkgbuild``), strips
+    version constraints, drops unresolved ``${...}``/``$(...)`` tokens, and
+    queries pacman for each installed version. Staged deps (e.g. ``llvm=<ver>``
+    satisfied by a stage prefix) map to None — that dimension stays constant in
+    the staged context and the staged libLLVM is captured via ``staged_dep_fps``.
+    """
+    from sysforge.primitives.aur_resolve import _looks_unresolved, _strip_version
+
+    names: set[str] = set()
+    for key in ("depends", "makedepends", "checkdepends"):
+        for tok in globals_.get(key, []) or []:
+            if not tok or _looks_unresolved(tok):
+                continue
+            bare = _strip_version(tok)
+            if bare:
+                names.add(bare)
+    if not names:
+        return {}
+    return dict(sorted(_query_pacman_versions(tuple(sorted(names))).items()))
+
+
+def _pkg_fingerprint(
+    ctx: _ReuseCtx,
+    name: str,
+    pkgbuild_path: Path,
+    cc: str | None,
+    compiler_flags_extra: str | None,
+    linker_flags_extra: str | None,
+    cmake_llvm_dir: str | None,
+    extra_flags,
+) -> tuple[str, str]:
+    """Return ``(pkgbase, fingerprint)`` for one PKGBUILD in pass ``ctx.pass_id``.
+
+    Parses the PKGBUILD once (for pkgbase + dep versions) and folds every input
+    that determines the build output into the fingerprint. Parse failure is
+    non-fatal — the recipe is still captured by ``pkgbuild_sha`` and the missing
+    metadata only ever over-invalidates (forces a rebuild), never under.
+    """
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    try:
+        globals_ = parse_pkgbuild(pkgbuild_path).get("globals", {})
+    except Exception:  # noqa: BLE001 — fingerprint helper must never abort a build
+        globals_ = {}
+    pkgbase = globals_.get("pkgbase") or name
+    components = {
+        "pass_id": ctx.pass_id,
+        "pkgbase": pkgbase,
+        "pkgbuild_sha": build_fingerprint.hash_file(pkgbuild_path),
+        "source_commit": build_fingerprint.source_commit(pkgbuild_path.parent),
+        "cc_identity": build_fingerprint.clang_identity(cc),
+        "compiler_flags_extra": compiler_flags_extra,
+        "linker_flags_extra": linker_flags_extra,
+        "cmake_llvm_dir": cmake_llvm_dir,
+        "extra_flags": list(extra_flags or []),
+        "config_digest": ctx.config_digest,
+        "profdata_sha": ctx.profdata_sha,
+        "makedep_versions": _dep_versions_from_globals(globals_),
+        "staged_dep_fps": sorted(ctx.staged_dep_fps),
+    }
+    return pkgbase, build_fingerprint.compute_fingerprint(components)
+
+
 def _build_pkg(
     name: str,
     pkgbuild_path: Path,
@@ -649,7 +747,8 @@ def _build_pass(
     toolchain_variant: str | None = None,
     owner_stage: str | None = None,
     cmake_llvm_dir: str | None = None,
-) -> None:
+    reuse: "_ReuseCtx | None" = None,
+) -> dict[str, str]:
     """Build all packages in pkgbuild_map for one pass.
 
     Deduplicates by PKGBUILD directory: split packages that share a directory
@@ -663,6 +762,13 @@ def _build_pass(
     fail with "target not found" (the version isn't published anywhere), and
     abort the pass.  Pass 1a sets staged_deps=False because it builds against
     the live system; Pass 1b/2/3 set staged_deps=True.
+
+    ``reuse`` enables opt-in input-fingerprint reuse (Pass 3 only). When set,
+    each built PKGBUILD's fingerprint is computed and recorded; if
+    ``reuse.consult`` and a matching, still-present artifact is cached, the build
+    is *skipped* (the on-disk artifact is reused by the later staging/install).
+    Returns ``{pkgbase: fingerprint}`` for the dirs built or skipped this pass —
+    the caller chains it into the next sub-pass's ``staged_dep_fps`` (Merkle).
     """
     extra = ["--install"] if install else []
     if pgo_build:
@@ -675,6 +781,7 @@ def _build_pass(
     total = len({p.parent for p in pkgbuild_map.values()})
     seen_dirs: set[Path] = set()
     first = True
+    fingerprints: dict[str, str] = {}
     with progress.tracker(total, label) as tick:
         for name, pkgbuild_path in pkgbuild_map.items():
             pkg_dir = pkgbuild_path.parent
@@ -683,6 +790,30 @@ def _build_pass(
                 continue
             seen_dirs.add(pkg_dir)
             tick(name)
+
+            # Input-fingerprint reuse (Pass 3, opt-in). Compute always (so a
+            # first run populates the cache); skip the build only when opted in
+            # AND the cached artifact set is still valid. Never active in
+            # dry-run (no artifacts to validate or reuse).
+            fp: str | None = None
+            pkgbase = name
+            if reuse is not None and not options.dry_run:
+                pkgbase, fp = _pkg_fingerprint(
+                    reuse, name, pkgbuild_path, cc, compiler_flags_extra,
+                    linker_flags_extra, cmake_llvm_dir, extra,
+                )
+                fingerprints[pkgbase] = fp
+                if reuse.consult:
+                    key = build_fingerprint.cache_key(reuse.pass_id, pkgbase)
+                    hit = build_fingerprint.cache_hit(reuse.cache, key, fp)
+                    if hit:
+                        _log.ui(
+                            f"  [PGO] reusing cached build of {pkgbase} "
+                            f"({reuse.pass_id}) — fingerprint match, "
+                            f"{len(hit)} artifact(s) on disk; skipping rebuild",
+                        )
+                        continue  # build skipped; do not consume `first`
+
             _build_pkg(
                 name,
                 pkgbuild_path,
@@ -701,6 +832,16 @@ def _build_pass(
                 cmake_llvm_dir=cmake_llvm_dir,
             )
             first = False
+
+            if reuse is not None and fp is not None:
+                members = [n for n, p in pkgbuild_map.items() if p.parent == pkg_dir]
+                search_dirs = ([reuse.pkgdest] if reuse.pkgdest else []) + [pkg_dir]
+                key = build_fingerprint.cache_key(reuse.pass_id, pkgbase)
+                build_fingerprint.record_build(
+                    reuse.cache, key, fp, search_dirs, members,
+                )
+                build_fingerprint.save_cache(reuse.cache_path, reuse.cache)
+    return fingerprints
 
 
 # ---------------------------------------------------------------------------
@@ -1970,6 +2111,9 @@ def _build_llvm_pgo_inner(
     staging3: Path,
     pgo_store: Path,
     options,
+    *,
+    config_digest: str = "",
+    reuse_built: bool = False,
 ) -> tuple[dict[str, Path], str, str, str, str]:
     """
     4-pass LLVM PGO build. Builds WITHOUT installing.
@@ -2375,6 +2519,37 @@ def _build_llvm_pgo_inner(
         all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
         opt = "reusing profdata" if skip_profgen else "PGO 4/4"
         profile_use = f"-fprofile-use={profdata_path}"
+
+        # Input-fingerprint reuse setup (Pass 3 only). The cache lives in
+        # pgo_store, so it is wiped on a fresh 4-pass start but survives a
+        # profdata-reuse resume. The profdata is hashed once (constant across
+        # 3a/3b/3c). The cache is always *written*; it is only *consulted*
+        # (skipping rebuilds) when ``reuse_built`` is opted in.
+        reuse_cache: dict = {}
+        reuse_cache_path = pgo_store / "build_cache.json"
+        reuse_profdata_sha: str | None = None
+        reuse_pkgdest: Path | None = None
+        if not options.dry_run:
+            reuse_cache = build_fingerprint.load_cache(reuse_cache_path)
+            reuse_profdata_sha = build_fingerprint.hash_file(profdata_path)
+            reuse_pkgdest = get_pkgdest()
+            if reuse_built:
+                _log.ui(
+                    "[PGO] --reuse-built: unchanged Pass-3 packages will be "
+                    f"reused from cache at {reuse_cache_path}",
+                )
+
+        def _mk_reuse_ctx(pass_id: str, staged_dep_fps: list[str]) -> _ReuseCtx:
+            return _ReuseCtx(
+                pass_id=pass_id,
+                cache=reuse_cache,
+                cache_path=reuse_cache_path,
+                config_digest=config_digest,
+                profdata_sha=reuse_profdata_sha,
+                pkgdest=reuse_pkgdest,
+                consult=reuse_built,
+                staged_dep_fps=staged_dep_fps,
+            )
         # Pass 3 is split into coherent sub-passes (3a pgo → stage3 → 3b non_pgo
         # → 3c lib32) so the non-pgo suite links against the *final optimized*
         # libLLVM that ships, NOT the live /usr one. The std::-symbol re-export
@@ -2398,7 +2573,7 @@ def _build_llvm_pgo_inner(
         pass3a_env: dict[str, str] = {"LLVM_PROFILE_FILE": ""}
         if using_staged_cc:
             pass3a_env.update(_stage_env(staging))
-        _build_pass(
+        pgo_fps = _build_pass(
             f"PGO optimize · llvm/llvm-libs ({opt})",
             pgo_map,
             options,
@@ -2411,7 +2586,12 @@ def _build_llvm_pgo_inner(
             staged_deps=True,
             toolchain_variant="pgo_llvm",
             owner_stage="toolchain",
+            reuse=_mk_reuse_ctx("3a", []),
         )
+
+        # 3b's fingerprints feed 3c's Merkle chain; default empty so 3c is safe
+        # when non_pgo_map is empty but lib32_map is not.
+        nonpgo_fps: dict[str, str] = {}
 
         # Stage the just-built OPTIMIZED libLLVM (+ headers + cmake configs) so
         # the non-pgo / lib32 sub-passes resolve find_package(LLVM) against the
@@ -2438,7 +2618,7 @@ def _build_llvm_pgo_inner(
                 "LLVM_PROFILE_FILE": "",
                 "CMAKE_PREFIX_PATH": f"{staging3}/usr",
             }
-            _build_pass(
+            nonpgo_fps = _build_pass(
                 f"PGO optimize · clang/lld/... against shipped libLLVM ({opt})",
                 non_pgo_map,
                 options,
@@ -2452,6 +2632,7 @@ def _build_llvm_pgo_inner(
                 toolchain_variant="pgo_llvm",
                 owner_stage="toolchain",
                 cmake_llvm_dir=f"{staging3}/usr/lib/cmake/llvm",
+                reuse=_mk_reuse_ctx("3b", sorted(pgo_fps.values())),
             )
             # Verify the split actually held: clang/lld must have linked the
             # staged shipped libLLVM, not the live /usr one. Abort before install
@@ -2484,6 +2665,9 @@ def _build_llvm_pgo_inner(
                 toolchain_variant="pgo_llvm",
                 owner_stage="toolchain",
                 cmake_llvm_dir=f"{staging3}/usr/lib/cmake/llvm",
+                reuse=_mk_reuse_ctx(
+                    "3c", sorted([*pgo_fps.values(), *nonpgo_fps.values()]),
+                ),
             )
             _assert_pass_links_shipped_libllvm(
                 lib32_map, label="Pass 3c (lib32)", dry_run=options.dry_run,
@@ -3111,9 +3295,25 @@ class ToolchainStage(Stage):
             # so it runs OUTSIDE the sentinel; a build-pass failure leaves no
             # sentinel behind (matches kernel).
             if pgo:
+                # Opt-in input-fingerprint reuse (Pass 3): CLI --reuse-built >
+                # toolchain.toml reuse_unchanged > off. config_digest folds the
+                # flag-relevant config (profiles/rules) + the toolchain settings
+                # (e.g. [llvm] targets, which drive the LLVM_TARGETS_TO_BUILD
+                # cmake patch the upstream-PKGBUILD hash can't see) so a config
+                # edit between runs invalidates the cache.
+                reuse_built = bool(getattr(options, "reuse_built", False)) or bool(
+                    tcfg.get("reuse_unchanged", False)
+                )
+                config_digest = build_fingerprint.hash_obj({
+                    "profiles": config.get("profiles"),
+                    "rules": config.get("rules"),
+                    "toolchain": tcfg,
+                })
                 built_map, cc, cxx, ld, variant = _build_llvm_pgo_inner(
                     pgo_map, non_pgo_map, lib32_map,
                     staging1, staging, staging3, pgo_store, options,
+                    config_digest=config_digest,
+                    reuse_built=reuse_built,
                 )
             else:
                 built_map, cc, cxx, ld, variant = _build_llvm_single(
