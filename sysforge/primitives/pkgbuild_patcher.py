@@ -70,6 +70,21 @@ _INTERACTIVE_KCONFIG_RE = re.compile(
     re.MULTILINE,
 )
 
+# Anchors for injecting the sysforge.config fragment merge into a stock kernel
+# PKGBUILD's prepare(). Primary: a non-interactive kconfig-resolve line (the
+# point where .config is established) — group 1 captures its indentation.
+_KCONFIG_SETUP_RE = re.compile(
+    r"^([ \t]*)make(?:\s+\w+=\S*)*\s+"
+    r"(?:olddefconfig|oldconfig|defconfig|alldefconfig)\b.*$",
+    re.MULTILINE,
+)
+# Secondary anchor: the line that creates .config (cp/cat into .config), used
+# when the PKGBUILD seeds .config without a make-config resolve step.
+_CONFIG_WRITE_RE = re.compile(
+    r"^([ \t]*)(?:cp\s+\S+\s+\.config|cat\b.*>\s*\.config)\b.*$",
+    re.MULTILINE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Group patching (moved from pkgbuild_meta.py)
@@ -565,6 +580,77 @@ def patch_noninteractive_kconfig(patched_path):
             )
     else:
         _log.info("No interactive kconfig targets found — nothing replaced")
+
+
+def _find_kconfig_anchor(text: str):
+    """Locate where to inject the fragment-merge in prepare().
+
+    Returns ``(insert_index, indent)`` where ``insert_index`` is the offset just
+    past the anchor line's content (before its newline) and ``indent`` is the
+    anchor's leading whitespace, or ``None`` when no anchor is found. Prefers a
+    non-interactive kconfig-resolve line (``make olddefconfig`` etc.); falls back
+    to the ``.config`` creation line.
+    """
+    m = _KCONFIG_SETUP_RE.search(text) or _CONFIG_WRITE_RE.search(text)
+    if m is None:
+        return None
+    return m.end(), m.group(1)
+
+
+def patch_kernel_kconfig_apply(patched_path, *, interactive,
+                               fragment="sysforge.config"):
+    """Inject the sysforge.config fragment merge (and, when interactive, an
+    interactive ``make nconfig`` review) into a stock kernel PKGBUILD.
+
+    sysforge writes the merged kconfig fragment to ``$startdir/<fragment>`` but a
+    stock PKGBUILD does not consume it. This patches ``prepare()`` to merge the
+    fragment into ``.config`` (re-resolving with ``make olddefconfig``) right
+    after the PKGBUILD establishes its base ``.config`` — so the operator's
+    hardware/device kconfig actually lands. When ``interactive`` and the PKGBUILD
+    has no interactive target of its own, an ``make nconfig`` is appended so the
+    user reviews the merged config.
+
+    Skips PKGBUILDs that already cooperate (reference ``merge_config.sh`` or the
+    fragment) to avoid double-injection. Modifies ``patched_path`` in place.
+    """
+    patched_path = Path(patched_path)
+    text = patched_path.read_text(encoding="utf-8")
+
+    if "merge_config.sh" in text or fragment in text:
+        _log.info(
+            "PKGBUILD already applies the sysforge kconfig fragment "
+            "(merge_config.sh present) — skipping kconfig injection",
+        )
+        return
+
+    anchor = _find_kconfig_anchor(text)
+    if anchor is None:
+        _log.warn(
+            "No kconfig-setup anchor (make olddefconfig / .config seed) found in "
+            "the kernel PKGBUILD prepare() — cannot inject the sysforge.config "
+            "merge, so the hardware/device fragment will be ignored. Add a "
+            "`make olddefconfig` step (or call merge_config.sh) in prepare().",
+        )
+        return
+
+    insert_at, indent = anchor
+    add_nconfig = interactive and not _INTERACTIVE_KCONFIG_RE.search(text)
+    block = [
+        f"{indent}# sysforge: merge the generated kconfig fragment into .config",
+        f'{indent}if [ -f "$startdir/{fragment}" ]; then',
+        f'{indent}  ./scripts/kconfig/merge_config.sh -m .config "$startdir/{fragment}"',
+        f"{indent}  make olddefconfig",
+        f"{indent}fi",
+    ]
+    if add_nconfig:
+        block.append(f"{indent}make nconfig  # sysforge: interactive kconfig review")
+    injected = "\n" + "\n".join(block)
+    patched_path.write_text(
+        text[:insert_at] + injected + text[insert_at:], encoding="utf-8")
+    _log.info(
+        "Injected sysforge.config fragment merge into kernel PKGBUILD prepare()"
+        + (" + interactive `make nconfig`" if add_nconfig else ""),
+    )
 
 
 # ---------------------------------------------------------------------------

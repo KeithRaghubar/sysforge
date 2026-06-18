@@ -70,6 +70,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     cleanup_patch_artifacts,
     extract_pkgbuild_profile,
     is_llvm_pkgbase,
+    patch_kernel_kconfig_apply,
     patch_llvm_dir,
     patch_llvm_targets,
     patch_noninteractive_kconfig,
@@ -265,8 +266,14 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     if cmake_llvm_dir:
         cmake_injected = patch_llvm_dir(pkgbuild_path, cmake_llvm_dir) or cmake_injected
 
-    if kernel_build and not interactive:
-        patch_noninteractive_kconfig(pkgbuild_path)
+    if kernel_build:
+        # Always inject the sysforge.config fragment merge so a stock PKGBUILD
+        # actually applies the hardware/device kconfig (it adds `make nconfig`
+        # itself only when interactive). The non-interactive patch then rewrites
+        # any *existing* interactive kconfig target to olddefconfig.
+        patch_kernel_kconfig_apply(pkgbuild_path, interactive=interactive)
+        if not interactive:
+            patch_noninteractive_kconfig(pkgbuild_path)
 
     # Reset toolchain env vars in subshell functions so sub-builds (musl
     # bootstrap, embedded grub, etc.) use the system default compiler/linker

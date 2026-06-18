@@ -161,6 +161,33 @@ def test_non_kernel_build_never_patches_kconfig(tmp_path):
     mock_patch.assert_not_called()
 
 
+def test_kernel_build_always_applies_fragment_merge(tmp_path):
+    """kernel_build=True always injects the sysforge.config fragment merge,
+    threading the resolved interactive flag (both branches)."""
+    for interactive in (True, False):
+        with (
+            _mock_build_context(tmp_path) as (pkgbuild, _),
+            patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig"),
+            patch("sysforge.primitives.makepkg_wrapper.patch_kernel_kconfig_apply") as mock_apply,
+        ):
+            _run_build(pkgbuild, _minimal_profile(), {}, [],
+                       extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
+                       interactive=interactive, kernel_build=True)
+        mock_apply.assert_called_once()
+        assert mock_apply.call_args.kwargs["interactive"] is interactive
+
+
+def test_non_kernel_build_never_applies_fragment_merge(tmp_path):
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.primitives.makepkg_wrapper.patch_kernel_kconfig_apply") as mock_apply,
+    ):
+        _run_build(pkgbuild, _minimal_profile(), {}, [],
+                   extracted_profile=None, pkgmeta=_minimal_pkgmeta(),
+                   kernel_build=False)
+    mock_apply.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # _find_built_packages
 # ---------------------------------------------------------------------------
