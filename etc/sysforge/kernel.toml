@@ -52,7 +52,10 @@ pkgname = "linux-sysforge"      # base package name (must match the PKGBUILD pkg
 #                               # profdata trains the clang binary itself, not the
 #                               # linux kernel target — there is no kernel PGO here.
 
-# pkgbuild_src_dir = "~/src"    # override the global pkgbuild_src_dir for this kernel only
+# pkgbuild_src_dir = "~/src"    # optional per-kernel override of the global
+#                               # [paths] pkgbuild_src_dir (profiles.toml). When
+#                               # unset, the kernel stage falls back to that
+#                               # global value; only both being unset is an error.
 
 # ---------------------------------------------------------------------------
 # Boot safety — the kernel stage must never leave the system unbootable.
@@ -93,11 +96,13 @@ pkgname = "linux-sysforge"      # base package name (must match the PKGBUILD pkg
 #                                 #                /boot/config-$(uname -r))
 #                                 #   "<path>"   → read the base from that file
 #                                 # For "running"/<path>, sysforge writes the
-#                                 # chosen config to <pkgbuild_dir>/sysforge.base.config;
-#                                 # the PKGBUILD's prepare() must copy it to .config
-#                                 # (then `make olddefconfig`) BEFORE merging
-#                                 # sysforge.config — same cooperation contract as
-#                                 # the fragment below.
+#                                 # chosen config to <pkgbuild_dir>/sysforge.base.config
+#                                 # and injects a `cp sysforge.base.config .config`
+#                                 # (+ `make olddefconfig`) into the PKGBUILD's
+#                                 # prepare() BEFORE the sysforge.config merge — so a
+#                                 # stock PKGBUILD honours the base without cooperating.
+#                                 # The default "pkgbuild" writes no base file, so the
+#                                 # injected seed is a runtime no-op.
 
 # ---------------------------------------------------------------------------
 # kconfig — kernel config fragment

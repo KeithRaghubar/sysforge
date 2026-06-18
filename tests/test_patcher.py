@@ -35,6 +35,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     load_extracted_profile,
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
+    patch_kernel_config_install,
     patch_kernel_kconfig_apply,
     patch_noninteractive_kconfig,
     patch_pkgbuild_groups,
@@ -576,6 +577,82 @@ def test_kconfig_apply_preserves_anchor_indentation(tmp_path):
     text = pb.read_text()
     # injected block carries the anchor's tab indentation
     assert "\n\tif [ -f \"$startdir/sysforge.config\" ]; then" in text
+
+
+def test_kconfig_apply_seeds_base_config_before_fragment(tmp_path):
+    """The base-config copy is injected before the fragment merge, both after
+    the anchor, so base_config="running"/<path> actually seeds the build."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    patch_kernel_kconfig_apply(pb, interactive=False)
+    text = pb.read_text()
+    assert 'cp "$startdir/sysforge.base.config" .config' in text
+    # ordering: anchor → base copy → fragment merge
+    assert text.index("make olddefconfig") < text.index("sysforge.base.config")
+    assert text.index("sysforge.base.config") < text.index("merge_config.sh")
+
+
+def test_kconfig_apply_base_copy_is_file_guarded(tmp_path):
+    """The base copy is wrapped in `if [ -f … ]`, so the default base_config=
+    "pkgbuild" (no base file) is a runtime no-op — nothing unconditional."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    patch_kernel_kconfig_apply(pb, interactive=False)
+    text = pb.read_text()
+    assert 'if [ -f "$startdir/sysforge.base.config" ]; then' in text
+    # the cp only appears inside the guard
+    assert text.count('cp "$startdir/sysforge.base.config" .config') == 1
+
+
+# ---------------------------------------------------------------------------
+# patch_kernel_config_install (/boot config install into package())
+# ---------------------------------------------------------------------------
+
+_STOCK_PACKAGE = (
+    "package_linux-sysforge() {\n"
+    "  cd $_srcname\n"
+    '  make INSTALL_MOD_PATH="$pkgdir/usr" modules_install\n'
+    "}\n"
+)
+
+
+def test_config_install_injects_into_split_package(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PACKAGE)
+    patch_kernel_config_install(pb, pkgname="linux-sysforge")
+    text = pb.read_text()
+    assert '"$pkgdir/boot/config-$(<"$_sf_rel")"' in text
+    assert "include/config/kernel.release" in text
+    # injected just inside the package function body
+    assert text.index("package_linux-sysforge()") < text.index("_sf_rel=")
+
+
+def test_config_install_injects_into_bare_package(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("package() {\n  cd src\n}\n")
+    patch_kernel_config_install(pb, pkgname="linux")
+    assert "/boot/config-" in pb.read_text()
+
+
+def test_config_install_idempotent_when_boot_config_present(tmp_path):
+    """A PKGBUILD that already installs /boot/config is left untouched."""
+    native = (
+        "package() {\n"
+        '  install -Dm644 .config "$pkgdir/boot/config-1.0"\n'
+        "}\n"
+    )
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(native)
+    patch_kernel_config_install(pb, pkgname="linux")
+    assert pb.read_text() == native
+
+
+def test_config_install_no_package_func_is_noop(tmp_path):
+    original = "prepare() {\n  make olddefconfig\n}\n"
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(original)
+    patch_kernel_config_install(pb, pkgname="linux")
+    assert pb.read_text() == original
 
 
 # ---------------------------------------------------------------------------

@@ -70,6 +70,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     cleanup_patch_artifacts,
     extract_pkgbuild_profile,
     is_llvm_pkgbase,
+    patch_kernel_config_install,
     patch_kernel_kconfig_apply,
     patch_llvm_dir,
     patch_llvm_targets,
@@ -125,16 +126,49 @@ from sysforge.primitives.profile import (
 # ---------------------------------------------------------------------------
 
 
+def _find_artifacts(pkgbuild_dir) -> list:
+    """Locate built ``.pkg.tar*`` artifacts honouring makepkg's PKGDEST.
+
+    makepkg writes artifacts to its configured ``PKGDEST`` (env or layered
+    makepkg.conf), falling back to the PKGBUILD directory only when PKGDEST is
+    unset. Any code that *locates* a built artifact must go through
+    ``pacman.get_pkgdest()`` (CLAUDE.md: makepkg path resolution has one home) —
+    globbing only the PKGBUILD dir silently finds nothing when PKGDEST is set.
+    Searches the union of {PKGDEST, pkgbuild_dir} (deduped) so artifacts are
+    found wherever they landed.
+    """
+    from sysforge.primitives.pacman import get_pkgdest
+
+    roots, seen = [], set()
+    for root in (get_pkgdest(), Path(pkgbuild_dir).resolve()):
+        if root is None:
+            continue
+        rp = Path(root).resolve()
+        if str(rp) in seen:
+            continue
+        seen.add(str(rp))
+        roots.append(rp)
+    found, names = [], set()
+    for root in roots:
+        for p in _find_built_packages(root):
+            if p.name in names:
+                continue
+            names.add(p.name)
+            found.append(p)
+    return found
+
+
 def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
-    """Install the .pkg.tar* artifacts in ``pkgbuild_dir`` via ``pacman -U``.
+    """Install the .pkg.tar* artifacts for ``pkgbuild_dir`` via ``pacman -U``.
 
     For callers that split build from install — the kernel stage builds with
     ``BuildOptions.no_install`` so its safety audit can run against the
     resolved .config, then calls this to install only once the audit passes.
-    Inherits stdio so a pacman conflict/sudo prompt is visible. Raises
-    RuntimeError when no artifact is found or the install fails.
+    Locates artifacts via ``_find_artifacts`` (PKGDEST-aware, not just the
+    PKGBUILD dir). Inherits stdio so a pacman conflict/sudo prompt is visible.
+    Raises RuntimeError when no artifact is found or the install fails.
     """
-    pkgs = _find_built_packages(Path(pkgbuild_dir).resolve())
+    pkgs = _find_artifacts(pkgbuild_dir)
     if not pkgs:
         raise RuntimeError(
             f"no built package found in {pkgbuild_dir} — nothing to install")
@@ -272,6 +306,9 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # itself only when interactive). The non-interactive patch then rewrites
         # any *existing* interactive kconfig target to olddefconfig.
         patch_kernel_kconfig_apply(pkgbuild_path, interactive=interactive)
+        # Ship the resolved .config to /boot (pacman-tracked) when the PKGBUILD
+        # doesn't already — the main image subpackage is named for the pkgbase.
+        patch_kernel_config_install(pkgbuild_path, pkgname=_pkgname_from_meta(pkgmeta))
         if not interactive:
             patch_noninteractive_kconfig(pkgbuild_path)
 
@@ -741,7 +778,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         # Post-build ABI check (non-fatal) — owned by abi_check.py
         if options.abi_check:
             from sysforge.primitives.abi_check import report_post_build_abi
-            report_post_build_abi(_find_built_packages(pkgbuild_path.resolve().parent))
+            report_post_build_abi(_find_artifacts(pkgbuild_path.resolve().parent))
 
         # Record build metadata for `sysforge update` (non-fatal)
         try:
@@ -771,7 +808,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             # untouched, so packages using them would otherwise record a
             # literal ``$...`` string as pkgver and always mismatch vercmp.
             filename_versions: dict[str, tuple[str, str, str]] = {}
-            for p in _find_built_packages(pkgbuild_path.resolve().parent):
+            for p in _find_artifacts(pkgbuild_path.resolve().parent):
                 for name in pkgnames:
                     if name in filename_versions:
                         continue

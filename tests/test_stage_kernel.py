@@ -288,7 +288,9 @@ def test_load_kernel_config_returns_dict(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_pkgbuild_path_missing_pkgbuild_src_dir():
-    with pytest.raises(RuntimeError, match="missing pkgbuild_src_dir"):
+    # KernelStage.run() stamps the effective src dir in; an empty value here
+    # means neither kernel.toml nor the global [paths] had one.
+    with pytest.raises(RuntimeError, match="no pkgbuild_src_dir configured"):
         _pkgbuild_path({"pkgname": "linux-git"})
 
 def test_pkgbuild_path_missing_pkgname(tmp_path):
@@ -600,6 +602,27 @@ def test_kernel_stage_calls_makepkg(tmp_path):
     mock_build.assert_called_once()
     called_path = mock_build.call_args[0][0]
     assert "linux-git" in str(called_path)
+
+def test_kernel_stage_falls_back_to_global_pkgbuild_src_dir(tmp_path):
+    """kernel.toml omits pkgbuild_src_dir → run() resolves it from the global
+    [paths] pkgbuild_src_dir instead of hard-failing (Issue 1)."""
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    # kernel.toml WITHOUT pkgbuild_src_dir
+    p = tmp_path / "kernel.toml"
+    p.write_text('enabled = true\npkgname = "linux-git"\nsource = "git"\n')
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(builds)}}
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))
+
+    mock_build.assert_called_once()
+    assert "linux-git" in str(mock_build.call_args[0][0])
 
 def test_kernel_stage_runs_mkinitcpio(tmp_path):
     import sysforge.pipeline.stages.kernel as _km

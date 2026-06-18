@@ -234,8 +234,11 @@ def test_find_built_packages_ignores_unrelated(tmp_path):
 # install_built_packages — used by the kernel stage's split build/install
 # ---------------------------------------------------------------------------
 
-def test_install_built_packages_runs_pacman_U(tmp_path):
+def test_install_built_packages_runs_pacman_U(tmp_path, monkeypatch):
     from sysforge.primitives import makepkg_wrapper as mw
+    # PKGDEST-unset so _find_artifacts looks only in the PKGBUILD dir (the dev
+    # machine's real PKGDEST would otherwise leak its built packages in).
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: None)
     (tmp_path / "linux-custom-1-1-x86_64.pkg.tar.zst").touch()
     (tmp_path / "linux-custom-headers-1-1-x86_64.pkg.tar.zst").touch()
     calls = {}
@@ -250,14 +253,16 @@ def test_install_built_packages_runs_pacman_U(tmp_path):
     assert len(pkgs) == 2
 
 
-def test_install_built_packages_no_artifact_raises(tmp_path):
+def test_install_built_packages_no_artifact_raises(tmp_path, monkeypatch):
     from sysforge.primitives import makepkg_wrapper as mw
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: None)
     with pytest.raises(RuntimeError, match="nothing to install"):
         mw.install_built_packages(tmp_path)
 
 
-def test_install_built_packages_pacman_failure_raises(tmp_path):
+def test_install_built_packages_pacman_failure_raises(tmp_path, monkeypatch):
     from sysforge.primitives import makepkg_wrapper as mw
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: None)
     (tmp_path / "linux-custom-1-1-x86_64.pkg.tar.zst").touch()
     with patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
                lambda cmd, *a, **k: SimpleNamespace(returncode=1)):

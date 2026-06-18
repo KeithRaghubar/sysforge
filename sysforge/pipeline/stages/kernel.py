@@ -418,12 +418,16 @@ def _pkgbuild_path(kernel_cfg):
     when not specified. srcdir allows the source directory name to differ from
     pkgname (e.g. pkgname="linux-custom", srcdir="linux").
     """
+    # KernelStage.run() stamps the effective value (kernel.toml override, else
+    # the global [paths] pkgbuild_src_dir) into kernel_cfg before this is called,
+    # so an empty value here means neither source is set.
     pkgbuild_src_dir = kernel_cfg.get("pkgbuild_src_dir")
     if not pkgbuild_src_dir:
         raise RuntimeError(
-            "[KERNEL] kernel.toml is missing pkgbuild_src_dir. "
-            "Set pkgbuild_src_dir to the directory that contains your kernel PKGBUILD directory "
-            '(e.g. pkgbuild_src_dir = "~/src" if the PKGBUILD is at ~/src/linux-custom/PKGBUILD).'
+            "[KERNEL] no pkgbuild_src_dir configured. Set [paths] pkgbuild_src_dir "
+            "in profiles.toml (the global default) or pkgbuild_src_dir in kernel.toml "
+            "(per-kernel override) to the directory that contains your kernel PKGBUILD "
+            'directory (e.g. "~/src" if the PKGBUILD is at ~/src/linux-custom/PKGBUILD).'
         )
     pkgname = kernel_cfg.get("pkgname")
     if not pkgname:
@@ -1061,6 +1065,15 @@ class KernelStage(Stage):
         if kernel_cfg is None or not kernel_cfg.get("enabled", False):
             _log.ui("kernel.toml absent or disabled — stage is a no-op")
             return
+
+        # pkgbuild_src_dir is optional in kernel.toml: when unset, fall back to
+        # the global [paths] pkgbuild_src_dir. Resolve once and stamp it back so
+        # the kernel_cfg-only _pkgbuild_path() call sites pick up the global
+        # value without each needing the full config dict.
+        from sysforge.primitives.config import resolve_pkgbuild_src_dir
+        eff_src_dir = resolve_pkgbuild_src_dir(config, build_cfg=kernel_cfg)
+        if eff_src_dir:
+            kernel_cfg["pkgbuild_src_dir"] = eff_src_dir
 
         pkgname = kernel_cfg.get("pkgname", "unknown")
         bootloader = _resolve_bootloader(kernel_cfg, options)

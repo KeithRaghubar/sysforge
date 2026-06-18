@@ -86,6 +86,26 @@ _CONFIG_WRITE_RE = re.compile(
 )
 
 
+def _package_func_re(pkgname: str) -> re.Pattern:
+    """Match the opening of the kernel's package function up to its ``{``.
+
+    Prefers the split-package ``package_<pkgname>()`` (the main image
+    subpackage, which conventionally installs /boot files) and falls back to a
+    bare ``package()``. Group 1 captures the function's leading indentation;
+    ``re.escape`` handles pkgnames with ``-``/``.`` (e.g. ``linux-sysforge``).
+    """
+    return re.compile(
+        r"^([ \t]*)package(?:_" + re.escape(pkgname) + r")?\s*\(\)\s*\{",
+        re.MULTILINE,
+    )
+
+
+# Detect a PKGBUILD that already installs a kernel config to /boot — both a
+# native ``install … /boot/config-…`` and a prior sysforge injection — so the
+# injection stays idempotent.
+_BOOT_CONFIG_RE = re.compile(r"/boot/config\b")
+
+
 # ---------------------------------------------------------------------------
 # Group patching (moved from pkgbuild_meta.py)
 # ---------------------------------------------------------------------------
@@ -599,16 +619,26 @@ def _find_kconfig_anchor(text: str):
 
 def patch_kernel_kconfig_apply(patched_path, *, interactive,
                                fragment="sysforge.config"):
-    """Inject the sysforge.config fragment merge (and, when interactive, an
-    interactive ``make nconfig`` review) into a stock kernel PKGBUILD.
+    """Inject the base-config seed + sysforge.config fragment merge (and, when
+    interactive, an interactive ``make nconfig`` review) into a stock kernel
+    PKGBUILD.
 
-    sysforge writes the merged kconfig fragment to ``$startdir/<fragment>`` but a
-    stock PKGBUILD does not consume it. This patches ``prepare()`` to merge the
-    fragment into ``.config`` (re-resolving with ``make olddefconfig``) right
-    after the PKGBUILD establishes its base ``.config`` — so the operator's
-    hardware/device kconfig actually lands. When ``interactive`` and the PKGBUILD
-    has no interactive target of its own, an ``make nconfig`` is appended so the
-    user reviews the merged config.
+    sysforge writes an optional base config to ``$startdir/sysforge.base.config``
+    (when ``base_config`` is ``"running"``/``<path>``) and the merged kconfig
+    fragment to ``$startdir/<fragment>``, but a stock PKGBUILD consumes neither.
+    This patches ``prepare()``, right after the PKGBUILD establishes its base
+    ``.config``, to:
+
+      1. copy ``sysforge.base.config`` over ``.config`` (then ``make
+         olddefconfig``) **when that file exists** — so ``base_config="running"``
+         actually seeds the build instead of being a silent no-op; and
+      2. merge ``<fragment>`` into ``.config`` (re-resolving with ``make
+         olddefconfig``) — so the operator's hardware/device kconfig lands.
+
+    Both steps are file-existence guarded, so the default ``base_config =
+    "pkgbuild"`` (which writes no base file) is unaffected. When ``interactive``
+    and the PKGBUILD has no interactive target of its own, a ``make nconfig`` is
+    appended so the user reviews the merged config.
 
     Skips PKGBUILDs that already cooperate (reference ``merge_config.sh`` or the
     fragment) to avoid double-injection. Modifies ``patched_path`` in place.
@@ -636,7 +666,11 @@ def patch_kernel_kconfig_apply(patched_path, *, interactive,
     insert_at, indent = anchor
     add_nconfig = interactive and not _INTERACTIVE_KCONFIG_RE.search(text)
     block = [
-        f"{indent}# sysforge: merge the generated kconfig fragment into .config",
+        f"{indent}# sysforge: seed the base config (when provided), then merge the fragment",
+        f'{indent}if [ -f "$startdir/sysforge.base.config" ]; then',
+        f'{indent}  cp "$startdir/sysforge.base.config" .config',
+        f"{indent}  make olddefconfig",
+        f"{indent}fi",
         f'{indent}if [ -f "$startdir/{fragment}" ]; then',
         f'{indent}  ./scripts/kconfig/merge_config.sh -m .config "$startdir/{fragment}"',
         f"{indent}  make olddefconfig",
@@ -650,6 +684,62 @@ def patch_kernel_kconfig_apply(patched_path, *, interactive,
     _log.info(
         "Injected sysforge.config fragment merge into kernel PKGBUILD prepare()"
         + (" + interactive `make nconfig`" if add_nconfig else ""),
+    )
+
+
+def patch_kernel_config_install(patched_path, *, pkgname):
+    """Inject a ``/boot/config-<release>`` install into the kernel ``package()``.
+
+    A stock kernel PKGBUILD does not always ship the resolved ``.config`` to
+    ``/boot``. This patches the main package function (``package_<pkgname>()``
+    for split kernels, else ``package()``) to install the built ``.config`` as
+    ``$pkgdir/boot/config-<kernelrelease>`` so the running config is recoverable
+    and pacman-tracked.
+
+    The injected block is CWD-/layout-independent: it locates the kernel build
+    tree via ``include/config/kernel.release`` (the same release source the
+    stage's ``_built_kernel_release`` reads) anywhere under ``$srcdir``, then
+    installs the sibling ``.config``. ``package()`` runs inside ``$srcdir`` with
+    ``$pkgdir`` available (PKGBUILD(5)).
+
+    Skips PKGBUILDs that already install to ``/boot/config`` (native or a prior
+    injection) for idempotency. Modifies ``patched_path`` in place.
+    """
+    patched_path = Path(patched_path)
+    text = patched_path.read_text(encoding="utf-8")
+
+    if _BOOT_CONFIG_RE.search(text):
+        _log.info(
+            "PKGBUILD already installs a kernel config to /boot — skipping "
+            "/boot config-install injection",
+        )
+        return
+
+    m = _package_func_re(pkgname).search(text)
+    if m is None:
+        _log.warn(
+            f"No package() / package_{pkgname}() function found in the kernel "
+            "PKGBUILD — cannot inject the /boot config install, so the resolved "
+            ".config will not be shipped to /boot.",
+        )
+        return
+
+    indent = m.group(1) + "  "
+    insert_at = m.end()  # just past the opening brace
+    block = [
+        "",
+        f"{indent}# sysforge: install the resolved kernel config to /boot",
+        f'{indent}_sf_rel=$(find "$srcdir" -path \'*/include/config/kernel.release\' -type f 2>/dev/null | head -n1)',
+        f'{indent}if [ -n "$_sf_rel" ] && [ -f "${{_sf_rel%/include/config/kernel.release}}/.config" ]; then',
+        f'{indent}  install -Dm644 "${{_sf_rel%/include/config/kernel.release}}/.config" \\',
+        f'{indent}    "$pkgdir/boot/config-$(<"$_sf_rel")"',
+        f"{indent}fi",
+    ]
+    injected = "\n" + "\n".join(block)
+    patched_path.write_text(
+        text[:insert_at] + injected + text[insert_at:], encoding="utf-8")
+    _log.info(
+        f"Injected /boot config install into kernel PKGBUILD {m.group(0).strip()}",
     )
 
 

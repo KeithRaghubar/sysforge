@@ -115,6 +115,58 @@ def test_effective_build_dir_uses_conf_builddir(tmp_path, monkeypatch):
     assert result == builddir / "somepkg"
 
 
+# ---------------------------------------------------------------------------
+# Built-artifact discovery honours PKGDEST (the install-from-wrong-dir bug)
+# ---------------------------------------------------------------------------
+
+def _touch_pkg(d, name):
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text("pkg")
+    return p
+
+
+def test_find_artifacts_uses_pkgdest_when_set(tmp_path, monkeypatch):
+    from sysforge.primitives import makepkg_wrapper
+
+    pkgbuild_dir = tmp_path / "linux-custom"
+    pkgbuild_dir.mkdir()
+    pkgdest = tmp_path / "pkgs"
+    art = _touch_pkg(pkgdest, "linux-custom-6.10-1-x86_64.pkg.tar.zst")
+
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest
+    )
+    found = makepkg_wrapper._find_artifacts(pkgbuild_dir)
+    assert found == [art]  # found in PKGDEST, not the (empty) PKGBUILD dir
+
+
+def test_find_artifacts_falls_back_to_pkgbuild_dir(tmp_path, monkeypatch):
+    from sysforge.primitives import makepkg_wrapper
+
+    pkgbuild_dir = tmp_path / "linux-custom"
+    art = _touch_pkg(pkgbuild_dir, "linux-custom-6.10-1-x86_64.pkg.tar.zst")
+
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: None)
+    found = makepkg_wrapper._find_artifacts(pkgbuild_dir)
+    assert found == [art]
+
+
+def test_find_artifacts_unions_and_dedups(tmp_path, monkeypatch):
+    from sysforge.primitives import makepkg_wrapper
+
+    pkgbuild_dir = tmp_path / "linux-custom"
+    pkgdest = tmp_path / "pkgs"
+    a = _touch_pkg(pkgdest, "linux-custom-6.10-1-x86_64.pkg.tar.zst")
+    b = _touch_pkg(pkgbuild_dir, "linux-custom-headers-6.10-1-x86_64.pkg.tar.zst")
+
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest
+    )
+    found = set(makepkg_wrapper._find_artifacts(pkgbuild_dir))
+    assert found == {a, b}
+
+
 def test_effective_build_dir_falls_back_to_pkgbuild_dir(tmp_path, monkeypatch):
     from sysforge.primitives import makepkg_env
 
