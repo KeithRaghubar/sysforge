@@ -57,6 +57,12 @@ pkgname = "linux-sysforge"      # base package name (must match the PKGBUILD pkg
 #                               # unset, the kernel stage falls back to that
 #                               # global value; only both being unset is an error.
 
+# source = "local"              # "local" | "aur" | "git" — how the kernel
+#                               # PKGBUILD is sourced. "local" (default) uses the
+#                               # already-cloned tree under pkgbuild_src_dir;
+#                               # "aur"/"git" route a fresh fetch through the
+#                               # source-sync scheduler before building.
+
 # ---------------------------------------------------------------------------
 # Boot safety — the kernel stage must never leave the system unbootable.
 #

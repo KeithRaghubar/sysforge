@@ -91,15 +91,19 @@ _KNOWN_TOP_KEYS: dict[str, set[str]] = {
     "sysforge.toml":  set(),
     "profiles.toml":  {"extends_system"},
     "packages.toml":  set(),
-    "kernel.toml":    {"enabled", "compiler", "pgo", "skip_build",
-                       "pgo_staging", "pgo_store", "pkgname", "srcdir",
+    # Kept in lockstep with what KernelStage actually reads via
+    # kernel_cfg.get(...) — enforced by tests/test_check_shipped.py's
+    # test_kernel_allowlist_matches_stage_reads. The kernel stage does NO
+    # PGO, so the toolchain's pgo/skip_build/pgo_staging/pgo_store keys are
+    # deliberately absent here.
+    "kernel.toml":    {"enabled", "compiler", "pkgname", "srcdir",
                        "bootloader", "interactive", "pkgbuild_src_dir",
-                       "source", "require_fallback_kernel", "boot_audit",
-                       "min_boot_free_mb", "capture_lsmod_snapshot",
-                       "device_kconfig"},
+                       "source", "base_config", "require_fallback_kernel",
+                       "boot_audit", "min_boot_free_mb",
+                       "capture_lsmod_snapshot", "device_kconfig"},
     "toolchain.toml": {"enabled", "compiler", "pgo", "skip_build",
-                       "pgo_staging", "pgo_store",
-                       "min_build_free_gb", "require_multilib",
+                       "pgo_staging", "pgo_staging1", "pgo_staging3",
+                       "pgo_store", "min_build_free_gb", "require_multilib",
                        "rebuild_soname_consumers", "reuse_unchanged"},
     "bootstrap.toml": {"target"},
 }
@@ -128,7 +132,83 @@ def check_configs(repo: Path) -> list[Finding]:
     for path in sorted(shipped_dir.glob("*.toml")):
         findings.extend(_audit_shipped_toml(path, repo))
 
+    findings.extend(_check_fixture_lockstep(shipped_dir, live_dir))
     findings.extend(_strict_load_smoke(repo))
+    return findings
+
+
+# Flat-schema configs whose fixture must mirror shipped's documented key
+# inventory exactly (see _check_fixture_lockstep). Rich-body configs
+# (packages.toml, profiles.toml) are deliberately excluded.
+_LOCKSTEP_FILES = {"kernel.toml", "toolchain.toml", "sysforge.toml"}
+
+
+# Matches an active or commented `key = ...` assignment at line start. The `=`
+# immediately after the identifier is what keeps prose comments from matching;
+# only one leading `#` is stripped, so doubly-commented continuation lines
+# (`#      # default ...`) are ignored.
+_DOC_KEY_RE = re.compile(r"^\s*#?\s*([a-z_][a-z0-9_]*)\s*=")
+# Matches an active or commented `[section]` / `[[array]]` header.
+_DOC_SECTION_RE = re.compile(r"^\s*#?\s*\[\[?([a-z_][a-z0-9_.]*)\]\]?\s*(#.*)?$")
+
+
+def _documented_keys(path: Path) -> set[str]:
+    """Key inventory of a config file: every key name that appears as an
+    active assignment *or* a commented `# key = ...` example, plus every
+    section name (active or commented). Section-body keys are lumped in with
+    top-level keys; that is fine because the inventory is only ever *diffed*
+    against a sibling file parsed the same way, so any over-collection is
+    symmetric and cancels out. The diff catches a key documented in one file
+    but missing from the other.
+    """
+    keys: set[str] = set()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        msec = _DOC_SECTION_RE.match(raw)
+        if msec:
+            keys.add(msec.group(1).split(".")[0])
+            continue
+        mkey = _DOC_KEY_RE.match(raw)
+        if mkey:
+            keys.add(mkey.group(1))
+    return keys
+
+
+def _check_fixture_lockstep(shipped_dir: Path, live_dir: Path) -> list[Finding]:
+    """Fixture <-> shipped key-inventory lockstep for the flat-schema configs.
+
+    The tracked test fixture (tests/data/etc/sysforge/) is the only thing that
+    keeps the shipped defaults honest now that the personal live config is a
+    fully decoupled, untracked dir. Values may differ (the fixture carries test
+    baselines), but the *set* of documented keys must not drift in either
+    direction.
+
+    Scoped to the flat stage/global configs, where the documented key inventory
+    *is* the schema. packages.toml / profiles.toml are excluded: they are
+    array-of-tables / rich-body configs whose fixtures legitimately carry
+    test-specific bodies (real [[package]] entries, test profiles/rules) that
+    diverge from shipped's minimal examples; their schema is already guarded by
+    _audit_shipped_toml. bootstrap.toml has no fixture by design.
+    """
+    findings: list[Finding] = []
+    for shipped in sorted(shipped_dir.glob("*.toml")):
+        if shipped.name not in _LOCKSTEP_FILES:
+            continue
+        fixture = live_dir / shipped.name
+        if not fixture.exists():
+            continue  # absence already reported above
+        rel = f"tests/data/etc/sysforge/{shipped.name}"
+        shipped_keys = _documented_keys(shipped)
+        fixture_keys = _documented_keys(fixture)
+        for missing in sorted(shipped_keys - fixture_keys):
+            findings.append(Finding(
+                "configs", "error", rel,
+                f"key {missing!r} documented in shipped {shipped.name} "
+                f"but absent from the fixture"))
+        for extra in sorted(fixture_keys - shipped_keys):
+            findings.append(Finding(
+                "configs", "error", rel,
+                f"key {extra!r} in fixture {shipped.name} "
+                f"but not documented in shipped"))
     return findings
 
 

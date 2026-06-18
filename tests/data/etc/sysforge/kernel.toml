@@ -11,3 +11,19 @@ bootloader   = "systemd-boot"
 # the toolchain stage's resolved compiler. CLI: `--compiler {gcc,llvm}`.
 # NOTE: "llvm" builds the kernel with clang; it does NOT apply PGO profdata
 # (that trains the clang binary, not the linux target — no kernel PGO here).
+
+# --- Optional fields, documented to mirror shipped kernel.toml ---
+# Key inventory is kept in lockstep with etc/sysforge/kernel.toml by
+# tools/check_shipped.py (_check_fixture_lockstep). Values may differ; the set
+# of documented keys may not.
+# source = "local"               # "local" | "aur" | "git" — how the PKGBUILD is sourced
+# base_config = "pkgbuild"        # "pkgbuild" | "running" | "<path>" — starting .config base
+# require_fallback_kernel = true  # refuse install without a stock fallback kernel
+# boot_audit = true               # run /boot space check + Gate-2 resolved-.config audit
+# min_boot_free_mb = 200          # minimum free MiB on /boot before building
+# capture_lsmod_snapshot = true   # capture lsmod for the PKGBUILD's `make localmodconfig`
+# device_kconfig = true           # merge the hardware stage's device-driven kconfig entries
+
+# kconfig — manual kernel config fragment (highest precedence)
+# [kconfig]
+# CONFIG_HZ_1000 = "y"

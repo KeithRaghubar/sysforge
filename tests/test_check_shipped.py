@@ -262,3 +262,151 @@ class TestDriver:
         res = run_checker(args=["--check=does_not_exist"])
         assert res.returncode == 2
         assert "unknown group" in res.stderr
+
+
+# ---------------------------------------------------------------------------
+# Allowlist <-> stage-code parity (anti-drift for _KNOWN_TOP_KEYS)
+#
+# The configs group only checks that shipped keys are a *subset* of the
+# allowlist. These tests close the reverse gap: the allowlist must track the
+# keys the stage code actually reads, and every read key must be documented in
+# the shipped file. This is the durable guard for the base_config regression
+# (read by the kernel stage, documented for users, but missing from the
+# allowlist -> would have blocked the release gate the moment it was adopted).
+# ---------------------------------------------------------------------------
+
+import importlib.util  # noqa: E402
+import re as _re2  # noqa: E402
+import tomllib  # noqa: E402
+
+
+def _load_check_shipped():
+    spec = importlib.util.spec_from_file_location("check_shipped", SCRIPT)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    # Register before exec so the module's @dataclass can resolve its own
+    # __module__ in sys.modules (Python 3.14 dataclass annotation lookup).
+    sys.modules["check_shipped"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _stage_reads(rel_path: str, accessor: str) -> set[str]:
+    """Keys read from a config dict via `<accessor>.get("<key>")` in a module."""
+    src = (REPO / rel_path).read_text(encoding="utf-8")
+    pat = _re2.escape(accessor) + r'\.get\(\s*"([a-z_][a-z0-9_]*)"'
+    return set(_re2.findall(pat, src))
+
+
+def _documented_keys(rel_path: str) -> set[str]:
+    """Mirror of check_shipped._documented_keys for a repo-relative file."""
+    cs = _load_check_shipped()
+    return cs._documented_keys(REPO / rel_path)
+
+
+class TestAllowlistCodeParity:
+    KERNEL = "sysforge/pipeline/stages/kernel.py"
+    TOOLCHAIN = "sysforge/pipeline/stages/toolchain.py"
+
+    def test_kernel_allowlist_matches_stage_reads(self):
+        """_KNOWN_TOP_KEYS|_KNOWN_SECTIONS for kernel.toml must equal exactly
+        the keys KernelStage reads via kernel_cfg.get(...). Catches both an
+        un-allowlisted read and a stale allowlist entry."""
+        cs = _load_check_shipped()
+        allow = (cs._KNOWN_TOP_KEYS["kernel.toml"]
+                 | cs._KNOWN_SECTIONS["kernel.toml"])
+        reads = _stage_reads(self.KERNEL, "kernel_cfg")
+        assert reads == allow, (
+            f"kernel allowlist drift:\n"
+            f"  read but not allowlisted: {sorted(reads - allow)}\n"
+            f"  allowlisted but not read: {sorted(allow - reads)}"
+        )
+
+    def test_toolchain_allowlist_matches_stage_reads(self):
+        """Toolchain reads partly flow through helpers (resolve_pgo_store takes
+        tcfg), so the guard is asymmetric: every direct tcfg.get(...) read must
+        be allowlisted, and every allowlisted key must be either read directly
+        or resolved by a known helper."""
+        cs = _load_check_shipped()
+        allow_top = cs._KNOWN_TOP_KEYS["toolchain.toml"]
+        allow_sec = cs._KNOWN_SECTIONS["toolchain.toml"]
+        reads = _stage_reads(self.TOOLCHAIN, "tcfg")
+        # pgo_store is read inside primitives.makepkg_pgo.resolve_pgo_store(tcfg),
+        # not directly in the stage; assert that indirection really exists.
+        helper = (REPO / "sysforge/primitives/makepkg_pgo.py").read_text()
+        assert 'get("pgo_store")' in helper
+        helper_resolved = {"pgo_store"}
+        assert reads <= (allow_top | allow_sec), (
+            f"toolchain reads not allowlisted: "
+            f"{sorted(reads - (allow_top | allow_sec))}")
+        stale = allow_top - reads - helper_resolved
+        assert not stale, f"stale toolchain allowlist entries: {sorted(stale)}"
+
+    def test_kernel_reads_are_documented_in_shipped(self):
+        """Every key the kernel stage reads must be documented (active or as a
+        commented example) in the shipped kernel.toml, so no real option is
+        invisible to users."""
+        reads = _stage_reads(self.KERNEL, "kernel_cfg")
+        documented = _documented_keys("etc/sysforge/kernel.toml")
+        assert reads <= documented, (
+            f"kernel keys read but undocumented in shipped kernel.toml: "
+            f"{sorted(reads - documented)}")
+
+    def test_toolchain_reads_are_documented_in_shipped(self):
+        """Same for the toolchain stage's tcfg.get(...) reads."""
+        reads = _stage_reads(self.TOOLCHAIN, "tcfg")
+        documented = _documented_keys("etc/sysforge/toolchain.toml")
+        assert reads <= documented, (
+            f"toolchain keys read but undocumented in shipped toolchain.toml: "
+            f"{sorted(reads - documented)}")
+
+
+class TestFullyPopulatedShippedConfigs:
+    """Every documented top-level key example in the flat stage configs must be
+    a real, allowlisted key. Uncomments single-`#` top-level `# key = value`
+    examples (skipping section bodies and alternative duplicates), parses with
+    tomllib, and asserts allowlist membership. Independently catches the
+    base_config-style omission."""
+
+    def _uncomment_top_level(self, text: str) -> str:
+        out: list[str] = []
+        in_section = False
+        seen: set[str] = set()
+        for line in text.splitlines():
+            stripped = line.strip()
+            # Track section context (active or commented) so we never lift a
+            # section-body example to the top level.
+            sec = _re2.match(r"^#?\s*\[\[?[a-z_]", stripped)
+            if sec:
+                in_section = True
+                out.append(line)
+                continue
+            m = _re2.match(r"^#\s*([a-z_][a-z0-9_]*)\s*=\s*\S", stripped)
+            if m and not in_section:
+                key = m.group(1)
+                if key in seen:  # skip alternative duplicate examples
+                    out.append(line)
+                    continue
+                seen.add(key)
+                out.append(stripped[1:].lstrip())
+                continue
+            out.append(line)
+        return "\n".join(out)
+
+    def _check(self, name: str):
+        cs = _load_check_shipped()
+        text = (REPO / "etc/sysforge" / name).read_text(encoding="utf-8")
+        data = tomllib.loads(self._uncomment_top_level(text))
+        allow_top = cs._KNOWN_TOP_KEYS[name]
+        allow_sec = cs._KNOWN_SECTIONS[name]
+        for key, val in data.items():
+            if isinstance(val, (dict, list)):
+                assert key in allow_sec, f"{name}: section [{key}] not allowlisted"
+            else:
+                assert key in allow_top, f"{name}: key {key!r} not allowlisted"
+
+    def test_kernel_documented_examples_are_allowlisted(self):
+        self._check("kernel.toml")
+
+    def test_toolchain_documented_examples_are_allowlisted(self):
+        self._check("toolchain.toml")

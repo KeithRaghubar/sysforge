@@ -26,10 +26,16 @@ enabled = false
 #                      # major bumps — leave on "gcc" unless you specifically
 #                      # want PGO LLVM.
 # pgo     = true       # LLVM only: enable 4-pass PGO bootstrap (ignored for gcc)
+# skip_build = false   # default false. true registers the existing system
+#                      # compiler into pipeline state without building anything
+#                      # (useful to re-propagate CC/CXX to later stages).
 
-# Path where pass-2 binaries are extracted for use as CC/CXX in pass 3.
-# Must be on the same filesystem as /usr and have ~2 GB free.
-# pgo_staging = "/var/tmp/sysforge-llvm-stage2"
+# Staging dirs where each pass's binaries are extracted for use as CC/CXX by
+# the next pass (kept off the live /usr). Each must be on the same filesystem
+# as /usr with ~2 GB free. Defaults shown; override only to relocate them.
+# pgo_staging1 = "/var/tmp/sysforge-llvm-stage1"   # pass-1 (bootstrap) staging
+# pgo_staging  = "/var/tmp/sysforge-llvm-stage2"   # pass-2 (instrumented) staging
+# pgo_staging3 = "/var/tmp/sysforge-llvm-stage3"   # pass-3 (optimized) staging
 
 # Path where profraw files are written during pass 2 and merged to profdata.
 # Profraw files are deleted after merging; profdata is preserved for reuse.
