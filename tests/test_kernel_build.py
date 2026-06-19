@@ -277,6 +277,46 @@ def test_install_built_packages_runs_pacman_U(tmp_path, monkeypatch):
     assert len(pkgs) == 2
 
 
+def test_install_built_packages_scopes_to_pkgbuild_pkgnames(tmp_path, monkeypatch):
+    """Only the PKGBUILD's own artifacts are installed, not all of PKGDEST.
+
+    Regression: the kernel stage globbed the shared PKGDEST and handed every
+    .pkg.tar* to ``pacman -U`` — so a populated PKGDEST dragged unrelated
+    packages into the kernel install. The install set must be scoped to the
+    PKGBUILD's pkgnames.
+    """
+    from sysforge.primitives import makepkg_wrapper as mw
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
+    # Kernel's own artifacts...
+    (pkgdest / "linux-custom-1-1-x86_64.pkg.tar.zst").touch()
+    (pkgdest / "linux-custom-headers-1-1-x86_64.pkg.tar.zst").touch()
+    # ...alongside unrelated packages a real PKGDEST would hold.
+    (pkgdest / "firefox-130-1-x86_64.pkg.tar.zst").touch()
+    (pkgdest / "ripgrep-14-1-x86_64.pkg.tar.zst").touch()
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgbase=linux-custom\n"
+        "pkgname=('linux-custom' 'linux-custom-headers')\n"
+        "pkgver=1\npkgrel=1\narch=('x86_64')\n"
+    )
+    calls = {}
+
+    def fake_run(cmd, *a, **k):
+        calls["cmd"] = cmd
+        return SimpleNamespace(returncode=0)
+
+    with patch("sysforge.primitives.makepkg_wrapper.subprocess.run", fake_run):
+        pkgs = mw.install_built_packages(tmp_path)
+    installed = {p.name for p in pkgs}
+    assert installed == {
+        "linux-custom-1-1-x86_64.pkg.tar.zst",
+        "linux-custom-headers-1-1-x86_64.pkg.tar.zst",
+    }
+    assert not any("firefox" in arg or "ripgrep" in arg for arg in calls["cmd"])
+
+
 def test_install_built_packages_no_artifact_raises(tmp_path, monkeypatch):
     from sysforge.primitives import makepkg_wrapper as mw
     monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: None)

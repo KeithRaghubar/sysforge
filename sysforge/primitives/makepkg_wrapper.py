@@ -159,17 +159,56 @@ def _find_artifacts(pkgbuild_dir) -> list:
     return found
 
 
+def _artifacts_for_pkgbuild(pkgbuild_dir) -> list:
+    """Return only the artifacts in PKGDEST that belong to ``pkgbuild_dir``.
+
+    ``_find_artifacts`` globs the *whole* PKGDEST (shared across every build),
+    so on a populated PKGDEST it returns far more than the current build's
+    output. This scopes that union down to the PKGBUILD's own pkgnames by
+    parsing each filename with ``_parse_built_pkg_filename`` — the same
+    name-anchored filter the version-recording path uses. Falls back to the
+    unfiltered union only when the PKGBUILD can't be parsed for pkgnames, so a
+    parse limitation degrades to the old behaviour rather than installing
+    nothing.
+    """
+    found = _find_artifacts(pkgbuild_dir)
+    pkgbuild_file = Path(pkgbuild_dir) / "PKGBUILD"
+    if not pkgbuild_file.is_file():
+        return found
+    try:
+        parsed = parse_pkgbuild(pkgbuild_file)
+    except Exception:
+        return found
+    globals_ = parsed.get("globals", {})
+    pkgnames = globals_.get("pkgname", [])
+    if isinstance(pkgnames, str):
+        pkgnames = [pkgnames]
+    if not pkgnames:
+        return found
+    scoped = [
+        p for p in found
+        if any(_parse_built_pkg_filename(name, p.name) is not None
+               for name in pkgnames)
+    ]
+    # If nothing matched (e.g. unresolved pkgver in the static parse left the
+    # filenames unrecognisable), don't silently install nothing — let the
+    # caller's empty-list check raise its clearer error against the full union.
+    return scoped or found
+
+
 def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
     """Install the .pkg.tar* artifacts for ``pkgbuild_dir`` via ``pacman -U``.
 
     For callers that split build from install — the kernel stage builds with
     ``BuildOptions.no_install`` so its safety audit can run against the
     resolved .config, then calls this to install only once the audit passes.
-    Locates artifacts via ``_find_artifacts`` (PKGDEST-aware, not just the
-    PKGBUILD dir). Inherits stdio so a pacman conflict/sudo prompt is visible.
-    Raises RuntimeError when no artifact is found or the install fails.
+    Locates artifacts via ``_artifacts_for_pkgbuild`` (PKGDEST-aware **and**
+    scoped to this PKGBUILD's pkgnames, so a shared/populated PKGDEST doesn't
+    drag every previously-built package into the ``pacman -U``). Inherits stdio
+    so a pacman conflict/sudo prompt is visible. Raises RuntimeError when no
+    artifact is found or the install fails.
     """
-    pkgs = _find_artifacts(pkgbuild_dir)
+    pkgs = _artifacts_for_pkgbuild(pkgbuild_dir)
     if not pkgs:
         raise RuntimeError(
             f"no built package found in {pkgbuild_dir} — nothing to install")
