@@ -26,19 +26,33 @@
 #
 #   profile = "standard"          # (required) fallback when no rule matches
 #   append_groups = ["sf-build"]  # (optional) groups added to every package
+#   toolchain = "gcc"             # (optional) global package-compiler default:
+#                                 # "gcc" | "llvm". Expands to the compiler bundle
+#                                 # below for any profile that doesn't set its own
+#                                 # `toolchain` (or explicit CC/CXX). When the
+#                                 # toolchain stage runs (toolchain.toml enabled),
+#                                 # it rewrites THIS key to match toolchain.toml's
+#                                 # `compiler`, so the package default tracks the
+#                                 # registered system compiler.
 #
 # ── [profiles.NAME] ──────────────────────────────────────────────────────────
 #
 #   extends = "bare"              # (optional) parent profile; child keys override
 #                                 # [profiles.NAME.append] does token-level merge
 #
-#   # Compiler / linker  (written to temp makepkg.conf)
-#   # Default profile uses system gcc/binutils. LLVM is opt-in — set
-#   # CC=clang + CXX=clang++ (plus AR/NM/RANLIB/STRIP if needed) in a
-#   # user profile or via sysforge run toolchain --compiler=llvm.
-#   CC       = "gcc"
-#   CXX      = "g++"
-#   # AR     = "llvm-ar"      # opt-in: LLVM binutils
+#   # Compiler / linker
+#   toolchain = "gcc"        # "gcc" | "llvm" — selects the compiler bundle. One
+#                            # field instead of hand-setting the keys below;
+#                            # explicit keys always override the bundle.
+#                            #   gcc  → CC=gcc,   CXX=g++,    system binutils
+#                            #   llvm → CC=clang, CXX=clang++, AR/NM/RANLIB/STRIP
+#                            #          =llvm-*, and -fuse-ld=lld added to LDFLAGS
+#                            #          when no -fuse-ld= is already declared.
+#   # Individual overrides (written to temp makepkg.conf; each wins over the
+#   # bundle above):
+#   # CC     = "clang"
+#   # CXX    = "clang++"
+#   # AR     = "llvm-ar"
 #   # NM     = "llvm-nm"
 #   # RANLIB = "llvm-ranlib"
 #   # STRIP  = "llvm-strip"
@@ -138,6 +152,7 @@ pkgbuild_src_dir = "~/src"
 [defaults]
 profile = "standard"
 append_groups = ["sf-build"]
+toolchain = "gcc"   # global package-compiler default: "gcc" | "llvm" (see header)
 
 # =============================================================================
 # Profiles
@@ -149,12 +164,10 @@ BUILDDIR = "$HOME/builds"
 
 [profiles.standard]
 extends = "bare"
-# System default toolchain: gcc + system binutils (ar/nm/ranlib/strip from
-# /usr/bin via the base-devel binutils package). LLVM is opt-in — to build
-# with clang, override CC/CXX in a user profile (and optionally set the
-# LLVM binutils explicitly) or use `sysforge run toolchain --compiler=llvm`.
-CC       = "gcc"
-CXX      = "g++"
+# Compiler comes from the `toolchain` field (defaults to "gcc" via [defaults]).
+# That expands to CC=gcc/CXX=g++ + system binutils, or CC=clang/CXX=clang++ +
+# llvm-* binutils + -fuse-ld=lld for "llvm". Set `toolchain = "llvm"` here or in
+# a rule to switch, or override individual CC/CXX/AR/… keys to win over it.
 CFLAGS   = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS  = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"

@@ -83,6 +83,13 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
 - **Flag-drift detection has one home**: `primitives/flag_drift.resolve_flag_drift`
   (pure, never logs); sole consumer is `update` Phase 4.3 (report by default, rebuild via
   `--rebuild-on-flag-drift`). Don't re-implement the re-resolve+diff. See DESIGN.md §update.
+- **`toolchain` profile-field expansion has one home**: `profile._expand_toolchain` (pure,
+  run after `merge_extends` in `resolve_profile`). `toolchain = "gcc"|"llvm"` `setdefault`s
+  the compiler/binutils bundle (+lld into LDFLAGS for llvm when no `-fuse-ld=`); explicit
+  CC/CXX/AR/… win. The package-compiler knob — **distinct** from `toolchain.toml compiler`
+  and from `toolchain_variant`; don't conflate. Keeping `[defaults] toolchain` in sync with
+  `toolchain.toml` has one home: `config.set_default_toolchain`, called only by the toolchain
+  stage (`_propagate_default_toolchain`) on success. See DESIGN.md §Flag/Profile System.
 - **packages.toml `[group.*]` expansion has one home**: `config.expand_package_groups(data)`
   — every manifest consumer routes raw TOML through it; never iterate `data.get("package")`
   directly. Writing groups/desktop catalog has one home: `primitives/pkg_catalog.py`

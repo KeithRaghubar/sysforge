@@ -3,16 +3,18 @@
 ### Profile structure
 
 ```toml
+[defaults]
+profile = "standard"
+toolchain = "gcc"        # global package-compiler default (see "Toolchain field")
+
 [profiles.bare]
 # Fallback profile, no flags
 
 [profiles.standard]
 extends = "bare"
-# Default profile uses system gcc + binutils. LLVM is opt-in — override
-# CC/CXX in a user profile (and optionally set AR/NM/RANLIB/STRIP to the
-# llvm-* variants) or use `sysforge run toolchain --compiler=llvm`.
-CC = "gcc"
-CXX = "g++"
+# Compiler comes from the `toolchain` field (defaults to "gcc" via [defaults]).
+# Override individual CC/CXX/AR/… keys to win over the bundle, or set
+# `toolchain = "llvm"` here / in a rule to switch the whole bundle.
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
@@ -37,6 +39,37 @@ build_mode = "kernel"
 batch = true
 makepkg_flags = ["--noconfirm", "--syncdeps", "-f", "-c"]
 ```
+
+### Toolchain field
+
+`toolchain = "gcc" | "llvm"` is a single knob that expands to the correct
+compiler/binutils bundle, so a profile need not hand-set the six-plus correlated
+keys (and risk a silently half-LLVM build). Valid in `[defaults]` (global
+default) and any `[profiles.NAME]`.
+
+| value  | expands to |
+|--------|------------|
+| `gcc`  | `CC=gcc`, `CXX=g++` (binutils from system base-devel) |
+| `llvm` | `CC=clang`, `CXX=clang++`, `AR=llvm-ar`, `NM=llvm-nm`, `RANLIB=llvm-ranlib`, `STRIP=llvm-strip`, and `-fuse-ld=lld` injected into `LDFLAGS` when no `-fuse-ld=` is already declared |
+
+Resolution (in `profile._expand_toolchain`, the one home, run **after**
+`merge_extends` so the directive inherits/overrides like any key): an explicit
+`CC`/`CXX`/`AR`/… in the resolved profile wins (`setdefault`); otherwise the
+resolved profile's own `toolchain`; otherwise `[defaults] toolchain`. The
+expansion is pure (no fs probing) — a missing `lld` is reconciled by the
+emit-time linker guard, exactly as for a hand-written `-fuse-ld=lld`.
+
+This field is the **package** compiler knob. It is distinct from two other axes
+that also take `gcc`/`llvm`:
+
+- `toolchain.toml`'s `compiler` — whether the toolchain *stage* builds/registers
+  a system compiler. On a successful register/build the stage writes
+  `[defaults] toolchain` to match it (via `config.set_default_toolchain`), so the
+  package default tracks the registered compiler. See pipeline-layer → toolchain
+  stage.
+- `toolchain_variant` — which toolchain the stage *built* (`stock_llvm`/`pgo_llvm`/
+  `gcc`), recorded in `build_state.toml` for drift detection. Not derived from
+  this field.
 
 ### `extends` semantics
 

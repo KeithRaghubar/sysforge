@@ -133,6 +133,7 @@ pkgbuild_src_dir = "~/src"
 [defaults]
 profile = "standard"
 append_groups = ["sf-build"]
+toolchain = "gcc"
 
 # =============================================================================
 # Profiles

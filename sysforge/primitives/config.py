@@ -515,6 +515,89 @@ def set_makepkg_conf_keys(path, mapping: dict[str, str], dest=None) -> str:
     return new_text
 
 
+def _rewrite_profiles_default_toolchain(text: str, compiler: str) -> str:
+    """Return ``text`` with ``[defaults] toolchain`` set to ``compiler``.
+
+    Section-aware and comment-preserving (this is the runtime counterpart to the
+    dev-only tomlkit path in tools/sync_config.py — no tomlkit at runtime):
+
+      * An existing active or commented ``toolchain = ...`` inside the
+        ``[defaults]`` section is replaced/uncommented in place.
+      * If ``[defaults]`` exists without a ``toolchain`` key, the assignment is
+        inserted directly after the ``[defaults]`` header.
+      * If there is no ``[defaults]`` section, one is appended at end of file.
+
+    All other lines (comments, other keys, other sections) are preserved
+    verbatim. Only the *first* ``[defaults]`` table is touched.
+    """
+    lines = text.splitlines()
+    new_line = f'toolchain = "{compiler}"'
+    section_re = _re.compile(r"^\s*\[")
+    defaults_re = _re.compile(r"^\s*\[defaults\]\s*(?:#.*)?$")
+    key_re = _re.compile(r"^(\s*)#?\s*toolchain\s*=")
+
+    trailing_nl = "\n" if text.endswith("\n") else ""
+
+    defaults_idx = next(
+        (i for i, line in enumerate(lines) if defaults_re.match(line)), None
+    )
+
+    if defaults_idx is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append("[defaults]")
+        lines.append(new_line)
+        return "\n".join(lines) + "\n"
+
+    # Scan the section body until the next table header.
+    for j in range(defaults_idx + 1, len(lines)):
+        if section_re.match(lines[j]):
+            break
+        m = key_re.match(lines[j])
+        if m:
+            lines[j] = f"{m.group(1)}{new_line}"
+            return "\n".join(lines) + trailing_nl
+    else:
+        j = len(lines)
+    # No toolchain key in [defaults] — insert right after the header.
+    lines.insert(defaults_idx + 1, new_line)
+    return "\n".join(lines) + trailing_nl
+
+
+def _active_profiles_path() -> Path:
+    """Return the profiles.toml the resolver actually reads (write target).
+
+    Mirrors ``load_config``'s search: the first existing path in
+    ``CONFIG_PATHS`` (user before system); when none exist yet, the system
+    install path (``CONFIG_PATHS[-1]``).
+    """
+    for p in CONFIG_PATHS:
+        if Path(p).exists():
+            return Path(p)
+    return Path(CONFIG_PATHS[-1])
+
+
+def set_default_toolchain(compiler: str, path=None) -> str:
+    """Write ``[defaults] toolchain = <compiler>`` to the live profiles.toml.
+
+    The sole home for keeping ``profiles.toml``'s package-compiler default in
+    sync with ``toolchain.toml``'s ``compiler``: the toolchain stage calls this
+    on a successful register/build so the profile default tracks the toolchain
+    it just registered. ``path`` defaults to :func:`_active_profiles_path`
+    (the file the resolver reads); pass an explicit path in tests to avoid
+    mutating the committed fixture. Returns the rewritten text.
+    """
+    path = Path(path) if path is not None else _active_profiles_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    new_text = _rewrite_profiles_default_toolchain(text, compiler)
+    path.write_text(new_text, encoding="utf-8")
+    _log.info(f"Set [defaults] toolchain = {compiler!r} in {path}")
+    return new_text
+
+
 def parse_system_makepkg_conf(path=None):
     """
     Parse makepkg.conf into a dict of {key: raw_value_string}.

@@ -26,6 +26,10 @@ import fnmatch
 import pprint
 import re
 from sysforge import log
+from sysforge.primitives.makepkg_flags import (
+    _detect_linker_from_ldflags,
+    _inject_linker,
+)
 
 # One module, one tag. Profile resolution (extends-chain merge, append merging,
 # rule matching, group accumulation, consumes inference) is a single concern;
@@ -49,6 +53,7 @@ SYSFORGE_KEYS = {
     "failure_handling",
     "makepkg_flags",
     "pgo_store",
+    "toolchain",
 }
 
 # Maps conf file type -> profile keys that belong in that delivery channel.
@@ -301,6 +306,71 @@ def merge_extends(profile_name, profiles, visited=None, conflict_groups=None):
     return merged
 
 
+# ---------------------------------------------------------------------------
+# Toolchain field expansion
+# ---------------------------------------------------------------------------
+#
+# A profile selects its compiler with a single ``toolchain = "gcc"|"llvm"``
+# field (valid in ``[defaults]`` and any ``[profiles.NAME]``). It expands to a
+# canonical bundle of compiler/binutils keys so users don't hand-set six
+# correlated values and risk a silently half-LLVM build. Explicit keys always
+# win — the expansion only fills keys the resolved profile doesn't already set.
+#
+# This is the *package* compiler knob. It is distinct from ``toolchain.toml``'s
+# ``compiler`` (whether the toolchain stage builds/registers a system compiler)
+# and from ``toolchain_variant`` (which toolchain the stage built, recorded in
+# build_state.toml for drift detection). The toolchain stage keeps the two in
+# sync by writing ``[defaults] toolchain`` from ``toolchain.toml`` — see
+# config.set_default_toolchain.
+
+_TOOLCHAIN_BUNDLES: dict[str, dict[str, str]] = {
+    # ar/nm/ranlib/strip come from the system base-devel binutils (/usr/bin) —
+    # not set here, so a gcc selection leaves them at the system default.
+    "gcc": {"CC": "gcc", "CXX": "g++"},
+    "llvm": {
+        "CC": "clang", "CXX": "clang++",
+        "AR": "llvm-ar", "NM": "llvm-nm",
+        "RANLIB": "llvm-ranlib", "STRIP": "llvm-strip",
+    },
+}
+
+# Linker selected by the llvm bundle when the profile declares no -fuse-ld=.
+_LLVM_LINKER = "lld"
+
+
+def _expand_toolchain(profile: dict, default_toolchain: str | None) -> dict:
+    """Expand the ``toolchain`` field into compiler/binutils keys, in place.
+
+    Reads ``profile["toolchain"]`` (falling back to ``default_toolchain`` from
+    ``[defaults]``). For a recognized value, fills each bundle key the profile
+    does not already set (``setdefault`` — explicit CC/CXX/AR/… win). For the
+    llvm bundle, injects ``-fuse-ld=lld`` into LDFLAGS only when no linker is
+    declared, so an explicit ``-fuse-ld=mold`` is preserved. An unrecognized
+    value warns and is otherwise a no-op. Pure: no I/O, no fs probing — the
+    emit-time linker guard reconciles a missing lld.
+    """
+    tc = profile.get("toolchain") or default_toolchain
+    if tc is None:
+        return profile
+    bundle = _TOOLCHAIN_BUNDLES.get(tc)
+    if bundle is None:
+        _log.warn(
+            f"toolchain={tc!r} is not a known value "
+            f"({'/'.join(sorted(_TOOLCHAIN_BUNDLES))}) — ignoring"
+        )
+        return profile
+
+    for key, val in bundle.items():
+        profile.setdefault(key, val)
+
+    if tc == "llvm":
+        ldflags = profile.get("LDFLAGS", "")
+        if _detect_linker_from_ldflags(ldflags) is None:
+            profile["LDFLAGS"] = _inject_linker(ldflags, _LLVM_LINKER)
+
+    return profile
+
+
 def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
                     extracted_profile=None):
     """
@@ -364,6 +434,11 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
         _log.info(f"[{pkgname}] Injected pkgbuild_extracted as chain root")
 
     result = merge_extends(profile_name, profiles, conflict_groups=conflict_groups)
+    # Expand the toolchain field into compiler/binutils keys after the extends
+    # chain is merged, so the resolved profile's own `toolchain` (or its
+    # inherited value) wins over the [defaults] fallback. Explicit CC/CXX/AR/…
+    # already present in `result` are preserved (setdefault).
+    _expand_toolchain(result, defaults.get("toolchain"))
     _log.debug(f"[{pkgname}] Full resolved profile ({profile_name}):\n{pprint.pformat(result, indent=2, sort_dicts=False)}")
     return result
 

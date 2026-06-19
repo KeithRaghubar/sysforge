@@ -114,7 +114,11 @@ from sysforge import log
 _log = log.get_logger("TOOLCHAIN")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.build_lock import build_lock
-from sysforge.primitives.config import find_pkgbuild, load_sysforge_toml
+from sysforge.primitives.config import (
+    find_pkgbuild,
+    load_sysforge_toml,
+    set_default_toolchain,
+)
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
     evaluate_strict,
@@ -3157,6 +3161,23 @@ def _compiler_paths(compiler: str) -> tuple[str, str, str | None]:
     return "/usr/bin/clang", "/usr/bin/clang++", "lld"
 
 
+def _propagate_default_toolchain(compiler: str, options) -> None:
+    """Sync ``profiles.toml [defaults] toolchain`` to ``toolchain.toml compiler``.
+
+    Called only on a successful register/build so the package-compiler default
+    tracks the toolchain this stage just registered. ``compiler`` is the
+    ``toolchain.toml`` value (``"gcc"``/``"llvm"``) — never the build variant
+    (stock_llvm/pgo_llvm), which is a different axis. No-op on dry runs;
+    tolerant of an unwritable config (warns, does not fail the stage).
+    """
+    if getattr(options, "dry_run", False):
+        return
+    try:
+        set_default_toolchain(compiler)
+    except OSError as exc:
+        _log.warn(f"Could not update profiles.toml [defaults] toolchain: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
@@ -3213,6 +3234,7 @@ class ToolchainStage(Stage):
                 _log.warn(
                     "Cannot write state — toolchain results will not be checkpointed",
                 )
+            _propagate_default_toolchain(compiler, options)
             return
 
         # skip_build (LLVM only): register clang paths without building.
@@ -3237,6 +3259,7 @@ class ToolchainStage(Stage):
                 _log.warn(
                     "Cannot write state — toolchain results will not be checkpointed",
                 )
+            _propagate_default_toolchain(compiler, options)
             return
 
         pgo_pkgs, non_pgo_pkgs, lib32_pkgs = _package_lists(tcfg)
@@ -3455,6 +3478,12 @@ class ToolchainStage(Stage):
             _log.warn(
                 "Cannot write state — toolchain results will not be checkpointed",
             )
+
+        # Installed + Gate-3-verified: sync the profile default to the configured
+        # compiler (outside the sentinel, on success only — a failed build above
+        # returns/raises before here, so the default never flips to an
+        # uninstalled llvm).
+        _propagate_default_toolchain(compiler, options)
 
         _log.ui(
             f"Toolchain stage complete. cc={cc}  cxx={cxx}"

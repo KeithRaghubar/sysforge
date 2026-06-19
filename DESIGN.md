@@ -694,6 +694,8 @@ When `compiler` is unset (or set to `"gcc"`), the toolchain stage is **register-
 
 **`skip_build = true`:** registers the system compiler paths in pipeline state without building anything. Downstream stages (packages, kernel) will use the system compiler. Useful when the system compiler is already optimized and no rebuild is needed.
 
+**Profile-default propagation.** On a *successful* register/build — the GCC register-only short-circuit, the `skip_build` path, or the LLVM final pass after Gate 3 — the stage writes `profiles.toml [defaults] toolchain` to match `toolchain.toml`'s `compiler` via `config.set_default_toolchain` (`_propagate_default_toolchain`, the single home). This makes `toolchain.toml` the upstream source of truth: the package-compiler default (`flag-profile-system` → *Toolchain field*) always tracks the compiler the stage just registered, so a system that enables the stage with `compiler = "gcc"` builds packages with gcc, and flipping to `"llvm"` propagates to every package without a second edit. It writes only the **user live** `profiles.toml` (the file the resolver reads), only on success (a failed LLVM build returns before this point, so the default never flips to an uninstalled clang), and never on `--dry-run`; an unwritable config is a WARN, not a stage failure. This is *not* `toolchain_variant` (which records what was *built*, in `build_state.toml`).
+
 **Build-safety gates + build/install split (kernel-parity).** The LLVM path mirrors the kernel stage's three-gate / build-install-split structure so a broken or doomed build can never leave the live `/usr` toolchain inconsistent. The pure, unit-testable facts live in `primitives/toolchain_safety.py` (`ToolchainFinding(severity, check_id, message, remediation, is_brick)`); the toolchain stage owns the abort/warn *policy*. `toolchain_safety` imports `LLVM_LOCKSTEP_SUITE` from `toolchain_preflight` (both primitives — no layering issue) and is **not** a third health-check entry point: `_verify_llvm_install` (pipeline, post-install) and `toolchain_preflight._probe_cc` (primitives, update path) remain the only two, and `_verify_llvm_install`'s skew arm now draws from `toolchain_safety.detect_suite_skew`.
 
 - **Gate 1 — pre-build preflight** (`_gate1_preflight`, outside the sentinel, runs for both PGO and non-PGO). Brick-class aborts *before any build time is spent*: PKGBUILD pkgver skew across the lockstep suite (`check_pkgver_lockstep`; `spirv-llvm-translator` + `lib32-*` are excluded so their legitimately-different versions don't false-positive — the bug the old whole-set `_check_pkgver_consistency` had); a non-functional clang / missing lld (`smoke_test_compilers`, now run on the non-PGO path too); insufficient build-filesystem headroom (`check_build_space`, deduped by `st_dev`); `[multilib]` disabled while a `lib32-*` is in scope (`check_multilib_enabled`). Each brick is overridable (`--allow-version-skew`, `--skip-build-space-check`, `require_multilib = false`) and **downgraded to a warning in `--dry-run`**. Advisory (warn-only): residual `-fprofile-generate` instrumentation; an incomplete rollback snapshot.
@@ -1553,16 +1555,18 @@ The primitive must not import the pipeline layer; the kernel stage owns the abor
 ### Profile structure
 
 ```toml
+[defaults]
+profile = "standard"
+toolchain = "gcc"        # global package-compiler default (see "Toolchain field")
+
 [profiles.bare]
 # Fallback profile, no flags
 
 [profiles.standard]
 extends = "bare"
-# Default profile uses system gcc + binutils. LLVM is opt-in — override
-# CC/CXX in a user profile (and optionally set AR/NM/RANLIB/STRIP to the
-# llvm-* variants) or use `sysforge run toolchain --compiler=llvm`.
-CC = "gcc"
-CXX = "g++"
+# Compiler comes from the `toolchain` field (defaults to "gcc" via [defaults]).
+# Override individual CC/CXX/AR/… keys to win over the bundle, or set
+# `toolchain = "llvm"` here / in a rule to switch the whole bundle.
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
@@ -1587,6 +1591,37 @@ build_mode = "kernel"
 batch = true
 makepkg_flags = ["--noconfirm", "--syncdeps", "-f", "-c"]
 ```
+
+### Toolchain field
+
+`toolchain = "gcc" | "llvm"` is a single knob that expands to the correct
+compiler/binutils bundle, so a profile need not hand-set the six-plus correlated
+keys (and risk a silently half-LLVM build). Valid in `[defaults]` (global
+default) and any `[profiles.NAME]`.
+
+| value  | expands to |
+|--------|------------|
+| `gcc`  | `CC=gcc`, `CXX=g++` (binutils from system base-devel) |
+| `llvm` | `CC=clang`, `CXX=clang++`, `AR=llvm-ar`, `NM=llvm-nm`, `RANLIB=llvm-ranlib`, `STRIP=llvm-strip`, and `-fuse-ld=lld` injected into `LDFLAGS` when no `-fuse-ld=` is already declared |
+
+Resolution (in `profile._expand_toolchain`, the one home, run **after**
+`merge_extends` so the directive inherits/overrides like any key): an explicit
+`CC`/`CXX`/`AR`/… in the resolved profile wins (`setdefault`); otherwise the
+resolved profile's own `toolchain`; otherwise `[defaults] toolchain`. The
+expansion is pure (no fs probing) — a missing `lld` is reconciled by the
+emit-time linker guard, exactly as for a hand-written `-fuse-ld=lld`.
+
+This field is the **package** compiler knob. It is distinct from two other axes
+that also take `gcc`/`llvm`:
+
+- `toolchain.toml`'s `compiler` — whether the toolchain *stage* builds/registers
+  a system compiler. On a successful register/build the stage writes
+  `[defaults] toolchain` to match it (via `config.set_default_toolchain`), so the
+  package default tracks the registered compiler. See pipeline-layer → toolchain
+  stage.
+- `toolchain_variant` — which toolchain the stage *built* (`stock_llvm`/`pgo_llvm`/
+  `gcc`), recorded in `build_state.toml` for drift detection. Not derived from
+  this field.
 
 ### `extends` semantics
 
