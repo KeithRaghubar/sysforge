@@ -1987,7 +1987,7 @@ def _verify_llvm_install(
 
     1. ``pacman -Q`` versions across :data:`_LLVM_VERSION_MATCH_SET` all
        match. A mismatch is the canonical interrupted-install symptom.
-    2. ``clang --version`` and ``lld --version`` run without crashing.
+    2. ``clang --version`` and ``ld.lld --version`` run without crashing.
     3. ``llvm-config --targets-built`` is a superset of
        ``expected_targets`` (skipped when ``expected_targets`` is None or
        empty — i.e. no LLVM_TARGETS filtering was configured).
@@ -2008,9 +2008,13 @@ def _verify_llvm_install(
 
     issues.extend(_check_llvm_link_resolution())
 
+    # Probe ``ld.lld``, not bare ``lld``: ``lld`` is the generic multiplexer
+    # driver and dispatches on argv[0], so ``lld --version`` always exits 1
+    # ("lld is a generic driver"). ``ld.lld`` is the GNU-compatible flavor that
+    # ``-fuse-ld=lld`` actually resolves to for every build pass.
     for cmd, label in (
         (["clang", "--version"], "clang --version"),
-        (["lld", "--version"], "lld --version"),
+        (["ld.lld", "--version"], "ld.lld --version"),
     ):
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)

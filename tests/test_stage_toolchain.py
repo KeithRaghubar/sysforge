@@ -2638,7 +2638,7 @@ def test_verify_llvm_install_clean_returns_no_issues():
             return MagicMock(returncode=0, stdout=pacman_output, stderr="")
         if cmd[0] == "clang":
             return MagicMock(returncode=0, stdout="clang version 22.0.1", stderr="")
-        if cmd[0] == "lld":
+        if cmd[0] == "ld.lld":
             return MagicMock(returncode=0, stdout="LLD 22.0.1", stderr="")
         if cmd[0] == "llvm-config":
             return MagicMock(returncode=0, stdout="X86 AMDGPU NVPTX\n", stderr="")
@@ -2646,6 +2646,47 @@ def test_verify_llvm_install_clean_returns_no_issues():
 
     with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
         issues = _verify_llvm_install(expected_targets=["X86", "AMDGPU"])
+    assert issues == []
+
+
+def test_verify_llvm_install_uses_ld_lld_not_generic_driver():
+    """Gate 3 must probe ``ld.lld``, never bare ``lld``.
+
+    Regression for the false-positive Gate-3 failure: ``lld`` is the generic
+    multiplexer driver and exits 1 ("lld is a generic driver") when invoked
+    without a flavor, so probing it would always fail a perfectly good
+    toolchain. ``ld.lld`` is the GNU-compatible flavor that ``-fuse-ld=lld``
+    actually resolves to. This fake models the real behavior; the verifier must
+    never hit the exit-1 ``lld`` arm.
+    """
+    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
+
+    pacman_output = "\n".join(
+        f"{n} 22.0.1-1" for n in (
+            "llvm", "llvm-libs", "clang", "lld", "compiler-rt",
+        )
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pacman":
+            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
+        if cmd[0] == "clang":
+            return MagicMock(returncode=0, stdout="clang version 22.0.1", stderr="")
+        if cmd[0] == "lld":
+            # Generic driver: refuses to run without a flavor.
+            return MagicMock(
+                returncode=1, stdout="",
+                stderr="lld is a generic driver.\nInvoke ld.lld (Unix), ...",
+            )
+        if cmd[0] == "ld.lld":
+            return MagicMock(
+                returncode=0, stdout="LLD 22.0.1 (compatible with GNU linkers)",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
+        issues = _verify_llvm_install()
     assert issues == []
 
 
