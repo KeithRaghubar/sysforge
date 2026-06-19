@@ -893,6 +893,8 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
             "cfe": kw.get("compiler_flags_extra"),
             "env": dict(kw.get("pgo_env") or {}),
             "cmake_llvm_dir": kw.get("cmake_llvm_dir"),
+            "cc": kw.get("cc"),
+            "cxx": kw.get("cxx"),
         })
         return {}  # real _build_pass returns {pkgbase: fingerprint}
 
@@ -947,6 +949,19 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
         if c["pkgs"] == {"llvm"} and (c["cfe"] or "").startswith("-fprofile-use=")
     ]
     assert pgo_opt, "Pass 3a must optimize llvm/llvm-libs with -fprofile-use"
+
+    # Pass 1a (instrument) MUST bootstrap on the live system clang, never the
+    # resolved profile's CC=gcc — gcc + -fprofile-generate produces gcov
+    # __gcov_* refs in stage1's .a archives that the clang profile runtime
+    # cannot satisfy, bricking the Pass 1b link.
+    pass1a = [
+        c for c in calls
+        if c["pkgs"] == {"llvm"}
+        and (c["cfe"] or "").startswith("-fprofile-generate=")
+    ]
+    assert len(pass1a) == 1, "Pass 1a must instrument llvm with -fprofile-generate"
+    assert pass1a[0]["cc"] == "/usr/bin/clang"
+    assert pass1a[0]["cxx"] == "/usr/bin/clang++"
 
 
 def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
@@ -1006,12 +1021,13 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
         ToolchainStage().run(config, state, options)
 
     # non_pgo=[] here, so Pass 3 is a single pgo-only sub-pass (3a): no non_pgo
-    # suite to stage against → no 3b/3c. 3 makepkg calls: pass 1a (system CC),
-    # pass 2 (stage1 clang), pass 3a (system CC fallback — no staged cc here).
+    # suite to stage against → no 3b/3c. 3 makepkg calls: pass 1a (live system
+    # clang — pinned, not the profile's CC=gcc), pass 2 (stage1 clang), pass 3a
+    # (system CC fallback — no staged cc here).
     # The non_pgo coherent-staging (3b → stage3) is covered by the dedicated
     # test_pass3_non_pgo_links_against_staged_optimized_libllvm_* tests.
     assert len(call_log) == 3
-    assert call_log[0]["cc"] is None                        # pass 1a: system
+    assert call_log[0]["cc"] == "/usr/bin/clang"            # pass 1a: pinned clang
     assert call_log[1]["cc"] == "/usr/bin/clang"            # pass 2: pass-1 clang
     assert call_log[2]["cc"].endswith("/usr/bin/clang")     # pass 3a: system fallback
     # All PGO passes force a clean build and overwrite PKGDEST artifacts from

@@ -31,7 +31,8 @@ toolchain.toml structure:
   lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", ...]
 
 LLVM PGO bootstrap (4 passes, only when pgo = true):
-  Pass 1a — system compiler + -fprofile-generate=<pgo_store>/; builds ONLY the
+  Pass 1a — live system clang (pinned; the resolved profile ships CC=gcc) +
+            -fprofile-generate=<pgo_store>/; builds ONLY the
             pgo list (llvm, llvm-libs).  makepkg runs WITHOUT --install; outputs
             are extracted to pgo_staging1 (stage1) by _pgo_pass1_stage so the
             live /usr is never touched.  Both packages stage — including the
@@ -2124,7 +2125,8 @@ def _build_llvm_pgo_inner(
     all run with ``install=False`` so the live ``/usr`` is untouched until the
     caller's install step — a build-pass failure therefore leaves no sentinel.
 
-    Pass 1a: system compiler + -fprofile-generate; builds ONLY the pgo list
+    Pass 1a: live system clang (pinned — the resolved profile ships CC=gcc) +
+             -fprofile-generate; builds ONLY the pgo list
              (llvm, llvm-libs).  makepkg runs WITHOUT --install; outputs are
              extracted to pgo_staging1 (stage1) — the live /usr is never
              touched.  Both packages stage, including the cmake-config /
@@ -2288,18 +2290,24 @@ def _build_llvm_pgo_inner(
         residual_linker_flags: str | None = None
 
         if not skip_profgen:
-            # Pass 1a — build pgo packages with the system compiler +
-            # -fprofile-generate. -fprofile-generate produces LLVM-format
-            # .profraw (consumed by llvm-profdata); on a running Arch system
-            # with LLVM installed the system compiler is always clang. makepkg
-            # runs WITHOUT --install; outputs are extracted into stage1 by
-            # _pgo_pass1_stage so the live root is never touched.
+            # Pass 1a — build pgo packages with the live system clang +
+            # -fprofile-generate. cc MUST be pinned to clang explicitly: the
+            # resolved profile is `[profiles.standard]`, shipped as CC=gcc, and
+            # cc=None would let that gcc win. clang's -fprofile-generate emits
+            # LLVM-format .profraw and __llvm_profile_* refs in the staged .a
+            # archives (resolved by Pass 1b's _profile_runtime_ldflag); gcc's
+            # would emit gcov __gcov_* refs that the clang profile runtime
+            # cannot satisfy, bricking the Pass 1b link. Mirrors Pass 1b's
+            # explicit cc="/usr/bin/clang" (this branch only runs for
+            # compiler="llvm"; the gcc path returns early before any PGO pass).
+            # makepkg runs WITHOUT --install; outputs are extracted into stage1
+            # by _pgo_pass1_stage so the live root is never touched.
             _build_pass(
                 "PGO 1/4 · instrument llvm / llvm-libs",
                 pgo_map,
                 options,
-                cc=None,
-                cxx=None,
+                cc="/usr/bin/clang",
+                cxx="/usr/bin/clang++",
                 install=False,
                 pgo_build=True,
                 compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
