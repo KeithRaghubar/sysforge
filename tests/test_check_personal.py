@@ -90,6 +90,33 @@ def test_excludes_tests_and_internal_dirs(tmp_path):
     assert r.returncode == 0, r.stdout
 
 
+def _git_init(repo: Path):
+    for args in (["init", "-q"], ["config", "user.email", "x@y"],
+                 ["config", "user.name", "x"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True,
+                       capture_output=True, text=True)
+
+
+def test_gitignored_files_are_skipped(tmp_path):
+    # A .gitignore'd file with a personal token must NOT be flagged: the
+    # publication surface is what git would ship. .aider* logs are the real case.
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text(".aider*\n")
+    (tmp_path / ".aider.chat.history.md").write_text("ran in /home/keith/src\n")
+    r = run(tmp_path)
+    assert r.returncode == 0, r.stdout
+
+
+def test_tracked_personal_token_still_flagged_in_git_repo(tmp_path):
+    # The gitignore filter must not suppress a non-ignored (publishable) file.
+    _git_init(tmp_path)
+    (tmp_path / ".gitignore").write_text(".aider*\n")
+    (tmp_path / "DESIGN.md").write_text("Config lives in /home/keith/.config.\n")
+    r = run(tmp_path)
+    assert r.returncode == 1
+    assert "home path" in r.stdout
+
+
 def test_scans_shared_claude_config(tmp_path):
     # The committed .claude/ subset (hooks, agents, skills, hookify rules) IS
     # scanned now that it travels with the repo -- PII there must be caught.
