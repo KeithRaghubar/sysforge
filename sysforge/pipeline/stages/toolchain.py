@@ -40,8 +40,13 @@ LLVM PGO bootstrap (4 passes, only when pgo = true):
             find_package(LLVM) sees the staged headers + configs.  The
             instrumented .a archives staged alongside surface __llvm_profile_*
             link errors for anything that consumes LLVM component targets;
-            Pass 1b and Pass 2 work around that via _profile_runtime_ldflag().
-            Spurious profraw from CMake feature probes is purged before Pass 1b.
+            Pass 1b and Pass 2 work around that via _profile_runtime_ldflag()
+            (force-loads the clang profile runtime) AND by selecting lld
+            (toolchain_variant="pgo_llvm" → the [VARIANT_LD] guard in
+            emit_makepkg_conf): under the CC=gcc profile's default bfd, the
+            runtime would otherwise be dropped by strict left-to-right archive
+            order. Spurious profraw from CMake feature probes is purged before
+            Pass 1b.
   Pass 1b — non-instrumented build of the non_pgo packages (clang, lld,
             compiler-rt, polly, openmp, spirv-llvm-translator) against stage1.
             CMAKE_PREFIX_PATH=<staging1>/usr points find_package(LLVM) at stage1
@@ -1283,12 +1288,22 @@ def _system_llvm_is_instrumented() -> bool:
 
 
 def _profile_runtime_ldflag() -> str | None:
-    """Return '-L<runtime_dir> -lclang_rt.profile-<arch>' if the profile runtime exists.
+    """Return a force-load LDFLAGS fragment for the clang profile runtime, or None.
 
-    Returns None if the runtime library cannot be located, with a log warning.
-    Injected into LDFLAGS for both Pass 2 and Pass 3 when the system LLVM static
-    libs are instrumented (residual from a prior Pass 1), so packages linking
-    against them can resolve __llvm_profile_* symbols.
+    Form: ``-Wl,--push-state,--whole-archive <profile_lib>.a -Wl,--pop-state``,
+    using the full archive path so the linker locates it unambiguously. Returns
+    None if the runtime library cannot be located, with a log warning.
+
+    Injected into LDFLAGS for Pass 1b and Pass 2 (the passes that link against
+    stage1's instrumented LLVM static libs), so packages linking those archives
+    can resolve __llvm_profile_* symbols. ``--whole-archive`` force-loads the
+    runtime regardless of link order: a bare ``-lclang_rt.profile`` appended to
+    LDFLAGS lands ahead of the libraries in CMAKE_EXE_LINKER_FLAGS, and bfd's
+    strict left-to-right archive resolution then drops it before the
+    instrumented archives reference it. lld is order-independent, but the
+    force-load keeps correctness from depending on the linker. push-state /
+    pop-state confines the --whole-archive to this one archive so surrounding
+    --as-needed behaviour is preserved.
     """
     rt_result = subprocess.run(
         ["/usr/bin/clang", "--print-runtime-dir"],
@@ -1319,7 +1334,7 @@ def _profile_runtime_ldflag() -> str | None:
         )
         return None
 
-    return f"-L{runtime_dir} -lclang_rt.profile-{arch}"
+    return f"-Wl,--push-state,--whole-archive {profile_lib} -Wl,--pop-state"
 
 
 def _validate_pgo_environment(dry_run: bool) -> None:
@@ -2137,9 +2152,11 @@ def _build_llvm_pgo_inner(
              stage1.  CMAKE_PREFIX_PATH=<staging1>/usr; LD_LIBRARY_PATH is
              deliberately NOT set (forcing system clang to load stage1's
              libLLVM would recreate the version-skew failure mode this
-             refactor exists to prevent).  Outputs extracted into the same
-             pgo_staging1, making stage1 self-sufficient — both a working
-             clang and a working libLLVM, both ABI-coherent.
+             refactor exists to prevent).  Links with lld
+             (toolchain_variant="pgo_llvm") + a force-loaded profile runtime so
+             stage1's instrumented archives resolve __llvm_profile_*.  Outputs
+             extracted into the same pgo_staging1, making stage1 self-sufficient
+             — both a working clang and a working libLLVM, both ABI-coherent.
     Pass 2:  training run.  CC=<staging1>/usr/bin/clang (built in Pass 1b);
              the running clang and the libLLVM it loads are guaranteed
              coherent because they were built together.  Builds pgo + non_pgo;
@@ -2311,6 +2328,13 @@ def _build_llvm_pgo_inner(
                 install=False,
                 pgo_build=True,
                 compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
+                # Select lld like every other LLVM toolchain build. The PGO
+                # bootstrap runs under a CC=gcc profile whose makepkg.conf
+                # defaults to bfd; only the [VARIANT_LD] guard (keyed on this
+                # variant) injects -fuse-ld=lld. Pass 1a links via the
+                # -fprofile-generate driver flag regardless, but stay consistent
+                # with Pass 1b/2/3 so the whole sequence uses one linker.
+                toolchain_variant="pgo_llvm",
             )
             _pgo_pass1_stage(pgo_map, staging1, options.dry_run)
             _log.ui("[PGO] 1/4 complete (staged to "
@@ -2354,8 +2378,14 @@ def _build_llvm_pgo_inner(
             # CMAKE_PREFIX_PATH points cmake's find_package(LLVM) at stage1
             # so the new clang links against stage1's libLLVM.so. The
             # instrumented .a archives staged alongside surface __llvm_profile_*
-            # link errors; _profile_runtime_ldflag() injects the clang profile
-            # runtime to satisfy them.
+            # link errors; _profile_runtime_ldflag() force-loads the clang
+            # profile runtime to satisfy them. toolchain_variant="pgo_llvm"
+            # selects lld via the [VARIANT_LD] guard — without it this pass
+            # falls back to the CC=gcc profile's bfd, whose strict left-to-right
+            # archive resolution drops the profile runtime before the
+            # instrumented archives reference it (the historical Pass 1b
+            # failure). lld resolves it regardless of order; the --whole-archive
+            # form of _profile_runtime_ldflag() makes it order-proof either way.
             pass1b_env = {
                 "CMAKE_PREFIX_PATH": f"{staging1}/usr",
             }
@@ -2378,6 +2408,7 @@ def _build_llvm_pgo_inner(
                 pgo_env=pass1b_env,
                 staged_deps=True,
                 cmake_llvm_dir=f"{staging1}/usr/lib/cmake/llvm",
+                toolchain_variant="pgo_llvm",
             )
             _extract_pass2_to_staging(non_pgo_map, staging1, options.dry_run)
             _log.ui(f"[PGO] 2/4 complete (stage1 self-sufficient at {staging1})")
@@ -2457,6 +2488,10 @@ def _build_llvm_pgo_inner(
                     pgo_build=True,
                     pgo_env=pass2_env,
                     staged_deps=True,
+                    # lld parity (see Pass 1b): without it this pass links the
+                    # instrumented stage1 archives under the gcc profile's bfd
+                    # and the bare profile-runtime ref drops out by order.
+                    toolchain_variant="pgo_llvm",
                 )
             finally:
                 stop_event.set()

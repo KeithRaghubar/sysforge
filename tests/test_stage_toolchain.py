@@ -2034,7 +2034,9 @@ def test_system_llvm_is_instrumented_missing_lib():
 
 
 def test_profile_runtime_ldflag_returns_flag(tmp_path):
-    """Returns the -L/-l flag string when the profile runtime lib exists."""
+    """Returns a force-loaded (--whole-archive) full-path flag when the runtime
+    lib exists. Force-load makes the runtime resolve regardless of link order, so
+    a bfd link can't drop it ahead of the archives that reference __llvm_profile_*."""
     runtime_dir = tmp_path / "clang" / "lib" / "linux"
     runtime_dir.mkdir(parents=True)
     profile_lib = runtime_dir / "libclang_rt.profile-x86_64.a"
@@ -2056,8 +2058,10 @@ def test_profile_runtime_ldflag_returns_flag(tmp_path):
         flag = _profile_runtime_ldflag()
 
     assert flag is not None
-    assert str(runtime_dir) in flag
-    assert "clang_rt.profile-x86_64" in flag
+    # Full archive path, force-loaded, scoped by push/pop-state.
+    assert str(profile_lib) in flag
+    assert "-Wl,--push-state,--whole-archive" in flag
+    assert "-Wl,--pop-state" in flag
 
 
 def test_profile_runtime_ldflag_missing_lib_returns_none(tmp_path):
@@ -2934,6 +2938,7 @@ def _pgo_fake_run_factory(pgo_store, call_log):
             "pkgbuild": str(pkgbuild_path),
             "cfe":     options.compiler_flags_extra if options else None,
             "lfe":     options.linker_flags_extra if options else None,
+            "variant": options.toolchain_variant if options else None,
             "env":     env,
         })
         # Pass 2 is the training run: it injects CCACHE_DISABLE into extra_env.
@@ -3139,6 +3144,28 @@ def test_pgo_profile_runtime_injected_into_pass1b_and_pass2(tmp_path):
     for call in p3:
         assert call["lfe"] is None, \
             "Pass 3 uses stage2 (non-instrumented) — profile runtime must NOT leak through"
+
+
+def test_pgo_instrumented_consumer_passes_select_lld(tmp_path):
+    """Pass 1b and Pass 2 link against stage1's *instrumented* archives. They
+    must select lld (toolchain_variant="pgo_llvm") so the [VARIANT_LD] guard in
+    emit_makepkg_conf injects -fuse-ld=lld — otherwise they fall back to the
+    CC=gcc profile's bfd, whose strict left-to-right archive resolution drops
+    the force-loaded profile runtime and __llvm_profile_* dangles (the
+    historical Pass 1b link failure). Regression guard for that omission."""
+    call_log = _run_pgo(
+        tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"],
+    )
+    p1b = _pass1b(call_log)
+    p2 = _pass2(call_log)
+    assert p1b, "Pass 1b must have run (non_pgo present)"
+    assert p2, "Pass 2 must have run"
+    for call in p1b:
+        assert call["variant"] == "pgo_llvm", \
+            "Pass 1b must select lld via toolchain_variant=pgo_llvm"
+    for call in p2:
+        assert call["variant"] == "pgo_llvm", \
+            "Pass 2 must select lld via toolchain_variant=pgo_llvm"
 
 
 def test_pgo_profile_runtime_unavailable_no_injection(tmp_path):
