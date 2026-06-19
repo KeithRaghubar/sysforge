@@ -524,17 +524,19 @@ def check_completions(repo: Path) -> list[Finding]:
 
 
 def _import_build_parser(repo: Path):
-    """Import sysforge.cli._build_parser with CONFIG_DIR set to `repo`.
+    """Import sysforge.cli._build_parser with CONFIG_DIR set to the repo fixtures.
 
-    Drops cached sysforge modules so paths.py picks up the right CONFIG_BASE
-    on re-import. Restores the caller's SYSFORGE_CONFIG_DIR before returning
-    so downstream checks (notably manpage, which shells out to
-    gen_options.py and inherits the env) see the user's original setting.
+    Drops cached sysforge modules so paths.py picks up the right CONFIG_DIR
+    on re-import. SYSFORGE_CONFIG_DIR is the config dir *itself* (the dir that
+    directly holds the TOML files), so it points at `repo/etc/sysforge`, not
+    `repo`. Restores the caller's SYSFORGE_CONFIG_DIR before returning so
+    downstream checks (notably manpage, which shells out to gen_options.py and
+    inherits the env) see the user's original setting.
     """
     saved_env = os.environ.get("SYSFORGE_CONFIG_DIR")
     saved_modules = {k: v for k, v in sys.modules.items() if k.startswith("sysforge")}
 
-    os.environ["SYSFORGE_CONFIG_DIR"] = str(repo)
+    os.environ["SYSFORGE_CONFIG_DIR"] = str(repo / "etc/sysforge")
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
     for mod in list(sys.modules):
