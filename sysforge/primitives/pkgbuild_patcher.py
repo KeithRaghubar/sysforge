@@ -105,6 +105,16 @@ def _package_func_re(pkgname: str) -> re.Pattern:
 # injection stays idempotent.
 _BOOT_CONFIG_RE = re.compile(r"/boot/config\b")
 
+# Standard Arch kernel PKGBUILDs don't define ``package_<pkgname>()`` literally;
+# they define helper functions (``_package``, ``_package-headers``,
+# ``_package-docs``) and synthesize the real ``package_$_p()`` via an ``eval``
+# loop, which ``_package_func_re`` can't see statically. The base image helper
+# is the unsuffixed ``_package()`` — inject the /boot config install there. The
+# ``-headers``/``-docs`` helpers don't match (text sits between ``_package`` and
+# ``()``).
+_EVAL_LOOP_BASE_PACKAGE_RE = re.compile(
+    r"^([ \t]*)_package\s*\(\)\s*\{", re.MULTILINE)
+
 # bpftool's ``vmlinux.h`` target/artifact requires a ``.BTF`` section in
 # ``vmlinux``, which only exists when ``CONFIG_DEBUG_INFO_BTF=y``. A lean
 # (BTF-off) resolved ``.config`` — e.g. ``base_config="running"`` seeded from a
@@ -728,6 +738,12 @@ def patch_kernel_config_install(patched_path, *, pkgname):
     installs the sibling ``.config``. ``package()`` runs inside ``$srcdir`` with
     ``$pkgdir`` available (PKGBUILD(5)).
 
+    When neither a literal ``package_<pkgname>()`` nor a bare ``package()`` is
+    present, falls back to the unsuffixed ``_package()`` helper used by the
+    standard Arch kernel PKGBUILD's ``eval``-loop split-package idiom (which
+    synthesizes the real package functions at runtime, invisible to a static
+    parser).
+
     Skips PKGBUILDs that already install to ``/boot/config`` (native or a prior
     injection) for idempotency. Modifies ``patched_path`` in place.
     """
@@ -743,10 +759,14 @@ def patch_kernel_config_install(patched_path, *, pkgname):
 
     m = _package_func_re(pkgname).search(text)
     if m is None:
+        # Eval-loop split kernel (upstream Arch ``linux`` layout): inject into
+        # the base image helper ``_package()``.
+        m = _EVAL_LOOP_BASE_PACKAGE_RE.search(text)
+    if m is None:
         _log.warn(
-            f"No package() / package_{pkgname}() function found in the kernel "
-            "PKGBUILD — cannot inject the /boot config install, so the resolved "
-            ".config will not be shipped to /boot.",
+            f"No package() / package_{pkgname}() / _package() function found in "
+            "the kernel PKGBUILD — cannot inject the /boot config install, so the "
+            "resolved .config will not be shipped to /boot.",
         )
         return
 

@@ -635,6 +635,42 @@ def test_config_install_injects_into_bare_package(tmp_path):
     assert "/boot/config-" in pb.read_text()
 
 
+_EVAL_LOOP_PACKAGE = (
+    "_package() {\n"
+    "  pkgdesc='The kernel and modules'\n"
+    "  cd $_srcname\n"
+    '  install -Dm644 "$(make -s image_name)" "$pkgdir/usr/lib/modules/x/vmlinuz"\n'
+    "}\n"
+    "\n"
+    "_package-headers() {\n"
+    "  cd $_srcname\n"
+    "}\n"
+    "\n"
+    'pkgname=(\n  "$pkgbase"\n  "$pkgbase-headers"\n)\n'
+    'for _p in "${pkgname[@]}"; do\n'
+    '  eval "package_$_p() {\n'
+    '    $(declare -f "_package${_p#$pkgbase}")\n'
+    "    _package${_p#$pkgbase}\n"
+    '  }"\n'
+    "done\n"
+)
+
+
+def test_config_install_injects_into_eval_loop_helper(tmp_path):
+    """Standard Arch kernel layout: no literal package_<pkgname>() — the real
+    package functions are synthesized via an eval loop, so the injection must
+    target the base image helper _package()."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_EVAL_LOOP_PACKAGE)
+    patch_kernel_config_install(pb, pkgname="linux-sysforge")
+    text = pb.read_text()
+    assert '"$pkgdir/boot/config-$(<"$_sf_rel")"' in text
+    assert "include/config/kernel.release" in text
+    # injected just inside the base helper body, not the -headers helper
+    assert text.index("_package()") < text.index("_sf_rel=")
+    assert text.index("_sf_rel=") < text.index("_package-headers()")
+
+
 def test_config_install_idempotent_when_boot_config_present(tmp_path):
     """A PKGBUILD that already installs /boot/config is left untouched."""
     native = (
