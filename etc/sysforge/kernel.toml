@@ -57,6 +57,18 @@ pkgname = "linux-sysforge"      # base package name (must match the PKGBUILD pkg
 #                               # unset, the kernel stage falls back to that
 #                               # global value; only both being unset is an error.
 
+# build_headers = true          # default: true — build & install the kernel
+#                               # -headers subpackage. Required by DKMS and any
+#                               # out-of-tree module build (nvidia-open-dkms,
+#                               # virtualbox, …); disabling it (build_headers = false
+#                               # or --no-headers) means those modules cannot rebuild
+#                               # and will not load on reboot. CLI: --headers/--no-headers
+
+# build_docs = false            # default: false — the kernel -docs subpackage is
+#                               # dropped from the build (it's rarely needed and slow
+#                               # to package). Set true (or pass --docs) to build the
+#                               # kernel HTML/man documentation. CLI: --docs/--no-docs
+
 # source = "local"              # "local" | "aur" | "git" — how the kernel
 #                               # PKGBUILD is sourced. "local" (default) uses the
 #                               # already-cloned tree under pkgbuild_src_dir;

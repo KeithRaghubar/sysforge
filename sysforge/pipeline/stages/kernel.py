@@ -146,6 +146,29 @@ def _resolve_compiler(kernel_cfg, options, state):
     return None, cc, cxx
 
 
+def _resolve_subpackages(kernel_cfg, options):
+    """Resolve whether to build the kernel -headers / -docs subpackages.
+
+    Precedence per toggle: CLI flag (``--headers``/``--no-headers``,
+    ``--docs``/``--no-docs``) > kernel.toml (``build_headers``/``build_docs``) >
+    hard default (headers on, docs off). The CLI fields default to ``None`` when
+    the flag is unset, so ``None`` falls through to the TOML value.
+
+    Returns ``(build_headers, build_docs)``.
+    """
+    cli_headers = getattr(options, "build_headers", None)
+    build_headers = (
+        cli_headers if cli_headers is not None
+        else bool(kernel_cfg.get("build_headers", True))
+    )
+    cli_docs = getattr(options, "build_docs", None)
+    build_docs = (
+        cli_docs if cli_docs is not None
+        else bool(kernel_cfg.get("build_docs", False))
+    )
+    return build_headers, build_docs
+
+
 def _resolve_bootloader(kernel_cfg, options):
     """Resolve bootloader: CLI override > kernel.toml > 'systemd-boot' default."""
     cli = getattr(options, "bootloader", None)
@@ -876,8 +899,24 @@ def _gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
         )
 
     # F1 — DKMS modules will need rebuilding against the new kernel.
+    build_headers, _ = _resolve_subpackages(kernel_cfg, options)
     dkms = kernel_safety.list_dkms_modules()
-    if dkms:
+    if not build_headers:
+        # Headers are being dropped from the build — the strongest risk surface.
+        msg = (
+            f"kernel -headers subpackage disabled — {pkgname}-headers will NOT "
+            "be built/installed. Out-of-tree and DKMS modules need the matching "
+            "kernel headers to compile; without them they cannot rebuild and "
+            "will not load on reboot."
+        )
+        if dkms:
+            msg += (
+                f" DKMS modules present ({', '.join(dkms)}) will fail to rebuild "
+                "(nvidia → black screen). Re-enable with --headers or "
+                "build_headers = true."
+            )
+        _log.warn(msg)
+    elif dkms:
         _log.warn(
             f"DKMS modules present ({', '.join(dkms)}) — they must rebuild "
             f"against {pkgname}; ensure {pkgname}-headers is installed or they "
@@ -1085,7 +1124,7 @@ def _log_resolution_summary(
     *, pkgname, compiler, compiler_origin, cc, cxx, variant, bootloader,
     bootloader_installed, source, kconfig_target, base_config_source,
     hw_kconfig_count, manual_kconfig_count, device_kconfig_count,
-    kernel_cfg, skip_boot_audit,
+    kernel_cfg, skip_boot_audit, build_headers, build_docs,
 ):
     """Emit one labelled block of the resolved kernel-build plan.
 
@@ -1115,6 +1154,10 @@ def _log_resolution_summary(
         f"{device_kconfig_count} device, {manual_kconfig_count} manual)"
     )
     _log.ui(f"  base cfg:   {base_config_source}")
+    _log.ui(
+        f"  subpkgs:    headers={'on' if build_headers else 'off'} "
+        f"docs={'on' if build_docs else 'off'}"
+    )
     _log.ui(f"  gates:      {gates}")
 
 
@@ -1290,6 +1333,7 @@ class KernelStage(Stage):
             )
 
         skip_boot_audit = bool(getattr(options, "skip_boot_audit", False))
+        build_headers, build_docs = _resolve_subpackages(kernel_cfg, options)
 
         # B1: consolidated resolution summary — one labelled block instead of
         # decisions scattered across the log. Useful before a multi-hour build
@@ -1311,6 +1355,8 @@ class KernelStage(Stage):
             device_kconfig_count=device_kconfig_count,
             kernel_cfg=kernel_cfg,
             skip_boot_audit=skip_boot_audit,
+            build_headers=build_headers,
+            build_docs=build_docs,
         )
 
         # Gate 1 — cheap preflight (fallback-kernel guarantee, /boot space,
@@ -1353,6 +1399,8 @@ class KernelStage(Stage):
                         cxx_override=cxx,
                         source=source,
                         toolchain_variant=variant if variant != "system" else None,
+                        kernel_build_headers=build_headers,
+                        kernel_build_docs=build_docs,
                     ))
                 except AlreadyBuilt:
                     _log.info(

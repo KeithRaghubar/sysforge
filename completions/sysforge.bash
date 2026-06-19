@@ -298,7 +298,8 @@ _sysforge_run() {
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update --cleansrc --cleansrc-force \
                 --non-interactive --compiler --bootloader --base-config \
-                --allow-no-fallback --skip-boot-audit --no-pkg-logs \
+                --allow-no-fallback --skip-boot-audit \
+                --headers --no-headers --docs --no-docs --no-pkg-logs \
                 --persist-log --log-dir --cache-report --abi-check \
                 --state-dir --profile-conf" -- "$cur") )
             ;;

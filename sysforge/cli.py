@@ -832,6 +832,16 @@ def _add_run_parser(sub):
              "(the PKGBUILD's own base), 'running' (the running kernel's config), "
              "or a path to a .config file. Resolution order: this flag > "
              "kernel.toml base_config > 'pkgbuild' default.")
+    p_kernel.add_argument("--headers",
+        action=argparse.BooleanOptionalAction, default=None, dest="build_headers",
+        help="Build the kernel -headers subpackage (default: on, per kernel.toml "
+             "build_headers). --no-headers drops it from the build; DKMS modules "
+             "(nvidia-open-dkms, virtualbox, …) and any out-of-tree module then "
+             "cannot rebuild and will not load on reboot.")
+    p_kernel.add_argument("--docs",
+        action=argparse.BooleanOptionalAction, default=None, dest="build_docs",
+        help="Build the kernel -docs subpackage (default: off, per kernel.toml "
+             "build_docs). Pass --docs to build the kernel HTML/man documentation.")
     p_kernel.add_argument("--no-pkg-logs", action="store_true", dest="no_pkg_logs",
         help="Disable per-package log files.")
     p_kernel.add_argument("--persist-log", action="store_true", dest="persist_log",

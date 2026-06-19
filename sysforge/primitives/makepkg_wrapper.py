@@ -73,6 +73,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_kernel_btf_guard,
     patch_kernel_config_install,
     patch_kernel_kconfig_apply,
+    patch_kernel_subpackages,
     patch_llvm_dir,
     patch_llvm_targets,
     patch_noninteractive_kconfig,
@@ -295,6 +296,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                extra_flags=None, interactive=False,
                cc_override=None, cxx_override=None, ld_override=None,
                kernel_build: bool = False,
+               kernel_build_headers: bool = True,
+               kernel_build_docs: bool = True,
                compiler_flags_extra: str | None = None,
                linker_flags_extra: str | None = None,
                strip_full_lto: bool = False,
@@ -354,6 +357,11 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # doesn't hard-fail at the bpftool step. Guard is config-conditional at
         # build time, so it's safe to apply unconditionally.
         patch_kernel_btf_guard(pkgbuild_path)
+        # Drop the -headers/-docs subpackages from pkgname when disabled, so the
+        # build never packages them (helper bodies stay defined but unreferenced).
+        patch_kernel_subpackages(
+            pkgbuild_path, headers=kernel_build_headers, docs=kernel_build_docs
+        )
         if not interactive:
             patch_noninteractive_kconfig(pkgbuild_path)
 
@@ -550,6 +558,8 @@ class BuildOptions:
     """
     extra_flags: list | None = None
     interactive: bool = False
+    kernel_build_headers: bool = True
+    kernel_build_docs: bool = True
     pkg_log: bool = True
     persist_log: bool = False
     log_dir: Path | None = None
@@ -763,6 +773,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 cxx_override=options.cxx_override,
                 ld_override=options.ld_override,
                 kernel_build=kernel_build,
+                kernel_build_headers=options.kernel_build_headers,
+                kernel_build_docs=options.kernel_build_docs,
                 compiler_flags_extra=effective_flags_extra,
                 linker_flags_extra=options.linker_flags_extra,
                 strip_full_lto=options.strip_full_lto,

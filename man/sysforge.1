@@ -1028,6 +1028,16 @@ Override kernel.\&toml bootloader for this invocation (systemd-boot is the defau
 Override kernel.\&toml base_config for this run: the starting .\&config before the sysforge.\&config fragment overlay.\& One of '\&pkgbuild'\& (the PKGBUILD'\&s own base), '\&running'\& (the running kernel'\&s config), or a path to a .\&config file.\& Resolution order: this flag > kernel.\&toml base_config > '\&pkgbuild'\& default.\&
 .PP
 .RE
+\fB--headers\fR, \fB--no-headers\fR
+.RS 4
+Build the kernel -headers subpackage (default: on, per kernel.\&toml build_headers).\& --no-headers drops it from the build; DKMS modules (nvidia-open-dkms, virtualbox, …) and any out-of-tree module then cannot rebuild and will not load on reboot.\&
+.PP
+.RE
+\fB--docs\fR, \fB--no-docs\fR
+.RS 4
+Build the kernel -docs subpackage (default: off, per kernel.\&toml build_docs).\& Pass --docs to build the kernel HTML/man documentation.\&
+.PP
+.RE
 \fB--no-pkg-logs\fR
 .RS 4
 Disable per-package log files.\&

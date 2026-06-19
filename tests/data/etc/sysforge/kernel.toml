@@ -16,6 +16,8 @@ bootloader   = "systemd-boot"
 # Key inventory is kept in lockstep with etc/sysforge/kernel.toml by
 # tools/check_shipped.py (_check_fixture_lockstep). Values may differ; the set
 # of documented keys may not.
+# build_headers = true            # build the -headers subpackage (DKMS/out-of-tree modules need it)
+# build_docs = false              # build the -docs subpackage (dropped by default)
 # source = "local"               # "local" | "aur" | "git" — how the PKGBUILD is sourced
 # base_config = "pkgbuild"        # "pkgbuild" | "running" | "<path>" — starting .config base
 # require_fallback_kernel = true  # refuse install without a stock fallback kernel

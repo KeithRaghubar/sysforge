@@ -867,6 +867,90 @@ def patch_kernel_btf_guard(patched_path):
         )
 
 
+def patch_kernel_subpackages(patched_path, *, headers: bool, docs: bool):
+    """Drop the ``-headers`` and/or ``-docs`` subpackages from a kernel
+    PKGBUILD's ``pkgname=(...)`` array.
+
+    Standard Arch kernel PKGBUILDs list the image plus optional subpackages —
+    ``pkgname=("$pkgbase" "$pkgbase-headers" "$pkgbase-docs")`` — and synthesize
+    each ``package_$_p()`` via ``for _p in "${pkgname[@]}"; do eval …``. An entry
+    absent from the array is therefore never packaged, so removing it is the
+    cleanest way to *not build* a subpackage: the ``_package-headers()`` /
+    ``_package-docs()`` helper bodies can stay defined and untouched.
+
+    When ``headers`` is False, every array token whose dequoted value ends with
+    ``-headers`` is dropped; likewise ``docs`` → ``-docs``. The suffix test (not
+    a literal-name match) handles every token form — ``linux-custom-headers``,
+    ``"$pkgbase-headers"``, ``${pkgbase}-headers`` all end the same way.
+
+    Mirrors the sibling kernel patchers: edits ``patched_path``
+    (``PKGBUILD.sysforge``) in place, leaves the operator's tracked PKGBUILD
+    alone. No-op fast path when both subpackages are kept; a PKGBUILD lacking the
+    targeted subpackage is a no-op; naturally idempotent (a re-run finds nothing
+    left to drop). Both the single-line and one-token-per-line array layouts are
+    preserved.
+    """
+    if headers and docs:
+        return  # nothing to drop
+
+    patched_path = Path(patched_path)
+    text = patched_path.read_text(encoding="utf-8")
+
+    m = re.search(r"^pkgname=\(", text, re.MULTILINE)
+    if not m:
+        return
+
+    # Walk paren depth from the opening '(' so a multi-line array
+    # (pkgname=(\n  pkg1\n  pkg2\n)) is captured whole.
+    open_idx = text.index("(", m.start())
+    depth = 0
+    i = open_idx
+    while i < len(text):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    if depth != 0:
+        return  # unbalanced — leave the PKGBUILD untouched
+    close_idx = i
+    inner = text[open_idx + 1:close_idx]
+
+    drop_suffixes = []
+    if not headers:
+        drop_suffixes.append("-headers")
+    if not docs:
+        drop_suffixes.append("-docs")
+
+    def _should_drop(token: str) -> bool:
+        val = token.strip().strip('"').strip("'")
+        return any(val.endswith(suffix) for suffix in drop_suffixes)
+
+    tokens = re.findall(r"\S+", inner)
+    kept = [t for t in tokens if not _should_drop(t)]
+    if len(kept) == len(tokens):
+        return  # nothing matched — no-op (idempotent re-runs land here)
+
+    if "\n" in inner:
+        # One token per line: recover the array's indentation from the first
+        # indented line so the rewrite preserves the original layout.
+        indent_match = re.search(r"\n([ \t]+)\S", inner)
+        indent = indent_match.group(1) if indent_match else "  "
+        new_inner = "\n" + "\n".join(indent + t for t in kept) + "\n"
+    else:
+        new_inner = " ".join(kept)
+
+    new_text = text[:open_idx + 1] + new_inner + text[close_idx:]
+    patched_path.write_text(new_text, encoding="utf-8")
+    dropped = [s.lstrip("-") for s in drop_suffixes]
+    _log.info(
+        f"Dropped kernel subpackage(s) from pkgname: {', '.join(dropped)} "
+        "(disabled via kernel.toml/CLI)",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Subshell toolchain env reset
 # ---------------------------------------------------------------------------

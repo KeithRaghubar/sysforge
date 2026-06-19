@@ -173,6 +173,8 @@ class RunKernelVerb(_RunVerbBase):
             base_config=getattr(args, "base_config", None),
             allow_no_fallback=getattr(args, "allow_no_fallback", False),
             skip_boot_audit=getattr(args, "skip_boot_audit", False),
+            build_headers=getattr(args, "build_headers", None),
+            build_docs=getattr(args, "build_docs", None),
         )
         run_stage_standalone(KernelStage(), config, options)
         return ExecResult()

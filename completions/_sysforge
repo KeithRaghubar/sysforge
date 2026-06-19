@@ -436,6 +436,10 @@ _sysforge_run_kernel() {
     '--base-config[override kernel.toml base_config (pkgbuild|running|<path>)]:source:(pkgbuild running)' \
     '--allow-no-fallback[override the fallback-kernel guarantee (Gate 1)]' \
     '--skip-boot-audit[override the pre-install boot-critical kconfig audit (Gate 2) — dangerous]' \
+    '--headers[build the -headers subpackage (default on; DKMS/out-of-tree modules need it)]' \
+    '--no-headers[drop the -headers subpackage — DKMS/out-of-tree modules cannot rebuild]' \
+    '--docs[build the -docs subpackage (kernel HTML/man documentation)]' \
+    '--no-docs[drop the -docs subpackage (the default)]' \
     '--no-pkg-logs[disable per-package log files]' \
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \

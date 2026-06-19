@@ -957,6 +957,98 @@ def test_resolve_bootloader_rejects_invalid_cli():
 
 
 # ---------------------------------------------------------------------------
+# _resolve_subpackages (headers/docs toggles)
+# ---------------------------------------------------------------------------
+
+def test_resolve_subpackages_defaults_headers_on_docs_off():
+    from sysforge.pipeline.stages.kernel import _resolve_subpackages
+    assert _resolve_subpackages({}, make_options()) == (True, False)
+
+
+def test_resolve_subpackages_kernel_toml_wins_over_default():
+    from sysforge.pipeline.stages.kernel import _resolve_subpackages
+    cfg = {"build_headers": False, "build_docs": True}
+    assert _resolve_subpackages(cfg, make_options()) == (False, True)
+
+
+def test_resolve_subpackages_cli_headers_off_beats_toml_on():
+    from sysforge.pipeline.stages.kernel import _resolve_subpackages
+    options = make_options(build_headers=False)
+    assert _resolve_subpackages({"build_headers": True}, options) == (False, False)
+
+
+def test_resolve_subpackages_cli_docs_on_beats_toml_off():
+    from sysforge.pipeline.stages.kernel import _resolve_subpackages
+    options = make_options(build_docs=True)
+    assert _resolve_subpackages({"build_docs": False}, options) == (True, True)
+
+
+def test_resolve_subpackages_cli_none_falls_through_to_toml():
+    from sysforge.pipeline.stages.kernel import _resolve_subpackages
+    # RunOptions defaults build_headers/build_docs to None (flag unset).
+    options = make_options()
+    cfg = {"build_headers": False, "build_docs": True}
+    assert _resolve_subpackages(cfg, options) == (False, True)
+
+
+def test_kernel_stage_threads_subpackages_into_build_options(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    opts = make_options(state_dir=tmp_path / "state", build_headers=False, build_docs=True)
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    build_opts = mock_build.call_args.kwargs["options"]
+    assert build_opts.kernel_build_headers is False
+    assert build_opts.kernel_build_docs is True
+
+
+def test_kernel_stage_subpackage_defaults_headers_on_docs_off(tmp_path):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    build_opts = mock_build.call_args.kwargs["options"]
+    assert build_opts.kernel_build_headers is True
+    assert build_opts.kernel_build_docs is False
+
+
+def test_gate1_warns_when_headers_disabled(monkeypatch):
+    """Disabling headers must warn about the DKMS / out-of-tree module risk,
+    naming any present DKMS modules."""
+    from sysforge.pipeline.stages.kernel import _gate1_preflight
+    monkeypatch.setattr(kernel_safety, "find_fallback_kernels", lambda *a, **k: ["linux"])
+    monkeypatch.setattr(kernel_safety, "check_boot_mount_space", lambda *a, **k: None)
+    monkeypatch.setattr(kernel_safety, "detect_root_topology",
+                        lambda *a, **k: kernel_safety.RootTopology())
+    monkeypatch.setattr(kernel_safety, "check_mkinitcpio_hooks", lambda *a, **k: [])
+    monkeypatch.setattr(kernel_safety, "list_dkms_modules", lambda: ["nvidia"])
+
+    cfg = {"build_headers": False, "capture_lsmod_snapshot": False}
+    with _capture_logs() as logs:
+        _gate1_preflight(cfg, make_options(), "linux-custom", dry_run=False)
+
+    joined = "\n".join(_warn_messages(logs))
+    assert "-headers subpackage disabled" in joined
+    assert "nvidia" in joined
+
+
+# ---------------------------------------------------------------------------
 # Interactive default, --non-interactive, BuildOptions plumbing
 # ---------------------------------------------------------------------------
 

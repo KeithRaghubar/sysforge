@@ -50,6 +50,8 @@ class RunOptions:
     base_config: str | None = None   # CLI override for kernel.toml base_config (pkgbuild|running|<path>)
     allow_no_fallback: bool = False  # kernel: override the fallback-kernel guarantee (Gate 1)
     skip_boot_audit: bool = False    # kernel: override the pre-install boot-critical audit (Gate 2)
+    build_headers: bool | None = None  # kernel: build -headers subpackage; None → kernel.toml (default on)
+    build_docs: bool | None = None     # kernel: build -docs subpackage; None → kernel.toml (default off)
     # Extra makepkg flags (appended after profile makepkg_flags)
     makepkg_flags: list[str] = field(default_factory=list)
     # PGO profdata

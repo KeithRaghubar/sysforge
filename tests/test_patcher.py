@@ -38,6 +38,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_kernel_btf_guard,
     patch_kernel_config_install,
     patch_kernel_kconfig_apply,
+    patch_kernel_subpackages,
     patch_noninteractive_kconfig,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
@@ -1001,6 +1002,102 @@ def test_btf_guard_does_not_wrap_commented_build_step(tmp_path):
     assert "#  make -C tools/bpf/bpftool vmlinux.h" in text
     # The install token, however, IS made conditional.
     assert _BTF_GUARD in text
+
+
+# ---------------------------------------------------------------------------
+# patch_kernel_subpackages (drop -headers/-docs from pkgname=(...))
+# ---------------------------------------------------------------------------
+
+_EVAL_LOOP_PKGNAME = (
+    "pkgbase=linux-custom\n"
+    'pkgname=(\n  "$pkgbase"\n  "$pkgbase-headers"\n  "$pkgbase-docs"\n)\n'
+    'for _p in "${pkgname[@]}"; do\n'
+    '  eval "package_$_p() { :; }"\n'
+    "done\n"
+)
+
+_LITERAL_PKGNAME = (
+    "pkgbase=linux-custom\n"
+    "pkgname=('linux-custom' 'linux-custom-headers' 'linux-custom-docs')\n"
+)
+
+
+def test_subpackages_drop_docs_only(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_EVAL_LOOP_PKGNAME)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    text = pb.read_text()
+    assert '"$pkgbase-headers"' in text
+    assert "-docs" not in text
+    # Layout preserved: still one token per line, loop untouched.
+    assert '"$pkgbase"' in text
+    assert 'for _p in "${pkgname[@]}"' in text
+
+
+def test_subpackages_drop_headers_only(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_EVAL_LOOP_PKGNAME)
+    patch_kernel_subpackages(pb, headers=False, docs=True)
+    text = pb.read_text()
+    assert "-headers" not in text
+    assert '"$pkgbase-docs"' in text
+
+
+def test_subpackages_drop_both(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_EVAL_LOOP_PKGNAME)
+    patch_kernel_subpackages(pb, headers=False, docs=False)
+    text = pb.read_text()
+    assert "-headers" not in text
+    assert "-docs" not in text
+    assert '"$pkgbase"' in text
+
+
+def test_subpackages_keep_both_is_noop(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_EVAL_LOOP_PKGNAME)
+    patch_kernel_subpackages(pb, headers=True, docs=True)
+    assert pb.read_text() == _EVAL_LOOP_PKGNAME
+
+
+def test_subpackages_literal_names_single_line(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_LITERAL_PKGNAME)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    text = pb.read_text()
+    assert "'linux-custom-headers'" in text
+    assert "linux-custom-docs" not in text
+    assert "pkgname=('linux-custom' 'linux-custom-headers')" in text
+
+
+def test_subpackages_idempotent(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_EVAL_LOOP_PKGNAME)
+    patch_kernel_subpackages(pb, headers=False, docs=False)
+    once = pb.read_text()
+    patch_kernel_subpackages(pb, headers=False, docs=False)
+    assert pb.read_text() == once
+
+
+def test_subpackages_absent_is_noop(tmp_path):
+    """A kernel PKGBUILD with no -docs subpackage is left untouched when docs
+    are disabled."""
+    original = (
+        "pkgbase=linux-custom\n"
+        'pkgname=(\n  "$pkgbase"\n  "$pkgbase-headers"\n)\n'
+    )
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(original)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    assert pb.read_text() == original
+
+
+def test_subpackages_no_pkgname_is_noop(tmp_path):
+    original = "prepare() {\n  make olddefconfig\n}\n"
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(original)
+    patch_kernel_subpackages(pb, headers=False, docs=False)
+    assert pb.read_text() == original
 
 
 # ---------------------------------------------------------------------------

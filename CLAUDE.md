@@ -171,6 +171,11 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   **interactive by default** (only verb where unattended is opt-in); base `.config` via
   `_resolve_base_config`. Boot-safety tables in `kernel_safety.py`/`device_probe`, not inline;
   `device_probe.enumerate_devices` + `kernel_safety.parse_kconfig_text` are the single entry points.
+  Headers/docs toggles resolve in `_resolve_subpackages` (CLI `--headers`/`--docs` >
+  `kernel.toml build_headers`/`build_docs` > headers-on/docs-off default); dropping a
+  subpackage has one home — `pkgbuild_patcher.patch_kernel_subpackages` edits the
+  `pkgname=(...)` array (no parallel pkgname editor). Disabling headers must keep the Gate-1
+  DKMS/out-of-tree warning. See DESIGN.md §Kernel stage.
 
 `run toolchain` (stage 6), `run kernel` (stage 8), and the PGO profdata-reuse path
 (`build_mode = "pgo_llvm_toolchain"`) are stable but default `enabled = false` (opt-in —
