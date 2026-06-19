@@ -2017,7 +2017,7 @@ Pipeline stage 3. Probes the running system via `/proc/cpuinfo` and `lspci`, emi
 
 Unknown AMD CPU models get `CONFIG_X86_AMD_PSTATE` but no `CONFIG_MZEN*` entry — the kernel defaults to `CONFIG_GENERIC_CPU`.
 
-**LLVM target derivation.** The hardware stage also writes `host_arch` (from `uname -m`) and an autodetected `llvm_targets` list — CPU backend from arch (`x86_64`→`X86`, `aarch64`→`AArch64`, `armv7l`→`ARM`, `riscv64`→`RISCV`, `ppc64le`→`PowerPC`) plus GPU backends from `gpu_vendors` (`amd`→`AMDGPU`, `nvidia`→`NVPTX`; `intel` contributes nothing because the Mesa Intel drivers don't depend on an LLVM backend). Consumed by `pkgbuild_patcher.patch_llvm_targets` when building any LLVM-toolchain package.
+**LLVM target derivation.** The hardware stage also writes `host_arch` (from `uname -m`) and an autodetected `llvm_targets` list — CPU backend from arch (`x86_64`→`X86`, `aarch64`→`AArch64`, `armv7l`→`ARM`, `riscv64`→`RISCV`, `ppc64le`→`PowerPC`) plus GPU backends from `gpu_vendors` (`amd`→`AMDGPU`, `nvidia`→`NVPTX`; `intel` contributes nothing because the Mesa Intel drivers don't depend on an LLVM backend). **Plus a mandatory `AMDGPU` baseline (`_SYSTEM_LIBLLVM_CONSUMER_TARGETS`) on every recognised arch — even nvidia/intel-only hosts:** the *system* `mesa` package links the `AMDGPU` (radeonsi) and host-CPU (llvmpipe) target-init symbols from `libgallium` **unconditionally**, so a rebuilt system `llvm-libs` that dropped `AMDGPU` leaves mesa with `undefined symbol: LLVMInitializeAMDGPU…` and bricks every EGL/GL consumer (the whole desktop). An unrecognised arch yields an empty list — "no filtering", i.e. upstream builds all targets, which is also safe for mesa. Consumed by `pkgbuild_patcher.patch_llvm_targets` when building any LLVM-toolchain package.
 
 **`hardware_profile.toml` layout:**
 ```toml
@@ -2027,7 +2027,7 @@ cpu_family  = 25
 cpu_model   = 33
 host_arch   = "x86_64"
 gpu_vendors = ["nvidia"]
-llvm_targets = ["X86", "NVPTX"]
+llvm_targets = ["X86", "NVPTX", "AMDGPU"]  # AMDGPU always present (system mesa)
 nvme        = true
 
 [kconfig]
@@ -2157,6 +2157,8 @@ Build in this order to satisfy dependencies correctly:
 6. `libinput-git`
 7. COSMIC git packages
 8. `xwayland-satellite`
+
+**Reduced LLVM targets must keep `AMDGPU`.** When the toolchain stage rebuilds Stage-1 `llvm`/`llvm-libs` with a reduced `LLVM_TARGETS_TO_BUILD` (see §Hardware detection → *LLVM target derivation*), the set **must** include `AMDGPU` even on nvidia/intel-only hosts. Stage-4 `mesa` links the `AMDGPU` (radeonsi) and host-CPU (llvmpipe) target-init symbols from `libgallium` **unconditionally**; a system `libLLVM` missing them fails to load with `undefined symbol: LLVMInitializeAMDGPU…`, taking down every EGL/GL client (`cosmic-comp`, the greeter — the whole desktop), with healthy kernel/KMS still presenting as a black screen. `hardware.derive_llvm_targets` guarantees this via `_SYSTEM_LIBLLVM_CONSUMER_TARGETS`.
 
 ---
 

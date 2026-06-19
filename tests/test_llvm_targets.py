@@ -103,6 +103,59 @@ def test_resolve_targets_not_a_list_is_ignored(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# derive_llvm_targets — autodetected set, incl. the mandatory AMDGPU baseline
+#
+# AMDGPU must appear on EVERY recognised-arch host (even nvidia/intel-only),
+# because Arch's mesa links the AMDGPU + host-CPU target-init symbols from
+# libgallium unconditionally. Dropping AMDGPU from a rebuilt system libLLVM
+# bricks the whole EGL/GL desktop — the regression this guards against.
+# ---------------------------------------------------------------------------
+
+def test_derive_nvidia_host_appends_amdgpu():
+    from sysforge.pipeline.stages.hardware import derive_llvm_targets
+    assert derive_llvm_targets("x86_64", ["nvidia"]) == ["X86", "NVPTX", "AMDGPU"]
+
+
+def test_derive_amd_host_keeps_amdgpu_once():
+    """AMD GPU already pulls in AMDGPU via the vendor map; the baseline must
+    not duplicate it."""
+    from sysforge.pipeline.stages.hardware import derive_llvm_targets
+    result = derive_llvm_targets("x86_64", ["amd"])
+    assert result == ["X86", "AMDGPU"]
+    assert result.count("AMDGPU") == 1
+
+
+def test_derive_intel_only_host_still_gets_amdgpu():
+    from sysforge.pipeline.stages.hardware import derive_llvm_targets
+    assert derive_llvm_targets("x86_64", ["intel"]) == ["X86", "AMDGPU"]
+
+
+def test_derive_no_gpu_host_still_gets_amdgpu():
+    from sysforge.pipeline.stages.hardware import derive_llvm_targets
+    assert derive_llvm_targets("x86_64", []) == ["X86", "AMDGPU"]
+
+
+def test_derive_multi_gpu_amdgpu_appears_once():
+    from sysforge.pipeline.stages.hardware import derive_llvm_targets
+    result = derive_llvm_targets("x86_64", ["amd", "nvidia"])
+    assert result == ["X86", "AMDGPU", "NVPTX"]
+    assert result.count("AMDGPU") == 1
+
+
+def test_derive_aarch64_host_gets_amdgpu():
+    """Baseline applies to every recognised arch, not just x86_64."""
+    from sysforge.pipeline.stages.hardware import derive_llvm_targets
+    assert derive_llvm_targets("aarch64", ["nvidia"]) == ["AArch64", "NVPTX", "AMDGPU"]
+
+
+def test_derive_unrecognised_arch_returns_empty_no_filtering():
+    """Unknown arch → [] (no filtering = upstream builds all targets), which
+    is also safe for mesa since AMDGPU is then built anyway."""
+    from sysforge.pipeline.stages.hardware import derive_llvm_targets
+    assert derive_llvm_targets("s390x", ["amd"]) == []
+
+
+# ---------------------------------------------------------------------------
 # is_llvm_pkgbase
 # ---------------------------------------------------------------------------
 
@@ -423,7 +476,8 @@ def test_maybe_patch_llvm_targets_falls_back_to_live_detect(tmp_path):
         return_value=fake_lspci,
     ), patch("os.uname", return_value=fake_uname):
         _maybe_patch_llvm_targets(pkgbuild, pkgmeta, state_dir_override=state_dir)
-    assert '-DLLVM_TARGETS_TO_BUILD="X86;NVPTX"' in pkgbuild.read_text()
+    # AMDGPU is always appended (system mesa links it regardless of GPU).
+    assert '-DLLVM_TARGETS_TO_BUILD="X86;NVPTX;AMDGPU"' in pkgbuild.read_text()
 
 
 def test_maybe_patch_llvm_targets_force_all_short_circuits_live(tmp_path):
@@ -476,11 +530,12 @@ def test_resolve_or_detect_falls_back_to_live(tmp_path):
         result = resolve_or_detect_llvm_targets(
             tmp_path / "missing-tc.toml", tmp_path / "missing-hw.toml",
         )
-    assert result == ["X86", "NVPTX"]
+    # AMDGPU is always appended — system mesa links it regardless of GPU.
+    assert result == ["X86", "NVPTX", "AMDGPU"]
 
 
 def test_resolve_or_detect_lspci_failure_is_non_fatal(tmp_path):
-    """lspci missing/erroring → CPU-only target list (still useful)."""
+    """lspci missing/erroring → CPU target + the AMDGPU baseline (still useful)."""
     from sysforge.primitives.llvm_targets import resolve_or_detect_llvm_targets
     fake_lspci = SimpleNamespace(returncode=1, stdout="")
     fake_uname = SimpleNamespace(machine="x86_64")
@@ -491,7 +546,8 @@ def test_resolve_or_detect_lspci_failure_is_non_fatal(tmp_path):
         result = resolve_or_detect_llvm_targets(
             tmp_path / "missing-tc.toml", tmp_path / "missing-hw.toml",
         )
-    assert result == ["X86"]
+    # No GPU detected, but AMDGPU is still mandatory for system mesa.
+    assert result == ["X86", "AMDGPU"]
 
 
 # ---------------------------------------------------------------------------

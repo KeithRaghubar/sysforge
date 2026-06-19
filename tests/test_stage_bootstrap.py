@@ -598,7 +598,10 @@ class TestHardwareStageRun:
         assert data["hardware"]["host_arch"]
         assert data["hardware"]["llvm_targets"]
         assert "NVPTX" in data["hardware"]["llvm_targets"]
-        assert "AMDGPU" not in data["hardware"]["llvm_targets"]
+        # AMDGPU is mandatory even on an nvidia host: system mesa's libgallium
+        # links the AMDGPU target-init symbols unconditionally, so a reduced
+        # system libLLVM that dropped it would brick the EGL/GL desktop.
+        assert "AMDGPU" in data["hardware"]["llvm_targets"]
         # [[devices]] inventory written, with the unbound audio controller.
         assert len(data["devices"]) == 2
         audio = next(d for d in data["devices"] if d["address"] == "0000:0d:00.4")

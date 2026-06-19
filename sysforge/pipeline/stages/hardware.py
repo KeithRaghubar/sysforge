@@ -201,13 +201,26 @@ _HOST_ARCH_TO_LLVM = {
     "ppc64le": "PowerPC",
 }
 
-# GPU vendor (as emitted by parse_gpu_vendors) → LLVM GPU backend.
-# Intel Mesa drivers (iris/anv) do not depend on an LLVM backend, so intel
-# GPUs contribute no entry here.
+# GPU vendor (as emitted by parse_gpu_vendors) → the LLVM backend that GPU's
+# OWN compute path wants. Intel Mesa drivers (iris/anv) don't use an LLVM
+# backend, so intel GPUs contribute no entry here. This map is NOT the whole
+# story: every host also gets _SYSTEM_LIBLLVM_CONSUMER_TARGETS below, so an
+# intel/nvidia-only host still ends up with AMDGPU in its target set.
 _GPU_VENDOR_TO_LLVM = {
     "amd":    "AMDGPU",
     "nvidia": "NVPTX",
 }
+
+# Targets the *system* libLLVM must always carry because installed system
+# packages link them regardless of this host's GPU. Arch's mesa references the
+# AMDGPU (radeonsi) and host-CPU (llvmpipe) target-init symbols from libgallium
+# UNCONDITIONALLY — they are compiled in whatever GPU you own. If the toolchain
+# stage rebuilds system llvm-libs with a reduced LLVM_TARGETS_TO_BUILD that drops
+# AMDGPU, mesa — and therefore every EGL/GL consumer, i.e. the whole desktop —
+# fails to load with `undefined symbol: LLVMInitializeAMDGPU...`. So AMDGPU is
+# mandatory in any non-empty autodetected set, even on nvidia/intel-only hosts.
+# (The host CPU backend is already supplied from _HOST_ARCH_TO_LLVM.)
+_SYSTEM_LIBLLVM_CONSUMER_TARGETS = ("AMDGPU",)
 
 
 def detect_host_arch() -> str:
@@ -218,9 +231,11 @@ def detect_host_arch() -> str:
 def derive_llvm_targets(host_arch: str, gpu_vendors: list[str]) -> list[str]:
     """Build the autodetected LLVM_TARGETS_TO_BUILD list for this host.
 
-    Order: CPU backend first, then GPU backends in vendor-detection order.
-    Returns an empty list when the host arch is unrecognised — callers
-    treat empty as "no filtering" (i.e. preserve upstream defaults).
+    Order: CPU backend first, then GPU backends in vendor-detection order, then
+    the mandatory system-libLLVM-consumer baseline (AMDGPU — see
+    ``_SYSTEM_LIBLLVM_CONSUMER_TARGETS``). Returns an empty list when the host
+    arch is unrecognised — callers treat empty as "no filtering" (i.e. preserve
+    upstream defaults), which also keeps mesa safe because all targets get built.
     """
     cpu = _HOST_ARCH_TO_LLVM.get(host_arch)
     targets: list[str] = []
@@ -235,6 +250,12 @@ def derive_llvm_targets(host_arch: str, gpu_vendors: list[str]) -> list[str]:
     for vendor in gpu_vendors:
         backend = _GPU_VENDOR_TO_LLVM.get(vendor)
         if backend and backend not in targets:
+            targets.append(backend)
+    # Always carry the backends system consumers (mesa's libgallium) link, even
+    # when this host's GPU wouldn't otherwise pull them in — otherwise a reduced
+    # system libLLVM bricks the desktop. See _SYSTEM_LIBLLVM_CONSUMER_TARGETS.
+    for backend in _SYSTEM_LIBLLVM_CONSUMER_TARGETS:
+        if backend not in targets:
             targets.append(backend)
     return targets
 
