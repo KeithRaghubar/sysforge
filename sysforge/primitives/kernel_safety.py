@@ -119,6 +119,59 @@ def is_enabled(config: dict[str, str], symbol: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# kconfig drift  (what sysforge merged vs what survived into the resolved .config)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class KconfigDrift:
+    """One option sysforge requested in the fragment that the resolved
+    ``.config`` did not honour.
+
+    ``requested``/``resolved`` use the same forms ``parse_kconfig_text``
+    yields ("y", "m", "n", or a quoted ``"str"``); an option absent from the
+    resolved config is normalised to "n" (kernel semantics: not-set == off).
+    """
+    option: str
+    requested: str
+    resolved: str
+    kind: str          # "disabled" | "re-enabled" | "changed"
+
+
+def diff_requested_kconfig(
+    requested: dict[str, str], resolved: dict[str, str],
+) -> list[KconfigDrift]:
+    """Compare the options sysforge merged (``requested``) against the resolved
+    ``.config`` (``resolved``) and classify every divergence.
+
+    Pure fact-finder — only iterates keys in ``requested`` (sysforge's intent),
+    so options the base config or kconfig auto-select added are ignored. A
+    missing resolved option is treated as "n". Classification:
+
+      - requested y/m → resolved n         → ``disabled``
+      - requested y/m → resolved m/y (≠)   → ``changed`` (built-in↔module)
+      - requested n   → resolved y/m       → ``re-enabled``
+      - any other value mismatch (string/int) → ``changed``
+
+    Returns drifts in ``requested`` insertion order; empty when nothing drifted.
+    """
+    drifts: list[KconfigDrift] = []
+    for option, req in requested.items():
+        res = resolved.get(option, "n")
+        if res == req:
+            continue
+        req_on = req in ("y", "m")
+        res_on = res in ("y", "m")
+        if req_on and res == "n":
+            kind = "disabled"
+        elif req == "n" and res_on:
+            kind = "re-enabled"
+        else:
+            kind = "changed"
+        drifts.append(KconfigDrift(option=option, requested=req, resolved=res, kind=kind))
+    return drifts
+
+
+# ---------------------------------------------------------------------------
 # Curated boot-critical kconfig tables
 #
 # (symbol, human reason). All entries here are brick-class unless noted.

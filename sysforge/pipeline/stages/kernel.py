@@ -586,6 +586,12 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None):
     entries are machine-derived advisories — a hardware/manual entry overrides
     them silently. If no entries exist from any source, no fragment is written.
 
+    The whole merge is gated by ``kernel.toml kconfig_merge`` (default true);
+    set false to disable the fragment entirely (and skip the post-build drift
+    check, which keys off the fragment's existence). When disabled, a stale
+    ``sysforge.config`` from a prior run is removed so "off" means off — the
+    PKGBUILD won't merge a leftover fragment.
+
     ``provenance`` (optional) is a one-line toolchain trail (e.g.
     "toolchain variant: pgo_llvm  cc: /usr/bin/clang") stamped into the
     fragment header so a ``.config`` diff between two builds carries the
@@ -594,6 +600,21 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None):
     Returns ``(path | None, hw_count, manual_count, device_count)`` — path is
     None when no fragment was written (no entries, or dry-run).
     """
+    # Master gate: kconfig_merge = false disables the fragment outright. Remove
+    # any stale fragment so a prior run's sysforge.config isn't merged by the
+    # PKGBUILD — "off" must mean off.
+    if not bool(kernel_cfg.get("kconfig_merge", True)):
+        _log.info("kconfig_merge = false — skipping kconfig fragment merge")
+        if not dry_run:
+            stale = _pkgbuild_path(kernel_cfg).parent / "sysforge.config"
+            if stale.exists():
+                try:
+                    stale.unlink()
+                    _log.info(f"Removed stale kconfig fragment: {stale}")
+                except OSError as exc:
+                    _log.warn(f"Could not remove stale kconfig fragment {stale}: {exc}")
+        return None, 0, 0, 0
+
     # Load and validate the sources
     hw_kconfig, device_kconfig = _load_hardware_kconfig(config)
     if device_kconfig and not bool(kernel_cfg.get("device_kconfig", True)):
@@ -980,6 +1001,48 @@ def _gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None):
         )
 
 
+def _gate2_kconfig_drift(pkgbuild_dir, fragment_path):
+    """Advisory: warn when options sysforge merged didn't survive into the
+    resolved .config.
+
+    Runs post-build (beside Gate 2, pre-install) but **never raises** — a drop
+    can be a deliberate ``nconfig`` toggle *or* legitimate dependency
+    resolution by ``make olddefconfig``, and sysforge can't tell the two apart
+    without a full dep solve. ``fragment_path is None`` (merge disabled or no
+    entries) makes this a no-op, so the check is on exactly when the merge is.
+    """
+    if fragment_path is None:
+        return
+
+    config_path = _resolve_built_config(pkgbuild_dir)
+    if config_path is None:
+        _log.info(
+            "kconfig drift check skipped — resolved .config not found in build tree"
+        )
+        return
+
+    requested = kernel_safety.parse_kconfig_text(
+        Path(fragment_path).read_text(encoding="utf-8")
+    )
+    resolved = kernel_safety.parse_kconfig(config_path) or {}
+    drifts = kernel_safety.diff_requested_kconfig(requested, resolved)
+
+    if not drifts:
+        _log.info(
+            f"kconfig drift check: all {len(requested)} merged option(s) "
+            "survived into the resolved .config"
+        )
+        return
+
+    _log.warn(
+        f"kconfig drift: {len(drifts)} option(s) sysforge merged differ in the "
+        "resolved .config — possibly toggled in `nconfig`, or dropped by "
+        "`make olddefconfig` due to unmet dependencies (advisory, not a failure)"
+    )
+    for d in drifts:
+        _log.warn(f"  {d.option}: {d.requested} → {d.resolved} ({d.kind})")
+
+
 def _gate3_verify(pkgbuild_dir, pkgname, bootloader):
     """Post-install boot-readiness verification. Raises on brick.
 
@@ -1199,7 +1262,7 @@ class KernelStage(Stage):
         # the toolchain provenance (C2). Still before the build, which reads
         # sysforge.config in the PKGBUILD's prepare().
         provenance = f"toolchain variant: {variant}  cc: {cc or '-'}"
-        _, hw_kconfig_count, manual_kconfig_count, device_kconfig_count = (
+        fragment_path, hw_kconfig_count, manual_kconfig_count, device_kconfig_count = (
             _write_kconfig_fragment(
                 kernel_cfg, config, options.dry_run, provenance=provenance,
             )
@@ -1292,6 +1355,11 @@ class KernelStage(Stage):
                     pkgbuild.parent, topology,
                     skip_boot_audit=skip_boot_audit, state_dir=state_dir,
                 )
+
+                # Advisory: warn if any option sysforge merged didn't survive
+                # the build's kconfig resolution (nconfig toggle or olddefconfig
+                # dep drop). Never raises; no-op when no fragment was written.
+                _gate2_kconfig_drift(pkgbuild.parent, fragment_path)
 
             # Install + boot wiring are the mutation window — wrap them in the
             # sentinel so an interrupted install / mkinitcpio / bootloader regen

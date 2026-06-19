@@ -424,6 +424,99 @@ def test_write_kconfig_fragment_conflict_emits_warn(tmp_path):
     assert any("CONFIG_MZEN3" in m and "manual override wins" in m
                for m in _warn_messages(logs))
 
+# ---------------------------------------------------------------------------
+# kconfig_merge master toggle
+# ---------------------------------------------------------------------------
+
+def test_write_kconfig_fragment_merge_disabled_is_noop(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    hw = make_hardware_profile(tmp_path, kconfig={"CONFIG_MZEN3": "y"})
+    kernel_cfg = {
+        "pkgname": "linux-git",
+        "pkgbuild_src_dir": str(builds),
+        "kconfig_merge": False,
+    }
+    config = {"hardware_profile": str(hw)}
+
+    result, hw_c, man_c, dev_c = _write_kconfig_fragment(kernel_cfg, config, dry_run=False)
+
+    assert result is None
+    assert (hw_c, man_c, dev_c) == (0, 0, 0)
+    assert not (builds / "linux-git" / "sysforge.config").exists()
+
+def test_write_kconfig_fragment_merge_disabled_removes_stale(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    stale = builds / "linux-git" / "sysforge.config"
+    stale.write_text("CONFIG_OLD=y\n")
+    kernel_cfg = {
+        "pkgname": "linux-git",
+        "pkgbuild_src_dir": str(builds),
+        "kconfig_merge": False,
+    }
+
+    result, *_ = _write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
+
+    assert result is None
+    assert not stale.exists()
+
+# ---------------------------------------------------------------------------
+# _gate2_kconfig_drift — advisory post-build drift check
+# ---------------------------------------------------------------------------
+
+def test_gate2_kconfig_drift_warns_on_disabled_option(tmp_path, monkeypatch):
+    fragment = tmp_path / "sysforge.config"
+    fragment.write_text("# source: hardware\nCONFIG_MZEN3=y\nCONFIG_HZ_1000=y\n")
+    resolved = tmp_path / ".config"
+    resolved.write_text("# CONFIG_MZEN3 is not set\nCONFIG_HZ_1000=y\n")
+    monkeypatch.setattr(_km, "_resolve_built_config", lambda d: resolved)
+
+    with _capture_logs() as logs:
+        _km._gate2_kconfig_drift(tmp_path, fragment)
+
+    warns = _warn_messages(logs)
+    assert any("kconfig drift" in m for m in warns)
+    assert any("CONFIG_MZEN3" in m and "disabled" in m for m in warns)
+    # the surviving option must NOT be reported as drift
+    assert not any("CONFIG_HZ_1000" in m for m in warns)
+
+def test_gate2_kconfig_drift_clean_logs_info_no_warn(tmp_path, monkeypatch):
+    fragment = tmp_path / "sysforge.config"
+    fragment.write_text("CONFIG_HZ_1000=y\n")
+    resolved = tmp_path / ".config"
+    resolved.write_text("CONFIG_HZ_1000=y\nCONFIG_EXTRA=y\n")
+    monkeypatch.setattr(_km, "_resolve_built_config", lambda d: resolved)
+
+    with _capture_logs() as logs:
+        _km._gate2_kconfig_drift(tmp_path, fragment)
+
+    assert not _warn_messages(logs)
+    assert any("survived" in m for m in _info_messages(logs))
+
+def test_gate2_kconfig_drift_no_fragment_is_noop(tmp_path, monkeypatch):
+    # fragment_path is None (merge disabled / no entries) → check must not run,
+    # not even locate the resolved config.
+    called = []
+    monkeypatch.setattr(_km, "_resolve_built_config", lambda d: called.append(d))
+
+    with _capture_logs() as logs:
+        _km._gate2_kconfig_drift(tmp_path, None)
+
+    assert called == []
+    assert not _warn_messages(logs)
+
+def test_gate2_kconfig_drift_no_resolved_config_skips(tmp_path, monkeypatch):
+    fragment = tmp_path / "sysforge.config"
+    fragment.write_text("CONFIG_HZ_1000=y\n")
+    monkeypatch.setattr(_km, "_resolve_built_config", lambda d: None)
+
+    with _capture_logs() as logs:
+        _km._gate2_kconfig_drift(tmp_path, fragment)
+
+    assert not _warn_messages(logs)
+    assert any("resolved .config not found" in m for m in _info_messages(logs))
+
 def test_write_kconfig_fragment_dry_run_no_file(tmp_path):
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")

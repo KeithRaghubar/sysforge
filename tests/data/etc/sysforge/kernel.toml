@@ -22,6 +22,7 @@ bootloader   = "systemd-boot"
 # boot_audit = true               # run /boot space check + Gate-2 resolved-.config audit
 # min_boot_free_mb = 200          # minimum free MiB on /boot before building
 # capture_lsmod_snapshot = true   # capture lsmod for the PKGBUILD's `make localmodconfig`
+# kconfig_merge = true            # write the sysforge.config fragment (false also disables the drift check)
 # device_kconfig = true           # merge the hardware stage's device-driven kconfig entries
 
 # kconfig — manual kernel config fragment (highest precedence)

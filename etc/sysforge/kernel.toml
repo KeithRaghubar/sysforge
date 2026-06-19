@@ -124,6 +124,14 @@ pkgname = "linux-sysforge"      # base package name (must match the PKGBUILD pkg
 # CONFIG_PREEMPT = "y"
 # ---------------------------------------------------------------------------
 
+# kconfig_merge = true           # default: true — write the sysforge.config
+#                                # fragment (device + hardware + manual entries)
+#                                # for the PKGBUILD to merge. Set false to skip
+#                                # the fragment entirely; this also disables the
+#                                # post-build drift check (which warns when a
+#                                # merged option didn't survive into the resolved
+#                                # .config), since there's nothing to compare.
+
 # device_kconfig = true          # default: true — merge the hardware stage's
 #                                # device-driven [kconfig_devices] entries
 #                                # (modular drivers, "=m", for devices present

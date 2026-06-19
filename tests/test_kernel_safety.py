@@ -67,6 +67,60 @@ def test_is_enabled():
 
 
 # ---------------------------------------------------------------------------
+# diff_requested_kconfig — fragment intent vs resolved .config
+# ---------------------------------------------------------------------------
+
+def test_diff_kconfig_exact_match_no_drift():
+    req = {"CONFIG_A": "y", "CONFIG_B": "m", "CONFIG_S": '"str"'}
+    assert ks.diff_requested_kconfig(req, dict(req)) == []
+
+
+def test_diff_kconfig_disabled():
+    drifts = ks.diff_requested_kconfig({"CONFIG_A": "y"}, {"CONFIG_A": "n"})
+    assert len(drifts) == 1
+    assert (drifts[0].option, drifts[0].requested, drifts[0].resolved,
+            drifts[0].kind) == ("CONFIG_A", "y", "n", "disabled")
+
+
+def test_diff_kconfig_absent_resolves_to_n_is_disabled():
+    # requested y, option missing from resolved .config → treated as n (disabled)
+    drifts = ks.diff_requested_kconfig({"CONFIG_A": "m"}, {})
+    assert [d.kind for d in drifts] == ["disabled"]
+    assert drifts[0].resolved == "n"
+
+
+def test_diff_kconfig_downgrade_and_upgrade_are_changed():
+    drifts = ks.diff_requested_kconfig(
+        {"CONFIG_A": "y", "CONFIG_B": "m"},
+        {"CONFIG_A": "m", "CONFIG_B": "y"},
+    )
+    assert [d.kind for d in drifts] == ["changed", "changed"]
+
+
+def test_diff_kconfig_re_enabled():
+    drifts = ks.diff_requested_kconfig({"CONFIG_A": "n"}, {"CONFIG_A": "y"})
+    assert [d.kind for d in drifts] == ["re-enabled"]
+
+
+def test_diff_kconfig_requested_n_absent_is_no_drift():
+    # requested off, resolved doesn't mention it → both off, no drift
+    assert ks.diff_requested_kconfig({"CONFIG_A": "n"}, {}) == []
+
+
+def test_diff_kconfig_string_value_change_is_changed():
+    drifts = ks.diff_requested_kconfig(
+        {"CONFIG_CMDLINE": '"quiet"'}, {"CONFIG_CMDLINE": '"verbose"'},
+    )
+    assert [d.kind for d in drifts] == ["changed"]
+
+
+def test_diff_kconfig_ignores_options_not_requested():
+    # an option only in the resolved config is not sysforge's intent → ignored
+    assert ks.diff_requested_kconfig({"CONFIG_A": "y"},
+                                     {"CONFIG_A": "y", "CONFIG_EXTRA": "y"}) == []
+
+
+# ---------------------------------------------------------------------------
 # audit_resolved_config — boot-critical
 # ---------------------------------------------------------------------------
 
