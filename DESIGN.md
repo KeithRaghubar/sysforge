@@ -1573,7 +1573,6 @@ LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
 [profiles.pgo_llvm_toolchain]
 extends = "optimized"
 build_mode = "pgo_llvm_toolchain"
-pgo_store = "/var/tmp"
 
 [profiles.patched]
 extends = "optimized"

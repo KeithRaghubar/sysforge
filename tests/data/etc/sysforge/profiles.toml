@@ -87,8 +87,6 @@
 #   # SysForge behaviour keys  (not written to conf or env)
 #   build_mode    = "patched_pkgbuild"  # "patched_pkgbuild" | "pgo_llvm_toolchain" | "kernel"
 #                                     # omit for standard builds
-#   pgo_store     = "/var/tmp"        # (required when build_mode = "pgo_llvm_toolchain")
-#                                     # directory for PGO instrumentation data
 #   clean_builddir = true             # wipe src/ before build (default: false)
 #   batch          = true             # abort on failure without prompting (default: false)
 #   consumes       = ["makepkg", "rust", "cmake", "meson", "env"]
@@ -171,7 +169,6 @@ LDFLAGS = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=
 [profiles.pgo_llvm_toolchain]
 extends = "optimized"
 build_mode = "pgo_llvm_toolchain"
-pgo_store = "/var/tmp"
 
 [profiles.patched]
 extends = "optimized"

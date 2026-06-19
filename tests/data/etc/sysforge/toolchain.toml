@@ -21,7 +21,7 @@ skip_build = false
 # On subsequent runs, compatible profdata (same LLVM major) skips passes 1a-2.
 # Use --rebuild-profdata to force a full 4-pass build.
 # Needs ~500 MB free during pass 2.
-# pgo_store = "/var/tmp/sysforge-llvm-pgo"
+# pgo_store = "/var/cache/sysforge/llvm-pgo"
 
 # Build-safety Gate 1 (LLVM path only — the GCC path is register-only and skips
 # all gates). The two keys below are *settable config keys shown at their
