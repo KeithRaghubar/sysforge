@@ -161,6 +161,30 @@ def test_non_kernel_build_never_patches_kconfig(tmp_path):
     mock_patch.assert_not_called()
 
 
+def test_kernel_build_applies_btf_guard(tmp_path):
+    """kernel_build=True → patch_kernel_btf_guard called (gates vmlinux.h on BTF)."""
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.primitives.makepkg_wrapper.patch_kernel_btf_guard") as mock_btf,
+    ):
+        _run_build(pkgbuild, _minimal_profile(), {}, [],
+                   extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
+                   kernel_build=True)
+    mock_btf.assert_called_once()
+
+
+def test_non_kernel_build_never_applies_btf_guard(tmp_path):
+    """kernel_build=False → patch_kernel_btf_guard never called."""
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.primitives.makepkg_wrapper.patch_kernel_btf_guard") as mock_btf,
+    ):
+        _run_build(pkgbuild, _minimal_profile(), {}, [],
+                   extracted_profile=None, pkgmeta=_minimal_pkgmeta(),
+                   kernel_build=False)
+    mock_btf.assert_not_called()
+
+
 def test_kernel_build_always_applies_fragment_merge(tmp_path):
     """kernel_build=True always injects the sysforge.config fragment merge,
     threading the resolved interactive flag (both branches)."""

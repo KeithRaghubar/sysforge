@@ -105,6 +105,32 @@ def _package_func_re(pkgname: str) -> re.Pattern:
 # injection stays idempotent.
 _BOOT_CONFIG_RE = re.compile(r"/boot/config\b")
 
+# bpftool's ``vmlinux.h`` target/artifact requires a ``.BTF`` section in
+# ``vmlinux``, which only exists when ``CONFIG_DEBUG_INFO_BTF=y``. A lean
+# (BTF-off) resolved ``.config`` — e.g. ``base_config="running"`` seeded from a
+# debug-info-free kernel — makes the stock PKGBUILD's unconditional
+# ``make … vmlinux.h`` build step and its ``package()`` install hard-fail. These
+# anchors gate both behind a runtime ``CONFIG_DEBUG_INFO_BTF`` check (the idiom
+# the kernel PKGBUILD already uses for ``CONFIG_DEBUG_INFO_BTF_MODULES``). The
+# build-step pattern requires ``make`` immediately after the indent, so a
+# commented-out step (``#  make …``) is naturally skipped. The install pattern
+# spans backslash-continuations so it captures the one multi-line ``install``
+# statement that lists ``vmlinux.h`` without overrunning into the next command.
+_BPFTOOL_VMLINUX_H_BUILD_RE = re.compile(
+    r"^([ \t]*)(make[ \t]+-C[ \t]+tools/bpf/bpftool\b[^\n]*\bvmlinux\.h\b[^\n]*)$",
+    re.MULTILINE,
+)
+_VMLINUX_H_INSTALL_STMT_RE = re.compile(
+    r"^([ \t]*)install\b(?:[^\n]*\\\n)*[^\n]*tools/bpf/bpftool/vmlinux\.h[^\n]*$",
+    re.MULTILINE,
+)
+_BPFTOOL_VMLINUX_H_INSTALL_TOKEN_RE = re.compile(
+    r"[ \t]+tools/bpf/bpftool/vmlinux\.h\b"
+)
+# Sentinel marking a prior BTF-guard injection (present in both the wrapped
+# build step and the guarded install) — keeps the patch idempotent.
+_BTF_GUARD_SENTINEL = "# sysforge: BTF guard"
+
 
 # ---------------------------------------------------------------------------
 # Group patching (moved from pkgbuild_meta.py)
@@ -741,6 +767,84 @@ def patch_kernel_config_install(patched_path, *, pkgname):
     _log.info(
         f"Injected /boot config install into kernel PKGBUILD {m.group(0).strip()}",
     )
+
+
+def patch_kernel_btf_guard(patched_path):
+    """Gate the kernel PKGBUILD's bpftool ``vmlinux.h`` build + install on
+    ``CONFIG_DEBUG_INFO_BTF``.
+
+    A stock kernel PKGBUILD runs ``make -C tools/bpf/bpftool vmlinux.h`` in
+    ``build()`` and installs the produced ``vmlinux.h`` in ``package()``, both
+    unconditionally. Generating/installing ``vmlinux.h`` requires a ``.BTF``
+    section in ``vmlinux``, which only exists when ``CONFIG_DEBUG_INFO_BTF=y``.
+    When the resolved ``.config`` has BTF off (e.g. ``base_config="running"`` on
+    a lean, debug-info-free kernel), the build hard-fails at the bpftool step
+    with ``failed to find '.BTF' ELF section``.
+
+    This wraps the build step in — and reduces the ``vmlinux.h`` install to — a
+    runtime ``if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF) = y ]]`` guard
+    (the same idiom the PKGBUILD already uses for
+    ``CONFIG_DEBUG_INFO_BTF_MODULES``), so a BTF-on build keeps both steps and a
+    BTF-off build skips them. The guard is evaluated against the *real* resolved
+    config at build time, so sysforge needs no BTF prediction.
+
+    Mirrors the sibling kernel patchers: modifies ``patched_path`` in place,
+    no-op when the build step is absent (commented out / already removed) and
+    idempotent via the ``# sysforge: BTF guard`` sentinel. The operator's
+    tracked PKGBUILD is untouched — this only edits the generated
+    ``PKGBUILD.sysforge`` copy.
+    """
+    patched_path = Path(patched_path)
+    text = patched_path.read_text(encoding="utf-8")
+
+    if _BTF_GUARD_SENTINEL in text:
+        _log.info(
+            "PKGBUILD already carries the sysforge BTF guard — skipping "
+            "vmlinux.h BTF-guard injection",
+        )
+        return
+
+    changed = False
+
+    # 1. Wrap the build() step so vmlinux.h is only generated when BTF is on.
+    mb = _BPFTOOL_VMLINUX_H_BUILD_RE.search(text)
+    if mb:
+        indent = mb.group(1)
+        wrapped = (
+            f"{indent}if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF) = y ]]; then  {_BTF_GUARD_SENTINEL}\n"
+            f"{indent}  {mb.group(2)}\n"
+            f"{indent}fi"
+        )
+        text = text[:mb.start()] + wrapped + text[mb.end():]
+        changed = True
+
+    # 2. Pull vmlinux.h out of the unconditional package() install and re-add it
+    #    behind the same guard (so a BTF-off build doesn't fail installing a file
+    #    it never built). Strip only the vmlinux.h token; sibling files stay on
+    #    the original install line.
+    mi = _VMLINUX_H_INSTALL_STMT_RE.search(text)
+    if mi:
+        indent = mi.group(1)
+        stmt_stripped = _BPFTOOL_VMLINUX_H_INSTALL_TOKEN_RE.sub("", mi.group(0))
+        guarded = (
+            f"\n{indent}if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF) = y ]]; then  {_BTF_GUARD_SENTINEL}\n"
+            f'{indent}  install -Dt "$builddir" -m644 tools/bpf/bpftool/vmlinux.h\n'
+            f"{indent}fi"
+        )
+        text = text[:mi.start()] + stmt_stripped + guarded + text[mi.end():]
+        changed = True
+
+    if changed:
+        patched_path.write_text(text, encoding="utf-8")
+        _log.info(
+            "Gated bpftool vmlinux.h build/install on CONFIG_DEBUG_INFO_BTF "
+            "(BTF-off configs skip it)",
+        )
+    else:
+        _log.info(
+            "No bpftool vmlinux.h build/install found in the kernel PKGBUILD — "
+            "nothing to BTF-guard",
+        )
 
 
 # ---------------------------------------------------------------------------

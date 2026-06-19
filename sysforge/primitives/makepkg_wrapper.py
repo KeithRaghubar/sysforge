@@ -70,6 +70,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     cleanup_patch_artifacts,
     extract_pkgbuild_profile,
     is_llvm_pkgbase,
+    patch_kernel_btf_guard,
     patch_kernel_config_install,
     patch_kernel_kconfig_apply,
     patch_llvm_dir,
@@ -309,6 +310,11 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # Ship the resolved .config to /boot (pacman-tracked) when the PKGBUILD
         # doesn't already — the main image subpackage is named for the pkgbase.
         patch_kernel_config_install(pkgbuild_path, pkgname=_pkgname_from_meta(pkgmeta))
+        # Gate the bpftool vmlinux.h build+install on CONFIG_DEBUG_INFO_BTF so a
+        # BTF-off resolved .config (e.g. base_config="running" on a lean kernel)
+        # doesn't hard-fail at the bpftool step. Guard is config-conditional at
+        # build time, so it's safe to apply unconditionally.
+        patch_kernel_btf_guard(pkgbuild_path)
         if not interactive:
             patch_noninteractive_kconfig(pkgbuild_path)
 

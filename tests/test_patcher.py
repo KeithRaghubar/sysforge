@@ -35,6 +35,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     load_extracted_profile,
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
+    patch_kernel_btf_guard,
     patch_kernel_config_install,
     patch_kernel_kconfig_apply,
     patch_noninteractive_kconfig,
@@ -849,6 +850,121 @@ def test_subshell_env_reset_inherited_default_ld():
         )
         assert count == 0
         assert p.read_text() == original
+
+
+# ---------------------------------------------------------------------------
+# patch_kernel_btf_guard (gate bpftool vmlinux.h on CONFIG_DEBUG_INFO_BTF)
+# ---------------------------------------------------------------------------
+
+_BTF_GUARD = "if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF) = y ]]; then"
+_BTF_SENTINEL = "# sysforge: BTF guard"
+
+# Mirrors the real kernel PKGBUILD: an unconditional bpftool vmlinux.h build
+# step and a backslash-continued install statement that lists vmlinux.h.
+_BTF_PKGBUILD = (
+    "build() {\n"
+    "  cd $_srcname\n"
+    "  make all\n"
+    "  make -C tools/bpf/bpftool vmlinux.h feature-clang-bpf-co-re=1\n"
+    "  make htmldocs\n"
+    "}\n"
+    "\n"
+    "package() {\n"
+    "  install -Dt \"$builddir\" -m644 .config Makefile Module.symvers System.map \\\n"
+    "    localversion.* version vmlinux tools/bpf/bpftool/vmlinux.h\n"
+    "  cp -t \"$builddir\" -a scripts\n"
+    "}\n"
+)
+
+
+def test_btf_guard_wraps_build_step(tmp_path):
+    """The bpftool vmlinux.h build step is wrapped in a BTF runtime guard."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BTF_PKGBUILD)
+    patch_kernel_btf_guard(pb)
+    text = pb.read_text()
+    # Guard precedes the (still-present) make step, which is now indented under it.
+    idx_guard = text.index(_BTF_GUARD)
+    idx_make = text.index("make -C tools/bpf/bpftool vmlinux.h")
+    assert idx_guard < idx_make
+    assert "\n  fi\n" in text  # build-step guard closed
+    # Unrelated make steps untouched.
+    assert "make all\n" in text
+    assert "make htmldocs\n" in text
+
+
+def test_btf_guard_makes_install_conditional(tmp_path):
+    """vmlinux.h is pulled out of the unconditional install and re-added guarded."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BTF_PKGBUILD)
+    patch_kernel_btf_guard(pb)
+    text = pb.read_text()
+    # The token now appears exactly once — inside the guarded install, not on the
+    # original multi-file install line.
+    assert text.count("tools/bpf/bpftool/vmlinux.h") == 1
+    guarded = text[text.index("package()"):]
+    assert 'install -Dt "$builddir" -m644 tools/bpf/bpftool/vmlinux.h' in guarded
+    # Sibling files survive on the original install line; `vmlinux` (no .h) kept.
+    assert ".config Makefile Module.symvers System.map" in text
+    assert "version vmlinux" in text
+    # The stripped main install line no longer carries the bpftool path.
+    main_install_line = next(
+        ln for ln in text.splitlines()
+        if "localversion.* version vmlinux" in ln
+    )
+    assert "tools/bpf/bpftool/vmlinux.h" not in main_install_line
+
+
+def test_btf_guard_idempotent(tmp_path):
+    """Re-applying the guard is a no-op (sentinel short-circuits)."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BTF_PKGBUILD)
+    patch_kernel_btf_guard(pb)
+    once = pb.read_text()
+    patch_kernel_btf_guard(pb)
+    assert pb.read_text() == once
+    # Exactly two guards: one for build(), one for the install.
+    assert once.count(_BTF_SENTINEL) == 2
+
+
+def test_btf_guard_noop_when_step_absent(tmp_path):
+    """A PKGBUILD with the step commented out and no install token is unchanged
+    (the linux.bak case where BTF was disabled by hand)."""
+    original = (
+        "build() {\n"
+        "  cd $_srcname\n"
+        "  make all\n"
+        "#  make -C tools/bpf/bpftool vmlinux.h feature-clang-bpf-co-re=1\n"
+        "}\n"
+        "\n"
+        "package() {\n"
+        "  install -Dt \"$builddir\" -m644 .config Makefile vmlinux\n"
+        "}\n"
+    )
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(original)
+    patch_kernel_btf_guard(pb)
+    assert pb.read_text() == original
+
+
+def test_btf_guard_does_not_wrap_commented_build_step(tmp_path):
+    """A commented `#  make … vmlinux.h` is not wrapped even when an install
+    token is (separately) present."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(
+        "build() {\n"
+        "#  make -C tools/bpf/bpftool vmlinux.h feature-clang-bpf-co-re=1\n"
+        "}\n"
+        "package() {\n"
+        "  install -Dt \"$builddir\" -m644 vmlinux tools/bpf/bpftool/vmlinux.h\n"
+        "}\n"
+    )
+    patch_kernel_btf_guard(pb)
+    text = pb.read_text()
+    # The commented line is left intact (still commented, not guarded).
+    assert "#  make -C tools/bpf/bpftool vmlinux.h" in text
+    # The install token, however, IS made conditional.
+    assert _BTF_GUARD in text
 
 
 # ---------------------------------------------------------------------------
