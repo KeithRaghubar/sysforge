@@ -527,15 +527,23 @@ def _validate_manual_kconfig(entries):
     return seen
 
 
-def _load_hardware_kconfig(config):
+def _load_hardware_kconfig(config, state_dir=None):
     """
     Load the [kconfig] and [kconfig_devices] tables from hardware_profile.toml.
     Returns (kconfig, device_kconfig) dicts {option: value}; both empty if the
     hardware profile is absent. hardware_profile.toml is emitted by the
     hardware stage; its absence is not an error here — kconfig entries are
     simply skipped with an INFO log.
+
+    The path comes from ``config["hardware_profile"]`` (set when the full
+    pipeline runs in one process); when the kernel stage runs standalone that
+    key is empty, so we fall back to ``state_dir / "hardware_profile.toml"`` —
+    where the hardware stage actually writes it. Mirrors the resolution in
+    reconfigure.py's hardware-profile review step.
     """
     hw_path = config.get("hardware_profile")
+    if not hw_path and state_dir is not None:
+        hw_path = state_dir / "hardware_profile.toml"
     if not hw_path:
         _log.ui(
             "No hardware_profile configured — hardware kconfig entries skipped (hardware stage not run)",
@@ -571,7 +579,7 @@ def _format_kconfig_line(option, value):
     return f'{option}="{value}"'
 
 
-def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None):
+def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None, state_dir=None):
     """
     Build and write the sysforge.config fragment to the PKGBUILD directory.
 
@@ -616,7 +624,7 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None):
         return None, 0, 0, 0
 
     # Load and validate the sources
-    hw_kconfig, device_kconfig = _load_hardware_kconfig(config)
+    hw_kconfig, device_kconfig = _load_hardware_kconfig(config, state_dir)
     if device_kconfig and not bool(kernel_cfg.get("device_kconfig", True)):
         _log.info(
             f"device_kconfig = false — skipping {len(device_kconfig)} "
@@ -1265,6 +1273,7 @@ class KernelStage(Stage):
         fragment_path, hw_kconfig_count, manual_kconfig_count, device_kconfig_count = (
             _write_kconfig_fragment(
                 kernel_cfg, config, options.dry_run, provenance=provenance,
+                state_dir=state_dir,
             )
         )
 

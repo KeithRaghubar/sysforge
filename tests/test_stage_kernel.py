@@ -261,6 +261,32 @@ def test_load_hardware_kconfig_returns_device_table(tmp_path):
     result = _load_hardware_kconfig({"hardware_profile": str(hw)})
     assert result == ({"CONFIG_MZEN3": "y"}, {"CONFIG_IGC": "m"})
 
+def test_load_hardware_kconfig_falls_back_to_state_dir(tmp_path):
+    # Standalone `run kernel` after `run hardware`: config has no
+    # hardware_profile key, but the hardware stage wrote the file under state_dir.
+    make_hardware_profile(tmp_path,
+        kconfig={"CONFIG_MZEN3": "y"},
+        kconfig_devices={"CONFIG_IGC": "m"},
+    )
+    result = _load_hardware_kconfig({}, state_dir=tmp_path)
+    assert result == ({"CONFIG_MZEN3": "y"}, {"CONFIG_IGC": "m"})
+
+def test_load_hardware_kconfig_state_dir_file_absent(tmp_path):
+    # state_dir given but the hardware stage never ran — no file present.
+    result = _load_hardware_kconfig({}, state_dir=tmp_path)
+    assert result == ({}, {})
+
+def test_load_hardware_kconfig_config_key_wins_over_state_dir(tmp_path):
+    # An explicit config path takes precedence over the state_dir fallback.
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    hw = make_hardware_profile(cfg_dir, kconfig={"CONFIG_FROM_CONFIG": "y"})
+    make_hardware_profile(tmp_path, kconfig={"CONFIG_FROM_STATE": "y"})
+    result = _load_hardware_kconfig(
+        {"hardware_profile": str(hw)}, state_dir=tmp_path,
+    )
+    assert result == ({"CONFIG_FROM_CONFIG": "y"}, {})
+
 
 # ---------------------------------------------------------------------------
 # _load_kernel_config
@@ -356,6 +382,23 @@ def test_write_kconfig_fragment_hardware_only(tmp_path):
     assert "CONFIG_MZEN3=y" in content
     assert "# CONFIG_NOUVEAU is not set" in content
     assert "# source: hardware" in content
+
+def test_write_kconfig_fragment_hardware_from_state_dir(tmp_path):
+    # Standalone `run kernel`: no config key, profile resolved via state_dir.
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    make_hardware_profile(state_dir, kconfig={"CONFIG_MZEN3": "y"})
+    kernel_cfg = {"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)}
+
+    result, hw_c, _, _ = _write_kconfig_fragment(
+        kernel_cfg, {}, dry_run=False, state_dir=state_dir,
+    )
+
+    assert result is not None
+    assert hw_c == 1
+    assert "CONFIG_MZEN3=y" in result.read_text()
 
 def test_write_kconfig_fragment_manual_only(tmp_path):
     builds = tmp_path / "builds"
