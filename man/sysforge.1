@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026-06-18"
+.TH "sysforge" "1" "2026-06-19"
 .PP
 .PP
 .SH NAME
@@ -271,7 +271,7 @@ Skip rebuild; install only those locally-built artifacts in PKGDEST that are new
 .RE
 \fB--packages\fR \fIFILE\fR
 .RS 4
-Path to packages.\&toml for override rules (default: /home/keith/src/sysforge/tests/data/etc/sysforge/packages.\&toml).\&
+Path to packages.\&toml for override rules (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
 .PP
 .RE
 \fB--state-dir\fR \fIDIR\fR
@@ -506,7 +506,7 @@ Manage packages.\&toml override entries (list, add, add-group, remove).\&
 .PP
 \fB--packages\fR \fIFILE\fR
 .RS 4
-Path to packages.\&toml (default: /home/keith/src/sysforge/tests/data/etc/sysforge/packages.\&toml).\&
+Path to packages.\&toml (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
 .PP
 .RE
 \fB--orphans\fR
@@ -725,7 +725,7 @@ Show what would run without executing anything.\&
 .RE
 \fB--packages\fR \fIFILE\fR
 .RS 4
-Path to packages.\&toml (default: /home/keith/src/sysforge/tests/data/etc/sysforge/packages.\&toml).\&
+Path to packages.\&toml (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
 .PP
 .RE
 \fB--state-dir\fR \fIDIR\fR
@@ -925,7 +925,7 @@ Build and install non-kernel packages from packages.\&toml.\&
 .PP
 \fB--packages\fR \fIFILE\fR
 .RS 4
-Path to packages.\&toml (default: /home/keith/src/sysforge/tests/data/etc/sysforge/packages.\&toml).\&
+Path to packages.\&toml (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
 .PP
 .RE
 \fB--dry-run\fR

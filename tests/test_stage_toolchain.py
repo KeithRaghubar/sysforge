@@ -38,7 +38,6 @@ from sysforge.pipeline.stages.toolchain import (
     _so_ver,
     _newest_so,
     _ensure_pgo_store_writable,
-    _has_llvm_cmake_config,
     _pgo_install,
     _pgo_pass1_stage,
     _system_llvm_is_instrumented,
@@ -1859,36 +1858,6 @@ def test_assert_staging_has_llvm_cmake_passes_when_present(tmp_path):
     cfg.mkdir(parents=True)
     (cfg / "LLVMConfig.cmake").touch()
     _assert_staging_has_llvm_cmake(staging)  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# _has_llvm_cmake_config / _pgo_pass1_stage
-# ---------------------------------------------------------------------------
-
-
-def test_has_llvm_cmake_config_true(tmp_path):
-    """Returns True when tar listing contains cmake/llvm."""
-    pkg = tmp_path / "llvm-18.pkg.tar.zst"
-    pkg.touch()
-    listing = (
-        "./usr/lib/cmake/llvm/LLVMConfig.cmake\n"
-        "./usr/lib/libLLVMSupport.a\n"
-    )
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout=listing, stderr="")
-        assert _has_llvm_cmake_config(pkg) is True
-    mock_run.assert_called_once()
-    assert "tar" in mock_run.call_args[0][0]
-
-
-def test_has_llvm_cmake_config_false(tmp_path):
-    """Returns False for packages that have no cmake/llvm entries (e.g. llvm-libs)."""
-    pkg = tmp_path / "llvm-libs-18.pkg.tar.zst"
-    pkg.touch()
-    listing = "./usr/lib/libLLVM-18.so.1\n./usr/lib/libLLVM-18.so\n"
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout=listing, stderr="")
-        assert _has_llvm_cmake_config(pkg) is False
 
 
 # ---------------------------------------------------------------------------

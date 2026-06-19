@@ -41,7 +41,6 @@ from sysforge.packages_cmd import (
     PackagesListVerb,
     PackagesRemoveVerb,
 )
-from sysforge.primitives.paths import PACKAGES_PATH
 from sysforge.primitives.pkg_catalog import valid_desktops
 from sysforge.resolve import ResolveVerb
 from sysforge.run_cmd import (
@@ -62,7 +61,10 @@ from sysforge.state_cmd import (
 from sysforge.update import UpdateVerb
 from sysforge.verbs import run_verb
 
-_PACKAGES_HELP = f"Path to packages.toml (default: {PACKAGES_PATH})."
+_PACKAGES_HELP = (
+    "Path to packages.toml (default: /etc/sysforge/packages.toml; "
+    "override the dir with $SYSFORGE_CONFIG_DIR)."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +328,9 @@ def _add_update_parser(sub):
              "--makepkg, --no-cleanbuild, --cleansrc, --cleansrc-force, --interactive, and "
              "--cache-report.")
     p.add_argument("--packages", metavar="FILE", dest="packages",
-        help=f"Path to packages.toml for override rules (default: {PACKAGES_PATH}).")
+        help="Path to packages.toml for override rules "
+             "(default: /etc/sysforge/packages.toml; override the dir with "
+             "$SYSFORGE_CONFIG_DIR).")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",

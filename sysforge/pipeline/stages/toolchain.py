@@ -256,14 +256,11 @@ def _sync_pkgbuild_dirs(
 
 _DEFAULT_LLVM_PGO = ["llvm", "llvm-libs"]
 _DEFAULT_LLVM_NON_PGO = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
-# The canonical lib32 LLVM suite. Kept for documentation / opt-in, but NOT built
-# by the toolchain stage by default (see _DEFAULT_LLVM_LIB32 below).
-_LLVM_LIB32_SUITE = [
-    "lib32-llvm",
-    "lib32-llvm-libs",
-    "lib32-clang",
-    "lib32-spirv-llvm-translator",
-]
+# The canonical lib32 LLVM suite — lib32-llvm, lib32-llvm-libs, lib32-clang,
+# lib32-spirv-llvm-translator — is documented here for opt-in reference but NOT
+# built by the toolchain stage by default (see _DEFAULT_LLVM_LIB32 below). A user
+# opts it back in via `[packages] lib32 = [...]` in toolchain.toml; it is kept as
+# prose (not a live constant) because nothing in code consumes it.
 # lib32 is intentionally NOT part of the toolchain pass by default. lib32 ships no
 # headers of its own and compiles against the all-target 64-bit /usr/include/llvm
 # headers, so reducing its LLVM_TARGETS_TO_BUILD (which the toolchain target filter
@@ -1196,21 +1193,6 @@ def _ensure_pgo_store_writable(pgo_store: Path, dry_run: bool) -> None:
     _log.info(f"[PGO] Provisioning root-owned pgo_store via sudo: {pgo_store}")
     subprocess.run(["sudo", "mkdir", "-p", str(pgo_store)], check=True)
     subprocess.run(["sudo", "chown", "-R", f"{user}:", str(pgo_store)], check=True)
-
-
-def _has_llvm_cmake_config(pkg_file: Path) -> bool:
-    """Return True if pkg_file contains LLVM cmake config files (usr/lib/cmake/llvm/).
-
-    Used by _pgo_pass1_install to identify the static-lib / cmake-config package
-    (typically named 'llvm') so it can be excluded from the Pass 1 system install.
-    """
-    result = subprocess.run(
-        ["tar", "--list", "--file", str(pkg_file)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return any("cmake/llvm" in line for line in result.stdout.splitlines())
 
 
 def _pgo_pass1_stage(
