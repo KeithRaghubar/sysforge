@@ -123,6 +123,12 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   not `func=` callbacks. See DESIGN.md §CLI Verb Framework.
 - **Install-bearing scopes share one sentinel primitive**: `primitives.stage_sentinel.
   sentinel_scope()`. Don't roll a separate install/clear path. See DESIGN.md §Toolchain stage.
+- **Editor/merge-tool launch has one home**: `primitives/editor.py` —
+  `resolve_editor`/`editor_usable` (reconfigure), `resolve_merge_tool` (`config merge`:
+  `SYSFORGE_MERGE` > `[ui].merge` > `$DIFFPROG` > `vimdiff`), and `run_tty_argv` (the
+  `/dev/tty` passthrough both use). Don't add a second `/dev/tty` launcher or resolution
+  chain. `.sfnew` adoption lives in `config_cmd.ConfigMergeVerb` (no sentinel; no blind
+  "accept theirs"). See DESIGN.md §Config Layer / §CLI Verb Framework.
 - **`doctor` axes share one Finding framework and stay read-only**: each axis is a producer
   returning `list[diagnostics.Finding]` (never import `pipeline` from `diagnostics`).
   Register in `doctor.py` (`_SYSTEM_AXIS_ORDER`/`_AXIS_FLAGS`/`_system_axes` +

@@ -904,7 +904,7 @@ class TestParseStepSelectionExtra:
 class TestResolveEditor:
     def test_sysforge_editor_env_wins(self):
         with patch.dict("os.environ", {"SYSFORGE_EDITOR": "emacs"}, clear=False), \
-             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
+             patch("sysforge.primitives.editor.load_sysforge_toml",
                    return_value={}), \
              patch("sysforge.pipeline.stages.reconfigure.shutil.which",
                    return_value="/usr/bin/emacs"):
@@ -914,7 +914,7 @@ class TestResolveEditor:
 
     def test_sysforge_toml_second(self):
         with patch.dict("os.environ", {}, clear=False), \
-             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
+             patch("sysforge.primitives.editor.load_sysforge_toml",
                    return_value={"ui": {"editor": "helix"}}):
             # Clear env vars that might interfere
             env = dict(SYSFORGE_EDITOR="", EDITOR="", VISUAL="")
@@ -929,7 +929,7 @@ class TestResolveEditor:
         with patch.dict("os.environ",
                         {"EDITOR": "nano", "SYSFORGE_EDITOR": ""},
                         clear=False), \
-             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
+             patch("sysforge.primitives.editor.load_sysforge_toml",
                    return_value={}), \
              patch("sysforge.pipeline.stages.reconfigure.shutil.which",
                    return_value="/usr/bin/nano"):
@@ -941,7 +941,7 @@ class TestResolveEditor:
         with patch.dict("os.environ",
                         {"SYSFORGE_EDITOR": "", "EDITOR": "", "VISUAL": ""},
                         clear=False), \
-             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
+             patch("sysforge.primitives.editor.load_sysforge_toml",
                    return_value={}), \
              patch("sysforge.pipeline.stages.reconfigure.shutil.which") as mock_which:
             mock_which.side_effect = lambda x: "/usr/bin/vim" if x == "vim" else None
@@ -958,7 +958,7 @@ class TestResolveEditor:
                         {"SYSFORGE_EDITOR": "ghosted",
                          "EDITOR": "", "VISUAL": ""},
                         clear=False), \
-             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
+             patch("sysforge.primitives.editor.load_sysforge_toml",
                    return_value={}), \
              patch("sysforge.pipeline.stages.reconfigure.shutil.which") as mock_which:
             mock_which.side_effect = lambda x: "/usr/bin/nano" if x == "nano" else None
@@ -976,7 +976,7 @@ class TestResolveEditor:
         with patch.dict("os.environ",
                         {"SYSFORGE_EDITOR": "", "EDITOR": "", "VISUAL": ""},
                         clear=False), \
-             patch("sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
+             patch("sysforge.primitives.editor.load_sysforge_toml",
                    return_value={}), \
              patch("sysforge.pipeline.stages.reconfigure.shutil.which",
                    return_value=None):

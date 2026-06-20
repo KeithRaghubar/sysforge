@@ -17,7 +17,7 @@ _sysforge() {
         cword=$COMP_CWORD
     fi
 
-    local commands="build fetch update resolve doctor packages state run setup env log"
+    local commands="build fetch update resolve doctor packages state run setup env log config"
 
     # Locate the top-level verb (first non-flag arg after `sysforge`) and an
     # optional subverb (first non-flag arg after the verb).
@@ -62,6 +62,7 @@ _sysforge() {
         run)         _sysforge_run         ;;
         setup)       _sysforge_setup       ;;
         env)         _sysforge_env         ;;
+        config)      _sysforge_config      ;;
         completions) _sysforge_completions ;;
     esac
 }
@@ -74,7 +75,7 @@ _sysforge_flag_arg() {
             _filedir
             return 0
             ;;
-        --state-dir|--log-dir)
+        --state-dir|--log-dir|--config-dir)
             _filedir -d
             return 0
             ;;
@@ -320,6 +321,19 @@ _sysforge_setup() {
 
 _sysforge_env() {
     :
+}
+
+_sysforge_config() {
+    _sysforge_flag_arg && return
+    if [[ -z $subverb ]]; then
+        COMPREPLY=( $(compgen -W "merge" -- "$cur") )
+        return
+    fi
+    case "$subverb" in
+        merge)
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--config-dir --list --dry-run --no-pager" -- "$cur") )
+            ;;
+    esac
 }
 
 # Internal scaffolding subcommand consumed by this completion script itself

@@ -54,6 +54,11 @@ from sysforge.primitives.paths import (
     TOOLCHAIN_PATH,
     resolve_packages_path,
 )
+from sysforge.primitives.editor import (
+    editor_usable as _editor_usable,
+    resolve_editor as _resolve_editor,
+    run_tty_argv as _run_editor_argv,
+)
 from sysforge.primitives.pkg_catalog import select_desktop, write_desktop_group
 from sysforge.primitives.provides_lookup import files_db_present, sync_files_db
 from sysforge.primitives.prompt import (
@@ -266,36 +271,12 @@ def _select_steps(options) -> list[str]:
 
 # ---------------------------------------------------------------------------
 # Step: editor selection
+#
+# Editor resolution / usability / TTY-safe launch live in
+# sysforge.primitives.editor (imported above as _resolve_editor /
+# _editor_usable / _run_editor_argv) so the merge verb and this stage share
+# one home for the /dev/tty rebinding and resolution order.
 # ---------------------------------------------------------------------------
-
-def _resolve_editor() -> tuple[str, str]:
-    sysforge_cfg = load_sysforge_toml()
-    candidates = [
-        (os.environ.get("SYSFORGE_EDITOR"), "SYSFORGE_EDITOR"),
-        (sysforge_cfg.get("ui", {}).get("editor"), "sysforge.toml"),
-        (os.environ.get("EDITOR"), "$EDITOR"),
-        (os.environ.get("VISUAL"), "$VISUAL"),
-    ]
-    # Each candidate must resolve on PATH; otherwise a stale env var or
-    # config entry would propagate as the "editor" and every subsequent
-    # [e]dit prompt would silently fail to open anything.
-    for value, source in candidates:
-        if value and shutil.which(value):
-            return value, source
-    for fallback in ("vim", "nano", "vi"):
-        if shutil.which(fallback):
-            return fallback, "detected"
-    # No editor on PATH at all. Returning a hard-coded "vi" here would lie:
-    # downstream prompts would say "Editor: vi" and "Keeping 'vi'" while
-    # /usr/bin/vi doesn't exist. Empty string + source "none" lets callers
-    # detect this and force the user to pick one.
-    return "", "none"
-
-
-def _editor_usable(editor: str) -> bool:
-    """True when ``editor`` is set and resolves on PATH."""
-    return bool(editor) and shutil.which(editor) is not None
-
 
 def _packages_providing(editor_cmd: str) -> list[str]:
     """
@@ -659,35 +640,6 @@ def _validate_flag_profiles(path: Path) -> tuple[bool, str]:
         return True, f"{len(profiles)} profiles, {len(cfg.get('rules', []))} rules"
     except Exception as e:
         return False, str(e)
-
-
-def _run_editor_argv(argv: list[str]) -> int:
-    """
-    Run an editor argv with stdin/stdout/stderr bound to /dev/tty when one is
-    available. Without this, sysforge invoked under output redirection
-    (e.g. ``sysforge ... | tee log``) would launch the editor with a piped
-    stdout, and TUI editors like nvim detect the non-tty and exit silently
-    without ever drawing.
-
-    Returns the editor's exit code, or -1 if the binary couldn't be found.
-    """
-    tty_fd: int | None = None
-    try:
-        tty_fd = os.open("/dev/tty", os.O_RDWR)
-    except OSError:
-        tty_fd = None
-
-    try:
-        if tty_fd is not None:
-            result = subprocess.run(argv, stdin=tty_fd, stdout=tty_fd, stderr=tty_fd)
-        else:
-            result = subprocess.run(argv)
-        return result.returncode
-    except FileNotFoundError:
-        return -1
-    finally:
-        if tty_fd is not None:
-            os.close(tty_fd)
 
 
 def _open_in_editor(path: Path, editor: str) -> bool:

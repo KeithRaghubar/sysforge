@@ -149,6 +149,14 @@ sysforge log                         # unified log: <state_dir>/sysforge.log
 sysforge log linux-custom            # per-package log: <pkgbuild_src_dir>/linux-custom/sysforge_linux-custom.log
 sysforge log --no-pager              # raw output, no $PAGER pipe
 
+# 10b. Adopt shipped config-default drift left as <name>.sfnew companions
+#      (a pacdiff-style merge for sysforge's own config). View the diff,
+#      hand-merge in a tool, then drop the .sfnew — your values are never
+#      clobbered. Merge tool: SYSFORGE_MERGE > sysforge.toml [ui].merge >
+#      $DIFFPROG > vimdiff.
+sysforge config merge                # interactive over $SYSFORGE_CONFIG_DIR (else /etc/sysforge)
+sysforge config merge --list         # just list companion files, no prompts
+
 # 11. Health-check an installed package's depends + linkage (e.g. when Steam
 #     launches as a black window and the graphics stack may be out of sync).
 #     Walks the target's dep closure; --shallow restricts to direct depends.

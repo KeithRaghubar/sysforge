@@ -1149,6 +1149,38 @@ Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
 .PP
 \fBEnvironment:\fR $SYSFORGE_STATE_DIR, $PAGER
 .PP
+.SS config
+.PP
+\fBsysforge config\fR \fISUBCOMMAND\fR
+.PP
+Manage live sysforge config files (adopt shipped-default drift).\&
+.PP
+.SS config merge
+.PP
+\fBsysforge config merge\fR [\fIOPTIONS\fR]
+.PP
+Interactively adopt or clear .\&sfnew companions (and pacman'\&s .\&pacnew/.\&pacsave for sysforge config) left by `make sync-config`.\& pacdiff-style: view diff, merge in a tool, skip, remove, or overwrite.\& Merge tool: SYSFORGE_MERGE > sysforge.\&toml [ui].\&merge > $DIFFPROG > vimdiff.\&
+.PP
+\fB--config-dir\fR \fIDIR\fR
+.RS 4
+Live config dir to scan (default: $SYSFORGE_CONFIG_DIR, else /etc/sysforge).\&
+.PP
+.RE
+\fB--list\fR
+.RS 4
+List companion files and their live targets without prompting (non-interactive; for scripting/CI).\& Alias: --dry-run.\&
+.PP
+.RE
+\fB--dry-run\fR
+.RS 4
+Same as --list: report companions without merging.\&
+.PP
+.RE
+\fB--no-pager\fR
+.RS 4
+Don'\&t pipe diffs through $PAGER (default: paginate when stdout is a TTY).\&
+.PP
+.RE
 .SH FILES
 .PP
 /etc/sysforge/profiles.\&toml

@@ -1,6 +1,6 @@
 ## CLI Verb Framework
 
-Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`, `setup`, `log`, `completions`, `packages …`, `state …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `completions_cmd.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(_dispatch(args.verb_cls, args))` — a thin wrapper around `run_verb` that adds the optional cProfile harness (see *Global profiling flags* below).
+Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`, `setup`, `log`, `completions`, `packages …`, `state …`, `config …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `completions_cmd.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(_dispatch(args.verb_cls, args))` — a thin wrapper around `run_verb` that adds the optional cProfile harness (see *Global profiling flags* below).
 
 **Three-phase contract.** Each verb implements:
 
@@ -36,6 +36,7 @@ Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`
 | `log` | null | resolve unified/per-pkg log path; page through `$PAGER` | null | no |
 | `packages {list,add,remove}` | load packages.toml + validate override fields | rewrite TOML | null | no |
 | `state {list,repair,orphans}` | load state dir | inspect / repair / prune | null | `repair` only |
+| `config merge` | null | scan config dir for `.sfnew`/`.pacnew`; pacdiff-style view/merge/remove loop | null | no |
 | `run …` namespace | build `RunOptions` | delegate to `pipeline.run_pipeline` / `run_stage_standalone` | pipeline framework | (pipeline owns it) |
 
 ### Global profiling flags

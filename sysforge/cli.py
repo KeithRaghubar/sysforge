@@ -31,6 +31,7 @@ _log = log.get_logger("CLI")
 
 from sysforge.build_cmd import BuildVerb
 from sysforge.completions_cmd import CompletionsVerb
+from sysforge.config_cmd import ConfigMergeVerb
 from sysforge.doctor import DoctorVerb
 from sysforge.env_cmd import EnvVerb
 from sysforge.fetch import FetchVerb
@@ -648,6 +649,32 @@ def _add_log_parser(sub):
     p.set_defaults(verb_cls=LogVerb)
 
 
+def _add_config_parser(sub):
+    """config namespace: merge — adopt .sfnew/.pacnew config companions."""
+    p = sub.add_parser("config",
+        help="Manage live sysforge config files (adopt shipped-default drift).")
+    config_sub = p.add_subparsers(dest="config_cmd")
+    config_sub.required = True
+
+    p_merge = config_sub.add_parser("merge",
+        help="Interactively adopt or clear .sfnew companions (and pacman's "
+             ".pacnew/.pacsave for sysforge config) left by `make sync-config`. "
+             "pacdiff-style: view diff, merge in a tool, skip, remove, or "
+             "overwrite. Merge tool: SYSFORGE_MERGE > sysforge.toml [ui].merge "
+             "> $DIFFPROG > vimdiff.")
+    p_merge.add_argument("--config-dir", metavar="DIR", dest="config_dir",
+        help="Live config dir to scan (default: $SYSFORGE_CONFIG_DIR, else "
+             "/etc/sysforge).")
+    p_merge.add_argument("--list", action="store_true", dest="list",
+        help="List companion files and their live targets without prompting "
+             "(non-interactive; for scripting/CI). Alias: --dry-run.")
+    p_merge.add_argument("--dry-run", action="store_true", dest="dry_run",
+        help="Same as --list: report companions without merging.")
+    p_merge.add_argument("--no-pager", action="store_true", dest="no_pager",
+        help="Don't pipe diffs through $PAGER (default: paginate when stdout is a TTY).")
+    p_merge.set_defaults(verb_cls=ConfigMergeVerb)
+
+
 def _add_run_parser(sub):
     """run namespace: pipeline / reconfigure / toolchain / packages / kernel"""
     p = sub.add_parser("run",
@@ -958,6 +985,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_setup_parser(sub)
     _add_env_parser(sub)
     _add_log_parser(sub)
+    _add_config_parser(sub)
 
     # completions (used by shell completion scripts; not user-facing)
     p_completions = sub.add_parser("completions")
