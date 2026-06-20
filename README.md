@@ -23,6 +23,12 @@ SysForge started as a tool to streamline its author's own Arch Linux build and m
 - `makepkg`, `pacman`, `sudo`
 - An AUR helper is **not** required — SysForge handles AUR builds directly
 
+> SysForge's writable runtime directories (`/var/lib/sysforge`, `/var/cache/sysforge`)
+> are owned by the `sysforge` group. The package install creates the group; the first
+> privileged run also adds your user to it. Group membership only takes effect after you
+> log out and back in — until then SysForge repairs the directory permissions per run, so
+> nothing breaks, you may just be prompted for `sudo` once more than usual.
+
 ---
 
 ## Quick start

@@ -48,6 +48,7 @@ from sysforge import log
 _log = log.get_logger("CONFIGURE")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import load_bootstrap, BootstrapConfig
+from sysforge.primitives.fs_provision import SYSFORGE_DIR_MODE, SYSFORGE_GROUP
 from sysforge.primitives.pkg_catalog import select_desktop, write_desktop_group
 from sysforge.primitives.prompt import is_interactive
 from sysforge.primitives.run import run_or_raise
@@ -514,10 +515,15 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
 
 
 def _create_sysforge_group(cfg: BootstrapConfig) -> None:
-    """Create the sysforge group and add the builder user to it."""
-    _chroot(cfg.target, ["groupadd", "-f", "sysforge"])
-    _chroot(cfg.target, ["usermod", "-aG", "sysforge", cfg.username])
-    _log.ui(f"Group sysforge created, {cfg.username} added")
+    """Create the sysforge group and add the builder user to it.
+
+    Mirrors the runtime model in primitives/fs_provision.py: the same group owns
+    sysforge's writable runtime dirs on both VM-bootstrapped and package-installed
+    systems.
+    """
+    _chroot(cfg.target, ["groupadd", "-f", SYSFORGE_GROUP])
+    _chroot(cfg.target, ["usermod", "-aG", SYSFORGE_GROUP, cfg.username])
+    _log.ui(f"Group {SYSFORGE_GROUP} created, {cfg.username} added")
 
 
 def _create_state_dir(cfg: BootstrapConfig) -> None:
@@ -530,17 +536,18 @@ def _create_state_dir(cfg: BootstrapConfig) -> None:
     dir means files written by stages after configure inherit the sysforge
     group automatically.
     """
+    mode = f"0{SYSFORGE_DIR_MODE:o}"  # "02775" — shared with primitives/fs_provision
     state_dir = Path(cfg.target) / "var/lib/sysforge"
     state_dir.mkdir(parents=True, exist_ok=True)
     # Pre-create sentinels/ so the libalpm hooks (shipped by the sysforge
     # PKGBUILD) can drop reminder files even before tmpfiles-create runs.
     (state_dir / "sentinels").mkdir(exist_ok=True)
-    _chroot(cfg.target, ["chown", "-R", "root:sysforge", "/var/lib/sysforge"])
-    _chroot(cfg.target, ["chmod", "02775", "/var/lib/sysforge"])
+    _chroot(cfg.target, ["chown", "-R", f"root:{SYSFORGE_GROUP}", "/var/lib/sysforge"])
+    _chroot(cfg.target, ["chmod", mode, "/var/lib/sysforge"])
     _chroot(cfg.target, ["sh", "-c",
-        "find /var/lib/sysforge -mindepth 1 -type d -exec chmod 02775 {} +; "
+        f"find /var/lib/sysforge -mindepth 1 -type d -exec chmod {mode} {{}} +; "
         "find /var/lib/sysforge -mindepth 1 -type f -exec chmod g+w {} +"])
-    _log.ui("State dir: /var/lib/sysforge (root:sysforge, mode 02775, contents g+w)")
+    _log.ui(f"State dir: /var/lib/sysforge (root:{SYSFORGE_GROUP}, mode {mode}, contents g+w)")
 
 
 def _copy_config_files(cfg: BootstrapConfig) -> None:

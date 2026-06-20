@@ -573,6 +573,20 @@ remaining = ["cosmic-comp-git", "cosmic-panel-git"]
 
 On resume with failed packages, the user is prompted to retry or skip each (or `--force-retry` bypasses the prompt).
 
+### Directory provisioning
+
+sysforge writes into FHS-rooted directories the unprivileged build user does not own out of the box — `/var/lib/sysforge` (state, logs, sentinels) and `/var/cache/sysforge` (the regenerable PGO profdata store). **Provisioning these has one home: `primitives/fs_provision.py`.** Do not add a parallel `mkdir`/`chown`/`sudo` path.
+
+The ownership model is a single one for every writable sysforge runtime dir: **`root:sysforge`, setgid mode `2775`**. The `sysforge` group lets group members read/write state and the PGO cache across runs (and across users on a shared host); the setgid bit makes every subdirectory created underneath inherit the group automatically. `/etc/sysforge` is deliberately *not* in this set — config stays root-owned and read-only to sysforge.
+
+`fs_provision.ensure_writable_dir(path)`:
+
+- **Fast path** — a plain `mkdir` landing a writable directory (already provisioned by the shipped `tmpfiles.d`, or a user-owned location like an XDG dir) returns immediately and never touches sudo.
+- **Slow path** (root-owned ancestor / not writable) — provisions via sudo: create the group if missing (`groupadd -f`), add the build user durably (`usermod -aG`, effective next login), then `install -d -m 2775 -g sysforge` and `chgrp`/`chmod` to **repair** an already-existing dir whose ownership predates this policy. The durable group add plus the per-run `chgrp`/`chmod` together mean the dir is usable *this* run even before the user's new group membership takes effect.
+- **Fail-safe** — when sudo is unavailable it raises `FsProvisionError`; callers fall back to a user-writable location (the state-dir resolver drops to the XDG state dir; logging drops to a plain `mkdir`).
+
+The build user is resolved once, in `fs_provision.build_user()` (`SUDO_USER` > `USER` > `getpass.getuser()`). The same `SYSFORGE_GROUP`/`SYSFORGE_DIR_MODE` constants are reused by the VM-bootstrap `configure.py` state-dir setup, so bootstrapped and package-installed systems agree. Install-time, the shipped `tmpfiles.d` provisions all four dirs `root:sysforge 2775` and a shipped `sysusers.d` declares the group (so `systemd-sysusers` creates it before `systemd-tmpfiles`) — making the runtime sudo path a no-op on a normally-installed host. `fs_provision.empty_dir_contents(path)` clears a directory's contents while leaving the node intact, used for the PGO purge so a root-owned parent never blocks the cleanup.
+
 ### Kernel stage (stage 8)
 
 Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent or has `enabled = false`, so systems using a stock pacman kernel skip it without needing `--start-from`. Opt-in by design — users who want a stock kernel leave the stage disabled.
@@ -802,7 +816,7 @@ The sequence is **four builds** (Pass 1a, Pass 1b, Pass 2, Pass 3) across three 
 **Confirmation gating (PGO).** Unlike the rest of sysforge (which is automation-focused), the LLVM PGO sub-flow is fragile enough that wrong profdata silently mis-optimises the resulting compiler. Four decision points in `_build_llvm_pgo` therefore prompt the user before destructive or long-running work, all sharing a single `_pgo_confirm` helper:
 
 1. **Reuse vs rebuild** — when compatible profdata is found, prompt `[Y/n]` to reuse; declining triggers a full 4-pass rebuild (and continues into prompts 2–3).
-2. **Purge `staging/` and `pgo_store/`** — prompt `[y/N]` before `rmtree`; declining aborts PGO. After the purge, `pgo_store` is recreated via `_ensure_pgo_store_writable`: the FHS default lives under root-owned `/var/cache`, and the unprivileged makepkg passes write `.profraw` directly into it, so when a plain `mkdir` hits `EACCES` the helper falls back to `sudo mkdir -p` + `sudo chown -R <user>:` (the installed `tmpfiles.d` provisions `/var/cache/sysforge` 0777 for package installs, but a run-from-repo dev setup has no tmpfiles, hence the runtime fallback). A user-writable / env-override `pgo_store` takes the direct path and never touches sudo.
+2. **Purge `staging/` and `pgo_store/`** — prompt `[y/N]` before clearing; declining aborts PGO. The `staging1/2/3` dirs (under world-writable `/var/tmp`) are `rmtree`'d, but `pgo_store` is cleared with `fs_provision.empty_dir_contents` — it lives under the root-owned FHS parent `/var/cache/sysforge`, so `rmtree`'s final `rmdir` would need write on that parent and fail with `EACCES`; emptying the contents (all unprivileged-written) keeps the node and needs no parent write. After the purge, `pgo_store` is (re)provisioned via `fs_provision.ensure_writable_dir` (`root:sysforge 2775` — see *Directory provisioning* above). A user-writable / env-override `pgo_store` takes the direct path and never touches sudo.
 3. **4-pass start** — prompt `[y/N]` before launching the ~2–3 hour 4-pass sequence; declining aborts PGO.
 4. **Suspicious Pass-2 profdata size** (`< 10 MiB`) — prompt `[y/N]` to continue into Pass 3; declining aborts before Pass 3 so the user can investigate instrumentation.
 

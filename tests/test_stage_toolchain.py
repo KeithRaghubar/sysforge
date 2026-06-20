@@ -37,7 +37,6 @@ from sysforge.pipeline.stages.toolchain import (
     _assert_pass_links_shipped_libllvm,
     _so_ver,
     _newest_so,
-    _ensure_pgo_store_writable,
     _pgo_install,
     _pgo_pass1_stage,
     _system_llvm_is_instrumented,
@@ -917,7 +916,8 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
          patch(T + "_profraw_merge_daemon"), \
          patch(T + "_merge_profraw", return_value=profdata), \
          patch(T + "_write_profdata_version"), \
-         patch(T + "_ensure_pgo_store_writable"), \
+         patch(T + "fs_provision.ensure_writable_dir"), \
+         patch(T + "fs_provision.empty_dir_contents"), \
          patch(T + "_extract_pass2_to_staging"), \
          patch(T + "_assert_staging_has_llvm_cmake"), \
          patch(T + "_remove_staging"), \
@@ -1904,45 +1904,9 @@ def test_assert_staging_has_llvm_cmake_passes_when_present(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _ensure_pgo_store_writable
+# pgo_store provisioning is exercised in tests/test_fs_provision.py; the PGO
+# build wires it via fs_provision.ensure_writable_dir / empty_dir_contents.
 # ---------------------------------------------------------------------------
-
-
-def test_ensure_pgo_store_writable_user_path_no_sudo(tmp_path):
-    """A user-writable pgo_store is created directly, never touching sudo."""
-    pgo_store = tmp_path / "pgo" / "llvm-pgo"
-    with patch("subprocess.run") as mock_run:
-        _ensure_pgo_store_writable(pgo_store, dry_run=False)
-    assert pgo_store.is_dir()
-    mock_run.assert_not_called()
-
-
-def test_ensure_pgo_store_writable_dry_run_noop(tmp_path):
-    """Dry-run creates nothing and never shells out."""
-    pgo_store = tmp_path / "pgo" / "llvm-pgo"
-    with patch("subprocess.run") as mock_run:
-        _ensure_pgo_store_writable(pgo_store, dry_run=True)
-    assert not pgo_store.exists()
-    mock_run.assert_not_called()
-
-
-def test_ensure_pgo_store_writable_root_owned_falls_back_to_sudo(tmp_path, monkeypatch):
-    """A root-owned ancestor (mkdir raises EACCES) triggers sudo mkdir + chown
-    to the invoking user."""
-    pgo_store = tmp_path / "cache" / "sysforge" / "llvm-pgo"
-    monkeypatch.setenv("SUDO_USER", "buildbot")
-
-    def raise_eacces(*a, **k):
-        raise PermissionError(13, "Permission denied")
-
-    with patch("pathlib.Path.mkdir", side_effect=raise_eacces), \
-         patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
-        _ensure_pgo_store_writable(pgo_store, dry_run=False)
-
-    calls = [c.args[0] for c in mock_run.call_args_list]
-    assert ["sudo", "mkdir", "-p", str(pgo_store)] in calls
-    assert ["sudo", "chown", "-R", "buildbot:", str(pgo_store)] in calls
 
 
 def test_pgo_pass1_stage_extracts_all_packages(tmp_path):

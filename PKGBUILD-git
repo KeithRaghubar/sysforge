@@ -82,16 +82,24 @@ package() {
     install -Dm644 etc/sysforge/bootstrap.toml \
         "$pkgdir/usr/share/sysforge/bootstrap.toml.example"
 
+    # The sysforge group owns sysforge's writable runtime dirs so the
+    # unprivileged build user (a member) can write state and the PGO cache
+    # across runs. systemd-sysusers creates it before systemd-tmpfiles runs.
+    install -Dm644 /dev/null "$pkgdir/usr/lib/sysusers.d/sysforge.conf"
+    printf 'g sysforge -\n' > "$pkgdir/usr/lib/sysusers.d/sysforge.conf"
+
     # State directory (pipeline state, build state, logs) + sentinel subdir
     # consumed by `sysforge update` from the libalpm hooks below.
-    # /var/cache/sysforge holds the regenerable PGO profdata store, written
-    # by the unprivileged toolchain build — 0777 so makepkg can populate it
-    # without sudo (mirrors the runtime sudo-provisioning fallback).
+    # /var/cache/sysforge holds the regenerable PGO profdata store, written by
+    # the unprivileged toolchain build. All owned root:sysforge with setgid
+    # (2775) so group members can write and new subdirs inherit the group —
+    # the single ownership model shared with primitives/fs_provision.py.
     install -Dm644 /dev/null "$pkgdir/usr/lib/tmpfiles.d/sysforge.conf"
     {
-        printf 'd /var/lib/sysforge 0777 root root -\n'
-        printf 'd /var/lib/sysforge/sentinels 0777 root root -\n'
-        printf 'd /var/cache/sysforge 0777 root root -\n'
+        printf 'd /var/lib/sysforge 2775 root sysforge -\n'
+        printf 'd /var/lib/sysforge/sentinels 2775 root sysforge -\n'
+        printf 'd /var/cache/sysforge 2775 root sysforge -\n'
+        printf 'd /var/cache/sysforge/llvm-pgo 2775 root sysforge -\n'
     } > "$pkgdir/usr/lib/tmpfiles.d/sysforge.conf"
 
     # Pacman PostTransaction hooks: kernel/toolchain reminders +

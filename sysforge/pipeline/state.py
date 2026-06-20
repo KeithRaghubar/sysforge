@@ -76,12 +76,23 @@ def resolve_state_dir(cli_override=None):
         return chosen, "SYSFORGE_STATE_DIR"
 
     if not _state_dir_is_writable(_DEFAULT_STATE_DIR):
-        _log.info(
-            f"State dir {_DEFAULT_STATE_DIR} is not writable — "
-            f"falling back to {_FALLBACK_STATE_DIR} "
-            "(set SYSFORGE_STATE_DIR or install sysforge via PKGBUILD to use /var/lib/sysforge)",
-        )
-        return _FALLBACK_STATE_DIR, "xdg-fallback"
+        # Attempt to provision the default into the shared root:sysforge tree
+        # (the one home for sysforge dir ownership). Falls back to the XDG
+        # state dir only when sudo is unavailable, so a non-root run-from-repo
+        # invocation still works without prompting.
+        from sysforge.primitives import fs_provision
+
+        try:
+            fs_provision.ensure_writable_dir(_DEFAULT_STATE_DIR)
+            return _DEFAULT_STATE_DIR, "default"
+        except fs_provision.FsProvisionError:
+            _log.info(
+                f"State dir {_DEFAULT_STATE_DIR} is not writable and could not be "
+                f"provisioned — falling back to {_FALLBACK_STATE_DIR} "
+                "(set SYSFORGE_STATE_DIR or install sysforge via PKGBUILD to use "
+                "/var/lib/sysforge)",
+            )
+            return _FALLBACK_STATE_DIR, "xdg-fallback"
 
     return _DEFAULT_STATE_DIR, "default"
 

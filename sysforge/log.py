@@ -203,7 +203,16 @@ def open_unified_log(path, purge: bool = False) -> None:
     """
     global _unified_log_fh
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # The unified log lives in the state dir; create its parent group-consistently
+    # (root:sysforge) when creatable. Lazy import avoids a log<->fs_provision cycle;
+    # allow_sudo=False keeps logging from ever prompting — fall back to a plain
+    # mkdir, matching the prior best-effort behaviour.
+    try:
+        from sysforge.primitives import fs_provision
+
+        fs_provision.ensure_writable_dir(path.parent, allow_sudo=False)
+    except Exception:
+        path.parent.mkdir(parents=True, exist_ok=True)
     mode = "w" if purge else "a"
     _unified_log_fh = open(path, mode, buffering=1)  # line-buffered
     # Group-writable so other sysforge-group members (e.g. post-reboot primary

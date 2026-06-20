@@ -176,14 +176,34 @@ def test_resolve_cli_override_beats_env(monkeypatch, tmp_path):
     assert path == tmp_path
 
 def test_resolve_xdg_fallback_when_var_lib_not_writable(monkeypatch):
-    """When /var/lib/sysforge is not writable, fall back to the XDG state dir
-    ($XDG_STATE_HOME/sysforge), not the old ~/.config consolidation."""
+    """When /var/lib/sysforge is not writable and cannot be provisioned (no
+    sudo), fall back to the XDG state dir ($XDG_STATE_HOME/sysforge), not the
+    old ~/.config consolidation."""
     monkeypatch.delenv("SYSFORGE_STATE_DIR", raising=False)
     import sysforge.pipeline.state as _state_mod
+    from sysforge.primitives import fs_provision
     monkeypatch.setattr(_state_mod, "_state_dir_is_writable", lambda p: False)
+
+    def _raise(*a, **k):
+        raise fs_provision.FsProvisionError("no sudo")
+
+    monkeypatch.setattr(fs_provision, "ensure_writable_dir", _raise)
     path, source = resolve_state_dir()
     assert source == "xdg-fallback"
     assert path == _state_mod._FALLBACK_STATE_DIR
     # XDG-correct: under a state root, never under ~/.config.
     assert ".config/sysforge" not in str(path)
     assert str(path).endswith("/sysforge")
+
+
+def test_resolve_provisions_default_when_possible(monkeypatch):
+    """When /var/lib/sysforge is not yet writable but can be provisioned
+    (root:sysforge via the shared primitive), use it rather than XDG."""
+    monkeypatch.delenv("SYSFORGE_STATE_DIR", raising=False)
+    import sysforge.pipeline.state as _state_mod
+    from sysforge.primitives import fs_provision
+    monkeypatch.setattr(_state_mod, "_state_dir_is_writable", lambda p: False)
+    monkeypatch.setattr(fs_provision, "ensure_writable_dir", lambda p, **k: p)
+    path, source = resolve_state_dir()
+    assert source == "default"
+    assert str(path) == "/var/lib/sysforge"

@@ -129,6 +129,14 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   `/dev/tty` passthrough both use). Don't add a second `/dev/tty` launcher or resolution
   chain. `.sfnew` adoption lives in `config_cmd.ConfigMergeVerb` (no sentinel; no blind
   "accept theirs"). See DESIGN.md §Config Layer / §CLI Verb Framework.
+- **Runtime directory/group provisioning has one home**: `primitives/fs_provision.py`
+  (`ensure_writable_dir` provisions sysforge's writable FHS dirs `root:sysforge` setgid
+  `2775` — `groupadd`/`usermod` + per-run `chgrp`/`chmod` repair; `FsProvisionError` →
+  caller XDG-fallback; `empty_dir_contents` for the PGO purge; `build_user()` for
+  `SUDO_USER`>`USER`). `/etc/sysforge` stays root-owned. Don't add a parallel
+  `mkdir`/`chown`/`sudo` path; the shipped `tmpfiles.d`/`sysusers.d` (both PKGBUILDs) and
+  bootstrap `configure.py` reuse the same `SYSFORGE_GROUP`/`SYSFORGE_DIR_MODE`, gated by
+  `check_shipped` `provisioning`. See DESIGN.md §07 (Directory provisioning).
 - **`doctor` axes share one Finding framework and stay read-only**: each axis is a producer
   returning `list[diagnostics.Finding]` (never import `pipeline` from `diagnostics`).
   Register in `doctor.py` (`_SYSTEM_AXIS_ORDER`/`_AXIS_FLAGS`/`_system_axes` +

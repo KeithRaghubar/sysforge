@@ -76,8 +76,8 @@ class TestRealRepo:
         res = run_checker(args=["--list"])
         assert res.returncode == 0
         groups = res.stdout.split()
-        assert {"configs", "pkgbuild", "pkgbuild_parity", "hooks",
-                "completions", "versions", "manpage"} <= set(groups)
+        assert {"configs", "pkgbuild", "pkgbuild_parity", "provisioning",
+                "hooks", "completions", "versions", "manpage"} <= set(groups)
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +154,53 @@ class TestPkgbuildParity:
         res = run_checker(repo=repo, args=["--check=pkgbuild_parity"])
         assert res.returncode == 1
         assert "optdepends differs" in res.stdout
+
+
+class TestProvisioning:
+    def test_wrong_group_fails(self, tmp_path):
+        repo = copy_shipped_tree(tmp_path)
+        pkgbuild = repo / "PKGBUILD"
+        text = pkgbuild.read_text()
+        # Flip /var/cache/sysforge back to the old world-writable root:root form.
+        new = text.replace(
+            "'d /var/cache/sysforge 2775 root sysforge -\\n'",
+            "'d /var/cache/sysforge 0777 root root -\\n'",
+        )
+        assert new != text
+        pkgbuild.write_text(new)
+
+        res = run_checker(repo=repo, args=["--check=provisioning"])
+        assert res.returncode == 1
+        assert "/var/cache/sysforge" in res.stdout
+
+    def test_missing_sysusers_group_fails(self, tmp_path):
+        repo = copy_shipped_tree(tmp_path)
+        for name in ("PKGBUILD", "PKGBUILD-git"):
+            pkgbuild = repo / name
+            text = pkgbuild.read_text()
+            new = text.replace("printf 'g sysforge -\\n'", "printf 'g other -\\n'")
+            assert new != text
+            pkgbuild.write_text(new)
+
+        res = run_checker(repo=repo, args=["--check=provisioning"])
+        assert res.returncode == 1
+        assert "does not declare group 'sysforge'" in res.stdout
+
+    def test_tmpfiles_parity_between_pkgbuilds(self, tmp_path):
+        repo = copy_shipped_tree(tmp_path)
+        git = repo / "PKGBUILD-git"
+        text = git.read_text()
+        # Drop the llvm-pgo line from the VCS PKGBUILD only.
+        new = text.replace(
+            "        printf 'd /var/cache/sysforge/llvm-pgo 2775 root sysforge -\\n'\n",
+            "",
+        )
+        assert new != text
+        git.write_text(new)
+
+        res = run_checker(repo=repo, args=["--check=provisioning"])
+        assert res.returncode == 1
+        assert "differs between PKGBUILD and PKGBUILD-git" in res.stdout
 
 
 class TestHookDrift:

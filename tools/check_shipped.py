@@ -697,6 +697,89 @@ def _which(name: str) -> bool:
 
 
 # ===========================================================================
+# Group: provisioning
+# ===========================================================================
+#
+# Both PKGBUILDs generate usr/lib/{sysusers,tmpfiles}.d/sysforge.conf inline.
+# The runtime provisioning primitive (primitives/fs_provision.py) owns the same
+# dirs root:sysforge with setgid mode 2775; install-time tmpfiles must agree so
+# a package-installed system never needs the runtime sudo fallback. This check
+# pins that contract: the sysforge group is declared, every sysforge runtime dir
+# is tmpfiles-provisioned root:sysforge 2775, and both PKGBUILDs match.
+
+# The runtime dirs that must be group-owned + setgid by tmpfiles, mirroring the
+# FHS-rooted paths fs_provision provisions. /etc/sysforge is deliberately absent
+# — config stays root-owned (read-only to sysforge).
+_PROVISIONED_DIRS = {
+    "/var/lib/sysforge",
+    "/var/lib/sysforge/sentinels",
+    "/var/cache/sysforge",
+    "/var/cache/sysforge/llvm-pgo",
+}
+_EXPECTED_DIR_MODE = "2775"
+_EXPECTED_DIR_OWNER = ("root", "sysforge")
+
+# tmpfiles `d <path> <mode> <user> <group> <age>` line emitted via printf '...'.
+_TMPFILES_LINE_RE = re.compile(
+    r"printf\s+'d\s+(?P<path>\S+)\s+(?P<mode>\S+)\s+(?P<user>\S+)\s+(?P<group>\S+)\s+"
+)
+_SYSUSERS_GROUP_RE = re.compile(r"printf\s+'g\s+(?P<group>\S+)\s")
+
+
+def _parse_tmpfiles_dirs(text: str) -> dict[str, tuple[str, str, str]]:
+    """Map tmpfiles dir path -> (mode, user, group) from inline printf lines."""
+    return {
+        m.group("path"): (m.group("mode"), m.group("user"), m.group("group"))
+        for m in _TMPFILES_LINE_RE.finditer(text)
+    }
+
+
+def _check_one_provisioning(group: str, label: str, text: str) -> list[Finding]:
+    findings: list[Finding] = []
+
+    groups = {m.group("group") for m in _SYSUSERS_GROUP_RE.finditer(text)}
+    if _EXPECTED_DIR_OWNER[1] not in groups:
+        findings.append(Finding(group, "error", label,
+            f"sysusers.d does not declare group '{_EXPECTED_DIR_OWNER[1]}' "
+            "(needed before tmpfiles assigns it)"))
+
+    dirs = _parse_tmpfiles_dirs(text)
+    for path in sorted(_PROVISIONED_DIRS):
+        if path not in dirs:
+            findings.append(Finding(group, "error", label,
+                f"tmpfiles.d does not provision {path}"))
+            continue
+        mode, user, grp = dirs[path]
+        if (user, grp) != _EXPECTED_DIR_OWNER:
+            findings.append(Finding(group, "error", label,
+                f"{path} owned {user}:{grp}, expected "
+                f"{_EXPECTED_DIR_OWNER[0]}:{_EXPECTED_DIR_OWNER[1]}"))
+        if mode != _EXPECTED_DIR_MODE:
+            findings.append(Finding(group, "error", label,
+                f"{path} mode {mode}, expected setgid {_EXPECTED_DIR_MODE}"))
+    return findings
+
+
+def check_provisioning(repo: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    pkgbuild = repo / "PKGBUILD"
+    git = repo / "PKGBUILD-git"
+    if not pkgbuild.exists() or not git.exists():
+        return [Finding("provisioning", "error", "PKGBUILD",
+                        "PKGBUILD or PKGBUILD-git missing")]
+    stable_text = pkgbuild.read_text()
+    git_text = git.read_text()
+    findings += _check_one_provisioning("provisioning", "PKGBUILD", stable_text)
+    findings += _check_one_provisioning("provisioning", "PKGBUILD-git", git_text)
+
+    # Parity: the generated tmpfiles must be identical between the two.
+    if _parse_tmpfiles_dirs(stable_text) != _parse_tmpfiles_dirs(git_text):
+        findings.append(Finding("provisioning", "error", "PKGBUILD vs PKGBUILD-git",
+            "tmpfiles.d dir provisioning differs between PKGBUILD and PKGBUILD-git"))
+    return findings
+
+
+# ===========================================================================
 # Driver
 # ===========================================================================
 
@@ -704,6 +787,7 @@ GROUPS = {
     "configs":         check_configs,
     "pkgbuild":        check_pkgbuild,
     "pkgbuild_parity": check_pkgbuild_parity,
+    "provisioning":    check_provisioning,
     "hooks":           check_hooks,
     "completions":     check_completions,
     "versions":        check_versions,
