@@ -260,6 +260,64 @@ def derive_llvm_targets(host_arch: str, gpu_vendors: list[str]) -> list[str]:
     return targets
 
 
+# GPU vendor (as emitted by parse_gpu_vendors) → the mesa gallium / vulkan
+# drivers that vendor's hardware needs. The software rasterizers are NOT here —
+# they come from the mandatory baseline below so every host keeps a working
+# fallback regardless of GPU vendor. This is the mesa analogue of
+# _GPU_VENDOR_TO_LLVM, used to trim mesa's `gallium-drivers=all` /
+# `vulkan-drivers=<every-driver>` down to what the box can actually run.
+_GPU_VENDOR_TO_MESA_GALLIUM = {
+    "amd":    ["radeonsi"],
+    "intel":  ["iris", "crocus"],
+    "nvidia": ["nouveau"],
+}
+_GPU_VENDOR_TO_MESA_VULKAN = {
+    "amd":    ["amd"],
+    "intel":  ["intel", "intel_hasvk"],
+    "nvidia": ["nouveau"],
+}
+
+# Mesa drivers that must always be built regardless of detected GPU — the
+# *inverse* of the LLVM AMDGPU invariant. Where _SYSTEM_LIBLLVM_CONSUMER_TARGETS
+# guards against reducing too LITTLE, this guards against reducing too MUCH:
+# dropping the software rasterizers (gallium llvmpipe/softpipe, vulkan
+# swrast=lavapipe) would break headless sessions, VMs, GPU-reset recovery and
+# the llvmpipe/software-Vulkan fallback. zink (GL-on-Vulkan) rides along as the
+# portability path some stacks fall back to. Always present in any non-empty
+# autodetected set, even when no GPU is detected at all.
+_MESA_MANDATORY_GALLIUM = ("llvmpipe", "softpipe", "zink")
+_MESA_MANDATORY_VULKAN = ("swrast",)
+
+
+def derive_mesa_drivers(gpu_vendors: list[str]) -> dict[str, list[str]]:
+    """Build the autodetected mesa gallium/vulkan driver lists for this host.
+
+    Returns ``{"gallium": [...], "vulkan": [...]}``: vendor drivers (in
+    detection order) first, then the mandatory software baseline
+    (``_MESA_MANDATORY_*``) appended and de-duplicated. Unlike
+    ``derive_llvm_targets`` there is no arch gate — GPU drivers are vendor- not
+    arch-determined, and the software baseline is valid on every arch. An empty
+    ``gpu_vendors`` yields baseline-only (software rendering), the correct
+    minimum for a headless or undetected host.
+    """
+    gallium: list[str] = []
+    vulkan: list[str] = []
+    for vendor in gpu_vendors:
+        for drv in _GPU_VENDOR_TO_MESA_GALLIUM.get(vendor, []):
+            if drv not in gallium:
+                gallium.append(drv)
+        for drv in _GPU_VENDOR_TO_MESA_VULKAN.get(vendor, []):
+            if drv not in vulkan:
+                vulkan.append(drv)
+    for drv in _MESA_MANDATORY_GALLIUM:
+        if drv not in gallium:
+            gallium.append(drv)
+    for drv in _MESA_MANDATORY_VULKAN:
+        if drv not in vulkan:
+            vulkan.append(drv)
+    return {"gallium": gallium, "vulkan": vulkan}
+
+
 # ---------------------------------------------------------------------------
 # Architecture-aware kconfig disable
 #
@@ -379,6 +437,12 @@ def _write_hardware_profile(
         "llvm_targets = [{}]".format(
             ", ".join(f'"{v}"' for v in hw.get("llvm_targets", []))
         ),
+        "mesa_gallium_drivers = [{}]".format(
+            ", ".join(f'"{v}"' for v in hw.get("mesa_gallium_drivers", []))
+        ),
+        "mesa_vulkan_drivers = [{}]".format(
+            ", ".join(f'"{v}"' for v in hw.get("mesa_vulkan_drivers", []))
+        ),
         f'nvme        = {"true" if hw.get("nvme") else "false"}',
         "",
     ]
@@ -480,9 +544,16 @@ class HardwareStage(Stage):
         # --- Host arch + LLVM target list ---
         host_arch = detect_host_arch()
         llvm_targets = derive_llvm_targets(host_arch, gpu_vendors)
+        mesa_drivers = derive_mesa_drivers(gpu_vendors)
         _log.ui(f"host_arch: {host_arch}")
         if llvm_targets:
             _log.ui(f"llvm_targets: {';'.join(llvm_targets)}")
+        _log.ui(
+            "mesa drivers: gallium={} vulkan={}".format(
+                ",".join(mesa_drivers["gallium"]),
+                ",".join(mesa_drivers["vulkan"]),
+            )
+        )
 
         # --- Build kconfig ---
         kconfig = {}
@@ -555,6 +626,8 @@ class HardwareStage(Stage):
             "nvme": nvme,
             "host_arch": host_arch,
             "llvm_targets": llvm_targets,
+            "mesa_gallium_drivers": mesa_drivers["gallium"],
+            "mesa_vulkan_drivers": mesa_drivers["vulkan"],
         }
 
         # --- Write output ---

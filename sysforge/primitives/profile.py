@@ -150,6 +150,16 @@ KERNEL_CLEAN_KEYS: frozenset[str] = frozenset({
 _MESA_PKGBASES = frozenset({"mesa", "mesa-git", "lib32-mesa", "lib32-mesa-git"})
 
 
+def is_mesa_pkgbase(pkgbase: str | None) -> bool:
+    """True for the mesa-family pkgbases sysforge has graphics-specific handling
+    for (the ``MESA_WHICH_LLVM`` overlay and gallium/vulkan driver filtering).
+
+    The public predicate over ``_MESA_PKGBASES`` — callers (makepkg_wrapper's
+    mesa driver patch gate) use this rather than importing the private set.
+    """
+    return bool(pkgbase) and pkgbase in _MESA_PKGBASES
+
+
 def variant_env_overlay(pkgbase: str, variant: str | None) -> dict[str, str]:
     """Return per-package env vars driven by the active toolchain variant.
 

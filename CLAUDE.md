@@ -195,6 +195,18 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   targets` (else check #3 silently skips on autodetect hosts). Same fact surfaced read-only by
   `doctor --graphics` (`graphics_probe._check_mesa_llvm_symbols`). Opt-out is `[llvm] targets = []`
   (build all). See DESIGN.md §Hardware detection / §`graphics-stack` / §07.
+- **Mesa driver filtering is the meson analogue of LLVM target filtering, inverted** — trims
+  mesa's `-D gallium-drivers=all` / `-D vulkan-drivers=…` to detected GPU vendors. One home each:
+  derivation `hardware.derive_mesa_drivers`, resolution `mesa_drivers.resolve_or_detect_mesa_drivers`
+  (mirrors the llvm_targets precedence), meson rewrite `pkgbuild_patcher.patch_mesa_drivers` (+ the
+  only meson injector/validator — `validate_patched_meson_pkgbuild`; don't add a parallel one),
+  wired via `makepkg_wrapper._maybe_patch_mesa_drivers` gated by `profile.is_mesa_pkgbase`. The
+  invariant is **inverted** vs LLVM: the mandatory *software* baseline (`_MESA_MANDATORY_GALLIUM`
+  llvmpipe/softpipe/zink, `_MESA_MANDATORY_VULKAN` swrast) is always kept (`_ensure_mesa_software_baseline`)
+  — reducing too MUCH bricks headless/VM/recovery. A gallium reduction also intersects
+  `gallium-rusticl-enable-drivers` (rusticl ⊆ built gallium). **Opt-in** (`sysforge.toml [mesa]
+  filter_drivers`, default off) — unlike LLVM filtering; lib32-mesa **is** filtered (vendor- not
+  arch-coupled, unlike lib32-llvm). See DESIGN.md §Hardware detection / §Config Layer.
 - **Pass-3 build reuse has one home**: `primitives/build_fingerprint.py` (opt-in `--reuse-built`,
   fail-safe to rebuild). New `compute_fingerprint` inputs bump `_SCHEMA`.
 - **Kernel stage**: compiler independent of toolchain (`_compiler_paths`, don't hardcode);

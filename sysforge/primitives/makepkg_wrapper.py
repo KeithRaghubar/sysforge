@@ -40,7 +40,7 @@ from sysforge.primitives.config import (
     load_conflict_groups,
     load_consumes_inference,
 )
-from sysforge.primitives.paths import TOOLCHAIN_PATH
+from sysforge.primitives.paths import SYSFORGE_TOML_PATH, TOOLCHAIN_PATH
 from sysforge.primitives.pkgbuild_meta import has_hardcoded_gcc, parse_pkgbuild
 # Flag-string manipulation lives in makepkg_flags (owns the [FLAG] tag).
 # Re-exported here so emit_makepkg_conf and the CLI/update call sites
@@ -76,9 +76,11 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_kernel_subpackages,
     patch_llvm_dir,
     patch_llvm_targets,
+    patch_mesa_drivers,
     patch_noninteractive_kconfig,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
+    validate_patched_meson_pkgbuild,
     validate_patched_pkgbuild,
     warn_artifacts_left,
     write_extracted_profile,
@@ -111,6 +113,7 @@ _build_log = log.get_logger("BUILD")
 from sysforge.primitives.profile import (
     CONF_KEY_MAP,
     get_build_mode,
+    is_mesa_pkgbase,
     match_rules,
     resolve_consumes,
     resolve_groups,
@@ -291,6 +294,37 @@ def _maybe_patch_llvm_targets(
     return patch_llvm_targets(pkgbuild_path, targets)
 
 
+def _maybe_patch_mesa_drivers(
+    pkgbuild_path, pkgmeta, state_dir_override: Path | None = None
+):
+    """Trim mesa's ``gallium-drivers`` / ``vulkan-drivers`` meson options to the
+    drivers this host runs, the mesa analogue of :func:`_maybe_patch_llvm_targets`.
+
+    Returns the resolved ``{"gallium": [...], "vulkan": [...]}`` dict when a
+    rewrite occurred (so the caller can validate against it), else ``None``.
+
+    Opt-in: ``resolve_or_detect_mesa_drivers`` returns ``None`` unless
+    ``[mesa] filter_drivers = true`` in sysforge.toml, so with the switch off
+    this is a no-op for every build. Unlike the LLVM path, lib32-mesa IS
+    filtered — mesa drivers are vendor- not arch-determined, and lib32 has no
+    header-symbol coupling to a reduced set.
+    """
+    pkgname = _pkgname_from_meta(pkgmeta)
+    if not is_mesa_pkgbase(pkgname):
+        return None
+    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives.mesa_drivers import resolve_or_detect_mesa_drivers
+    state_dir, _ = resolve_state_dir(state_dir_override)
+    hw_profile = state_dir / "hardware_profile.toml"
+    drivers = resolve_or_detect_mesa_drivers(SYSFORGE_TOML_PATH, hw_profile)
+    if not drivers:
+        # Switch off, or nothing resolved — let the upstream PKGBUILD decide.
+        return None
+    if patch_mesa_drivers(pkgbuild_path, drivers["gallium"], drivers["vulkan"]):
+        return drivers
+    return None
+
+
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
                active_consumes=None, extracted_profile=None, pkgmeta=None,
                extra_flags=None, interactive=False,
@@ -343,6 +377,13 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     if cmake_llvm_dir:
         cmake_injected = patch_llvm_dir(pkgbuild_path, cmake_llvm_dir) or cmake_injected
 
+    # Mesa (meson, not cmake): trim gallium/vulkan drivers to this host. Opt-in —
+    # a no-op unless [mesa] filter_drivers = true. Returns the resolved driver
+    # dict when a rewrite happened, so the meson validation can check against it.
+    mesa_filtered = _maybe_patch_mesa_drivers(
+        pkgbuild_path, pkgmeta, state_dir_override=state_dir
+    )
+
     if kernel_build:
         # Always inject the sysforge.config fragment merge so a stock PKGBUILD
         # actually applies the hardware/device kconfig (it adds `make nconfig`
@@ -379,6 +420,16 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     # strictly holds there. Raises PkgbuildPatchError, which aborts the build.
     if cmake_injected:
         validate_patched_pkgbuild(original_pkgbuild_path, pkgbuild_path)
+
+    # Same fail-fast for a mesa meson-driver rewrite: G1 globals unchanged + the
+    # rewritten gallium/vulkan options kept their mandatory software baseline.
+    if mesa_filtered:
+        validate_patched_meson_pkgbuild(
+            original_pkgbuild_path,
+            pkgbuild_path,
+            mesa_filtered["gallium"],
+            mesa_filtered["vulkan"],
+        )
 
     # Probe ThinLTO cache dir (informational, once per build) — owned by cache_probe.py
     report_thinlto_cache(resolved_profile.get("LDFLAGS", ""))

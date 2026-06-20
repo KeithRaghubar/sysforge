@@ -1062,6 +1062,41 @@ _LLVM_DIR_RE = re.compile(
     r'-DLLVM_DIR(?::[A-Z]+)?=(?:"[^"]*"|\'[^\']*\'|\S+)'
 )
 
+# --- mesa meson driver options ----------------------------------------------
+#
+# Mesa is a meson build: drivers are array elements of `meson_options=( … )`,
+# written `-D gallium-drivers=all` / `-D vulkan-drivers=amd,intel,…` (the `-D`
+# and key may or may not have a space between them). Each regex captures the
+# key-prefix (group 1) so a rewrite preserves the original `-D `/`-D` spacing,
+# and matches the unquoted comma-list value to end of element. This is the
+# meson analogue of _LLVM_TARGETS_RE — sysforge has no other meson injector.
+_MESA_GALLIUM_RE = re.compile(
+    r'(-D[ \t]?gallium-drivers=)(?:"[^"]*"|\'[^\']*\'|\S+)'
+)
+_MESA_VULKAN_RE = re.compile(
+    r'(-D[ \t]?vulkan-drivers=)(?:"[^"]*"|\'[^\']*\'|\S+)'
+)
+# rusticl drivers must be a SUBSET of the built gallium drivers, else meson
+# configure aborts — so a gallium reduction must intersect this too.
+_MESA_RUSTICL_RE = re.compile(
+    r'(-D[ \t]?gallium-rusticl-enable-drivers=)(?:"[^"]*"|\'[^\']*\'|\S+)'
+)
+
+# Valid meson driver tokens (the option enums) — used to reject a typo'd
+# explicit `[mesa]` override before it reaches `arch-meson` and aborts the build
+# hours in. Kept deliberately broad (every upstream driver); the point is to
+# catch garbage, not to police which drivers a host may request.
+_MESA_GALLIUM_TOKENS = frozenset({
+    "asahi", "crocus", "d3d12", "etnaviv", "freedreno", "i915", "iris", "lima",
+    "llvmpipe", "nouveau", "panfrost", "r300", "r600", "radeonsi", "softpipe",
+    "svga", "tegra", "v3d", "vc4", "virgl", "zink",
+})
+_MESA_VULKAN_TOKENS = frozenset({
+    "amd", "asahi", "broadcom", "freedreno", "gfxstream", "imagination",
+    "intel", "intel_hasvk", "microsoft-experimental", "nouveau", "panfrost",
+    "swrast", "virtio",
+})
+
 
 def is_llvm_pkgbase(pkgbase: str | None) -> bool:
     """Return True if pkgbase looks like an LLVM-toolchain package."""
@@ -1234,6 +1269,128 @@ def patch_llvm_dir(patched_path, llvm_dir: str) -> bool:
     return True
 
 
+def _validate_mesa_tokens(drivers: list[str], allowed: frozenset[str], axis: str) -> bool:
+    """True if every token in ``drivers`` is a recognised meson ``axis`` driver.
+
+    A bad token (typically a typo in an explicit ``[mesa]`` override) makes
+    ``arch-meson`` abort the configure step hours before compile. The caller
+    treats False as "skip the rewrite, leave upstream's driver list untouched"
+    so a fat-fingered override degrades to a full build, never a hard failure.
+    """
+    unknown = [d for d in drivers if d not in allowed]
+    if unknown:
+        _log.warn(
+            f"mesa {axis} driver filtering requested with unrecognised "
+            f"token(s) {', '.join(unknown)} — skipping the {axis} rewrite "
+            "(building upstream's full driver set instead)"
+        )
+        return False
+    return True
+
+
+def patch_mesa_drivers(
+    patched_path,
+    gallium: list[str] | None,
+    vulkan: list[str] | None,
+) -> bool:
+    """Rewrite mesa's ``-D gallium-drivers=`` / ``-D vulkan-drivers=`` meson
+    options to the resolved per-host driver lists, in an already-written
+    PKGBUILD.sysforge.
+
+    The meson counterpart of :func:`patch_llvm_targets`. Differences forced by
+    mesa being meson, not cmake:
+
+    * Drivers are *array elements* of ``meson_options=( … )``, not args on a
+      ``cmake`` configure line — so this rewrites the value in place (matched by
+      :data:`_MESA_GALLIUM_RE` / :data:`_MESA_VULKAN_RE`) rather than appending a
+      ``\\``-continuation. No anchor/statement-end logic is needed.
+    * A gallium reduction also rewrites ``gallium-rusticl-enable-drivers`` to the
+      intersection with the new gallium set (rusticl drivers must be a subset of
+      built gallium drivers), falling back to ``llvmpipe`` (always in the
+      baseline, and a valid rusticl driver) when the intersection is empty — so
+      ``gallium-rusticl=true`` stays satisfiable.
+
+    Each axis is independent: pass ``None`` to leave that option untouched. A
+    token that isn't a recognised meson driver (:func:`_validate_mesa_tokens`)
+    skips that axis's rewrite rather than injecting a value that aborts the
+    build. Idempotent — returns False (no write) when nothing changed.
+
+    Returns True when the file was modified.
+    """
+    if not gallium and not vulkan:
+        return False
+
+    patched_path = Path(patched_path)
+    text = patched_path.read_text(encoding="utf-8")
+    new_text = text
+    modified = False
+
+    if gallium and _validate_mesa_tokens(gallium, _MESA_GALLIUM_TOKENS, "gallium"):
+        new_text, changed = _rewrite_mesa_option(
+            new_text, _MESA_GALLIUM_RE, gallium, "gallium-drivers"
+        )
+        modified = modified or changed
+        # rusticl drivers ⊆ gallium drivers — keep them consistent with the
+        # reduced set so meson doesn't reject an enabled-but-unbuilt driver.
+        new_text, r_changed = _rewrite_mesa_rusticl(new_text, gallium)
+        modified = modified or r_changed
+
+    if vulkan and _validate_mesa_tokens(vulkan, _MESA_VULKAN_TOKENS, "vulkan"):
+        new_text, changed = _rewrite_mesa_option(
+            new_text, _MESA_VULKAN_RE, vulkan, "vulkan-drivers"
+        )
+        modified = modified or changed
+
+    if modified:
+        patched_path.write_text(new_text, encoding="utf-8")
+    return modified
+
+
+def _rewrite_mesa_option(text, regex, drivers, label):
+    """Replace the value of a single ``-D <opt>=`` meson element with the
+    comma-joined ``drivers`` list. Returns ``(new_text, changed)``.
+
+    Idempotent: a no-op (``changed=False``) when the option already carries the
+    target value. Logs a warning and leaves the text unchanged when the option
+    isn't present (upstream may have renamed/dropped it)."""
+    existing = regex.search(text)
+    if not existing:
+        _log.warn(
+            f"mesa driver filtering requested but no `-D {label}=` meson "
+            "option found in PKGBUILD — leaving unmodified"
+        )
+        return (text, False)
+    value = ",".join(drivers)
+    replacement = existing.group(1) + value
+    if existing.group(0) == replacement:
+        return (text, False)
+    new_text = text[:existing.start()] + replacement + text[existing.end():]
+    _log.info(f"Set mesa {label}: {existing.group(0)!r} → {replacement!r}")
+    return (new_text, True)
+
+
+def _rewrite_mesa_rusticl(text, gallium):
+    """Intersect ``gallium-rusticl-enable-drivers`` with the new ``gallium`` set
+    (fallback ``llvmpipe`` when empty). Returns ``(new_text, changed)``; a no-op
+    when the option is absent or already consistent."""
+    existing = _MESA_RUSTICL_RE.search(text)
+    if not existing:
+        return (text, False)
+    current_val = existing.group(0)[len(existing.group(1)):].strip("\"'")
+    current = [d for d in current_val.split(",") if d]
+    gallium_set = set(gallium)
+    kept = [d for d in current if d in gallium_set] or ["llvmpipe"]
+    replacement = existing.group(1) + ",".join(kept)
+    if existing.group(0) == replacement:
+        return (text, False)
+    new_text = text[:existing.start()] + replacement + text[existing.end():]
+    _log.info(
+        f"Reduced mesa gallium-rusticl-enable-drivers: "
+        f"{existing.group(0)!r} → {replacement!r}"
+    )
+    return (new_text, True)
+
+
 # ---------------------------------------------------------------------------
 # Post-patch validation gate
 #
@@ -1297,7 +1454,7 @@ def validate_patched_pkgbuild(original_path, patched_path) -> None:
             raise PkgbuildPatchError(msg)
 
     # G2: join `\`-continuations so an injected arg shares its cmake's logical line.
-    joined = Path(patched_path).read_text().replace("\\\n", " ")
+    joined = Path(patched_path).read_text(encoding="utf-8").replace("\\\n", " ")
     for line in joined.splitlines():
         stripped = line.strip()
         if stripped.startswith("cmake"):
@@ -1310,6 +1467,62 @@ def validate_patched_pkgbuild(original_path, patched_path) -> None:
                 )
                 _log.error(msg)
                 raise PkgbuildPatchError(msg)
+
+
+def validate_patched_meson_pkgbuild(
+    original_path,
+    patched_path,
+    gallium: list[str] | None,
+    vulkan: list[str] | None,
+) -> None:
+    """Structural validation of a mesa PKGBUILD.sysforge after a
+    :func:`patch_mesa_drivers` rewrite. Raises :class:`PkgbuildPatchError` on a
+    botched rewrite — the meson counterpart of :func:`validate_patched_pkgbuild`.
+
+    Reuses G1 (identity/dependency globals unchanged) via
+    :func:`validate_patched_pkgbuild` — meson_options is a ``local`` inside
+    ``build()`` so a driver rewrite must never touch a global, and G2's
+    cmake-token loop is a harmless no-op here. Then, for each axis that was
+    filtered, asserts the rewritten ``-D <opt>=`` value:
+
+      * still exists and is not the upstream ``all`` sentinel, and
+      * carries the mandatory software baseline
+        (``_MESA_MANDATORY_*`` — the inverse-AMDGPU invariant: a mesa with no
+        software renderer bricks headless/VM/recovery).
+    """
+    validate_patched_pkgbuild(original_path, patched_path)
+    from sysforge.pipeline.stages.hardware import (
+        _MESA_MANDATORY_GALLIUM,
+        _MESA_MANDATORY_VULKAN,
+    )
+    text = Path(patched_path).read_text(encoding="utf-8")
+
+    def _check(axis, regex, requested, mandatory):
+        if not requested:
+            return
+        m = regex.search(text)
+        if not m:
+            msg = f"mesa {axis} rewrite reported success but no `-D {axis}=` option remains"
+            _log.error(msg)
+            raise PkgbuildPatchError(msg)
+        value = m.group(0)[len(m.group(1)):].strip("\"'")
+        tokens = {t for t in value.split(",") if t}
+        if "all" in tokens:
+            msg = f"mesa {axis} rewrite left the upstream 'all' sentinel: {value!r}"
+            _log.error(msg)
+            raise PkgbuildPatchError(msg)
+        missing = [d for d in mandatory if d not in tokens]
+        if missing:
+            msg = (
+                f"mesa {axis} rewrite dropped mandatory software driver(s) "
+                f"{', '.join(missing)} (value {value!r}) — a build with no "
+                "software renderer bricks headless/VM/recovery sessions"
+            )
+            _log.error(msg)
+            raise PkgbuildPatchError(msg)
+
+    _check("gallium-drivers", _MESA_GALLIUM_RE, gallium, _MESA_MANDATORY_GALLIUM)
+    _check("vulkan-drivers", _MESA_VULKAN_RE, vulkan, _MESA_MANDATORY_VULKAN)
 
 
 # ---------------------------------------------------------------------------

@@ -170,7 +170,7 @@ def cache_key(pass_id: str, pkgbase: str) -> str:
 def load_cache(path) -> dict:
     """Load the JSON build cache, or ``{}`` on any error (fail safe)."""
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return {}

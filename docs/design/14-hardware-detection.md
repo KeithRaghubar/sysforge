@@ -19,6 +19,8 @@ Unknown AMD CPU models get `CONFIG_X86_AMD_PSTATE` but no `CONFIG_MZEN*` entry �
 
 **The baseline is enforced at *resolution* time, not only at derivation.** `derive_llvm_targets` bakes `AMDGPU` into a freshly-derived list, but the actual build resolves `LLVM_TARGETS_TO_BUILD` from `hardware_profile.toml` (or an explicit `toolchain.toml [llvm] targets`) via `llvm_targets.resolve_or_detect_llvm_targets` — both of which *bypass* derivation. A profile cached before the baseline existed, or one a user hand-edited, would otherwise silently reintroduce a brick. So `resolve_llvm_targets`/`resolve_or_detect_llvm_targets` re-apply `_SYSTEM_LIBLLVM_CONSUMER_TARGETS` (via `_ensure_system_consumer_targets`) to **any** non-None, non-empty resolved set, from any source. The single opt-out is `[llvm] targets = []` ("build all", which already includes `AMDGPU`), which resolves to `None` and skips the enforcement. This is the layer the bricked-desktop regression slipped through: the fix had lived only in derivation while the build read the cached file.
 
+**Mesa driver derivation (the meson analogue).** The hardware stage also writes `mesa_gallium_drivers` / `mesa_vulkan_drivers` from the same `gpu_vendors` (`derive_mesa_drivers`): `amd`→`radeonsi`/`amd`, `intel`→`iris,crocus`/`intel,intel_hasvk`, `nvidia`→`nouveau`/`nouveau`. These trim mesa's `-D gallium-drivers=all` / `-D vulkan-drivers=<every-driver>` (every ARM-SoC/mobile GPU mesa ships) down to what the host runs — a real build-time win when sysforge source-builds mesa. The invariant is the *inverse* of the LLVM `AMDGPU` one: where that guards against reducing *too little*, mesa's mandatory software baseline (`_MESA_MANDATORY_GALLIUM` = `llvmpipe`/`softpipe`/`zink`, `_MESA_MANDATORY_VULKAN` = `swrast`/lavapipe) guards against reducing *too much* — a build with no software renderer bricks headless/VM/GPU-reset-recovery sessions. The baseline rides every derived/resolved set, even a no-GPU host (which yields baseline-only). **Unlike LLVM filtering, mesa filtering is opt-in** (`[mesa] filter_drivers = true` in `sysforge.toml`, default off); resolution (`mesa_drivers.resolve_or_detect_mesa_drivers`) and baseline enforcement (`_ensure_mesa_software_baseline`) mirror the LLVM path, and a gallium reduction also intersects `gallium-rusticl-enable-drivers` with the built set (rusticl drivers must be a subset). Consumed by `pkgbuild_patcher.patch_mesa_drivers` (gated by `profile.is_mesa_pkgbase`) when building any mesa-family package; lib32-mesa **is** filtered (vendor- not arch-coupled, unlike lib32-llvm).
+
 **`hardware_profile.toml` layout:**
 ```toml
 [hardware]
@@ -28,6 +30,8 @@ cpu_model   = 33
 host_arch   = "x86_64"
 gpu_vendors = ["nvidia"]
 llvm_targets = ["X86", "NVPTX", "AMDGPU"]  # AMDGPU always present (system mesa)
+mesa_gallium_drivers = ["nouveau", "llvmpipe", "softpipe", "zink"]  # + software baseline
+mesa_vulkan_drivers  = ["nouveau", "swrast"]                        # swrast = lavapipe baseline
 nvme        = true
 
 [kconfig]
@@ -51,6 +55,7 @@ Written atomically (write-then-rename) to `<state_dir>/hardware_profile.toml`. T
 
 - **`pipeline/stages/kernel.py`** — `_load_hardware_kconfig()` consumes `[kconfig]` and `[kconfig_devices]`; entries flow into the `sysforge.config` fragment merged into `.config` via `merge_config.sh` (precedence: manual `[[kconfig]]` > `[kconfig]` > `[kconfig_devices]`; the device table is gated by `kernel.toml device_kconfig`, default true). Absence is non-fatal (entries skipped with an INFO log).
 - **`primitives/llvm_targets.py`** — `_read_hardware_targets()` consumes `[hardware] llvm_targets`; resolves the `LLVM_TARGETS_TO_BUILD` cmake arg injected by `pkgbuild_patcher.patch_llvm_targets`.
+- **`primitives/mesa_drivers.py`** — `_read_hardware_drivers()` consumes `[hardware] mesa_gallium_drivers` / `mesa_vulkan_drivers`; resolves (opt-in, gated by `sysforge.toml [mesa] filter_drivers`) the `-D gallium-drivers=` / `-D vulkan-drivers=` meson options rewritten by `pkgbuild_patcher.patch_mesa_drivers`.
 - **`pipeline/stages/reconfigure.py`** — surfaces the file in the pre-build config review so the user can hand-edit before kernel build.
 - **`commands/doctor.py`** — consumes `[hardware] gpu_vendors` to scope the `doctor --graphics` health checks.
 

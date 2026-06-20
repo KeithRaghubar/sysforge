@@ -59,6 +59,9 @@ Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to su
 | `[build]` | `python` | `system` | Python interpreter for PKGBUILD `build()` steps, pinned ahead of any pyenv/asdf/conda shim on `PATH` so a bare `python` resolves to the interpreter its `python-*` makedepends were installed against. `system` / unset → `/usr/bin/python`; a bare version like `3.12` → `/usr/bin/python3.12`; or an absolute path. Resolved choice logged at DEBUG; an unusable value warns and falls back to the system python |
 | `[aur]` | `min_fetch_interval_ms` | `500` | Minimum gap between consecutive git fetches against aur.archlinux.org (millisecond resolution) |
 | `[aur]` | `rate_limit_abort_s` | `300` | If AUR returns a `Retry-After` ≥ this many seconds, the remaining sync batch is aborted rather than waited out |
+| `[mesa]` | `filter_drivers` | `false` | Opt-in master switch for hardware-filtering mesa's gallium/vulkan drivers (the meson analogue of LLVM target filtering). Off → mesa builds every upstream driver. On → `mesa_drivers.resolve_or_detect_mesa_drivers` trims `-D gallium-drivers=` / `-D vulkan-drivers=` to the detected GPU vendors, always keeping the mandatory software baseline (gallium `llvmpipe`/`softpipe`/`zink`, vulkan `swrast`/lavapipe) |
+| `[mesa]` | `gallium` | — | Optional explicit gallium-driver override list (non-empty pins the axis, still baseline-enforced; absent → autodetect). Tokens must be valid meson gallium drivers |
+| `[mesa]` | `vulkan` | — | Optional explicit vulkan-driver override list (same semantics) |
 
 ### Hardware overlays
 

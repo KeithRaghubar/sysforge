@@ -39,3 +39,11 @@ checksum_mismatch     = "prompt_user"
 # LLVM source pre-flight. See etc/sysforge/sysforge.toml for full docs.
 llvm_strict_toolchain = true
 llvm_preflight        = true
+
+[mesa]
+# Opt-in hardware-filtering of mesa gallium/vulkan drivers (meson analogue of
+# LLVM target filtering). OFF by default; software fallbacks always kept.
+# See etc/sysforge/sysforge.toml for full docs.
+# filter_drivers = false
+# gallium = ["radeonsi"]
+# vulkan  = ["amd"]

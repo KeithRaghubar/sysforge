@@ -66,3 +66,28 @@ clone_timeout = 60
 #   gate, not just informational there).
 llvm_strict_toolchain = true
 llvm_preflight        = true
+
+[mesa]
+# Hardware-filter mesa's gallium/vulkan drivers, the meson analogue of LLVM
+# target filtering. Mesa's PKGBUILD builds EVERY driver
+# (gallium-drivers=all, vulkan-drivers=amd,intel,…,freedreno,panfrost,asahi,…);
+# most are ARM-SoC/mobile GPUs that can't run on a desktop. When sysforge
+# source-builds mesa, trimming to the detected GPU vendors (+ mandatory
+# software fallbacks) is a real build-time win.
+#
+# OFF by default — unlike LLVM filtering, this is opt-in. With it off, mesa
+# builds exactly as upstream ships. Drivers are autodetected from lspci (the
+# same gpu_vendors the hardware stage records); the mandatory software
+# rasterizers (gallium llvmpipe/softpipe/zink, vulkan swrast/lavapipe) are
+# ALWAYS kept regardless of override, so headless/VM/recovery never lose a
+# renderer.
+#
+# filter_drivers — master switch. Set true to enable mesa driver filtering.
+# filter_drivers = false
+#
+# gallium / vulkan — optional explicit override lists. A non-empty list pins
+# that axis (still baseline-enforced); absent/empty means "autodetect". Tokens
+# must be valid meson driver names (e.g. radeonsi, nouveau, iris for gallium;
+# amd, intel, nouveau for vulkan).
+# gallium = ["radeonsi"]
+# vulkan  = ["amd"]
