@@ -267,6 +267,8 @@ For a graphical desktop, you don't have to enumerate every package: `sysforge pa
 
 A fresh `/etc/makepkg.conf` ships `PACKAGER="Unknown Packager"` and builds single-threaded. The `sysforge reconfigure` makepkg step offers to set `PACKAGER` (defaulting to your git identity) and `MAKEFLAGS=-j$(nproc)`; for unattended installs, set them in `bootstrap.toml [makepkg]` (`packager`, `makeflags`) and the configure stage writes them into the target `/etc/makepkg.conf`.
 
+To keep a heavy build from making the rest of the machine sluggish, `sysforge.toml [build]` has CPU/IO-throttle knobs (all off by default): `nice = 19` and `ionice = "idle"` lower the build's scheduling/IO priority so it yields instantly to your foreground apps (full speed when the machine is idle — no throughput cost), `cpu_quota = "600%"` sets a hard ceiling of six cores' worth via a `systemd` cgroup, and `jobs = 6` caps build parallelism. Each can also be set per flag-profile to throttle only the expensive ones.
+
 For a custom kernel like `linux-sysforge` (the shipped default name), configure it in `kernel.toml` instead of `packages.toml` — the kernel stage owns its lifecycle, and `sysforge update` will skip kernel-stage packages by default (use `--include-stage-owned` to override or just name them on the command line).
 
 The same applies to a custom LLVM toolchain: when `toolchain.toml` is enabled with `compiler = "llvm"`, the toolchain stage owns the LLVM suite (`llvm`, `clang`, `lld`, `compiler-rt`, …), and `sysforge update` skips those packages by default — rebuild them with `sysforge run toolchain` (or override with `--include-stage-owned` / by naming the package).

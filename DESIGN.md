@@ -445,6 +445,10 @@ Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to su
 | `[git]` | `fetch_timeout` | `30` | Seconds before a `git fetch` times out during source sync (0 = no limit). Legacy alias: `pull_timeout` |
 | `[git]` | `clone_timeout` | `60` | Seconds before `git clone` / `pkgctl repo clone` times out (0 = no limit) |
 | `[build]` | `python` | `system` | Python interpreter for PKGBUILD `build()` steps, pinned ahead of any pyenv/asdf/conda shim on `PATH` so a bare `python` resolves to the interpreter its `python-*` makedepends were installed against. `system` / unset → `/usr/bin/python`; a bare version like `3.12` → `/usr/bin/python3.12`; or an absolute path. Resolved choice logged at DEBUG; an unusable value warns and falls back to the system python |
+| `[build]` | `nice` | — | Build CPU-throttle: scheduling niceness `0..19` (out-of-range clamped). Applied as a `nice -n` front-end on the makepkg invocation — soft yield, full speed when idle. See §Flag/Profile System (build throttling) |
+| `[build]` | `ionice` | — | Build IO-throttle class: `"idle"` or `"best-effort"`. Applied as `ionice -c {3,2}` |
+| `[build]` | `cpu_quota` | — | Hard CPU ceiling, `"N%"` (100% = one core). Enforced by wrapping makepkg in a transient `systemd-run --scope --user -p CPUQuota=N%` (folds in `Nice=`/`IOSchedulingClass=`); degrades to nice/ionice with a warning when `systemd-run` is absent or the user slice lacks CPU-controller delegation |
+| `[build]` | `jobs` | — | Parallel build jobs; rewrites the `-jN` token in the emitted `MAKEFLAGS` (appends `-jN` if absent — make honours the last `-j`, so a `-j$(nproc)` baseline is still capped) |
 | `[aur]` | `min_fetch_interval_ms` | `500` | Minimum gap between consecutive git fetches against aur.archlinux.org (millisecond resolution) |
 | `[aur]` | `rate_limit_abort_s` | `300` | If AUR returns a `Retry-After` ≥ this many seconds, the remaining sync batch is aborted rather than waited out |
 | `[mesa]` | `filter_drivers` | `false` | Opt-in master switch for hardware-filtering mesa's gallium/vulkan drivers (the meson analogue of LLVM target filtering). Off → mesa builds every upstream driver. On → `mesa_drivers.resolve_or_detect_mesa_drivers` trims `-D gallium-drivers=` / `-D vulkan-drivers=` to the detected GPU vendors, always keeping the mandatory software baseline (gallium `llvmpipe`/`softpipe`/`zink`, vulkan `swrast`/lavapipe) |
@@ -1779,6 +1783,17 @@ Profile keys are routed to one of three delivery channels:
 Unclassified keys (not in any `CONF_KEY_MAP` type and not in `SYSFORGE_KEYS`) travel via env pass and are logged as `[WARN][ENV]`.
 
 Toolchain keys (`CC`, `CXX`) from the **system** makepkg.conf are excluded from the emitted temp conf — makepkg sources the conf as a shell script, so any `CC`/`CXX` present would overwrite the env-injected values from the profile. Only env injection delivers toolchain keys.
+
+### Build throttling
+
+Build CPU/IO throttling has **one home**: `primitives/build_throttle.py`. Four knobs — `nice`, `ionice`, `cpu_quota`, `jobs` — keep packages from saturating the machine. Each is a global default in `sysforge.toml [build]` (see §Config Layer) and a per-profile override: all four are in `profile.SYSFORGE_KEYS`, so a profile may carry them but they are **never** written to the conf or env. `resolve_throttle(resolved_profile, config)` resolves them — a key present on the profile wins over the global default, an absent key falls back to it. The resolver is pure; every malformed value (bad niceness range, non-`N%` quota, etc.) is dropped with a warning so a typo never fails a build.
+
+Two delivery channels, by mechanism:
+
+- **Invocation wrapper** (`nice`/`ionice`/`cpu_quota`) — `wrapper_argv(throttle)` builds an argv prefix prepended to the `makepkg` command at the single subprocess chokepoint (`makepkg_invoke.invoke_makepkg`, where `cmd` is assembled). `cpu_quota` wraps the build in a transient `systemd-run --scope --user -p CPUQuota=N%` (folding `Nice=`/`IOSchedulingClass=` in) so the cgroup ceiling applies; the scope keeps the controlling TTY, so the interactive path still gets prompts. Each tool is guarded by `shutil.which` — a missing `systemd-run`/`nice`/`ionice` drops just that piece (a missing `systemd-run` downgrades a hard cap to soft nice/ionice). Throttling is best-effort and **must never fail a build**.
+- **MAKEFLAGS** (`jobs`) — `apply_jobs_to_makeflags` rewrites the `-jN` token in the `MAKEFLAGS` value at conf emit (`emit_makepkg_conf(jobs=…)`, threaded from `_run_build`), normalising to short `-jN`; appends when absent (make honours the last `-j`, so a `-j$(nproc)` baseline is still capped).
+
+Don't add a parallel `nice`/`systemd-run`/`-j` path elsewhere.
 
 ### Flag guards
 

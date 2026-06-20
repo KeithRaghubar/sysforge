@@ -65,6 +65,13 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   PGO flags (`makepkg_flags._strip_pgo_flags`, after `compiler_flags_extra` injection).
   Reuse `_strip_lld_flags`/`_strip_pgo_flags`; don't add an i686 per-profile rule. See
   DESIGN.md §Flag/Profile System.
+- **Build CPU/IO throttling has one home**: `primitives/build_throttle.py`
+  (`resolve_throttle` — `sysforge.toml [build]` defaults + per-profile override; the four keys
+  `nice`/`ionice`/`cpu_quota`/`jobs` are in `profile.SYSFORGE_KEYS`, never conf/env). Two
+  channels: `wrapper_argv` prepends a `nice`/`ionice`/`systemd-run --scope CPUQuota` prefix to
+  `cmd` at the `makepkg_invoke` chokepoint (best-effort — `shutil.which`-guarded, never fails a
+  build); `apply_jobs_to_makeflags` rewrites the `-j` token via `emit_makepkg_conf(jobs=…)`.
+  Don't add a parallel `nice`/`systemd-run`/`-j` path. See DESIGN.md §Flag/Profile System.
 - **`build` is a strict subset of `update`; both go through `build_core.py`**
   (`build_and_install` → `prepare_deps` + per-package loop + `install_built`). makepkg
   always runs with `BATCH_STRIP_FLAGS` + `force_batch` (sysforge pre-installs repo

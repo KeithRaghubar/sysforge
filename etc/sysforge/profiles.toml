@@ -116,6 +116,13 @@
 #   consumes       = ["makepkg", "rust", "cmake", "meson", "env"]
 #                  # override auto-inferred consumes; omit to infer from makedepends
 #
+#   # CPU/IO throttling — per-profile override of [build] in sysforge.toml.
+#   # Set on a heavy profile (e.g. an LLVM/PGO build) to throttle just those.
+#   nice       = 19                     # scheduling niceness 0..19 (soft yield)
+#   ionice     = "idle"                 # IO class: "idle" | "best-effort"
+#   cpu_quota  = "600%"                 # hard CPU ceiling via systemd scope (100% = one core)
+#   jobs       = 6                      # parallel jobs; rewrites -j in MAKEFLAGS
+#
 # ── [profiles.NAME.append] ───────────────────────────────────────────────────
 #
 #   Token-level merge into the parent's value instead of full override.

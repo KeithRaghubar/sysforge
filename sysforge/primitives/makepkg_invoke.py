@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.build_throttle import resolve_throttle, wrapper_argv
 from sysforge.primitives.makepkg_artifacts import _find_built_packages
 from sysforge.primitives.makepkg_env import (
     _effective_build_dir,
@@ -164,7 +165,16 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         removed = [f for f in before if f not in flags]
         if removed:
             _makepkg_log.info(f"Batch mode: stripped flags {removed}")
-    cmd = ["makepkg", "-p", pkgbuild_path.name] + flags
+    # Throttle prefix: nice/ionice front-ends or a systemd-run --scope carrying
+    # a CPUQuota ceiling, resolved from [build] + the profile. Best-effort —
+    # wrapper_argv drops any piece whose tool is missing rather than failing the
+    # build (see build_throttle). The systemd-run scope keeps the controlling
+    # TTY, so the interactive Popen path below still gets its prompts.
+    throttle = resolve_throttle(resolved_profile)
+    prefix = wrapper_argv(throttle)
+    if prefix:
+        _makepkg_log.info(f"Throttling build: {' '.join(prefix)}")
+    cmd = prefix + ["makepkg", "-p", pkgbuild_path.name] + flags
 
     _makepkg_log.info(f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
 

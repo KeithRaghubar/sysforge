@@ -27,6 +27,12 @@ clone_timeout = 60
 # pyenv/asdf/conda shim on PATH. unset/"system" → /usr/bin/python (default);
 # "3.12" → /usr/bin/python3.12; or an absolute path. See etc/sysforge/sysforge.toml.
 # python = "system"
+# Build CPU/IO throttling (global default; per-profile override in profiles.toml).
+# See etc/sysforge/sysforge.toml for full docs.
+# nice = 19          # scheduling niceness 0..19 (soft yield)
+# ionice = "idle"    # IO class: "idle" | "best-effort"
+# cpu_quota = "600%" # hard CPU ceiling via systemd-run scope (100% = one core)
+# jobs = 6           # parallel jobs; rewrites -j in MAKEFLAGS
 
 [failure_handling]
 # Build-failure auto-repair (DESIGN.md §1242).

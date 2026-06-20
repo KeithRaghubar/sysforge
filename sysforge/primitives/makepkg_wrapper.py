@@ -49,6 +49,7 @@ from sysforge.primitives.makepkg_artifacts import (
     _find_built_packages,
     _parse_built_pkg_filename,
 )
+from sysforge.primitives.build_throttle import resolve_throttle
 from sysforge.primitives.makepkg_conf import emit_makepkg_conf
 from sysforge.primitives.makepkg_env import resolve_env_vars
 from sysforge.primitives.makepkg_invoke import (
@@ -520,7 +521,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                         pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
                         reactive_gcc_fallback=_reactive_retry_used,
                         is_lib32=is_lib32,
-                        toolchain_variant=toolchain_variant) as conf_path:
+                        toolchain_variant=toolchain_variant,
+                        jobs=resolve_throttle(resolved_profile, config).jobs) as conf_path:
                     _invoke_with_retry(
                         pkgbuild_path, conf_path, resolved_profile,
                         extra_env, extra_flags, interactive, strip_flags)

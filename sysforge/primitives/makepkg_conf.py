@@ -26,6 +26,7 @@ import shutil
 import tempfile
 
 from sysforge import log
+from sysforge.primitives.build_throttle import apply_jobs_to_makeflags
 from sysforge.primitives.config import parse_system_makepkg_conf
 from sysforge.primitives.makepkg_flags import (
     _detect_linker_from_ldflags,
@@ -53,7 +54,8 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       pkgbuild_has_hardcoded_gcc: bool = False,
                       reactive_gcc_fallback: bool = False,
                       is_lib32: bool = False,
-                      toolchain_variant: str | None = None):
+                      toolchain_variant: str | None = None,
+                      jobs: int | None = None):
     """
     Write a complete, self-contained temp makepkg.conf by merging:
       1. All keys from /etc/makepkg.conf (system baseline)
@@ -142,6 +144,20 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
 
     # Load system conf baseline
     system_assignments = parse_system_makepkg_conf(system_conf_path)
+
+    # Build-throttle job cap: force the -j token in MAKEFLAGS. The effective
+    # base is the profile MAKEFLAGS if set, else the system conf value (unquoted),
+    # else empty; the result is written via profile_overrides so it wins. Folding
+    # it in here (rather than in the profile) keeps parallelism control in one
+    # home with the nice/ionice/cpu_quota knobs (see build_throttle).
+    if jobs is not None:
+        base_makeflags = profile_overrides.get("MAKEFLAGS")
+        if base_makeflags is None and "MAKEFLAGS" in system_assignments:
+            _raw = system_assignments["MAKEFLAGS"].strip()
+            base_makeflags = _raw[1:-1] if (len(_raw) >= 2 and _raw[0] == _raw[-1] == '"') else _raw
+        base_makeflags = base_makeflags or ""
+        profile_overrides["MAKEFLAGS"] = apply_jobs_to_makeflags(base_makeflags, jobs)
+        _conf_log.info(f"Build-throttle: capped MAKEFLAGS jobs to -j{jobs}")
 
     # Apply CLI toolchain overrides on top of profile values
     if cc_override is not None:

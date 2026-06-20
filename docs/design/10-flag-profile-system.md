@@ -166,6 +166,17 @@ Unclassified keys (not in any `CONF_KEY_MAP` type and not in `SYSFORGE_KEYS`) tr
 
 Toolchain keys (`CC`, `CXX`) from the **system** makepkg.conf are excluded from the emitted temp conf — makepkg sources the conf as a shell script, so any `CC`/`CXX` present would overwrite the env-injected values from the profile. Only env injection delivers toolchain keys.
 
+### Build throttling
+
+Build CPU/IO throttling has **one home**: `primitives/build_throttle.py`. Four knobs — `nice`, `ionice`, `cpu_quota`, `jobs` — keep packages from saturating the machine. Each is a global default in `sysforge.toml [build]` (see §Config Layer) and a per-profile override: all four are in `profile.SYSFORGE_KEYS`, so a profile may carry them but they are **never** written to the conf or env. `resolve_throttle(resolved_profile, config)` resolves them — a key present on the profile wins over the global default, an absent key falls back to it. The resolver is pure; every malformed value (bad niceness range, non-`N%` quota, etc.) is dropped with a warning so a typo never fails a build.
+
+Two delivery channels, by mechanism:
+
+- **Invocation wrapper** (`nice`/`ionice`/`cpu_quota`) — `wrapper_argv(throttle)` builds an argv prefix prepended to the `makepkg` command at the single subprocess chokepoint (`makepkg_invoke.invoke_makepkg`, where `cmd` is assembled). `cpu_quota` wraps the build in a transient `systemd-run --scope --user -p CPUQuota=N%` (folding `Nice=`/`IOSchedulingClass=` in) so the cgroup ceiling applies; the scope keeps the controlling TTY, so the interactive path still gets prompts. Each tool is guarded by `shutil.which` — a missing `systemd-run`/`nice`/`ionice` drops just that piece (a missing `systemd-run` downgrades a hard cap to soft nice/ionice). Throttling is best-effort and **must never fail a build**.
+- **MAKEFLAGS** (`jobs`) — `apply_jobs_to_makeflags` rewrites the `-jN` token in the `MAKEFLAGS` value at conf emit (`emit_makepkg_conf(jobs=…)`, threaded from `_run_build`), normalising to short `-jN`; appends when absent (make honours the last `-j`, so a `-j$(nproc)` baseline is still capped).
+
+Don't add a parallel `nice`/`systemd-run`/`-j` path elsewhere.
+
 ### Flag guards
 
 `emit_makepkg_conf` runs a series of guards after profile overrides are applied but before the conf is written. Each guard detects and reconciles toolchain incompatibilities, logging at `[WARN][CONF]` (the conf module narrates its own flag adjustments; the underlying transforms stay pure in `makepkg_flags`). Guards run in this order:

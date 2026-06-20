@@ -50,8 +50,12 @@ SYSFORGE_KEYS = {
     "build_mode",
     "clean_builddir",
     "consumes",
+    "cpu_quota",
     "failure_handling",
+    "ionice",
+    "jobs",
     "makepkg_flags",
+    "nice",
     "pgo_store",
     "toolchain",
 }

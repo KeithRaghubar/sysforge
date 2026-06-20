@@ -36,6 +36,37 @@ clone_timeout = 60
 # The resolved interpreter is logged at DEBUG.
 # python = "system"
 
+# --- Build CPU/IO throttling ------------------------------------------------
+# Keep compilation from saturating the machine so interactive apps stay
+# responsive. All four are unset by default (builds run unthrottled, makepkg's
+# own MAKEFLAGS applies). Each can also be set per flag-profile in profiles.toml
+# (a profile value overrides the global default below for that key).
+#
+# nice — scheduling niceness 0..19 (higher = nicer / lower priority). Lets the
+#   build yield CPU to foreground apps the instant you need it, with no
+#   throughput loss when the machine is otherwise idle. No privilege needed.
+#   Recommended starting point for "don't disturb my other apps".
+# nice = 19
+#
+# ionice — IO scheduling class: "idle" (only when nothing else wants the disk)
+#   or "best-effort". Pairs with nice so a heavy build doesn't stall the UI on
+#   disk IO either.
+# ionice = "idle"
+#
+# cpu_quota — hard CPU ceiling as a percentage, where 100% = one core's worth
+#   (e.g. "600%" caps the build at six cores on an 8-core box, leaving two
+#   free even when the rest of the machine is idle). Enforced via a transient
+#   systemd-run --scope cgroup; if the user slice lacks CPU-controller
+#   delegation or systemd-run is missing, sysforge warns and falls back to
+#   nice/ionice. Unlike nice, this is a firm cap rather than a soft yield.
+# cpu_quota = "600%"
+#
+# jobs — parallel build jobs; rewrites the -j token in the emitted MAKEFLAGS
+#   (e.g. jobs = 6 → -j6). Coarser than the above — single-threaded link
+#   phases still use a full core and some build systems ignore it — but it
+#   directly bounds peak parallelism.
+# jobs = 6
+
 # [failure_handling]
 # Per-scenario behaviour for build-failure auto-repair (DESIGN.md §1242).
 # Values: "auto_repair" | "auto_repair_with_warning" | "prompt_user" |
