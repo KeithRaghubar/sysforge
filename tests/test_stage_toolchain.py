@@ -1591,6 +1591,12 @@ def test_pgo_install_raises_on_pacman_failure(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _g2_opts(rebuild_soname_consumers=None):
+    """Minimal options stand-in for _gate2_audit (only the heal path reads it)."""
+    import types
+    return types.SimpleNamespace(rebuild_soname_consumers=rebuild_soname_consumers)
+
+
 def test_gate2_audit_refuses_hazardous_build(tmp_path, monkeypatch):
     """When scan_abi_hazards finds a leak, _gate2_audit aborts before install.
 
@@ -1619,7 +1625,7 @@ def test_gate2_audit_refuses_hazardous_build(tmp_path, monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="refusing to install"):
-        _gate2_audit(built_map, dry_run=False)
+        _gate2_audit(built_map, [], _g2_opts(), {}, dry_run=False)
 
 
 def test_gate2_audit_clean_build_passes(tmp_path, monkeypatch):
@@ -1635,7 +1641,9 @@ def test_gate2_audit_clean_build_passes(tmp_path, monkeypatch):
         lambda m: [fake_pkg],
     )
     # scan_abi_hazards stubbed to [] by the autouse fixture.
-    _gate2_audit({"clang": pkg_dir / "PKGBUILD"}, dry_run=False)  # must not raise
+    assert _gate2_audit(
+        {"clang": pkg_dir / "PKGBUILD"}, [], _g2_opts(), {}, dry_run=False,
+    ) == []  # must not raise
 
 
 def test_gate2_audit_refuses_graphics_consumer_brick(tmp_path, monkeypatch):
@@ -1664,7 +1672,70 @@ def test_gate2_audit_refuses_graphics_consumer_brick(tmp_path, monkeypatch):
     monkeypatch.setattr(_ts, "check_system_consumer_symbols", lambda pkgs: brick)
 
     with pytest.raises(RuntimeError, match="graphics consumer"):
-        _gate2_audit({"llvm-libs": pkg_dir / "PKGBUILD"}, dry_run=False)
+        _gate2_audit(
+            {"llvm-libs": pkg_dir / "PKGBUILD"}, [], _g2_opts(), {}, dry_run=False,
+        )
+
+
+def test_gate2_audit_heals_stddrift_consumer(tmp_path, monkeypatch):
+    """A healable std:: re-export drift does NOT abort: under mode=auto, Gate 2
+    returns the libLLVM consumers to rebuild after Gate 3 (same machinery as a
+    soname bump), and nothing is raised."""
+    from sysforge.pipeline.stages.toolchain import _gate2_audit
+    from sysforge.primitives import toolchain_safety as _ts
+
+    pkg_dir = tmp_path / "llvm-libs"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "llvm-libs-22.1.6-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
+        lambda m: [fake_pkg],
+    )
+    drift = [_ts.ToolchainFinding(
+        "error", "libllvm_consumer_symbols",
+        "libgallium-26.so links libLLVM.so.22.1 but the freshly-built libLLVM "
+        "no longer re-exports 4 libstdc++ symbol(s)",
+        "Rebuild the affected libLLVM consumer(s).",
+        is_brick=True, healable=True,
+    )]
+    monkeypatch.setattr(_ts, "check_system_consumer_symbols", lambda pkgs: drift)
+    monkeypatch.setattr(_ts, "libllvm_abi_consumers", lambda *, exclude: ["mesa"])
+
+    out = _gate2_audit(
+        {"llvm-libs": pkg_dir / "PKGBUILD"}, [], _g2_opts("auto"), {},
+        dry_run=False,
+    )
+    assert out == ["mesa"]
+
+
+def test_gate2_audit_stddrift_prompt_noninteractive_aborts(tmp_path, monkeypatch):
+    """Healable drift + mode=prompt + non-interactive → abort (never silently
+    install a stranding libLLVM); points at --rebuild-soname-consumers."""
+    from sysforge.pipeline.stages import toolchain as _tc
+    from sysforge.primitives import toolchain_safety as _ts
+
+    pkg_dir = tmp_path / "llvm-libs"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "llvm-libs-22.1.6-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
+        lambda m: [fake_pkg],
+    )
+    drift = [_ts.ToolchainFinding(
+        "error", "libllvm_consumer_symbols", "std:: re-export drift",
+        "Rebuild the consumer.", is_brick=True, healable=True,
+    )]
+    monkeypatch.setattr(_ts, "check_system_consumer_symbols", lambda pkgs: drift)
+    monkeypatch.setattr(_ts, "libllvm_abi_consumers", lambda *, exclude: ["mesa"])
+    monkeypatch.setattr(_tc, "is_interactive", lambda: False)
+
+    with pytest.raises(RuntimeError, match="non-interactive"):
+        _tc._gate2_audit(
+            {"llvm-libs": pkg_dir / "PKGBUILD"}, [], _g2_opts("prompt"), {},
+            dry_run=False,
+        )
 
 
 def _make_so(base, name):

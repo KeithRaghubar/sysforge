@@ -2982,23 +2982,40 @@ def _rebuild_soname_consumers(consumers: list[str], config, options, state) -> N
     )
 
 
-def _gate2_audit(built_map: dict[str, Path], *, dry_run: bool) -> None:
-    """Scan the built ``.pkg.tar*`` for the std::-bound-to-LLVM ABI hazard.
+def _gate2_audit(
+    built_map: dict[str, Path], all_names: list[str], options, tcfg,
+    *, dry_run: bool,
+) -> list[str]:
+    """Scan the built ``.pkg.tar*`` for ABI hazards before any install.
 
-    Runs *outside* the install sentinel, between build and install, for BOTH
-    the PGO and non-PGO paths (previously only PGO's ``_pgo_install`` scanned).
-    A brick (any ``_ZNSt*@LLVM_*`` symbol) aborts before any ``pacman -U`` — so
-    the live ``/usr`` is untouched and no sentinel is left behind. Skipped in
-    dry-run (nothing was built).
+    Runs *outside* the install sentinel, between build and install, for BOTH the
+    PGO and non-PGO paths (previously only PGO's ``_pgo_install`` scanned). Two
+    arms:
+
+      1. ``scan_abi_hazards`` — the built suite's own std::-bound-to-LLVM hazard
+         (any ``_ZNSt*@LLVM_*``): always a hard abort (the live toolchain could
+         not resolve ``std::string`` at runtime).
+      2. ``check_system_consumer_symbols`` — graphics consumers (mesa) the
+         freshly-built libLLVM would strand. *Unhealable* findings (a dropped
+         LLVM backend / target-init symbol) hard-abort here, before any
+         ``pacman -U`` — the live ``/usr`` is untouched and no sentinel is left
+         behind. *Healable* findings (the same-soname std:: re-export drift —
+         the ``-fprofile-use`` libLLVM inlined away the weak libstdc++ copies the
+         stock build re-exported) do NOT abort: the installed libLLVM consumers
+         are captured (per ``rebuild_soname_consumers`` mode) and returned for
+         rebuild after Gate 3, exactly like a soname bump.
+
+    Returns the consumer pkgbases to rebuild post-install (``[]`` when none,
+    dry-run, or mode ``off``).
     """
     if dry_run:
         _log.ui("[dry-run] would audit built packages for ABI hazards (Gate 2)")
-        return
+        return []
     pkgs = _collect_pgo_packages(built_map)
     if not pkgs:
         # Nothing to audit (e.g. AlreadyBuilt with PKGDEST cleared) — the
         # install step will surface a missing-package error of its own.
-        return
+        return []
     _log.ui(f"Gate 2: auditing {len(pkgs)} built package(s) for ABI hazards")
     findings = toolchain_safety.scan_abi_hazards(pkgs)
     if findings:
@@ -3011,22 +3028,109 @@ def _gate2_audit(built_map: dict[str, Path], *, dry_run: bool) -> None:
             "Restart with: sysforge run toolchain --rebuild-profdata"
         )
 
-    # Graphics-consumer symbol sufficiency: refuse a freshly-built libLLVM that
-    # dropped an LLVM backend an installed mesa/graphics consumer imports (e.g. a
-    # reduced LLVM_TARGETS_TO_BUILD without AMDGPU). Pre-install, outside the
-    # sentinel — a brick here leaves the live graphics stack untouched, vs. a
-    # post-reboot black screen. See toolchain_safety.check_system_consumer_symbols.
+    # Graphics-consumer symbol sufficiency vs the freshly-built libLLVM.
+    # Pre-install, outside the sentinel — an abort here leaves the live graphics
+    # stack untouched, vs. a post-reboot black screen.
     consumer_findings = toolchain_safety.check_system_consumer_symbols(pkgs)
-    if consumer_findings:
-        joined = "\n".join(f"  - {f.message}" for f in consumer_findings)
-        remediation = consumer_findings[0].remediation
+    if not consumer_findings:
+        return []
+
+    # Unhealable: a dropped LLVM backend (e.g. a reduced LLVM_TARGETS_TO_BUILD
+    # without AMDGPU). Rebuilding the consumer cannot recover a symbol that no
+    # longer exists — hard abort, nothing installed.
+    unhealable = [f for f in consumer_findings if not f.healable]
+    if unhealable:
+        joined = "\n".join(f"  - {f.message}" for f in unhealable)
         raise RuntimeError(
             "[TOOLCHAIN] Gate 2: the freshly-built libLLVM would strand an "
             "installed graphics consumer (mesa) by dropping LLVM target-init "
             "symbols it imports — refusing to install (the desktop would "
             f"black-screen on next session). Nothing was installed.\n{joined}\n"
-            f"{remediation}"
+            f"{unhealable[0].remediation}"
         )
+
+    # All healable: the same-soname std:: re-export drift. Capture the installed
+    # libLLVM consumers for rebuild after Gate 3 (reusing the soname-consumer
+    # machinery), gated by rebuild_soname_consumers mode.
+    joined = "\n".join(f"  - {f.message}" for f in consumer_findings)
+    _log.warn(
+        "Gate 2: the freshly-built libLLVM no longer re-exports libstdc++ "
+        "symbols an installed graphics consumer imports from the LLVM version "
+        f"namespace (same-soname PGO re-export drift):\n{joined}"
+    )
+    return _resolve_abi_consumers_to_rebuild(all_names, options, tcfg)
+
+
+def _resolve_abi_consumers_to_rebuild(all_names, options, tcfg) -> list[str]:
+    """Apply ``rebuild_soname_consumers`` mode to the same-soname ABI-drift case.
+
+    Enumerates the installed libLLVM consumers (``libllvm_abi_consumers`` — the
+    reverse-dep walk shared with the soname-bump gate) and, per the mode (CLI >
+    toolchain.toml > ``prompt``), returns them for post-Gate-3 rebuild, aborts,
+    or proceeds without rebuilding. Mirrors :func:`_gate_soname_consumers`.
+    """
+    consumers = toolchain_safety.libllvm_abi_consumers(
+        exclude=set(LLVM_LOCKSTEP_SUITE) | set(all_names),
+    )
+    if not consumers:
+        _log.warn(
+            "Gate 2: no installed libLLVM consumer resolved for rebuild — "
+            "proceeding with the install; rebuild affected packages manually "
+            "if the desktop misbehaves."
+        )
+        return []
+
+    mode = (
+        getattr(options, "rebuild_soname_consumers", None)
+        or tcfg.get("rebuild_soname_consumers")
+        or "prompt"
+    )
+    manual_cmd = "sysforge build " + " ".join(consumers)
+    _log.warn(
+        f"{len(consumers)} installed package(s) link libLLVM and must be "
+        "rebuilt against the new libLLVM:"
+    )
+    for name in consumers:
+        _log.warn(f"  - {name}")
+
+    if mode == "off":
+        _log.warn(
+            "rebuild_soname_consumers=off — installing the new libLLVM WITHOUT "
+            f"rebuilding these consumers. Rebuild them yourself afterwards: {manual_cmd}"
+        )
+        return []
+
+    if mode == "auto":
+        _log.ui(
+            f"rebuild_soname_consumers=auto — will rebuild {len(consumers)} "
+            "consumer(s) after the toolchain install"
+        )
+        return consumers
+
+    # mode == "prompt"
+    if not is_interactive():
+        raise RuntimeError(
+            "[TOOLCHAIN] Gate 2: the freshly-built libLLVM strands "
+            f"{len(consumers)} installed consumer(s) via std:: re-export drift, "
+            "and this is a non-interactive run. Nothing was installed. Re-run "
+            "with --rebuild-soname-consumers=auto to install + rebuild them, or "
+            "=off to install without rebuilding."
+        )
+    choice = prompt_choice(
+        f"Install the new libLLVM and rebuild {len(consumers)} affected "
+        "package(s) afterwards? [y/N]: ",
+        choices=("y", "yes", "n"),
+        default="n",
+        eof_default="n",
+        tag="TOOLCHAIN",
+        level="WARN",
+    )
+    if choice not in ("y", "yes"):
+        raise RuntimeError(
+            "[TOOLCHAIN] Gate 2: aborted — libLLVM consumer rebuild not "
+            "approved. Nothing was installed."
+        )
+    return consumers
 
 
 def _snapshot_suite(built_map: dict[str, Path]) -> dict[str, "Path | None"]:
@@ -3360,9 +3464,13 @@ class ToolchainStage(Stage):
                 )
 
             # Gate 2 — pre-install ABI-hazard audit (both paths), OUTSIDE the
-            # sentinel: a brick abort here leaves nothing installed and no
-            # sentinel, keeping the live toolchain intact.
-            _gate2_audit(built_map, dry_run=options.dry_run)
+            # sentinel: an unhealable brick aborts here leaving nothing installed
+            # and no sentinel, keeping the live toolchain intact. A healable
+            # std:: re-export drift returns the libLLVM consumers to rebuild
+            # after Gate 3 (same machinery as a soname bump).
+            abi_consumers = _gate2_audit(
+                built_map, all_names, options, tcfg, dry_run=options.dry_run,
+            )
 
             # Install + post-install verify are the mutation window — wrap them
             # in the sentinel so an interrupted/failed install blocks the next
@@ -3411,15 +3519,22 @@ class ToolchainStage(Stage):
                     issues = list(
                         _verify_llvm_install(expected_targets=expected_targets)
                     )
-                    # Graphics-consumer sufficiency vs the NOW-INSTALLED libLLVM:
-                    # a dropped backend an installed mesa consumer imports is
-                    # brick-class. Folded into `issues` so the same snapshot
-                    # auto-restore fires while rollback is still armed (inside the
-                    # sentinel) — a black screen reverts itself instead of shipping.
-                    issues.extend(
-                        f.message
-                        for f in toolchain_safety.check_installed_consumer_symbols()
-                    )
+                    # Graphics-consumer sufficiency vs the NOW-INSTALLED libLLVM.
+                    # An *unhealable* dropped backend an installed mesa consumer
+                    # imports is brick-class — folded into `issues` so the same
+                    # snapshot auto-restore fires while rollback is still armed
+                    # (inside the sentinel). *Healable* std:: re-export misses are
+                    # EXPECTED here (mesa is not rebuilt until after Gate 3): they
+                    # must NOT trip rollback, or we would revert the very libLLVM
+                    # the post-Gate-3 consumer rebuild is about to make coherent.
+                    for f in toolchain_safety.check_installed_consumer_symbols():
+                        if f.healable:
+                            _log.ui(
+                                "Gate 3: std:: re-export drift (healable by the "
+                                f"queued consumer rebuild): {f.message}"
+                            )
+                        else:
+                            issues.append(f.message)
                     if issues:
                         evidence_path = (
                             _dump_stage_dynsym_evidence(staging3, state.path.parent)
@@ -3457,12 +3572,14 @@ class ToolchainStage(Stage):
                         _remove_staging(staging3)
 
         # Toolchain is installed and Gate-3-verified. Rebuild the libLLVM
-        # consumers captured by the pre-build soname gate so the live system is
-        # left coherent (mesa et al. re-link the new soname). OUTSIDE the
+        # consumers so the live system is left coherent: the pre-build soname
+        # gate's set (re-link the new soname) merged with Gate 2's same-soname
+        # std:: re-export drift set (re-link std:: to libstdc++). OUTSIDE the
         # sentinel — a consumer rebuild failure must not roll back the intended
         # toolchain bump; it surfaces as an actionable error instead.
-        if soname_consumers and not options.dry_run:
-            _rebuild_soname_consumers(soname_consumers, config, options, state)
+        rebuild_consumers = sorted(set(soname_consumers) | set(abi_consumers))
+        if rebuild_consumers and not options.dry_run:
+            _rebuild_soname_consumers(rebuild_consumers, config, options, state)
 
         # Write compiler paths + variant to pipeline state for downstream
         # stages. ``variant`` is the canonical signal consumers read via

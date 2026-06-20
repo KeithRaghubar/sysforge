@@ -442,6 +442,46 @@ def test_soname_impact_no_consumers_after_exclude_no_impact(monkeypatch):
     assert impact is None
 
 
+def test_libllvm_abi_consumers_current_soname_not_gated_on_bump(monkeypatch):
+    # Same-soname case: no version change, but libllvm_abi_consumers still walks
+    # the reverse deps of the *installed* soname (the std:: re-export drift path).
+    _patch_pacman(
+        monkeypatch,
+        llvm_libs_files=["usr/lib/libLLVM.so.22.1"],
+        installed={"mesa": "1", "clang": "1"},
+        depends={
+            "mesa": ["libLLVM.so=22.1-64"],
+            "clang": ["libLLVM.so=22.1-64"],
+        },
+    )
+    out = ts.libllvm_abi_consumers(exclude=set(ts.LLVM_LOCKSTEP_SUITE))
+    assert out == ["mesa"]  # clang excluded as a suite member
+
+
+def test_libllvm_abi_consumers_llvm_libs_absent_empty(monkeypatch):
+    _patch_pacman(
+        monkeypatch, llvm_libs_files=[], installed={"mesa": "1"},
+        depends={"mesa": ["libLLVM.so=22.1-64"]},
+    )
+    assert ts.libllvm_abi_consumers(exclude=set()) == []
+
+
+def test_libllvm_soname_consumers_shared_walk(monkeypatch):
+    # The factored helper both paths share: collapse to pkgbase, minus exclude.
+    _patch_pacman(
+        monkeypatch,
+        llvm_libs_files=["usr/lib/libLLVM.so.22.1"],
+        installed={"vulkan-radeon": "1", "clang": "1"},
+        depends={
+            "vulkan-radeon": ["libLLVM.so=22.1-64"],
+            "clang": ["libLLVM.so=22.1-64"],
+        },
+        pkgbase={"vulkan-radeon": "mesa"},
+    )
+    out = ts.libllvm_soname_consumers("22.1", exclude=set(ts.LLVM_LOCKSTEP_SUITE))
+    assert out == ["mesa"]
+
+
 # ---------------------------------------------------------------------------
 # System graphics-consumer symbol sufficiency
 # (_llvm_init_target / _diff_consumers_against_libllvm /
@@ -489,10 +529,60 @@ def test_diff_consumers_missing_amdgpu_is_brick(tmp_path, monkeypatch):
     assert len(findings) == 1
     f = findings[0]
     assert f.is_brick
+    assert not f.healable  # a dropped target backend is unhealable — hard block
     assert f.check_id == "libllvm_consumer_symbols"
     assert "AMDGPU" in f.message
     assert "libgallium-26.1.2-arch1.1.so" in f.message
     assert "malloc" not in f.message  # libc undef not attributed to libLLVM
+
+
+def test_diff_consumers_stddrift_is_healable(tmp_path, monkeypatch):
+    """A drop of *only* non-target-init LLVM_*-versioned symbols (libstdc++
+    re-exports the PGO build inlined away) is the same-soname std:: drift:
+    flagged is_brick but healable, with no target-centric remediation."""
+    usr_lib = tmp_path / "usr/lib"
+    _mk(usr_lib, "libgallium-26.1.3-arch1.2.so")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(_AC + "needed_sonames", lambda p: ["libLLVM.so.22.1"])
+    std_sym = ("_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE"
+               "9_M_assignERKS4_")
+    monkeypatch.setattr(_AC + "_undefined_versioned", lambda p: {
+        (std_sym, "LLVM_22.1"),
+    })
+    # The new libLLVM still exports the target-init node (no backend dropped),
+    # just not the weak std:: copy.
+    monkeypatch.setattr(_AC + "_exported_versioned", lambda path, cache: {
+        ("LLVMInitializeAMDGPUTarget", "LLVM_22.1"),
+    })
+    findings = ts._diff_consumers_against_libllvm(
+        Path("/x/libLLVM.so.22.1"), source_label="freshly-built",
+    )
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.is_brick
+    assert f.healable
+    assert "LLVM_TARGETS_TO_BUILD" not in f.remediation  # not target advice
+    assert "rebuild" in f.remediation.lower()
+
+
+def test_diff_consumers_mixed_drop_is_unhealable(tmp_path, monkeypatch):
+    """If *any* miss is a target-init symbol the finding is unhealable even when
+    a std:: symbol is also dropped — the backend loss governs."""
+    usr_lib = tmp_path / "usr/lib"
+    _mk(usr_lib, "libgallium-26.so")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(_AC + "needed_sonames", lambda p: ["libLLVM.so.22.1"])
+    monkeypatch.setattr(_AC + "_undefined_versioned", lambda p: {
+        ("LLVMInitializeAMDGPUTarget", "LLVM_22.1"),
+        ("_ZNSt7__cxx11_M_assign", "LLVM_22.1"),
+    })
+    monkeypatch.setattr(_AC + "_exported_versioned",
+                        lambda path, cache: {("LLVMInitializeX86Target", "LLVM_22.1")})
+    findings = ts._diff_consumers_against_libllvm(
+        Path("/x/libLLVM.so.22.1"), source_label="installed",
+    )
+    assert len(findings) == 1
+    assert not findings[0].healable
 
 
 def test_diff_consumers_satisfied_no_findings(tmp_path, monkeypatch):
