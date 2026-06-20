@@ -594,10 +594,13 @@ def _cmd_update_body(args) -> None:
 
     # Build-state-wide coverage (absorbed from the removed `converge` verb):
     # profiled build_state entries outside this run's package walk — e.g.
-    # repo-class packages recorded by `sysforge build` when repo_mode is not
-    # "profiled" — still get drift detection. Detect/report and
-    # --explain-drift only: promotion to NEEDS_REBUILD needs an entry in this
-    # run's walk, so out-of-walk drifters get a `sysforge build` hint instead.
+    # stage-owned (kernel/toolchain) packages filtered from the walk, or
+    # entries excluded by a `sysforge update <pkg>` name filter — still get
+    # drift detection. (A plain source-built package is now in the walk under
+    # the build_state-is-authority model, so it is promotable directly.)
+    # Detect/report and --explain-drift only: promotion to NEEDS_REBUILD needs
+    # an entry in this run's walk, so out-of-walk drifters get a `sysforge
+    # build` / owning-stage hint instead.
     _fold_filter = set(getattr(args, "pkgnames", None) or [])
     fold_drifted: set[str] = set()
     _fold_map, _fold_entry = group_by_pkgbase(bs.all_packages())

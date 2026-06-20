@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from sysforge import build_core, log
+from sysforge.primitives.aur import is_repo_package
 from sysforge.primitives.config import find_pkgbuild
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
 from sysforge.verbs import ExecResult, PreCheckResult, Verb
@@ -167,7 +168,18 @@ class BuildVerb(Verb):
                         _log.error(f"--cleansrc {pkg!r}: {e}")
                         continue
             pkgbuild = find_pkgbuild(pkg, config)
-            targets.append(build_core.target_from_pkgbuild(pkgbuild))
+            target = build_core.target_from_pkgbuild(pkgbuild)
+            # Record origin so build_state is self-describing: a repo package
+            # built from source is stamped source="repo" so `sysforge update`
+            # classifies it repo_class="source" (rebuild-from-source) outright
+            # rather than leaning on the non-foreign→repo inference. Non-repo
+            # packages keep source=None — their aur/git/local origin is
+            # recovered from pacman -Qm foreign-ness at update time, and
+            # guessing here risks mis-routing a local-only PKGBUILD that
+            # shadows a repo name.
+            if target.source is None and is_repo_package(target.pkgbase):
+                target.source = "repo"
+            targets.append(target)
 
         if not targets:
             return ExecResult()

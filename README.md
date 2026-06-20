@@ -36,10 +36,15 @@ cd sysforge && makepkg -si
 #    (profiles.toml, packages.toml — both are self-documented)
 sudo vim /etc/sysforge/profiles.toml
 
-# 3. Build and install an AUR package with your active profile. Dependencies
+# 3. Build and install a package with your active profile. Dependencies
 #    are handled the same way `sysforge update` does: missing repo deps are
 #    installed up front and AUR/local deps are built first, so makepkg never
 #    tries to `pacman -S` an AUR-only dependency.
+#    Anything you build this way is then *maintained*: `sysforge update`
+#    rebuilds it from source as upstream advances (build_state is the registry
+#    of what sysforge keeps up to date). This works for repo packages too —
+#    `sysforge build mesa` keeps your optimized mesa current instead of leaving
+#    it frozen. Use `sysforge state forget <pkg>` to stop maintaining one.
 sysforge build neovim-git -m "-si"
 
 # 4. Check for and rebuild any outdated installed AUR packages
@@ -136,6 +141,8 @@ sysforge state orphans               # superseded .pkg.tar* in PKGDEST (safe to 
 sysforge state orphans --prune       # delete them after y/N confirmation
 sysforge state failed                # packages whose last build failed, with any diagnosed fix
 sysforge state failed --clear PKG    # forget one failure (also: --clear-all)
+sysforge state forget PKG            # stop maintaining PKG — `update` no longer rebuilds it
+                                     # (installed package left in place; pacman -S PKG to revert)
 
 # 10. Page sysforge logs through $PAGER (default less -RFX).
 sysforge log                         # unified log: <state_dir>/sysforge.log

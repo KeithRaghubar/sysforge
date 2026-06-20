@@ -1,19 +1,52 @@
 ## Package Manifest
 
-`packages.toml` is the **declared system manifest**. It plays two roles depending on context:
+Two files split the responsibility cleanly, and keeping them distinct is what
+makes the model legible:
+
+- **`build_state.toml` — the registry of what sysforge maintains.** It is the
+  **authority** for steady-state tracking. Any installed package sysforge built
+  from source (its record has `build_mode != "pacman"`) is maintained — i.e.
+  `sysforge update` rebuilds it from source as upstream advances — with no
+  packages.toml entry required. `build_mode = "pacman"` records are inert
+  install-markers written by `sync_with_installed` for everything else installed.
+- **`packages.toml` — the declared manifest** of *intent*: the bootstrap install
+  set, package groups, and per-package **build overrides**. It does **not** drive
+  steady-state tracking; that is build_state's job.
+
+`packages.toml` plays two roles depending on context:
 
 1. **Bootstrap (pipeline `run packages` stage):** every entry is installed. The manifest *is* the install list, because the system has nothing installed yet beyond the pacstrap base.
-2. **Steady-state (`sysforge update`, `sysforge build`):** entries act as **build-rule overrides** applied to the live install set. Pacman owns the install set; `build_state.toml` mirrors it. An entry whose package is not currently installed is an inert rule, not a "missing" item.
+2. **Steady-state (`sysforge update`, `sysforge build`):** entries act as **build-rule overrides** applied to the live install set. Pacman owns the install set; `build_state.toml` mirrors it and is the tracking authority. An entry whose package is not currently installed is an inert rule, not a "missing" item.
 
 This dual role is intentional: the manifest captures your declared intent, but at steady-state we respect the live system rather than reconciling against the manifest.
 
-The orthogonality of the two roles means:
+### What `sysforge update` maintains (steady-state scope)
+
+In one sentence: **sysforge maintains what it built.** Concretely, `update`'s
+walk is the union of —
+- everything sysforge source-built (build_state `build_mode != "pacman"`) — this
+  is what makes `sysforge build mesa` *durable*: the optimized repo build is
+  rebuilt from source on every update instead of being frozen behind
+  `IgnoreGroup = sf-build`;
+- every foreign package (`pacman -Qm` — AUR/local installed outside or before
+  sysforge), with default rules and no overrides;
+- repo packages explicitly opted in via a packages.toml override
+  (`pkgbuild_patch` / `cache` / `reason`) or globally via `repo_mode = "profiled"`.
+
+Stage-owned packages (kernel/toolchain) are excluded from the default walk
+(`--include-stage-owned` or naming them overrides). To **stop** maintaining a
+package, drop its record with `sysforge state forget <pkg>` — the installed
+artifact is left in place (still pinned by the `sf-build` group), so reverting to
+the stock repo binary is a separate `pacman -S <pkg>`. Uninstalling a package
+also auto-stops tracking (`sync_with_installed` prunes its record).
+
+The orthogonality of the roles means:
 - An entry for `mesa-git` can stay in the manifest even if you've rolled back to repo `mesa` — it's an inert rule at steady-state, but the next pipeline bootstrap of a fresh system would still install it.
 - An installed AUR package without an entry uses default rules — `sysforge update` still walks it via `pacman -Qm`, just with no overrides applied.
 - `profiles.toml` and the manifest stay orthogonal: sourcing/patching choices vs. compiler flag tuning.
 
 Each entry overrides at most these fields (all optional except `name`):
-- `source` — `repo` (pacman) vs `aur`. Optional metadata; classification falls through to pacman / AUR RPC if omitted. Set explicitly only when classification is ambiguous or you want to force routing. `source` alone is **inert** and does not trigger any sysforge command path (matches the `packages add` validator); pair it with a behavior-changing field (`pkgbuild_patch`, `cache`, `reason`) if you want the entry to take effect.
+- `source` — `repo` (pacman) vs `aur`/`git`/`local`. A **routing hint**: it tells the bootstrap/build paths how to obtain the package, falling through to pacman / AUR RPC inference if omitted. It does **not** by itself put a package under steady-state tracking — tracking comes from sysforge having built the package (build_state), not from a manifest entry. So an entry with only `name` + `source` has no override effect at steady-state, and `sysforge packages add` rejects it (pair it with a behavior-changing field — `pkgbuild_patch`, `cache`, `reason` — for the entry to override anything). When sysforge builds a package, it records the resolved `source` in build_state, so the registry is self-describing without re-inferring origin later.
 - `pkgbuild_patch` *(bool)* — if `true`, the PKGBUILD patching library runs on this package before build.
 - `cache` *(bool)* — `false` disables ccache/sccache for this package (required for PGO stages).
 
@@ -36,7 +69,7 @@ An entry with only `name` and no override fields has no effect on the build. `sy
 ### `[build]` global section
 
 - `pkgbuild_src_dir` — directory holding pre-cloned PKGBUILDs (`<pkgbuild_src_dir>/<name>/PKGBUILD`). Missing AUR clones are auto-fetched here on demand.
-- `repo_mode` — default build mode for repo-source packages: `"pacman"` (install via `pacman -S --needed`) or `"profiled"` (build from PKGBUILD with sysforge flag profiles). Per-package `pkgbuild_patch = true` overrides to profiled regardless. `sysforge update` walks repo packages only when a per-package override sets a behavior-changing field (`pkgbuild_patch`, `cache`, `reason`), or when `repo_mode = "profiled"` is set globally — in which case every installed repo package is in scope, but only the overridden subset is source-built; the remainder takes a fast pacman path (`checkupdates` for upgrade detection, one terminal `sudo pacman -Syu` after the source-build loop). This avoids the per-package `pkgctl repo clone` that would otherwise fire for every installed repo package and is what makes the "track everything" mode tolerable on a maintained workstation.
+- `repo_mode` — controls how the **bootstrap** (`run packages`) builds repo-source entries: `"pacman"` (install via `pacman -S --needed`) or `"profiled"` (build from PKGBUILD with sysforge flag profiles); per-package `pkgbuild_patch = true` forces profiled regardless. At **steady-state** `repo_mode = "profiled"` is a *bulk drift-surfacing* switch: it pulls **every** installed repo package into `sysforge update`'s walk so repo-side version drift is reported alongside AUR drift. It is **not** how you get a repo package source-built going forward — that happens automatically once sysforge has built it (build_state authority; `sysforge build mesa` is the natural entry). Of the bulk set, only the overridden / already-source-built subset is rebuilt from source; the remainder takes a fast pacman path (`checkupdates` for upgrade detection, one terminal `sudo pacman -Syu` after the source-build loop). This avoids a per-package `pkgctl repo clone` for every installed repo package and is what makes the "track everything" mode tolerable on a maintained workstation.
 
 ### Package groups
 

@@ -74,13 +74,24 @@ def _assemble_package_set(
     }
     repo_mode_profiled = build_cfg.get("repo_mode") == "profiled"
 
+    # build_state is the authority for "what sysforge maintains": any installed
+    # package sysforge built from source (build_mode != "pacman") is tracked
+    # going forward, with no packages.toml entry required. This is what makes
+    # `sysforge build mesa` durable — the repo-source build is rebuilt from
+    # source on every update instead of being frozen behind IgnoreGroup =
+    # sf-build. `build_mode = "pacman"` records are inert install-markers
+    # written by sync_with_installed for everything else and are excluded.
+    source_built = {n for n, e in build_state_pkgs.items()
+                    if e.get("build_mode", "pacman") != "pacman"}
+
     # Live install set: every installed foreign + every non-foreign package
-    # carrying a behavior-changing override. With repo_mode = "profiled",
-    # also pull in every installed repo package.
+    # carrying a behavior-changing override + everything sysforge source-built.
+    # With repo_mode = "profiled", also pull in every installed repo package.
     all_installed = get_all_installed_packages()
     target_names = {n for n in all_installed
                     if n in foreign
                     or n in behavior_overridden
+                    or n in source_built
                     or (repo_mode_profiled and n not in foreign)}
 
     # Stage-owned packages: skipped by default so `sysforge update` doesn't
@@ -157,18 +168,24 @@ def _assemble_package_set(
             return "repo"
         return None
 
-    def _resolve_repo_class(name: str, source: str | None) -> str | None:
+    def _resolve_repo_class(name: str, source: str | None,
+                            bs_entry: dict | None) -> str | None:
         """Sub-classify repo-source packages: "source" vs "pacman".
 
         Only meaningful when ``source == "repo"``. Returns:
           - ``"source"`` if the package has a behavior-changing override
-            (``pkgbuild_patch`` / ``cache`` / ``reason``) — it goes through
-            pkgctl-clone + makepkg, same as before.
-          - ``"pacman"`` if it has no override and is in scope only because
-            ``repo_mode = "profiled"`` is set. These skip source sync and
-            get version-checked via the batched ``checkupdates`` call;
-            upgrades are deferred to a single ``sudo pacman -Syu`` at the
-            end of the update.
+            (``pkgbuild_patch`` / ``cache`` / ``reason``) **or** sysforge
+            already source-built it (build_state ``build_mode != "pacman"``)
+            — it goes through pkgctl-clone + makepkg-with-flags. A
+            source-built repo package must take this path, not the pacman
+            fast path: a deferred ``pacman -Syu`` would be a no-op anyway
+            (``IgnoreGroup = sf-build`` shields the installed artifact), so
+            the only way to actually refresh it is to rebuild from source.
+          - ``"pacman"`` if it has no override and was not source-built, in
+            scope only because ``repo_mode = "profiled"`` is set. These skip
+            source sync and get version-checked via the batched
+            ``checkupdates`` call; upgrades are deferred to a single
+            ``sudo pacman -Syu`` at the end of the update.
           - ``None`` for non-repo sources (aur/git) — those follow the
             existing path.
         """
@@ -176,13 +193,15 @@ def _assemble_package_set(
             return None
         if name in behavior_overridden:
             return "source"
+        if bs_entry is not None and bs_entry.get("build_mode", "pacman") != "pacman":
+            return "source"
         return "pacman"
 
     for name in target_names:
         override = overrides_by_name.get(name, {})
         bs_entry = build_state_pkgs.get(name)
         resolved_source = _resolve_source(name, override, bs_entry)
-        resolved_repo_class = _resolve_repo_class(name, resolved_source)
+        resolved_repo_class = _resolve_repo_class(name, resolved_source, bs_entry)
 
         if bs_entry is not None and bs_entry.get("build_mode", "profiled") != "pacman":
             pkg = dict(bs_entry)

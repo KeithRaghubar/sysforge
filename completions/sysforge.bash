@@ -242,7 +242,7 @@ _sysforge_packages() {
 _sysforge_state() {
     _sysforge_flag_arg && return
     if [[ -z $subverb ]]; then
-        COMPREPLY=( $(compgen -W "list repair orphans failed" -- "$cur") )
+        COMPREPLY=( $(compgen -W "list repair orphans failed forget" -- "$cur") )
         return
     fi
     case "$subverb" in
@@ -257,6 +257,13 @@ _sysforge_state() {
             ;;
         failed)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --no-pager --clear --clear-all" -- "$cur") )
+            ;;
+        forget)
+            if [[ $cur == -* ]]; then
+                COMPREPLY=( $(compgen -W "--state-dir" -- "$cur") )
+            else
+                _sysforge_state_names
+            fi
             ;;
     esac
 }

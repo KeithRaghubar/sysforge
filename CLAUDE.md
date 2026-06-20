@@ -96,6 +96,17 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   (`DESKTOP_CATALOG`, `select_desktop`, `write_desktop_group`). Add a DE by extending
   `DESKTOP_CATALOG` (+ `bootstrap.toml [desktop]` validation + both completions). See
   DESIGN.md §Package Manifest.
+- **`build_state.toml` is the steady-state tracking authority** (not packages.toml).
+  `update`'s walk (`update_assemble._assemble_package_set`) includes every installed package
+  sysforge source-built (`build_mode != "pacman"`), so `sysforge build mesa` is durable —
+  rebuilt from source on every `update`. A source-built repo package is classified
+  `repo_class = "source"` (rebuild) not `"pacman"` (a deferred `pacman -Syu` no-ops behind
+  `IgnoreGroup = sf-build`). packages.toml stays the *declarative* layer: bootstrap set +
+  groups + per-package overrides; `repo_mode = "profiled"` is bulk repo-drift surfacing, not
+  the source-tracking mechanism. `build` stamps the resolved `source` (`is_repo_package`) so
+  the registry is self-describing. Stop tracking via `sysforge state forget <pkg>`
+  (`BuildState.delete`, pkgbase-expanded). Don't re-add a packages.toml-entry-gates-tracking
+  path. See DESIGN.md §Package Manifest / §update.
 - **PKGBUILD review gate has one home**: `build_core.build_and_install(review=…)` →
   `pkgbuild_review.review_target` (`build` defaults `"prompt"`, `update` `"auto"`); AUR
   dep builds gated via `review_deps` in `prepare_deps`. Baseline is sticky `reviewed_commit`

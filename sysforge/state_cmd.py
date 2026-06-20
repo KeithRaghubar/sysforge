@@ -432,6 +432,52 @@ def cmd_state_failed(args):
         )
 
 
+def cmd_state_forget(args):
+    """Stop maintaining the named package(s): delete their build_state records.
+
+    build_state is the authority for what ``sysforge update`` rebuilds from
+    source. ``forget`` drops a package's record so update no longer tracks it —
+    the "hand it back to pacman" escape hatch for the durable-by-default
+    tracking model. The *installed* package is left in place; it still carries
+    the ``sf-build`` pacman group, so ``pacman -Syu`` won't replace it. To fully
+    revert to the stock repo binary, reinstall it explicitly with
+    ``pacman -S <pkg>``. (The next update's ``sync_with_installed`` re-seeds a
+    plain ``build_mode = "pacman"`` marker, which is inert.)
+
+    A name matching a pkgbase forgets every split-package member sharing it.
+    """
+    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives.build_state import BuildState
+
+    state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
+    bs = BuildState(state_dir)
+    all_pkgs = bs.all_packages()
+
+    names = list(getattr(args, "pkgnames", None) or [])
+    forgotten: list[str] = []
+    missing: list[str] = []
+    for name in names:
+        # Delete the exact entry plus any split-package siblings whose pkgbase
+        # equals the requested name (so `forget llvm` drops llvm-libs/polly too).
+        targets = {name} if name in all_pkgs else set()
+        targets |= {pn for pn, e in all_pkgs.items() if e.get("pkgbase") == name}
+        if not targets:
+            missing.append(name)
+            continue
+        for pn in sorted(targets):
+            if bs.delete(pn):
+                forgotten.append(pn)
+
+    if forgotten:
+        bs.save()
+        print(f"Stopped tracking {len(forgotten)} package(s): {', '.join(forgotten)}")
+        print("  (installed package left in place; it keeps the sf-build group, so "
+              "`pacman -Syu` won't touch it.")
+        print("   Reinstall the repo binary with `pacman -S <pkg>` to fully revert.)")
+    for name in missing:
+        print(f"No build_state record for {name!r} — nothing to forget.")
+
+
 # ---------------------------------------------------------------------------
 # Verb wrappers
 # ---------------------------------------------------------------------------
@@ -510,4 +556,22 @@ class StateFailedVerb(Verb):
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         cmd_state_failed(args)
+        return ExecResult()
+
+
+class StateForgetVerb(Verb):
+    """Drop build_state records so `update` stops maintaining the package(s).
+
+    Writes build_state.toml, so it carries a sentinel like the other state
+    write paths (repair / failed --clear).
+    """
+
+    name = "state-forget"
+    requires_sentinel = True
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        cmd_state_forget(args)
         return ExecResult()

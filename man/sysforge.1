@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026-06-19"
+.TH "sysforge" "1" "2026-06-20"
 .PP
 .PP
 .SH NAME
@@ -689,6 +689,22 @@ Clear the recorded failure for PKGBASE and exit.\&
 \fB--clear-all\fR
 .RS 4
 Clear all recorded failures and exit.\&
+.PP
+.RE
+.SS state forget
+.PP
+\fBsysforge state forget\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
+.PP
+Stop maintaining PKG(s): delete their build_state record so `sysforge update` no longer rebuilds them from source.\& The installed package is left in place (still pinned by the sf-build group).\&
+.PP
+\fBPKG\fR
+.RS 4
+Package name(s) or pkgbase(s) to stop tracking.\& A pkgbase forgets every split-package member sharing it.\&
+.PP
+.RE
+\fB--state-dir\fR \fIDIR\fR
+.RS 4
+Override state directory.\&
 .PP
 .RE
 .SS run

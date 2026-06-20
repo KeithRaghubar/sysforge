@@ -279,6 +279,7 @@ _sysforge_state() {
         repair)  _sysforge_state_repair  ;;
         orphans) _sysforge_state_orphans ;;
         failed)  _sysforge_state_failed  ;;
+        forget)  _sysforge_state_forget  ;;
       esac
       ;;
   esac
@@ -290,6 +291,7 @@ _sysforge_state_subcommands() {
     'repair:re-parse PKGBUILDs to fix entries with unexpanded shell variables'
     'orphans:list (and optionally prune) stale .pkg.tar* artifacts in PKGDEST'
     'failed:list recorded build failures (with any diagnosed fix)'
+    'forget:stop maintaining package(s) — delete their build_state record'
   )
   _describe 'subcommand' subcommands
 }
@@ -319,6 +321,12 @@ _sysforge_state_failed() {
     '--no-pager[do not pipe output through $PAGER]' \
     '--clear[clear the recorded failure for PKGBASE]:pkgbase:_sysforge_state_names' \
     '--clear-all[clear all recorded failures]'
+}
+
+_sysforge_state_forget() {
+  _arguments \
+    '--state-dir[override state directory]:dir:_directories' \
+    '*: :_sysforge_state_names'
 }
 
 _sysforge_run() {

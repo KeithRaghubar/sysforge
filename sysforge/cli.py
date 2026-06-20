@@ -54,6 +54,7 @@ from sysforge.run_cmd import (
 from sysforge.setup_cmd import SetupVerb
 from sysforge.state_cmd import (
     StateFailedVerb,
+    StateForgetVerb,
     StateListVerb,
     StateOrphansVerb,
     StateRepairVerb,
@@ -604,6 +605,17 @@ def _add_state_parser(sub):
     p_failed.add_argument("--clear-all", action="store_true", dest="clear_all",
         help="Clear all recorded failures and exit.")
     p_failed.set_defaults(verb_cls=StateFailedVerb)
+
+    p_forget = state_sub.add_parser("forget",
+        help="Stop maintaining PKG(s): delete their build_state record so "
+             "`sysforge update` no longer rebuilds them from source. The installed "
+             "package is left in place (still pinned by the sf-build group).")
+    p_forget.add_argument("pkgnames", nargs="+", metavar="PKG",
+        help="Package name(s) or pkgbase(s) to stop tracking. A pkgbase forgets "
+             "every split-package member sharing it.")
+    p_forget.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory.")
+    p_forget.set_defaults(verb_cls=StateForgetVerb)
 
 
 def _add_setup_parser(sub):

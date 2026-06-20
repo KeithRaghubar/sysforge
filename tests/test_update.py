@@ -357,6 +357,58 @@ def test_bare_source_only_override_is_inert(fake_run, state_dir):
     assert packages == {}
 
 
+def test_source_built_repo_package_is_tracked(fake_run, state_dir):
+    """build_state is the tracking authority: a repo package sysforge
+    source-built (build_mode != "pacman") is in update scope even with no
+    override and default repo_mode — this is what makes `sysforge build mesa`
+    durable. It must classify as repo_class="source" (rebuild from source),
+    not "pacman" (which a deferred pacman -Syu would no-op behind IgnoreGroup).
+    """
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="mesa 1:25.3.1-1\n")
+    bs = BuildState(state_dir)
+    bs.record(pkgname="mesa", pkgver="25.3.1", pkgrel="1", epoch="1",
+              pkgbase="mesa", pkgbuild_dir=state_dir,
+              build_mode="profiled", source="repo")
+    bs.save()
+    packages, _ = _assemble_package_set(
+        _make_args(), bs, {}, {}, {},
+    )
+    assert set(packages) == {"mesa"}
+    assert packages["mesa"]["repo_class"] == "source"
+
+
+def test_pacman_mode_record_does_not_track_repo_package(fake_run, state_dir):
+    """Negative: a bare build_mode="pacman" marker (written by
+    sync_with_installed for everything installed) must NOT pull a repo package
+    into scope — only genuinely source-built records track."""
+    fake_run.respond(["pacman", "-Qm"], stdout="")
+    fake_run.respond(["pacman", "-Q"], stdout="mesa 1:25.3.1-1\n")
+    bs = BuildState(state_dir)
+    bs.record(pkgname="mesa", pkgver="25.3.1", pkgrel="1", epoch="1",
+              pkgbase="mesa", pkgbuild_dir=state_dir,
+              build_mode="pacman", source="repo")
+    bs.save()
+    packages, _ = _assemble_package_set(
+        _make_args(), bs, {}, {}, {},
+    )
+    assert packages == {}
+
+
+def test_source_built_record_survives_sync_with_installed(state_dir):
+    """Durability: sync_with_installed only adds pacman markers for packages
+    with no record and prunes uninstalled ones — it must never downgrade an
+    existing source-built record to build_mode="pacman"."""
+    bs = BuildState(state_dir)
+    bs.record(pkgname="mesa", pkgver="25.3.1", pkgrel="1", epoch="1",
+              pkgbase="mesa", pkgbuild_dir=state_dir,
+              build_mode="profiled", source="repo")
+    bs.save()
+    bs.sync_with_installed({"mesa": "1:25.3.1-1", "bash": "5.2-1"})
+    assert bs.get("mesa")["build_mode"] == "profiled"   # unchanged
+    assert bs.get("bash")["build_mode"] == "pacman"     # new inert marker
+
+
 def test_load_overrides_warns_on_inert_entries(tmp_path, capsys):
     """
     `_load_overrides` emits a warn line for any inert `[[package]]` entry
@@ -541,12 +593,17 @@ def test_not_profiled_package_is_not_flag_drift_checked(update_scenario, capsys)
 # ---------------------------------------------------------------------------
 
 def _seed_out_of_walk_drift(scenario):
-    """ripgrep: installed (pacman -Q) but not foreign and no override, so
-    update's walk never iterates it — only the Phase 4.3 fold sees its
-    profiled build_state entry. Recorded flags are stale -> drifted."""
+    """ripgrep: installed and source-built, but stage-owned (owner_stage), so
+    update's walk filters it out — only the Phase 4.3 fold sees its profiled
+    build_state entry. Recorded flags are stale -> drifted.
+
+    (A plain source-built repo package is now *in* the walk under the
+    build_state-is-authority model, so stage ownership is what keeps an entry
+    genuinely out-of-walk here.)"""
     scenario.add_pkg("ripgrep", "pkgname=ripgrep\npkgver=14.0.0\npkgrel=1\n")
     scenario.record("ripgrep", "14.0.0", "1",
-                    flags_string="CFLAGS=-this-is-stale")
+                    flags_string="CFLAGS=-this-is-stale",
+                    owner_stage="toolchain")
     return {"ripgrep": "14.0.0-1"}, {}
 
 
