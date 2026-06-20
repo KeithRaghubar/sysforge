@@ -340,6 +340,31 @@ def _check_steam_gpu_accel() -> GraphicsFinding | None:
     return None
 
 
+def _check_mesa_llvm_symbols() -> GraphicsFinding | None:
+    """
+    mesa's libgallium (and other libLLVM consumers) must resolve every
+    `LLVMInitialize*@LLVM_x.y` symbol against the installed libLLVM. A
+    self-built libLLVM rebuilt with a reduced LLVM_TARGETS_TO_BUILD that dropped
+    a backend mesa links unconditionally (AMDGPU/radeonsi, host-CPU/llvmpipe)
+    leaves those references dangling → mesa EGL/GL fails to load → the whole
+    desktop black-screens even though the kernel/KMS are healthy.
+
+    Reuses the toolchain stage's post-install symbol fact
+    (`toolchain_safety.check_installed_consumer_symbols`) so there is exactly one
+    symbol differ. Read-only; returns None when no consumer links libLLVM or all
+    resolve. This is the one-line self-diagnosis for the
+    "rebuilt toolchain, now black screen" failure mode.
+    """
+    from sysforge.primitives import toolchain_safety
+
+    findings = toolchain_safety.check_installed_consumer_symbols()
+    if not findings:
+        return None
+    f = findings[0]
+    extra = f" ({len(findings)} consumers affected)" if len(findings) > 1 else ""
+    return GraphicsFinding(SEV_ERROR, "mesa_llvm_symbols", f.message + extra, f.remediation)
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -369,6 +394,10 @@ def check_system_graphics(
     _add(_check_session_type())
     _add(_check_xwayland_present(installed))
     _add(_check_multilib_enabled(gvendors))
+    # GPU-agnostic: mesa's libgallium links libLLVM regardless of vendor, so a
+    # broken system libLLVM after a toolchain rebuild bricks the desktop on any
+    # GPU. Self-diagnoses the "rebuilt toolchain → black screen" failure mode.
+    _add(_check_mesa_llvm_symbols())
 
     if "nvidia" in gvendors:
         _add(_check_nvidia_module_loaded(gvendors))

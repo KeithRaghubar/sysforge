@@ -468,6 +468,9 @@ Check inventory (v1):
 | `xwayland_present` | `pacman -Q xorg-xwayland` when session is Wayland | Wayland session | error |
 | `explicit_sync_protocol` | `wayland-info` — look for `wp_linux_drm_syncobj_manager_v1` (or legacy `zwp_linux_explicit_synchronization_v1`) in advertised globals | Wayland session + `nvidia` vendor | error |
 | `steam_gpu_accel` | parse `~/.steam/root/config/config.vdf` for `GPUAccelerationEnabled "1"` | Steam installed | warn |
+| `mesa_llvm_symbols` | `toolchain_safety.check_installed_consumer_symbols` — installed `libgallium`/DRI/Vulkan drivers must resolve every `LLVMInitialize*@LLVM_x.y` symbol against the installed `libLLVM` | any GPU vendor (mesa links libLLVM regardless) | error |
+
+The `mesa_llvm_symbols` check is the one-line self-diagnosis for the "rebuilt the toolchain, now the desktop black-screens" failure mode: a self-built `libLLVM` with a reduced `LLVM_TARGETS_TO_BUILD` that dropped a backend mesa links unconditionally (AMDGPU/radeonsi, host-CPU/llvmpipe) leaves `libgallium` with dangling `undefined symbol: LLVMInitializeAMDGPU…`, killing every EGL/GL client. It reuses the toolchain stage's post-install symbol fact (one differ; remediation points at reinstalling official `llvm-libs` or rerunning `run toolchain` with the AMDGPU baseline). The toolchain stage's Gate 2/3 prevent this pre/post-install; this surfaces it for a system already in the state.
 
 The explicit-sync check is the load-bearing one for NVIDIA-on-Wayland black-window breakage: when the compositor doesn't advertise `wp_linux_drm_syncobj_manager_v1`, XWayland games on NVIDIA fall back to implicit sync which is known-broken on the NVIDIA explicit-sync driver path. Note: the registry global is `wp_linux_drm_syncobj_manager_v1` — the protocol-document name `linux-drm-syncobj-v1` (i.e. the bare `wp_linux_drm_syncobj_v1` substring) never appears as an advertised global.
 

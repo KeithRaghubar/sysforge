@@ -22,6 +22,9 @@ Capabilities:
   - check_link_resolution          — clang/lld resolve libLLVM under /usr/lib
   - smoke_test_compilers           — clang/lld present + actually run
   - scan_abi_hazards               — _ZNSt*@LLVM_* C++-stdlib-in-LLVM-ns symbols
+  - check_system_consumer_symbols  — built libLLVM drops a target an installed
+                                     mesa/graphics consumer imports (pre-install)
+  - check_installed_consumer_symbols— same, vs the now-installed libLLVM (post-install)
   - detect_residual_instrumentation— stale -fprofile-generate LLVM libs (advisory)
   - check_pkgver_lockstep          — PKGBUILD pkgver skew across lockstep members
   - assess_libllvm_soname_impact   — impending libLLVM soname bump + broken consumers
@@ -304,6 +307,159 @@ def scan_abi_hazards(pkg_files: list[Path]) -> list[ToolchainFinding]:
                             is_brick=True,
                         ))
     return findings
+
+
+# ---------------------------------------------------------------------------
+# System graphics-consumer symbol sufficiency — a rebuilt libLLVM that dropped
+# an LLVM backend an installed consumer imports would brick the desktop
+# ---------------------------------------------------------------------------
+
+# Installed external libLLVM consumers (relative to _USR_LIB) whose dynamic
+# symbols must stay satisfiable across a system-libLLVM swap. mesa's libgallium
+# links the AMDGPU (radeonsi) + host-CPU (llvmpipe) target-init symbols
+# UNCONDITIONALLY, so a libLLVM rebuilt with a reduced LLVM_TARGETS_TO_BUILD
+# that drops a needed backend leaves these with dangling
+# LLVMInitialize*@LLVM_x.y references → mesa EGL fails → black screen. Curated,
+# not exhaustive (mirrors hardware._ARCH_OWNED_KCONFIG): the needed-soname
+# filter below makes a non-consumer that happens to match a glob a harmless
+# skip, so extend freely for new consumers.
+_SYSTEM_LIBLLVM_CONSUMER_GLOBS: tuple[str, ...] = (
+    "libgallium-*.so",
+    "dri/*.so",
+    "libvulkan_radeon.so",
+    "libvulkan_lvp.so",
+)
+
+# LLVMInitialize<Target>{Target,TargetInfo,TargetMC,TargetMCA,AsmPrinter,
+# AsmParser,Disassembler} → the backend name, for human-readable diagnostics.
+_RE_LLVM_INIT_TARGET = re.compile(
+    r"^LLVMInitialize(?P<target>[A-Za-z0-9]+?)"
+    r"(Target(Info|MCA|MC)?|AsmPrinter|AsmParser|Disassembler)$"
+)
+
+
+def _llvm_init_target(sym: str) -> str | None:
+    """Map an ``LLVMInitialize<Target>*`` symbol to its backend (AMDGPU, X86…)."""
+    m = _RE_LLVM_INIT_TARGET.match(sym)
+    return m.group("target") if m else None
+
+
+def _diff_consumers_against_libllvm(
+    libllvm_path: Path, *, source_label: str,
+) -> list[ToolchainFinding]:
+    """Flag installed graphics consumers whose ``LLVM_*``-versioned imports the
+    given libLLVM does not export. Shared core of the pre-install (vs the built
+    ``.pkg.tar`` member) and post-install (vs the now-installed ``/usr`` lib)
+    gates — symbol-version precise via abi_check, no parallel differ.
+
+    Scope: only consumers that actually ``NEED`` this libLLVM's *exact* soname
+    are checked (a soname *bump* is owned by ``assess_libllvm_soname_impact`` /
+    ``_gate_soname_consumers`` — those consumers are rebuilt, not symbol-diffed).
+    Only the consumer's ``LLVM_*`` version-node imports are considered; its libc
+    / libstdc++ imports are irrelevant to a libLLVM swap. A non-empty miss is
+    brick-class. Fail-open on an unreadable export set (returns []) — the gate
+    must not block a build on an ``nm`` hiccup; Part-1 enforcement + the other
+    gate arm still protect.
+    """
+    from sysforge.primitives.abi_check import (
+        _exported_versioned,
+        _undefined_versioned,
+        needed_sonames,
+    )
+
+    new_soname = libllvm_path.name  # LLVM sets SONAME == versioned filename
+    cache: dict[str, set[tuple[str, str]]] = {}
+    exported = _exported_versioned(str(libllvm_path), cache)
+    if not exported:
+        return []
+
+    findings: list[ToolchainFinding] = []
+    for pattern in _SYSTEM_LIBLLVM_CONSUMER_GLOBS:
+        for consumer in sorted(_USR_LIB.glob(pattern)):
+            if not consumer.is_file() or consumer.is_symlink():
+                continue
+            if new_soname not in needed_sonames(consumer):
+                continue  # doesn't link this libLLVM soname
+            missing = sorted(
+                (s, v)
+                for (s, v) in _undefined_versioned(consumer)
+                if v.startswith("LLVM_") and (s, v) not in exported
+            )
+            if not missing:
+                continue
+            targets = sorted(
+                {t for (s, _) in missing if (t := _llvm_init_target(s))}
+            )
+            shown = ", ".join(f"{s}@{v}" for s, v in missing[:6])
+            more = "" if len(missing) <= 6 else f" (+{len(missing) - 6} more)"
+            tgt = f" — dropped LLVM target(s): {', '.join(targets)}" if targets else ""
+            findings.append(ToolchainFinding(
+                SEV_ERROR, "libllvm_consumer_symbols",
+                f"{consumer.name} links {new_soname} but the {source_label} "
+                f"libLLVM does not export {len(missing)} symbol(s) it imports"
+                f"{tgt}: {shown}{more}. mesa EGL/GL would fail to load — the "
+                "whole desktop black-screens.",
+                "Rebuild the toolchain with the dropped target(s) kept in "
+                "LLVM_TARGETS_TO_BUILD (sysforge enforces the AMDGPU baseline "
+                "automatically — check toolchain.toml [llvm] targets for an "
+                "explicit override that omits them). To recover a system already "
+                "in this state, reinstall the official llvm-libs.",
+                is_brick=True,
+            ))
+    return findings
+
+
+def check_system_consumer_symbols(
+    built_pkg_files: list[Path],
+) -> list[ToolchainFinding]:
+    """Pre-install gate: refuse a freshly-built libLLVM that would strand an
+    already-installed graphics consumer by dropping target-init symbols.
+
+    Extracts the system ``libLLVM.so.*`` (the ``usr/lib`` ELF — lib32 excluded)
+    from ``built_pkg_files`` and diffs it against installed consumers. Returns
+    [] when the batch ships no system libLLVM (nothing replacing the live lib).
+    """
+    from sysforge.primitives.abi_check import _extract_sos, _list_sos_in_pkg
+
+    with tempfile.TemporaryDirectory(prefix="sysforge-consumer-") as tmpdir:
+        tmp = Path(tmpdir)
+        libllvm_path: Path | None = None
+        for pkg in built_pkg_files:
+            members = [
+                m for m in _list_sos_in_pkg(pkg)
+                if m.startswith("usr/lib/")
+                and Path(m).name.startswith("libLLVM.so.")
+            ]
+            for member in members:
+                extracted = _extract_sos(pkg, [member], tmp / pkg.name)
+                if extracted:
+                    libllvm_path = extracted[0]
+                    break
+            if libllvm_path is not None:
+                break
+        if libllvm_path is None:
+            return []
+        return _diff_consumers_against_libllvm(
+            libllvm_path, source_label="freshly-built",
+        )
+
+
+def check_installed_consumer_symbols() -> list[ToolchainFinding]:
+    """Post-install gate: the system libLLVM is now in place — verify installed
+    graphics consumers still resolve against it. Run inside the toolchain
+    sentinel so a brick triggers the snapshot auto-restore. Returns [] when no
+    versioned ``/usr/lib/libLLVM.so.*`` ELF is present.
+    """
+    libllvm = next(
+        (
+            p for p in sorted(_USR_LIB.glob("libLLVM.so.*"))
+            if p.is_file() and not p.is_symlink()
+        ),
+        None,
+    )
+    if libllvm is None:
+        return []
+    return _diff_consumers_against_libllvm(libllvm, source_label="installed")
 
 
 # ---------------------------------------------------------------------------

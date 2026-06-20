@@ -3041,6 +3041,23 @@ def _gate2_audit(built_map: dict[str, Path], *, dry_run: bool) -> None:
             "Restart with: sysforge run toolchain --rebuild-profdata"
         )
 
+    # Graphics-consumer symbol sufficiency: refuse a freshly-built libLLVM that
+    # dropped an LLVM backend an installed mesa/graphics consumer imports (e.g. a
+    # reduced LLVM_TARGETS_TO_BUILD without AMDGPU). Pre-install, outside the
+    # sentinel — a brick here leaves the live graphics stack untouched, vs. a
+    # post-reboot black screen. See toolchain_safety.check_system_consumer_symbols.
+    consumer_findings = toolchain_safety.check_system_consumer_symbols(pkgs)
+    if consumer_findings:
+        joined = "\n".join(f"  - {f.message}" for f in consumer_findings)
+        remediation = consumer_findings[0].remediation
+        raise RuntimeError(
+            "[TOOLCHAIN] Gate 2: the freshly-built libLLVM would strand an "
+            "installed graphics consumer (mesa) by dropping LLVM target-init "
+            "symbols it imports — refusing to install (the desktop would "
+            f"black-screen on next session). Nothing was installed.\n{joined}\n"
+            f"{remediation}"
+        )
+
 
 def _snapshot_suite(built_map: dict[str, Path]) -> dict[str, "Path | None"]:
     """Capture the current-install ``.pkg.tar*`` for the suite + built packages.
@@ -3400,9 +3417,39 @@ class ToolchainStage(Stage):
                 # prior-good toolchain from the snapshot (offline pacman -U):
                 #   restore OK   → live /usr is whole again → clear sentinel + raise.
                 #   restore FAIL → keep sentinel (recovery_cmd = snapshot restore).
-                expected_targets = (tcfg.get("llvm", {}) or {}).get("targets") or None
+                #
+                # expected_targets is the *actually resolved* LLVM_TARGETS_TO_BUILD
+                # the build patched in (resolve_or_detect_llvm_targets — the same
+                # value makepkg_wrapper used), NOT just toolchain.toml [llvm]
+                # targets. On an autodetect host that key is unset, so the old
+                # `tcfg[...]` form resolved to None and skipped check #3 entirely —
+                # the gap that let a target-reduced libLLVM install unverified.
+                from sysforge.pipeline.state import resolve_state_dir
+                from sysforge.primitives.llvm_targets import (
+                    resolve_or_detect_llvm_targets,
+                )
+                # Resolve the state dir the same way the build's patcher did
+                # (makepkg_wrapper._maybe_patch_llvm_targets → resolve_state_dir),
+                # so Gate 3 reads the same hardware_profile.toml. options.state_dir
+                # may be None (env/default fallback); resolve_state_dir handles it.
+                _gate3_state_dir, _ = resolve_state_dir(options.state_dir)
+                hw_profile = _gate3_state_dir / "hardware_profile.toml"
+                expected_targets = resolve_or_detect_llvm_targets(
+                    TOOLCHAIN_PATH, hw_profile,
+                )
                 if not options.dry_run:
-                    issues = _verify_llvm_install(expected_targets=expected_targets)
+                    issues = list(
+                        _verify_llvm_install(expected_targets=expected_targets)
+                    )
+                    # Graphics-consumer sufficiency vs the NOW-INSTALLED libLLVM:
+                    # a dropped backend an installed mesa consumer imports is
+                    # brick-class. Folded into `issues` so the same snapshot
+                    # auto-restore fires while rollback is still armed (inside the
+                    # sentinel) — a black screen reverts itself instead of shipping.
+                    issues.extend(
+                        f.message
+                        for f in toolchain_safety.check_installed_consumer_symbols()
+                    )
                     if issues:
                         evidence_path = (
                             _dump_stage_dynsym_evidence(staging3, state.path.parent)

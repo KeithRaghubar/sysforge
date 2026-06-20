@@ -109,6 +109,18 @@ def _toolchain_gates_clean(monkeypatch):
     monkeypatch.setattr(_ts, "check_pkgver_lockstep", lambda *a, **k: None, raising=True)
     monkeypatch.setattr(_ts, "detect_residual_instrumentation", lambda: [], raising=True)
     monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: [], raising=True)
+    monkeypatch.setattr(
+        _ts, "check_system_consumer_symbols", lambda pkgs: [], raising=True)
+    monkeypatch.setattr(
+        _ts, "check_installed_consumer_symbols", lambda: [], raising=True)
+    # On a successful llvm build the stage propagates profiles.toml [defaults]
+    # toolchain via set_default_toolchain — which writes SYSFORGE_CONFIG_DIR,
+    # pointed by conftest at the git-tracked fixture. Neutralise it so toolchain
+    # tests never mutate tests/data/etc/sysforge/profiles.toml (no test asserts
+    # propagation; set_default_toolchain has its own unit coverage).
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._propagate_default_toolchain",
+        lambda compiler, options: None, raising=True)
     # Snapshot: no suite package resolves to a cached file (offline-undo
     # unavailable). Tests that exercise rollback patch this explicitly.
     monkeypatch.setattr(
@@ -1015,6 +1027,7 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
          patch("sysforge.pipeline.stages.toolchain._pgo_pass1_stage"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
          patch("sysforge.pipeline.stages.toolchain._run_llvm_preflight"), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
          patch("subprocess.run", side_effect=fake_subprocess), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
@@ -1215,6 +1228,7 @@ def test_toolchain_stage_pgo_pass3_redirects_dyld_when_clang_staged(tmp_path):
          patch("sysforge.pipeline.stages.toolchain._pgo_pass1_stage"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
          patch("sysforge.pipeline.stages.toolchain._run_llvm_preflight"), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
          patch("subprocess.run", side_effect=fake_subprocess), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
@@ -1622,6 +1636,35 @@ def test_gate2_audit_clean_build_passes(tmp_path, monkeypatch):
     )
     # scan_abi_hazards stubbed to [] by the autouse fixture.
     _gate2_audit({"clang": pkg_dir / "PKGBUILD"}, dry_run=False)  # must not raise
+
+
+def test_gate2_audit_refuses_graphics_consumer_brick(tmp_path, monkeypatch):
+    """A freshly-built libLLVM that drops a target an installed mesa consumer
+    imports aborts Gate 2 before install (outside the sentinel) — the
+    bricked-desktop class. scan_abi_hazards is clean; the consumer check trips."""
+    from sysforge.pipeline.stages.toolchain import _gate2_audit
+    from sysforge.primitives import toolchain_safety as _ts
+
+    pkg_dir = tmp_path / "llvm-libs"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "llvm-libs-22.1.6-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
+        lambda m: [fake_pkg],
+    )
+    # scan_abi_hazards clean (autouse) — the consumer check is what aborts.
+    brick = [_ts.ToolchainFinding(
+        "error", "libllvm_consumer_symbols",
+        "libgallium-26.so links libLLVM.so.22.1 but the freshly-built libLLVM "
+        "does not export 6 symbol(s) — dropped LLVM target(s): AMDGPU",
+        "Rebuild with AMDGPU kept.",
+        is_brick=True,
+    )]
+    monkeypatch.setattr(_ts, "check_system_consumer_symbols", lambda pkgs: brick)
+
+    with pytest.raises(RuntimeError, match="graphics consumer"):
+        _gate2_audit({"llvm-libs": pkg_dir / "PKGBUILD"}, dry_run=False)
 
 
 def _make_so(base, name):
@@ -2996,6 +3039,7 @@ def _run_pgo(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None,
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
          patch("sysforge.pipeline.stages.toolchain._assert_staging_has_llvm_cmake"), \
          patch("subprocess.run", side_effect=_fake_subprocess_factory(profdata_size)), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
          patch("sys.stdin.isatty", return_value=False), \
          patch("sysforge.pipeline.stages.toolchain._validate_pgo_environment"), \
          patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
@@ -3247,6 +3291,7 @@ def test_pgo_stale_staging_purged_at_run_start(tmp_path):
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
          patch("sysforge.pipeline.stages.toolchain._pgo_pass1_stage"), \
          patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
          patch("subprocess.run", side_effect=_fake_subprocess_factory()), \
          patch("sys.stdin.isatty", return_value=False), \
          patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
@@ -3691,6 +3736,74 @@ def test_gate3_failure_auto_restores_and_clears_sentinel(tmp_path, monkeypatch):
 
     assert restored.get("files")  # rollback ran
     assert not _sentinel_exists(tmp_path / "state")  # system whole → cleared
+
+
+def test_gate3_expected_targets_sourced_from_resolved_set(tmp_path, monkeypatch):
+    """Gate 3 verifies against the *resolved* LLVM targets (resolve_or_detect),
+    not just toolchain.toml [llvm] targets — so check #3 runs on autodetect
+    hosts where that key is unset (the previously-skipped, unverified gap)."""
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+    monkeypatch.setattr(
+        "sysforge.primitives.llvm_targets.resolve_or_detect_llvm_targets",
+        lambda tc, hw: ["X86", "NVPTX", "AMDGPU"],
+    )
+    seen = {}
+
+    def spy_verify(expected_targets=None):
+        seen["targets"] = expected_targets
+        return []
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install",
+               side_effect=spy_verify), \
+         patch("sys.stdin.isatty", return_value=False):
+        ToolchainStage().run(config, state, options)
+
+    assert seen["targets"] == ["X86", "NVPTX", "AMDGPU"]
+
+
+def test_gate3_consumer_symbol_brick_triggers_rollback(tmp_path, monkeypatch):
+    """A post-install graphics-consumer symbol brick is folded into Gate-3
+    issues → snapshot rollback fires even though _verify_llvm_install is clean.
+    This is the post-install safety net for a target-reduced libLLVM."""
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+    cached = tmp_path / "cache" / "llvm-22.1.5-1-x86_64.pkg.tar.zst"
+    cached.parent.mkdir(parents=True)
+    cached.touch()
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain.cached_pkg_files_for",
+        lambda names: {n: cached for n in names},
+    )
+    monkeypatch.setattr(
+        "sysforge.primitives.llvm_targets.resolve_or_detect_llvm_targets",
+        lambda tc, hw: ["X86", "AMDGPU"],
+    )
+    from sysforge.primitives import toolchain_safety as _ts
+    brick = [_ts.ToolchainFinding(
+        "error", "libllvm_consumer_symbols",
+        "libgallium-26.so: dropped LLVM target(s): AMDGPU", "rebuild",
+        is_brick=True,
+    )]
+    monkeypatch.setattr(_ts, "check_installed_consumer_symbols", lambda: brick)
+
+    restored = {}
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install",
+               return_value=[]), \
+         patch("sysforge.pipeline.stages.toolchain.batch_install_pkgs",
+               side_effect=lambda files: restored.setdefault("files", files) or True), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError, match="prior toolchain was restored"):
+            ToolchainStage().run(config, state, options)
+
+    assert restored.get("files")  # rollback ran because the consumer arm bricked
+    assert not _sentinel_exists(tmp_path / "state")
 
 
 def test_gate3_failure_restore_fails_keeps_sentinel(tmp_path, monkeypatch):

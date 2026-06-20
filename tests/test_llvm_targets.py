@@ -60,12 +60,15 @@ def test_resolve_hardware_only(tmp_path):
 
 
 def test_resolve_explicit_override_wins(tmp_path):
+    """toolchain.toml [llvm] targets wins over hardware autodetect — but the
+    mandatory AMDGPU baseline is still appended (the system-mesa invariant
+    overrides even an explicit list; only `targets = []` opts out)."""
     tc = tmp_path / "toolchain.toml"
     hw = tmp_path / "hardware_profile.toml"
     _write_toolchain(tc, '[llvm]\ntargets = ["X86", "AArch64"]\n')
     _write_hardware(hw, ["X86", "AMDGPU", "NVPTX"])
     result = resolve_llvm_targets(tc, hw)
-    assert result == ["X86", "AArch64"]
+    assert result == ["X86", "AArch64", "AMDGPU"]
 
 
 def test_resolve_empty_override_disables_filtering(tmp_path):
@@ -78,12 +81,13 @@ def test_resolve_empty_override_disables_filtering(tmp_path):
 
 
 def test_resolve_section_absent_falls_through(tmp_path):
-    """toolchain.toml without [llvm] section → fall through to hardware."""
+    """toolchain.toml without [llvm] section → fall through to hardware (with
+    the AMDGPU baseline appended to the autodetected set)."""
     tc = tmp_path / "toolchain.toml"
     hw = tmp_path / "hardware_profile.toml"
     _write_toolchain(tc, "enabled = false\n")
     _write_hardware(hw, ["X86"])
-    assert resolve_llvm_targets(tc, hw) == ["X86"]
+    assert resolve_llvm_targets(tc, hw) == ["X86", "AMDGPU"]
 
 
 def test_resolve_malformed_toolchain_falls_through(tmp_path):
@@ -91,7 +95,7 @@ def test_resolve_malformed_toolchain_falls_through(tmp_path):
     hw = tmp_path / "hardware_profile.toml"
     _write_toolchain(tc, "this is not valid TOML [[\n")
     _write_hardware(hw, ["X86"])
-    assert resolve_llvm_targets(tc, hw) == ["X86"]
+    assert resolve_llvm_targets(tc, hw) == ["X86", "AMDGPU"]
 
 
 def test_resolve_targets_not_a_list_is_ignored(tmp_path):
@@ -100,6 +104,51 @@ def test_resolve_targets_not_a_list_is_ignored(tmp_path):
     _write_toolchain(tc, '[llvm]\ntargets = "X86"\n')
     _write_hardware(hw, ["X86", "AMDGPU"])
     assert resolve_llvm_targets(tc, hw) == ["X86", "AMDGPU"]
+
+
+# ---------------------------------------------------------------------------
+# System-consumer baseline enforcement at the RESOLUTION layer — a cached or
+# hand-edited hardware_profile.toml that drops AMDGPU (bypassing
+# derive_llvm_targets) must still resolve to a set that carries it. This is the
+# layer the bricked-desktop bug slipped through: the fix lived in derivation,
+# but the build resolves from the cached file.
+# ---------------------------------------------------------------------------
+
+def test_resolve_stale_profile_without_amdgpu_gets_it_appended(tmp_path):
+    """The exact bug: a profile written before the baseline existed
+    (`["X86", "NVPTX"]`) is re-augmented with AMDGPU at resolution time."""
+    hw = tmp_path / "hardware_profile.toml"
+    _write_hardware(hw, ["X86", "NVPTX"])
+    assert resolve_llvm_targets(tmp_path / "missing-tc.toml", hw) == [
+        "X86", "NVPTX", "AMDGPU",
+    ]
+
+
+def test_resolve_amdgpu_already_present_not_duplicated(tmp_path):
+    hw = tmp_path / "hardware_profile.toml"
+    _write_hardware(hw, ["X86", "AMDGPU", "NVPTX"])
+    result = resolve_llvm_targets(tmp_path / "missing-tc.toml", hw)
+    assert result is not None
+    assert result == ["X86", "AMDGPU", "NVPTX"]
+    assert result.count("AMDGPU") == 1
+
+
+def test_resolve_explicit_targets_without_amdgpu_gets_it(tmp_path):
+    """An explicit toolchain.toml list that omits AMDGPU is still augmented —
+    the system-mesa invariant is not user-overridable except via `[] = all`."""
+    tc = tmp_path / "toolchain.toml"
+    _write_toolchain(tc, '[llvm]\ntargets = ["X86", "NVPTX"]\n')
+    assert resolve_llvm_targets(tc, tmp_path / "missing-hw.toml") == [
+        "X86", "NVPTX", "AMDGPU",
+    ]
+
+
+def test_resolve_empty_override_stays_none_no_baseline(tmp_path):
+    """`targets = []` (build all) must NOT be turned into ["AMDGPU"] — it stays
+    None (no filtering), which already builds every target including AMDGPU."""
+    tc = tmp_path / "toolchain.toml"
+    _write_toolchain(tc, "[llvm]\ntargets = []\n")
+    assert resolve_llvm_targets(tc, tmp_path / "missing-hw.toml") is None
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +465,13 @@ def _llvm_path_with_hw(tmp_path, llvm_targets):
 def test_maybe_patch_llvm_targets_injects_for_llvm(tmp_path):
     """Explicit state_dir_override → patcher reads hardware_profile.toml from
     the caller-supplied path (round-2 fix: caller pins the state dir, so the
-    patcher and the writer can't disagree even when env vars differ)."""
+    patcher and the writer can't disagree even when env vars differ).
+
+    Regression for the bricked-desktop bug: a cached hardware_profile.toml that
+    predates the AMDGPU baseline (`["X86", "NVPTX"]`, an nvidia host) must STILL
+    inject AMDGPU — the resolution layer (resolve_or_detect_llvm_targets) re-adds
+    it even though the cached file bypasses derive_llvm_targets. Without this the
+    rebuilt system libLLVM drops AMDGPU and mesa black-screens the desktop."""
     pkgbuild, state_dir = _llvm_path_with_hw(tmp_path, ["X86", "NVPTX"])
     pkgmeta = {"globals": {"pkgname": ["llvm", "llvm-libs"]}}
     with patch(
@@ -424,7 +479,7 @@ def test_maybe_patch_llvm_targets_injects_for_llvm(tmp_path):
         tmp_path / "missing-toolchain.toml",
     ):
         _maybe_patch_llvm_targets(pkgbuild, pkgmeta, state_dir_override=state_dir)
-    assert '-DLLVM_TARGETS_TO_BUILD="X86;NVPTX"' in pkgbuild.read_text()
+    assert '-DLLVM_TARGETS_TO_BUILD="X86;NVPTX;AMDGPU"' in pkgbuild.read_text()
 
 
 def test_maybe_patch_llvm_targets_skips_non_llvm(tmp_path):

@@ -7,11 +7,27 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import pytest
+
 from sysforge.primitives import graphics_probe as gp
 from sysforge.primitives import pacman as pacman_mod
+
+
+@pytest.fixture(autouse=True)
+def _quiet_mesa_llvm_symbols(monkeypatch):
+    """`_check_mesa_llvm_symbols` reaches the real /usr libs via
+    `toolchain_safety.check_installed_consumer_symbols`. Neutralise it by
+    default so orchestrator tests stay deterministic and host-independent
+    (this file's contract: all deps patched at the module boundary). Tests
+    targeting it re-patch the same attribute explicitly."""
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_safety.check_installed_consumer_symbols",
+        lambda: [], raising=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -384,3 +400,53 @@ def test_orchestrator_nvidia_checks_skipped_without_nvidia(monkeypatch):
     assert "nvidia_modeset" not in ids
     assert "nvidia_driver_skew" not in ids
     assert "explicit_sync_protocol" not in ids
+
+
+# ---------------------------------------------------------------------------
+# _check_mesa_llvm_symbols — reuses the toolchain post-install symbol fact so
+# `doctor --graphics` self-diagnoses the "rebuilt toolchain → black screen"
+# bug. The fact is monkeypatched (its own unit tests live in
+# test_toolchain_safety.py); here we pin the GraphicsFinding mapping.
+# ---------------------------------------------------------------------------
+
+_CHECK = "sysforge.primitives.toolchain_safety.check_installed_consumer_symbols"
+
+
+def test_mesa_llvm_symbols_clean_returns_none(monkeypatch):
+    monkeypatch.setattr(_CHECK, lambda: [])
+    assert gp._check_mesa_llvm_symbols() is None
+
+
+def test_mesa_llvm_symbols_broken_maps_to_error(monkeypatch):
+    finding = SimpleNamespace(
+        message="libgallium-26.so links libLLVM.so.22.1 but the installed "
+        "libLLVM does not export 6 symbol(s) — dropped LLVM target(s): AMDGPU",
+        remediation="Rebuild the toolchain with AMDGPU kept.",
+    )
+    monkeypatch.setattr(_CHECK, lambda: [finding])
+    f = gp._check_mesa_llvm_symbols()
+    assert f is not None
+    assert f.severity == gp.SEV_ERROR
+    assert f.check_id == "mesa_llvm_symbols"
+    assert "AMDGPU" in f.message
+    assert f.remediation == "Rebuild the toolchain with AMDGPU kept."
+
+
+def test_mesa_llvm_symbols_multiple_consumers_count(monkeypatch):
+    f1 = SimpleNamespace(message="consumer one broken", remediation="r")
+    f2 = SimpleNamespace(message="consumer two broken", remediation="r")
+    monkeypatch.setattr(_CHECK, lambda: [f1, f2])
+    f = gp._check_mesa_llvm_symbols()
+    assert f is not None
+    assert "(2 consumers affected)" in f.message
+
+
+def test_check_system_graphics_includes_mesa_llvm(monkeypatch):
+    """The orchestrator surfaces a broken mesa/libLLVM link on any GPU vendor."""
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(
+        _CHECK,
+        lambda: [SimpleNamespace(message="broken AMDGPU link", remediation="fix")],
+    )
+    findings = gp.check_system_graphics(None, gpu_vendors=[])
+    assert "mesa_llvm_symbols" in {f.check_id for f in findings}

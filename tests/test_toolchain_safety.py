@@ -440,3 +440,153 @@ def test_soname_impact_no_consumers_after_exclude_no_impact(monkeypatch):
     )
     impact = ts.assess_libllvm_soname_impact("23.0.0", exclude=set(ts.LLVM_LOCKSTEP_SUITE))
     assert impact is None
+
+
+# ---------------------------------------------------------------------------
+# System graphics-consumer symbol sufficiency
+# (_llvm_init_target / _diff_consumers_against_libllvm /
+#  check_system_consumer_symbols / check_installed_consumer_symbols)
+#
+# The abi_check seams (_exported_versioned/_undefined_versioned/needed_sonames/
+# _list_sos_in_pkg/_extract_sos) are imported lazily inside the functions, so
+# monkeypatching them on the abi_check module (string-target form) takes effect
+# at call time. _USR_LIB is repointed at a fixture tree.
+# ---------------------------------------------------------------------------
+
+_AC = "sysforge.primitives.abi_check."
+
+
+def test_llvm_init_target_extracts_backend():
+    assert ts._llvm_init_target("LLVMInitializeAMDGPUTargetInfo") == "AMDGPU"
+    assert ts._llvm_init_target("LLVMInitializeAMDGPUTargetMCA") == "AMDGPU"
+    assert ts._llvm_init_target("LLVMInitializeX86Target") == "X86"
+    assert ts._llvm_init_target("LLVMInitializeAArch64AsmPrinter") == "AArch64"
+    assert ts._llvm_init_target("malloc") is None
+
+
+def _mk(usr_lib: Path, name: str) -> Path:
+    usr_lib.mkdir(parents=True, exist_ok=True)
+    p = usr_lib / name
+    p.write_bytes(b"\x7fELF")  # content irrelevant — the symbol seams are faked
+    return p
+
+
+def test_diff_consumers_missing_amdgpu_is_brick(tmp_path, monkeypatch):
+    usr_lib = tmp_path / "usr/lib"
+    _mk(usr_lib, "libgallium-26.1.2-arch1.1.so")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(_AC + "needed_sonames", lambda p: ["libLLVM.so.22.1"])
+    monkeypatch.setattr(_AC + "_undefined_versioned", lambda p: {
+        ("LLVMInitializeAMDGPUTarget", "LLVM_22.1"),
+        ("LLVMInitializeAMDGPUTargetInfo", "LLVM_22.1"),
+        ("malloc", "GLIBC_2.2.5"),   # non-LLVM undef must be ignored
+    })
+    monkeypatch.setattr(_AC + "_exported_versioned",
+                        lambda path, cache: {("LLVMInitializeX86Target", "LLVM_22.1")})
+    findings = ts._diff_consumers_against_libllvm(
+        Path("/staging/usr/lib/libLLVM.so.22.1"), source_label="installed",
+    )
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.is_brick
+    assert f.check_id == "libllvm_consumer_symbols"
+    assert "AMDGPU" in f.message
+    assert "libgallium-26.1.2-arch1.1.so" in f.message
+    assert "malloc" not in f.message  # libc undef not attributed to libLLVM
+
+
+def test_diff_consumers_satisfied_no_findings(tmp_path, monkeypatch):
+    usr_lib = tmp_path / "usr/lib"
+    _mk(usr_lib, "libgallium-26.so")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(_AC + "needed_sonames", lambda p: ["libLLVM.so.22.1"])
+    monkeypatch.setattr(_AC + "_undefined_versioned",
+                        lambda p: {("LLVMInitializeAMDGPUTarget", "LLVM_22.1")})
+    monkeypatch.setattr(_AC + "_exported_versioned", lambda path, cache: {
+        ("LLVMInitializeAMDGPUTarget", "LLVM_22.1"),
+        ("LLVMInitializeX86Target", "LLVM_22.1"),
+    })
+    assert ts._diff_consumers_against_libllvm(
+        Path("/x/libLLVM.so.22.1"), source_label="installed") == []
+
+
+def test_diff_consumers_different_soname_skipped(tmp_path, monkeypatch):
+    """Consumer links the OLD soname → owned by the soname-bump gate, not here."""
+    usr_lib = tmp_path / "usr/lib"
+    _mk(usr_lib, "libgallium-26.so")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(_AC + "needed_sonames", lambda p: ["libLLVM.so.21.1"])
+    monkeypatch.setattr(_AC + "_undefined_versioned",
+                        lambda p: {("LLVMInitializeAMDGPUTarget", "LLVM_21.1")})
+    monkeypatch.setattr(_AC + "_exported_versioned",
+                        lambda path, cache: {("LLVMInitializeX86Target", "LLVM_22.1")})
+    assert ts._diff_consumers_against_libllvm(
+        Path("/x/libLLVM.so.22.1"), source_label="installed") == []
+
+
+def test_diff_consumers_unreadable_exports_fail_open(tmp_path, monkeypatch):
+    """nm can't read the new lib → return [] (don't block a build on a hiccup)."""
+    usr_lib = tmp_path / "usr/lib"
+    _mk(usr_lib, "libgallium-26.so")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(_AC + "_exported_versioned", lambda path, cache: set())
+    assert ts._diff_consumers_against_libllvm(
+        Path("/x/libLLVM.so.22.1"), source_label="freshly-built") == []
+
+
+def test_check_system_consumer_symbols_extracts_and_flags(tmp_path, monkeypatch):
+    usr_lib = tmp_path / "usr/lib"
+    _mk(usr_lib, "libgallium-26.so")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    extracted = tmp_path / "extract/usr/lib/libLLVM.so.22.1"
+
+    def fake_extract(pkg, members, dest):
+        # lib32 member must have been filtered out before extraction.
+        assert members == ["usr/lib/libLLVM.so.22.1"]
+        extracted.parent.mkdir(parents=True, exist_ok=True)
+        extracted.write_bytes(b"\x7fELF")
+        return [extracted]
+
+    monkeypatch.setattr(_AC + "_list_sos_in_pkg", lambda pkg: [
+        "usr/lib/libLLVM.so.22.1", "usr/lib32/libLLVM.so.22.1",
+    ])
+    monkeypatch.setattr(_AC + "_extract_sos", fake_extract)
+    monkeypatch.setattr(_AC + "needed_sonames", lambda p: ["libLLVM.so.22.1"])
+    monkeypatch.setattr(_AC + "_undefined_versioned",
+                        lambda p: {("LLVMInitializeAMDGPUTarget", "LLVM_22.1")})
+    monkeypatch.setattr(_AC + "_exported_versioned",
+                        lambda path, cache: {("LLVMInitializeX86Target", "LLVM_22.1")})
+    findings = ts.check_system_consumer_symbols([tmp_path / "llvm-libs.pkg.tar.zst"])
+    assert len(findings) == 1
+    assert findings[0].is_brick
+    assert "AMDGPU" in findings[0].message
+    assert "freshly-built" in findings[0].message
+
+
+def test_check_system_consumer_symbols_no_libllvm_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(_AC + "_list_sos_in_pkg", lambda pkg: ["usr/lib/libfoo.so.1"])
+    assert ts.check_system_consumer_symbols([tmp_path / "foo.pkg.tar.zst"]) == []
+
+
+def test_check_installed_consumer_symbols_no_libllvm_returns_empty(tmp_path, monkeypatch):
+    usr_lib = tmp_path / "usr/lib"
+    usr_lib.mkdir(parents=True)
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    assert ts.check_installed_consumer_symbols() == []
+
+
+def test_check_installed_consumer_symbols_flags_broken(tmp_path, monkeypatch):
+    usr_lib = tmp_path / "usr/lib"
+    _mk(usr_lib, "libLLVM.so.22.1")        # the now-installed lib (real file)
+    _mk(usr_lib, "libgallium-26.so")       # broken consumer
+    (usr_lib / "libLLVM.so").symlink_to(usr_lib / "libLLVM.so.22.1")  # dev symlink ignored
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(_AC + "needed_sonames", lambda p: ["libLLVM.so.22.1"])
+    monkeypatch.setattr(_AC + "_undefined_versioned",
+                        lambda p: {("LLVMInitializeAMDGPUTarget", "LLVM_22.1")})
+    monkeypatch.setattr(_AC + "_exported_versioned",
+                        lambda path, cache: {("LLVMInitializeX86Target", "LLVM_22.1")})
+    findings = ts.check_installed_consumer_symbols()
+    assert len(findings) == 1
+    assert findings[0].is_brick
+    assert "installed" in findings[0].message

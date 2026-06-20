@@ -165,6 +165,19 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
 - **libLLVM soname-bump → consumer rebuild**: facts `assess_libllvm_soname_impact`; policy
   `_gate_soname_consumers`/`_rebuild_soname_consumers` (rebuild after Gate 3, outside the
   sentinel). No parallel reverse-dep scanner.
+- **System libLLVM must keep `AMDGPU` (mesa survives a target reduction)** — system mesa's
+  `libgallium` links `LLVMInitializeAMDGPU*`/llvmpipe **unconditionally**, so a reduced
+  `LLVM_TARGETS_TO_BUILD` that drops AMDGPU bricks the whole desktop. Enforced at **resolution**
+  (one home: `llvm_targets._ensure_system_consumer_targets`, applied in `resolve_llvm_targets`/
+  `resolve_or_detect_llvm_targets` — not only `hardware.derive_llvm_targets`, which a cached/
+  edited `hardware_profile.toml` bypasses). Verified by a **graphics-consumer symbol gate** (one
+  home: `toolchain_safety.check_system_consumer_symbols` pre-install in `_gate2_audit`,
+  `check_installed_consumer_symbols` post-install in the Gate-3 path; shared core
+  `_diff_consumers_against_libllvm` over abi_check seams — no parallel differ). Gate-3
+  `expected_targets` comes from `resolve_or_detect_llvm_targets`, **not** `toolchain.toml [llvm]
+  targets` (else check #3 silently skips on autodetect hosts). Same fact surfaced read-only by
+  `doctor --graphics` (`graphics_probe._check_mesa_llvm_symbols`). Opt-out is `[llvm] targets = []`
+  (build all). See DESIGN.md §Hardware detection / §`graphics-stack` / §07.
 - **Pass-3 build reuse has one home**: `primitives/build_fingerprint.py` (opt-in `--reuse-built`,
   fail-safe to rebuild). New `compute_fingerprint` inputs bump `_SCHEMA`.
 - **Kernel stage**: compiler independent of toolchain (`_compiler_paths`, don't hardcode);
