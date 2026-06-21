@@ -156,7 +156,8 @@ class BuildState:
                source: str | None = None,
                owner_stage: str | None = None,
                toolchain_variant: str | None = None,
-               reviewed_commit: str | None = None) -> None:
+               reviewed_commit: str | None = None,
+               origin_pkgbase: str | None = None) -> None:
         """Record build metadata for a single package name.
 
         ``built_at`` defaults to now; callers performing a repair pass may
@@ -194,6 +195,14 @@ class BuildState:
         (``primitives/pkgbuild_review.py``): a later build whose clone HEAD
         differs prompts for review of the intervening diff. None for local
         (non-git) PKGBUILDs. Sticky like the other provenance fields.
+
+        ``origin_pkgbase`` is the *pre-rename* pkgbase for packages built with
+        the ``-sysforge`` suffix (e.g. ``"llvm"`` for an installed
+        ``llvm-sysforge``). The ``pkgbase`` field then holds the renamed value,
+        so ``origin_pkgbase`` is what ``sysforge update`` uses to correlate the
+        artifact back to its upstream identity (version checks, source sync —
+        upstream ships ``llvm``, not ``llvm-sysforge``). None for un-renamed
+        builds. Sticky like the other provenance fields.
         """
         entry = {
             "pkgver": pkgver,
@@ -234,6 +243,10 @@ class BuildState:
             entry["reviewed_commit"] = reviewed_commit
         elif "reviewed_commit" in prior:
             entry["reviewed_commit"] = prior["reviewed_commit"]
+        if origin_pkgbase is not None:
+            entry["origin_pkgbase"] = origin_pkgbase
+        elif "origin_pkgbase" in prior:
+            entry["origin_pkgbase"] = prior["origin_pkgbase"]
         self._data[pkgname] = entry
         # A successful build clears any recorded failure for this pkgbase so
         # `sysforge state failed` self-heals on the next good build.
@@ -331,7 +344,7 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant", "reviewed_commit"):
+            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant", "reviewed_commit", "origin_pkgbase"):
                 if key in entry:
                     val = _toml_escape(entry[key])
                     lines.append(f'{key} = "{val}"')

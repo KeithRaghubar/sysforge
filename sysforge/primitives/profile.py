@@ -21,6 +21,9 @@ Public API:
                      inference_map)                          -> frozenset[str]
     serialize_flags(resolved_profile)                        -> str
     get_build_mode(matched_rules, config)                    -> str | None
+    is_optimized_build_mode(build_mode)                      -> bool
+    is_llvm_toolchain(toolchain)                             -> bool
+    requires_llvm_toolchain(toolchain, *, feature)           -> None
 """
 import fnmatch
 import pprint
@@ -681,3 +684,77 @@ def get_build_mode(matched_rules, config) -> str | None:
         profile_name = p.get("extends")
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Optimized-build classification (drives the -sysforge package rename)
+# ---------------------------------------------------------------------------
+
+# ``build_mode`` values that mean "a profile-guided or post-link optimization is
+# baked into this artifact." These — and only these — earn the ``-sysforge``
+# package rename: the suffix is a *signal* that an optimization is present, not
+# merely that LLVM built the package. Plain ``"profiled"``/``"pacman"``/
+# ``"kernel"`` and a non-PGO ``stock_llvm`` build keep their stock package name.
+_OPTIMIZED_BUILD_MODES = frozenset({
+    "pgo_llvm_toolchain",  # instrumentation PGO of the LLVM toolchain (existing)
+    "pgo_mesa",            # instrumentation PGO of mesa
+    "autofdo_kernel",      # sample-based FDO of the kernel (Clang AutoFDO)
+    "propeller_kernel",    # Propeller basic-block layout of the kernel
+    "bolt_llvm",           # post-link BOLT of the LLVM toolchain
+})
+
+
+def is_optimized_build_mode(build_mode: str | None) -> bool:
+    """True when ``build_mode`` denotes a profile-guided/post-link optimization.
+
+    Single source of truth for "does this build earn the ``-sysforge`` rename?"
+    (consumed by the naming gate in ``makepkg_wrapper``). Adding a new
+    optimization method means adding its ``build_mode`` to
+    ``_OPTIMIZED_BUILD_MODES`` here — don't scatter the membership check.
+    """
+    return bool(build_mode) and build_mode in _OPTIMIZED_BUILD_MODES
+
+
+# ---------------------------------------------------------------------------
+# LLVM-toolchain gate for optimization features
+# ---------------------------------------------------------------------------
+
+# Authoritative wording for "this optimization needs LLVM". Reused verbatim by
+# the pre_check guard below and surfaced (abbreviated) in CLI help text and the
+# design docs so the message has one home. The nuance matters: GCC is not
+# *incapable* of optimization (it has -fprofile-generate / -fauto-profile), but
+# sysforge does not implement those GCC paths, and Propeller plus the kernel's
+# CONFIG_AUTOFDO_CLANG have no GCC equivalent at all.
+LLVM_REQUIRED_HINT = (
+    "sysforge implements profile-guided and post-link optimization "
+    "(PGO, AutoFDO, Propeller, BOLT) only against the LLVM/Clang toolchain. "
+    "GCC has its own PGO/AutoFDO, but sysforge does not wire those, and "
+    "Propeller plus the kernel's Clang AutoFDO have no GCC equivalent. "
+    'Set toolchain = "llvm" to use this feature; under gcc only standard '
+    "flag-level builds are available."
+)
+
+
+def is_llvm_toolchain(toolchain: str | None) -> bool:
+    """True when the resolved toolchain/compiler is Clang/LLVM.
+
+    Accepts the ``toolchain`` field value (``"llvm"``/``"gcc"``) or a resolved
+    compiler name/path (``clang``, ``/usr/bin/clang++``, ``clang-18``, ``gcc``).
+    ``None`` / unknown → False (no LLVM in effect).
+    """
+    if not toolchain:
+        return False
+    name = str(toolchain).rsplit("/", 1)[-1]
+    return name == "llvm" or name.startswith("clang")
+
+
+def requires_llvm_toolchain(toolchain: str | None, *, feature: str) -> None:
+    """Raise ``ValueError`` (a clean ``pre_check`` abort) unless LLVM is active.
+
+    The single home for the "optimization needs LLVM" gate: optimization verbs
+    call this from ``pre_check`` so the abort lands before any build work, with
+    the authoritative ``LLVM_REQUIRED_HINT`` wording. ``feature`` names the thing
+    being refused (e.g. ``"kernel AutoFDO"``) for the leading sentence.
+    """
+    if not is_llvm_toolchain(toolchain):
+        raise ValueError(f"{feature} requires the LLVM toolchain. {LLVM_REQUIRED_HINT}")

@@ -342,6 +342,51 @@ def test_toolchain_variant_in_serialized_toml(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# origin_pkgbase — pre-rename pkgbase for -sysforge builds
+# ---------------------------------------------------------------------------
+
+def test_record_with_origin_pkgbase(tmp_path):
+    # A renamed llvm-sysforge build: pkgbase is the renamed value, origin_pkgbase
+    # carries the upstream identity update uses for version/source correlation.
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="llvm-sysforge", pkgver="18.1.8", pkgrel="1", epoch="0",
+              pkgbase="llvm-sysforge", pkgbuild_dir=Path("/tmp/llvm"),
+              origin_pkgbase="llvm")
+    assert bs.get("llvm-sysforge")["origin_pkgbase"] == "llvm"
+
+
+def test_record_without_origin_pkgbase_omits_field(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs)
+    assert "origin_pkgbase" not in bs.get("htop")
+
+
+def test_origin_pkgbase_sticky_on_subsequent_record(tmp_path):
+    """origin_pkgbase survives a rebuild that doesn't re-pass it (e.g. an
+    update-driven rebuild). Matches the sticky pattern of the other provenance
+    fields."""
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="llvm-sysforge", pkgver="18.1.8", pkgrel="1", epoch="0",
+              pkgbase="llvm-sysforge", pkgbuild_dir=Path("/tmp/llvm"),
+              origin_pkgbase="llvm")
+    bs.record(pkgname="llvm-sysforge", pkgver="18.1.9", pkgrel="1", epoch="0",
+              pkgbase="llvm-sysforge", pkgbuild_dir=Path("/tmp/llvm"))
+    assert bs.get("llvm-sysforge")["origin_pkgbase"] == "llvm"
+
+
+def test_origin_pkgbase_persisted_and_reloaded(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="mesa-sysforge", pkgver="24.1.0", pkgrel="1", epoch="0",
+              pkgbase="mesa-sysforge", pkgbuild_dir=Path("/tmp/mesa"),
+              origin_pkgbase="mesa")
+    bs.save()
+    text = (tmp_path / "build_state.toml").read_text()
+    assert 'origin_pkgbase = "mesa"' in text
+    bs2 = BuildState(tmp_path)
+    assert bs2.get("mesa-sysforge")["origin_pkgbase"] == "mesa"
+
+
+# ---------------------------------------------------------------------------
 # State dir via SYSFORGE_STATE_DIR env var
 # ---------------------------------------------------------------------------
 

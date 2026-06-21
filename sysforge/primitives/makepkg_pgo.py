@@ -3,13 +3,25 @@
 # SPDX-License-Identifier: MIT
 
 """
-makepkg_pgo.py — PGO profdata state resolution
+makepkg_pgo.py — profile-store resolution (instrumentation PGO + sample/post-link)
 
 Pure helpers that answer "is a saved clang.profdata present and compatible with
-the LLVM PKGBUILD about to be built?" for the ``pgo_llvm_toolchain`` build mode.
-Reads ``toolchain.toml`` (``pgo_store``) and the profdata version sidecar; no
-subprocess, no logging.  The PGO *emission* sites (``[PGO]`` tag) still live in
-the build orchestrator's conf/run paths and migrate here when those split out.
+the LLVM PKGBUILD about to be built?" for the ``pgo_llvm_toolchain`` build mode,
+and — more generally — where each profile-guided/post-link optimization method
+keeps its collected profile data.
+
+Every method sysforge grows (instrumentation PGO, AutoFDO, Propeller, BOLT)
+shares one shape: *build-for-profiling → collect a profile from a workload →
+rebuild consuming the profile*. They therefore share one on-disk root
+(``/var/cache/sysforge``) so a single ``fs_provision.ensure_writable_dir`` /
+purge path covers all of them. ``resolve_pgo_store`` stays the (unchanged)
+accessor for the original instrumentation-PGO store; ``resolve_method_store``
+is the general accessor that hands out per-method sibling subdirs.
+
+Reads ``toolchain.toml`` (``pgo_store`` / ``profile_store``) and the profdata
+version sidecar; no subprocess, no logging.  The PGO *emission* sites (``[PGO]``
+tag) still live in the build orchestrator's conf/run paths and migrate here when
+those split out.
 
 Consumed by the build orchestrator (``makepkg_wrapper.run``) and the toolchain
 provenance check (``llvm_state``); ``PGOBuildSkipped`` is re-raised up through
@@ -27,6 +39,17 @@ from sysforge.primitives.paths import TOOLCHAIN_PATH
 # toolchain stage, so it belongs under /var/cache rather than /var/tmp.
 _DEFAULT_PGO_STORE = "/var/cache/sysforge/llvm-pgo"
 
+# Shared root for every profile-method store. ``llvm-pgo`` (instrumentation PGO)
+# is the original tenant; the sample/post-link methods get sibling subdirs here
+# so one provision/purge path covers the lot.
+_DEFAULT_PROFILE_STORE_ROOT = "/var/cache/sysforge"
+
+# Logical method names accepted by ``resolve_method_store``. ``"instr-pgo"``
+# aliases the legacy ``resolve_pgo_store`` location (back-compat with the
+# ``pgo_store`` config key / ``SYSFORGE_PGO_STORE`` env); the rest map to a
+# literal sibling subdir under the shared root.
+PROFILE_METHODS = frozenset({"instr-pgo", "autofdo", "propeller", "bolt"})
+
 
 def resolve_pgo_store(tcfg: dict | None) -> Path:
     """Resolve the PGO profdata store directory (single source of truth).
@@ -41,6 +64,51 @@ def resolve_pgo_store(tcfg: dict | None) -> Path:
     if env:
         return Path(env)
     return Path(_DEFAULT_PGO_STORE)
+
+
+def resolve_profile_store_root(tcfg: dict | None) -> Path:
+    """Resolve the shared root that holds every profile-method store.
+
+    Precedence: ``toolchain.toml [profile_store]`` (explicit config wins) →
+    ``SYSFORGE_PROFILE_STORE`` env override → the FHS default
+    ``_DEFAULT_PROFILE_STORE_ROOT``. This is the directory a caller provisions
+    once (``fs_provision.ensure_writable_dir``) to cover AutoFDO/Propeller/BOLT.
+    """
+    configured = (tcfg or {}).get("profile_store")
+    if configured:
+        return Path(configured)
+    env = os.environ.get("SYSFORGE_PROFILE_STORE")
+    if env:
+        return Path(env)
+    return Path(_DEFAULT_PROFILE_STORE_ROOT)
+
+
+def resolve_method_store(
+    tcfg: dict | None, method: str, target: str | None = None
+) -> Path:
+    """Resolve the on-disk store for one optimization ``method``.
+
+    ``method`` must be one of ``PROFILE_METHODS``. ``"instr-pgo"`` returns the
+    legacy ``resolve_pgo_store`` location unchanged (so the existing
+    ``pgo_store``/``SYSFORGE_PGO_STORE`` overrides keep working); every other
+    method returns ``<profile_store_root>/<method>[/<target>]``.
+
+    ``target`` namespaces per-package profiles within a method (e.g. the kernel
+    AutoFDO profile vs a mesa one) — ``autofdo/linux-sysforge/`` — and is
+    omitted for methods that keep a single profile.
+    """
+    if method not in PROFILE_METHODS:
+        raise ValueError(
+            f"unknown profile method {method!r}; expected one of "
+            f"{sorted(PROFILE_METHODS)}"
+        )
+    if method == "instr-pgo":
+        base = resolve_pgo_store(tcfg)
+    else:
+        base = resolve_profile_store_root(tcfg) / method
+    if target:
+        base = base / target
+    return base
 
 
 def _try_load_toml(path: Path) -> dict | None:

@@ -952,6 +952,194 @@ def patch_kernel_subpackages(patched_path, *, headers: bool, docs: bool):
 
 
 # ---------------------------------------------------------------------------
+# -sysforge package rename (optimization provenance)
+# ---------------------------------------------------------------------------
+
+# A pkgname/pkgbase token that *references* pkgbase (``$pkgbase`` /
+# ``${pkgbase}``) cascades automatically once pkgbase is renamed, so the suffix
+# logic must skip it — re-suffixing would double-apply.
+_PKGBASE_REF_RE = re.compile(r"\$\{?pkgbase\}?")
+
+
+def _dequote(token: str) -> tuple[str, str]:
+    """Split a bash array token into ``(quote_char, value)``.
+
+    ``"llvm"`` -> ``('"', 'llvm')``; ``llvm`` -> ``('', 'llvm')``.
+    """
+    if len(token) >= 2 and token[0] in "\"'" and token[-1] == token[0]:
+        return (token[0], token[1:-1])
+    return ("", token)
+
+
+def _suffix_name_token(token: str, suffix: str) -> str:
+    """Append ``-suffix`` to a literal pkgname/pkgbase token, preserving quotes.
+
+    Pkgbase-reference tokens (``$pkgbase``…) and tokens already carrying the
+    suffix are returned unchanged (cascade / idempotency).
+    """
+    quote, val = _dequote(token)
+    if _PKGBASE_REF_RE.search(val):
+        return token
+    if val.endswith(f"-{suffix}"):
+        return token
+    return f"{quote}{val}-{suffix}{quote}"
+
+
+def _find_array_span(text: str, key: str) -> tuple[int, int] | None:
+    """Return ``(open_paren_idx, close_paren_idx)`` for a ``key=(...)`` array.
+
+    Walks paren depth so a multi-line array is captured whole. Returns None when
+    the key is absent or the array is unbalanced (caller leaves it untouched).
+    """
+    m = re.search(rf"^{re.escape(key)}=\(", text, re.MULTILINE)
+    if not m:
+        return None
+    open_idx = text.index("(", m.start())
+    depth = 0
+    i = open_idx
+    while i < len(text):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return (open_idx, i)
+        i += 1
+    return None
+
+
+def _merge_or_create_array(text: str, key: str, values: list[str], anchor_end: int) -> str:
+    """Append ``values`` to an existing ``key=(...)`` array, or create one.
+
+    A second top-level ``key=(...)`` would clobber the first in bash (last
+    assignment wins), so an existing array is *merged into* rather than
+    duplicated. A newly-created array is inserted at ``anchor_end`` (the end of
+    the pkgname line/array). Values already present (quoted or bare) are skipped.
+    """
+    span = _find_array_span(text, key)
+    quoted = [f'"{v}"' for v in values]
+    if span is None:
+        line = f"\n{key}=(" + " ".join(quoted) + ")"
+        return text[:anchor_end] + line + text[anchor_end:]
+    open_idx, close_idx = span
+    inner = text[open_idx + 1:close_idx]
+    existing = set(re.findall(r"\S+", inner))
+    add = [q for q, v in zip(quoted, values) if q not in existing and v not in existing]
+    if not add:
+        return text
+    pad = "" if (not inner or inner.endswith((" ", "\n", "\t"))) else " "
+    return text[:close_idx] + pad + " ".join(add) + text[close_idx:]
+
+
+def patch_package_suffix(patched_path, suffix: str, *, mode: str = "conflict") -> dict | None:
+    """Rename a PKGBUILD's package(s) with a ``-suffix`` and (conflict mode) make
+    them drop-in replacements for the stock names. The one home for the
+    ``-sysforge`` optimization-provenance rename.
+
+    Two modes, because the runtime semantics differ by target:
+
+    * ``mode="conflict"`` (llvm, mesa): the renamed build is a *mutually
+      exclusive* drop-in — it must not coexist with the stock package (same
+      file paths → runtime confusion). Injects ``provides=(orig=$pkgver …)`` +
+      ``conflicts=(orig …)`` + ``replaces=(orig …)`` covering every original
+      pkgname so pacman cleanly swaps the stock package out.
+    * ``mode="coexist"`` (kernel): the renamed build installs *alongside* the
+      stock one (version-suffixed files, bootloader fallback). Rename only — no
+      conflicts/replaces.
+
+    Renames the ``pkgbase=`` string and every *literal* token of the
+    ``pkgname=(...)`` array (or a single ``pkgname=`` string). ``$pkgbase``
+    references are left alone — renaming pkgbase cascades through them. Edits
+    ``patched_path`` (PKGBUILD.sysforge) in place; idempotent (already-suffixed
+    names are skipped). Returns ``{"origin_pkgbase", "origin_pkgnames", "suffix",
+    "mode"}`` for the caller to thread into ``build_state`` (origin_pkgbase) and
+    the rename-aware validator, or None if there was nothing to rename.
+
+    .. note:: Top-level ``provides``/``conflicts``/``replaces`` are package-level
+       defaults; a split subpackage that *reassigns* them in its
+       ``package_<name>()`` body overrides the injected global. Wiring a specific
+       split package (llvm/mesa) must verify the subpackage functions against
+       this — the primitive supplies the mechanism and the static guarantee
+       (validated below); per-subpackage overrides are a wiring concern.
+    """
+    if mode not in ("conflict", "coexist"):
+        raise ValueError(f"unknown rename mode {mode!r}; expected 'conflict' or 'coexist'")
+
+    patched_path = Path(patched_path)
+    text = patched_path.read_text(encoding="utf-8")
+
+    from sysforge.primitives import pkgbuild_meta
+    globals_ = pkgbuild_meta.parse_pkgbuild(patched_path).get("globals", {})
+    origin_pkgbase = globals_.get("pkgbase")
+    origin_pkgnames = globals_.get("pkgname")
+    if isinstance(origin_pkgnames, str):
+        origin_pkgnames = [origin_pkgnames]
+    origin_pkgnames = list(origin_pkgnames or [])
+    if not origin_pkgbase and origin_pkgnames:
+        origin_pkgbase = origin_pkgnames[0]
+
+    # Idempotency: a re-run would read the already-renamed names as "originals"
+    # and double-inject conflicts. If the rename already landed (pkgbase carries
+    # the suffix), there is nothing to do.
+    if origin_pkgbase and origin_pkgbase.endswith(f"-{suffix}"):
+        return None
+
+    # --- rename pkgbase= (string field) ---
+    def _sub_pkgbase(m: re.Match) -> str:
+        return m.group(1) + _suffix_name_token(m.group(2), suffix)
+
+    text = re.sub(
+        r"^(pkgbase=)(\S+)", _sub_pkgbase, text, count=1, flags=re.MULTILINE
+    )
+
+    # --- rename pkgname tokens (array or single string) ---
+    anchor_end: int | None = None
+    span = _find_array_span(text, "pkgname")
+    if span is not None:
+        open_idx, close_idx = span
+        inner = text[open_idx + 1:close_idx]
+        # Preserve token layout (whitespace runs) by re-suffixing in place.
+        def _sub_token(m: re.Match) -> str:
+            return _suffix_name_token(m.group(0), suffix)
+        new_inner = re.sub(r"\S+", _sub_token, inner)
+        text = text[:open_idx + 1] + new_inner + text[close_idx:]
+        anchor_end = open_idx + 1 + len(new_inner) + 1  # past the ')'
+    else:
+        m = re.search(r"^(pkgname=)(\S+)", text, re.MULTILINE)
+        if m:
+            renamed = _suffix_name_token(m.group(2), suffix)
+            text = text[:m.start()] + m.group(1) + renamed + text[m.end():]
+            anchor_end = m.start() + len(m.group(1)) + len(renamed)
+
+    if anchor_end is None:
+        return None  # no pkgname to rename
+
+    # --- conflict mode: provides/conflicts/replaces over the stock names ---
+    if mode == "conflict" and origin_pkgnames:
+        text = _merge_or_create_array(
+            text, "replaces", list(origin_pkgnames), anchor_end
+        )
+        text = _merge_or_create_array(
+            text, "conflicts", list(origin_pkgnames), anchor_end
+        )
+        text = _merge_or_create_array(
+            text, "provides", [f"{n}=$pkgver" for n in origin_pkgnames], anchor_end
+        )
+
+    patched_path.write_text(text, encoding="utf-8")
+    _log.info(
+        f"Renamed package(s) with -{suffix} suffix ({mode} mode): "
+        f"{', '.join(origin_pkgnames)}",
+    )
+    return {
+        "origin_pkgbase": origin_pkgbase,
+        "origin_pkgnames": origin_pkgnames,
+        "suffix": suffix,
+        "mode": mode,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Subshell toolchain env reset
 # ---------------------------------------------------------------------------
 
@@ -1419,8 +1607,81 @@ _INVARIANT_GLOBALS = (
 # `-D …` *array elements* like `cmake_options=(-D FOO=ON)` are not flagged.
 _MANAGED_CMAKE_TOKENS = ("-DLLVM_TARGETS_TO_BUILD=", "-DLLVM_DIR=")
 
+# Identity globals that a ``-sysforge`` rename is *allowed* to mutate (and which
+# ``_validate_rename`` then checks). Every other ``_INVARIANT_GLOBALS`` key stays
+# strictly invariant even under a rename.
+_RENAME_MUTABLE_GLOBALS = frozenset(
+    {"pkgname", "pkgbase", "provides", "conflicts", "replaces"}
+)
 
-def validate_patched_pkgbuild(original_path, patched_path) -> None:
+
+def _validate_rename(orig: dict, patched: dict, rename: dict) -> None:
+    """Assert a :func:`patch_package_suffix` rename is well-formed.
+
+    Verifies the suffix landed on pkgbase and every pkgname, and — in conflict
+    mode — that ``provides``/``conflicts``/``replaces`` cover every original
+    pkgname so no dependency edge is silently dropped and the renamed build can
+    never install *next to* the stock one. Raises :class:`PkgbuildPatchError`.
+    """
+    suffix = rename["suffix"]
+    mode = rename["mode"]
+    sfx = f"-{suffix}"
+
+    def _as_list(v):
+        if v is None:
+            return []
+        return [v] if isinstance(v, str) else list(v)
+
+    # Every renamed name must *carry* the suffix. A substring (not endswith)
+    # test is deliberate: a ``$pkgbase``-cascaded subpackage like
+    # ``$pkgbase-headers`` becomes ``linux-custom-sysforge-headers`` — the
+    # suffix lands mid-name, which is still a valid, collision-free rename.
+    patched_names = _as_list(patched.get("pkgname"))
+    for n in patched_names:
+        if sfx not in n:
+            msg = (
+                f"rename produced pkgname {n!r} which does not carry the "
+                f"{sfx!r} suffix — it could still collide with a stock name"
+            )
+            _log.error(msg)
+            raise PkgbuildPatchError(msg)
+
+    orig_base = orig.get("pkgbase")
+    if orig_base:
+        patched_base = patched.get("pkgbase")
+        if not patched_base or sfx not in patched_base:
+            msg = (
+                f"rename left pkgbase as {patched_base!r}; expected it to carry "
+                f"the {sfx!r} suffix"
+            )
+            _log.error(msg)
+            raise PkgbuildPatchError(msg)
+
+    if mode != "conflict":
+        return
+
+    orig_names = _as_list(orig.get("pkgname")) or _as_list(orig.get("pkgbase"))
+
+    # Conflict mode: every stock name must be covered by provides + conflicts +
+    # replaces, or the renamed build could install beside the stock package.
+    provides = _as_list(patched.get("provides"))
+    provided = {p.split("=", 1)[0] for p in provides}
+    conflicts = set(_as_list(patched.get("conflicts")))
+    replaces = set(_as_list(patched.get("replaces")))
+    for name in orig_names:
+        for label, have in (("provides", provided), ("conflicts", conflicts),
+                            ("replaces", replaces)):
+            if name not in have:
+                msg = (
+                    f"conflict-mode rename does not {label} the stock name "
+                    f"{name!r} — the renamed build could install beside, or "
+                    f"silently drop a dependency edge to, the stock package"
+                )
+                _log.error(msg)
+                raise PkgbuildPatchError(msg)
+
+
+def validate_patched_pkgbuild(original_path, patched_path, *, rename=None) -> None:
     """Fast, build-free structural validation of a fully-patched PKGBUILD.sysforge.
 
     Raises :class:`PkgbuildPatchError` if a patch corrupted the file in a way that
@@ -1437,6 +1698,13 @@ def validate_patched_pkgbuild(original_path, patched_path) -> None:
     begin with ``cmake``. Catches a ``-D…`` arg orphaned as its own command (the
     clang composition exit-4 brick).
 
+    ``rename`` (the dict returned by :func:`patch_package_suffix`) relaxes G1 for
+    the five identity globals a rename intentionally mutates
+    (``_RENAME_MUTABLE_GLOBALS``) and instead routes them through
+    :func:`_validate_rename` — so the rename stays a *validated* transformation
+    with one validator home, while every non-rename patch keeps the strict
+    invariant. Default ``None`` leaves existing callers unchanged.
+
     Intended to be called only when a cmake-arg injection actually ran (the
     toolchain LLVM path), where the dependency-array invariant strictly holds.
     """
@@ -1444,6 +1712,8 @@ def validate_patched_pkgbuild(original_path, patched_path) -> None:
     orig = pkgbuild_meta.parse_pkgbuild(original_path).get("globals", {})
     patched = pkgbuild_meta.parse_pkgbuild(patched_path).get("globals", {})
     for key in _INVARIANT_GLOBALS:
+        if rename is not None and key in _RENAME_MUTABLE_GLOBALS:
+            continue
         if orig.get(key) != patched.get(key):
             msg = (
                 f"patch altered '{key}' — a dependency/identity field that must "
@@ -1452,6 +1722,8 @@ def validate_patched_pkgbuild(original_path, patched_path) -> None:
             )
             _log.error(msg)
             raise PkgbuildPatchError(msg)
+    if rename is not None:
+        _validate_rename(orig, patched, rename)
 
     # G2: join `\`-continuations so an injected arg shares its cmake's logical line.
     joined = Path(patched_path).read_text(encoding="utf-8").replace("\\\n", " ")

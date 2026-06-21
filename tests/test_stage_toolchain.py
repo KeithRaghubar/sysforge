@@ -180,6 +180,55 @@ def test_resolve_pgo_store_config_wins_over_env(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# resolve_profile_store_root / resolve_method_store — shared multi-method store
+# ---------------------------------------------------------------------------
+
+def test_resolve_profile_store_root_default(monkeypatch):
+    from sysforge.primitives.makepkg_pgo import resolve_profile_store_root
+    monkeypatch.delenv("SYSFORGE_PROFILE_STORE", raising=False)
+    assert resolve_profile_store_root(None) == Path("/var/cache/sysforge")
+
+
+def test_resolve_profile_store_root_env_then_config(monkeypatch):
+    from sysforge.primitives.makepkg_pgo import resolve_profile_store_root
+    monkeypatch.setenv("SYSFORGE_PROFILE_STORE", "/tmp/env-prof")
+    assert resolve_profile_store_root(None) == Path("/tmp/env-prof")
+    # config wins over env
+    assert resolve_profile_store_root({"profile_store": "/cfg/prof"}) == Path("/cfg/prof")
+
+
+def test_resolve_method_store_instr_pgo_aliases_legacy(monkeypatch):
+    # instr-pgo must keep returning the legacy llvm-pgo location so the existing
+    # pgo_store / SYSFORGE_PGO_STORE overrides stay authoritative.
+    from sysforge.primitives.makepkg_pgo import resolve_method_store
+    monkeypatch.delenv("SYSFORGE_PGO_STORE", raising=False)
+    assert resolve_method_store(None, "instr-pgo") == Path("/var/cache/sysforge/llvm-pgo")
+    monkeypatch.setenv("SYSFORGE_PGO_STORE", "/tmp/legacy")
+    assert resolve_method_store(None, "instr-pgo") == Path("/tmp/legacy")
+
+
+def test_resolve_method_store_sibling_subdirs(monkeypatch):
+    from sysforge.primitives.makepkg_pgo import resolve_method_store
+    monkeypatch.delenv("SYSFORGE_PROFILE_STORE", raising=False)
+    assert resolve_method_store(None, "autofdo") == Path("/var/cache/sysforge/autofdo")
+    assert resolve_method_store(None, "bolt") == Path("/var/cache/sysforge/bolt")
+
+
+def test_resolve_method_store_target_namespacing(monkeypatch):
+    from sysforge.primitives.makepkg_pgo import resolve_method_store
+    monkeypatch.delenv("SYSFORGE_PROFILE_STORE", raising=False)
+    assert resolve_method_store(None, "propeller", "linux-sysforge") == Path(
+        "/var/cache/sysforge/propeller/linux-sysforge"
+    )
+
+
+def test_resolve_method_store_rejects_unknown_method():
+    from sysforge.primitives.makepkg_pgo import resolve_method_store
+    with pytest.raises(ValueError, match="unknown profile method"):
+        resolve_method_store(None, "nonsense")
+
+
+# ---------------------------------------------------------------------------
 # _package_lists
 # ---------------------------------------------------------------------------
 

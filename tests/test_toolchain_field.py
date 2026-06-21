@@ -14,6 +14,8 @@ import os
 import sys
 import types
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.primitives import config
@@ -240,3 +242,55 @@ def test_propagate_tolerates_unwritable_config(monkeypatch):
     monkeypatch.setattr(ts, "set_default_toolchain", _boom)
     # Must not raise — a config write failure is a warning, not a stage failure.
     ts._propagate_default_toolchain("gcc", types.SimpleNamespace(dry_run=False))
+
+
+# ---------------------------------------------------------------------------
+# is_optimized_build_mode — the -sysforge rename trigger
+# ---------------------------------------------------------------------------
+
+def test_optimized_build_modes_qualify():
+    from sysforge.primitives.profile import is_optimized_build_mode
+    for mode in (
+        "pgo_llvm_toolchain",
+        "pgo_mesa",
+        "autofdo_kernel",
+        "propeller_kernel",
+        "bolt_llvm",
+    ):
+        assert is_optimized_build_mode(mode) is True, mode
+
+
+def test_non_optimized_build_modes_do_not_qualify():
+    from sysforge.primitives.profile import is_optimized_build_mode
+    # Plain builds, pacman mirror entries, a vanilla kernel, and a non-PGO LLVM
+    # build keep their stock name — the suffix means "an optimization is baked in".
+    for mode in ("profiled", "pacman", "kernel", "patched_pkgbuild", "", None):
+        assert is_optimized_build_mode(mode) is False, mode
+
+
+# ---------------------------------------------------------------------------
+# is_llvm_toolchain / requires_llvm_toolchain — optimization LLVM gate
+# ---------------------------------------------------------------------------
+
+def test_is_llvm_toolchain_recognizes_llvm_and_clang():
+    from sysforge.primitives.profile import is_llvm_toolchain
+    for val in ("llvm", "clang", "clang++", "clang-18", "/usr/bin/clang"):
+        assert is_llvm_toolchain(val) is True, val
+
+
+def test_is_llvm_toolchain_rejects_gcc_and_empty():
+    from sysforge.primitives.profile import is_llvm_toolchain
+    for val in ("gcc", "g++", "/usr/bin/gcc", "", None):
+        assert is_llvm_toolchain(val) is False, val
+
+
+def test_requires_llvm_toolchain_passes_for_llvm():
+    from sysforge.primitives.profile import requires_llvm_toolchain
+    # No exception → returns None for an LLVM toolchain.
+    assert requires_llvm_toolchain("llvm", feature="kernel AutoFDO") is None
+
+
+def test_requires_llvm_toolchain_raises_for_gcc():
+    from sysforge.primitives.profile import requires_llvm_toolchain
+    with pytest.raises(ValueError, match="requires the LLVM toolchain"):
+        requires_llvm_toolchain("gcc", feature="kernel AutoFDO")

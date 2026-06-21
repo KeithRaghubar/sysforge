@@ -22,6 +22,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.primitives.pkgbuild_patcher import (
@@ -40,8 +42,11 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_kernel_kconfig_apply,
     patch_kernel_subpackages,
     patch_noninteractive_kconfig,
+    patch_package_suffix,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
+    validate_patched_pkgbuild,
+    PkgbuildPatchError,
 )
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
@@ -1098,6 +1103,124 @@ def test_subpackages_no_pkgname_is_noop(tmp_path):
     pb.write_text(original)
     patch_kernel_subpackages(pb, headers=False, docs=False)
     assert pb.read_text() == original
+
+
+# ---------------------------------------------------------------------------
+# patch_package_suffix — the -sysforge optimization-provenance rename
+# ---------------------------------------------------------------------------
+
+_LLVM_SPLIT = (
+    "pkgbase=llvm\n"
+    "pkgname=(llvm llvm-libs)\n"
+    "pkgver=18.1.8\n"
+    "pkgrel=1\n"
+    "depends=(zlib)\n"
+)
+
+_KERNEL_PKGBUILD = (
+    "pkgbase=linux-custom\n"
+    'pkgname=("$pkgbase" "$pkgbase-headers")\n'
+    "pkgver=6.10\n"
+    "pkgrel=1\n"
+)
+
+
+def test_suffix_conflict_renames_split_and_injects_metadata(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_LLVM_SPLIT)
+    info = patch_package_suffix(pb, "sysforge", mode="conflict")
+    assert info["origin_pkgbase"] == "llvm"
+    assert info["origin_pkgnames"] == ["llvm", "llvm-libs"]
+    g = parse_pkgbuild(pb).get("globals", {})
+    assert g["pkgbase"] == "llvm-sysforge"
+    assert set(g["pkgname"]) == {"llvm-sysforge", "llvm-libs-sysforge"}
+    # provides carries versions; conflicts/replaces are bare — covering both
+    # original names so pacman swaps the stock package out cleanly.
+    assert {p.split("=", 1)[0] for p in g["provides"]} == {"llvm", "llvm-libs"}
+    assert all("=$pkgver" in p or "=" in p for p in g["provides"])
+    assert set(g["conflicts"]) == {"llvm", "llvm-libs"}
+    assert set(g["replaces"]) == {"llvm", "llvm-libs"}
+
+
+def test_suffix_coexist_renames_only_no_conflicts(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_KERNEL_PKGBUILD)
+    info = patch_package_suffix(pb, "sysforge", mode="coexist")
+    assert info["origin_pkgbase"] == "linux-custom"
+    g = parse_pkgbuild(pb).get("globals", {})
+    assert g["pkgbase"] == "linux-custom-sysforge"
+    # $pkgbase references cascade — they must NOT be double-suffixed.
+    assert set(g["pkgname"]) == {"linux-custom-sysforge", "linux-custom-sysforge-headers"}
+    # Coexist: no conflicts/replaces injected (parallel install + bootloader).
+    assert not g.get("conflicts")
+    assert not g.get("replaces")
+
+
+def test_suffix_is_idempotent(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_LLVM_SPLIT)
+    patch_package_suffix(pb, "sysforge", mode="conflict")
+    first = pb.read_text()
+    patch_package_suffix(pb, "sysforge", mode="conflict")
+    assert pb.read_text() == first
+
+
+def test_suffix_rejects_unknown_mode(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_LLVM_SPLIT)
+    with pytest.raises(ValueError, match="unknown rename mode"):
+        patch_package_suffix(pb, "sysforge", mode="bogus")
+
+
+# ---------------------------------------------------------------------------
+# validate_patched_pkgbuild — rename carve-out
+# ---------------------------------------------------------------------------
+
+def test_validate_accepts_wellformed_conflict_rename(tmp_path):
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_LLVM_SPLIT)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(_LLVM_SPLIT)
+    info = patch_package_suffix(patched, "sysforge", mode="conflict")
+    # Must not raise: the rename is well-formed and fully covered.
+    validate_patched_pkgbuild(orig, patched, rename=info)
+
+
+def test_validate_accepts_coexist_rename(tmp_path):
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_KERNEL_PKGBUILD)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(_KERNEL_PKGBUILD)
+    info = patch_package_suffix(patched, "sysforge", mode="coexist")
+    validate_patched_pkgbuild(orig, patched, rename=info)
+
+
+def test_validate_rejects_conflict_rename_missing_coverage(tmp_path):
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_LLVM_SPLIT)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    # Renamed names but NO conflicts/replaces/provides — a build that could
+    # install beside the stock package. The carve-out must catch this.
+    patched.write_text(
+        "pkgbase=llvm-sysforge\n"
+        "pkgname=(llvm-sysforge llvm-libs-sysforge)\n"
+        "pkgver=18.1.8\n"
+        "pkgrel=1\n"
+        "depends=(zlib)\n"
+    )
+    rename = {"suffix": "sysforge", "mode": "conflict"}
+    with pytest.raises(PkgbuildPatchError, match="conflict-mode rename does not"):
+        validate_patched_pkgbuild(orig, patched, rename=rename)
+
+
+def test_validate_without_rename_still_rejects_pkgname_change(tmp_path):
+    # Regression: the strict G1 invariant must still hold for non-rename patches.
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_LLVM_SPLIT)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(_LLVM_SPLIT.replace("pkgname=(llvm llvm-libs)", "pkgname=(llvm)"))
+    with pytest.raises(PkgbuildPatchError, match="pkgname"):
+        validate_patched_pkgbuild(orig, patched)
 
 
 # ---------------------------------------------------------------------------
