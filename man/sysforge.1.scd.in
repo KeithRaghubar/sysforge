@@ -24,7 +24,7 @@ update, drift detection, and diagnostics.
 
 *sysforge update* is the steady-state entry point: it walks the live install
 set (all foreign packages, plus repo packages selected by overrides or
-repo_mode = "profiled"), syncs sources through a rate-limited scheduler,
+repo_mode = "build_from_source"), syncs sources through a rate-limited scheduler,
 compares versions, reports toolchain-variant and compiler-flag drift, and
 rebuilds what changed. Before any changed source is built, the PKGBUILD
 review gate presents the full source-tree diff since the last accepted

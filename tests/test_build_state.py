@@ -124,9 +124,9 @@ def test_split_package_records(tmp_path):
 
 def test_record_with_build_mode(tmp_path):
     bs = BuildState(tmp_path)
-    _record(bs, build_mode="profiled")
+    _record(bs, build_mode="source_built")
     entry = bs.get("htop")
-    assert entry["build_mode"] == "profiled"
+    assert entry["build_mode"] == "source_built"
 
 
 def test_record_without_build_mode_omits_field(tmp_path):
@@ -138,22 +138,98 @@ def test_record_without_build_mode_omits_field(tmp_path):
 
 def test_build_mode_persisted_and_reloaded(tmp_path):
     bs = BuildState(tmp_path)
-    _record(bs, pkgname="mesa", pkgbase="mesa", build_mode="profiled")
+    _record(bs, pkgname="mesa", pkgbase="mesa", build_mode="source_built")
     _record(bs, pkgname="htop", pkgbase="htop")
     bs.save()
 
     bs2 = BuildState(tmp_path)
-    assert bs2.get("mesa")["build_mode"] == "profiled"
+    assert bs2.get("mesa")["build_mode"] == "source_built"
     assert "build_mode" not in bs2.get("htop")
 
 
 def test_build_mode_in_serialized_toml(tmp_path):
     bs = BuildState(tmp_path)
-    _record(bs, build_mode="profiled")
+    _record(bs, build_mode="source_built")
     bs.save()
     with open(bs.path, "rb") as f:
         data = tomllib.load(f)
-    assert data["htop"]["build_mode"] == "profiled"
+    assert data["htop"]["build_mode"] == "source_built"
+
+
+# ---------------------------------------------------------------------------
+# Legacy "profiled" build_mode normalization (back-compat)
+# ---------------------------------------------------------------------------
+
+def test_legacy_profiled_build_mode_normalized_on_load(tmp_path):
+    """A pre-rename file with build_mode = "profiled" is read as "source_built"."""
+    (tmp_path / "build_state.toml").write_text(
+        '["mesa"]\n'
+        'pkgver = "1.0"\npkgrel = "1"\nepoch = "0"\npkgbase = "mesa"\n'
+        'build_mode = "profiled"\n'
+    )
+    bs = BuildState(tmp_path)
+    assert bs.get("mesa")["build_mode"] == "source_built"
+
+
+def test_legacy_profiled_build_mode_self_migrates_on_save(tmp_path):
+    """The legacy token is rewritten to the new value on the next save()."""
+    (tmp_path / "build_state.toml").write_text(
+        '["mesa"]\n'
+        'pkgver = "1.0"\npkgrel = "1"\nepoch = "0"\npkgbase = "mesa"\n'
+        'build_mode = "profiled"\n'
+    )
+    bs = BuildState(tmp_path)
+    bs.save()
+    with open(bs.path, "rb") as f:
+        data = tomllib.load(f)
+    assert data["mesa"]["build_mode"] == "source_built"
+    assert "profiled" not in (tmp_path / "build_state.toml").read_text()
+
+
+# ---------------------------------------------------------------------------
+# reconcile_external_installs (auto-demote on external pacman -S)
+# ---------------------------------------------------------------------------
+
+def test_reconcile_demotes_external_source_built(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs, pkgname="mesa", pkgbase="mesa", build_mode="source_built")
+    demoted = bs.reconcile_external_installs({"mesa"})
+    assert demoted == ["mesa"]
+    entry = bs.get("mesa")
+    assert entry["build_mode"] == "pacman"
+    # Provenance stripped, version identity kept.
+    assert "pkgbuild_dir" not in entry
+    assert entry["pkgver"] == "3.4.1"
+    assert entry["pkgbase"] == "mesa"
+
+
+def test_reconcile_leaves_non_external_source_built(tmp_path):
+    """A source-built package NOT in the external set (sysforge's own install)
+    is untouched."""
+    bs = BuildState(tmp_path)
+    _record(bs, pkgname="mesa", pkgbase="mesa", build_mode="source_built")
+    demoted = bs.reconcile_external_installs(set())
+    assert demoted == []
+    assert bs.get("mesa")["build_mode"] == "source_built"
+
+
+def test_reconcile_exempts_stage_owned(tmp_path):
+    """Stage-owned (kernel/toolchain) entries are never auto-demoted."""
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="llvm", pkgver="18", pkgrel="1", epoch="0", pkgbase="llvm",
+              pkgbuild_dir=Path("/src/llvm"), build_mode="source_built",
+              owner_stage="toolchain")
+    demoted = bs.reconcile_external_installs({"llvm"})
+    assert demoted == []
+    assert bs.get("llvm")["build_mode"] == "source_built"
+
+
+def test_reconcile_ignores_pacman_and_unknown(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs, pkgname="htop", pkgbase="htop", build_mode="pacman")
+    demoted = bs.reconcile_external_installs({"htop", "does-not-exist"})
+    assert demoted == []
+    assert bs.get("htop")["build_mode"] == "pacman"
 
 
 # ---------------------------------------------------------------------------
@@ -512,20 +588,20 @@ def test_sync_adds_pacman_mode_entries_for_new_installs(tmp_path):
 
 def test_sync_preserves_profiled_entries(tmp_path):
     bs = BuildState(tmp_path)
-    _record(bs, pkgname="htop", pkgver="3.4.1", build_mode="profiled")
+    _record(bs, pkgname="htop", pkgver="3.4.1", build_mode="source_built")
     # Pre-record carries pkgbuild_dir; sync must not overwrite it.
     added, removed = bs.sync_with_installed({"htop": "3.4.1-1"})
     assert added == 0
     assert removed == 0
     entry = bs.get("htop")
-    assert entry["build_mode"] == "profiled"
+    assert entry["build_mode"] == "source_built"
     assert entry["pkgbuild_dir"] == "/home/user/src/htop"
 
 
 def test_sync_prunes_uninstalled_entries(tmp_path):
     bs = BuildState(tmp_path)
-    _record(bs, pkgname="htop", build_mode="profiled")
-    _record(bs, pkgname="neovim", pkgbase="neovim", build_mode="profiled")
+    _record(bs, pkgname="htop", build_mode="source_built")
+    _record(bs, pkgname="neovim", pkgbase="neovim", build_mode="source_built")
     added, removed = bs.sync_with_installed({"htop": "3.4.1-1"})
     assert added == 0
     assert removed == 1
@@ -543,7 +619,7 @@ def test_sync_prunes_zombie_variable_keys(tmp_path):
         "pkgrel": "1",
         "epoch": "0",
         "pkgbase": "$_pkgname",
-        "build_mode": "profiled",
+        "build_mode": "source_built",
     }
     added, removed = bs.sync_with_installed({"real-pkg": "1.0-1"})
     assert removed == 1
@@ -603,7 +679,7 @@ def test_success_record_clears_failure(tmp_path):
     assert "gpu-burn-git" in bs.all_failures()
     bs.record(pkgname="gpu-burn", pkgver="1", pkgrel="1", epoch="0",
               pkgbase="gpu-burn-git", pkgbuild_dir=Path("/x"),
-              build_mode="profiled")
+              build_mode="source_built")
     assert bs.all_failures() == {}
 
 
@@ -652,7 +728,7 @@ def test_build_state_records_flags_string(tmp_path):
     fs = "CFLAGS=-O3\nCXXFLAGS=-O3\nLDFLAGS=-Wl,-O1"
     bs.record(pkgname="htop", pkgver="3.4.1", pkgrel="1", epoch="0",
               pkgbase="htop", pkgbuild_dir=tmp_path,
-              build_mode="profiled", flags_string=fs)
+              build_mode="source_built", flags_string=fs)
     entry = bs.get("htop")
     assert entry["flags_string"] == fs
 
@@ -662,7 +738,7 @@ def test_build_state_flags_string_persisted(tmp_path):
     fs = "CFLAGS=-O3\nLDFLAGS=-Wl,-O1"
     bs.record(pkgname="htop", pkgver="3.4.1", pkgrel="1", epoch="0",
               pkgbase="htop", pkgbuild_dir=tmp_path,
-              build_mode="profiled", flags_string=fs)
+              build_mode="source_built", flags_string=fs)
     bs.save()
 
     bs2 = BuildState(tmp_path)
@@ -675,7 +751,7 @@ def test_build_state_flags_string_valid_toml(tmp_path):
     fs = "CFLAGS=-O3\nCXXFLAGS=-O3"
     bs.record(pkgname="mesa", pkgver="24.0.0", pkgrel="1", epoch="0",
               pkgbase="mesa", pkgbuild_dir=tmp_path,
-              build_mode="profiled", flags_string=fs)
+              build_mode="source_built", flags_string=fs)
     bs.save()
     with open(bs.path, "rb") as f:
         data = tomllib.load(f)
@@ -689,14 +765,14 @@ def test_reviewed_commit_recorded_and_sticky(tmp_path):
     bs = BuildState(tmp_path)
     bs.record(pkgname="htop", pkgver="1", pkgrel="1", epoch="0",
               pkgbase="htop", pkgbuild_dir=tmp_path,
-              build_mode="profiled", reviewed_commit="aaa111")
+              build_mode="source_built", reviewed_commit="aaa111")
     assert bs.get("htop")["reviewed_commit"] == "aaa111"
     # Unaware rebuild: no reviewed_commit passed -> prior value preserved.
     bs.record(pkgname="htop", pkgver="2", pkgrel="1", epoch="0",
-              pkgbase="htop", pkgbuild_dir=tmp_path, build_mode="profiled")
+              pkgbase="htop", pkgbuild_dir=tmp_path, build_mode="source_built")
     assert bs.get("htop")["reviewed_commit"] == "aaa111"
     # Aware rebuild: explicit value replaces.
     bs.record(pkgname="htop", pkgver="3", pkgrel="1", epoch="0",
               pkgbase="htop", pkgbuild_dir=tmp_path,
-              build_mode="profiled", reviewed_commit="bbb222")
+              build_mode="source_built", reviewed_commit="bbb222")
     assert bs.get("htop")["reviewed_commit"] == "bbb222"

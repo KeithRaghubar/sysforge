@@ -444,7 +444,7 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
             base = pkgbase or pkgname
             bs = BuildState(state_dir)
             bs.record(pkgname, pkgver, pkgrel, epoch, base,
-                      src_root / base, build_mode="profiled", **kw)
+                      src_root / base, build_mode="source_built", **kw)
             bs.save()
 
         def use_pkgdest(self):
@@ -529,7 +529,7 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
             packages_path.write_text("\n".join(lines))
 
         def set_repo_mode(self, mode):
-            """Set ``[build] repo_mode`` (e.g. "profiled") in packages.toml."""
+            """Set ``[build] repo_mode`` (e.g. "build_from_source") in packages.toml."""
             self._build_cfg["repo_mode"] = mode
             self._write_packages()
 

@@ -13,14 +13,14 @@ build-rule overrides — that path lives in update.py and does not iterate
 the manifest.
 
 Walks packages.toml and builds/installs each entry:
-  source = "repo", effective_mode = "pacman"   → pacman -S --needed <name>
-  source = "repo", effective_mode = "profiled" → locate PKGBUILD, build like AUR
-  source = "aur"                               → locate PKGBUILD via find_pkgbuild(), call makepkg_wrapper.run()
-  source = "git"                               → same as aur
+  source = "repo", effective_mode = "pacman"           → pacman -S --needed <name>
+  source = "repo", effective_mode = "build_from_source" → locate PKGBUILD, build like AUR
+  source = "aur"                                        → locate PKGBUILD via find_pkgbuild(), call makepkg_wrapper.run()
+  source = "git"                                        → same as aur
 
 Effective build mode for repo packages:
-  global [build] repo_mode = "pacman" | "profiled"  (default "pacman")
-  per-package pkgbuild_patch = true  →  forces "profiled" regardless of global
+  global [build] repo_mode = "pacman" | "build_from_source"  (default "pacman")
+  per-package enable_build_from_source = true  →  forces "build_from_source" regardless of global
 
 Per-package checkpointing: state is written after every outcome (built/failed).
 On resume with failed packages the user is prompted (or --force-retry bypasses).
@@ -45,6 +45,10 @@ from sysforge.primitives.config import (
     expand_package_groups,
     find_pkgbuild,
     resolve_pkgbuild_src_dir,
+    resolve_repo_mode,
+    REPO_MODE_PACMAN,
+    REPO_MODE_SOURCE,
+    PKG_KEY_BUILD_FROM_SOURCE,
 )
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
@@ -77,11 +81,13 @@ def _load_packages(config):
     build_cfg = data.get("build", {})
     packages = expand_package_groups(data)
 
-    repo_mode = build_cfg.get("repo_mode", "pacman")
-    if repo_mode not in ("pacman", "profiled"):
+    # resolve_repo_mode maps the legacy "profiled" token to "build_from_source"
+    # so old configs keep working; validate the resolved (current) vocabulary.
+    repo_mode = resolve_repo_mode(build_cfg)
+    if repo_mode not in (REPO_MODE_PACMAN, REPO_MODE_SOURCE):
         raise ValueError(
-            f"[PACKAGES] Invalid [build] repo_mode={repo_mode!r} in {path}. "
-            f"Must be 'pacman' or 'profiled'."
+            f"[PACKAGES] Invalid [build] repo_mode={build_cfg.get('repo_mode')!r} "
+            f"in {path}. Must be {REPO_MODE_PACMAN!r} or {REPO_MODE_SOURCE!r}."
         )
 
     _log.ui(f"Loaded {len(packages)} package(s) from {path}")
@@ -290,13 +296,13 @@ class PackagesStage(Stage):
                 continue
             pkg = pkg_map[name]
             source = pkg.get("source", "aur")
-            rm = build_cfg.get("repo_mode", "pacman")
-            effective = "profiled" if pkg.get("pkgbuild_patch") else rm
+            rm = resolve_repo_mode(build_cfg)
+            effective = REPO_MODE_SOURCE if pkg.get(PKG_KEY_BUILD_FROM_SOURCE) else rm
             # `local` source has no remote AUR deps to resolve — its
             # build-time deps come from the local PKGBUILD's depends=()
-            # which makepkg handles directly. Group only aur/git/profiled-repo
+            # which makepkg handles directly. Group only aur/git/source-built-repo
             # for the AUR-dep resolution pass.
-            if source in ("aur", "git") or (source == "repo" and effective == "profiled"):
+            if source in ("aur", "git") or (source == "repo" and effective == REPO_MODE_SOURCE):
                 aur_names.append(name)
 
         # Stage-level sentinel covers the AUR-dep build and the per-package
@@ -365,16 +371,17 @@ class PackagesStage(Stage):
                     source = pkg.get("source", "aur")
 
                     # Effective build mode for repo packages:
-                    # global repo_mode default, overridden by per-package pkgbuild_patch.
-                    repo_mode = build_cfg.get("repo_mode", "pacman")
-                    effective_mode = "profiled" if pkg.get("pkgbuild_patch") else repo_mode
+                    # global repo_mode default, overridden by per-package
+                    # enable_build_from_source.
+                    repo_mode = resolve_repo_mode(build_cfg)
+                    effective_mode = REPO_MODE_SOURCE if pkg.get(PKG_KEY_BUILD_FROM_SOURCE) else repo_mode
 
                     state.mark_package_building(name)
                     state.save()
 
                     try:
-                        if source == "repo" and effective_mode == "profiled":
-                            _log.ui(f"{name}: repo source with profiled build mode — building from source")
+                        if source == "repo" and effective_mode == REPO_MODE_SOURCE:
+                            _log.ui(f"{name}: repo source with build-from-source mode — building from source")
                             _build_aur(pkg, build_cfg, config, options, toolchain)
                         elif source == "repo":
                             _install_repo(pkg, options)

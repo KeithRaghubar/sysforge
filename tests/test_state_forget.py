@@ -15,7 +15,7 @@ def _args(state_dir: Path, *pkgnames):
     return SimpleNamespace(state_dir=str(state_dir), pkgnames=list(pkgnames))
 
 
-def _seed(state_dir: Path, pkgname: str, pkgbase: str, build_mode="profiled"):
+def _seed(state_dir: Path, pkgname: str, pkgbase: str, build_mode="source_built"):
     state_dir.mkdir(parents=True, exist_ok=True)
     bs = BuildState(state_dir)
     bs.record(pkgname=pkgname, pkgver="1", pkgrel="1", epoch="0",

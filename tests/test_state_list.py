@@ -48,7 +48,7 @@ def test_tracked_foreign_excluded_from_untracked(tmp_path, capsys):
     _seed_state(state_dir, {
         "yay": {
             "pkgver": "12.4.2", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "yay", "build_mode": "profiled",
+            "pkgbase": "yay", "build_mode": "source_built",
             "pkgbuild_dir": "/tmp/yay",
         },
     })
@@ -71,7 +71,7 @@ def test_no_untracked_section_when_all_foreign_tracked(tmp_path, capsys):
     _seed_state(state_dir, {
         "yay": {
             "pkgver": "12.4.2", "pkgrel": "1", "epoch": "0",
-            "pkgbase": "yay", "build_mode": "profiled",
+            "pkgbase": "yay", "build_mode": "source_built",
             "pkgbuild_dir": "/tmp/yay",
         },
     })

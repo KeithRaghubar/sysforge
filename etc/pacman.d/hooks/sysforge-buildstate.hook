@@ -1,10 +1,12 @@
 # sysforge — build-state staleness signal
 #
 # Drops a sentinel under /var/lib/sysforge/sentinels/buildstate on any
-# pacman transaction. The next `sysforge update` reconciles its build
-# state via the existing sync_with_installed() pass and silently unlinks
-# the sentinel. The hook fires for every package, so the helper must
-# stay near-instant — a single mkdir + touch.
+# pacman transaction, recording the transaction's target package list
+# (NeedsTargets pipes them to the helper on stdin). The next `sysforge update`
+# reconciles its build state via the existing sync_with_installed() pass — and
+# uses the recorded targets to auto-demote any source-built package reinstalled
+# from the repo via `pacman -S` — then unlinks the sentinel. The hook fires for
+# every package, so the helper must stay near-instant — a single mkdir + append.
 
 [Trigger]
 Operation = Install
@@ -16,4 +18,5 @@ Target = *
 [Action]
 Description = Recording pacman transaction for sysforge build-state refresh...
 When = PostTransaction
+NeedsTargets
 Exec = /usr/lib/sysforge/pacman-hook-helper.sh buildstate

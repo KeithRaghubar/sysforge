@@ -264,7 +264,7 @@ def test_non_optimized_build_modes_do_not_qualify():
     from sysforge.primitives.profile import is_optimized_build_mode
     # Plain builds, pacman mirror entries, a vanilla kernel, and a non-PGO LLVM
     # build keep their stock name — the suffix means "an optimization is baked in".
-    for mode in ("profiled", "pacman", "kernel", "patched_pkgbuild", "", None):
+    for mode in ("source_built", "pacman", "kernel", "patched_pkgbuild", "", None):
         assert is_optimized_build_mode(mode) is False, mode
 
 

@@ -21,10 +21,11 @@ from sysforge.build_core import BuildOutcome, BuildTarget
 from sysforge.verbs import PreCheckResult
 
 
-def _drive_build(monkeypatch, tmp_path, pkgname, *, is_repo):
+def _run_build(monkeypatch, tmp_path, pkgname, *, is_repo, force=True,
+               interactive=False, config=None, opt_in_yes=False):
     """Run BuildVerb.execute for one package with the heavy collaborators
-    stubbed, and return the BuildTarget handed to build_and_install."""
-    captured: dict = {}
+    stubbed. Returns (targets_passed_to_build_and_install, exec_result)."""
+    captured: dict = {"targets": []}
 
     pkgbuild = tmp_path / pkgname / "PKGBUILD"
     monkeypatch.setattr(build_cmd, "find_pkgbuild", lambda pkg, cfg: pkgbuild)
@@ -32,6 +33,9 @@ def _drive_build(monkeypatch, tmp_path, pkgname, *, is_repo):
     monkeypatch.setattr(build_core, "target_from_pkgbuild",
                         lambda p: BuildTarget(pkgbase=pkgname, pkgnames=[pkgname],
                                               pkgbuild_path=Path(p)))
+    monkeypatch.setattr(build_cmd, "is_interactive", lambda: interactive)
+    monkeypatch.setattr(build_cmd, "prompt_choice",
+                        lambda *a, **k: "y" if opt_in_yes else "n")
 
     def _fake_build_and_install(targets, **kwargs):
         captured["targets"] = targets
@@ -47,9 +51,17 @@ def _drive_build(monkeypatch, tmp_path, pkgname, *, is_repo):
         no_update=True, interactive=False, profile_conf=None, cc=None, cxx=None,
         ld=None, state_dir=None, no_pkg_log=True, persist_log=False, log_dir=None,
         cache_report=False, abi_check=False, no_review=True, timings=False,
+        force=force,
     )
-    BuildVerb().execute(args, PreCheckResult(ctx={"config": {}}))
-    return captured["targets"][0]
+    result = BuildVerb().execute(args, PreCheckResult(ctx={"config": config or {}}))
+    return captured["targets"], result
+
+
+def _drive_build(monkeypatch, tmp_path, pkgname, *, is_repo):
+    """Back-compat shim for the source-stamping tests: bypass the repo gate via
+    --force and return the single BuildTarget handed to build_and_install."""
+    targets, _ = _run_build(monkeypatch, tmp_path, pkgname, is_repo=is_repo, force=True)
+    return targets[0]
 
 
 def test_build_records_repo_source_for_repo_package(monkeypatch, tmp_path):
@@ -64,6 +76,95 @@ def test_build_leaves_source_none_for_non_repo_package(monkeypatch, tmp_path):
     from pacman -Qm foreign-ness at update time; guessing risks mis-routing."""
     target = _drive_build(monkeypatch, tmp_path, "neovim-git", is_repo=False)
     assert target.source is None
+
+
+# ---------------------------------------------------------------------------
+# Repo-package opt-in gate
+# ---------------------------------------------------------------------------
+
+def test_gate_aborts_repo_pkg_not_opted_in_non_interactive(monkeypatch, tmp_path):
+    """A repo package with no opt-in, non-interactive, no --force is skipped
+    (no targets reach build_and_install)."""
+    cfg = {"packages_file": str(tmp_path / "packages.toml")}
+    targets, _ = _run_build(monkeypatch, tmp_path, "mesa", is_repo=True,
+                            force=False, interactive=False, config=cfg)
+    assert targets == []
+
+
+def test_gate_force_builds_without_touching_packages_toml(monkeypatch, tmp_path):
+    """--force builds the repo package and never writes the opt-in key."""
+    pkg_path = tmp_path / "packages.toml"
+    cfg = {"packages_file": str(pkg_path)}
+    targets, _ = _run_build(monkeypatch, tmp_path, "mesa", is_repo=True,
+                            force=True, interactive=False, config=cfg)
+    assert [t.pkgbase for t in targets] == ["mesa"]
+    assert not pkg_path.exists()
+
+
+def test_gate_interactive_yes_builds_and_writes_opt_in(monkeypatch, tmp_path):
+    """Interactive confirm builds AND records enable_build_from_source=true."""
+    pkg_path = tmp_path / "packages.toml"
+    cfg = {"packages_file": str(pkg_path)}
+    targets, _ = _run_build(monkeypatch, tmp_path, "mesa", is_repo=True,
+                            force=False, interactive=True, opt_in_yes=True, config=cfg)
+    assert [t.pkgbase for t in targets] == ["mesa"]
+    text = pkg_path.read_text()
+    assert 'name = "mesa"' in text
+    assert "enable_build_from_source = true" in text
+
+
+def test_gate_interactive_no_skips(monkeypatch, tmp_path):
+    """Interactive decline skips the target and never writes packages.toml."""
+    pkg_path = tmp_path / "packages.toml"
+    cfg = {"packages_file": str(pkg_path)}
+    targets, _ = _run_build(monkeypatch, tmp_path, "mesa", is_repo=True,
+                            force=False, interactive=True, opt_in_yes=False, config=cfg)
+    assert targets == []
+    assert not pkg_path.exists()
+
+
+def test_gate_already_opted_in_builds_silently(monkeypatch, tmp_path):
+    """A repo package already opted in (per-package key) builds with no prompt."""
+    pkg_path = tmp_path / "packages.toml"
+    pkg_path.write_text(
+        '[build]\npkgbuild_src_dir = "~/src"\n\n'
+        '[[package]]\nname = "mesa"\nenable_build_from_source = true\n'
+    )
+    cfg = {"packages_file": str(pkg_path)}
+    targets, _ = _run_build(monkeypatch, tmp_path, "mesa", is_repo=True,
+                            force=False, interactive=False, config=cfg)
+    assert [t.pkgbase for t in targets] == ["mesa"]
+
+
+def test_gate_global_repo_mode_opts_in(monkeypatch, tmp_path):
+    """repo_mode = build_from_source opts in every repo package globally."""
+    pkg_path = tmp_path / "packages.toml"
+    pkg_path.write_text('[build]\nrepo_mode = "build_from_source"\n')
+    cfg = {"packages_file": str(pkg_path)}
+    targets, _ = _run_build(monkeypatch, tmp_path, "mesa", is_repo=True,
+                            force=False, interactive=False, config=cfg)
+    assert [t.pkgbase for t in targets] == ["mesa"]
+
+
+def test_gate_does_not_apply_to_non_repo_package(monkeypatch, tmp_path):
+    """An AUR/git target is never gated — built unconditionally, no prompt."""
+    cfg = {"packages_file": str(tmp_path / "packages.toml")}
+    targets, _ = _run_build(monkeypatch, tmp_path, "neovim-git", is_repo=False,
+                            force=False, interactive=False, config=cfg)
+    assert [t.pkgbase for t in targets] == ["neovim-git"]
+
+
+def test_gate_legacy_pkgbuild_patch_counts_as_opted_in(monkeypatch, tmp_path):
+    """A pre-rename pkgbuild_patch=true entry still counts as opted in."""
+    pkg_path = tmp_path / "packages.toml"
+    pkg_path.write_text(
+        '[build]\npkgbuild_src_dir = "~/src"\n\n'
+        '[[package]]\nname = "mesa"\npkgbuild_patch = true\n'
+    )
+    cfg = {"packages_file": str(pkg_path)}
+    targets, _ = _run_build(monkeypatch, tmp_path, "mesa", is_repo=True,
+                            force=False, interactive=False, config=cfg)
+    assert [t.pkgbase for t in targets] == ["mesa"]
 
 
 def test_summary_lists_built_and_failed(capsys):

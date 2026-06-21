@@ -236,7 +236,7 @@ def test_prepare_deps_review_accept_builds_deps(tmp_path):
     bs = BuildState(state_dir)
     bs.record(pkgname="libdep", pkgver="1", pkgrel="1", epoch="0",
               pkgbase="libdep", pkgbuild_dir=tmp_path / "libdep",
-              build_mode="profiled", reviewed_commit="dep123")
+              build_mode="source_built", reviewed_commit="dep123")
     bs.save()
     target = _make_target(tmp_path)
     dep = SimpleNamespace(
@@ -1102,7 +1102,7 @@ def test_review_gate_passes_recorded_reviewed_commit(tmp_path):
     bs = BuildState(state_dir)
     bs.record(pkgname="foo", pkgver="1", pkgrel="1", epoch="0",
               pkgbase="foo", pkgbuild_dir=tmp_path / "foo",
-              build_mode="profiled", reviewed_commit="abc123")
+              build_mode="source_built", reviewed_commit="abc123")
     bs.save()
     seen = []
     _run_gated(

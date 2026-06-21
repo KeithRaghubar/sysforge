@@ -49,7 +49,7 @@ def test_repair_simple_scalar_reference(tmp_path, capsys, monkeypatch):
             "epoch": "0",
             "pkgbase": "$_basename-git",
             "pkgbuild_dir": str(pkgbuild_dir),
-            "build_mode": "profiled",
+            "build_mode": "source_built",
             "flags_string": "CFLAGS=-O2",
             "built_at": "2026-03-26T13:29:45Z",
         }
@@ -68,7 +68,7 @@ def test_repair_simple_scalar_reference(tmp_path, capsys, monkeypatch):
     # build history preserved
     assert entry["built_at"] == "2026-03-26T13:29:45Z"
     assert entry["flags_string"] == "CFLAGS=-O2"
-    assert entry["build_mode"] == "profiled"
+    assert entry["build_mode"] == "source_built"
 
 
 def test_repair_split_package(tmp_path, monkeypatch):
@@ -89,14 +89,14 @@ def test_repair_split_package(tmp_path, monkeypatch):
             "pkgver": "6.19.9.arch1", "pkgrel": "1", "epoch": "0",
             "pkgbase": "linux-custom",
             "pkgbuild_dir": str(pkgbuild_dir),
-            "build_mode": "profiled",
+            "build_mode": "source_built",
             "built_at": "2026-03-23T18:15:35Z",
         },
         "$pkgbase-headers": {
             "pkgver": "6.19.9.arch1", "pkgrel": "1", "epoch": "0",
             "pkgbase": "linux-custom",
             "pkgbuild_dir": str(pkgbuild_dir),
-            "build_mode": "profiled",
+            "build_mode": "source_built",
             "built_at": "2026-03-23T18:15:35Z",
         },
     })

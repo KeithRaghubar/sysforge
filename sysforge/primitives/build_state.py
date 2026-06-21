@@ -13,7 +13,9 @@ build_state.toml is a superset of `pacman -Q`: every installed package has
 an entry, regardless of whether sysforge built it. Entries are distinguished
 by the `build_mode` field:
 
-  - "profiled"  — built by sysforge; carries pkgbuild_dir and flags_string.
+  - "source_built" — built by sysforge from source; carries pkgbuild_dir and
+                  flags_string. (Legacy files use "profiled" for this value;
+                  it is normalized to "source_built" on load — see __init__.)
   - "pacman"    — installed via pacman; pkgver/pkgrel/epoch parsed from
                   `pacman -Q` output; pkgbuild_dir and flags_string absent.
   - "pgo_llvm_toolchain" — LLVM toolchain packages with profdata reuse;
@@ -50,6 +52,14 @@ from pathlib import Path
 # all_packages()/sync_with_installed(). A package literally named "failures"
 # would collide; none exists in practice.
 _FAILURES_KEY = "failures"
+
+# build_mode values. "source_built" replaced the legacy "profiled" token (which
+# was confusingly overloaded with PGO and repo_mode "profiled"). Legacy files
+# are normalized to the new value on load; readers compare against the new
+# constant. The "!= pacman" predicate (update's rebuild scope) is unaffected.
+BUILD_MODE_SOURCE = "source_built"
+BUILD_MODE_PACMAN = "pacman"
+_LEGACY_BUILD_MODE_SOURCE = "profiled"
 
 # Bounds for the stored failure ``error`` blob — keep the tail (the real
 # compiler/makepkg error is at the bottom), capped so build_state.toml stays
@@ -139,6 +149,14 @@ class BuildState:
         # Split the reserved failures namespace out of the install mirror.
         failures = raw.pop(_FAILURES_KEY, {})
         self._failures = failures if isinstance(failures, dict) else {}
+        # Normalize the legacy "profiled" build_mode token to "source_built" at
+        # this single load chokepoint, so every downstream comparison (and
+        # read-only command) sees the new value regardless of file vintage. The
+        # file self-migrates to the new token the next time save() runs.
+        for entry in raw.values():
+            if isinstance(entry, dict) and \
+                    entry.get("build_mode") == _LEGACY_BUILD_MODE_SOURCE:
+                entry["build_mode"] = BUILD_MODE_SOURCE
         self._data = raw
 
     def _load(self):
@@ -255,6 +273,44 @@ class BuildState:
     def delete(self, pkgname: str) -> bool:
         """Remove an entry by pkgname.  Returns True if it existed."""
         return self._data.pop(pkgname, None) is not None
+
+    def reconcile_external_installs(self, external_names) -> list[str]:
+        """Demote source-built entries reinstalled externally via ``pacman -S``.
+
+        ``external_names`` is the set of packages installed by something other
+        than sysforge (computed by ``install_reconcile.external_install_targets``:
+        buildstate-hook targets minus sysforge's own ``pacman -U`` targets).
+        For each one currently recorded ``build_mode = "source_built"``, demote
+        it to a plain ``pacman`` marker: keep the version identity
+        (pkgver/pkgrel/epoch/pkgbase) but strip the source provenance
+        (pkgbuild_dir, flags_string, source, built_upstream_commit,
+        toolchain_variant, reviewed_commit, origin_pkgbase). This is what makes
+        ``sysforge build mesa`` → ``pacman -S mesa`` stick: the next ``update``
+        no longer rebuilds mesa from source.
+
+        Demote (not delete) preserves the "build_state ⊇ ``pacman -Q``"
+        invariant. **Stage-owned** entries (kernel/toolchain, carrying
+        ``owner_stage``) are never auto-demoted — their lifecycle belongs to the
+        owning stage. Returns the list of demoted pkgnames (caller saves).
+        """
+        demoted: list[str] = []
+        for name in external_names:
+            entry = self._data.get(name)
+            if not entry:
+                continue
+            if entry.get("build_mode") != BUILD_MODE_SOURCE:
+                continue
+            if entry.get("owner_stage"):
+                continue
+            new_entry = {
+                k: entry[k]
+                for k in ("pkgver", "pkgrel", "epoch", "pkgbase")
+                if k in entry
+            }
+            new_entry["build_mode"] = BUILD_MODE_PACMAN
+            self._data[name] = new_entry
+            demoted.append(name)
+        return demoted
 
     def record_failure(self, pkgbase: str, *, error,
                        pkgver: str | None = None,

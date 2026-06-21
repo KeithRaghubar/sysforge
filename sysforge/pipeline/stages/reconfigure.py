@@ -14,7 +14,7 @@ a range, or refer to steps by name. Defaults to all when non-interactive.
 Available steps:
   1  editor      Editor selection (SYSFORGE_EDITOR → sysforge.toml → $EDITOR → $VISUAL → detected)
   2  config      Config file review (flag_profiles, packages, toolchain, kernel, hardware_profile)
-  3  build_mode  View/set packages.toml repo_mode (pacman | profiled)
+  3  build_mode  View/set packages.toml repo_mode (pacman | build_from_source)
   4  desktop     Pick a curated desktop environment (GNOME | KDE) as a packages.toml group
   5  makepkg     System makepkg.conf review (MAKEFLAGS, BUILDDIR, PKGDEST, flags)
   6  sudo        User / sudo verification
@@ -45,6 +45,10 @@ from sysforge.primitives.config import (
     load_conflict_groups,
     load_sysforge_toml,
     set_makepkg_conf_keys,
+    resolve_repo_mode,
+    REPO_MODE_PACMAN,
+    REPO_MODE_SOURCE,
+    PKG_KEY_BUILD_FROM_SOURCE,
 )
 from sysforge.primitives.paths import (
     CONFIG_DIR,
@@ -80,7 +84,7 @@ _STEPS = [
     ("config",     "Config file review",
      "Review profiles.toml, packages.toml, toolchain.toml, kernel.toml, hardware_profile.toml"),
     ("build_mode", "Build mode",
-     "View/set packages.toml repo_mode (pacman | profiled); show per-package pkgbuild_patch overrides"),
+     "View/set packages.toml repo_mode (pacman | build_from_source); show per-package enable_build_from_source overrides"),
     ("desktop",    "Desktop environment",
      "Pick a curated desktop environment (GNOME / KDE) to install as a packages.toml group"),
     ("makepkg",    "makepkg.conf review",
@@ -810,35 +814,36 @@ def _step_build_mode(config, state, options, editor: str) -> str:
         return editor
 
     build_cfg = data.get("build", {})
-    repo_mode = build_cfg.get("repo_mode", "pacman")
+    repo_mode = resolve_repo_mode(build_cfg)
     packages  = expand_package_groups(data)
-    patched   = [p["name"] for p in packages if p.get("pkgbuild_patch")]
+    enabled   = [p["name"] for p in packages if p.get(PKG_KEY_BUILD_FROM_SOURCE)]
 
     _log.ui(f"  File:       {pkg_path}")
     _log.ui(f"  repo_mode:  {repo_mode}")
-    _log.ui("  pacman    — repo packages installed via pacman (no profiled flags)")
-    _log.ui("  profiled  — repo packages cloned and built from source with profile flags")
+    _log.ui("  pacman            — repo packages installed via pacman (no source build)")
+    _log.ui("  build_from_source — repo packages cloned and built from source with profile flags")
 
-    if patched:
+    if enabled:
         _log.ui(
-            f"  Per-package pkgbuild_patch overrides ({len(patched)}): "
-            + ", ".join(patched)
+            f"  Per-package enable_build_from_source overrides ({len(enabled)}): "
+            + ", ".join(enabled)
         )
     else:
-        _log.ui("  No per-package pkgbuild_patch overrides.")
+        _log.ui("  No per-package enable_build_from_source overrides.")
 
     if not _interactive() or options.dry_run:
         return editor
 
     choice = _prompt_choice(
-        f"  Change repo_mode from {repo_mode!r}? [p]acman / [r]profiled / [Enter] keep: ",
-        choices=("p", "r", "pacman", "profiled"),
+        f"  Change repo_mode from {repo_mode!r}? "
+        "[p]acman / [s]build_from_source / [Enter] keep: ",
+        choices=("p", "s", REPO_MODE_PACMAN, REPO_MODE_SOURCE),
     )
 
-    if choice in ("p", "pacman"):
-        new_mode = "pacman"
-    elif choice in ("r", "profiled"):
-        new_mode = "profiled"
+    if choice in ("p", REPO_MODE_PACMAN):
+        new_mode = REPO_MODE_PACMAN
+    elif choice in ("s", REPO_MODE_SOURCE):
+        new_mode = REPO_MODE_SOURCE
     else:
         return editor
 
@@ -1234,7 +1239,7 @@ def _step_preview(config, state, options, editor: str) -> str:
         _log.ui("  No packages defined in packages.toml")
         return editor
 
-    repo_mode = build_cfg.get("repo_mode", "pacman")
+    repo_mode = resolve_repo_mode(build_cfg)
 
     _match_rules = None
     try:
@@ -1252,11 +1257,14 @@ def _step_preview(config, state, options, editor: str) -> str:
     for pkg in packages:
         name   = pkg.get("name", "?")
         source = pkg.get("source", "aur")
-        effective_mode = "profiled" if pkg.get("pkgbuild_patch") else repo_mode
+        effective_mode = REPO_MODE_SOURCE if pkg.get(PKG_KEY_BUILD_FROM_SOURCE) else repo_mode
 
-        if source == "repo" and effective_mode == "profiled":
-            patch_note = " (pkgbuild_patch)" if pkg.get("pkgbuild_patch") else " (repo_mode)"
-            action = f"build  [profiled]{patch_note}"
+        if source == "repo" and effective_mode == REPO_MODE_SOURCE:
+            patch_note = (
+                " (enable_build_from_source)"
+                if pkg.get(PKG_KEY_BUILD_FROM_SOURCE) else " (repo_mode)"
+            )
+            action = f"build  [build_from_source]{patch_note}"
             build_count += 1
         elif source == "repo":
             action = "pacman -S --needed"

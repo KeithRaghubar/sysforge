@@ -320,12 +320,12 @@ def test_repo_package_with_override_is_iterated(fake_run, state_dir):
 
 
 def test_repo_mode_profiled_walks_installed_repo_packages(fake_run, state_dir):
-    """With ``[build] repo_mode = "profiled"``, every installed repo package is
+    """With ``[build] repo_mode = "build_from_source"``, every installed repo package is
     iterated alongside foreign packages — no per-package override needed."""
     fake_run.respond(["pacman", "-Qm"], stdout="")
     fake_run.respond(["pacman", "-Q"], stdout="firefox 131.0-1\n")
     packages, _ = _assemble_package_set(
-        _make_args(), BuildState(state_dir), {}, {"repo_mode": "profiled"}, {},
+        _make_args(), BuildState(state_dir), {}, {"repo_mode": "build_from_source"}, {},
     )
     assert set(packages) == {"firefox"}
 
@@ -369,7 +369,7 @@ def test_source_built_repo_package_is_tracked(fake_run, state_dir):
     bs = BuildState(state_dir)
     bs.record(pkgname="mesa", pkgver="25.3.1", pkgrel="1", epoch="1",
               pkgbase="mesa", pkgbuild_dir=state_dir,
-              build_mode="profiled", source="repo")
+              build_mode="source_built", source="repo")
     bs.save()
     packages, _ = _assemble_package_set(
         _make_args(), bs, {}, {}, {},
@@ -402,10 +402,10 @@ def test_source_built_record_survives_sync_with_installed(state_dir):
     bs = BuildState(state_dir)
     bs.record(pkgname="mesa", pkgver="25.3.1", pkgrel="1", epoch="1",
               pkgbase="mesa", pkgbuild_dir=state_dir,
-              build_mode="profiled", source="repo")
+              build_mode="source_built", source="repo")
     bs.save()
     bs.sync_with_installed({"mesa": "1:25.3.1-1", "bash": "5.2-1"})
-    assert bs.get("mesa")["build_mode"] == "profiled"   # unchanged
+    assert bs.get("mesa")["build_mode"] == "source_built"   # unchanged
     assert bs.get("bash")["build_mode"] == "pacman"     # new inert marker
 
 
@@ -571,7 +571,7 @@ def test_flag_drift_rebuild_installs_through_phase6_filter(update_scenario):
 def test_not_profiled_package_is_not_flag_drift_checked(update_scenario, capsys):
     """A pacman-mode (non-profiled) package is never a flag-drift candidate."""
     update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
-    # build_mode pacman (not profiled) -> outside flag-drift scope
+    # build_mode pacman (not source_built) -> outside flag-drift scope
     from sysforge.primitives.build_state import BuildState
     bs = BuildState(update_scenario.state_dir)
     bs.record("htop", "3.4.1", "1", "0", "htop",
@@ -1231,7 +1231,7 @@ def test_print_summary_verbose_shows_all_lines(capsys):
 
 
 # ---------------------------------------------------------------------------
-# repo_mode = "profiled" → pacman-class fast path
+# repo_mode = "build_from_source" → pacman-class fast path
 # ---------------------------------------------------------------------------
 
 def _syu_fired(scenario):
@@ -1247,7 +1247,7 @@ def _checkupdates_called(scenario):
 def test_repo_pacman_class_flags_needs_pacman_upgrade(update_scenario, capsys):
     """repo_mode=profiled + no override + checkupdates newer → the package is
     flagged for a pacman upgrade and the bulk pacman -Syu fires (no source build)."""
-    update_scenario.set_repo_mode("profiled")
+    update_scenario.set_repo_mode("build_from_source")
     update_scenario.fake_sync()  # neutralize the real source-sync scheduler
     update_scenario.fake_checkupdates({"firefox": "131.0-1"})
     update_scenario.run(
@@ -1263,7 +1263,7 @@ def test_repo_pacman_class_flags_needs_pacman_upgrade(update_scenario, capsys):
 
 def test_repo_pacman_class_up_to_date_when_not_in_checkupdates(update_scenario, capsys):
     """repo_mode=profiled + nothing pending in checkupdates → UP_TO_DATE, no -Syu."""
-    update_scenario.set_repo_mode("profiled")
+    update_scenario.set_repo_mode("build_from_source")
     update_scenario.fake_sync()
     update_scenario.fake_checkupdates({})  # ran, nothing pending
     update_scenario.run(
@@ -1278,7 +1278,7 @@ def test_repo_pacman_class_up_to_date_when_not_in_checkupdates(update_scenario, 
 def test_repo_pacman_class_skipped_when_checkupdates_missing(update_scenario, capsys):
     """repo_mode=profiled + checkupdates errors (binary unavailable) →
     SKIPPED_NO_CHECKUPDATES surfaces and nothing is upgraded."""
-    update_scenario.set_repo_mode("profiled")
+    update_scenario.set_repo_mode("build_from_source")
     update_scenario.fake_sync()
     update_scenario.fake_checkupdates(None)  # fast path unavailable
     update_scenario.run(
@@ -1291,11 +1291,11 @@ def test_repo_pacman_class_skipped_when_checkupdates_missing(update_scenario, ca
 
 
 def test_repo_source_class_still_goes_through_pkgbuild_parse(update_scenario, capsys):
-    """repo_mode=profiled + a behavior-changing override (pkgbuild_patch) →
+    """repo_mode=build_from_source + a behavior-changing override (enable_build_from_source) →
     source path (real PKGBUILD parse + vercmp), NOT the pacman fast path:
     checkupdates is never consulted for a source-class package."""
-    update_scenario.set_repo_mode("profiled")
-    update_scenario.add_override("firefox", source="repo", pkgbuild_patch=True)
+    update_scenario.set_repo_mode("build_from_source")
+    update_scenario.add_override("firefox", source="repo", enable_build_from_source=True)
     update_scenario.add_pkg("firefox", "pkgname=firefox\npkgver=131.0\npkgrel=1\n")
     update_scenario.fake_sync()
     # Programmed but must be ignored — the override forces the source path.
@@ -1313,7 +1313,7 @@ def test_repo_source_class_still_goes_through_pkgbuild_parse(update_scenario, ca
 
 def test_offline_skips_checkupdates_call(update_scenario, capsys):
     """--offline → checkupdates is never invoked even in profiled repo mode."""
-    update_scenario.set_repo_mode("profiled")
+    update_scenario.set_repo_mode("build_from_source")
     update_scenario.fake_sync()
     update_scenario.fake_checkupdates({"firefox": "131.0-1"})
     update_scenario.run(

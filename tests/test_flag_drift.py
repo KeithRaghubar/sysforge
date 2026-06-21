@@ -114,9 +114,9 @@ def test_not_profiled_short_circuits(tmp_path):
 
 
 def test_no_pkgbuild(tmp_path):
-    # build_mode profiled but the recorded dir has no PKGBUILD on disk.
+    # build_mode source_built but the recorded dir has no PKGBUILD on disk.
     entry = {
-        "build_mode": "profiled",
+        "build_mode": "source_built",
         "pkgbuild_dir": str(tmp_path / "ghost"),
         "flags_string": _BARE_FLAGS,
     }
@@ -127,7 +127,7 @@ def test_no_pkgbuild(tmp_path):
 
 def test_no_flags(tmp_path):
     d = _pkgbuild(tmp_path, "htop")
-    entry = {"build_mode": "profiled", "pkgbuild_dir": str(d)}  # no flags_string
+    entry = {"build_mode": "source_built", "pkgbuild_dir": str(d)}  # no flags_string
     r = resolve_flag_drift(entry, _MINIMAL_CONFIG, {})
     assert r.status == STATUS_NO_FLAGS
 
@@ -135,7 +135,7 @@ def test_no_flags(tmp_path):
 def test_in_sync(tmp_path):
     d = _pkgbuild(tmp_path, "htop")
     entry = {
-        "build_mode": "profiled",
+        "build_mode": "source_built",
         "pkgbuild_dir": str(d),
         "flags_string": _BARE_FLAGS,  # exactly what `bare` resolves to
     }
@@ -147,7 +147,7 @@ def test_in_sync(tmp_path):
 def test_drifted(tmp_path):
     d = _pkgbuild(tmp_path, "mesa")
     entry = {
-        "build_mode": "profiled",
+        "build_mode": "source_built",
         "pkgbuild_dir": str(d),
         "flags_string": "CFLAGS=-this-is-stale",  # != resolved `bare`
     }
@@ -166,7 +166,7 @@ def test_parse_error_is_reported_not_raised(tmp_path, monkeypatch):
 
     monkeypatch.setattr("sysforge.primitives.flag_drift.parse_pkgbuild", _boom)
     entry = {
-        "build_mode": "profiled",
+        "build_mode": "source_built",
         "pkgbuild_dir": str(d),
         "flags_string": _BARE_FLAGS,
     }

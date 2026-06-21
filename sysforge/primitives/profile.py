@@ -693,7 +693,7 @@ def get_build_mode(matched_rules, config) -> str | None:
 # ``build_mode`` values that mean "a profile-guided or post-link optimization is
 # baked into this artifact." These — and only these — earn the ``-sysforge``
 # package rename: the suffix is a *signal* that an optimization is present, not
-# merely that LLVM built the package. Plain ``"profiled"``/``"pacman"``/
+# merely that LLVM built the package. Plain ``"source_built"``/``"pacman"``/
 # ``"kernel"`` and a non-PGO ``stock_llvm`` build keep their stock package name.
 _OPTIMIZED_BUILD_MODES = frozenset({
     "pgo_llvm_toolchain",  # instrumentation PGO of the LLVM toolchain (existing)

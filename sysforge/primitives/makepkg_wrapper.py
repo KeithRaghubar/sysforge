@@ -892,7 +892,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
 
         # Record build metadata for `sysforge update` (non-fatal)
         try:
-            from sysforge.primitives.build_state import BuildState
+            from sysforge.primitives.build_state import BuildState, BUILD_MODE_SOURCE
             from sysforge.pipeline.state import resolve_state_dir
             from sysforge.primitives.vcs_pkgver import read_built_upstream_commit
             _state_dir, _ = resolve_state_dir(options.state_dir)
@@ -947,7 +947,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     epoch=ep,
                     pkgbase=pkgbase,
                     pkgbuild_dir=pkgbuild_path.parent,
-                    build_mode="profiled",
+                    build_mode=BUILD_MODE_SOURCE,
                     flags_string=fs,
                     built_upstream_commit=upstream_commit,
                     source=options.source,

@@ -50,7 +50,12 @@ sudo vim /etc/sysforge/profiles.toml
 #    rebuilds it from source as upstream advances (build_state is the registry
 #    of what sysforge keeps up to date). This works for repo packages too —
 #    `sysforge build mesa` keeps your optimized mesa current instead of leaving
-#    it frozen. Use `sysforge state forget <pkg>` to stop maintaining one.
+#    it frozen. Building a *repo* package is opt-in: sysforge asks to confirm
+#    and records `enable_build_from_source` in packages.toml so the choice
+#    sticks (pass `--force` to build it once without recording). Use
+#    `sysforge state forget <pkg>` to stop maintaining one — or just
+#    `sudo pacman -S <pkg>`, and the next `update` auto-reverts it to the
+#    repo binary.
 sysforge build neovim-git -m "-si"
 
 # 4. Check for and rebuild any outdated installed AUR packages
@@ -135,9 +140,9 @@ sysforge run toolchain --allow-dirty-llvm
 #    build-rule overrides at steady-state — see DESIGN.md §Package Manifest)
 sysforge packages list
 sysforge packages list --orphans     # entries whose package isn't installed
-sysforge packages add mesa-git --pkgbuild-patch
+sysforge packages add firefox --enable-build-from-source  # build this repo pkg from source
 sysforge packages add-group gnome    # write a curated desktop group (gnome | kde)
-sysforge packages remove mesa-git
+sysforge packages remove firefox
 
 # 9b. Inspect / repair build_state.toml (the live install-state mirror)
 sysforge state list                  # paginated by default (TTY); --no-pager

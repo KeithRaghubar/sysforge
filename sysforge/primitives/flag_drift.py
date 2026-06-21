@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sysforge.primitives.build_state import BUILD_MODE_SOURCE
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
 from sysforge.primitives.profile import (
@@ -38,7 +39,7 @@ from sysforge.primitives.profile import (
 # Outcome statuses for a single recorded package.
 STATUS_DRIFTED = "DRIFTED"            # stored flags differ from a fresh resolution
 STATUS_IN_SYNC = "IN_SYNC"           # stored flags match the current resolution
-STATUS_NOT_PROFILED = "NOT_PROFILED"  # build_mode != "profiled" — no flags to drift
+STATUS_NOT_PROFILED = "NOT_PROFILED"  # build_mode != "source_built" — no flags to drift
 STATUS_NO_PKGBUILD = "NO_PKGBUILD"   # recorded pkgbuild_dir has no PKGBUILD
 STATUS_NO_FLAGS = "NO_FLAGS"         # built before flag tracking; nothing stored
 STATUS_PARSE_ERROR = "PARSE_ERROR"   # parse_pkgbuild raised
@@ -101,7 +102,7 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups) -> FlagDriftR
     ``STATUS_PARSE_ERROR`` with the message in ``error`` so callers can decide how
     to surface it.
     """
-    if entry.get("build_mode") != "profiled":
+    if entry.get("build_mode") != BUILD_MODE_SOURCE:
         return FlagDriftResult(status=STATUS_NOT_PROFILED)
 
     pkgbuild_path = Path(entry["pkgbuild_dir"]) / "PKGBUILD"

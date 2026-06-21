@@ -109,11 +109,27 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   rebuilt from source on every `update`. A source-built repo package is classified
   `repo_class = "source"` (rebuild) not `"pacman"` (a deferred `pacman -Syu` no-ops behind
   `IgnoreGroup = sf-build`). packages.toml stays the *declarative* layer: bootstrap set +
-  groups + per-package overrides; `repo_mode = "profiled"` is bulk repo-drift surfacing, not
-  the source-tracking mechanism. `build` stamps the resolved `source` (`is_repo_package`) so
-  the registry is self-describing. Stop tracking via `sysforge state forget <pkg>`
-  (`BuildState.delete`, pkgbase-expanded). Don't re-add a packages.toml-entry-gates-tracking
-  path. See DESIGN.md §Package Manifest / §update.
+  groups + per-package overrides; `repo_mode = "build_from_source"` is bulk repo-drift
+  surfacing, not the source-tracking mechanism. `build` stamps the resolved `source`
+  (`is_repo_package`) so the registry is self-describing. Stop tracking via `sysforge state
+  forget <pkg>` (`BuildState.delete`, pkgbase-expanded), or automatically: a `source_built`
+  package reinstalled via `pacman -S` is demoted to a `pacman` marker at the next `update`
+  (`BuildState.reconcile_external_installs`, fed by `primitives/install_reconcile`'s
+  buildstate−self-install sentinel diff; stage-owned exempt). Don't re-add a
+  packages.toml-entry-gates-tracking path. See DESIGN.md §Package Manifest / §update.
+- **Vocabulary (renamed; legacy aliases honored on read)**: build_state `build_mode` value is
+  `"source_built"` (legacy `"profiled"` normalized in `BuildState.__init__`); packages.toml
+  `[build] repo_mode` value is `"build_from_source"` (legacy `"profiled"` via
+  `config.resolve_repo_mode`); per-package key is `enable_build_from_source` (legacy
+  `pkgbuild_patch` via `config.normalize_package_entry` in `expand_package_groups`; the
+  packages_cmd auto-prune is legacy-aware so it never drops a pre-rename entry). One read
+  chokepoint per surface — don't scatter `or "profiled"` checks.
+- **`build` gates repo packages on opt-in**: `build_cmd` source-builds AUR/git/local
+  unconditionally but a `source="repo"` target not already opted in (global
+  `repo_mode="build_from_source"` or per-package `enable_build_from_source`) prompts on a TTY
+  (yes → build + write the key via `packages_cmd`; no → skip) or aborts with a hint when
+  non-interactive. `--force` builds every arg this run only and never prompts/writes
+  packages.toml. Don't add a second packages.toml writer. See DESIGN.md §CLI Verb Framework.
 - **PKGBUILD review gate has one home**: `build_core.build_and_install(review=…)` →
   `pkgbuild_review.review_target` (`build` defaults `"prompt"`, `update` `"auto"`); AUR
   dep builds gated via `review_deps` in `prepare_deps`. Baseline is sticky `reviewed_commit`

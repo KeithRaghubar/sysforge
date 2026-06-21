@@ -285,7 +285,7 @@ def test_packages_stage_aur_auto_clone(tmp_path):
 PACKAGES_TOML_REPO_MODE = """
 [build]
 pkgbuild_src_dir = "{pkgbuild_src_dir}"
-repo_mode = "profiled"
+repo_mode = "build_from_source"
 
 [[package]]
 name = "htop"
@@ -303,7 +303,7 @@ pkgbuild_src_dir = "{pkgbuild_src_dir}"
 [[package]]
 name = "htop"
 source = "repo"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "neovim"
@@ -312,7 +312,7 @@ source = "repo"
 
 
 def test_repo_mode_profiled_builds_repo_pkg_from_source(tmp_path):
-    """repo_mode=profiled: repo packages are built via makepkg, not pacman."""
+    """repo_mode=build_from_source: repo packages are built via makepkg, not pacman."""
     builds_dir = tmp_path / "builds"
     make_pkgbuild(builds_dir, "htop")
     make_pkgbuild(builds_dir, "mesa-git")
@@ -327,13 +327,13 @@ def test_repo_mode_profiled_builds_repo_pkg_from_source(tmp_path):
          patch("sysforge.pipeline.stages.packages.subprocess.run") as mock_pacman:
         PackagesStage().run({"packages_file": str(pkg_file)}, state, make_options())
 
-    assert "htop" in built       # repo pkg routed to profiled build
+    assert "htop" in built       # repo pkg routed to source build
     assert "mesa-git" in built   # aur pkg always built
     mock_pacman.assert_not_called()
 
 
-def test_pkgbuild_patch_overrides_pacman_repo_mode(tmp_path):
-    """pkgbuild_patch=true on a repo pkg forces profiled build regardless of global repo_mode."""
+def test_enable_build_from_source_overrides_pacman_repo_mode(tmp_path):
+    """enable_build_from_source=true on a repo pkg forces source build regardless of global repo_mode."""
     builds_dir = tmp_path / "builds"
     make_pkgbuild(builds_dir, "htop")
     pkg_file = tmp_path / "packages.toml"
@@ -349,8 +349,8 @@ def test_pkgbuild_patch_overrides_pacman_repo_mode(tmp_path):
                side_effect=lambda cmd, **kw: pacman_installed.append(cmd[-1]) or MagicMock(returncode=0)):
         PackagesStage().run({"packages_file": str(pkg_file)}, state, make_options())
 
-    assert "htop" in built             # pkgbuild_patch → profiled
-    assert "neovim" in pacman_installed  # no pkgbuild_patch → pacman
+    assert "htop" in built             # enable_build_from_source → source build
+    assert "neovim" in pacman_installed  # no enable_build_from_source → pacman
 
 
 def test_repo_mode_invalid_raises(tmp_path):

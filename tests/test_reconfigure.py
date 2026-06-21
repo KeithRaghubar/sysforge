@@ -77,13 +77,13 @@ source = "repo"
 [[package]]
 name = "mesa-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 """
 
 _REPO_MODE_PROFILED_TOML = """\
 [build]
 pkgbuild_src_dir = "~/src"
-repo_mode = "profiled"
+repo_mode = "build_from_source"
 
 [[package]]
 name = "htop"
@@ -248,38 +248,38 @@ def test_parse_step_selection_invalid_range():
 
 def test_set_repo_mode_replaces_existing(tmp_path):
     p = make_packages_toml(tmp_path, '[build]\nrepo_mode = "pacman"\n')
-    _set_repo_mode(p, "profiled")
-    assert 'repo_mode = "profiled"' in p.read_text()
+    _set_repo_mode(p, "build_from_source")
+    assert 'repo_mode = "build_from_source"' in p.read_text()
 
 
 def test_set_repo_mode_inserts_after_build_header(tmp_path):
     p = make_packages_toml(tmp_path, '[build]\npkgbuild_src_dir = "~/src"\n')
-    _set_repo_mode(p, "profiled")
+    _set_repo_mode(p, "build_from_source")
     text = p.read_text()
-    assert 'repo_mode = "profiled"' in text
+    assert 'repo_mode = "build_from_source"' in text
     # Should appear after [build]
-    assert text.index("[build]") < text.index('repo_mode = "profiled"')
+    assert text.index("[build]") < text.index('repo_mode = "build_from_source"')
 
 
 def test_set_repo_mode_no_build_section_appends(tmp_path):
     p = make_packages_toml(tmp_path, '[[package]]\nname = "htop"\nsource = "repo"\n')
-    _set_repo_mode(p, "profiled")
+    _set_repo_mode(p, "build_from_source")
     text = p.read_text()
     assert "[build]" in text
-    assert 'repo_mode = "profiled"' in text
+    assert 'repo_mode = "build_from_source"' in text
 
 
 def test_set_repo_mode_roundtrip_valid_toml(tmp_path):
     p = make_packages_toml(tmp_path, _BASIC_TOML)
-    _set_repo_mode(p, "profiled")
+    _set_repo_mode(p, "build_from_source")
     with open(p, "rb") as f:
         data = tomllib.load(f)
-    assert data["build"]["repo_mode"] == "profiled"
+    assert data["build"]["repo_mode"] == "build_from_source"
 
 
 def test_set_repo_mode_preserves_other_content(tmp_path):
     p = make_packages_toml(tmp_path, _BASIC_TOML)
-    _set_repo_mode(p, "profiled")
+    _set_repo_mode(p, "build_from_source")
     with open(p, "rb") as f:
         data = tomllib.load(f)
     assert data["build"]["pkgbuild_src_dir"] == "~/src"
@@ -306,7 +306,7 @@ def test_step_build_mode_dry_run_does_not_write(tmp_path):
     config = {"packages_file": str(p)}
 
     with patch("sysforge.pipeline.stages.reconfigure._interactive", return_value=True), \
-         patch("sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="r"):
+         patch("sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="s"):
         _step_build_mode(config, None, make_options(dry_run=True), "vi")
 
     assert p.read_text() == original
@@ -319,17 +319,17 @@ def test_step_build_mode_missing_file_skips(tmp_path):
     assert result == "vi"
 
 
-def test_step_build_mode_interactive_sets_profiled(tmp_path):
+def test_step_build_mode_interactive_sets_build_from_source(tmp_path):
     p = make_packages_toml(tmp_path, '[build]\nrepo_mode = "pacman"\n\n[[package]]\nname = "htop"\nsource = "repo"\n')
     config = {"packages_file": str(p)}
 
     with patch("sysforge.pipeline.stages.reconfigure._interactive", return_value=True), \
-         patch("sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="r"):
+         patch("sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="s"):
         _step_build_mode(config, None, make_options(), "vi")
 
     with open(p, "rb") as f:
         data = tomllib.load(f)
-    assert data["build"]["repo_mode"] == "profiled"
+    assert data["build"]["repo_mode"] == "build_from_source"
 
 
 def test_step_build_mode_interactive_no_change_on_enter(tmp_path):
@@ -354,14 +354,14 @@ def test_step_build_mode_shows_pkgbuild_patch_overrides(tmp_path):
         _step_build_mode(config, None, make_options(), "vi")
 
     combined = " ".join(logged)
-    assert "mesa-git" in combined   # pkgbuild_patch package listed
+    assert "mesa-git" in combined   # enable_build_from_source package listed
 
 
 # ---------------------------------------------------------------------------
 # _step_preview — repo_mode reflected
 # ---------------------------------------------------------------------------
 
-def test_step_preview_repo_mode_profiled_shown(tmp_path):
+def test_step_preview_repo_mode_build_from_source_shown(tmp_path):
     p = make_packages_toml(tmp_path, _REPO_MODE_PROFILED_TOML)
     config = {"packages_file": str(p), "rules": [], "defaults": {}}
     logged = []
@@ -370,12 +370,12 @@ def test_step_preview_repo_mode_profiled_shown(tmp_path):
         _step_preview(config, None, make_options(), "vi")
 
     combined = " ".join(logged)
-    assert "profiled" in combined
+    assert "build_from_source" in combined
     assert "repo_mode" in combined
 
 
-def test_step_preview_pkgbuild_patch_shown_as_profiled(tmp_path):
-    """A repo package with pkgbuild_patch=true shows profiled build action."""
+def test_step_preview_enable_build_from_source_shown(tmp_path):
+    """A repo package with enable_build_from_source=true shows source build action."""
     toml = """\
 [build]
 pkgbuild_src_dir = "~/src"
@@ -383,7 +383,7 @@ pkgbuild_src_dir = "~/src"
 [[package]]
 name = "mold"
 source = "repo"
-pkgbuild_patch = true
+enable_build_from_source = true
 """
     p = make_packages_toml(tmp_path, toml)
     config = {"packages_file": str(p), "rules": [], "defaults": {}}
@@ -393,8 +393,8 @@ pkgbuild_patch = true
         _step_preview(config, None, make_options(), "vi")
 
     combined = " ".join(logged)
-    assert "profiled" in combined
-    assert "pkgbuild_patch" in combined
+    assert "build_from_source" in combined
+    assert "enable_build_from_source" in combined
 
 
 def test_step_preview_default_repo_mode_shows_pacman(tmp_path):
@@ -406,7 +406,7 @@ def test_step_preview_default_repo_mode_shows_pacman(tmp_path):
         _step_preview(config, None, make_options(), "vi")
 
     combined = " ".join(logged)
-    assert "pacman -S --needed" in combined  # htop has no pkgbuild_patch
+    assert "pacman -S --needed" in combined  # htop has no enable_build_from_source
 
 
 # ---------------------------------------------------------------------------

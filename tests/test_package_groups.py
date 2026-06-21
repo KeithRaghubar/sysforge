@@ -35,33 +35,47 @@ def test_basic_expansion_marks_origin():
 def test_group_defaults_inherit_to_members():
     data = {"group": {"patched": {
         "packages": ["mesa-git"],
-        "pkgbuild_patch": True,
+        "enable_build_from_source": True,
         "source": "aur",
     }}}
     (entry,) = expand_package_groups(data)
-    assert entry["pkgbuild_patch"] is True
+    assert entry["enable_build_from_source"] is True
     assert entry["source"] == "aur"
     assert entry["group"] == "patched"
+
+
+def test_legacy_key_normalized_on_expand():
+    """A pre-rename ``pkgbuild_patch`` is normalized to the new key name, for
+    both explicit entries and group defaults."""
+    data = {
+        "package": [{"name": "htop", "pkgbuild_patch": True}],
+        "group": {"patched": {"packages": ["mesa-git"], "pkgbuild_patch": True}},
+    }
+    entries = {e["name"]: e for e in expand_package_groups(data)}
+    assert entries["htop"]["enable_build_from_source"] is True
+    assert "pkgbuild_patch" not in entries["htop"]
+    assert entries["mesa-git"]["enable_build_from_source"] is True
+    assert "pkgbuild_patch" not in entries["mesa-git"]
 
 
 def test_explicit_entry_wins_over_group():
     """An explicit [[package]] entry beats the group outright — no merge."""
     data = {
         "package": [{"name": "mesa-git", "cache": False}],
-        "group": {"patched": {"packages": ["mesa-git"], "pkgbuild_patch": True}},
+        "group": {"patched": {"packages": ["mesa-git"], "enable_build_from_source": True}},
     }
     (entry,) = expand_package_groups(data)
-    assert entry == {"name": "mesa-git", "cache": False}  # no pkgbuild_patch
+    assert entry == {"name": "mesa-git", "cache": False}  # no enable_build_from_source
 
 
 def test_first_group_wins_on_duplicate_membership():
     data = {"group": {
         "a": {"packages": ["pkg"], "cache": False},
-        "b": {"packages": ["pkg"], "pkgbuild_patch": True},
+        "b": {"packages": ["pkg"], "enable_build_from_source": True},
     }}
     (entry,) = expand_package_groups(data)
     assert entry["group"] == "a"
-    assert "pkgbuild_patch" not in entry
+    assert "enable_build_from_source" not in entry
 
 
 def test_malformed_group_values_ignored():
@@ -80,11 +94,11 @@ def test_update_loader_expands_groups(tmp_path, capsys):
     p.write_text(
         '[[package]]\nname = "pipewire"\nsource = "repo"\n'   # inert -> warns
         '[group.cosmic]\npackages = ["cosmic-comp-git"]\n'    # inert, no warn
-        '[group.patched]\npackages = ["mesa-git"]\npkgbuild_patch = true\n'
+        '[group.patched]\npackages = ["mesa-git"]\nenable_build_from_source = true\n'
     )
     _, overrides = _load_overrides(p)
     assert set(overrides) == {"pipewire", "cosmic-comp-git", "mesa-git"}
-    assert overrides["mesa-git"]["pkgbuild_patch"] is True
+    assert overrides["mesa-git"]["enable_build_from_source"] is True
     err = capsys.readouterr().err
     assert "pipewire" in err and "inert" in err
     assert "cosmic-comp-git" not in err  # group members never get the nudge

@@ -46,7 +46,11 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("UPDATE")
 from sysforge.ui import progress as _ui_progress  # noqa: E402
-from sysforge.primitives.build_state import BuildState, group_by_pkgbase
+from sysforge.primitives.build_state import (
+    BuildState,
+    group_by_pkgbase,
+    BUILD_MODE_SOURCE,
+)
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.aur import fetch_aur_name_cache
 from sysforge.primitives.source_sync import (
@@ -239,7 +243,7 @@ def _load_overrides(path: Path) -> tuple[dict, dict[str, dict]]:
             if entry_is_inert(entry) and "group" not in entry:
                 _log.warn(
                     f"{name}: inert override (no behavior-changing field) — "
-                    "has no effect; remove or add pkgbuild_patch/cache/reason"
+                    "has no effect; remove or add enable_build_from_source/cache/reason"
                 )
         return build_cfg, overrides
     except Exception:
@@ -278,17 +282,20 @@ _SENTINEL_REMINDERS = {
 }
 
 
-def _consume_pacman_hook_sentinels(silent: bool = False) -> None:
+def _consume_pacman_hook_sentinels(
+    silent: bool = False, reminders_only: bool = False
+) -> None:
     """Surface kernel/toolchain reminders dropped by pacman PostTransaction
     hooks since the last `sysforge update` run, then unlink them.
 
-    The buildstate sentinel is consumed silently — its only purpose is to
-    nudge the build_state.toml resync that already runs in cmd_update.
+    The buildstate + self-install sentinels feed the external-install demotion
+    reconcile (see ``_reconcile_external_demotions``). The start-of-run call
+    passes ``reminders_only=True`` so those two survive for the reconcile step;
+    the end-of-run call (default) clears them along with any kernel/toolchain
+    sentinels sysforge's own Phase 5 (pacman -U) / Phase 6.5 (pacman -Syu)
+    transactions just dropped, so they don't re-fire on the next invocation.
 
     silent=True suppresses the kernel/toolchain warnings but still unlinks.
-    Used at the end of cmd_update so sentinels dropped by sysforge's own
-    Phase 5 (pacman -U) and Phase 6.5 (pacman -Syu) transactions don't
-    re-fire as "stale" reminders on the next invocation.
     """
     if not _SENTINEL_DIR.is_dir():
         return
@@ -301,12 +308,40 @@ def _consume_pacman_hook_sentinels(silent: bool = False) -> None:
                 path.unlink()
             except OSError:
                 pass
-    buildstate = _SENTINEL_DIR / "buildstate"
-    if buildstate.exists():
-        try:
-            buildstate.unlink()
-        except OSError:
-            pass
+    if reminders_only:
+        return
+    from sysforge.primitives.install_reconcile import clear_reconcile_sentinels
+    clear_reconcile_sentinels(_SENTINEL_DIR)
+
+
+def _reconcile_external_demotions(bs: BuildState) -> None:
+    """Demote source-built packages reinstalled externally via ``pacman -S``.
+
+    Reads the buildstate + self-install sentinels (the diff is the set of
+    externally-installed packages), demotes any matching ``source_built``
+    build_state entry to a ``pacman`` marker, saves if anything changed, then
+    unlinks both sentinels. Best-effort — a sentinel/IO error never aborts the
+    update. Stage-owned packages are exempt (handled in BuildState).
+    """
+    from sysforge.primitives.install_reconcile import (
+        clear_reconcile_sentinels,
+        external_install_targets,
+    )
+    try:
+        external = external_install_targets(_SENTINEL_DIR)
+        if external:
+            demoted = bs.reconcile_external_installs(external)
+            if demoted:
+                bs.save()
+                _log.info(
+                    "demoted "
+                    f"{len(demoted)} source-built package(s) reinstalled from "
+                    f"the repo: {', '.join(sorted(demoted))}"
+                )
+    except Exception as e:
+        _log.info(f"external-install reconcile skipped (non-fatal): {e}")
+    finally:
+        clear_reconcile_sentinels(_SENTINEL_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +351,9 @@ def _consume_pacman_hook_sentinels(silent: bool = False) -> None:
 def cmd_update(args) -> None:
     """Entry point for `sysforge update`."""
 
-    _consume_pacman_hook_sentinels()
+    # reminders_only: leave the buildstate + self-install sentinels in place so
+    # the body's _reconcile_external_demotions can read them; it unlinks them.
+    _consume_pacman_hook_sentinels(reminders_only=True)
     _suppress_pagers_in_env(getattr(args, "interactive", False))
 
     try:
@@ -358,6 +395,12 @@ def _cmd_update_body(args) -> None:
 
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
     bs = BuildState(state_dir)
+
+    # External-install demotion: a source-built package reinstalled from the
+    # repo via `pacman -S` (buildstate hook target, minus sysforge's own
+    # pacman -U self-install targets) is demoted back to a plain pacman marker
+    # so this run doesn't rebuild it from source and undo the user's switch.
+    _reconcile_external_demotions(bs)
 
     # Active toolchain variant — stamped onto every rebuild via BuildOptions
     # and used below to surface drift between installed packages' recorded
@@ -423,10 +466,10 @@ def _cmd_update_body(args) -> None:
         # build-state-wide fold still owes them drift detection (repo-class
         # packages recorded by `sysforge build` with no override). Every
         # phase in between no-ops on an empty package set.
-        _has_profiled_entries = any(
-            e.get("build_mode") == "profiled" for e in bs.all_packages().values()
+        _has_source_built_entries = any(
+            e.get("build_mode") == BUILD_MODE_SOURCE for e in bs.all_packages().values()
         )
-        if not _has_profiled_entries:
+        if not _has_source_built_entries:
             print(
                 "[SYSFORGE] No installed packages in scope (no foreign packages, "
                 "and no repo packages with overrides in packages.toml).",
@@ -579,7 +622,7 @@ def _cmd_update_body(args) -> None:
             entry = bs.get(name)
             if entry is not None:
                 break
-        if not entry or entry.get("build_mode") != "profiled":
+        if not entry or entry.get("build_mode") != BUILD_MODE_SOURCE:
             continue
         if _flag_cgroups is None:
             _flag_cgroups = load_conflict_groups()
@@ -611,7 +654,7 @@ def _cmd_update_body(args) -> None:
         if _fold_filter and not (_fold_filter & ({pkgbase} | set(pkgnames))):
             continue
         entry = _fold_entry[pkgbase]
-        if entry.get("build_mode") != "profiled":
+        if entry.get("build_mode") != BUILD_MODE_SOURCE:
             continue
         if _flag_cgroups is None:
             _flag_cgroups = load_conflict_groups()

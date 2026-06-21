@@ -24,20 +24,26 @@ Public API:
     cmd_packages_add_group(args)
     cmd_packages_remove(args)
 """
+import re
 import sys
 import tomllib
 from pathlib import Path
 
 from sysforge import log
 _log = log.get_logger("PACKAGES")
-from sysforge.primitives.config import load_config
+from sysforge.primitives.config import (
+    load_config,
+    normalize_package_entry,
+    PKG_KEY_BUILD_FROM_SOURCE,
+    _LEGACY_PKG_KEY_BUILD_FROM_SOURCE,
+)
 from sysforge.primitives.paths import resolve_packages_path
 
 
 # Behavior-changing override fields. `source` is metadata (it pins routing
 # but doesn't change build behavior), so it doesn't count toward the
 # "at least one override" rule for `add` validation or auto-prune.
-OVERRIDE_FIELDS = ("pkgbuild_patch", "cache", "reason")
+OVERRIDE_FIELDS = (PKG_KEY_BUILD_FROM_SOURCE, "cache", "reason")
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +82,14 @@ def entry_toml_block(entry: dict) -> str:
 
 
 def entry_is_inert(entry: dict) -> bool:
-    """An entry is inert if it has no behavior-changing override field set."""
-    return not any(k in entry for k in OVERRIDE_FIELDS)
+    """An entry is inert if it has no behavior-changing override field set.
+
+    Normalizes the legacy per-package key first so an entry carrying only
+    ``pkgbuild_patch`` (pre-rename configs) counts as non-inert — otherwise
+    ``_rewrite_packages_toml``'s auto-prune would silently delete it (data loss).
+    """
+    normalized = normalize_package_entry(dict(entry))
+    return not any(k in normalized for k in OVERRIDE_FIELDS)
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +162,17 @@ def _rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | Non
             drop_set.add(i)
     keep_lines = [line for i, line in enumerate(lines) if i not in drop_set]
 
+    # Migrate the legacy per-package key in place on every rewrite. Anchored at
+    # the start of the line (after indentation) so it never touches the key name
+    # embedded in a reason string or comment.
+    _legacy_key_re = re.compile(
+        rf"^(\s*){re.escape(_LEGACY_PKG_KEY_BUILD_FROM_SOURCE)}(\s*=)"
+    )
+    keep_lines = [
+        _legacy_key_re.sub(rf"\1{PKG_KEY_BUILD_FROM_SOURCE}\2", line)
+        for line in keep_lines
+    ]
+
     # Drop trailing blank-line runs to avoid growth across rewrites.
     while keep_lines and keep_lines[-1].strip() == "":
         keep_lines.pop()
@@ -195,8 +218,8 @@ def cmd_packages_list(args):
             name = e.get("name", "")
             source = e.get("source", "")
             flags = []
-            if e.get("pkgbuild_patch"):
-                flags.append("pkgbuild_patch")
+            if e.get(PKG_KEY_BUILD_FROM_SOURCE) or e.get(_LEGACY_PKG_KEY_BUILD_FROM_SOURCE):
+                flags.append(PKG_KEY_BUILD_FROM_SOURCE)
             if e.get("cache") is False:
                 flags.append("cache=false")
             if e.get("reason"):
@@ -229,19 +252,20 @@ def cmd_packages_add(args):
     """Add or update an override entry.
 
     Requires at least one behavior-changing override flag
-    (`--pkgbuild-patch`, `--no-cache`, `--reason`). `--source` is optional
-    metadata and does not satisfy validation on its own.
+    (`--enable-build-from-source`, `--no-cache`, `--reason`). `--source` is
+    optional metadata and does not satisfy validation on its own.
     """
     pkg = args.pkg
-    has_pkgbuild_patch = bool(getattr(args, "pkgbuild_patch", False))
+    has_build_from_source = bool(getattr(args, PKG_KEY_BUILD_FROM_SOURCE, False))
     has_no_cache = bool(getattr(args, "no_cache", False))
     reason = getattr(args, "reason", None)
     source = getattr(args, "source", None)
 
-    if not (has_pkgbuild_patch or has_no_cache or reason):
+    if not (has_build_from_source or has_no_cache or reason):
         print(
             f"[SYSFORGE] {pkg}: at least one behavior-changing override is required "
-            f"(--pkgbuild-patch, --no-cache, or --reason). --source alone is metadata.",
+            f"(--enable-build-from-source, --no-cache, or --reason). "
+            f"--source alone is metadata.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -251,8 +275,8 @@ def cmd_packages_add(args):
     new_entry: dict = {"name": pkg}
     if source is not None:
         new_entry["source"] = source
-    if has_pkgbuild_patch:
-        new_entry["pkgbuild_patch"] = True
+    if has_build_from_source:
+        new_entry[PKG_KEY_BUILD_FROM_SOURCE] = True
     if has_no_cache:
         new_entry["cache"] = False
     if reason:
@@ -359,14 +383,14 @@ class PackagesAddVerb(Verb):
     requires_sentinel = False
 
     def pre_check(self, args) -> PreCheckResult:
-        has_pkgbuild_patch = bool(getattr(args, "pkgbuild_patch", False))
+        has_build_from_source = bool(getattr(args, PKG_KEY_BUILD_FROM_SOURCE, False))
         has_no_cache = bool(getattr(args, "no_cache", False))
         reason = getattr(args, "reason", None)
-        if not (has_pkgbuild_patch or has_no_cache or reason):
+        if not (has_build_from_source or has_no_cache or reason):
             return PreCheckResult(
                 blocker=(
                     f"{args.pkg}: at least one behavior-changing override is required "
-                    "(--pkgbuild-patch, --no-cache, or --reason). "
+                    "(--enable-build-from-source, --no-cache, or --reason). "
                     "--source alone is metadata."
                 ),
                 exit_code=1,

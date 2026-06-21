@@ -164,8 +164,8 @@ def group_toml_block(name: str, members, defaults: dict | None = None) -> str:
     """Serialise a ``[group.<name>]`` table to TOML text (no leading newline).
 
     ``members`` is the ordered package list; ``defaults`` are optional
-    per-group fields (``source`` / ``pkgbuild_patch`` / ``cache`` / ``reason``)
-    written above the ``packages`` array, matching the read side in
+    per-group fields (``source`` / ``enable_build_from_source`` / ``cache`` /
+    ``reason``) written above the ``packages`` array, matching the read side in
     :func:`config.expand_package_groups`.
     """
     lines = [f"[group.{name}]"]

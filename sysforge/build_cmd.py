@@ -17,8 +17,14 @@ from pathlib import Path
 
 from sysforge import build_core, log
 from sysforge.primitives.aur import is_repo_package
-from sysforge.primitives.config import find_pkgbuild
+from sysforge.primitives.config import (
+    find_pkgbuild,
+    resolve_repo_mode,
+    REPO_MODE_SOURCE,
+    PKG_KEY_BUILD_FROM_SOURCE,
+)
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
+from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.verbs import ExecResult, PreCheckResult, Verb
 from sysforge.verbs.helpers import load_config_with_overrides
 
@@ -126,6 +132,74 @@ def _review_config_enabled(config) -> bool:
         return True
 
 
+def _load_repo_optin(config) -> tuple[dict, set[str]]:
+    """Return (build_cfg, opted_in_names) from packages.toml.
+
+    ``opted_in_names`` is the set of per-package names whose
+    ``enable_build_from_source`` is true. Reads through
+    ``expand_package_groups`` so the legacy ``pkgbuild_patch`` key is honored.
+    A missing/unreadable file yields ``({}, set())``.
+    """
+    import tomllib
+
+    from sysforge.primitives.config import expand_package_groups
+    from sysforge.primitives.paths import resolve_packages_path
+    try:
+        path = resolve_packages_path(config)
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        return {}, set()
+    build_cfg = data.get("build", {}) or {}
+    opted_in = {
+        e["name"] for e in expand_package_groups(data)
+        if e.get("name") and e.get(PKG_KEY_BUILD_FROM_SOURCE)
+    }
+    return build_cfg, opted_in
+
+
+def _repo_pkg_opted_in(name: str, build_cfg: dict, opted_in: set[str]) -> bool:
+    """True if a repo package is already opted into source builds.
+
+    Opted in when the global ``repo_mode`` is ``build_from_source`` OR the
+    per-package ``enable_build_from_source`` key is set.
+    """
+    if resolve_repo_mode(build_cfg) == REPO_MODE_SOURCE:
+        return True
+    return name in opted_in
+
+
+def _write_repo_optin(name: str, config) -> bool:
+    """Persist ``enable_build_from_source = true`` for ``name`` in packages.toml.
+
+    Reuses the packages-command writers (single packages.toml mutation home);
+    creates the file with a standard header when absent. Returns True on
+    success, False (with a warning) on any I/O error — a write failure must
+    not abort the build the user already confirmed.
+    """
+    from sysforge.packages_cmd import _rewrite_packages_toml, entry_toml_block
+    from sysforge.primitives.paths import resolve_packages_path
+    try:
+        path = resolve_packages_path(config)
+        entry = {"name": name, PKG_KEY_BUILD_FROM_SOURCE: True}
+        block = "\n" + entry_toml_block(entry) + "\n"
+        # Replace any existing entry for this name, then append the new one.
+        _rewrite_packages_toml(path, drop_name=name)
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "# packages.toml — managed by sysforge packages\n"
+                "\n[build]\n"
+                'pkgbuild_src_dir = "~/src"\n'
+            )
+        _rewrite_packages_toml(path, append=block)
+        _log.ui(f"{name}: recorded enable_build_from_source = true in {path}")
+        return True
+    except Exception as e:
+        _log.warn(f"{name}: could not write packages.toml opt-in: {e}")
+        return False
+
+
 class BuildVerb(Verb):
     """Build one or more packages using their matched profiles."""
 
@@ -152,6 +226,16 @@ class BuildVerb(Verb):
         packages = args.pkgbuilds
         cleansrc_force = getattr(args, "cleansrc_force", False)
         cleansrc_active = cleansrc_force or getattr(args, "cleansrc", False)
+        force = getattr(args, "force", False)
+
+        # Repo-package opt-in gate: `build` source-builds AUR/git/local targets
+        # unconditionally (that's their only path), but a *repo* package is
+        # installed from pacman by default. Source-building one is opt-in — the
+        # global repo_mode or the per-package enable_build_from_source key. With
+        # --force we build every argument this run without prompting or touching
+        # packages.toml; otherwise an un-opted-in repo target prompts (TTY) or
+        # aborts with a hint (non-TTY). Loaded once, before the loop.
+        build_cfg, opted_in = ({}, set()) if force else _load_repo_optin(config)
 
         # Resolve each requested package to a build target. --cleansrc purges
         # the source tree first (build-only concern). A purge refusal skips
@@ -179,6 +263,33 @@ class BuildVerb(Verb):
             # shadows a repo name.
             if target.source is None and is_repo_package(target.pkgbase):
                 target.source = "repo"
+
+            # Apply the repo-package gate (skipped entirely under --force).
+            if not force and target.source == "repo" \
+                    and not _repo_pkg_opted_in(target.pkgbase, build_cfg, opted_in):
+                if is_interactive():
+                    ans = prompt_choice(
+                        f"{target.pkgbase} is a repo package — build from source? "
+                        "[y/N]: ",
+                        choices=("y", "n"),
+                        default="n",
+                        retry_on_invalid=False,
+                        tag="BUILD",
+                    )
+                    if ans != "y":
+                        _log.ui(f"{target.pkgbase}: skipped (kept as a pacman package).")
+                        continue
+                    _write_repo_optin(target.pkgbase, config)
+                else:
+                    _log.error(
+                        f"{target.pkgbase} is a repo package not opted into source "
+                        "builds — set enable_build_from_source=true in packages.toml "
+                        "(or run `sysforge packages add "
+                        f"{target.pkgbase} --enable-build-from-source`), or pass "
+                        "--force to build it this run only."
+                    )
+                    continue
+
             targets.append(target)
 
         if not targets:

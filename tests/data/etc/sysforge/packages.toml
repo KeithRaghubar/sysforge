@@ -10,7 +10,8 @@
 #   name           required  package name
 #   source         optional  "repo" (pacman -S) | "aur" (AUR build) — set when
 #                            classification is ambiguous or you want to force routing
-#   pkgbuild_patch optional  true = extract and patch PKGBUILD flags before build
+#   enable_build_from_source optional  true = build this repo package from source
+#                            instead of installing the binary via pacman
 #   cache          optional  false = disable ccache/sccache (required for PGO)
 #
 # An entry with only `name` (or only `name` + `source`) has no override
@@ -25,22 +26,22 @@
 # Directory containing pre-cloned PKGBUILDs for aur/git packages.
 # Each entry should have its own subdirectory: <pkgbuild_src_dir>/<name>/PKGBUILD
 pkgbuild_src_dir = "~/src"
-repo_mode = "profiled"  # "pacman" (default) | "profiled" — how repo-source packages are built
-#                       # "pacman"   → repo packages only enter `sysforge update` scope
-#                       #              if they carry a behavior-changing override.
-#                       # "profiled" → every installed repo package is tracked. Override-
-#                       #              tagged ones are source-built (pkgctl_checkout +
-#                       #              makepkg); the rest take a fast path via batched
-#                       #              `checkupdates` and one terminal `sudo pacman -Syu`
-#                       #              after the source builds. Requires pacman-contrib.
-#                       # per-package pkgbuild_patch = true overrides to source-build regardless
+repo_mode = "build_from_source"  # "pacman" (default) | "build_from_source" — how repo packages are handled
+#                       # "pacman"           → repo packages only enter `sysforge update`
+#                       #                      scope if they carry a behavior-changing override.
+#                       # "build_from_source"→ every installed repo package is tracked. Override-
+#                       #                      tagged ones are source-built (pkgctl_checkout +
+#                       #                      makepkg); the rest take a fast path via batched
+#                       #                      `checkupdates` and one terminal `sudo pacman -Syu`
+#                       #                      after the source builds. Requires pacman-contrib.
+#                       # per-package enable_build_from_source = true overrides to source-build regardless
 # review = true         # PKGBUILD review gate: diff prompt before building changed
 #                       # sources (view/accept/skip/abort). false disables; --no-review
 #                       # disables per run. Non-interactive runs auto-accept + warn.
 
 # [group.<name>]        # named package set; expands into [[package]] entries at
 # packages = ["a", "b"] # load time. Optional per-group defaults (source /
-#                       # pkgbuild_patch / cache) inherit to members; an explicit
+#                       # enable_build_from_source / cache) inherit to members; an explicit
 #                       # [[package]] entry for the same name wins outright.
 
 
@@ -55,21 +56,21 @@ cache = false   # PGO build — never cache instrumented objects
 [[package]]
 name = "mesa-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "cosmic-comp-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "cosmic-panel-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "cosmic-edit-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 
 # =============================================================================
@@ -78,170 +79,170 @@ pkgbuild_patch = true
 [[package]]
 name = "egl-wayland-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "flite1"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "gtk2"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "lcevcdec"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-egl-wayland-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "lib32-gperftools"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-gtk2"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-libappindicator-gtk2"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-libdbusmenu-gtk2"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-libgcrypt15"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-libidn11"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-libindicator-gtk2"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-libjpeg6-turbo"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-libpng12"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "lib32-libtiff4"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "lib32-libvpx1.3"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-mesa-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-openssl-1.0"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-openssl-1.1"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-sbc"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-serd"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-sord"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-vulkan-icd-loader-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-wayland-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 
 [[package]]
 name = "lib32-zix"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "libinput-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "linux-steam-integration"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "openapv"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "pacman-static"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "pop-launcher-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "quirc"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "rockchip-mpp"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "volk-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "wine-cachyos"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "xavs2"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "xeve"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "xorg-xwayland-git"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true
 [[package]]
 name = "lib32-gst-plugins-base"
 source = "aur"
-pkgbuild_patch = true
+enable_build_from_source = true

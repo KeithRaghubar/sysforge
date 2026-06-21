@@ -9,7 +9,47 @@ from sysforge.primitives.config import (
     load_config,
     load_conflict_groups,
     load_consumes_inference,
+    normalize_package_entry,
+    resolve_repo_mode,
 )
+
+
+# ---------------------------------------------------------------------------
+# resolve_repo_mode (back-compat: legacy "profiled" → "build_from_source")
+# ---------------------------------------------------------------------------
+
+class TestResolveRepoMode:
+    def test_default_is_pacman(self):
+        assert resolve_repo_mode({}) == "pacman"
+        assert resolve_repo_mode(None) == "pacman"
+
+    def test_explicit_build_from_source(self):
+        assert resolve_repo_mode({"repo_mode": "build_from_source"}) == "build_from_source"
+
+    def test_legacy_profiled_maps_to_build_from_source(self):
+        assert resolve_repo_mode({"repo_mode": "profiled"}) == "build_from_source"
+
+    def test_unknown_value_passed_through(self):
+        # Validation happens at the call site; resolve only maps the legacy alias.
+        assert resolve_repo_mode({"repo_mode": "hybrid"}) == "hybrid"
+
+
+class TestNormalizePackageEntry:
+    def test_legacy_key_renamed(self):
+        assert normalize_package_entry({"name": "x", "pkgbuild_patch": True}) == {
+            "name": "x", "enable_build_from_source": True,
+        }
+
+    def test_new_key_wins_when_both_present(self):
+        entry = normalize_package_entry(
+            {"name": "x", "pkgbuild_patch": True, "enable_build_from_source": False}
+        )
+        assert entry == {"name": "x", "enable_build_from_source": False}
+
+    def test_no_legacy_key_unchanged(self):
+        assert normalize_package_entry({"name": "x", "cache": False}) == {
+            "name": "x", "cache": False,
+        }
 
 
 # ---------------------------------------------------------------------------

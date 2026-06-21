@@ -19,14 +19,22 @@ tests are unchanged.
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives.build_state import BuildState
+from sysforge.primitives.build_state import (
+    BuildState,
+    BUILD_MODE_SOURCE,
+    BUILD_MODE_PACMAN,
+)
 from sysforge.primitives.pacman import (
     get_all_installed_packages,
     get_foreign_packages,
     get_pkgbase,
 )
 from sysforge.primitives.aur import aur_info
-from sysforge.primitives.config import resolve_pkgbuild_src_dir
+from sysforge.primitives.config import (
+    resolve_pkgbuild_src_dir,
+    resolve_repo_mode,
+    REPO_MODE_SOURCE,
+)
 from sysforge.primitives.stage_ownership import load_stage_ownership
 from sysforge.packages_cmd import entry_is_inert
 
@@ -42,18 +50,19 @@ def _assemble_package_set(
     Iteration scope:
       - Every installed foreign package (`pacman -Qm`) — always.
       - Installed repo packages whose override entry sets a behavior-changing
-        field (``pkgbuild_patch``, ``cache``, ``reason``). A bare
+        field (``enable_build_from_source``, ``cache``, ``reason``). A bare
         ``source = "repo"`` entry is inert metadata and is *not* a trigger
         (matches the `sysforge packages add` validator).
-      - When ``[build] repo_mode = "profiled"`` in packages.toml, every
-        installed repo package is iterated as well (the version-check phase
-        compares against ``pkgctl repo clone``-resolved PKGBUILDs from the
-        Arch packaging repo). Designed for users who maintain a fully
-        profiled system and want repo-side version drift surfaced alongside
-        AUR drift in a single ``sysforge update`` run.
+      - When ``[build] repo_mode = "build_from_source"`` in packages.toml,
+        every installed repo package is iterated as well (the version-check
+        phase compares against ``pkgctl repo clone``-resolved PKGBUILDs from
+        the Arch packaging repo). Designed for users who maintain a fully
+        source-built system and want repo-side version drift surfaced
+        alongside AUR drift in a single ``sysforge update`` run.
 
-    `overrides_by_name` is applied as an overlay (`source`, `pkgbuild_patch`,
-    `cache`, `reason`); installed packages with no override use defaults.
+    `overrides_by_name` is applied as an overlay (`source`,
+    `enable_build_from_source`, `cache`, `reason`); installed packages with no
+    override use defaults.
     Override entries whose package is not currently installed are inert
     rules and are not iterated.
 
@@ -65,14 +74,14 @@ def _assemble_package_set(
     pkgbuild_src_dir_base = Path(pkgbuild_src_dir_raw).expanduser() if pkgbuild_src_dir_raw else None
 
     foreign = set(get_foreign_packages().keys())
-    # Behavior-changing overrides (pkgbuild_patch / cache / reason) are what
+    # Behavior-changing overrides (enable_build_from_source / cache / reason) are what
     # pull a non-foreign package into update scope. `source` alone is inert
     # metadata per the `packages add` contract.
     behavior_overridden = {
         name for name, ov in overrides_by_name.items()
         if not entry_is_inert(ov)
     }
-    repo_mode_profiled = build_cfg.get("repo_mode") == "profiled"
+    repo_mode_source = resolve_repo_mode(build_cfg) == REPO_MODE_SOURCE
 
     # build_state is the authority for "what sysforge maintains": any installed
     # package sysforge built from source (build_mode != "pacman") is tracked
@@ -82,17 +91,18 @@ def _assemble_package_set(
     # sf-build. `build_mode = "pacman"` records are inert install-markers
     # written by sync_with_installed for everything else and are excluded.
     source_built = {n for n, e in build_state_pkgs.items()
-                    if e.get("build_mode", "pacman") != "pacman"}
+                    if e.get("build_mode", BUILD_MODE_PACMAN) != BUILD_MODE_PACMAN}
 
     # Live install set: every installed foreign + every non-foreign package
     # carrying a behavior-changing override + everything sysforge source-built.
-    # With repo_mode = "profiled", also pull in every installed repo package.
+    # With repo_mode = "build_from_source", also pull in every installed repo
+    # package.
     all_installed = get_all_installed_packages()
     target_names = {n for n in all_installed
                     if n in foreign
                     or n in behavior_overridden
                     or n in source_built
-                    or (repo_mode_profiled and n not in foreign)}
+                    or (repo_mode_source and n not in foreign)}
 
     # Stage-owned packages: skipped by default so `sysforge update` doesn't
     # double-process kernel-owned packages alongside `sysforge run kernel`.
@@ -174,15 +184,15 @@ def _assemble_package_set(
 
         Only meaningful when ``source == "repo"``. Returns:
           - ``"source"`` if the package has a behavior-changing override
-            (``pkgbuild_patch`` / ``cache`` / ``reason``) **or** sysforge
-            already source-built it (build_state ``build_mode != "pacman"``)
+            (``enable_build_from_source`` / ``cache`` / ``reason``) **or**
+            sysforge already source-built it (build_state ``build_mode != "pacman"``)
             — it goes through pkgctl-clone + makepkg-with-flags. A
             source-built repo package must take this path, not the pacman
             fast path: a deferred ``pacman -Syu`` would be a no-op anyway
             (``IgnoreGroup = sf-build`` shields the installed artifact), so
             the only way to actually refresh it is to rebuild from source.
           - ``"pacman"`` if it has no override and was not source-built, in
-            scope only because ``repo_mode = "profiled"`` is set. These skip
+            scope only because ``repo_mode = "build_from_source"`` is set. These skip
             source sync and get version-checked via the batched
             ``checkupdates`` call; upgrades are deferred to a single
             ``sudo pacman -Syu`` at the end of the update.
@@ -203,7 +213,7 @@ def _assemble_package_set(
         resolved_source = _resolve_source(name, override, bs_entry)
         resolved_repo_class = _resolve_repo_class(name, resolved_source, bs_entry)
 
-        if bs_entry is not None and bs_entry.get("build_mode", "profiled") != "pacman":
+        if bs_entry is not None and bs_entry.get("build_mode", BUILD_MODE_SOURCE) != BUILD_MODE_PACMAN:
             pkg = dict(bs_entry)
             if resolved_source and "source" not in pkg:
                 pkg["source"] = resolved_source

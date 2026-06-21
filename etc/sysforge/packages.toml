@@ -20,7 +20,8 @@
 #                            HINT for how to obtain the package; set when
 #                            classification is ambiguous. Does NOT by itself put
 #                            the package under tracking (building it does).
-#   pkgbuild_patch optional  true = extract and patch PKGBUILD flags before build
+#   enable_build_from_source optional  true = build this repo package from source
+#                            instead of installing the binary via pacman
 #   cache          optional  false = disable ccache/sccache (required for PGO)
 #
 # An entry with only `name` (or only `name` + `source`) has no override
@@ -31,30 +32,32 @@
 # AUR packages are resolved via the PKGBUILD directory set in flag_profiles.toml
 # ([paths] pkgbuild_src_dir) or [build] pkgbuild_src_dir below; missing clones
 # are auto-fetched. Repo packages are installed via pacman -S --needed (no
-# build step) unless repo_mode = "profiled" is set or pkgbuild_patch = true.
+# build step) unless repo_mode = "build_from_source" is set or
+# enable_build_from_source = true.
 # =============================================================================
 
 # [build]
 # pkgbuild_src_dir = "~/src"   # override the path from flag_profiles.toml for this manifest
-# repo_mode    = "pacman"  # "pacman" (default) | "profiled" — bootstrap build mode for repo
+# repo_mode    = "pacman"  # "pacman" (default) | "build_from_source" — bootstrap mode for repo
 #                          # packages, and a steady-state bulk-drift switch:
-#                          # "pacman"   → bootstrap installs repo packages via pacman -S --needed
-#                          #              (no build step). At steady-state `sysforge update`
+#                          # "pacman"           → bootstrap installs repo packages via pacman -S
+#                          #              --needed (no build step). At steady-state `sysforge update`
 #                          #              only walks repo packages it has already source-built
 #                          #              (build_state) or that carry a behavior-changing override.
-#                          # "profiled" → bootstrap builds repo packages from source with your
-#                          #              flag profile, AND `sysforge update` walks EVERY installed
-#                          #              repo package to surface drift. Of those, the overridden /
-#                          #              already-source-built subset is rebuilt from source; the
-#                          #              rest take a fast path — one batched `checkupdates` call
-#                          #              detects pending upgrades, then one terminal
-#                          #              `sudo pacman -Syu` after the source builds. Source
+#                          # "build_from_source"→ bootstrap builds repo packages from source with
+#                          #              your flag profile, AND `sysforge update` walks EVERY
+#                          #              installed repo package to surface drift. Of those, the
+#                          #              overridden / already-source-built subset is rebuilt from
+#                          #              source; the rest take a fast path — one batched
+#                          #              `checkupdates` call detects pending upgrades, then one
+#                          #              terminal `sudo pacman -Syu` after the source builds. Source
 #                          #              artifacts install first so the `IgnoreGroup = sf-build`
 #                          #              line from `sysforge setup` protects them.
-#                          # NOTE: you do NOT need "profiled" to keep a specific repo package
-#                          #       source-built — just `sysforge build <pkg>` once; build_state
-#                          #       then keeps it maintained. "profiled" is for tracking ALL of them.
-#                          # per-package pkgbuild_patch = true overrides to "profiled" regardless
+#                          # NOTE: you do NOT need "build_from_source" to keep a specific repo
+#                          #       package source-built — just `sysforge build <pkg>` once;
+#                          #       build_state then keeps it maintained. "build_from_source" is
+#                          #       for tracking ALL of them.
+#                          # per-package enable_build_from_source = true overrides regardless
 # # Requires `pacman-contrib` for the checkupdates fast path; without it,
 # # pacman-class packages are reported as SKIPPED_NO_CHECKUPDATES.
 # review = true            # PKGBUILD review gate: before building a package whose
@@ -73,7 +76,7 @@
 #   # Optional defaults inherited by every member (an explicit [[package]]
 #   # entry for the same name wins outright):
 #   # source = "aur"
-#   # pkgbuild_patch = true
+#   # enable_build_from_source = true
 #   # cache = false
 #
 # Members are installed by `run packages` (bootstrap) like any entry; at

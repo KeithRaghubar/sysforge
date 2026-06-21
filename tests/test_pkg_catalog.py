@@ -45,11 +45,11 @@ class TestGroupTomlBlock:
 
     def test_defaults_emitted(self):
         block = group_toml_block(
-            "x", ["a"], {"source": "aur", "pkgbuild_patch": True}
+            "x", ["a"], {"source": "aur", "enable_build_from_source": True}
         )
         data = tomllib.loads(block)["group"]["x"]
         assert data["source"] == "aur"
-        assert data["pkgbuild_patch"] is True
+        assert data["enable_build_from_source"] is True
 
     def test_empty_members(self):
         data = tomllib.loads(group_toml_block("x", []))

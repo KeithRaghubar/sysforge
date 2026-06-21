@@ -282,6 +282,10 @@ def _add_build_parser(sub):
         help="Skip the PKGBUILD review gate (full source-tree diff prompt for "
              "packages whose source changed since the last accepted build). "
              "Also configurable via [build] review = false in packages.toml.")
+    p.add_argument("--force", action="store_true", dest="force",
+        help="Unconditionally build all arguments from source for this run "
+             "only, including repo packages not yet opted in. Never prompts "
+             "for or modifies packages.toml opt-in keys.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
     p.set_defaults(verb_cls=BuildVerb)
@@ -526,13 +530,15 @@ def _add_packages_parser(sub):
     # add
     p_add = pkg_sub.add_parser("add",
         help="Add or update an override entry. Requires at least one of "
-             "--pkgbuild-patch / --no-cache / --reason.")
+             "--enable-build-from-source / --no-cache / --reason.")
     p_add.add_argument("pkg", metavar="PKG", help="Package name to add or update.")
     p_add.add_argument("--source", choices=("repo", "aur", "local"), dest="source",
         help="Pin routing (metadata; doesn't satisfy validation on its own). "
              "`local` marks a hand-maintained PKGBUILD with no remote to sync from.")
-    p_add.add_argument("--pkgbuild-patch", action="store_true", dest="pkgbuild_patch",
-        help="Patch PKGBUILD flags before build.")
+    p_add.add_argument("--enable-build-from-source", action="store_true",
+        dest="enable_build_from_source",
+        help="Build this repo package from source instead of installing the "
+             "binary via pacman.")
     p_add.add_argument("--no-cache", action="store_true", dest="no_cache",
         help="Disable ccache/sccache for this package (required for PGO).")
     p_add.add_argument("--reason", metavar="TEXT", dest="reason",

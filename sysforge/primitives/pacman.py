@@ -401,6 +401,13 @@ def batch_install_pkgs(pkg_paths: list) -> bool:
             for line in result.stderr.splitlines():
                 _log.error(line)
         return False
+    # Record sysforge's own install targets so `sysforge update`'s reconcile can
+    # tell them apart from an external `pacman -S` (which demotes a source-built
+    # entry). Best-effort: a missing marker never fails the install.
+    from sysforge.primitives.install_reconcile import record_self_install
+    record_self_install(
+        [n for n in (read_pkgname_from_file(p) for p in pkg_paths) if n]
+    )
     return True
 
 

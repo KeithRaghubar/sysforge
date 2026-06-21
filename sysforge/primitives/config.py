@@ -28,6 +28,48 @@ from sysforge.primitives.paths import (
     SYSFORGE_TOML_PATH,
 )
 
+# packages.toml [build] repo_mode values. "build_from_source" replaced the
+# legacy "profiled" token (which collided with build_state's build_mode and
+# PGO). Legacy files still parse: resolve_repo_mode() maps the old value, and
+# the file self-migrates the next time reconfigure rewrites it.
+REPO_MODE_PACMAN = "pacman"
+REPO_MODE_SOURCE = "build_from_source"
+_LEGACY_REPO_MODE_SOURCE = "profiled"
+
+# Per-package opt-in key. "enable_build_from_source" replaced the misleading
+# "pkgbuild_patch" (which never patched anything — it forced the source-build
+# path for a repo package). Stays boolean. Legacy entries are normalized to the
+# new key in expand_package_groups so every manifest consumer sees one name.
+PKG_KEY_BUILD_FROM_SOURCE = "enable_build_from_source"
+_LEGACY_PKG_KEY_BUILD_FROM_SOURCE = "pkgbuild_patch"
+
+
+def resolve_repo_mode(build_cfg: dict | None) -> str:
+    """Resolve packages.toml ``[build] repo_mode`` to a current-vocabulary value.
+
+    Returns ``"pacman"`` (default) or ``"build_from_source"``. The legacy
+    ``"profiled"`` token is mapped to ``"build_from_source"`` so existing
+    untracked user configs keep working. This is the single read chokepoint for
+    ``repo_mode``; every consumer routes through it instead of reading the raw
+    key, so the legacy alias is honored in exactly one place.
+    """
+    raw = (build_cfg or {}).get("repo_mode", REPO_MODE_PACMAN)
+    if raw == _LEGACY_REPO_MODE_SOURCE:
+        return REPO_MODE_SOURCE
+    return raw
+
+
+def normalize_package_entry(entry: dict) -> dict:
+    """Return ``entry`` with the legacy per-package key renamed in place.
+
+    Renames ``pkgbuild_patch`` → ``enable_build_from_source`` (the new key wins
+    if both are present). Mutates and returns the same dict for convenience.
+    """
+    if _LEGACY_PKG_KEY_BUILD_FROM_SOURCE in entry:
+        legacy = entry.pop(_LEGACY_PKG_KEY_BUILD_FROM_SOURCE)
+        entry.setdefault(PKG_KEY_BUILD_FROM_SOURCE, legacy)
+    return entry
+
 
 def load_sysforge_toml() -> dict:
     """Load /etc/sysforge/sysforge.toml (global sysforge settings).
@@ -156,23 +198,30 @@ def expand_package_groups(data: dict) -> list[dict]:
     """Return packages.toml ``[[package]]`` entries with ``[group.*]`` expanded.
 
     A ``[group.<name>]`` table declares ``packages = ["a", "b", ...]`` plus
-    optional per-group defaults (``source`` / ``pkgbuild_patch`` / ``cache`` /
-    ``reason``) inherited by every member. Expansion appends one synthetic
-    entry per member carrying ``group = "<name>"`` to mark its origin; an
-    explicit ``[[package]]`` entry for the same name wins outright (no field
+    optional per-group defaults (``source`` / ``enable_build_from_source`` /
+    ``cache`` / ``reason``) inherited by every member. Expansion appends one
+    synthetic entry per member carrying ``group = "<name>"`` to mark its origin;
+    an explicit ``[[package]]`` entry for the same name wins outright (no field
     merge), and the first group to claim a name wins over later groups.
+
+    This is also the single normalization point for the legacy per-package key
+    ``pkgbuild_patch`` → ``enable_build_from_source`` (via
+    ``normalize_package_entry``), so every manifest consumer sees the current
+    name regardless of file vintage.
 
     This is the single expansion point for every manifest consumer (pipeline
     packages stage, update overrides, completions, packages list, reconfigure
     summaries) — do not re-expand ``[group.*]`` anywhere else.
     """
-    entries = list(data.get("package", []))
+    entries = [normalize_package_entry(dict(e)) for e in data.get("package", [])]
     groups = data.get("group", {}) or {}
     seen = {e.get("name") for e in entries}
     for gname, gtable in groups.items():
         if not isinstance(gtable, dict):
             continue
-        defaults = {k: v for k, v in gtable.items() if k != "packages"}
+        defaults = normalize_package_entry(
+            {k: v for k, v in gtable.items() if k != "packages"}
+        )
         for name in gtable.get("packages", []):
             if not name or name in seen:
                 continue

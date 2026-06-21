@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026-06-20"
+.TH "sysforge" "1" "2026-06-21"
 .PP
 .PP
 .SH NAME
@@ -28,7 +28,7 @@ update, drift detection, and diagnostics.\&
 .PP
 \fBsysforge update\fR is the steady-state entry point: it walks the live install
 set (all foreign packages, plus repo packages selected by overrides or
-repo_mode = "profiled"), syncs sources through a rate-limited scheduler,
+repo_mode = "build_from_source"), syncs sources through a rate-limited scheduler,
 compares versions, reports toolchain-variant and compiler-flag drift, and
 rebuilds what changed.\& Before any changed source is built, the PKGBUILD
 review gate presents the full source-tree diff since the last accepted
@@ -187,6 +187,11 @@ Suppress the LLVM source pre-flight summary.\&
 \fB--no-review\fR
 .RS 4
 Skip the PKGBUILD review gate (full source-tree diff prompt for packages whose source changed since the last accepted build).\& Also configurable via [build] review = false in packages.\&toml.\&
+.PP
+.RE
+\fB--force\fR
+.RS 4
+Unconditionally build all arguments from source for this run only, including repo packages not yet opted in.\& Never prompts for or modifies packages.\&toml opt-in keys.\&
 .PP
 .RE
 \fB--state-dir\fR \fIDIR\fR
@@ -538,7 +543,7 @@ Show only entries whose package is not currently installed.\&
 .PP
 \fBsysforge packages add\fR [\fIOPTIONS\fR] \fIPKG\fR
 .PP
-Add or update an override entry.\& Requires at least one of --pkgbuild-patch / --no-cache / --reason.\&
+Add or update an override entry.\& Requires at least one of --enable-build-from-source / --no-cache / --reason.\&
 .PP
 \fBPKG\fR
 .RS 4
@@ -550,9 +555,9 @@ Package name to add or update.\&
 Pin routing (metadata; doesn'\&t satisfy validation on its own).\& `local` marks a hand-maintained PKGBUILD with no remote to sync from.\&
 .PP
 .RE
-\fB--pkgbuild-patch\fR
+\fB--enable-build-from-source\fR
 .RS 4
-Patch PKGBUILD flags before build.\&
+Build this repo package from source instead of installing the binary via pacman.\&
 .PP
 .RE
 \fB--no-cache\fR
