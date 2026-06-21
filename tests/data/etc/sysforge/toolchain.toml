@@ -45,6 +45,9 @@ skip_build = false
 # pgo     = ["llvm", "llvm-libs", "clang", "lld"]
 # non_pgo = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
 # lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
+# training_corpus = ["llvm", "mesa"]  # extra Pass-2 corpus (mesa) to enrich
+#                                     # clang.profdata; never installed. Default
+#                                     # ["llvm"]. See shipped toolchain.toml.
 #
 # For GCC, only non_pgo is used:
 # non_pgo = ["gcc", "gcc-libs"]

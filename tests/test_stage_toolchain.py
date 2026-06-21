@@ -15,6 +15,7 @@ from sysforge.pipeline.stages.toolchain import (
     ToolchainStage,
     _load_toolchain_config,
     _package_lists,
+    _resolve_training_corpus,
     _resolve_all_pkgbuilds,
     _extract_pass2_to_staging,
     _build_pass,
@@ -253,6 +254,47 @@ def test_package_lists_custom_override():
     assert pgo == ["llvm", "clang"]
     assert non_pgo == ["compiler-rt"]
     assert lib32 == []
+
+
+# ---------------------------------------------------------------------------
+# _resolve_training_corpus — Pass-2 corpus enrichment (mesa)
+# ---------------------------------------------------------------------------
+
+def test_training_corpus_default_is_llvm_only():
+    # Default ["llvm"] means no *extra* targets — historical behaviour.
+    assert _resolve_training_corpus({}) == []
+    assert _resolve_training_corpus({"packages": {}}) == []
+
+
+def test_training_corpus_strips_implicit_llvm_base():
+    # "llvm" is the implicit base; only the extras come back.
+    assert _resolve_training_corpus(
+        {"packages": {"training_corpus": ["llvm", "mesa"]}}
+    ) == ["mesa"]
+
+
+def test_training_corpus_mesa_only_without_llvm():
+    # Omitting "llvm" still yields mesa (the self-build always trains LLVM
+    # regardless, so the base is implicit either way).
+    assert _resolve_training_corpus(
+        {"packages": {"training_corpus": ["mesa"]}}
+    ) == ["mesa"]
+
+
+def test_training_corpus_drops_unknown_members(capsys):
+    out = _resolve_training_corpus(
+        {"packages": {"training_corpus": ["mesa", "qt6", "llvm"]}}
+    )
+    assert out == ["mesa"]  # unknown "qt6" dropped
+
+
+def test_training_corpus_dedups_and_coerces_string():
+    assert _resolve_training_corpus(
+        {"packages": {"training_corpus": "mesa"}}
+    ) == ["mesa"]
+    assert _resolve_training_corpus(
+        {"packages": {"training_corpus": ["mesa", "mesa", "llvm"]}}
+    ) == ["mesa"]
 
 
 # ---------------------------------------------------------------------------
@@ -1022,6 +1064,125 @@ def test_pass3_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
     assert len(pass1a) == 1, "Pass 1a must instrument llvm with -fprofile-generate"
     assert pass1a[0]["cc"] == "/usr/bin/clang"
     assert pass1a[0]["cxx"] == "/usr/bin/clang++"
+
+
+def test_pass2_corpus_enrichment_compiles_extras_into_profile(tmp_path):
+    """A non-empty corpus_map compiles the extra targets (mesa) in Pass 2 with
+    the SAME instrumented LLVM_PROFILE_FILE so their codegen profraw merges into
+    clang.profdata — never installed, never -fprofile-use."""
+    builds = tmp_path / "builds"
+    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
+    non_pgo_map = {"clang": make_pkgbuild(builds, "clang")}
+    corpus_map = {"mesa": make_pkgbuild(builds, "mesa")}
+    staging1, staging, staging3 = (
+        tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3"
+    )
+    pgo_store = tmp_path / "pgo_store"
+    pgo_store.mkdir()
+    profdata = tmp_path / "clang.profdata"
+    profdata.write_bytes(b"x" * (_PGO_PROFDATA_MIN_BYTES + 1))
+
+    options = make_options(
+        dry_run=False, rebuild_profdata=True, state_dir=tmp_path / "state"
+    )
+
+    calls = []
+
+    def fake_build_pass(label, pkgbuild_map, options, **kw):
+        calls.append({
+            "label": label,
+            "pkgs": set(pkgbuild_map.keys()),
+            "env": dict(kw.get("pgo_env") or {}),
+            "install": kw.get("install"),
+            "cfe": kw.get("compiler_flags_extra"),
+        })
+        return {}
+
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "_validate_pgo_environment"), \
+         patch(T + "_pgo_confirm"), \
+         patch(T + "_pgo_pass1_stage"), \
+         patch(T + "_profile_runtime_ldflag", return_value=None), \
+         patch(T + "_profraw_merge_daemon"), \
+         patch(T + "_merge_profraw", return_value=profdata), \
+         patch(T + "_write_profdata_version"), \
+         patch(T + "fs_provision.ensure_writable_dir"), \
+         patch(T + "fs_provision.empty_dir_contents"), \
+         patch(T + "_extract_pass2_to_staging"), \
+         patch(T + "_assert_staging_has_llvm_cmake"), \
+         patch(T + "_remove_staging"), \
+         patch(T + "_build_pass", side_effect=fake_build_pass), \
+         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
+        _build_llvm_pgo_inner(
+            pgo_map, non_pgo_map, {},
+            staging1, staging, staging3, pgo_store, options,
+            corpus_map=corpus_map,
+        )
+
+    corpus_calls = [c for c in calls if c["pkgs"] == {"mesa"}]
+    assert len(corpus_calls) == 1, "mesa corpus must be compiled exactly once"
+    cc = corpus_calls[0]
+    # Same instrumented profraw target as the Pass-2 LLVM training build, so it
+    # merges into the one clang.profdata.
+    assert cc["env"]["LLVM_PROFILE_FILE"] == f"{pgo_store}/default_%m_%p.profraw"
+    assert cc["env"]["CCACHE_DISABLE"] == "1"
+    # Never installed; never an -fprofile-use target (corpus, not consumer).
+    assert cc["install"] is False
+    assert cc["cfe"] is None
+
+
+def test_pass2_corpus_enrichment_failure_is_non_fatal(tmp_path):
+    """A corpus build that raises must NOT abort the PGO run — the toolchain
+    proceeds to Pass 3 with whatever LLVM-only profraw was collected."""
+    builds = tmp_path / "builds"
+    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
+    non_pgo_map = {"clang": make_pkgbuild(builds, "clang")}
+    corpus_map = {"mesa": make_pkgbuild(builds, "mesa")}
+    staging1, staging, staging3 = (
+        tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3"
+    )
+    pgo_store = tmp_path / "pgo_store"
+    pgo_store.mkdir()
+    profdata = tmp_path / "clang.profdata"
+    profdata.write_bytes(b"x" * (_PGO_PROFDATA_MIN_BYTES + 1))
+
+    options = make_options(
+        dry_run=False, rebuild_profdata=True, state_dir=tmp_path / "state"
+    )
+
+    seen = []
+
+    def fake_build_pass(label, pkgbuild_map, options, **kw):
+        seen.append(set(pkgbuild_map.keys()))
+        if set(pkgbuild_map.keys()) == {"mesa"}:
+            raise RuntimeError("missing makedepend under --nodeps")
+        return {}
+
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "_validate_pgo_environment"), \
+         patch(T + "_pgo_confirm"), \
+         patch(T + "_pgo_pass1_stage"), \
+         patch(T + "_profile_runtime_ldflag", return_value=None), \
+         patch(T + "_profraw_merge_daemon"), \
+         patch(T + "_merge_profraw", return_value=profdata), \
+         patch(T + "_write_profdata_version"), \
+         patch(T + "fs_provision.ensure_writable_dir"), \
+         patch(T + "fs_provision.empty_dir_contents"), \
+         patch(T + "_extract_pass2_to_staging"), \
+         patch(T + "_assert_staging_has_llvm_cmake"), \
+         patch(T + "_remove_staging"), \
+         patch(T + "_build_pass", side_effect=fake_build_pass), \
+         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
+        # Must not raise despite the mesa corpus build failing.
+        _build_llvm_pgo_inner(
+            pgo_map, non_pgo_map, {},
+            staging1, staging, staging3, pgo_store, options,
+            corpus_map=corpus_map,
+        )
+
+    # Pass 3 still ran after the failed corpus build (llvm re-optimized).
+    assert {"mesa"} in seen
+    assert any(s == {"llvm"} for s in seen), "Pass 3 must proceed after corpus failure"
 
 
 def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):

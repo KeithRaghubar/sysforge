@@ -354,6 +354,44 @@ def _package_lists(tcfg: dict) -> tuple[list[str], list[str], list[str]]:
     return pgo_pkgs, non_pgo_pkgs, lib32_pkgs
 
 
+# Known training-corpus members. "llvm" is the implicit base — the 4-pass build
+# compiles LLVM's own source regardless, so listing it is a no-op. Extra members
+# (currently only "mesa") are compiled by the instrumented stage1 clang during
+# Pass 2 *purely to enrich clang.profdata* with non-LLVM codegen patterns; they
+# are never installed and never become -fprofile-use targets (the profile stays
+# clang-keyed). See DESIGN.md §Flag/Profile System (training corpus).
+_KNOWN_CORPUS = frozenset({"llvm", "mesa"})
+_DEFAULT_TRAINING_CORPUS = ["llvm"]
+
+
+def _resolve_training_corpus(tcfg: dict) -> list[str]:
+    """Return the *extra* (non-llvm) training-corpus package names, ordered.
+
+    Reads ``[packages] training_corpus`` (default ``["llvm"]``). "llvm" is the
+    implicit base and is stripped from the result; unknown members are warned
+    and dropped; duplicates are collapsed. The returned list is exactly what
+    Pass 2 additionally compiles with the instrumented stage1 clang so their
+    codegen lands in ``clang.profdata``. An empty list means "LLVM self-build
+    only" — the historical behaviour.
+    """
+    raw = tcfg.get("packages", {}).get("training_corpus", _DEFAULT_TRAINING_CORPUS)
+    if isinstance(raw, str):
+        raw = [raw]
+    extras: list[str] = []
+    for name in raw:
+        if name == "llvm":
+            continue  # implicit base; not an "extra"
+        if name not in _KNOWN_CORPUS:
+            _log.warn(
+                f"[PGO] Unknown training_corpus member {name!r} — ignoring "
+                f"(known: {', '.join(sorted(_KNOWN_CORPUS))})",
+            )
+            continue
+        if name not in extras:
+            extras.append(name)
+    return extras
+
+
 # ---------------------------------------------------------------------------
 # PKGBUILD resolution
 # ---------------------------------------------------------------------------
@@ -2087,6 +2125,7 @@ def _build_llvm_pgo_inner(
     *,
     config_digest: str = "",
     reuse_built: bool = False,
+    corpus_map: dict[str, Path] | None = None,
 ) -> tuple[dict[str, Path], str, str, str, str]:
     """
     4-pass LLVM PGO build. Builds WITHOUT installing.
@@ -2145,6 +2184,7 @@ def _build_llvm_pgo_inner(
     """
     staged_cc = str(staging / "usr/bin/clang")
     staged_cxx = str(staging / "usr/bin/clang++")
+    corpus_map = corpus_map or {}
 
     n_pgo = len(set(pgo_map.values()))
     n_total = len(set({**pgo_map, **non_pgo_map, **lib32_map}.values()))
@@ -2453,6 +2493,41 @@ def _build_llvm_pgo_inner(
                     # and the bare profile-runtime ref drops out by order.
                     toolchain_variant="pgo_llvm",
                 )
+                # Training-corpus enrichment (mesa, …). Compiled by the SAME
+                # instrumented stage1 clang and SAME LLVM_PROFILE_FILE so their
+                # codegen profraw lands in pgo_store and merges into
+                # clang.profdata alongside the LLVM self-build's. These targets
+                # are NEVER installed and never become -fprofile-use targets —
+                # they only broaden the corpus toward graphics/C-heavy code the
+                # LLVM self-compilation under-exercises. The merge daemon is
+                # still running here, and the final _merge_profraw sweep below
+                # picks up whatever this adds. staged_deps=True keeps the
+                # no-pacman-mutation invariant (--nodeps, no --syncdeps), so the
+                # extras' makedepends must already be installed. Best-effort: a
+                # corpus build failure (missing makedep, mesa configure quirk)
+                # is logged and the PGO run proceeds with the LLVM-only profile
+                # — enrichment must never brick the toolchain build.
+                if corpus_map:
+                    try:
+                        _build_pass(
+                            f"PGO 3/4 · corpus enrich ({', '.join(corpus_map)})",
+                            corpus_map,
+                            options,
+                            cc=pass2_cc,
+                            cxx=pass2_cxx,
+                            install=False,
+                            linker_flags_extra=residual_linker_flags,
+                            pgo_build=True,
+                            pgo_env=pass2_env,
+                            staged_deps=True,
+                            toolchain_variant="pgo_llvm",
+                        )
+                    except Exception as e:
+                        _log.warn(
+                            f"[PGO] Training-corpus enrichment build failed "
+                            f"({', '.join(corpus_map)}): {e} — continuing with "
+                            "LLVM-only profile data",
+                        )
             finally:
                 stop_event.set()
                 if not options.dry_run:
@@ -3371,6 +3446,34 @@ class ToolchainStage(Stage):
         non_pgo_map = {n: pkgbuild_map[n] for n in non_pgo_pkgs}
         lib32_map = {n: pkgbuild_map[n] for n in lib32_pkgs}
 
+        # Training-corpus extras (e.g. mesa): compiled by the instrumented
+        # stage1 clang in Pass 2 purely to enrich clang.profdata with non-LLVM
+        # (graphics/C-heavy) codegen; never installed. Resolved through the same
+        # scheduler-synced PKGBUILD path as the toolchain packages. Best-effort
+        # — a resolution miss degrades to an LLVM-only corpus with a warning,
+        # never blocks the toolchain build. PGO path only (a non-PGO single-pass
+        # build generates no profraw, so the corpus is meaningless there).
+        corpus_map: dict[str, Path] = {}
+        corpus_extras = _resolve_training_corpus(tcfg) if pgo else []
+        if corpus_extras:
+            try:
+                corpus_resolved = _resolve_all_pkgbuilds(
+                    corpus_extras, config,
+                    update=not options.no_update,
+                    cleansrc=getattr(options, "cleansrc", False),
+                    cleansrc_force=getattr(options, "cleansrc_force", False),
+                )
+                corpus_map = {n: corpus_resolved[n] for n in corpus_extras}
+                _log.ui(
+                    f"[PGO] Training-corpus extras: {', '.join(corpus_extras)} "
+                    "(compiled in Pass 2 for profile enrichment; not installed)",
+                )
+            except RuntimeError as e:
+                _log.warn(
+                    f"[PGO] Could not resolve training-corpus extras "
+                    f"{corpus_extras}: {e} — proceeding with LLVM-only corpus",
+                )
+
         role_map = (
             (
                 {n: "pgo" for n in pgo_pkgs}
@@ -3457,6 +3560,7 @@ class ToolchainStage(Stage):
                     staging1, staging, staging3, pgo_store, options,
                     config_digest=config_digest,
                     reuse_built=reuse_built,
+                    corpus_map=corpus_map,
                 )
             else:
                 built_map, cc, cxx, ld, variant = _build_llvm_single(

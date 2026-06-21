@@ -194,6 +194,14 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
 - **Pass-3 builds non-pgo against the libLLVM it ships** (3a→`_extract_pass2_to_staging`→3b/3c
   with `CMAKE_PREFIX_PATH` **and** forced `-DLLVM_DIR` via `patch_llvm_dir` — prefix-path alone
   is NOT enough). staging3 needs both `llvm-libs` and `llvm`; don't collapse Pass 3 into one pass.
+- **Pass-2 training corpus has one home**: `_resolve_training_corpus(tcfg)` (reads `[packages]
+  training_corpus`, default `["llvm"]`; strips the implicit `"llvm"` base, warns+drops unknowns)
+  + the `corpus_map` second `_build_pass` inside Pass 2. Extras (mesa) compile with the **same**
+  instrumented stage1 clang + `LLVM_PROFILE_FILE` so their profraw merges into the one
+  `clang.profdata` — **never installed, never `-fprofile-use` targets** (that's Phase-3 mesa-PGO,
+  a distinct cycle). `staged_deps=True` keeps the no-pacman-mutation invariant; the build is
+  **best-effort** (a corpus failure warns and the run continues with LLVM-only profraw). PGO path
+  only. Don't add a parallel corpus builder or make it a profile consumer.
 - **libLLVM soname-bump → consumer rebuild**: facts `assess_libllvm_soname_impact`; policy
   `_gate_soname_consumers`/`_rebuild_soname_consumers` (rebuild after Gate 3, outside the
   sentinel). No parallel reverse-dep scanner.

@@ -96,6 +96,17 @@ enabled = false
 # non_pgo = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
 # lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
 #
+# training_corpus = ["llvm", "mesa"]
+#   Extra packages compiled by the instrumented stage1 clang during Pass 2 to
+#   enrich clang.profdata. "llvm" is the implicit base (the self-build always
+#   trains on LLVM); adding "mesa" broadens the corpus toward graphics/C-heavy
+#   codegen the LLVM self-compilation under-exercises, so the resulting clang is
+#   faster at compiling that style of code. Corpus members are NEVER installed
+#   and never become -fprofile-use targets — the profile stays clang-keyed.
+#   Built with --nodeps, so each extra's makedepends must already be installed;
+#   a corpus build failure is non-fatal (the run continues with LLVM-only
+#   data). Default ["llvm"] (self-build only). LLVM/PGO path only.
+#
 # The [packages] section only applies to compiler = "llvm" (the GCC path is
 # register-only — no build, no package list).
 # ---------------------------------------------------------------------------
