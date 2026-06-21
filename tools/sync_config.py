@@ -23,7 +23,9 @@ key it injects. Pure documentation comments and *commented-out example*
 settings (``# interactive = true``) have no key to anchor to, so when a shipped
 file gains such content the live file lacks, the shipped file is written verbatim
 beside the target as ``<name>.sfnew`` (pacnew-style) for the operator to diff and
-adopt manually. A stale ``.sfnew`` is removed once the drift is resolved.
+adopt manually. A stale ``.sfnew`` is removed once the drift is resolved. A
+commented example the live file has *already adopted* by uncommenting it into an
+active, identical key is not drift and does not trigger a ``.sfnew``.
 
 tomlkit is a **dev-only** dependency, pulled into an ephemeral uv overlay by the
 `make sync-config` target - it is intentionally not in pyproject.toml, so the
@@ -82,6 +84,23 @@ def _comment_signature(text: str) -> set[str]:
         if stripped.startswith("#"):
             sig.add(stripped.lstrip("#").strip())
     sig.discard("")
+    return sig
+
+
+def _active_signature(text: str) -> set[str]:
+    """Normalized set of active (uncommented, non-blank) lines in a TOML text.
+
+    The mirror of :func:`_comment_signature` over the *non-comment* lines, with the
+    same ``strip`` normalization. Used to recognise a commented-out example the live
+    file has already adopted by uncommenting it: a shipped ``# interactive = true``
+    whose uncommented text matches an active ``interactive = true`` in the live file
+    is not drift, so it must not trigger a ``.sfnew``.
+    """
+    sig: set[str] = set()
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped and not stripped.startswith("#"):
+            sig.add(stripped)
     return sig
 
 
@@ -156,7 +175,9 @@ def sync_file(shipped: Path, target: Path,
     only inject active keys (and their leading comments), so when the shipped
     file carries documentation comments or commented-out example settings the
     live file still lacks after the merge, the shipped file is dropped verbatim
-    beside the target — pacnew-style — for the operator to diff and adopt.
+    beside the target — pacnew-style — for the operator to diff and adopt. A
+    commented example whose uncommented text already exists as an identical active
+    line in the live file counts as adopted, not missing, and does not spill.
     """
     if not target.exists():
         if not dry_run:
@@ -174,9 +195,14 @@ def sync_file(shipped: Path, target: Path,
 
     # Comment/example drift the key-merge cannot carry → .sfnew companion.
     # Compare against the *post-merge* text so newly-injected keys' comments
-    # don't count as missing.
+    # don't count as missing; also subtract the live file's active lines so a
+    # commented example it already adopted by uncommenting isn't flagged as drift.
     sfnew_path = target.with_name(target.name + ".sfnew")
-    missing_comments = _comment_signature(shipped_text) - _comment_signature(merged_text)
+    missing_comments = (
+        _comment_signature(shipped_text)
+        - _comment_signature(merged_text)
+        - _active_signature(merged_text)
+    )
     sfnew_written: Path | None = None
     if missing_comments:
         sfnew_written = sfnew_path

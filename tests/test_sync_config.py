@@ -30,6 +30,7 @@ def _load_module():
 sync_config = _load_module()
 sync_file = sync_config.sync_file
 _comment_signature = sync_config._comment_signature
+_active_signature = sync_config._active_signature
 
 
 def _sfnew(target: Path) -> Path:
@@ -102,6 +103,34 @@ def test_sfnew_written_for_commented_example_drift(tmp_path):
     assert _sfnew(target).read_text(encoding="utf-8") == shipped.read_text(encoding="utf-8")
     # The live file itself is untouched.
     assert "interactive" not in target.read_text(encoding="utf-8")
+
+
+def test_no_sfnew_when_commented_example_adopted_uncommented(tmp_path):
+    """A commented example the live file has already adopted by uncommenting it
+    into an identical active key is not drift — no .sfnew should be written."""
+    shipped = tmp_path / "ship.toml"
+    target = tmp_path / "live.toml"
+    shipped.write_text(
+        "[kernel]\n"
+        "enabled = true\n"
+        "# interactive = true\n",
+        encoding="utf-8",
+    )
+    # Live file already carries `interactive` uncommented as an active key.
+    target.write_text(
+        "[kernel]\nenabled = true\ninteractive = true\n", encoding="utf-8")
+
+    status, added, sfnew = sync_file(shipped, target, dry_run=False)
+
+    assert status == "up to date"
+    assert added == []
+    assert sfnew is None
+    assert not _sfnew(target).exists()
+    # A *differing* value is still genuine drift → .sfnew reappears.
+    target.write_text(
+        "[kernel]\nenabled = true\ninteractive = false\n", encoding="utf-8")
+    _, _, sfnew2 = sync_file(shipped, target, dry_run=False)
+    assert sfnew2 == _sfnew(target)
 
 
 def test_no_sfnew_when_comments_match(tmp_path):
@@ -177,6 +206,18 @@ def test_comment_signature_normalizes_and_ignores_non_comments():
         "value = 2  # inline comment, not a full-line comment\n"
     )
     assert sig == {"alpha", "beta"}
+
+
+def test_active_signature_collects_uncommented_lines():
+    sig = _active_signature(
+        "# doc comment\n"
+        "[ui]\n"
+        "  color = true  \n"
+        "\n"
+        "# interactive = true\n"
+    )
+    # Active (non-comment, non-blank) lines, strip-normalized; comments excluded.
+    assert sig == {"[ui]", "color = true"}
 
 
 def test_default_target_uses_config_dir_directly(monkeypatch):
