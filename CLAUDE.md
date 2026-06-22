@@ -73,6 +73,12 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   PGO flags (`makepkg_flags._strip_pgo_flags`, after `compiler_flags_extra` injection).
   Reuse `_strip_lld_flags`/`_strip_pgo_flags`; don't add an i686 per-profile rule. See
   DESIGN.md §Flag/Profile System.
+- **musl-static flag scrubs live at the same conf-emit home**: `emit_makepkg_conf(is_musl_static=True)`
+  forces the bfd linker (`-fuse-ld=lld`→`bfd`), strips lld-only tokens, and scrubs PGO flags for
+  static-musl bootstraps (e.g. `pacman-static`) — lld+`-static`+musl segfaults at startup and
+  musl-gcc can't read a clang `.profdata`. Detection has one home: `pkgbuild_meta.is_musl_static_build`
+  (musl makedepend + build-time `CC=musl-gcc`/`-static`). Reuse the same strip helpers; don't add a
+  parallel musl rule. See DESIGN.md §Flag/Profile System.
 - **Build CPU/IO throttling has one home**: `primitives/build_throttle.py`
   (`resolve_throttle` — `sysforge.toml [build]` defaults + per-profile override; the four keys
   `nice`/`ionice`/`cpu_quota`/`jobs` are in `profile.SYSFORGE_KEYS`, never conf/env). Two

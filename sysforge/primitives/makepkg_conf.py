@@ -29,8 +29,8 @@ from sysforge import log
 from sysforge.primitives.build_throttle import apply_jobs_to_makeflags
 from sysforge.primitives.config import parse_system_makepkg_conf
 from sysforge.primitives.makepkg_flags import (
-    _detect_linker_from_ldflags,
     _detect_linker_from_rustflags,
+    _detect_linker_from_ldflags,
     _inject_linker,
     _replace_rustflags_linker,
     _scrub_lib32_arch_flags,
@@ -54,6 +54,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       pkgbuild_has_hardcoded_gcc: bool = False,
                       reactive_gcc_fallback: bool = False,
                       is_lib32: bool = False,
+                      is_musl_static: bool = False,
                       toolchain_variant: str | None = None,
                       jobs: int | None = None):
     """
@@ -105,6 +106,13 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     x86-64[-v2|v3|v4]`` are 64-bit ISA levels — both are rejected by
     multilib GCC when building i686 objects. Set by callers that detect
     lib32-* from the PKGBUILD directory name.
+
+    is_musl_static: when True (a static-musl bootstrap like pacman-static,
+    detected via ``pkgbuild_meta.is_musl_static_build``), force the bfd linker
+    and scrub PGO flags from CFLAGS/CXXFLAGS/LDFLAGS in both profile overrides
+    and system-conf passthrough. ``-fuse-ld=lld`` + ``-static`` + musl yields a
+    startup-crashing binary, and musl-gcc cannot consume a clang ``.profdata``.
+    The musl analogue of ``is_lib32``; reuses the same strip helpers.
     """
     env_keys = CONF_KEY_MAP.get("env", set())
     # Toolchain keys (CC, CXX) are delivered via subprocess env, not via the
@@ -405,6 +413,51 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                         f"profile {key}: {stripped_tokens}"
                     )
                     profile_overrides[key] = cleaned
+
+    # musl-static guards (pacman-static et al.): force the bfd linker and scrub
+    # PGO flags. -fuse-ld=lld + -static + musl produces a startup-crashing binary
+    # (the conftest segfaults at configure time), and musl-gcc cannot consume a
+    # clang .profdata. The failing flags usually live in the system conf
+    # (/etc/makepkg-clang.conf carries -fuse-ld=lld), so for each key we resolve
+    # the effective value (profile override else unquoted system conf), scrub it,
+    # and write it back as an *owned* override — so the emission loop emits the
+    # scrubbed value once and never re-emits the raw system value.
+    if is_musl_static:
+        def _effective(key):
+            if key in profile_overrides:
+                return profile_overrides[key]
+            if key in system_assignments:
+                raw = system_assignments[key].strip()
+                return raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
+            return None
+
+        ldflags = _effective("LDFLAGS")
+        if ldflags is not None:
+            changed = False
+            if _detect_linker_from_ldflags(ldflags) == "lld":
+                ldflags = _inject_linker(ldflags, "bfd")
+                changed = True
+                _conf_log.info("musl-static build: forced bfd linker "
+                               "(-fuse-ld=lld + -static + musl crashes at runtime)")
+            ldflags, stripped = _strip_lld_flags(ldflags)
+            if stripped:
+                changed = True
+                _conf_log.info(f"musl-static build: stripped lld-only flag(s) from "
+                               f"LDFLAGS: {stripped}")
+            # Only claim ownership when we actually scrubbed something; a
+            # pristine LDFLAGS stays in system-conf passthrough untouched.
+            if changed:
+                profile_overrides["LDFLAGS"] = ldflags
+
+        for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
+            val = _effective(key)
+            if val is None:
+                continue
+            cleaned, stripped = _strip_pgo_flags(val)
+            if stripped:
+                _conf_log.info(f"musl-static build: stripped PGO profile flag(s) "
+                               f"from {key}: {stripped}")
+                profile_overrides[key] = cleaned
 
     # Build output lines: system conf keys in their original raw form,
     # profile-overridden keys substituted inline, new profile keys appended.

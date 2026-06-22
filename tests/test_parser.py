@@ -9,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from sysforge.primitives.pkgbuild_meta import has_hardcoded_gcc, parse_pkgbuild
+from sysforge.primitives.pkgbuild_meta import (
+    has_hardcoded_gcc,
+    is_musl_static_build,
+    parse_pkgbuild,
+)
 
 TESTS_DIR = Path(__file__).parent
 PKGBUILDS_DIR = TESTS_DIR / "data/PKGBUILDs"
@@ -523,3 +527,97 @@ def test_hardcoded_gcc_verify_function_not_scanned(tmp_path):
     )
     parsed = parse_pkgbuild(pkgbuild)
     assert has_hardcoded_gcc(parsed) is False
+
+
+# ---------------------------------------------------------------------------
+# is_musl_static_build (pacman-static-style static-musl bootstraps)
+# ---------------------------------------------------------------------------
+
+def _parse_musl_pkgbuild(tmp_path, *, makedepends, build_body):
+    """Write a PKGBUILD with the given makedepends array + build() body."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        f"makedepends=({makedepends})\n"
+        "build() {\n"
+        f"{build_body}\n"
+        "}\n"
+    )
+    return parse_pkgbuild(pkgbuild)
+
+
+def test_musl_static_cc_musl_gcc(tmp_path):
+    """pacman-static pattern: musl makedepend + export CC=musl-gcc."""
+    parsed = _parse_musl_pkgbuild(
+        tmp_path,
+        makedepends="'meson' 'cmake' 'musl' 'kernel-headers-musl'",
+        build_body="  export CC=musl-gcc\n  make",
+    )
+    assert is_musl_static_build(parsed) is True
+
+
+def test_musl_static_static_ldflags(tmp_path):
+    """Detected via the -static LDFLAGS append alone (CC set elsewhere)."""
+    parsed = _parse_musl_pkgbuild(
+        tmp_path,
+        makedepends="'musl'",
+        build_body='  export LDFLAGS="$LDFLAGS -static"\n  make',
+    )
+    assert is_musl_static_build(parsed) is True
+
+
+def test_musl_static_quoted_cc_value(tmp_path):
+    """export CC="musl-gcc -fno-stack-protector" form."""
+    parsed = _parse_musl_pkgbuild(
+        tmp_path,
+        makedepends="'kernel-headers-musl'",
+        build_body='  export CC="musl-gcc -fno-stack-protector"\n  make',
+    )
+    assert is_musl_static_build(parsed) is True
+
+
+def test_musl_static_requires_makedepend(tmp_path):
+    """musl-gcc in body but no musl makedepend → not authoritative, False."""
+    parsed = _parse_musl_pkgbuild(
+        tmp_path,
+        makedepends="'meson' 'cmake'",
+        build_body="  export CC=musl-gcc\n  make",
+    )
+    assert is_musl_static_build(parsed) is False
+
+
+def test_musl_static_makedepend_without_build_signal(tmp_path):
+    """musl makedepend but no CC=musl-gcc / -static in body → False."""
+    parsed = _parse_musl_pkgbuild(
+        tmp_path,
+        makedepends="'musl'",
+        build_body="  make",
+    )
+    assert is_musl_static_build(parsed) is False
+
+
+def test_musl_static_static_libgcc_not_matched(tmp_path):
+    """Word-boundary: -static-libgcc must not trip the -static detector."""
+    parsed = _parse_musl_pkgbuild(
+        tmp_path,
+        makedepends="'musl'",
+        build_body='  export LDFLAGS="$LDFLAGS -static-libgcc"\n  make',
+    )
+    assert is_musl_static_build(parsed) is False
+
+
+def test_musl_static_plain_gcc_pkgbuild(tmp_path):
+    parsed = _parse_musl_pkgbuild(
+        tmp_path,
+        makedepends="'cmake'",
+        build_body="  gcc -O2 -o foo foo.c",
+    )
+    assert is_musl_static_build(parsed) is False
+
+
+def test_musl_static_empty_parsed():
+    assert is_musl_static_build({}) is False
+    assert is_musl_static_build({"globals": {}, "functions": {}}) is False

@@ -41,7 +41,11 @@ from sysforge.primitives.config import (
     load_consumes_inference,
 )
 from sysforge.primitives.paths import SYSFORGE_TOML_PATH, TOOLCHAIN_PATH
-from sysforge.primitives.pkgbuild_meta import has_hardcoded_gcc, parse_pkgbuild
+from sysforge.primitives.pkgbuild_meta import (
+    has_hardcoded_gcc,
+    is_musl_static_build,
+    parse_pkgbuild,
+)
 # Flag-string manipulation lives in makepkg_flags (owns the [FLAG] tag).
 # Re-exported here so emit_makepkg_conf and the CLI/update call sites
 # that import `expand_makepkg_flags` from makepkg_wrapper keep working.
@@ -533,6 +537,9 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # ``pkgname`` is interpolated. Matches the lib32 detection used for the
         # GCC flag guard in _run_build.
         is_lib32 = Path(pkgbuild_path).parent.name.startswith("lib32-")
+        # Static-musl bootstraps (pacman-static): the profile's lld linker +
+        # -static + musl crashes at runtime, so force bfd / scrub PGO at emit.
+        is_musl_static = is_musl_static_build(pkgmeta)
         while True:
             try:
                 with emit_makepkg_conf(
@@ -547,6 +554,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                         pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
                         reactive_gcc_fallback=_reactive_retry_used,
                         is_lib32=is_lib32,
+                        is_musl_static=is_musl_static,
                         toolchain_variant=toolchain_variant,
                         jobs=resolve_throttle(resolved_profile, config).jobs) as conf_path:
                     _invoke_with_retry(

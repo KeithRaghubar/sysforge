@@ -11,6 +11,7 @@ execute, or modify any PKGBUILD. All mutation lives in pkgbuild_patcher.py.
 Public API:
     parse_pkgbuild(path) -> {"globals": {...}, "functions": {...}}
     has_hardcoded_gcc(parsed) -> bool
+    is_musl_static_build(parsed) -> bool
 """
 import re
 
@@ -485,6 +486,74 @@ def has_hardcoded_gcc(parsed):
         if _HARDCODED_GCC_CMD.search(body):
             return True
         if _HARDCODED_GCC_ASSIGN.search(body):
+            return True
+    return False
+
+
+# musl makedepends that mark a PKGBUILD as a static-musl bootstrap (it builds
+# its bundled libs against musl rather than glibc). pacman-static is the
+# canonical example: makedepends=(... 'musl' 'kernel-headers-musl' ...).
+_MUSL_MAKEDEPENDS = ("musl", "kernel-headers-musl")
+
+# Matches CC=musl-gcc as a build-time assignment (standalone, make arg, or
+# exported), mirroring _HARDCODED_GCC_ASSIGN's terminator handling. Also the
+# value form `export CC="musl-gcc -..."`.
+_MUSL_CC_ASSIGN = re.compile(
+    r"""
+    (?:^|[ \t;&|])                # start of line or shell separator
+    (?:CC|CXX|HOSTCC|HOSTCXX)     # build-time compiler variable
+    \+?=                          # literal = (or += append)
+    ['"]?                         # optional opening quote
+    musl-(?:gcc|g\+\+|clang)      # musl wrapper compiler
+    (?=[ \t'"&;|]|$)              # word-terminated (lookahead)
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
+# Matches a `-static` token added to LDFLAGS in a build-time function body
+# (e.g. `export LDFLAGS="$LDFLAGS -static"`), word-bounded so `-static-libgcc`
+# does not match.
+_STATIC_LDFLAGS = re.compile(
+    r"""
+    LDFLAGS                       # the linker-flags variable
+    [^\n]*?                       # anything up to the token on the same line
+    (?<![\w-])-static(?![\w-])    # a bare -static token
+    """,
+    re.VERBOSE,
+)
+
+
+def is_musl_static_build(parsed):
+    """
+    True if the PKGBUILD bootstraps its libs as **static musl** binaries
+    (``CC=musl-gcc`` + ``-static``), e.g. pacman-static.
+
+    Such builds cannot take the sysforge profile's lld linker (``-fuse-ld=lld``
+    + ``-static`` + musl produces a startup-crashing binary) or its PGO flags
+    (musl-gcc cannot consume a clang ``.profdata``). Callers pass the result to
+    ``emit_makepkg_conf(is_musl_static=True)`` to scrub those flags — the musl
+    analogue of the ``is_lib32`` scrub.
+
+    Detection is conservative (matching ``has_hardcoded_gcc``'s stance): it
+    requires a ``musl``/``kernel-headers-musl`` makedepend **and** a build-time
+    signal — a ``CC=musl-gcc`` assignment or a ``-static`` LDFLAGS append. The
+    makedepend alone is insufficient (a package may merely link one static lib);
+    False is not authoritative.
+    """
+    if not isinstance(parsed, dict):
+        return False
+    globals_ = parsed.get("globals", {})
+    makedeps = globals_.get("makedepends", []) or []
+    if not any(d in _MUSL_MAKEDEPENDS for d in makedeps):
+        return False
+
+    funcs = parsed.get("functions", {})
+    for name, body in funcs.items():
+        if not body:
+            continue
+        if name not in _SCAN_FUNCS_LITERAL and not name.startswith("package_"):
+            continue
+        if _MUSL_CC_ASSIGN.search(body) or _STATIC_LDFLAGS.search(body):
             return True
     return False
 
