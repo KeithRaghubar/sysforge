@@ -609,9 +609,30 @@ def _collect_graphics_findings(config) -> list[diag.Finding]:
 
 def _collect_pacman_findings() -> list[diag.Finding]:
     """Local pacman-db consistency, stale lock, unmerged .pacnew/.pacsave,
-    orphans. Read-only — never syncs. See ``primitives/system_probe.py``."""
+    orphans, plus sysforge libalpm-hook drift. Read-only — never syncs or
+    writes. See ``primitives/system_probe.py`` / ``primitives/pacman_hooks.py``."""
     from sysforge.primitives import system_probe
-    return system_probe.collect_system_findings()
+    findings = system_probe.collect_system_findings()
+    findings += _collect_hook_findings()
+    return findings
+
+
+def _collect_hook_findings() -> list[diag.Finding]:
+    """Report sysforge libalpm hooks that are missing from or stale against the
+    shipped source — these silently disable `sysforge update`'s reminder and
+    auto-demote logic. Read-only; remediation is `sysforge setup`."""
+    from sysforge.primitives import pacman_hooks
+
+    out: list[diag.Finding] = []
+    for art, state in pacman_hooks.diff_status():
+        if state == pacman_hooks.STATE_OK:
+            continue
+        verb = "missing" if state == pacman_hooks.STATE_MISSING else "stale"
+        out.append(diag.Finding(
+            "pacman", diag.SEV_WARN, f"hook_{state}:{art.name}",
+            f"sysforge pacman hook {verb}: {art.dest}",
+            remediation="run `sysforge setup` to install/refresh sysforge's pacman hooks"))
+    return out
 
 
 def _collect_state_findings(args) -> list[diag.Finding]:

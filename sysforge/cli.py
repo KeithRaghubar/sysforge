@@ -634,7 +634,8 @@ def _add_state_parser(sub):
 
 def _add_setup_parser(sub):
     p = sub.add_parser("setup",
-        help="Configure system integration (pacman IgnoreGroup for sf-build).")
+        help="Configure system integration (pacman IgnoreGroup for sf-build; "
+             "install/refresh sysforge's pacman hooks).")
     p.add_argument("--pacman-conf", metavar="FILE", dest="pacman_conf",
         help="Path to pacman.conf (default: /etc/pacman.conf).")
     p.set_defaults(verb_cls=SetupVerb)

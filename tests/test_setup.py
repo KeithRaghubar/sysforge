@@ -6,14 +6,22 @@ the cmd_setup entry point (mocked filesystem and stdin).
 """
 import os
 import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from sysforge.primitives import pacman_hooks
 from sysforge.setup_cmd import _check_ignore_group, _patch_conf_text, cmd_setup
+
+
+@pytest.fixture(autouse=True)
+def _hooks_in_sync(monkeypatch):
+    """Default: pretend sysforge's pacman hooks are already installed so the
+    IgnoreGroup-focused tests never touch the real system via sudo. Hook-block
+    tests override diff_status explicitly."""
+    monkeypatch.setattr(pacman_hooks, "diff_status", lambda: [])
 
 
 # ---------------------------------------------------------------------------
@@ -264,3 +272,67 @@ def test_cmd_setup_conf_not_found(tmp_path, capsys):
 
     err = capsys.readouterr().err
     assert "not found" in err
+
+
+# ---------------------------------------------------------------------------
+# cmd_setup — pacman hook provisioning block
+# ---------------------------------------------------------------------------
+
+def _conf_already_configured(tmp_path):
+    conf = tmp_path / "pacman.conf"
+    conf.write_text(_CONF_WITH_SF_BUILD)
+    args = MagicMock()
+    args.pacman_conf = str(conf)
+    return args
+
+
+def _missing_status():
+    art = pacman_hooks.HookArtifact(
+        pacman_hooks.HOOK_DEST_DIR / "sysforge-kernel.hook", b"x", 0o644)
+    return [(art, pacman_hooks.STATE_MISSING)]
+
+
+def test_setup_hooks_up_to_date(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(pacman_hooks, "diff_status", lambda: [])
+    cmd_setup(_conf_already_configured(tmp_path))
+    assert "hooks up to date" in capsys.readouterr().out
+
+
+def test_setup_hooks_install_on_yes(tmp_path, capsys, monkeypatch):
+    status = _missing_status()
+    monkeypatch.setattr(pacman_hooks, "diff_status", lambda: status)
+    provisioned = []
+
+    def fake_provision(s=None):
+        provisioned.append(s)
+        return [(status[0][0].dest, pacman_hooks.STATE_MISSING)]
+
+    monkeypatch.setattr(pacman_hooks, "provision", fake_provision)
+    with patch("builtins.input", return_value="y"):
+        cmd_setup(_conf_already_configured(tmp_path))
+
+    assert provisioned  # provision() was called
+    assert "installed" in capsys.readouterr().out
+
+
+def test_setup_hooks_skip_on_no(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(pacman_hooks, "diff_status", _missing_status)
+    monkeypatch.setattr(pacman_hooks, "provision",
+                        lambda s=None: pytest.fail("must not provision on 'no'"))
+    with patch("builtins.input", return_value="n"):
+        cmd_setup(_conf_already_configured(tmp_path))
+    assert "not modified" in capsys.readouterr().err
+
+
+def test_setup_hooks_priv_failure_prints_manual(tmp_path, capsys, monkeypatch):
+    from sysforge.primitives.fs_provision import FsProvisionError
+
+    monkeypatch.setattr(pacman_hooks, "diff_status", _missing_status)
+
+    def boom(s=None):
+        raise FsProvisionError("sudo not available")
+
+    monkeypatch.setattr(pacman_hooks, "provision", boom)
+    with patch("builtins.input", return_value="y"):
+        cmd_setup(_conf_already_configured(tmp_path))
+    assert "sudo sysforge setup" in capsys.readouterr().err

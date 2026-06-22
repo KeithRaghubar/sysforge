@@ -29,6 +29,14 @@ sysforge = "sysforge.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["sysforge"]
 
+# Ship the pacman hook sources + helper inside the wheel so an installed
+# sysforge (not just a source checkout) has a canonical copy to provision/
+# verify against. Consumed by primitives/pacman_hooks.py; the PKGBUILD still
+# installs the live copies into /usr/share/libalpm/hooks and /usr/lib/sysforge.
+[tool.hatch.build.targets.wheel.force-include]
+"etc/pacman.d/hooks" = "sysforge/_data/pacman-hooks"
+"tools/pacman-hook-helper.sh" = "sysforge/_data/pacman-hook-helper.sh"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

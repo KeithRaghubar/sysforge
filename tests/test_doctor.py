@@ -1300,6 +1300,39 @@ def test_cmd_doctor_repo_excludes_foreign(tmp_path, monkeypatch, capsys):
 # pacman local-db helpers used by doctor
 # ---------------------------------------------------------------------------
 
+def test_collect_hook_findings_reports_missing_and_stale(monkeypatch):
+    from sysforge.primitives import pacman_hooks
+
+    a_missing = pacman_hooks.HookArtifact(
+        pacman_hooks.HOOK_DEST_DIR / "sysforge-kernel.hook", b"k", 0o644)
+    a_stale = pacman_hooks.HookArtifact(
+        pacman_hooks.HOOK_DEST_DIR / "sysforge-buildstate.hook", b"b", 0o644)
+    a_ok = pacman_hooks.HookArtifact(
+        pacman_hooks.HOOK_DEST_DIR / "sysforge-toolchain.hook", b"t", 0o644)
+    monkeypatch.setattr(pacman_hooks, "diff_status", lambda: [
+        (a_missing, pacman_hooks.STATE_MISSING),
+        (a_stale, pacman_hooks.STATE_STALE),
+        (a_ok, pacman_hooks.STATE_OK),
+    ])
+
+    findings = doctor._collect_hook_findings()
+    ids = {f.check_id for f in findings}
+    assert ids == {"hook_missing:sysforge-kernel.hook",
+                   "hook_stale:sysforge-buildstate.hook"}
+    assert all(f.severity == "warn" for f in findings)
+    assert all("sysforge setup" in f.remediation for f in findings)
+
+
+def test_collect_hook_findings_clean(monkeypatch):
+    from sysforge.primitives import pacman_hooks
+
+    a_ok = pacman_hooks.HookArtifact(
+        pacman_hooks.HOOK_DEST_DIR / "sysforge-kernel.hook", b"k", 0o644)
+    monkeypatch.setattr(pacman_hooks, "diff_status",
+                        lambda: [(a_ok, pacman_hooks.STATE_OK)])
+    assert doctor._collect_hook_findings() == []
+
+
 def test_pacman_get_package_files_filters_dirs(tmp_path):
     _mk_pkg(tmp_path, "foo", "1.0-1",
             files=["usr/", "usr/bin/", "usr/bin/foo", "usr/lib/libfoo.so.1"])

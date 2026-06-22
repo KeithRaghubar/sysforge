@@ -28,6 +28,8 @@ import re
 import sys
 from pathlib import Path
 
+from sysforge.primitives import pacman_hooks
+from sysforge.primitives.fs_provision import FsProvisionError
 from sysforge.primitives.prompt import prompt_choice
 
 
@@ -134,6 +136,15 @@ _MANUAL_INSTRUCTION = """\
 """
 
 
+_HOOK_MANUAL_INSTRUCTION = """\
+[SYSFORGE] Could not install pacman hooks ({err}).
+
+  The hooks must be written into root-owned system directories. Re-run as root:
+
+      sudo sysforge setup
+"""
+
+
 def cmd_setup(args) -> None:
     """Entry point for 'sysforge setup'."""
     conf_path = Path(getattr(args, "pacman_conf", None) or PACMAN_CONF)
@@ -149,29 +160,66 @@ def cmd_setup(args) -> None:
 
     if _check_ignore_group(conf_text):
         print(f"[SYSFORGE] Already configured: IgnoreGroup = {_IGNORE_GROUP} is present in {conf_path}.")
+    else:
+        print(
+            f"\n  sysforge stamps every package it builds with the '{_IGNORE_GROUP}' pacman group.\n"
+            f"  Adding 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path} prevents 'pacman -Syu'\n"
+            f"  from overwriting those packages with unoptimized repo binaries.\n"
+        )
+
+        answer = prompt_choice(
+            f"  Add 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path}? [y/N] ",
+            choices=("y", "yes", "n"),
+            default="n",
+        )
+
+        if answer not in ("y", "yes"):
+            print(_RISK_WARNING, file=sys.stderr)
+        else:
+            patched = _patch_conf_text(conf_text)
+            if _write_conf(conf_path, patched):
+                print(f"[SYSFORGE] Added 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path}.")
+            else:
+                print(_MANUAL_INSTRUCTION.format(path=conf_path), file=sys.stderr)
+
+    _setup_pacman_hooks()
+
+
+def _setup_pacman_hooks() -> None:
+    """Install or refresh sysforge's libalpm hooks + helper to match the shipped
+    source. The hooks feed `sysforge update`'s reminder/auto-demote logic; the
+    PKGBUILD installs them at package time, but a source-checkout dev workflow
+    (or an edited hook) needs this runtime refresh."""
+    status = pacman_hooks.diff_status()
+    pending = [(art, state) for art, state in status if state != pacman_hooks.STATE_OK]
+
+    if not pending:
+        print("[SYSFORGE] pacman hooks up to date.")
         return
 
-    print(
-        f"\n  sysforge stamps every package it builds with the '{_IGNORE_GROUP}' pacman group.\n"
-        f"  Adding 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path} prevents 'pacman -Syu'\n"
-        f"  from overwriting those packages with unoptimized repo binaries.\n"
-    )
+    print("\n  sysforge ships pacman hooks that record kernel/toolchain/build-state")
+    print("  changes for `sysforge update`. The following are out of sync:")
+    for art, state in pending:
+        print(f"    {state:>7}  {art.dest}")
+    print()
 
     answer = prompt_choice(
-        f"  Add 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path}? [y/N] ",
+        "  Install/refresh these pacman hooks? [y/N] ",
         choices=("y", "yes", "n"),
         default="n",
     )
-
     if answer not in ("y", "yes"):
-        print(_RISK_WARNING, file=sys.stderr)
+        print("[SYSFORGE] pacman hooks not modified.", file=sys.stderr)
         return
 
-    patched = _patch_conf_text(conf_text)
-    if _write_conf(conf_path, patched):
-        print(f"[SYSFORGE] Added 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path}.")
-    else:
-        print(_MANUAL_INSTRUCTION.format(path=conf_path), file=sys.stderr)
+    try:
+        written = pacman_hooks.provision(status)
+    except FsProvisionError as e:
+        print(_HOOK_MANUAL_INSTRUCTION.format(err=e), file=sys.stderr)
+        return
+
+    for dest, state in written:
+        print(f"[SYSFORGE] {'installed' if state == pacman_hooks.STATE_MISSING else 'refreshed'} {dest}.")
 
 
 # ---------------------------------------------------------------------------

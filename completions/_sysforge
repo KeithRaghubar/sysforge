@@ -45,7 +45,7 @@ _sysforge_commands() {
     'packages:manage packages.toml override entries (list, add, remove)'
     'state:inspect or repair build_state.toml (list, repair, orphans)'
     'run:execute a pipeline stage'
-    'setup:configure system integration (pacman IgnoreGroup for sf-build)'
+    'setup:configure system integration (pacman IgnoreGroup for sf-build; install/refresh pacman hooks)'
     'env:print the inherited env chain (shell vars, parent processes, shell init files)'
     'log:page the unified or per-package sysforge log through $PAGER'
     'config:adopt .sfnew/.pacnew config companions left by make sync-config (merge)'

@@ -180,6 +180,15 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   `mkdir`/`chown`/`sudo` path; the shipped `tmpfiles.d`/`sysusers.d` (both PKGBUILDs) and
   bootstrap `configure.py` reuse the same `SYSFORGE_GROUP`/`SYSFORGE_DIR_MODE`, gated by
   `check_shipped` `provisioning`. See DESIGN.md §07 (Directory provisioning).
+- **libalpm-hook install/refresh has one home**: `primitives/pacman_hooks.py`
+  (`shipped_sources` — repo checkout > wheel `_data` `force-include`; `diff_status` →
+  `ok`/`missing`/`stale` pure read; `provision` writes via `fs_provision._run_priv`, no second
+  sudo path). Two consumers: `setup_cmd` (provision after the IgnoreGroup step) and
+  `doctor._collect_hook_findings` (read-only `--pacman` warnings). The PKGBUILD still installs the
+  live copies; this is the runtime/dev-checkout refresh. A new hook updates `HOOK_NAMES`, the
+  shipped `.hook` files, the `pyproject.toml` `force-include`, and the helper's documented kinds in
+  lockstep (gated by `check_shipped` `hooks`). Don't re-implement the compare/install or read
+  `/usr/share/libalpm/hooks` directly. See DESIGN.md §`pacman_hooks.py` / §setup.
 - **`doctor` axes share one Finding framework and stay read-only**: each axis is a producer
   returning `list[diagnostics.Finding]` (never import `pipeline` from `diagnostics`).
   Register in `doctor.py` (`_SYSTEM_AXIS_ORDER`/`_AXIS_FLAGS`/`_system_axes` +

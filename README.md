@@ -4,7 +4,7 @@ SysForge is an Arch Linux build and maintenance suite with compiler optimization
 
 The default build profile uses the system gcc; LLVM (clang/lld) is fully supported but opt-in — install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `toolchain = "llvm"` in `[defaults]` or a profile (one field that expands to clang/clang++ + the llvm-* binutils + lld; individual `CC`/`CXX`/`AR`/… keys still override it), or use `sysforge run toolchain --compiler=llvm`.
 
-**Commands:** `build` / `fetch` / `update` / `resolve` build and maintain profiled AUR & custom packages; `packages` / `state` manage the manifest and build state; `doctor` / `log` / `env` inspect system health and configuration; `setup` wires up pacman integration; `run <stage>` drives the bootstrap pipeline (plus the opt-in `toolchain` and `kernel` stages). See `sysforge --help` or the [man page](man/sysforge.1) for the full reference.
+**Commands:** `build` / `fetch` / `update` / `resolve` build and maintain profiled AUR & custom packages; `packages` / `state` manage the manifest and build state; `doctor` / `log` / `env` inspect system health and configuration; `setup` wires up pacman integration (IgnoreGroup + libalpm hooks); `run <stage>` drives the bootstrap pipeline (plus the opt-in `toolchain` and `kernel` stages). See `sysforge --help` or the [man page](man/sysforge.1) for the full reference.
 
 <sub><!--version-->v1.2.0<!--/version--></sub>
 

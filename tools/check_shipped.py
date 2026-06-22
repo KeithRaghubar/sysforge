@@ -445,6 +445,39 @@ def check_hooks(repo: Path) -> list[Finding]:
             findings.append(Finding("hooks", "error", rel,
                                     f"Exec arg {arg!r} not documented in helper "
                                     f"(known: {sorted(doc_kinds)})"))
+
+    # The runtime provisioner (primitives/pacman_hooks.py) and the wheel
+    # force-include must both cover every shipped hook, or `sysforge setup` /
+    # `doctor --pacman` would silently ignore a newly-added hook on installed
+    # systems.
+    shipped = {h.name for h in hooks_dir.glob("*.hook")}
+    findings += _check_hook_runtime_parity(repo, shipped)
+    return findings
+
+
+def _check_hook_runtime_parity(repo: Path, shipped: set[str]) -> list[Finding]:
+    findings: list[Finding] = []
+
+    # 1. pacman_hooks.HOOK_NAMES must match the shipped .hook files exactly.
+    #    (Guarded: minimal test repos copy only shipped files, not the source
+    #    tree; skip the parity assertions when those files are absent.)
+    src_file = repo / "sysforge/primitives/pacman_hooks.py"
+    if src_file.is_file():
+        listed = set(re.findall(r'"(sysforge-[\w-]+\.hook)"', src_file.read_text()))
+        if listed != shipped:
+            findings.append(Finding(
+                "hooks", "error", "sysforge/primitives/pacman_hooks.py",
+                f"HOOK_NAMES {sorted(listed)} != shipped hooks {sorted(shipped)}"))
+
+    # 2. The wheel force-include must ship the hooks dir + helper.
+    pyproject_file = repo / "pyproject.toml"
+    if pyproject_file.is_file():
+        pyproject = pyproject_file.read_text()
+        for needed in ("etc/pacman.d/hooks", "tools/pacman-hook-helper.sh"):
+            if f'"{needed}"' not in pyproject:
+                findings.append(Finding(
+                    "hooks", "error", "pyproject.toml",
+                    f"force-include missing {needed!r} (hooks won't ship in the wheel)"))
     return findings
 
 
