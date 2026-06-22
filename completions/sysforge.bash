@@ -106,6 +106,10 @@ _sysforge_flag_arg() {
             COMPREPLY=( $(compgen -W "repo aur local" -- "$cur") )
             return 0
             ;;
+        --pgo)
+            COMPREPLY=( $(compgen -W "record use" -- "$cur") )
+            return 0
+            ;;
     esac
     return 1
 }
@@ -149,7 +153,7 @@ _sysforge_build() {
     local flags="-m --makepkg --interactive --profile-conf --cc --cxx --ld \
         --no-pkg-log --log-dir --persist-log --cache-report --abi-check \
         --no-update --cleansrc --cleansrc-force --no-llvm-preflight \
-        --no-review --force --state-dir"
+        --no-review --force --pgo --state-dir"
     if [[ $cur == -* ]]; then
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
     else

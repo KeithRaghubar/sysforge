@@ -79,6 +79,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_llvm_targets,
     patch_mesa_drivers,
     patch_noninteractive_kconfig,
+    patch_package_suffix,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
     validate_patched_meson_pkgbuild,
@@ -115,6 +116,7 @@ from sysforge.primitives.profile import (
     CONF_KEY_MAP,
     get_build_mode,
     is_mesa_pkgbase,
+    is_optimized_build_mode,
     match_rules,
     resolve_consumes,
     resolve_groups,
@@ -341,7 +343,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                pkgbuild_has_hardcoded_gcc: bool = False,
                state_dir: Path | None = None,
                toolchain_variant: str | None = None,
-               cmake_llvm_dir: str | None = None):
+               cmake_llvm_dir: str | None = None,
+               optimization_build_mode: str | None = None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -431,6 +434,24 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             mesa_filtered["gallium"],
             mesa_filtered["vulkan"],
         )
+
+    # -sysforge optimization-provenance rename. Gated on the Phase-1 predicate
+    # is_optimized_build_mode (one home for "does this build earn the suffix?"):
+    # only an optimization variant the *build verb* drove (e.g. mesa `--pgo=use`,
+    # build_mode pgo_mesa) reaches here with optimization_build_mode set — the
+    # toolchain stage's own PGO/BOLT naming is stage-managed and never threads it.
+    # patch_package_suffix injects provides/conflicts/replaces (conflict mode) so
+    # the renamed build is a validated drop-in; the rename dict rides back to run()
+    # for build_state (renamed names + origin_pkgbase). Applied last so it sees the
+    # fully-patched PKGBUILD and validate_patched_pkgbuild can prove every non-rename
+    # global survived.
+    rename = None
+    if optimization_build_mode and is_optimized_build_mode(optimization_build_mode):
+        rename = patch_package_suffix(pkgbuild_path, "sysforge", mode="conflict")
+        if rename:
+            validate_patched_pkgbuild(
+                original_pkgbuild_path, pkgbuild_path, rename=rename
+            )
 
     # Probe ThinLTO cache dir (informational, once per build) — owned by cache_probe.py
     report_thinlto_cache(resolved_profile.get("LDFLAGS", ""))
@@ -594,6 +615,11 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             else:
                 _build_log.warn(f"Build failed — leaving patched PKGBUILD in place: {pkgbuild_path}")
 
+    # The -sysforge rename dict (or None) rides back to run() so build_state
+    # records the renamed names + origin_pkgbase. Only set on a successful
+    # optimization rename; every other build returns None.
+    return rename
+
 
 # ---------------------------------------------------------------------------
 # Build options
@@ -638,6 +664,7 @@ class BuildOptions:
     owner_stage: str | None = None  # e.g. "kernel" — persisted so `sysforge update` skips by default
     toolchain_variant: str | None = None  # "gcc" | "stock_llvm" | "pgo_llvm" — persisted so `sysforge update` can flag drift
     cmake_llvm_dir: str | None = None  # force -DLLVM_DIR at a staged libLLVM prefix (toolchain PGO passes 1b/3b/3c)
+    pgo_mode: str | None = None  # "record" | "use" — mesa instrumentation PGO (`build --pgo`); no-op for non-mesa pkgbases
 
 
 # ---------------------------------------------------------------------------
@@ -774,6 +801,55 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     )
                 _build_log.warn(f"{pkgname}: Building without PGO: {reason}")
 
+        # mesa instrumentation PGO (`build --pgo=record|use`) — reuses the same
+        # compiler_flags_extra seam as the toolchain PGO above (makepkg_conf
+        # injects it into CFLAGS/CXXFLAGS/LDFLAGS, which mesa's arch-meson
+        # inherits). `record` bakes the store path into an instrumented mesa so
+        # *any* GPU app that loads it appends .profraw to the store; `use` merges
+        # those and consumes the profile, earning the -sysforge rename below
+        # (record_build_mode = "pgo_mesa"). A logged no-op for non-mesa pkgbases —
+        # mesa is the only wired target this phase.
+        record_build_mode: str | None = None
+        if options.pgo_mode:
+            _pgo_globals = pkgmeta.get("globals", {})
+            _pgo_names = _pgo_globals.get("pkgname")
+            if isinstance(_pgo_names, list):
+                _pgo_names = _pgo_names[0] if _pgo_names else None
+            _pgo_pkgbase = _pgo_globals.get("pkgbase") or _pgo_names
+            if is_mesa_pkgbase(_pgo_pkgbase):
+                from sysforge.primitives import fs_provision, mesa_pgo
+                _store = mesa_pgo.resolve_store()
+                if options.pgo_mode == "record":
+                    try:
+                        fs_provision.ensure_writable_dir(_store)
+                    except fs_provision.FsProvisionError as e:
+                        _build_log.warn(
+                            f"mesa PGO store {_store} could not be group-provisioned "
+                            f"({e}) — GPU apps may be unable to write .profraw there"
+                        )
+                    _pgo_flag = mesa_pgo.generate_flag(_store)
+                elif options.pgo_mode == "use":
+                    # Raises MesaPgoError (clean pre-build abort) if nothing was
+                    # collected or llvm-profdata is unavailable.
+                    _profdata = mesa_pgo.merge_profraw(_store)
+                    _pgo_flag = mesa_pgo.use_flags(_profdata)
+                    record_build_mode = mesa_pgo.BUILD_MODE  # "pgo_mesa"
+                else:
+                    raise RuntimeError(f"unknown --pgo mode {options.pgo_mode!r}")
+                effective_flags_extra = (
+                    f"{effective_flags_extra} {_pgo_flag}".strip()
+                    if effective_flags_extra
+                    else _pgo_flag
+                )
+                _build_log.ui(
+                    f"mesa PGO ({options.pgo_mode}): injecting {_pgo_flag!r}"
+                )
+            else:
+                _build_log.warn(
+                    f"--pgo={options.pgo_mode} ignored for {_pgo_pkgbase!r}: "
+                    "mesa instrumentation PGO is mesa-only"
+                )
+
         extracted_profile = None
         if build_mode in ("patched_pkgbuild", "kernel"):
             extracted_profile = extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
@@ -815,7 +891,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
 
         import time as _time
         _build_start = _time.time()
-        _run_build(
+        rename = _run_build(
                 pkgbuild_path, resolved_profile, config, groups,
                 active_consumes=active_consumes,
                 extracted_profile=extracted_profile if build_mode in ("patched_pkgbuild", "kernel") else None,
@@ -837,6 +913,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 state_dir=options.state_dir,
                 toolchain_variant=options.toolchain_variant,
                 cmake_llvm_dir=options.cmake_llvm_dir,
+                optimization_build_mode=record_build_mode,
             )
         build_success = True
 
@@ -904,6 +981,17 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             pkgbase = globals_.get("pkgbase") or (pkgnames[0] if pkgnames else "unknown")
             fs = serialize_flags(resolved_profile) if resolved_profile is not None else None
 
+            # An optimization rename (-sysforge) changes what landed on disk: the
+            # built artifacts and installed packages carry the suffix, so that is
+            # what build_state must track (and what the filename_versions match
+            # below keys on). origin_pkgbase preserves the upstream correlation so
+            # `sysforge update`'s source-sync still finds the original tree.
+            origin_pkgbase = None
+            if rename:
+                pkgnames = list(rename["renamed_pkgnames"])
+                pkgbase = rename["renamed_pkgbase"] or pkgbase
+                origin_pkgbase = rename["origin_pkgbase"]
+
             # Single-git-source VCS packages: capture the just-built upstream
             # SHA from the cloned srcdir so the next `sysforge update --devel`
             # can short-circuit pkgver() resolution via `git ls-remote`.
@@ -947,13 +1035,14 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     epoch=ep,
                     pkgbase=pkgbase,
                     pkgbuild_dir=pkgbuild_path.parent,
-                    build_mode=BUILD_MODE_SOURCE,
+                    build_mode=record_build_mode or BUILD_MODE_SOURCE,
                     flags_string=fs,
                     built_upstream_commit=upstream_commit,
                     source=options.source,
                     owner_stage=options.owner_stage,
                     toolchain_variant=options.toolchain_variant,
                     reviewed_commit=_reviewed,
+                    origin_pkgbase=origin_pkgbase,
                 )
             bs.save()
             _build_log.info(f"Recorded build state for {pkgbase!r}")

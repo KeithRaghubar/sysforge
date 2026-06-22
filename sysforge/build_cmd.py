@@ -214,6 +214,20 @@ class BuildVerb(Verb):
             )
         _log.info(f"Invocation: {' '.join(sys.argv)}")
         config = load_config_with_overrides(args)
+        # Optimization gate (one home: profile.is_llvm_toolchain + LLVM_REQUIRED_HINT):
+        # mesa instrumentation PGO instruments with clang and merges with
+        # llvm-profdata, so it has no gcc path. Block cleanly before any build work.
+        if getattr(args, "pgo_mode", None):
+            from sysforge.primitives.profile import (
+                LLVM_REQUIRED_HINT,
+                is_llvm_toolchain,
+            )
+            toolchain = config.get("defaults", {}).get("toolchain")
+            if not is_llvm_toolchain(toolchain):
+                return PreCheckResult(
+                    blocker=f"mesa PGO (--pgo) requires the LLVM toolchain. "
+                            f"{LLVM_REQUIRED_HINT}"
+                )
         if not getattr(args, "no_llvm_preflight", False):
             _render_llvm_preflight([_pkg_to_name(p) for p in args.pkgbuilds], config)
         if getattr(args, "dry_run", False):
@@ -323,6 +337,7 @@ class BuildVerb(Verb):
             abi_check=args.abi_check,
             extra_flags=extra_flags,
             active_variant=active_variant,
+            pgo_mode=getattr(args, "pgo_mode", None),
             review=(
                 "prompt"
                 if not getattr(args, "no_review", False)

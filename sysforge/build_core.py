@@ -553,6 +553,7 @@ def build_and_install(
     active_variant: str | None = None,
     pkgdest: Path | None = None,
     review: str = "prompt",
+    pgo_mode: str | None = None,
     timer: PhaseTimer | None = None,
 ) -> BuildOutcome:
     """Resolve deps, build every target, then bulk-install — the shared core.
@@ -576,6 +577,12 @@ def build_and_install(
     but auto-accepts changes with a logged notice (the ``update`` default);
     ``"off"`` skips the gate entirely (``--no-review`` /
     ``[build] review = false``).
+
+    ``pgo_mode`` (``"record"``/``"use"``/``None``) drives mesa instrumentation
+    PGO (`build --pgo`). Threaded into every target's ``BuildOptions`` but a
+    no-op for non-mesa pkgbases (the wrapper gates on ``is_mesa_pkgbase``), so a
+    mixed batch only profiles the mesa target. ``use`` earns the ``-sysforge``
+    rename (``build_mode = "pgo_mesa"``).
     """
     outcome = BuildOutcome()
     if timer is None:
@@ -793,6 +800,7 @@ def build_and_install(
                         force_batch=not interactive,
                         source=target.source,
                         toolchain_variant=active_variant,
+                        pgo_mode=pgo_mode,
                     ))
                     new_pkgs = sorted(
                         p for p in snapshot_pkg_dir(search_dir)

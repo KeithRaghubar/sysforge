@@ -971,6 +971,35 @@ def _dequote(token: str) -> tuple[str, str]:
     return ("", token)
 
 
+def _rename_package_functions(text: str, origin_pkgnames: list[str], suffix: str) -> str:
+    """Rename ``package_<name>()`` split-package functions to carry the suffix.
+
+    makepkg's split-package contract requires a ``package_<pkgname>()`` function
+    for every ``pkgname`` member, so renaming the ``pkgname`` tokens without the
+    matching functions makes makepkg abort ("missing package function") deep into
+    the build. For each renamed literal name, rewrite ``package_<orig>()`` →
+    ``package_<orig-suffix>()`` so the function name tracks the pkgname.
+
+    Bare ``package()`` (single-package PKGBUILDs) is left untouched — makepkg uses
+    it regardless of the renamed ``pkgname``. ``$pkgbase``-reference pkgname tokens
+    have no literal function to rename (function names must be literal
+    identifiers), so they are skipped here and validated downstream. Names are
+    processed longest-first so a shorter name never partially matches a longer
+    function's body; the trailing ``()`` anchor already prevents prefix collisions.
+    """
+    for origname in sorted(origin_pkgnames, key=len, reverse=True):
+        _, val = _dequote(origname)
+        if _PKGBASE_REF_RE.search(val) or val.endswith(f"-{suffix}"):
+            continue
+        new = f"{val}-{suffix}"
+        text = re.sub(
+            rf"(?m)^(\s*)package_{re.escape(val)}(\s*\(\s*\))",
+            rf"\g<1>package_{new}\g<2>",
+            text,
+        )
+    return text
+
+
 def _suffix_name_token(token: str, suffix: str) -> str:
     """Append ``-suffix`` to a literal pkgname/pkgbase token, preserving quotes.
 
@@ -1126,14 +1155,26 @@ def patch_package_suffix(patched_path, suffix: str, *, mode: str = "conflict") -
             text, "provides", [f"{n}=$pkgver" for n in origin_pkgnames], anchor_end
         )
 
+    # Rename split-package functions to match the renamed pkgnames (both modes —
+    # the kernel coexist rename needs it too). Must run for split packages or
+    # makepkg can't find the packaging function for a renamed member.
+    text = _rename_package_functions(text, origin_pkgnames, suffix)
+
     patched_path.write_text(text, encoding="utf-8")
     _log.info(
         f"Renamed package(s) with -{suffix} suffix ({mode} mode): "
         f"{', '.join(origin_pkgnames)}",
     )
+    # The renamed names are what landed on disk (and so what build_state must
+    # record); ``origin_*`` is what ``sysforge update`` correlates back to the
+    # upstream source tree. Computed via the same ``_suffix_name_token`` the
+    # rewrite used so split-package / lib32 prefixing stays consistent.
     return {
         "origin_pkgbase": origin_pkgbase,
         "origin_pkgnames": origin_pkgnames,
+        "renamed_pkgbase": _suffix_name_token(origin_pkgbase, suffix)
+        if origin_pkgbase else None,
+        "renamed_pkgnames": [_suffix_name_token(n, suffix) for n in origin_pkgnames],
         "suffix": suffix,
         "mode": mode,
     }
@@ -1724,6 +1765,31 @@ def validate_patched_pkgbuild(original_path, patched_path, *, rename=None) -> No
             raise PkgbuildPatchError(msg)
     if rename is not None:
         _validate_rename(orig, patched, rename)
+
+    # G3 (rename only): a rename that updated ``pkgname`` but left the matching
+    # ``package_<orig>()`` function un-renamed is the split-package brick — makepkg
+    # aborts at packaging time looking for ``package_<new>()``. Fire precisely on
+    # that case: the renamed function is absent *and* the stale original lingers.
+    # When the PKGBUILD has no per-member function at all (a single bare
+    # ``package()``, or a fixture), there is nothing for the rename to have
+    # missed, so stay silent.
+    if rename is not None:
+        patched_text = Path(patched_path).read_text(encoding="utf-8")
+        for orig, new in zip(
+            rename.get("origin_pkgnames", []), rename.get("renamed_pkgnames", [])
+        ):
+            if orig == new:
+                continue
+            has_new = re.search(rf"(?m)^\s*package_{re.escape(new)}\s*\(\s*\)", patched_text)
+            has_orig = re.search(rf"(?m)^\s*package_{re.escape(orig)}\s*\(\s*\)", patched_text)
+            if not has_new and has_orig:
+                msg = (
+                    f"rename updated pkgname {orig!r} → {new!r} but left its "
+                    f"`package_{orig}()` function un-renamed — makepkg would abort "
+                    "at packaging time looking for the renamed function"
+                )
+                _log.error(msg)
+                raise PkgbuildPatchError(msg)
 
     # G2: join `\`-continuations so an injected arg shares its cmake's logical line.
     joined = Path(patched_path).read_text(encoding="utf-8").replace("\\\n", " ")

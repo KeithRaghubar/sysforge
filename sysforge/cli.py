@@ -286,6 +286,13 @@ def _add_build_parser(sub):
         help="Unconditionally build all arguments from source for this run "
              "only, including repo packages not yet opted in. Never prompts "
              "for or modifies packages.toml opt-in keys.")
+    p.add_argument("--pgo", choices=("record", "use"), dest="pgo_mode",
+        help="Mesa instrumentation PGO (LLVM toolchain only). "
+             "--pgo=record builds+installs an instrumented mesa that writes "
+             "profile data to the sysforge store as you run graphics workloads; "
+             "--pgo=use merges the collected profiles and rebuilds an optimized "
+             "mesa-sysforge (conflicts/replaces stock mesa). No-op for non-mesa "
+             "targets.")
     p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory for build_state.toml.")
     p.set_defaults(verb_cls=BuildVerb)

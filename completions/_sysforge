@@ -124,6 +124,7 @@ _sysforge_build() {
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--no-review[skip the PKGBUILD review gate (source-change diff prompt)]' \
     '--force[build all args from source this run only; never prompt/modify packages.toml]' \
+    '--pgo[mesa instrumentation PGO (LLVM only): record=instrument, use=optimize -> mesa-sysforge]:mode:(record use)' \
     '--state-dir[override state directory]:directory:_files -/' \
     '*: :_sysforge_pkg_or_file' \
   && return

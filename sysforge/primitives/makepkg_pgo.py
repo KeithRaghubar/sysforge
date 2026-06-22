@@ -47,8 +47,13 @@ _DEFAULT_PROFILE_STORE_ROOT = "/var/cache/sysforge"
 # Logical method names accepted by ``resolve_method_store``. ``"instr-pgo"``
 # aliases the legacy ``resolve_pgo_store`` location (back-compat with the
 # ``pgo_store`` config key / ``SYSFORGE_PGO_STORE`` env); the rest map to a
-# literal sibling subdir under the shared root.
-PROFILE_METHODS = frozenset({"instr-pgo", "autofdo", "propeller", "bolt"})
+# literal sibling subdir under the shared root. ``"pgo-mesa"`` is mesa's own
+# instrumentation-PGO store (distinct from ``instr-pgo``, which is the *compiler*
+# self-profile) — its runtime-collected ``.profraw`` and merged ``mesa.profdata``
+# live in ``<root>/pgo-mesa``; see ``primitives/mesa_pgo.py``.
+PROFILE_METHODS = frozenset(
+    {"instr-pgo", "pgo-mesa", "autofdo", "propeller", "bolt"}
+)
 
 
 def resolve_pgo_store(tcfg: dict | None) -> Path:

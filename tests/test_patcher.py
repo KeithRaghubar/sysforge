@@ -1224,6 +1224,71 @@ def test_validate_without_rename_still_rejects_pkgname_change(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Split-package function rename (makepkg requires package_<pkgname>() per member)
+# ---------------------------------------------------------------------------
+
+_SPLIT_WITH_FUNCS = (
+    "pkgbase=mesa\n"
+    "pkgname=(mesa lib32-mesa)\n"
+    "pkgver=25.0\n"
+    "pkgrel=1\n"
+    "depends=(libdrm)\n"
+    "package_mesa() {\n  true\n}\n"
+    "package_lib32-mesa() {\n  true\n}\n"
+)
+
+
+def test_suffix_renames_package_functions(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_SPLIT_WITH_FUNCS)
+    patch_package_suffix(pb, "sysforge", mode="conflict")
+    text = pb.read_text()
+    # Each renamed member's package_<name>() function tracks the new name, or
+    # makepkg aborts at packaging time looking for the renamed function.
+    assert "package_mesa-sysforge()" in text
+    assert "package_lib32-mesa-sysforge()" in text
+    # The stale originals must be gone.
+    assert "package_mesa()" not in text
+    assert "package_lib32-mesa()" not in text
+
+
+def test_validate_accepts_rename_with_functions(tmp_path):
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_SPLIT_WITH_FUNCS)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(_SPLIT_WITH_FUNCS)
+    info = patch_package_suffix(patched, "sysforge", mode="conflict")
+    validate_patched_pkgbuild(orig, patched, rename=info)  # must not raise
+
+
+def test_validate_rejects_rename_that_missed_a_function(tmp_path):
+    # Simulate a rename that updated pkgname but left package_mesa() un-renamed
+    # (the split-package brick G3 exists to catch).
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_SPLIT_WITH_FUNCS)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(
+        "pkgbase=mesa-sysforge\n"
+        "pkgname=(mesa-sysforge lib32-mesa-sysforge)\n"
+        'provides=("mesa=$pkgver" "lib32-mesa=$pkgver")\n'
+        'conflicts=(mesa lib32-mesa)\n'
+        'replaces=(mesa lib32-mesa)\n'
+        "pkgver=25.0\n"
+        "pkgrel=1\n"
+        "depends=(libdrm)\n"
+        "package_mesa() {\n  true\n}\n"  # <-- stale, un-renamed
+        "package_lib32-mesa-sysforge() {\n  true\n}\n"
+    )
+    rename = {
+        "suffix": "sysforge", "mode": "conflict",
+        "origin_pkgnames": ["mesa", "lib32-mesa"],
+        "renamed_pkgnames": ["mesa-sysforge", "lib32-mesa-sysforge"],
+    }
+    with pytest.raises(PkgbuildPatchError, match="un-renamed"):
+        validate_patched_pkgbuild(orig, patched, rename=rename)
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 

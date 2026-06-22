@@ -130,6 +130,26 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   (yes → build + write the key via `packages_cmd`; no → skip) or aborts with a hint when
   non-interactive. `--force` builds every arg this run only and never prompts/writes
   packages.toml. Don't add a second packages.toml writer. See DESIGN.md §CLI Verb Framework.
+- **Optimization-build naming/store has one home each**: the `-sysforge` rename gate is
+  `profile.is_optimized_build_mode(build_mode)` (the membership set — add a new optimization
+  `build_mode` there, don't scatter checks); the rename itself is
+  `pkgbuild_patcher.patch_package_suffix(path, "sysforge", mode="conflict"|"coexist")`, applied
+  once in `makepkg_wrapper._run_build` (gated on that predicate) and validated by
+  `validate_patched_pkgbuild(..., rename=…)` (G3: every renamed split member keeps a renamed
+  `package_<name>()` — `patch_package_suffix` renames the functions too, or makepkg bricks at
+  packaging time). The renamed build records its renamed pkgnames + sticky `origin_pkgbase` so
+  `update` still source-syncs the upstream tree. Profile stores route through
+  `makepkg_pgo.resolve_method_store(method)` (`pgo-mesa`/`autofdo`/`propeller`/`bolt`; `instr-pgo`
+  aliases the legacy clang store). Don't add a parallel renamer/store-resolver. See DESIGN.md
+  §CLI Verb Framework / §Flag-Profile.
+- **Mesa instrumentation PGO has one home**: `primitives/mesa_pgo.py` (`resolve_store`,
+  `merge_profraw` → `llvm-profdata`, `generate_flag`/`use_flags`, `BUILD_MODE="pgo_mesa"`). The
+  `build --pgo=record|use` flow injects `-fprofile-generate=<store>` / `-fprofile-use=<profdata>`
+  via the **same `compiler_flags_extra` seam** the toolchain PGO uses (no `-Db_pgo` patch, no
+  second injector); `record` keeps the stock name, `use` earns `-sysforge`. LLVM-only — gated in
+  `BuildVerb.pre_check` via `profile.is_llvm_toolchain` + `LLVM_REQUIRED_HINT`; a no-op for
+  non-mesa (`is_mesa_pkgbase`). Distinct from Phase-2's compiler training corpus (that enriches
+  `clang.profdata`; this profiles mesa itself). See DESIGN.md §CLI Verb Framework.
 - **PKGBUILD review gate has one home**: `build_core.build_and_install(review=…)` →
   `pkgbuild_review.review_target` (`build` defaults `"prompt"`, `update` `"auto"`); AUR
   dep builds gated via `review_deps` in `prepare_deps`. Baseline is sticky `reviewed_commit`

@@ -205,3 +205,47 @@ def test_summary_all_failed(capsys):
     out = capsys.readouterr().err
     assert "Build complete: 0 built, 2 failed." in out
     assert "Built:" not in out
+
+
+# ---------------------------------------------------------------------------
+# --pgo LLVM-toolchain gate (mesa instrumentation PGO has no gcc path)
+# ---------------------------------------------------------------------------
+
+def _pgo_args(pgo_mode):
+    return types.SimpleNamespace(
+        pgo_mode=pgo_mode,
+        no_pkg_log=False,
+        log_dir=None,
+        dry_run=False,
+        no_llvm_preflight=True,
+        pkgbuilds=["mesa"],
+    )
+
+
+def test_pre_check_pgo_blocks_under_gcc(monkeypatch):
+    monkeypatch.setattr(
+        build_cmd, "load_config_with_overrides",
+        lambda args: {"defaults": {"toolchain": "gcc"}},
+    )
+    pre = BuildVerb().pre_check(_pgo_args("record"))
+    assert pre.blocker is not None
+    assert "LLVM toolchain" in pre.blocker
+
+
+def test_pre_check_pgo_allowed_under_llvm(monkeypatch):
+    monkeypatch.setattr(
+        build_cmd, "load_config_with_overrides",
+        lambda args: {"defaults": {"toolchain": "llvm"}},
+    )
+    pre = BuildVerb().pre_check(_pgo_args("use"))
+    assert pre.blocker is None
+
+
+def test_pre_check_no_pgo_never_gates(monkeypatch):
+    # Without --pgo the toolchain gate must not fire even under gcc.
+    monkeypatch.setattr(
+        build_cmd, "load_config_with_overrides",
+        lambda args: {"defaults": {"toolchain": "gcc"}},
+    )
+    pre = BuildVerb().pre_check(_pgo_args(None))
+    assert pre.blocker is None
