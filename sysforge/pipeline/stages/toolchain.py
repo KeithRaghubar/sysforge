@@ -117,13 +117,15 @@ from sysforge.primitives.config import (
     find_pkgbuild,
     load_sysforge_toml,
     set_default_toolchain,
+    resolve_repo_mode,
+    REPO_MODE_PACMAN,
 )
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
     evaluate_strict,
     render_preflight,
 )
-from sysforge.primitives.paths import TOOLCHAIN_PATH
+from sysforge.primitives.paths import TOOLCHAIN_PATH, resolve_packages_path
 from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
 from sysforge.primitives import build_fingerprint, fs_provision, toolchain_safety
 from sysforge.primitives.makepkg_pgo import resolve_pgo_store
@@ -131,6 +133,7 @@ from sysforge.primitives.pacman import (
     batch_install_pkgs,
     cached_pkg_files_for,
     get_pkgdest,
+    install_repo_pkgs,
 )
 from sysforge.primitives.makepkg_flags import SYNC_FLAGS
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
@@ -337,6 +340,23 @@ def _load_toolchain_config() -> dict | None:
         raise RuntimeError(
             f"[TOOLCHAIN] Failed to parse {TOOLCHAIN_PATH}: {e}"
         ) from None
+
+
+def _resolve_packages_repo_mode(config: dict) -> str:
+    """Read packages.toml ``[build] repo_mode`` (the single read chokepoint).
+
+    Returns ``"pacman"`` or ``"build_from_source"`` via
+    :func:`config.resolve_repo_mode`. A missing/unreadable packages.toml falls
+    back to the documented default (``"pacman"``) — that is the correct default
+    for the repo-install branch (install the stock LLVM suite rather than build).
+    """
+    try:
+        path = resolve_packages_path(config)
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return REPO_MODE_PACMAN
+    return resolve_repo_mode(data.get("build", {}))
 
 
 def _package_lists(tcfg: dict) -> tuple[list[str], list[str], list[str]]:
@@ -3620,6 +3640,50 @@ class ToolchainStage(Stage):
                 f"(variant={variant}): cc={cc}  cxx={cxx}",
             )
             result = {"cc": cc, "cxx": cxx, "variant": variant}
+            if ld is not None:
+                result["ld"] = ld
+            state.set_stage_result("toolchain", result)
+            try:
+                state.save()
+            except PermissionError:
+                _log.warn(
+                    "Cannot write state — toolchain results will not be checkpointed",
+                )
+            _propagate_default_toolchain(compiler, options)
+            return
+
+        # Repo-install path (LLVM, PGO off): when packages.toml [build]
+        # repo_mode is "pacman", honor the user's package-sourcing preference
+        # and pull the stock LLVM suite from the repos instead of compiling it.
+        # PGO is deliberately excluded — a profiled toolchain is the point of
+        # enabling PGO and has no repo artifact, so PGO always builds from
+        # source regardless of repo_mode.
+        if not pgo and _resolve_packages_repo_mode(config) == REPO_MODE_PACMAN:
+            pgo_pkgs, non_pgo_pkgs, lib32_pkgs = _package_lists(tcfg)
+            suite = pgo_pkgs + non_pgo_pkgs + lib32_pkgs
+            cc, cxx, ld = _compiler_paths(compiler)
+            _log.ui(
+                f"repo_mode=pacman, PGO off — installing {len(suite)} LLVM "
+                f"package(s) from repo (no build): {' '.join(suite)}",
+            )
+            if options.dry_run:
+                _log.ui(
+                    f"[dry-run] would install from repo: {' '.join(suite)}"
+                )
+            else:
+                # Install is the mutation window — wrap in the sentinel so an
+                # interrupted/failed install blocks the next run with a recovery
+                # command.
+                with sentinel_scope(
+                    options.state_dir,
+                    "toolchain",
+                    recovery_cmd="sudo pacman -S " + " ".join(suite),
+                    retry_cmd="sysforge run toolchain",
+                    compiler=compiler,
+                    pgo=pgo,
+                ):
+                    install_repo_pkgs(suite)
+            result = {"cc": cc, "cxx": cxx, "variant": "stock_llvm"}
             if ld is not None:
                 result["ld"] = ld
             state.set_stage_result("toolchain", result)

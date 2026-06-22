@@ -496,6 +496,20 @@ def batch_install_makedeps(deps: list) -> None:
         raise RuntimeError(f"makedep install failed (exit {result.returncode})")
 
 
+def install_repo_pkgs(names: list) -> None:
+    """Install repo packages via ``sudo pacman -S --needed --noconfirm``.
+
+    Mutates the system; callers wrap this in an install-bearing sentinel scope.
+    Raises RuntimeError on a non-zero pacman exit.
+    """
+    _log.info(f"Installing {len(names)} repo package(s): {names}")
+    result = subprocess.run(
+        ["sudo", "pacman", "-S", "--needed", "--noconfirm"] + list(names)
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"repo install failed (exit {result.returncode})")
+
+
 # ---------------------------------------------------------------------------
 # Package queries
 # ---------------------------------------------------------------------------

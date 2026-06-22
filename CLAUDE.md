@@ -284,7 +284,11 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
 - **Toolchain/kernel stages: 3 gates, build split from install, snapshot+auto-restore undo.**
   Facts in `primitives/{toolchain,kernel}_safety.py` (pure); policy in the stage. Build is
   `install=False`; Gate 2 runs **outside** `sentinel_scope`, install→Gate-3→rollback inside.
-  GCC path is register-only — **the stage never builds GCC**.
+  GCC path is register-only — **the stage never builds GCC**. LLVM with `pgo=false` +
+  packages.toml `[build] repo_mode="pacman"` is a third no-build branch: install the stock
+  suite from the repos (`pacman.install_repo_pkgs`, inside `sentinel_scope`) instead of
+  building. **PGO always builds from source regardless of `repo_mode`** (no repo artifact for a
+  profiled toolchain). `repo_mode` read through `config.resolve_repo_mode` only.
 - **Pass-3 builds non-pgo against the libLLVM it ships** (3a→`_extract_pass2_to_staging`→3b/3c
   with `CMAKE_PREFIX_PATH` **and** forced `-DLLVM_DIR` via `patch_llvm_dir` — prefix-path alone
   is NOT enough). staging3 needs both `llvm-libs` and `llvm`; don't collapse Pass 3 into one pass.

@@ -794,6 +794,124 @@ def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# ToolchainStage.run() — repo-install path (LLVM, PGO off, repo_mode=pacman)
+# ---------------------------------------------------------------------------
+
+def _write_packages_repo_mode(tmp_path: Path, mode: str) -> str:
+    """Write a packages.toml with the given [build] repo_mode; return its path."""
+    p = tmp_path / "packages.toml"
+    p.write_text(f'[build]\nrepo_mode = "{mode}"\n')
+    return str(p)
+
+
+def test_toolchain_stage_llvm_no_pgo_pacman_installs_from_repo(tmp_path):
+    """compiler=llvm, pgo=false, repo_mode=pacman → install the LLVM suite from
+    the repos via install_repo_pkgs; never resolve PKGBUILDs or build."""
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = true\ncompiler = "llvm"\npgo = false\n')
+
+    state = PipelineState(tmp_path / "state")
+    # Empty pkgbuild dir: any build path would raise on resolution.
+    config = {
+        "paths": {"pkgbuild_src_dir": str(tmp_path / "empty")},
+        "packages_file": _write_packages_repo_mode(tmp_path, "pacman"),
+    }
+    options = make_options(dry_run=False, state_dir=str(tmp_path / "sdir"))
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock, \
+         patch("sysforge.pipeline.stages.toolchain._resolve_all_pkgbuilds") as resolve_mock:
+        ToolchainStage().run(config, state, options)
+
+    install_mock.assert_called_once()
+    installed = install_mock.call_args.args[0]
+    assert set(_DEFAULT_LLVM_PGO + _DEFAULT_LLVM_NON_PGO).issubset(set(installed))
+    resolve_mock.assert_not_called()
+
+    result = state.get_stage_result("toolchain")
+    assert result["cc"] == "/usr/bin/clang"
+    assert result["cxx"] == "/usr/bin/clang++"
+    assert result["ld"] == "lld"
+    assert result["variant"] == "stock_llvm"
+
+
+def test_toolchain_stage_llvm_no_pgo_pacman_dry_run_skips_install(tmp_path):
+    """Dry-run repo-install: log intent, write state, but never call pacman."""
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = true\ncompiler = "llvm"\npgo = false\n')
+
+    state = PipelineState(tmp_path / "state")
+    config = {
+        "paths": {"pkgbuild_src_dir": str(tmp_path / "empty")},
+        "packages_file": _write_packages_repo_mode(tmp_path, "pacman"),
+    }
+    options = make_options(dry_run=True, state_dir=str(tmp_path / "sdir"))
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock:
+        ToolchainStage().run(config, state, options)
+
+    install_mock.assert_not_called()
+    result = state.get_stage_result("toolchain")
+    assert result["variant"] == "stock_llvm"
+
+
+def test_toolchain_stage_llvm_no_pgo_source_mode_builds(tmp_path):
+    """compiler=llvm, pgo=false, repo_mode=build_from_source → single-pass build
+    (no repo install)."""
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = true\ncompiler = "llvm"\npgo = false\n')
+
+    pkgbuild_dir = tmp_path / "builds"
+    for name in _DEFAULT_LLVM_PGO + _DEFAULT_LLVM_NON_PGO + _DEFAULT_LLVM_LIB32:
+        make_pkgbuild(pkgbuild_dir, name)
+
+    state = PipelineState(tmp_path / "state")
+    config = {
+        "paths": {"pkgbuild_src_dir": str(pkgbuild_dir)},
+        "packages_file": _write_packages_repo_mode(tmp_path, "build_from_source"),
+    }
+    options = make_options(dry_run=True)
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock:
+        ToolchainStage().run(config, state, options)
+
+    install_mock.assert_not_called()
+    result = state.get_stage_result("toolchain")
+    assert result["variant"] == "stock_llvm"
+
+
+def test_toolchain_stage_llvm_pgo_pacman_still_builds_from_source(tmp_path):
+    """PGO wins over repo_mode: pgo=true, repo_mode=pacman → build from source,
+    never a repo install."""
+    staging = tmp_path / "staging"
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text(
+        f'enabled = true\ncompiler = "llvm"\npgo = true\npgo_staging = "{staging}"\n'
+    )
+
+    pkgbuild_dir = tmp_path / "builds"
+    for name in _DEFAULT_LLVM_PGO + _DEFAULT_LLVM_NON_PGO + _DEFAULT_LLVM_LIB32:
+        make_pkgbuild(pkgbuild_dir, name)
+
+    state = PipelineState(tmp_path / "state")
+    config = {
+        "paths": {"pkgbuild_src_dir": str(pkgbuild_dir)},
+        "packages_file": _write_packages_repo_mode(tmp_path, "pacman"),
+    }
+    options = make_options(dry_run=True)
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock:
+        ToolchainStage().run(config, state, options)
+
+    install_mock.assert_not_called()
+    result = state.get_stage_result("toolchain")
+    assert result["variant"] == "pgo_llvm"
+
+
+# ---------------------------------------------------------------------------
 # skip_build variant reflects on-disk profdata
 # ---------------------------------------------------------------------------
 
