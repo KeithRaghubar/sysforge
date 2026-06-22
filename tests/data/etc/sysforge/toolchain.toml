@@ -38,6 +38,14 @@ skip_build = false
 #                          # whose inputs + on-disk artifact are unchanged
 #                          # instead of rebuilding. CLI override: --reuse-built.
 
+# BOLT post-link optimization (Pass 4, LLVM/PGO path) — EXPERIMENTAL; no official
+# Arch package, so sysforge builds llvm-bolt itself. See etc/sysforge for docs.
+# `enabled` is the live BOLT-inclusion gate (default off).
+[bolt]
+enabled = false            # opt-in PGO→BOLT "fast clang"; clang executable BOLTed
+# libllvm = false          # also BOLT libLLVM.so (more fragile)
+# training_workload = ""   # .cpp to profile; empty = generated header-heavy TU
+
 # ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed
 #

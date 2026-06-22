@@ -82,7 +82,7 @@ _KNOWN_SECTIONS: dict[str, set[str]] = {
                        "append_conflict_groups", "consumes_inference"},
     "packages.toml":  {"build", "package", "group"},
     "kernel.toml":    {"kconfig"},
-    "toolchain.toml": {"packages", "llvm"},
+    "toolchain.toml": {"packages", "llvm", "bolt"},
     "bootstrap.toml": {"partition", "system", "mirror", "desktop", "makepkg"},
 }
 

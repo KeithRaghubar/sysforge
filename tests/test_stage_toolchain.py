@@ -13,6 +13,8 @@ import pytest
 
 from sysforge.pipeline.stages.toolchain import (
     ToolchainStage,
+    _bolt_config,
+    _run_bolt_pass4,
     _load_toolchain_config,
     _package_lists,
     _resolve_training_corpus,
@@ -4309,3 +4311,91 @@ def test_toolchain_stage_gcc_never_assesses_soname(tmp_path, monkeypatch):
         ToolchainStage().run(config, state, options)
 
     assert state.get_stage_result("toolchain")["variant"] == "gcc"
+
+
+# ---------------------------------------------------------------------------
+# BOLT Pass 4 — _bolt_config reader + _run_bolt_pass4 gating
+# ---------------------------------------------------------------------------
+
+def test_bolt_config_defaults():
+    assert _bolt_config({}) == {
+        "enabled": False, "libllvm": False, "training_workload": "",
+    }
+
+
+def test_bolt_config_override():
+    cfg = _bolt_config({"bolt": {
+        "enabled": True, "libllvm": True, "training_workload": "/t/w.cpp",
+    }})
+    assert cfg == {"enabled": True, "libllvm": True, "training_workload": "/t/w.cpp"}
+
+
+def _bolt_opts(dry_run=False):
+    from types import SimpleNamespace
+    return SimpleNamespace(dry_run=dry_run, state_dir=None, no_update=True,
+                           makepkg_flags=[])
+
+
+def test_bolt_pass4_disabled_is_noop(monkeypatch):
+    # [bolt] absent → returns before importing/calling any BOLT machinery.
+    called = []
+    monkeypatch.setattr(
+        "sysforge.primitives.fs_provision._run_priv",
+        lambda argv: called.append(argv),
+    )
+    _run_bolt_pass4({}, {}, _bolt_opts(), "pgo_llvm")
+    assert called == []
+
+
+def test_bolt_pass4_dry_run_is_noop(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "sysforge.primitives.fs_provision._run_priv",
+        lambda argv: called.append(argv),
+    )
+    _run_bolt_pass4({"bolt": {"enabled": True}}, {}, _bolt_opts(dry_run=True), "pgo_llvm")
+    assert called == []
+
+
+def test_bolt_pass4_tool_build_fails_skips_rewrite(monkeypatch):
+    # Enabled but the BOLT tools can't be built (Pass 4a fails) → no rewrite, the
+    # verified PGO clang is left untouched (no privileged install).
+    called = []
+    # tools absent, and the build itself raises → _build_bolt_tools returns False.
+    monkeypatch.setattr(
+        "sysforge.primitives.bolt.tools_available",
+        lambda need_perf=False: (False, ["llvm-bolt"]),
+    )
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._query_pacman_versions",
+        lambda names: {"llvm": "22.1.8-4"},
+    )
+    monkeypatch.setattr(
+        "sysforge.primitives.bolt.materialize_pkgbuild",
+        lambda d, v: __import__("pathlib").Path(d) / "llvm-bolt" / "PKGBUILD",
+    )
+    def _boom(*a, **k):
+        raise RuntimeError("build failed")
+    monkeypatch.setattr("sysforge.pipeline.stages.toolchain._build_pkg", _boom)
+    monkeypatch.setattr(
+        "sysforge.primitives.fs_provision._run_priv",
+        lambda argv: called.append(argv),
+    )
+    cfg = {"paths": {"pkgbuild_src_dir": "/tmp"}}
+    _run_bolt_pass4({"bolt": {"enabled": True}}, cfg, _bolt_opts(), "pgo_llvm")
+    assert called == []
+
+
+def test_bolt_pass4_no_pkgbuild_src_dir_skips(monkeypatch):
+    # Enabled, tools absent, but no pkgbuild_src_dir to materialize into → skip.
+    monkeypatch.setattr(
+        "sysforge.primitives.bolt.tools_available",
+        lambda need_perf=False: (False, ["llvm-bolt"]),
+    )
+    built = []
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._build_pkg",
+        lambda *a, **k: built.append(a),
+    )
+    _run_bolt_pass4({"bolt": {"enabled": True}}, {"paths": {}}, _bolt_opts(), "pgo_llvm")
+    assert built == []  # never attempted a build without a source dir

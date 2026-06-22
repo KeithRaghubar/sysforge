@@ -89,6 +89,38 @@ enabled = false
 # reuse_unchanged = false
 
 # ---------------------------------------------------------------------------
+# BOLT post-link optimization (Pass 4 — LLVM/PGO path only) — EXPERIMENTAL
+#
+# After the PGO passes produce an optimized clang/libLLVM, BOLT (Binary
+# Optimization and Layout Tool) can rewrite the finished binaries for a further
+# layout/locality win — the canonical PGO→BOLT "fast clang" stack. Unlike PGO,
+# BOLT is post-link: Pass 3 links with -Wl,--emit-relocs, then `llvm-bolt`
+# rewrites the binary using a profile that `perf2bolt` converts from a `perf
+# record` run of clang on a representative compile job.
+#
+# EXPERIMENTAL: there is no official Arch package for BOLT, and the stock `llvm`
+# package does not build it. sysforge therefore builds the BOLT tools itself
+# (Pass 4a): it generates an `llvm-bolt` PKGBUILD version-locked to your llvm and
+# builds it from the same llvm-project monorepo tarball the toolchain already
+# downloaded (the `bolt/` subtree rides inside it), then installs it (a persistent
+# pacman package, kept in sync each run). You only need `perf` (linux-tools) for
+# the profile-collection step. Off by default; every step is best-effort — a
+# failed tool build, a missing `perf`, or a BOLT/smoke failure warns and leaves
+# the verified PGO toolchain in place.
+#
+# `enabled` is the BOLT-inclusion gate and is LIVE below at its default (off);
+# uncomment the optional sub-keys to tune. Only takes effect on the LLVM PGO path.
+[bolt]
+enabled = false            # opt-in; build llvm-bolt + BOLT-optimize clang
+# libllvm = false          # also BOLT libLLVM.so (shared lib; more fragile than
+#                          # the clang executable — leave off unless you know you
+#                          # want it). The clang executable is BOLTed regardless.
+# training_workload = ""   # path to a .cpp the freshly-built clang compiles under
+#                          # perf to collect the profile; empty = a generated
+#                          # header-heavy C++ TU (front-end + optimizer + codegen).
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed
 #
 # [packages]

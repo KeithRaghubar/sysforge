@@ -180,6 +180,25 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   `_gate_fdo_llvm`/`_fdo_is_llvm` (compiler==llvm or `cc`/`$CC` basename `clang*`). BRS is Zen3+
   only (experimental); `detect_branch_sampling` reads `/proc/cpuinfo`. Don't add a parallel
   perf/profile injector. See DESIGN.md §Kernel stage (Sample-based kernel FDO).
+- **BOLT post-link optimization has one home**: `primitives/bolt.py` (`resolve_store` method
+  `bolt`, `emit_relocs_ldflag`, `collect_profile` → `perf record`+`perf2bolt`, `bolt_binary` →
+  `llvm-bolt`, `tools_available`, `BUILD_MODE="bolt_llvm"`, **and the generated `llvm-bolt`
+  PKGBUILD** `render_pkgbuild`/`materialize_pkgbuild`). The only **post-link** method (no compiler
+  flag). **EXPERIMENTAL — BOLT is not in the Arch repos and stock `llvm` doesn't build it**, so
+  sysforge builds the tools itself: `materialize_pkgbuild` writes a version-locked `llvm-bolt`
+  PKGBUILD (modeled on the `clang` component; the `bolt/` subtree rides in the same monorepo
+  tarball; `sha256sums=SKIP`) and `_build_bolt_tools` (Pass 4a) builds it standalone against the
+  installed PGO libLLVM. Wired as **toolchain Pass 4** (`run toolchain`, opt-in `toolchain.toml
+  [bolt] enabled`, `_bolt_config` reader): Pass 3a/3b link with `-Wl,--emit-relocs` (threaded as
+  `linker_flags_extra` through `_build_llvm_pgo_inner`, gated on `bolt_relocs`); `_run_bolt_pass4`
+  runs **after Gate 3, inside the sentinel** — 4a builds the tools, 4b BOLTs the installed
+  `/usr/bin/clang` **in place, stock name (not `-sysforge`** — the toolchain stage is the in-place
+  system replacement), smoke-tests before replacing. Best-effort end to end (failed tool build /
+  missing `perf` / BOLT / smoke failure warns, leaves the PGO clang). Post-link rewrite →
+  `pacman -Qkk clang` reports modified (expected, not corruption). `rename_mode_for_build_mode("bolt_llvm")`
+  is `conflict` (for a future `build`-driven BOLT), but Pass-4 does no rename. `[bolt]` is in
+  `check_shipped` `_KNOWN_SECTIONS`. Don't add a parallel perf2bolt/llvm-bolt path or a second
+  PKGBUILD generator. See DESIGN.md §Toolchain stage (BOLT Pass 4).
 - **PKGBUILD review gate has one home**: `build_core.build_and_install(review=…)` →
   `pkgbuild_review.review_target` (`build` defaults `"prompt"`, `update` `"auto"`); AUR
   dep builds gated via `review_deps` in `prepare_deps`. Baseline is sticky `reviewed_commit`

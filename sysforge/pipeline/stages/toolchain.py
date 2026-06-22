@@ -392,6 +392,23 @@ def _resolve_training_corpus(tcfg: dict) -> list[str]:
     return extras
 
 
+def _bolt_config(tcfg: dict) -> dict:
+    """Return the ``[bolt]`` config with defaults applied (LLVM/PGO Pass 4).
+
+    Keys: ``enabled`` (default false — opt-in), ``libllvm`` (also BOLT
+    libLLVM.so, default false — the shared lib is more fragile than the clang
+    executable), ``training_workload`` (path to a .cpp profiled to collect the
+    BOLT profile; empty → a generated header-heavy TU). One read home so the
+    Pass-3 emit-relocs gate and the Pass-4 orchestration agree on the same flags.
+    """
+    bcfg = tcfg.get("bolt", {}) or {}
+    return {
+        "enabled": bool(bcfg.get("enabled", False)),
+        "libllvm": bool(bcfg.get("libllvm", False)),
+        "training_workload": str(bcfg.get("training_workload", "") or ""),
+    }
+
+
 # ---------------------------------------------------------------------------
 # PKGBUILD resolution
 # ---------------------------------------------------------------------------
@@ -2126,6 +2143,7 @@ def _build_llvm_pgo_inner(
     config_digest: str = "",
     reuse_built: bool = False,
     corpus_map: dict[str, Path] | None = None,
+    bolt_relocs: bool = False,
 ) -> tuple[dict[str, Path], str, str, str, str]:
     """
     4-pass LLVM PGO build. Builds WITHOUT installing.
@@ -2651,6 +2669,12 @@ def _build_llvm_pgo_inner(
         pass3a_env: dict[str, str] = {"LLVM_PROFILE_FILE": ""}
         if using_staged_cc:
             pass3a_env.update(_stage_env(staging))
+        # BOLT Pass 4 (opt-in) rewrites the *finished* clang/libLLVM, which needs
+        # relocations retained at link time — so the binaries that ship from
+        # Pass 3a (libLLVM) and 3b (clang) link with -Wl,--emit-relocs. Off
+        # unless [bolt] enabled; lib32 (3c) is never BOLTed so it is untouched.
+        from sysforge.primitives import bolt as _bolt
+        _bolt_ldflag = _bolt.emit_relocs_ldflag() if bolt_relocs else None
         pgo_fps = _build_pass(
             f"PGO optimize · llvm/llvm-libs ({opt})",
             pgo_map,
@@ -2659,6 +2683,7 @@ def _build_llvm_pgo_inner(
             cxx=pass3_cxx,
             install=False,
             compiler_flags_extra=profile_use,
+            linker_flags_extra=_bolt_ldflag,
             pgo_build=True,
             pgo_env=pass3a_env,
             staged_deps=True,
@@ -2704,6 +2729,7 @@ def _build_llvm_pgo_inner(
                 cxx=pass3_cxx,
                 install=False,
                 compiler_flags_extra=profile_use,
+                linker_flags_extra=_bolt_ldflag,
                 pgo_build=True,
                 pgo_env=pass3b_env,
                 staged_deps=True,
@@ -3327,6 +3353,202 @@ def _propagate_default_toolchain(compiler: str, options) -> None:
 
 
 # ---------------------------------------------------------------------------
+# BOLT Pass 4 (post-link optimization of the just-installed PGO clang)
+# ---------------------------------------------------------------------------
+
+
+def _build_bolt_tools(tcfg: dict, config: dict, options, variant: str | None) -> bool:
+    """Pass 4a — build+install the BOLT tools (`llvm-bolt`/`perf2bolt`/…).
+
+    BOLT is EXPERIMENTAL: it is not in the official Arch repos and the stock
+    `llvm` package does not build it. sysforge generates an `llvm-bolt` PKGBUILD
+    (`bolt.materialize_pkgbuild`, version-locked to the just-installed llvm) and
+    builds it standalone against the installed PGO libLLVM — the `bolt/` subtree
+    rides inside the same `llvm-project` monorepo tarball the `llvm` build used.
+
+    Returns True if the tools are available afterward (built now, or already
+    present). Best-effort: a build failure WARNs and returns False so Pass 4b is
+    skipped and the verified PGO toolchain is left intact.
+    """
+    from sysforge.primitives import bolt as _bolt
+
+    # Already present (e.g. a prior run installed them) — nothing to build.
+    if _bolt.tools_available(need_perf=False)[0]:
+        return True
+
+    pkgbuild_dir = (config.get("paths", {}) or {}).get("pkgbuild_src_dir")
+    if not pkgbuild_dir:
+        _log.warn(
+            "[BOLT] Pass 4a skipped — no [paths] pkgbuild_src_dir to materialize "
+            "the llvm-bolt PKGBUILD into; PGO toolchain left as-is."
+        )
+        return False
+
+    llvm_ver = _query_pacman_versions(("llvm",)).get("llvm")
+    if not llvm_ver:
+        _log.warn("[BOLT] Pass 4a skipped — installed llvm version not found")
+        return False
+    pkgver = llvm_ver.split("-", 1)[0]  # strip pkgrel; BOLT locks to llvm pkgver
+
+    try:
+        pkgbuild = _bolt.materialize_pkgbuild(Path(pkgbuild_dir), pkgver)
+    except OSError as e:
+        _log.warn(f"[BOLT] Pass 4a skipped — could not write llvm-bolt PKGBUILD ({e})")
+        return False
+
+    _log.ui(
+        f"[BOLT] Pass 4a — building the BOLT tools (llvm-bolt {pkgver}, "
+        "experimental: no official Arch package) against the installed libLLVM"
+    )
+    try:
+        _build_pkg(
+            _bolt.PKG_NAME, pkgbuild, options,
+            extra_flags=["--install"],
+            toolchain_variant=variant,
+            owner_stage="toolchain",
+        )
+    except Exception as e:
+        _log.warn(
+            f"[BOLT] Pass 4a failed to build llvm-bolt ({e}) — PGO toolchain "
+            "left in place; BOLT optimization skipped."
+        )
+        return False
+
+    ok, missing = _bolt.tools_available(need_perf=False)
+    if not ok:
+        _log.warn(
+            f"[BOLT] llvm-bolt built but {', '.join(missing)} still not on PATH — "
+            "skipping BOLT optimization."
+        )
+    return ok
+
+
+def _run_bolt_pass4(tcfg: dict, config: dict, options, variant: str | None) -> None:
+    """Pass 4 — BOLT-optimize the freshly-installed PGO clang (post-link).
+
+    Runs after Gate 3 has *verified* the PGO toolchain in ``/usr`` and inside the
+    stage sentinel, so a mishap is covered by the same snapshot rollback as the
+    install. The canonical PGO→BOLT "fast clang" stack, in two steps: **4a**
+    builds the BOLT tools sysforge needs (see :func:`_build_bolt_tools` — they are
+    not in the Arch repos), then **4b** profiles the installed clang on a
+    representative compile job (``perf record``), converts with ``perf2bolt``,
+    rewrites with ``llvm-bolt``, smoke-tests the result, and only then atomically
+    replaces ``/usr/bin/clang``.
+
+    EXPERIMENTAL and best-effort throughout: a failed tool build, a missing
+    ``perf``, a ``perf``/``llvm-bolt`` failure, or a failed smoke test WARNs and
+    leaves the verified PGO clang untouched — BOLT is an opt-in extra win, never
+    allowed to regress the working toolchain. No-op unless ``[bolt] enabled`` (and
+    not dry-run). Note: this rewrites the installed binary post-link, so
+    ``pacman -Qkk clang`` will report it modified — an inherent property of
+    post-link optimization, not corruption.
+    """
+    import subprocess as _sp
+    import tempfile as _tempfile
+
+    bcfg = _bolt_config(tcfg)
+    if not bcfg["enabled"]:
+        return
+    if options.dry_run:
+        _log.ui(
+            "[dry-run] would build the BOLT tools (experimental) and "
+            "BOLT-optimize the installed clang (Pass 4)"
+        )
+        return
+
+    from sysforge.primitives import bolt as _bolt
+    from sysforge.primitives import fs_provision as _fsp
+
+    # Pass 4a — sysforge builds llvm-bolt/perf2bolt itself (not in Arch repos).
+    if not _build_bolt_tools(tcfg, config, options, variant):
+        return
+
+    # perf (linux-tools) is needed for collection but isn't something sysforge
+    # builds — surface its absence with an actionable hint, don't silently skip.
+    ok, missing = _bolt.tools_available(need_perf=True)
+    if not ok:
+        _log.warn(
+            f"[BOLT] Pass 4b skipped — {', '.join(missing)} not on PATH "
+            "(install the linux-tools `perf` package). PGO clang left in place."
+        )
+        return
+
+    clang = Path("/usr/bin/clang")
+    clangxx = Path("/usr/bin/clang++")
+    if not clang.exists():
+        _log.warn("[BOLT] Pass 4 skipped — /usr/bin/clang not found")
+        return
+
+    store = _bolt.resolve_store(tcfg)
+    try:
+        _fsp.ensure_writable_dir(store)
+    except _fsp.FsProvisionError as e:
+        _log.warn(f"[BOLT] profile store {store} not group-provisioned ({e})")
+
+    with _tempfile.TemporaryDirectory(prefix="sysforge-bolt-") as _td:
+        td = Path(_td)
+        workload_cfg = bcfg["training_workload"]
+        workload = (
+            Path(workload_cfg).expanduser()
+            if workload_cfg
+            else _bolt.write_default_workload(td)
+        )
+        if not workload.is_file():
+            _log.warn(
+                f"[BOLT] training_workload {workload} not found — Pass 4 skipped"
+            )
+            return
+
+        _log.ui(
+            "[BOLT] Pass 4 — profiling clang on a compile job and rewriting "
+            "with llvm-bolt (PGO→BOLT)"
+        )
+        try:
+            fdata = _bolt.collect_profile(
+                clang, store,
+                _bolt.compile_workload_argv(str(clangxx), workload, td / "w.o"),
+            )
+            bolted = _bolt.bolt_binary(clang, fdata, out=td / "clang.bolt")
+        except _bolt.BoltError as e:
+            _log.warn(f"[BOLT] Pass 4 failed ({e}) — PGO clang left in place")
+            return
+
+        # Smoke-test the BOLTed clang *before* it replaces the system compiler.
+        smoke = _sp.run(
+            [str(bolted), "-std=c++17", "-O2", "-c", str(workload), "-o", str(td / "s.o")],
+            capture_output=True, text=True,
+        )
+        if smoke.returncode != 0 or not (td / "s.o").exists():
+            _log.warn(
+                "[BOLT] the BOLT-optimized clang failed its smoke test — "
+                "discarding it; the verified PGO clang stays in place"
+            )
+            return
+
+        try:
+            _fsp._run_priv(["install", "-Dm755", str(bolted), str(clang)])
+        except _fsp.FsProvisionError as e:
+            _log.warn(
+                f"[BOLT] could not install the BOLTed clang ({e}) — "
+                "PGO clang left in place"
+            )
+            return
+
+        # Provenance sidecar (the build_state entry stays the PGO record; this
+        # marks that a post-link BOLT pass was applied on top).
+        try:
+            (store / "applied.txt").write_text(
+                f"bolt_llvm applied to {clang}\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
+        _log.ui(
+            "[BOLT] Pass 4 complete — /usr/bin/clang is now PGO+BOLT optimized "
+            f"(build_mode {_bolt.BUILD_MODE})"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
 
@@ -3561,6 +3783,9 @@ class ToolchainStage(Stage):
                     config_digest=config_digest,
                     reuse_built=reuse_built,
                     corpus_map=corpus_map,
+                    # BOLT Pass 4 (opt-in) needs the shipped clang/libLLVM linked
+                    # with -Wl,--emit-relocs so llvm-bolt can rewrite them.
+                    bolt_relocs=_bolt_config(tcfg)["enabled"],
                 )
             else:
                 built_map, cc, cxx, ld, variant = _build_llvm_single(
@@ -3674,6 +3899,13 @@ class ToolchainStage(Stage):
                     if pgo:
                         _remove_staging(staging)
                         _remove_staging(staging3)
+                        # Pass 4 — BOLT the verified PGO clang (opt-in, gated on
+                        # [bolt] enabled). 4a builds the BOLT tools (not in the
+                        # Arch repos), 4b rewrites clang. Best-effort and
+                        # smoke-tested before it replaces /usr/bin/clang; runs
+                        # inside the sentinel so a mishap stays covered by the
+                        # snapshot rollback.
+                        _run_bolt_pass4(tcfg, config, options, variant)
 
         # Toolchain is installed and Gate-3-verified. Rebuild the libLLVM
         # consumers so the live system is left coherent: the pre-build soname
