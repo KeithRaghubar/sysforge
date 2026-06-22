@@ -47,6 +47,14 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   README.md, then CLAUDE.md. Never edit generated DESIGN.md directly.
 - **Completions stay in lockstep with the CLI**: update `completions/_sysforge` (and the
   bash completion) in the same change as any CLI-surface change, not as a follow-up.
+- **Releases are GPG-signed; the stable PKGBUILD verifies the maintainer signature**:
+  `tools/release.sh` signs the commit + annotated tag (`git tag -s`/`-v`) and the release
+  tarball (detached `.asc`, uploaded with the GitHub release), gated by a signing preflight
+  and a sentinel-fingerprint publish gate. The stable `PKGBUILD` carries `validpgpkeys` + a
+  `.asc` source (paired with `SKIP`) so `makepkg` verifies at install; `-git` is stable-only
+  exempt. `check_shipped` `pkgbuild`/`pkgbuild_parity` permit signature `SKIP` + stable-only
+  `validpgpkeys` (sentinel `REPLACE_WITH_MAINTAINER_KEY_FINGERPRINT` tolerated in dev). Don't
+  add a parallel signer/gate. See DESIGN.md §Release Process / §Standards (row 16).
 - **PKGBUILD parsing/detection/patching**: cross-check `PKGBUILD(5)` before changing
   (array vs string fields, escape rules). Arch array families (`makedepends_x86_64`, …)
   merge into the canonical key in `parse_pkgbuild` — extend `_ARCH_ARRAY_FAMILIES` in

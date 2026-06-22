@@ -20,6 +20,7 @@ path = [
     "PKGBUILD",
     "PKGBUILD-git",
     ".SRCINFO",
+    "keys/**",
     "Makefile",
     ".gitignore",
     "LICENSE",

@@ -31,6 +31,7 @@ adhered to, partially or fully guarded · **target** = adopted, gap being closed
 | 13 | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) | Release notes | enforced | `docs/release-notes/vX.Y.Z.md` category vocabulary; `check_standards` `changelog` group |
 | 14 | [REUSE](https://reuse.software/) / SPDX (license: **MIT**) | Per-file licensing | enforced | SPDX headers + `LICENSES/MIT.txt` + `REUSE.toml`; `check_standards` `spdx` group (`reuse lint`) |
 | 15 | Reproducible builds | Builds SysForge produces | followed | does not strip reproducibility OPTIONS / honours `SOURCE_DATE_EPOCH`; `tests/test_standards_compliance.py` |
+| 16 | OpenPGP signing (RFC 4880) + makepkg `validpgpkeys` | Release provenance (signed commits, tags, tarball) | followed | `tools/release.sh` (signing preflight + `git tag -s` + tarball `.asc`); `check_shipped` `pkgbuild` group (`validpgpkeys` + signature-aware `SKIP`); verified downstream by `makepkg` |
 
 ### Notes on selected standards
 
@@ -62,6 +63,17 @@ check, with a header-presence grep fallback.
 of packages it builds: it does not inject non-deterministic data, preserves
 reproducibility-relevant `OPTIONS`, and passes `SOURCE_DATE_EPOCH` through to the
 build environment unmodified.
+
+**OpenPGP signing (16).** Releases are signed end to end with the maintainer key:
+the `release: vX.Y.Z` commit (`commit.gpgsign`), an annotated tag (`git tag -s`,
+verified with `git tag -v`), and a detached signature of the source tarball
+(`sysforge-X.Y.Z.tar.gz.asc`) uploaded to the GitHub release. The stable
+`PKGBUILD` declares the maintainer fingerprint in `validpgpkeys` and lists the
+`.asc` as a second `source` (paired with `SKIP`), so `makepkg` verifies the
+maintainer signature at install time. `tools/release.sh` preflight refuses to run
+without a usable signing key, and refuses to publish while the placeholder
+fingerprint sentinel is still in the PKGBUILD. See **Release Process** and the
+*Verifying releases* section of `README.md`.
 
 ### Adding or changing a standard
 

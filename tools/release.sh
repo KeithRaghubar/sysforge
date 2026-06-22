@@ -126,7 +126,10 @@ RESUME=0
 # If a local tag for the *current* pyproject.toml version points to HEAD,
 # Phase 1 has already run (this is a resume after a Ctrl-C at Phase 2).
 if git rev-parse --quiet --verify "v$CUR" >/dev/null 2>&1; then
-    if [[ "$(git rev-parse "v$CUR")" == "$(git rev-parse HEAD)" ]]; then
+    # Resolve through the tag object to the commit ("^{commit}") — a signed/
+    # annotated tag is its own object, so a bare `git rev-parse v$CUR` would
+    # return the tag SHA (never == HEAD) and silently defeat resume.
+    if [[ "$(git rev-parse "v$CUR^{commit}")" == "$(git rev-parse HEAD)" ]]; then
         RESUME=1
         NEW="$CUR"
         TAG="v$NEW"
@@ -159,6 +162,29 @@ preflight_common() {
             exit 1
         fi
     fi
+    # Signing preflight — every release tag, commit, and tarball is GPG-signed,
+    # and the published PKGBUILD verifies that signature via validpgpkeys. Fail
+    # before any file is rewritten if the key is not usable, so we can never cut
+    # an *unsigned* release. (Skipped on --dry-run: no commit/tag/sign happens.)
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        local signingkey
+        signingkey="$(git config --get user.signingkey || true)"
+        if [[ -z "$signingkey" ]]; then
+            echo "ERROR: git user.signingkey is unset — release tags/commits must be signed." >&2
+            echo "       Set it once: git config --global user.signingkey <KEYID>" >&2
+            exit 1
+        fi
+        if [[ "$(git config --get commit.gpgsign || true)" != "true" ]]; then
+            echo "ERROR: git commit.gpgsign is not 'true' — the release commits would be unsigned." >&2
+            echo "       Enable it: git config --global commit.gpgsign true" >&2
+            exit 1
+        fi
+        if ! gpg --list-secret-keys "$signingkey" >/dev/null 2>&1; then
+            echo "ERROR: no usable GPG secret key for '$signingkey' (git user.signingkey)." >&2
+            echo "       Verify with: gpg --list-secret-keys $signingkey" >&2
+            exit 1
+        fi
+    fi
 }
 
 preflight_fresh() {
@@ -171,6 +197,14 @@ preflight_fresh() {
     git fetch --tags origin >/dev/null 2>&1 || true
     if git ls-remote --tags origin "refs/tags/$TAG" 2>/dev/null | grep -q "refs/tags/$TAG$"; then
         echo "ERROR: tag $TAG already exists on origin" >&2
+        exit 1
+    fi
+    # Signing trust-anchor gate. The stable PKGBUILD must carry the real
+    # maintainer key fingerprint (not the shipped sentinel) so installers can
+    # verify the release signature this run uploads.
+    if grep -q "REPLACE_WITH_MAINTAINER_KEY_FINGERPRINT" PKGBUILD; then
+        echo "ERROR: PKGBUILD validpgpkeys still holds the placeholder sentinel." >&2
+        echo "       Replace it with your key fingerprint: gpg --fingerprint" >&2
         exit 1
     fi
     # Release-notes gate. Every release ships curated notes; the file is
@@ -356,13 +390,16 @@ if [[ "$RESUME" -eq 0 ]]; then
     if [[ "$DRY_RUN" -eq 0 ]]; then
         git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 "docs/release-notes/$TAG.md"
         git commit -m "release: $TAG"
-        git tag "$TAG"
-        echo "    committed: release: $TAG"
-        echo "    tagged:    $TAG"
+        # Signed annotated tag — the release's authenticity anchor. `git tag -v`
+        # fails (and aborts the release) if the signature does not verify.
+        git tag -s "$TAG" -m "sysforge $TAG"
+        git tag -v "$TAG" >/dev/null
+        echo "    committed: release: $TAG (signed)"
+        echo "    tagged:    $TAG (signed, verified)"
     else
         echo "    [dry-run] git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 docs/release-notes/$TAG.md"
-        echo "    [dry-run] git commit -m \"release: $TAG\""
-        echo "    [dry-run] git tag $TAG"
+        echo "    [dry-run] git commit -m \"release: $TAG\"  (commit.gpgsign)"
+        echo "    [dry-run] git tag -s $TAG -m \"sysforge $TAG\" && git tag -v $TAG"
     fi
 fi
 
@@ -414,21 +451,67 @@ echo
 echo "==> Phase 3: post-tag artifacts"
 
 TARBALL_URL="https://github.com/KeithRaghubar/sysforge/archive/$TAG.tar.gz"
-echo "    Fetching sha256 from $TARBALL_URL"
+# Release artifacts (signed tarball, SHA256SUMS) are staged here and uploaded to
+# the GitHub release in Phase 4. Kept until script exit so Phase 4 can read them.
+RELEASE_STAGE="$(mktemp -d)"
+trap 'rm -rf "$RELEASE_STAGE"' EXIT
+ASSET_TARBALL="$RELEASE_STAGE/sysforge-$NEW.tar.gz"
+ASSET_SIG="$ASSET_TARBALL.asc"
+echo "    Fetching tarball + signing from $TARBALL_URL"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
     SHA256="DRYRUN0000000000000000000000000000000000000000000000000000000000"
-    echo "    [dry-run] would fetch; using placeholder $SHA256"
+    echo "    [dry-run] would fetch tarball, sha256, and GPG-sign it"
+    echo "    [dry-run] gpg --detach-sign --armor -o $ASSET_SIG <tarball>"
 else
-    SHA256=$(curl -fsSL "$TARBALL_URL" | sha256sum | awk '{print $1}')
+    # Download the exact bytes GitHub serves for this tag, then hash AND sign
+    # that same file — the sha256 pins integrity, the detached .asc proves it
+    # came from the maintainer key (verified downstream via PKGBUILD validpgpkeys).
+    curl -fsSL "$TARBALL_URL" -o "$ASSET_TARBALL"
+    SHA256=$(sha256sum "$ASSET_TARBALL" | awk '{print $1}')
     echo "    sha256: $SHA256"
+    gpg --detach-sign --armor --yes -o "$ASSET_SIG" "$ASSET_TARBALL"
+    gpg --verify "$ASSET_SIG" "$ASSET_TARBALL" >/dev/null 2>&1 \
+        || { echo "ERROR: GPG signature of the release tarball failed to verify" >&2; exit 1; }
+    # SHA256SUMS (+ its own detached signature) for non-makepkg consumers.
+    ( cd "$RELEASE_STAGE" && sha256sum "sysforge-$NEW.tar.gz" > SHA256SUMS \
+        && gpg --detach-sign --armor --yes -o SHA256SUMS.asc SHA256SUMS )
+    echo "    signed: sysforge-$NEW.tar.gz.asc, SHA256SUMS.asc"
 fi
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
-    sed -i "s/^sha256sums=.*/sha256sums=('$SHA256')/" PKGBUILD
-    echo "    PKGBUILD sha256sums updated"
+    # Two-element sha256sums: the tarball hash, then SKIP for the detached
+    # signature source (GPG-verified against validpgpkeys, not hashed).
+    sed -i "s/^sha256sums=.*/sha256sums=('$SHA256'\n            'SKIP')/" PKGBUILD
+    echo "    PKGBUILD sha256sums updated (tarball + SKIP for .asc)"
 else
-    echo "    [dry-run] would update sha256sums in PKGBUILD"
+    echo "    [dry-run] would update sha256sums in PKGBUILD (tarball hash + SKIP)"
+fi
+
+# GitHub release — created BEFORE chroot validation because the stable PKGBUILD's
+# detached-signature source points at this release's download URL; makepkg (run by
+# makechrootpkg below) must be able to fetch sysforge-$NEW.tar.gz.asc to verify it.
+echo "    Publishing GitHub release $TAG with signed artifacts"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "    [dry-run] gh release create $TAG --title \"sysforge $TAG\" \\"
+    echo "    [dry-run]   --notes-file docs/release-notes/$TAG.md \\"
+    echo "    [dry-run]   $ASSET_SIG SHA256SUMS SHA256SUMS.asc"
+elif ! command -v gh >/dev/null 2>&1; then
+    echo "ERROR: gh CLI not found — needed to publish the release + upload the signature." >&2
+    echo "       Install: sudo pacman -S --needed github-cli && gh auth login" >&2
+    exit 1
+else
+    if gh release view "$TAG" >/dev/null 2>&1; then
+        # Idempotent resume: release already exists, just (re)upload the assets.
+        echo "    release $TAG exists — uploading assets (--clobber)"
+        gh release upload "$TAG" --clobber \
+            "$ASSET_SIG" "$RELEASE_STAGE/SHA256SUMS" "$RELEASE_STAGE/SHA256SUMS.asc"
+    else
+        gh release create "$TAG" --title "sysforge $TAG" \
+            --notes-file "docs/release-notes/$TAG.md" \
+            "$ASSET_SIG" "$RELEASE_STAGE/SHA256SUMS" "$RELEASE_STAGE/SHA256SUMS.asc"
+    fi
+    echo "    release published: $TARBALL_URL → asset sysforge-$NEW.tar.gz.asc"
 fi
 
 # Chroot validation
@@ -451,11 +534,13 @@ fi
 # .SRCINFO-git via tmpdir
 echo "    Generating .SRCINFO-git"
 if [[ "$DRY_RUN" -eq 0 ]]; then
+    # Clean up inline rather than via an EXIT trap — the RELEASE_STAGE trap set
+    # in the sha256/sign step owns EXIT, and a second `trap ... EXIT` would clobber it.
     TMPDIR_GIT=$(mktemp -d)
-    trap 'rm -rf "$TMPDIR_GIT"' EXIT
     cp PKGBUILD-git "$TMPDIR_GIT/PKGBUILD"
     (cd "$TMPDIR_GIT" && makepkg --printsrcinfo > .SRCINFO)
     cp "$TMPDIR_GIT/.SRCINFO" .SRCINFO-git
+    rm -rf "$TMPDIR_GIT"
 else
     echo "    [dry-run] makepkg --printsrcinfo > .SRCINFO-git (via tmpdir)"
 fi
@@ -480,7 +565,8 @@ fi
 
 cat <<EOF
 
-==> Phase 4: done. Final manual steps:
+==> Phase 4: done. The signed GitHub release $TAG is already published
+    (tag, commits, and release tarball are GPG-signed). Final manual steps:
 
 1. Push the sha256 commit:
 
@@ -498,8 +584,4 @@ cat <<EOF
     cp PKGBUILD-git /tmp/aur-sysforge-git/PKGBUILD
     cp .SRCINFO-git /tmp/aur-sysforge-git/.SRCINFO
     cd /tmp/aur-sysforge-git && git add -A && git commit -m "Update to $NEW" && git push
-
-4. Publish the GitHub release (uses the notes committed in Phase 1):
-
-    gh release create $TAG --title "sysforge $TAG" --notes-file docs/release-notes/$TAG.md
 EOF

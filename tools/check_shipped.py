@@ -306,7 +306,11 @@ _INSTALL_RE = re.compile(
 )
 _BACKUP_RE = re.compile(r"^backup=\((.*?)\)", re.DOTALL | re.MULTILINE)
 _LOCAL_VAR_RE = re.compile(r'local\s+(\w+)\s*=\s*"([^"]+)"')
-_SHA256_RE = re.compile(r"^sha256sums=\((.*?)\)", re.DOTALL | re.MULTILINE)
+
+# Placeholder fingerprint shipped in PKGBUILD until the maintainer fills in their
+# real key. tools/release.sh refuses to publish while this is present; check_shipped
+# tolerates it so dev gates pass before a signing key exists.
+_VALIDPGPKEYS_SENTINEL = "REPLACE_WITH_MAINTAINER_KEY_FINGERPRINT"
 
 
 def check_pkgbuild(repo: Path) -> list[Finding]:
@@ -354,15 +358,41 @@ def check_pkgbuild(repo: Path) -> list[Finding]:
         findings.append(Finding("pkgbuild", "error", "PKGBUILD",
                                 f"backup=() lists {p} but no install line writes it"))
 
-    sm = _SHA256_RE.search(text)
-    if sm:
-        for s in re.findall(r"'([^']+)'", sm.group(1)):
-            if s == "SKIP":
+    # sha256sums / source / validpgpkeys: parse the arrays so a SKIP can be
+    # paired with its source. A detached signature source (*.asc / *.sig) is
+    # GPG-verified against validpgpkeys, so SKIP is *correct* for it — but SKIP
+    # on a hashable source (or an all-zero/DRYRUN value) is still a placeholder.
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    g = parse_pkgbuild(str(pkgbuild))["globals"]
+    sources = g.get("source") or []
+    sums = g.get("sha256sums") or []
+    for i, s in enumerate(sums):
+        src = sources[i] if i < len(sources) else ""
+        is_sig = src.endswith(".asc") or src.endswith(".sig")
+        if s == "SKIP":
+            if not is_sig:
                 findings.append(Finding("pkgbuild", "error", "PKGBUILD",
-                    "sha256sums=('SKIP') in stable PKGBUILD (only valid for PKGBUILD-git)"))
-            elif re.fullmatch(r"0+", s) or s.startswith("DRYRUN"):
-                findings.append(Finding("pkgbuild", "error", "PKGBUILD",
-                                        f"sha256sums contains placeholder: {s}"))
+                    f"sha256sums=('SKIP') for non-signature source {src!r} "
+                    "(SKIP is only valid for a detached .asc/.sig source)"))
+        elif re.fullmatch(r"0+", s) or s.startswith("DRYRUN"):
+            findings.append(Finding("pkgbuild", "error", "PKGBUILD",
+                                    f"sha256sums contains placeholder: {s}"))
+
+    # Release-signing trust anchor: the stable PKGBUILD must declare a maintainer
+    # key so makepkg verifies the .asc. Accept the dev sentinel (release.sh blocks
+    # publishing while it's present) or a real 40-hex fingerprint.
+    keys = g.get("validpgpkeys") or []
+    if not keys:
+        findings.append(Finding("pkgbuild", "error", "PKGBUILD",
+            "validpgpkeys=() not declared — required to verify the release signature"))
+    for k in keys:
+        if k != _VALIDPGPKEYS_SENTINEL and not re.fullmatch(r"[0-9A-Fa-f]{40}", k):
+            findings.append(Finding("pkgbuild", "error", "PKGBUILD",
+                f"validpgpkeys entry {k!r} is not a 40-hex fingerprint "
+                f"(or the {_VALIDPGPKEYS_SENTINEL} sentinel)"))
     return findings
 
 
@@ -375,6 +405,9 @@ def check_pkgbuild(repo: Path) -> list[Finding]:
 _ALLOWED_PKGBUILD_DIVERGENCE = {
     "pkgname", "pkgver", "pkgrel", "pkgdesc",
     "source", "sha256sums", "conflicts", "provides",
+    # Stable verifies a maintainer-signed release tarball; the VCS package
+    # tracks a git clone (no release .asc), so validpgpkeys is stable-only.
+    "validpgpkeys",
 }
 
 

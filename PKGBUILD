@@ -39,8 +39,16 @@ backup=(
     'etc/sysforge/kernel.toml'
     'etc/sysforge/toolchain.toml'
 )
-source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('0c2c6777d9df13d0c5d8fb88ec6ba08887a249c31bc6b197398024a48e8a25a0')
+# Maintainer release-signing key. Releases are GPG-signed (signed tag + detached
+# signature of the release tarball, uploaded to the GitHub release by
+# tools/release.sh); makepkg verifies the .asc below against this fingerprint.
+# REPLACE the sentinel with the real 40-hex fingerprint (gpg --fingerprint);
+# tools/release.sh refuses to publish while the sentinel is present.
+validpgpkeys=('23774499080F9288FEFB49CE7AAE22E6E1B4B22C')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz"
+        "$pkgname-$pkgver.tar.gz.asc::$url/releases/download/v$pkgver/sysforge-$pkgver.tar.gz.asc")
+sha256sums=('0c2c6777d9df13d0c5d8fb88ec6ba08887a249c31bc6b197398024a48e8a25a0'
+            'SKIP')
 
 build() {
     cd "$srcdir/$pkgname-$pkgver"

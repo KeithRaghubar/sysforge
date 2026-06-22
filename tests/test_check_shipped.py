@@ -137,6 +137,61 @@ class TestPkgbuildDrift:
         assert res.returncode == 1
         assert "install source not found" in res.stdout
 
+    def test_skip_on_signature_source_passes(self, tmp_path):
+        # The real PKGBUILD pairs a SKIP with the detached .asc source — that is
+        # legitimate and must pass the sha256 placeholder rule.
+        repo = copy_shipped_tree(tmp_path)
+        res = run_checker(repo=repo, args=["--check=pkgbuild"])
+        assert res.returncode == 0, res.stdout
+
+    def test_skip_on_non_signature_source_fails(self, tmp_path):
+        # Move the SKIP onto the tarball source (swap the two sha256sums entries)
+        # so SKIP pairs with a hashable source — that must be flagged.
+        repo = copy_shipped_tree(tmp_path)
+        pkgbuild = repo / "PKGBUILD"
+        text = pkgbuild.read_text()
+        new = text.replace(
+            "sha256sums=('0c2c6777d9df13d0c5d8fb88ec6ba08887a249c31bc6b197398024a48e8a25a0'\n"
+            "            'SKIP')",
+            "sha256sums=('SKIP'\n"
+            "            '0c2c6777d9df13d0c5d8fb88ec6ba08887a249c31bc6b197398024a48e8a25a0')",
+        )
+        assert new != text
+        pkgbuild.write_text(new)
+
+        res = run_checker(repo=repo, args=["--check=pkgbuild"])
+        assert res.returncode == 1
+        assert "SKIP" in res.stdout and "non-signature source" in res.stdout
+
+    def test_missing_validpgpkeys_fails(self, tmp_path):
+        repo = copy_shipped_tree(tmp_path)
+        pkgbuild = repo / "PKGBUILD"
+        text = pkgbuild.read_text()
+        new = text.replace(
+            "validpgpkeys=('REPLACE_WITH_MAINTAINER_KEY_FINGERPRINT')\n", "", 1,
+        )
+        assert new != text
+        pkgbuild.write_text(new)
+
+        res = run_checker(repo=repo, args=["--check=pkgbuild"])
+        assert res.returncode == 1
+        assert "validpgpkeys" in res.stdout
+
+    def test_malformed_validpgpkeys_fails(self, tmp_path):
+        repo = copy_shipped_tree(tmp_path)
+        pkgbuild = repo / "PKGBUILD"
+        text = pkgbuild.read_text()
+        new = text.replace(
+            "validpgpkeys=('REPLACE_WITH_MAINTAINER_KEY_FINGERPRINT')",
+            "validpgpkeys=('not-a-fingerprint')",
+        )
+        assert new != text
+        pkgbuild.write_text(new)
+
+        res = run_checker(repo=repo, args=["--check=pkgbuild"])
+        assert res.returncode == 1
+        assert "40-hex fingerprint" in res.stdout
+
 
 class TestPkgbuildParity:
     def test_optdepends_drift(self, tmp_path):

@@ -362,6 +362,25 @@ Both complete subcommands, all flags, and package names (local `pkgbuild_src_dir
 
 ---
 
+## Verifying releases
+
+Releases are GPG-signed end to end with the maintainer key: the release commit, the git tag, and the source tarball. Each GitHub release carries a detached signature (`sysforge-X.Y.Z.tar.gz.asc`) plus `SHA256SUMS`/`SHA256SUMS.asc`. The AUR `sysforge` package verifies the tarball signature automatically at install time via `validpgpkeys` — `makepkg` aborts if it does not match.
+
+To verify by hand, import the maintainer key (its fingerprint is in `keys/sysforge.asc` in this repo) and check the tag and tarball:
+
+```bash
+# Import the maintainer key (from the repo, or a keyserver by fingerprint)
+gpg --import keys/sysforge.asc
+# Verify the signed tag
+git tag -v vX.Y.Z
+# Verify a downloaded release tarball against its detached signature
+gpg --verify sysforge-X.Y.Z.tar.gz.asc sysforge-X.Y.Z.tar.gz
+```
+
+Signing applies from the first release cut after this feature landed; earlier releases were published unsigned. See [SECURITY.md](SECURITY.md) for the disclosure policy.
+
+---
+
 ## Contributing
 
 Issues are the best channel for bug reports and feedback; pull requests are welcome too. See [CONTRIBUTING.md](CONTRIBUTING.md) for how the project is developed and what a good PR looks like.
