@@ -14,6 +14,22 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Python, TOML config. T
 is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,minor,patch}`
 / `vm-*`); don't invoke `pytest` directly.
 
+## Commands (canonical: the Makefile)
+
+```bash
+make test          # full suite          make test-x   # stop on first failure
+make lint          # ruff
+make design        # regenerate DESIGN.md from docs/design/* (run after editing sources)
+make check-design  # guard: DESIGN.md in sync with its sources
+make check-shipped # guard: etc/sysforge, PKGBUILD*, hooks, completions, manpage parity
+make check-standards
+make sync-config   # adopt new shipped defaults into the untracked live config (add-only)
+make release-{major,minor,patch}
+```
+
+Don't invoke `pytest` directly. Shipped-file edits must pass `make check-shipped`; doc/design
+edits must pass `make check-design` after `make design`.
+
 ## Dev Environment
 
 - Ryzen 7 5800X3D, RTX 5070, Arch Linux, COSMIC/Wayland, nvidia-open-dkms.
