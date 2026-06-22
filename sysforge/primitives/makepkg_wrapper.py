@@ -118,6 +118,7 @@ from sysforge.primitives.profile import (
     is_mesa_pkgbase,
     is_optimized_build_mode,
     match_rules,
+    rename_mode_for_build_mode,
     resolve_consumes,
     resolve_groups,
     resolve_profile,
@@ -447,7 +448,11 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     # global survived.
     rename = None
     if optimization_build_mode and is_optimized_build_mode(optimization_build_mode):
-        rename = patch_package_suffix(pkgbuild_path, "sysforge", mode="conflict")
+        # Conflict vs coexist is policy-per-build_mode (one home:
+        # rename_mode_for_build_mode) — kernel FDO coexists with the stock kernel
+        # for bootloader fallback; llvm/mesa replace their stock package.
+        rename_mode = rename_mode_for_build_mode(optimization_build_mode)
+        rename = patch_package_suffix(pkgbuild_path, "sysforge", mode=rename_mode)
         if rename:
             validate_patched_pkgbuild(
                 original_pkgbuild_path, pkgbuild_path, rename=rename
@@ -665,6 +670,7 @@ class BuildOptions:
     toolchain_variant: str | None = None  # "gcc" | "stock_llvm" | "pgo_llvm" — persisted so `sysforge update` can flag drift
     cmake_llvm_dir: str | None = None  # force -DLLVM_DIR at a staged libLLVM prefix (toolchain PGO passes 1b/3b/3c)
     pgo_mode: str | None = None  # "record" | "use" — mesa instrumentation PGO (`build --pgo`); no-op for non-mesa pkgbases
+    optimization_build_mode: str | None = None  # e.g. "autofdo_kernel" — stage-supplied optimization mode; seeds record_build_mode → -sysforge rename + build_state. mesa --pgo=use sets its own ("pgo_mesa") internally.
 
 
 # ---------------------------------------------------------------------------
@@ -809,7 +815,11 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         # those and consumes the profile, earning the -sysforge rename below
         # (record_build_mode = "pgo_mesa"). A logged no-op for non-mesa pkgbases —
         # mesa is the only wired target this phase.
-        record_build_mode: str | None = None
+        # Seeded from the stage-supplied optimization mode (kernel FDO sets
+        # "autofdo_kernel"/"propeller_kernel" here); the mesa --pgo=use block
+        # below sets its own. Either way it drives the -sysforge rename in
+        # _run_build and the recorded build_state build_mode.
+        record_build_mode: str | None = options.optimization_build_mode
         if options.pgo_mode:
             _pgo_globals = pkgmeta.get("globals", {})
             _pgo_names = _pgo_globals.get("pkgname")

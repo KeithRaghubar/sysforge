@@ -1064,6 +1064,16 @@ Build the kernel -headers subpackage (default: on, per kernel.\&toml build_heade
 Build the kernel -docs subpackage (default: off, per kernel.\&toml build_docs).\& Pass --docs to build the kernel HTML/man documentation.\&
 .PP
 .RE
+\fB--autofdo\fR \fIKERNEL_FDO\fR
+.RS 4
+Sample-based kernel optimization (AutoFDO; LLVM toolchain only).\& Three steps spanning reboots: '\&record'\& builds+installs a profiling kernel (CONFIG_AUTOFDO_CLANG, stock name); '\&capture'\& prints the host-tailored perf + create_llvm_prof commands to run on the booted profiling kernel (no build); '\&use'\& rebuilds consuming the collected profile and installs it as <pkgname>-sysforge alongside the stock kernel for bootloader fallback.\&
+.PP
+.RE
+\fB--propeller\fR
+.RS 4
+Layer Propeller (basic-block layout) on the --autofdo cycle.\& Requires --autofdo; adds CONFIG_PROPELLER_CLANG and the Propeller profile pair.\& Recommended over BOLT for the kernel.\&
+.PP
+.RE
 \fB--no-pkg-logs\fR
 .RS 4
 Disable per-package log files.\&

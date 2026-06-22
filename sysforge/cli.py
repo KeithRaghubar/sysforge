@@ -895,6 +895,19 @@ def _add_run_parser(sub):
         action=argparse.BooleanOptionalAction, default=None, dest="build_docs",
         help="Build the kernel -docs subpackage (default: off, per kernel.toml "
              "build_docs). Pass --docs to build the kernel HTML/man documentation.")
+    p_kernel.add_argument("--autofdo", choices=("record", "capture", "use"),
+        dest="kernel_fdo",
+        help="Sample-based kernel optimization (AutoFDO; LLVM toolchain only). "
+             "Three steps spanning reboots: 'record' builds+installs a profiling "
+             "kernel (CONFIG_AUTOFDO_CLANG, stock name); 'capture' prints the "
+             "host-tailored perf + create_llvm_prof commands to run on the booted "
+             "profiling kernel (no build); 'use' rebuilds consuming the collected "
+             "profile and installs it as <pkgname>-sysforge alongside the stock "
+             "kernel for bootloader fallback.")
+    p_kernel.add_argument("--propeller", action="store_true", dest="kernel_propeller",
+        help="Layer Propeller (basic-block layout) on the --autofdo cycle. "
+             "Requires --autofdo; adds CONFIG_PROPELLER_CLANG and the Propeller "
+             "profile pair. Recommended over BOLT for the kernel.")
     p_kernel.add_argument("--no-pkg-logs", action="store_true", dest="no_pkg_logs",
         help="Disable per-package log files.")
     p_kernel.add_argument("--persist-log", action="store_true", dest="persist_log",

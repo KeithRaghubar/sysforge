@@ -69,6 +69,7 @@ Post-install steps (run after makepkg succeeds):
 """
 
 import contextlib
+import os
 import subprocess
 import tomllib
 from pathlib import Path
@@ -76,7 +77,7 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("KERNEL")
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives import device_probe, kbuild_map, kernel_safety
+from sysforge.primitives import device_probe, kbuild_map, kernel_fdo, kernel_safety
 from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.paths import KERNEL_PATH
 from sysforge.primitives.makepkg_wrapper import (
@@ -411,6 +412,130 @@ def _warn_and_confirm_diverged(pkgbuild_dir, options):
 
 
 # ---------------------------------------------------------------------------
+# Sample-based FDO (AutoFDO / Propeller) — kernel_fdo orchestration
+#
+# Three steps spanning reboots: `record` builds a profiling kernel
+# (CONFIG_AUTOFDO_CLANG=y, stock name); `capture` is a read-only step that prints
+# host-tailored perf + create_llvm_prof commands; `use` rebuilds consuming the
+# collected profile (injected via the build's extra_env make-variables) and earns
+# the -sysforge coexist rename. LLVM-only — there is no GCC path. See
+# DESIGN.md §Kernel stage.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_fdo(options):
+    """Resolve the kernel FDO request from CLI options.
+
+    Returns ``(mode, propeller)`` — ``mode`` is one of ``kernel_fdo.VALID_MODES``
+    (``record``/``capture``/``use``) or ``None`` when no FDO flag was passed.
+    ``--propeller`` is a modifier that layers Propeller on the AutoFDO cycle, so
+    it requires a mode. Raises on an invalid combination.
+    """
+    mode = getattr(options, "kernel_fdo", None)
+    propeller = bool(getattr(options, "kernel_propeller", False))
+    if mode is not None and mode not in kernel_fdo.VALID_MODES:
+        raise RuntimeError(
+            f"[KERNEL] invalid --autofdo value {mode!r}: must be one of "
+            f"{kernel_fdo.VALID_MODES}"
+        )
+    if propeller and mode is None:
+        raise RuntimeError(
+            "[KERNEL] --propeller layers Propeller on the AutoFDO cycle and "
+            "requires --autofdo=record|capture|use"
+        )
+    return mode, propeller
+
+
+def _fdo_is_llvm(compiler, cc):
+    """Whether the resolved kernel compiler is Clang/LLVM (kernel FDO is LLVM-only).
+
+    ``compiler`` is the explicit "gcc"/"llvm" choice (CLI/kernel.toml/pipeline);
+    when it is ``None`` (inherited toolchain) we sniff the resolved ``cc`` and,
+    failing that, the environment ``CC`` — the same basename the kernel build
+    keys its LLVM=1 detection on, so a workstation whose ``CC=clang`` is honored.
+    """
+    if compiler == "llvm":
+        return True
+    if compiler == "gcc":
+        return False
+    probe = cc or os.environ.get("CC", "")
+    return bool(probe) and Path(probe).name.startswith("clang")
+
+
+def _gate_fdo_llvm(mode, propeller, compiler, cc):
+    """Hard-abort when kernel FDO is requested under a non-LLVM toolchain.
+
+    AutoFDO/Propeller have no GCC path in sysforge, and the kernel's
+    CONFIG_AUTOFDO_CLANG/CONFIG_PROPELLER_CLANG have no GCC equivalent at all — so
+    this is a clean refusal before any build work. The single home for the
+    kernel-FDO LLVM gate.
+    """
+    if _fdo_is_llvm(compiler, cc):
+        return
+    from sysforge.primitives.profile import LLVM_REQUIRED_HINT
+    feature = "kernel Propeller" if propeller else "kernel AutoFDO"
+    raise RuntimeError(
+        f"[KERNEL] {feature} (--autofdo={mode}) requires the LLVM toolchain. "
+        f"{LLVM_REQUIRED_HINT}"
+    )
+
+
+def _run_fdo_capture(pkgname, propeller, dry_run):
+    """The ``--autofdo=capture`` step: print host-tailored perf + create_llvm_prof
+    commands for the operator to run on the booted profiling kernel.
+
+    Read-only and non-mutating — no build, no install, no sentinel. Provisions
+    the store so the printed ``create_llvm_prof --out=<store>/…`` can write, then
+    resolves this host's branch-sampling event and the matching vmlinux and
+    prints the command block. ``--autofdo=use`` later consumes whatever profile
+    landed in the store.
+    """
+    store = kernel_fdo.resolve_store(pkgname, propeller=propeller)
+    sampling = kernel_fdo.detect_branch_sampling()
+    vmlinux = kernel_fdo.resolve_vmlinux(pkgname)
+
+    if dry_run:
+        _log.ui(
+            f"[dry-run] would print AutoFDO capture commands for {pkgname} "
+            f"(store {store})"
+        )
+        return
+
+    from sysforge.primitives import fs_provision
+    try:
+        fs_provision.ensure_writable_dir(store)
+    except fs_provision.FsProvisionError as e:
+        _log.warn(
+            f"FDO store {store} could not be group-provisioned ({e}) — "
+            "create_llvm_prof may be unable to write the profile there"
+        )
+
+    if sampling.supported:
+        _log.info(f"branch sampling: {sampling.note}")
+    else:
+        _log.warn(f"branch sampling unsupported on this CPU: {sampling.note}")
+    if vmlinux is None:
+        _log.warn(
+            "no uncompressed vmlinux found in the build tree — build the "
+            "profiling kernel with `--autofdo=record` first, then substitute the "
+            "real vmlinux path in the command below."
+        )
+
+    _log.ui(
+        f"AutoFDO{' + Propeller' if propeller else ''} capture — reboot into "
+        f"{pkgname}, then run these while exercising the machine:"
+    )
+    for line in kernel_fdo.capture_commands(
+        store, sampling=sampling, vmlinux=vmlinux, propeller=propeller
+    ):
+        _log.ui(f"  {line}")
+    _log.ui(
+        "Then rebuild the optimized kernel: "
+        f"sysforge run kernel --autofdo=use{' --propeller' if propeller else ''}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # kernel.toml loading
 # ---------------------------------------------------------------------------
 
@@ -602,7 +727,9 @@ def _format_kconfig_line(option, value):
     return f'{option}="{value}"'
 
 
-def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None, state_dir=None):
+def _write_kconfig_fragment(
+    kernel_cfg, config, dry_run, provenance=None, state_dir=None, extra_kconfig=None
+):
     """
     Build and write the sysforge.config fragment to the PKGBUILD directory.
 
@@ -611,7 +738,10 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None, state_
          map ∪ curated table), set by hardware stage; gated by kernel.toml
          ``device_kconfig`` (default true)
       2. hardware_profile.toml [kconfig]         — hardware-driven, set by hardware stage
-      3. kernel.toml [[kconfig]]                 — manual overrides, validated
+      3. ``extra_kconfig``                       — feature-driven (e.g. the kernel
+         FDO ``CONFIG_AUTOFDO_CLANG``/``CONFIG_PROPELLER_CLANG`` entries supplied
+         by the stage for an ``--autofdo`` build); labeled ``fdo`` in the fragment
+      4. kernel.toml [[kconfig]]                 — manual overrides, validated
 
     Manual-vs-hardware conflicts are logged as WARN; manual wins. Device
     entries are machine-derived advisories — a hardware/manual entry overrides
@@ -628,9 +758,10 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None, state_
     fragment header so a ``.config`` diff between two builds carries the
     toolchain identity that produced it.
 
-    Returns ``(path | None, hw_count, manual_count, device_count)`` — path is
-    None when no fragment was written (no entries, or dry-run).
+    Returns ``(path | None, hw_count, manual_count, device_count, fdo_count)`` —
+    path is None when no fragment was written (no entries, or dry-run).
     """
+    extra_kconfig = extra_kconfig or {}
     # Master gate: kconfig_merge = false disables the fragment outright. Remove
     # any stale fragment so a prior run's sysforge.config isn't merged by the
     # PKGBUILD — "off" must mean off.
@@ -644,7 +775,7 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None, state_
                     _log.info(f"Removed stale kconfig fragment: {stale}")
                 except OSError as exc:
                     _log.warn(f"Could not remove stale kconfig fragment {stale}: {exc}")
-        return None, 0, 0, 0
+        return None, 0, 0, 0, 0
 
     # Load and validate the sources
     hw_kconfig, device_kconfig = _load_hardware_kconfig(config, state_dir)
@@ -657,20 +788,26 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None, state_
     manual_entries = kernel_cfg.get("kconfig", [])
     manual_kconfig = _validate_manual_kconfig(manual_entries) if manual_entries else {}
 
-    # Detect conflicts
+    # Detect conflicts (manual wins over hardware and over feature-driven fdo)
     for option, manual_val in manual_kconfig.items():
         if option in hw_kconfig and hw_kconfig[option] != manual_val:
             _log.warn(
                 f"kconfig conflict on {option}: hardware_profile={hw_kconfig[option]!r}, "
                 f"kernel.toml={manual_val!r} — manual override wins",
             )
+        if option in extra_kconfig and extra_kconfig[option] != manual_val:
+            _log.warn(
+                f"kconfig conflict on {option}: feature(fdo)={extra_kconfig[option]!r}, "
+                f"kernel.toml={manual_val!r} — manual override wins (this may "
+                "disable the requested optimization)",
+            )
 
-    # Merge: device base, hardware above it, manual on top
-    merged = {**device_kconfig, **hw_kconfig, **manual_kconfig}
+    # Merge: device base, hardware, feature(fdo), manual on top
+    merged = {**device_kconfig, **hw_kconfig, **extra_kconfig, **manual_kconfig}
 
     if not merged:
         _log.ui("No kconfig entries from any source — skipping fragment")
-        return None, 0, 0, 0
+        return None, 0, 0, 0, 0
 
     pkgbuild = _pkgbuild_path(kernel_cfg)
     fragment_path = pkgbuild.parent / "sysforge.config"
@@ -685,10 +822,14 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None, state_
     hw_count = 0
     manual_count = 0
     device_count = 0
+    fdo_count = 0
     for option, value in merged.items():
         if option in manual_kconfig:
             source = "manual"
             manual_count += 1
+        elif option in extra_kconfig:
+            source = "fdo"
+            fdo_count += 1
         elif option in hw_kconfig:
             source = "hardware"
             hw_count += 1
@@ -699,19 +840,21 @@ def _write_kconfig_fragment(kernel_cfg, config, dry_run, provenance=None, state_
         lines.append(_format_kconfig_line(option, value))
 
     counts = f"{hw_count} hardware, {device_count} device, {manual_count} manual"
+    if fdo_count:
+        counts += f", {fdo_count} fdo"
     if dry_run:
         _log.ui(
             f"[dry-run] would write kconfig fragment ({counts}): {fragment_path}",
         )
         for line in lines:
             _log.ui(f"  {line}")
-        return None, hw_count, manual_count, device_count
+        return None, hw_count, manual_count, device_count, fdo_count
 
     fragment_path.write_text("\n".join(lines) + "\n")
     _log.ui(
         f"Wrote kconfig fragment: {fragment_path} ({counts})",
     )
-    return fragment_path, hw_count, manual_count, device_count
+    return fragment_path, hw_count, manual_count, device_count, fdo_count
 
 
 def _resolve_base_config(kernel_cfg, options=None):
@@ -1125,6 +1268,7 @@ def _log_resolution_summary(
     bootloader_installed, source, kconfig_target, base_config_source,
     hw_kconfig_count, manual_kconfig_count, device_kconfig_count,
     kernel_cfg, skip_boot_audit, build_headers, build_docs,
+    fdo_kconfig_count=0, fdo_label="off",
 ):
     """Emit one labelled block of the resolved kernel-build plan.
 
@@ -1149,11 +1293,15 @@ def _log_resolution_summary(
     _log.ui(f"  variant:    {variant}")
     _log.ui(f"  bootloader: {bootloader}{boot_note}")
     _log.ui(f"  source:     {source}")
-    _log.ui(
-        f"  kconfig:    {kconfig_target} ({hw_kconfig_count} hardware, "
-        f"{device_kconfig_count} device, {manual_kconfig_count} manual)"
+    kconfig_counts = (
+        f"{hw_kconfig_count} hardware, {device_kconfig_count} device, "
+        f"{manual_kconfig_count} manual"
     )
+    if fdo_kconfig_count:
+        kconfig_counts += f", {fdo_kconfig_count} fdo"
+    _log.ui(f"  kconfig:    {kconfig_target} ({kconfig_counts})")
     _log.ui(f"  base cfg:   {base_config_source}")
+    _log.ui(f"  fdo:        {fdo_label}")
     _log.ui(
         f"  subpkgs:    headers={'on' if build_headers else 'off'} "
         f"docs={'on' if build_docs else 'off'}"
@@ -1197,6 +1345,39 @@ class KernelStage(Stage):
         # downstream, and the BuildState.record() variant stamp later in run.
         variant = get_toolchain_variant(state)
         state_dir, _ = resolve_state_dir(options.state_dir)
+
+        # Sample-based FDO (AutoFDO / Propeller). Resolved up front so the
+        # LLVM-only gate fires before any work, the read-only `capture` step can
+        # short-circuit (print perf/create_llvm_prof commands, no build), and the
+        # `use` step's profile presence is checked fail-fast. `fdo_env` (the
+        # CLANG_AUTOFDO_PROFILE/CLANG_PROPELLER_PROFILE_PREFIX make-variables) and
+        # `fdo_opt_build_mode` (autofdo_kernel/propeller_kernel → -sysforge coexist
+        # rename) thread into the build call below; `fdo_eff_pkgname` is the
+        # installed name the post-install gates must verify (the use build is
+        # renamed inside makepkg_wrapper).
+        fdo_mode, fdo_propeller = _resolve_fdo(options)
+        fdo_env = None
+        fdo_opt_build_mode = None
+        fdo_eff_pkgname = pkgname
+        if fdo_mode:
+            _fdo_compiler, _fdo_cc, _ = _resolve_compiler(kernel_cfg, options, state)
+            _gate_fdo_llvm(fdo_mode, fdo_propeller, _fdo_compiler, _fdo_cc)
+            if fdo_mode == "capture":
+                _run_fdo_capture(pkgname, fdo_propeller, options.dry_run)
+                return
+            if fdo_mode == "use":
+                _fdo_store = kernel_fdo.resolve_store(pkgname, propeller=fdo_propeller)
+                # Clean pre-build abort if the record→capture profile is missing.
+                kernel_fdo.require_profile(_fdo_store, propeller=fdo_propeller)
+                fdo_env = kernel_fdo.use_env(_fdo_store, propeller=fdo_propeller)
+                fdo_opt_build_mode = kernel_fdo.build_mode(propeller=fdo_propeller)
+                if not pkgname.endswith("-sysforge"):
+                    fdo_eff_pkgname = f"{pkgname}-sysforge"
+                _log.ui(
+                    f"AutoFDO{' + Propeller' if fdo_propeller else ''} use-build: "
+                    f"consuming {_fdo_store} → {fdo_eff_pkgname} "
+                    f"(coexists with {pkgname})"
+                )
 
         # A1: per-kernel toolchain drift. update.py's drift sweep skips
         # stage-owned packages (the kernel is one), so this stage owns the
@@ -1250,9 +1431,11 @@ class KernelStage(Stage):
         # late after a multi-hour build.
         _validate_pkgname_matches_pkgbuild(pkgbuild, pkgname)
 
-        # A4: warn + confirm if the kernel pkgname shadows a pacman repo package
-        # (would overwrite the official package on install).
-        _check_pkgname_repo_collision(pkgname, options)
+        # A4: warn + confirm if the *installed* kernel name shadows a pacman repo
+        # package (would overwrite the official package on install). For an FDO
+        # use-build that is the -sysforge name, which never collides; for
+        # record/no-FDO it is the stock pkgname.
+        _check_pkgname_repo_collision(fdo_eff_pkgname, options)
 
         # Compiler resolution: CLI > kernel.toml > pipeline state from toolchain.
         compiler, cc, cxx = _resolve_compiler(kernel_cfg, options, state)
@@ -1312,12 +1495,27 @@ class KernelStage(Stage):
         # it, and after compiler resolution so the fragment header can carry
         # the toolchain provenance (C2). Still before the build, which reads
         # sysforge.config in the PKGBUILD's prepare().
-        provenance = f"toolchain variant: {variant}  cc: {cc or '-'}"
-        fragment_path, hw_kconfig_count, manual_kconfig_count, device_kconfig_count = (
-            _write_kconfig_fragment(
-                kernel_cfg, config, options.dry_run, provenance=provenance,
-                state_dir=state_dir,
+        # FDO (record/use) needs CONFIG_AUTOFDO_CLANG (+ CONFIG_PROPELLER_CLANG)
+        # in the fragment — and therefore the fragment itself. Refuse the
+        # contradictory "FDO requested but kconfig_merge = false" combo rather
+        # than silently building an unprofiled kernel.
+        fdo_extra_kconfig = (
+            kernel_fdo.fdo_kconfig(propeller=fdo_propeller) if fdo_mode else None
+        )
+        if fdo_extra_kconfig and not bool(kernel_cfg.get("kconfig_merge", True)):
+            raise RuntimeError(
+                "[KERNEL] --autofdo needs the kconfig fragment to set "
+                f"{', '.join(fdo_extra_kconfig)}, but kernel.toml kconfig_merge = "
+                "false disables it. Set kconfig_merge = true to use kernel FDO."
             )
+
+        provenance = f"toolchain variant: {variant}  cc: {cc or '-'}"
+        (
+            fragment_path, hw_kconfig_count, manual_kconfig_count,
+            device_kconfig_count, fdo_kconfig_count,
+        ) = _write_kconfig_fragment(
+            kernel_cfg, config, options.dry_run, provenance=provenance,
+            state_dir=state_dir, extra_kconfig=fdo_extra_kconfig,
         )
 
         kconfig_target = "make nconfig (user-supplied)" if interactive else "make olddefconfig (patched)"
@@ -1334,6 +1532,15 @@ class KernelStage(Stage):
 
         skip_boot_audit = bool(getattr(options, "skip_boot_audit", False))
         build_headers, build_docs = _resolve_subpackages(kernel_cfg, options)
+
+        if fdo_mode:
+            fdo_label = (
+                f"autofdo={fdo_mode}{' +propeller' if fdo_propeller else ''}"
+            )
+            if fdo_eff_pkgname != pkgname:
+                fdo_label += f" → {fdo_eff_pkgname}"
+        else:
+            fdo_label = "off"
 
         # B1: consolidated resolution summary — one labelled block instead of
         # decisions scattered across the log. Useful before a multi-hour build
@@ -1357,7 +1564,27 @@ class KernelStage(Stage):
             skip_boot_audit=skip_boot_audit,
             build_headers=build_headers,
             build_docs=build_docs,
+            fdo_kconfig_count=fdo_kconfig_count,
+            fdo_label=fdo_label,
         )
+
+        # FDO feasibility advisory (record only — a `use` build already has its
+        # profile). Surfaces this host's branch-sampling capability before the
+        # operator commits to building + booting a profiling kernel: AMD BRS
+        # (Zen 3+) is experimental for AutoFDO, and pre-Zen3 AMD has no path.
+        if fdo_mode == "record":
+            _sampling = kernel_fdo.detect_branch_sampling()
+            if _sampling.supported:
+                _log.warn(
+                    "AutoFDO profiling kernel: after install, reboot into it and "
+                    f"run `sysforge run kernel --autofdo=capture`. {_sampling.note}"
+                )
+            else:
+                _log.warn(
+                    "AutoFDO profiling kernel requested, but branch sampling is "
+                    f"unsupported on this CPU — {_sampling.note} The collected "
+                    "profile may be unusable."
+                )
 
         # Gate 1 — cheap preflight (fallback-kernel guarantee, /boot space,
         # root-topology capture, advisory warnings). Hard-fails *before* the
@@ -1401,6 +1628,11 @@ class KernelStage(Stage):
                         toolchain_variant=variant if variant != "system" else None,
                         kernel_build_headers=build_headers,
                         kernel_build_docs=build_docs,
+                        # FDO use-build: profile path make-variables (extra_env →
+                        # `make`) + the optimization build_mode that earns the
+                        # -sysforge coexist rename. Both None for record/no-FDO.
+                        extra_env=fdo_env,
+                        optimization_build_mode=fdo_opt_build_mode,
                     ))
                 except AlreadyBuilt:
                     _log.info(
@@ -1428,12 +1660,12 @@ class KernelStage(Stage):
                 "kernel",
                 recovery_cmd=_kernel_recovery_command(),
                 retry_cmd="sysforge run kernel",
-                pkgname=pkgname,
+                pkgname=fdo_eff_pkgname,
                 bootloader=bootloader,
                 compiler=compiler or "default",
             ):
                 if options.dry_run:
-                    _log.ui(f"[dry-run] would install {pkgname} and wire it into boot")
+                    _log.ui(f"[dry-run] would install {fdo_eff_pkgname} and wire it into boot")
                 else:
                     install_built_packages(pkgbuild.parent, noconfirm=not interactive)
 
@@ -1442,8 +1674,10 @@ class KernelStage(Stage):
 
                 # Gate 3 — post-install boot-readiness (raises on brick). Inside
                 # the sentinel so an unbootable result blocks the next run for
-                # recovery.
+                # recovery. Keyed on the *installed* name: an FDO use-build is
+                # renamed to <pkgname>-sysforge, so /boot/vmlinuz-<that> is what
+                # must exist.
                 if not options.dry_run:
-                    _gate3_verify(pkgbuild.parent, pkgname, bootloader)
+                    _gate3_verify(pkgbuild.parent, fdo_eff_pkgname, bootloader)
 
-        _log.ui(f"Kernel stage complete: {pkgname}")
+        _log.ui(f"Kernel stage complete: {fdo_eff_pkgname}")

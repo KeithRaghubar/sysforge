@@ -452,6 +452,8 @@ _sysforge_run_kernel() {
     '--no-headers[drop the -headers subpackage — DKMS/out-of-tree modules cannot rebuild]' \
     '--docs[build the -docs subpackage (kernel HTML/man documentation)]' \
     '--no-docs[drop the -docs subpackage (the default)]' \
+    '--autofdo[sample-based kernel optimization (AutoFDO; LLVM only)]:step:(record capture use)' \
+    '--propeller[layer Propeller basic-block layout on the --autofdo cycle]' \
     '--no-pkg-logs[disable per-package log files]' \
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \

@@ -52,6 +52,8 @@ class RunOptions:
     skip_boot_audit: bool = False    # kernel: override the pre-install boot-critical audit (Gate 2)
     build_headers: bool | None = None  # kernel: build -headers subpackage; None → kernel.toml (default on)
     build_docs: bool | None = None     # kernel: build -docs subpackage; None → kernel.toml (default off)
+    kernel_fdo: str | None = None      # kernel: sample-based FDO step ("record"|"capture"|"use"); LLVM-only
+    kernel_propeller: bool = False     # kernel: layer Propeller on the --autofdo cycle
     # Extra makepkg flags (appended after profile makepkg_flags)
     makepkg_flags: list[str] = field(default_factory=list)
     # PGO profdata

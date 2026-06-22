@@ -715,6 +715,27 @@ def is_optimized_build_mode(build_mode: str | None) -> bool:
     return bool(build_mode) and build_mode in _OPTIMIZED_BUILD_MODES
 
 
+# Optimization build_modes whose ``-sysforge`` rename must *coexist* with the
+# stock package (parallel install + bootloader fallback) rather than replace it.
+# The kernel is the sole coexist case: a custom kernel installs alongside the
+# repo kernel (version-suffixed /boot files) so a broken optimization build still
+# leaves a known-good kernel to boot. Every other optimization (llvm, mesa) owns
+# the same paths as its stock package and must therefore *conflict*.
+_COEXIST_BUILD_MODES = frozenset({"autofdo_kernel", "propeller_kernel"})
+
+
+def rename_mode_for_build_mode(build_mode: str | None) -> str:
+    """The ``patch_package_suffix`` mode (``"conflict"`` | ``"coexist"``) for a
+    given optimization ``build_mode``.
+
+    One home for the conflict-vs-coexist policy so the naming gate in
+    ``makepkg_wrapper`` never hard-codes a mode. Kernel FDO modes coexist; all
+    other optimizations are mutually-exclusive drop-ins that conflict. Add a new
+    coexist optimization to ``_COEXIST_BUILD_MODES`` above.
+    """
+    return "coexist" if build_mode in _COEXIST_BUILD_MODES else "conflict"
+
+
 # ---------------------------------------------------------------------------
 # LLVM-toolchain gate for optimization features
 # ---------------------------------------------------------------------------

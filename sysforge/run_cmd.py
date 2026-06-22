@@ -175,6 +175,8 @@ class RunKernelVerb(_RunVerbBase):
             skip_boot_audit=getattr(args, "skip_boot_audit", False),
             build_headers=getattr(args, "build_headers", None),
             build_docs=getattr(args, "build_docs", None),
+            kernel_fdo=getattr(args, "kernel_fdo", None),
+            kernel_propeller=getattr(args, "kernel_propeller", False),
         )
         run_stage_standalone(KernelStage(), config, options)
         return ExecResult()

@@ -110,6 +110,10 @@ _sysforge_flag_arg() {
             COMPREPLY=( $(compgen -W "record use" -- "$cur") )
             return 0
             ;;
+        --autofdo)
+            COMPREPLY=( $(compgen -W "record capture use" -- "$cur") )
+            return 0
+            ;;
     esac
     return 1
 }
@@ -311,7 +315,8 @@ _sysforge_run() {
                 --dry-run --no-update --cleansrc --cleansrc-force \
                 --non-interactive --compiler --bootloader --base-config \
                 --allow-no-fallback --skip-boot-audit \
-                --headers --no-headers --docs --no-docs --no-pkg-logs \
+                --headers --no-headers --docs --no-docs \
+                --autofdo --propeller --no-pkg-logs \
                 --persist-log --log-dir --cache-report --abi-check \
                 --state-dir --profile-conf" -- "$cur") )
             ;;

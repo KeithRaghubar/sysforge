@@ -142,7 +142,9 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   `profile.is_optimized_build_mode(build_mode)` (the membership set — add a new optimization
   `build_mode` there, don't scatter checks); the rename itself is
   `pkgbuild_patcher.patch_package_suffix(path, "sysforge", mode="conflict"|"coexist")`, applied
-  once in `makepkg_wrapper._run_build` (gated on that predicate) and validated by
+  once in `makepkg_wrapper._run_build` (gated on that predicate; **mode chosen by
+  `profile.rename_mode_for_build_mode`** — kernel FDO modes coexist, all else conflict, one home
+  in `_COEXIST_BUILD_MODES`) and validated by
   `validate_patched_pkgbuild(..., rename=…)` (G3: every renamed split member keeps a renamed
   `package_<name>()` — `patch_package_suffix` renames the functions too, or makepkg bricks at
   packaging time). The renamed build records its renamed pkgnames + sticky `origin_pkgbase` so
@@ -158,6 +160,20 @@ is the canonical entry point (`make test` / `test-x` / `lint` / `release-{major,
   `BuildVerb.pre_check` via `profile.is_llvm_toolchain` + `LLVM_REQUIRED_HINT`; a no-op for
   non-mesa (`is_mesa_pkgbase`). Distinct from Phase-2's compiler training corpus (that enriches
   `clang.profdata`; this profiles mesa itself). See DESIGN.md §CLI Verb Framework.
+- **Kernel sample-based FDO has one home**: `primitives/kernel_fdo.py` (`resolve_store`,
+  `fdo_kconfig`, `use_env`, `require_profile`, `detect_branch_sampling`, `resolve_vmlinux`,
+  `capture_commands`, `build_mode`). `run kernel --autofdo=record|capture|use` (+`--propeller`)
+  is **sample**-based, not instrumentation: `record` merges `CONFIG_AUTOFDO_CLANG` (+`PROPELLER`)
+  into the kconfig fragment (new `fdo` source in `_write_kconfig_fragment`, precedence
+  device<hardware<fdo<manual); `capture` is **read-only** (no build/install/sentinel) — prints the
+  host-tailored `perf -b` + `create_llvm_prof` commands; `use` injects `CLANG_AUTOFDO_PROFILE`/
+  `CLANG_PROPELLER_PROFILE_PREFIX` via the **`extra_env` make-variable seam** (same channel as
+  `LLVM=1`, not `compiler_flags_extra`), stamps `build_mode=autofdo_kernel`/`propeller_kernel` →
+  `-sysforge` **coexist** rename. Stage threads an effective `<pkgname>-sysforge` to Gate-3/
+  sentinel/collision-check (the use build is renamed in makepkg_wrapper). LLVM-only: hard gate
+  `_gate_fdo_llvm`/`_fdo_is_llvm` (compiler==llvm or `cc`/`$CC` basename `clang*`). BRS is Zen3+
+  only (experimental); `detect_branch_sampling` reads `/proc/cpuinfo`. Don't add a parallel
+  perf/profile injector. See DESIGN.md §Kernel stage (Sample-based kernel FDO).
 - **PKGBUILD review gate has one home**: `build_core.build_and_install(review=…)` →
   `pkgbuild_review.review_target` (`build` defaults `"prompt"`, `update` `"auto"`); AUR
   dep builds gated via `review_deps` in `prepare_deps`. Baseline is sticky `reviewed_commit`
