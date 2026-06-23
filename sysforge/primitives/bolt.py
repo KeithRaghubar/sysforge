@@ -134,6 +134,36 @@ def tools_available(*, need_perf: bool = True) -> tuple[bool, list[str]]:
     return (not missing, missing)
 
 
+# BLOCKED: a standalone llvm-bolt build can't link against a dylib-only LLVM.
+# Every BOLT tool is built with `DISABLE_LLVM_LINK_LLVM_DYLIB` (bolt/tools/*/
+# CMakeLists.txt), so it links the *per-component* static archives — libLLVMObject.a,
+# libLLVMMC.a, the X86 target libs, libLLVMTransformUtils.a, … — not libLLVM.so. A
+# dylib-only LLVM install (the PGO toolchain, and stock Arch `llvm`) ships libLLVM.so
+# plus only the handful of static libs that can't live in the dylib (Support/Demangle/
+# TableGen/…), so those component archives are absent and `ld.lld` reports
+# `unable to find library -lLLVMObject`. BOLT must be built *in-tree* with LLVM (where
+# the build tree still holds the archives); building it standalone against the installed
+# package is unviable. This probe lets an opt-in `[bolt] enabled` fail fast instead of
+# 100+ ninja steps deep.
+_LLVM_LIBDIR = Path("/usr/lib")
+# Probe archives that are present ONLY in a full static LLVM install. Support/Demangle
+# are always shipped static (useless as a probe); these are the first BOLT actually
+# needs that a dylib-only install omits.
+_STATIC_COMPONENT_PROBE = ("libLLVMObject.a", "libLLVMMC.a")
+
+
+def standalone_build_viable(libdir: Path = _LLVM_LIBDIR) -> bool:
+    """True only if the installed LLVM ships the static component archives BOLT links.
+
+    See the module note above: BOLT's tools force static LLVM linkage, so a standalone
+    build needs the per-component ``.a`` archives on disk. A dylib-only LLVM omits them,
+    making the standalone build BLOCKED. The toolchain stage calls this before Pass 4a
+    so an enabled-but-unviable BOLT pass skips with a clear reason rather than failing
+    mid-link.
+    """
+    return all((libdir / name).is_file() for name in _STATIC_COMPONENT_PROBE)
+
+
 def perf_record_cmd(perf_data: Path, workload_argv: list[str]) -> list[str]:
     """The ``perf record`` command line that samples ``workload_argv``."""
     return [

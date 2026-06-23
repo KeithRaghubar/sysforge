@@ -91,6 +91,13 @@ enabled = false
 # ---------------------------------------------------------------------------
 # BOLT post-link optimization (Pass 4 — LLVM/PGO path only) — EXPERIMENTAL
 #
+# CURRENTLY BLOCKED — keep `enabled = false`. The BOLT tools are all built with
+# DISABLE_LLVM_LINK_LLVM_DYLIB, so they link the per-component static LLVM archives
+# (libLLVMObject.a, libLLVMMC.a, ...). A PGO toolchain — like the stock Arch `llvm`
+# package — ships a dylib-only libLLVM without those archives, so the standalone
+# llvm-bolt build can't link. sysforge detects this and skips Pass 4 with a warning;
+# building BOLT in-tree with LLVM is the planned fix but is not yet implemented.
+#
 # After the PGO passes produce an optimized clang/libLLVM, BOLT (Binary
 # Optimization and Layout Tool) can rewrite the finished binaries for a further
 # layout/locality win — the canonical PGO→BOLT "fast clang" stack. Unlike PGO,

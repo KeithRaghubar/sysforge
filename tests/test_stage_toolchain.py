@@ -4485,6 +4485,10 @@ def test_bolt_pass4_tool_build_fails_skips_rewrite(monkeypatch):
         lambda need_perf=False: (False, ["llvm-bolt"]),
     )
     monkeypatch.setattr(
+        "sysforge.primitives.bolt.standalone_build_viable",
+        lambda *a, **k: True,  # past the dylib-only BLOCKED guard
+    )
+    monkeypatch.setattr(
         "sysforge.pipeline.stages.toolchain._query_pacman_versions",
         lambda names: {"llvm": "22.1.8-4"},
     )
@@ -4510,6 +4514,10 @@ def test_bolt_pass4_no_pkgbuild_src_dir_skips(monkeypatch):
         "sysforge.primitives.bolt.tools_available",
         lambda need_perf=False: (False, ["llvm-bolt"]),
     )
+    monkeypatch.setattr(
+        "sysforge.primitives.bolt.standalone_build_viable",
+        lambda *a, **k: True,  # past the dylib-only BLOCKED guard
+    )
     built = []
     monkeypatch.setattr(
         "sysforge.pipeline.stages.toolchain._build_pkg",
@@ -4517,3 +4525,29 @@ def test_bolt_pass4_no_pkgbuild_src_dir_skips(monkeypatch):
     )
     _run_bolt_pass4({"bolt": {"enabled": True}}, {"paths": {}}, _bolt_opts(), "pgo_llvm")
     assert built == []  # never attempted a build without a source dir
+
+
+def test_bolt_pass4_dylib_only_llvm_is_blocked(monkeypatch):
+    # Enabled, tools absent, but the host LLVM is dylib-only → the BLOCKED guard
+    # short-circuits Pass 4 before materializing the PKGBUILD or building anything.
+    monkeypatch.setattr(
+        "sysforge.primitives.bolt.tools_available",
+        lambda need_perf=False: (False, ["llvm-bolt"]),
+    )
+    monkeypatch.setattr(
+        "sysforge.primitives.bolt.standalone_build_viable",
+        lambda *a, **k: False,  # no per-component static archives on disk
+    )
+    materialized = []
+    built = []
+    monkeypatch.setattr(
+        "sysforge.primitives.bolt.materialize_pkgbuild",
+        lambda d, v: materialized.append((d, v)),
+    )
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain._build_pkg",
+        lambda *a, **k: built.append(a),
+    )
+    cfg = {"paths": {"pkgbuild_src_dir": "/tmp"}}
+    _run_bolt_pass4({"bolt": {"enabled": True}}, cfg, _bolt_opts(), "pgo_llvm")
+    assert materialized == [] and built == []  # blocked before any work

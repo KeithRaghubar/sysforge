@@ -3396,6 +3396,21 @@ def _build_bolt_tools(tcfg: dict, config: dict, options, variant: str | None) ->
     if _bolt.tools_available(need_perf=False)[0]:
         return True
 
+    # BLOCKED guard: BOLT's tools all force static LLVM linkage
+    # (DISABLE_LLVM_LINK_LLVM_DYLIB), so a standalone build needs the per-component
+    # static archives. The PGO toolchain (like stock Arch llvm) is dylib-only and
+    # omits them — the build would fail ~100 ninja steps in with an unfindable
+    # -lLLVMObject. Fail fast with the reason instead of a cryptic late link error.
+    if not _bolt.standalone_build_viable():
+        _log.warn(
+            "[BOLT] Pass 4 skipped — BLOCKED: the BOLT tools link LLVM statically, but "
+            "the PGO toolchain ships a dylib-only libLLVM without the per-component "
+            "static archives a standalone llvm-bolt build needs. Building BOLT in-tree "
+            "with LLVM is the only viable path (not yet implemented). PGO toolchain left "
+            "intact — see DESIGN.md §Toolchain stage (BOLT Pass 4)."
+        )
+        return False
+
     pkgbuild_dir = (config.get("paths", {}) or {}).get("pkgbuild_src_dir")
     if not pkgbuild_dir:
         _log.warn(

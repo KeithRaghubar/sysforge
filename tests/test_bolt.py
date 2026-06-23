@@ -108,6 +108,31 @@ def test_tools_available_skips_perf_when_not_needed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# standalone_build_viable — BLOCKED guard for dylib-only LLVM installs
+# ---------------------------------------------------------------------------
+
+def test_standalone_build_viable_true_with_static_components(tmp_path):
+    # A full static LLVM install ships the per-component archives BOLT links.
+    for name in bolt._STATIC_COMPONENT_PROBE:
+        (tmp_path / name).write_text("")
+    assert bolt.standalone_build_viable(tmp_path) is True
+
+
+def test_standalone_build_viable_false_for_dylib_only(tmp_path):
+    # Dylib-only install (PGO toolchain / stock Arch llvm): only libLLVM.so + a few
+    # static libs, none of the component archives BOLT's static-linked tools need.
+    (tmp_path / "libLLVM.so").write_text("")
+    (tmp_path / "libLLVMSupport.a").write_text("")  # shipped static, but not a probe
+    assert bolt.standalone_build_viable(tmp_path) is False
+
+
+def test_standalone_build_viable_false_when_partial(tmp_path):
+    # Even one missing probe archive blocks the standalone build.
+    (tmp_path / bolt._STATIC_COMPONENT_PROBE[0]).write_text("")
+    assert bolt.standalone_build_viable(tmp_path) is False
+
+
+# ---------------------------------------------------------------------------
 # collect_profile + bolt_binary (subprocess mocked)
 # ---------------------------------------------------------------------------
 

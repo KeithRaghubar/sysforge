@@ -200,11 +200,18 @@ edits must pass `make check-design` after `make design`.
   `bolt`, `emit_relocs_ldflag`, `collect_profile` → `perf record`+`perf2bolt`, `bolt_binary` →
   `llvm-bolt`, `tools_available`, `BUILD_MODE="bolt_llvm"`, **and the generated `llvm-bolt`
   PKGBUILD** `render_pkgbuild`/`materialize_pkgbuild`). The only **post-link** method (no compiler
-  flag). **EXPERIMENTAL — BOLT is not in the Arch repos and stock `llvm` doesn't build it**, so
-  sysforge builds the tools itself: `materialize_pkgbuild` writes a version-locked `llvm-bolt`
-  PKGBUILD (modeled on the `clang` component; the `bolt/` subtree rides in the same monorepo
-  tarball; `sha256sums=SKIP`) and `_build_bolt_tools` (Pass 4a) builds it standalone against the
-  installed PGO libLLVM. Wired as **toolchain Pass 4** (`run toolchain`, opt-in `toolchain.toml
+  flag). **EXPERIMENTAL — and currently BLOCKED.** BOLT is not in the Arch repos and stock `llvm`
+  doesn't build it, so sysforge builds the tools itself: `materialize_pkgbuild` writes a
+  version-locked `llvm-bolt` PKGBUILD (modeled on the `clang` component; the `bolt/` subtree rides
+  in the same monorepo tarball; `sha256sums=SKIP`) and `_build_bolt_tools` (Pass 4a) builds it
+  standalone against the installed PGO libLLVM. **BLOCKER: the standalone build doesn't link.**
+  Every BOLT tool forces `DISABLE_LLVM_LINK_LLVM_DYLIB`, so it links the per-component static LLVM
+  archives (`libLLVMObject.a`/`libLLVMMC.a`/X86/…) — which a dylib-only LLVM (the PGO toolchain,
+  and stock Arch `llvm`) does NOT ship, so `ld.lld` can't find `-lLLVMObject`. The real fix is an
+  in-tree BOLT build (not yet done); until then `_build_bolt_tools` guards on
+  `bolt.standalone_build_viable()` (probes `libLLVMObject.a`/`libLLVMMC.a`) and skips Pass 4 with a
+  clear WARN on a dylib-only host. **Keep `[bolt] enabled = false`.** Wired as **toolchain Pass 4**
+  (`run toolchain`, opt-in `toolchain.toml
   [bolt] enabled`, `_bolt_config` reader): Pass 3a/3b link with `-Wl,--emit-relocs` (threaded as
   `linker_flags_extra` through `_build_llvm_pgo_inner`, gated on `bolt_relocs`); `_run_bolt_pass4`
   runs **after Gate 3, inside the sentinel** — 4a builds the tools, 4b BOLTs the installed
