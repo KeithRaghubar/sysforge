@@ -124,3 +124,31 @@ def test_merge_tool_failure_raises_with_stderr(tmp_path, monkeypatch):
     with pytest.raises(mesa_pgo.MesaPgoError) as exc:
         mesa_pgo.merge_profraw(tmp_path)
     assert "corrupt profile" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# reuse_profdata — durability across plain `build mesa` / `update` rebuilds
+# ---------------------------------------------------------------------------
+
+def test_reuse_profdata_none_when_never_collected(tmp_path):
+    # No prior --pgo=use ⇒ no merged profile ⇒ a plain rebuild stays stock.
+    assert mesa_pgo.reuse_profdata({"profile_store": str(tmp_path)}) is None
+
+
+def test_reuse_profdata_returns_existing_merged_profile(tmp_path):
+    # A prior `build mesa --pgo=use` left a merged mesa.profdata in the store;
+    # a subsequent source rebuild reuses it instead of producing stock mesa.
+    store = mesa_pgo.resolve_store({"profile_store": str(tmp_path)})
+    store.mkdir(parents=True)
+    pd = store / mesa_pgo.PROFDATA_NAME
+    pd.write_text("merged")
+    assert mesa_pgo.reuse_profdata({"profile_store": str(tmp_path)}) == pd
+
+
+def test_reuse_profdata_ignores_bare_profraw(tmp_path):
+    # record-only (profraw present, never merged) must NOT auto-reuse — there is
+    # no consumable profdata yet, so the rebuild falls back to a normal build.
+    store = mesa_pgo.resolve_store({"profile_store": str(tmp_path)})
+    store.mkdir(parents=True)
+    (store / "a.profraw").write_text("raw")
+    assert mesa_pgo.reuse_profdata({"profile_store": str(tmp_path)}) is None

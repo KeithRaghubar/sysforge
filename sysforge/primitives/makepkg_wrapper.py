@@ -828,12 +828,12 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         # below sets its own. Either way it drives the -sysforge rename in
         # _run_build and the recorded build_state build_mode.
         record_build_mode: str | None = options.optimization_build_mode
+        _pgo_globals = pkgmeta.get("globals", {})
+        _pgo_names = _pgo_globals.get("pkgname")
+        if isinstance(_pgo_names, list):
+            _pgo_names = _pgo_names[0] if _pgo_names else None
+        _pgo_pkgbase = _pgo_globals.get("pkgbase") or _pgo_names
         if options.pgo_mode:
-            _pgo_globals = pkgmeta.get("globals", {})
-            _pgo_names = _pgo_globals.get("pkgname")
-            if isinstance(_pgo_names, list):
-                _pgo_names = _pgo_names[0] if _pgo_names else None
-            _pgo_pkgbase = _pgo_globals.get("pkgbase") or _pgo_names
             if is_mesa_pkgbase(_pgo_pkgbase):
                 from sysforge.primitives import fs_provision, mesa_pgo
                 _store = mesa_pgo.resolve_store()
@@ -866,6 +866,43 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 _build_log.warn(
                     f"--pgo={options.pgo_mode} ignored for {_pgo_pkgbase!r}: "
                     "mesa instrumentation PGO is mesa-only"
+                )
+        elif is_mesa_pkgbase(_pgo_pkgbase):
+            # Durability: no explicit --pgo, but a prior `build mesa --pgo=use`
+            # left a merged mesa.profdata in the store. mesa is source-tracked,
+            # so update rebuilds it every cycle; reuse the existing profile
+            # (same compiler_flags_extra seam as --pgo=use) rather than silently
+            # regressing to a stock mesa. No re-merge — the optimized mesa isn't
+            # instrumented, so no new .profraw accrues. None ⇒ never PGO-built
+            # here ⇒ a normal build. use_flags already demotes the skew warnings
+            # so a slightly-stale profile never -Werror-fails the rebuild.
+            from sysforge.primitives import mesa_pgo
+            from sysforge.primitives.profile import is_llvm_toolchain
+            # A clang .profdata only feeds a clang build (the BuildVerb.pre_check
+            # LLVM gate doesn't run on the update/plain-build path, so guard
+            # here). Resolve the compiler the same way the kernel branch does:
+            # explicit override > resolved profile (if already resolved) > env CC.
+            _reuse_cc = (
+                options.cc_override
+                or (resolved_profile.get("CC") if resolved_profile else None)
+                or os.environ.get("CC", "")
+            )
+            _reuse = (
+                mesa_pgo.reuse_profdata()
+                if is_llvm_toolchain(_reuse_cc)
+                else None
+            )
+            if _reuse is not None:
+                _pgo_flag = mesa_pgo.use_flags(_reuse)
+                record_build_mode = mesa_pgo.BUILD_MODE  # "pgo_mesa"
+                effective_flags_extra = (
+                    f"{effective_flags_extra} {_pgo_flag}".strip()
+                    if effective_flags_extra
+                    else _pgo_flag
+                )
+                _build_log.ui(
+                    f"mesa PGO (reuse): re-applying {_reuse} from a prior "
+                    "--pgo=use (source rebuild stays profiled)"
                 )
 
         extracted_profile = None

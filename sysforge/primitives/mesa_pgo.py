@@ -108,6 +108,28 @@ def use_flags(profdata: Path) -> str:
     )
 
 
+def reuse_profdata(tcfg: dict | None = None) -> Path | None:
+    """Return the merged ``mesa.profdata`` if a prior ``--pgo=use`` left one.
+
+    Durability hook for the ``update`` / plain ``build mesa`` path. Mesa is
+    source-tracked, so every ``update`` rebuilds it; without re-applying the
+    profile the user already collected (via :func:`use_flags`) the rebuild
+    would silently regress to a stock, unprofiled mesa — contradicting the
+    one-shot ``build mesa --pgo=use`` the user ran. The *existence* of a merged
+    ``mesa.profdata`` in the store is the durable signal that this host opted
+    into mesa PGO, so a no-``--pgo`` rebuild reuses it.
+
+    Returns ``None`` when no merged profile exists (never PGO-built, or only
+    ``record``-instrumented — bare ``.profraw`` is not consumable), so the
+    caller falls back to a normal build. No re-merge happens here: once ``use``
+    swaps the instrumented mesa for the optimized one, no new ``.profraw``
+    accrues between updates, so the existing merged profile is current. Pure —
+    just a path existence check.
+    """
+    pd = profdata_path(tcfg)
+    return pd if pd.is_file() else None
+
+
 def merge_profraw(store: Path, *, profdata_tool: str = "llvm-profdata") -> Path:
     """Merge every ``.profraw`` in ``store`` into ``store/mesa.profdata``.
 
