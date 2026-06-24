@@ -241,6 +241,7 @@ def prepare_deps(
     ld: str | None = None,
     state_dir: Path | None = None,
     review: str = "off",
+    interactive: bool = False,
 ) -> bool:
     """Pre-install missing repo makedeps, then resolve + build AUR/local deps.
 
@@ -335,6 +336,7 @@ def prepare_deps(
                 cxx_override=cxx,
                 ld_override=ld,
                 state_dir=state_dir,
+                interactive=interactive,
             )
     except RuntimeError as e:
         _log.error(f"AUR dep resolution failed: {e}")
@@ -699,6 +701,7 @@ def build_and_install(
             ld=ld,
             state_dir=state_dir,
             review=review,
+            interactive=interactive,
         )
     if not proceed:
         _log.ui(

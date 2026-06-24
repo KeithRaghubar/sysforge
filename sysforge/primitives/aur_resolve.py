@@ -385,11 +385,14 @@ def build_resolved_deps(
     cxx_override: str | None = None,
     ld_override: str | None = None,
     state_dir: Path | None = None,
+    interactive: bool = False,
 ) -> list[str]:
     """Build and install AUR deps in topological order.
 
     Each dep is built via makepkg_wrapper.run() with ``-i`` (install)
-    appended so it is available for subsequent deps.
+    appended so it is available for subsequent deps. ``interactive`` is threaded
+    through so a ``build --interactive`` run keeps live output / prompts for the
+    dependency builds too, not only the main target.
 
     Returns list of successfully built dep names.
     """
@@ -421,6 +424,7 @@ def build_resolved_deps(
                 state_dir=state_dir,
                 init_session=(i == 0),
                 pkg_log=False,
+                interactive=interactive,
             )
             makepkg_run(dep.pkgbuild_path, options=opts)
             built.append(dep.name)

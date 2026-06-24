@@ -105,6 +105,72 @@ def test_prepare_deps_preinstalls_makedeps_and_builds_aur(tmp_path):
     assert [d.name for d in passed] == ["python-ufonormalizer"]
 
 
+def test_prepare_deps_threads_interactive_to_aur_dep_build(tmp_path):
+    """``--interactive`` must reach AUR *dependency* builds, not just the main
+    target. A package like ``gamescope-nvidia`` that pulls AUR deps otherwise
+    appears non-interactive even when the user asked for interactive output."""
+    target = _make_target(tmp_path, "gamescope-nvidia")
+    aur_deps = [SimpleNamespace(name="some-aur-lib", source="aur")]
+    with (
+        patch("sysforge.build_core.collect_builddeps", return_value=["some-aur-lib"]),
+        patch("sysforge.build_core.filter_missing_deps", return_value=["some-aur-lib"]),
+        patch("sysforge.build_core.repo_packages", return_value=set()),
+        patch("sysforge.build_core.batch_install_makedeps"),
+        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
+              return_value=aur_deps),
+        patch("sysforge.primitives.aur_resolve.build_resolved_deps") as build_aur,
+    ):
+        build_core.prepare_deps(
+            [target.pkgbuild_path], {},
+            building_names={"gamescope-nvidia"},
+            interactive=True,
+        )
+    assert build_aur.call_args.kwargs.get("interactive") is True
+
+
+def test_prepare_deps_defaults_dep_build_noninteractive(tmp_path):
+    """Default (no ``--interactive``) keeps AUR dep builds non-interactive."""
+    target = _make_target(tmp_path, "gamescope-nvidia")
+    aur_deps = [SimpleNamespace(name="some-aur-lib", source="aur")]
+    with (
+        patch("sysforge.build_core.collect_builddeps", return_value=["some-aur-lib"]),
+        patch("sysforge.build_core.filter_missing_deps", return_value=["some-aur-lib"]),
+        patch("sysforge.build_core.repo_packages", return_value=set()),
+        patch("sysforge.build_core.batch_install_makedeps"),
+        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
+              return_value=aur_deps),
+        patch("sysforge.primitives.aur_resolve.build_resolved_deps") as build_aur,
+    ):
+        build_core.prepare_deps(
+            [target.pkgbuild_path], {},
+            building_names={"gamescope-nvidia"},
+        )
+    assert build_aur.call_args.kwargs.get("interactive") is False
+
+
+def test_build_resolved_deps_threads_interactive_into_build_options(tmp_path):
+    """``build_resolved_deps(interactive=True)`` must set ``interactive`` on the
+    per-dep BuildOptions handed to makepkg_wrapper.run."""
+    from sysforge.primitives import aur_resolve
+
+    dep_dir = tmp_path / "some-aur-lib"
+    dep_dir.mkdir()
+    (dep_dir / "PKGBUILD").write_text("pkgname=some-aur-lib\n")
+    deps = [SimpleNamespace(
+        name="some-aur-lib", source="aur",
+        pkgbuild_path=dep_dir / "PKGBUILD",
+        required_by=["gamescope-nvidia"],
+    )]
+    seen = {}
+
+    def fake_run(pkgbuild_path, options=None):
+        seen["options"] = options
+
+    with patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run):
+        aur_resolve.build_resolved_deps(deps, interactive=True)
+    assert seen["options"].interactive is True
+
+
 def test_prepare_deps_excludes_aur_makedeps_from_pacman(tmp_path):
     """Regression for the proton-cachyos exit-8 failure: AUR-only makedeps must
     never be passed to ``pacman -S`` — mixing them in makes pacman abort the
