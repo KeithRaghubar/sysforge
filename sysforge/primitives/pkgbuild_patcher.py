@@ -1535,9 +1535,11 @@ def patch_mesa_drivers(
       ``\\``-continuation. No anchor/statement-end logic is needed.
     * A gallium reduction also rewrites ``gallium-rusticl-enable-drivers`` to the
       intersection with the new gallium set (rusticl drivers must be a subset of
-      built gallium drivers), falling back to ``llvmpipe`` (always in the
-      baseline, and a valid rusticl driver) when the intersection is empty — so
-      ``gallium-rusticl=true`` stays satisfiable.
+      built gallium drivers), falling back to meson's own ``auto`` when the
+      intersection is empty — so ``gallium-rusticl=true`` stays satisfiable.
+      ``auto`` (not a concrete driver like ``llvmpipe``, which is a gallium
+      driver but is **not** rusticl-capable and is rejected by meson) resolves
+      to the rusticl-capable subset of the built drivers, version-independently.
 
     Each axis is independent: pass ``None`` to leave that option untouched. A
     token that isn't a recognised meson driver (:func:`_validate_mesa_tokens`)
@@ -1600,15 +1602,22 @@ def _rewrite_mesa_option(text, regex, drivers, label):
 
 def _rewrite_mesa_rusticl(text, gallium):
     """Intersect ``gallium-rusticl-enable-drivers`` with the new ``gallium`` set
-    (fallback ``llvmpipe`` when empty). Returns ``(new_text, changed)``; a no-op
-    when the option is absent or already consistent."""
+    (fallback ``auto`` when empty). Returns ``(new_text, changed)``; a no-op
+    when the option is absent or already consistent.
+
+    The fallback is meson's own ``auto`` — NOT a concrete driver. ``auto``
+    enables rusticl on exactly the rusticl-capable subset of the *built* gallium
+    drivers, so it is always a valid, subset-safe value regardless of mesa
+    version. (The previous ``llvmpipe`` fallback bricked the build: llvmpipe is
+    a gallium driver but is **not** rusticl-capable, so meson rejects it —
+    "not in allowed choices: auto, asahi, freedreno, radeonsi".)"""
     existing = _MESA_RUSTICL_RE.search(text)
     if not existing:
         return (text, False)
     current_val = existing.group(0)[len(existing.group(1)):].strip("\"'")
     current = [d for d in current_val.split(",") if d]
     gallium_set = set(gallium)
-    kept = [d for d in current if d in gallium_set] or ["llvmpipe"]
+    kept = [d for d in current if d in gallium_set] or ["auto"]
     replacement = existing.group(1) + ",".join(kept)
     if existing.group(0) == replacement:
         return (text, False)

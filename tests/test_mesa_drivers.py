@@ -325,14 +325,20 @@ def test_patch_rusticl_intersected_with_new_gallium(tmp_path):
     assert "-D gallium-rusticl-enable-drivers=radeonsi" in p.read_text()
 
 
-def test_patch_rusticl_empty_intersection_falls_back_to_llvmpipe(tmp_path):
+def test_patch_rusticl_empty_intersection_falls_back_to_auto(tmp_path):
     """Nvidia host: none of asahi/freedreno/radeonsi are built → rusticl falls
-    back to llvmpipe (always in the baseline, a valid rusticl driver) so
-    gallium-rusticl=true stays satisfiable."""
+    back to meson's ``auto`` (enables rusticl on exactly the rusticl-capable
+    subset of the *built* drivers) so gallium-rusticl=true stays satisfiable.
+
+    Regression: the old fallback was ``llvmpipe``, but llvmpipe is NOT a
+    rusticl-capable driver — meson rejects it ("not in allowed choices:
+    auto, asahi, freedreno, radeonsi"), bricking the mesa build."""
     p = tmp_path / "PKGBUILD.sysforge"
     p.write_text(_MESA_PKGBUILD)
     patch_mesa_drivers(p, ["nouveau", *_BASE_GALLIUM], ["nouveau", *_BASE_VULKAN])
-    assert "-D gallium-rusticl-enable-drivers=llvmpipe" in p.read_text()
+    new = p.read_text()
+    assert "-D gallium-rusticl-enable-drivers=auto" in new
+    assert "llvmpipe" not in new.split("gallium-rusticl-enable-drivers=")[1].split("\n")[0]
 
 
 def test_patch_idempotent(tmp_path):
