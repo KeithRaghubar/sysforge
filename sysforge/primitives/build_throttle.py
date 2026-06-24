@@ -166,43 +166,44 @@ def wrapper_argv(throttle: BuildThrottle) -> list[str]:
     scheduling/IO/quota knobs (``jobs`` is delivered separately, via MAKEFLAGS).
 
     A hard ``cpu_quota`` requires a cgroup, so it wraps the build in a transient
-    ``systemd-run --scope --user`` carrying ``CPUQuota=`` (plus ``Nice=`` /
-    ``IOSchedulingClass=`` folded in when set). Without a quota, ``nice`` and
-    ``ionice`` are applied as standalone front-ends.
+    ``systemd-run --scope --user`` carrying ``CPUQuota=``. ``nice`` / ``ionice``
+    are *always* applied as front-end commands (``nice -n N ionice -c C makepkg``),
+    nested inside the scope when a quota is present. They are **not** folded into
+    ``systemd-run -p``: ``--scope`` runs the command in the caller's context (so the
+    controlling TTY is kept for prompts), so systemd never execs it and rejects exec
+    properties like ``Nice=`` / ``IOSchedulingClass=`` ("Unknown assignment").
 
     Every tool is guarded by :func:`shutil.which`; a missing tool drops just that
     piece with a warning — throttling is best-effort and must never fail a build.
     Returns ``[]`` when nothing applies.
     """
+    # nice/ionice front-ends, shared by the quota and no-quota paths. With a
+    # systemd scope these run *inside* it (the scope's command), since scope units
+    # cannot carry Nice=/IOSchedulingClass= properties.
+    front: list[str] = []
+    if throttle.nice is not None:
+        if shutil.which("nice"):
+            front += ["nice", "-n", str(throttle.nice)]
+        else:
+            _throttle_log.warn("nice not found on PATH — skipping niceness throttle")
+    if throttle.ionice is not None:
+        if shutil.which("ionice"):
+            front += ["ionice", "-c", _IONICE_CLASSES[throttle.ionice]]
+        else:
+            _throttle_log.warn("ionice not found on PATH — skipping IO-priority throttle")
+
     if throttle.cpu_quota is not None:
         if shutil.which("systemd-run"):
-            argv = ["systemd-run", "--scope", "--user", "--quiet",
-                    "-p", f"CPUQuota={throttle.cpu_quota}"]
-            if throttle.nice is not None:
-                argv += ["-p", f"Nice={throttle.nice}"]
-            if throttle.ionice is not None:
-                argv += ["-p", "IOSchedulingClass=idle" if throttle.ionice == "idle"
-                         else "IOSchedulingClass=best-effort"]
-            return argv
-        # No systemd-run: we cannot enforce the hard ceiling. Fall through to the
+            return ["systemd-run", "--scope", "--user", "--quiet",
+                    "-p", f"CPUQuota={throttle.cpu_quota}"] + front
+        # No systemd-run: we cannot enforce the hard ceiling. Fall back to the
         # nice/ionice front-ends so the build is at least de-prioritised.
         _throttle_log.warn(
             "cpu_quota set but systemd-run not found — cannot enforce a hard CPU "
             "ceiling; falling back to nice/ionice only"
         )
 
-    argv: list[str] = []
-    if throttle.nice is not None:
-        if shutil.which("nice"):
-            argv += ["nice", "-n", str(throttle.nice)]
-        else:
-            _throttle_log.warn("nice not found on PATH — skipping niceness throttle")
-    if throttle.ionice is not None:
-        if shutil.which("ionice"):
-            argv += ["ionice", "-c", _IONICE_CLASSES[throttle.ionice]]
-        else:
-            _throttle_log.warn("ionice not found on PATH — skipping IO-priority throttle")
-    return argv
+    return front
 
 
 def apply_jobs_to_makeflags(makeflags: str, jobs: int | None) -> str:

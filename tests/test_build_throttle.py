@@ -74,10 +74,13 @@ def test_wrapper_ionice_best_effort(monkeypatch):
 def test_wrapper_cpu_quota_uses_systemd_scope(monkeypatch):
     monkeypatch.setattr(bt.shutil, "which", lambda _: "/usr/bin/" + _)
     argv = wrapper_argv(BuildThrottle(cpu_quota="600%", nice=19, ionice="idle"))
-    assert argv[:6] == ["systemd-run", "--scope", "--user", "--quiet",
-                        "-p", "CPUQuota=600%"]
-    assert "Nice=19" in argv
-    assert "IOSchedulingClass=idle" in argv
+    # Scope carries ONLY the cgroup CPUQuota; nice/ionice ride as front-end
+    # commands inside the scope (Nice=/IOSchedulingClass= are invalid on a
+    # --scope unit, which the caller execs directly).
+    assert argv == ["systemd-run", "--scope", "--user", "--quiet",
+                    "-p", "CPUQuota=600%", "nice", "-n", "19", "ionice", "-c", "3"]
+    assert not any(a.startswith("Nice=") for a in argv)
+    assert not any(a.startswith("IOSchedulingClass=") for a in argv)
 
 
 def test_wrapper_cpu_quota_falls_back_without_systemd_run(monkeypatch):
