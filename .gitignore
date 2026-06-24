@@ -16,6 +16,7 @@
 .SRCINFO-git
 
 notes.txt
+docs/plans/
 
 # Claude workspace: share reusable checks/hooks/agents/skills + hookify rules.
 # Keep the per-machine allowlist, local worktrees, and rolling history private.
