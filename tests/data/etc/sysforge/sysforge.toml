@@ -14,13 +14,20 @@ color = "auto"
 #                      # > vimdiff. Accepts args, e.g. "nvim -d" or "meld".
 
 [git]
-# Timeout in seconds for git pull --rebase during `sysforge update`.
-# Set to 0 to disable the timeout (wait indefinitely).
-pull_timeout = 30
+# Timeout (s) for the per-source git fetch during `sysforge update` (full-history
+# fetch+compare via the scheduler, never `git pull --rebase`). 0 = no timeout.
+# Legacy key `pull_timeout` still honoured. See etc/sysforge/sysforge.toml.
+fetch_timeout = 30
 
 # Timeout in seconds for git clone / pkgctl repo clone operations.
 # Set to 0 to disable the timeout (wait indefinitely).
 clone_timeout = 60
+
+[aur]
+# Source-fetch throttling (politeness + rate-limit). Safe defaults; see
+# etc/sysforge/sysforge.toml for full docs.
+# min_fetch_interval_ms = 500  # min delay between source fetches (ms)
+# rate_limit_abort_s = 120     # abort queue if 429/503 penalty exceeds this (s)
 
 [build]
 # Python interpreter for PKGBUILD build() steps; pinned ahead of any

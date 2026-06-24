@@ -16,13 +16,30 @@ color = "auto"
 #                      # > vimdiff. Accepts args, e.g. "nvim -d" or "meld".
 
 [git]
-# Timeout in seconds for git pull --rebase during `sysforge update`.
-# Set to 0 to disable the timeout (wait indefinitely).
-pull_timeout = 30
+# Timeout in seconds for the per-source git fetch sysforge runs to refresh a
+# PKGBUILD checkout during `sysforge update` (a full-history fetch + compare via
+# the source-sync scheduler, never `git pull --rebase`). Set to 0 to disable the
+# timeout (wait indefinitely). The legacy key `pull_timeout` is still honoured.
+fetch_timeout = 30
 
 # Timeout in seconds for git clone / pkgctl repo clone operations.
 # Set to 0 to disable the timeout (wait indefinitely).
 clone_timeout = 60
+
+[aur]
+# Politeness / rate-limit throttling for AUR (and gitlab repo) source fetches,
+# applied by the source-sync scheduler. Both have safe defaults; uncomment to
+# tune for a slow or rate-limit-sensitive connection.
+#
+# min_fetch_interval_ms — minimum delay between successive source fetches, in
+#   milliseconds. Spaces out RPC/clone/fetch traffic so a large update doesn't
+#   hammer the AUR. Default 500.
+# min_fetch_interval_ms = 500
+#
+# rate_limit_abort_s — when the AUR returns 429/503, sysforge honours the
+#   Retry-After budget; if the accumulated penalty would exceed this many
+#   seconds, it aborts the remaining queue instead of waiting it out. Default 120.
+# rate_limit_abort_s = 120
 
 [build]
 # Which python interpreter PKGBUILD build() steps should use. A bare `python`
