@@ -453,6 +453,60 @@ def _load_toolchain_cfg() -> dict | None:
         return None
 
 
+def _toolchain_built_packages() -> set[str]:
+    """Pkgbases the toolchain stage built and installed, per build_state.
+
+    The toolchain stage replaces LLVM **in place with stock pkgnames** (it is
+    the system compiler — no ``-sysforge`` suffix), so pacman classifies the
+    result as a repo package (``install_origin == "repo"``) exactly like a stock
+    install. The only authoritative "sysforge built this toolchain" signal is the
+    sticky ``owner_stage == "toolchain"`` marker the install-bearing pass stamps
+    into ``build_state.toml`` (never auto-demoted — see
+    ``BuildState.reconcile_external_installs``). Read-only; never throws (a
+    missing/unreadable state dir → empty set, so the caller falls back to
+    treating the install as stock).
+    """
+    try:
+        from sysforge.pipeline.state import resolve_state_dir
+        from sysforge.primitives.build_state import BuildState
+
+        resolved_dir, _ = resolve_state_dir(None)
+        bs = BuildState(resolved_dir)
+        return {
+            name
+            for name, entry in bs.all_packages().items()
+            if isinstance(entry, dict) and entry.get("owner_stage") == "toolchain"
+        }
+    except Exception as e:  # noqa: BLE001 — advisory; absent state is fine
+        _log.debug(f"toolchain build_state read skipped: {e}")
+        return set()
+
+
+def _packages_repo_mode_is_pacman() -> bool:
+    """True when packages.toml ``[build] repo_mode`` resolves to ``pacman``.
+
+    With ``pgo = false`` the toolchain stage honors this by installing the stock
+    LLVM suite from the repos (``install_repo_pkgs``) instead of building — so a
+    stock install is the *intended* outcome, not a provenance mismatch. Read
+    through the single ``config.resolve_repo_mode`` chokepoint; never throws.
+    """
+    try:
+        import tomllib
+
+        from sysforge.primitives.config import REPO_MODE_PACMAN, resolve_repo_mode
+        from sysforge.primitives.paths import resolve_packages_path
+
+        path = resolve_packages_path({})
+        if not path.exists():
+            return False
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        return resolve_repo_mode(data.get("build", {})) == REPO_MODE_PACMAN
+    except Exception as e:  # noqa: BLE001 — advisory; default to "not pacman"
+        _log.debug(f"packages.toml repo_mode read skipped: {e}")
+        return False
+
+
 def detect_toolchain_config_mismatch(
     config: dict | None,
     *,
@@ -492,6 +546,14 @@ def detect_toolchain_config_mismatch(
         return ()
     pgo = bool(cfg.get("pgo", True))  # PGO defaults on for the llvm path
 
+    # pgo off + packages.toml repo_mode=pacman: the stage installs the stock
+    # LLVM suite from the repos on purpose (no build), so a stock install is the
+    # chosen path, not a mismatch. (PGO always builds from source regardless of
+    # repo_mode, so this only applies when pgo is off.) Nothing else can fire
+    # here — the profdata-skew arm is pgo-only — so return early.
+    if not pgo and _packages_repo_mode_is_pacman():
+        return ()
+
     # Lazy import: the lockstep suite is the single source of truth for which
     # LLVM packages move together (CLAUDE.md). Imported here to avoid an
     # import-time cycle with toolchain_preflight.
@@ -506,7 +568,18 @@ def detect_toolchain_config_mismatch(
         return ()
     findings: list[ToolchainMismatchFinding] = []
 
-    stock = sorted(s.pkgbase for s in report.states if s.install_origin == "repo")
+    # A custom/PGO build installs stock-named packages in place, so pacman reads
+    # them as repo (install_origin == "repo") — indistinguishable from a genuine
+    # stock install by pacman alone. Subtract anything build_state records as a
+    # toolchain-owned build: that is sysforge's authoritative "we built it"
+    # signal, so it is NOT a stock install (B5). When build_state is empty (the
+    # stage was never run) the set is empty and a real stock install still fires.
+    built = _toolchain_built_packages()
+    stock = sorted(
+        s.pkgbase
+        for s in report.states
+        if s.install_origin == "repo" and s.pkgbase not in built
+    )
     if stock:
         kind = "PGO LLVM" if pgo else "custom LLVM"
         findings.append(ToolchainMismatchFinding(

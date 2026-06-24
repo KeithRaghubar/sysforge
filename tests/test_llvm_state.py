@@ -474,7 +474,9 @@ def test_mismatch_stock_install_flags_error():
 
     report = _report(_state(pkgbase="llvm", install_origin="repo"))
     with patch("sysforge.primitives.llvm_state.collect_llvm_state",
-               return_value=report):
+               return_value=report), \
+         patch("sysforge.primitives.llvm_state._toolchain_built_packages",
+               return_value=set()):
         result = detect_toolchain_config_mismatch(
             {}, toolchain_cfg={"enabled": True, "compiler": "llvm", "pgo": True})
     assert len(result) == 1
@@ -546,3 +548,50 @@ def test_mismatch_collect_failure_is_silent():
         result = detect_toolchain_config_mismatch(
             {}, toolchain_cfg={"enabled": True, "compiler": "llvm", "pgo": True})
     assert result == ()
+
+
+def test_mismatch_suppressed_when_toolchain_built():
+    """In-place custom/PGO builds install stock-named packages (llvm, clang, …),
+    which pacman classifies as repo (install_origin='repo') because their names
+    exist in a sync DB. A toolchain-owned build_state record proves sysforge
+    built them, so the stock-install finding must NOT fire (B5)."""
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    report = _report(_state(pkgbase="llvm", install_origin="repo"))
+    with patch("sysforge.primitives.llvm_state.collect_llvm_state",
+               return_value=report), \
+         patch("sysforge.primitives.llvm_state._toolchain_built_packages",
+               return_value={"llvm"}):
+        result = detect_toolchain_config_mismatch(
+            {}, toolchain_cfg={"enabled": True, "compiler": "llvm", "pgo": True})
+    assert result == ()
+
+
+def test_mismatch_still_flags_stock_when_never_built():
+    """No toolchain build_state record (the stage was never run) → a stock
+    install IS a genuine provenance mismatch and still fires."""
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    report = _report(_state(pkgbase="llvm", install_origin="repo"))
+    with patch("sysforge.primitives.llvm_state.collect_llvm_state",
+               return_value=report), \
+         patch("sysforge.primitives.llvm_state._toolchain_built_packages",
+               return_value=set()):
+        result = detect_toolchain_config_mismatch(
+            {}, toolchain_cfg={"enabled": True, "compiler": "llvm", "pgo": True})
+    assert [f.check_id for f in result] == ["toolchain_stock_install"]
+
+
+def test_mismatch_repo_mode_pacman_pgo_off_is_intended_stock():
+    """pgo off + packages.toml repo_mode=pacman → the stage installs the stock
+    LLVM suite from the repos on purpose, so a stock install is the chosen path,
+    not a mismatch; the probe is skipped entirely."""
+    from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
+
+    with patch("sysforge.primitives.llvm_state.collect_llvm_state") as mock_collect, \
+         patch("sysforge.primitives.llvm_state._packages_repo_mode_is_pacman",
+               return_value=True):
+        result = detect_toolchain_config_mismatch(
+            {}, toolchain_cfg={"enabled": True, "compiler": "llvm", "pgo": False})
+    assert result == ()
+    mock_collect.assert_not_called()
