@@ -547,13 +547,19 @@ def is_musl_static_build(parsed):
     if not any(d in _MUSL_MAKEDEPENDS for d in makedeps):
         return False
 
+    # The build-time signal may live in a scanned function body or at global
+    # PKGBUILD scope (top-level `export CC=musl-gcc` / `LDFLAGS+=' -static'`,
+    # which run when makepkg sources the file — e.g. pacman-static).
+    bodies = [parsed.get("global_body", "")]
     funcs = parsed.get("functions", {})
     for name, body in funcs.items():
         if not body:
             continue
         if name not in _SCAN_FUNCS_LITERAL and not name.startswith("package_"):
             continue
-        if _MUSL_CC_ASSIGN.search(body) or _STATIC_LDFLAGS.search(body):
+        bodies.append(body)
+    for body in bodies:
+        if body and (_MUSL_CC_ASSIGN.search(body) or _STATIC_LDFLAGS.search(body)):
             return True
     return False
 
@@ -579,6 +585,11 @@ def parse_pkgbuild(path):
     text = _strip_comments(open(path, encoding="utf-8").read())
     result = {"globals": {}, "functions": {}}
     result["functions"], global_text = _extract_functions(text)
+    # Retain the raw top-level script body (functions removed). Some PKGBUILDs
+    # set build-time toolchain via global `export CC=...` / `LDFLAGS+=...`
+    # statements that run when makepkg sources the file — these never land in
+    # `globals` (the `^(\w+)=` scan skips `export X=`) nor in `functions`.
+    result["global_body"] = global_text
     result["globals"].update(_extract_arrays(global_text))
     for m in re.finditer(
         r"""^(\w+)=(?:"([^"]*)"|'([^']*)'|([^()\n'"]+))""",

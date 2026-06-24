@@ -579,6 +579,29 @@ def test_musl_static_quoted_cc_value(tmp_path):
     assert is_musl_static_build(parsed) is True
 
 
+def test_musl_static_global_scope_exports(tmp_path):
+    """pacman-static declares CC=musl-gcc + -static as top-level exports,
+    before any function body — these must still be detected."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=pacman-static\n"
+        "pkgver=1.0\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+        "makedepends=('meson' 'cmake' 'musl' 'kernel-headers-musl' 'git')\n"
+        'export LDFLAGS="$LDFLAGS -static"\n'
+        "export CC=musl-gcc\n"
+        "prepare() {\n"
+        "  true\n"
+        "}\n"
+        "build() {\n"
+        "  make\n"
+        "}\n"
+    )
+    parsed = parse_pkgbuild(pkgbuild)
+    assert is_musl_static_build(parsed) is True
+
+
 def test_musl_static_requires_makedepend(tmp_path):
     """musl-gcc in body but no musl makedepend → not authoritative, False."""
     parsed = _parse_musl_pkgbuild(
