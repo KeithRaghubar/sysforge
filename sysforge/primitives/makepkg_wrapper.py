@@ -834,45 +834,45 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             _pgo_names = _pgo_names[0] if _pgo_names else None
         _pgo_pkgbase = _pgo_globals.get("pkgbase") or _pgo_names
         if options.pgo_mode:
-            if is_mesa_pkgbase(_pgo_pkgbase):
-                from sysforge.primitives import fs_provision, mesa_pgo
-                _store = mesa_pgo.resolve_store()
-                if options.pgo_mode == "record":
-                    try:
-                        fs_provision.ensure_writable_dir(_store)
-                    except fs_provision.FsProvisionError as e:
-                        _build_log.warn(
-                            f"mesa PGO store {_store} could not be group-provisioned "
-                            f"({e}) — GPU apps may be unable to write .profraw there"
-                        )
-                    _pgo_flag = mesa_pgo.generate_flag(_store)
-                elif options.pgo_mode == "use":
-                    # Raises MesaPgoError (clean pre-build abort) if nothing was
-                    # collected or llvm-profdata is unavailable.
-                    _profdata = mesa_pgo.merge_profraw(_store)
-                    _pgo_flag = mesa_pgo.use_flags(_profdata)
-                    record_build_mode = mesa_pgo.BUILD_MODE  # "pgo_mesa"
-                else:
-                    raise RuntimeError(f"unknown --pgo mode {options.pgo_mode!r}")
-                effective_flags_extra = (
-                    f"{effective_flags_extra} {_pgo_flag}".strip()
-                    if effective_flags_extra
-                    else _pgo_flag
-                )
-                _build_log.ui(
-                    f"mesa PGO ({options.pgo_mode}): injecting {_pgo_flag!r}"
-                )
+            # Instrumentation PGO is now a generic per-package build flag (F5):
+            # mesa is the seeded target (with bespoke graphics handling) but any
+            # package can be profiled. The "not recommended for most packages"
+            # warning is emitted once, up front, in BuildVerb.pre_check (it has
+            # the config + the allow-list); here we just do the injection.
+            from sysforge.primitives import fs_provision, mesa_pgo
+            _store = mesa_pgo.resolve_store(pkgbase=_pgo_pkgbase)
+            if options.pgo_mode == "record":
+                try:
+                    fs_provision.ensure_writable_dir(_store)
+                except fs_provision.FsProvisionError as e:
+                    _build_log.warn(
+                        f"PGO store {_store} could not be group-provisioned "
+                        f"({e}) — instrumented {_pgo_pkgbase} may be unable to "
+                        "write .profraw there"
+                    )
+                _pgo_flag = mesa_pgo.generate_flag(_store)
+            elif options.pgo_mode == "use":
+                # Raises MesaPgoError (clean pre-build abort) if nothing was
+                # collected or llvm-profdata is unavailable.
+                _profdata = mesa_pgo.merge_profraw(_store, pkgbase=_pgo_pkgbase)
+                _pgo_flag = mesa_pgo.use_flags(_profdata)
+                record_build_mode = mesa_pgo.build_mode_for(_pgo_pkgbase)
             else:
-                _build_log.warn(
-                    f"--pgo={options.pgo_mode} ignored for {_pgo_pkgbase!r}: "
-                    "mesa instrumentation PGO is mesa-only"
-                )
-        elif is_mesa_pkgbase(_pgo_pkgbase):
-            # Durability: no explicit --pgo, but a prior `build mesa --pgo=use`
-            # left a merged mesa.profdata in the store. mesa is source-tracked,
-            # so update rebuilds it every cycle; reuse the existing profile
+                raise RuntimeError(f"unknown --pgo mode {options.pgo_mode!r}")
+            effective_flags_extra = (
+                f"{effective_flags_extra} {_pgo_flag}".strip()
+                if effective_flags_extra
+                else _pgo_flag
+            )
+            _build_log.ui(
+                f"PGO ({options.pgo_mode}) {_pgo_pkgbase}: injecting {_pgo_flag!r}"
+            )
+        elif _pgo_pkgbase:
+            # Durability: no explicit --pgo, but a prior `build <pkg> --pgo=use`
+            # left a merged profile in the package's store. A source-tracked
+            # package is rebuilt every update cycle; reuse the existing profile
             # (same compiler_flags_extra seam as --pgo=use) rather than silently
-            # regressing to a stock mesa. No re-merge — the optimized mesa isn't
+            # regressing to a stock build. No re-merge — the optimized build isn't
             # instrumented, so no new .profraw accrues. None ⇒ never PGO-built
             # here ⇒ a normal build. use_flags already demotes the skew warnings
             # so a slightly-stale profile never -Werror-fails the rebuild.
@@ -888,21 +888,21 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 or os.environ.get("CC", "")
             )
             _reuse = (
-                mesa_pgo.reuse_profdata()
+                mesa_pgo.reuse_profdata(pkgbase=_pgo_pkgbase)
                 if is_llvm_toolchain(_reuse_cc)
                 else None
             )
             if _reuse is not None:
                 _pgo_flag = mesa_pgo.use_flags(_reuse)
-                record_build_mode = mesa_pgo.BUILD_MODE  # "pgo_mesa"
+                record_build_mode = mesa_pgo.build_mode_for(_pgo_pkgbase)
                 effective_flags_extra = (
                     f"{effective_flags_extra} {_pgo_flag}".strip()
                     if effective_flags_extra
                     else _pgo_flag
                 )
                 _build_log.ui(
-                    f"mesa PGO (reuse): re-applying {_reuse} from a prior "
-                    "--pgo=use (source rebuild stays profiled)"
+                    f"PGO (reuse) {_pgo_pkgbase}: re-applying {_reuse} from a "
+                    "prior --pgo=use (source rebuild stays profiled)"
                 )
 
         extracted_profile = None

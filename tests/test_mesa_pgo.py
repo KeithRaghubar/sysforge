@@ -152,3 +152,70 @@ def test_reuse_profdata_ignores_bare_profraw(tmp_path):
     store.mkdir(parents=True)
     (store / "a.profraw").write_text("raw")
     assert mesa_pgo.reuse_profdata({"profile_store": str(tmp_path)}) is None
+
+
+# ---------------------------------------------------------------------------
+# Generalization beyond mesa (F5): per-package stores + build_mode
+# ---------------------------------------------------------------------------
+
+def test_store_is_pgo_mesa_for_mesa_family():
+    # mesa-family keeps the back-compat <root>/pgo-mesa store (no target subdir),
+    # so existing collected mesa profiles are never orphaned.
+    for pkgbase in ("mesa", "mesa-git", "lib32-mesa"):
+        store = mesa_pgo.resolve_store({}, pkgbase=pkgbase)
+        assert store.name == "pgo-mesa", pkgbase
+
+
+def test_store_is_per_package_for_non_mesa(tmp_path):
+    # A non-mesa target gets its own namespaced store under the generic `pgo`
+    # method: <root>/pgo/<pkgbase>.
+    store = mesa_pgo.resolve_store({"profile_store": str(tmp_path)}, pkgbase="foo")
+    assert store == tmp_path / "pgo" / "foo"
+
+
+def test_profdata_name_tracks_pkgbase(tmp_path):
+    # mesa keeps mesa.profdata (== the pkgbase pattern); a generic package gets
+    # <pkgbase>.profdata inside its own store.
+    assert mesa_pgo.profdata_path({}, pkgbase="mesa").name == "mesa.profdata"
+    pd = mesa_pgo.profdata_path({"profile_store": str(tmp_path)}, pkgbase="foo")
+    assert pd == tmp_path / "pgo" / "foo" / "foo.profdata"
+
+
+def test_build_mode_for_mesa_vs_generic():
+    from sysforge.primitives.profile import is_optimized_build_mode
+
+    assert mesa_pgo.build_mode_for("mesa") == "pgo_mesa"
+    assert mesa_pgo.build_mode_for("foo") == "pgo"
+    # Both earn the -sysforge rename.
+    assert is_optimized_build_mode(mesa_pgo.build_mode_for("mesa"))
+    assert is_optimized_build_mode(mesa_pgo.build_mode_for("foo"))
+
+
+def test_reuse_profdata_per_package(tmp_path):
+    store = mesa_pgo.resolve_store({"profile_store": str(tmp_path)}, pkgbase="foo")
+    store.mkdir(parents=True)
+    pd = store / "foo.profdata"
+    pd.write_text("merged")
+    assert mesa_pgo.reuse_profdata(
+        {"profile_store": str(tmp_path)}, pkgbase="foo"
+    ) == pd
+    # A different package with no profile is unaffected.
+    assert mesa_pgo.reuse_profdata(
+        {"profile_store": str(tmp_path)}, pkgbase="bar"
+    ) is None
+
+
+def test_merge_profraw_names_output_per_package(tmp_path, monkeypatch):
+    store = mesa_pgo.resolve_store({"profile_store": str(tmp_path)}, pkgbase="foo")
+    store.mkdir(parents=True)
+    (store / "a.profraw").write_text("x")
+    monkeypatch.setattr(mesa_pgo.shutil, "which", lambda _t: "/usr/bin/llvm-profdata")
+
+    def fake_run(argv, **kw):
+        out_idx = argv.index("--output") + 1
+        Path(argv[out_idx]).write_text("merged")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(mesa_pgo.subprocess, "run", fake_run)
+    out = mesa_pgo.merge_profraw(store, pkgbase="foo")
+    assert out == store / "foo.profdata"

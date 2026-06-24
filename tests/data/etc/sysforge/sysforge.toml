@@ -53,3 +53,8 @@ llvm_preflight        = true
 # filter_drivers = false
 # gallium = ["radeonsi"]
 # vulkan  = ["amd"]
+
+[pgo]
+# Packages for which `--pgo` is recommended (suppresses the "not recommended"
+# warning). mesa is always allowed. See etc/sysforge/sysforge.toml for full docs.
+allow = ["mesa"]

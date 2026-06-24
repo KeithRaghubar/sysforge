@@ -10,6 +10,8 @@ from sysforge.primitives.config import (
     load_conflict_groups,
     load_consumes_inference,
     normalize_package_entry,
+    pgo_warns_for,
+    resolve_pgo_allowlist,
     resolve_repo_mode,
 )
 
@@ -32,6 +34,35 @@ class TestResolveRepoMode:
     def test_unknown_value_passed_through(self):
         # Validation happens at the call site; resolve only maps the legacy alias.
         assert resolve_repo_mode({"repo_mode": "hybrid"}) == "hybrid"
+
+
+# ---------------------------------------------------------------------------
+# resolve_pgo_allowlist / pgo_warns_for (F5: --pgo warn-list, seeded with mesa)
+# ---------------------------------------------------------------------------
+
+class TestPgoAllowlist:
+    def test_default_seeds_mesa(self):
+        # No [pgo] section ⇒ mesa is still allow-listed (the supported case).
+        assert "mesa" in resolve_pgo_allowlist({})
+        assert "mesa" in resolve_pgo_allowlist(None)
+
+    def test_explicit_allow_list_used(self):
+        cfg = {"pgo": {"allow": ["mesa", "llvm"]}}
+        allow = resolve_pgo_allowlist(cfg)
+        assert {"mesa", "llvm"} <= allow
+
+    def test_mesa_family_never_warns(self):
+        # mesa-family is implicitly allowed regardless of config contents.
+        cfg = {"pgo": {"allow": ["llvm"]}}
+        assert not pgo_warns_for("mesa", cfg)
+        assert not pgo_warns_for("lib32-mesa", cfg)
+
+    def test_allow_listed_package_does_not_warn(self):
+        assert not pgo_warns_for("llvm", {"pgo": {"allow": ["llvm"]}})
+
+    def test_unlisted_package_warns(self):
+        assert pgo_warns_for("ffmpeg", {"pgo": {"allow": ["llvm"]}})
+        assert pgo_warns_for("ffmpeg", {})
 
 
 class TestNormalizePackageEntry:

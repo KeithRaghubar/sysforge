@@ -174,20 +174,26 @@ edits must pass `make check-design` after `make design`.
   `makepkg_pgo.resolve_method_store(method)` (`pgo-mesa`/`autofdo`/`propeller`/`bolt`; `instr-pgo`
   aliases the legacy clang store). Don't add a parallel renamer/store-resolver. See DESIGN.md
   §CLI Verb Framework / §Flag-Profile.
-- **Mesa instrumentation PGO has one home**: `primitives/mesa_pgo.py` (`resolve_store`,
-  `merge_profraw` → `llvm-profdata`, `generate_flag`/`use_flags`, `reuse_profdata`,
-  `BUILD_MODE="pgo_mesa"`). The
-  `build --pgo=record|use` flow injects `-fprofile-generate=<store>` / `-fprofile-use=<profdata>`
-  via the **same `compiler_flags_extra` seam** the toolchain PGO uses (no `-Db_pgo` patch, no
-  second injector); `record` keeps the stock name, `use` earns `-sysforge`. **Reuse is durable**:
-  a no-`--pgo` mesa rebuild (`update`/plain `build mesa`) re-applies an existing merged profile via
-  `reuse_profdata()` (profdata-exists is the signal) through the same seam and re-stamps `pgo_mesa`
-  — bare `.profraw` (record-only) is not reused; opt out by removing the store profdata or `state
-  forget mesa`. That reuse branch in `_run_build` is `is_llvm_toolchain`-guarded (it bypasses
-  `pre_check`) so a clang `.profdata` never feeds a gcc build. LLVM-only — gated in
-  `BuildVerb.pre_check` via `profile.is_llvm_toolchain` + `LLVM_REQUIRED_HINT`; a no-op for
-  non-mesa (`is_mesa_pkgbase`). Distinct from Phase-2's compiler training corpus (that enriches
-  `clang.profdata`; this profiles mesa itself). See DESIGN.md §CLI Verb Framework.
+- **Instrumentation PGO has one home**: `primitives/mesa_pgo.py` (`resolve_store(pkgbase)`,
+  `merge_profraw` → `llvm-profdata`, `generate_flag`/`use_flags`, `reuse_profdata(pkgbase)`,
+  `build_mode_for(pkgbase)` → `pgo_mesa` for mesa / generic `pgo` else, both in
+  `_OPTIMIZED_BUILD_MODES`). PGO is "just a build flag", so **`--pgo` works on any package** (F5),
+  not only mesa — every function takes a `pkgbase`. The `build --pgo=record|use` flow injects
+  `-fprofile-generate=<store>` / `-fprofile-use=<profdata>` via the **same `compiler_flags_extra`
+  seam** the toolchain PGO uses (no `-Db_pgo` patch, no second injector); `record` keeps the stock
+  name, `use` earns `-sysforge`. **Stores are per-package**: mesa-family keeps the back-compat
+  `<root>/pgo-mesa` (method `pgo-mesa`); any other target gets `<root>/pgo/<pkgbase>` (method `pgo`,
+  `target=pkgbase`) — don't collapse mesa into the generic path (orphans collected profiles).
+  **Reuse is durable**: a no-`--pgo` rebuild (`update`/plain `build <pkg>`) re-applies an existing
+  merged `<pkgbase>.profdata` via `reuse_profdata(pkgbase)` (profdata-exists is the signal) through
+  the same seam and re-stamps `build_mode_for(pkgbase)` — bare `.profraw` (record-only) is not
+  reused; opt out by removing the store profdata or `state forget <pkg>`. That reuse branch in
+  `_run_build` is `is_llvm_toolchain`-guarded (it bypasses `pre_check`) so a clang `.profdata` never
+  feeds a gcc build. LLVM-only — gated in `BuildVerb.pre_check` via `profile.is_llvm_toolchain` +
+  `LLVM_REQUIRED_HINT`. **Warn-list (one home: `config.pgo_warns_for` over `sysforge.toml [pgo]
+  allow`, seeded with mesa)**: `pre_check` warns (not blocks) on `--pgo` for any target that is
+  neither mesa-family nor allow-listed. Distinct from Phase-2's compiler training corpus (that
+  enriches `clang.profdata`; this profiles the package itself). See DESIGN.md §CLI Verb Framework.
 - **Kernel sample-based FDO has one home**: `primitives/kernel_fdo.py` (`resolve_store`,
   `fdo_kconfig`, `use_env`, `require_profile`, `detect_branch_sampling`, `resolve_vmlinux`,
   `capture_commands`, `build_mode`). `run kernel --autofdo=record|capture|use` (+`--propeller`)

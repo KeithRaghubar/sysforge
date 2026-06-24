@@ -215,9 +215,13 @@ class BuildVerb(Verb):
         _log.info(f"Invocation: {' '.join(sys.argv)}")
         config = load_config_with_overrides(args)
         # Optimization gate (one home: profile.is_llvm_toolchain + LLVM_REQUIRED_HINT):
-        # mesa instrumentation PGO instruments with clang and merges with
-        # llvm-profdata, so it has no gcc path. Block cleanly before any build work.
+        # instrumentation PGO instruments with clang and merges with llvm-profdata,
+        # so it has no gcc path. Block cleanly before any build work.
         if getattr(args, "pgo_mode", None):
+            from sysforge.primitives.config import (
+                load_sysforge_toml,
+                pgo_warns_for,
+            )
             from sysforge.primitives.profile import (
                 LLVM_REQUIRED_HINT,
                 is_llvm_toolchain,
@@ -225,9 +229,22 @@ class BuildVerb(Verb):
             toolchain = config.get("defaults", {}).get("toolchain")
             if not is_llvm_toolchain(toolchain):
                 return PreCheckResult(
-                    blocker=f"mesa PGO (--pgo) requires the LLVM toolchain. "
+                    blocker=f"PGO (--pgo) requires the LLVM toolchain. "
                             f"{LLVM_REQUIRED_HINT}"
                 )
+            # PGO works on any package (F5) but is rarely worth the doubled build
+            # + manual workload outside a hot, long-lived library. Warn once per
+            # un-allow-listed target; mesa-family + sysforge.toml [pgo] allow are
+            # quiet. Warning only — the build proceeds.
+            sysforge_cfg = load_sysforge_toml()
+            for pkg in args.pkgbuilds:
+                name = _pkg_to_name(pkg)
+                if pgo_warns_for(name, sysforge_cfg):
+                    _log.warn(
+                        f"--pgo on {name!r}: PGO is not recommended for most "
+                        "packages (doubled build + a manual record/use workload). "
+                        "Add it to sysforge.toml [pgo] allow to silence this."
+                    )
         if not getattr(args, "no_llvm_preflight", False):
             _render_llvm_preflight([_pkg_to_name(p) for p in args.pkgbuilds], config)
         if getattr(args, "dry_run", False):

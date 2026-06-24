@@ -59,6 +59,37 @@ def resolve_repo_mode(build_cfg: dict | None) -> str:
     return raw
 
 
+def resolve_pgo_allowlist(sysforge_cfg: dict | None) -> set[str]:
+    """The set of pkgbases for which ``--pgo`` is a *recommended* build mode.
+
+    Read chokepoint for ``sysforge.toml [pgo] allow``. Instrumentation PGO is now
+    "just a build flag" (the ``compiler_flags_extra`` seam), so ``--pgo`` works on
+    any package — but it's only worth the doubled build + manual workload for a
+    hot, long-lived library. The allow-list suppresses the "not recommended"
+    warning for the packages the user has decided are worth it. ``mesa`` is always
+    seeded (the original, fully-wired case) even when the section is absent.
+    """
+    allow = set((sysforge_cfg or {}).get("pgo", {}).get("allow", []) or [])
+    allow.add("mesa")
+    return allow
+
+
+def pgo_warns_for(pkgbase: str | None, sysforge_cfg: dict | None) -> bool:
+    """True when ``--pgo`` on ``pkgbase`` should emit the "not recommended"
+    warning: i.e. the package is neither mesa-family nor on the allow-list.
+
+    Single home for the warn-vs-quiet decision so ``build``'s pre-check and any
+    future caller agree. mesa-family is always quiet regardless of config (it's
+    the supported target); everything else defers to
+    :func:`resolve_pgo_allowlist`.
+    """
+    from sysforge.primitives.profile import is_mesa_pkgbase
+
+    if is_mesa_pkgbase(pkgbase):
+        return False
+    return pkgbase not in resolve_pgo_allowlist(sysforge_cfg)
+
+
 def normalize_package_entry(entry: dict) -> dict:
     """Return ``entry`` with the legacy per-package key renamed in place.
 

@@ -58,10 +58,13 @@ sudo vim /etc/sysforge/profiles.toml
 #    repo binary.
 sysforge build neovim-git -m "-si"
 
-#    Profile-guided mesa (LLVM toolchain only): `sysforge build mesa --pgo=record`
+#    Profile-guided optimization (LLVM toolchain only): `sysforge build mesa --pgo=record`
 #    installs an instrumented mesa that records a profile as you use the desktop;
 #    after a representative session, `sysforge build mesa --pgo=use` rebuilds an
-#    optimized `mesa-sysforge` (drop-in replacement) from that profile.
+#    optimized `mesa-sysforge` (drop-in replacement) from that profile. `--pgo`
+#    works on any package, but it warns for packages outside `sysforge.toml
+#    [pgo] allow` (seeded with mesa) — it's rarely worth the doubled build plus a
+#    manual record/use workload outside a hot, long-lived library.
 
 # 4. Check for and rebuild any outdated installed AUR packages
 #    (Source sync is RPC-first: one batched AUR `info` call, and a git

@@ -698,6 +698,7 @@ def get_build_mode(matched_rules, config) -> str | None:
 _OPTIMIZED_BUILD_MODES = frozenset({
     "pgo_llvm_toolchain",  # instrumentation PGO of the LLVM toolchain (existing)
     "pgo_mesa",            # instrumentation PGO of mesa
+    "pgo",                 # instrumentation PGO of any other package (F5)
     "autofdo_kernel",      # sample-based FDO of the kernel (Clang AutoFDO)
     "propeller_kernel",    # Propeller basic-block layout of the kernel
     "bolt_llvm",           # post-link BOLT of the LLVM toolchain

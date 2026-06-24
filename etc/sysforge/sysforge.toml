@@ -122,3 +122,13 @@ llvm_preflight        = true
 # amd, intel, nouveau for vulkan).
 # gallium = ["radeonsi"]
 # vulkan  = ["amd"]
+
+[pgo]
+# Instrumentation PGO is "just a build flag" — `sysforge build <pkg> --pgo=record`
+# then `--pgo=use` works on ANY package, not only mesa. But it's rarely worth the
+# doubled build plus a manual record/use workload outside a hot, long-lived
+# library, so `--pgo` on an un-listed package prints a "not recommended" warning.
+# List the pkgbases you've decided are worth it here to silence that warning.
+# mesa is always treated as allowed (the original, fully-wired case) whether or
+# not it appears below.
+allow = ["mesa"]

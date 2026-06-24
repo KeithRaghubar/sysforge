@@ -50,9 +50,11 @@ _DEFAULT_PROFILE_STORE_ROOT = "/var/cache/sysforge"
 # literal sibling subdir under the shared root. ``"pgo-mesa"`` is mesa's own
 # instrumentation-PGO store (distinct from ``instr-pgo``, which is the *compiler*
 # self-profile) — its runtime-collected ``.profraw`` and merged ``mesa.profdata``
-# live in ``<root>/pgo-mesa``; see ``primitives/mesa_pgo.py``.
+# live in ``<root>/pgo-mesa``; see ``primitives/mesa_pgo.py``. ``"pgo"`` is the
+# generic per-package instrumentation-PGO method (``--pgo`` on any non-mesa
+# target): profiles live in ``<root>/pgo/<pkgbase>`` via the ``target`` namespace.
 PROFILE_METHODS = frozenset(
-    {"instr-pgo", "pgo-mesa", "autofdo", "propeller", "bolt"}
+    {"instr-pgo", "pgo-mesa", "pgo", "autofdo", "propeller", "bolt"}
 )
 
 
