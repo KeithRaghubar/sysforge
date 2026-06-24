@@ -7,6 +7,7 @@ checker as a subprocess with --repo=<tmp_path>, so the checker reads
 shipped data from the synthetic tree while importing sysforge from this
 working repo as usual.
 """
+import re
 import shutil
 import subprocess
 import sys
@@ -167,10 +168,12 @@ class TestPkgbuildDrift:
         repo = copy_shipped_tree(tmp_path)
         pkgbuild = repo / "PKGBUILD"
         text = pkgbuild.read_text()
-        new = text.replace(
-            "validpgpkeys=('REPLACE_WITH_MAINTAINER_KEY_FINGERPRINT')\n", "", 1,
-        )
-        assert new != text
+        # Drop whichever validpgpkeys line the PKGBUILD currently ships (the
+        # dev sentinel or a real fingerprint) — the checker must flag its
+        # absence regardless of the value that was there.
+        new, n = re.subn(r"^validpgpkeys=\([^)]*\)\n", "", text, count=1,
+                         flags=re.MULTILINE)
+        assert n == 1, "validpgpkeys=(...) line not found in shipped PKGBUILD"
         pkgbuild.write_text(new)
 
         res = run_checker(repo=repo, args=["--check=pkgbuild"])
@@ -181,11 +184,11 @@ class TestPkgbuildDrift:
         repo = copy_shipped_tree(tmp_path)
         pkgbuild = repo / "PKGBUILD"
         text = pkgbuild.read_text()
-        new = text.replace(
-            "validpgpkeys=('REPLACE_WITH_MAINTAINER_KEY_FINGERPRINT')",
-            "validpgpkeys=('not-a-fingerprint')",
-        )
-        assert new != text
+        # Replace the current validpgpkeys value with a non-fingerprint token.
+        new, n = re.subn(r"^validpgpkeys=\([^)]*\)",
+                         "validpgpkeys=('not-a-fingerprint')", text, count=1,
+                         flags=re.MULTILINE)
+        assert n == 1, "validpgpkeys=(...) line not found in shipped PKGBUILD"
         pkgbuild.write_text(new)
 
         res = run_checker(repo=repo, args=["--check=pkgbuild"])
