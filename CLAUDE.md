@@ -360,8 +360,11 @@ edits must pass `make check-design` after `make design`.
   Headers/docs toggles resolve in `_resolve_subpackages` (CLI `--headers`/`--docs` >
   `kernel.toml build_headers`/`build_docs` > headers-on/docs-off default); dropping a
   subpackage has one home — `pkgbuild_patcher.patch_kernel_subpackages` edits the
-  `pkgname=(...)` array (no parallel pkgname editor). Disabling headers must keep the Gate-1
-  DKMS/out-of-tree warning. See DESIGN.md §Kernel stage.
+  `pkgname=(...)` array (no parallel pkgname editor) **and**, when docs are off, comments out
+  the standalone doc-build make line via `_neutralize_kernel_doc_build` (stock `linux` runs
+  `make htmldocs` in `build()`, not only `_package-docs()`; a mixed `make all htmldocs` line is
+  left alone). Disabling headers must keep the Gate-1 DKMS/out-of-tree warning. See DESIGN.md
+  §Kernel stage.
 
 `run toolchain` (stage 6), `run kernel` (stage 8), and the PGO profdata-reuse path
 (`build_mode = "pgo_llvm_toolchain"`) are stable but default `enabled = false` (opt-in —

@@ -1105,6 +1105,49 @@ def test_subpackages_no_pkgname_is_noop(tmp_path):
     assert pb.read_text() == original
 
 
+# Stock Arch `linux` builds docs in build() (`make htmldocs`), not only in
+# _package-docs() — dropping the -docs subpackage from pkgname stops packaging
+# but not the (expensive) doc *build*. Disabling docs must also neutralize it.
+_BUILD_WITH_HTMLDOCS = (
+    "pkgbase=linux\n"
+    'pkgname=("$pkgbase" "$pkgbase-headers" "$pkgbase-docs")\n'
+    "build() {\n"
+    "  cd $_srcname\n"
+    "  make all\n"
+    "  make htmldocs SPHINXOPTS=-QT\n"
+    "}\n"
+)
+
+
+def test_subpackages_docs_off_neutralizes_htmldocs_build(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BUILD_WITH_HTMLDOCS)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    text = pb.read_text()
+    # The -docs subpackage is dropped AND the doc build no longer runs.
+    assert "$pkgbase-docs" not in text
+    lines = [ln.strip() for ln in text.splitlines()]
+    assert not any(ln.startswith("make htmldocs") for ln in lines)
+    # The real kernel build (make all) is untouched.
+    assert any(ln == "make all" for ln in lines)
+
+
+def test_subpackages_docs_on_keeps_htmldocs_build(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BUILD_WITH_HTMLDOCS)
+    patch_kernel_subpackages(pb, headers=True, docs=True)
+    assert pb.read_text() == _BUILD_WITH_HTMLDOCS
+
+
+def test_subpackages_htmldocs_neutralization_idempotent(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BUILD_WITH_HTMLDOCS)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    once = pb.read_text()
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    assert pb.read_text() == once
+
+
 # ---------------------------------------------------------------------------
 # patch_package_suffix — the -sysforge optimization-provenance rename
 # ---------------------------------------------------------------------------

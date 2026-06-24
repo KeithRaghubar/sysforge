@@ -867,6 +867,47 @@ def patch_kernel_btf_guard(patched_path):
         )
 
 
+# A standalone `make <…>docs` line in build()/prepare() — the kernel's
+# Documentation targets all end in `docs` (htmldocs, pdfdocs, infodocs, mandocs,
+# psdocs, xmldocs, texinfodocs, latexdocs, epubdocs, linkcheckdocs). Anchored so
+# the make goals are *exclusively* doc targets (optional VAR=val/flag tokens
+# allowed), never a mixed line like `make all htmldocs` where commenting out the
+# whole line would also drop the real build.
+_KERNEL_DOC_MAKE_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<cmd>make(?:[ \t]+[A-Za-z_][\w]*=\S+|[ \t]+-\S+)*"
+    r"(?:[ \t]+\w*docs\b)+(?:[ \t]+[A-Za-z_][\w]*=\S+|[ \t]+-\S+)*[ \t]*)$",
+    re.MULTILINE,
+)
+
+_DOC_DISABLED_PREFIX = "# sysforge(docs off): "
+
+
+def _neutralize_kernel_doc_build(patched_path) -> None:
+    """Comment out standalone kernel doc-build make lines (``make htmldocs`` …).
+
+    Editing ``pkgname=(...)`` stops the ``-docs`` subpackage from being packaged
+    but not from being *built* — stock Arch ``linux`` runs ``make htmldocs`` in
+    ``build()``. When docs are disabled we prefix any line whose make goals are
+    exclusively ``*docs`` targets with a ``# sysforge(docs off):`` marker, so the
+    Sphinx build never runs. Mixed lines (``make all htmldocs``) are deliberately
+    not matched. Naturally idempotent: a commented line no longer starts with
+    ``make``, so a re-run finds nothing to neutralize.
+    """
+    patched_path = Path(patched_path)
+    text = patched_path.read_text(encoding="utf-8")
+
+    def _comment(m: "re.Match") -> str:
+        return f"{m.group('indent')}{_DOC_DISABLED_PREFIX}{m.group('cmd').rstrip()}"
+
+    new_text = _KERNEL_DOC_MAKE_RE.sub(_comment, text)
+    if new_text != text:
+        patched_path.write_text(new_text, encoding="utf-8")
+        _log.info(
+            "Disabled kernel documentation build (make *docs commented out) "
+            "(docs disabled via kernel.toml/CLI)",
+        )
+
+
 def patch_kernel_subpackages(patched_path, *, headers: bool, docs: bool):
     """Drop the ``-headers`` and/or ``-docs`` subpackages from a kernel
     PKGBUILD's ``pkgname=(...)`` array.
@@ -894,6 +935,17 @@ def patch_kernel_subpackages(patched_path, *, headers: bool, docs: bool):
         return  # nothing to drop
 
     patched_path = Path(patched_path)
+
+    # Stock Arch `linux` builds the HTML/PDF/man documentation inside build()
+    # (`make htmldocs SPHINXOPTS=-QT`), not only in _package-docs(). Dropping the
+    # -docs token from pkgname stops *packaging* the docs but not the (often
+    # multi-minute Sphinx) *build* — so the resolution summary's "docs=off" would
+    # be a lie. Comment out the standalone doc-target make line(s) too. Done
+    # independently of the pkgname edit so a PKGBUILD that builds docs without a
+    # -docs subpackage is still handled.
+    if not docs:
+        _neutralize_kernel_doc_build(patched_path)
+
     text = patched_path.read_text(encoding="utf-8")
 
     m = re.search(r"^pkgname=\(", text, re.MULTILINE)
