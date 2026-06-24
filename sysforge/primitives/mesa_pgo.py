@@ -193,16 +193,31 @@ def merge_profraw(
             "toolchain (llvm-profdata ships with llvm)."
         )
     out = store / profdata_name(pkgbase)
+    # Fold any prior merged profile into the inputs so the accumulated signal
+    # survives pruning the raw below (the toolchain stage does the same — the
+    # profdata is the durable store, the .profraw is transient). Write to a
+    # temp first so `out` can safely also be an input.
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    inputs = ([str(out)] if out.exists() else []) + [str(p) for p in profraw]
     _log.ui(f"Merging {len(profraw)} {pkgbase} .profraw file(s) → {out}")
     result = subprocess.run(
-        [profdata_tool, "merge", "--output", str(out), *(str(p) for p in profraw)],
+        [profdata_tool, "merge", "--output", str(tmp), *inputs],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
+        tmp.unlink(missing_ok=True)
         raise MesaPgoError(
             f"{profdata_tool} merge failed (exit {result.returncode}): "
             f"{result.stderr.strip() or result.stdout.strip()}"
         )
+    tmp.replace(out)
+    # Prune the consumed raw — without this every record→use cycle leaks its
+    # .profraw into the store unbounded (Q5). The signal now lives in `out`.
+    for p in profraw:
+        try:
+            p.unlink()
+        except OSError:
+            pass
     _log.info(f"Merged mesa profile: {out} ({out.stat().st_size} bytes)")
     return out

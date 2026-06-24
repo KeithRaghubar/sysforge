@@ -113,6 +113,57 @@ def test_merge_success_invokes_llvm_profdata(tmp_path, monkeypatch):
     assert sum(a.endswith(".profraw") for a in calls["argv"]) == 2
 
 
+def test_merge_prunes_profraw_after_success(tmp_path, monkeypatch):
+    # Storage-leak guard (Q5): a successful merge must delete the raw .profraw
+    # it consumed, mirroring the toolchain stage's delete-on-merge. Otherwise
+    # every record→use cycle leaves its raw behind and the store grows forever.
+    raws = [tmp_path / "a.profraw", tmp_path / "b.profraw"]
+    for r in raws:
+        r.write_text("raw")
+    monkeypatch.setattr(mesa_pgo.shutil, "which", lambda _t: "/usr/bin/llvm-profdata")
+
+    def fake_run(argv, **kw):
+        out_idx = argv.index("--output") + 1
+        Path(argv[out_idx]).write_text("merged")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(mesa_pgo.subprocess, "run", fake_run)
+    out = mesa_pgo.merge_profraw(tmp_path)
+    assert out.read_text() == "merged"
+    # Raw inputs gone; only the merged profdata remains.
+    assert mesa_pgo.list_profraw(tmp_path) == []
+    for r in raws:
+        assert not r.exists()
+
+
+def test_merge_folds_existing_profdata(tmp_path, monkeypatch):
+    # Pruning the raw is only safe if the accumulated signal lives in the
+    # profdata — so a re-merge must pass the existing profdata as an input
+    # (cumulative, like the toolchain), not start from scratch.
+    out = tmp_path / mesa_pgo.PROFDATA_NAME
+    out.write_text("prior")
+    (tmp_path / "new.profraw").write_text("raw")
+    monkeypatch.setattr(mesa_pgo.shutil, "which", lambda _t: "/usr/bin/llvm-profdata")
+
+    calls = {}
+
+    def fake_run(argv, **kw):
+        calls["argv"] = argv
+        out_idx = argv.index("--output") + 1
+        Path(argv[out_idx]).write_text("remerged")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(mesa_pgo.subprocess, "run", fake_run)
+    mesa_pgo.merge_profraw(tmp_path)
+    # The prior profdata path is among the merge *inputs* (not just the
+    # --output target), so accumulated signal survives the raw being pruned.
+    argv = calls["argv"]
+    out_idx = argv.index("--output") + 1
+    inputs = [a for i, a in enumerate(argv) if i not in (0, out_idx - 1, out_idx)]
+    assert any(a.endswith(mesa_pgo.PROFDATA_NAME) for a in inputs)
+    assert out.read_text() == "remerged"
+
+
 def test_merge_tool_failure_raises_with_stderr(tmp_path, monkeypatch):
     (tmp_path / "a.profraw").write_text("x")
     monkeypatch.setattr(mesa_pgo.shutil, "which", lambda _t: "/usr/bin/llvm-profdata")
