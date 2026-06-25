@@ -45,7 +45,10 @@ def _mock_build_context(tmp_path, profile=None, extra_env_out=None):
     def fake_emit(*args, **kwargs):
         yield "/tmp/fake_makepkg.conf"
 
-    def fake_invoke(pb, conf, rp, extra_env, extra_flags, interactive, strip_flags=None):
+    def fake_invoke(pb, conf, rp, extra_env=None, extra_flags=None,
+                    interactive=False, strip_flags=None, **kwargs):
+        # **kwargs absorbs the keyword-only reemit_conf/pkgbase that the
+        # interactive build-failure recovery path threads through.
         captured["extra_env"] = dict(extra_env or {})
 
     with (
