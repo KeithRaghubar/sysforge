@@ -105,3 +105,25 @@ def test_wrapper_persists_swap_overrides(monkeypatch, tmp_path):
     mw._persist_recovery_overrides("htop")
     assert recorded["pkgbase"] == "htop"
     assert recorded["cc"] == "gcc"
+
+
+def test_wrapper_persist_partial_overrides_never_raises(monkeypatch):
+    import sysforge.primitives.makepkg_wrapper as mw
+
+    called = {"n": 0}
+
+    def fake_write(path, pkgbase, cc, cxx, ld):
+        called["n"] += 1
+        return True
+
+    monkeypatch.setattr(mw, "write_package_compiler_override", fake_write,
+                        raising=False)
+    # Partial dict (CC-only swap) missing cxx/ld must not crash persistence.
+    monkeypatch.setattr(
+        mw, "take_last_recovery",
+        lambda: mw.RecoveryOutcome(action="retry", overrides={"cc": "gcc"}),
+        raising=False,
+    )
+    # Must not raise (best-effort contract): skips the write on an incomplete dict.
+    mw._persist_recovery_overrides("htop")
+    assert called["n"] == 0

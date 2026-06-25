@@ -152,13 +152,20 @@ def _persist_recovery_overrides(pkgbase) -> None:
     if outcome is None or not outcome.overrides or not pkgbase:
         return
     ov = outcome.overrides
+    cc, cxx, ld = ov.get("cc"), ov.get("cxx"), ov.get("ld")
+    if cc is None or cxx is None or ld is None:
+        _build_log.warn(
+            "Recovery override incomplete (missing cc/cxx/ld) — "
+            "skipping profiles.toml persist"
+        )
+        return
+    # Best-effort end to end: path resolution and the write must never raise
+    # out of here (CLAUDE.md: persistence never fails a good build).
     try:
         path = _active_profiles_path()
+        write_package_compiler_override(path, pkgbase, cc, cxx, ld)
     except Exception as e:
-        _build_log.warn(f"Could not locate profiles.toml to persist override: {e}")
-        return
-    write_package_compiler_override(
-        path, pkgbase, ov["cc"], ov["cxx"], ov["ld"])
+        _build_log.warn(f"Could not persist recovery override to profiles.toml: {e}")
 
 
 def _find_artifacts(pkgbuild_dir) -> list:
