@@ -206,6 +206,18 @@ class BuildVerb(Verb):
     name = "build"
     requires_sentinel = True
 
+    def unified_log_basename(self, args) -> str | None:
+        """A multi-package ``build`` run leaves one consolidated log next to
+        the per-package logs, parallel to ``sysforge-update.log``.
+
+        ``build`` goes through ``build_core`` rather than the pipeline runner,
+        so — unlike ``run kernel``/``run toolchain``, which already emit a
+        consolidated ``sysforge.log`` via ``run_stage_standalone`` — it would
+        otherwise have no run-level log at all. Opened/closed by the verb
+        runner; dry runs write nothing."""
+        del args
+        return "sysforge-build.log"
+
     def pre_check(self, args) -> PreCheckResult:
         if args.no_pkg_log and args.log_dir:
             print(

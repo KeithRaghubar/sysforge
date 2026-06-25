@@ -28,7 +28,7 @@ entry, cleared on a clean exit, and left in place on any exception.
 """
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from sysforge import log
@@ -88,14 +88,61 @@ def _run_verb_inner(verb: Verb, args, _log) -> int:
         scope = nullcontext()
 
     try:
-        with scope:
+        with _consolidated_log(verb, args, _log) as log_state, scope:
             result = verb.execute(args, pre)
             verb.post_validate(args, pre, result)
+            log_state["success"] = bool(
+                result.artifacts.get("log_success", result.exit_code == 0)
+            )
     except RuntimeError as e:
         _log.error(str(e))
         return 1
 
     return result.exit_code
+
+
+@contextmanager
+def _consolidated_log(verb: Verb, args, _log):
+    """Open a per-verb consolidated run log around ``execute``, if requested.
+
+    Yields a mutable ``{"success": bool}`` dict the caller sets from the verb
+    outcome; the log is closed *kept* (``persist=True``) so the file survives
+    for inspection, parallel to ``sysforge-update.log``. The lifecycle
+    primitive (``log.open_unified_log``/``close_unified_log``) is the single
+    home — this is just the generic-verb caller. Verbs return ``None`` from
+    ``unified_log_basename`` (default) to opt out; ``update`` and the pipeline
+    do so because they manage their own richer log lifecycle.
+
+    No-op (and ``success`` is irrelevant) when the verb opts out or on a dry
+    run, where nothing should be written to disk.
+    """
+    state = {"success": True}
+    basename = verb.unified_log_basename(args)
+    if not basename or getattr(args, "dry_run", False):
+        yield state
+        return
+
+    from sysforge.pipeline.state import resolve_state_dir
+
+    log_dir = (
+        Path(args.log_dir)
+        if getattr(args, "log_dir", None)
+        else resolve_state_dir(getattr(args, "state_dir", None))[0]
+    )
+    log_path = log_dir / basename
+    try:
+        log.open_unified_log(log_path, purge=True)
+        _log.info(f"Consolidated log: {log_path}")
+    except OSError as e:
+        _log.warn(f"Cannot write consolidated log to {log_path}: {e} — terminal only")
+        yield state
+        return
+
+    try:
+        yield state
+    finally:
+        log.close_unified_log(success=state["success"], persist=True)
+        _log.ui(f"[SYSFORGE] Consolidated log: {log_path}")
 
 
 def _resolve_state_dir(args) -> Path | None:

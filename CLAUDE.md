@@ -117,6 +117,14 @@ edits must pass `make check-design` after `make design`.
   these — never read `os.environ["BUILDDIR"]` or assume `~/builds`/the PKGBUILD dir.
   Writing makepkg.conf keys has one home too: `config.set_makepkg_conf_keys(path, mapping,
   dest=None)`. See DESIGN.md §`primitives-layer`.
+- **The consolidated run-log lifecycle has one home**: `log.open_unified_log`/
+  `close_unified_log`. Callers differ by verb shape — `run pipeline`/`run <stage>` open it in
+  `pipeline/runner.py` (`sysforge.log`); `update` opens it in `cmd_update`
+  (`sysforge-update.log`, own success calc). Every other verb only declares a basename via
+  the opt-in `Verb.unified_log_basename(args)` hook and `verbs/runner.py` opens (purge) /
+  closes (kept) it around `execute`; `build` is the sole user (`sysforge-build.log` — it
+  routes through `build_core`, not the pipeline runner). Don't add a parallel open/close path;
+  a verb that manages its own lifecycle returns `None` to opt out. See DESIGN.md §Logging.
 - **Flag-drift detection has one home**: `primitives/flag_drift.resolve_flag_drift`
   (pure, never logs); sole consumer is `update` Phase 4.3 (report by default, rebuild via
   `--rebuild-on-flag-drift`). Don't re-implement the re-resolve+diff. See DESIGN.md §update.

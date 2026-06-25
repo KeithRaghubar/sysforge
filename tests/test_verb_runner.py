@@ -140,6 +140,60 @@ def test_startup_phase_painted_and_cleared(
 
 
 # ---------------------------------------------------------------------------
+# Consolidated per-verb run log (F6)
+# ---------------------------------------------------------------------------
+
+class _LoggingVerb(_CountingVerb):
+    """A verb that opts into a consolidated run log and emits one UI line."""
+
+    def __init__(self, *, basename="sysforge-build.log", exec_rc=0, raise_in=None):
+        super().__init__(exec_rc=exec_rc, raise_in=raise_in)
+        self._basename = basename
+
+    def unified_log_basename(self, args):
+        return self._basename
+
+    def execute(self, args, pre):
+        from sysforge import log as _log
+        _log.get_logger("TEST").ui("hello from execute")
+        return super().execute(args, pre)
+
+
+def test_consolidated_log_written_and_persisted(tmp_path):
+    """A verb that returns a basename leaves a kept log in --log-dir."""
+    v = _LoggingVerb()
+    rc = run_verb(v, _args(state_dir=str(tmp_path), log_dir=str(tmp_path), dry_run=False))
+    assert rc == 0
+    log_path = tmp_path / "sysforge-build.log"
+    assert log_path.exists()
+    body = log_path.read_text()
+    assert "hello from execute" in body
+    # persist=True keeps the content — no "cleared after successful run" marker.
+    assert "log cleared" not in body
+
+
+def test_consolidated_log_skipped_on_dry_run(tmp_path):
+    """Dry runs never write the consolidated log to disk."""
+    v = _LoggingVerb()
+    rc = run_verb(v, _args(state_dir=str(tmp_path), log_dir=str(tmp_path), dry_run=True))
+    assert rc == 0
+    assert not (tmp_path / "sysforge-build.log").exists()
+
+
+def test_consolidated_log_opt_out_writes_nothing(tmp_path):
+    """A verb returning None (the default) gets no run-level log."""
+    v = _LoggingVerb(basename=None)
+    rc = run_verb(v, _args(state_dir=str(tmp_path), log_dir=str(tmp_path), dry_run=False))
+    assert rc == 0
+    assert not (tmp_path / "sysforge-build.log").exists()
+
+
+def test_consolidated_log_default_basename_is_none():
+    """The base Verb opts out by default, so most verbs are unaffected."""
+    assert _CountingVerb().unified_log_basename(_args()) is None
+
+
+# ---------------------------------------------------------------------------
 # Sentinel handoff
 # ---------------------------------------------------------------------------
 

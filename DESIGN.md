@@ -2050,15 +2050,17 @@ The mode is resolved at startup as **`--color=auto|always|never` flag > `[ui] co
 
 File logging runs at full verbosity regardless of the `-v` level — every `[INFO]`, `[WARN]`, and `[ERROR]` line is written to file even when the terminal shows only errors. Never let file I/O break a build: all file write errors are silently swallowed.
 
-**Unified log** — one file for the entire run.
+**Unified log** — one consolidated file for the entire run.
 
-- Default path: `<state_dir>/sysforge.log` (i.e. `/var/lib/sysforge/sysforge.log`). For `sysforge update`: `<state_dir>/sysforge-update.log`.
-- `sysforge update` always truncates at run start. `sysforge run pipeline` appends across runs and clears on success.
+- Default path: `<state_dir>/sysforge.log` (i.e. `/var/lib/sysforge/sysforge.log`). Per verb: `sysforge update` → `<state_dir>/sysforge-update.log`; `sysforge build` → `<state_dir>/sysforge-build.log`. `run pipeline` and the standalone stage runs (`run toolchain`, `run kernel`, `run packages`) share `sysforge.log`.
+- `sysforge update` and `sysforge build` always truncate at run start and **keep** the log afterwards (so a multi-package run leaves one consolidated record next to the per-package logs). `sysforge run pipeline` / `run <stage>` append across runs and clear on success.
 - A `# log cleared after successful run` marker is left in the file after truncation.
 - `--log-dir <path>` overrides the directory.
 - `--purge-log` (`run pipeline` only) truncates before the run starts.
 - `--persist-log` suppresses truncation on success. Use when you want to keep the log for post-run analysis.
 - `--no-unified-log` (`run pipeline` only) disables the unified log for this run.
+
+The lifecycle primitive (`log.open_unified_log` / `close_unified_log`) is the single home; its callers differ by verb shape. `run pipeline` / `run <stage>` open it inside the pipeline runner (`run_pipeline` / `run_stage_standalone`); `update` opens it inside `cmd_update` (it owns a fine-grained success calc over failed/install/pacman state). Every other verb declares only a basename via the opt-in `Verb.unified_log_basename(args)` hook and the **verb runner** (`verbs/runner.py`) opens it purged before `execute` and closes it kept afterwards — `build` is the sole user today (it routes through `build_core`, not the pipeline runner, so it would otherwise have no run-level log). Verbs that already manage their own richer lifecycle return `None` to opt out.
 
 **Per-package log** — one file per package build, written alongside the PKGBUILD.
 

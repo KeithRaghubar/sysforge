@@ -106,6 +106,26 @@ class Verb(ABC):
         del args, pre, result
         return None
 
+    def unified_log_basename(self, args) -> str | None:
+        """Basename of the consolidated run log this verb wants, or ``None``.
+
+        When a verb returns a basename (e.g. ``"sysforge-build.log"``), the
+        runner opens it — under ``--log-dir`` else the resolved state dir —
+        purged before ``execute`` and closes it *kept* (``persist=True``)
+        afterwards, so a multi-package run leaves one consolidated log
+        alongside the scattered per-package logs (parallel to
+        ``sysforge-update.log``). Success is taken from
+        ``ExecResult.artifacts['log_success']`` when present, else from a
+        clean (exception-free, exit-0) return. Dry runs never write.
+
+        Default ``None`` = no consolidated log. ``update`` and the full
+        pipeline return ``None`` here because they own richer log lifecycles
+        (their own purge/persist/success policy) and call
+        :func:`~sysforge.log.open_unified_log` directly.
+        """
+        del args
+        return None
+
     def sentinel_metadata(self, args, pre: PreCheckResult) -> dict[str, Any]:
         """Extra fields persisted in the sentinel file.
 
