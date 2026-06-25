@@ -285,3 +285,9 @@ ninja      = ["makepkg", "env"]
 make       = ["makepkg", "env"]
 python     = ["makepkg", "env"]
 git        = ["makepkg"]
+
+# Auto-managed by sysforge — compiler/linker overrides recovered from build
+# failures (sysforge build's interactive recovery menu, [c] swap). Keyed by
+# pkgbase; applied last in resolve_profile, so a row here wins over the matched
+# profile's CC/CXX/LD for that package. Safe to edit or delete by hand.
+[package_compiler_overrides]
