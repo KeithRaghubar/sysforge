@@ -88,6 +88,67 @@ On build failure, patched PKGBUILD files are left in place for diagnosis rather 
 
 On success, all patch artifacts are cleaned up in both modes.
 
+### Interactive recovery menu
+
+When `_invoke_with_retry` is not in batch mode and a build fails with no
+built `.pkg.tar*` artifacts found (the "install-only failure" branch above
+doesn't apply), it hands off to `makepkg_invoke._run_recovery_menu` — the
+**one home** for interactive build-failure recovery. This replaces the old
+bare "fix the PKGBUILD and press Enter" prompt with a small menu:
+
+```
+Recover:
+  [e] edit PKGBUILD in $EDITOR — retries automatically on exit
+  [c] retry with a different compiler / linker
+  [r] retry as-is            (Enter)
+  [a] abort
+```
+
+`[c]` is offered only when the caller supplied a `reemit_conf` closure (see
+below) — a caller with no conf-emission seam (e.g. a test harness) degrades
+to `[e]/[r]/[a]`.
+
+- **`[e]`** snapshots the PKGBUILD to a sibling `<name>.orig` (once, on first
+  edit — never overwritten by a later edit) before launching `$EDITOR`
+  (`primitives/editor.py`'s `resolve_editor`/`editor_usable`, the same
+  resolution chain as `config merge`), via the shared `/dev/tty` passthrough
+  `run_tty_argv`. On editor exit it retries the build automatically; a
+  still-failing retry re-shows the menu rather than raising.
+- **`[c]`** prompts for `CC`/`CXX`/`LD`, then calls the caller-supplied
+  `reemit_conf(cc, cxx, ld)` context manager to get a freshly emitted conf
+  path and retries against it. `makepkg_invoke` never imports the conf
+  emitter itself — `reemit_conf` is a closure the wrapper builds over its own
+  `emit_makepkg_conf(...)` call (same `_conf_kwargs` as the main build), so
+  the layering stays one-directional: `makepkg_wrapper` depends on
+  `makepkg_invoke`, never the reverse. A successful swap is reported back as
+  `RecoveryOutcome(action="retry", overrides={"cc", "cxx", "ld"})`.
+- **`[r]`** retries unchanged; **`[a]`** aborts.
+
+`_run_recovery_menu` returns a `RecoveryOutcome` (`action: "retry"|"abort"`,
+optional `overrides`) only on a successful retry or an explicit abort — it
+never returns mid-failure, it loops. `_invoke_with_retry` raises the
+`[build_failed]` error on `action == "abort"`.
+
+**Read-once channel back to the wrapper.** `_invoke_with_retry` runs one
+import-cycle below `makepkg_wrapper`, which is the layer that owns the
+profiles.toml writer — so the menu can't call the writer directly without
+inverting the dependency. Instead a successful swap's `RecoveryOutcome` is
+stashed in a `contextvars.ContextVar` (`_LAST_RECOVERY`) and the wrapper
+drains it once via `take_last_recovery()` right after the build's `with
+emit_makepkg_conf(...)` block exits successfully — `take_last_recovery`
+resets the var on read, so a stale outcome from an earlier package can never
+leak into the next one's persistence check.
+
+**Persistence is best-effort.** `makepkg_wrapper._persist_recovery_overrides`
+(called once per successful build, keyed on the package's `pkgbase`) drains
+`take_last_recovery()`; if it carries `overrides` it calls
+`profile_writer.write_package_compiler_override` — the sole profiles.toml
+writer for this table (see §Flag/Profile System →
+`[package_compiler_overrides]`) — wrapped so a read/write failure is logged
+and swallowed rather than failing an otherwise-successful build. A swap with
+any of `cc`/`cxx`/`ld` missing is skipped with a warning instead of writing a
+partial row.
+
 ### Batch mode
 
 `batch = true` on a profile switches to unattended mode — build failures abort immediately rather than prompting. Intended for pipeline use.

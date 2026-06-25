@@ -177,6 +177,35 @@ Two delivery channels, by mechanism:
 
 Don't add a parallel `nice`/`systemd-run`/`-j` path elsewhere.
 
+### `[package_compiler_overrides]`
+
+An auto-managed table, keyed by `pkgbase`, that records a compiler/linker swap
+recovered from an interactive build-failure (see pipeline-layer → Makepkg
+Wrapper → Interactive recovery menu). Each row is an inline table:
+
+```toml
+[package_compiler_overrides]
+some-pkgbase = { cc = "clang", cxx = "clang++", ld = "lld" }
+```
+
+**Applied last** in `resolve_profile` — after `merge_extends` and
+`_expand_toolchain` — so it wins over whatever the matched profile (and its
+`toolchain` expansion) resolved. The single read home is `resolve_profile`
+(via `_apply_package_compiler_override`, keyed on the package's `pkgbase`,
+falling back to `pkgname` only when no `pkgbase` field is present). `cc`/`cxx`
+set `CC`/`CXX` directly; `ld` is **folded into `LDFLAGS`** as a `-fuse-ld=<ld>`
+token (replacing any existing `-fuse-ld=` token) rather than carried as a
+standalone key — linker selection is always conf-delivered through LDFLAGS, so
+this keeps the override on the same delivery channel as a hand-written
+profile.
+
+The single write home is `profile_writer.write_package_compiler_override`
+(line-level, comment-preserving — it never round-trips the whole document
+through a TOML emitter, mirroring `packages_cmd._rewrite_packages_toml`). The
+sole caller is the makepkg wrapper, persisting a successful recovery-menu
+compiler swap; don't add a second writer for this table or write it from
+anywhere else.
+
 ### Flag guards
 
 `emit_makepkg_conf` runs a series of guards after profile overrides are applied but before the conf is written. Each guard detects and reconciles toolchain incompatibilities, logging at `[WARN][CONF]` (the conf module narrates its own flag adjustments; the underlying transforms stay pure in `makepkg_flags`). Guards run in this order:
