@@ -81,3 +81,27 @@ def test_swap_unavailable_without_reemit(monkeypatch, pkgbuild):
         interactive=True, strip_flags=None, reemit_conf=None, pkgbase="htop",
     )
     assert out.action == "abort"
+
+
+def test_wrapper_persists_swap_overrides(monkeypatch, tmp_path):
+    import sysforge.primitives.makepkg_wrapper as mw
+
+    recorded = {}
+
+    def fake_write(path, pkgbase, cc, cxx, ld):
+        recorded.update(dict(path=path, pkgbase=pkgbase, cc=cc, cxx=cxx, ld=ld))
+        return True
+
+    monkeypatch.setattr(mw, "write_package_compiler_override", fake_write,
+                        raising=False)
+    # _invoke_with_retry returns None; take_last_recovery yields a swap outcome.
+    monkeypatch.setattr(mw, "_invoke_with_retry", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mw, "take_last_recovery",
+        lambda: mw.RecoveryOutcome(action="retry",
+                                   overrides={"cc": "gcc", "cxx": "g++", "ld": "bfd"}),
+        raising=False,
+    )
+    mw._persist_recovery_overrides("htop")
+    assert recorded["pkgbase"] == "htop"
+    assert recorded["cc"] == "gcc"
