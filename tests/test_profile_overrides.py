@@ -38,3 +38,42 @@ def test_no_override_for_unlisted_pkgbase():
     cfg = _config_with_override("gcc", "g++", "bfd")
     prof = resolve_profile(_pkgmeta("vim"), [], cfg)
     assert prof["CC"] == "clang"  # untouched
+
+
+def test_override_keys_off_pkgbase_not_pkgname():
+    # Split package: pkgbase differs from pkgname. The override row keyed on
+    # the pkgbase must apply; a row keyed on the pkgname must NOT.
+    pkgmeta = {"globals": {"pkgbase": "ffmpeg", "pkgname": "ffmpeg-libs"}}
+
+    cfg_pkgbase = {
+        "defaults": {"profile": "bare"},
+        "profiles": {"bare": {"CC": "clang", "CXX": "clang++"}},
+        "package_compiler_overrides": {
+            "ffmpeg": {"cc": "gcc", "cxx": "g++", "ld": "bfd"},
+        },
+    }
+    prof = resolve_profile(pkgmeta, [], cfg_pkgbase)
+    assert prof["CC"] == "gcc"
+    assert prof["CXX"] == "g++"
+    assert "-fuse-ld=bfd" in prof.get("LDFLAGS", "")
+
+    cfg_pkgname = {
+        "defaults": {"profile": "bare"},
+        "profiles": {"bare": {"CC": "clang", "CXX": "clang++"}},
+        "package_compiler_overrides": {
+            "ffmpeg-libs": {"cc": "gcc", "cxx": "g++", "ld": "bfd"},
+        },
+    }
+    prof = resolve_profile(pkgmeta, [], cfg_pkgname)
+    assert prof["CC"] == "clang"  # pkgname-keyed row must not apply
+
+
+def test_explicit_none_table_is_none_safe():
+    # An explicit None table must not crash the resolution.
+    cfg = {
+        "defaults": {"profile": "bare"},
+        "profiles": {"bare": {"CC": "clang", "CXX": "clang++"}},
+        "package_compiler_overrides": None,
+    }
+    prof = resolve_profile(_pkgmeta("htop"), [], cfg)
+    assert prof["CC"] == "clang"

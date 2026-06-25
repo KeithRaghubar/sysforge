@@ -388,7 +388,7 @@ def _expand_toolchain(profile: dict, default_toolchain: str | None) -> dict:
     return profile
 
 
-def _apply_package_compiler_override(result: dict, config: dict, pkgbase) -> None:
+def _apply_package_compiler_override(result: dict, config: dict, pkgbase: str | None) -> None:
     """Apply an auto-managed [package_compiler_overrides][pkgbase] row last.
 
     Wins over the matched profile's CC/CXX/LDFLAGS for this pkgbase. The
@@ -398,7 +398,7 @@ def _apply_package_compiler_override(result: dict, config: dict, pkgbase) -> Non
     """
     if not pkgbase:
         return
-    overrides = config.get("package_compiler_overrides", {})
+    overrides = config.get("package_compiler_overrides") or {}
     row = overrides.get(pkgbase)
     if not row:
         return
