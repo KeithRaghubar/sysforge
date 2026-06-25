@@ -89,6 +89,53 @@ Three layers:
 
 **Import direction:** `cli.py` → `verbs/runner.py` → command modules (`update.py`, `packages_cmd.py`, `resolve.py`, …) → `primitives/*`. Each command module defines a `*Verb(Verb)` subclass alongside its existing helpers; the runner dispatches uniformly across them. No command module imports from another command module. See [CLI Verb Framework](#cli-verb-framework).
 
+### Module & function decomposition
+
+SysForge has no line-count lint for functions or modules; decomposition is
+driven by **ownership and reuse**, not size. The governing rule is *one home per
+concern*: a given decision (a path, a detection, an injection, a gate) is
+computed in exactly one place, and every caller routes through it. The standing
+list of these single-home invariants lives in `CLAUDE.md` ("Project
+Conventions" + the toolchain/kernel deep invariants); this section is the
+*rubric* behind them — when to extract, and where the extracted code belongs.
+
+**Promote logic to a `primitives/` function when** any of:
+
+- **A second caller appears.** The moment two command modules (or a command
+  module and a stage) need the same decision, it moves to `primitives/` — never
+  copied. Two command modules must not import each other (above), so a shared
+  primitive is the *only* way for them to share logic.
+- **It is a policy-free fact.** Pure derivations — "which LLVM targets does this
+  GPU need", "is this a musl-static build", "what is `PKGDEST`" — belong in a
+  primitive that does guarded reads and degrades to a safe default rather than
+  raising. The *stage/verb* owns the abort/warn/prompt policy; the primitive
+  owns the facts. (`toolchain_safety.py`, `kernel_safety.py`, `flag_drift.py`,
+  and the `pacman.get_*` path resolvers are the model — pure, never log.)
+- **It guards an invariant a test must pin independently.** If a regression test
+  needs to assert the behaviour in isolation (e.g. the lib32 flag scrub, the
+  cmake-anchor finder), it wants a named, importable seam.
+
+**Keep logic inline in the command module / stage when** it is policy
+(sequencing gates, deciding to prompt vs abort), it has exactly one caller and
+no test needs it in isolation, or extracting it would only relocate a single
+straight-line block without removing duplication. Premature extraction that adds
+an indirection with one caller is churn, not decomposition.
+
+**Splitting an existing function** is warranted when a distinct, separately
+*testable* responsibility is buried inside it (the classic "this 200-line
+function has a 30-line pure sub-computation a test keeps reaching into via
+monkeypatch"), or when two callers want different *prefixes/suffixes* around a
+shared middle. Splitting purely to hit a line target is not — a long but linear,
+single-responsibility function (a stage's gate sequence, a PKGBUILD render) is
+more readable whole than fragmented across helpers that are each called once.
+
+**Where extracted code lands:** a cross-cutting fact or operation → `primitives/`
+(its own module if it owns a subsystem — `mesa_pgo.py`, `bolt.py`, `kernel_fdo.py`
+— else an existing cohesive one); verb-specific orchestration → the command
+module or `pipeline/stages/`; never a "utils" grab-bag. When adding a new
+single-home concern, record it in `CLAUDE.md` so the invariant is discoverable,
+and cross-reference the owning DESIGN.md section.
+
 ---
 
 ## Directory Structure
@@ -2410,6 +2457,50 @@ Forward-looking enhancements that build on existing infrastructure. Each is a ca
 - **Configure stage additions** — btrfs snapshot before build runs, ccache/sccache initialisation check, estimated build time heuristic.
 - **Graphics runtime debugging refinement** — tighten the graphics/doctor diagnostics surface (exact scope TBD). A candidate when revisiting graphics-related code; not blocking.
 - **System maintenance scope expansion** — grow sysforge beyond build/package management into a unified system-maintenance helper: track and manage user-owned system artifacts that currently live ad-hoc across `~/scripts`, `/etc/systemd/system/`, `/etc/pacman.d/hooks/`, etc. Candidate primitives: inventory of tracked files, source-of-truth dir under repo control, install/sync command, drift detection vs filesystem, integration with the existing config/profile/manifest layers.
+
+### System-maintenance scope (scoping pass)
+
+The Arch wiki's [System maintenance](https://wiki.archlinux.org/title/System_maintenance)
+and [General recommendations](https://wiki.archlinux.org/title/General_recommendations)
+pages are the reference checklist for "keeping an Arch install healthy". This is
+a deliberate *scoping* pass — which of their sections are a natural fit for
+sysforge (as a verb or a `doctor` axis) vs. out of scope — not a commitment to
+build any of it. SysForge's lane is **build/package optimization and the health
+of what it builds**; it is not aiming to become a general config-management or
+backup tool.
+
+**In scope (already covered or a clean fit):**
+
+- *Upgrading the system / partial-upgrade avoidance* — the `update` verb already
+  owns the full-system upgrade path (source-built packages rebuilt, repo packages
+  via `pacman -Syu`); partial upgrades are structurally avoided.
+- *Orphans, unused packages, paccache* — overlaps the existing `cache` management
+  and would extend naturally to a `doctor` axis reporting orphaned dependencies
+  and reclaimable package cache, read-only.
+- *`.pacnew`/`.pacsave` handling* — directly analogous to the existing config
+  merge verb (`.sfnew` adoption); a `doctor` axis surfacing pending `.pacnew`
+  merges is the obvious extension.
+- *Failed systemd units / journal errors* — fits the read-only `doctor` Finding
+  framework as a health axis (no mutation).
+- *Mirror / keyring freshness* — a `doctor` axis warning on a stale mirrorlist or
+  `archlinux-keyring` is in-lane (it directly affects what sysforge builds and
+  installs).
+
+**Out of scope (explicitly not sysforge's job):**
+
+- Backups, snapshots-as-policy, disk-space *strategy*, user-data hygiene — these
+  are the user's tooling (btrfs/timeshift/borg/etc.); sysforge's only adjacency
+  is the optional pre-build snapshot already listed under *Configure stage
+  additions* above.
+- General `General recommendations` territory — networking, user management,
+  desktop/locale/input config, security hardening as a whole — is outside a
+  package-builder's remit and would dilute the tool.
+
+The actionable near-term slice is therefore a set of **read-only `doctor` axes**
+(orphans, `.pacnew`, failed units, mirror/keyring freshness) reusing the existing
+Finding framework, plus the artifact-inventory primitive sketched in the bullet
+above. Anything mutating stays behind an explicit verb with the sentinel/gate
+discipline the rest of sysforge uses.
 ## Standards & Specifications
 
 SysForge commits to a set of external specifications so that its on-disk
@@ -2438,7 +2529,7 @@ adhered to, partially or fully guarded · **target** = adopted, gap being closed
 | 8 | RFC 3339 / ISO 8601 (UTC) | Timestamps in state files | followed | central `_now_iso()` helpers; `tests/test_standards_compliance.py` |
 | 9 | UTF-8 | Text file encoding | enforced | explicit `encoding="utf-8"`; `check_standards` `encoding` group (ruff `PLW1514 --preview` is the one-shot fixer) |
 | 10 | PEP 517 / 518 / 621 / 508 | Python packaging metadata | followed | `pyproject.toml` (hatchling backend, `[project]` table) |
-| 11 | `PKGBUILD(5)` · `.SRCINFO` · `alpm-hooks(5)` · `makepkg.conf` | Arch packaging artefacts | enforced | `pkgbuild-spec-check`/`pkgbuild-edit` skills; `check_shipped` `pkgbuild`/`hooks` groups |
+| 11 | `PKGBUILD(5)` · `.SRCINFO` · `alpm-hooks(5)` · `makepkg.conf` + [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines) / [VCS package guidelines](https://wiki.archlinux.org/title/VCS_package_guidelines) | Arch packaging artefacts + conventions | enforced | `pkgbuild-spec-check`/`pkgbuild-edit` skills; `check_shipped` `pkgbuild`/`hooks` groups |
 | 12 | `man-pages(7)` via scdoc | Manual page | enforced | `make man`; `check_shipped` `manpage` group |
 | 13 | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) | Release notes | enforced | `docs/release-notes/vX.Y.Z.md` category vocabulary; `check_standards` `changelog` group |
 | 14 | [REUSE](https://reuse.software/) / SPDX (license: **MIT**) | Per-file licensing | enforced | SPDX headers + `LICENSES/MIT.txt` + `REUSE.toml`; `check_standards` `spdx` group (`reuse lint`) |
@@ -2475,6 +2566,31 @@ check, with a header-presence grep fallback.
 of packages it builds: it does not inject non-deterministic data, preserves
 reproducibility-relevant `OPTIONS`, and passes `SOURCE_DATE_EPOCH` through to the
 build environment unmodified.
+
+**Arch packaging (11).** Two tiers underlie this row. The **machine-checkable
+specs** — `PKGBUILD(5)`, `.SRCINFO`, `alpm-hooks(5)`, `makepkg.conf` — are
+guarded by `check_shipped` (`pkgbuild`/`hooks` groups) and the `pkgbuild-*`
+skills, and are the authority any parser/patcher change cross-checks (array vs
+string fields, escape and brace-expansion rules, the `_<arch>` array families).
+Layered on top are the **prose conventions** that aren't mechanically lintable
+but inform how SysForge generates and edits PKGBUILDs:
+
+- Package guidelines — <https://wiki.archlinux.org/title/Arch_package_guidelines>
+  (and the per-language sub-pages) — naming, `pkgrel`/`epoch` semantics, split-package
+  layout, the `provides`/`conflicts`/`replaces` triad. The split-package handling
+  (`match_rules` matching `pkgbase`, the `-sysforge` rename keeping every
+  `package_<name>()` function) follows from here.
+- VCS package guidelines — <https://wiki.archlinux.org/title/VCS_package_guidelines>
+  — `-git` naming, the `pkgver()` auto-bump, full-history fetch (never `--depth=1`,
+  which makes every advance look diverged). SysForge's `vcs_pkgver`/`source_sync`
+  invariants implement this.
+- Authoritative manual pages: [PKGBUILD(5)](https://man.archlinux.org/man/PKGBUILD.5),
+  [makepkg(8)](https://man.archlinux.org/man/makepkg.8), and the upstream
+  [package-guidelines manual](https://manual.archlinux.page/package-guidelines/).
+
+These are reference conventions, not a separate gate — they back the existing
+parser/patcher invariants in `CLAUDE.md` (PKGBUILD parsing/detection/patching,
+source-sync) rather than adding a parallel check.
 
 **OpenPGP signing (16).** Releases are signed end to end with the maintainer key:
 the `release: vX.Y.Z` commit (`commit.gpgsign`), an annotated tag (`git tag -s`,

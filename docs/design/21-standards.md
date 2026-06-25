@@ -26,7 +26,7 @@ adhered to, partially or fully guarded · **target** = adopted, gap being closed
 | 8 | RFC 3339 / ISO 8601 (UTC) | Timestamps in state files | followed | central `_now_iso()` helpers; `tests/test_standards_compliance.py` |
 | 9 | UTF-8 | Text file encoding | enforced | explicit `encoding="utf-8"`; `check_standards` `encoding` group (ruff `PLW1514 --preview` is the one-shot fixer) |
 | 10 | PEP 517 / 518 / 621 / 508 | Python packaging metadata | followed | `pyproject.toml` (hatchling backend, `[project]` table) |
-| 11 | `PKGBUILD(5)` · `.SRCINFO` · `alpm-hooks(5)` · `makepkg.conf` | Arch packaging artefacts | enforced | `pkgbuild-spec-check`/`pkgbuild-edit` skills; `check_shipped` `pkgbuild`/`hooks` groups |
+| 11 | `PKGBUILD(5)` · `.SRCINFO` · `alpm-hooks(5)` · `makepkg.conf` + [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines) / [VCS package guidelines](https://wiki.archlinux.org/title/VCS_package_guidelines) | Arch packaging artefacts + conventions | enforced | `pkgbuild-spec-check`/`pkgbuild-edit` skills; `check_shipped` `pkgbuild`/`hooks` groups |
 | 12 | `man-pages(7)` via scdoc | Manual page | enforced | `make man`; `check_shipped` `manpage` group |
 | 13 | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) | Release notes | enforced | `docs/release-notes/vX.Y.Z.md` category vocabulary; `check_standards` `changelog` group |
 | 14 | [REUSE](https://reuse.software/) / SPDX (license: **MIT**) | Per-file licensing | enforced | SPDX headers + `LICENSES/MIT.txt` + `REUSE.toml`; `check_standards` `spdx` group (`reuse lint`) |
@@ -63,6 +63,31 @@ check, with a header-presence grep fallback.
 of packages it builds: it does not inject non-deterministic data, preserves
 reproducibility-relevant `OPTIONS`, and passes `SOURCE_DATE_EPOCH` through to the
 build environment unmodified.
+
+**Arch packaging (11).** Two tiers underlie this row. The **machine-checkable
+specs** — `PKGBUILD(5)`, `.SRCINFO`, `alpm-hooks(5)`, `makepkg.conf` — are
+guarded by `check_shipped` (`pkgbuild`/`hooks` groups) and the `pkgbuild-*`
+skills, and are the authority any parser/patcher change cross-checks (array vs
+string fields, escape and brace-expansion rules, the `_<arch>` array families).
+Layered on top are the **prose conventions** that aren't mechanically lintable
+but inform how SysForge generates and edits PKGBUILDs:
+
+- Package guidelines — <https://wiki.archlinux.org/title/Arch_package_guidelines>
+  (and the per-language sub-pages) — naming, `pkgrel`/`epoch` semantics, split-package
+  layout, the `provides`/`conflicts`/`replaces` triad. The split-package handling
+  (`match_rules` matching `pkgbase`, the `-sysforge` rename keeping every
+  `package_<name>()` function) follows from here.
+- VCS package guidelines — <https://wiki.archlinux.org/title/VCS_package_guidelines>
+  — `-git` naming, the `pkgver()` auto-bump, full-history fetch (never `--depth=1`,
+  which makes every advance look diverged). SysForge's `vcs_pkgver`/`source_sync`
+  invariants implement this.
+- Authoritative manual pages: [PKGBUILD(5)](https://man.archlinux.org/man/PKGBUILD.5),
+  [makepkg(8)](https://man.archlinux.org/man/makepkg.8), and the upstream
+  [package-guidelines manual](https://manual.archlinux.page/package-guidelines/).
+
+These are reference conventions, not a separate gate — they back the existing
+parser/patcher invariants in `CLAUDE.md` (PKGBUILD parsing/detection/patching,
+source-sync) rather than adding a parallel check.
 
 **OpenPGP signing (16).** Releases are signed end to end with the maintainer key:
 the `release: vX.Y.Z` commit (`commit.gpgsign`), an annotated tag (`git tag -s`,
