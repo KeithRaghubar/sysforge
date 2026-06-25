@@ -59,6 +59,12 @@ Written atomically (write-then-rename) to `<state_dir>/hardware_profile.toml`. T
 - **`pipeline/stages/reconfigure.py`** — surfaces the file in the pre-build config review so the user can hand-edit before kernel build.
 - **`commands/doctor.py`** — consumes `[hardware] gpu_vendors` to scope the `doctor --graphics` health checks.
 
+### Drift report (before overwrite)
+
+The stage re-probes from scratch every run and overwrites `hardware_profile.toml` unconditionally — but before the write it reports how the freshly-detected hardware summary differs from the existing file, so a meaningful change (a swapped GPU, a CPU upgrade, a new arch) is surfaced rather than silently replaced. This mirrors the flag-drift reporting pattern (`primitives/flag_drift.py`): the comparison is advisory, never a hard failure that blocks the refresh.
+
+Two pure helpers in `pipeline/stages/hardware.py` back it: `_load_hardware_summary(path)` reads the `[hardware]` table from the existing file (returning `None` when absent or unparseable — a corrupt prior profile is treated as "no baseline"), and `_diff_hardware_summary(old, new)` diffs the two summaries over the ordered `_HARDWARE_DRIFT_FIELDS` set, emitting `  <field>: <old> → <new>` lines. Only the scalar `[hardware]` summary is compared; the `[kconfig]`/`[kconfig_devices]`/`[[devices]]` tables churn on every probe (device addresses, kbuild-map width) and are not a stable drift surface. When fields changed, the stage logs a `WARN` header plus one line per field; when nothing changed it logs an `INFO` "unchanged" line.
+
 ### Architecture-aware kconfig disable
 
 In addition to the positive `=y` enables above, the hardware stage emits an `=n` line for every CONFIG_* key owned by a kernel architecture domain that is **not** the host's domain. The data lives in two module-level constants in `pipeline/stages/hardware.py`:

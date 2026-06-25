@@ -41,6 +41,7 @@ stage — kconfig entries are simply skipped.
 import os
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 from sysforge import log
@@ -409,6 +410,76 @@ def _toml_str(value: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Drift detection (F3) — report changes vs. the existing profile before
+# overwriting. Pure helpers mirroring the flag_drift reporting pattern: the
+# diff is computed without side effects; the stage decides how to surface it.
+# Only the scalar [hardware] summary is compared — kconfig/device tables churn
+# on every probe (device addresses, kbuild-map width) and aren't a stable
+# drift surface.
+# ---------------------------------------------------------------------------
+
+# Ordered (key, label) pairs for the [hardware] summary drift report. Order
+# determines the report order; labels are the human-facing field names.
+_HARDWARE_DRIFT_FIELDS: list[tuple[str, str]] = [
+    ("cpu_vendor", "cpu_vendor"),
+    ("cpu_family", "cpu_family"),
+    ("cpu_model", "cpu_model"),
+    ("host_arch", "host_arch"),
+    ("gpu_vendors", "gpu_vendors"),
+    ("nvme", "nvme"),
+    ("llvm_targets", "llvm_targets"),
+    ("mesa_gallium_drivers", "mesa_gallium_drivers"),
+    ("mesa_vulkan_drivers", "mesa_vulkan_drivers"),
+]
+
+
+def _load_hardware_summary(path: Path) -> dict | None:
+    """Read the ``[hardware]`` table from an existing profile, or ``None``.
+
+    Returns ``None`` when the file is absent or unparseable (a corrupt prior
+    profile is treated as "no baseline" — drift reporting is advisory, never a
+    hard failure that would block a refresh).
+    """
+    if not path.exists():
+        return None
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    table = data.get("hardware")
+    return table if isinstance(table, dict) else None
+
+
+def _fmt_drift_value(value) -> str:
+    """Render a summary value for a drift line (lists as comma-joined)."""
+    if isinstance(value, list):
+        return "[" + ", ".join(str(v) for v in value) + "]"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _diff_hardware_summary(old: dict, new: dict) -> list[str]:
+    """Return human-readable drift lines between two ``[hardware]`` summaries.
+
+    Compares only the fields in :data:`_HARDWARE_DRIFT_FIELDS`, in that order.
+    Format per changed field: ``  <field>: <old> → <new>``. Missing keys on the
+    old side (a profile written before a field existed) read as an empty value
+    rather than being skipped, so a newly-tracked field still surfaces.
+    """
+    diffs: list[str] = []
+    for key, label in _HARDWARE_DRIFT_FIELDS:
+        old_val = old.get(key)
+        new_val = new.get(key)
+        if old_val == new_val:
+            continue
+        diffs.append(
+            f"  {label}: {_fmt_drift_value(old_val)} → {_fmt_drift_value(new_val)}"
+        )
+    return diffs
+
+
 def _write_hardware_profile(
     path: Path, hw: dict, kconfig: dict, dry_run: bool, devices=None,
     device_kconfig: dict | None = None,
@@ -629,6 +700,21 @@ class HardwareStage(Stage):
             "mesa_gallium_drivers": mesa_drivers["gallium"],
             "mesa_vulkan_drivers": mesa_drivers["vulkan"],
         }
+
+        # --- Drift report (F3): advise on changes vs. the existing profile
+        # before overwriting. Advisory only — never blocks the refresh.
+        prior = _load_hardware_summary(output_path)
+        if prior is not None:
+            drift = _diff_hardware_summary(prior, hw)
+            if drift:
+                _log.warn(
+                    f"Hardware profile drift vs. existing {output_path.name} "
+                    f"({len(drift)} field(s) changed):",
+                )
+                for line in drift:
+                    _log.warn(line)
+            else:
+                _log.ui(f"Hardware profile unchanged vs. existing {output_path.name}")
 
         # --- Write output ---
         _write_hardware_profile(
