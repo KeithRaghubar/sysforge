@@ -77,3 +77,47 @@ def test_explicit_none_table_is_none_safe():
     }
     prof = resolve_profile(_pkgmeta("htop"), [], cfg)
     assert prof["CC"] == "clang"
+
+
+import tomllib
+from sysforge.profile_writer import write_package_compiler_override
+
+
+_BASE_TOML = """\
+# profiles.toml
+[defaults]
+profile = "bare"
+
+[profiles.bare]
+CC = "clang"
+"""
+
+
+def test_writer_creates_section_and_row(tmp_path):
+    p = tmp_path / "profiles.toml"
+    p.write_text(_BASE_TOML)
+    assert write_package_compiler_override(p, "htop", "gcc", "g++", "bfd") is True
+    data = tomllib.loads(p.read_text())
+    assert data["package_compiler_overrides"]["htop"] == {
+        "cc": "gcc", "cxx": "g++", "ld": "bfd"
+    }
+    # Existing content preserved.
+    assert data["profiles"]["bare"]["CC"] == "clang"
+    assert "# profiles.toml" in p.read_text()
+
+
+def test_writer_upserts_existing_row(tmp_path):
+    p = tmp_path / "profiles.toml"
+    p.write_text(_BASE_TOML)
+    write_package_compiler_override(p, "htop", "gcc", "g++", "bfd")
+    # Second write with new values replaces, not duplicates.
+    write_package_compiler_override(p, "htop", "clang", "clang++", "lld")
+    data = tomllib.loads(p.read_text())
+    assert data["package_compiler_overrides"]["htop"]["cc"] == "clang"
+    # Exactly one htop row.
+    assert p.read_text().count("htop =") == 1
+
+
+def test_writer_returns_false_on_missing_parent(tmp_path):
+    p = tmp_path / "does-not-exist" / "profiles.toml"
+    assert write_package_compiler_override(p, "htop", "gcc", "g++", "bfd") is False
