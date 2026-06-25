@@ -30,11 +30,13 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 
 from sysforge.primitives.config import (
+    _active_profiles_path,
     find_pkgbuild,
     load_config,
     load_conflict_groups,
@@ -58,10 +60,13 @@ from sysforge.primitives.makepkg_conf import emit_makepkg_conf
 from sysforge.primitives.makepkg_env import resolve_env_vars
 from sysforge.primitives.makepkg_invoke import (
     AlreadyBuilt,
+    RecoveryOutcome,  # noqa: F401  (re-export; tests build outcomes via mw.RecoveryOutcome)
     ToolchainMismatchError,
     _build_failed_error,
     _invoke_with_retry,
+    take_last_recovery,
 )
+from sysforge.profile_writer import write_package_compiler_override
 from sysforge.primitives.makepkg_pgo import (
     _resolve_pgo_state,
     _try_load_toml,
@@ -137,6 +142,30 @@ from sysforge.primitives.profile import (
 # Conf emission / flag utils / env resolution / makepkg invocation now live in
 # makepkg_conf / makepkg_flags / makepkg_env / makepkg_invoke respectively.
 # ---------------------------------------------------------------------------
+
+
+def _persist_recovery_overrides(pkgbase) -> None:
+    """If the interactive recovery menu recorded a successful compiler swap,
+    persist it to profiles.toml [package_compiler_overrides]. Best-effort:
+    a write failure is logged and swallowed — never fail a good build."""
+    outcome = take_last_recovery()
+    if outcome is None or not outcome.overrides or not pkgbase:
+        return
+    ov = outcome.overrides
+    cc, cxx, ld = ov.get("cc"), ov.get("cxx"), ov.get("ld")
+    if cc is None or cxx is None or ld is None:
+        _build_log.warn(
+            "Recovery override incomplete (missing cc/cxx/ld) — "
+            "skipping profiles.toml persist"
+        )
+        return
+    # Best-effort end to end: path resolution and the write must never raise
+    # out of here (CLAUDE.md: persistence never fails a good build).
+    try:
+        path = _active_profiles_path()
+        write_package_compiler_override(path, pkgbase, cc, cxx, ld)
+    except Exception as e:
+        _build_log.warn(f"Could not persist recovery override to profiles.toml: {e}")
 
 
 def _find_artifacts(pkgbuild_dir) -> list:
@@ -542,24 +571,43 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         is_musl_static = is_musl_static_build(pkgmeta)
         while True:
             try:
+                _conf_kwargs = dict(
+                    kernel_build=kernel_build,
+                    compiler_flags_extra=compiler_flags_extra,
+                    linker_flags_extra=linker_flags_extra,
+                    strip_full_lto=strip_full_lto,
+                    pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
+                    reactive_gcc_fallback=_reactive_retry_used,
+                    is_lib32=is_lib32,
+                    is_musl_static=is_musl_static,
+                    toolchain_variant=toolchain_variant,
+                    jobs=resolve_throttle(resolved_profile, config).jobs,
+                )
+
+                @contextmanager
+                def _reemit_conf(cc, cxx, ld, _kw=_conf_kwargs):
+                    # ld is folded into LDFLAGS by emit via ld_override.
+                    with emit_makepkg_conf(
+                            resolved_profile, active_consumes,
+                            cc_override=cc or None,
+                            cxx_override=cxx or None,
+                            ld_override=ld or None,
+                            **_kw) as cpath:
+                        yield cpath
+
                 with emit_makepkg_conf(
                         resolved_profile, active_consumes,
                         cc_override=cc_override,
                         cxx_override=cxx_override,
                         ld_override=ld_override,
-                        kernel_build=kernel_build,
-                        compiler_flags_extra=compiler_flags_extra,
-                        linker_flags_extra=linker_flags_extra,
-                        strip_full_lto=strip_full_lto,
-                        pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
-                        reactive_gcc_fallback=_reactive_retry_used,
-                        is_lib32=is_lib32,
-                        is_musl_static=is_musl_static,
-                        toolchain_variant=toolchain_variant,
-                        jobs=resolve_throttle(resolved_profile, config).jobs) as conf_path:
+                        **_conf_kwargs) as conf_path:
                     _invoke_with_retry(
                         pkgbuild_path, conf_path, resolved_profile,
-                        extra_env, extra_flags, interactive, strip_flags)
+                        extra_env, extra_flags, interactive, strip_flags,
+                        reemit_conf=_reemit_conf,
+                        pkgbase=pkgmeta.get("globals", {}).get("pkgbase"))
+                _persist_recovery_overrides(
+                    pkgmeta.get("globals", {}).get("pkgbase"))
                 break
             except ToolchainMismatchError as e:
                 if _reactive_retry_used:

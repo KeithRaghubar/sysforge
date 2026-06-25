@@ -248,6 +248,13 @@ edits must pass `make check-design` after `make design`.
   in `build_state.toml`. Abort is a clean `BuildOutcome.aborted`, not an exception. New
   serialized `build_state` fields go in `BuildState._serialize`'s key tuple. See DESIGN.md
   §`primitives-layer`.
+- **Interactive build-failure recovery has one home**: `makepkg_invoke._run_recovery_menu`
+  (menu + editor + cc/ld swap, returns `RecoveryOutcome`); the wrapper supplies the
+  `reemit_conf` closure and persists a successful swap via
+  `profile_writer.write_package_compiler_override` (the sole `profiles.toml` writer) into
+  `[package_compiler_overrides]`, applied last in `profile.resolve_profile`. Don't add a
+  second profiles.toml writer or a parallel recovery loop. See DESIGN.md §Flag/Profile
+  System / §makepkg-wrapper.
 - **LLVM source-state inspection**: `primitives/llvm_state.collect_llvm_state` is the only
   entry point — don't call `git_is_dirty` + URL parsing directly.
 - **Dual-toolchain test parity**: any logic branching on resolved compiler (gcc vs llvm)

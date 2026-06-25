@@ -21,13 +21,16 @@ flag transforms and env resolvers it draws on stay in ``makepkg_flags`` /
 ``ToolchainMismatchError`` / ``AlreadyBuilt`` exceptions are re-exported from
 ``makepkg_wrapper``.
 """
+import contextvars
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.build_throttle import resolve_throttle, wrapper_argv
+from sysforge.primitives.editor import editor_usable, resolve_editor, run_tty_argv
 from sysforge.primitives.makepkg_artifacts import _find_built_packages
 from sysforge.primitives.makepkg_env import (
     _effective_build_dir,
@@ -36,7 +39,7 @@ from sysforge.primitives.makepkg_env import (
 )
 from sysforge.primitives.makepkg_flags import INSTALL_FLAGS
 from sysforge.primitives.profile import CONF_KEY_MAP
-from sysforge.primitives.prompt import prompt_choice
+from sysforge.primitives.prompt import prompt_choice, prompt_text
 from sysforge.primitives.pty_runner import run_with_pty, strip_ansi
 from sysforge.primitives.resource_guard import lift_for_child
 
@@ -398,9 +401,126 @@ def _build_failed_error(cause: Exception, message: str | None = None) -> Runtime
     err.captured_output = getattr(cause, "captured_output", None)
     return err
 
+@dataclass
+class RecoveryOutcome:
+    action: str                      # "retry" | "abort"
+    overrides: dict | None = None    # {"cc","cxx","ld"} after a successful swap
+
+
+_LAST_RECOVERY: "contextvars.ContextVar[RecoveryOutcome | None]" = \
+    contextvars.ContextVar("_LAST_RECOVERY", default=None)
+
+
+def take_last_recovery() -> "RecoveryOutcome | None":
+    """Consume the most recent RecoveryOutcome (set by the recovery menu when a
+    swap succeeded). Returns None and resets after read."""
+    out = _LAST_RECOVERY.get()
+    _LAST_RECOVERY.set(None)
+    return out
+
+
+def _recover_menu_choices(have_swap: bool) -> tuple[str, tuple[str, ...]]:
+    swap_line = "  [c] retry with a different compiler / linker\n" if have_swap else ""
+    msg = (
+        "Recover:\n"
+        "  [e] edit PKGBUILD in $EDITOR — retries automatically on exit\n"
+        f"{swap_line}"
+        "  [r] retry as-is            (Enter)\n"
+        "  [a] abort\n"
+        "Choice: "
+    )
+    choices = ("e", "c", "r", "a") if have_swap else ("e", "r", "a")
+    return msg, choices
+
+
+def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
+                       extra_env, extra_flags, interactive, strip_flags,
+                       reemit_conf, pkgbase):
+    """Interactive recovery loop. Returns a RecoveryOutcome; only returns on a
+    successful retry or an abort. Re-invokes invoke_makepkg internally for the
+    editor and swap paths so a still-failing retry re-shows the menu."""
+    pkgbuild_path = Path(pkgbuild_path).resolve()
+    cc = resolved_profile.get("CC", "(default)")
+    cxx = resolved_profile.get("CXX", "(default)")
+    have_swap = reemit_conf is not None
+    orig_snapshot = pkgbuild_path.with_suffix(pkgbuild_path.suffix + ".orig")
+
+    while True:
+        _makepkg_log.ui(f"Build failed: {pkgbase or pkgbuild_path.name}")
+        _makepkg_log.ui(f"  Toolchain used:  CC={cc}  CXX={cxx}")
+        msg, choices = _recover_menu_choices(have_swap)
+        choice = prompt_choice(msg, choices, default="r", eof_default="a",
+                               tag="MAKEPKG")
+
+        if choice == "a":
+            return RecoveryOutcome(action="abort")
+
+        if choice == "e":
+            editor, source = resolve_editor()
+            if not editor_usable(editor):
+                _makepkg_log.error(
+                    "No usable $EDITOR (set SYSFORGE_EDITOR or [ui].editor).")
+                continue
+            if not orig_snapshot.exists():
+                try:
+                    orig_snapshot.write_text(pkgbuild_path.read_text())
+                except OSError as e:
+                    _makepkg_log.warn(f"Could not snapshot PKGBUILD.orig: {e}")
+            run_tty_argv([editor, str(pkgbuild_path)])
+            try:
+                invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
+                               extra_env, extra_flags, interactive, strip_flags)
+                return RecoveryOutcome(action="retry")
+            except subprocess.CalledProcessError:
+                continue  # still failing → re-show menu
+
+        if choice == "c" and have_swap:
+            # Use the real resolved CC/CXX as prompt defaults, not the "(default)"
+            # display placeholder — pressing Enter must keep the current compiler,
+            # never inject a literal "(default)" string.
+            cur_cc = resolved_profile.get("CC")
+            cur_cxx = resolved_profile.get("CXX")
+            new_cc = prompt_text(f"CC [{cur_cc or 'default'}]: ",
+                                 default=cur_cc or "", tag="MAKEPKG")
+            new_cxx = prompt_text(f"CXX [{cur_cxx or 'default'}]: ",
+                                  default=cur_cxx or "", tag="MAKEPKG")
+            new_ld = prompt_text("LD (e.g. lld, bfd, mold): ", default="",
+                                 tag="MAKEPKG")
+            # CC/CXX are env-delivered (resolve_env_vars injects them, and
+            # invoke_makepkg applies extra_env LAST, over the conf). Re-emitting
+            # the conf alone is not enough — the stale extra_env["CC"]/["CXX"]
+            # would clobber it — so overlay the swap onto a copy of extra_env.
+            # LD stays conf-delivered (LDFLAGS) via reemit_conf; not an env key.
+            swap_env = dict(extra_env or {})
+            if new_cc:
+                swap_env["CC"] = new_cc
+            if new_cxx:
+                swap_env["CXX"] = new_cxx
+            try:
+                with reemit_conf(new_cc, new_cxx, new_ld) as new_conf:
+                    invoke_makepkg(pkgbuild_path, new_conf, resolved_profile,
+                                   swap_env, extra_flags, interactive,
+                                   strip_flags)
+                return RecoveryOutcome(
+                    action="retry",
+                    overrides={"cc": new_cc, "cxx": new_cxx, "ld": new_ld},
+                )
+            except subprocess.CalledProcessError:
+                _makepkg_log.error("Build still failed after compiler swap.")
+                continue
+
+        # choice == "r": retry as-is.
+        try:
+            invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
+                           extra_env, extra_flags, interactive, strip_flags)
+            return RecoveryOutcome(action="retry")
+        except subprocess.CalledProcessError:
+            continue
+
+
 def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                        extra_env=None, extra_flags=None, interactive=False,
-                       strip_flags=None):
+                       strip_flags=None, *, reemit_conf=None, pkgbase=None):
     """
     Invoke makepkg, retrying after manual correction if not in batch mode.
 
@@ -488,17 +608,19 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                     # anything else: fall through to retry the full build
                     _makepkg_log.info("Retrying build...")
                 else:
-                    # Empty input → "" → retry; "abort" → stop.
-                    response = prompt_choice(
-                        "Manually correct the PKGBUILD and press Enter to retry, "
-                        "or type 'abort' to stop: ",
-                        choices=("abort",),
-                        default="",
-                        eof_default="abort",
-                        tag="MAKEPKG",
-                    )
-                    if response == "abort":
+                    outcome = _run_recovery_menu(
+                        pkgbuild_path, conf_path, resolved_profile,
+                        extra_env=extra_env, extra_flags=extra_flags,
+                        interactive=interactive, strip_flags=strip_flags,
+                        reemit_conf=reemit_conf, pkgbase=pkgbase)
+                    if outcome.action == "abort":
                         raise _build_failed_error(
                             e, "[build_failed] Aborted by user after build failure"
                         )
-                    _makepkg_log.info("Retrying build...")
+                    # Menu's retry already ran a successful build. This function
+                    # returns None, so surface any recovered overrides to the
+                    # caller through the read-once _LAST_RECOVERY contextvar
+                    # (drained by take_last_recovery) instead of changing the
+                    # return contract.
+                    _LAST_RECOVERY.set(outcome)
+                    return

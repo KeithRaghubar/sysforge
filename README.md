@@ -66,6 +66,10 @@ sysforge build neovim-git -m "-si"
 #    [pgo] allow` (seeded with mesa) — it's rarely worth the doubled build plus a
 #    manual record/use workload outside a hot, long-lived library.
 
+#    When an interactive `sysforge build` fails, sysforge offers to open the
+#    PKGBUILD in $EDITOR (auto-retries on exit) or retry with a different
+#    compiler/linker; a working compiler choice is remembered per package.
+
 # 4. Check for and rebuild any outdated installed AUR packages
 #    (Source sync is RPC-first: one batched AUR `info` call, and a git
 #     fetch per package only when the cached version/LastModified differs
