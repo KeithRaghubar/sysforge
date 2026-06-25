@@ -475,14 +475,31 @@ def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
                 continue  # still failing → re-show menu
 
         if choice == "c" and have_swap:
-            new_cc = prompt_text(f"CC [{cc}]: ", default=cc, tag="MAKEPKG")
-            new_cxx = prompt_text(f"CXX [{cxx}]: ", default=cxx, tag="MAKEPKG")
+            # Use the real resolved CC/CXX as prompt defaults, not the "(default)"
+            # display placeholder — pressing Enter must keep the current compiler,
+            # never inject a literal "(default)" string.
+            cur_cc = resolved_profile.get("CC")
+            cur_cxx = resolved_profile.get("CXX")
+            new_cc = prompt_text(f"CC [{cur_cc or 'default'}]: ",
+                                 default=cur_cc or "", tag="MAKEPKG")
+            new_cxx = prompt_text(f"CXX [{cur_cxx or 'default'}]: ",
+                                  default=cur_cxx or "", tag="MAKEPKG")
             new_ld = prompt_text("LD (e.g. lld, bfd, mold): ", default="",
                                  tag="MAKEPKG")
+            # CC/CXX are env-delivered (resolve_env_vars injects them, and
+            # invoke_makepkg applies extra_env LAST, over the conf). Re-emitting
+            # the conf alone is not enough — the stale extra_env["CC"]/["CXX"]
+            # would clobber it — so overlay the swap onto a copy of extra_env.
+            # LD stays conf-delivered (LDFLAGS) via reemit_conf; not an env key.
+            swap_env = dict(extra_env or {})
+            if new_cc:
+                swap_env["CC"] = new_cc
+            if new_cxx:
+                swap_env["CXX"] = new_cxx
             try:
                 with reemit_conf(new_cc, new_cxx, new_ld) as new_conf:
                     invoke_makepkg(pkgbuild_path, new_conf, resolved_profile,
-                                   extra_env, extra_flags, interactive,
+                                   swap_env, extra_flags, interactive,
                                    strip_flags)
                 return RecoveryOutcome(
                     action="retry",
@@ -600,9 +617,10 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                         raise _build_failed_error(
                             e, "[build_failed] Aborted by user after build failure"
                         )
-                    # Menu's retry already ran a successful build; surface the
-                    # overrides to the caller (via a sentinel attr on a custom
-                    # return) and finish. Since this function returns None, we
-                    # stash the outcome on the call frame's contextvar.
+                    # Menu's retry already ran a successful build. This function
+                    # returns None, so surface any recovered overrides to the
+                    # caller through the read-once _LAST_RECOVERY contextvar
+                    # (drained by take_last_recovery) instead of changing the
+                    # return contract.
                     _LAST_RECOVERY.set(outcome)
                     return

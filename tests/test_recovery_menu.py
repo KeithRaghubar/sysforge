@@ -66,6 +66,38 @@ def test_swap_path_returns_overrides_on_success(monkeypatch, pkgbuild):
     assert out.overrides == {"cc": "gcc", "cxx": "g++", "ld": "bfd"}
 
 
+def test_swap_applies_new_cc_cxx_to_retry_env(monkeypatch, pkgbuild):
+    # Regression: the swapped CC/CXX must reach invoke_makepkg's extra_env,
+    # not just the re-emitted conf (env.update wins last in invoke_makepkg, so
+    # a stale CC/CXX in extra_env would clobber the freshly-emitted conf).
+    monkeypatch.setattr(mi, "prompt_choice", lambda *a, **k: "c")
+    answers = iter(["gcc", "g++", "bfd"])
+    monkeypatch.setattr(mi, "prompt_text", lambda *a, **k: next(answers))
+
+    @contextmanager
+    def fake_reemit(cc, cxx, ld):
+        yield Path("/conf-new")
+
+    recorded = {}
+
+    def fake_invoke(pkgbuild_path, conf_path, resolved_profile,
+                    extra_env=None, *a, **k):
+        recorded["env"] = extra_env
+
+    monkeypatch.setattr(mi, "invoke_makepkg", fake_invoke)
+    out = mi._run_recovery_menu(
+        pkgbuild, Path("/conf"), {"CC": "clang", "CXX": "clang++"},
+        extra_env={"CC": "clang", "CXX": "clang++", "FOO": "bar"},
+        extra_flags=None, interactive=True, strip_flags=None,
+        reemit_conf=fake_reemit, pkgbase="htop",
+    )
+    assert out.action == "retry"
+    assert recorded["env"]["CC"] == "gcc"
+    assert recorded["env"]["CXX"] == "g++"
+    assert recorded["env"]["FOO"] == "bar"   # unrelated env preserved
+    assert out.overrides == {"cc": "gcc", "cxx": "g++", "ld": "bfd"}
+
+
 def test_swap_unavailable_without_reemit(monkeypatch, pkgbuild):
     # reemit_conf=None → [c] is not offered; choosing retry as-is then aborting.
     seq = iter(["r", "a"])
