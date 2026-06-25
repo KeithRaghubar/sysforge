@@ -1309,6 +1309,32 @@ def _log_resolution_summary(
     _log.ui(f"  gates:      {gates}")
 
 
+def _pause_before_kconfig(interactive: bool, dry_run: bool) -> None:
+    """Pause (F2) so the operator can read the build plan before `make nconfig`.
+
+    A standalone interactive run drops straight into the PKGBUILD's kconfig UI
+    (typically ``make nconfig``), which seizes the terminal — the resolution
+    summary above (compiler, source, and especially the *merged* kconfig
+    counts) scrolls past unread. A single Enter-to-continue beat lets the
+    operator absorb "what was already merged" before the UI takes over.
+
+    Advisory and EOF-safe: only fires on a real interactive, non-dry-run build.
+    ``prompt_text`` treats EOF/unreadable-stdin as the default, so pipeline /
+    ``--non-interactive`` / captured-stdin paths fall straight through without
+    blocking. ``Ctrl-C`` still aborts the run as usual.
+    """
+    if not interactive or dry_run:
+        return
+    from sysforge.primitives.prompt import prompt_text
+
+    prompt_text(
+        "Review the build plan above, then press Enter to drop into the "
+        "kernel's interactive kconfig (Ctrl-C to abort)… ",
+        eof_default="",
+        tag="KERNEL",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
@@ -1614,6 +1640,10 @@ class KernelStage(Stage):
             if options.dry_run:
                 _log.ui(f"[dry-run] would build {pkgname} (no install) from {pkgbuild}")
             else:
+                # F2: let the operator read the build plan (esp. the merged
+                # kconfig counts) before the PKGBUILD's `make nconfig` seizes
+                # the terminal. No-op on non-interactive / no-TTY paths.
+                _pause_before_kconfig(interactive, options.dry_run)
                 _log.ui(f"Building kernel (no install): {pkgname} from {pkgbuild}")
                 try:
                     makepkg_run(pkgbuild, options=make_build_options(
