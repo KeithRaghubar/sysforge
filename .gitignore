@@ -38,3 +38,6 @@ pkg/
 src/
 man/sysforge.1.scd
 .aider*
+.opencode*
+opencode.json
+AGENTS.md
