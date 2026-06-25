@@ -388,6 +388,34 @@ def _expand_toolchain(profile: dict, default_toolchain: str | None) -> dict:
     return profile
 
 
+def _apply_package_compiler_override(result: dict, config: dict, pkgbase) -> None:
+    """Apply an auto-managed [package_compiler_overrides][pkgbase] row last.
+
+    Wins over the matched profile's CC/CXX/LDFLAGS for this pkgbase. The
+    LD value is folded into LDFLAGS as a -fuse-ld=<ld> token (replacing any
+    existing -fuse-ld=), since linker selection is conf-delivered via LDFLAGS,
+    not a standalone key. No-op when the table or row is absent.
+    """
+    if not pkgbase:
+        return
+    overrides = config.get("package_compiler_overrides", {})
+    row = overrides.get(pkgbase)
+    if not row:
+        return
+    cc = row.get("cc")
+    cxx = row.get("cxx")
+    ld = row.get("ld")
+    if cc:
+        result["CC"] = cc
+    if cxx:
+        result["CXX"] = cxx
+    if ld:
+        ldflags = result.get("LDFLAGS", "")
+        tokens = [t for t in ldflags.split() if not t.startswith("-fuse-ld=")]
+        tokens.append(f"-fuse-ld={ld}")
+        result["LDFLAGS"] = " ".join(tokens)
+
+
 def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
                     extracted_profile=None):
     """
@@ -456,6 +484,7 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
     # inherited value) wins over the [defaults] fallback. Explicit CC/CXX/AR/…
     # already present in `result` are preserved (setdefault).
     _expand_toolchain(result, defaults.get("toolchain"))
+    _apply_package_compiler_override(result, config, pkgname)
     _log.debug(f"[{pkgname}] Full resolved profile ({profile_name}):\n{pprint.pformat(result, indent=2, sort_dicts=False)}")
     return result
 
