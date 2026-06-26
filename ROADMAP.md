@@ -169,6 +169,76 @@ and in release notes.
   stays behind an explicit verb with the sentinel/gate discipline the rest of
   sysforge uses. *Priority: low (strategic).*
 
+- **`1.2.0-F25` — Kernel stage: pause immediately before the `nconfig`/`menuconfig`
+  call.** The current kernel-stage interactive pause lands too early in the flow. The
+  existing pause can stay, but the originally-intended one is a pause *right before*
+  the kernel config tool is invoked, so the options changed by the merged config
+  fragments are clearly visible in the editor that opens. Add the pause at the
+  config-invocation seam (the same helper that already implements
+  "pause-before-kconfig"); don't relocate the existing pause, add the targeted one.
+  *Priority: medium (usability — the merged-fragment diff is currently not reviewable
+  at the moment it matters).*
+
+- **`1.2.0-F26` — FDO-instrumented kernel must not overwrite the production sysforge
+  kernel.** An AutoFDO/Propeller *instrumented* kernel build (record pass) currently
+  collides with the production sysforge kernel install. SysForge should create a
+  *separate* boot entry for the instrumented kernel and only overwrite an existing
+  entry if sysforge is the one that created it (ownership-gated, mirroring the
+  `owner_stage` stamp + coexist-rename discipline already used for `-sysforge`
+  optimization renames and the kernel stage). Reuse the kernel-FDO seam
+  (`primitives/kernel_fdo.py`) + the existing coexist-rename / boot-entry path; don't
+  add a parallel boot-entry writer. *Priority: medium (safety — an instrumented
+  kernel silently replacing the production one is a boot-stability risk).*
+
+---
+
+### Bugs
+
+- **`1.2.0-B2` — `sysforge.install` scriptlet not published → every VM bootstrap /
+  packaging attempt fails.** Observed on every VM bootstrap and packaging attempt:
+  `==> ERROR: install file (sysforge.install) does not exist or is not a regular
+  file.` followed by `==> ERROR: Could not download sources.` Root cause: both
+  `PKGBUILD` and `PKGBUILD-git` declare `install=sysforge.install` (the F1
+  first-install notice scriptlet, added 2026-06-25), and the file exists in the repo,
+  but VM bootstrap builds sysforge by cloning the package **from the AUR**
+  (`tools/iso-install.sh` `_aur_clone_with_retry "$AUR_URL"` → `makepkg -si`). The AUR
+  repo checkout has no `sysforge.install`, so makepkg aborts before fetching sources.
+  Fix: ensure `sysforge.install` is committed to the AUR package repos alongside the
+  PKGBUILDs (the release/AUR-publish path must include it — cross-check
+  `tools/release.sh` + `check_shipped.py`'s install-graph parity, which already knows
+  about the scriptlet). *Priority: high (blocks all VM bootstrap and packaging).*
+
+- **`1.2.0-B3` — PKGBUILD patcher emits an unbalanced quote (`unexpected EOF`) for
+  various cosmic packages.** New failure across multiple cosmic packages:
+  `/home/keith/src/cosmic-applets-git/PKGBUILD.sysforge: line 56: unexpected EOF while
+  looking for matching `"'`. The generated `PKGBUILD.sysforge` is syntactically
+  invalid bash — the patcher (`pkgbuild_patcher.py`) is injecting/anchoring content
+  that leaves a double-quote unbalanced (same *class* as the recently-fixed
+  provides-anchor / pkgver-expansion bugs). Reproduce by inspecting line 56 of a
+  generated `PKGBUILD.sysforge` for a cosmic package; add a regression test and
+  re-validate via `validate_patched_pkgbuild`. *Priority: high (blocks cosmic-stack
+  builds).*
+
+- **`1.2.0-B4` — Build-failure summary omits the failing `LD`.** The failure summary
+  prints the resolved `CC` and `CXX` but not `LD`. Since linker choice
+  (`-fuse-ld=…`, mold/lld swaps) is a frequent failure cause and sysforge already
+  resolves the effective linker (`makepkg_flags.resolve_effective_linker`), the
+  summary should include `LD` alongside `CC`/`CXX`. *Priority: low (diagnostics
+  completeness).*
+
+### Questions
+
+- **`1.2.0-Q8` — Is the `update --devel` LLVM source pre-flight conveying anything
+  useful for repo-origin lib32 packages?** `sysforge update --devel` prints an
+  "LLVM source pre-flight (2 packages)" block listing `lib32-llvm` / `lib32-clang`
+  with `origin=repo`, `clean=clean`, `sync=unknown`, `installed=repo`, `mode=—`. For
+  packages that are repo-origin (not source-built), every interesting column is empty
+  or `unknown`, so the block reads as noise. Decide whether this is by design (and
+  should be suppressed / collapsed for repo-origin entries) or a partial breakage
+  (e.g. `sync=unknown` should resolve to a real state). Likely outcome: filter
+  repo-origin packages out of the pre-flight, or only show rows with an actionable
+  state. *Priority: low (clarity of `--devel` output).*
+
 ---
 
 ## Abandoned / decided against
