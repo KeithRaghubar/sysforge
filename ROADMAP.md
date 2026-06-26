@@ -204,10 +204,3 @@ and in release notes.
   `SYSFORGE_CONFIG_DIR`) are exempt (SysForge's own interface, not build-tool vars).
   The `[env_precedence]` table will not be implemented. (The env-stripping model that
   replaced it is documented in DESIGN.md.)
-
----
-
-## Already covered elsewhere
-
-- Interactive build-failure recovery shipped — spec under `docs/superpowers/specs/`
-  (`2026-06-23-build-failure-recovery-design.md`, local/gitignored).
