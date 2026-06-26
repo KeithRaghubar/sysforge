@@ -181,7 +181,16 @@ def merge_profraw(
     are clean aborts with an actionable hint, never a silent unprofiled build.
     """
     profraw = list_profraw(store)
+    out = store / profdata_name(pkgbase)
     if not profraw:
+        # No fresh raw — but a prior merge may have already produced (and pruned
+        # down to) a consumable profdata. That is the durable artifact, so a
+        # re-run of `use` (e.g. after the consuming build failed downstream)
+        # reuses it rather than dead-ending. Only abort when there is genuinely
+        # nothing collected.
+        if out.is_file():
+            _log.info(f"Reusing existing merged {pkgbase} profile: {out}")
+            return out
         raise MesaPgoError(
             f"no .profraw files in {store} — build+install the instrumented "
             f"{pkgbase} with `sysforge build {pkgbase} --pgo=record`, run a "
@@ -192,7 +201,6 @@ def merge_profraw(
             f"{profdata_tool!r} not found on PATH — PGO needs the LLVM "
             "toolchain (llvm-profdata ships with llvm)."
         )
-    out = store / profdata_name(pkgbase)
     # Fold any prior merged profile into the inputs so the accumulated signal
     # survives pruning the raw below (the toolchain stage does the same — the
     # profdata is the durable store, the .profraw is transient). Write to a

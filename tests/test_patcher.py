@@ -1186,6 +1186,32 @@ def test_suffix_conflict_renames_split_and_injects_metadata(tmp_path):
     assert set(g["replaces"]) == {"llvm", "llvm-libs"}
 
 
+def test_suffix_created_provides_expands_pkgver(tmp_path):
+    # Regression: the injected `provides=(name=$pkgver …)` array must be placed
+    # *after* the `pkgver=` assignment. PKGBUILDs that declare pkgname before
+    # pkgver (mesa, llvm) otherwise get the array inserted above pkgver=, and
+    # bash expands $pkgver at assignment time → `name=` → makepkg aborts with
+    # "pkgver in provides is not allowed to be empty".
+    import shutil
+    import subprocess
+
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_LLVM_SPLIT)
+    patch_package_suffix(pb, "sysforge", mode="conflict")
+    text = pb.read_text()
+    # Positional invariant: created provides array sits below the pkgver= line.
+    assert text.index("\nprovides=(") > text.index("pkgver=18.1.8")
+
+    # Behavioural invariant: source it and confirm $pkgver actually expanded.
+    bash = shutil.which("bash")
+    if bash:
+        out = subprocess.run(
+            [bash, "-c", f"source {pb}; printf '%s\\n' \"${{provides[0]}}\""],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert out == "llvm=18.1.8", out
+
+
 def test_suffix_coexist_renames_only_no_conflicts(tmp_path):
     pb = tmp_path / "PKGBUILD.sysforge"
     pb.write_text(_KERNEL_PKGBUILD)

@@ -81,6 +81,22 @@ def test_merge_no_profraw_raises_actionable(tmp_path):
     assert "--pgo=record" in str(exc.value)
 
 
+def test_merge_no_profraw_reuses_existing_profdata(tmp_path, monkeypatch):
+    # A re-run of `--pgo=use` after the raw was already merged+pruned (e.g. the
+    # consuming build failed downstream) must NOT hard-abort: the merged
+    # profdata is the durable, consumable artifact. Return it as-is without
+    # invoking llvm-profdata.
+    out = tmp_path / mesa_pgo.PROFDATA_NAME
+    out.write_text("merged-already")
+
+    def explode(*a, **kw):  # llvm-profdata must not be touched
+        raise AssertionError("merge invoked despite an existing profdata + no raw")
+
+    monkeypatch.setattr(mesa_pgo.subprocess, "run", explode)
+    assert mesa_pgo.merge_profraw(tmp_path) == out
+    assert out.read_text() == "merged-already"
+
+
 def test_merge_missing_tool_raises(tmp_path, monkeypatch):
     (tmp_path / "a.profraw").write_text("x")
     monkeypatch.setattr(mesa_pgo.shutil, "which", lambda _t: None)

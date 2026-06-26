@@ -1089,6 +1089,21 @@ def _find_array_span(text: str, key: str) -> tuple[int, int] | None:
     return None
 
 
+def _metadata_block_end(text: str, fallback: int) -> int:
+    """Offset just past the last top-level ``pkgver=``/``pkgrel=``/``epoch=``
+    assignment line, or ``fallback`` if none is found (or all precede it).
+
+    Used to anchor a freshly-created ``provides`` array below ``pkgver=`` so its
+    ``$pkgver`` references expand non-empty at bash assignment time. Indented
+    (in-function) assignments are excluded by the leading ``^`` with no
+    whitespace.
+    """
+    end = fallback
+    for m in re.finditer(r"^(?:pkgver|pkgrel|epoch)=\S.*$", text, re.MULTILINE):
+        end = max(end, m.end())
+    return end
+
+
 def _merge_or_create_array(text: str, key: str, values: list[str], anchor_end: int) -> str:
     """Append ``values`` to an existing ``key=(...)`` array, or create one.
 
@@ -1203,8 +1218,16 @@ def patch_package_suffix(patched_path, suffix: str, *, mode: str = "conflict") -
         text = _merge_or_create_array(
             text, "conflicts", list(origin_pkgnames), anchor_end
         )
+        # provides entries reference ``$pkgver``, which bash expands at array
+        # *assignment* time. PKGBUILDs that declare pkgname before pkgver (mesa,
+        # llvm) would otherwise get the created array inserted above ``pkgver=``,
+        # leaving every entry as ``name=`` (makepkg: "pkgver in provides is not
+        # allowed to be empty"). Anchor a freshly-created array below the pkgver
+        # assignment instead. Recomputed on the current text so the replaces/
+        # conflicts insertions above don't stale the offset.
+        provides_anchor = _metadata_block_end(text, anchor_end)
         text = _merge_or_create_array(
-            text, "provides", [f"{n}=$pkgver" for n in origin_pkgnames], anchor_end
+            text, "provides", [f"{n}=$pkgver" for n in origin_pkgnames], provides_anchor
         )
 
     # Rename split-package functions to match the renamed pkgnames (both modes —
