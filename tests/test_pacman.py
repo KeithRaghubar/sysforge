@@ -423,10 +423,14 @@ class TestBatchInstallPkgsInteractive:
         # subprocess; the pacman -U call is the first invocation.
         return mock_run.call_args_list[0]
 
+    @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file",
+           return_value=set())
+    @patch("sysforge.primitives.pacman.get_all_installed_packages",
+           return_value={})
     @patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="foo")
     @patch("sysforge.primitives.install_reconcile.record_self_install")
     @patch("sysforge.primitives.pacman.subprocess.run")
-    def test_default_is_noconfirm(self, mock_run, _rec, _rd, tmp_path):
+    def test_default_is_noconfirm(self, mock_run, _rec, _rd, _inst, _repl, tmp_path):
         mock_run.return_value = MagicMock(returncode=0, stderr="")
         assert batch_install_pkgs([self._make_pkg(tmp_path)]) is True
         call = self._pacman_call(mock_run)
@@ -447,6 +451,74 @@ class TestBatchInstallPkgsInteractive:
         # The conflict prompt must reach the operator: streams stay inherited
         # (not captured), so the question is visible and stdin can answer it.
         assert call.kwargs.get("stderr") is None
+
+
+class TestBatchInstallPkgsConflictRename:
+    """A conflict-mode ``-sysforge`` rename is a deliberate drop-in replacement
+    (built pkg declares ``replaces = <stock>`` for an installed pkg). pacman
+    only auto-processes ``replaces`` on a sync upgrade, so on a ``-U
+    --noconfirm`` install the conflict prompt is declined (default N) and the
+    transaction aborts. When a built pkg replaces something installed, pass
+    ``--ask=4`` (ALPM_QUESTION_CONFLICT_PKG) to auto-confirm that intended
+    removal; otherwise leave the prompt at its safe default."""
+
+    def _make_pkg(self, tmp_path, name="mesa-sysforge"):
+        p = tmp_path / f"{name}-1-1-x86_64.pkg.tar.zst"
+        p.write_bytes(b"")
+        return p
+
+    @patch("sysforge.primitives.pacman.get_all_installed_packages",
+           return_value={"mesa": "1:26.1.3-2"})
+    @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file",
+           return_value={"mesa"})
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file",
+           return_value="mesa-sysforge")
+    @patch("sysforge.primitives.install_reconcile.record_self_install")
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_replaces_installed_auto_confirms_conflict(
+        self, mock_run, _rec, _name, _repl, _inst, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        assert batch_install_pkgs([self._make_pkg(tmp_path)]) is True
+        argv = mock_run.call_args_list[0].args[0]
+        assert "--noconfirm" in argv
+        assert "--ask=4" in argv
+
+    @patch("sysforge.primitives.pacman.get_all_installed_packages",
+           return_value={"some-other-pkg": "1-1"})
+    @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file",
+           return_value=set())
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file",
+           return_value="foo")
+    @patch("sysforge.primitives.install_reconcile.record_self_install")
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_no_replaces_leaves_conflict_prompt_at_default(
+        self, mock_run, _rec, _name, _repl, _inst, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        assert batch_install_pkgs([self._make_pkg(tmp_path, "foo")]) is True
+        argv = mock_run.call_args_list[0].args[0]
+        assert not any(str(a).startswith("--ask") for a in argv)
+
+    @patch("sysforge.primitives.pacman.get_all_installed_packages")
+    @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file",
+           return_value={"mesa"})
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file",
+           return_value="mesa-sysforge")
+    @patch("sysforge.primitives.install_reconcile.record_self_install")
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_interactive_never_adds_ask(
+        self, mock_run, _rec, _name, _repl, mock_inst, tmp_path
+    ):
+        # Interactive runs let the operator answer the prompt — no --ask, and
+        # the installed-set query is never needed.
+        mock_run.return_value = MagicMock(returncode=0, stderr=None)
+        assert batch_install_pkgs(
+            [self._make_pkg(tmp_path)], interactive=True
+        ) is True
+        argv = mock_run.call_args_list[0].args[0]
+        assert not any(str(a).startswith("--ask") for a in argv)
+        mock_inst.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

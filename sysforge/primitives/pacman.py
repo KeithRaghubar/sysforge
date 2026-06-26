@@ -427,6 +427,17 @@ def batch_install_pkgs(pkg_paths: list, *, interactive: bool = False) -> bool:
     question (``X and Y are in conflict. Remove Y? [y/N]``) is put to the
     operator on the controlling TTY instead of being auto-answered ``N`` by
     ``--noconfirm`` and aborting the transaction (B6).
+
+    Non-interactive runs (the default, and every ``sysforge update``) still
+    auto-answer that prompt ``N`` — fatal for a conflict-mode ``-sysforge``
+    rename, which is a deliberate drop-in replacement: the built package
+    declares ``replaces = <stock name>`` for a package the user has installed.
+    pacman only auto-processes ``replaces`` during a sync upgrade, so on a
+    local ``-U`` it raises the conflict prompt regardless. When (and only when)
+    a built package replaces something currently installed, pass ``--ask=4``
+    (``ALPM_QUESTION_CONFLICT_PKG``) so that intended removal is auto-confirmed;
+    absent a real replaces relationship the prompt keeps its safe default so an
+    unexpected conflict still aborts the transaction.
     """
     missing = [p for p in pkg_paths if not Path(p).exists()]
     if missing:
@@ -440,6 +451,11 @@ def batch_install_pkgs(pkg_paths: list, *, interactive: bool = False) -> bool:
     argv = ["sudo", "pacman", "-U"]
     if not interactive:
         argv.append("--noconfirm")
+        # Auto-confirm only the intended drop-in replacement (a built pkg whose
+        # `replaces` names a currently-installed pkg); see the docstring.
+        installed = set(get_all_installed_packages().keys())
+        if any(read_pkg_replaces_from_file(p) & installed for p in pkg_paths):
+            argv.append("--ask=4")
     argv += [str(p) for p in pkg_paths]
     # Interactive: inherit pacman's streams so the conflict prompt is visible
     # and stdin can answer it. Non-interactive: capture stderr to relay it.
