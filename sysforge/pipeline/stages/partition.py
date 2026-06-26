@@ -207,11 +207,15 @@ def _plan_table(cfg: BootstrapConfig) -> list[str]:
 
 def _confirm(cfg: BootstrapConfig) -> None:
     """Print the partition plan and require explicit confirmation."""
+    # The plan table is built with box-drawing glyphs; route every emitted line
+    # through the same downgrade chokepoint log.ui() uses so a Linux VT console
+    # (which can't render ─│┼…) gets ASCII fallbacks instead of missing-glyph
+    # boxes. _plan_table stays pure (glyph-rich) for testing.
     print()
     for line in _plan_table(cfg):
-        print(line)
+        print(log.downgrade_glyphs(line))
     print()
-    print(f"  WARNING: All data on {cfg.device} will be destroyed.")
+    print(log.downgrade_glyphs(f"  WARNING: All data on {cfg.device} will be destroyed."))
     print()
 
     # Destructive: any non-confirming input must abort, never re-prompt.

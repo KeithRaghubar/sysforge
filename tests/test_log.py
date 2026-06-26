@@ -647,3 +647,127 @@ def test_color_helpers_wrap_only_when_enabled(monkeypatch):
     monkeypatch.setattr(log, "_COLOR_MODE", "never")
     for fn in (log.red, log.green, log.yellow, log.cyan, log.bold, log.dim):
         assert fn("x") == "x"
+
+
+# ---------------------------------------------------------------------------
+# Unicode glyph gating — VT/serial console font fallback to ASCII
+# ---------------------------------------------------------------------------
+
+class _FakeUtfTTY:
+    """TTY-like sink that advertises a UTF-8 encoding."""
+    encoding = "utf-8"
+    def isatty(self): return True
+    def write(self, _): pass
+    def flush(self): pass
+
+
+def test_use_unicode_true_on_utf8_tty(monkeypatch):
+    monkeypatch.setattr(log, "_UNICODE_MODE", "auto")
+    monkeypatch.delenv("SYSFORGE_ASCII", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr(log, "_out", lambda: _FakeUtfTTY())
+    assert log.use_unicode() is True
+
+
+def test_use_unicode_false_on_linux_vt_console(monkeypatch):
+    # The Linux framebuffer/VT console (TERM=linux) loads a console font that
+    # maps only a subset of code points — arrows/checks/ellipsis render as a
+    # missing-glyph box. Downgrade to ASCII there.
+    monkeypatch.setattr(log, "_UNICODE_MODE", "auto")
+    monkeypatch.delenv("SYSFORGE_ASCII", raising=False)
+    monkeypatch.setenv("TERM", "linux")
+    monkeypatch.setattr(log, "_out", lambda: _FakeUtfTTY())
+    assert log.use_unicode() is False
+
+
+def test_use_unicode_false_when_stream_not_utf(monkeypatch):
+    class _AsciiTTY(_FakeUtfTTY):
+        encoding = "ANSI_X3.4-1968"  # POSIX/C locale ascii
+    monkeypatch.setattr(log, "_UNICODE_MODE", "auto")
+    monkeypatch.delenv("SYSFORGE_ASCII", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr(log, "_out", lambda: _AsciiTTY())
+    assert log.use_unicode() is False
+
+
+def test_use_unicode_unknown_encoding_defaults_to_unicode(monkeypatch):
+    # Unknown/None encoding must not force ASCII — only a *known* non-UTF
+    # encoding downgrades, so capture sinks (encoding=None) stay unicode.
+    class _NoEnc(_FakeUtfTTY):
+        encoding = None
+    monkeypatch.setattr(log, "_UNICODE_MODE", "auto")
+    monkeypatch.delenv("SYSFORGE_ASCII", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr(log, "_out", lambda: _NoEnc())
+    assert log.use_unicode() is True
+
+
+def test_use_unicode_env_override_forces_ascii(monkeypatch):
+    monkeypatch.setattr(log, "_UNICODE_MODE", "auto")
+    monkeypatch.setenv("SYSFORGE_ASCII", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr(log, "_out", lambda: _FakeUtfTTY())
+    assert log.use_unicode() is False
+
+
+def test_unicode_mode_never_and_always(monkeypatch):
+    monkeypatch.setattr(log, "_UNICODE_MODE", "always")
+    monkeypatch.setenv("TERM", "linux")  # would normally downgrade
+    monkeypatch.setattr(log, "_out", lambda: _FakeUtfTTY())
+    assert log.use_unicode() is True
+    monkeypatch.setattr(log, "_UNICODE_MODE", "never")
+    monkeypatch.delenv("TERM", raising=False)
+    assert log.use_unicode() is False
+
+
+def test_set_unicode_mode_rejects_unknown_value():
+    log.set_unicode_mode("bogus")
+    assert log._UNICODE_MODE == "auto"
+    log.set_unicode_mode("never")
+    assert log._UNICODE_MODE == "never"
+    log.set_unicode_mode("auto")  # restore
+
+
+def test_downgrade_glyphs_passthrough_when_unicode(monkeypatch):
+    monkeypatch.setattr(log, "_UNICODE_MODE", "always")
+    s = "running → done ✓ skipped ↷ … ─── 80% █"
+    assert log.downgrade_glyphs(s) == s
+
+
+def test_downgrade_glyphs_maps_known_glyphs_to_ascii(monkeypatch):
+    monkeypatch.setattr(log, "_UNICODE_MODE", "never")
+    out = log.downgrade_glyphs("a → b ✓ c ✗ d ⚠ e … f")
+    assert out == "a -> b [OK] c [X] d (!) e ... f"
+    # Box-drawing headers degrade to ASCII rules, no replacement-glyph boxes.
+    assert log.downgrade_glyphs("───") == "---"
+    # Every char in the result is plain ASCII.
+    assert all(ord(ch) < 128 for ch in out)
+
+
+def test_ui_downgrades_glyphs_on_linux_console(monkeypatch, capsys):
+    monkeypatch.setattr(log, "_UNICODE_MODE", "never")
+    log.set_verbosity(3)
+    log.ui("[TAG]", "build → mesa ✓")
+    # ui() writes to _out() which is stderr outside dry-run mode.
+    out = capsys.readouterr().err
+    assert "build -> mesa [OK]" in out
+    assert "→" not in out and "✓" not in out
+
+
+def test_format_line_downgrades_glyphs_when_ascii(monkeypatch):
+    monkeypatch.setattr(log, "_UNICODE_MODE", "never")
+    monkeypatch.setenv("NO_COLOR", "1")
+    line = log._format_line("WARN", "[TAG]", "drift → reflag")
+    assert line == "[SYSFORGE][WARN][TAG] drift -> reflag\n"
+
+
+def test_file_logs_keep_unicode_even_when_terminal_is_ascii(tmp_path, monkeypatch):
+    # Downgrade is terminal-only — the UTF-8 log files must keep the real glyphs.
+    monkeypatch.setattr(log, "_UNICODE_MODE", "never")
+    path = tmp_path / "sysforge.log"
+    log.set_verbosity(3)
+    log.open_unified_log(path)
+    log.ui("[TAG]", "phase → done ✓")
+    log.close_unified_log(success=False, persist=True)
+    content = path.read_text()
+    assert "phase → done ✓" in content

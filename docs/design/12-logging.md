@@ -21,6 +21,17 @@ Resolution precedence in `use_color()`:
 
 The mode is resolved at startup as **`--color=auto|always|never` flag > `[ui] color` config (`sysforge.toml`) > `"auto"`** (`cli._resolve_color_mode`); a junk value degrades to `"auto"`. File logs are always written plain regardless of the gate. Because the decision is per-call, output piped through the pager is coloured up front (the review diff passes `git diff --color=always` when the gate is on, then `less -R` carries the ANSI through).
 
+### Glyph downgrade
+
+`log.use_unicode()` is the single capability gate for decorative non-ASCII glyphs (arrows, `✓`/`✗`, box-drawing, ellipsis, block-bar fills), parallel to `use_color()`. When it returns false, `log.downgrade_glyphs(text)` rewrites those code points to ASCII fallbacks (`→`→`->`, `✓`→`[OK]`, `─`→`-`, …) via a single `str.translate` table; when true it is a pass-through. This exists because a Linux framebuffer/VT console (`TERM=linux`) loads a console font that maps only a subset of code points, so the install-time pipeline rendered missing-glyph boxes on bare-metal/VM consoles.
+
+Resolution precedence in `use_unicode()`:
+
+1. Unicode **mode** (`log.set_unicode_mode`): `"never"` → off; `"always"` → on.
+2. Mode `"auto"` (default): `SYSFORGE_ASCII` (any non-empty value) disables; a stream whose `encoding` is a known non-UTF value disables; `TERM=linux` disables; otherwise Unicode is allowed (an unknown/`None` encoding stays Unicode so test capture sinks aren't over-stripped).
+
+Downgrade happens **only at the terminal-output chokepoints** — `log.ui()`, `log._format_line()` (error/warn/info/debug), `prompt.py`'s prompt strings, `ui/progress.py::_paint`, and the `partition` stage's plan-table `print()` — never at every call site. The UTF-8 file logs are written from the caller's original text and therefore always keep the real glyphs. In `progress._paint` the downgrade precedes the column clamp because ASCII fallbacks change string length.
+
 ### File logging
 
 File logging runs at full verbosity regardless of the `-v` level — every `[INFO]`, `[WARN]`, and `[ERROR]` line is written to file even when the terminal shows only errors. Never let file I/O break a build: all file write errors are silently swallowed.

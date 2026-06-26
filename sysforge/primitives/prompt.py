@@ -66,7 +66,7 @@ def prompt_text(
     stdin raises ``OSError("reading from stdin while output is captured")``,
     and any other unreadable-stdin scenario should fall back gracefully too.
     """
-    full = _format_prefix(tag, level) + msg
+    full = log.downgrade_glyphs(_format_prefix(tag, level) + msg)
     progress.suspend_for_prompt()
     try:
         raw = input(full).strip()
@@ -101,7 +101,7 @@ def prompt_choice(
         prompts where any non-confirming input should fall through to abort.
     """
     choices_t = tuple(c.lower() for c in choices)
-    full = _format_prefix(tag, level) + msg
+    full = log.downgrade_glyphs(_format_prefix(tag, level) + msg)
     progress.suspend_for_prompt()
     while True:
         try:
@@ -145,7 +145,7 @@ def prompt_key(
     A bare Enter (or empty line in fallback mode) returns ``""`` — "no
     answer", distinct from EOF — so callers can re-prompt.
     """
-    full = _format_prefix(tag, level) + msg
+    full = log.downgrade_glyphs(_format_prefix(tag, level) + msg)
     progress.suspend_for_prompt()
 
     def _fallback(prompt: str) -> str:

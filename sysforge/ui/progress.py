@@ -162,6 +162,9 @@ def _release_region() -> None:
 def _paint(text: str) -> None:
     if _cols <= 0:
         _refresh_size()
+    # Downgrade decorative glyphs (·, block-bar fills) before width-truncating —
+    # ASCII fallbacks change length, so this must precede the column clamp.
+    text = log.downgrade_glyphs(text)
     truncated = text[: max(0, _cols - 1)]
     _write(_SAVE)
     _write(f"{_ESC}[{_rows};1H{_CLEAR_LINE}")

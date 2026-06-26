@@ -54,6 +54,7 @@ from typing import NoReturn
 _VERBOSITY = 0
 _DRY_RUN = False
 _COLOR_MODE = "auto"  # one of {"auto", "always", "never"}; see use_color()
+_UNICODE_MODE = "auto"  # one of {"auto", "always", "never"}; see use_unicode()
 _unified_log_fh = None
 _pkg_log_fh = None
 
@@ -179,9 +180,93 @@ def cyan(text: str) -> str:
     return _wrap(text, _ANSI_CYAN)
 
 
+# ---------------------------------------------------------------------------
+# Unicode glyph gating — single source of truth, parallel to use_color().
+#
+# Terminal output may include decorative non-ASCII glyphs (status marks like
+# ✓/✗, arrows, box-drawing rules, ellipses). The Linux framebuffer/VT console
+# (TERM=linux, what a bare-metal or QEMU-graphical install sees) loads a
+# console font that maps only a subset of code points, so those glyphs render
+# as a missing-glyph box. A non-UTF-8 stream (C/POSIX locale) can't encode them
+# at all. use_unicode() decides whether to keep the glyphs; downgrade_glyphs()
+# rewrites them to ASCII when not. File logs are always UTF-8 and bypass this.
+# ---------------------------------------------------------------------------
+
+def set_unicode_mode(mode: str) -> None:
+    """Set the global glyph mode consulted by :func:`use_unicode`.
+
+    ``mode`` is ``"auto"`` (TERM/encoding/SYSFORGE_ASCII gated), ``"always"``
+    (force Unicode glyphs), or ``"never"`` (force ASCII). Unknown values degrade
+    to ``"auto"`` rather than raising, mirroring :func:`set_color_mode`.
+    """
+    global _UNICODE_MODE
+    _UNICODE_MODE = mode if mode in ("auto", "always", "never") else "auto"
+
+
+def use_unicode() -> bool:
+    """Return True iff the active output stream can render decorative glyphs.
+
+    Precedence (single source of truth for the whole codebase):
+      * mode ``"never"`` → False; ``"always"`` → True.
+      * mode ``"auto"`` (the default): ``SYSFORGE_ASCII`` (any non-empty value)
+        forces ASCII; a *known* non-UTF stream encoding forces ASCII; the Linux
+        VT console (``TERM=linux``) forces ASCII; otherwise glyphs are kept.
+
+    An unknown/``None`` stream encoding does *not* downgrade — capture sinks and
+    odd streams stay Unicode rather than being needlessly stripped. Checked
+    per-call so a mid-run redirect is respected.
+    """
+    if _UNICODE_MODE == "never":
+        return False
+    if _UNICODE_MODE == "always":
+        return True
+    if os.environ.get("SYSFORGE_ASCII"):
+        return False
+    enc = (getattr(_out(), "encoding", None) or "").lower()
+    if enc and "utf" not in enc:
+        return False
+    if os.environ.get("TERM") == "linux":
+        return False
+    return True
+
+
+# Decorative glyph → ASCII fallback. Applied only to terminal-bound text when
+# use_unicode() is False. Keep replacements width-frugal and unambiguous.
+_GLYPH_FALLBACKS = {
+    # arrows
+    "→": "->", "←": "<-", "↔": "<->", "↳": "->", "↷": ">>", "▸": ">",
+    # status marks
+    "✓": "[OK]", "✗": "[X]", "⚠": "(!)", "•": "*", "·": "-",
+    # punctuation
+    "…": "...", "—": "--", "–": "-", "−": "-", "×": "x", "≥": ">=", "≈": "~=",
+    # box-drawing rules / junctions
+    "─": "-", "═": "=", "│": "|", "┤": "+", "├": "+", "┬": "+", "┴": "+",
+    "┼": "+", "┌": "+", "┐": "+", "└": "+", "┘": "+",
+    # block elements (progress bars)
+    "█": "#", "▏": "#", "▎": "#", "▍": "#", "▌": "#", "▋": "#", "▊": "#",
+    "▉": "#",
+}
+_GLYPH_TABLE = {ord(k): v for k, v in _GLYPH_FALLBACKS.items()}
+
+
+def downgrade_glyphs(text: str) -> str:
+    """Return *text* with decorative glyphs rewritten to ASCII when the active
+    terminal can't render them (``use_unicode()`` is False); otherwise unchanged.
+
+    The single chokepoint for terminal glyph safety — call sites keep writing the
+    pretty Unicode and this strips it only where it would corrupt the display.
+    """
+    if use_unicode():
+        return text
+    return text.translate(_GLYPH_TABLE)
+
+
 def _format_line(level: str, tag: str, message: str) -> str:
     """Return a ``[SYSFORGE][LEVEL]<tag> <message>\\n`` line, with ANSI colour
     applied when the output stream is a colour-capable TTY."""
+    # Terminal-only path: downgrade decorative glyphs the console can't render.
+    # The UTF-8 file logs are written separately from the caller's own `plain`.
+    message = downgrade_glyphs(message)
     plain = f"[SYSFORGE][{level}]{tag} {message}\n"
     if not use_color():
         return plain
@@ -350,7 +435,7 @@ def newline() -> None:
 
 def ui(tag: str, message: str) -> None:
     """Always printed regardless of verbosity. Always written to log files. For interactive output."""
-    print(message, file=_out())
+    print(downgrade_glyphs(message), file=_out())
     _write_to_files(f"[SYSFORGE][UI]{tag} {message}\n")
 
 
