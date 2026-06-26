@@ -223,7 +223,7 @@ def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
         packages=[], graphics=False, hardware=False, toolchain=False,
         pacman=False, state=False, boot=False, services=False, audio=False,
-        all=False, repo=False,
+        network=False, all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
         apply=False, no_confirm=False, dry_run=False, state_dir=None,
     )
@@ -242,6 +242,7 @@ def _patch_axes_clean(monkeypatch):
     monkeypatch.setattr(doctor, "_collect_state_findings", lambda args: [])
     monkeypatch.setattr(doctor, "_collect_services_findings", lambda: [])
     monkeypatch.setattr(doctor, "_collect_audio_findings", lambda: [])
+    monkeypatch.setattr(doctor, "_collect_network_findings", lambda: [])
     monkeypatch.setattr(doctor, "_collect_boot_findings", lambda: [])
 
 
@@ -258,7 +259,7 @@ def test_cmd_doctor_bare_runs_full_system_sweep(monkeypatch, capsys):
     for label in ("toolchain checks", "hardware checks", "system graphics checks",
                   "pacman / system integrity", "sysforge state integrity",
                   "boot / kernel runtime", "services / runtime health",
-                  "audio / sound stack"):
+                  "audio / sound stack", "network / connectivity"):
         assert label in err, label
     assert rc == 0
 
@@ -285,7 +286,7 @@ def test_resolve_axis_names_single_new_flag():
 def test_resolve_axis_names_bare_includes_new_axes():
     names = doctor._resolve_axis_names(_make_args())
     for n in ("toolchain", "hardware", "graphics", "pacman", "state",
-              "boot", "services", "audio"):
+              "boot", "services", "audio", "network"):
         assert n in names
 
 

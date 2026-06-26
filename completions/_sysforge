@@ -192,6 +192,7 @@ _sysforge_doctor() {
     '--boot[running-system boot readiness: kernel artifacts, fallback, /boot space, DKMS]' \
     '--services[failed systemd units + firmware a driver could not load]' \
     '--audio[PipeWire/WirePlumber: failed audio user services + vanished output sink]' \
+    '--network[no default route, connection-manager conflicts, DNS provisioner conflict]' \
     '--all[verify every installed package, foreign + non-foreign (pacman -Q)]' \
     '--repo[verify every non-foreign (native repo) package]' \
     '--shallow[do not recurse into transitive dependencies]' \

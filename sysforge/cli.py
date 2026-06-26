@@ -442,7 +442,8 @@ def _add_resolve_parser(sub):
 def _add_doctor_parser(sub):
     p = sub.add_parser("doctor",
         help="Diagnose sysforge-managed system health (linkage, toolchain, "
-             "hardware, graphics, pacman, state, boot, services, audio).")
+             "hardware, graphics, pacman, state, boot, services, audio, "
+             "network).")
     p.add_argument("packages", nargs="*", metavar="PKG",
         help="One or more installed package names to verify (package depends "
              "+ ABI linkage walk). With no PKG and no axis flag, bare `doctor` "
@@ -487,6 +488,13 @@ def _add_doctor_parser(sub):
              "user services (`systemctl --user --failed`) and a vanished output "
              "sink (only the dummy auto_null device present). User-scoped, so it "
              "degrades to clean under sudo. Usable on its own (no PKG).")
+    p.add_argument("--network", action="store_true",
+        help="Check network/connectivity configuration: no default route, "
+             "connection-manager ownership conflicts (more than one of "
+             "NetworkManager/systemd-networkd/dhcpcd/… enabled), and a DNS "
+             "provisioner conflict (systemd-resolved active but "
+             "/etc/resolv.conf is a static override). Read-only; no live "
+             "network calls. Usable on its own (no PKG).")
     p.add_argument("--all", action="store_true", dest="all",
         help="Run every system-state axis AND the full per-package walk over "
              "every installed package — foreign and non-foreign (pacman -Q). "

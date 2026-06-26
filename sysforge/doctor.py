@@ -663,6 +663,16 @@ def _collect_audio_findings() -> list[diag.Finding]:
     return audio_probe.collect_audio_findings()
 
 
+def _collect_network_findings() -> list[diag.Finding]:
+    """Live network/connectivity configuration health: no default route,
+    connection-manager ownership conflicts (>1 enabled manager), and a DNS
+    provisioner conflict (resolved active but /etc/resolv.conf static). Read-only
+    — never makes a network call or mutates a unit. See
+    ``primitives/network_probe.py``."""
+    from sysforge.primitives import network_probe
+    return network_probe.collect_network_findings()
+
+
 def _collect_boot_findings() -> list[diag.Finding]:
     """Running-system boot readiness — the analog of the kernel stage's gates
     1/3, reusing ``kernel_safety``: per-kernel boot artifacts (vmlinuz +
@@ -705,7 +715,7 @@ def _collect_boot_findings() -> list[diag.Finding]:
 # Canonical order the axes render in.
 _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
     "toolchain", "hardware", "graphics", "pacman", "state", "boot", "services",
-    "audio",
+    "audio", "network",
 )
 
 # CLI flag attribute → axis name. ``--graphics`` is also a package-walk trigger
@@ -719,6 +729,7 @@ _AXIS_FLAGS: dict[str, str] = {
     "boot": "boot",
     "services": "services",
     "audio": "audio",
+    "network": "network",
 }
 
 
@@ -759,6 +770,11 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
             "audio", "audio / sound stack",
             lambda: _collect_audio_findings(),
             clean_msg="audio stack healthy (or not probeable under sudo)"),
+        "network": diag.Axis(
+            "network", "network / connectivity",
+            lambda: _collect_network_findings(),
+            clean_msg=("default route present; one connection manager; DNS "
+                       "provisioning consistent")),
     }
 
 
