@@ -1502,6 +1502,31 @@ def test_patch_build_linker_rustflags(tmp_path):
     assert "mold" not in p.read_text()
 
 
+def test_patch_build_linker_rustflags_preserves_quotes(tmp_path):
+    # 1.2.0-B3: the rust link-arg rewrite must not consume the closing quote or
+    # collapse indentation/newlines — doing so emits unbalanced bash
+    # (`unexpected EOF while looking for matching "`) that aborts cosmic builds.
+    import shutil
+    import subprocess
+
+    p = tmp_path / "PKGBUILD"
+    p.write_text(
+        "pkgname=foo\nbuild() {\n"
+        '  RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"\n'
+        "  cargo build --release\n"
+        "}\n"
+    )
+    patch_build_linker(p, "lld")
+    text = p.read_text()
+    # The line is rewritten in place: indentation, the wrapping quote, and the
+    # trailing newline all survive — only the linker token changes.
+    assert '  RUSTFLAGS+=" -C link-arg=-fuse-ld=lld"\n' in text
+    bash = shutil.which("bash")
+    if bash:  # syntax-only check reproduces makepkg's parse of the install body
+        res = subprocess.run([bash, "-n", str(p)], capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+
+
 def test_patch_build_linker_ldflags(tmp_path):
     p = tmp_path / "PKGBUILD"
     p.write_text(

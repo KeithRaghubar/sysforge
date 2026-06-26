@@ -194,17 +194,6 @@ and in release notes.
 
 ### Bugs
 
-- **`1.2.0-B3` — PKGBUILD patcher emits an unbalanced quote (`unexpected EOF`) for
-  various cosmic packages.** New failure across multiple cosmic packages:
-  `/home/keith/src/cosmic-applets-git/PKGBUILD.sysforge: line 56: unexpected EOF while
-  looking for matching `"'`. The generated `PKGBUILD.sysforge` is syntactically
-  invalid bash — the patcher (`pkgbuild_patcher.py`) is injecting/anchoring content
-  that leaves a double-quote unbalanced (same *class* as the recently-fixed
-  provides-anchor / pkgver-expansion bugs). Reproduce by inspecting line 56 of a
-  generated `PKGBUILD.sysforge` for a cosmic package; add a regression test and
-  re-validate via `validate_patched_pkgbuild`. *Priority: high (blocks cosmic-stack
-  builds).*
-
 - **`1.2.0-B4` — Build-failure summary omits the failing `LD`.** The failure summary
   prints the resolved `CC` and `CXX` but not `LD`. Since linker choice
   (`-fuse-ld=…`, mold/lld swaps) is a frequent failure cause and sysforge already

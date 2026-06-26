@@ -1451,16 +1451,15 @@ def patch_build_linker(patched_path, target_linker):
     ``target_linker``, in place.
 
     Handles both the LDFLAGS form (``-fuse-ld=X``) and the RUSTFLAGS forms
-    (``-C link-arg=-fuse-ld=X`` / ``-Clink-arg=-fuse-ld=X``, via
-    :func:`makepkg_flags._replace_rustflags_linker`). When ``target_linker`` is
-    ``"ld"`` (the system default), the token is **stripped** rather than written
-    as an invalid ``-fuse-ld=ld``; the now-empty ``-C link-arg=`` wrapper is
-    removed too.
+    (``-C link-arg=-fuse-ld=X`` / ``-Clink-arg=-fuse-ld=X``) with a single
+    in-place ``-fuse-ld=`` token sub, so indentation, surrounding quotes, and
+    newlines are preserved. When ``target_linker`` is ``"ld"`` (the system
+    default), the token is **stripped** rather than written as an invalid
+    ``-fuse-ld=ld``; the now-empty ``-C link-arg=`` wrapper is removed too.
 
     Returns ``{"old", "new", "count"}`` (``old`` = the first linker replaced) or
     ``None`` if nothing changed.
     """
-    from sysforge.primitives.makepkg_flags import _replace_rustflags_linker
 
     patched_path = Path(patched_path)
     text = patched_path.read_text()
@@ -1484,12 +1483,13 @@ def patch_build_linker(patched_path, target_linker):
             new_line = _RUST_FUSE_LD_ONE_RE.sub("", new_line)
             new_line = _FUSE_LD_RE.sub("", new_line)
         else:
-            # Gate rust replace behind presence check to preserve original
-            # spacing on pure-LDFLAGS lines (avoids whitespace normalization).
-            new_line = line
-            if "link-arg=-fuse-ld=" in line:
-                new_line = _replace_rustflags_linker(line, target_linker)
-            new_line = _FUSE_LD_RE.sub(f"-fuse-ld={target_linker}", new_line)
+            # _FUSE_LD_RE matches the `-fuse-ld=X` token inside any wrapper
+            # (bare LDFLAGS, `-C link-arg=…`, or `-Clink-arg=…`), so a single
+            # in-place regex sub rewrites the linker name while preserving the
+            # line's indentation, surrounding quotes, and newline. Splitting the
+            # whole line through _replace_rustflags_linker dropped the closing
+            # quote and collapsed whitespace, emitting unbalanced bash (1.2.0-B3).
+            new_line = _FUSE_LD_RE.sub(f"-fuse-ld={target_linker}", line)
 
         if new_line != line:
             count += line.count("-fuse-ld=")
