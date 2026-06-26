@@ -383,7 +383,10 @@ edits must pass `make check-design` after `make design`.
   mesa's `-D gallium-drivers=all` / `-D vulkan-drivers=…` to detected GPU vendors. One home each:
   derivation `hardware.derive_mesa_drivers`, resolution `mesa_drivers.resolve_or_detect_mesa_drivers`
   (mirrors the llvm_targets precedence), meson rewrite `pkgbuild_patcher.patch_mesa_drivers` (+ the
-  only meson injector/validator — `validate_patched_meson_pkgbuild`; don't add a parallel one),
+  only meson injector/validator — `validate_patched_meson_pkgbuild`; don't add a parallel one;
+  the same function hardens packaging via `_harden_mesa_packaging` so a filtered driver's missing
+  `libvulkan_*.so` doesn't abort `package_*()` — `_pick` skips unbuilt sources, split `mv` is
+  `compgen`-guarded; don't map driver→pkgname),
   wired via `makepkg_wrapper._maybe_patch_mesa_drivers` gated by `profile.is_mesa_pkgbase`. The
   invariant is **inverted** vs LLVM: the mandatory *software* baseline (`_MESA_MANDATORY_GALLIUM`
   llvmpipe/softpipe/zink, `_MESA_MANDATORY_VULKAN` swrast) is always kept (`_ensure_mesa_software_baseline`)

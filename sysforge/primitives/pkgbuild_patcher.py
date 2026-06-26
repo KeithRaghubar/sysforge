@@ -1698,9 +1698,48 @@ def patch_mesa_drivers(
         )
         modified = modified or changed
 
+    # A reduced driver set means some per-driver libs are never built. mesa's
+    # package_*() functions relocate every upstream driver unconditionally
+    # (`_pick … libvulkan_<drv>.so`, then `mv <tag>/* "$pkgdir"` in the split
+    # package), so packaging aborts on the missing artifacts. Make those steps
+    # self-healing rather than mapping driver→pkgname (fragile, version-drifts).
     if modified:
+        new_text = _harden_mesa_packaging(new_text)
         patched_path.write_text(new_text, encoding="utf-8")
     return modified
+
+
+# A `_pick` relocation whose source file wasn't built must be skipped, not
+# `mv`'d (which aborts package_mesa()). Inserted right after the loop header.
+_MESA_PICK_LOOP_RE = re.compile(r"^([ \t]*)for f; do[ \t]*$", re.MULTILINE)
+_MESA_PICK_GUARD = '[ -e "$f" ] || continue'
+
+# A split package stages its files under `<tag>/` via `_pick`; an unbuilt
+# driver leaves that dir empty/absent, so the bare `mv <tag>/* "$pkgdir"` fails
+# on an unmatched literal glob. `compgen -G` makes it a no-op when empty.
+_MESA_SPLIT_MV_RE = re.compile(
+    r'^([ \t]*)mv (?P<tag>[A-Za-z0-9_]+)/\* "\$pkgdir"[ \t]*$', re.MULTILINE
+)
+
+
+def _harden_mesa_packaging(text: str) -> str:
+    """Make mesa's split-package relocation tolerant of drivers that a reduced
+    ``-D *-drivers=`` set never built. Idempotent; a no-op on a PKGBUILD that
+    has no ``_pick`` loop / split ``mv`` (upstream restructure)."""
+    if _MESA_PICK_GUARD not in text:
+        def _guard_pick(m: re.Match) -> str:
+            return f"{m.group(0)}\n{m.group(1)}  {_MESA_PICK_GUARD}"
+
+        text = _MESA_PICK_LOOP_RE.sub(_guard_pick, text, count=1)
+
+    def _guard_mv(m: re.Match) -> str:
+        indent, tag = m.group(1), m.group("tag")
+        return (
+            f'{indent}if compgen -G "{tag}/*" > /dev/null; then '
+            f'mv {tag}/* "$pkgdir"; fi'
+        )
+
+    return _MESA_SPLIT_MV_RE.sub(_guard_mv, text)
 
 
 def _rewrite_mesa_option(text, regex, drivers, label):

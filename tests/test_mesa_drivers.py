@@ -398,6 +398,87 @@ def test_patch_missing_option_warns_and_skips(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# patch_mesa_drivers — packaging hardening (self-healing _pick / split mv).
+# A reduced driver set means some per-driver libs are never built, so the
+# unfiltered package_*() relocation steps must tolerate the missing artifacts.
+# ---------------------------------------------------------------------------
+
+_MESA_PKGBUILD_PKG = _MESA_PKGBUILD + """\
+
+_pick() {
+  local p="$1" f d; shift
+  for f; do
+    d="$srcdir/$p/${f#$pkgdir/}"
+    mkdir -p "$(dirname "$d")"
+    mv -v "$f" "$d"
+    rmdir -p --ignore-fail-on-non-empty "$(dirname "$f")"
+  done
+}
+
+package_mesa() {
+  local libdir=usr/lib
+  cd "$pkgdir"
+  _pick vkasahi $libdir/libvulkan_asahi.so
+  _pick vkradeon $libdir/libvulkan_radeon.so
+}
+
+package_vulkan-asahi() {
+  mv vkasahi/* "$pkgdir"
+}
+
+package_vulkan-radeon() {
+  mv vkradeon/* "$pkgdir"
+}
+"""
+
+
+def test_patch_hardens_pick_against_missing_driver(tmp_path):
+    """A driver filtered out of the build is never produced, so package_mesa()'s
+    unconditional `_pick …/libvulkan_<driver>.so` would `mv` a missing file and
+    abort packaging. After a reducing rewrite, `_pick` must skip missing
+    sources."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_MESA_PKGBUILD_PKG)
+    patch_mesa_drivers(p, ["nouveau", *_BASE_GALLIUM], ["nouveau", *_BASE_VULKAN])
+    new = p.read_text()
+    assert '[ -e "$f" ] || continue' in new
+
+
+def test_patch_hardens_split_mv_against_empty_staging(tmp_path):
+    """An unbuilt driver leaves its split-package staging dir empty/absent, so
+    `mv vkasahi/* "$pkgdir"` would fail on an unmatched literal glob. After a
+    reducing rewrite the split mv must tolerate an empty staging dir."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_MESA_PKGBUILD_PKG)
+    patch_mesa_drivers(p, ["nouveau", *_BASE_GALLIUM], ["nouveau", *_BASE_VULKAN])
+    new = p.read_text()
+    assert 'compgen -G "vkasahi/*"' in new
+    assert 'compgen -G "vkradeon/*"' in new
+
+
+def test_patch_hardening_idempotent(tmp_path):
+    """Re-running the patcher must not double-insert guards."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_MESA_PKGBUILD_PKG)
+    patch_mesa_drivers(p, ["nouveau", *_BASE_GALLIUM], ["nouveau", *_BASE_VULKAN])
+    once = p.read_text()
+    patch_mesa_drivers(p, ["nouveau", *_BASE_GALLIUM], ["nouveau", *_BASE_VULKAN])
+    assert p.read_text() == once
+    assert once.count('[ -e "$f" ] || continue') == 1
+
+
+def test_patch_no_hardening_when_no_packaging_block(tmp_path):
+    """A PKGBUILD without `_pick`/split-mv is left structurally alone (the
+    driver rewrite still happens, but no spurious guard text appears)."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_MESA_PKGBUILD)
+    patch_mesa_drivers(p, ["nouveau", *_BASE_GALLIUM], ["nouveau", *_BASE_VULKAN])
+    new = p.read_text()
+    assert "compgen" not in new
+    assert '|| continue' not in new
+
+
+# ---------------------------------------------------------------------------
 # validate_patched_meson_pkgbuild — post-rewrite structural gate.
 # ---------------------------------------------------------------------------
 
