@@ -11,9 +11,12 @@ history (the commit that lands an item is its record).
 
 IDs are `<version>-<TYPE><n>`, e.g. `1.2.0-F1` (feature), `1.2.0-B1` (bug),
 `1.2.0-Q1` (open question), `1.2.0-STD1` (standards). The version prefix is the
-current `pyproject.toml` version. The per-release, per-type counter **resets to 1
-on every release** (when `tools/release.sh` bumps the version); the version prefix
-keeps IDs globally unique. An item still open at release time keeps its existing ID
+current `pyproject.toml` version. The per-type counter **resets to 1 only on a
+major or minor version bump** (`X.Y.Z` → `(X+1).0.0` / `X.(Y+1).0`), never on a
+patch bump — i.e. the counter is scoped to the minor-release cycle and stays
+monotonic across patch releases within it. The version prefix keeps IDs globally
+unique and records the cycle an item originated in. An item still open at release
+time keeps its existing ID
 (it records the cycle the item originated in, not its target). IDs appear only here
 and in release notes.
 

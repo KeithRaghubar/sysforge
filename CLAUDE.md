@@ -47,7 +47,7 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
 
 - **Doc update order**: `docs/design/*.md` source (+ `make design`) → README.md → CLAUDE.md.
 - **DESIGN = implemented only; `/ROADMAP.md` = planned + abandoned.** Roadmap IDs
-  (`<version>-<TYPE><n>`, e.g. `1.2.0-F1`; counters reset on `release.sh` bump) appear only in
+  (`<version>-<TYPE><n>`, e.g. `1.2.0-F1`; counters reset only on a major/minor bump, not patch) appear only in
   ROADMAP + `docs/release-notes/`, never DESIGN. Triage `notes.txt` into ROADMAP.md.
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same
   change as any CLI-surface change.
