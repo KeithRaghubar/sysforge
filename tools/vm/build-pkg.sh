@@ -92,6 +92,8 @@ case "$FLAVOR" in
 
         SHA=$(sha256sum "$TARBALL" | awk '{print $1}')
         cp "$REPO_ROOT/PKGBUILD" "$SCRATCH/PKGBUILD"
+        # install= scriptlet is read from the build dir, not fetched as a source.
+        cp "$REPO_ROOT/sysforge.install" "$SCRATCH/sysforge.install"
         sed -i -E "s/^sha256sums=\(.*\)/sha256sums=('$SHA')/" "$SCRATCH/PKGBUILD"
         export SRCDEST="$SCRATCH"
         ;;
@@ -101,6 +103,8 @@ case "$FLAVOR" in
         # on `git describe --long --tags`.
         git clone --bare --quiet "$REPO_ROOT" "$SCRATCH/sysforge.git"
         cp "$REPO_ROOT/PKGBUILD-git" "$SCRATCH/PKGBUILD"
+        # install= scriptlet is read from the build dir, not fetched as a source.
+        cp "$REPO_ROOT/sysforge.install" "$SCRATCH/sysforge.install"
         sed -i "s|^source=.*|source=(\"\$pkgname::git+file://$SCRATCH/sysforge.git\")|" \
             "$SCRATCH/PKGBUILD"
         ;;
