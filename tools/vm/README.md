@@ -96,7 +96,15 @@ via the `vm-savevm` wrapper:
 make vm-savevm NAME=clean
 ```
 
-This is your reset point. Every test run can start from here.
+This is your reset point. Every test run can start from here. To boot straight
+from a saved snapshot (instead of `loadvm` in the monitor after boot), use
+`vm-loadvm`, which restores it at startup via QEMU's `-loadvm`:
+
+```bash
+make vm-loadvm NAME=clean          # headless
+make vm-loadvm NAME=clean GUI=1    # with a VNC display
+make vm-loadvm clean               # name may also be given positionally
+```
 
 ### 4a. Enable the serial console (existing VM only)
 

@@ -6,6 +6,8 @@
 #   ./tools/vm/boot.sh --snapshot   # boot in ephemeral mode, discard changes on exit
 #   ./tools/vm/boot.sh --iso        # boot from Arch ISO for initial install
 #   ./tools/vm/boot.sh --gui        # boot installed disk with a VNC display
+#   ./tools/vm/boot.sh --loadvm NAME  # restore named savevm snapshot at startup
+#                                     # (combine with --gui for a graphical restore)
 #
 # All modes run QEMU with -daemonize: the script exits as soon as the VM has
 # initialized, and the VM continues running in the background. Use
@@ -52,15 +54,35 @@ SSH_PORT=10022   # host port forwarded to VM :22
 SNAPSHOT=0
 USE_ISO=0
 USE_GUI=0
+LOADVM=""
 
-for arg in "$@"; do
-    case "$arg" in
-        --snapshot) SNAPSHOT=1 ;;
-        --iso)      USE_ISO=1 ;;
-        --gui)      USE_GUI=1 ;;
-        *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --snapshot)   SNAPSHOT=1 ;;
+        --iso)        USE_ISO=1 ;;
+        --gui)        USE_GUI=1 ;;
+        --loadvm)     shift; LOADVM="${1:-}";
+                      [[ -n "$LOADVM" ]] || { echo "--loadvm requires a snapshot name" >&2; exit 1; } ;;
+        --loadvm=*)   LOADVM="${1#*=}";
+                      [[ -n "$LOADVM" ]] || { echo "--loadvm requires a snapshot name" >&2; exit 1; } ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
+    shift
 done
+
+# -loadvm restores point-in-time VM state; -snapshot opens a throwaway overlay.
+# Restoring saved guest RAM into an ephemeral overlay is incoherent, and --iso
+# boots external media (nothing to restore into) — reject both up front.
+if [[ -n "$LOADVM" ]]; then
+    if [[ $SNAPSHOT -eq 1 ]]; then
+        echo "--loadvm cannot be combined with --snapshot (ephemeral overlay mode)." >&2
+        exit 1
+    fi
+    if [[ $USE_ISO -eq 1 ]]; then
+        echo "--loadvm cannot be combined with --iso." >&2
+        exit 1
+    fi
+fi
 
 # Sanity checks
 if [[ ! -f "$DISK_IMAGE" ]]; then
@@ -162,6 +184,13 @@ fi
 # sockets behind when the pidfile was already gone, which QEMU then can't bind.
 rm -f "$VM_DIR/qemu.pid" "$VM_DIR/qemu-monitor.sock" "$VM_DIR/serial.sock"
 
+# Restore a named savevm snapshot at startup. Placed after the drives in
+# QEMU_ARGS (declaration order matters — see the -drive comment above) so QEMU
+# resolves the vmstate against the same block device savevm wrote it to.
+if [[ -n "$LOADVM" ]]; then
+    QEMU_ARGS+=(-loadvm "$LOADVM")
+fi
+
 if [[ $SNAPSHOT -eq 1 ]]; then
     QEMU_ARGS+=(-snapshot)
     echo "Booting in ephemeral mode (changes will be discarded on exit)."
@@ -221,5 +250,8 @@ else
     echo "  Serial:  make vm-console"
     echo "  Monitor: make vm-monitor"
     echo "  Stop:    make vm-stop (or 'quit' in make vm-monitor)"
+fi
+if [[ -n "$LOADVM" ]]; then
+    echo "  Restoring from snapshot '$LOADVM'."
 fi
 "${QEMU_ARGS[@]}"

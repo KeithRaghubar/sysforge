@@ -2,7 +2,7 @@
         check-shipped check-personal check-standards design check-design pre-release \
         sync-config \
         release-major release-minor release-patch \
-        vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
+        vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
@@ -153,6 +153,14 @@ vm-boot:
 vm-boot-gui:
 	./tools/vm/boot.sh --gui
 
+# Boot the installed disk restored from a named savevm snapshot.
+#   make vm-loadvm NAME=clean          # headless
+#   make vm-loadvm NAME=clean GUI=1    # with a VNC display
+# Also accepts the name positionally: make vm-loadvm clean
+vm-loadvm:
+	@if [ -z "$(NAME)" ]; then echo "Usage: make vm-loadvm NAME=<snapshot-name> [GUI=1]  (or: make vm-loadvm <snapshot-name>)"; exit 2; fi
+	./tools/vm/boot.sh --loadvm "$(NAME)" $(if $(GUI),--gui,)
+
 vm-snapshot:
 	./tools/vm/boot.sh --snapshot
 
@@ -180,16 +188,16 @@ vm-console:
 	socat -,raw,echo=0,escape=0x1d UNIX-CONNECT:$(VM_DIR)/serial.sock
 
 # Accept the snapshot name as a bare positional goal: `make vm-savevm <name>`
-# in addition to `make vm-savevm NAME=<name>`. When vm-savevm is the first goal,
-# treat the next goal as the name and stub it out with a no-op recipe so Make
-# does not try to build it as a target (it would otherwise look for a rule named
-# e.g. `clean` and run the real `clean` target after savevm).
-ifeq (vm-savevm,$(firstword $(MAKECMDGOALS)))
-  VM_SAVEVM_POS := $(word 2,$(MAKECMDGOALS))
-  ifneq ($(VM_SAVEVM_POS),)
-    NAME ?= $(VM_SAVEVM_POS)
-    $(eval $(VM_SAVEVM_POS):;@:)
-    .PHONY: $(VM_SAVEVM_POS)
+# (and `make vm-loadvm <name>`) in addition to the `NAME=<name>` form. When one
+# of these is the first goal, treat the next goal as the name and stub it out
+# with a no-op recipe so Make does not try to build it as a target (it would
+# otherwise look for a rule named e.g. `clean` and run the real `clean` target).
+ifneq ($(filter vm-savevm vm-loadvm,$(firstword $(MAKECMDGOALS))),)
+  VM_SNAP_POS := $(word 2,$(MAKECMDGOALS))
+  ifneq ($(VM_SNAP_POS),)
+    NAME ?= $(VM_SNAP_POS)
+    $(eval $(VM_SNAP_POS):;@:)
+    .PHONY: $(VM_SNAP_POS)
   endif
 endif
 
