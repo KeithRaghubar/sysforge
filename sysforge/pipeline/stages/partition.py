@@ -18,6 +18,7 @@ Requires sgdisk (gptfdisk), mkfs.fat, mkfs.ext4 / mkfs.btrfs, and mount.
 """
 
 import subprocess
+import unicodedata
 from pathlib import Path
 
 from sysforge import log
@@ -140,9 +141,31 @@ _COLS = (7, 12, 10, 26)
 _W = sum(_COLS) + len(_COLS) - 1  # full-width interior = 58
 
 
+def _dwidth(text: str) -> int:
+    """Terminal display width: East-Asian Wide/Fullwidth glyphs occupy two cells.
+
+    ``len()`` counts code points, not cells, so a single wide glyph (or an em
+    dash that a terminal renders double-width) would shift the right border —
+    the recurring misalignment. Measuring display width keeps the box square.
+    """
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
+
+
 def _pad(text: str, width: int) -> str:
-    """Left-justify into width; truncate over-long content so the box never breaks."""
-    return text[:width].ljust(width)
+    """Left-justify into ``width`` *display cells*; truncate over-long content.
+
+    Truncation and padding both reckon in display width, so non-ASCII content
+    can never push the box out of alignment.
+    """
+    out = ""
+    used = 0
+    for c in text:
+        w = _dwidth(c)
+        if used + w > width:
+            break
+        out += c
+        used += w
+    return out + " " * (width - used)
 
 
 def _cap(left: str, right: str) -> str:
@@ -169,7 +192,7 @@ def _plan_table(cfg: BootstrapConfig) -> list[str]:
     """Build the partition-plan box table as a list of equal-width lines."""
     return [
         _cap("┌", "┐"),
-        _fullrow("  SysForge — Partition plan"),
+        _fullrow("  SysForge - Partition plan"),
         _cap("├", "┤"),
         _fullrow(f"  Device : {cfg.device}"),
         _fullrow(f"  Target : {cfg.target}"),
