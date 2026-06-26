@@ -19,6 +19,7 @@ path = [
     "**.json",
     "PKGBUILD",
     "PKGBUILD-git",
+    "sysforge.install",
     ".SRCINFO",
     "keys/**",
     "Makefile",

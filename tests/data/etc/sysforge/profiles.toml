@@ -85,8 +85,9 @@
 #                 #               --noprogressbar --log --cleanbuild --force
 #
 #   # SysForge behaviour keys  (not written to conf or env)
-#   build_mode    = "patched_pkgbuild"  # "patched_pkgbuild" | "pgo_llvm_toolchain" | "kernel"
-#                                     # omit for standard builds
+#   build_mode    = "source_built"      # "source_built" | "pgo_llvm_toolchain" | "kernel"
+#                                     # omit for standard builds; legacy
+#                                     # "patched_pkgbuild" still accepted on read
 #   clean_builddir = true             # wipe src/ before build (default: false)
 #   batch          = true             # abort on failure without prompting (default: false)
 #   consumes       = ["makepkg", "rust", "cmake", "meson", "env"]
@@ -178,6 +179,8 @@ build_mode = "pgo_llvm_toolchain"
 
 [profiles.patched]
 extends = "optimized"
+# Intentionally the legacy token: exercises normalize_build_mode's read-alias
+# (patched_pkgbuild -> source_built) through the real config-load path (F12).
 build_mode = "patched_pkgbuild"
 
 [profiles.cosmic]

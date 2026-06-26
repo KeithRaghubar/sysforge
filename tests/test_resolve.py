@@ -309,7 +309,7 @@ SIMPLE_CONFIG = {
 }
 
 MATCHED_RULE = {"priority": 10, "pkgnames": ["mypkg"], "profile": "optimized"}
-RESOLVED_PROFILE = {"CC": "clang", "build_mode": "patched_pkgbuild"}
+RESOLVED_PROFILE = {"CC": "clang", "build_mode": "source_built"}
 
 
 def test_print_resolve_shows_package_name(capsys, tmp_path):
@@ -361,7 +361,7 @@ def test_print_resolve_shows_build_mode(capsys, tmp_path):
     _print_resolve(pb, SIMPLE_PKGMETA, [MATCHED_RULE], RESOLVED_PROFILE,
                    frozenset(), [], SIMPLE_CONFIG, show_flags=False)
     out = capsys.readouterr().out
-    assert "patched_pkgbuild" in out
+    assert "source_built" in out
 
 
 def test_print_resolve_no_build_mode_omits_line(capsys, tmp_path):

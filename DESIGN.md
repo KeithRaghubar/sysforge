@@ -1359,7 +1359,7 @@ Static parser for PKGBUILD metadata. Does **not** source or execute the PKGBUILD
 
 ### `pkgbuild_patcher.py`
 
-All PKGBUILD mutation. Active when `build_mode = "patched_pkgbuild"` or `"kernel"` on the resolved profile.
+All PKGBUILD mutation. Active when `build_mode` is `"source_built"` (legacy token `"patched_pkgbuild"`, normalized on read) or `"kernel"` on the resolved profile — tested via the shared predicate `profile.build_mode_uses_extracted_profile` (the one home for this membership; don't re-spell the tuple inline).
 
 **Flag extraction** (`extract_pkgbuild_profile`) scans all function bodies and extracts bare, `export`, and `+=` assignments to known flag variables. Strips self-references (`$CFLAGS` in CFLAGS), skips complex bash expressions (e.g. `${CFLAGS/-g /-g1 }`), expands packed `-Wl,a,b,c` tokens into individual sub-tokens. Returns a synthetic profile dict used as the implicit chain root in `merge_extends` — forming the chain: `pkgbuild_extracted → bare → standard → optimized`.
 
@@ -1497,7 +1497,7 @@ High-level flow:
 3. Resolve consumes and groups
 4. Import GPG keys via `aur.import_pgp_keys` (bundled `keys/pgp/*.asc` first, keyserver fallback)
 5. Run pre-build soname dep analysis
-6. If `patched_pkgbuild` or `kernel` mode: extract PKGBUILD flags, write extracted profile, apply patch
+6. If `source_built` (legacy `patched_pkgbuild`) or `kernel` mode: extract PKGBUILD flags, write extracted profile, apply patch
 7. If `kernel` mode and not `interactive`: patch interactive kconfig targets in `PKGBUILD.sysforge` to `olddefconfig`
 8. If `kernel` mode: detect effective CC; if clang, inject `LLVM=1 LLVM_IAS=1` into build env
 9. Emit complete temp `makepkg.conf` (merged system conf + profile overrides; kernel mode omits `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`CPPFLAGS`/`DEBUG_*` profile overrides — system conf values preserved verbatim)
@@ -1763,7 +1763,7 @@ build_mode = "pgo_llvm_toolchain"
 
 [profiles.patched]
 extends = "optimized"
-build_mode = "patched_pkgbuild"
+build_mode = "source_built"   # legacy token "patched_pkgbuild" still accepted on read
 
 [profiles.kernel]
 extends = "bare"
@@ -1771,6 +1771,27 @@ build_mode = "kernel"
 batch = true
 makepkg_flags = ["--noconfirm", "--syncdeps", "-f", "-c"]
 ```
+
+### `build_mode` vocabulary
+
+`build_mode` is set in two layers and `profile.py` carries the single documented
+enumeration of every token (next to `_OPTIMIZED_BUILD_MODES`). The profile layer
+(`profiles.toml`, user-set) uses `source_built` | `pgo_llvm_toolchain` | `kernel`
+(omit for a standard build); the build_state layer (`build_state.toml`, stamped at
+build time) uses `source_built` | `pacman` | `kernel` plus the optimization modes
+(`pgo_mesa`/`pgo`/`autofdo_kernel`/`propeller_kernel`/`bolt_llvm`). The two layers
+share one value space: `source_built` means "a plain from-source build" in both —
+the profile layer extracts the PKGBUILD's embedded profile, build_state stamps it
+as the rebuild-on-update marker.
+
+Two legacy tokens are normalized **on read only** (never written into new data),
+collapsing the historically-overloaded vocabulary: build_state maps
+`profiled → source_built` (`BuildState.__init__`); the profile layer maps
+`patched_pkgbuild → source_built` (`profile.normalize_build_mode`, applied at the
+`get_build_mode` read chokepoint). The "does this mode extract the embedded
+PKGBUILD profile?" gate has one home — `profile.build_mode_uses_extracted_profile`
+(`source_built`/`kernel`, legacy token accepted) — consumed by `flag_drift` and
+`makepkg_wrapper`; don't re-spell the membership inline.
 
 ### Toolchain field
 
@@ -2064,7 +2085,7 @@ Repair modes:
 
 On build failure, patched PKGBUILD files are left in place for diagnosis rather than deleted:
 
-- `patched_pkgbuild` mode: `PKGBUILD.sysforge` and `pkgbuild_extracted_profile.toml` are preserved. A `[WARN][PATCH]` line is emitted noting their location.
+- `source_built` mode (legacy token `patched_pkgbuild`): `PKGBUILD.sysforge` and `pkgbuild_extracted_profile.toml` are preserved. A `[WARN][PATCH]` line is emitted noting their location.
 - Groups-only mode (non-patch builds): `PKGBUILD.sysforge` is also preserved on failure with a `[WARN][BUILD]` message.
 
 On success, all patch artifacts are cleaned up in both modes.

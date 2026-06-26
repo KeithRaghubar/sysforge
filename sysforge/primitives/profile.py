@@ -709,10 +709,79 @@ def get_build_mode(matched_rules, config) -> str | None:
         visited.add(profile_name)
         p = profiles.get(profile_name, {})
         if "build_mode" in p:
-            return p["build_mode"]
+            return normalize_build_mode(p["build_mode"])
         profile_name = p.get("extends")
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# build_mode vocabulary — the single documented enumeration (F12)
+# ---------------------------------------------------------------------------
+#
+# ``build_mode`` is set in two layers; this is the one place every token is
+# enumerated with the layer that sets it and what it means. Keep it in sync with
+# the profiles.toml header comment and build_state.BUILD_MODE_* constants.
+#
+#   token                | layer        | meaning
+#   ---------------------|--------------|------------------------------------------
+#   (unset / None)       | profile      | standard build — no embedded-profile
+#                        |              | extraction, stock package name
+#   "source_built"       | profile +    | plain from-source build; the profile
+#                        | build_state  | layer extracts the PKGBUILD's embedded
+#                        |              | profile, build_state stamps it as the
+#                        |              | "rebuild me on update" marker. Legacy
+#                        |              | profile token: "patched_pkgbuild";
+#                        |              | legacy build_state token: "profiled".
+#   "kernel"             | profile +    | kernel build; extracts embedded profile,
+#                        | build_state  | coexist-renamed when optimized.
+#   "pacman"             | build_state  | installed from a binary repo (deferred
+#                        |              | -Syu), never source-rebuilt by update.
+#   "pgo_llvm_toolchain" | profile +    | instrumentation PGO of the LLVM
+#                        | build_state  | toolchain — earns -sysforge.
+#   "pgo_mesa" / "pgo" / | build_state  | the remaining optimization modes, all
+#   "autofdo_kernel" /   | (stamped)    | stamped at build time and members of
+#   "propeller_kernel" / |              | _OPTIMIZED_BUILD_MODES → -sysforge.
+#   "bolt_llvm"          |              |
+#
+# The two legacy tokens are normalized on read (never on write of new data):
+# build_state normalizes "profiled"→"source_built" (BuildState.__init__);
+# this module normalizes the profile token "patched_pkgbuild"→"source_built"
+# (normalize_build_mode, applied at the get_build_mode read chokepoint).
+
+# Profile-layer build_mode values whose build wants the PKGBUILD's *embedded*
+# profile extracted (a plain from-source build and a kernel build). The shared
+# predicate below is the one home for this membership — the two scattered
+# ``build_mode in ("patched_pkgbuild", "kernel")`` checks (flag_drift,
+# makepkg_wrapper) route through it so the legacy alias is honoured in one place.
+_EXTRACTED_PROFILE_BUILD_MODES = frozenset({"source_built", "kernel"})
+
+# Legacy profile-layer build_mode token → canonical token. Mirrors the
+# build_state ``"profiled"`` → ``"source_built"`` read-alias; both collapse the
+# overloaded historical vocabulary onto one value space.
+_LEGACY_BUILD_MODE_ALIASES = {"patched_pkgbuild": "source_built"}
+
+
+def normalize_build_mode(build_mode: str | None) -> str | None:
+    """Map a legacy profile-layer ``build_mode`` token to its canonical value.
+
+    ``"patched_pkgbuild"`` → ``"source_built"``; every other token (and
+    ``None``) is returned unchanged. The single read-alias chokepoint so a
+    live/edited profiles.toml of any vintage presents one vocabulary downstream.
+    """
+    if build_mode is None:
+        return None
+    return _LEGACY_BUILD_MODE_ALIASES.get(build_mode, build_mode)
+
+
+def build_mode_uses_extracted_profile(build_mode: str | None) -> bool:
+    """True when ``build_mode`` should extract the PKGBUILD's embedded profile.
+
+    One home for the ``("patched_pkgbuild", "kernel")`` gate (legacy token
+    accepted via :func:`normalize_build_mode`). Consumed by ``flag_drift`` and
+    ``makepkg_wrapper`` — don't re-spell the membership inline.
+    """
+    return normalize_build_mode(build_mode) in _EXTRACTED_PROFILE_BUILD_MODES
 
 
 # ---------------------------------------------------------------------------

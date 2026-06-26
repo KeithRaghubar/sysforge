@@ -31,7 +31,7 @@ build_mode = "pgo_llvm_toolchain"
 
 [profiles.patched]
 extends = "optimized"
-build_mode = "patched_pkgbuild"
+build_mode = "source_built"   # legacy token "patched_pkgbuild" still accepted on read
 
 [profiles.kernel]
 extends = "bare"
@@ -39,6 +39,27 @@ build_mode = "kernel"
 batch = true
 makepkg_flags = ["--noconfirm", "--syncdeps", "-f", "-c"]
 ```
+
+### `build_mode` vocabulary
+
+`build_mode` is set in two layers and `profile.py` carries the single documented
+enumeration of every token (next to `_OPTIMIZED_BUILD_MODES`). The profile layer
+(`profiles.toml`, user-set) uses `source_built` | `pgo_llvm_toolchain` | `kernel`
+(omit for a standard build); the build_state layer (`build_state.toml`, stamped at
+build time) uses `source_built` | `pacman` | `kernel` plus the optimization modes
+(`pgo_mesa`/`pgo`/`autofdo_kernel`/`propeller_kernel`/`bolt_llvm`). The two layers
+share one value space: `source_built` means "a plain from-source build" in both —
+the profile layer extracts the PKGBUILD's embedded profile, build_state stamps it
+as the rebuild-on-update marker.
+
+Two legacy tokens are normalized **on read only** (never written into new data),
+collapsing the historically-overloaded vocabulary: build_state maps
+`profiled → source_built` (`BuildState.__init__`); the profile layer maps
+`patched_pkgbuild → source_built` (`profile.normalize_build_mode`, applied at the
+`get_build_mode` read chokepoint). The "does this mode extract the embedded
+PKGBUILD profile?" gate has one home — `profile.build_mode_uses_extracted_profile`
+(`source_built`/`kernel`, legacy token accepted) — consumed by `flag_drift` and
+`makepkg_wrapper`; don't re-spell the membership inline.
 
 ### Toolchain field
 

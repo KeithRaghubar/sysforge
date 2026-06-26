@@ -30,6 +30,7 @@ from sysforge.primitives.build_state import BUILD_MODE_SOURCE
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
 from sysforge.primitives.profile import (
+    build_mode_uses_extracted_profile,
     get_build_mode,
     match_rules,
     resolve_profile,
@@ -123,7 +124,7 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups) -> FlagDriftR
     matched = match_rules(pkgmeta, config.get("rules", []))
     build_mode = get_build_mode(matched, config)
     extracted_profile = None
-    if build_mode in ("patched_pkgbuild", "kernel"):
+    if build_mode_uses_extracted_profile(build_mode):
         extracted_profile = extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
     resolved = resolve_profile(
         pkgmeta, matched, config, conflict_groups,

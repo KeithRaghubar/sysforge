@@ -83,7 +83,7 @@ Repair modes:
 
 On build failure, patched PKGBUILD files are left in place for diagnosis rather than deleted:
 
-- `patched_pkgbuild` mode: `PKGBUILD.sysforge` and `pkgbuild_extracted_profile.toml` are preserved. A `[WARN][PATCH]` line is emitted noting their location.
+- `source_built` mode (legacy token `patched_pkgbuild`): `PKGBUILD.sysforge` and `pkgbuild_extracted_profile.toml` are preserved. A `[WARN][PATCH]` line is emitted noting their location.
 - Groups-only mode (non-patch builds): `PKGBUILD.sysforge` is also preserved on failure with a `[WARN][BUILD]` message.
 
 On success, all patch artifacts are cleaned up in both modes.

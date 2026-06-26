@@ -109,8 +109,13 @@
 #                 #         --noprogressbar --log --cleanbuild --force
 #
 #   # SysForge behaviour keys  (not written to conf or env)
-#   build_mode    = "patched_pkgbuild"  # "patched_pkgbuild" | "pgo_llvm_toolchain" | "kernel"
-#                                       # omit for standard builds
+#   build_mode    = "source_built"      # "source_built" | "pgo_llvm_toolchain" | "kernel"
+#                                       # omit for standard builds. "source_built"
+#                                       # extracts the PKGBUILD's embedded profile
+#                                       # (legacy token "patched_pkgbuild" still
+#                                       # accepted on read). Optimization modes
+#                                       # (pgo_mesa/pgo/autofdo_kernel/…) are
+#                                       # stamped at build time, not set here.
 #   clean_builddir = true               # wipe src/ before build (default: false)
 #   batch          = true               # abort on failure without prompting (default: false)
 #   consumes       = ["makepkg", "rust", "cmake", "meson", "env"]
@@ -194,7 +199,7 @@ build_mode = "pgo_llvm_toolchain"
 
 [profiles.patched]
 extends = "optimized"
-build_mode = "patched_pkgbuild"
+build_mode = "source_built"   # extracts the PKGBUILD's embedded profile (was "patched_pkgbuild")
 
 [profiles.kernel]
 extends = "bare"

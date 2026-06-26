@@ -127,10 +127,12 @@ from sysforge import log
 _build_log = log.get_logger("BUILD")
 from sysforge.primitives.profile import (
     CONF_KEY_MAP,
+    build_mode_uses_extracted_profile,
     get_build_mode,
     is_mesa_pkgbase,
     is_optimized_build_mode,
     match_rules,
+    normalize_build_mode,
     rename_mode_for_build_mode,
     resolve_consumes,
     resolve_groups,
@@ -870,7 +872,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     f"[BUILD] profile_override {options.profile_override!r} not found in loaded config"
                 )
             resolved_profile = merge_extends(options.profile_override, profiles, conflict_groups=conflict_groups)
-            build_mode = resolved_profile.get("build_mode")
+            build_mode = normalize_build_mode(resolved_profile.get("build_mode"))
             _build_log.info(f"Profile override: {options.profile_override!r} (build_mode={build_mode!r})")
         else:
             build_mode = get_build_mode(matched_rules, config)
@@ -1010,7 +1012,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 )
 
         extracted_profile = None
-        if build_mode in ("patched_pkgbuild", "kernel"):
+        if build_mode_uses_extracted_profile(build_mode):
             extracted_profile = extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
             if extracted_profile:
                 write_extracted_profile(extracted_profile, pkgbuild_path)
@@ -1053,7 +1055,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         rename = _run_build(
                 pkgbuild_path, resolved_profile, config, groups,
                 active_consumes=active_consumes,
-                extracted_profile=extracted_profile if build_mode in ("patched_pkgbuild", "kernel") else None,
+                extracted_profile=extracted_profile if build_mode_uses_extracted_profile(build_mode) else None,
                 pkgmeta=pkgmeta,
                 extra_flags=options.extra_flags,
                 interactive=options.interactive,
