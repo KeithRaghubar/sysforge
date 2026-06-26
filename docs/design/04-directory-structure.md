@@ -56,6 +56,7 @@ sysforge/
 │       ├── system_probe.py            # doctor pacman axis: -Dk, db.lck, .pacnew, orphans (read-only)
 │       ├── state_probe.py             # doctor state axis: build failures, stale sentinel, state drift
 │       ├── runtime_probe.py           # doctor services axis: failed units, missing firmware
+│       ├── audio_probe.py             # doctor audio axis: failed pipewire user units, vanished sink
 │       ├── failure.py                 # failure scenario handling (shared)
 │       ├── resource_guard.py          # controller RLIMIT_AS cap + lift_for_child() for subprocesses
 │       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)

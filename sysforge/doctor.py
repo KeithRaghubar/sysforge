@@ -654,6 +654,15 @@ def _collect_services_findings() -> list[diag.Finding]:
         only=lambda f: f.check_id == "missing_firmware")
 
 
+def _collect_audio_findings() -> list[diag.Finding]:
+    """Live PipeWire/WirePlumber sound-stack health: failed audio user services
+    and a vanished output sink. Read-only — never restarts a unit. User-scoped,
+    so it degrades to clean under sudo (no reachable session bus). See
+    ``primitives/audio_probe.py``."""
+    from sysforge.primitives import audio_probe
+    return audio_probe.collect_audio_findings()
+
+
 def _collect_boot_findings() -> list[diag.Finding]:
     """Running-system boot readiness — the analog of the kernel stage's gates
     1/3, reusing ``kernel_safety``: per-kernel boot artifacts (vmlinuz +
@@ -696,6 +705,7 @@ def _collect_boot_findings() -> list[diag.Finding]:
 # Canonical order the axes render in.
 _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
     "toolchain", "hardware", "graphics", "pacman", "state", "boot", "services",
+    "audio",
 )
 
 # CLI flag attribute → axis name. ``--graphics`` is also a package-walk trigger
@@ -708,6 +718,7 @@ _AXIS_FLAGS: dict[str, str] = {
     "state": "state",
     "boot": "boot",
     "services": "services",
+    "audio": "audio",
 }
 
 
@@ -744,6 +755,10 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
             "services", "services / runtime health",
             lambda: _collect_services_findings(),
             clean_msg="no failed units or missing firmware"),
+        "audio": diag.Axis(
+            "audio", "audio / sound stack",
+            lambda: _collect_audio_findings(),
+            clean_msg="audio stack healthy (or not probeable under sudo)"),
     }
 
 

@@ -442,7 +442,7 @@ def _add_resolve_parser(sub):
 def _add_doctor_parser(sub):
     p = sub.add_parser("doctor",
         help="Diagnose sysforge-managed system health (linkage, toolchain, "
-             "hardware, graphics, pacman, state, boot, services).")
+             "hardware, graphics, pacman, state, boot, services, audio).")
     p.add_argument("packages", nargs="*", metavar="PKG",
         help="One or more installed package names to verify (package depends "
              "+ ABI linkage walk). With no PKG and no axis flag, bare `doctor` "
@@ -482,6 +482,11 @@ def _add_doctor_parser(sub):
         help="Check live service/driver runtime health: failed systemd units "
              "(`systemctl --failed`) and firmware a driver requested but could "
              "not load this boot. Usable on its own (no PKG).")
+    p.add_argument("--audio", action="store_true",
+        help="Check live PipeWire/WirePlumber sound-stack health: failed audio "
+             "user services (`systemctl --user --failed`) and a vanished output "
+             "sink (only the dummy auto_null device present). User-scoped, so it "
+             "degrades to clean under sudo. Usable on its own (no PKG).")
     p.add_argument("--all", action="store_true", dest="all",
         help="Run every system-state axis AND the full per-package walk over "
              "every installed package — foreign and non-foreign (pacman -Q). "

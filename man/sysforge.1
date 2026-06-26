@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026-06-22"
+.TH "sysforge" "1" "2026-06-26"
 .PP
 .PP
 .SH NAME
@@ -422,7 +422,7 @@ Path to a profiles.\&toml to use instead of the default.\&
 .PP
 \fBsysforge doctor\fR [\fIOPTIONS\fR] \fI[PKG.\&.\&.\&]\fR
 .PP
-Diagnose sysforge-managed system health (linkage, toolchain, hardware, graphics, pacman, state, boot, services).\&
+Diagnose sysforge-managed system health (linkage, toolchain, hardware, graphics, pacman, state, boot, services, audio).\&
 .PP
 \fBPKG\fR
 .RS 4
@@ -462,6 +462,11 @@ Check running-system boot readiness (reusing the kernel stage'\&s safety primiti
 \fB--services\fR
 .RS 4
 Check live service/driver runtime health: failed systemd units (`systemctl --failed`) and firmware a driver requested but could not load this boot.\& Usable on its own (no PKG).\&
+.PP
+.RE
+\fB--audio\fR
+.RS 4
+Check live PipeWire/WirePlumber sound-stack health: failed audio user services (`systemctl --user --failed`) and a vanished output sink (only the dummy auto_null device present).\& User-scoped, so it degrades to clean under sudo.\& Usable on its own (no PKG).\&
 .PP
 .RE
 \fB--all\fR
