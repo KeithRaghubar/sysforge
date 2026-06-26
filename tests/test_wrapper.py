@@ -124,3 +124,108 @@ def test_build_failed_error_carries_diagnosis():
     assert "Aborted by user" in str(err)
     assert err.diagnosis[0].signature == "toolchain:llvm-broken"
     assert err.captured_output == []
+
+
+# ---------------------------------------------------------------------------
+# _maybe_patch_build_linker
+# ---------------------------------------------------------------------------
+
+from sysforge.primitives import makepkg_wrapper
+
+
+def _write_mold_pkgbuild(tmp_path):
+    p = tmp_path / "PKGBUILD"
+    p.write_text(
+        "pkgname=foo\npkgver=1\npkgrel=1\narch=(x86_64)\n"
+        "makedepends=(mold clang)\n"
+        "build() {\n"
+        '  RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"\n'
+        "  cargo build --release\n"
+        "}\n"
+    )
+    return p
+
+
+def test_maybe_patch_build_linker_llvm_path(tmp_path, monkeypatch):
+    # Effective linker lld, PKGBUILD hardcodes mold -> rewrite to lld.
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    p = _write_mold_pkgbuild(tmp_path)
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+    pkgmeta = parse_pkgbuild(p)
+    res = makepkg_wrapper._maybe_patch_build_linker(
+        p, pkgmeta, resolved_profile={"LDFLAGS": "-fuse-ld=lld"}, ld_override=None
+    )
+    assert res is not None and res["new"] == "lld"
+    assert "-fuse-ld=lld" in p.read_text()
+    assert "-fuse-ld=mold" not in p.read_text()
+
+
+def test_maybe_patch_build_linker_override_path(tmp_path, monkeypatch):
+    # --ld=lld override wins even if profile LDFLAGS says mold.
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    p = _write_mold_pkgbuild(tmp_path)
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+    pkgmeta = parse_pkgbuild(p)
+    res = makepkg_wrapper._maybe_patch_build_linker(
+        p, pkgmeta, resolved_profile={"LDFLAGS": "-fuse-ld=mold"}, ld_override="lld"
+    )
+    assert res is not None and res["new"] == "lld"
+    assert "-fuse-ld=lld" in p.read_text()
+
+
+def test_maybe_patch_build_linker_noop_when_equal(tmp_path, monkeypatch):
+    # gcc-path parity: effective linker == hardcoded -> no rewrite.
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    p = _write_mold_pkgbuild(tmp_path)
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+    pkgmeta = parse_pkgbuild(p)
+    before = p.read_text()
+    res = makepkg_wrapper._maybe_patch_build_linker(
+        p, pkgmeta, resolved_profile={"LDFLAGS": "-fuse-ld=mold"}, ld_override=None
+    )
+    assert res is None
+    assert p.read_text() == before
+
+
+def test_maybe_patch_build_linker_none_when_no_hardcode(tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    p = tmp_path / "PKGBUILD"
+    p.write_text(
+        "pkgname=foo\npkgver=1\npkgrel=1\narch=(x86_64)\n"
+        "build() { cargo build --release; }\n"
+    )
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+    pkgmeta = parse_pkgbuild(p)
+    res = makepkg_wrapper._maybe_patch_build_linker(
+        p, pkgmeta, resolved_profile={"LDFLAGS": "-fuse-ld=lld"}, ld_override=None
+    )
+    assert res is None
+
+
+def test_cosmic_git_regression_mold_to_lld(tmp_path, monkeypatch):
+    """Real-world regression: xdg-desktop-portal-cosmic-git build() uses
+    ``nice make ARGS+=`` with ``RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"``.
+    When sysforge's effective linker is lld the flag must be rewritten to lld.
+    The comment line ``# use mold ...`` contains no -fuse-ld= token so it is
+    left intact; only the active flag line is rewritten."""
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    p = tmp_path / "PKGBUILD"
+    p.write_text(
+        "pkgname=xdg-desktop-portal-cosmic-git\npkgver=1\npkgrel=1\narch=(x86_64)\n"
+        "makedepends=(cargo mold clang)\n"
+        "build() {\n"
+        '  cd "$srcdir/$_pkgname"\n'
+        "  # use mold instead of lld to speed up build\n"
+        '  RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"\n'
+        '  nice make ARGS+=" --frozen --release"\n'
+        "}\n"
+    )
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+    pkgmeta = parse_pkgbuild(p)
+    res = makepkg_wrapper._maybe_patch_build_linker(
+        p, pkgmeta, resolved_profile={"LDFLAGS": "-fuse-ld=lld"}, ld_override="lld"
+    )
+    assert res is not None and res["new"] == "lld"
+    text = p.read_text()
+    assert "fuse-ld=mold" not in text
+    assert "link-arg=-fuse-ld=lld" in text

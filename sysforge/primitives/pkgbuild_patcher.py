@@ -1300,6 +1300,80 @@ def patch_subshell_env_reset(patched_path, toolchain_env, inherited_env=None):
 
 
 # ---------------------------------------------------------------------------
+# Build-linker token rewrite  (-fuse-ld=X  →  -fuse-ld=target_linker)
+# ---------------------------------------------------------------------------
+
+# Matches a bare `-fuse-ld=X` LDFLAGS token (X = linker name; stops at
+# whitespace, quotes, or other shell delimiters).
+_FUSE_LD_RE = re.compile(r"-fuse-ld=([\w.-]+)")
+# Matches the RUSTFLAGS `-C link-arg=-fuse-ld=X` (two-token) and
+# `-Clink-arg=-fuse-ld=X` (one-token) forms, for the strip path.
+_RUST_FUSE_LD_TWO_RE = re.compile(r"-C\s+link-arg=-fuse-ld=[\w.-]+")
+_RUST_FUSE_LD_ONE_RE = re.compile(r"-Clink-arg=-fuse-ld=[\w.-]+")
+
+
+def patch_build_linker(patched_path, target_linker):
+    """Rewrite ``-fuse-ld=X`` tokens in build-time flag appends to
+    ``target_linker``, in place.
+
+    Handles both the LDFLAGS form (``-fuse-ld=X``) and the RUSTFLAGS forms
+    (``-C link-arg=-fuse-ld=X`` / ``-Clink-arg=-fuse-ld=X``, via
+    :func:`makepkg_flags._replace_rustflags_linker`). When ``target_linker`` is
+    ``"ld"`` (the system default), the token is **stripped** rather than written
+    as an invalid ``-fuse-ld=ld``; the now-empty ``-C link-arg=`` wrapper is
+    removed too.
+
+    Returns ``{"old", "new", "count"}`` (``old`` = the first linker replaced) or
+    ``None`` if nothing changed.
+    """
+    from sysforge.primitives.makepkg_flags import _replace_rustflags_linker
+
+    patched_path = Path(patched_path)
+    text = patched_path.read_text()
+    out_lines = []
+    count = 0
+    first_old = None
+
+    for line in text.splitlines(keepends=True):
+        if "-fuse-ld=" not in line:
+            out_lines.append(line)
+            continue
+
+        if first_old is None:
+            m = _FUSE_LD_RE.search(line)
+            if m:
+                first_old = m.group(1)
+
+        if target_linker == "ld":
+            # Strip the whole token, including the rust link-arg wrapper.
+            new_line = _RUST_FUSE_LD_TWO_RE.sub("", line)
+            new_line = _RUST_FUSE_LD_ONE_RE.sub("", new_line)
+            new_line = _FUSE_LD_RE.sub("", new_line)
+        else:
+            # Gate rust replace behind presence check to preserve original
+            # spacing on pure-LDFLAGS lines (avoids whitespace normalization).
+            new_line = line
+            if "link-arg=-fuse-ld=" in line:
+                new_line = _replace_rustflags_linker(line, target_linker)
+            new_line = _FUSE_LD_RE.sub(f"-fuse-ld={target_linker}", new_line)
+
+        if new_line != line:
+            count += line.count("-fuse-ld=")
+        out_lines.append(new_line)
+
+    if count == 0:
+        return None
+
+    patched_path.write_text("".join(out_lines))
+    _log.info(
+        f"Rewrote {count} hardcoded -fuse-ld= token(s) "
+        f"({first_old} -> {target_linker}) in PKGBUILD build body "
+        f"(effective linker is {target_linker})"
+    )
+    return {"old": first_old, "new": target_linker, "count": count}
+
+
+# ---------------------------------------------------------------------------
 # LLVM_TARGETS_TO_BUILD injection (LLVM PKGBUILDs only)
 # ---------------------------------------------------------------------------
 

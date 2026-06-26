@@ -1946,6 +1946,19 @@ Guards 3–4 fire when any of the following is true:
 
 The `[WARN][FLAG]` rewrite log records which trigger fired so the cause is visible in the per-package log. The effective linker is determined by guard 1 and shared with subsequent guards.
 
+### build()-hardcoded linker reconciliation
+
+The conf layer writes linker flags into the generated `makepkg.conf` (guard 1 above), but it cannot reach linker flags the PKGBUILD **re-appends inside `build()`** — e.g. `RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"`. These `build()`-level assignments win over what the conf layer set, silently overriding the effective linker. The patch layer closes this gap.
+
+- **Detection** — `pkgbuild_meta.hardcoded_build_linker(parsed)` scans the parsed `build()` function body for `-fuse-ld=<name>` tokens and returns the hardcoded linker name, or `None` if none is present. Linker only — compiler assignments stay with `has_hardcoded_gcc`.
+- **Effective-linker resolution** — `makepkg_flags.resolve_effective_linker(*, ld_override, profile_ldflags, system_ldflags)` is the shared definition of the effective linker consulted by **both** the conf layer (guard 1) and the patch layer. `ld_override` (CLI `--ld`) wins; then the first `-fuse-ld=` token in `profile_ldflags`, then `system_ldflags`; falls back to `"ld"` (bfd).
+- **Rewrite** — `pkgbuild_patcher.patch_build_linker(path, target_linker)` rewrites every `-fuse-ld=<old>` token in the PKGBUILD's `build()` body to `-fuse-ld=<target_linker>`. Returns `{"old": …, "new": …, "count": …}` on success, `None` on no-op. Validated by the existing `validate_patched_pkgbuild` (G1 identity/deps unchanged, G2 managed `-D` — no new validator needed).
+- **Wiring** — `makepkg_wrapper._maybe_patch_build_linker(path, pkgmeta, resolved_profile, ld_override)` is the sole call-site. It calls `hardcoded_build_linker`, then `resolve_effective_linker`, and only rewrites when `hardcoded != effective`. Returns the patch dict or `None`.
+
+**Conf-vs-patch layer boundary:** the conf layer owns env flags it writes into `makepkg.conf`; the patch layer owns linker flags the PKGBUILD re-appends in `build()` — the case the conf layer structurally cannot reach (shell `+=` assignments inside a function body run after makepkg sources the conf).
+
+Real-world trigger: `xdg-desktop-portal-cosmic-git` ships `RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"` inside `build()` alongside a `# use mold ...` comment. The comment line carries no `-fuse-ld=` token so it is left intact; only the active flag line is rewritten.
+
 ---
 
 ## Makepkg Wrapper

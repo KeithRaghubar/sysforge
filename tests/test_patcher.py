@@ -45,6 +45,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_package_suffix,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
+    patch_build_linker,
     validate_patched_pkgbuild,
     PkgbuildPatchError,
 )
@@ -1329,6 +1330,60 @@ def test_validate_rejects_rename_that_missed_a_function(tmp_path):
     }
     with pytest.raises(PkgbuildPatchError, match="un-renamed"):
         validate_patched_pkgbuild(orig, patched, rename=rename)
+
+
+# ---------------------------------------------------------------------------
+# patch_build_linker
+# ---------------------------------------------------------------------------
+
+def test_patch_build_linker_rustflags(tmp_path):
+    p = tmp_path / "PKGBUILD"
+    p.write_text(
+        "pkgname=foo\nbuild() {\n"
+        '  RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"\n'
+        "  cargo build --release\n"
+        "}\n"
+    )
+    res = patch_build_linker(p, "lld")
+    assert res == {"old": "mold", "new": "lld", "count": 1}
+    assert "-fuse-ld=lld" in p.read_text()
+    assert "mold" not in p.read_text()
+
+
+def test_patch_build_linker_ldflags(tmp_path):
+    p = tmp_path / "PKGBUILD"
+    p.write_text(
+        "pkgname=foo\nbuild() {\n"
+        '  export LDFLAGS="$LDFLAGS -fuse-ld=gold"\n'
+        "  make\n"
+        "}\n"
+    )
+    res = patch_build_linker(p, "lld")
+    assert res["new"] == "lld" and res["count"] == 1
+    assert "-fuse-ld=lld" in p.read_text()
+    assert "gold" not in p.read_text()
+
+
+def test_patch_build_linker_target_ld_strips(tmp_path):
+    p = tmp_path / "PKGBUILD"
+    p.write_text(
+        "pkgname=foo\nbuild() {\n"
+        '  RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"\n'
+        "}\n"
+    )
+    res = patch_build_linker(p, "ld")
+    assert res["new"] == "ld"
+    text = p.read_text()
+    assert "-fuse-ld=" not in text
+    assert "link-arg=" not in text  # the now-empty rust link-arg is removed too
+
+
+def test_patch_build_linker_noop_returns_none(tmp_path):
+    p = tmp_path / "PKGBUILD"
+    body = "pkgname=foo\nbuild() { cargo build --release; }\n"
+    p.write_text(body)
+    assert patch_build_linker(p, "lld") is None
+    assert p.read_text() == body
 
 
 # ---------------------------------------------------------------------------

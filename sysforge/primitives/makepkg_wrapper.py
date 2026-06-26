@@ -41,9 +41,11 @@ from sysforge.primitives.config import (
     load_config,
     load_conflict_groups,
     load_consumes_inference,
+    parse_system_makepkg_conf,
 )
 from sysforge.primitives.paths import SYSFORGE_TOML_PATH, TOOLCHAIN_PATH
 from sysforge.primitives.pkgbuild_meta import (
+    hardcoded_build_linker,
     has_hardcoded_gcc,
     is_musl_static_build,
     parse_pkgbuild,
@@ -75,6 +77,7 @@ from sysforge.primitives.makepkg_pgo import (
 )
 from sysforge.primitives.makepkg_flags import INSTALL_FLAGS
 from sysforge.primitives.makepkg_flags import expand_makepkg_flags  # noqa: F401  (re-export)
+from sysforge.primitives.makepkg_flags import resolve_effective_linker
 from sysforge.primitives.pkgbuild_patcher import (
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
@@ -86,6 +89,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_kernel_subpackages,
     patch_llvm_dir,
     patch_llvm_targets,
+    patch_build_linker,
     patch_mesa_drivers,
     patch_noninteractive_kconfig,
     patch_package_suffix,
@@ -362,6 +366,49 @@ def _maybe_patch_mesa_drivers(
     return None
 
 
+def _maybe_patch_build_linker(pkgbuild_path, pkgmeta, resolved_profile, ld_override):
+    """Reconcile a PKGBUILD ``build()`` that hardcodes ``-fuse-ld=X`` against
+    sysforge's effective linker.
+
+    The conf layer injects ``--ld`` / profile LDFLAGS into the makepkg.conf, but
+    a ``RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"`` inside ``build()`` re-appends
+    its own linker at runtime, *after* the conf is sourced — and "last
+    ``-fuse-ld=`` wins" at link time. This is the only layer that can reach it.
+
+    Gate: skip unless the PKGBUILD hardcodes a linker; then rewrite only when
+    the hardcoded linker differs from the effective linker (one shared
+    definition, :func:`resolve_effective_linker`). Equal -> silent no-op.
+
+    Returns the :func:`patch_build_linker` result dict on a rewrite (so the
+    caller validates against the original), else ``None``.
+    """
+    hardcoded = hardcoded_build_linker(pkgmeta)
+    if not hardcoded:
+        return None
+
+    system_ldflags = ""
+    try:
+        _sys = parse_system_makepkg_conf()
+        _raw = (_sys.get("LDFLAGS") or "").strip()
+        system_ldflags = _raw[1:-1] if (len(_raw) >= 2 and _raw[0] == _raw[-1] == '"') else _raw
+    except Exception:
+        system_ldflags = ""
+
+    effective = resolve_effective_linker(
+        ld_override=ld_override,
+        profile_ldflags=resolved_profile.get("LDFLAGS"),
+        system_ldflags=system_ldflags,
+    )
+    if hardcoded == effective:
+        return None
+
+    _build_log.info(
+        f"PKGBUILD build() hardcodes -fuse-ld={hardcoded}, but effective linker "
+        f"is {effective} — rewriting to honor the effective linker"
+    )
+    return patch_build_linker(pkgbuild_path, effective)
+
+
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
                active_consumes=None, extracted_profile=None, pkgmeta=None,
                extra_flags=None, interactive=False,
@@ -468,6 +515,15 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             mesa_filtered["gallium"],
             mesa_filtered["vulkan"],
         )
+
+    # Reconcile a build()-hardcoded -fuse-ld= linker against the effective
+    # linker. The conf layer cannot reach a RUSTFLAGS+= inside build(); this
+    # patch layer rewrites the token so --ld / the profile linker actually wins.
+    linker_rewritten = _maybe_patch_build_linker(
+        pkgbuild_path, pkgmeta, resolved_profile, ld_override
+    )
+    if linker_rewritten:
+        validate_patched_pkgbuild(original_pkgbuild_path, pkgbuild_path)
 
     # -sysforge optimization-provenance rename. Gated on the Phase-1 predicate
     # is_optimized_build_mode (one home for "does this build earn the suffix?"):

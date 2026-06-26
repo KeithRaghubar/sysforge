@@ -564,6 +564,61 @@ def is_musl_static_build(parsed):
     return False
 
 
+def hardcoded_build_linker(parsed):
+    """
+    Return the linker name a build-time function body (or top-level global
+    body) pins via a ``-fuse-ld=X`` token in a RUSTFLAGS/LDFLAGS append, or
+    ``None``.
+
+    Scans the same bodies as :func:`has_hardcoded_gcc` /
+    :func:`is_musl_static_build`: ``prepare``/``build``/``check``/``package``,
+    every ``package_<pkgname>`` split-package variant, and the top-level
+    ``global_body`` (e.g. ``export RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"``,
+    which runs when makepkg sources the file).
+
+    Reuses :func:`makepkg_flags._detect_linker_from_ldflags` /
+    :func:`_detect_linker_from_rustflags` — no new token grammar. Returns the
+    **last** ``-fuse-ld=`` seen across all scanned bodies (mirrors link-time
+    "last ``-fuse-ld=`` wins"). ``None`` is not authoritative — a Makefile in
+    src/ may still pin a linker; the reactive recovery path catches those.
+
+    Used to decide whether the PKGBUILD's build() re-appends a linker that
+    contradicts sysforge's effective linker, so the patch layer can rewrite it
+    (the conf layer cannot reach a RUSTFLAGS+= inside build()).
+    """
+    from sysforge.primitives.makepkg_flags import (
+        _detect_linker_from_ldflags,
+        _detect_linker_from_rustflags,
+    )
+
+    if not isinstance(parsed, dict):
+        return None
+
+    bodies = [parsed.get("global_body", "")]
+    funcs = parsed.get("functions", {}) or {}
+    for name, body in funcs.items():
+        if not body:
+            continue
+        if name not in _SCAN_FUNCS_LITERAL and not name.startswith("package_"):
+            continue
+        bodies.append(body)
+
+    found = None
+    for body in bodies:
+        if not body:
+            continue
+        # Per-line so "last wins" is well-defined and a RUSTFLAGS line and an
+        # LDFLAGS line on different lines are both considered in order.
+        for line in body.splitlines():
+            # Strip shell quoting so "-fuse-ld=mold" doesn't capture the
+            # trailing quote as part of the linker name.
+            bare = line.replace('"', '').replace("'", '')
+            linker = _detect_linker_from_rustflags(bare) or _detect_linker_from_ldflags(bare)
+            if linker:
+                found = linker
+    return found
+
+
 def parse_pkgbuild(path):
     """
     Parse a PKGBUILD statically without sourcing or executing it.

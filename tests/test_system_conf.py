@@ -600,3 +600,37 @@ def test_emit_variant_lld_missing_skips_injection(sys_conf_path, monkeypatch):
     ) as conf_path:
         conf = read_conf(conf_path)
     assert "-fuse-ld=lld" not in conf.get("LDFLAGS", "")
+
+
+# ---------------------------------------------------------------------------
+# Regression: profile LDFLAGS without -fuse-ld= must shadow system -fuse-ld=lld
+# ---------------------------------------------------------------------------
+
+def test_emit_profile_ldflags_no_fuse_ld_shadows_system_lld(tmp_path):
+    """Profile LDFLAGS without -fuse-ld= must shadow the system's -fuse-ld=lld.
+
+    When the profile sets LDFLAGS but omits -fuse-ld=, the effective linker
+    must be derived from the profile value only (i.e. 'ld', the default).
+    The system conf's -fuse-ld=lld is irrelevant because the profile value
+    REPLACES the system value in the emitted conf.
+
+    Observable signal: an lld-only flag (--icf=all) in the profile LDFLAGS
+    must be STRIPPED (because effective linker is 'ld', not 'lld').  With the
+    bug, resolve_effective_linker falls through to the system value and returns
+    'lld', so --icf=all is incorrectly preserved.
+    """
+    sys_conf = tmp_path / "makepkg.conf"
+    sys_conf.write_text(
+        'CARCH="x86_64"\n'
+        'LDFLAGS="-Wl,-O1 -fuse-ld=lld"\n'
+    )
+    # Profile sets LDFLAGS but WITHOUT -fuse-ld= — it has an lld-only flag.
+    profile = {"LDFLAGS": "-Wl,-O1 --icf=all"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf) as conf_path:
+        conf = read_conf(conf_path)
+    # The lld-only flag must have been stripped because the effective linker is
+    # 'ld' (no -fuse-ld in the profile, and the system value is shadowed).
+    assert "--icf=all" not in conf.get("LDFLAGS", ""), (
+        "lld-only flag --icf=all should have been stripped when profile "
+        "LDFLAGS has no -fuse-ld= (effective linker is 'ld', not 'lld')"
+    )

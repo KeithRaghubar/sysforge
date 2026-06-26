@@ -14,6 +14,8 @@ Owns the ``[FLAG]`` log tag.  Consumed by the conf-emission layer
 (``makepkg_conf.emit_makepkg_conf``) and re-exported from ``makepkg_wrapper``
 for the CLI/update call sites that expand the raw flags string.
 """
+import shutil
+
 from sysforge import log
 
 _flag_log = log.get_logger("FLAG")
@@ -123,6 +125,34 @@ def _inject_linker(ldflags_val, linker_name):
             return " ".join(tokens)
     _flag_log.info(f"Injected {new_token} into LDFLAGS (--ld override)")
     return " ".join([new_token] + tokens)
+
+
+def resolve_effective_linker(*, ld_override, profile_ldflags, system_ldflags):
+    """The linker that will actually be used at link time.
+
+    Precedence: an explicit ``--ld`` override wins; else the ``-fuse-ld=``
+    declared in the profile's LDFLAGS; else the one in the system makepkg.conf
+    LDFLAGS; else ``"ld"`` (the system default linker). If the named linker is
+    not on PATH, falls back to ``"ld"`` — the same guard the conf layer applies
+    so a declared-but-missing linker doesn't poison flag-stripping decisions.
+
+    Pure: the single definition both the conf layer (emit_makepkg_conf) and the
+    patch layer (_maybe_patch_build_linker) consult, so they never disagree on
+    "which linker wins".
+    """
+    linker = None
+    if ld_override:
+        linker = ld_override
+    else:
+        linker = (
+            _detect_linker_from_ldflags(profile_ldflags or "")
+            or _detect_linker_from_ldflags(system_ldflags or "")
+        )
+    if not linker:
+        return "ld"
+    if not shutil.which(linker):
+        return "ld"
+    return linker
 
 
 def _strip_full_lto(flags_val: str) -> tuple[str, list[str]]:

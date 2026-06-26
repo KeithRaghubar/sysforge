@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from sysforge.primitives.pkgbuild_meta import (
+    hardcoded_build_linker,
     has_hardcoded_gcc,
     is_musl_static_build,
     parse_pkgbuild,
@@ -434,6 +435,68 @@ def test_hardcoded_gcc_gpu_burn_style_makefile_not_in_pkgbuild(tmp_path):
     """
     parsed = _parse_with_build(tmp_path, '  make')
     assert has_hardcoded_gcc(parsed) is False
+
+
+# ---------------------------------------------------------------------------
+# hardcoded_build_linker
+# ---------------------------------------------------------------------------
+
+def _parsed(tmp_path, body):
+    """Helper: write an arbitrary PKGBUILD body and parse it."""
+    p = tmp_path / "PKGBUILD"
+    p.write_text(body)
+    return parse_pkgbuild(p)
+
+
+def test_hardcoded_linker_rustflags_append(tmp_path):
+    # The real cosmic-git case: RUSTFLAGS+= inside build()
+    parsed = _parsed(tmp_path, (
+        "pkgname=foo\npkgver=1\npkgrel=1\narch=(x86_64)\n"
+        "build() {\n"
+        '  RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"\n'
+        "  cargo build --release\n"
+        "}\n"
+    ))
+    assert hardcoded_build_linker(parsed) == "mold"
+
+
+def test_hardcoded_linker_bare_ldflags(tmp_path):
+    parsed = _parsed(tmp_path, (
+        "pkgname=foo\npkgver=1\npkgrel=1\narch=(x86_64)\n"
+        "build() {\n"
+        '  export LDFLAGS="$LDFLAGS -fuse-ld=gold"\n'
+        "  make\n"
+        "}\n"
+    ))
+    assert hardcoded_build_linker(parsed) == "gold"
+
+
+def test_hardcoded_linker_global_body(tmp_path):
+    parsed = _parsed(tmp_path, (
+        "pkgname=foo\npkgver=1\npkgrel=1\narch=(x86_64)\n"
+        'export RUSTFLAGS+=" -Clink-arg=-fuse-ld=mold"\n'
+        "build() { cargo build; }\n"
+    ))
+    assert hardcoded_build_linker(parsed) == "mold"
+
+
+def test_hardcoded_linker_last_wins(tmp_path):
+    parsed = _parsed(tmp_path, (
+        "pkgname=foo\npkgver=1\npkgrel=1\narch=(x86_64)\n"
+        "build() {\n"
+        '  RUSTFLAGS+=" -C link-arg=-fuse-ld=lld"\n'
+        '  RUSTFLAGS+=" -C link-arg=-fuse-ld=mold"\n'
+        "}\n"
+    ))
+    assert hardcoded_build_linker(parsed) == "mold"
+
+
+def test_hardcoded_linker_none_when_absent(tmp_path):
+    parsed = _parsed(tmp_path, (
+        "pkgname=foo\npkgver=1\npkgrel=1\narch=(x86_64)\n"
+        "build() { cargo build --release; }\n"
+    ))
+    assert hardcoded_build_linker(parsed) is None
 
 
 # ---------------------------------------------------------------------------

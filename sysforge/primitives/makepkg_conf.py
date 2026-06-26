@@ -37,6 +37,7 @@ from sysforge.primitives.makepkg_flags import (
     _strip_full_lto,
     _strip_lld_flags,
     _strip_pgo_flags,
+    resolve_effective_linker,
 )
 from sysforge.primitives.profile import CONF_KEY_MAP, KERNEL_CLEAN_KEYS, SYSFORGE_KEYS
 
@@ -206,23 +207,30 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     # the system conf — minimal profiles (like ``bare``) often do not override
     # LDFLAGS, so the system conf's LDFLAGS (e.g. ``-fuse-ld=lld``) is what
     # actually reaches makepkg.
-    effective_linker = "ld"
+    # Effective linker: one definition, shared with the patch layer.
+    # _ldflags_source tells the lld-flag-strip block below whether the value we
+    # could rewrite is the profile's (writable) or the system conf's (read-only).
     _ldflags_source: str | None = None  # "profile" | "system" | None
-    _ldflags_value = ""
-    if "LDFLAGS" in profile_overrides:
+    _profile_ldflags = profile_overrides.get("LDFLAGS")
+    _system_ldflags = ""
+    if "LDFLAGS" in system_assignments:
+        _raw = system_assignments["LDFLAGS"].strip()
+        _system_ldflags = _raw[1:-1] if (len(_raw) >= 2 and _raw[0] == _raw[-1] == '"') else _raw
+    if _profile_ldflags is not None:
         _ldflags_source = "profile"
-        _ldflags_value = profile_overrides["LDFLAGS"]
     elif "LDFLAGS" in system_assignments:
         _ldflags_source = "system"
-        _raw = system_assignments["LDFLAGS"].strip()
-        _ldflags_value = _raw[1:-1] if (len(_raw) >= 2 and _raw[0] == _raw[-1] == '"') else _raw
+    effective_linker = resolve_effective_linker(
+        ld_override=None,
+        profile_ldflags=_profile_ldflags,
+        system_ldflags="" if _ldflags_source == "profile" else _system_ldflags,
+    )
     if _ldflags_source is not None:
-        declared_linker = _detect_linker_from_ldflags(_ldflags_value)
-        effective_linker = declared_linker or "ld"
-
+        declared_linker = _detect_linker_from_ldflags(
+            _profile_ldflags if _ldflags_source == "profile" else _system_ldflags
+        )
         if declared_linker and not shutil.which(declared_linker):
             _conf_log.warn(f"Declared linker '{declared_linker}' not found on PATH — treating effective linker as 'ld'")
-            effective_linker = "ld"
 
         # Only strip lld-only flags from LDFLAGS we own (profile_overrides). The
         # system conf is read-only here; if its LDFLAGS contains lld-only flags

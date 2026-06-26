@@ -168,6 +168,12 @@ edits must pass `make check-design` after `make design`.
   (yes → build + write the key via `packages_cmd`; no → skip) or aborts with a hint when
   non-interactive. `--force` builds every arg this run only and never prompts/writes
   packages.toml. Don't add a second packages.toml writer. See DESIGN.md §CLI Verb Framework.
+- **build()-hardcoded `-fuse-ld=` reconciliation has one home**: detection
+  `pkgbuild_meta.hardcoded_build_linker`, effective-linker `makepkg_flags.resolve_effective_linker`
+  (shared with the conf layer), rewrite `pkgbuild_patcher.patch_build_linker`, wired via
+  `makepkg_wrapper._maybe_patch_build_linker` (gate: hardcoded != effective; validated by the
+  existing `validate_patched_pkgbuild`). Linker only — compiler stays with `has_hardcoded_gcc`.
+  See DESIGN.md §`pkgbuild_patcher.py` / §Flag-Profile.
 - **Optimization-build naming/store has one home each**: the `-sysforge` rename gate is
   `profile.is_optimized_build_mode(build_mode)` (the membership set — add a new optimization
   `build_mode` there, don't scatter checks); the rename itself is
