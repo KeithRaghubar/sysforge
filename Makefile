@@ -179,6 +179,20 @@ vm-console:
 	@test -S "$(VM_DIR)/serial.sock" || { echo "VM not running (no serial socket at $(VM_DIR)/serial.sock). Start it with 'make vm-boot'."; exit 1; }
 	socat -,raw,echo=0,escape=0x1d UNIX-CONNECT:$(VM_DIR)/serial.sock
 
+# Accept the snapshot name as a bare positional goal: `make vm-savevm <name>`
+# in addition to `make vm-savevm NAME=<name>`. When vm-savevm is the first goal,
+# treat the next goal as the name and stub it out with a no-op recipe so Make
+# does not try to build it as a target (it would otherwise look for a rule named
+# e.g. `clean` and run the real `clean` target after savevm).
+ifeq (vm-savevm,$(firstword $(MAKECMDGOALS)))
+  VM_SAVEVM_POS := $(word 2,$(MAKECMDGOALS))
+  ifneq ($(VM_SAVEVM_POS),)
+    NAME ?= $(VM_SAVEVM_POS)
+    $(eval $(VM_SAVEVM_POS):;@:)
+    .PHONY: $(VM_SAVEVM_POS)
+  endif
+endif
+
 # savevm wrapper that works around the libslirp BOOTP VMState bug.
 # Plain `savevm` over user-mode networking emits
 #   warning: Slirp: Save of field slirp_bootpclient/macaddr failed
@@ -186,7 +200,7 @@ vm-console:
 # savevm destroys libslirp's in-memory BOOTP client list so there is nothing
 # to (mis)serialize; reattach after to restore SSH on host port 10022.
 vm-savevm:
-	@if [ -z "$(NAME)" ]; then echo "Usage: make vm-savevm NAME=<snapshot-name>"; exit 2; fi
+	@if [ -z "$(NAME)" ]; then echo "Usage: make vm-savevm NAME=<snapshot-name>  (or: make vm-savevm <snapshot-name>)"; exit 2; fi
 	@test -S "$(VM_DIR)/qemu-monitor.sock" || { echo "VM not running (no monitor socket at $(VM_DIR)/qemu-monitor.sock). Start it with 'make vm-boot'."; exit 1; }
 	@( printf 'set_link net0 off\nnetdev_del net0\nsavevm $(NAME)\nnetdev_add user,id=net0,hostfwd=tcp:127.0.0.1:10022-:22\nset_link net0 on\n'; sleep 30 ) \
 	  | socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
