@@ -2106,6 +2106,15 @@ Recover:
   [a] abort
 ```
 
+Above the menu, the failure summary reports the toolchain the build actually
+used: `Toolchain used:  CC=…  CXX=…  LD=…`. The `LD` field comes from
+`_summary_linker`, which reuses the single `makepkg_flags.resolve_effective_linker`
+authority over the profile's LDFLAGS *and* the system makepkg.conf LDFLAGS — so a
+conf-level `-fuse-ld=` swap (e.g. the clang config's lld) is surfaced, not just a
+profile-level one. Since linker choice (`-fuse-ld=…`, mold/lld swaps) is a frequent
+failure cause, showing it alongside `CC`/`CXX` makes the diagnostic complete; the
+resolver's PATH guard means a declared-but-missing linker degrades to `ld`.
+
 `[c]` is offered only when the caller supplied a `reemit_conf` closure (see
 below) — a caller with no conf-emission seam (e.g. a test harness) degrades
 to `[e]/[r]/[a]`.

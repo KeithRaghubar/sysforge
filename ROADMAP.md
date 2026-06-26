@@ -192,17 +192,6 @@ and in release notes.
 
 ---
 
-### Bugs
-
-- **`1.2.0-B4` — Build-failure summary omits the failing `LD`.** The failure summary
-  prints the resolved `CC` and `CXX` but not `LD`. Since linker choice
-  (`-fuse-ld=…`, mold/lld swaps) is a frequent failure cause and sysforge already
-  resolves the effective linker (`makepkg_flags.resolve_effective_linker`), the
-  summary should include `LD` alongside `CC`/`CXX`. *Priority: low (diagnostics
-  completeness).*
-
----
-
 ## Abandoned / decided against
 
 - **`-sysforge` suffix on the PGO-built toolchain — scrapped 2026-06-24.** The PGO

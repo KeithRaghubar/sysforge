@@ -37,7 +37,10 @@ from sysforge.primitives.makepkg_env import (
     _logdest_tail,
     resolve_build_python,
 )
-from sysforge.primitives.makepkg_flags import INSTALL_FLAGS
+from sysforge.primitives.makepkg_flags import (
+    INSTALL_FLAGS,
+    resolve_effective_linker,
+)
 from sysforge.primitives.profile import CONF_KEY_MAP
 from sysforge.primitives.prompt import prompt_choice, prompt_text
 from sysforge.primitives.pty_runner import run_with_pty, strip_ansi
@@ -433,6 +436,28 @@ def _recover_menu_choices(have_swap: bool) -> tuple[str, tuple[str, ...]]:
     return msg, choices
 
 
+def _summary_linker(resolved_profile, conf_path):
+    """The linker the failed build actually used, for the failure summary.
+
+    Reuses the single ``resolve_effective_linker`` authority (CLAUDE.md
+    one-home invariant) over the profile's LDFLAGS and the system makepkg.conf
+    LDFLAGS, so a conf-level ``-fuse-ld=`` swap (e.g. the clang config's lld)
+    is surfaced just like a profile-level one. Defensive: an unreadable or
+    missing conf simply contributes no LDFLAGS, and the resolver falls back to
+    ``"ld"`` (1.2.0-B4)."""
+    system_ldflags = ""
+    try:
+        from sysforge.primitives.config import _parse_one_makepkg_conf
+        system_ldflags = _parse_one_makepkg_conf(Path(conf_path)).get("LDFLAGS", "")
+    except Exception:
+        system_ldflags = ""
+    return resolve_effective_linker(
+        ld_override=None,
+        profile_ldflags=resolved_profile.get("LDFLAGS", ""),
+        system_ldflags=system_ldflags,
+    )
+
+
 def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
                        extra_env, extra_flags, interactive, strip_flags,
                        reemit_conf, pkgbase):
@@ -442,12 +467,13 @@ def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
     pkgbuild_path = Path(pkgbuild_path).resolve()
     cc = resolved_profile.get("CC", "(default)")
     cxx = resolved_profile.get("CXX", "(default)")
+    ld = _summary_linker(resolved_profile, conf_path)
     have_swap = reemit_conf is not None
     orig_snapshot = pkgbuild_path.with_suffix(pkgbuild_path.suffix + ".orig")
 
     while True:
         _makepkg_log.ui(f"Build failed: {pkgbase or pkgbuild_path.name}")
-        _makepkg_log.ui(f"  Toolchain used:  CC={cc}  CXX={cxx}")
+        _makepkg_log.ui(f"  Toolchain used:  CC={cc}  CXX={cxx}  LD={ld}")
         msg, choices = _recover_menu_choices(have_swap)
         choice = prompt_choice(msg, choices, default="r", eof_default="a",
                                tag="MAKEPKG")

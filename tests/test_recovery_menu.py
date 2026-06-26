@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import sysforge.primitives.makepkg_flags as mf
 import sysforge.primitives.makepkg_invoke as mi
 
 
@@ -22,6 +23,36 @@ def test_abort_returns_clean_outcome(monkeypatch, pkgbuild):
     )
     assert out.action == "abort"
     assert out.overrides is None
+
+
+def test_summary_reports_effective_linker(monkeypatch, capsys, pkgbuild):
+    # 1.2.0-B4: the "Toolchain used" line must surface LD alongside CC/CXX.
+    # A profile carrying -fuse-ld=lld in LDFLAGS resolves to LD=lld.
+    monkeypatch.setattr(mi, "prompt_choice", lambda *a, **k: "a")
+    monkeypatch.setattr(mf.shutil, "which", lambda name: f"/usr/bin/{name}")
+    mi._run_recovery_menu(
+        pkgbuild, Path("/conf"),
+        {"CC": "clang", "CXX": "clang++", "LDFLAGS": "-fuse-ld=lld -Wl,-O2"},
+        extra_env=None, extra_flags=None, interactive=True, strip_flags=None,
+        reemit_conf=None, pkgbase="htop",
+    )
+    out = capsys.readouterr().err
+    summary = next(ln for ln in out.splitlines() if "Toolchain used" in ln)
+    assert "CC=clang" in summary
+    assert "CXX=clang++" in summary
+    assert "LD=lld" in summary
+
+
+def test_summary_linker_defaults_to_ld_when_unspecified(monkeypatch, capsys,
+                                                         pkgbuild):
+    monkeypatch.setattr(mi, "prompt_choice", lambda *a, **k: "a")
+    mi._run_recovery_menu(
+        pkgbuild, Path("/conf"), {}, extra_env=None, extra_flags=None,
+        interactive=True, strip_flags=None, reemit_conf=None, pkgbase="htop",
+    )
+    out = capsys.readouterr().err
+    summary = next(ln for ln in out.splitlines() if "Toolchain used" in ln)
+    assert "LD=ld" in summary
 
 
 def test_editor_path_snapshots_orig_and_retries(monkeypatch, pkgbuild):
