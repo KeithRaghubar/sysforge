@@ -575,7 +575,7 @@ cat <<EOF
 2. Push to AUR (sysforge stable):
 
     git clone ssh://aur@aur.archlinux.org/sysforge.git /tmp/aur-sysforge
-    cp PKGBUILD .SRCINFO /tmp/aur-sysforge/
+    cp PKGBUILD .SRCINFO sysforge.install /tmp/aur-sysforge/
     cd /tmp/aur-sysforge && git add -A && git commit -m "Update to $NEW" && git push
 
 3. Push to AUR (sysforge-git VCS):
@@ -583,5 +583,6 @@ cat <<EOF
     git clone ssh://aur@aur.archlinux.org/sysforge-git.git /tmp/aur-sysforge-git
     cp PKGBUILD-git /tmp/aur-sysforge-git/PKGBUILD
     cp .SRCINFO-git /tmp/aur-sysforge-git/.SRCINFO
+    cp sysforge.install /tmp/aur-sysforge-git/
     cd /tmp/aur-sysforge-git && git add -A && git commit -m "Update to $NEW" && git push
 EOF

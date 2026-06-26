@@ -392,6 +392,17 @@ def check_pkgbuild(repo: Path) -> list[Finding]:
     if inst and not (repo / inst).exists():
         findings.append(Finding("pkgbuild", "error", "PKGBUILD",
                                 f"install scriptlet not found: {inst}"))
+    # The install= scriptlet is read by makepkg from the build startdir, not the
+    # source tarball — so it must be copied into the AUR repos at publish time.
+    # tools/release.sh's Phase-4 instructions are the sole publish path; if the
+    # scriptlet isn't referenced there, every AUR-clone bootstrap aborts with
+    # "install file does not exist" (1.2.0-B2). Guard the rename/forget regression.
+    if inst:
+        release_sh = repo / "tools" / "release.sh"
+        if release_sh.exists() and inst not in release_sh.read_text():
+            findings.append(Finding("pkgbuild", "error", "PKGBUILD",
+                                    f"install scriptlet {inst} not copied to the "
+                                    f"AUR repos by tools/release.sh publish steps"))
 
     keys = g.get("validpgpkeys") or []
     if not keys:

@@ -147,6 +147,17 @@ class TestPkgbuildDrift:
         assert res.returncode == 1
         assert "install scriptlet not found" in res.stdout
 
+    def test_release_omits_install_scriptlet_fails(self, tmp_path):
+        # 1.2.0-B2: the install= scriptlet is read by makepkg from the build
+        # startdir, so release.sh must copy it into the AUR repos. Drop every
+        # reference and the publish-parity guard must fire.
+        repo = copy_shipped_tree(tmp_path)
+        rel = repo / "tools" / "release.sh"
+        rel.write_text(rel.read_text().replace("sysforge.install", "PKGBUILD"))
+        res = run_checker(repo=repo, args=["--check=pkgbuild"])
+        assert res.returncode == 1
+        assert "not copied to the AUR repos" in res.stdout
+
     def test_skip_on_signature_source_passes(self, tmp_path):
         # The real PKGBUILD pairs a SKIP with the detached .asc source — that is
         # legitimate and must pass the sha256 placeholder rule.

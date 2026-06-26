@@ -194,20 +194,6 @@ and in release notes.
 
 ### Bugs
 
-- **`1.2.0-B2` — `sysforge.install` scriptlet not published → every VM bootstrap /
-  packaging attempt fails.** Observed on every VM bootstrap and packaging attempt:
-  `==> ERROR: install file (sysforge.install) does not exist or is not a regular
-  file.` followed by `==> ERROR: Could not download sources.` Root cause: both
-  `PKGBUILD` and `PKGBUILD-git` declare `install=sysforge.install` (the F1
-  first-install notice scriptlet, added 2026-06-25), and the file exists in the repo,
-  but VM bootstrap builds sysforge by cloning the package **from the AUR**
-  (`tools/iso-install.sh` `_aur_clone_with_retry "$AUR_URL"` → `makepkg -si`). The AUR
-  repo checkout has no `sysforge.install`, so makepkg aborts before fetching sources.
-  Fix: ensure `sysforge.install` is committed to the AUR package repos alongside the
-  PKGBUILDs (the release/AUR-publish path must include it — cross-check
-  `tools/release.sh` + `check_shipped.py`'s install-graph parity, which already knows
-  about the scriptlet). *Priority: high (blocks all VM bootstrap and packaging).*
-
 - **`1.2.0-B3` — PKGBUILD patcher emits an unbalanced quote (`unexpected EOF`) for
   various cosmic packages.** New failure across multiple cosmic packages:
   `/home/keith/src/cosmic-applets-git/PKGBUILD.sysforge: line 56: unexpected EOF while
