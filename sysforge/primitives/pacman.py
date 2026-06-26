@@ -381,8 +381,15 @@ def filter_pkgs_to_installed(
     return keep, dropped
 
 
-def batch_install_pkgs(pkg_paths: list) -> bool:
-    """Install all built packages in one sudo pacman -U call. Returns True on success."""
+def batch_install_pkgs(pkg_paths: list, *, interactive: bool = False) -> bool:
+    """Install all built packages in one sudo pacman -U call. Returns True on success.
+
+    With ``interactive=True`` the ``--noconfirm`` flag is dropped and the
+    pacman streams stay inherited (not captured), so a package-conflict
+    question (``X and Y are in conflict. Remove Y? [y/N]``) is put to the
+    operator on the controlling TTY instead of being auto-answered ``N`` by
+    ``--noconfirm`` and aborting the transaction (B6).
+    """
     missing = [p for p in pkg_paths if not Path(p).exists()]
     if missing:
         for p in missing:
@@ -392,12 +399,16 @@ def batch_install_pkgs(pkg_paths: list) -> bool:
         _log.error("No package files remain to install after filtering missing paths")
         return False
     _log.info(f"Batch-installing {len(pkg_paths)} built package file(s)")
-    result = subprocess.run(
-        ["sudo", "pacman", "-U", "--noconfirm"] + [str(p) for p in pkg_paths],
-        stderr=subprocess.PIPE, text=True,
-    )
+    argv = ["sudo", "pacman", "-U"]
+    if not interactive:
+        argv.append("--noconfirm")
+    argv += [str(p) for p in pkg_paths]
+    # Interactive: inherit pacman's streams so the conflict prompt is visible
+    # and stdin can answer it. Non-interactive: capture stderr to relay it.
+    run_kwargs: dict = {} if interactive else {"stderr": subprocess.PIPE, "text": True}
+    result = subprocess.run(argv, **run_kwargs)
     if result.returncode != 0:
-        if result.stderr:
+        if not interactive and result.stderr:
             for line in result.stderr.splitlines():
                 _log.error(line)
         return False

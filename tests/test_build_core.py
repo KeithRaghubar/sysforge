@@ -427,7 +427,7 @@ def test_build_and_install_strips_syncdeps_and_install_flags(tmp_path):
     with _ctx(_patch_build_env(
         run_side_effect=fake_run,
         snapshot_return=frozenset({artifact}),
-        install_capture=lambda paths: installs.append(list(paths)) or True,
+        install_capture=lambda paths, **_kw: installs.append(list(paths)) or True,
     )):
         outcome = build_core.build_and_install(
             [target], config={}, sync_source=True,
@@ -454,7 +454,7 @@ def test_build_and_install_interactive_disables_force_batch(tmp_path):
     with _ctx(_patch_build_env(
         run_side_effect=fake_run,
         snapshot_return=frozenset({artifact}),
-        install_capture=lambda paths: True,
+        install_capture=lambda paths, **_kw: True,
     )):
         build_core.build_and_install(
             [target], config={}, sync_source=False, interactive=True,
@@ -473,7 +473,7 @@ def test_build_and_install_records_failure(tmp_path):
     with _ctx(_patch_build_env(
         run_side_effect=fake_run,
         snapshot_return=frozenset(),
-        install_capture=lambda paths: True,
+        install_capture=lambda paths, **_kw: True,
     ) + [
         patch("sysforge.build_core._record_build_failure",
               side_effect=lambda sd, t, e: recorded.update(pkgbase=t.pkgbase)),
@@ -496,7 +496,7 @@ def test_build_and_install_pgo_skip(tmp_path):
     with _ctx(_patch_build_env(
         run_side_effect=fake_run,
         snapshot_return=frozenset(),
-        install_capture=lambda paths: True,
+        install_capture=lambda paths, **_kw: True,
     )):
         outcome = build_core.build_and_install(
             [target], config={}, sync_source=False,
@@ -547,7 +547,7 @@ def test_build_and_install_records_phase_timings(tmp_path):
     with _ctx(_patch_build_env(
         run_side_effect=fake_run,
         snapshot_return=frozenset({artifact}),
-        install_capture=lambda paths: True,
+        install_capture=lambda paths, **_kw: True,
     )):
         outcome = build_core.build_and_install(
             [target], config={}, sync_source=False,
@@ -573,7 +573,7 @@ def test_build_and_install_accumulates_on_caller_timer(tmp_path):
     with _ctx(_patch_build_env(
         run_side_effect=fake_run,
         snapshot_return=frozenset({artifact}),
-        install_capture=lambda paths: True,
+        install_capture=lambda paths, **_kw: True,
     )):
         outcome = build_core.build_and_install(
             [target], config={}, sync_source=False, timer=timer,
@@ -610,7 +610,7 @@ def _ordered_build_env(events):
             Path(pkgbuild_path).parent / f"{base}-1-1-x86_64.pkg.tar.zst"
         )
 
-    def fake_install(paths):
+    def fake_install(paths, **_kw):
         events.append(("install", sorted(p.name for p in paths)))
         return True
 
@@ -823,7 +823,7 @@ def test_build_and_install_resolves_system_pkgdest(tmp_path):
         patch("sysforge.build_core.filter_pkgs_to_installed",
               side_effect=lambda files, inst: (list(files), [])),
         patch("sysforge.build_core.batch_install_pkgs",
-              side_effect=lambda paths: installs.append(list(paths)) or True),
+              side_effect=lambda paths, **_kw: installs.append(list(paths)) or True),
         patch("sysforge.build_core.get_pkgdest", return_value=pkgdest),
         patch("sysforge.primitives.cache_probe.reset_session"),
         patch("sysforge.primitives.cache_probe.emit_session_report"),
@@ -850,7 +850,7 @@ def test_install_built_dedupes_and_filters(tmp_path):
         patch("sysforge.build_core.filter_pkgs_to_installed",
               side_effect=lambda files, inst: ([a], [(b, "b")])),
         patch("sysforge.build_core.batch_install_pkgs",
-              side_effect=lambda paths: installs.append(list(paths)) or True),
+              side_effect=lambda paths, **_kw: installs.append(list(paths)) or True),
     ):
         kept, failed = build_core.install_built([a, b, a])  # duplicate a
     assert kept == [a]               # b filtered out, a deduped
@@ -885,7 +885,7 @@ def test_install_built_installs_requested_fresh_pkg(tmp_path):
         patch("sysforge.build_core.filter_pkgs_to_installed", filter_pkgs_to_installed),
         patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="proton-cachyos"),
         patch("sysforge.build_core.batch_install_pkgs",
-              side_effect=lambda paths: installs.append(list(paths)) or True),
+              side_effect=lambda paths, **_kw: installs.append(list(paths)) or True),
     ]
     # Default: a not-yet-installed package is dropped (split-pkgbase safety).
     with _ctx(patches):

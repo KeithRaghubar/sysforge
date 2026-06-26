@@ -358,6 +358,55 @@ class TestFilterPkgsToInstalled:
 
 
 # ---------------------------------------------------------------------------
+# batch_install_pkgs interactivity (B6)
+# ---------------------------------------------------------------------------
+
+from sysforge.primitives.pacman import batch_install_pkgs
+
+
+class TestBatchInstallPkgsInteractive:
+    """``--interactive`` must thread a real TTY prompt through the final
+    ``pacman -U`` so a package-conflict question is put to the operator
+    instead of being auto-answered ``N`` by ``--noconfirm`` (B6)."""
+
+    def _make_pkg(self, tmp_path):
+        p = tmp_path / "foo-1-1-x86_64.pkg.tar.zst"
+        p.write_bytes(b"")
+        return p
+
+    @staticmethod
+    def _pacman_call(mock_run):
+        # read_pkgname_from_file (post-install marker) runs its own bsdtar
+        # subprocess; the pacman -U call is the first invocation.
+        return mock_run.call_args_list[0]
+
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="foo")
+    @patch("sysforge.primitives.install_reconcile.record_self_install")
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_default_is_noconfirm(self, mock_run, _rec, _rd, tmp_path):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        assert batch_install_pkgs([self._make_pkg(tmp_path)]) is True
+        call = self._pacman_call(mock_run)
+        assert "--noconfirm" in call.args[0]
+
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="foo")
+    @patch("sysforge.primitives.install_reconcile.record_self_install")
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_interactive_drops_noconfirm_and_inherits_tty(
+        self, mock_run, _rec, _rd, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr=None)
+        assert batch_install_pkgs(
+            [self._make_pkg(tmp_path)], interactive=True
+        ) is True
+        call = self._pacman_call(mock_run)
+        assert "--noconfirm" not in call.args[0]
+        # The conflict prompt must reach the operator: streams stay inherited
+        # (not captured), so the question is visible and stdin can answer it.
+        assert call.kwargs.get("stderr") is None
+
+
+# ---------------------------------------------------------------------------
 # get_pkgbase
 # ---------------------------------------------------------------------------
 

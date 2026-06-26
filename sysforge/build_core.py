@@ -27,7 +27,7 @@ Public API:
     BuildTarget, BuildOutcome
     prepare_deps(pkgbuild_paths, config, ...)
     build_and_install(targets, ...) -> BuildOutcome
-    install_built(built_pkg_files, *, always_install=frozenset()) -> tuple[list[Path], bool]
+    install_built(built_pkg_files, *, always_install=frozenset(), interactive=False) -> tuple[list[Path], bool]
     _find_existing_artifacts(...)        # also consumed by update's install_only scan
     _record_build_failure(state_dir, target, exc)
 """
@@ -355,6 +355,7 @@ def install_built(
     built_pkg_files: list[Path],
     *,
     always_install: "frozenset[str] | set[str]" = frozenset(),
+    interactive: bool = False,
 ) -> tuple[list[Path], bool]:
     """Dedupe, filter to the install keep-set, and bulk ``pacman -U``.
 
@@ -390,7 +391,7 @@ def install_built(
                 _log.info(f"  - {pn} ({path.name})")
 
     if built_pkg_files:
-        if not batch_install_pkgs(built_pkg_files):
+        if not batch_install_pkgs(built_pkg_files, interactive=interactive):
             _log.error("Batch package install failed")
             _log.error("packages were built but not installed")
             install_failed = True
@@ -771,7 +772,8 @@ def build_and_install(
                     )
                     with timer.phase(f"install deps: {target.pkgbase}"):
                         installed_files, jit_failed = install_built(
-                            pending, always_install=requested
+                            pending, always_install=requested,
+                            interactive=interactive,
                         )
                     _tick.resume()
                     jit_handled.update(pending)
@@ -849,7 +851,7 @@ def build_and_install(
         _ui_progress.phase("installing built packages")
     with timer.phase("install"):
         installed_now, final_failed = install_built(
-            remaining, always_install=requested
+            remaining, always_install=requested, interactive=interactive,
         )
     outcome.built_pkg_files = jit_files + installed_now
     outcome.install_failed = outcome.install_failed or final_failed
