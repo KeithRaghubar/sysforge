@@ -31,7 +31,12 @@ from sysforge.pipeline.stages.configure import (
     _sync_pacman_dbs,
 )
 from sysforge.pipeline.stages.base_install import BaseInstallStage, _BASE_PACKAGES
-from sysforge.pipeline.stages.partition import PartitionStage, _partition_disk
+from sysforge.pipeline.stages.partition import (
+    PartitionStage,
+    _partition_disk,
+    _has_existing_partitions,
+    _confirm,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -932,3 +937,57 @@ class TestPartitionDevicePaths:
             esp, root = _partition_disk(cfg)
         assert esp  == expected_esp
         assert root == expected_root
+
+
+class TestHasExistingPartitions:
+    """Detection of a pre-existing partition table via lsblk."""
+
+    def test_bare_disk_returns_false(self):
+        # lsblk lists only the device itself — no child partitions.
+        with patch("sysforge.pipeline.stages.partition.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="sda\n")
+            assert _has_existing_partitions("/dev/sda") is False
+
+    def test_partitioned_disk_returns_true(self):
+        with patch("sysforge.pipeline.stages.partition.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="sda\nsda1\nsda2\n")
+            assert _has_existing_partitions("/dev/sda") is True
+
+    def test_lsblk_failure_returns_false(self):
+        # Can't determine — fall through to the normal confirm rather than erroring.
+        with patch("sysforge.pipeline.stages.partition.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="")
+            assert _has_existing_partitions("/dev/sda") is False
+
+
+class TestConfirmOverwrite:
+    """The overwrite branch of _confirm when existing partitions are present."""
+
+    def test_existing_partitions_default_aborts(self):
+        cfg = make_cfg(device="/dev/sda")
+        with patch("sysforge.pipeline.stages.partition._has_existing_partitions",
+                   return_value=True), \
+             patch("sysforge.pipeline.stages.partition.prompt_choice",
+                   return_value="n") as mock_prompt:
+            with pytest.raises(RuntimeError, match="Aborted by user"):
+                _confirm(cfg)
+        # Defaults to abort: prompt invoked with default "n".
+        assert mock_prompt.call_args.kwargs["default"] == "n"
+
+    def test_existing_partitions_yes_proceeds(self):
+        cfg = make_cfg(device="/dev/sda")
+        with patch("sysforge.pipeline.stages.partition._has_existing_partitions",
+                   return_value=True), \
+             patch("sysforge.pipeline.stages.partition.prompt_choice",
+                   return_value="y"):
+            _confirm(cfg)  # no raise
+
+    def test_bare_disk_uses_plain_confirm(self):
+        cfg = make_cfg(device="/dev/sda")
+        with patch("sysforge.pipeline.stages.partition._has_existing_partitions",
+                   return_value=False), \
+             patch("sysforge.pipeline.stages.partition.prompt_choice",
+                   return_value="yes") as mock_prompt:
+            _confirm(cfg)
+        # Plain confirm keeps the strict "yes" choice set, not the y/N overwrite form.
+        assert mock_prompt.call_args.kwargs["choices"] == ("yes",)

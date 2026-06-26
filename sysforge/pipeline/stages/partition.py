@@ -109,6 +109,25 @@ def _is_already_mounted(device: str, target: str) -> bool:
     return False
 
 
+def _has_existing_partitions(device: str) -> bool:
+    """Return True if `device` already carries a partition table with partitions.
+
+    ``lsblk`` lists the device followed by one line per child partition, so any
+    output beyond the device's own line means existing partitions that a
+    ``sgdisk --clear`` would destroy. On any lsblk error we return False — the
+    inability to enumerate shouldn't itself block partitioning; the standard
+    plan confirmation still applies.
+    """
+    result = subprocess.run(
+        ["lsblk", "--noheadings", "--raw", "--output", "NAME", device],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return False
+    names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return len(names) > 1
+
+
 def _check_not_mounted(device: str, target: str) -> None:
     """Raise if the device or target is already in use by a different device."""
     result = subprocess.run(
@@ -218,7 +237,31 @@ def _confirm(cfg: BootstrapConfig) -> None:
     print(log.downgrade_glyphs(f"  WARNING: All data on {cfg.device} will be destroyed."))
     print()
 
-    # Destructive: any non-confirming input must abort, never re-prompt.
+    # When the device already carries a partition table, make the overwrite
+    # explicit and default to *no*: the prompt defaults to "n", and any input
+    # but an explicit yes (including empty input / EOF in a non-interactive run)
+    # aborts. This stops a stray run from silently wiping a populated disk.
+    if _has_existing_partitions(cfg.device):
+        print(log.downgrade_glyphs(
+            f"  {cfg.device} already has an existing partition table — its "
+            f"partitions will be erased."
+        ))
+        print()
+        answer = prompt_choice(
+            f"  Overwrite all partitions on {cfg.device}? [y/N]: ",
+            choices=("y", "yes"),
+            default="n",
+            eof_default="n",
+            retry_on_invalid=False,
+            tag="PARTITION",
+        )
+        if answer not in ("y", "yes"):
+            raise RuntimeError(
+                "[PARTITION] Aborted by user — existing partitions left intact."
+            )
+        return
+
+    # Bare/unpartitioned disk: any non-confirming input must abort, never re-prompt.
     answer = prompt_choice(
         "  Type 'yes' to proceed, anything else to abort: ",
         choices=("yes",),

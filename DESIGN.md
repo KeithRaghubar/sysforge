@@ -578,6 +578,8 @@ environment = "gnome"   # optional — "gnome" | "kde"; installs a curated
                         # stage prompts; unset + no TTY → no desktop.
 ```
 
+**Partition stage (stage 1)** prints a partition-plan box and requires explicit confirmation before any destructive operation (skipped under `--dry-run`). Before prompting it inspects the target device with `lsblk` (`_has_existing_partitions`): a device that already carries a partition table gets an overwrite-specific prompt that **defaults to no** (`Overwrite all partitions on <device>? [y/N]`) — empty input, EOF, or anything but an explicit `y`/`yes` aborts with `existing partitions left intact`, so a stray or non-interactive run never silently wipes a populated disk. A bare/unpartitioned device keeps the strict `Type 'yes' to proceed` confirmation. If lsblk can't enumerate the device the stage falls through to the plain confirmation rather than erroring. (Distinct from the *already-mounted* short-circuit: a device fully mounted at `target` + `target/boot` is treated as already prepared and skipped; a partial mount raises.)
+
 **Configure stage (stage 4)** runs all one-time system identity steps inside `arch-chroot`:
 - Hostname (`/etc/hostname`), locale (`locale-gen`), timezone (`ln -sf /usr/share/zoneinfo/...`), keymap (`/etc/vconsole.conf`), `ParallelDownloads` in `pacman.conf`
 - Reflector mirrorlist (skipped gracefully if `reflector` absent in chroot)
