@@ -1127,6 +1127,100 @@ def _merge_or_create_array(text: str, key: str, values: list[str], anchor_end: i
     return text[:close_idx] + pad + " ".join(add) + text[close_idx:]
 
 
+def _find_func_body_span(text: str, funcname: str) -> tuple[int, int] | None:
+    """Return ``(open_brace_idx, close_brace_idx)`` for ``funcname() { ... }``.
+
+    Walks brace depth so a body with nested ``${…}`` / blocks is captured whole.
+    Returns None when the function is absent or its braces are unbalanced. The
+    walk is naive about braces inside comments/strings — acceptable here (the same
+    tradeoff as :func:`_find_array_span`'s paren walk) since package functions
+    keep ``{}`` balanced.
+    """
+    m = re.search(rf"(?m)^[ \t]*{re.escape(funcname)}\s*\(\s*\)\s*\{{", text)
+    if not m:
+        return None
+    open_idx = text.index("{", m.start())
+    depth = 0
+    i = open_idx
+    while i < len(text):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return (open_idx, i)
+        i += 1
+    return None
+
+
+def _find_indented_array_span(text: str, key: str) -> tuple[int, int] | None:
+    """Like :func:`_find_array_span` but matches an *indented* ``key=(`` — i.e. an
+    array assigned inside a ``package_<name>()`` function body."""
+    m = re.search(rf"(?m)^[ \t]*{re.escape(key)}=\(", text)
+    if not m:
+        return None
+    open_idx = text.index("(", m.start())
+    depth = 0
+    i = open_idx
+    while i < len(text):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return (open_idx, i)
+        i += 1
+    return None
+
+
+def _has_package_func(text: str, name: str) -> bool:
+    return re.search(rf"(?m)^[ \t]*package_{re.escape(name)}\s*\(\s*\)", text) is not None
+
+
+def _inject_member_conflict(text: str, member: str) -> str:
+    """Ensure a split member's ``package_<member>()`` body declares
+    ``provides``/``conflicts``/``replaces`` for its *own* stock name.
+
+    The B1 root cause: a single top-level (global) injection is shadowed by any
+    ``package_<name>()`` body that reassigns these arrays (bash: last assignment
+    in the function wins), so the renamed member silently drops its drop-in
+    conflict — and members that *don't* reassign inherit the over-broad global
+    listing every sibling. Attribution must be per-member, inside the body, where
+    it survives the body's own assignment. Merges into an existing in-body array,
+    or creates one right after the opening brace (no later top-level assignment in
+    the body can then shadow it). ``$pkgver`` is always set inside a package
+    function, so the provides version expands correctly regardless of field order.
+    Returns ``text`` unchanged if the member has no literal package function.
+    """
+    # replaces/conflicts carry the bare name; provides carries name=$pkgver.
+    wanted = {
+        "replaces": member,
+        "conflicts": member,
+        "provides": f"{member}=$pkgver",
+    }
+    for key, value in wanted.items():
+        span = _find_func_body_span(text, f"package_{member}")
+        if span is None:
+            return text
+        open_brace, close_brace = span
+        body = text[open_brace + 1:close_brace]
+        arr = _find_indented_array_span(body, key)
+        quoted = f'"{value}"'
+        if arr is not None:
+            a_open, a_close = arr
+            inner = body[a_open + 1:a_close]
+            existing = set(re.findall(r"\S+", inner))
+            if quoted in existing or value in existing:
+                continue
+            pad = "" if (not inner or inner.endswith((" ", "\n", "\t"))) else " "
+            abs_close = open_brace + 1 + a_close
+            text = text[:abs_close] + pad + quoted + text[abs_close:]
+        else:
+            insert_at = open_brace + 1
+            text = text[:insert_at] + f"\n  {key}=({quoted})" + text[insert_at:]
+    return text
+
+
 def patch_package_suffix(patched_path, suffix: str, *, mode: str = "conflict") -> dict | None:
     """Rename a PKGBUILD's package(s) with a ``-suffix`` and (conflict mode) make
     them drop-in replacements for the stock names. The one home for the
@@ -1212,23 +1306,40 @@ def patch_package_suffix(patched_path, suffix: str, *, mode: str = "conflict") -
 
     # --- conflict mode: provides/conflicts/replaces over the stock names ---
     if mode == "conflict" and origin_pkgnames:
-        text = _merge_or_create_array(
-            text, "replaces", list(origin_pkgnames), anchor_end
-        )
-        text = _merge_or_create_array(
-            text, "conflicts", list(origin_pkgnames), anchor_end
-        )
-        # provides entries reference ``$pkgver``, which bash expands at array
-        # *assignment* time. PKGBUILDs that declare pkgname before pkgver (mesa,
-        # llvm) would otherwise get the created array inserted above ``pkgver=``,
-        # leaving every entry as ``name=`` (makepkg: "pkgver in provides is not
-        # allowed to be empty"). Anchor a freshly-created array below the pkgver
-        # assignment instead. Recomputed on the current text so the replaces/
-        # conflicts insertions above don't stale the offset.
-        provides_anchor = _metadata_block_end(text, anchor_end)
-        text = _merge_or_create_array(
-            text, "provides", [f"{n}=$pkgver" for n in origin_pkgnames], provides_anchor
-        )
+        # Attribution must be *per member*: a split ``package_<name>()`` body that
+        # reassigns provides/conflicts/replaces shadows any global array (bash:
+        # last assignment in the function wins). Members that own a literal
+        # package function get their stock name injected *inside* that body (B1);
+        # the rest (a single bare ``package()``, or ``$pkgbase``-cascaded members
+        # with no literal function) are covered by the global injection, which is
+        # the effective array for them.
+        with_func, without_func = [], []
+        for n in origin_pkgnames:
+            _, val = _dequote(n)
+            if not _PKGBASE_REF_RE.search(val) and _has_package_func(text, val):
+                with_func.append(val)
+            else:
+                without_func.append(n)
+        if without_func:
+            text = _merge_or_create_array(
+                text, "replaces", list(without_func), anchor_end
+            )
+            text = _merge_or_create_array(
+                text, "conflicts", list(without_func), anchor_end
+            )
+            # provides entries reference ``$pkgver``, which bash expands at array
+            # *assignment* time. PKGBUILDs that declare pkgname before pkgver
+            # (mesa, llvm) would otherwise get the created array inserted above
+            # ``pkgver=``, leaving every entry as ``name=`` (makepkg: "pkgver in
+            # provides is not allowed to be empty"). Anchor a freshly-created
+            # array below the pkgver assignment instead. Recomputed on the
+            # current text so the replaces/conflicts insertions don't stale it.
+            provides_anchor = _metadata_block_end(text, anchor_end)
+            text = _merge_or_create_array(
+                text, "provides", [f"{n}=$pkgver" for n in without_func], provides_anchor
+            )
+        for val in with_func:
+            text = _inject_member_conflict(text, val)
 
     # Rename split-package functions to match the renamed pkgnames (both modes —
     # the kernel coexist rename needs it too). Must run for split packages or
@@ -1853,13 +1964,35 @@ _RENAME_MUTABLE_GLOBALS = frozenset(
 )
 
 
-def _validate_rename(orig: dict, patched: dict, rename: dict) -> None:
+def _array_from_body(body: str | None, key: str) -> set[str] | None:
+    """Bare-name set of an array assigned inside a ``package_<name>()`` body, or
+    None when the body does not reassign it (caller falls back to the global).
+
+    Returns an *empty set* when the body assigns an empty array — distinct from
+    None (not assigned) so the validator can tell "overridden to nothing" from
+    "inherits global".
+    """
+    if not body:
+        return None
+    span = _find_indented_array_span(body, key)
+    if span is None:
+        return None
+    open_idx, close_idx = span
+    inner = body[open_idx + 1:close_idx]
+    return {_dequote(tok)[1] for tok in re.findall(r"\S+", inner)}
+
+
+def _validate_rename(orig: dict, patched: dict, rename: dict,
+                     patched_functions: dict | None = None) -> None:
     """Assert a :func:`patch_package_suffix` rename is well-formed.
 
     Verifies the suffix landed on pkgbase and every pkgname, and — in conflict
-    mode — that ``provides``/``conflicts``/``replaces`` cover every original
-    pkgname so no dependency edge is silently dropped and the renamed build can
-    never install *next to* the stock one. Raises :class:`PkgbuildPatchError`.
+    mode — that the *effective* ``provides``/``conflicts``/``replaces`` for every
+    member cover its stock name so no dependency edge is silently dropped and the
+    renamed build can never install *next to* the stock one. "Effective" means a
+    split ``package_<name>()`` body that reassigns an array overrides the global
+    (the B1 mis-attribution the global-only check missed). Raises
+    :class:`PkgbuildPatchError`.
     """
     suffix = rename["suffix"]
     mode = rename["mode"]
@@ -1898,21 +2031,39 @@ def _validate_rename(orig: dict, patched: dict, rename: dict) -> None:
     if mode != "conflict":
         return
 
-    orig_names = _as_list(orig.get("pkgname")) or _as_list(orig.get("pkgbase"))
+    # Global arrays — the effective values for any member that does not reassign
+    # them in its own ``package_<name>()`` body.
+    g_provided = {p.split("=", 1)[0] for p in _as_list(patched.get("provides"))}
+    g_conflicts = set(_as_list(patched.get("conflicts")))
+    g_replaces = set(_as_list(patched.get("replaces")))
+    patched_functions = patched_functions or {}
 
-    # Conflict mode: every stock name must be covered by provides + conflicts +
-    # replaces, or the renamed build could install beside the stock package.
-    provides = _as_list(patched.get("provides"))
-    provided = {p.split("=", 1)[0] for p in provides}
-    conflicts = set(_as_list(patched.get("conflicts")))
-    replaces = set(_as_list(patched.get("replaces")))
-    for name in orig_names:
+    # Pair each stock name with the renamed member so we can read its body.
+    orig_names = _as_list(rename.get("origin_pkgnames"))
+    renamed = _as_list(rename.get("renamed_pkgnames"))
+    if not orig_names:
+        # Synthetic/legacy caller without per-member info — fall back to the
+        # global arrays as the effective values for every original name.
+        orig_names = _as_list(orig.get("pkgname")) or _as_list(orig.get("pkgbase"))
+        renamed = [None] * len(orig_names)
+
+    for stock, new in zip(orig_names, renamed):
+        _, stock_val = _dequote(stock)
+        body = patched_functions.get(f"package_{new}") if new else None
+        # Body reassignment (if any) overrides the global; else inherit global.
+        b_provides = _array_from_body(body, "provides")
+        provided = ({p.split("=", 1)[0] for p in b_provides}
+                    if b_provides is not None else g_provided)
+        conflicts = _array_from_body(body, "conflicts")
+        conflicts = conflicts if conflicts is not None else g_conflicts
+        replaces = _array_from_body(body, "replaces")
+        replaces = replaces if replaces is not None else g_replaces
         for label, have in (("provides", provided), ("conflicts", conflicts),
                             ("replaces", replaces)):
-            if name not in have:
+            if stock_val not in have:
                 msg = (
                     f"conflict-mode rename does not {label} the stock name "
-                    f"{name!r} — the renamed build could install beside, or "
+                    f"{stock_val!r} — the renamed build could install beside, or "
                     f"silently drop a dependency edge to, the stock package"
                 )
                 _log.error(msg)
@@ -1948,7 +2099,9 @@ def validate_patched_pkgbuild(original_path, patched_path, *, rename=None) -> No
     """
     from sysforge.primitives import pkgbuild_meta
     orig = pkgbuild_meta.parse_pkgbuild(original_path).get("globals", {})
-    patched = pkgbuild_meta.parse_pkgbuild(patched_path).get("globals", {})
+    parsed_patched = pkgbuild_meta.parse_pkgbuild(patched_path)
+    patched = parsed_patched.get("globals", {})
+    patched_functions = parsed_patched.get("functions", {})
     for key in _INVARIANT_GLOBALS:
         if rename is not None and key in _RENAME_MUTABLE_GLOBALS:
             continue
@@ -1961,7 +2114,7 @@ def validate_patched_pkgbuild(original_path, patched_path, *, rename=None) -> No
             _log.error(msg)
             raise PkgbuildPatchError(msg)
     if rename is not None:
-        _validate_rename(orig, patched, rename)
+        _validate_rename(orig, patched, rename, patched_functions)
 
     # G3 (rename only): a rename that updated ``pkgname`` but left the matching
     # ``package_<orig>()`` function un-renamed is the split-package brick — makepkg

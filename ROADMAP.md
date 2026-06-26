@@ -24,19 +24,6 @@ and in release notes.
 
 ## Planned
 
-### Bugs
-
-- **`1.2.0-B1` — PGO-built split packages: `provides`/`conflicts` attribution is
-  busted.** Observed on mesa: the conflict lands on the wrong split member —
-  `mesa-docs-sysforge` declares the conflict with stock `mesa` while
-  `mesa-sysforge` declares no conflict at all, then fails at install because stock
-  `mesa` still owns the files. The `provides`/`conflicts` rewrite (conflict-mode
-  `patch_package_suffix`) is wrong across all built split members, forcing a manual
-  rollback to stock mesa. Needs a fix to the per-`package_<name>()`
-  provides/conflicts attribution **and** much more thorough testing of mesa PGO
-  builds and general (`--pgo`) builds. *Priority: high (a profiled build that can't
-  install is a hard regression on the optimization path).*
-
 ### Features
 
 - **`1.2.0-F24` — `build --pgo` should imply makepkg `-Cc` (clean build).** Both

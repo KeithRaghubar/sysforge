@@ -1359,6 +1359,132 @@ def test_validate_rejects_rename_that_missed_a_function(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# B1 regression — per-member provides/conflicts/replaces attribution in split
+# packages whose package_<name>() bodies *reassign* those arrays (mesa).
+# ---------------------------------------------------------------------------
+
+# Mirrors the real mesa shape: package_mesa() reassigns provides/conflicts/
+# replaces (so a *global* injection is shadowed), while package_mesa-docs()
+# declares none (so a global injection would over-broadly attribute every
+# sibling's stock name to it).
+_SPLIT_REASSIGNS = (
+    "pkgbase=mesa\n"
+    "pkgname=(mesa mesa-docs)\n"
+    "pkgver=25.0\n"
+    "pkgrel=1\n"
+    "depends=(libdrm)\n"
+    "package_mesa() {\n"
+    '  provides=("mesa-libgl=$pkgver" opengl-driver)\n'
+    "  conflicts=('mesa-libgl<17')\n"
+    "  replaces=('mesa-libgl<17')\n"
+    "  true\n"
+    "}\n"
+    "package_mesa-docs() {\n"
+    "  pkgdesc=docs\n"
+    "  true\n"
+    "}\n"
+)
+
+
+def _member_arrays_via_bash(pb, funcname):
+    """Source the patched PKGBUILD, call the member's package function, and read
+    the *effective* provides/conflicts/replaces exactly as makepkg would — body
+    reassignment shadows the global. Returns (provides, conflicts, replaces) as
+    sets of bare names (provides versions stripped). Skips if bash is absent."""
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash not available")
+    script = (
+        f"source {pb}\n{funcname}\n"
+        'printf "P:%s\\n" "${provides[@]}"\n'
+        'printf "C:%s\\n" "${conflicts[@]}"\n'
+        'printf "R:%s\\n" "${replaces[@]}"\n'
+    )
+    out = subprocess.run(
+        [bash, "-c", script], capture_output=True, text=True, check=True
+    ).stdout
+    prov, conf, repl = set(), set(), set()
+    for line in out.splitlines():
+        tag, _, val = line.partition(":")
+        if not val:
+            continue
+        if tag == "P":
+            prov.add(val.split("=", 1)[0])
+        elif tag == "C":
+            conf.add(val)
+        elif tag == "R":
+            repl.add(val)
+    return prov, conf, repl
+
+
+def test_suffix_conflict_per_member_attribution_survives_body_reassign(tmp_path):
+    # B1: a member whose package_<name>() body reassigns provides/conflicts/
+    # replaces must STILL drop-in replace its own stock name (the injected
+    # entries survive the body's assignment), and must NOT claim a sibling's
+    # stock name. A member that declares none gets ONLY its own name, not the
+    # over-broad global listing every sibling.
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_SPLIT_REASSIGNS)
+    patch_package_suffix(pb, "sysforge", mode="conflict")
+
+    prov, conf, repl = _member_arrays_via_bash(pb, "package_mesa-sysforge")
+    assert "mesa" in conf and "mesa" in repl and "mesa" in prov
+    assert "mesa-libgl<17" in conf  # the body's own conflict is preserved
+    assert "mesa-docs" not in conf  # never another member's name
+
+    prov, conf, repl = _member_arrays_via_bash(pb, "package_mesa-docs-sysforge")
+    assert "mesa-docs" in conf and "mesa-docs" in repl and "mesa-docs" in prov
+    assert "mesa" not in conf  # the B1 mis-attribution must be gone
+
+
+def test_validate_rejects_member_body_that_drops_its_conflict(tmp_path):
+    # B1: a global provides/conflicts/replaces that is shadowed by a member
+    # body which omits its own stock name would install beside the stock
+    # package. The validator must check *effective* per-member arrays, not just
+    # globals, and reject this.
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_SPLIT_REASSIGNS)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(
+        "pkgbase=mesa-sysforge\n"
+        "pkgname=(mesa-sysforge mesa-docs-sysforge)\n"
+        'provides=("mesa=$pkgver" "mesa-docs=$pkgver")\n'
+        "conflicts=(mesa mesa-docs)\n"
+        "replaces=(mesa mesa-docs)\n"
+        "pkgver=25.0\n"
+        "pkgrel=1\n"
+        "depends=(libdrm)\n"
+        "package_mesa-sysforge() {\n"
+        "  provides=(opengl-driver)\n"  # shadows global, drops `mesa`
+        "  conflicts=('mesa-libgl<17')\n"
+        "  replaces=('mesa-libgl<17')\n"
+        "  true\n"
+        "}\n"
+        "package_mesa-docs-sysforge() {\n  true\n}\n"
+    )
+    rename = {
+        "suffix": "sysforge", "mode": "conflict",
+        "origin_pkgnames": ["mesa", "mesa-docs"],
+        "renamed_pkgnames": ["mesa-sysforge", "mesa-docs-sysforge"],
+    }
+    with pytest.raises(PkgbuildPatchError, match="conflict-mode rename"):
+        validate_patched_pkgbuild(orig, patched, rename=rename)
+
+
+def test_validate_accepts_per_member_injected_split(tmp_path):
+    # The output of the fixed injector must pass its own validator end-to-end.
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_SPLIT_REASSIGNS)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(_SPLIT_REASSIGNS)
+    info = patch_package_suffix(patched, "sysforge", mode="conflict")
+    validate_patched_pkgbuild(orig, patched, rename=info)  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # patch_build_linker
 # ---------------------------------------------------------------------------
 
