@@ -201,19 +201,6 @@ and in release notes.
   summary should include `LD` alongside `CC`/`CXX`. *Priority: low (diagnostics
   completeness).*
 
-### Questions
-
-- **`1.2.0-Q8` — Is the `update --devel` LLVM source pre-flight conveying anything
-  useful for repo-origin lib32 packages?** `sysforge update --devel` prints an
-  "LLVM source pre-flight (2 packages)" block listing `lib32-llvm` / `lib32-clang`
-  with `origin=repo`, `clean=clean`, `sync=unknown`, `installed=repo`, `mode=—`. For
-  packages that are repo-origin (not source-built), every interesting column is empty
-  or `unknown`, so the block reads as noise. Decide whether this is by design (and
-  should be suppressed / collapsed for repo-origin entries) or a partial breakage
-  (e.g. `sync=unknown` should resolve to a real state). Likely outcome: filter
-  repo-origin packages out of the pre-flight, or only show rows with an actionable
-  state. *Priority: low (clarity of `--devel` output).*
-
 ---
 
 ## Abandoned / decided against

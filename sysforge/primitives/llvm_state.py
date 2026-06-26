@@ -623,6 +623,26 @@ def _format_version_pair(installed: str | None, pkgbuild: str | None) -> str:
     return f"{inst} → {pkg}"
 
 
+def is_actionable_state(s: LlvmPackageState) -> bool:
+    """True when an LLVM pre-flight row carries information worth surfacing.
+
+    The pre-flight only guards *source builds*: it exists to warn that a tree
+    sysforge is about to build is dirty, diverged, or carries stale PGO
+    profdata. A repo-origin package installed from the binary repo with no
+    source build_mode has every source-state column empty/``unknown`` — its
+    row is pure noise (1.2.0-Q8). A row is actionable when it has an active
+    concern (dirty / diverged / profdata-mismatch), was built locally
+    (``install_origin == "foreign"``), or sysforge intends to build it from
+    source (any non-``pacman`` build_mode). Display-only: the strict
+    blocker path (:func:`evaluate_strict`) still sees every state.
+    """
+    if s.is_dirty or s.divergence == "diverged" or s.pgo_profdata_mismatch:
+        return True
+    if s.install_origin == "foreign":
+        return True
+    return bool(s.build_mode) and s.build_mode != "pacman"
+
+
 def render_preflight(report: LlvmPreflightReport, *, verbose: bool = False) -> str:
     """Render a human-readable pre-flight table.
 
@@ -630,18 +650,27 @@ def render_preflight(report: LlvmPreflightReport, *, verbose: bool = False) -> s
     :func:`sysforge.update._print_summary` (``  [TAG] ...`` with a 17-col
     gutter). Returns the rendered text rather than printing it so callers
     can route through ``log.ui`` / ``print`` themselves.
+
+    Non-actionable rows (see :func:`is_actionable_state`) are filtered out
+    unless ``verbose`` is set, so repo-origin packages with nothing to report
+    don't bury the rows that matter (1.2.0-Q8). When every row is filtered the
+    whole block collapses to ``""``.
     """
-    if not report.states:
+    shown = (
+        report.states if verbose
+        else tuple(s for s in report.states if is_actionable_state(s))
+    )
+    if not shown:
         return ""
 
     header = f"  [{_TAG}]" + " " * max(1, 17 - len(_TAG) - 2)
     lines: list[str] = []
     lines.append(
-        f"{header}LLVM source pre-flight ({len(report.states)} package"
-        f"{'s' if len(report.states) != 1 else ''})"
+        f"{header}LLVM source pre-flight ({len(shown)} package"
+        f"{'s' if len(shown) != 1 else ''})"
     )
 
-    for s in report.states:
+    for s in shown:
         clean = "clean" if not s.is_dirty else f"DIRTY ({s.dirty_reason})"
         sync = s.divergence
         if s.head_short and s.upstream_short and sync != "up_to_date":

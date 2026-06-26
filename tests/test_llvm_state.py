@@ -445,6 +445,62 @@ def test_render_blockers_block_listed_at_end():
     assert "llvm-git: dirty (uncommitted changes)" in out
 
 
+# A repo-origin lib32 package installed from the binary repo with no source
+# build_mode: every source-state column is empty/unknown. Nothing the pre-flight
+# reports is actionable, so the row is pure noise (1.2.0-Q8).
+def _repo_origin_noise_state(**kwargs):
+    base = dict(
+        pkgbase="lib32-llvm",
+        source_origin="repo",
+        install_origin="repo",
+        is_dirty=False,
+        divergence="unknown",
+        build_mode=None,
+        pgo_profdata_mismatch=False,
+    )
+    base.update(kwargs)
+    return _state(**base)
+
+
+def test_render_suppresses_nonactionable_repo_origin_rows():
+    # 1.2.0-Q8: a repo-origin row with no actionable state is dropped from the
+    # rendered block entirely (it would otherwise read as noise).
+    out = render_preflight(_report(_repo_origin_noise_state()))
+    assert out == ""
+
+
+def test_render_keeps_actionable_rows_alongside_noise():
+    # The actionable row survives; the count reflects only what is shown.
+    out = render_preflight(_report(
+        _repo_origin_noise_state(),
+        _state(pkgbase="llvm-git", is_dirty=True, dirty_reason="2 unpushed commit(s)"),
+    ))
+    assert "lib32-llvm" not in out
+    assert "llvm-git" in out
+    assert "(1 package)" in out
+
+
+def test_render_verbose_shows_all_rows():
+    # --verbose is the escape hatch: even non-actionable rows render.
+    out = render_preflight(_report(_repo_origin_noise_state()), verbose=True)
+    assert "lib32-llvm" in out
+
+
+def test_render_keeps_repo_origin_when_source_built():
+    # A repo-origin clone that sysforge *will* build from source is actionable.
+    out = render_preflight(_report(
+        _repo_origin_noise_state(build_mode="source_built"),
+    ))
+    assert "lib32-llvm" in out
+
+
+def test_render_keeps_diverged_repo_origin():
+    out = render_preflight(_report(
+        _repo_origin_noise_state(divergence="diverged"),
+    ))
+    assert "lib32-llvm" in out
+
+
 # ---------------------------------------------------------------------------
 # detect_toolchain_config_mismatch (configured-vs-installed provenance)
 # ---------------------------------------------------------------------------
