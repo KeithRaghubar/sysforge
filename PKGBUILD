@@ -32,6 +32,7 @@ optdepends=(
     'compiler-rt: required for sysforge run toolchain --compiler=llvm'
 )
 conflicts=('sysforge-git')
+install=sysforge.install
 backup=(
     'etc/sysforge/sysforge.toml'
     'etc/sysforge/profiles.toml'

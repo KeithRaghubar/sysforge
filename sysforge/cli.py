@@ -1121,6 +1121,13 @@ def main():
                 "file once you have manually verified system consistency.",
             )
             sys.exit(2)
+    # First-install init notice (F1): on a fresh package install a marker file
+    # is dropped in the state dir; advise running the reconfigure + hardware
+    # bootstrap stages until both complete, then self-delete. Best-effort,
+    # never blocks. Skip completions (machine-readable output must stay clean).
+    if getattr(args, "command", None) != "completions":
+        from sysforge.primitives.init_notice import maybe_emit_init_notice
+        maybe_emit_init_notice(getattr(args, "state_dir", None))
     verb_cls = getattr(args, "verb_cls", None)
     if verb_cls is None:
         _log.error("No verb dispatcher set for this command — argparse misconfiguration")

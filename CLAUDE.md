@@ -261,6 +261,13 @@ edits must pass `make check-design` after `make design`.
   `[package_compiler_overrides]`, applied last in `profile.resolve_profile`. Don't add a
   second profiles.toml writer or a parallel recovery loop. See DESIGN.md §Flag/Profile
   System / §makepkg-wrapper.
+- **First-install notice has one home**: `primitives/init_notice.py`
+  (`maybe_emit_init_notice` — called once per invocation from `cli.main()` after the
+  stale-sentinel gate, skipped for `completions`). The marker `<state_dir>/.sysforge-init-notice`
+  is **created only** by the PKGBUILD `post_install` scriptlet (`sysforge.install`, `install=` in
+  both PKGBUILDs); sysforge only reads/deletes it. Advises the still-pending `reconfigure`/`hardware`
+  stages (via `PipelineState.stage_status`) until both `done`, then self-deletes. Best-effort, never
+  blocks/raises. Don't add a parallel notice or recreate the marker. See DESIGN.md §`init_notice.py`.
 - **LLVM source-state inspection**: `primitives/llvm_state.collect_llvm_state` is the only
   entry point — don't call `git_is_dirty` + URL parsing directly.
 - **Dual-toolchain test parity**: any logic branching on resolved compiler (gcc vs llvm)

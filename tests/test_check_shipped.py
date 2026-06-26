@@ -52,8 +52,8 @@ def copy_shipped_tree(dst: Path) -> Path:
         src = REPO / sub
         if src.is_dir():
             shutil.copytree(src, dst / sub)
-    for name in ("PKGBUILD", "PKGBUILD-git", "pyproject.toml",
-                 "README.md", "DESIGN.md"):
+    for name in ("PKGBUILD", "PKGBUILD-git", "sysforge.install",
+                 "pyproject.toml", "README.md", "DESIGN.md"):
         if (REPO / name).exists():
             shutil.copyfile(REPO / name, dst / name)
     return dst
@@ -137,6 +137,15 @@ class TestPkgbuildDrift:
         res = run_checker(repo=repo, args=["--check=pkgbuild"])
         assert res.returncode == 1
         assert "install source not found" in res.stdout
+
+    def test_missing_install_scriptlet_fails(self, tmp_path):
+        # The PKGBUILD declares install=sysforge.install (F1); the scriptlet
+        # file must ship alongside it.
+        repo = copy_shipped_tree(tmp_path)
+        (repo / "sysforge.install").unlink()
+        res = run_checker(repo=repo, args=["--check=pkgbuild"])
+        assert res.returncode == 1
+        assert "install scriptlet not found" in res.stdout
 
     def test_skip_on_signature_source_passes(self, tmp_path):
         # The real PKGBUILD pairs a SKIP with the detached .asc source — that is

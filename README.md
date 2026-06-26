@@ -38,6 +38,11 @@ SysForge started as a tool to streamline its author's own Arch Linux build and m
 git clone https://aur.archlinux.org/sysforge.git
 cd sysforge && makepkg -si
 
+# After a fresh install, sysforge reminds you (on each command) to run the
+# one-time bootstrap stages until both complete, then the reminder disappears:
+sudo sysforge run reconfigure   # adopt system/toolchain defaults
+sudo sysforge run hardware      # detect CPU/GPU and write the hardware profile
+
 # 2. Edit the config files installed at /etc/sysforge/
 #    (profiles.toml, packages.toml — both are self-documented)
 sudo vim /etc/sysforge/profiles.toml

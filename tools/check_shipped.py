@@ -386,6 +386,13 @@ def check_pkgbuild(repo: Path) -> list[Finding]:
     # Release-signing trust anchor: the stable PKGBUILD must declare a maintainer
     # key so makepkg verifies the .asc. Accept the dev sentinel (release.sh blocks
     # publishing while it's present) or a real 40-hex fingerprint.
+    # install= scriptlet (F1 first-install notice): when declared, the file
+    # must ship in the repo root alongside the PKGBUILD.
+    inst = g.get("install")
+    if inst and not (repo / inst).exists():
+        findings.append(Finding("pkgbuild", "error", "PKGBUILD",
+                                f"install scriptlet not found: {inst}"))
+
     keys = g.get("validpgpkeys") or []
     if not keys:
         findings.append(Finding("pkgbuild", "error", "PKGBUILD",

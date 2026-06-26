@@ -33,6 +33,7 @@ optdepends=(
 )
 conflicts=('sysforge')
 provides=('sysforge')
+install=sysforge.install
 backup=(
     'etc/sysforge/sysforge.toml'
     'etc/sysforge/profiles.toml'
