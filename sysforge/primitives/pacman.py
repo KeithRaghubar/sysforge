@@ -358,6 +358,36 @@ def read_pkgname_from_file(path) -> str | None:
     return None
 
 
+def read_pkg_replaces_from_file(path) -> set:
+    """Return the set of names a built package ``replaces`` (from its .PKGINFO).
+
+    Each ``replaces`` is a separate ``replaces = NAME`` line in .PKGINFO (version
+    constraints, if any, ride on the same line — stripped here to the bare name).
+    Used by :func:`filter_pkgs_to_installed` to keep a conflict-mode renamed
+    artifact (``mesa-sysforge`` from a ``--pgo=use`` build) whose own pkgname is
+    on neither the installed nor the requested list but which replaces a stock
+    package that is. Empty set on any read failure.
+    """
+    try:
+        result = subprocess.run(
+            ["bsdtar", "-xOqf", str(path), ".PKGINFO"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return set()
+    if result.returncode != 0:
+        return set()
+    out: set = set()
+    for line in result.stdout.splitlines():
+        if line.startswith("replaces = "):
+            val = line[len("replaces = "):].strip()
+            # Strip any version constraint (``replaces = foo<1.0``) to the name.
+            name = re.split(r"[<>=]", val, maxsplit=1)[0].strip()
+            if name:
+                out.add(name)
+    return out
+
+
 def filter_pkgs_to_installed(
     pkg_paths: list, installed: set,
 ) -> tuple[list, list]:
@@ -367,6 +397,12 @@ def filter_pkgs_to_installed(
     ones the user never installed. Returns ``(keep, dropped)`` where
     ``dropped`` is ``[(path, pkgname)]``. Files whose pkgname can't be read
     fall through to ``keep`` so the caller can let pacman surface the error.
+
+    A conflict-mode ``-sysforge`` rename (e.g. ``mesa --pgo=use`` → builds
+    ``mesa-sysforge``) produces a pkgname on neither the installed nor the
+    requested list, so the bare-pkgname test would wrongly drop it. Such a
+    package declares ``replaces = <stock name>``; if any replaced name is in
+    ``installed`` it is the drop-in the user asked for and is kept.
     """
     keep: list = []
     dropped: list = []
@@ -375,6 +411,8 @@ def filter_pkgs_to_installed(
         if pn is None:
             keep.append(p)
         elif pn in installed:
+            keep.append(p)
+        elif read_pkg_replaces_from_file(p) & installed:
             keep.append(p)
         else:
             dropped.append((p, pn))

@@ -18,6 +18,7 @@ from sysforge.primitives.pacman import (
     get_pacman_cache_dirs,
     get_pacman_sync_version,
     get_pkgbase,
+    read_pkg_replaces_from_file,
     read_pkgname_from_file,
     snapshot_pkg_dir,
 )
@@ -324,6 +325,32 @@ class TestReadPkgnameFromFile:
 
 
 # ---------------------------------------------------------------------------
+# read_pkg_replaces_from_file
+# ---------------------------------------------------------------------------
+
+class TestReadPkgReplacesFromFile:
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_reads_replaces(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout="pkgname = mesa-sysforge\nreplaces = mesa\nreplaces = mesa-libgl\n",
+            returncode=0,
+        )
+        assert read_pkg_replaces_from_file("/tmp/mesa-sysforge.pkg.tar.zst") == {
+            "mesa", "mesa-libgl",
+        }
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_no_replaces_field(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="pkgname = foo\n", returncode=0)
+        assert read_pkg_replaces_from_file("/tmp/x.pkg.tar.zst") == set()
+
+    @patch("sysforge.primitives.pacman.subprocess.run", side_effect=FileNotFoundError)
+    def test_bsdtar_not_installed(self, _mock_run):
+        assert read_pkg_replaces_from_file("/tmp/x.pkg.tar.zst") == set()
+
+
+# ---------------------------------------------------------------------------
 # filter_pkgs_to_installed
 # ---------------------------------------------------------------------------
 
@@ -343,8 +370,24 @@ class TestFilterPkgsToInstalled:
         assert set(str(p) for p in keep) == {"/tmp/foo-1-1.pkg.tar.zst", "/tmp/foo-dev-1-1.pkg.tar.zst"}
         assert [pn for _, pn in dropped] == ["foo-bar"]
 
+    @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file")
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file")
+    def test_keeps_renamed_pkg_that_replaces_installed(self, mock_name, mock_repl):
+        # A conflict-mode `-sysforge` rebuild (mesa --pgo=use) emits
+        # `mesa-sysforge`, whose pkgname is on neither the installed nor the
+        # requested list — but it `replaces = mesa`, which IS installed, so it
+        # must be kept, not dropped as a stray split sub-package.
+        mock_name.return_value = "mesa-sysforge"
+        mock_repl.return_value = {"mesa"}
+        keep, dropped = filter_pkgs_to_installed(
+            ["/tmp/mesa-sysforge-1-1.pkg.tar.zst"], installed={"mesa"},
+        )
+        assert [str(p) for p in keep] == ["/tmp/mesa-sysforge-1-1.pkg.tar.zst"]
+        assert dropped == []
+
+    @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file", return_value=set())
     @patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value=None)
-    def test_unreadable_file_kept(self, _mock_read):
+    def test_unreadable_file_kept(self, _mock_read, _mock_repl):
         # If we can't determine pkgname, fall through to pacman to surface the error.
         keep, dropped = filter_pkgs_to_installed(["/tmp/x.pkg.tar.zst"], installed=set())
         assert keep == ["/tmp/x.pkg.tar.zst"]
