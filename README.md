@@ -225,7 +225,7 @@ sysforge doctor steam --suggest       # reverse-lookup candidate packages for ea
 
 To override system defaults without modifying `/etc/sysforge/`, create user copies in `~/.config/sysforge/`.
 
-For full CLI reference, profile/rule semantics, and architecture details, see [DESIGN.md](DESIGN.md) (`glow -p DESIGN.md` for in-shell rendering).
+For full CLI reference, profile/rule semantics, and architecture details, see [DESIGN.md](DESIGN.md) (`glow -p DESIGN.md` for in-shell rendering). Planned features and abandoned-idea rationale live in [ROADMAP.md](ROADMAP.md).
 
 ---
 

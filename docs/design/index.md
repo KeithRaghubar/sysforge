@@ -34,7 +34,6 @@ from these sources.
 | `17-release-plan.md` | Release Process |
 | `18-reconverge.md` | Drift detection |
 | `19-known-gaps.md` | Known Gaps |
-| `20-roadmap.md` | Roadmap |
 | `21-standards.md` | Standards & Specifications |
 
 ## Planned reorganization

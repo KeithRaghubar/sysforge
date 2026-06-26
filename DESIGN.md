@@ -33,8 +33,7 @@ SysForge manages the profiled AUR-helper surface (install, update, and manage AU
 18. [Release Process](#release-process)
 19. [Drift detection](#drift-detection)
 20. [Known Gaps](#known-gaps)
-21. [Roadmap](#roadmap)
-22. [Standards & Specifications](#standards-specifications)
+21. [Standards & Specifications](#standards-specifications)
 
 ---
 
@@ -47,6 +46,8 @@ SysForge was motivated by source-based distros' compile-time control and perform
 - **Feature selection** — what to enable
 
 SysForge separates these into distinct config layers and produces a standard mutable Arch system as output. It is not a distro. There is no ISO, no divergence from upstream Arch, no custom package ecosystem.
+
+This document describes only **implemented** design. Planned features, candidate enhancements, and the rationale for purposely-excluded or abandoned ideas live in `/ROADMAP.md`. Roadmap items carry version-prefixed IDs (`<version>-<TYPE><n>`, reset each release) that appear only in the roadmap and release notes — never here.
 
 ---
 
@@ -2011,8 +2012,6 @@ SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are explic
 
 Any build tool override needed at invocation time should use the corresponding SysForge flag (`--cc`, `--cxx`, `--ld`), not a shell export. This applies to both `sysforge build` and `sysforge pipeline`.
 
-> **Cancelled design:** an `[env_precedence]` TOML table with a configurable priority stack (profile = 100, makepkg.conf = 80, shell = 20, PKGBUILD export = 10) was previously planned. It is superseded by this model — shell bleed-through is not a tunable priority, it is prevented entirely.
-
 ### Failure handling
 
 Each scenario has a configurable behaviour in `[failure_handling]`:
@@ -2588,7 +2587,7 @@ DAG stages are categorised as **bootstrap-only** (partition, base_install, confi
 
 ## Known Gaps
 
-Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code.
+Implemented behaviour that is incomplete or has known limitations. These are not deferred features — they are holes in currently active code. Planned and abandoned work is tracked in `/ROADMAP.md`, not here.
 
 **`sysforge update` tracks every package sysforge source-built (build_state authority); `repo_mode = "build_from_source"` additionally surfaces drift for *unbuilt* repo packages.** `sysforge update` walks the union of: every installed AUR package (`pacman -Qm`); every package sysforge source-built (build_state `build_mode != "pacman"`, classified `repo_class = "source"` for repo origins) — so `sysforge build mesa` is durable, rebuilt from source on every update; any repo package whose override sets a behavior-changing field (`enable_build_from_source`, `cache`, `reason`); and, with `repo_mode = "build_from_source"`, every remaining installed repo package. Source-built / overridden entries go through `pkgctl repo clone` (via `source_sync._sync_one` calling `pkgctl_checkout` on first visit and `git_fetch_and_compare` on subsequent runs, with a clean-tree hard-reset to upstream when the local clone diverges) and into the source-build loop. The remaining unbuilt, unmodified repo packages (`repo_class = "pacman"`, only present under `repo_mode = "build_from_source"`) take a fast path: one batched `checkupdates` call (`primitives.pacman.checkupdates_map`) resolves their pending-upgrade versions in a single subprocess; vercmp against the installed version emits `NEEDS_PACMAN_UPGRADE`; one terminal `sudo pacman -Syu` after Phase 6 (install) does the actual upgrade. This split is what makes "track every installed package" tolerable on a maintained workstation — without it, every repo package would mean an individual `git fetch` against the Arch packaging tree on every update run. The post-install ordering matters: source-built artifacts hit the system first so the `IgnoreGroup = sf-build` line added by `sysforge setup` protects them when `pacman -Syu` runs. If `checkupdates` is missing (no `pacman-contrib`), pacman-class packages report `SKIPPED_NO_CHECKUPDATES` and no `pacman -Syu` is dispatched. **Remaining limitation:** a repo package installed via plain `pacman -S` (never built by sysforge, no override) is not source-tracked unless you build it once (`sysforge build <pkg>`), add an override, or set `repo_mode = "build_from_source"`. `repo_mode` also governs the packages-stage bootstrap build path; one key, two surfaces.
 
@@ -2596,62 +2595,10 @@ Implemented behaviour that is incomplete or has known limitations. These are not
 
 **`repo_mode = "build_from_source"` is the canonical repo-handling key.** The `[build] repo_mode = "pacman" | "build_from_source"` setting in `packages.toml` is parsed and honoured by `run packages` / `run pipeline` (repo packages with `repo_mode = "build_from_source"`, or per-package `enable_build_from_source = true`, are built from source via `_build_aur()` using `find_pkgbuild` → `pkgctl_checkout`) and at steady-state by `sysforge update` (where `repo_mode = "build_from_source"` pulls every installed repo package into the bulk drift-surfacing walk — distinct from build_state, which independently tracks whatever sysforge has already source-built). `sysforge build` consults `find_pkgbuild` independently.
 
-**`[env_precedence]` config table — design cancelled.** The original design proposed a priority stack (wrapper profile = 100, makepkg.conf = 80, shell passthrough = 20, PKGBUILD export = 10) and an `[env_precedence]` TOML table to configure it. This design is superseded. The current model is simpler and more predictable: build tool vars (`CC`, `CFLAGS`, `LDFLAGS`, etc.) are stripped from the inherited shell env in `invoke_makepkg` before makepkg runs — the temp conf is the sole authority for all makepkg-managed keys. Shell env bleed-through is not a configurable priority; it is prevented entirely. SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are exempt — they are SysForge's own interface, not build tool vars, and are not stripped. The `[env_precedence]` table will not be implemented.
+**Build-env authority: the temp conf, not a precedence stack.** Build tool vars (`CC`, `CFLAGS`, `LDFLAGS`, etc.) are stripped from the inherited shell env in `invoke_makepkg` before makepkg runs — the temp conf is the sole authority for all makepkg-managed keys. Shell env bleed-through is not a configurable priority; it is prevented entirely. SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are exempt — they are SysForge's own interface, not build tool vars, and are not stripped. (The cancelled `[env_precedence]` priority-stack alternative is recorded in `/ROADMAP.md`.)
 
 ---
 
-## Roadmap
-
-Forward-looking enhancements that build on existing infrastructure. Each is a candidate, not a commitment, and none is required for current functionality. Shipped work is recorded in `docs/release-notes/`, not here.
-
-- **Rule priority auto-calculation** — auto-calculate a baseline specificity score from rule conditions (mirrors CSS specificity: more AND'd conditions = higher weight), with manual `priority` override for ties. Deferred until enough real rules exist to validate whether auto-priority causes ordering problems in practice.
-- **Configure stage additions** — btrfs snapshot before build runs, ccache/sccache initialisation check, estimated build time heuristic.
-- **Graphics runtime debugging refinement** — tighten the graphics/doctor diagnostics surface (exact scope TBD). A candidate when revisiting graphics-related code; not blocking.
-- **System maintenance scope expansion** — grow sysforge beyond build/package management into a unified system-maintenance helper: track and manage user-owned system artifacts that currently live ad-hoc across `~/scripts`, `/etc/systemd/system/`, `/etc/pacman.d/hooks/`, etc. Candidate primitives: inventory of tracked files, source-of-truth dir under repo control, install/sync command, drift detection vs filesystem, integration with the existing config/profile/manifest layers.
-
-### System-maintenance scope (scoping pass)
-
-The Arch wiki's [System maintenance](https://wiki.archlinux.org/title/System_maintenance)
-and [General recommendations](https://wiki.archlinux.org/title/General_recommendations)
-pages are the reference checklist for "keeping an Arch install healthy". This is
-a deliberate *scoping* pass — which of their sections are a natural fit for
-sysforge (as a verb or a `doctor` axis) vs. out of scope — not a commitment to
-build any of it. SysForge's lane is **build/package optimization and the health
-of what it builds**; it is not aiming to become a general config-management or
-backup tool.
-
-**In scope (already covered or a clean fit):**
-
-- *Upgrading the system / partial-upgrade avoidance* — the `update` verb already
-  owns the full-system upgrade path (source-built packages rebuilt, repo packages
-  via `pacman -Syu`); partial upgrades are structurally avoided.
-- *Orphans, unused packages, paccache* — overlaps the existing `cache` management
-  and would extend naturally to a `doctor` axis reporting orphaned dependencies
-  and reclaimable package cache, read-only.
-- *`.pacnew`/`.pacsave` handling* — directly analogous to the existing config
-  merge verb (`.sfnew` adoption); a `doctor` axis surfacing pending `.pacnew`
-  merges is the obvious extension.
-- *Failed systemd units / journal errors* — fits the read-only `doctor` Finding
-  framework as a health axis (no mutation).
-- *Mirror / keyring freshness* — a `doctor` axis warning on a stale mirrorlist or
-  `archlinux-keyring` is in-lane (it directly affects what sysforge builds and
-  installs).
-
-**Out of scope (explicitly not sysforge's job):**
-
-- Backups, snapshots-as-policy, disk-space *strategy*, user-data hygiene — these
-  are the user's tooling (btrfs/timeshift/borg/etc.); sysforge's only adjacency
-  is the optional pre-build snapshot already listed under *Configure stage
-  additions* above.
-- General `General recommendations` territory — networking, user management,
-  desktop/locale/input config, security hardening as a whole — is outside a
-  package-builder's remit and would dilute the tool.
-
-The actionable near-term slice is therefore a set of **read-only `doctor` axes**
-(orphans, `.pacnew`, failed units, mirror/keyring freshness) reusing the existing
-Finding framework, plus the artifact-inventory primitive sketched in the bullet
-above. Anything mutating stays behind an explicit verb with the sentinel/gate
-discipline the rest of sysforge uses.
 ## Standards & Specifications
 
 SysForge commits to a set of external specifications so that its on-disk

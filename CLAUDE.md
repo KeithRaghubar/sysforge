@@ -61,6 +61,14 @@ edits must pass `make check-design` after `make design`.
 
 - **Doc update order**: `docs/design/*.md` source first (then `make design`), then
   README.md, then CLAUDE.md. Never edit generated DESIGN.md directly.
+- **DESIGN = implemented only; `/ROADMAP.md` = planned + abandoned.** DESIGN.md (and its
+  `docs/design/*` sources) describes only shipped/implemented design. Planned features,
+  candidates, and the rationale for purposely-excluded/abandoned ideas live in the
+  top-level hand-maintained `/ROADMAP.md` (not generated, not gitignored — unlike the old
+  `docs/plans/backlog.md`). Roadmap IDs are version-prefixed `<version>-<TYPE><n>` (e.g.
+  `1.2.0-F1`), per-release/per-type counters reset on each `release.sh` bump, and appear
+  **only** in ROADMAP + `docs/release-notes/` — never in DESIGN. Triage `notes.txt` into
+  ROADMAP.md.
 - **Completions stay in lockstep with the CLI**: update `completions/_sysforge` (and the
   bash completion) in the same change as any CLI-surface change, not as a follow-up.
 - **Releases are GPG-signed; the stable PKGBUILD verifies the maintainer signature**:
