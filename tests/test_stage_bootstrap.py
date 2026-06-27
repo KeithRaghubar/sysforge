@@ -867,6 +867,48 @@ class TestConfigureStageDryRun:
         assert not (tmp_path / "etc/hostname").exists()
 
 
+class TestConfigureStageStepOrder:
+    """Regression: the desktop group must be written into packages.toml *after*
+    sysforge is installed.
+
+    ``_install_sysforge`` runs ``pacman -U --overwrite='/etc/sysforge/*'``,
+    which reinstalls the shipped (empty) ``packages.toml`` over the target's.
+    If ``_configure_desktop`` wrote ``[group.<de>]`` *before* that install, the
+    overwrite silently wipes it — the desktop never installs and the system
+    boots to a TTY. So the desktop write must come last.
+    """
+
+    _STEP_FUNCS = (
+        "_set_hostname", "_set_locale", "_set_timezone", "_set_keymap",
+        "_set_pacman_parallel_downloads", "_set_makepkg_conf", "_run_reflector",
+        "_sync_pacman_dbs", "_install_bootloader", "_enable_services",
+        "_configure_sshd", "_create_user", "_create_sysforge_group",
+        "_configure_shell", "_set_default_shell", "_copy_config_files",
+        "_configure_desktop", "_create_state_dir", "_write_resume_reminder",
+        "_install_sysforge", "_set_root_password",
+    )
+
+    def test_desktop_written_after_sysforge_install(self, tmp_path):
+        stage = ConfigureStage()
+        options = make_options()
+
+        from unittest.mock import DEFAULT
+
+        order: list[str] = []
+        with patch.multiple(
+            "sysforge.pipeline.stages.configure",
+            **{name: DEFAULT for name in self._STEP_FUNCS},
+            load_bootstrap=MagicMock(return_value=make_cfg(target=str(tmp_path))),
+        ) as mocks:
+            for name in ("_install_sysforge", "_configure_desktop"):
+                mocks[name].side_effect = (
+                    lambda *a, _n=name, **k: order.append(_n)
+                )
+            stage.run({}, MagicMock(), options)
+
+        assert order.index("_install_sysforge") < order.index("_configure_desktop")
+
+
 # ---------------------------------------------------------------------------
 # BaseInstall stage
 # ---------------------------------------------------------------------------

@@ -715,13 +715,15 @@ class ConfigureStage(Stage):
             if cfg.shell != "bash":
                 _log.ui(f"[dry-run] would set default shell: {cfg.shell}")
             _log.ui("[dry-run] would copy /etc/sysforge/ to target")
+            _log.ui("[dry-run] would create /var/lib/sysforge (mode 0777)")
+            _log.ui("[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
+            _log.ui("[dry-run] would build sysforge in target via makepkg and install with pacman -U (tracked)")
+            # Desktop group is written *after* the sysforge install (whose
+            # pacman -U --overwrite restores the shipped packages.toml).
             if cfg.desktop:
                 _log.ui(f"[dry-run] would select desktop: {cfg.desktop} (writes [group.{cfg.desktop}])")
             else:
                 _log.ui("[dry-run] would prompt for a desktop environment (interactive only)")
-            _log.ui("[dry-run] would create /var/lib/sysforge (mode 0777)")
-            _log.ui("[dry-run] would build sysforge in target via makepkg and install with pacman -U (tracked)")
-            _log.ui("[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
             return
 
         _set_hostname(cfg)
@@ -740,13 +742,18 @@ class ConfigureStage(Stage):
         _configure_shell(cfg)
         _set_default_shell(cfg)
         _copy_config_files(cfg)
-        _configure_desktop(cfg)
         _create_state_dir(cfg)
         # Write the resume reminder before the (potentially fragile) sysforge
         # install. If install fails, the user still has a login-time breadcrumb
         # pointing at `sysforge run pipeline --resume`.
         _write_resume_reminder(cfg)
         _install_sysforge(cfg)
+        # MUST run after _install_sysforge: that step installs the sysforge
+        # package with `pacman -U --overwrite='/etc/sysforge/*'`, which restores
+        # the shipped (empty) packages.toml over the target's. Writing the
+        # desktop [group.<de>] before the install would be silently wiped,
+        # leaving the system without a desktop (boots to a TTY). Write it last.
+        _configure_desktop(cfg)
         _set_root_password(cfg)
 
         _log.ui("Configure stage complete.")
