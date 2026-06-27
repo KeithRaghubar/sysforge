@@ -452,6 +452,16 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
     shutil.rmtree(extract_root)
     shutil.copy(pkgbuild, build_host / "PKGBUILD")
 
+    # The stable PKGBUILD's source=() lists a detached `.asc` signature served
+    # from the GitHub *release* (alongside the archive tarball). makepkg
+    # downloads every source entry even under --skipinteg — that flag only
+    # skips *verification*, not fetching. For a local/unreleased build that
+    # release asset doesn't exist (404), aborting the build. Stage an empty
+    # placeholder next to the tarball so makepkg finds it locally and skips the
+    # fetch; --skipinteg means the (bogus) signature is never verified.
+    if ".tar.gz.asc" in pkgbuild.read_text(encoding="utf-8"):
+        (build_host / f"{tarball.name}.asc").touch()
+
     # An `install=` scriptlet is resolved by makepkg from the build dir
     # ($startdir), not extracted from source=() — so it must be staged next to
     # the PKGBUILD or makepkg aborts with "install file ... does not exist".

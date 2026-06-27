@@ -696,6 +696,43 @@ class TestInstallSysforge:
             "install scriptlet not staged next to PKGBUILD in build dir"
         assert staged.read_text() == "post_install() { :; }\n"
 
+    def test_signature_source_placeholder_staged_into_build_dir(self, tmp_path):
+        """The stable PKGBUILD's source=() lists a detached `.asc` signature
+        served from the GitHub *release*. makepkg downloads every source even
+        under --skipinteg (which only skips *verification*), so for a local /
+        unreleased build that release asset 404s. An empty placeholder must be
+        staged next to the tarball so makepkg uses it locally and skips the
+        fetch."""
+        src = tmp_path / "src/sysforge"
+        src.mkdir(parents=True)
+        (src / "pyproject.toml").write_text("[project]\nname='sysforge'\n")
+        (src / "PKGBUILD").write_text(
+            "pkgname=sysforge\npkgver=1.0.0\npkgrel=1\n"
+            'url="https://github.com/KeithRaghubar/sysforge"\n'
+            'source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz"\n'
+            '        "$pkgname-$pkgver.tar.gz.asc::$url/releases/download/'
+            'v$pkgver/sysforge-$pkgver.tar.gz.asc")\n'
+        )
+        target = self._make_target(tmp_path)
+        cfg = make_cfg(target=str(target), username="builder")
+        build_dir = target / "home/builder/sysforge-pkg"
+
+        def chroot_side_effect(target_arg, cmd, check=True):
+            if cmd[:3] == ["sudo", "-u", "builder"]:
+                build_dir.mkdir(parents=True, exist_ok=True)
+                (build_dir / "sysforge-1.0.0-1-any.pkg.tar.zst").touch()
+            return MagicMock(returncode=0)
+
+        with patch("sysforge.pipeline.stages.configure._find_sysforge_source",
+                   return_value=src), \
+             patch("sysforge.pipeline.stages.configure._chroot",
+                   side_effect=chroot_side_effect):
+            _install_sysforge(cfg)
+
+        sig = build_dir / "sysforge-1.0.0.tar.gz.asc"
+        assert sig.exists(), \
+            "detached signature placeholder not staged next to the tarball"
+
     def test_makepkg_failure_raises_and_cleans_sudoers(self, tmp_path):
         src = self._stage_source(tmp_path)
         target = self._make_target(tmp_path)
