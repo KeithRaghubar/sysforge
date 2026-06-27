@@ -86,7 +86,13 @@ scp -P "$VM_PORT" "${SSH_OPTS[@]}" "$PKG" "$VM_USER@$VM_HOST:/tmp/"
 
 echo "Installing $PKG_BASENAME in VM..."
 # root runs pacman directly; a non-root override needs sudo.
-INSTALL_CMD="pacman -U --noconfirm /tmp/$PKG_BASENAME"
+# --ask=4 (ALPM_QUESTION_CONFLICT_PKG) auto-confirms the conflict-removal
+# prompt: the stable/git flavors declare conflicts=('<other-flavor>'), so a
+# local `pacman -U` raises "X and Y are in conflict. Remove Y? [y/N]", which
+# --noconfirm would otherwise answer N and abort. Swapping flavors in place is
+# the intended behaviour (it's part of what these targets validate). Mirrors
+# install_built()'s replace path in sysforge/primitives/pacman.py.
+INSTALL_CMD="pacman -U --noconfirm --ask=4 /tmp/$PKG_BASENAME"
 [[ $VM_USER != root ]] && INSTALL_CMD="sudo $INSTALL_CMD"
 ssh -t -p "$VM_PORT" "${SSH_OPTS[@]}" "$VM_USER@$VM_HOST" "$INSTALL_CMD"
 
