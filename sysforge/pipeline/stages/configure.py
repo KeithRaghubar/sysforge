@@ -374,6 +374,7 @@ def _find_sysforge_source() -> Path | None:
 
 
 _PKGVER_RE = re.compile(r"^pkgver\s*=\s*['\"]?([^'\"\s]+)['\"]?\s*$", re.MULTILINE)
+_INSTALL_RE = re.compile(r"^install\s*=\s*['\"]?([^'\"\s]+)['\"]?\s*$", re.MULTILINE)
 
 
 def _read_pkgver(pkgbuild: Path) -> str:
@@ -450,6 +451,20 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
     )
     shutil.rmtree(extract_root)
     shutil.copy(pkgbuild, build_host / "PKGBUILD")
+
+    # An `install=` scriptlet is resolved by makepkg from the build dir
+    # ($startdir), not extracted from source=() — so it must be staged next to
+    # the PKGBUILD or makepkg aborts with "install file ... does not exist".
+    install_match = _INSTALL_RE.search(pkgbuild.read_text(encoding="utf-8"))
+    if install_match:
+        install_name = install_match.group(1)
+        install_src = target_src / install_name
+        if not install_src.is_file():
+            raise RuntimeError(
+                f"[CONFIGURE] PKGBUILD declares install={install_name} but "
+                f"{install_src} is missing from the sysforge source tree."
+            )
+        shutil.copy(install_src, build_host / install_name)
 
     _chroot(cfg.target, ["chown", "-R", f"{cfg.username}:{cfg.username}", build_chroot])
 

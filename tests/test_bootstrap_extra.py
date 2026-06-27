@@ -664,6 +664,38 @@ class TestInstallSysforge:
         # Temporary sudoers drop-in is removed at the end
         assert not (target / "etc/sudoers.d/99-sysforge-bootstrap-build").exists()
 
+    def test_install_scriptlet_staged_into_build_dir(self, tmp_path):
+        """A PKGBUILD declaring `install=sysforge.install` requires that file to
+        live alongside the PKGBUILD in the makepkg build dir — makepkg resolves
+        the install scriptlet from $startdir, not from the extracted tarball."""
+        src = tmp_path / "src/sysforge"
+        src.mkdir(parents=True)
+        (src / "pyproject.toml").write_text("[project]\nname='sysforge'\n")
+        (src / "PKGBUILD").write_text(
+            "pkgname=sysforge\npkgver=1.0.0\npkgrel=1\ninstall=sysforge.install\n"
+        )
+        (src / "sysforge.install").write_text("post_install() { :; }\n")
+        target = self._make_target(tmp_path)
+        cfg = make_cfg(target=str(target), username="builder")
+        build_dir = target / "home/builder/sysforge-pkg"
+
+        def chroot_side_effect(target_arg, cmd, check=True):
+            if cmd[:3] == ["sudo", "-u", "builder"]:
+                build_dir.mkdir(parents=True, exist_ok=True)
+                (build_dir / "sysforge-1.0.0-1-any.pkg.tar.zst").touch()
+            return MagicMock(returncode=0)
+
+        with patch("sysforge.pipeline.stages.configure._find_sysforge_source",
+                   return_value=src), \
+             patch("sysforge.pipeline.stages.configure._chroot",
+                   side_effect=chroot_side_effect):
+            _install_sysforge(cfg)
+
+        staged = build_dir / "sysforge.install"
+        assert staged.exists(), \
+            "install scriptlet not staged next to PKGBUILD in build dir"
+        assert staged.read_text() == "post_install() { :; }\n"
+
     def test_makepkg_failure_raises_and_cleans_sudoers(self, tmp_path):
         src = self._stage_source(tmp_path)
         target = self._make_target(tmp_path)
