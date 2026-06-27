@@ -646,6 +646,27 @@ def _validate_flag_profiles(path: Path) -> tuple[bool, str]:
         return False, str(e)
 
 
+def _edit_needs_sudo(path: Path) -> bool:
+    """True when ``path`` can't be saved as the current user, so the editor
+    must be launched under ``sudo``.
+
+    The reconfigure stage runs as a normal user, but the shipped config files
+    live in root-owned ``/etc/sysforge``. Opening them with a plain
+    ``[editor, path]`` lets the editor *read* the file but silently refuse the
+    write — the "opens read-only" symptom. We need sudo when either the file
+    itself isn't writable *or* its parent directory isn't: TUI editors save via
+    a temp-file + atomic rename, which needs write permission on the directory,
+    not just the file. Running as root (``os.access`` sees W_OK everywhere)
+    short-circuits to False, so this is a no-op in that case. Mirrors the
+    ``sudo`` privilege model already used by the makepkg.conf edit path.
+    """
+    try:
+        return not (os.access(path, os.W_OK) and os.access(path.parent, os.W_OK))
+    except OSError:
+        # If we can't even stat it, assume sudo is the safer bet.
+        return True
+
+
 def _open_in_editor(path: Path, editor: str) -> bool:
     """
     Launch ``editor`` on ``path``. Returns False when the editor couldn't be
@@ -655,12 +676,20 @@ def _open_in_editor(path: Path, editor: str) -> bool:
     exit from a launched editor still counts as "ran" (returns True) — the
     user may have edited the file and closed with an error code, and we want
     to validate either way.
+
+    Root-owned config files (``/etc/sysforge/*.toml``) are opened under ``sudo``
+    so the editor can actually save; see :func:`_edit_needs_sudo`.
     """
     if not _editor_usable(editor):
         _log.ui(f"  Skipping {path.name} — no usable editor available.")
         return False
-    _log.ui(f"  Opening: {editor} {path}")
-    rc = _run_editor_argv([editor, str(path)])
+    argv = [editor, str(path)]
+    if _edit_needs_sudo(path):
+        argv = ["sudo", *argv]
+        _log.ui(f"  Opening (sudo): {editor} {path}")
+    else:
+        _log.ui(f"  Opening: {editor} {path}")
+    rc = _run_editor_argv(argv)
     if rc == -1:
         _log.ui(f"  Editor not found: {editor!r}")
         return False

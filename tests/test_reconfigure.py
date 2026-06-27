@@ -19,7 +19,9 @@ from sysforge.pipeline.stages.reconfigure import (
     _STEP_KEYS,
     _choose_install_package,
     _confirm_unknown_editor,
+    _edit_needs_sudo,
     _editor_usable,
+    _open_in_editor,
     _packages_providing,
     _parse_step_selection,
     _require_usable_editor,
@@ -434,6 +436,67 @@ def test_editor_usable_present_binary_is_true():
         return_value="/usr/bin/nano",
     ):
         assert _editor_usable("nano") is True
+
+
+def test_edit_needs_sudo_when_file_not_writable(tmp_path):
+    """Root-owned config files report W_OK=False → sudo required."""
+    target = tmp_path / "profiles.toml"
+    target.write_text("x = 1\n")
+
+    def fake_access(path, mode):
+        return False  # neither file nor parent writable
+
+    with patch("sysforge.pipeline.stages.reconfigure.os.access", side_effect=fake_access):
+        assert _edit_needs_sudo(target) is True
+
+
+def test_edit_needs_sudo_when_dir_not_writable(tmp_path):
+    """File bit loose but parent dir read-only → still sudo (atomic-rename save)."""
+    target = tmp_path / "packages.toml"
+    target.write_text("x = 1\n")
+
+    def fake_access(path, mode):
+        return Path(path) == target  # file writable, parent not
+
+    with patch("sysforge.pipeline.stages.reconfigure.os.access", side_effect=fake_access):
+        assert _edit_needs_sudo(target) is True
+
+
+def test_edit_needs_no_sudo_when_writable(tmp_path):
+    """A user-owned file in a writable dir needs no sudo."""
+    target = tmp_path / "user.toml"
+    target.write_text("x = 1\n")
+    assert _edit_needs_sudo(target) is False
+
+
+def test_open_in_editor_uses_sudo_for_root_owned(tmp_path):
+    """The config-review launch prepends sudo when the file isn't writable."""
+    target = tmp_path / "profiles.toml"
+    target.write_text("x = 1\n")
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable", return_value=True
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._edit_needs_sudo", return_value=True
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._run_editor_argv", return_value=0
+    ) as run:
+        assert _open_in_editor(target, "vim") is True
+    run.assert_called_once_with(["sudo", "vim", str(target)])
+
+
+def test_open_in_editor_no_sudo_when_writable(tmp_path):
+    """No sudo prefix for a user-writable file."""
+    target = tmp_path / "user.toml"
+    target.write_text("x = 1\n")
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable", return_value=True
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._edit_needs_sudo", return_value=False
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._run_editor_argv", return_value=0
+    ) as run:
+        assert _open_in_editor(target, "vim") is True
+    run.assert_called_once_with(["vim", str(target)])
 
 
 def test_require_usable_editor_returns_prev_when_usable():
