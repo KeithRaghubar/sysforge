@@ -114,7 +114,75 @@ counter, then version) — sort on every add so the list stays scannable.
   mutates the system stays behind a sentinel-gated verb. Stays inside the boundary in
   DESIGN.md §Scope & Non-Goals (this is steady-state health of a managed system, not
   backup/config-management). *Priority: low (strategic — coarse; decompose before
-  building).*
+  building).* **Sub-thread to design: opt-in offering of user-owned systemd
+  services and pacman hooks.** The user keeps custom units and hooks on the live
+  system; sysforge should be able to *offer* (not force) them — open question whether
+  the surface is the `setup` stage, a dedicated verb, or a sync mode of this
+  inventory. Discuss the UX before committing; it is a concrete first slice of this
+  primitive.
+
+- **`1.2.0-F29` — Basic package management verbs (uninstall / search / revert-to-stock).**
+  Sysforge is build-focused but lacks everyday lifecycle verbs. `search` and
+  `uninstall` are largely pacman passthroughs, but must account for the build/install
+  paths a sysforge package can take: an `uninstall` has to clear the `build_state.toml`
+  entry (`state forget`) and any coexist-renamed `-sysforge` package, not just
+  `pacman -R`. **`revert-to-stock`** is the genuinely sysforge-specific part — undo a
+  source-built/optimized package back to the repo version: reverse coexist-rename,
+  forget build state, reinstall the stock pacman package, and reconcile drift gates.
+  Route through the Verb framework (`requires_sentinel=True` for the mutating verbs);
+  reuse `BuildState.reconcile_external_installs` / `state forget` rather than a
+  parallel demotion path. *Priority: medium (rounds out the lifecycle; revert-to-stock
+  is a real recovery need).*
+
+- **`1.2.0-F30` — Config default for rebuild-on-drift.** `update` currently requires
+  `--rebuild-on-drift` (and the per-axis `--rebuild-on-toolchain-drift` /
+  `--rebuild-on-flag-drift`) every run. Add an `[update]` config key (e.g.
+  `rebuild_on_drift = true`, with per-axis overrides) so a user who always wants
+  drift auto-resolved doesn't repeat the flag. CLI flag still wins when passed;
+  resolve through the existing `getattr(args, ...)` seam in `update.py` Phase 4.3 — no
+  parallel drift switch. *Priority: medium.*
+
+- **`1.2.0-F31` — `make install` / `make uninstall` via venv + config symlinks.** Add
+  verbose Make targets that install sysforge from the git checkout (venv entry point +
+  symlinked config/hooks/completions/manpage) and a matching uninstall, for quick
+  trial or fresh dev-env setup **without** going through the AUR and **without**
+  permanent system changes. Each target must print every file it creates/removes and
+  whether the operation succeeded (idempotent, reversible). Document the option in
+  README.md (user-facing install path). Cross-check `make check-shipped` parity so the
+  symlinked set matches the packaged set. *Priority: medium (lowers the bar to try
+  sysforge / stand up a new workstation).*
+
+- **`1.2.0-F32` — `update`: advise on stage-owned packages with available updates.**
+  `update` skips toolchain/kernel stage-owned packages by design (`owner_stage`), but
+  it should still *detect* that a newer upstream version exists for them and advise the
+  user to run the owning pipeline stage (`run toolchain` / `run kernel`) to rebuild.
+  Detection only — no rebuild from `update`. Surface in the summary, keyed off
+  `stage_ownership.owner_of`. *Priority: medium (silent staleness on the highest-stakes
+  packages otherwise).*
+
+- **`1.2.0-F33` — `update` summary formatting.** The end-of-run summary lacks clear
+  separation between the header, the built/failed/pacman sections, and the package
+  names within each section. Tighten the layout in `_print_summary` (grouped headers,
+  per-section spacing/columns, readable package lists) honoring the Unicode/`use_color`
+  gates. *Priority: low (polish, but it's the primary user-facing output of the most
+  common verb).*
+
+---
+
+## Open questions
+
+- **`1.2.0-Q9` — Toolchain-variant drift is name-only; a same-variant profdata
+  rebuild is invisible.** `update` Phase 4.25 detects toolchain drift by string-comparing
+  the recorded `build_state.toml` `toolchain_variant` (e.g. `pgo_llvm`) against the
+  active variant. If the toolchain is rebuilt with **fresh profdata but the same
+  variant name**, the strings still match, so dependent packages are never flagged for
+  rebuild despite being built against a different libLLVM/clang. There is no content
+  hash (profdata digest / toolchain build fingerprint) in the comparison. *Open
+  question: do we add a toolchain-build fingerprint to `toolchain_variant` drift
+  (cf. `build_fingerprint.py`), and is same-variant rebuild common enough to matter?*
+  (Note: the related worry that *non-toolchain* packages "have no field so get no
+  drift detection" is a misconception — they are covered by the separate **flag-drift**
+  axis, `resolve_flag_drift`, not by the variant field.)
 
 ---
 
