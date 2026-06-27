@@ -212,17 +212,23 @@ ifneq ($(filter vm-savevm vm-loadvm,$(firstword $(MAKECMDGOALS))),)
   endif
 endif
 
-# savevm wrapper that works around the libslirp BOOTP VMState bug.
-# Plain `savevm` over user-mode networking emits
-#   warning: Slirp: Save of field slirp_bootpclient/macaddr failed
-# and the resulting snapshot is unusable. Detaching the netdev backend before
-# savevm destroys libslirp's in-memory BOOTP client list so there is nothing
-# to (mis)serialize; reattach after to restore SSH on host port 10022.
+# Plain `savevm` over the qemu monitor.
+#
+# Older libslirp had a BOOTP VMState serialization bug
+# (warning: Slirp: Save of field slirp_bootpclient/macaddr failed) that left the
+# snapshot's networking unusable, which we used to work around by detaching the
+# netdev backend (set_link off / netdev_del) before savevm and reattaching after.
+# That workaround is obsolete AND harmful on qemu 11.x / libslirp 4.9.x: a
+# `netdev_del` on a slirp backend still peered to its NIC frontend does NOT close
+# the hostfwd listening socket on port 10022, so the reattaching `netdev_add`
+# can never rebind the port and the VM is left with no network backend at all.
+# Verified on qemu 11.0.1 / libslirp 4.9.3 that a plain savevm snapshot restores
+# (via a fresh `-loadvm`) with the SSH host-forward fully working, so the netdev
+# surgery is no longer needed.
 vm-savevm:
 	@if [ -z "$(NAME)" ]; then echo "Usage: make vm-savevm NAME=<snapshot-name>  (or: make vm-savevm <snapshot-name>)"; exit 2; fi
 	@test -S "$(VM_DIR)/qemu-monitor.sock" || { echo "VM not running (no monitor socket at $(VM_DIR)/qemu-monitor.sock). Start it with 'make vm-boot'."; exit 1; }
-	@( printf 'set_link net0 off\nnetdev_del net0\nsavevm $(NAME)\nnetdev_add user,id=net0,hostfwd=tcp:127.0.0.1:10022-:22\nset_link net0 on\n'; sleep 30 ) \
-	  | socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
+	@printf 'savevm $(NAME)\n' | socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
 	@echo "Saved snapshot '$(NAME)'. Verify with: make vm-monitor → info snapshots"
 
 # Stop the VM and only clear state once the process is *confirmed* gone.

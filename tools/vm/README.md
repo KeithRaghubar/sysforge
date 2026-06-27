@@ -123,16 +123,19 @@ After this, `make vm-console` reaches a login prompt on the serial console.
 `systemd` auto-starts `serial-getty@ttyS0` once the cmdline names the port — no
 explicit `systemctl enable` is needed. Re-save your clean snapshot afterward.
 
-> **Why a wrapper instead of typing `savevm clean` in the monitor?** Plain
-> `savevm` over SLIRP user-mode networking emits
+> **Historical note on the savevm wrapper.** Older libslirp had a BOOTP
+> VMState bug — plain `savevm` over SLIRP user-mode networking emitted
 > `warning: Slirp: Save of field slirp_bootpclient/macaddr failed` and
-> produces an unusable snapshot — libslirp's BOOTP client list isn't fully
-> VMState-migratable. The wrapper detaches the netdev backend
-> (`netdev_del net0`) so libslirp has no in-memory state to (mis)serialize,
-> runs `savevm`, then reattaches the netdev. The cost: SSH on port 10022
-> drops for the duration of the save. After `loadvm <name>` you may need to
-> run `set_link net0 on` from `make vm-monitor` if the link doesn't come back
-> automatically.
+> produced a snapshot whose networking was unusable. `make vm-savevm` used to
+> work around it by detaching the netdev backend (`netdev_del net0`) before
+> the save and reattaching it after. That workaround is now removed: on
+> qemu 11.0.1 / libslirp 4.9.3 a plain `savevm` snapshot restores (via a
+> fresh `-loadvm`) with the SSH host-forward fully working, and the
+> `netdev_del`/`netdev_add` dance was actively harmful — `netdev_del` on a
+> slirp backend still peered to its NIC frontend does **not** close the
+> hostfwd listening socket on port 10022, so the reattach could never rebind
+> the port and left the VM with no network backend at all. `make vm-savevm`
+> now just runs `savevm` and SSH on port 10022 stays up throughout.
 
 ### 5. Install SysForge into the VM
 

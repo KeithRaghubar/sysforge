@@ -73,6 +73,13 @@ SSH_OPTS=(
     -o "ConnectTimeout=5"
 )
 
+# Evict any stale host key for this port before connecting. The VM is ephemeral
+# and regenerates its SSH host keys on every fresh install, so a known_hosts
+# entry from a previous VM makes accept-new hard-fail with "REMOTE HOST
+# IDENTIFICATION HAS CHANGED". Mirrors the `make vm-ssh*` targets. (-R exits 0
+# and is a no-op when the file or entry is absent.)
+ssh-keygen -R "[$VM_HOST]:$VM_PORT" -f "$KNOWN_HOSTS" 2>/dev/null || true
+
 PKG_BASENAME=$(basename "$PKG")
 echo "Copying $PKG_BASENAME to VM..."
 scp -P "$VM_PORT" "${SSH_OPTS[@]}" "$PKG" "$VM_USER@$VM_HOST:/tmp/"
