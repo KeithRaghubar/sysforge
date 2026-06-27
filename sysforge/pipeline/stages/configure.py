@@ -26,7 +26,8 @@ bootstrap.toml optional fields:
   [mirror] countries           list    reflector --country values
   [mirror] protocol            string  reflector --protocol (default: "https")
   [mirror] age                 int     reflector --latest N (default: 12)
-  [desktop] environment        string  desktop package group to install (gnome | kde);
+  [desktop] environment        string  desktop package group to install (gnome | kde
+                                       | xfce | mate | cinnamon | lxqt | budgie | cosmic);
                                        interactive prompt when unset on a TTY
   [makepkg] packager           string  PACKAGER written to target /etc/makepkg.conf
   [makepkg] makeflags          string  MAKEFLAGS written to target /etc/makepkg.conf

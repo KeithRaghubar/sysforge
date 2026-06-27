@@ -235,7 +235,7 @@ _sysforge_packages() {
             if [[ $cur == -* ]]; then
                 COMPREPLY=( $(compgen -W "--packages" -- "$cur") )
             else
-                COMPREPLY=( $(compgen -W "gnome kde" -- "$cur") )
+                COMPREPLY=( $(compgen -W "gnome kde xfce mate cinnamon lxqt budgie cosmic" -- "$cur") )
             fi
             ;;
         remove)

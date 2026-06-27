@@ -11,6 +11,7 @@ import pytest
 
 from sysforge.pipeline.stages.packages import (
     PackagesStage,
+    _enable_display_managers,
     _load_packages,
     _resolve_pkgbuild,
 )
@@ -484,3 +485,59 @@ def test_packages_stage_preserves_sentinel_on_unexpected_exception(tmp_path):
     record = StageSentinel(state_dir).get_active()
     assert record is not None
     assert record["stage"] == "packages"
+
+
+# ---------------------------------------------------------------------------
+# Display-manager enablement (boot-into-desktop fix)
+# ---------------------------------------------------------------------------
+
+
+def _gnome_group_entries():
+    """Synthetic expand_package_groups output for an installed GNOME group."""
+    return [
+        {"name": "gnome-shell", "group": "gnome"},
+        {"name": "gdm", "group": "gnome"},
+        {"name": "htop"},  # ungrouped — must be ignored
+    ]
+
+
+def test_enable_display_managers_enables_dm_when_built():
+    built = {"gnome-shell", "gdm"}
+    with patch("sysforge.pipeline.stages.packages.subprocess.run") as m:
+        _enable_display_managers(_gnome_group_entries(), built, dry_run=False)
+    calls = [c.args[0] for c in m.call_args_list]
+    assert ["sudo", "systemctl", "enable", "gdm.service"] in calls
+
+
+def test_enable_display_managers_skips_when_dm_not_built():
+    # The group was selected but its DM package failed to build — don't enable.
+    built = {"gnome-shell"}
+    with patch("sysforge.pipeline.stages.packages.subprocess.run") as m:
+        _enable_display_managers(_gnome_group_entries(), built, dry_run=False)
+    m.assert_not_called()
+
+
+def test_enable_display_managers_ignores_non_desktop_groups():
+    entries = [{"name": "htop", "group": "tools"}, {"name": "vim", "group": "tools"}]
+    with patch("sysforge.pipeline.stages.packages.subprocess.run") as m:
+        _enable_display_managers(entries, {"htop", "vim"}, dry_run=False)
+    m.assert_not_called()
+
+
+def test_enable_display_managers_dry_run_does_nothing():
+    with patch("sysforge.pipeline.stages.packages.subprocess.run") as m:
+        _enable_display_managers(_gnome_group_entries(), {"gdm"}, dry_run=True)
+    m.assert_not_called()
+
+
+def test_enable_display_managers_enables_each_dm_once():
+    entries = [
+        {"name": "gdm", "group": "gnome"},
+        {"name": "gnome-shell", "group": "gnome"},
+    ]
+    with patch("sysforge.pipeline.stages.packages.subprocess.run") as m:
+        _enable_display_managers(entries, {"gdm", "gnome-shell"}, dry_run=False)
+    enable_calls = [
+        c.args[0] for c in m.call_args_list if "enable" in c.args[0]
+    ]
+    assert enable_calls.count(["sudo", "systemctl", "enable", "gdm.service"]) == 1

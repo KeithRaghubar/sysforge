@@ -56,9 +56,10 @@ protocol  = "https"
 age       = 12                 # reflector --latest N hours
 
 [desktop]
-environment = "gnome"   # optional — "gnome" | "kde"; installs a curated
-                        # desktop package group. Unset + a TTY → the configure
-                        # stage prompts; unset + no TTY → no desktop.
+environment = "gnome"   # optional — gnome|kde|xfce|mate|cinnamon|lxqt|budgie|
+                        # cosmic; installs a curated desktop package group and
+                        # enables its display manager. Unset + a TTY → the
+                        # configure stage prompts; unset + no TTY → no desktop.
 ```
 
 **Partition stage (stage 1)** prints a partition-plan box and requires explicit confirmation before any destructive operation (skipped under `--dry-run`). Before prompting it inspects the target device with `lsblk` (`_has_existing_partitions`): a device that already carries a partition table gets an overwrite-specific prompt that **defaults to no** (`Overwrite all partitions on <device>? [y/N]`) — empty input, EOF, or anything but an explicit `y`/`yes` aborts with `existing partitions left intact`, so a stray or non-interactive run never silently wipes a populated disk. A bare/unpartitioned device keeps the strict `Type 'yes' to proceed` confirmation. If lsblk can't enumerate the device the stage falls through to the plain confirmation rather than erroring. (Distinct from the *already-mounted* short-circuit: a device fully mounted at `target` + `target/boot` is treated as already prepared and skipped; a partial mount raises.)
@@ -73,7 +74,7 @@ environment = "gnome"   # optional — "gnome" | "kde"; installs a curated
 - `useradd -m -G wheel <username>` + `/etc/sudoers.d/wheel` drop-in
 - Shell dotfiles: `.bashrc` + `.zshrc` for root (red prompt) and primary user (green prompt)
 - Root and user passwords via `chpasswd` (warns if absent from bootstrap.toml)
-- Desktop environment (optional): after copying config into the target, `pkg_catalog.select_desktop` resolves `[desktop] environment` (non-interactive) or prompts on a TTY, then writes the chosen `[group.*]` into the target's `packages.toml` so the packages stage installs it. The only interactive point in an otherwise non-interactive stage; non-TTY runs with no preselection skip silently. See Package Manifest → *Curated desktop catalog*.
+- Desktop environment (optional): after copying config into the target, `pkg_catalog.select_desktop` resolves `[desktop] environment` (non-interactive) or prompts on a TTY, then writes the chosen `[group.*]` into the target's `packages.toml` so the packages stage installs it *and* enables its display manager (`_enable_display_managers`, post-reboot — configure can't, the unit isn't installed yet). The only interactive point in an otherwise non-interactive stage; non-TTY runs with no preselection skip silently. See Package Manifest → *Curated desktop catalog*.
 - sysforge install in target via `makepkg -si` from the source tree's PKGBUILD, run as the build user with a temporary `NOPASSWD` sudoers drop-in (removed after install). The configure stage stages the source as `sysforge-$pkgver.tar.gz` so makepkg uses the local copy instead of fetching, runs with `--skipchecksums --skipinteg` since the tarball is locally produced, and ends with sysforge owned by pacman (`pacman -Q sysforge`). This replaces the earlier `uv pip install --system` path, which left files unowned and forced `pacman -U --overwrite='*'` on the first AUR-driven update.
 
 The hardware stage (stage 3) needs no config — it auto-detects and writes `hardware_profile.toml` to `state_dir`. After reboot the file is at its natural path (`/var/lib/sysforge/hardware_profile.toml`) and the kernel stage picks it up automatically.

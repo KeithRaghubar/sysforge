@@ -74,8 +74,10 @@ age      = 12
 # =============================================================================
 #
 # Pick a curated desktop environment to install as a packages.toml [group.*]
-# table; the packages stage installs it later in the same pipeline. Supported
-# values: "gnome" | "kde".
+# table; the packages stage installs it later in the same pipeline (and enables
+# the matching display manager so the system boots to a graphical login).
+# Supported values: "gnome" | "kde" | "xfce" | "mate" | "cinnamon" | "lxqt" |
+# "budgie" | "cosmic".
 #
 #   - set here       → installed non-interactively (unattended installs)
 #   - unset + a TTY  → the configure stage prompts

@@ -93,13 +93,15 @@ Expansion semantics (single expansion point: `primitives/config.expand_package_g
 
 #### Curated desktop catalog
 
-`primitives/pkg_catalog.py` ships a small curated catalog of desktop-environment groups (currently `gnome` and `kde`) and is the single home for the catalog, the guided selection prompt (`select_desktop`), and the `[group.*]` writer (`write_desktop_group`). It lives in the primitives layer because three surfaces consume it:
+`primitives/pkg_catalog.py` ships a curated catalog of desktop-environment groups (`gnome`, `kde`, `xfce`, `mate`, `cinnamon`, `lxqt`, `budgie`, `cosmic`) and is the single home for the catalog, the guided selection prompt (`select_desktop`), the per-entry display-manager pairing (`display_manager_for`), and the `[group.*]` writer (`write_desktop_group`). It lives in the primitives layer because three surfaces consume it:
 
-- **`sysforge packages add-group <gnome|kde>`** — writes the chosen catalog group into `packages.toml` (idempotent: re-running replaces the same-named group block; other `[[package]]` blocks and tables are preserved byte-for-byte). Creates the file with the standard header if absent.
+- **`sysforge packages add-group <de>`** — writes the chosen catalog group into `packages.toml` (idempotent: re-running replaces the same-named group block; other `[[package]]` blocks and tables are preserved byte-for-byte). Creates the file with the standard header if absent.
 - **Configure stage (bootstrap, stage 4)** — after copying config into the target, `select_desktop` resolves the choice: `bootstrap.toml [desktop] environment` wins non-interactively (unattended installs); otherwise a TTY run prompts ("Install a graphical desktop? → numbered menu"); a non-TTY run with no preselection skips. The group is written into the *target's* `packages.toml` so the later packages stage installs it.
 - **Reconfigure step `desktop`** — offers the same guided selection on a live system, writing to the live manifest.
 
-The writer only adds `[group.*]` text; expansion stays in `config.expand_package_groups`. The catalog is intentionally minimal (a core session + display manager per entry) — users extend their own group afterward.
+The writer only adds `[group.*]` text; expansion stays in `config.expand_package_groups`. Each entry is intentionally minimal — a core session plus its display manager (and, for lightdm-based desktops, a greeter); users extend their own group afterward. Every entry declares a `display_manager` package that is also a member of its `packages` tuple, so the package installs *and* its unit can be enabled.
+
+**Display-manager enablement is the single fix that makes the selection actually boot into a GUI.** Installing the DM package on Arch does not enable its systemd unit, so the packages stage (the one home — both fresh-install and `sysforge run packages` flow through it) enables `<display_manager>.service` for every desktop group whose DM package built, via `_enable_display_managers` → `pkg_catalog.display_manager_for`. It runs once per distinct DM, outside the sentinel scope (cosmetic), and never `--now`-starts the unit (the install may be headless over SSH) — it takes effect on the next boot. This is **not** done in the configure stage: configure runs in the chroot *before* any packages are installed, so the unit doesn't yet exist there.
 
 ### Manifest lifecycle commands
 
@@ -107,7 +109,7 @@ The writer only adds `[group.*]` text; expansion stays in `config.expand_package
 
 - **`packages list`** (default when no subcommand) — tabulates entries: name and any override fields set. `--orphans` lists entries whose package is not currently installed (informational only; entries are still valid rules).
 - **`packages add <pkg> [--source ...] [--enable-build-from-source] [--no-cache] [--reason TEXT]`** — adds or updates an override entry. Requires at least one of `--enable-build-from-source`, `--no-cache`, `--reason` (the *behavior-changing* override fields); calls with only `<pkg>` or `<pkg> --source` are rejected. `--source` is metadata that pins routing (`repo` vs `aur`) — it doesn't satisfy validation on its own, since classification arrives at the same value automatically. Entries with no behavior-changing override are auto-pruned on the next `packages.toml` write-back (`add` or `remove`); the auto-prune is legacy-aware (a pre-rename `pkgbuild_patch` entry counts as non-inert so it is never silently dropped).
-- **`packages add-group <gnome|kde>`** — writes a curated desktop-environment group (see *Curated desktop catalog* above) into `packages.toml`. Idempotent; the group installs via `sysforge run packages`.
+- **`packages add-group <de>`** — writes a curated desktop-environment group (see *Curated desktop catalog* above) into `packages.toml`. Idempotent; the group installs (and its display manager is enabled) via `sysforge run packages`.
 - **`packages remove <pkg>`** — removes the `[[package]]` block for the named entry using line-level manipulation; preserves all surrounding comments and section headers.
 
 All subcommands accept `--packages FILE` to target a specific file (default: `/etc/sysforge/packages.toml`).

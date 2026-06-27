@@ -119,7 +119,7 @@ name   = "neovim-git"
 source = "aur"
 ```
 
-For a graphical desktop you don't have to enumerate every package: `sysforge packages add-group gnome` (or `kde`) writes a curated desktop group. A fresh install offers the same choice interactively, or reads it from `bootstrap.toml [desktop] environment`.
+For a graphical desktop you don't have to enumerate every package: `sysforge packages add-group gnome` (also `kde`, `xfce`, `mate`, `cinnamon`, `lxqt`, `budgie`, `cosmic`) writes a curated desktop group — its session, display manager, and portals. Installing the group also enables the display manager so you boot straight to a graphical login. A fresh install offers the same choice interactively, or reads it from `bootstrap.toml [desktop] environment`.
 
 A custom kernel goes in `kernel.toml` (not `packages.toml`) and a custom LLVM toolchain in `toolchain.toml` — the kernel and toolchain stages own those packages, and `sysforge update` skips stage-owned packages by default. Build/IO throttling, `PACKAGER`/`MAKEFLAGS` defaults, and per-profile knobs are documented inline in the shipped configs and in [DESIGN.md](DESIGN.md).
 

@@ -170,6 +170,43 @@ def _prompt_failed_packages(failed_names, errors, options):
 # Individual package installers
 # ---------------------------------------------------------------------------
 
+def _enable_display_managers(packages, built, *, dry_run):
+    """Enable the display-manager service for each installed desktop group.
+
+    ``packages`` is the expanded manifest (``expand_package_groups`` output);
+    each desktop-group member carries ``group="<de_key>"``. For every distinct
+    desktop group whose display-manager package actually built, enable
+    ``<dm>.service`` so the system boots into a graphical login instead of a
+    TTY. Installing the DM package does NOT enable its unit on Arch, so without
+    this the desktop selection lands the user at a console.
+
+    The DM lookup is the single home in :mod:`pkg_catalog`; we never hardcode
+    a DE→DM mapping here. Enabling is best-effort and idempotent (``systemctl
+    enable`` on an already-enabled unit is a no-op); it takes effect on the
+    next boot. We never ``--now`` start it — the install may be running headless
+    over SSH.
+    """
+    from sysforge.primitives.pkg_catalog import display_manager_for
+
+    enabled: set[str] = set()
+    for entry in packages:
+        group = entry.get("group")
+        if not group:
+            continue
+        dm = display_manager_for(group)
+        if not dm or dm in enabled or dm not in built:
+            continue
+        enabled.add(dm)
+        if dry_run:
+            _log.ui(f"[dry-run] would enable display manager: {dm}.service")
+            continue
+        result = subprocess.run(["sudo", "systemctl", "enable", f"{dm}.service"])
+        if result.returncode != 0:
+            _log.warn(f"Could not enable {dm}.service (enable it manually to boot into the desktop)")
+        else:
+            _log.ui(f"Display manager enabled: {dm}.service (starts on next boot)")
+
+
 def _install_repo(pkg, options):
     """Install a repo package via sudo pacman -S --needed."""
     name = pkg["name"]
@@ -403,6 +440,13 @@ class PackagesStage(Stage):
                         state.save()
                         _log.error(f"{name}: FAILED — {e}")
                         # Non-fatal: continue with remaining packages
+
+        # Enable the display-manager service for any desktop group that just
+        # installed, so the system boots into a graphical login rather than a
+        # TTY. Runs outside the sentinel scope (cosmetic — a failure here never
+        # blocks the next invocation).
+        final_built = set(state.get_package_progress().get("built", []))
+        _enable_display_managers(packages, final_built, dry_run=options.dry_run)
 
         # Check if any packages are still failed after the loop
         final = state.get_package_progress()

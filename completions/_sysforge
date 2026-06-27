@@ -261,7 +261,7 @@ _sysforge_packages_add() {
 _sysforge_packages_add_group() {
   _arguments \
     '--packages[path to packages.toml]:file:_files' \
-    '1:desktop:(gnome kde)'
+    '1:desktop:(gnome kde xfce mate cinnamon lxqt budgie cosmic)'
 }
 
 _sysforge_packages_remove() {

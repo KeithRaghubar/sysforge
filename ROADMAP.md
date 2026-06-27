@@ -106,12 +106,6 @@ counter, then version) — sort on every add so the list stays scannable.
   writer. *Priority: medium (safety — silently replacing the production kernel is a
   boot-stability risk).*
 
-- **`1.2.0-F27` — Sync the desktop catalog to the Arch wiki's DE list.** Keep
-  `pkg_catalog.DESKTOP_CATALOG` (the one home for the desktop catalog) in sync with
-  the desktop environments enumerated on the Arch wiki's General-recommendations
-  page, rather than an ad-hoc subset (add a DE via `DESKTOP_CATALOG` +
-  `bootstrap.toml [desktop]` + both completions). *Priority: low.*
-
 - **`1.2.0-F28` — User-owned artifact inventory primitive.** Track the user-owned
   system artifacts now scattered across `~/scripts`, `/etc/systemd/system/`,
   `/etc/pacman.d/hooks/`, etc.: a tracked-file inventory, a repo-controlled

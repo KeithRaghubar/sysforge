@@ -8,6 +8,7 @@ from sysforge.primitives import pkg_catalog
 from sysforge.primitives.config import expand_package_groups
 from sysforge.primitives.pkg_catalog import (
     DESKTOP_CATALOG,
+    display_manager_for,
     group_toml_block,
     select_desktop,
     valid_desktops,
@@ -31,6 +32,44 @@ class TestCatalog:
             assert entry.key == key
             assert entry.packages, f"{key} has no packages"
             assert entry.display_name
+
+    def test_curated_set_present(self):
+        assert set(valid_desktops()) >= {
+            "gnome", "kde", "xfce", "mate", "cinnamon", "lxqt", "budgie", "cosmic",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Display-manager pairing (F27 + boot-into-desktop fix)
+# ---------------------------------------------------------------------------
+
+class TestDisplayManager:
+    def test_every_entry_declares_a_display_manager(self):
+        for key, entry in DESKTOP_CATALOG.items():
+            assert entry.display_manager, f"{key} has no display_manager"
+
+    def test_display_manager_is_in_the_package_list(self):
+        # The DM must actually be installed by the group, or enabling its
+        # service post-install would fail.
+        for key, entry in DESKTOP_CATALOG.items():
+            assert entry.display_manager in entry.packages, (
+                f"{key}: {entry.display_manager} not in packages"
+            )
+
+    def test_display_manager_for_returns_the_pairing(self):
+        assert display_manager_for("gnome") == "gdm"
+        assert display_manager_for("kde") == "sddm"
+
+    def test_display_manager_for_unknown_returns_none(self):
+        assert display_manager_for("nope") is None
+
+    def test_lightdm_desktops_bundle_a_greeter(self):
+        # lightdm shows nothing usable without a greeter — bundle one.
+        for key, entry in DESKTOP_CATALOG.items():
+            if entry.display_manager == "lightdm":
+                assert any(p.endswith("-greeter") for p in entry.packages), (
+                    f"{key}: lightdm without a greeter package"
+                )
 
 
 # ---------------------------------------------------------------------------

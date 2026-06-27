@@ -21,6 +21,7 @@ afterward. The *read* side of groups (expansion into package entries) stays in
 Public API:
     DESKTOP_CATALOG                       -> dict[str, DesktopEntry]
     valid_desktops()                      -> list[str]
+    display_manager_for(de_key)           -> str | None
     select_desktop(*, interactive, preselected) -> str | None
     group_toml_block(name, members, defaults=None) -> str
     write_desktop_group(path, de_key)     -> None
@@ -47,6 +48,13 @@ class DesktopEntry:
     key: str
     display_name: str
     packages: tuple[str, ...]
+    # The display-manager package that boots into this session. Its systemd
+    # unit (``<display_manager>.service``) is what the packages stage enables
+    # so the install lands at a graphical login instead of a TTY. The package
+    # MUST also appear in ``packages`` (it can't be enabled if it isn't
+    # installed); enforced by tests. For lightdm-based desktops the catalog
+    # also bundles a greeter, since lightdm shows nothing usable without one.
+    display_manager: str = ""
     # Optional per-group defaults inherited by every member at expansion time
     # (e.g. {"source": "repo"}). Mirrors the [group.*] defaults that
     # config.expand_package_groups understands.
@@ -61,6 +69,7 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
     "gnome": DesktopEntry(
         key="gnome",
         display_name="GNOME",
+        display_manager="gdm",
         packages=(
             "gnome-shell",
             "gdm",
@@ -73,6 +82,7 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
     "kde": DesktopEntry(
         key="kde",
         display_name="KDE Plasma",
+        display_manager="sddm",
         packages=(
             "plasma-meta",
             "sddm",
@@ -81,12 +91,98 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
             "xdg-desktop-portal-kde",
         ),
     ),
+    "xfce": DesktopEntry(
+        key="xfce",
+        display_name="Xfce",
+        display_manager="lightdm",
+        packages=(
+            "xfce4",
+            "xfce4-goodies",
+            "lightdm",
+            "lightdm-gtk-greeter",
+            "xdg-desktop-portal-gtk",
+        ),
+    ),
+    "mate": DesktopEntry(
+        key="mate",
+        display_name="MATE",
+        display_manager="lightdm",
+        packages=(
+            "mate",
+            "mate-extra",
+            "lightdm",
+            "lightdm-gtk-greeter",
+            "xdg-desktop-portal-gtk",
+        ),
+    ),
+    "cinnamon": DesktopEntry(
+        key="cinnamon",
+        display_name="Cinnamon",
+        display_manager="lightdm",
+        packages=(
+            "cinnamon",
+            "gnome-terminal",
+            "lightdm",
+            "lightdm-gtk-greeter",
+            "xdg-desktop-portal-gtk",
+        ),
+    ),
+    "lxqt": DesktopEntry(
+        key="lxqt",
+        display_name="LXQt",
+        display_manager="sddm",
+        packages=(
+            "lxqt",
+            "sddm",
+            "breeze-icons",
+            "xdg-desktop-portal-lxqt",
+        ),
+    ),
+    "budgie": DesktopEntry(
+        key="budgie",
+        display_name="Budgie",
+        display_manager="lightdm",
+        packages=(
+            "budgie-desktop",
+            "gnome-control-center",
+            "nautilus",
+            "gnome-terminal",
+            "lightdm",
+            "lightdm-gtk-greeter",
+            "xdg-desktop-portal-gtk",
+        ),
+    ),
+    "cosmic": DesktopEntry(
+        key="cosmic",
+        display_name="COSMIC",
+        display_manager="cosmic-greeter",
+        packages=(
+            "cosmic-session",
+            "cosmic-greeter",
+            "cosmic-files",
+            "cosmic-term",
+            "xdg-desktop-portal-cosmic",
+        ),
+    ),
 }
 
 
 def valid_desktops() -> list[str]:
     """Catalog keys, in catalog order — for argparse ``choices`` and validation."""
     return list(DESKTOP_CATALOG)
+
+
+def display_manager_for(de_key: str) -> str | None:
+    """Return the display-manager package for a catalog key, or ``None``.
+
+    Used by the packages stage to enable ``<display_manager>.service`` after a
+    desktop group installs, so the system boots into a graphical login instead
+    of a TTY. ``None`` for unknown keys or entries with no display manager.
+    """
+    entry = DESKTOP_CATALOG.get(de_key)
+    if entry is None or not entry.display_manager:
+        return None
+    return entry.display_manager
 
 
 # ---------------------------------------------------------------------------
