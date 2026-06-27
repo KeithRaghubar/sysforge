@@ -20,109 +20,60 @@ time keeps its existing ID
 (it records the cycle the item originated in, not its target). IDs appear only here
 and in release notes.
 
+Within each subsection, entries are kept in **ascending ID order** (by type
+counter, then version) — sort on every add so the list stays scannable.
+
 ---
 
 ## Planned
 
 ### Features
 
-- **`1.2.0-F24` — `build --pgo` should imply makepkg `-Cc` (clean build).** Both
-  `--pgo=record` and `--pgo=use` should force a clean build/package
-  (makepkg `-C`/`-c`), so instrumentation and profile-use builds never reuse stale
-  object files from a differently-instrumented prior run. Apply at the build-flag
-  seam, not per-package. *Priority: medium (correctness — stale objects silently
-  corrupt a PGO build).*
-
 - **`1.2.0-F9` — Respect a PKGBUILD's per-package `options=()` (spun off Q6).** At
-  conf-emit time, read the parsed `globals["options"]` (already captured by
-  `parse_pkgbuild`) for the target and: (1) **`!lto`** → strip profile LTO flags
-  (`-flto*`) from CFLAGS/CXXFLAGS/LDFLAGS — the package author has declared LTO
-  breaks it (the cosmic-edit/onig mold-failure class); (2) **`!buildflags`** →
-  recognize that makepkg will ignore conf CFLAGS/CXXFLAGS/LDFLAGS entirely, so
-  optimization is a no-op AND Phase-4.3 flag-drift
-  (`flag_drift.resolve_flag_drift`) must not false-trigger a rebuild. Implement as
-  the same conf-emit scrub seam as `emit_makepkg_conf(is_lib32=…)`/`is_musl_static=…`
-  (reuse the strip helpers; one home — don't add a parallel rule). Lower-stakes
-  tokens (`!strip`/`debug`/`!makeflags`) optional. *Priority: medium (correctness —
-  prevents injecting flags the PKGBUILD explicitly opts out of).*
-
-- **`1.2.0-F13` — `doctor`: detect a partially-installed PGO toolchain.** When
-  `toolchain.toml` defines a PGO toolchain (`[llvm] enabled = true`,
-  `compiler = "llvm"`, `pgo = true`) but the installed LLVM suite is a *mix* of
-  profiled and stock-repo components, `doctor` currently reports nothing. Observed:
-  repo `llvm` + `llvm-libs` were temporarily reinstalled to fix a mesa runtime
-  issue, leaving an inconsistent suite, and no axis flagged it. Add a read-only
-  check (likely on the existing toolchain/graphics axis or a dedicated PGO axis)
-  that cross-references the declared PGO intent against per-component provenance —
-  reuse `llvm_state.collect_llvm_state` / `detect_toolchain_config_mismatch` (the
-  provenance home) rather than adding a third checker (see CLAUDE.md "Toolchain
-  health: exactly two checkers" + `llvm_state` invariants). Emit a `warn` naming
-  which components are stock vs profiled and pointing at `run toolchain` to
-  reconcile. *Priority: medium (correctness — a silently-mixed toolchain is exactly
-  the state the gates exist to prevent).*
+  conf-emit time, honor the parsed `globals["options"]`: **`!lto`** → strip profile
+  LTO flags (`-flto*`) from CFLAGS/CXXFLAGS/LDFLAGS (author declared LTO breaks it —
+  the cosmic-edit/onig mold-failure class); **`!buildflags`** → makepkg ignores conf
+  build flags entirely, so suppress optimization *and* prevent Phase-4.3 flag-drift
+  (`flag_drift.resolve_flag_drift`) from false-triggering a rebuild. Reuse the
+  `emit_makepkg_conf(is_lib32=…/is_musl_static=…)` scrub seam — one home, no parallel
+  rule. *Priority: medium (don't inject flags the PKGBUILD opts out of).*
 
 - **`1.2.0-F14` — `doctor`: warn on installed instrumented/incomplete-PGO builds of
-  *any* package.** Since `--pgo` now works on any package (F5), an instrumented
-  (`-fprofile-generate`, record-stage) build can be left installed for any target,
-  not just mesa. `doctor` should detect when an instrumented build is the live
-  package and `warn` with next steps: complete the profiled build
-  (`build <pkg> --pgo=use`) or roll back to the repo package. Detection should lean
-  on the existing provenance trail — `build_state.toml` `build_mode` (the
-  `pgo`/`pgo_mesa` record-stage markers via `mesa_pgo.build_mode_for`) cross-checked
-  against store state (`mesa_pgo.resolve_store` — a bare `.profraw` with no merged
-  `.profdata` is the record-only signal) — rather than re-deriving from binaries.
-  Read-only, no system mutation, consistent with the doctor-axis Finding framework.
-  *Priority: medium (correctness — record-stage builds are unoptimized and meant to
-  be transient).*
+  *any* package.** Since `--pgo` works on any package (F5), an instrumented
+  (record-stage) build can be left live for any target, not just mesa. Add a
+  read-only doctor check that flags a live instrumented build and points at the next
+  step (`build <pkg> --pgo=use`, or roll back to the repo package). Detect via the
+  existing provenance trail — `build_state.toml` `build_mode` cross-checked against
+  store state (a bare `.profraw` with no merged `.profdata` = record-only) — not from
+  binaries. *Priority: medium (record-stage builds are unoptimized and transient).*
 
-- **`1.2.0-F15` — `doctor` package-cache axis (spun off F11 audit).** Warn when the
+- **`1.2.0-F15` — `doctor` package-cache axis (from the doctor maintenance-gap audit).** Warn when the
   pacman package cache (`/var/cache/pacman/pkg`, resolve via the proper config home
   rather than hardcoding) exceeds a size threshold, with `paccache -r` /
   `paccache -ruk0` remediation. Distinct from `cache_probe.py`, which only reports
   *build* caches (ccache/sccache). New read-only axis or fold into the `pacman`
   axis. *Priority: medium (the most common real-world disk reclaim).*
 
-- **`1.2.0-F16` — `doctor` mirror-freshness check (spun off F11 audit).** Warn when
+- **`1.2.0-F16` — `doctor` mirror-freshness check (from the doctor maintenance-gap audit).** Warn when
   `/etc/pacman.d/mirrorlist` is stale (file age, or newest server's last-sync age)
   so partial-upgrade/slow-mirror situations surface. Read-only, no network call
   (don't probe mirror latency live — that flaps). *Priority: low.*
 
-- **`1.2.0-F17` — Promote the disk-space check into a `doctor` axis (spun off F11
-  audit).** The disk-space check currently lives only in the reconfigure stage
+- **`1.2.0-F17` — Promote the disk-space check into a `doctor` axis (from the doctor
+  maintenance-gap audit).** The disk-space check currently lives only in the reconfigure stage
   (`pipeline/stages/reconfigure.py`), so an ad-hoc `sysforge doctor` run misses it.
   **Move** the logic to a probe primitive and consume it from both the stage and a
   new doctor axis (one home — don't duplicate). *Priority: medium.*
 
-- **`1.2.0-F18` — `doctor` fstab integrity (spun off F11 audit).** Flag
+- **`1.2.0-F18` — `doctor` fstab integrity (from the doctor maintenance-gap audit).** Flag
   `/etc/fstab` entries whose UUID/label or device no longer resolves (stale mount).
   Read-only. *Priority: low.*
 
-- **`1.2.0-F19` — Broaden the journal scan beyond firmware (spun off F11 audit).**
+- **`1.2.0-F19` — Broaden the journal scan beyond firmware (from the doctor maintenance-gap audit).**
   `runtime_probe` only greps `journalctl -k -b` for "Direct firmware load … failed".
   Extend it (or add a sibling check on the services/boot axis) to surface
   failed-boot / core-dump / repeated-unit-failure errors. Read-only, current-boot
   scoped. *Priority: low.*
-
-- **`1.2.0-F11` — Roadmap alignment with the Arch wiki (guiding principle + concrete
-  first cut).** Treat the Arch wiki's
-  [System maintenance](https://wiki.archlinux.org/title/System_maintenance) and
-  [General recommendations](https://wiki.archlinux.org/title/General_recommendations)
-  pages as the north star for what sysforge should help **set up, monitor, and
-  debug** — the roadmap should stay aligned with their contents rather than
-  diverging. This is a *meta* item that seeds smaller specs; it should not be
-  implemented as one mega-change. **Concrete first cut:** drive the GUI package
-  groups from the desktop-environment list on General recommendations — i.e. keep
-  `pkg_catalog.DESKTOP_CATALOG` (the one home for the desktop catalog, per CLAUDE.md)
-  in sync with the wiki's enumerated DEs rather than an ad-hoc subset. Most
-  System-maintenance topics (orphan removal, paccache, failed units, journal errors,
-  mirror freshness, `.pacnew`/`.pacsave` handling, fstab/UUID checks) overlap with
-  existing `doctor` axes — audit which are already covered and file the gaps as their
-  own items rather than scope-creeping this entry. *Priority: low (strategic —
-  spawns scoped follow-ups; not a single deliverable).*
-  **Progress (2026-06-26):** the System-maintenance audit strand is done — coverage
-  matrix in `docs/superpowers/specs/2026-06-26-doctor-maintenance-gap-audit.md`
-  (local, gitignored); gaps filed as F15–F19 above. The desktop-catalog ↔ wiki first
-  cut and the broader General-recommendations alignment remain.
 
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
@@ -139,56 +90,37 @@ and in release notes.
   Tighten the graphics/doctor diagnostics surface (exact scope TBD). A candidate
   when revisiting graphics-related code; not blocking. *Priority: low (candidate).*
 
-- **`1.2.0-F23` — System-maintenance scope expansion (from the DESIGN roadmap).**
-  Grow sysforge beyond build/package management into a unified system-maintenance
-  helper: track and manage user-owned system artifacts that currently live ad-hoc
-  across `~/scripts`, `/etc/systemd/system/`, `/etc/pacman.d/hooks/`, etc. Candidate
-  primitives: inventory of tracked files, source-of-truth dir under repo control,
-  install/sync command, drift detection vs filesystem, integration with the existing
-  config/profile/manifest layers.
-
-  *Scoping pass (which Arch-wiki maintenance topics fit):* SysForge's lane is
-  **build/package optimization and the health of what it builds** — not a
-  general config-management or backup tool.
-  - **In scope (covered or a clean fit):** full-system upgrade / partial-upgrade
-    avoidance (the `update` verb already owns this); orphans / unused packages /
-    paccache (extends the `cache` layer + a read-only `doctor` axis);
-    `.pacnew`/`.pacsave` handling (analogous to the `.sfnew` config-merge verb;
-    a `doctor` axis surfacing pending merges); failed systemd units / journal
-    errors (read-only `doctor` Finding axis); mirror/keyring freshness (a `doctor`
-    axis — it directly affects what sysforge builds/installs).
-  - **Out of scope (not sysforge's job):** backups, snapshots-as-policy, disk-space
-    *strategy*, user-data hygiene (the user's btrfs/timeshift/borg tooling — the
-    only adjacency is the optional pre-build snapshot under F21); the broader
-    *General recommendations* territory (networking, user management, desktop/locale/
-    input config, security hardening as a whole) — outside a package-builder's remit.
-
-  The actionable near-term slice is a set of read-only `doctor` axes (orphans,
-  `.pacnew`, failed units, mirror/keyring freshness — several already filed as
-  F15–F19) plus the artifact-inventory primitive sketched above. Anything mutating
-  stays behind an explicit verb with the sentinel/gate discipline the rest of
-  sysforge uses. *Priority: low (strategic).*
-
-- **`1.2.0-F25` — Kernel stage: pause immediately before the `nconfig`/`menuconfig`
-  call.** The current kernel-stage interactive pause lands too early in the flow. The
-  existing pause can stay, but the originally-intended one is a pause *right before*
-  the kernel config tool is invoked, so the options changed by the merged config
-  fragments are clearly visible in the editor that opens. Add the pause at the
-  config-invocation seam (the same helper that already implements
-  "pause-before-kconfig"); don't relocate the existing pause, add the targeted one.
-  *Priority: medium (usability — the merged-fragment diff is currently not reviewable
-  at the moment it matters).*
+- **`1.2.0-F24` — `build --pgo` should imply makepkg `-Cc` (clean build).** Both
+  `--pgo=record` and `--pgo=use` should force a clean build/package
+  (makepkg `-C`/`-c`), so instrumentation and profile-use builds never reuse stale
+  object files from a differently-instrumented prior run. Apply at the build-flag
+  seam, not per-package. *Priority: medium (correctness — stale objects silently
+  corrupt a PGO build).*
 
 - **`1.2.0-F26` — FDO-instrumented kernel must not overwrite the production sysforge
-  kernel.** An AutoFDO/Propeller *instrumented* kernel build (record pass) currently
-  collides with the production sysforge kernel install. SysForge should create a
-  *separate* boot entry for the instrumented kernel and only overwrite an existing
-  entry if sysforge is the one that created it (ownership-gated, mirroring the
-  `owner_stage` stamp + coexist-rename discipline already used for `-sysforge`
-  optimization renames and the kernel stage). Reuse the kernel-FDO seam
-  (`primitives/kernel_fdo.py`) + the existing coexist-rename / boot-entry path; don't
-  add a parallel boot-entry writer. *Priority: medium (safety — an instrumented
-  kernel silently replacing the production one is a boot-stability risk).*
+  kernel.** An AutoFDO/Propeller *instrumented* (record-pass) kernel build currently
+  collides with the production sysforge kernel install. Give the instrumented kernel
+  a *separate* boot entry, overwriting an existing one only when sysforge created it
+  (ownership-gated, like the `owner_stage` + coexist-rename discipline). Reuse the
+  `primitives/kernel_fdo.py` seam and the existing boot-entry path — no parallel
+  writer. *Priority: medium (safety — silently replacing the production kernel is a
+  boot-stability risk).*
+
+- **`1.2.0-F27` — Sync the desktop catalog to the Arch wiki's DE list.** Keep
+  `pkg_catalog.DESKTOP_CATALOG` (the one home for the desktop catalog) in sync with
+  the desktop environments enumerated on the Arch wiki's General-recommendations
+  page, rather than an ad-hoc subset (add a DE via `DESKTOP_CATALOG` +
+  `bootstrap.toml [desktop]` + both completions). *Priority: low.*
+
+- **`1.2.0-F28` — User-owned artifact inventory primitive.** Track the user-owned
+  system artifacts now scattered across `~/scripts`, `/etc/systemd/system/`,
+  `/etc/pacman.d/hooks/`, etc.: a tracked-file inventory, a repo-controlled
+  source-of-truth dir, an install/sync command, and drift detection vs the
+  filesystem, tied into the existing config/profile/manifest layers. Anything that
+  mutates the system stays behind a sentinel-gated verb. Stays inside the boundary in
+  DESIGN.md §Scope & Non-Goals (this is steady-state health of a managed system, not
+  backup/config-management). *Priority: low (strategic — coarse; decompose before
+  building).*
 
 ---
 

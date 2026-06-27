@@ -49,6 +49,10 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
 - **DESIGN = implemented only; `/ROADMAP.md` = planned + abandoned.** Roadmap IDs
   (`<version>-<TYPE><n>`, e.g. `1.2.0-F1`; counters reset only on a major/minor bump, not patch) appear only in
   ROADMAP + `docs/release-notes/`, never DESIGN. Triage `notes.txt` into ROADMAP.md.
+  **Implementing a roadmap item removes it from ROADMAP.md in the same commit** (the
+  landing commit is its record; shipped work lives in git history + `docs/release-notes/`,
+  not ROADMAP). Drop the whole entry — don't leave a "done" marker. **Keep entries in
+  ascending ID order** within each subsection — re-sort on every add/remove.
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same
   change as any CLI-surface change.
 - **CLI verbs go through the Verb framework**: `Verb` subclass dispatched by
