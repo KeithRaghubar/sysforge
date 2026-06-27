@@ -44,6 +44,18 @@ pythonpath = ["."]
 # Verbose output so rule parametrize IDs are readable.
 addopts = "-v"
 
+[tool.pyright]
+# Ruff owns lint-style diagnostics; disable the pyright checks that overlap
+# so editors don't double-report. Pyright remains the type-analysis authority.
+#   reportUnusedImport     -> ruff F401
+#   reportUnusedVariable   -> ruff F841
+#   reportUnusedExpression -> ruff B018
+#   reportDuplicateImport  -> ruff F811
+reportUnusedImport = "none"
+reportUnusedVariable = "none"
+reportUnusedExpression = "none"
+reportDuplicateImport = "none"
+
 [tool.ruff.lint]
 # E402: SysForge modules deliberately set `_log = log.get_logger("TAG")`
 # between imports so the logger is bound to the module's tag at the top
