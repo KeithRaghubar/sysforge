@@ -27,8 +27,6 @@ docs/plans/
 !.claude/skills/
 !.claude/hookify.*.md
 .remember/
-# Superpowers brainstorming/spec workspace — local, like .remember/
-docs/superpowers/
 .venv/
 .coverage
 coverage.json
