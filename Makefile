@@ -2,7 +2,7 @@
         check-shipped check-personal check-standards design check-design pre-release \
         sync-config \
         release-major release-minor release-patch \
-        vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-stop vm-clean \
+        vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
@@ -170,11 +170,22 @@ vm-iso:
 
 VM_SSH = ssh -p 10022 -o UserKnownHostsFile=$(VM_DIR)/known_hosts -o StrictHostKeyChecking=accept-new
 
+# Default to root: it is the only account guaranteed to exist in every state the
+# VM tooling targets — the live ISO, a half-installed system mid-pipeline, and an
+# installed system regardless of the username the user chose at bootstrap. The
+# builder account only exists post-install and only under the default username,
+# so connecting as builder breaks for non-default usernames / ISO runs. Override
+# with `make vm-ssh VM_USER=<name>` or use `vm-ssh-builder`.
+VM_USER ?= root
+
 vm-ssh:
-	ssh-keygen -R '[localhost]:10022' -f $(VM_DIR)/known_hosts 2>/dev/null; $(VM_SSH) builder@localhost
+	ssh-keygen -R '[localhost]:10022' -f $(VM_DIR)/known_hosts 2>/dev/null; $(VM_SSH) $(VM_USER)@localhost
 
 vm-ssh-root:
 	ssh-keygen -R '[localhost]:10022' -f $(VM_DIR)/known_hosts 2>/dev/null; $(VM_SSH) root@localhost
+
+vm-ssh-builder:
+	ssh-keygen -R '[localhost]:10022' -f $(VM_DIR)/known_hosts 2>/dev/null; $(VM_SSH) builder@localhost
 
 vm-monitor:
 	socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock

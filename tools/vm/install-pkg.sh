@@ -7,7 +7,10 @@ set -euo pipefail
 FLAVOR=""
 PKG_DIR="${HOME}/.local/share/sysforge-vm/build"
 VM_PORT=10022
-VM_USER=builder
+# Connect as root: it always exists and can run pacman directly. The builder
+# account only exists post-install under the default username, so it breaks for
+# non-default usernames / ISO runs. Override with VM_USER=<name> if needed.
+VM_USER="${VM_USER:-root}"
 VM_HOST=localhost
 KNOWN_HOSTS="${HOME}/.local/share/sysforge-vm/known_hosts"
 
@@ -75,8 +78,10 @@ echo "Copying $PKG_BASENAME to VM..."
 scp -P "$VM_PORT" "${SSH_OPTS[@]}" "$PKG" "$VM_USER@$VM_HOST:/tmp/"
 
 echo "Installing $PKG_BASENAME in VM..."
-ssh -t -p "$VM_PORT" "${SSH_OPTS[@]}" "$VM_USER@$VM_HOST" \
-    "sudo pacman -U --noconfirm /tmp/$PKG_BASENAME"
+# root runs pacman directly; a non-root override needs sudo.
+INSTALL_CMD="pacman -U --noconfirm /tmp/$PKG_BASENAME"
+[[ $VM_USER != root ]] && INSTALL_CMD="sudo $INSTALL_CMD"
+ssh -t -p "$VM_PORT" "${SSH_OPTS[@]}" "$VM_USER@$VM_HOST" "$INSTALL_CMD"
 
 echo
 echo "Done. Verify in VM:  make vm-ssh  then  sysforge --version"

@@ -199,7 +199,7 @@ make vm-savevm NAME=sysforge-installed
 #### Alternative (legacy): build inside the VM
 
 ```bash
-make vm-ssh
+make vm-ssh-builder   # makepkg refuses to run as root
 git clone https://github.com/KeithRaghubar/sysforge.git
 cd sysforge && makepkg -si
 ```
@@ -236,8 +236,9 @@ make vm-boot
 make vm-boot-gui   # then: gvncviewer localhost
 
 # SSH into a running VM
-make vm-ssh        # builder user (makepkg / sysforge work)
-make vm-ssh-root   # root (admin tasks)
+make vm-ssh         # root (default — works in the ISO and for any username)
+make vm-ssh-builder # builder user (makepkg / sysforge work, post-install only)
+make vm-ssh-root    # root (explicit; same as vm-ssh)
 
 # Open the QEMU monitor (loadvm, info snapshots, quit, etc.)
 # For savevm use 'make vm-savevm NAME=<tag>' — see step 4 for why.
@@ -263,7 +264,7 @@ Then `make vm-stop` and re-run `make vm-snapshot` for the next ephemeral run.
 ## Kernel stage testing workflow
 
 1. `make vm-snapshot` — start from clean state
-2. `make vm-ssh` — SSH in as builder
+2. `make vm-ssh-builder` — SSH in as builder (makepkg needs a non-root user)
 3. Clone the kernel PKGBUILD into `~/builds/`
 4. Write `/etc/sysforge/kernel.toml`
 5. `sysforge pipeline --start-from kernel`
