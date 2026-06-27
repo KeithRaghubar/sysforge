@@ -234,7 +234,9 @@ class TestFormatPartitions:
             _format_partitions(cfg, "/dev/sda1", "/dev/sda2")
         cmds = [c.args[0] for c in mock_run.call_args_list]
         assert any("mkfs.fat" in c for c in cmds)
-        assert any("mkfs.ext4" in c for c in cmds)
+        ext4_cmd = next(c for c in cmds if "mkfs.ext4" in c)
+        # -F forces over an existing filesystem signature (non-interactive)
+        assert "-F" in ext4_cmd
 
     def test_btrfs_format(self):
         cfg = make_cfg(root_fs="btrfs")
@@ -242,7 +244,9 @@ class TestFormatPartitions:
             mock_run.return_value = MagicMock(returncode=0)
             _format_partitions(cfg, "/dev/sda1", "/dev/sda2")
         cmds = [c.args[0] for c in mock_run.call_args_list]
-        assert any("mkfs.btrfs" in c for c in cmds)
+        btrfs_cmd = next(c for c in cmds if "mkfs.btrfs" in c)
+        # -f forces over an existing btrfs signature left by a prior install
+        assert "-f" in btrfs_cmd
 
     def test_mkfs_failure_raises(self):
         cfg = make_cfg()

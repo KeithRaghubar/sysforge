@@ -340,9 +340,13 @@ def _format_partitions(cfg: BootstrapConfig, esp_part: str, root_part: str) -> N
     )
 
     _log.ui(f"Formatting {root_part} as {cfg.root_fs}")
+    # sgdisk --clear only rewrites the GPT; an existing filesystem signature
+    # inside the partition survives. The user already confirmed the overwrite
+    # at the partition prompt, so force mkfs over any leftover signature
+    # (-F for ext4, -f for btrfs) rather than aborting / prompting.
     mkfs_cmd = (
-        ["mkfs.ext4", "-L", "root", root_part] if cfg.root_fs == "ext4"
-        else ["mkfs.btrfs", "-L", "root", root_part]
+        ["mkfs.ext4", "-F", "-L", "root", root_part] if cfg.root_fs == "ext4"
+        else ["mkfs.btrfs", "-f", "-L", "root", root_part]
     )
     run_or_raise(
         mkfs_cmd, tag="PARTITION", operation=f"mkfs.{cfg.root_fs}",
