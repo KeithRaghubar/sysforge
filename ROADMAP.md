@@ -167,6 +167,59 @@ counter, then version) — sort on every add so the list stays scannable.
   gates. *Priority: low (polish, but it's the primary user-facing output of the most
   common verb).*
 
+- **`1.2.0-F34` — `doctor` mesa-failed finding should also advise manual rollback via
+  `state forget`.** When mesa is source-built (`mesa-sysforge`) and installed, the doctor
+  mesa check still reports the stock `mesa` as failed; the message currently only says the
+  warning clears on rebuild. Extend the finding's remediation text to also offer the manual
+  path — `sysforge state forget mesa` (drop the build-state tracking entry) — for users who
+  intentionally reverted. Read-only finding; advice-text only, no new mutation. Keep it in
+  the existing mesa doctor axis — no new producer. *Priority: low (UX — the current advice
+  is technically right but dead-ends a legitimate workflow).*
+
+- **`1.2.0-F35` — Author release notes per-task, not as a release-time backfill.** With the
+  `notes.txt` → ROADMAP triage process in place, the cleaner discipline is: when an item is
+  *completed* (and removed from ROADMAP in the landing commit), append its entry to the
+  target `docs/release-notes/vX.Y.Z.md` in the **same** commit, rather than reconstructing
+  the whole file at release time via the `release-notes` skill. Update the process convention
+  in CLAUDE.md and adjust the `release-notes` skill to reconcile/lint an already-populated
+  file instead of authoring from scratch. *Priority: medium (makes shipped-work provenance
+  incremental and removes a brittle release-time reconstruction step).*
+
+---
+
+## Bugs
+
+- **`1.2.0-B5` — Pager output is mangled for `log` and `state orphans`.** Long-standing: the
+  pager opens blank, only scrolls up, and appears to loop the top of the file. Reproduced on
+  both the global log and per-package `sysforge log [PKG]`, and independently on
+  `sysforge state orphans` — so the defect is in the *shared* pager-launch helper, not in
+  either verb. Investigate the common paging seam (how output is handed to `$PAGER` —
+  likely a non-seekable pipe or a TTY/`pty_runner` interaction) rather than the verb-specific
+  formatting. *Priority: medium (core output verbs are unreadable through the pager).*
+
+- **`1.2.0-B6` — Kernel stage pause fires before the merges, not before `nconfig` (F25
+  regression).** F25 was supposed to pause for interactive review immediately before the
+  kconfig editor (`nconfig`) opens; in practice the pause happens *earlier*, before any of the
+  config merges run, so the user confirms before the config is even assembled. The
+  pause-before-kconfig helper is positioned at the wrong point in the kernel stage sequence —
+  move it to immediately precede the `nconfig` invocation, after all merges. *Priority: medium
+  (the pause exists but guards the wrong step, defeating its purpose).*
+
+- **`1.2.0-B7` — Kernel stage builds and installs docs despite docs being disabled.** With the
+  kernel docs subpackage toggle set to disabled, the stage still builds and installs kernel
+  docs. The `_resolve_subpackages` / `pkgbuild_patcher.patch_kernel_subpackages` path is not
+  actually suppressing the docs build/package output (note the Gate-1 DKMS warning is expected
+  to remain when *headers* are disabled — this is specifically the docs subpackage). *Priority:
+  medium (wasted build time + unwanted install; the toggle is silently ineffective).*
+
+- **`1.2.0-B8` — Kernel and toolchain stages don't pull latest source before building.** The
+  kernel stage built without first fetching the newest upstream revision, producing a stale
+  build. Both the kernel and toolchain stages should always sync to latest before building,
+  the same way `update` does for ordinary packages — routed through the source-sync scheduler
+  (`source_sync.get_scheduler().request(...)`, full-history `git_fetch_and_compare`), never a
+  bare `git pull`. *Priority: medium (the highest-stakes stages can silently rebuild stale
+  source).*
+
 ---
 
 ## Open questions
@@ -183,6 +236,13 @@ counter, then version) — sort on every add so the list stays scannable.
   (Note: the related worry that *non-toolchain* packages "have no field so get no
   drift detection" is a misconception — they are covered by the separate **flag-drift**
   axis, `resolve_flag_drift`, not by the variant field.)
+
+- **`1.2.0-Q10` — Can repoctl be restricted to versions present in the official repos?**
+  When pulling package versions via repoctl, builds often pick up versions newer than what
+  `pacman` itself would install — the suspicion is that it sees `[testing]`/`[*-testing]`
+  versions. *Open question: is there a way to constrain the lookup to the stable official
+  repos only (filter by enabled-but-non-testing repos, or compare against `pacman`'s
+  resolved candidate), and is this a repoctl-config matter or a sysforge-side filter?*
 
 ---
 
