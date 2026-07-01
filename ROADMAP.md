@@ -54,6 +54,24 @@ counter, then version) — sort on every add so the list stays scannable.
   desktop packages honor `repo_mode` like any other repo package. *Priority: high
   (defeats the entire point of repo mode for the common desktop-install path).*
 
+- **`1.2.0-B13` — `reconfigure` editor-preference save silently fails on a root-owned
+  `sysforge.toml`.** `_save_sysforge_toml_ui` (`reconfigure.py:123-142`) writes via a bare
+  `SYSFORGE_TOML_PATH.write_text(...)` with no privilege escalation, unlike every other
+  write path in the stage (`_edit_needs_sudo`-gated editor launch for config-file steps,
+  `sudo cp` of a staged temp file for `makepkg.conf`). On an installed system
+  `SYSFORGE_CONFIG_DIR` is unset, so `CONFIG_DIR` resolves to the root-owned FHS path
+  `/etc/sysforge` (`paths.py:29`); a normal user's write raises `PermissionError`, caught
+  as a plain `OSError` in `_step_editor` and merely logged as a warning
+  (`reconfigure.py:623-624`) rather than escalated or treated as fatal. The in-memory
+  selection still satisfies `_require_usable_editor`'s "usable right now" guard for the
+  rest of that reconfigure run, so the stage completes normally while the on-disk
+  `sysforge.toml` keeps its commented-out `# editor = "vim"` default — a later process
+  (e.g. build-failure recovery) re-resolves with nothing saved and, absent `$EDITOR`/
+  `$VISUAL`/`vim`/`nano`, correctly reports no usable editor. Fix by routing the write
+  through the same staged-temp-file + `sudo cp` pattern used for `makepkg.conf`
+  (`reconfigure.py:~1000-1010`) instead of a direct `write_text`. *Priority: medium
+  (silent persistence failure defeats the whole point of "save as sysforge default").*
+
 ### Features
 
 - **`1.2.0-F9` — Respect a PKGBUILD's per-package `options=()` (spun off Q6).** At
