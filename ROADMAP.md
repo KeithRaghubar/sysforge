@@ -206,6 +206,20 @@ counter, then version) — sort on every add so the list stays scannable.
   alongside the F33 summary-formatting work (honour the Unicode/`use_color` gates). *Priority:
   low (visibility into implicit installs).*
 
+- **`1.2.0-F39` — Graceful `Ctrl-C` handling instead of a raw traceback.** `main()` has no
+  top-level `KeyboardInterrupt` handler (`cli.py:1090`), so interrupting any command unwinds as
+  a full Python stack trace — noisy and alarming for what is a normal "I changed my mind" abort.
+  Wrap the dispatch (`_dispatch` / `sys.exit(_dispatch(...))`) in a `try/except
+  KeyboardInterrupt` that prints one readable line (e.g. `[sysforge] aborted (Ctrl-C)` via
+  `log`, honouring the colour/Unicode gates) and exits with the conventional `130` (128 + SIGINT)
+  rather than a traceback. On the way out it must still **release the `ui/progress` DECSTBM scroll
+  region** (reuse the B5 `progress`/`suspended` machinery so the terminal isn't left clamped) and
+  must **not** suppress a mutating stage's sentinel — an interrupted toolchain/kernel/packages
+  install has to keep its recovery sentinel (`sentinel_scope` already persists on interrupt; the
+  handler just needs to avoid swallowing that path). One home for the handler in `main()`; verbs
+  keep raising `KeyboardInterrupt` normally. *Priority: medium (quality-of-life; the current
+  behaviour looks like a crash on a routine abort).*
+
 ---
 
 ## Bugs
