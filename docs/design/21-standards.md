@@ -28,7 +28,7 @@ adhered to, partially or fully guarded · **target** = adopted, gap being closed
 | 10 | PEP 517 / 518 / 621 / 508 | Python packaging metadata | followed | `pyproject.toml` (hatchling backend, `[project]` table) |
 | 11 | `PKGBUILD(5)` · `.SRCINFO` · `alpm-hooks(5)` · `makepkg.conf` + [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines) / [VCS package guidelines](https://wiki.archlinux.org/title/VCS_package_guidelines) | Arch packaging artefacts + conventions | enforced | `pkgbuild-spec-check`/`pkgbuild-edit` skills; `check_shipped` `pkgbuild`/`hooks` groups |
 | 12 | `man-pages(7)` via scdoc | Manual page | enforced | `make man`; `check_shipped` `manpage` group |
-| 13 | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) | Release notes | enforced | `docs/release-notes/vX.Y.Z.md` category vocabulary; `check_standards` `changelog` group |
+| 13 | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) | Release notes | enforced | `docs/release-notes/vX.Y.Z.md` + `unreleased.md` accumulator category vocabulary; `check_standards` `changelog` group |
 | 14 | [REUSE](https://reuse.software/) / SPDX (license: **MIT**) | Per-file licensing | enforced | SPDX headers + `LICENSES/MIT.txt` + `REUSE.toml`; `check_standards` `spdx` group (`reuse lint`) |
 | 15 | Reproducible builds | Builds SysForge produces | followed | does not strip reproducibility OPTIONS / honours `SOURCE_DATE_EPOCH`; `tests/test_standards_compliance.py` |
 | 16 | OpenPGP signing (RFC 4880) + makepkg `validpgpkeys` | Release provenance (signed commits, tags, tarball) | followed | `tools/release.sh` (signing preflight + `git tag -s` + tarball `.asc`); `check_shipped` `pkgbuild` group (`validpgpkeys` + signature-aware `SKIP`); verified downstream by `makepkg` |
@@ -51,7 +51,14 @@ bump path and keeps `pyproject.toml`, `PKGBUILD`, `PKGBUILD-git`, and the
 **Keep a Changelog (13).** `docs/release-notes/vX.Y.Z.md` *is* the changelog
 (there is no separate top-level `CHANGELOG.md` to drift). Entries use the Keep a
 Changelog category headings: `Added`, `Changed`, `Deprecated`, `Removed`,
-`Fixed`, `Security`.
+`Fixed`, `Security`. Notes are authored **incrementally**: each landing commit
+that completes a ROADMAP item appends its entry to the running accumulator
+`docs/release-notes/unreleased.md` in that same commit. At release,
+`tools/release.sh` Phase 1 renames the accumulator to `vX.Y.Z.md`, stamps its
+`# ` title with the version + ISO date, and reseeds a fresh accumulator; the
+`release-notes` skill only reconciles/lints the accumulated entries. The
+`changelog` check lints `unreleased.md` under the same vocabulary so entries are
+validated as they land, not just at release.
 
 **REUSE / SPDX (14).** SysForge is MIT-licensed (`LICENSE`). First-party source
 files carry per-file SPDX headers (a copyright tag plus the `MIT` license

@@ -27,8 +27,9 @@ Groups:
     spdx        Every first-party .py under sysforge/ and tools/ carries an
                 SPDX-License-Identifier header. If the `reuse` CLI is on PATH,
                 the full-tree `reuse lint` is run instead.
-    changelog   Every docs/release-notes/v*.md has a `#` title and uses only
-                Keep a Changelog `##` category headings.
+    changelog   Every docs/release-notes/v*.md — and the running accumulator
+                unreleased.md — has a `#` title and uses only Keep a Changelog
+                `##` category headings.
     encoding    UTF-8 discipline: ruff's PLW1514 (preview) reports no text-mode
                 open/read_text/write_text without an explicit encoding. Skipped
                 with a warning if ruff is not available.
@@ -144,7 +145,14 @@ def check_changelog(repo: Path) -> list[Finding]:
     notes_dir = repo / "docs" / "release-notes"
     if not notes_dir.is_dir():
         return findings
-    for md in sorted(notes_dir.glob("v*.md")):
+    # Lint published notes (v*.md) plus the running accumulator (unreleased.md),
+    # since per-task entries are authored in the accumulator all cycle and must
+    # obey the same Keep a Changelog vocabulary before they are renamed.
+    notes_files = sorted(notes_dir.glob("v*.md"))
+    unreleased = notes_dir / "unreleased.md"
+    if unreleased.is_file():
+        notes_files.append(unreleased)
+    for md in notes_files:
         rel = md.relative_to(repo).as_posix()
         text = md.read_text(encoding="utf-8")
         lines = text.splitlines()

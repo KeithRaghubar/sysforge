@@ -176,15 +176,6 @@ counter, then version) — sort on every add so the list stays scannable.
   the existing mesa doctor axis — no new producer. *Priority: low (UX — the current advice
   is technically right but dead-ends a legitimate workflow).*
 
-- **`1.2.0-F35` — Author release notes per-task, not as a release-time backfill.** With the
-  `notes.txt` → ROADMAP triage process in place, the cleaner discipline is: when an item is
-  *completed* (and removed from ROADMAP in the landing commit), append its entry to the
-  target `docs/release-notes/vX.Y.Z.md` in the **same** commit, rather than reconstructing
-  the whole file at release time via the `release-notes` skill. Update the process convention
-  in CLAUDE.md and adjust the `release-notes` skill to reconcile/lint an already-populated
-  file instead of authoring from scratch. *Priority: medium (makes shipped-work provenance
-  incremental and removes a brittle release-time reconstruction step).*
-
 - **`1.2.0-F36` — Audit logging verbosity levels + configurable default verbosity.** Warning/info
   messages added over successive features have crept into the default verbosity level, eroding the
   meaning of the levels (default output is now noisy). Audit every logging call site to confirm the

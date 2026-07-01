@@ -207,12 +207,20 @@ preflight_fresh() {
         echo "       Replace it with your key fingerprint: gpg --fingerprint" >&2
         exit 1
     fi
-    # Release-notes gate. Every release ships curated notes; the file is
-    # committed in Phase 1 and referenced by the gh-release step in Phase 4.
-    if [[ ! -f "docs/release-notes/$TAG.md" ]]; then
-        echo "ERROR: docs/release-notes/$TAG.md is missing." >&2
-        echo "       Draft it first — run /release-notes in Claude Code, or write it by hand" >&2
-        echo "       (sections: Highlights / Breaking changes / Fixes / Internal)." >&2
+    # Release-notes gate. Notes are authored incrementally in the running
+    # accumulator (docs/release-notes/unreleased.md); Phase 1 renames it to
+    # $TAG.md, stamps the title, and reseeds a fresh accumulator. Require the
+    # accumulator to exist and hold at least one authored Keep a Changelog
+    # section — otherwise the release would ship empty notes.
+    if [[ ! -f "docs/release-notes/unreleased.md" ]]; then
+        echo "ERROR: docs/release-notes/unreleased.md is missing." >&2
+        echo "       It is the running accumulator — restore it (git checkout) or reseed it." >&2
+        exit 1
+    fi
+    if ! grep -q '^## ' "docs/release-notes/unreleased.md"; then
+        echo "ERROR: docs/release-notes/unreleased.md has no authored entries." >&2
+        echo "       Landing commits should append entries as items ship; run /release-notes" >&2
+        echo "       to reconcile/lint the accumulator before releasing." >&2
         exit 1
     fi
     # Shipped-file consistency gate. Validates every shipped TOML schema,
@@ -292,8 +300,9 @@ Phase 1 — bump, commit, tag:
   - rewrite README.md, DESIGN.md   <!--version-->v$NEW<!--/version-->
   - regenerate uv.lock             (uv lock)
   - regenerate man/sysforge.1      (make man)
-  - include release notes          docs/release-notes/$TAG.md
-  - git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 docs/release-notes/$TAG.md
+  - stamp + rename release notes   docs/release-notes/unreleased.md -> $TAG.md (title dated)
+  - reseed accumulator             fresh docs/release-notes/unreleased.md
+  - git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 docs/release-notes/$TAG.md docs/release-notes/unreleased.md
   - git commit -m "release: $TAG"
   - git tag $TAG
 
@@ -386,9 +395,37 @@ if [[ "$RESUME" -eq 0 ]]; then
         make man >/dev/null
     fi
 
+    # Release notes: rename the running accumulator to the versioned file, stamp
+    # its `# ` title with the version + ISO date, and reseed a fresh accumulator
+    # for the next cycle. Notes were authored incrementally into unreleased.md,
+    # so nothing is reconstructed here.
+    RELEASE_DATE="$(date +%F)"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        git mv "docs/release-notes/unreleased.md" "docs/release-notes/$TAG.md"
+        # Rewrite the first `# ` heading to the dated versioned title.
+        sed -i -E "0,/^# .*/s//# sysforge $TAG — $RELEASE_DATE/" "docs/release-notes/$TAG.md"
+        cat > "docs/release-notes/unreleased.md" <<'UNRELEASED_EOF'
+# sysforge (unreleased)
+
+<!--
+Running accumulator for the next release. Every landing commit that COMPLETES a
+ROADMAP item appends its entry here (in the same commit that drops the item from
+ROADMAP.md), under the matching Keep a Changelog section — one of Added, Changed,
+Deprecated, Removed, Fixed, Security, in that order. Reference the roadmap ID
+inline, e.g. (1.2.0-F35). Flag breaking changes with a **Breaking:** prefix and
+the migration path. At release time tools/release.sh (Phase 1) renames this file
+to vX.Y.Z.md, stamps the `# ` title with the version and date, and reseeds a fresh
+accumulator. Run the release-notes skill first to reconcile/lint the entries and
+finalize the one-line summary below (drop this comment). Keep a Changelog:
+https://keepachangelog.com/en/1.1.0/
+-->
+UNRELEASED_EOF
+    fi
+    echo "    release notes: unreleased.md -> $TAG.md (title: sysforge $TAG — $RELEASE_DATE); accumulator reseeded"
+
     # Commit + tag
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 "docs/release-notes/$TAG.md"
+        git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 "docs/release-notes/$TAG.md" "docs/release-notes/unreleased.md"
         git commit -m "release: $TAG"
         # Signed annotated tag — the release's authenticity anchor. `git tag -v`
         # fails (and aborts the release) if the signature does not verify.
@@ -397,7 +434,8 @@ if [[ "$RESUME" -eq 0 ]]; then
         echo "    committed: release: $TAG (signed)"
         echo "    tagged:    $TAG (signed, verified)"
     else
-        echo "    [dry-run] git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 docs/release-notes/$TAG.md"
+        echo "    [dry-run] git mv docs/release-notes/unreleased.md docs/release-notes/$TAG.md (title stamped) + reseed accumulator"
+        echo "    [dry-run] git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 docs/release-notes/$TAG.md docs/release-notes/unreleased.md"
         echo "    [dry-run] git commit -m \"release: $TAG\"  (commit.gpgsign)"
         echo "    [dry-run] git tag -s $TAG -m \"sysforge $TAG\" && git tag -v $TAG"
     fi

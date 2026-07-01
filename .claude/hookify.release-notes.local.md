@@ -8,6 +8,8 @@ action: warn
 
 **Release notes required before releasing.**
 
-`tools/release.sh` preflight hard-fails if `docs/release-notes/v<NEW>.md` is missing
-for the target version. Before running the release command, check the file exists for
-the bumped version; if not, run the `/release-notes` skill to draft it first.
+`tools/release.sh` preflight hard-fails if the running accumulator
+`docs/release-notes/unreleased.md` is missing or has no authored `## ` sections.
+Notes are authored per-task into the accumulator as items ship; the release script
+renames it to `v<NEW>.md` at Phase 1. Before running the release command, run the
+`/release-notes` skill to reconcile/lint the accumulated entries.

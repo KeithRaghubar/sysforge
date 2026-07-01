@@ -53,6 +53,13 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   landing commit is its record; shipped work lives in git history + `docs/release-notes/`,
   not ROADMAP). Drop the whole entry — don't leave a "done" marker. **Keep entries in
   ascending ID order** within each subsection — re-sort on every add/remove.
+  **In that same landing commit, append the item's release-note entry to the running
+  accumulator `docs/release-notes/unreleased.md`** (matching Keep a Changelog section,
+  inline roadmap ID) — notes are authored per-task, never reconstructed at release time.
+  `tools/release.sh` Phase 1 renames the accumulator to `vX.Y.Z.md`, stamps its title
+  with the version + date, and reseeds a fresh one; the `release-notes` skill only
+  reconciles/lints the accumulated entries before a release. `make check-standards` lints
+  `unreleased.md` under the same Keep a Changelog vocabulary.
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same
   change as any CLI-surface change.
 - **CLI verbs go through the Verb framework**: `Verb` subclass dispatched by
