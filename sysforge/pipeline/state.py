@@ -368,3 +368,29 @@ def get_toolchain_variant(state) -> str:
     """
     result = state.get_stage_result("toolchain") or {}
     return result.get("variant", "system")
+
+
+def get_toolchain_fingerprint(state):
+    """Return the active toolchain's identity fingerprint, or ``None`` (Q9).
+
+    The finer-grained companion to :func:`get_toolchain_variant`: it fingerprints
+    the *active toolchain's compiler* (the ``cc`` recorded in the toolchain stage
+    result) under the configured ``[toolchain] drift_detect`` method, so a
+    same-variant toolchain rebuild (fresh PGO codegen, unchanged soname) is
+    detectable. ``None`` when the toolchain stage has never run (variant
+    ``"system"``) — nothing built under it, so nothing to stamp or compare.
+
+    This is the single canonical computation site, shared by build-time stamping
+    (into ``build_state.toolchain_fingerprint``) and update-time comparison — the
+    two must agree, so they must not re-derive it independently.
+    """
+    result = state.get_stage_result("toolchain") or {}
+    variant = result.get("variant", "system")
+    if variant == "system":
+        return None
+    # Imported lazily to keep this low-level module free of a config/primitives
+    # import at module load (avoids an import cycle via pipeline ← build_core).
+    from sysforge.primitives import build_fingerprint, config
+    return build_fingerprint.toolchain_fingerprint(
+        config.resolve_drift_detect(), result.get("cc")
+    )

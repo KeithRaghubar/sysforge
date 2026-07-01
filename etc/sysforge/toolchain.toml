@@ -21,6 +21,25 @@
 
 enabled = false
 
+# How `sysforge update` fingerprints the active toolchain to detect a
+# *same-variant* rebuild — a toolchain rebuilt with fresh PGO codegen but the
+# same variant name and the same libLLVM soname. (A variant-name change or a
+# soname bump is already caught elsewhere; this covers the ABI-compatible,
+# different-codegen case only.) Advisory by default — a flagged package is
+# listed under `--explain-drift` and rebuilt only with
+# `--rebuild-on-toolchain-drift` / `--rebuild-on-drift`.
+#   "fingerprint"  (default) — clang path + size + nanosecond mtime + version
+#                  line. Fast, no hashing. TRADEOFF: mtime is included, so a
+#                  pacman reinstall of a byte-identical clang flips the
+#                  fingerprint → one spurious advisory (and, under a rebuild
+#                  flag, one spurious rebuild). Fail-safe: rebuilding is always
+#                  safe, so this is accepted rather than engineered around.
+#   "content_hash" — sha256 of the resolved libLLVM.so (the real codegen
+#                  carrier) + the version line. Precise: catches a same-version
+#                  libLLVM PGO rebuild the stat method would miss. PERFORMANCE:
+#                  hashes a ~100 MB+ shared object on every drift check.
+drift_detect = "fingerprint"
+
 # compiler = "gcc"     # "gcc" (default when unset) or "llvm". LLVM enables
 #                      # the 4-pass PGO bootstrap, but is fragile across LLVM
 #                      # major bumps — leave on "gcc" unless you specifically

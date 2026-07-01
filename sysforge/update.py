@@ -89,6 +89,7 @@ from sysforge import build_core
 from sysforge.build_core import _find_existing_artifacts
 from sysforge.pipeline.state import (
     PipelineState,
+    get_toolchain_fingerprint,
     get_toolchain_variant,
     resolve_state_dir,
 )
@@ -406,7 +407,14 @@ def _cmd_update_body(args) -> None:
     # and used below to surface drift between installed packages' recorded
     # variant and what's active now. ``"system"`` means the toolchain stage
     # has never run on this state dir; treat as a benign no-op (no stamp).
-    active_variant = get_toolchain_variant(PipelineState(state_dir))
+    _pstate = PipelineState(state_dir)
+    active_variant = get_toolchain_variant(_pstate)
+    # Companion to active_variant (Q9): identity of the active toolchain's
+    # compiler, computed once. Stamped onto every rebuild below and compared
+    # against each package's recorded fingerprint to catch a same-variant
+    # toolchain rebuild (fresh codegen, unchanged soname). None when variant is
+    # "system" (no toolchain stage run — nothing to compare).
+    active_fingerprint = get_toolchain_fingerprint(_pstate)
 
     # Superset sync: build_state.toml carries an entry for every installed
     # package (pacman-mode marker for those sysforge didn't build), so that
@@ -573,7 +581,10 @@ def _cmd_update_body(args) -> None:
     # Pure pacman-mode entries have no variant and are never drift candidates.
     # Surface as a one-line summary (always) and a full list under
     # --explain-drift; opt-in rebuild via --rebuild-on-toolchain-drift.
-    drifted: list[tuple[str, str]] = []  # (pkgbase, recorded_variant)
+    # (pkgbase, recorded_variant, reason). The reason distinguishes the two
+    # cases the drift check now folds together: a different variant name, or a
+    # same-variant toolchain rebuild caught by the fingerprint (Q9).
+    drifted: list[tuple[str, str, str]] = []
     if active_variant != "system":
         seen_bases: set[str] = set()
         for r in results:
@@ -586,17 +597,36 @@ def _cmd_update_body(args) -> None:
             for name in r.pkgnames:
                 rec = bs.get(name) or {}
                 rec_variant = rec.get("toolchain_variant")
-                if rec_variant and rec_variant != active_variant:
-                    drifted.append((r.pkgbase, rec_variant))
-                if rec_variant is not None:
-                    break
+                if rec_variant is None:
+                    continue
+                if rec_variant != active_variant:
+                    drifted.append((
+                        r.pkgbase, rec_variant,
+                        f"built under a different variant than active "
+                        f"({active_variant})",
+                    ))
+                else:
+                    # Same variant name: flag only when both fingerprints are
+                    # present and differ. A missing recorded fingerprint (built
+                    # before Q9) is never flagged — compared only when both sides
+                    # exist. This is the same-variant, same-soname, different-
+                    # codegen case (e.g. a fresh-profdata PGO rebuild).
+                    rec_fp = rec.get("toolchain_fingerprint")
+                    if (rec_fp and active_fingerprint
+                            and rec_fp != active_fingerprint):
+                        drifted.append((
+                            r.pkgbase, rec_variant,
+                            f"toolchain rebuilt since build (same variant: "
+                            f"{rec_variant})",
+                        ))
+                break
 
     if drifted:
-        sample = ", ".join(f"{pb} ({rv})" for pb, rv in drifted[:3])
+        sample = ", ".join(f"{pb} ({rv})" for pb, rv, _ in drifted[:3])
         more = f" (+{len(drifted) - 3} more)" if len(drifted) > 3 else ""
         _log.ui(
             f"toolchain drift: {len(drifted)} package(s) built under a "
-            f"different variant than active ({active_variant}): {sample}{more}. "
+            f"different toolchain than active ({active_variant}): {sample}{more}. "
             "Pass --rebuild-on-toolchain-drift to rebuild, or "
             "--explain-drift to list."
         )
@@ -686,11 +716,11 @@ def _cmd_update_body(args) -> None:
         else:
             print(
                 f"[SYSFORGE] {len(drifted)} package(s) built under a "
-                f"different toolchain variant than active "
+                f"different toolchain than active "
                 f"({active_variant}):"
             )
-            for pkgbase, rec_variant in sorted(drifted):
-                print(f"  {pkgbase:<40}  recorded={rec_variant}")
+            for pkgbase, rec_variant, reason in sorted(drifted):
+                print(f"  {pkgbase:<40}  recorded={rec_variant}  ({reason})")
         if not flag_drifted:
             print("[SYSFORGE] No flag drift.")
         else:
@@ -713,7 +743,7 @@ def _cmd_update_body(args) -> None:
     _rebuild_all_drift = getattr(args, "rebuild_on_drift", False)
 
     if (getattr(args, "rebuild_on_toolchain_drift", False) or _rebuild_all_drift) and drifted:
-        drifted_bases = {pb for pb, _ in drifted}
+        drifted_bases = {pb for pb, _, _ in drifted}
         promoted = 0
         unbuildable = 0
         for r in results:
@@ -868,6 +898,7 @@ def _cmd_update_body(args) -> None:
                 if getattr(args, "makepkg", None) else None
             ),
             active_variant=active_variant,
+            toolchain_fingerprint=active_fingerprint,
             pkgdest=pkgdest,
             review=review_mode,
             timer=timer,

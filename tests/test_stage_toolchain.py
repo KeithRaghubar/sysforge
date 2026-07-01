@@ -670,6 +670,30 @@ def test_state_result_round_trips(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# get_toolchain_fingerprint (Q9)
+# ---------------------------------------------------------------------------
+
+def test_get_toolchain_fingerprint_none_when_system(tmp_path):
+    from sysforge.pipeline.state import get_toolchain_fingerprint
+    state = PipelineState(tmp_path)  # toolchain stage never ran → "system"
+    assert get_toolchain_fingerprint(state) is None
+
+
+def test_get_toolchain_fingerprint_uses_active_cc_and_method(tmp_path, monkeypatch):
+    from sysforge.pipeline import state as state_mod
+    from sysforge.primitives import build_fingerprint, config
+    state = PipelineState(tmp_path)
+    state.set_stage_result("toolchain", {"cc": "/opt/clang", "variant": "pgo_llvm"})
+
+    monkeypatch.setattr(config, "resolve_drift_detect", lambda: "content_hash")
+    monkeypatch.setattr(
+        build_fingerprint, "toolchain_fingerprint",
+        lambda method, cc: f"{method}:{cc}",
+    )
+    assert state_mod.get_toolchain_fingerprint(state) == "content_hash:/opt/clang"
+
+
+# ---------------------------------------------------------------------------
 # ToolchainStage.run() — no-op when toolchain.toml absent
 # ---------------------------------------------------------------------------
 

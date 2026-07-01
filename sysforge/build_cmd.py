@@ -344,10 +344,13 @@ class BuildVerb(Verb):
         # install). The only difference is sync_source=True — build keeps its
         # inline per-package source sync (update syncs up front in Phase 2).
         from sysforge.pipeline.state import (
-            PipelineState, get_toolchain_variant, resolve_state_dir,
+            PipelineState, get_toolchain_fingerprint, get_toolchain_variant,
+            resolve_state_dir,
         )
         state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
-        active_variant = get_toolchain_variant(PipelineState(state_dir))
+        _pstate = PipelineState(state_dir)
+        active_variant = get_toolchain_variant(_pstate)
+        active_fingerprint = get_toolchain_fingerprint(_pstate)
 
         outcome = build_core.build_and_install(
             targets,
@@ -366,6 +369,7 @@ class BuildVerb(Verb):
             abi_check=args.abi_check,
             extra_flags=extra_flags,
             active_variant=active_variant,
+            toolchain_fingerprint=active_fingerprint,
             pgo_mode=getattr(args, "pgo_mode", None),
             review=(
                 "prompt"

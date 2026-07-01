@@ -554,6 +554,7 @@ def build_and_install(
     abi_check: bool = False,
     extra_flags: list | None = None,
     active_variant: str | None = None,
+    toolchain_fingerprint: str | None = None,
     pkgdest: Path | None = None,
     review: str = "prompt",
     pgo_mode: str | None = None,
@@ -805,6 +806,7 @@ def build_and_install(
                         force_batch=not interactive,
                         source=target.source,
                         toolchain_variant=active_variant,
+                        toolchain_fingerprint=toolchain_fingerprint,
                         pgo_mode=pgo_mode,
                     ))
                     new_pkgs = sorted(

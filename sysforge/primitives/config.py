@@ -26,7 +26,15 @@ from pathlib import Path
 from sysforge.primitives.paths import (
     CONFIG_PATHS,
     SYSFORGE_TOML_PATH,
+    TOOLCHAIN_PATH,
 )
+
+# [toolchain] drift_detect — how `sysforge update` fingerprints the active
+# toolchain to detect a same-variant rebuild (Q9). "fingerprint" (default) is
+# the fast stat-based clang_identity; "content_hash" hashes libLLVM.so.
+DRIFT_DETECT_FINGERPRINT = "fingerprint"
+DRIFT_DETECT_CONTENT_HASH = "content_hash"
+_DRIFT_DETECT_VALUES = {DRIFT_DETECT_FINGERPRINT, DRIFT_DETECT_CONTENT_HASH}
 
 # packages.toml [build] repo_mode values. "build_from_source" replaced the
 # legacy "profiled" token (which collided with build_state's build_mode and
@@ -676,6 +684,24 @@ def set_default_toolchain(compiler: str, path=None) -> str:
     path.write_text(new_text, encoding="utf-8")
     _log.info(f"Set [defaults] toolchain = {compiler!r} in {path}")
     return new_text
+
+
+def resolve_drift_detect(path=None) -> str:
+    """Resolve ``[toolchain] drift_detect`` (Q9).
+
+    Returns ``"fingerprint"`` (default) or ``"content_hash"``. A missing file,
+    a missing key, an unreadable file, or an unrecognised value all resolve to
+    ``"fingerprint"`` — the fast, always-safe default. ``path`` defaults to the
+    live ``toolchain.toml``; pass an explicit path in tests.
+    """
+    path = Path(path) if path is not None else TOOLCHAIN_PATH
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return DRIFT_DETECT_FINGERPRINT
+    val = data.get("drift_detect")
+    return val if val in _DRIFT_DETECT_VALUES else DRIFT_DETECT_FINGERPRINT
 
 
 def parse_system_makepkg_conf(path=None):

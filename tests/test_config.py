@@ -11,9 +11,36 @@ from sysforge.primitives.config import (
     load_consumes_inference,
     normalize_package_entry,
     pgo_warns_for,
+    resolve_drift_detect,
     resolve_pgo_allowlist,
     resolve_repo_mode,
 )
+
+
+# ---------------------------------------------------------------------------
+# resolve_drift_detect (Q9 — [toolchain] drift_detect)
+# ---------------------------------------------------------------------------
+
+def test_drift_detect_defaults_to_fingerprint_when_file_absent(tmp_path):
+    assert resolve_drift_detect(tmp_path / "nope.toml") == "fingerprint"
+
+
+def test_drift_detect_defaults_to_fingerprint_when_key_absent(tmp_path):
+    p = tmp_path / "toolchain.toml"
+    p.write_text("enabled = false\n")
+    assert resolve_drift_detect(p) == "fingerprint"
+
+
+def test_drift_detect_reads_content_hash(tmp_path):
+    p = tmp_path / "toolchain.toml"
+    p.write_text('drift_detect = "content_hash"\n')
+    assert resolve_drift_detect(p) == "content_hash"
+
+
+def test_drift_detect_unknown_value_falls_back_to_fingerprint(tmp_path):
+    p = tmp_path / "toolchain.toml"
+    p.write_text('drift_detect = "bogus"\n')
+    assert resolve_drift_detect(p) == "fingerprint"
 
 
 # ---------------------------------------------------------------------------

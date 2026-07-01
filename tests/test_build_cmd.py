@@ -44,6 +44,7 @@ def _run_build(monkeypatch, tmp_path, pkgname, *, is_repo, force=True,
     monkeypatch.setattr(pipeline_state, "resolve_state_dir",
                         lambda d: (tmp_path, None))
     monkeypatch.setattr(pipeline_state, "get_toolchain_variant", lambda st: "system")
+    monkeypatch.setattr(pipeline_state, "get_toolchain_fingerprint", lambda st: None)
     monkeypatch.setattr(pipeline_state, "PipelineState", lambda d: None)
 
     args = types.SimpleNamespace(

@@ -520,6 +520,92 @@ def test_offline_dry_run_flag_drift_is_network_free(update_scenario, capsys):
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 4.25 — toolchain-fingerprint drift (Q9)
+# ---------------------------------------------------------------------------
+
+def _seed_toolchain_fp(scenario, monkeypatch, *, active_fp, rec_fp,
+                       variant="pgo_llvm"):
+    """htop is version-current, recorded under ``variant``/``rec_fp``; the
+    active toolchain reports ``variant``/``active_fp``. Patches the two canonical
+    accessors in update's namespace so no real toolchain state is needed."""
+    scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    scenario.record("htop", "3.4.1", "1", toolchain_variant=variant,
+                    toolchain_fingerprint=rec_fp)
+    monkeypatch.setattr("sysforge.update.get_toolchain_variant",
+                        lambda s: variant)
+    monkeypatch.setattr("sysforge.update.get_toolchain_fingerprint",
+                        lambda s: active_fp)
+    return {"htop": "3.4.1-1"}, {"htop": "3.4.1-1"}
+
+
+def test_same_variant_different_fingerprint_is_drift(update_scenario, capsys,
+                                                     monkeypatch):
+    installed, foreign = _seed_toolchain_fp(
+        update_scenario, monkeypatch, active_fp="fp-new", rec_fp="fp-old")
+    builds = update_scenario.run(
+        _make_args(), installed=installed, foreign=foreign)
+    assert builds == []  # advisory only, no opt-in flag
+    captured = capsys.readouterr()
+    assert "toolchain drift" in (captured.out + captured.err).lower()
+
+
+def test_same_variant_identical_fingerprint_no_drift(update_scenario, capsys,
+                                                     monkeypatch):
+    installed, foreign = _seed_toolchain_fp(
+        update_scenario, monkeypatch, active_fp="fp-same", rec_fp="fp-same")
+    update_scenario.run(_make_args(), installed=installed, foreign=foreign)
+    captured = capsys.readouterr()
+    assert "toolchain drift" not in (captured.out + captured.err).lower()
+
+
+def test_missing_recorded_fingerprint_no_drift(update_scenario, capsys,
+                                               monkeypatch):
+    # Entry built before Q9: no recorded fingerprint → never flagged.
+    installed, foreign = _seed_toolchain_fp(
+        update_scenario, monkeypatch, active_fp="fp-new", rec_fp=None)
+    update_scenario.run(_make_args(), installed=installed, foreign=foreign)
+    captured = capsys.readouterr()
+    assert "toolchain drift" not in (captured.out + captured.err).lower()
+
+
+def test_explain_drift_renders_same_variant_reason(update_scenario, capsys,
+                                                   monkeypatch):
+    installed, foreign = _seed_toolchain_fp(
+        update_scenario, monkeypatch, active_fp="fp-new", rec_fp="fp-old")
+    update_scenario.run(
+        _make_args(explain_drift=True), installed=installed, foreign=foreign)
+    out = capsys.readouterr().out
+    assert "toolchain rebuilt since build (same variant: pgo_llvm)" in out
+
+
+def test_explain_drift_renders_different_variant_reason(update_scenario, capsys,
+                                                        monkeypatch):
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.record("htop", "3.4.1", "1", toolchain_variant="stock_llvm")
+    monkeypatch.setattr("sysforge.update.get_toolchain_variant",
+                        lambda s: "pgo_llvm")
+    monkeypatch.setattr("sysforge.update.get_toolchain_fingerprint",
+                        lambda s: "fp-new")
+    update_scenario.run(
+        _make_args(explain_drift=True),
+        installed={"htop": "3.4.1-1"}, foreign={"htop": "3.4.1-1"})
+    out = capsys.readouterr().out
+    assert "different variant than active (pgo_llvm)" in out
+
+
+def test_rebuild_on_toolchain_drift_promotes_fingerprint_drift(update_scenario,
+                                                               monkeypatch):
+    installed, foreign = _seed_toolchain_fp(
+        update_scenario, monkeypatch, active_fp="fp-new", rec_fp="fp-old")
+    builds = update_scenario.run(
+        _make_args(rebuild_on_toolchain_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign)
+    assert len(builds) == 1
+    pkgbuild_path = builds[0][0][0] if builds[0][0] else builds[0][1]["pkgbuild_path"]
+    assert "htop" in str(pkgbuild_path)
+
+
 def test_explain_drift_lists_flag_drift_and_exits(update_scenario, capsys):
     installed, foreign = _seed_flag_drift(update_scenario)
     builds = update_scenario.run(

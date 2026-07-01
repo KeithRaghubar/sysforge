@@ -174,6 +174,7 @@ class BuildState:
                source: str | None = None,
                owner_stage: str | None = None,
                toolchain_variant: str | None = None,
+               toolchain_fingerprint: str | None = None,
                reviewed_commit: str | None = None,
                origin_pkgbase: str | None = None) -> None:
         """Record build metadata for a single package name.
@@ -207,6 +208,14 @@ class BuildState:
         as candidates for rebuild. Sticky like ``source``/``owner_stage``:
         callers that don't know the variant (repair/backfill paths)
         preserve any prior value instead of erasing it.
+
+        ``toolchain_fingerprint`` is an opaque identity string for the active
+        toolchain at build time (see ``build_fingerprint.toolchain_fingerprint``)
+        — path/size/mtime/version by default, or a libLLVM content hash under
+        ``[toolchain] drift_detect = "content_hash"``. It lets ``sysforge
+        update`` flag a *same-variant* toolchain rebuild (fresh codegen, same
+        soname) that the ``toolchain_variant`` string alone would miss. Sticky
+        like ``toolchain_variant``.
 
         ``reviewed_commit`` is the source clone's HEAD at the time of a
         successful build — the baseline for the PKGBUILD review gate
@@ -257,6 +266,16 @@ class BuildState:
             entry["toolchain_variant"] = toolchain_variant
         elif "toolchain_variant" in prior:
             entry["toolchain_variant"] = prior["toolchain_variant"]
+        # ``toolchain_fingerprint`` (Q9): a finer-grained companion to
+        # ``toolchain_variant`` that distinguishes a same-variant toolchain
+        # rebuild (e.g. fresh PGO profdata, same soname). Sticky for the same
+        # reason as the variant — a backfill rebuild that doesn't recompute it
+        # must not erase it, or the entry would read as "never stamped" and be
+        # exempted from the fingerprint drift rule.
+        if toolchain_fingerprint is not None:
+            entry["toolchain_fingerprint"] = toolchain_fingerprint
+        elif "toolchain_fingerprint" in prior:
+            entry["toolchain_fingerprint"] = prior["toolchain_fingerprint"]
         if reviewed_commit is not None:
             entry["reviewed_commit"] = reviewed_commit
         elif "reviewed_commit" in prior:
@@ -400,7 +419,7 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant", "reviewed_commit", "origin_pkgbase"):
+            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant", "toolchain_fingerprint", "reviewed_commit", "origin_pkgbase"):
                 if key in entry:
                     val = _toml_escape(entry[key])
                     lines.append(f'{key} = "{val}"')

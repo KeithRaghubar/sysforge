@@ -260,19 +260,6 @@ counter, then version) — sort on every add so the list stays scannable.
 
 ## Open questions
 
-- **`1.2.0-Q9` — Toolchain-variant drift is name-only; a same-variant profdata
-  rebuild is invisible.** `update` Phase 4.25 detects toolchain drift by string-comparing
-  the recorded `build_state.toml` `toolchain_variant` (e.g. `pgo_llvm`) against the
-  active variant. If the toolchain is rebuilt with **fresh profdata but the same
-  variant name**, the strings still match, so dependent packages are never flagged for
-  rebuild despite being built against a different libLLVM/clang. There is no content
-  hash (profdata digest / toolchain build fingerprint) in the comparison. *Open
-  question: do we add a toolchain-build fingerprint to `toolchain_variant` drift
-  (cf. `build_fingerprint.py`), and is same-variant rebuild common enough to matter?*
-  (Note: the related worry that *non-toolchain* packages "have no field so get no
-  drift detection" is a misconception — they are covered by the separate **flag-drift**
-  axis, `resolve_flag_drift`, not by the variant field.)
-
 - **`1.2.0-Q10` — Can repoctl be restricted to versions present in the official repos?**
   When pulling package versions via repoctl, builds often pick up versions newer than what
   `pacman` itself would install — the suspicion is that it sees `[testing]`/`[*-testing]`

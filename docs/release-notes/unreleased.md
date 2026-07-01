@@ -71,6 +71,14 @@ PKGBUILD review trust gate — on top of a large modular refactor.
   (title stamped with version + date) at release, reseeding a fresh accumulator. The
   `release-notes` skill now reconciles/lints the accumulated entries instead of authoring
   the file from scratch.
+- **Same-variant toolchain-drift detection** (`1.2.0-Q9`) — `update` now stamps a
+  `toolchain_fingerprint` alongside `toolchain_variant` in `build_state.toml` and flags a
+  package when the active toolchain was rebuilt since it was built, even when the variant
+  name is unchanged (e.g. a fresh-profdata PGO rebuild with the same libLLVM soname). New
+  `[toolchain] drift_detect` config key selects the method: `"fingerprint"` (default; fast
+  path/size/mtime/version stat) or `"content_hash"` (hashes the resolved `libLLVM.so`).
+  Advisory by default — surfaced in the drift summary and `--explain-drift`, rebuilt only
+  under `--rebuild-on-toolchain-drift` / `--rebuild-on-drift`.
 
 ## Changed
 

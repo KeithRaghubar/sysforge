@@ -10,6 +10,8 @@ enabled    = true
 compiler   = "llvm"    # "llvm" or "gcc"
 pgo        = true      # LLVM only: enable 4-pass PGO bootstrap (ignored for gcc)
 skip_build = false
+drift_detect = "fingerprint"  # "fingerprint" (fast stat) | "content_hash"
+                              # (hash libLLVM.so). update same-variant drift.
 
 # Per-pass staging dirs (extracted binaries used as CC/CXX by the next pass).
 # pgo_staging1 = "/var/tmp/sysforge-llvm-stage1"   # pass-1 (bootstrap) staging

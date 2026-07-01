@@ -3054,7 +3054,10 @@ def _rebuild_soname_consumers(consumers: list[str], config, options, state) -> N
     command; the toolchain itself stays healthy.
     """
     from sysforge import build_core
-    from sysforge.pipeline.state import get_toolchain_variant
+    from sysforge.pipeline.state import (
+        get_toolchain_fingerprint,
+        get_toolchain_variant,
+    )
 
     manual_cmd = "sysforge build " + " ".join(consumers)
     _log.ui(
@@ -3086,6 +3089,7 @@ def _rebuild_soname_consumers(consumers: list[str], config, options, state) -> N
         sync_source=True,
         state_dir=options.state_dir,
         active_variant=get_toolchain_variant(state),
+        toolchain_fingerprint=get_toolchain_fingerprint(state),
         abi_check=True,
         review="auto",
     )

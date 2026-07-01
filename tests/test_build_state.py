@@ -418,6 +418,44 @@ def test_toolchain_variant_in_serialized_toml(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# toolchain_fingerprint (Q9)
+# ---------------------------------------------------------------------------
+
+def test_record_with_toolchain_fingerprint(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="3.4.0", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=Path("/tmp/x"),
+              toolchain_fingerprint="clang|size=1|v18")
+    assert bs.get("htop")["toolchain_fingerprint"] == "clang|size=1|v18"
+
+
+def test_record_without_toolchain_fingerprint_omits_field(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs)
+    assert "toolchain_fingerprint" not in bs.get("htop")
+
+
+def test_toolchain_fingerprint_sticky_on_subsequent_record(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="3.4.0", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=Path("/tmp/x"),
+              toolchain_fingerprint="fp-A")
+    bs.record(pkgname="htop", pkgver="3.4.1", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=Path("/tmp/x"))
+    assert bs.get("htop")["toolchain_fingerprint"] == "fp-A"
+
+
+def test_toolchain_fingerprint_persisted_and_reloaded(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="3.4.0", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=Path("/tmp/x"),
+              toolchain_fingerprint="fp-B")
+    bs.save()
+    bs2 = BuildState(tmp_path)
+    assert bs2.get("htop")["toolchain_fingerprint"] == "fp-B"
+
+
+# ---------------------------------------------------------------------------
 # origin_pkgbase — pre-rename pkgbase for -sysforge builds
 # ---------------------------------------------------------------------------
 

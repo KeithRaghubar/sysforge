@@ -460,7 +460,12 @@ class TestAllowlistCodeParity:
         # not directly in the stage; assert that indirection really exists.
         helper = (REPO / "sysforge/primitives/makepkg_pgo.py").read_text()
         assert 'get("pgo_store")' in helper
-        helper_resolved = {"pgo_store"}
+        # drift_detect is read on the *update* path (config.resolve_drift_detect),
+        # not by the toolchain stage — it configures update's same-variant drift
+        # fingerprint. Assert that indirection really exists.
+        cfg = (REPO / "sysforge/primitives/config.py").read_text()
+        assert 'get("drift_detect")' in cfg
+        helper_resolved = {"pgo_store", "drift_detect"}
         assert reads <= (allow_top | allow_sec), (
             f"toolchain reads not allowlisted: "
             f"{sorted(reads - (allow_top | allow_sec))}")

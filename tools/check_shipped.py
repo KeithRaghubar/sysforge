@@ -105,6 +105,7 @@ _KNOWN_TOP_KEYS: dict[str, set[str]] = {
                        "capture_lsmod_snapshot", "device_kconfig",
                        "kconfig_merge", "build_headers", "build_docs"},
     "toolchain.toml": {"enabled", "compiler", "pgo", "skip_build",
+                       "drift_detect",
                        "pgo_staging", "pgo_staging1", "pgo_staging3",
                        "pgo_store", "min_build_free_gb", "require_multilib",
                        "rebuild_soname_consumers", "reuse_unchanged"},

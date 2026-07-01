@@ -67,6 +67,14 @@ Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to su
 | `[mesa]` | `gallium` | — | Optional explicit gallium-driver override list (non-empty pins the axis, still baseline-enforced; absent → autodetect). Tokens must be valid meson gallium drivers |
 | `[mesa]` | `vulkan` | — | Optional explicit vulkan-driver override list (same semantics) |
 
+### Toolchain drift detection (`toolchain.toml`)
+
+`[toolchain] drift_detect` selects how `update` fingerprints the active toolchain to catch a **same-variant** rebuild (Phase 4.25; see §`update`). Resolved by `config.resolve_drift_detect()` — a missing file/key or an unrecognised value all fall back to the default. The value is the sole input to `build_fingerprint.toolchain_fingerprint(method, cc)`, whose opaque output is both stamped into `build_state.toml`'s `toolchain_fingerprint` at build time and recomputed for the active toolchain at update time; comparison is equality-only, so a method flip self-heals (old stamps stop matching → one fail-safe rebuild re-stamps).
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `drift_detect` | `"fingerprint"` | `"fingerprint"` — `clang_identity`: path + size + nanosecond mtime + `--version` line. Fast, no hashing; a byte-identical reinstall flips mtime → one spurious (fail-safe) advisory. `"content_hash"` — sha256 of the resolved `libLLVM.so` (the real codegen carrier — the driver links it dynamically, so hashing the driver would miss a libLLVM-only rebuild) mixed with the `--version` line; precise but hashes a ~100 MB+ object each check. Falls back to `clang_identity` when no libLLVM resolves (e.g. a gcc variant) |
+
 ### Hardware overlays
 
 The hardware detection stage emits `hardware_profile.toml` which feeds kconfig automation and gates hardware-specific packages in `packages.toml`. Key machine-specific caveats (Ryzen 7 5800X3D + RTX 5070):

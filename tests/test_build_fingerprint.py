@@ -142,6 +142,64 @@ def test_clang_identity_tolerates_mocked_subprocess(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# toolchain_fingerprint / resolve_libllvm (Q9)
+# ---------------------------------------------------------------------------
+
+def test_toolchain_fingerprint_default_method_is_clang_identity():
+    # The "fingerprint" method (default) is exactly clang_identity — fast, no
+    # hashing.
+    assert bf.toolchain_fingerprint("fingerprint", "/usr/bin/clang") == \
+        bf.clang_identity("/usr/bin/clang")
+
+
+def test_toolchain_fingerprint_unknown_method_falls_back_to_clang_identity():
+    assert bf.toolchain_fingerprint("bogus", "/usr/bin/clang") == \
+        bf.clang_identity("/usr/bin/clang")
+
+
+def test_toolchain_fingerprint_content_hash_hashes_libllvm(tmp_path, monkeypatch):
+    # content_hash mode hashes the resolved libLLVM.so (the codegen carrier),
+    # not the driver binary. Different libLLVM bytes → different fingerprint,
+    # even with an identical clang driver / version line.
+    so = tmp_path / "libLLVM.so.18.1"
+    so.write_bytes(b"llvm-bytes-A")
+    monkeypatch.setattr(bf, "resolve_libllvm", lambda cc: so)
+    monkeypatch.setattr(bf, "compiler_version_line", lambda cc: "clang 18")
+    fp_a = bf.toolchain_fingerprint("content_hash", "/usr/bin/clang")
+
+    so.write_bytes(b"llvm-bytes-B-rebuilt-pgo")
+    fp_b = bf.toolchain_fingerprint("content_hash", "/usr/bin/clang")
+    assert fp_a != fp_b
+    assert "content_hash" in fp_a
+
+
+def test_toolchain_fingerprint_content_hash_falls_back_when_no_libllvm(monkeypatch):
+    # A gcc variant (or any host where libLLVM can't be resolved) must not
+    # crash — it degrades to clang_identity.
+    monkeypatch.setattr(bf, "resolve_libllvm", lambda cc: None)
+    fp = bf.toolchain_fingerprint("content_hash", "/usr/bin/gcc")
+    assert fp == bf.clang_identity("/usr/bin/gcc")
+
+
+def test_resolve_libllvm_finds_sibling_lib(tmp_path):
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "lib").mkdir()
+    cc = tmp_path / "bin" / "clang"
+    cc.write_text("#!/bin/sh\n")
+    so = tmp_path / "lib" / "libLLVM.so.18.1"
+    so.write_bytes(b"x")
+    assert bf.resolve_libllvm(str(cc)) == so
+
+
+def test_resolve_libllvm_none_when_absent(tmp_path):
+    cc = tmp_path / "bin" / "clang"
+    cc.parent.mkdir()
+    cc.write_text("#!/bin/sh\n")
+    assert bf.resolve_libllvm(str(cc)) is None
+    assert bf.resolve_libllvm(None) is None
+
+
+# ---------------------------------------------------------------------------
 # cache_key / load_cache / save_cache
 # ---------------------------------------------------------------------------
 

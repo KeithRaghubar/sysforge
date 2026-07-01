@@ -98,6 +98,25 @@ def source_commit(pkgbuild_dir) -> str | None:
     return proc.stdout.strip() or None
 
 
+def compiler_version_line(cc) -> str:
+    """First line of ``<cc> --version``, or ``""`` if unobtainable.
+
+    Never raises — a missing binary, a timeout, or a mocked ``subprocess.run``
+    (which may return a non-str stdout under test) all degrade to ``""``.
+    """
+    if not cc:
+        return ""
+    try:
+        proc = subprocess.run(
+            [str(cc), "--version"], capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+        out = proc.stdout if isinstance(proc.stdout, str) else ""
+        return out.splitlines()[0].strip() if out else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 def clang_identity(cc) -> str:
     """Stable identity string for the compiler at path ``cc``.
 
@@ -115,20 +134,62 @@ def clang_identity(cc) -> str:
         parts.append(f"mtime={st.st_mtime_ns}")
     except OSError:
         pass
-    try:
-        proc = subprocess.run(
-            [str(cc), "--version"], capture_output=True, text=True,
-            timeout=10, check=False,
-        )
-        # Guard the type too: under test, subprocess.run may be mocked and
-        # return a non-str stdout — never let that poison the join.
-        out = proc.stdout if isinstance(proc.stdout, str) else ""
-        first = out.splitlines()[0].strip() if out else ""
-        if first:
-            parts.append(first)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    first = compiler_version_line(cc)
+    if first:
+        parts.append(first)
     return "|".join(p for p in parts if isinstance(p, str))
+
+
+def resolve_libllvm(cc):
+    """Resolve the ``libLLVM.so*`` shared object shipped alongside ``cc``.
+
+    The clang driver at ``<prefix>/bin/clang`` links ``<prefix>/lib/libLLVM.so``
+    dynamically, so libLLVM is the real codegen carrier — a PGO rebuild changes
+    its bytes even when the driver's bytes (and version line) are unchanged.
+    Returns the resolved ``Path`` or ``None`` when no libLLVM is found (e.g. a
+    gcc compiler, or a static/unusual layout). Never raises.
+    """
+    if not cc:
+        return None
+    try:
+        prefix = Path(cc).resolve().parent.parent
+    except (OSError, RuntimeError):
+        return None
+    for libdir in (prefix / "lib", prefix / "lib64"):
+        try:
+            matches = sorted(libdir.glob("libLLVM.so*"))
+        except OSError:
+            continue
+        if matches:
+            return matches[0]
+    return None
+
+
+def toolchain_fingerprint(method, cc) -> str:
+    """Opaque identity string for the active toolchain, selected by ``method``.
+
+    ``method`` mirrors ``[toolchain] drift_detect``:
+
+    - ``"content_hash"`` — sha256 of the resolved ``libLLVM.so`` mixed with the
+      compiler ``--version`` line. Precise: catches a same-version libLLVM PGO
+      rebuild the stat-based method would miss, at the cost of hashing a large
+      shared object. Falls back to ``clang_identity`` when no libLLVM resolves
+      (e.g. a gcc variant) so it never crashes.
+    - ``"fingerprint"`` (default) and any unrecognised value — ``clang_identity``
+      (path + size + mtime + version line). Fast, no hashing.
+
+    The value is opaque and compared only for equality, so a ``drift_detect``
+    flip self-heals: stamped strings simply stop matching the new method's
+    output, and the next rebuild re-stamps.
+    """
+    if method == "content_hash":
+        so = resolve_libllvm(cc)
+        if so is not None:
+            digest = hash_file(so)
+            if digest is not None:
+                return f"content_hash|{digest}|{compiler_version_line(cc)}"
+        return clang_identity(cc)
+    return clang_identity(cc)
 
 
 def compute_fingerprint(components: dict) -> str:

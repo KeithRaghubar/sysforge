@@ -782,6 +782,7 @@ class BuildOptions:
     source: str | None = None  # "aur" | "repo" | "git" | "local" — persisted in build_state
     owner_stage: str | None = None  # e.g. "kernel" — persisted so `sysforge update` skips by default
     toolchain_variant: str | None = None  # "gcc" | "stock_llvm" | "pgo_llvm" — persisted so `sysforge update` can flag drift
+    toolchain_fingerprint: str | None = None  # Q9: opaque active-toolchain identity — persisted so `sysforge update` flags same-variant rebuilds
     cmake_llvm_dir: str | None = None  # force -DLLVM_DIR at a staged libLLVM prefix (toolchain PGO passes 1b/3b/3c)
     pgo_mode: str | None = None  # "record" | "use" — mesa instrumentation PGO (`build --pgo`); no-op for non-mesa pkgbases
     optimization_build_mode: str | None = None  # e.g. "autofdo_kernel" — stage-supplied optimization mode; seeds record_build_mode → -sysforge rename + build_state. mesa --pgo=use sets its own ("pgo_mesa") internally.
@@ -1202,6 +1203,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     source=options.source,
                     owner_stage=options.owner_stage,
                     toolchain_variant=options.toolchain_variant,
+                    toolchain_fingerprint=options.toolchain_fingerprint,
                     reviewed_commit=_reviewed,
                     origin_pkgbase=origin_pkgbase,
                 )
