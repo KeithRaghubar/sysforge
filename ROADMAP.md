@@ -27,6 +27,33 @@ counter, then version) — sort on every add so the list stays scannable.
 
 ## Planned
 
+### Bugs
+
+- **`1.2.0-B11` — `packages` stage fails at makepkg when a pipeline resumes as root.**
+  Root-caused: a pipeline resumed after an interruption/reboot can re-enter with
+  `euid == 0` instead of the primary (non-root) user the design assumes, and
+  `makepkg` refuses to run as root — surfacing as a stage-7 `packages` failure deep in
+  the build rather than a clear diagnostic. Add an `euid == 0` guard in `pre_check` at
+  pipeline entry, before any makepkg-bearing stage (`packages`, `kernel`, `toolchain`),
+  that fails fast with an actionable message (re-run as the invoking user / via `sudo
+  -u`) instead of letting makepkg's own rejection bubble up unexplained. *Priority:
+  medium (confusing failure mode, no data loss, workaround is just re-invoking
+  correctly).*
+
+- **`1.2.0-B12` — Desktop-catalog packages ignore `repo_mode` and always build from
+  source.** `pkg_catalog.DESKTOP_CATALOG` entries (gnome/kde/xfce/mate/cinnamon/lxqt/
+  budgie/cosmic) carry empty `defaults`, so `write_desktop_group`/
+  `expand_package_groups` emit `[[package]]` entries with no `source` field;
+  `packages.py`'s build loop then defaults a missing `source` to `"aur"`
+  (`pkg.get("source", "aur")`, `packages.py:334,411`) and unconditionally routes it
+  through `_build_aur`, bypassing the `resolve_repo_mode`/`effective_mode` check that
+  only guards the `source == "repo"` branch. Result: even with global `repo_mode =
+  "pacman"`, every desktop-environment package — all of which exist in the official
+  repos — gets source-built instead of installed via pacman. Fix by stamping
+  `"source": "repo"` in each `DesktopEntry.defaults` (`pkg_catalog.py:44-167`) so
+  desktop packages honor `repo_mode` like any other repo package. *Priority: high
+  (defeats the entire point of repo mode for the common desktop-install path).*
+
 ### Features
 
 - **`1.2.0-F9` — Respect a PKGBUILD's per-package `options=()` (spun off Q6).** At
@@ -219,6 +246,23 @@ counter, then version) — sort on every add so the list stays scannable.
   handler just needs to avoid swallowing that path). One home for the handler in `main()`; verbs
   keep raising `KeyboardInterrupt` normally. *Priority: medium (quality-of-life; the current
   behaviour looks like a crash on a routine abort).*
+
+- **`1.2.0-F40` — Kernel-stage source tracking & local-rename.** The kernel stage's
+  `source` field (`local`/`aur`/`git`) is effectively inert: `_pkgbuild_path()` runs
+  before `_presync_kernel_source()` so a missing clone can never bootstrap, the
+  `pkgname == pkgbase` requirement forces `source=local` by default, and `git` is a
+  phantom value with no URL field. Decouple *what to pull* (new `upstream_pkgname`,
+  e.g. `linux-zen`) from *what to build/install as* (`pkgname`, defaulting to
+  `upstream_pkgname`), reorder the build entry so source-sync runs first, resolve
+  `local → repo → aur` automatically when `source` is omitted, drop the phantom `git`
+  value, and generalize `patch_package_suffix` into `patch_pkgbase_rename` (with
+  `patch_package_suffix` becoming a thin wrapper) so the kernel stage can patch the
+  cloned upstream's pkgbase to the local `pkgname` (mode=`coexist`) via a new
+  `BuildOptions.rename_pkgbase_to` seam. Pure-local configs (no `upstream_pkgname`,
+  `source=local`) are unaffected — byte-identical to current behavior. Full design in
+  `docs/superpowers/specs/2026-07-01-kernel-source-tracking-design.md` (status:
+  approved, pending implementation plan). *Priority: medium (unlocks tracking
+  upstream kernels like `linux-zen` alongside sysforge's optimized builds).*
 
 ---
 
