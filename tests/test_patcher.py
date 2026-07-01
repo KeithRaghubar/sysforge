@@ -511,6 +511,33 @@ def test_kconfig_apply_injects_merge_and_nconfig_when_interactive(tmp_path):
     assert text.index("merge_config.sh") < text.index("make nconfig")
 
 
+def test_kconfig_apply_pauses_after_merge_before_nconfig(tmp_path):
+    """B6: the interactive pause must be injected *after* the fragment merge and
+    immediately *before* `make nconfig` — the "after all merges, before the
+    editor" position. A stage-level pause before makepkg fired before these
+    in-prepare() merges, which defeated the review."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    patch_kernel_kconfig_apply(pb, interactive=True)
+    text = pb.read_text()
+    assert "read -rp" in text
+    # Ordering: merge → pause → nconfig.
+    assert text.index("merge_config.sh") < text.index("read -rp")
+    assert text.index("read -rp") < text.index("make nconfig")
+    # TTY-guarded and errexit-safe so pipeline / captured-stdin builds don't hang
+    # or abort under makepkg's `set -e`.
+    assert "if [ -t 0 ]; then" in text
+    assert "|| true" in text
+
+
+def test_kconfig_apply_no_pause_when_noninteractive(tmp_path):
+    """No injected nconfig → no injected pause (nothing to pause before)."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    patch_kernel_kconfig_apply(pb, interactive=False)
+    assert "read -rp" not in pb.read_text()
+
+
 def test_kconfig_apply_injects_merge_without_nconfig_when_noninteractive(tmp_path):
     pb = tmp_path / "PKGBUILD.sysforge"
     pb.write_text(_STOCK_PREPARE)
@@ -1147,6 +1174,94 @@ def test_subpackages_htmldocs_neutralization_idempotent(tmp_path):
     once = pb.read_text()
     patch_kernel_subpackages(pb, headers=True, docs=False)
     assert pb.read_text() == once
+
+
+# B7: modern Arch kernel PKGBUILDs add optional subpackages via `pkgname+=(...)`
+# appends, not a single `pkgname=(...)` literal. The old single-array walk missed
+# the append, so `-docs` survived and was still built/installed.
+_APPEND_SUBPKGS = (
+    "pkgbase=linux\n"
+    'pkgname=("$pkgbase")\n'
+    'pkgname+=("$pkgbase-headers")\n'
+    'pkgname+=("$pkgbase-docs")\n'
+)
+
+
+def test_subpackages_drop_docs_from_append(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_APPEND_SUBPKGS)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    text = pb.read_text()
+    # The docs append is removed entirely; headers append + base survive.
+    assert "$pkgbase-docs" not in text
+    assert '"$pkgbase-headers"' in text
+    assert 'pkgname=("$pkgbase")' in text
+    # No empty append left behind.
+    assert "pkgname+=()" not in text
+
+
+def test_subpackages_drop_both_from_appends(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_APPEND_SUBPKGS)
+    patch_kernel_subpackages(pb, headers=False, docs=False)
+    text = pb.read_text()
+    assert "-docs" not in text
+    assert "-headers" not in text
+    assert 'pkgname=("$pkgbase")' in text
+
+
+def test_subpackages_append_idempotent(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_APPEND_SUBPKGS)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    once = pb.read_text()
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    assert pb.read_text() == once
+
+
+def test_subpackages_append_keep_both_is_noop(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_APPEND_SUBPKGS)
+    patch_kernel_subpackages(pb, headers=True, docs=True)
+    assert pb.read_text() == _APPEND_SUBPKGS
+
+
+# B7: a mixed doc-build line (`make all htmldocs`) must lose only the doc goal —
+# commenting the whole line would also drop the real `make all`.
+_BUILD_MIXED_DOCS = (
+    "pkgbase=linux\n"
+    'pkgname=("$pkgbase" "$pkgbase-docs")\n'
+    "build() {\n"
+    "  cd $_srcname\n"
+    "  make all htmldocs\n"
+    "}\n"
+)
+
+
+def test_subpackages_docs_off_strips_mixed_make_line(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BUILD_MIXED_DOCS)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    lines = [ln.strip() for ln in pb.read_text().splitlines()]
+    # The doc goal is gone but the real build survives.
+    assert "make all" in lines
+    assert not any("htmldocs" in ln for ln in lines)
+
+
+def test_subpackages_docs_off_mixed_line_idempotent(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BUILD_MIXED_DOCS)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    once = pb.read_text()
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    assert pb.read_text() == once
+
+
+def test_subpackages_docs_on_keeps_mixed_make_line(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BUILD_MIXED_DOCS)
+    patch_kernel_subpackages(pb, headers=True, docs=True)
+    assert pb.read_text() == _BUILD_MIXED_DOCS
 
 
 # ---------------------------------------------------------------------------

@@ -673,8 +673,10 @@ def patch_kernel_kconfig_apply(patched_path, *, interactive,
 
     Both steps are file-existence guarded, so the default ``base_config =
     "pkgbuild"`` (which writes no base file) is unaffected. When ``interactive``
-    and the PKGBUILD has no interactive target of its own, a ``make nconfig`` is
-    appended so the user reviews the merged config.
+    and the PKGBUILD has no interactive target of its own, a TTY-guarded
+    "press Enter" pause followed by ``make nconfig`` is appended — the pause
+    lands *after* the merges assembled the final ``.config`` and immediately
+    before ``nconfig`` opens (B6), so the operator reviews the merged config.
 
     Skips PKGBUILDs that already cooperate (reference ``merge_config.sh`` or the
     fragment) to avoid double-injection. Modifies ``patched_path`` in place.
@@ -713,6 +715,20 @@ def patch_kernel_kconfig_apply(patched_path, *, interactive,
         f"{indent}fi",
     ]
     if add_nconfig:
+        # B6: pause *here* — after the base seed + fragment merge have assembled
+        # the final .config, immediately before nconfig opens — so the operator
+        # reviews what was actually merged, not a pre-merge plan. A stage-level
+        # pause before makepkg necessarily fires before these in-prepare() merges;
+        # this is the only point that is genuinely "after all merges, before
+        # nconfig". Guarded so it is inert off a TTY (pipeline / captured stdin)
+        # and errexit-safe under makepkg's `set -e` (read returns non-zero on EOF,
+        # swallowed by `|| true`; the `if` yields 0).
+        block.extend([
+            f"{indent}if [ -t 0 ]; then",
+            f"{indent}  read -rp 'sysforge: merged kernel .config assembled — press "
+            f"Enter to review it in nconfig (Ctrl-C aborts)… ' _sf_kconfig_ack || true",
+            f"{indent}fi",
+        ])
         block.append(f"{indent}make nconfig  # sysforge: interactive kconfig review")
     injected = "\n" + "\n".join(block)
     patched_path.write_text(
@@ -881,6 +897,17 @@ _KERNEL_DOC_MAKE_RE = re.compile(
 
 _DOC_DISABLED_PREFIX = "# sysforge(docs off): "
 
+# Mixed doc-build lines (`make all htmldocs`): a whole-line comment would also
+# drop the real build, so instead we strip *only* the doc goals. Matches any
+# make line with args; the callback decides whether a doc goal is present and
+# whether a real goal survives. A bare `*docs` word is a doc goal; VAR=val and
+# -flag tokens are never goals.
+_KERNEL_DOC_MIXED_RE = re.compile(
+    r"^(?P<indent>[ \t]*)make(?P<args>(?:[ \t]+\S+)+)[ \t]*$",
+    re.MULTILINE,
+)
+_DOCS_GOAL_RE = re.compile(r"^\w*docs$")
+
 
 def _neutralize_kernel_doc_build(patched_path) -> None:
     """Comment out standalone kernel doc-build make lines (``make htmldocs`` …).
@@ -899,7 +926,27 @@ def _neutralize_kernel_doc_build(patched_path) -> None:
     def _comment(m: "re.Match") -> str:
         return f"{m.group('indent')}{_DOC_DISABLED_PREFIX}{m.group('cmd').rstrip()}"
 
-    new_text = _KERNEL_DOC_MAKE_RE.sub(_comment, text)
+    def _strip_docs_goals(m: "re.Match") -> str:
+        """Drop only the ``*docs`` goals from a mixed make line, keeping the real
+        goals; leave exclusive-doc lines for the whole-line comment pass."""
+        indent = m.group("indent")
+        args = m.group("args").split()
+        if not any(_DOCS_GOAL_RE.match(t) for t in args):
+            return m.group(0)  # no doc goal — untouched
+        other_goals = [
+            t for t in args
+            if not _DOCS_GOAL_RE.match(t) and "=" not in t and not t.startswith("-")
+        ]
+        if not other_goals:
+            return m.group(0)  # exclusive-docs — handled by _KERNEL_DOC_MAKE_RE
+        kept = [t for t in args if not _DOCS_GOAL_RE.match(t)]
+        return f"{indent}make " + " ".join(kept)
+
+    # Mixed lines first (strip the doc goal in place), then exclusive-doc lines
+    # (comment the whole line). Order matters: the mixed pass leaves exclusive
+    # lines untouched so the comment pass still catches them.
+    new_text = _KERNEL_DOC_MIXED_RE.sub(_strip_docs_goals, text)
+    new_text = _KERNEL_DOC_MAKE_RE.sub(_comment, new_text)
     if new_text != text:
         patched_path.write_text(new_text, encoding="utf-8")
         _log.info(
@@ -947,28 +994,7 @@ def patch_kernel_subpackages(patched_path, *, headers: bool, docs: bool):
         _neutralize_kernel_doc_build(patched_path)
 
     text = patched_path.read_text(encoding="utf-8")
-
-    m = re.search(r"^pkgname=\(", text, re.MULTILINE)
-    if not m:
-        return
-
-    # Walk paren depth from the opening '(' so a multi-line array
-    # (pkgname=(\n  pkg1\n  pkg2\n)) is captured whole.
-    open_idx = text.index("(", m.start())
-    depth = 0
-    i = open_idx
-    while i < len(text):
-        if text[i] == "(":
-            depth += 1
-        elif text[i] == ")":
-            depth -= 1
-            if depth == 0:
-                break
-        i += 1
-    if depth != 0:
-        return  # unbalanced — leave the PKGBUILD untouched
-    close_idx = i
-    inner = text[open_idx + 1:close_idx]
+    original = text
 
     drop_suffixes = []
     if not headers:
@@ -980,22 +1006,65 @@ def patch_kernel_subpackages(patched_path, *, headers: bool, docs: bool):
         val = token.strip().strip('"').strip("'")
         return any(val.endswith(suffix) for suffix in drop_suffixes)
 
-    tokens = re.findall(r"\S+", inner)
-    kept = [t for t in tokens if not _should_drop(t)]
-    if len(kept) == len(tokens):
-        return  # nothing matched — no-op (idempotent re-runs land here)
+    def _match_close(s: str, open_idx: int):
+        """Return the index of the ')' matching the '(' at ``open_idx``, or None."""
+        depth = 0
+        for j in range(open_idx, len(s)):
+            if s[j] == "(":
+                depth += 1
+            elif s[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    return j
+        return None
 
-    if "\n" in inner:
-        # One token per line: recover the array's indentation from the first
-        # indented line so the rewrite preserves the original layout.
-        indent_match = re.search(r"\n([ \t]+)\S", inner)
-        indent = indent_match.group(1) if indent_match else "  "
-        new_inner = "\n" + "\n".join(indent + t for t in kept) + "\n"
-    else:
-        new_inner = " ".join(kept)
+    # Rewrite every `pkgname=(...)` literal AND every `pkgname+=(...)` append —
+    # modern Arch kernel PKGBUILDs add optional subpackages via
+    # `pkgname+=("$pkgbase-docs")`, which a single-array walk misses, so `-docs`
+    # survives and the subpackage is still built/installed (B7). A rewrite shifts
+    # offsets, so re-scan the fresh text after each edit rather than trusting a
+    # stale finditer cursor.
+    changed = True
+    while changed:
+        changed = False
+        for m in re.finditer(r"^pkgname(\+?=)\(", text, re.MULTILINE):
+            is_append = m.group(1) == "+="
+            open_idx = text.index("(", m.start())
+            close_idx = _match_close(text, open_idx)
+            if close_idx is None:
+                continue  # unbalanced — leave this statement untouched
+            inner = text[open_idx + 1:close_idx]
+            tokens = re.findall(r"\S+", inner)
+            kept = [t for t in tokens if not _should_drop(t)]
+            if len(kept) == len(tokens):
+                continue  # nothing to drop in this array (idempotent re-runs)
 
-    new_text = text[:open_idx + 1] + new_inner + text[close_idx:]
-    patched_path.write_text(new_text, encoding="utf-8")
+            if not kept and is_append:
+                # The append existed solely to add now-dropped subpackage(s):
+                # remove the whole `pkgname+=(...)` statement line rather than
+                # leave an empty `pkgname+=()`.
+                line_start = text.rfind("\n", 0, m.start()) + 1
+                end = close_idx + 1
+                if end < len(text) and text[end] == "\n":
+                    end += 1
+                text = text[:line_start] + text[end:]
+            else:
+                if "\n" in inner:
+                    # One token per line: recover the array's indentation from the
+                    # first indented line so the rewrite preserves the layout.
+                    indent_match = re.search(r"\n([ \t]+)\S", inner)
+                    indent = indent_match.group(1) if indent_match else "  "
+                    new_inner = "\n" + "\n".join(indent + t for t in kept) + "\n"
+                else:
+                    new_inner = " ".join(kept)
+                text = text[:open_idx + 1] + new_inner + text[close_idx:]
+            changed = True
+            break  # offsets shifted — restart the scan on the fresh text
+
+    if text == original:
+        return  # nothing matched anywhere — no-op (idempotent re-runs land here)
+
+    patched_path.write_text(text, encoding="utf-8")
     dropped = [s.lstrip("-") for s in drop_suffixes]
     _log.info(
         f"Dropped kernel subpackage(s) from pkgname: {', '.join(dropped)} "

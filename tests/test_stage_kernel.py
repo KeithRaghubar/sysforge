@@ -18,7 +18,6 @@ from sysforge.pipeline.stages.kernel import (
     _gate_fdo_llvm,
     _load_hardware_kconfig,
     _load_kernel_config,
-    _pause_before_kconfig,
     _pkgbuild_path,
     _resolve_fdo,
     _validate_manual_kconfig,
@@ -2505,32 +2504,8 @@ def test_write_base_config_pkgbuild_default_writes_nothing(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# F2: pause before interactive kconfig
+# B6: the pre-nconfig pause now lives inside the patched PKGBUILD's prepare()
+# (pkgbuild_patcher.patch_kernel_kconfig_apply), after the merges and right
+# before `make nconfig` — see tests/test_patcher.py. The stage no longer emits
+# a pre-makepkg pause, which fired before the in-prepare() merges.
 # ---------------------------------------------------------------------------
-
-
-class TestPauseBeforeKconfig:
-    def _spy(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(
-            "sysforge.primitives.prompt.prompt_text",
-            lambda *a, **k: calls.append((a, k)) or "",
-        )
-        return calls
-
-    def test_interactive_build_prompts(self, monkeypatch):
-        calls = self._spy(monkeypatch)
-        _pause_before_kconfig(interactive=True, dry_run=False)
-        assert len(calls) == 1
-        # EOF-safe: an empty default keeps captured-stdin/no-TTY paths flowing.
-        assert calls[0][1].get("eof_default") == ""
-
-    def test_non_interactive_does_not_prompt(self, monkeypatch):
-        calls = self._spy(monkeypatch)
-        _pause_before_kconfig(interactive=False, dry_run=False)
-        assert calls == []
-
-    def test_dry_run_does_not_prompt(self, monkeypatch):
-        calls = self._spy(monkeypatch)
-        _pause_before_kconfig(interactive=True, dry_run=True)
-        assert calls == []

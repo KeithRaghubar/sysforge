@@ -210,21 +210,6 @@ counter, then version) — sort on every add so the list stays scannable.
 
 ## Bugs
 
-- **`1.2.0-B6` — Kernel stage pause fires before the merges, not before `nconfig` (F25
-  regression).** F25 was supposed to pause for interactive review immediately before the
-  kconfig editor (`nconfig`) opens; in practice the pause happens *earlier*, before any of the
-  config merges run, so the user confirms before the config is even assembled. The
-  pause-before-kconfig helper is positioned at the wrong point in the kernel stage sequence —
-  move it to immediately precede the `nconfig` invocation, after all merges. *Priority: medium
-  (the pause exists but guards the wrong step, defeating its purpose).*
-
-- **`1.2.0-B7` — Kernel stage builds and installs docs despite docs being disabled.** With the
-  kernel docs subpackage toggle set to disabled, the stage still builds and installs kernel
-  docs. The `_resolve_subpackages` / `pkgbuild_patcher.patch_kernel_subpackages` path is not
-  actually suppressing the docs build/package output (note the Gate-1 DKMS warning is expected
-  to remain when *headers* are disabled — this is specifically the docs subpackage). *Priority:
-  medium (wasted build time + unwanted install; the toggle is silently ineffective).*
-
 - **`1.2.0-B8` — Kernel and toolchain stages don't pull latest source before building.** The
   kernel stage built without first fetching the newest upstream revision, producing a stale
   build. Both the kernel and toolchain stages should always sync to latest before building,

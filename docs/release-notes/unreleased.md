@@ -136,6 +136,20 @@ PKGBUILD review trust gate — on top of a large modular refactor.
   flag suppresses the alternate-screen switch entirely) and parses `$PAGER` as a
   shell word list, so `PAGER="less -RF"` is honored instead of being treated as
   one un-spawnable token.
+- Kernel interactive-review pause now fires at the right moment (`1.2.0-B6`) — it
+  moved out of the stage (where it ran before `makepkg`, i.e. before the base-seed
+  and fragment merges that assemble the final `.config` inside `prepare()`) and into
+  the patched PKGBUILD's `prepare()`, immediately after those merges and just before
+  `make nconfig` opens. The operator now confirms against the *merged* config instead
+  of a pre-merge plan. The injected pause is TTY-guarded and errexit-safe, so
+  unattended / no-TTY / dry-run builds are unaffected.
+- Disabling the kernel `-docs` subpackage now actually suppresses it (`1.2.0-B7`) —
+  `patch_kernel_subpackages` also rewrites `pkgname+=(...)` appends (the form modern
+  Arch kernel PKGBUILDs use to add optional subpackages), so a `-docs` added via an
+  append is no longer missed and left to build and install. Doc-build neutralization
+  additionally handles a mixed `make all htmldocs` line by stripping only the `*docs`
+  goal (→ `make all`) instead of skipping the line, so the doc compile is dropped
+  without dropping the real build.
 - Various dep-resolution, path-resolution, VM-testing, and build fixes.
 
 ## Security
