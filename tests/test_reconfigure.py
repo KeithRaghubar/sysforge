@@ -164,6 +164,20 @@ def test_step_desktop_no_selection_is_noop(tmp_path):
     assert pkg_path.read_text() == before
 
 
+def test_step_desktop_skips_prompt_when_already_configured(tmp_path):
+    """Configure stage already wrote [group.gnome]; reconfigure must not re-prompt."""
+    pkg_path = make_packages_toml(tmp_path, _BASIC_TOML + '\n[group.gnome]\npackages = ["gdm"]\n')
+    config = {"paths": {"packages": str(pkg_path)}}
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.resolve_packages_path",
+        return_value=pkg_path,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.select_desktop",
+    ) as mock_select:
+        _step_desktop(config, None, make_options(), "vi")
+    mock_select.assert_not_called()
+
+
 def test_step_desktop_dry_run_does_not_write(tmp_path):
     pkg_path = make_packages_toml(tmp_path, _BASIC_TOML)
     before = pkg_path.read_text()

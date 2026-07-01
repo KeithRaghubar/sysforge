@@ -63,7 +63,11 @@ from sysforge.primitives.editor import (
     resolve_editor as _resolve_editor,
     run_tty_argv as _run_editor_argv,
 )
-from sysforge.primitives.pkg_catalog import select_desktop, write_desktop_group
+from sysforge.primitives.pkg_catalog import (
+    DESKTOP_CATALOG,
+    select_desktop,
+    write_desktop_group,
+)
 from sysforge.primitives.provides_lookup import files_db_present, sync_files_db
 from sysforge.primitives.prompt import (
     is_interactive as _interactive,
@@ -893,6 +897,23 @@ def _step_build_mode(config, state, options, editor: str) -> str:
 # Step: desktop environment
 # ---------------------------------------------------------------------------
 
+def _existing_desktop_group(pkg_path: Path) -> str | None:
+    """Return the catalog key of an already-written ``[group.<de>]`` table in
+    ``pkg_path``, or ``None``. Lets :func:`_step_desktop` skip re-prompting
+    when the configure stage already wrote a desktop selection."""
+    if not pkg_path.exists():
+        return None
+    try:
+        with pkg_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    for key in data.get("group", {}):
+        if key in DESKTOP_CATALOG:
+            return key
+    return None
+
+
 def _step_desktop(config, state, options, editor: str) -> str:  # noqa: ARG001
     """Offer a curated desktop-environment package group and write it as a
     ``[group.<de>]`` table into packages.toml. Reuses the shared selection
@@ -900,6 +921,11 @@ def _step_desktop(config, state, options, editor: str) -> str:  # noqa: ARG001
     _log.ui("─── Desktop environment ─────────────────────────────")
 
     pkg_path = resolve_packages_path(config)
+    existing = _existing_desktop_group(pkg_path)
+    if existing:
+        _log.ui(f"  [group.{existing}] already configured in {pkg_path} — skipping prompt.")
+        return editor
+
     choice = select_desktop(interactive=_interactive(), preselected=None)
     if not choice:
         _log.ui("  No desktop environment selected.")
