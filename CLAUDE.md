@@ -126,9 +126,11 @@ writer/injector/loop. Mechanism lives in the cited DESIGN.md section.
   only (compiler stays `has_hardcoded_gcc`). §`pkgbuild_patcher.py`.
 - **Optimization rename/store**: gate `profile.is_optimized_build_mode`; rename
   `pkgbuild_patcher.patch_package_suffix(mode=conflict|coexist)` (mode via
-  `profile.rename_mode_for_build_mode`), validated G3 (renamed split members keep renamed
-  `package_<name>()`); stores via `makepkg_pgo.resolve_method_store`. §CLI Verb Framework /
-  §Flag-Profile.
+  `profile.rename_mode_for_build_mode`) — a thin wrapper over `patch_pkgbase_rename`
+  (arbitrary-pkgbase rename; kernel local-rename via `BuildOptions.rename_pkgbase_to`,
+  applied before the suffix so layers stack), validated G3 (renamed split members keep
+  renamed `package_<name>()`); stores via `makepkg_pgo.resolve_method_store`. §CLI Verb
+  Framework / §Flag-Profile / §`pkgbuild_patcher.py`.
 - **Instrumentation PGO**: `primitives/mesa_pgo.py`. `--pgo` works on any package via the
   `compiler_flags_extra` seam (no `-Db_pgo` patch); `record` keeps stock name, `use` earns
   `-sysforge`. Per-package stores (mesa keeps back-compat `pgo-mesa`). Durable no-`--pgo` reuse via

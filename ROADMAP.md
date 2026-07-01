@@ -251,33 +251,21 @@ counter, then version) — sort on every add so the list stays scannable.
   keep raising `KeyboardInterrupt` normally. *Priority: medium (quality-of-life; the current
   behaviour looks like a crash on a routine abort).*
 
-- **`1.2.0-F40` — Kernel-stage source tracking & local-rename.** The kernel stage's
-  `source` field (`local`/`aur`/`git`) is effectively inert: `_pkgbuild_path()` runs
-  before `_presync_kernel_source()` so a missing clone can never bootstrap, the
-  `pkgname == pkgbase` requirement forces `source=local` by default, and `git` is a
-  phantom value with no URL field. Decouple *what to pull* (new `upstream_pkgname`,
-  e.g. `linux-zen`) from *what to build/install as* (`pkgname`, defaulting to
-  `upstream_pkgname`), reorder the build entry so source-sync runs first, resolve
-  `local → repo → aur` automatically when `source` is omitted, drop the phantom `git`
-  value, and generalize `patch_package_suffix` into `patch_pkgbase_rename` (with
-  `patch_package_suffix` becoming a thin wrapper) so the kernel stage can patch the
-  cloned upstream's pkgbase to the local `pkgname` (mode=`coexist`) via a new
-  `BuildOptions.rename_pkgbase_to` seam. Pure-local configs (no `upstream_pkgname`,
-  `source=local`) are unaffected — byte-identical to current behavior. Full design in
-  `docs/superpowers/specs/2026-07-01-kernel-source-tracking-design.md` (status:
-  approved, pending implementation plan). *Priority: medium (unlocks tracking
-  upstream kernels like `linux-zen` alongside sysforge's optimized builds).*
-
----
-
-## Open questions
-
-- **`1.2.0-Q10` — Can repoctl be restricted to versions present in the official repos?**
-  When pulling package versions via repoctl, builds often pick up versions newer than what
-  `pacman` itself would install — the suspicion is that it sees `[testing]`/`[*-testing]`
-  versions. *Open question: is there a way to constrain the lookup to the stable official
-  repos only (filter by enabled-but-non-testing repos, or compare against `pacman`'s
-  resolved candidate), and is this a repoctl-config matter or a sysforge-side filter?*
+- **`1.2.0-F41` — Pin `source=repo` checkouts to the stable sync-DB version (resolves Q10).**
+  Root-caused (2026-07-01): `pkgctl repo clone` (`build_prep.pkgctl_checkout`) checks out the
+  packaging repo's `main` branch, which Arch bumps when a package is *released to testing* —
+  so repo-source builds routinely build a version newer than what `pacman` would install.
+  Not a tooling-config matter (no "stable only" clone knob exists); the fix is sysforge-side:
+  after clone/fetch of a `source=repo` package, resolve pacman's own candidate via the
+  existing `pacman.get_pacman_sync_version()` (first-repo-wins, mirrors pacman resolution)
+  and pin the checkout to the matching release tag — `pkgctl repo switch <version>`
+  translates pacman version format (epoch included) to the tag. Design notes: the source-sync
+  scheduler's `STATUS_DIVERGED` hard-reset-to-FETCH_HEAD and `update` Phase 3's
+  PKGBUILD-version compare both currently assume the checkout tracks `main` — the pin must
+  thread through the scheduler (one home), not become a parallel checkout path; VCS (`-git`)
+  and AUR sources are unaffected. Consider an opt-out (e.g. `[build] repo_track = "main"`)
+  for users who *want* testing-track builds. *Priority: medium (repo-source builds silently
+  outrun the stable repos — the built version can be untested against the installed system).*
 
 ---
 

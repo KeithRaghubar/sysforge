@@ -135,18 +135,21 @@ Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysf
 **`kernel.toml` structure:**
 
 ```toml
-pkgname          = "linux-sysforge"  # shipped default; must match the PKGBUILD pkgbase
+pkgname          = "linux-sysforge"  # LOCAL name to build/install as (defaults to upstream_pkgname)
+upstream_pkgname = "linux-zen"   # optional: upstream package to pull/track (clone dir + sync target)
 pkgbuild_src_dir = "~/src"       # parent dir; PKGBUILD is at <pkgbuild_src_dir>/<srcdir>/PKGBUILD
-srcdir           = "linux"       # source directory name if different from pkgname (optional)
+srcdir           = "linux"       # source dir override (default: upstream_pkgname, else pkgname)
 bootloader       = "systemd-boot"    # systemd-boot | grub | none  (default: systemd-boot)
 interactive      = true              # default: true — interactive kconfig (make nconfig)
 compiler         = "llvm"            # "gcc" | "llvm" — kernel-stage compiler (optional)
 base_config      = "pkgbuild"        # "pkgbuild" (default) | "running" | <path> — base .config source
 build_headers    = true              # default: true — build the -headers subpackage (DKMS needs it)
 build_docs       = false             # default: false — drop the -docs subpackage from the build
-source           = "local"           # "local" (default) | "aur" | "git"
+source           = "local"           # "local" | "repo" | "aur"; omitted → auto-resolve
                                      # "local" = hand-maintained PKGBUILD, no remote sync.
-                                     # "aur"/"git" = PKGBUILD is a clone of an AUR/git remote.
+                                     # "repo"/"aur" = clone/fetch through the source-sync
+                                     # scheduler. ("git" was a phantom value — no URL field
+                                     # ever existed — and now errors clearly.)
 
 # Boot safety (defaults shown; see §Kernel stage boot-safety):
 require_fallback_kernel = true       # refuse to install a custom kernel as the only kernel
@@ -161,7 +164,16 @@ option = "CONFIG_HZ_1000"        # must match CONFIG_[A-Z0-9_]+
 value  = "y"                     # y | m | n | non-empty string
 ```
 
-`srcdir` is needed when the PKGBUILD directory name differs from `pkgname` (e.g. `pkgname = "linux-sysforge"` but the repo is cloned as `~/builds/linux`). Defaults to `pkgname` if omitted.
+`srcdir` is needed when the PKGBUILD directory name differs from the tracked name (e.g. `pkgname = "linux-sysforge"` but the repo is cloned as `~/builds/linux`). Resolution: `srcdir` → `upstream_pkgname` → `pkgname`, first set wins (`_srcdir_path`).
+
+**Source tracking & local-rename (F40).** `upstream_pkgname` decouples *what to pull* from *what to build/install as*. Two modes fall out of the schema:
+
+- **Pure-local** (default): `upstream_pkgname` unset, `source = "local"`, `pkgname` names the hand-maintained tree — no sync, no rename; byte-identical to the pre-F40 behavior.
+- **Track-upstream:** `upstream_pkgname = "linux-zen"` (+ optional distinct `pkgname = "linux-mine"`) — the stage clones/fetches `linux-zen` into `<pkgbuild_src_dir>/linux-zen`, and when `pkgname` differs it threads `BuildOptions.rename_pkgbase_to = pkgname` into the build; `makepkg_wrapper._run_build` applies `pkgbuild_patcher.patch_pkgbase_rename(mode="coexist")` to the patched PKGBUILD so the build installs *alongside* the official package. The local rename is applied **before** the optional FDO `-sysforge` suffix, so the layers stack orthogonally (`linux-zen` → `linux-mine` → `linux-mine-sysforge`); the rename dict that rides to `build_state` keeps `origin_pkgbase = <upstream_pkgname>` so `sysforge update` still source-syncs the upstream tree. With `pkgname` omitted (defaults to `upstream_pkgname`) there is no rename and the repo-collision check is the safety net against shadowing the official package.
+
+**Name resolution** is `_resolve_names` (one home): `upstream_pkgname` or `None`, `pkgname` defaulting to `upstream_pkgname`; neither set is an error. **Source resolution** is `_resolve_source(kernel_cfg, srcdir_path)`: an explicit `source` is honored (`git` errors — it was a phantom value with no URL to clone from); when omitted it auto-resolves `local → repo → aur` — an existing non-git tree is `local` (never clobbered by a re-clone), an existing git clone is `repo` (the scheduler's generic fetch rebases via the tree's own origin, skipping the AUR RPC), and a missing tree picks its clone remote via `aur.is_repo_package` on the tracked name (sync DB hit → `repo`/pkgctl, else `aur`). The build entry runs the source sync **before** requiring the PKGBUILD path, so a missing tree is bootstrapped by the scheduler's clone-if-missing path instead of aborting with "clone it first".
+
+**The `-sysforge` collapse (intentional):** `patch_package_suffix`'s idempotency guard means a `pkgname` already ending in `-sysforge` gets no second suffix from an optimized (AutoFDO/Propeller `use`) build — the optimized build then *replaces* the prior build under the same name rather than coexisting. To keep an optimized and a stock build installed side-by-side, choose a `pkgname` that does not end in `-sysforge`; documented inline in the shipped `kernel.toml`.
 
 **Kernel-stage compiler override:** `compiler = "gcc" | "llvm"` is independent of the toolchain stage. A system that keeps gcc system-wide can still build the kernel with LLVM (or vice versa). Resolution order: `--compiler` CLI flag > `kernel.toml compiler` > toolchain-stage pipeline state (cc/cxx set by stage 6) > profile defaults. When set to LLVM, the standard `LLVM=1 LLVM_IAS=1` env vars are injected by `makepkg_wrapper` automatically — no extra PKGBUILD changes needed. Note: `compiler = "llvm"` builds the kernel *with* clang but does **not** apply the toolchain's PGO profdata — that profdata trains the clang binary, not the linux target. The kernel's own profile-guided path is sample-based AutoFDO/Propeller (`--autofdo`, LLVM-only), described under *Sample-based kernel FDO* below — a distinct mechanism from the toolchain PGO.
 
@@ -177,7 +189,7 @@ value  = "y"                     # y | m | n | non-empty string
 
 **Bootloader-installed preflight.** Stage entry probes for systemd-boot (`/boot/loader/loader.conf`) and grub (`/boot/grub/grub.cfg`); falls back to `pacman -Qq systemd grub` when neither marker is present. When the resolved `bootloader` (≠ `none`) isn't in the detected set, a single non-fatal WARN surfaces the mismatch *before* the build runs — so a user on a grub-only system who left the default `systemd-boot` configured gets an early signal instead of a post-install `bootctl update` failure. False negatives on exotic setups (UKI, custom loaders) don't block the build; the post-install branch still tolerates the bootloader-update failure.
 
-**Pkgname/pkgbase consistency check.** After the source sync, the stage static-parses the PKGBUILD via `parse_pkgbuild` and confirms the parsed `pkgbase` (or `pkgname` for non-split packages) matches `kernel.toml pkgname`. A typo or a cloned PKGBUILD whose `pkgbase` has drifted from the directory name raises a clear `RuntimeError` at stage entry instead of failing late at `makepkg --install` after a multi-hour build.
+**Pkgname/pkgbase consistency check.** After the source sync, the stage static-parses the PKGBUILD via `parse_pkgbuild` and confirms the parsed `pkgbase` (or `pkgname` for non-split packages) matches the *pre-rename* name of the tree — `upstream_pkgname` when tracking an upstream, else `pkgname` (the local rename is a patch applied later in `makepkg_wrapper`, so the on-disk PKGBUILD always carries the upstream name). A typo or a cloned PKGBUILD whose `pkgbase` has drifted from the directory name raises a clear `RuntimeError` at stage entry instead of failing late at `makepkg --install` after a multi-hour build.
 
 **Pkgname repo-collision check.** Immediately after the consistency check, the stage tests `kernel.toml pkgname` against the pacman sync DBs via `aur.is_repo_package` (one `pacman -Si`). A custom kernel should carry a unique name; if the name matches an official package (e.g. `linux`, `linux-lts`), building and installing it would overwrite the stock package on `pacman -U`. Interactive runs prompt for confirmation (`prompt_choice`, default no); unattended runs (`--non-interactive` or no TTY) abort; `--dry-run` warns without prompting.
 
@@ -207,7 +219,7 @@ Note: when other verbs (`sysforge build`, `sysforge update`) build a kernel PKGB
 
 **Source sync via the scheduler:**
 
-The kernel stage routes its source refresh through `source_sync.get_scheduler().request(SyncRequest(..., source=<kernel.toml source>))` ahead of the build, the same path as the toolchain stage. With the default `source = "local"`, the scheduler short-circuits (no RPC, no clone, no fetch) — only `--cleansrc` / `--cleansrc-force` would attempt a purge, but a hand-maintained tree has no remote to re-clone from, so users on the `local` path leave cleansrc unset. For `source = "aur"` / `"git"`, the normal sync runs: `--cleansrc` purges and re-clones (refusing on dirty/ahead/no-upstream clones); `--cleansrc-force` overrides that guard; cleansrc forces a sync even when `--no-update` is also set. `STATUS_FAILED` / `STATUS_RATE_LIMITED` / `STATUS_PURGE_REFUSED` raise.
+The kernel stage routes its source refresh through `source_sync.get_scheduler().request(SyncRequest(..., source=<resolved source>))` ahead of the build, the same path as the toolchain stage — and (F40) *before* `_pkgbuild_path` requires the PKGBUILD, so a missing tree is bootstrapped by the scheduler's clone-if-missing path. With `source = "local"` (explicit or auto-resolved), the scheduler short-circuits (no RPC, no clone, no fetch) — only `--cleansrc` / `--cleansrc-force` would attempt a purge, but a hand-maintained tree has no remote to re-clone from, so users on the `local` path leave cleansrc unset. For `source = "repo"` / `"aur"`, the normal sync runs: `--cleansrc` purges and re-clones (refusing on dirty/ahead/no-upstream clones); `--cleansrc-force` overrides that guard; cleansrc forces a sync even when `--no-update` is also set. `STATUS_FAILED` / `STATUS_RATE_LIMITED` / `STATUS_PURGE_REFUSED` raise.
 
 `STATUS_DIVERGED` (upstream advanced but the local tree can't fast-forward — local commits or a dirty tree) gets stronger handling in the *kernel* stage than the plain warning the other verbs use, because building a kernel off stale or hand-edited source is exactly the easy-to-miss footgun. `_warn_and_confirm_diverged` enriches the WARN with ahead/behind counts (`classify_head_vs_upstream`) so the "upstream has new commits but the local repo is dirty" case is spelled out, then **gates the build**: an interactive run must confirm (`prompt_choice`, default no), and an unattended run (`--non-interactive` or no TTY) aborts. Either decline raises, leaving nothing built (the sync runs before the sentinel). `--cleansrc` to discard local edits is the suggested escape hatch.
 

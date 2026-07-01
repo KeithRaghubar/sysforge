@@ -187,7 +187,7 @@ def _resolve_bootloader(kernel_cfg, options):
     return cli or cfg
 
 
-_VALID_SOURCES = ("local", "aur", "git")
+_VALID_SOURCES = ("local", "repo", "aur")
 
 
 def _probe_installed_bootloader():
@@ -302,15 +302,65 @@ def _check_pkgname_repo_collision(pkgname, options):
         )
 
 
-def _resolve_source(kernel_cfg):
-    """Resolve the kernel PKGBUILD source classification; defaults to ``local``."""
-    src = kernel_cfg.get("source", "local")
-    if src not in _VALID_SOURCES:
+def _resolve_names(kernel_cfg):
+    """Resolve ``(upstream_pkgname, pkgname)`` from kernel.toml (F40).
+
+    ``upstream_pkgname`` is what sysforge pulls/tracks (e.g. ``linux-zen``);
+    ``pkgname`` is the local name it builds/installs as, defaulting to
+    ``upstream_pkgname`` when omitted. Pure-local configs set only ``pkgname``
+    (upstream is None → no sync remote, no rename). At least one must be set.
+    """
+    upstream = kernel_cfg.get("upstream_pkgname") or None
+    pkgname = kernel_cfg.get("pkgname") or upstream
+    if not pkgname:
         raise RuntimeError(
-            f"[KERNEL] invalid kernel.toml source {src!r}: "
-            f"must be one of {_VALID_SOURCES}"
+            "[KERNEL] kernel.toml is missing pkgname (set pkgname, or "
+            "upstream_pkgname to track an upstream kernel)."
         )
-    return src
+    return upstream, pkgname
+
+
+def _resolve_source(kernel_cfg, srcdir_path):
+    """Resolve the kernel PKGBUILD source classification (F40).
+
+    Explicit ``source`` (``local`` | ``repo`` | ``aur``) is honored — ``git``
+    was a phantom value (no URL field ever existed) and now yields a clear
+    error. When omitted, auto-resolve ``local → repo → aur``:
+
+    * ``srcdir_path`` exists without ``.git`` → hand-maintained tree →
+      ``local`` (never clobbered by a re-clone).
+    * ``srcdir_path`` is an existing git clone → ``repo``: the scheduler's
+      generic fetch path rebases via the tree's own origin (and skips the
+      AUR RPC, which is wrong for non-AUR upstreams).
+    * ``srcdir_path`` missing → pick the clone remote by whether the tracked
+      name is in a pacman sync DB (the same probe the pkgname-collision
+      check uses): in a repo → ``repo`` (pkgctl), else → ``aur``.
+    """
+    src = kernel_cfg.get("source")
+    if src is not None:
+        if src == "git":
+            raise RuntimeError(
+                "[KERNEL] kernel.toml source = \"git\" is no longer supported "
+                "(it never had a URL to clone from). Use \"local\", \"repo\", "
+                "or \"aur\" — or omit source to auto-resolve."
+            )
+        if src not in _VALID_SOURCES:
+            raise RuntimeError(
+                f"[KERNEL] invalid kernel.toml source {src!r}: "
+                f"must be one of {_VALID_SOURCES}"
+            )
+        return src
+
+    srcdir_path = Path(srcdir_path)
+    if srcdir_path.is_dir():
+        if (srcdir_path / ".git").exists():
+            return "repo"
+        return "local"
+
+    from sysforge.primitives.aur import is_repo_package
+    upstream, pkgname = _resolve_names(kernel_cfg)
+    tracked = upstream or pkgname
+    return "repo" if is_repo_package(tracked) else "aur"
 
 
 def _presync_kernel_source(pkgbuild_dir, options, state_dir, source="local"):
@@ -557,14 +607,13 @@ def _load_kernel_config():
     return data
 
 
-def _pkgbuild_path(kernel_cfg):
-    """
-    Resolve the PKGBUILD for the configured kernel package.
-    Returns Path to the PKGBUILD file.
+def _srcdir_path(kernel_cfg):
+    """Resolve the kernel PKGBUILD *directory* (no existence requirement).
 
-    Looks for <pkgbuild_src_dir>/<srcdir>/PKGBUILD where srcdir defaults to pkgname
-    when not specified. srcdir allows the source directory name to differ from
-    pkgname (e.g. pkgname="linux-custom", srcdir="linux").
+    Split out of :func:`_pkgbuild_path` so the build entry can hand the dir to
+    the source-sync scheduler *before* requiring a PKGBUILD — a missing tree is
+    then bootstrapped by the scheduler's clone-if-missing path (F40) instead of
+    aborting here.
     """
     # KernelStage.run() stamps the effective value (kernel.toml override, else
     # the global [paths] pkgbuild_src_dir) into kernel_cfg before this is called,
@@ -577,13 +626,23 @@ def _pkgbuild_path(kernel_cfg):
             "(per-kernel override) to the directory that contains your kernel PKGBUILD "
             'directory (e.g. "~/src" if the PKGBUILD is at ~/src/linux-custom/PKGBUILD).'
         )
-    pkgname = kernel_cfg.get("pkgname")
-    if not pkgname:
-        raise RuntimeError("[KERNEL] kernel.toml is missing pkgname.")
+    upstream, pkgname = _resolve_names(kernel_cfg)
+    srcdir = kernel_cfg.get("srcdir") or upstream or pkgname
+    return Path(pkgbuild_src_dir).expanduser() / srcdir
 
-    srcdir = kernel_cfg.get("srcdir") or pkgname
 
-    srcdir_path = Path(pkgbuild_src_dir).expanduser() / srcdir
+def _pkgbuild_path(kernel_cfg):
+    """
+    Resolve the PKGBUILD for the configured kernel package.
+    Returns Path to the PKGBUILD file.
+
+    Looks for <pkgbuild_src_dir>/<srcdir>/PKGBUILD where srcdir resolves as
+    srcdir → upstream_pkgname → pkgname (first set wins): the explicit
+    override, else the tracked upstream's name, else the local name. srcdir
+    allows the source directory name to differ from either (e.g.
+    pkgname="linux-custom", srcdir="linux").
+    """
+    srcdir_path = _srcdir_path(kernel_cfg)
     candidate = srcdir_path / "PKGBUILD"
     if not candidate.exists():
         if srcdir_path.is_dir():
@@ -1337,9 +1396,13 @@ class KernelStage(Stage):
         if eff_src_dir:
             kernel_cfg["pkgbuild_src_dir"] = eff_src_dir
 
-        pkgname = kernel_cfg.get("pkgname", "unknown")
+        # F40: decouple what to pull (upstream_pkgname) from what to build/
+        # install as (pkgname); source auto-resolves local → repo → aur when
+        # omitted, keyed off the (possibly not-yet-cloned) source dir.
+        upstream_pkgname, pkgname = _resolve_names(kernel_cfg)
         bootloader = _resolve_bootloader(kernel_cfg, options)
-        source = _resolve_source(kernel_cfg)
+        srcdir_path = _srcdir_path(kernel_cfg)
+        source = _resolve_source(kernel_cfg, srcdir_path)
 
         # Hoisted once: shared by the drift check below, the compiler nudge
         # downstream, and the BuildState.record() variant stamp later in run.
@@ -1422,14 +1485,19 @@ class KernelStage(Stage):
         # Pre-sync the kernel PKGBUILD tree through SourceSyncScheduler. This
         # is the only allowed code path for refreshing sources (CLAUDE.md #3).
         # Running it here (vs. relying on makepkg_wrapper's internal sync)
-        # makes --cleansrc work even when --no-update is also set.
+        # makes --cleansrc work even when --no-update is also set. Sync runs
+        # BEFORE the PKGBUILD path is required (F40) so a missing tree is
+        # bootstrapped by the scheduler's clone-if-missing path instead of
+        # aborting with "clone it first".
+        synced = _presync_kernel_source(srcdir_path, options, state_dir, source=source)
         pkgbuild = _pkgbuild_path(kernel_cfg)
-        synced = _presync_kernel_source(pkgbuild.parent, options, state_dir, source=source)
 
-        # A3: static-parse the freshly-synced PKGBUILD and confirm pkgbase
-        # matches kernel.toml. Catches typos before makepkg --install fails
-        # late after a multi-hour build.
-        _validate_pkgname_matches_pkgbuild(pkgbuild, pkgname)
+        # A3: static-parse the freshly-synced PKGBUILD and confirm its pkgbase
+        # matches the *pre-rename* name of the tree — upstream_pkgname when
+        # tracking an upstream, else the local pkgname. Catches a mis-cloned/
+        # typo'd tree before makepkg --install fails late after a multi-hour
+        # build; the local rename is a patch applied later in makepkg_wrapper.
+        _validate_pkgname_matches_pkgbuild(pkgbuild, upstream_pkgname or pkgname)
 
         # A4: warn + confirm if the *installed* kernel name shadows a pacman repo
         # package (would overwrite the official package on install). For an FDO
@@ -1640,6 +1708,15 @@ class KernelStage(Stage):
                         # -sysforge coexist rename. Both None for record/no-FDO.
                         extra_env=fdo_env,
                         optimization_build_mode=fdo_opt_build_mode,
+                        # F40 local-rename: patch the cloned upstream's pkgbase
+                        # to the local pkgname (coexist) so the build installs
+                        # alongside the official package. None when the names
+                        # match (or pure-local) → no patch, upstream name.
+                        rename_pkgbase_to=(
+                            pkgname
+                            if upstream_pkgname and pkgname != upstream_pkgname
+                            else None
+                        ),
                     ))
                 except AlreadyBuilt:
                     _log.info(

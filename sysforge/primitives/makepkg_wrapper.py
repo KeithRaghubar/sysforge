@@ -93,6 +93,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_mesa_drivers,
     patch_noninteractive_kconfig,
     patch_package_suffix,
+    patch_pkgbase_rename,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
     validate_patched_meson_pkgbuild,
@@ -427,7 +428,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                state_dir: Path | None = None,
                toolchain_variant: str | None = None,
                cmake_llvm_dir: str | None = None,
-               optimization_build_mode: str | None = None):
+               optimization_build_mode: str | None = None,
+               rename_pkgbase_to: str | None = None):
     """
     Emit makepkg.conf and invoke makepkg, handling build failures.
 
@@ -537,6 +539,20 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     # for build_state (renamed names + origin_pkgbase). Applied last so it sees the
     # fully-patched PKGBUILD and validate_patched_pkgbuild can prove every non-rename
     # global survived.
+    # Kernel local-rename (F40): patch the cloned upstream's pkgbase to the
+    # configured local pkgname (linux-zen → linux-mine) so the build coexists
+    # with the official package. Applied BEFORE the optional -sysforge suffix so
+    # the layers stack orthogonally (linux-zen → linux-mine → linux-mine-sysforge).
+    local_rename = None
+    if rename_pkgbase_to:
+        local_rename = patch_pkgbase_rename(
+            pkgbuild_path, rename_pkgbase_to, mode="coexist"
+        )
+        if local_rename:
+            validate_patched_pkgbuild(
+                original_pkgbuild_path, pkgbuild_path, rename=local_rename
+            )
+
     rename = None
     if optimization_build_mode and is_optimized_build_mode(optimization_build_mode):
         # Conflict vs coexist is policy-per-build_mode (one home:
@@ -734,10 +750,18 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             else:
                 _build_log.warn(f"Build failed — leaving patched PKGBUILD in place: {pkgbuild_path}")
 
-    # The -sysforge rename dict (or None) rides back to run() so build_state
-    # records the renamed names + origin_pkgbase. Only set on a successful
-    # optimization rename; every other build returns None.
-    return rename
+    # The rename dict (or None) rides back to run() so build_state records the
+    # renamed names + origin_pkgbase. When both the kernel local-rename and the
+    # -sysforge suffix applied, the on-disk names come from the suffix pass but
+    # the origin stays the *upstream* pkgbase, so `sysforge update` keeps
+    # source-syncing the upstream tree.
+    if rename and local_rename:
+        return {
+            **rename,
+            "origin_pkgbase": local_rename["origin_pkgbase"],
+            "origin_pkgnames": local_rename["origin_pkgnames"],
+        }
+    return rename or local_rename
 
 
 # ---------------------------------------------------------------------------
@@ -786,6 +810,7 @@ class BuildOptions:
     cmake_llvm_dir: str | None = None  # force -DLLVM_DIR at a staged libLLVM prefix (toolchain PGO passes 1b/3b/3c)
     pgo_mode: str | None = None  # "record" | "use" — mesa instrumentation PGO (`build --pgo`); no-op for non-mesa pkgbases
     optimization_build_mode: str | None = None  # e.g. "autofdo_kernel" — stage-supplied optimization mode; seeds record_build_mode → -sysforge rename + build_state. mesa --pgo=use sets its own ("pgo_mesa") internally.
+    rename_pkgbase_to: str | None = None  # F40: patch the cloned upstream's pkgbase to this local name (coexist) — set by the kernel stage when pkgname != upstream_pkgname
 
 
 # ---------------------------------------------------------------------------
@@ -1082,6 +1107,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 toolchain_variant=options.toolchain_variant,
                 cmake_llvm_dir=options.cmake_llvm_dir,
                 optimization_build_mode=record_build_mode,
+                rename_pkgbase_to=options.rename_pkgbase_to,
             )
         build_success = True
 

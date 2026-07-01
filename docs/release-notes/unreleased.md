@@ -71,7 +71,15 @@ PKGBUILD review trust gate — on top of a large modular refactor.
   (title stamped with version + date) at release, reseeding a fresh accumulator. The
   `release-notes` skill now reconciles/lints the accumulated entries instead of authoring
   the file from scratch.
-- **Same-variant toolchain-drift detection** (`1.2.0-Q9`) — `update` now stamps a
+- **Kernel-stage upstream source tracking & local rename** (`1.2.0-F40`) — kernel.toml
+  gains `upstream_pkgname`, decoupling what sysforge pulls (e.g. `linux-zen`) from what
+  it builds/installs as (`pkgname`, defaulting to `upstream_pkgname`). A missing source
+  tree is now bootstrapped by the source-sync scheduler (sync runs before the PKGBUILD
+  path is required), `source` auto-resolves `local → repo → aur` when omitted (the
+  phantom `git` value errors clearly), and when `pkgname` differs from the upstream the
+  cloned PKGBUILD's pkgbase is patched to the local name (coexist rename — installs
+  alongside the official package, stacking under the optimized-build `-sysforge`
+  suffix). Pure-local configs are unaffected. — `update` now stamps a
   `toolchain_fingerprint` alongside `toolchain_variant` in `build_state.toml` and flags a
   package when the active toolchain was rebuilt since it was built, even when the variant
   name is unchanged (e.g. a fresh-profdata PGO rebuild with the same libLLVM soname). New

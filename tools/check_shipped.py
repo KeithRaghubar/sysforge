@@ -98,7 +98,7 @@ _KNOWN_TOP_KEYS: dict[str, set[str]] = {
     # test_kernel_allowlist_matches_stage_reads. The kernel stage does NO
     # PGO, so the toolchain's pgo/skip_build/pgo_staging/pgo_store keys are
     # deliberately absent here.
-    "kernel.toml":    {"enabled", "compiler", "pkgname", "srcdir",
+    "kernel.toml":    {"enabled", "compiler", "pkgname", "upstream_pkgname", "srcdir",
                        "bootloader", "interactive", "pkgbuild_src_dir",
                        "source", "base_config", "require_fallback_kernel",
                        "boot_audit", "min_boot_free_mb",

@@ -43,6 +43,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_kernel_subpackages,
     patch_noninteractive_kconfig,
     patch_package_suffix,
+    patch_pkgbase_rename,
     patch_pkgbuild_groups,
     patch_subshell_env_reset,
     patch_build_linker,
@@ -1355,6 +1356,128 @@ def test_suffix_rejects_unknown_mode(tmp_path):
     pb.write_text(_LLVM_SPLIT)
     with pytest.raises(ValueError, match="unknown rename mode"):
         patch_package_suffix(pb, "sysforge", mode="bogus")
+
+
+# ---------------------------------------------------------------------------
+# patch_pkgbase_rename — arbitrary pkgbase rename (F40 kernel local-rename)
+# ---------------------------------------------------------------------------
+
+_ZEN_CASCADE = (
+    "pkgbase=linux-zen\n"
+    'pkgname=("$pkgbase" "$pkgbase-headers")\n'
+    "pkgver=6.10\n"
+    "pkgrel=1\n"
+)
+
+_ZEN_LITERAL = (
+    "pkgbase=linux-zen\n"
+    "pkgname=(linux-zen linux-zen-headers)\n"
+    "pkgver=6.10\n"
+    "pkgrel=1\n"
+    "package_linux-zen() {\n  true\n}\n"
+    "package_linux-zen-headers() {\n  true\n}\n"
+)
+
+
+def test_pkgbase_rename_cascades_pkgbase_refs(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_ZEN_CASCADE)
+    info = patch_pkgbase_rename(pb, "linux-mine", mode="coexist")
+    assert info["origin_pkgbase"] == "linux-zen"
+    assert info["renamed_pkgbase"] == "linux-mine"
+    g = parse_pkgbuild(pb).get("globals", {})
+    assert g["pkgbase"] == "linux-mine"
+    # $pkgbase references cascade — tokens themselves stay untouched.
+    assert set(g["pkgname"]) == {"linux-mine", "linux-mine-headers"}
+    # Coexist: no conflicts/replaces injected.
+    assert not g.get("conflicts")
+    assert not g.get("replaces")
+
+
+def test_pkgbase_rename_rewrites_literal_tokens_and_functions(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_ZEN_LITERAL)
+    info = patch_pkgbase_rename(pb, "linux-mine", mode="coexist")
+    assert info["renamed_pkgnames"] == ["linux-mine", "linux-mine-headers"]
+    text = pb.read_text()
+    g = parse_pkgbuild(pb).get("globals", {})
+    assert set(g["pkgname"]) == {"linux-mine", "linux-mine-headers"}
+    # Split-package functions must track the renamed members.
+    assert "package_linux-mine()" in text
+    assert "package_linux-mine-headers()" in text
+    assert "package_linux-zen" not in text
+
+
+def test_pkgbase_rename_is_boundary_safe(tmp_path):
+    # A member merely *starting with* the old base as a substring (linux-zenith)
+    # must not be corrupted by the linux-zen → linux-mine rename.
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(
+        "pkgbase=linux-zen\n"
+        "pkgname=(linux-zen linux-zenith-docs)\n"
+        "pkgver=6.10\npkgrel=1\n"
+    )
+    patch_pkgbase_rename(pb, "linux-mine", mode="coexist")
+    g = parse_pkgbuild(pb).get("globals", {})
+    assert set(g["pkgname"]) == {"linux-mine", "linux-zenith-docs"}
+
+
+def test_pkgbase_rename_noop_when_name_unchanged(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_ZEN_CASCADE)
+    assert patch_pkgbase_rename(pb, "linux-zen", mode="coexist") is None
+    assert pb.read_text() == _ZEN_CASCADE
+
+
+def test_pkgbase_rename_is_idempotent(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_ZEN_LITERAL)
+    patch_pkgbase_rename(pb, "linux-mine", mode="coexist")
+    first = pb.read_text()
+    assert patch_pkgbase_rename(pb, "linux-mine", mode="coexist") is None
+    assert pb.read_text() == first
+
+
+def test_pkgbase_rename_conflict_mode_injects_metadata(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_LLVM_SPLIT)
+    patch_pkgbase_rename(pb, "llvm-custom", mode="conflict")
+    g = parse_pkgbuild(pb).get("globals", {})
+    assert g["pkgbase"] == "llvm-custom"
+    assert set(g["pkgname"]) == {"llvm-custom", "llvm-custom-libs"}
+    assert set(g["conflicts"]) == {"llvm", "llvm-libs"}
+    assert set(g["replaces"]) == {"llvm", "llvm-libs"}
+    assert {p.split("=", 1)[0] for p in g["provides"]} == {"llvm", "llvm-libs"}
+
+
+def test_validate_accepts_pkgbase_rename(tmp_path):
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_ZEN_LITERAL)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(_ZEN_LITERAL)
+    info = patch_pkgbase_rename(patched, "linux-mine", mode="coexist")
+    validate_patched_pkgbuild(orig, patched, rename=info)  # must not raise
+
+
+def test_validate_rejects_pkgbase_rename_that_missed_pkgbase(tmp_path):
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_ZEN_LITERAL)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(_ZEN_LITERAL)
+    info = patch_pkgbase_rename(patched, "linux-mine", mode="coexist")
+    # Sabotage: restore the original pkgbase line post-rename.
+    patched.write_text(
+        patched.read_text().replace("pkgbase=linux-mine", "pkgbase=linux-zen")
+    )
+    with pytest.raises(PkgbuildPatchError):
+        validate_patched_pkgbuild(orig, patched, rename=info)
+
+
+def test_pkgbase_rename_rejects_unknown_mode(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_ZEN_CASCADE)
+    with pytest.raises(ValueError, match="unknown rename mode"):
+        patch_pkgbase_rename(pb, "linux-mine", mode="bogus")
 
 
 # ---------------------------------------------------------------------------

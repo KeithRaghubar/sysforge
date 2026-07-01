@@ -17,8 +17,30 @@ enabled = false
 # Required fields
 # ---------------------------------------------------------------------------
 
-pkgname = "linux-sysforge"      # base package name (must match the PKGBUILD pkgbase)
-# srcdir  = "linux"             # subdirectory inside pkgbuild_src_dir containing the PKGBUILD
+pkgname = "linux-sysforge"      # LOCAL package name to build/install as. For a
+                                # pure-local tree it must match the PKGBUILD
+                                # pkgbase; when upstream_pkgname is set, sysforge
+                                # patches the cloned PKGBUILD's pkgbase to this
+                                # name (coexist rename) so the build installs
+                                # alongside the official package. Defaults to
+                                # upstream_pkgname when omitted.
+                                # NOTE: a pkgname already ending in "-sysforge"
+                                # collapses with the optimized-build suffix — an
+                                # AutoFDO/Propeller `use` build then REPLACES the
+                                # prior build under the same name instead of
+                                # coexisting. To keep an optimized and a stock
+                                # build installed side-by-side (bootloader
+                                # fallback), pick a pkgname that does not end in
+                                # "-sysforge" (e.g. "linux-mine").
+# upstream_pkgname = "linux-zen"  # upstream package to pull/track. When set, the
+                                # stage clones/fetches it into
+                                # <pkgbuild_src_dir>/<upstream_pkgname> and (if
+                                # pkgname differs) renames the build to pkgname.
+                                # Unset = pure-local mode: build the tree named
+                                # by pkgname, no rename.
+# srcdir  = "linux"             # subdirectory inside pkgbuild_src_dir containing
+                                # the PKGBUILD. Default: upstream_pkgname when
+                                # set, else pkgname.
 
 # ---------------------------------------------------------------------------
 # Optional fields
@@ -69,11 +91,16 @@ pkgname = "linux-sysforge"      # base package name (must match the PKGBUILD pkg
 #                               # to package). Set true (or pass --docs) to build the
 #                               # kernel HTML/man documentation. CLI: --docs/--no-docs
 
-# source = "local"              # "local" | "aur" | "git" — how the kernel
-#                               # PKGBUILD is sourced. "local" (default) uses the
-#                               # already-cloned tree under pkgbuild_src_dir;
-#                               # "aur"/"git" route a fresh fetch through the
-#                               # source-sync scheduler before building.
+# source = "local"              # "local" | "repo" | "aur" — how the kernel
+#                               # PKGBUILD is sourced. "local" uses the tree under
+#                               # pkgbuild_src_dir as-is (no sync); "repo"/"aur"
+#                               # route clone/fetch through the source-sync
+#                               # scheduler before building. When omitted, auto-
+#                               # resolves local → repo → aur: an existing non-git
+#                               # tree is local, an existing clone is fetched via
+#                               # its own origin, and a missing tree is cloned
+#                               # from the official repos when the tracked name is
+#                               # in a sync DB, else from the AUR.
 
 # ---------------------------------------------------------------------------
 # Boot safety — the kernel stage must never leave the system unbootable.

@@ -28,16 +28,18 @@ def _minimal_pkgmeta():
 
 
 @contextmanager
-def _mock_build_context(tmp_path, profile=None, extra_env_out=None):
+def _mock_build_context(tmp_path, profile=None, extra_env_out=None,
+                        pkgbuild_text=None):
     """
     Set up a minimal _run_build call with the build machinery mocked out.
     Writes a PKGBUILD.sysforge into tmp_path.
     Captures the extra_env passed to _invoke_with_retry via extra_env_out list.
     """
+    text = pkgbuild_text or "pkgname=linux-custom\npkgver=1\npkgrel=1\n"
     pkgbuild = tmp_path / "PKGBUILD"
-    pkgbuild.write_text("pkgname=linux-custom\npkgver=1\npkgrel=1\n")
+    pkgbuild.write_text(text)
     patched = tmp_path / "PKGBUILD.sysforge"
-    patched.write_text("pkgname=linux-custom\npkgver=1\npkgrel=1\n")
+    patched.write_text(text)
 
     captured = {}
 
@@ -506,3 +508,52 @@ def test_invoke_retry_batch_mode_ignores_packages(tmp_path):
         pytest.raises(RuntimeError, match="build_failed"),
     ):
         _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {"batch": True})
+
+
+# ---------------------------------------------------------------------------
+# rename_pkgbase_to — kernel local-rename seam (F40)
+# ---------------------------------------------------------------------------
+
+_ZEN_TEXT = (
+    "pkgbase=linux-zen\n"
+    'pkgname=("$pkgbase" "$pkgbase-headers")\n'
+    "pkgver=6.10\npkgrel=1\n"
+)
+
+
+def test_run_build_rename_pkgbase_to_applies_coexist_rename(tmp_path):
+    with _mock_build_context(tmp_path, pkgbuild_text=_ZEN_TEXT) as (pkgbuild, _):
+        info = _run_build(pkgbuild, _minimal_profile(), {}, [],
+                          extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
+                          kernel_build=True, rename_pkgbase_to="linux-mine")
+    assert info is not None
+    assert info["origin_pkgbase"] == "linux-zen"
+    assert info["renamed_pkgbase"] == "linux-mine"
+    assert info["mode"] == "coexist"
+    patched = (tmp_path / "PKGBUILD.sysforge").read_text()
+    assert "pkgbase=linux-mine" in patched
+
+
+def test_run_build_rename_stacks_under_fdo_suffix(tmp_path):
+    # Local rename first, FDO -sysforge suffix second: layers stack, and the
+    # returned dict keeps the *upstream* origin so `update` syncs the right tree.
+    with _mock_build_context(tmp_path, pkgbuild_text=_ZEN_TEXT) as (pkgbuild, _):
+        info = _run_build(pkgbuild, _minimal_profile(), {}, [],
+                          extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
+                          kernel_build=True, rename_pkgbase_to="linux-mine",
+                          optimization_build_mode="autofdo_kernel")
+    assert info is not None
+    assert info["origin_pkgbase"] == "linux-zen"
+    assert info["renamed_pkgbase"] == "linux-mine-sysforge"
+    patched = (tmp_path / "PKGBUILD.sysforge").read_text()
+    assert "pkgbase=linux-mine-sysforge" in patched
+
+
+def test_run_build_rename_noop_when_names_match(tmp_path):
+    # pkgname == upstream_pkgname → stage passes no rename → builds upstream name.
+    with _mock_build_context(tmp_path, pkgbuild_text=_ZEN_TEXT) as (pkgbuild, _):
+        info = _run_build(pkgbuild, _minimal_profile(), {}, [],
+                          extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
+                          kernel_build=True, rename_pkgbase_to="linux-zen")
+    assert info is None
+    assert "pkgbase=linux-zen" in (tmp_path / "PKGBUILD.sysforge").read_text()

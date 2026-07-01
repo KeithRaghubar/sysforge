@@ -114,11 +114,11 @@ def make_pkgbuild(pkgbuild_dir, pkgname):
 
 
 def make_kernel_toml(tmp_path, pkgbuild_dir, pkgname="linux-git",
-                     bootloader="systemd-boot", kconfig=None):
+                     bootloader="systemd-boot", kconfig=None, source="local"):
     lines = [
         'enabled = true',
         f'pkgname = "{pkgname}"',
-        'source = "git"',
+        f'source = "{source}"',
         f'pkgbuild_src_dir = "{pkgbuild_dir}"',
         f'bootloader = "{bootloader}"',
     ]
@@ -357,6 +357,94 @@ def test_pkgbuild_path_srcdir_not_found(tmp_path):
             "pkgname": "linux-custom",
             "srcdir": "linux",
         })
+
+
+def test_pkgbuild_path_upstream_pkgname_names_the_dir(tmp_path):
+    """Track-upstream mode: the clone dir defaults to upstream_pkgname."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-zen")
+    result = _pkgbuild_path({
+        "pkgbuild_src_dir": str(builds),
+        "upstream_pkgname": "linux-zen",
+        "pkgname": "linux-mine",
+    })
+    assert result.parent.name == "linux-zen"
+
+def test_pkgbuild_path_srcdir_wins_over_upstream(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "zen-tree")
+    result = _pkgbuild_path({
+        "pkgbuild_src_dir": str(builds),
+        "upstream_pkgname": "linux-zen",
+        "pkgname": "linux-mine",
+        "srcdir": "zen-tree",
+    })
+    assert result.parent.name == "zen-tree"
+
+def test_pkgbuild_path_pkgname_defaults_from_upstream(tmp_path):
+    """pkgname omitted → upstream_pkgname satisfies the name requirement."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-zen")
+    result = _pkgbuild_path({
+        "pkgbuild_src_dir": str(builds),
+        "upstream_pkgname": "linux-zen",
+    })
+    assert result.parent.name == "linux-zen"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_names / _resolve_source (F40)
+# ---------------------------------------------------------------------------
+
+def test_resolve_names_pure_local():
+    up, pkg = _km._resolve_names({"pkgname": "linux-sysforge"})
+    assert up is None
+    assert pkg == "linux-sysforge"
+
+def test_resolve_names_pkgname_defaults_to_upstream():
+    up, pkg = _km._resolve_names({"upstream_pkgname": "linux-zen"})
+    assert up == "linux-zen"
+    assert pkg == "linux-zen"
+
+def test_resolve_names_distinct():
+    up, pkg = _km._resolve_names(
+        {"upstream_pkgname": "linux-zen", "pkgname": "linux-mine"})
+    assert (up, pkg) == ("linux-zen", "linux-mine")
+
+def test_resolve_names_neither_raises():
+    with pytest.raises(RuntimeError, match="pkgname"):
+        _km._resolve_names({})
+
+def test_resolve_source_explicit_honored(tmp_path):
+    for src in ("local", "repo", "aur"):
+        assert _km._resolve_source({"source": src}, tmp_path) == src
+
+def test_resolve_source_git_rejected(tmp_path):
+    with pytest.raises(RuntimeError, match="git"):
+        _km._resolve_source({"source": "git"}, tmp_path)
+
+def test_resolve_source_auto_existing_plain_dir_is_local(tmp_path):
+    d = tmp_path / "linux-sysforge"
+    d.mkdir()
+    assert _km._resolve_source({"pkgname": "linux-sysforge"}, d) == "local"
+
+def test_resolve_source_auto_existing_git_clone_fetches(tmp_path):
+    d = tmp_path / "linux-zen"
+    (d / ".git").mkdir(parents=True)
+    assert _km._resolve_source(
+        {"upstream_pkgname": "linux-zen"}, d) == "repo"
+
+def test_resolve_source_auto_missing_dir_repo_package(tmp_path, monkeypatch):
+    monkeypatch.setattr("sysforge.primitives.aur.is_repo_package",
+                        lambda name: True)
+    assert _km._resolve_source(
+        {"upstream_pkgname": "linux-zen"}, tmp_path / "linux-zen") == "repo"
+
+def test_resolve_source_auto_missing_dir_aur_package(tmp_path, monkeypatch):
+    monkeypatch.setattr("sysforge.primitives.aur.is_repo_package",
+                        lambda name: False)
+    assert _km._resolve_source(
+        {"upstream_pkgname": "linux-tkg"}, tmp_path / "linux-tkg") == "aur"
 
 
 # ---------------------------------------------------------------------------
@@ -837,7 +925,7 @@ def test_kernel_stage_falls_back_to_global_pkgbuild_src_dir(tmp_path):
     make_pkgbuild(builds, "linux-git")
     # kernel.toml WITHOUT pkgbuild_src_dir
     p = tmp_path / "kernel.toml"
-    p.write_text('enabled = true\npkgname = "linux-git"\nsource = "git"\n')
+    p.write_text('enabled = true\npkgname = "linux-git"\nsource = "local"\n')
     state = PipelineState(tmp_path / "state")
     config = {"paths": {"pkgbuild_src_dir": str(builds)}}
 
@@ -1300,7 +1388,7 @@ def test_kernel_stage_presyncs_when_update_enabled(tmp_path):
     import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
-    p = make_kernel_toml(tmp_path, builds)
+    p = make_kernel_toml(tmp_path, builds, source="aur")
     state = PipelineState(tmp_path / "state")
 
     opts = make_options(state_dir=tmp_path / "state", no_update=False)
@@ -1379,7 +1467,7 @@ def test_kernel_stage_sync_failure_raises(tmp_path):
     from sysforge.primitives.source_sync import STATUS_FAILED
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
-    p = make_kernel_toml(tmp_path, builds)
+    p = make_kernel_toml(tmp_path, builds, source="aur")
     state = PipelineState(tmp_path / "state")
 
     opts = make_options(state_dir=tmp_path / "state", no_update=False)
@@ -1408,7 +1496,7 @@ def _run_kernel_diverged(tmp_path, *, interactive, answer="n"):
     from sysforge.primitives.source_sync import STATUS_DIVERGED
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
-    p = make_kernel_toml(tmp_path, builds)
+    p = make_kernel_toml(tmp_path, builds, source="aur")
     state = PipelineState(tmp_path / "state")
     opts = make_options(state_dir=tmp_path / "state", no_update=False)
 
@@ -1436,7 +1524,7 @@ def test_kernel_stage_sync_diverged_aborts_unattended(tmp_path):
     from sysforge.primitives.source_sync import STATUS_DIVERGED
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
-    p = make_kernel_toml(tmp_path, builds)
+    p = make_kernel_toml(tmp_path, builds, source="aur")
     state = PipelineState(tmp_path / "state")
     opts = make_options(state_dir=tmp_path / "state", no_update=False)
 
@@ -1945,7 +2033,7 @@ def test_run_no_nudge_when_compiler_explicit(tmp_path):
     p.write_text(
         'enabled = true\n'
         'pkgname = "linux-git"\n'
-        'source = "git"\n'
+        'source = "local"\n'
         f'pkgbuild_src_dir = "{builds}"\n'
         'bootloader = "systemd-boot"\n'
         'compiler = "gcc"\n'
@@ -2172,7 +2260,7 @@ def test_resolution_summary_names_compiler_origin(tmp_path):
     p.write_text(
         'enabled = true\n'
         'pkgname = "linux-git"\n'
-        'source = "git"\n'
+        'source = "local"\n'
         f'pkgbuild_src_dir = "{builds}"\n'
         'bootloader = "systemd-boot"\n'
         'compiler = "llvm"\n'
@@ -2509,3 +2597,38 @@ def test_write_base_config_pkgbuild_default_writes_nothing(tmp_path):
 # before `make nconfig` — see tests/test_patcher.py. The stage no longer emits
 # a pre-makepkg pause, which fired before the in-prepare() merges.
 # ---------------------------------------------------------------------------
+
+
+def test_kernel_stage_bootstraps_missing_tree_via_sync(tmp_path):
+    """F40: sync runs BEFORE the PKGBUILD path is required, so a missing tree
+    is cloned by the scheduler instead of aborting with 'clone it first'."""
+    builds = tmp_path / "builds"
+    builds.mkdir()
+    p = tmp_path / "kernel.toml"
+    p.write_text(
+        'enabled = true\n'
+        'upstream_pkgname = "linux-git"\n'
+        'source = "aur"\n'
+        f'pkgbuild_src_dir = "{builds}"\n'
+        'bootloader = "systemd-boot"\n'
+    )
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path / "state", no_update=False)
+
+    def clone_on_request(req):
+        make_pkgbuild(builds, "linux-git")
+        return _make_sync_result(status="cloned")
+
+    scheduler_mock = MagicMock()
+    scheduler_mock.request.side_effect = clone_on_request
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.get_scheduler",
+               return_value=scheduler_mock), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    scheduler_mock.request.assert_called_once()
+    mock_build.assert_called_once()
