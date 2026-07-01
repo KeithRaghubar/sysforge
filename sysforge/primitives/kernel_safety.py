@@ -38,6 +38,7 @@ SEV_INFO = "info"
 
 # Filesystem roots — module-level so tests can repoint them at a fixture tree.
 _BOOT_DIR = Path("/boot")
+_MODULES_DIR = Path("/usr/lib/modules")
 _PROC_MOUNTS = Path("/proc/mounts")
 _CRYPTTAB = Path("/etc/crypttab")
 _MDSTAT = Path("/proc/mdstat")
@@ -618,6 +619,16 @@ def check_mkinitcpio_hooks(topology: RootTopology) -> list[KernelFinding]:
     return findings
 
 
+def _dkms_module_in_tree(mod: str, kver: str) -> bool:
+    """True when a DKMS-managed ``.ko`` for ``mod`` exists in ``kver``'s module
+    tree — the fact behind a merely-"built" dkms state actually being loadable."""
+    dkms_dir = _MODULES_DIR / kver / "updates" / "dkms"
+    try:
+        return any(dkms_dir.glob(f"{mod}*.ko*"))
+    except OSError:
+        return False
+
+
 def check_dkms_for_kernel(kver: str) -> list[KernelFinding]:
     """Flag DKMS modules not built+installed for kernel release ``kver``.
 
@@ -630,23 +641,34 @@ def check_dkms_for_kernel(kver: str) -> list[KernelFinding]:
     if r is None or r.returncode != 0 or not r.stdout.strip():
         return []
 
-    # Map module → set of kernel versions it is installed for.
-    installed_for: dict[str, set[str]] = {}
+    # Map module → set of kernel versions it is present for. A module counts as
+    # present for a kver when dkms reports it "installed", OR reports it merely
+    # "built" but its .ko is actually in that kernel's module tree: newer dkms
+    # (3.x) can leave a loaded, working module at "built" (e.g. after the .ko
+    # was placed by the package rather than a fresh `dkms install`). Trusting
+    # the literal state word alone false-flags such healthy modules.
+    present_for: dict[str, set[str]] = {}
     for line in r.stdout.splitlines():
         line = line.strip()
         if not line:
             continue
         # Formats: "nvidia/570.x, 7.0.10-arch1-1, x86_64: installed"
+        #          "nvidia/570.x, 7.0.10-arch1-1, x86_64: built"
         #          "nvidia/570.x: added"  (no kernel → not built for any)
         head = line.split(":", 1)[0]
+        state = line.split(":", 1)[1].strip() if ":" in line else ""
         fields = [f.strip() for f in head.split(",")]
         mod = fields[0].split("/", 1)[0]
-        installed_for.setdefault(mod, set())
-        if len(fields) >= 2 and line.rstrip().endswith("installed"):
-            installed_for[mod].add(fields[1])
+        present_for.setdefault(mod, set())
+        if len(fields) < 2:
+            continue
+        mod_kver = fields[1]
+        if state == "installed" or (
+                state == "built" and _dkms_module_in_tree(mod, mod_kver)):
+            present_for[mod].add(mod_kver)
 
     findings: list[KernelFinding] = []
-    for mod, kvers in sorted(installed_for.items()):
+    for mod, kvers in sorted(present_for.items()):
         if kver not in kvers:
             findings.append(KernelFinding(
                 SEV_WARN, f"dkms:{mod}",

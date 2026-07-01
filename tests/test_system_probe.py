@@ -64,8 +64,11 @@ def test_stale_lock_absent(monkeypatch, tmp_path):
 # --- .pacnew / .pacsave -----------------------------------------------------
 
 def test_pacfiles_scan(monkeypatch, tmp_path):
+    # Both pacfiles have a live base file → mergeable, one pacnew_unmerged finding.
     (tmp_path / "a").mkdir()
+    (tmp_path / "pacman.conf").write_text("")
     (tmp_path / "pacman.conf.pacnew").write_text("")
+    (tmp_path / "a" / "thing.conf").write_text("")
     (tmp_path / "a" / "thing.conf.pacsave").write_text("")
     (tmp_path / "a" / "normal.conf").write_text("")
     monkeypatch.setattr(system_probe, "_ETC", tmp_path)
@@ -74,6 +77,28 @@ def test_pacfiles_scan(monkeypatch, tmp_path):
     assert findings[0].check_id == "pacnew_unmerged"
     assert findings[0].severity == diag.SEV_WARN
     assert "2 unmerged" in findings[0].message
+
+
+def test_pacfiles_orphaned_pacsave_not_advised_pacdiff(monkeypatch, tmp_path):
+    # .pacsave whose base file is gone (removed package) → pacdiff no-ops on it,
+    # so it must be reported as orphaned with manual-removal advice, not pacdiff
+    # (B10 dead-end-advice regression).
+    (tmp_path / "web2c").mkdir()
+    (tmp_path / "web2c" / "fmtutil.cnf.pacsave").write_text("")
+    monkeypatch.setattr(system_probe, "_ETC", tmp_path)
+    findings = system_probe._check_pacfiles()
+    assert len(findings) == 1
+    assert findings[0].check_id == "pacsave_orphaned"
+    assert "pacdiff" not in findings[0].remediation
+
+
+def test_pacfiles_mixed_mergeable_and_orphaned(monkeypatch, tmp_path):
+    (tmp_path / "pacman.conf").write_text("")
+    (tmp_path / "pacman.conf.pacnew").write_text("")   # mergeable
+    (tmp_path / "gone.conf.pacsave").write_text("")    # orphaned (no base)
+    monkeypatch.setattr(system_probe, "_ETC", tmp_path)
+    ids = {f.check_id for f in system_probe._check_pacfiles()}
+    assert ids == {"pacnew_unmerged", "pacsave_orphaned"}
 
 
 def test_pacfiles_clean(monkeypatch, tmp_path):

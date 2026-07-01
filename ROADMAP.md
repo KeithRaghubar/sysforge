@@ -241,21 +241,6 @@ counter, then version) — sort on every add so the list stays scannable.
   bare `git pull`. *Priority: medium (the highest-stakes stages can silently rebuild stale
   source).*
 
-- **`1.2.0-B9` — `doctor` DKMS detection is incorrect.** On a system with the nvidia DKMS module
-  installed, enabled, and actively loaded/running, the doctor DKMS check misreports its state. The
-  detection logic is producing a false finding for a healthy DKMS module — investigate what the
-  check reads (dkms status parse vs loaded-module cross-check) and align it with the actual DKMS
-  state. Read-only finding. *Priority: medium (a false alarm on a correctly-configured system
-  erodes trust in doctor output).*
-
-- **`1.2.0-B10` — `doctor` advises `pacdiff` to clear pacman config files, but `pacdiff` has no
-  output.** The doctor remediation suggests running `pacdiff` to resolve `.pacnew`/`.pacsave`
-  config files, but on the affected system `pacdiff` produces no output (nothing to reconcile) — so
-  either the finding is triggering when there are no pending pacnew/pacsave files, or the detection
-  and the advised command disagree about what "pending config files" means. Reconcile the detection
-  with what `pacdiff` actually acts on (scan the same `.pacnew`/`.pacsave` set). Read-only finding.
-  *Priority: medium (advice that dead-ends on a no-op command is misleading).*
-
 ---
 
 ## Open questions

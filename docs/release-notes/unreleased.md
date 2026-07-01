@@ -117,6 +117,14 @@ PKGBUILD review trust gate — on top of a large modular refactor.
   build (soname-bump / symbol-drift gates added).
 - Split-package relocation, `provides`/`conflicts`/`replaces` for renamed split packages,
   and mesa driver fallbacks hardened.
+- `doctor` no longer false-flags a healthy DKMS module (`1.2.0-B9`) — a module that
+  `dkms status` reports as merely `built` (not `installed`) for the running kernel is
+  cross-checked against its `.ko` in the kernel's `updates/dkms` tree, so a loaded,
+  working module (newer dkms can leave it at `built`) is treated as present.
+- `doctor` pacnew/pacsave advice no longer dead-ends (`1.2.0-B10`) — unmerged pacman
+  config files are split by whether their base file still exists: those with a live base
+  advise `pacdiff` (which can merge them), while orphaned `.pacsave` leftovers from removed
+  packages (base file gone, `pacdiff` no-ops) advise manual review/removal instead.
 - Various dep-resolution, path-resolution, VM-testing, and build fixes.
 
 ## Security

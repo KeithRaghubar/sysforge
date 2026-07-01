@@ -80,24 +80,53 @@ def _check_stale_lock() -> list[diag.Finding]:
 
 
 def _check_pacfiles() -> list[diag.Finding]:
-    """Unmerged ``*.pacnew`` / ``*.pacsave`` config files under /etc."""
-    found: list[str] = []
+    """Unmerged ``*.pacnew`` / ``*.pacsave`` config files under /etc.
+
+    Split by what ``pacdiff`` can actually act on: a pacfile whose *base* file
+    (the path with the suffix stripped) still exists is mergeable — pacdiff can
+    3-way merge it. A pacfile whose base is gone (typically an orphaned
+    ``.pacsave`` left by a removed package) has nothing to merge against, so
+    pacdiff no-ops on it; advising pacdiff there dead-ends (B10). Those need a
+    manual review/remove instead.
+    """
+    found: list[Path] = []
     for pattern in ("*.pacnew", "*.pacsave"):
         try:
-            found += [str(p) for p in _ETC.rglob(pattern)]
+            found += list(_ETC.rglob(pattern))
         except (OSError, PermissionError):
             continue
     if not found:
         return []
-    found.sort()
-    sample = "\n    ".join(found[:_PACNEW_SAMPLE])
-    more = "" if len(found) <= _PACNEW_SAMPLE else f"\n    (+{len(found) - _PACNEW_SAMPLE} more)"
-    return [diag.Finding(
-        "pacman", diag.SEV_WARN, "pacnew_unmerged",
-        f"{len(found)} unmerged pacman config file(s) under /etc:\n    {sample}{more}",
-        remediation="review and merge each with `pacdiff` (from pacman-contrib), "
-                    "then remove the .pacnew/.pacsave",
-    )]
+
+    mergeable = sorted(str(p) for p in found if p.with_suffix("").exists())
+    orphaned = sorted(str(p) for p in found if not p.with_suffix("").exists())
+
+    out: list[diag.Finding] = []
+    if mergeable:
+        out.append(_pacfile_finding(
+            mergeable, "pacnew_unmerged",
+            "unmerged pacman config file(s) under /etc",
+            "review and merge each with `pacdiff` (from pacman-contrib), "
+            "then remove the .pacnew/.pacsave"))
+    if orphaned:
+        out.append(_pacfile_finding(
+            orphaned, "pacsave_orphaned",
+            "orphaned pacman config backup(s) under /etc (base file gone; "
+            "pacdiff cannot merge these)",
+            "these are leftovers from removed packages — review and delete "
+            "each once you've salvaged any settings you need"))
+    return out
+
+
+def _pacfile_finding(files: list[str], check_id: str, summary: str,
+                     remediation: str) -> diag.Finding:
+    sample = "\n    ".join(files[:_PACNEW_SAMPLE])
+    more = "" if len(files) <= _PACNEW_SAMPLE else f"\n    (+{len(files) - _PACNEW_SAMPLE} more)"
+    return diag.Finding(
+        "pacman", diag.SEV_WARN, check_id,
+        f"{len(files)} {summary}:\n    {sample}{more}",
+        remediation=remediation,
+    )
 
 
 def _check_orphans() -> list[diag.Finding]:

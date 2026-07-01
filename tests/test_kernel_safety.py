@@ -351,6 +351,29 @@ def test_dkms_absent_no_findings(monkeypatch):
     assert ks.check_dkms_for_kernel("7.0.10-custom") == []
 
 
+def test_dkms_built_state_with_module_in_tree_ok(monkeypatch, tmp_path):
+    # Newer dkms can report a loaded, working module as "built" (not
+    # "installed") for the running kernel; if the .ko is actually in the
+    # kernel tree it will load, so no finding (B9 false-positive regression).
+    out = "nvidia/610.43.02, 7.0.10-custom, x86_64: built\n"
+    monkeypatch.setattr(ks, "_run", lambda cmd: _completed(out))
+    dkms_dir = tmp_path / "7.0.10-custom" / "updates" / "dkms"
+    dkms_dir.mkdir(parents=True)
+    (dkms_dir / "nvidia.ko.zst").write_bytes(b"")
+    monkeypatch.setattr(ks, "_MODULES_DIR", tmp_path)
+    assert ks.check_dkms_for_kernel("7.0.10-custom") == []
+
+
+def test_dkms_built_state_without_module_in_tree_flags(monkeypatch, tmp_path):
+    # "built" but the .ko is genuinely absent from the kernel tree → it won't
+    # load, so the finding must still fire.
+    out = "nvidia/610.43.02, 7.0.10-custom, x86_64: built\n"
+    monkeypatch.setattr(ks, "_run", lambda cmd: _completed(out))
+    monkeypatch.setattr(ks, "_MODULES_DIR", tmp_path)
+    findings = ks.check_dkms_for_kernel("7.0.10-custom")
+    assert any(f.check_id == "dkms:nvidia" for f in findings)
+
+
 # ---------------------------------------------------------------------------
 # list_dkms_modules / check_mkinitcpio_hooks
 # ---------------------------------------------------------------------------
