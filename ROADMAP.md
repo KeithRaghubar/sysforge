@@ -185,6 +185,36 @@ counter, then version) — sort on every add so the list stays scannable.
   file instead of authoring from scratch. *Priority: medium (makes shipped-work provenance
   incremental and removes a brittle release-time reconstruction step).*
 
+- **`1.2.0-F36` — Audit logging verbosity levels + configurable default verbosity.** Warning/info
+  messages added over successive features have crept into the default verbosity level, eroding the
+  meaning of the levels (default output is now noisy). Audit every logging call site to confirm the
+  level matches intent (info vs warning vs debug), and add a configurable default-verbosity key
+  (e.g. `[log] verbosity` in `sysforge.toml`, or the appropriate config home) so users can opt into
+  a quieter or more verbose baseline. CLI `-v/-q` flags still win when passed. Note: the user
+  personally prefers `info` as a default but it's too noisy to force on everyone — so the fix is
+  *correct levelling* plus a *user-settable* default, not changing the shipped default. Route
+  through the existing `log` seam / `log.use_color`-style gating — no parallel verbosity switch.
+  *Priority: medium (the primary UX regression in day-to-day output).*
+
+- **`1.2.0-F37` — Kernel stage: configurable kconfig target(s) via `kernel.toml`.** The kernel
+  stage should accept a configurable config-generation target chosen from the kernel's `make`
+  kconfig targets (`menuconfig`, `nconfig`, `oldconfig`, `olddefconfig`, `localmodconfig`,
+  `localyesconfig`, `defconfig`, `allmodconfig`, `alldefconfig`, `savedefconfig`, `listnewconfig`,
+  `mod2yesconfig`, etc.). Allow **at most one interactive** target (`config`/`nconfig`/`menuconfig`/
+  `xconfig`/`gconfig`) but **multiple non-interactive** targets, with sysforge defining and
+  documenting the execution order of a multi-target run. Wire the toggle through `kernel.toml` and
+  reuse the existing kernel-stage kconfig invocation seam (coordinate with the F25 pause-before-
+  kconfig helper / B6 positioning). *Priority: medium (makes the kernel-config workflow flexible
+  without hand-editing the stage).* **Sub-question:** does `randconfig` have any practical reason
+  to be offered? If not, exclude it from the allowed-target set (document the exclusion rationale).
+
+- **`1.2.0-F38` — `update`: report installed dependencies as their own summary category.** The
+  end-of-run `update` summary should surface dependency packages that were installed as a build
+  prerequisite (via `prepare_deps`) as a distinct category, separate from the built/failed/pacman
+  sections, so users can see what was pulled in on their behalf. Fold into `_print_summary`
+  alongside the F33 summary-formatting work (honour the Unicode/`use_color` gates). *Priority:
+  low (visibility into implicit installs).*
+
 ---
 
 ## Bugs
@@ -219,6 +249,21 @@ counter, then version) — sort on every add so the list stays scannable.
   (`source_sync.get_scheduler().request(...)`, full-history `git_fetch_and_compare`), never a
   bare `git pull`. *Priority: medium (the highest-stakes stages can silently rebuild stale
   source).*
+
+- **`1.2.0-B9` — `doctor` DKMS detection is incorrect.** On a system with the nvidia DKMS module
+  installed, enabled, and actively loaded/running, the doctor DKMS check misreports its state. The
+  detection logic is producing a false finding for a healthy DKMS module — investigate what the
+  check reads (dkms status parse vs loaded-module cross-check) and align it with the actual DKMS
+  state. Read-only finding. *Priority: medium (a false alarm on a correctly-configured system
+  erodes trust in doctor output).*
+
+- **`1.2.0-B10` — `doctor` advises `pacdiff` to clear pacman config files, but `pacdiff` has no
+  output.** The doctor remediation suggests running `pacdiff` to resolve `.pacnew`/`.pacsave`
+  config files, but on the affected system `pacdiff` produces no output (nothing to reconcile) — so
+  either the finding is triggering when there are no pending pacnew/pacsave files, or the detection
+  and the advised command disagree about what "pending config files" means. Reconcile the detection
+  with what `pacdiff` actually acts on (scan the same `.pacnew`/`.pacsave` set). Read-only finding.
+  *Priority: medium (advice that dead-ends on a no-op command is misleading).*
 
 ---
 
