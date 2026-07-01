@@ -210,14 +210,6 @@ counter, then version) — sort on every add so the list stays scannable.
 
 ## Bugs
 
-- **`1.2.0-B5` — Pager output is mangled for `log` and `state orphans`.** Long-standing: the
-  pager opens blank, only scrolls up, and appears to loop the top of the file. Reproduced on
-  both the global log and per-package `sysforge log [PKG]`, and independently on
-  `sysforge state orphans` — so the defect is in the *shared* pager-launch helper, not in
-  either verb. Investigate the common paging seam (how output is handed to `$PAGER` —
-  likely a non-seekable pipe or a TTY/`pty_runner` interaction) rather than the verb-specific
-  formatting. *Priority: medium (core output verbs are unreadable through the pager).*
-
 - **`1.2.0-B6` — Kernel stage pause fires before the merges, not before `nconfig` (F25
   regression).** F25 was supposed to pause for interactive review immediately before the
   kconfig editor (`nconfig`) opens; in practice the pause happens *earlier*, before any of the

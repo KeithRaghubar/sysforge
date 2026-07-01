@@ -125,6 +125,17 @@ PKGBUILD review trust gate — on top of a large modular refactor.
   config files are split by whether their base file still exists: those with a live base
   advise `pacdiff` (which can merge them), while orphaned `.pacsave` leftovers from removed
   packages (base file gone, `pacdiff` no-ops) advise manual review/removal instead.
+- Interactive pager output is no longer mangled (`1.2.0-B5`) — a verb that
+  painted a `ui.progress` status (e.g. `state orphans`' pre-scan phase) left its
+  DECSTBM scroll region active when it handed off to the pager, clamping less to
+  `[1, N-1]` so its alternate-screen redraws desynced (blank-open /
+  scroll-up-only / looping-top). The shared `maybe_pager` seam now runs the
+  pager inside `progress.suspended()`, releasing the region for the pager's
+  lifetime and restoring it after — fixing `log`, `state list`, `state orphans`,
+  and `state failed` at once. It also drops `less -X` from its fallback (that
+  flag suppresses the alternate-screen switch entirely) and parses `$PAGER` as a
+  shell word list, so `PAGER="less -RF"` is honored instead of being treated as
+  one un-spawnable token.
 - Various dep-resolution, path-resolution, VM-testing, and build fixes.
 
 ## Security
