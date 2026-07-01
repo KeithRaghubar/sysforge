@@ -25,6 +25,14 @@ FIXTURE_CONFIG_DIR = TEST_DATA / "etc/sysforge"
 # this env var, so pinning it is safe.
 os.environ["SYSFORGE_CONFIG_DIR"] = str(FIXTURE_CONFIG_DIR)
 
+# Scrub ambient colour overrides so log.use_color() resolves purely from the
+# capture stream's TTY-ness. CI runners and editor-integrated shells commonly
+# export FORCE_COLOR (or NO_COLOR), which would flip every plain-output log
+# assertion; tests that exercise the override behaviour set these explicitly
+# via monkeypatch.
+os.environ.pop("FORCE_COLOR", None)
+os.environ.pop("NO_COLOR", None)
+
 # Force the subprocess fallback in primitives.pacman so existing tests that
 # mock subprocess.run continue to drive the query. The pyalpm fast path is
 # exercised explicitly in test_pacman_pyalpm.py.
