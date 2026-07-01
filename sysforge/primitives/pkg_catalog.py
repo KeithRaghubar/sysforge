@@ -70,6 +70,7 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
         key="gnome",
         display_name="GNOME",
         display_manager="gdm",
+        defaults={"source": "repo"},
         packages=(
             "gnome-shell",
             "gdm",
@@ -83,6 +84,7 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
         key="kde",
         display_name="KDE Plasma",
         display_manager="sddm",
+        defaults={"source": "repo"},
         packages=(
             "plasma-meta",
             "sddm",
@@ -95,6 +97,7 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
         key="xfce",
         display_name="Xfce",
         display_manager="lightdm",
+        defaults={"source": "repo"},
         packages=(
             "xfce4",
             "xfce4-goodies",
@@ -107,6 +110,7 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
         key="mate",
         display_name="MATE",
         display_manager="lightdm",
+        defaults={"source": "repo"},
         packages=(
             "mate",
             "mate-extra",
@@ -119,6 +123,7 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
         key="cinnamon",
         display_name="Cinnamon",
         display_manager="lightdm",
+        defaults={"source": "repo"},
         packages=(
             "cinnamon",
             "gnome-terminal",
@@ -131,6 +136,7 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
         key="lxqt",
         display_name="LXQt",
         display_manager="sddm",
+        defaults={"source": "repo"},
         packages=(
             "lxqt",
             "sddm",
@@ -142,6 +148,7 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
         key="budgie",
         display_name="Budgie",
         display_manager="lightdm",
+        defaults={"source": "repo"},
         packages=(
             "budgie-desktop",
             "gnome-control-center",
@@ -156,6 +163,7 @@ DESKTOP_CATALOG: dict[str, DesktopEntry] = {
         key="cosmic",
         display_name="COSMIC",
         display_manager="cosmic-greeter",
+        defaults={"source": "repo"},
         packages=(
             "cosmic-session",
             "cosmic-greeter",

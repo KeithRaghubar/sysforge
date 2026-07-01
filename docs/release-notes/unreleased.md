@@ -106,6 +106,10 @@ PKGBUILD review trust gate — on top of a large modular refactor.
 
 ## Fixed
 
+- Desktop-catalog packages now honor `repo_mode` (`1.2.0-B12`) — every curated
+  desktop-environment group stamps `source = "repo"` on its members, so with
+  `repo_mode = "pacman"` desktop packages install from the official repos instead
+  of being unconditionally source-built.
 - Batch builds are now topologically ordered by intra-batch dependency edges (including
   provides/sonames) and freshly built siblings are installed before a dependent configures
   — fixing stale-sibling failures in large stack rebuilds.

@@ -38,6 +38,24 @@ class TestCatalog:
             "gnome", "kde", "xfce", "mate", "cinnamon", "lxqt", "budgie", "cosmic",
         }
 
+    def test_every_entry_defaults_to_repo_source(self):
+        # All catalog packages exist in the official repos; without
+        # source = "repo" the packages stage defaults to "aur" and
+        # source-builds them, bypassing repo_mode (1.2.0-B12).
+        for key, entry in DESKTOP_CATALOG.items():
+            assert entry.defaults.get("source") == "repo", (
+                f"{key}: defaults must stamp source = 'repo'"
+            )
+
+    def test_written_group_expands_to_repo_entries(self, tmp_path):
+        path = tmp_path / "packages.toml"
+        pkg_catalog.write_desktop_group(path, "gnome")
+        data = tomllib.loads(path.read_text())
+        entries = expand_package_groups(data)
+        assert entries, "expected expanded entries"
+        for e in entries:
+            assert e.get("source") == "repo", f"{e['name']} lacks source=repo"
+
 
 # ---------------------------------------------------------------------------
 # Display-manager pairing (F27 + boot-into-desktop fix)

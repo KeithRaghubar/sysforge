@@ -40,20 +40,6 @@ counter, then version) — sort on every add so the list stays scannable.
   medium (confusing failure mode, no data loss, workaround is just re-invoking
   correctly).*
 
-- **`1.2.0-B12` — Desktop-catalog packages ignore `repo_mode` and always build from
-  source.** `pkg_catalog.DESKTOP_CATALOG` entries (gnome/kde/xfce/mate/cinnamon/lxqt/
-  budgie/cosmic) carry empty `defaults`, so `write_desktop_group`/
-  `expand_package_groups` emit `[[package]]` entries with no `source` field;
-  `packages.py`'s build loop then defaults a missing `source` to `"aur"`
-  (`pkg.get("source", "aur")`, `packages.py:334,411`) and unconditionally routes it
-  through `_build_aur`, bypassing the `resolve_repo_mode`/`effective_mode` check that
-  only guards the `source == "repo"` branch. Result: even with global `repo_mode =
-  "pacman"`, every desktop-environment package — all of which exist in the official
-  repos — gets source-built instead of installed via pacman. Fix by stamping
-  `"source": "repo"` in each `DesktopEntry.defaults` (`pkg_catalog.py:44-167`) so
-  desktop packages honor `repo_mode` like any other repo package. *Priority: high
-  (defeats the entire point of repo mode for the common desktop-install path).*
-
 - **`1.2.0-B13` — `reconfigure` editor-preference save silently fails on a root-owned
   `sysforge.toml`.** `_save_sysforge_toml_ui` (`reconfigure.py:123-142`) writes via a bare
   `SYSFORGE_TOML_PATH.write_text(...)` with no privilege escalation, unlike every other
