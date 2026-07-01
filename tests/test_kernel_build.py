@@ -345,6 +345,52 @@ def test_no_install_option_default_false():
 
 
 # ---------------------------------------------------------------------------
+# B8 — run()'s options.update source-sync honors the PKGBUILD's origin
+# classification instead of defaulting every sync to source="aur".
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("opt_source, expected_source", [
+    ("local", "local"),   # hand-maintained (e.g. stock kernel PKGBUILD, modified pkgbase)
+    ("git",   "git"),      # git-hosted PKGBUILD repo — must actually fetch, not no-op as AUR
+    ("repo",  "repo"),
+    (None,    "aur"),      # unset → preserve the historical AUR default
+])
+def test_run_update_sync_honors_source(tmp_path, monkeypatch, opt_source, expected_source):
+    """run()'s options.update sync passes options.source to the scheduler (B8).
+
+    Regression: the SyncRequest omitted source=, so a "local"/"git"/"repo" PKGBUILD
+    was mis-synced as AUR — a spurious AUR RPC for local PKGBUILDs, and (worse) a
+    git-hosted PKGBUILD repo was never fetched, yielding a stale build.
+    """
+    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.primitives.makepkg_wrapper import BuildOptions
+    from sysforge.primitives.source_sync import STATUS_FAILED
+
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=linux-custom\npkgver=1\npkgrel=1\n")
+
+    captured = []
+
+    class _FakeScheduler:
+        def request(self, req):
+            captured.append(req)
+            # Abort right after the sync so we never reach the real build.
+            return SimpleNamespace(status=STATUS_FAILED, error="stub-abort",
+                                   pkgbase=req.pkgbase)
+
+    monkeypatch.setattr(mw, "get_scheduler", lambda *a, **k: _FakeScheduler())
+
+    opts = BuildOptions(update=True, source=opt_source, pkg_log=False)
+    # fatal() on STATUS_FAILED calls sys.exit → SystemExit; we only care that the
+    # SyncRequest was built before the abort.
+    with pytest.raises(SystemExit):
+        mw.run(pkgbuild, options=opts)
+
+    assert len(captured) == 1
+    assert captured[0].source == expected_source
+
+
+# ---------------------------------------------------------------------------
 # _invoke_with_retry — sudo timeout recovery
 # ---------------------------------------------------------------------------
 

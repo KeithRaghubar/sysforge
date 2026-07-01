@@ -150,6 +150,13 @@ PKGBUILD review trust gate — on top of a large modular refactor.
   additionally handles a mixed `make all htmldocs` line by stripping only the `*docs`
   goal (→ `make all`) instead of skipping the line, so the doc compile is dropped
   without dropping the real build.
+- Source sync now honors a PKGBUILD's origin classification during a build (`1.2.0-B8`) —
+  `makepkg_wrapper.run()`'s pre-build sync built its `SyncRequest` without a `source`, so it
+  always defaulted to `aur`. A hand-maintained (`local`) kernel PKGBUILD (e.g. a stock PKGBUILD
+  with a modified `pkgbase`) triggered a spurious AUR RPC that could abort the build, and a
+  git-hosted PKGBUILD repo was never fetched — building from a stale PKGBUILD. The sync now
+  passes `options.source` through, so `local` short-circuits cleanly and `git`/`repo` fetch the
+  right remote.
 - Various dep-resolution, path-resolution, VM-testing, and build fixes.
 
 ## Security

@@ -823,9 +823,15 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
 
     if options.update:
         pkgbuild_dir = pkgbuild_path.parent
+        # B8: honor the PKGBUILD's origin classification. Omitting this let the
+        # SyncRequest default to source="aur", so a hand-maintained ("local") or
+        # git-hosted PKGBUILD was mis-synced as AUR: a "local" kernel PKGBUILD
+        # triggered a spurious AUR RPC (that could fatal), and a "git"-hosted
+        # PKGBUILD repo was never fetched — building from a stale PKGBUILD.
         result = get_scheduler().request(SyncRequest(
             pkgbase=pkgbuild_dir.name,
             pkgbuild_dir=pkgbuild_dir,
+            source=options.source or "aur",
             force_fetch=True,
         ))
         if result.status in (STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED):

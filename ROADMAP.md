@@ -222,18 +222,6 @@ counter, then version) — sort on every add so the list stays scannable.
 
 ---
 
-## Bugs
-
-- **`1.2.0-B8` — Kernel and toolchain stages don't pull latest source before building.** The
-  kernel stage built without first fetching the newest upstream revision, producing a stale
-  build. Both the kernel and toolchain stages should always sync to latest before building,
-  the same way `update` does for ordinary packages — routed through the source-sync scheduler
-  (`source_sync.get_scheduler().request(...)`, full-history `git_fetch_and_compare`), never a
-  bare `git pull`. *Priority: medium (the highest-stakes stages can silently rebuild stale
-  source).*
-
----
-
 ## Open questions
 
 - **`1.2.0-Q10` — Can repoctl be restricted to versions present in the official repos?**
