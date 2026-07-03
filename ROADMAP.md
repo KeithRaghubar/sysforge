@@ -29,6 +29,19 @@ counter, then version) — sort on every add so the list stays scannable.
 
 ### Bugs
 
+- **`2.0.0-B1` — `release.sh` cannot resume once fixes land on top of the release
+  commit.** Resume detection (Phase 0a) requires the `v$CUR` tag to point exactly at
+  HEAD, so a failure *after* the tag exists (e.g. the v2.0.0 chroot-validation failure)
+  that needs a fix committed on top of the release commit permanently defeats resume —
+  re-running `make release-*` instead computes a fresh bump (v2.0.0 → v3.0.0) from the
+  already-bumped `pyproject.toml`. The remaining Phase 3/4 steps (chroot validate,
+  `.SRCINFO` regeneration, sha256 commit, AUR instructions) had to be replayed by hand.
+  Fix: allow resume when the `v$CUR` tag exists and is an *ancestor* of a clean HEAD
+  (`git merge-base --is-ancestor`), or add an explicit `--resume`/`--finish` mode that
+  re-enters at Phase 3 for the current version. *Priority: medium (only bites on a
+  mid-release failure, but the manual recovery is error-prone and defeats the script's
+  one-command design).*
+
 - **`1.2.0-B11` — `packages` stage fails at makepkg when a pipeline resumes as root.**
   Root-caused: a pipeline resumed after an interruption/reboot can re-enter with
   `euid == 0` instead of the primary (non-root) user the design assumes, and
