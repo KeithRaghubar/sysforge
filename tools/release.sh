@@ -102,6 +102,8 @@ chroot_build() {
     local scratch
     scratch=$(mktemp -d)
     cp "$pkgbuild_src" "$scratch/PKGBUILD"
+    # install= scriptlet must sit beside the PKGBUILD or makepkg refuses to run.
+    cp sysforge.install "$scratch/"
     echo "    building $label in $CHROOT_ROOT (scratch: $scratch)"
     (cd "$scratch" && PKGDEST="$scratch" SRCPKGDEST="$scratch" LOGDEST="$scratch" \
         makechrootpkg -c -u -r "$CHROOT_ROOT")
@@ -520,7 +522,18 @@ fi
 if [[ "$DRY_RUN" -eq 0 ]]; then
     # Two-element sha256sums: the tarball hash, then SKIP for the detached
     # signature source (GPG-verified against validpgpkeys, not hashed).
-    sed -i "s/^sha256sums=.*/sha256sums=('$SHA256'\n            'SKIP')/" PKGBUILD
+    # Replace the whole array (it may span multiple lines from a prior release),
+    # from the sha256sums= line through its closing paren.
+    awk -v sha="$SHA256" '
+        /^sha256sums=/ && !done {
+            printf "sha256sums=(%c%s%c\n            %cSKIP%c)\n", 39, sha, 39, 39, 39
+            done = 1
+            if ($0 ~ /\)[[:space:]]*$/) next
+            skipping = 1; next
+        }
+        skipping { if ($0 ~ /\)[[:space:]]*$/) skipping = 0; next }
+        { print }
+    ' PKGBUILD > PKGBUILD.sha256.tmp && mv PKGBUILD.sha256.tmp PKGBUILD
     echo "    PKGBUILD sha256sums updated (tarball + SKIP for .asc)"
 else
     echo "    [dry-run] would update sha256sums in PKGBUILD (tarball hash + SKIP)"
