@@ -128,8 +128,9 @@ try:
     from sysforge.cli import _build_parser
     p = _build_parser()
     seen = set()
+    import argparse
     for action in p._actions:
-        if hasattr(action, 'choices') and action.choices:
+        if isinstance(action, argparse._SubParsersAction):
             for v in action.choices:
                 seen.add(v)
     print(' '.join(sorted(seen)))
