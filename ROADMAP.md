@@ -58,20 +58,6 @@ counter, then version) — sort on every add so the list stays scannable.
   (`reconfigure.py:~1000-1010`) instead of a direct `write_text`. *Priority: medium
   (silent persistence failure defeats the whole point of "save as sysforge default").*
 
-- **`1.2.0-B14` — `run kernel --cleansrc-force` rebuilt a stale kernel version instead of
-  the newest available.** Observed 2026-07-01: a `--cleansrc-force` run purged and
-  re-acquired the *old* 7.0.12 source while the repos already carried 7.0.14 — the purge
-  succeeded but the re-sync landed back on the stale version. Needs diagnosis; candidate
-  causes: (a) the makepkg `SRCDEST` tarball cache survives `purge_src` (which purges the
-  PKGBUILD checkout, not `pacman.get_srcdest()`), so `makepkg` reuses the cached old
-  tarball; (b) the checkout re-sync (scheduler `force_fetch` path, or the F40 upstream
-  source-tracking rename) restored a PKGBUILD still pinned to the old `pkgver` rather
-  than the current repo release. Reproduce with a version-lagged checkout, then fix at
-  the owning seam (scheduler / purge_src — no parallel purge path). Interacts with F41
-  (repo checkouts tracking `main` vs the stable sync-DB version) — diagnose against that
-  design so the two don't fight. *Priority: medium (a "force clean" flag that silently
-  rebuilds stale source defeats its purpose).*
-
 ### Features
 
 - **`1.2.0-F9` — Respect a PKGBUILD's per-package `options=()` (spun off Q6).** At
@@ -232,18 +218,6 @@ counter, then version) — sort on every add so the list stays scannable.
   through the existing `log` seam / `log.use_color`-style gating — no parallel verbosity switch.
   *Priority: medium (the primary UX regression in day-to-day output).*
 
-- **`1.2.0-F37` — Kernel stage: configurable kconfig target(s) via `kernel.toml`.** The kernel
-  stage should accept a configurable config-generation target chosen from the kernel's `make`
-  kconfig targets (`menuconfig`, `nconfig`, `oldconfig`, `olddefconfig`, `localmodconfig`,
-  `localyesconfig`, `defconfig`, `allmodconfig`, `alldefconfig`, `savedefconfig`, `listnewconfig`,
-  `mod2yesconfig`, etc.). Allow **at most one interactive** target (`config`/`nconfig`/`menuconfig`/
-  `xconfig`/`gconfig`) but **multiple non-interactive** targets, with sysforge defining and
-  documenting the execution order of a multi-target run. Wire the toggle through `kernel.toml` and
-  reuse the existing kernel-stage kconfig invocation seam (coordinate with the F25 pause-before-
-  kconfig helper / B6 positioning). *Priority: medium (makes the kernel-config workflow flexible
-  without hand-editing the stage).* **Sub-question:** does `randconfig` have any practical reason
-  to be offered? If not, exclude it from the allowed-target set (document the exclusion rationale).
-
 - **`1.2.0-F38` — `update`: report installed dependencies as their own summary category.** The
   end-of-run `update` summary should surface dependency packages that were installed as a build
   prerequisite (via `prepare_deps`) as a distinct category, separate from the built/failed/pacman
@@ -265,36 +239,27 @@ counter, then version) — sort on every add so the list stays scannable.
   keep raising `KeyboardInterrupt` normally. *Priority: medium (quality-of-life; the current
   behaviour looks like a crash on a routine abort).*
 
-- **`1.2.0-F41` — Pin `source=repo` checkouts to the stable sync-DB version (resolves Q10).**
-  Root-caused (2026-07-01): `pkgctl repo clone` (`build_prep.pkgctl_checkout`) checks out the
-  packaging repo's `main` branch, which Arch bumps when a package is *released to testing* —
-  so repo-source builds routinely build a version newer than what `pacman` would install.
-  Not a tooling-config matter (no "stable only" clone knob exists); the fix is sysforge-side:
-  after clone/fetch of a `source=repo` package, resolve pacman's own candidate via the
-  existing `pacman.get_pacman_sync_version()` (first-repo-wins, mirrors pacman resolution)
-  and pin the checkout to the matching release tag — `pkgctl repo switch <version>`
-  translates pacman version format (epoch included) to the tag. Design notes: the source-sync
-  scheduler's `STATUS_DIVERGED` hard-reset-to-FETCH_HEAD and `update` Phase 3's
-  PKGBUILD-version compare both currently assume the checkout tracks `main` — the pin must
-  thread through the scheduler (one home), not become a parallel checkout path; VCS (`-git`)
-  and AUR sources are unaffected. Consider an opt-out (e.g. `[build] repo_track = "main"`)
-  for users who *want* testing-track builds. *Priority: medium (repo-source builds silently
-  outrun the stable repos — the built version can be untested against the installed system).*
-
 ### Open questions
 
 - **`1.2.0-Q11` — Should the kernel stage actively filter out drivers irrelevant to the
-  host (FPGA, SoC, exotic-arch subsystems) on a standard x86 build?** Today sysforge does
-  **not** filter kernel drivers itself: the stage only captures an lsmod snapshot
-  (`_capture_lsmod_snapshot`) so the PKGBUILD's `prepare()` can run `make localmodconfig`
-  reproducibly — that strips *modules not currently loaded* (which covers FPGA/SoC
-  drivers in practice), but only when the user's PKGBUILD actually routes through
-  `localmodconfig`, and it doesn't touch built-in (`=y`) options. Question: is an explicit
-  driver-class filter warranted — a kconfig analogue of the mesa driver filter, deriving
-  exclusions from `hardware_profile` — or is F37 (configurable kconfig targets, including
-  `localmodconfig`) plus the existing snapshot sufficient? If pursued, it must reuse the
-  existing kconfig-override seam and keep the Gate-1 boot-safety checks authoritative.
-  *Cross-ref: F37.*
+  host (FPGA, SoC, exotic-arch subsystems) on a standard x86 build?** F37 landed:
+  `kernel.toml kconfig_targets` now lets a run opt into `localmodconfig` (or any other
+  target) as part of a validated, ordered sequence, and the lsmod snapshot the PKGBUILD's
+  `make localmodconfig` reads accumulates across builds (`_merge_lsmod`, union by module
+  name) so a module loaded only occasionally isn't dropped just because it wasn't active
+  during the most recent capture. That still leaves two gaps unaddressed by F37: (1)
+  `localmodconfig` strips only *modules* (`=m`) not currently loaded — it doesn't touch
+  **built-in** (`=y`) options, so an irrelevant driver compiled directly into the kernel
+  survives untouched; and (2) the filtering is opt-in and reactive (keyed off what's
+  loaded on the build machine), not a proactive driver-class exclusion for a target
+  architecture. Narrowed question: is an explicit driver-class filter still warranted for
+  those two gaps — a kconfig analogue of the mesa driver filter, deriving `=n` exclusions
+  for built-in options from `hardware_profile`, and/or a non-`localmodconfig` mechanism
+  for target lists that doesn't depend on the build machine's currently-loaded module
+  set — or does the F37 target-sequence plus the accumulating snapshot cover this well
+  enough in practice? If pursued, it must reuse the existing kconfig-override seam
+  (`kernel.toml [kconfig]`/`[kconfig_devices]` fragment merge, not a parallel one) and
+  keep the Gate-1/Gate-2 boot-safety checks authoritative.
 
 ---
 

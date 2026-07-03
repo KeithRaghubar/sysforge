@@ -87,6 +87,15 @@ PKGBUILD review trust gate — on top of a large modular refactor.
   path/size/mtime/version stat) or `"content_hash"` (hashes the resolved `libLLVM.so`).
   Advisory by default — surfaced in the drift summary and `--explain-drift`, rebuilt only
   under `--rebuild-on-toolchain-drift` / `--rebuild-on-drift`.
+- **Repo checkouts pin to the sync-DB release** (`1.2.0-F41`) — `source=repo` checkouts
+  are pinned to the release tag matching pacman's sync-DB version, so source builds
+  match what pacman would install; set `[build] repo_track = "main"` in sysforge.toml
+  for testing-track builds.
+- Kernel stage: configurable kconfig target sequence via `kernel.toml`
+  `kconfig_targets` (UI/prompting/silent taxonomy, at most one UI target which
+  always runs last, prompting targets rejected in non-interactive runs,
+  `randconfig` excluded); the lsmod snapshot now accumulates across builds and
+  `localmodconfig` is warned against as high-risk/low-reward. (`1.2.0-F37`)
 
 ## Changed
 
@@ -170,6 +179,9 @@ PKGBUILD review trust gate — on top of a large modular refactor.
   passes `options.source` through, so `local` short-circuits cleanly and `git`/`repo` fetch the
   right remote.
 - Various dep-resolution, path-resolution, VM-testing, and build fixes.
+- `run kernel --cleansrc-force` could rebuild a stale source version (`1.2.0-B14`) —
+  `--cleansrc` now also purges the package's cached SRCDEST tarballs, and repo checkouts
+  re-pin to the current sync-DB release on every sync.
 
 ## Security
 

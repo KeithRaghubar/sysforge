@@ -171,6 +171,30 @@ pkgname = "linux-sysforge"      # LOCAL package name to build/install as. For a
 #                                # merged option didn't survive into the resolved
 #                                # .config), since there's nothing to compare.
 
+# kconfig_targets = ["olddefconfig"]  # default: unset (feature off) — names an
+#                                 # explicit `make <target>` kconfig-generation
+#                                 # sequence, replacing the PKGBUILD's own
+#                                 # kconfig steps; the sysforge.config fragment
+#                                 # merge above still applies first, so the
+#                                 # sequence shapes the merged config. Silent
+#                                 # targets (olddefconfig, defconfig,
+#                                 # allmodconfig, alldefconfig, savedefconfig,
+#                                 # listnewconfig) run in listed order.
+#                                 # Prompting targets (oldconfig, localmodconfig,
+#                                 # localyesconfig, mod2yesconfig) require an
+#                                 # interactive stage run — non-interactive runs
+#                                 # reject them (oldconfig names its silent
+#                                 # equivalent olddefconfig; the local*/mod2yes
+#                                 # targets say to run interactively). At most
+#                                 # one UI target (config, nconfig, menuconfig,
+#                                 # xconfig, gconfig) is allowed and it always
+#                                 # runs last. randconfig is never allowed — a
+#                                 # randomized config is a boot-safety hazard.
+#                                 # localmodconfig/localyesconfig over-minimize
+#                                 # to modules currently loaded (high risk, low
+#                                 # reward) and accumulate a snapshot at
+#                                 # <state_dir>/lsmod.snapshot; delete it to reset.
+
 # device_kconfig = true          # default: true — merge the hardware stage's
 #                                # device-driven [kconfig_devices] entries
 #                                # (modular drivers, "=m", for devices present

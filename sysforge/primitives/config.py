@@ -52,6 +52,14 @@ PKG_KEY_BUILD_FROM_SOURCE = "enable_build_from_source"
 _LEGACY_PKG_KEY_BUILD_FROM_SOURCE = "pkgbuild_patch"
 
 
+# `[build] repo_track` (sysforge.toml): which line a source=repo checkout
+# follows. "stable" (default) pins to the release tag matching pacman's
+# sync-DB candidate; "main" tracks the packaging repo's main branch, which
+# Arch bumps on release-to-testing — i.e. ahead of what pacman installs.
+REPO_TRACK_STABLE = "stable"
+REPO_TRACK_MAIN = "main"
+
+
 def resolve_repo_mode(build_cfg: dict | None) -> str:
     """Resolve packages.toml ``[build] repo_mode`` to a current-vocabulary value.
 
@@ -65,6 +73,17 @@ def resolve_repo_mode(build_cfg: dict | None) -> str:
     if raw == _LEGACY_REPO_MODE_SOURCE:
         return REPO_MODE_SOURCE
     return raw
+
+
+def resolve_repo_track(build_cfg: dict | None) -> str:
+    """Resolve sysforge.toml ``[build] repo_track``.
+
+    Single read chokepoint (mirrors :func:`resolve_repo_mode`). Returns
+    ``"stable"`` (default, and the fallback for unrecognized values) or
+    ``"main"``.
+    """
+    raw = (build_cfg or {}).get("repo_track", REPO_TRACK_STABLE)
+    return raw if raw in (REPO_TRACK_STABLE, REPO_TRACK_MAIN) else REPO_TRACK_STABLE
 
 
 def resolve_pgo_allowlist(sysforge_cfg: dict | None) -> set[str]:

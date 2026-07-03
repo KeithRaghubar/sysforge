@@ -5,21 +5,20 @@
 """
 build_prep.py — pre-build source acquisition and signing-key setup
 
-Two steps that run *before* makepkg is invoked on a packaging repo:
+Three steps that run *before* makepkg is invoked on a packaging repo:
 
-    pkgctl_checkout(name, dest)   -> None   pkgctl repo clone of the official
-                                            Arch packaging repo into dest
-    import_pgp_keys(pkgmeta, ...) -> None   ensure validpgpkeys are present in
-                                            the GPG keyring (bundled + keyserver)
+    pkgctl_checkout(name, dest)      -> None   pkgctl repo clone of the official
+                                               Arch packaging repo into dest
+    pkgctl_switch_version(dest, ver) -> None   pin a cloned repo to a release tag
+    import_pgp_keys(pkgmeta, ...)    -> None   ensure validpgpkeys are present in
+                                               the GPG keyring (bundled + keyserver)
 
-Both are pure side-effecting helpers over external tools (``pkgctl`` / ``gpg``)
+All are pure side-effecting helpers over external tools (``pkgctl`` / ``gpg``)
 with no AUR-RPC concern, which is why they live apart from ``aur.py``.
 ``pkgctl_checkout`` reuses ``git_ops.purge_src`` to clear a half-cloned
 leftover before re-cloning.
 
-``aur.py`` re-exports both so existing
-``from sysforge.primitives.aur import pkgctl_checkout`` /
-``import_pgp_keys`` call sites and tests are unchanged.
+``aur.py`` re-exports all three so existing call sites and tests are unchanged.
 """
 import os
 import shutil
@@ -103,6 +102,37 @@ def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
         raise RuntimeError(
             f"pkgctl checkout failed for {name!r}:\n" + "\n".join(output_lines).strip()
         )
+
+
+def pkgctl_switch_version(dest: Path, version: str, *, timeout: int | None = 60) -> None:
+    """Switch a pkgctl checkout to the release tag matching a pacman version.
+
+    ``pkgctl repo switch <version>`` owns the pacman-version → git-tag
+    translation (epoch and pkgrel included), so callers pass
+    ``pacman.get_pacman_sync_version()`` output verbatim. Leaves the checkout
+    on a detached HEAD at the tag. Raises RuntimeError on failure.
+    """
+    timeout = timeout or None
+    try:
+        result = subprocess.run(
+            ["pkgctl", "repo", "switch", version],
+            cwd=str(dest),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "pkgctl not found on PATH. Install it with: sudo pacman -S --needed devtools"
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"pkgctl repo switch {version!r} timed out after {timeout}s")
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"pkgctl repo switch {version!r} failed: {(result.stderr or result.stdout).strip()}"
+        )
+    _log.info(f"Pinned {dest.name} to release {version}")
 
 
 def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:

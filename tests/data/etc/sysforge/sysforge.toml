@@ -34,6 +34,8 @@ clone_timeout = 60
 # pyenv/asdf/conda shim on PATH. unset/"system" → /usr/bin/python (default);
 # "3.12" → /usr/bin/python3.12; or an absolute path. See etc/sysforge/sysforge.toml.
 # python = "system"
+# repo_track = "stable"        # "stable" | "main" — which line source=repo
+                               # checkouts follow. See etc/sysforge/sysforge.toml.
 # Build CPU/IO throttling (global default; per-profile override in profiles.toml).
 # See etc/sysforge/sysforge.toml for full docs.
 # nice = 19          # scheduling niceness 0..19 (soft yield)

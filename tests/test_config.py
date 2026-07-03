@@ -522,3 +522,26 @@ class TestResolvePkgbuildSrcDir:
         resolve_pkgbuild_src_dir({}, {"pkgbuild_src_dir": "~/src"})
         out = capsys.readouterr()
         assert "mismatch" not in out.out + out.err
+
+
+# ---------------------------------------------------------------------------
+# resolve_repo_track (F41: [build] repo_track, groundwork for source=repo pinning)
+# ---------------------------------------------------------------------------
+
+def test_resolve_repo_track_default_is_stable():
+    from sysforge.primitives.config import resolve_repo_track
+
+    assert resolve_repo_track(None) == "stable"
+    assert resolve_repo_track({}) == "stable"
+
+
+def test_resolve_repo_track_main_opt_out():
+    from sysforge.primitives.config import resolve_repo_track
+
+    assert resolve_repo_track({"repo_track": "main"}) == "main"
+
+
+def test_resolve_repo_track_unknown_value_falls_back_to_stable():
+    from sysforge.primitives.config import resolve_repo_track
+
+    assert resolve_repo_track({"repo_track": "testing"}) == "stable"

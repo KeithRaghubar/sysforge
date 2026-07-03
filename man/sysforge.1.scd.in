@@ -107,7 +107,20 @@ recovery command.
 
 /etc/sysforge/toolchain.toml, /etc/sysforge/kernel.toml
 	Opt-in toolchain and kernel stage configuration (enabled = false by
-	default in both).
+	default in both). kernel.toml *kconfig_targets* (default: unset)
+	names an explicit *make* kconfig-generation sequence, replacing the
+	PKGBUILD's own kconfig steps (the sysforge.config fragment merge
+	still applies first): silent targets
+	(olddefconfig, defconfig, allmodconfig, alldefconfig, savedefconfig,
+	listnewconfig) always run; prompting targets (oldconfig,
+	localmodconfig, localyesconfig, mod2yesconfig) require an
+	interactive stage run and are rejected otherwise (oldconfig names
+	its silent equivalent olddefconfig); at most one UI target (config,
+	nconfig, menuconfig, xconfig, gconfig) is allowed and it always
+	runs last; randconfig is never allowed. localmodconfig/
+	localyesconfig are warned against as high-risk/low-reward — they
+	over-minimize to modules currently loaded and accumulate the lsmod
+	snapshot at <state_dir>/lsmod.snapshot (delete it to reset).
 	Read by: *run toolchain* / *run kernel*, *run pipeline*,
 	*run reconfigure*, and *doctor* on the matching axes.
 

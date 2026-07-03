@@ -24,7 +24,7 @@ from sysforge import log
 from sysforge.primitives.source_sync import (
     SyncRequest, SyncResult, STATUS_DIVERGED, get_scheduler,
 )
-from sysforge.primitives.config import load_sysforge_toml
+from sysforge.primitives.config import load_sysforge_toml, resolve_repo_track
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.update_common import _SYNC_BLOCKING_STATUSES, _is_vcs
 
@@ -65,6 +65,7 @@ def _sync_sources(
         cleansrc=cleansrc,
         cleansrc_force=cleansrc_force,
         force_devel=force_devel,
+        repo_track=resolve_repo_track(sysforge_toml.get("build", {})),
         min_fetch_interval_ms=aur_cfg.get("min_fetch_interval_ms", 500),
         rate_limit_abort_s=aur_cfg.get("rate_limit_abort_s", 120.0),
         fetch_timeout=fetch_timeout,

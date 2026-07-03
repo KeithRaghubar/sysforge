@@ -53,6 +53,14 @@ clone_timeout = 60
 # The resolved interpreter is logged at DEBUG.
 # python = "system"
 
+# repo_track = "stable"        # "stable" | "main" — which line source=repo
+                               # checkouts follow. "stable" (default) pins the
+                               # checkout to the release tag matching pacman's
+                               # sync-DB version, so a source build produces the
+                               # same version pacman would install. "main" tracks
+                               # the packaging repo's main branch (testing-track:
+                               # may build a version newer than the stable repos).
+
 # --- Build CPU/IO throttling ------------------------------------------------
 # Keep compilation from saturating the machine so interactive apps stay
 # responsive. All four are unset by default (builds run unthrottled, makepkg's

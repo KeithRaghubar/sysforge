@@ -224,6 +224,8 @@ def test_repo_source_diverged_clean_tree_resets_to_upstream(tmp_path):
     with patch("sysforge.primitives.source_sync._head_commit", return_value="oldlocal"), \
          patch("sysforge.primitives.source_sync.git_fetch_and_compare", return_value=outcome), \
          patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value=None), \
          patch("sysforge.primitives.source_sync._reset_hard_fetch_head",
                return_value="newupstream") as reset:
         result = sched.request(SyncRequest(
@@ -376,6 +378,8 @@ def test_repo_source_routes_through_pkgctl(tmp_path):
     with patch("sysforge.primitives.source_sync.pkgctl_checkout",
                side_effect=fake_pkgctl) as pkgctl, \
          patch("sysforge.primitives.source_sync.aur_clone") as aur_clone_mock, \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value=None), \
          patch("sysforge.primitives.source_sync._head_commit",
                return_value="abcd1234"):
         result = sched.request(SyncRequest(
@@ -386,6 +390,197 @@ def test_repo_source_routes_through_pkgctl(tmp_path):
     aur_clone_mock.assert_not_called()
     assert result.status == "cloned"
     assert result.head_after == "abcd1234"
+
+
+# ---------------------------------------------------------------------------
+# source=repo pinning (repo_track)
+# ---------------------------------------------------------------------------
+
+def _fake_pkgctl_clone(name, dest, *, timeout=None):
+    Path(dest).mkdir(parents=True, exist_ok=True)
+    (Path(dest) / "PKGBUILD").write_text(f"pkgname={name}\n")
+
+
+def test_repo_clone_pins_to_sync_db_version(tmp_path):
+    """repo_track=stable (default): a fresh pkgctl clone is pinned to the
+    pacman sync-DB release tag via pkgctl_switch_version."""
+    sched = _scheduler(tmp_path, repo_track="stable")
+    dest = tmp_path / "linux"
+    switched = {}
+
+    with patch("sysforge.primitives.source_sync.pkgctl_checkout",
+               side_effect=_fake_pkgctl_clone), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version",
+               side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value="7.0.14.arch1-1"), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="tagged"):
+        res = sched.request(SyncRequest(
+            pkgbase="linux", pkgbuild_dir=dest, source="repo",
+        ))
+
+    assert res.status == "cloned"
+    assert switched["ver"] == "7.0.14.arch1-1"
+
+
+def test_repo_clone_skips_pin_when_tracking_main(tmp_path):
+    """repo_track=main (opt-out): the checkout stays on the main branch —
+    pkgctl_switch_version is never invoked."""
+    sched = _scheduler(tmp_path, repo_track="main")
+    dest = tmp_path / "linux"
+
+    with patch("sysforge.primitives.source_sync.pkgctl_checkout",
+               side_effect=_fake_pkgctl_clone), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version") as switch, \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version") as sync_ver, \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="mainhead"):
+        res = sched.request(SyncRequest(
+            pkgbase="linux", pkgbuild_dir=dest, source="repo",
+        ))
+
+    assert res.status == "cloned"
+    switch.assert_not_called()
+    sync_ver.assert_not_called()
+
+
+def test_repo_clone_no_sync_candidate_warns_and_stays_on_main(tmp_path):
+    """No sync-DB candidate (custom-repo-only package) → warn and stay on
+    main; never an error."""
+    sched = _scheduler(tmp_path, repo_track="stable")
+    dest = tmp_path / "mypkg"
+
+    with patch("sysforge.primitives.source_sync.pkgctl_checkout",
+               side_effect=_fake_pkgctl_clone), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version") as switch, \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value=None), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="mainhead"):
+        res = sched.request(SyncRequest(
+            pkgbase="mypkg", pkgbuild_dir=dest, source="repo",
+        ))
+
+    assert res.status == "cloned"
+    switch.assert_not_called()
+
+
+def test_repo_clone_pin_failure_is_failed(tmp_path):
+    """pkgctl_switch_version raising RuntimeError → STATUS_FAILED."""
+    sched = _scheduler(tmp_path, repo_track="stable")
+    dest = tmp_path / "linux"
+
+    with patch("sysforge.primitives.source_sync.pkgctl_checkout",
+               side_effect=_fake_pkgctl_clone), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version",
+               side_effect=RuntimeError("pkgctl repo switch failed: no such tag")), \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value="7.0.14.arch1-1"), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="x"):
+        res = sched.request(SyncRequest(
+            pkgbase="linux", pkgbuild_dir=dest, source="repo",
+        ))
+
+    assert res.status == STATUS_FAILED
+    assert "no such tag" in (res.error or "")
+    # head_after populated for consistent reporting even on pin failure
+    # (head_before stays None — there was no checkout before the clone)
+    assert res.head_before is None
+    assert res.head_after == "x"
+
+
+def test_repo_fetch_pin_failure_reports_heads(tmp_path):
+    """A re-pin failure on an existing checkout still reports head_before/
+    head_after (STATUS_FAILED results stay reporting-consistent)."""
+    pkg = _make_repo(tmp_path, "linux")
+    sched = _scheduler(tmp_path, repo_track="stable")
+    outcome = GitFetchOutcome(status="fetched", head_before="old", head_after="new")
+
+    with patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+               return_value=outcome), \
+         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version",
+               side_effect=RuntimeError("pkgctl repo switch failed: no such tag")), \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value="7.0.14.arch1-1"), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="new"):
+        res = sched.request(SyncRequest(
+            pkgbase="linux", pkgbuild_dir=pkg, source="repo", force_fetch=True,
+        ))
+
+    assert res.status == STATUS_FAILED
+    assert res.head_before == "new"
+    assert res.head_after == "new"
+
+
+def test_repo_fetch_repins_when_head_off_tag(tmp_path):
+    """Existing repo checkout, fetch succeeded, clean tree → re-pin to the
+    sync-DB tag."""
+    pkg = _make_repo(tmp_path, "linux")
+    sched = _scheduler(tmp_path, repo_track="stable")
+    outcome = GitFetchOutcome(status="fetched", head_before="old", head_after="new")
+    switched = {}
+
+    with patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+               return_value=outcome), \
+         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version",
+               side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value="7.0.14.arch1-1"), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="new"):
+        res = sched.request(SyncRequest(
+            pkgbase="linux", pkgbuild_dir=pkg, source="repo", force_fetch=True,
+        ))
+
+    assert switched["ver"] == "7.0.14.arch1-1"
+    assert res.status == STATUS_FETCHED
+
+
+def test_repo_fetch_dirty_tree_diverges_without_pin(tmp_path):
+    """Local edits on a repo checkout → STATUS_DIVERGED, no re-pin."""
+    pkg = _make_repo(tmp_path, "linux")
+    sched = _scheduler(tmp_path, repo_track="stable")
+    outcome = GitFetchOutcome(status="fetched", head_before="old", head_after="new")
+
+    with patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+               return_value=outcome), \
+         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=True), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version") as switch, \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value="7.0.14.arch1-1"), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="old"):
+        res = sched.request(SyncRequest(
+            pkgbase="linux", pkgbuild_dir=pkg, source="repo", force_fetch=True,
+        ))
+
+    switch.assert_not_called()
+    assert res.status == STATUS_DIVERGED
+
+
+def test_repo_fetch_pinned_detached_head_uses_tags_fetch(tmp_path):
+    """A pinned checkout has no tracking branch (`no_tracking`): repo+stable
+    runs a plain tags-included fetch, then re-pins."""
+    pkg = _make_repo(tmp_path, "linux")
+    sched = _scheduler(tmp_path, repo_track="stable")
+    outcome = GitFetchOutcome(status="no_tracking", head_before=None, head_after=None)
+    switched = {}
+
+    with patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+               return_value=outcome), \
+         patch("sysforge.primitives.source_sync._fetch_repo_tags",
+               return_value=None) as tags_fetch, \
+         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version",
+               side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value="7.0.14.arch1-1"), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="tagged"):
+        res = sched.request(SyncRequest(
+            pkgbase="linux", pkgbuild_dir=pkg, source="repo", force_fetch=True,
+        ))
+
+    tags_fetch.assert_called_once()
+    assert switched["ver"] == "7.0.14.arch1-1"
+    assert res.status == STATUS_UP_TO_DATE
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +628,49 @@ def test_cleansrc_forwards_is_vcs_for_git_pkgbase(tmp_path):
         sched.request(SyncRequest(pkgbase="ipp-usb-git", pkgbuild_dir=pkg))
 
     purge.assert_called_once_with(pkg, force=False, is_vcs=True)
+
+
+def test_cleansrc_purges_srcdest(tmp_path):
+    """--cleansrc also purges SRCDEST tarball artifacts after purge_src."""
+    pkg = _make_repo(tmp_path, "htop")
+    srcdest = tmp_path / "srcdest"
+    sched = _scheduler(tmp_path, cleansrc=True)
+
+    def fake_clone(name, d, **kw):
+        Path(d).mkdir(exist_ok=True)
+        (Path(d) / "PKGBUILD").write_text("pkgname=htop\n")
+
+    with patch("sysforge.primitives.source_sync.purge_src"), \
+         patch("sysforge.primitives.source_sync.purge_srcdest") as purge_sd, \
+         patch("sysforge.primitives.source_sync.get_srcdest", return_value=srcdest), \
+         patch("sysforge.primitives.source_sync.aur_clone", side_effect=fake_clone), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="new"):
+        sched.request(SyncRequest(pkgbase="htop", pkgbuild_dir=pkg))
+
+    purge_sd.assert_called_once_with("htop", srcdest, pkgbuild_dir=pkg)
+
+
+def test_recovery_purge_also_purges_srcdest(tmp_path):
+    """The degenerate-leftover recovery branch (dir without PKGBUILD) also
+    purges SRCDEST artifacts after its purge_src."""
+    pkg = tmp_path / "htop"
+    pkg.mkdir()  # no PKGBUILD → recovery branch
+    srcdest = tmp_path / "srcdest"
+    sched = _scheduler(tmp_path)
+
+    def fake_clone(name, d, **kw):
+        Path(d).mkdir(exist_ok=True)
+        (Path(d) / "PKGBUILD").write_text("pkgname=htop\n")
+
+    with patch("sysforge.primitives.source_sync.purge_src"), \
+         patch("sysforge.primitives.source_sync.purge_srcdest") as purge_sd, \
+         patch("sysforge.primitives.source_sync.get_srcdest", return_value=srcdest), \
+         patch("sysforge.primitives.source_sync.aur_clone", side_effect=fake_clone), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="new"):
+        result = sched.request(SyncRequest(pkgbase="htop", pkgbuild_dir=pkg))
+
+    purge_sd.assert_called_once_with("htop", srcdest, pkgbuild_dir=pkg)
+    assert result.status == STATUS_CLONED
 
 
 def test_cleansrc_refused_on_dirty_repo(tmp_path):

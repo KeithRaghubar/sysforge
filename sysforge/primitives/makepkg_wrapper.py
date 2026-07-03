@@ -83,6 +83,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     cleanup_patch_artifacts,
     extract_pkgbuild_profile,
     is_llvm_pkgbase,
+    patch_kconfig_targets,
     patch_kernel_btf_guard,
     patch_kernel_config_install,
     patch_kernel_kconfig_apply,
@@ -419,6 +420,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                kernel_build: bool = False,
                kernel_build_headers: bool = True,
                kernel_build_docs: bool = True,
+               kconfig_targets: list[str] | None = None,
                compiler_flags_extra: str | None = None,
                linker_flags_extra: str | None = None,
                strip_full_lto: bool = False,
@@ -477,8 +479,14 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # Always inject the sysforge.config fragment merge so a stock PKGBUILD
         # actually applies the hardware/device kconfig (it adds `make nconfig`
         # itself only when interactive). The non-interactive patch then rewrites
-        # any *existing* interactive kconfig target to olddefconfig.
-        patch_kernel_kconfig_apply(pkgbuild_path, interactive=interactive)
+        # any *existing* interactive kconfig target to olddefconfig. When a
+        # configured kconfig_targets sequence is set it is the sole authority
+        # for kconfig generation *and* UI review (resolve_kconfig_targets put
+        # any UI target last), so the interactive nconfig-review injection is
+        # suppressed — the seed/merge blocks are still injected, sentinel-
+        # tagged so patch_kconfig_targets leaves their resolve lines intact.
+        patch_kernel_kconfig_apply(
+            pkgbuild_path, interactive=interactive and not kconfig_targets)
         # Ship the resolved .config to /boot (pacman-tracked) when the PKGBUILD
         # doesn't already — the main image subpackage is named for the pkgbase.
         patch_kernel_config_install(pkgbuild_path, pkgname=_pkgname_from_meta(pkgmeta))
@@ -492,6 +500,17 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         patch_kernel_subpackages(
             pkgbuild_path, headers=kernel_build_headers, docs=kernel_build_docs
         )
+        # Configured kconfig_targets sequence (kernel.toml, already resolved/
+        # validated by the kernel stage) replaces the PKGBUILD's own kconfig
+        # generation step. Applied after the other kernel patchers so it sees
+        # their output — it skips the sentinel-tagged resolve lines the
+        # fragment-merge injection added and lands the configured block after
+        # the seed/merge guard blocks — and before patch_noninteractive_kconfig
+        # so a UI tail left in the configured sequence still gets stripped when
+        # the run is non-interactive (kernel.toml can't opt a UI target out of
+        # that).
+        if kconfig_targets:
+            patch_kconfig_targets(pkgbuild_path, kconfig_targets)
         if not interactive:
             patch_noninteractive_kconfig(pkgbuild_path)
 
@@ -782,6 +801,7 @@ class BuildOptions:
     interactive: bool = False
     kernel_build_headers: bool = True
     kernel_build_docs: bool = True
+    kconfig_targets: list[str] | None = None
     pkg_log: bool = True
     persist_log: bool = False
     log_dir: Path | None = None
@@ -1097,6 +1117,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 kernel_build=kernel_build,
                 kernel_build_headers=options.kernel_build_headers,
                 kernel_build_docs=options.kernel_build_docs,
+                kconfig_targets=options.kconfig_targets,
                 compiler_flags_extra=effective_flags_extra,
                 linker_flags_extra=options.linker_flags_extra,
                 strip_full_lto=options.strip_full_lto,

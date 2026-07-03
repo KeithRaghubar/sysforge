@@ -55,7 +55,11 @@ from sysforge.primitives.git_ops import (
     is_transient_git_error,
     purge_src,
 )
-from sysforge.primitives.build_prep import import_pgp_keys, pkgctl_checkout
+from sysforge.primitives.build_prep import (
+    import_pgp_keys,
+    pkgctl_checkout,
+    pkgctl_switch_version,
+)
 
 # One module, one tag. The RPC-query/clone narration previously logged under a
 # separate [MANIFEST] tag, but it is the same concern as the name-cache refresh
@@ -69,6 +73,7 @@ __all__ = [
     "repo_packages",
     "is_repo_package",
     "pkgctl_checkout",
+    "pkgctl_switch_version",
     "import_pgp_keys",
     "aur_clone",
     "AUR_RPC_URL",

@@ -435,6 +435,21 @@ def git_is_dirty(pkgbuild_dir: Path, *, is_vcs: bool = False) -> bool:
     return state in ("no_tracking", "ahead", "diverged_user")
 
 
+def _head_reachable_from_remote(pkgbuild_dir: Path) -> bool:
+    """True when HEAD's commit is an ancestor of (or equal to) any remote ref.
+
+    A source=repo checkout pinned to a release tag sits on a detached HEAD
+    with no tracking branch; that is upstream's history, not local-only work,
+    and must not block a purge. Local-only commits (not on any remote ref)
+    still refuse.
+    """
+    r = subprocess.run(
+        ["git", "-C", str(pkgbuild_dir), "branch", "-r", "--contains", "HEAD"],
+        capture_output=True, text=True,
+    )
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
 def _purge_refusal_message(pkgbuild_dir: Path, *, is_vcs: bool) -> str | None:
     """Return the operator-facing reason for refusing to purge, or None.
 
@@ -461,7 +476,8 @@ def _purge_refusal_message(pkgbuild_dir: Path, *, is_vcs: bool) -> str | None:
     elif state == "diverged_user":
         causes.append("diverged history with local-user-authored commits")
     elif state == "no_tracking":
-        causes.append("no upstream tracking branch")
+        if not _head_reachable_from_remote(pkgbuild_dir):
+            causes.append("no upstream tracking branch")
 
     if not causes:
         return None
@@ -511,6 +527,50 @@ def purge_src(
     suffix = " (forced)" if force else ""
     _log.warn(f"purging {pkgbuild_dir} for clean re-clone{suffix}")
     shutil.rmtree(pkgbuild_dir)
+
+
+def purge_srcdest(pkgbase, srcdest_dir, *, pkgbuild_dir=None) -> int:
+    """Delete ``pkgbase``'s cached source tarballs from SRCDEST.
+
+    Companion to :func:`purge_src` for ``--cleansrc``: the checkout rmtree
+    doesn't touch makepkg's SRCDEST cache, so a purged-and-re-cloned package
+    could still rebuild from a stale cached tarball (1.2.0-B14). Tarballs are
+    cache — no local work to protect — so there is no dirty-tree guard and no
+    force flag; failures warn and never raise (best-effort hygiene).
+
+    Matches ``<pkgbase>-<something-starting-with-a-digit>`` archives only
+    (makepkg names source tarballs ``name-version.ext``), so a different
+    pkgbase sharing a dash-prefix (``foo`` vs ``foo-tools``) is not clobbered.
+
+    No-ops: ``srcdest_dir`` is None/missing, or resolves inside
+    ``pkgbuild_dir`` (makepkg default layout — the checkout purge covers it).
+    Returns the number of entries removed.
+    """
+    if srcdest_dir is None:
+        return 0
+    srcdest_dir = Path(srcdest_dir)
+    if not srcdest_dir.is_dir():
+        return 0
+    if pkgbuild_dir is not None:
+        try:
+            srcdest_dir.resolve().relative_to(Path(pkgbuild_dir).resolve())
+            return 0  # srcdest inside the checkout — rmtree covers it
+        except ValueError:
+            pass
+
+    removed = 0
+    for entry in srcdest_dir.glob(f"{pkgbase}-[0-9]*"):
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            removed += 1
+        except OSError as e:
+            _log.warn(f"purge_srcdest: could not remove {entry}: {e}")
+    if removed:
+        _log.warn(f"purged {removed} cached source artifact(s) for {pkgbase} from {srcdest_dir}")
+    return removed
 
 
 TRANSIENT_GIT_ERRORS = (

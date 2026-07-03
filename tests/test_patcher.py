@@ -37,6 +37,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     load_extracted_profile,
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
+    patch_kconfig_targets,
     patch_kernel_btf_guard,
     patch_kernel_config_install,
     patch_kernel_kconfig_apply,
@@ -484,6 +485,195 @@ def test_patch_noninteractive_kconfig_preserves_non_kconfig_make(tmp_path):
     assert "olddefconfig" in content
     assert "make LOCALVERSION=v1 all" in content
     assert "make modules_install" in content
+
+
+# ---------------------------------------------------------------------------
+# patch_kconfig_targets
+# ---------------------------------------------------------------------------
+
+_KCONFIG_TARGETS_PKGBUILD = """\
+pkgbase=linux-custom
+prepare() {
+  cd $srcdir/linux
+  make olddefconfig
+  make nconfig
+}
+"""
+
+
+def test_replaces_kconfig_invocations_with_target_sequence(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_KCONFIG_TARGETS_PKGBUILD)
+    patch_kconfig_targets(p, ["localmodconfig", "olddefconfig", "menuconfig"])
+    text = p.read_text()
+    assert "make localmodconfig\n  make olddefconfig\n  make menuconfig" in text
+    assert "make nconfig" not in text
+    assert text.count("make localmodconfig") == 1  # first anchor replaced, others removed
+
+
+def test_preserves_var_args_and_indent(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text("prepare() {\n\tmake ARCH=x86_64 LLVM=1 olddefconfig\n}\n")
+    patch_kconfig_targets(p, ["defconfig", "savedefconfig"])
+    assert "\tmake ARCH=x86_64 LLVM=1 defconfig\n\tmake ARCH=x86_64 LLVM=1 savedefconfig\n" in p.read_text()
+
+
+def test_no_anchor_raises(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text("prepare() {\n  cp ../config .config\n}\n")
+    with pytest.raises(RuntimeError, match="kconfig"):
+        patch_kconfig_targets(p, ["olddefconfig"])
+
+
+def test_kconfig_targets_output_has_exactly_len_targets_lines(tmp_path):
+    """Output contains exactly len(targets) kconfig lines — no self-match survives."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_KCONFIG_TARGETS_PKGBUILD)
+    targets = ["localmodconfig", "olddefconfig", "menuconfig"]
+    patch_kconfig_targets(p, targets)
+    text = p.read_text()
+    kconfig_line_count = sum(
+        1 for line in text.splitlines() if line.strip().startswith("make ") and
+        line.strip().split()[-1] in targets
+    )
+    assert kconfig_line_count == len(targets)
+
+
+def test_patch_noninteractive_kconfig_strips_bare_config(tmp_path):
+    """Bare `make config` (line-oriented prompting UI) is also rewritten."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("  make config\n")
+    patch_noninteractive_kconfig(pb)
+    assert pb.read_text() == "  make olddefconfig\n"
+
+
+@pytest.mark.parametrize(
+    "target", ["config", "menuconfig", "nconfig", "xconfig", "gconfig"],
+)
+def test_patch_noninteractive_kconfig_strips_every_ui_target(tmp_path, target):
+    """All five UI kconfig targets are rewritten to olddefconfig."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(f"  make {target}\n")
+    patch_noninteractive_kconfig(pb)
+    assert pb.read_text() == "  make olddefconfig\n"
+
+
+def test_patch_noninteractive_kconfig_leaves_olddefconfig_intact(tmp_path):
+    """Adding bare `config` to the strip set must not half-match olddefconfig."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("  make olddefconfig\n  make localmodconfig\n")
+    patch_noninteractive_kconfig(pb)
+    assert pb.read_text() == "  make olddefconfig\n  make localmodconfig\n"
+
+
+# ---------------------------------------------------------------------------
+# patch_kernel_kconfig_apply + patch_kconfig_targets composition
+# ---------------------------------------------------------------------------
+
+_COMPOSE_KERNEL_PKGBUILD = (
+    "pkgbase=linux-custom\n"
+    "prepare() {\n"
+    "  cd $_srcname\n"
+    "  cp ../config.$CARCH .config\n"
+    "  make ARCH=x86_64 olddefconfig\n"
+    "  make -s kernelrelease > version\n"
+    "}\n"
+    "build() {\n"
+    "  make all\n"
+    "}\n"
+)
+
+_KCONFIG_TARGET_NAMES = (
+    "config nconfig menuconfig xconfig gconfig oldconfig olddefconfig "
+    "localmodconfig localyesconfig mod2yesconfig defconfig allmodconfig "
+    "alldefconfig savedefconfig listnewconfig randconfig"
+).split()
+
+
+def _kconfig_lines(text):
+    """All `make … <kconfig-target>` lines (comment-insensitive)."""
+    out = []
+    for line in text.splitlines():
+        words = line.split("#", 1)[0].split()
+        if words and words[0] == "make" and words[-1] in _KCONFIG_TARGET_NAMES:
+            out.append(line)
+    return out
+
+
+def test_kconfig_apply_then_targets_composition(tmp_path):
+    """Production order: patch_kernel_kconfig_apply first, then
+    patch_kconfig_targets. The injected seed/merge resolve lines must survive,
+    the configured sequence must land *after* the seed/merge blocks, the UI
+    target must be the last kconfig line, and no stock kconfig line remains."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_COMPOSE_KERNEL_PKGBUILD)
+    patch_kernel_kconfig_apply(pb, interactive=False)
+    patch_kconfig_targets(pb, ["localmodconfig", "olddefconfig", "nconfig"])
+    text = pb.read_text()
+
+    # (i) the injected resolve lines survive (base-seed + merge guard blocks
+    # each carry one) and the merge machinery is intact.
+    assert text.count("# sysforge: kconfig-resolve") == 2
+    assert 'merge_config.sh -m .config "$startdir/sysforge.config"' in text
+    assert '"$startdir/sysforge.base.config"' in text
+
+    # (ii) the configured targets appear after the seed/merge blocks.
+    assert text.rindex("merge_config.sh") < text.index("make ARCH=x86_64 localmodconfig")
+    assert text.rindex("# sysforge: kconfig-resolve") < text.index(
+        "make ARCH=x86_64 localmodconfig")
+
+    # (iii) the UI target is the last kconfig line in prepare().
+    kconfig = _kconfig_lines(text)
+    assert kconfig[-1].strip() == "make ARCH=x86_64 nconfig"
+
+    # (iv) exactly the expected kconfig lines remain: two sentinel-tagged
+    # resolve lines + the three configured targets, in order; the PKGBUILD's
+    # own `make ARCH=x86_64 olddefconfig` (untagged) is gone.
+    stripped = [ln.strip() for ln in kconfig]
+    assert stripped == [
+        "make olddefconfig  # sysforge: kconfig-resolve",
+        "make olddefconfig  # sysforge: kconfig-resolve",
+        "make ARCH=x86_64 localmodconfig",
+        "make ARCH=x86_64 olddefconfig",
+        "make ARCH=x86_64 nconfig",
+    ]
+    # configured sequence stays inside prepare()
+    assert text.index("make ARCH=x86_64 nconfig") < text.index("build() {")
+
+
+def test_kconfig_composition_noninteractive_strip_last(tmp_path):
+    """Full non-interactive production sequence: apply → targets → strip.
+    A UI tail in the configured sequence is rewritten to olddefconfig while
+    the sentinel resolve lines and merge blocks stay intact."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_COMPOSE_KERNEL_PKGBUILD)
+    patch_kernel_kconfig_apply(pb, interactive=False)
+    patch_kconfig_targets(pb, ["defconfig", "config"])
+    patch_noninteractive_kconfig(pb)
+    text = pb.read_text()
+    assert text.count("# sysforge: kconfig-resolve") == 2
+    assert "merge_config.sh" in text
+    stripped = [ln.strip() for ln in _kconfig_lines(text)]
+    assert stripped == [
+        "make olddefconfig  # sysforge: kconfig-resolve",
+        "make olddefconfig  # sysforge: kconfig-resolve",
+        "make ARCH=x86_64 defconfig",
+        "make ARCH=x86_64 olddefconfig",
+    ]
+
+
+def test_kconfig_targets_standalone_ignores_sentinel_comments(tmp_path):
+    """Without an anchor besides sentinel-tagged lines, the patcher refuses —
+    sysforge-injected resolve lines are never treated as the PKGBUILD's own
+    kconfig step."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(
+        "prepare() {\n"
+        "  make olddefconfig  # sysforge: kconfig-resolve\n"
+        "}\n"
+    )
+    with pytest.raises(RuntimeError, match="kconfig"):
+        patch_kconfig_targets(pb, ["olddefconfig"])
 
 
 # ---------------------------------------------------------------------------

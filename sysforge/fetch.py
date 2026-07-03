@@ -16,7 +16,12 @@ from pathlib import Path
 
 from sysforge import log
 _log = log.get_logger("FETCH")
-from sysforge.primitives.config import find_pkgbuild, load_config
+from sysforge.primitives.config import (
+    find_pkgbuild,
+    load_config,
+    load_sysforge_toml,
+    resolve_repo_track,
+)
 from sysforge.primitives.llvm_state import collect_llvm_state, render_preflight
 from sysforge.primitives.source_sync import SyncRequest, get_scheduler
 
@@ -31,6 +36,7 @@ def cmd_fetch(args) -> int:
         cleansrc=cleansrc,
         cleansrc_force=cleansrc_force,
         force_devel=getattr(args, "devel", False),
+        repo_track=resolve_repo_track(load_sysforge_toml().get("build", {})),
     )
 
     if not getattr(args, "no_llvm_preflight", False):

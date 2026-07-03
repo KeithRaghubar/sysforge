@@ -46,7 +46,13 @@ must already exist.
     get_scheduler(*, state_dir, offline=False, cleansrc=False,
                   min_fetch_interval_ms=None, rate_limit_abort_s=None,
                   fetch_timeout=None, clone_timeout=None,
-                  force_devel=False) -> SourceSyncScheduler
+                  force_devel=False, repo_track="stable") -> SourceSyncScheduler
+
+``repo_track`` governs ``source = "repo"`` checkouts: ``"stable"`` (default)
+pins them to pacman's sync-DB release tag after every clone/fetch (detached
+HEAD via ``pkgctl repo switch``); ``"main"`` leaves them tracking the
+packaging repo's main branch (testing-track). Callers thread
+``config.resolve_repo_track(sysforge_toml["build"])``.
 
 Sequential execution, per-process singleton, per-run dedup: a second
 ``request()`` for the same pkgbase returns the cached result. Cross-process
@@ -68,9 +74,10 @@ from sysforge.primitives.aur import (
     git_fetch_and_compare,
     git_is_dirty,
     is_rate_limit_error,
-    pkgctl_checkout,
-    purge_src,
 )
+from sysforge.primitives.build_prep import pkgctl_checkout, pkgctl_switch_version
+from sysforge.primitives.git_ops import purge_src, purge_srcdest
+from sysforge.primitives.pacman import get_pacman_sync_version, get_srcdest
 from sysforge.primitives.rate_limit import RateLimiter
 from sysforge.primitives.source_meta import SourceMetaCache, _now_iso
 
@@ -128,6 +135,7 @@ class SourceSyncScheduler:
         cleansrc: bool = False,
         cleansrc_force: bool = False,
         force_devel: bool = False,
+        repo_track: str = "stable",
         min_fetch_interval_ms: int | None = None,
         rate_limit_abort_s: float | None = None,
         fetch_timeout: int | None = None,
@@ -135,6 +143,7 @@ class SourceSyncScheduler:
     ):
         self.state_dir = Path(state_dir)
         self.offline = offline
+        self.repo_track = repo_track
         # cleansrc_force implies cleansrc — same purge gate, but with the
         # dirty-tree refusal bypassed at purge_src.
         self.cleansrc = cleansrc or cleansrc_force
@@ -262,6 +271,7 @@ class SourceSyncScheduler:
                     force=self.cleansrc_force,
                     is_vcs=_is_vcs(pkgbase),
                 )
+                purge_srcdest(pkgbase, get_srcdest(), pkgbuild_dir=pkgbuild_dir)
                 self.invalidate(pkgbase)
             except RuntimeError as e:
                 _log.error(f"--cleansrc {pkgbase}: {e}")
@@ -293,6 +303,7 @@ class SourceSyncScheduler:
                     force=self.cleansrc_force,
                     is_vcs=_is_vcs(pkgbase),
                 )
+                purge_srcdest(pkgbase, get_srcdest(), pkgbuild_dir=pkgbuild_dir)
             except RuntimeError as e:
                 return SyncResult(
                     pkgbase=pkgbase, status=STATUS_PURGE_REFUSED, error=str(e),
@@ -320,7 +331,7 @@ class SourceSyncScheduler:
                 head_before=local_head, head_after=local_head,
             )
 
-        return self._fetch(pkgbase, pkgbuild_dir, rpc_entry)
+        return self._fetch(pkgbase, pkgbuild_dir, rpc_entry, source=req.source)
 
     def _can_short_circuit(
         self, rpc_entry: dict | None, meta: dict | None, local_head: str | None,
@@ -357,6 +368,17 @@ class SourceSyncScheduler:
                 )
             return SyncResult(pkgbase=pkgbase, status=STATUS_FAILED, error=err)
 
+        if source == "repo":
+            err = self._pin_repo_checkout(pkgbase, pkgbuild_dir)
+            if err is not None:
+                # Fresh clone: no prior head; report where the failed pin
+                # left the checkout so STATUS_FAILED stays reporting-consistent.
+                return SyncResult(
+                    pkgbase=pkgbase, status=STATUS_FAILED,
+                    head_before=None, head_after=_head_commit(pkgbuild_dir),
+                    error=err,
+                )
+
         head = _head_commit(pkgbuild_dir)
         rpc_entry = self._rpc_entry(pkgbase) if source != "repo" else None
         self.cache.update(
@@ -373,12 +395,55 @@ class SourceSyncScheduler:
             head_before=None, head_after=head,
         )
 
+    def _pin_repo_checkout(self, pkgbase: str, pkgbuild_dir: Path) -> str | None:
+        """Pin a source=repo checkout to pacman's sync-DB release tag.
+
+        Returns an error string (sync becomes STATUS_FAILED) or None on
+        success/no-op. No sync-DB candidate → warn and stay on main (never an
+        error: the package may live only in a custom repo).
+        """
+        if self.repo_track != "stable":
+            return None
+        version = get_pacman_sync_version(pkgbase)
+        if version is None:
+            _log.warn(
+                f"{pkgbase}: no sync-DB candidate — leaving checkout on main "
+                f"(testing-track)"
+            )
+            return None
+        try:
+            pkgctl_switch_version(pkgbuild_dir, version, timeout=self.fetch_timeout)
+        except RuntimeError as e:
+            return str(e)
+        return None
+
     def _fetch(
         self, pkgbase: str, pkgbuild_dir: Path, rpc_entry: dict | None,
+        *, source: str = "aur",
     ) -> SyncResult:
         outcome: GitFetchOutcome = git_fetch_and_compare(
             pkgbuild_dir, timeout=self.fetch_timeout, limiter=self.limiter,
         )
+
+        repo_stable = source == "repo" and self.repo_track == "stable"
+
+        if repo_stable and outcome.status == "no_tracking":
+            # A pinned checkout sits on a detached HEAD with no tracking
+            # branch — the steady state for repo+stable. Refresh tags with a
+            # plain fetch, then fall through to the re-pin below.
+            head_before = _head_commit(pkgbuild_dir)
+            err = _fetch_repo_tags(
+                pkgbuild_dir, timeout=self.fetch_timeout, limiter=self.limiter,
+            )
+            if err is not None:
+                return SyncResult(
+                    pkgbase=pkgbase, status=STATUS_FAILED,
+                    head_before=head_before, error=err,
+                )
+            outcome = GitFetchOutcome(
+                status="up_to_date",
+                head_before=head_before, head_after=head_before,
+            )
 
         if outcome.status == STATUS_RATE_LIMITED:
             if self.limiter.remaining_penalty_s() > self.rate_limit_abort_s:
@@ -408,6 +473,30 @@ class SourceSyncScheduler:
                 _log.info(
                     f"{pkgbase}: upstream history diverged on a clean tree; "
                     f"reset to upstream {new_head[:10]}"
+                )
+
+        if repo_stable and outcome.status in ("up_to_date", "fetched"):
+            if git_is_dirty(pkgbuild_dir, is_vcs=_is_vcs(pkgbase)):
+                return SyncResult(
+                    pkgbase=pkgbase, status=STATUS_DIVERGED,
+                    head_before=outcome.head_before,
+                    head_after=outcome.head_after,
+                    error="local edits present — not re-pinning",
+                )
+            pre = _head_commit(pkgbuild_dir)
+            err = self._pin_repo_checkout(pkgbase, pkgbuild_dir)
+            if err is not None:
+                return SyncResult(
+                    pkgbase=pkgbase, status=STATUS_FAILED,
+                    head_before=pre, head_after=_head_commit(pkgbuild_dir),
+                    error=err,
+                )
+            post = _head_commit(pkgbuild_dir)
+            if post != pre:
+                # The pin moved HEAD (sync-DB tag advanced) — report the
+                # switch as the fetch delta.
+                outcome = GitFetchOutcome(
+                    status="fetched", head_before=pre, head_after=post,
                 )
 
         if outcome.status in ("up_to_date", "fetched"):
@@ -454,6 +543,32 @@ def _head_commit(pkgbuild_dir: Path) -> str | None:
     return r.stdout.strip() or None
 
 
+def _fetch_repo_tags(
+    pkgbuild_dir: Path, *, timeout: int | None = 30, limiter=None,
+) -> str | None:
+    """Tags-included fetch for a pinned (detached-HEAD) repo checkout.
+
+    ``git_fetch_and_compare`` bails with ``no_tracking`` on detached HEADs,
+    so pinned repo+stable checkouts refresh release tags with a plain
+    ``git fetch --tags origin`` instead. Returns an error string or None.
+    """
+    import subprocess
+    cmd = ["git", "-C", str(pkgbuild_dir), "fetch", "--tags", "origin"]
+    try:
+        if limiter is not None:
+            from sysforge.primitives.rate_limit import run_throttled_git
+            r = run_throttled_git(cmd, limiter, timeout=timeout or None)
+        else:
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout or None,
+            )
+    except subprocess.TimeoutExpired:
+        return f"git fetch --tags timed out after {timeout}s"
+    if r.returncode != 0:
+        return (r.stderr or r.stdout).strip() or "git fetch --tags failed"
+    return None
+
+
 def _reset_hard_fetch_head(pkgbuild_dir: Path) -> str | None:
     """Hard-reset the local branch to FETCH_HEAD.
 
@@ -485,6 +600,7 @@ def get_scheduler(
     cleansrc: bool = False,
     cleansrc_force: bool = False,
     force_devel: bool = False,
+    repo_track: str = "stable",
     min_fetch_interval_ms: int | None = None,
     rate_limit_abort_s: float | None = None,
     fetch_timeout: int | None = None,
@@ -493,7 +609,8 @@ def get_scheduler(
     """Return the per-process scheduler, constructing it on first call.
 
     Subsequent calls update mutable runtime flags (``offline`` / ``cleansrc``
-    / ``cleansrc_force`` / ``force_devel``) on the existing instance so
+    / ``cleansrc_force`` / ``force_devel`` / ``repo_track``) on the existing
+    instance so
     callers in different commands (e.g. `sysforge fetch` after `sysforge
     update`) can share the metadata cache without re-reading
     ``source_meta.toml``.
@@ -509,6 +626,7 @@ def get_scheduler(
             cleansrc=cleansrc,
             cleansrc_force=cleansrc_force,
             force_devel=force_devel,
+            repo_track=repo_track,
             min_fetch_interval_ms=min_fetch_interval_ms,
             rate_limit_abort_s=rate_limit_abort_s,
             fetch_timeout=fetch_timeout,
@@ -520,6 +638,8 @@ def get_scheduler(
         _scheduler.cleansrc = cleansrc or cleansrc_force or _scheduler.cleansrc
         _scheduler.cleansrc_force = cleansrc_force or _scheduler.cleansrc_force
         _scheduler.force_devel = force_devel or _scheduler.force_devel
+        if repo_track != "stable":
+            _scheduler.repo_track = repo_track
     return _scheduler
 
 

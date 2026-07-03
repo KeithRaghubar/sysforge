@@ -60,13 +60,17 @@ _WL_RE = re.compile(r"^-Wl,(.+)$")
 _INLINE_MAKE_RE = re.compile(r"^\s*make\s+(?P<key>\w+)=", re.MULTILINE)
 _INLINE_CMAKE_RE = re.compile(r"^\s*cmake\b.*-D(?P<key>[A-Z_]+)=", re.MULTILINE)
 
-# Interactive kconfig targets — require terminal input or a TUI.
+# Interactive kconfig targets — require terminal input or a TUI (bare
+# `config` line-prompts for every symbol; the rest are full-screen UIs).
 # Replaced with `make olddefconfig` in noninteractive mode (kernel stage).
+# `config` sits last in the alternation so `oldconfig` can't be half-matched
+# (the preceding \s+ prevents mid-word matches either way).
 # Groups: (1) leading whitespace + make + optional VAR=val args + space
 #         (2) the interactive target name
 #         (3) optional trailing whitespace / comment
 _INTERACTIVE_KCONFIG_RE = re.compile(
-    r"^(\s*make(?:\s+\w+=\S*)*\s+)(oldconfig|nconfig|menuconfig|xconfig|gconfig)(\s*(?:#.*)?)$",
+    r"^(\s*make(?:\s+\w+=\S*)*\s+)(oldconfig|nconfig|menuconfig|xconfig|gconfig|config)"
+    r"(\s*(?:#.*)?)$",
     re.MULTILINE,
 )
 
@@ -75,7 +79,8 @@ _INTERACTIVE_KCONFIG_RE = re.compile(
 # point where .config is established) — group 1 captures its indentation.
 _KCONFIG_SETUP_RE = re.compile(
     r"^([ \t]*)make(?:\s+\w+=\S*)*\s+"
-    r"(?:olddefconfig|oldconfig|defconfig|alldefconfig)\b.*$",
+    r"(?:olddefconfig|oldconfig|defconfig|alldefconfig|localmodconfig|"
+    r"localyesconfig|mod2yesconfig|allmodconfig)\b.*$",
     re.MULTILINE,
 )
 # Secondary anchor: the line that creates .config (cp/cat into .config), used
@@ -608,7 +613,7 @@ def patch_noninteractive_kconfig(patched_path):
     Replace interactive kconfig targets in a (already-patched) PKGBUILD file
     with `make olddefconfig`, which applies defaults non-interactively.
 
-    Handles: oldconfig, nconfig, menuconfig, xconfig, gconfig.
+    Handles: oldconfig, nconfig, menuconfig, xconfig, gconfig, config.
     Preserves any VAR=val arguments before the target (e.g. ARCH=x86_64).
     Logs each replacement.
 
@@ -636,6 +641,104 @@ def patch_noninteractive_kconfig(patched_path):
             )
     else:
         _log.info("No interactive kconfig targets found — nothing replaced")
+
+
+# All targets this patcher recognizes as "a kconfig generation invocation" —
+# the full set from `make help`'s config-targets section (kernel.toml
+# ``kconfig_targets`` validates against the same set; see
+# resolve_kconfig_targets).
+_ALL_KCONFIG_TARGETS = (
+    "config|nconfig|menuconfig|xconfig|gconfig|oldconfig|olddefconfig|"
+    "localmodconfig|localyesconfig|mod2yesconfig|defconfig|allmodconfig|"
+    "alldefconfig|savedefconfig|listnewconfig|randconfig"
+)
+_ANY_KCONFIG_RE = re.compile(
+    # Trailer is same-line only ([ \t], not \s): a multi-line \s* would let a
+    # match swallow a following comment line and misclassify the invocation.
+    r"^([ \t]*)(make(?:\s+\w+=\S*)*[ \t]+)(?:" + _ALL_KCONFIG_TARGETS
+    + r")([ \t]*(?:#.*)?)$",
+    re.MULTILINE,
+)
+
+# Sentinel comment on kconfig-resolve lines injected by
+# patch_kernel_kconfig_apply (inside the base-seed / merge_config.sh guard
+# blocks). patch_kconfig_targets must not treat sysforge-injected lines as the
+# PKGBUILD's own kconfig steps: they are neither removed nor used as the
+# anchor, and the configured sequence is inserted *after* the guard block
+# carrying the last one, so the fragment merge stays intact and the configured
+# targets (UI review included) operate on the fully seeded+merged .config.
+_KCONFIG_RESOLVE_SENTINEL = "# sysforge: kconfig-resolve"
+
+
+def patch_kconfig_targets(patched_path, targets: list[str]) -> None:
+    """Replace a kernel PKGBUILD's kconfig-generation invocation(s) with the
+    configured target sequence (kernel.toml ``kconfig_targets``, already
+    validated/ordered by the kernel stage).
+
+    Every PKGBUILD-owned ``make <kconfig-target>`` line is removed — the
+    configured list is the sole authority for kconfig generation. Lines
+    carrying a ``# sysforge:`` comment are exempt: they belong to
+    ``patch_kernel_kconfig_apply``'s base-seed / fragment-merge guard blocks
+    (tagged with ``_KCONFIG_RESOLVE_SENTINEL``) and must survive so the merge
+    stays resolved. The configured block reuses the first removed line's
+    indentation and ``VAR=val`` arguments (ARCH=, LLVM=, …) and is inserted
+    *after* the injected merge block when one exists (so the configured
+    sequence — including any UI review target, always last — operates on the
+    fully seeded+merged ``.config``); with no sentinel block present it takes
+    the first removed line's position. Raises RuntimeError when no
+    PKGBUILD-owned kconfig invocation exists (exotic PKGBUILD): never build
+    with a half-patched config step.
+
+    Removals are spliced last-to-first so earlier offsets stay valid.
+    Mirrors the sibling kernel patchers: edits patched_path
+    (PKGBUILD.sysforge) in place.
+    """
+    patched_path = Path(patched_path)
+    text = patched_path.read_text()
+    matches = [
+        m for m in _ANY_KCONFIG_RE.finditer(text)
+        if "# sysforge:" not in m.group(0)
+    ]
+    if not matches:
+        raise RuntimeError(
+            f"kconfig_targets: no kconfig make invocation found in "
+            f"{patched_path} — cannot anchor the configured target sequence"
+        )
+
+    first = matches[0]
+    indent, make_prefix, trailer = first.group(1), first.group(2), first.group(3)
+    # Remove every PKGBUILD-owned match, last-to-first, so earlier offsets
+    # (including first.start()) stay valid. Also swallow the newline that
+    # terminated each removed line so no blank line is left behind.
+    for m in reversed(matches):
+        start = m.start()
+        end = m.end()
+        if end < len(text) and text[end] == "\n":
+            end += 1
+        elif start > 0 and text[start - 1] == "\n":
+            start -= 1
+        text = text[:start] + text[end:]
+
+    # Composition with patch_kernel_kconfig_apply: when its sentinel-tagged
+    # resolve lines are present, insert after the guard block carrying the
+    # last one (its closing `fi`), so the configured sequence runs on the
+    # merged .config. Otherwise the first removed line's position anchors.
+    insert_at = first.start()
+    s_idx = text.rfind(_KCONFIG_RESOLVE_SENTINEL)
+    if s_idx != -1:
+        line_end = text.find("\n", s_idx)
+        insert_at = line_end + 1 if line_end != -1 else len(text)
+        next_nl = text.find("\n", insert_at)
+        if next_nl != -1 and text[insert_at:next_nl].strip() == "fi":
+            insert_at = next_nl + 1
+
+    block = "\n".join(f"{indent}{make_prefix}{t}" for t in targets) + trailer + "\n"
+    text = text[:insert_at] + block + text[insert_at:]
+
+    patched_path.write_text(text)
+    _log.info(
+        f"Patched kconfig invocation to configured target sequence: {targets!r}",
+    )
 
 
 def _find_kconfig_anchor(text: str):
@@ -707,11 +810,11 @@ def patch_kernel_kconfig_apply(patched_path, *, interactive,
         f"{indent}# sysforge: seed the base config (when provided), then merge the fragment",
         f'{indent}if [ -f "$startdir/sysforge.base.config" ]; then',
         f'{indent}  cp "$startdir/sysforge.base.config" .config',
-        f"{indent}  make olddefconfig",
+        f"{indent}  make olddefconfig  {_KCONFIG_RESOLVE_SENTINEL}",
         f"{indent}fi",
         f'{indent}if [ -f "$startdir/{fragment}" ]; then',
         f'{indent}  ./scripts/kconfig/merge_config.sh -m .config "$startdir/{fragment}"',
-        f"{indent}  make olddefconfig",
+        f"{indent}  make olddefconfig  {_KCONFIG_RESOLVE_SENTINEL}",
         f"{indent}fi",
     ]
     if add_nconfig:

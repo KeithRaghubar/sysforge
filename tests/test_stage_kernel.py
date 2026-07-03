@@ -13,15 +13,18 @@ import pytest
 from sysforge.pipeline.stages.base import RunOptions
 from sysforge.pipeline.stages.kernel import (
     KernelStage,
+    _capture_lsmod_snapshot,
     _fdo_is_llvm,
     _format_kconfig_line,
     _gate_fdo_llvm,
     _load_hardware_kconfig,
     _load_kernel_config,
+    _merge_lsmod,
     _pkgbuild_path,
     _resolve_fdo,
     _validate_manual_kconfig,
     _write_kconfig_fragment,
+    resolve_kconfig_targets,
 )
 from sysforge.pipeline.state import PipelineState
 from sysforge.primitives import device_probe, kbuild_map, kernel_safety
@@ -217,6 +220,81 @@ def test_validate_kconfig_duplicate_option():
     ]
     with pytest.raises(RuntimeError, match="duplicate option"):
         _validate_manual_kconfig(entries)
+
+
+# ---------------------------------------------------------------------------
+# resolve_kconfig_targets
+# ---------------------------------------------------------------------------
+
+def test_resolve_kconfig_targets_unset_returns_none():
+    assert resolve_kconfig_targets({}, interactive=True) is None
+
+
+def test_resolve_kconfig_targets_ui_target_reordered_last():
+    cfg = {"kconfig_targets": ["nconfig", "localmodconfig", "olddefconfig"]}
+    assert resolve_kconfig_targets(cfg, interactive=True) == [
+        "localmodconfig",
+        "olddefconfig",
+        "nconfig",
+    ]
+
+
+def test_resolve_kconfig_targets_two_ui_targets_rejected():
+    cfg = {"kconfig_targets": ["nconfig", "menuconfig"]}
+    with pytest.raises(ValueError, match="at most one"):
+        resolve_kconfig_targets(cfg, interactive=True)
+
+
+def test_resolve_kconfig_targets_randconfig_rejected():
+    with pytest.raises(ValueError, match="randconfig"):
+        resolve_kconfig_targets({"kconfig_targets": ["randconfig"]}, interactive=True)
+
+
+def test_resolve_kconfig_targets_unknown_target_rejected():
+    with pytest.raises(ValueError, match="unknown"):
+        resolve_kconfig_targets({"kconfig_targets": ["bogusconfig"]}, interactive=True)
+
+
+def test_resolve_kconfig_targets_prompting_target_rejected_when_non_interactive():
+    with pytest.raises(ValueError, match="olddefconfig"):
+        resolve_kconfig_targets({"kconfig_targets": ["oldconfig"]}, interactive=False)
+
+
+def test_resolve_kconfig_targets_local_target_rejected_when_non_interactive():
+    with pytest.raises(ValueError, match="interactively"):
+        resolve_kconfig_targets(
+            {"kconfig_targets": ["localmodconfig"]}, interactive=False
+        )
+
+
+def test_resolve_kconfig_targets_silent_targets_pass_non_interactive():
+    cfg = {"kconfig_targets": ["olddefconfig", "savedefconfig"]}
+    assert resolve_kconfig_targets(cfg, interactive=False) == [
+        "olddefconfig",
+        "savedefconfig",
+    ]
+
+
+def test_resolve_kconfig_targets_localmodconfig_warns(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(
+        _km.log, "warn", lambda tag, msg: warnings.append(msg)
+    )
+    cfg = {"kconfig_targets": ["localmodconfig"]}
+    result = resolve_kconfig_targets(cfg, interactive=True)
+    assert result == ["localmodconfig"]
+    assert any("lsmod.snapshot" in w for w in warnings)
+
+
+def test_resolve_kconfig_targets_localyesconfig_warns(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(
+        _km.log, "warn", lambda tag, msg: warnings.append(msg)
+    )
+    cfg = {"kconfig_targets": ["localyesconfig"]}
+    result = resolve_kconfig_targets(cfg, interactive=True)
+    assert result == ["localyesconfig"]
+    assert any("lsmod.snapshot" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -2274,6 +2352,110 @@ def test_resolution_summary_names_compiler_origin(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# F37 — kconfig_targets wiring into the kernel stage
+# ---------------------------------------------------------------------------
+
+def _write_kconfig_targets_toml(tmp_path, builds, targets, *, interactive=None):
+    lines = [
+        'enabled = true',
+        'pkgname = "linux-git"',
+        'source = "local"',
+        f'pkgbuild_src_dir = "{builds}"',
+        'bootloader = "systemd-boot"',
+        f'kconfig_targets = {targets!r}'.replace("'", '"'),
+    ]
+    if interactive is not None:
+        lines.append(f'interactive = {str(interactive).lower()}')
+    p = tmp_path / "kernel.toml"
+    p.write_text("\n".join(lines) + "\n")
+    return p
+
+
+def test_kconfig_targets_passed_to_makepkg_options_when_configured(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = PipelineState(tmp_path / "state")
+    p = _write_kconfig_targets_toml(tmp_path, builds, ["olddefconfig"], interactive=False)
+
+    import sysforge.pipeline.stages.kernel as _km
+    opts = make_options(state_dir=tmp_path / "state")
+    with patch.object(_km, "KERNEL_PATH", p), \
+         _capture_logs(), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_run, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         patch("sysforge.pipeline.stages.kernel._probe_installed_bootloader",
+               return_value={"systemd-boot"}):
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    assert mock_run.called
+    build_opts = mock_run.call_args.kwargs["options"]
+    assert build_opts.kconfig_targets == ["olddefconfig"]
+
+
+def test_kconfig_targets_unset_passes_none(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = PipelineState(tmp_path / "state")
+    p = make_kernel_toml(tmp_path, builds)
+
+    import sysforge.pipeline.stages.kernel as _km
+    opts = make_options(state_dir=tmp_path / "state")
+    with patch.object(_km, "KERNEL_PATH", p), \
+         _capture_logs(), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_run, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         patch("sysforge.pipeline.stages.kernel._probe_installed_bootloader",
+               return_value={"systemd-boot"}):
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+    assert mock_run.called
+    build_opts = mock_run.call_args.kwargs["options"]
+    assert build_opts.kconfig_targets is None
+
+
+def test_kconfig_targets_invalid_aborts_before_build(tmp_path):
+    """A bad kconfig_targets list raises ValueError pre-build — makepkg never runs."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = PipelineState(tmp_path / "state")
+    p = _write_kconfig_targets_toml(tmp_path, builds, ["randconfig"])
+
+    import sysforge.pipeline.stages.kernel as _km
+    opts = make_options(state_dir=tmp_path / "state")
+    with patch.object(_km, "KERNEL_PATH", p), \
+         _capture_logs(), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_run, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         patch("sysforge.pipeline.stages.kernel._probe_installed_bootloader",
+               return_value={"systemd-boot"}):
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        with pytest.raises(ValueError, match="randconfig"):
+            KernelStage().run({}, state, opts)
+
+    mock_run.assert_not_called()
+
+
+def test_kconfig_targets_summary_line_reports_configured_sequence(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = PipelineState(tmp_path / "state")
+    p = _write_kconfig_targets_toml(
+        tmp_path, builds, ["localmodconfig", "olddefconfig", "nconfig"],
+        interactive=True,
+    )
+    opts = make_options(state_dir=tmp_path / "state", dry_run=True)
+    logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
+
+    ui = _ui_messages(logs)
+    assert any(
+        "kconfig:" in m and "localmodconfig → olddefconfig → nconfig (configured)" in m
+        for m in ui
+    ), f"configured kconfig summary not found in {ui}"
+
+
+# ---------------------------------------------------------------------------
 # B2 — Missing-PKGBUILD hint (interrupted --cleansrc)
 # ---------------------------------------------------------------------------
 
@@ -2632,3 +2814,60 @@ def test_kernel_stage_bootstraps_missing_tree_via_sync(tmp_path):
 
     scheduler_mock.request.assert_called_once()
     mock_build.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _capture_lsmod_snapshot / _merge_lsmod — accumulating snapshot (F37)
+# ---------------------------------------------------------------------------
+
+LSMOD_HEADER = "Module                  Size  Used by\n"
+
+
+def _mock_lsmod(monkeypatch, stdout):
+    real_run = _km.subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if argv == ["lsmod"]:
+            return MagicMock(returncode=0, stdout=stdout)
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(_km.subprocess, "run", fake_run)
+
+
+def test_snapshot_accumulates_across_captures(tmp_path, monkeypatch):
+    snap = tmp_path / "lsmod.snapshot"
+    snap.write_text(LSMOD_HEADER + "wireguard 90112 0\n")
+    _mock_lsmod(monkeypatch, LSMOD_HEADER + "ext4 999424 1\n")
+    _capture_lsmod_snapshot(tmp_path, dry_run=False)
+    text = snap.read_text()
+    assert "wireguard" in text  # retained from prior snapshot
+    assert "ext4" in text  # newly merged
+    assert text.startswith("Module")
+    assert text.count("wireguard") == 1  # no duplicate rows
+
+
+def test_snapshot_fresh_capture_when_missing(tmp_path, monkeypatch):
+    _mock_lsmod(monkeypatch, LSMOD_HEADER + "ext4 999424 1\n")
+    _capture_lsmod_snapshot(tmp_path, dry_run=False)
+    assert "ext4" in (tmp_path / "lsmod.snapshot").read_text()
+
+
+def test_snapshot_corrupt_prior_degrades_to_fresh(tmp_path, monkeypatch):
+    (tmp_path / "lsmod.snapshot").write_bytes(b"\x00\xff garbage")
+    _mock_lsmod(monkeypatch, LSMOD_HEADER + "ext4 999424 1\n")
+    with _capture_logs() as logs:
+        _capture_lsmod_snapshot(tmp_path, dry_run=False)
+    text = (tmp_path / "lsmod.snapshot").read_text()
+    assert "ext4" in text
+    assert "garbage" not in text
+    assert _warn_messages(logs)
+
+
+def test_merge_lsmod_current_wins_on_conflict():
+    prior = LSMOD_HEADER + "wireguard 90112 0\n"
+    current = LSMOD_HEADER + "wireguard 90112 1\next4 999424 1\n"
+    merged = _merge_lsmod(prior, current)
+    assert merged.startswith("Module")
+    assert "wireguard 90112 1" in merged
+    assert "ext4" in merged
+    assert merged.count("wireguard") == 1

@@ -118,6 +118,7 @@ from sysforge.primitives.config import (
     load_sysforge_toml,
     set_default_toolchain,
     resolve_repo_mode,
+    resolve_repo_track,
     REPO_MODE_PACMAN,
 )
 from sysforge.primitives.llvm_state import (
@@ -193,6 +194,7 @@ def _sync_pkgbuild_dirs(
     scheduler = get_scheduler(
         cleansrc=cleansrc or cleansrc_force,
         cleansrc_force=cleansrc_force,
+        repo_track=resolve_repo_track(load_sysforge_toml().get("build", {})),
         min_fetch_interval_ms=aur_cfg.get("min_fetch_interval_ms", 500),
         rate_limit_abort_s=aur_cfg.get("rate_limit_abort_s", 120.0),
         fetch_timeout=fetch_timeout,

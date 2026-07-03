@@ -206,6 +206,85 @@ def test_kernel_build_always_applies_fragment_merge(tmp_path):
         assert mock_apply.call_args.kwargs["interactive"] is interactive
 
 
+def test_kernel_build_applies_kconfig_targets_patch(tmp_path):
+    """kconfig_targets set → patch_kconfig_targets called with (path, targets)."""
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig"),
+        patch("sysforge.primitives.makepkg_wrapper.patch_kconfig_targets") as mock_kt,
+    ):
+        _run_build(pkgbuild, _minimal_profile(), {}, [],
+                   extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
+                   interactive=False, kernel_build=True,
+                   kconfig_targets=["olddefconfig"])
+    mock_kt.assert_called_once()
+    args = mock_kt.call_args.args
+    assert args[1] == ["olddefconfig"]
+
+
+def test_kernel_build_kconfig_targets_unset_skips_patch(tmp_path):
+    """kconfig_targets=None (default) → patch_kconfig_targets never called."""
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig"),
+        patch("sysforge.primitives.makepkg_wrapper.patch_kconfig_targets") as mock_kt,
+    ):
+        _run_build(pkgbuild, _minimal_profile(), {}, [],
+                   extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
+                   interactive=False, kernel_build=True)
+    mock_kt.assert_not_called()
+
+
+def test_non_kernel_build_never_applies_kconfig_targets_patch(tmp_path):
+    """kernel_build=False → patch_kconfig_targets never called even if set."""
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.primitives.makepkg_wrapper.patch_kconfig_targets") as mock_kt,
+    ):
+        _run_build(pkgbuild, _minimal_profile(), {}, [],
+                   extracted_profile=None, pkgmeta=_minimal_pkgmeta(),
+                   kernel_build=False, kconfig_targets=["olddefconfig"])
+    mock_kt.assert_not_called()
+
+
+def test_kconfig_targets_suppress_injected_nconfig_review(tmp_path):
+    """When a configured kconfig_targets sequence is set it is the sole
+    authority for kconfig generation *and* UI review — the fragment merge is
+    still injected, but with the interactive nconfig-review add suppressed."""
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.primitives.makepkg_wrapper.patch_kernel_kconfig_apply") as mock_apply,
+        patch("sysforge.primitives.makepkg_wrapper.patch_kconfig_targets"),
+    ):
+        _run_build(pkgbuild, _minimal_profile(), {}, [],
+                   extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
+                   interactive=True, kernel_build=True,
+                   kconfig_targets=["nconfig"])
+    mock_apply.assert_called_once()
+    assert mock_apply.call_args.kwargs["interactive"] is False
+
+
+def test_kconfig_targets_patch_applied_before_noninteractive_strip(tmp_path):
+    """Ordering: patch_kconfig_targets runs after the other kernel patchers
+    (patch_kernel_subpackages) but before patch_noninteractive_kconfig — a
+    configured UI tail must still be stripped for a non-interactive run."""
+    order = []
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.primitives.makepkg_wrapper.patch_kernel_subpackages",
+              side_effect=lambda *a, **k: order.append("subpackages")),
+        patch("sysforge.primitives.makepkg_wrapper.patch_kconfig_targets",
+              side_effect=lambda *a, **k: order.append("kconfig_targets")),
+        patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig",
+              side_effect=lambda *a, **k: order.append("noninteractive")),
+    ):
+        _run_build(pkgbuild, _minimal_profile(), {}, [],
+                   extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
+                   interactive=False, kernel_build=True,
+                   kconfig_targets=["olddefconfig"])
+    assert order == ["subpackages", "kconfig_targets", "noninteractive"]
+
+
 def test_non_kernel_build_never_applies_fragment_merge(tmp_path):
     with (
         _mock_build_context(tmp_path) as (pkgbuild, _),

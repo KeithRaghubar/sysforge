@@ -79,6 +79,7 @@ _log = log.get_logger("KERNEL")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives import device_probe, kbuild_map, kernel_fdo, kernel_safety
 from sysforge.primitives.build_lock import build_lock
+from sysforge.primitives.config import load_sysforge_toml, resolve_repo_track
 from sysforge.primitives.paths import KERNEL_PATH
 from sysforge.primitives.makepkg_wrapper import (
     AlreadyBuilt,
@@ -391,6 +392,7 @@ def _presync_kernel_source(pkgbuild_dir, options, state_dir, source="local"):
         state_dir=state_dir,
         cleansrc=cleansrc,
         cleansrc_force=bool(getattr(options, "cleansrc_force", False)),
+        repo_track=resolve_repo_track(load_sysforge_toml().get("build", {})),
     )
     result = scheduler.request(SyncRequest(
         pkgbase=pkgbuild_dir.name,
@@ -668,11 +670,40 @@ def _pkgbuild_path(kernel_cfg):
 # ---------------------------------------------------------------------------
 
 
+def _merge_lsmod(prior_text: str, current_text: str) -> str:
+    """Union-merge two lsmod outputs by module name (first column).
+
+    Current rows win for modules present in both (fresher Size/Used data);
+    prior-only rows are retained — the snapshot grows monotonically so
+    ``make localmodconfig`` keeps modules that are only loaded intermittently
+    (USB devices, VPN, container netfilter, …). Output stays valid lsmod
+    format: header line then one row per module.
+    """
+
+    def rows(text):
+        lines = [line for line in text.splitlines() if line.strip()]
+        if not lines or not lines[0].startswith("Module"):
+            raise ValueError("not lsmod output")
+        return {line.split()[0]: line for line in lines[1:] if line.split()}
+
+    current = rows(current_text)
+    merged = rows(prior_text)
+    merged.update(current)
+    header = current_text.splitlines()[0]
+    return header + "\n" + "\n".join(merged[name] for name in sorted(merged)) + "\n"
+
+
 def _capture_lsmod_snapshot(state_dir, dry_run):
     """
     Capture current lsmod output to <state_dir>/lsmod.snapshot.
     Used by the PKGBUILD's prepare() to run make localmodconfig reproducibly
     on any machine with the same module set, not just the build machine.
+
+    The snapshot accumulates: each capture is union-merged with the prior
+    one by module name, so intermittently-loaded modules (USB devices, VPN,
+    container netfilter, …) are never dropped just because they weren't
+    loaded during this particular capture. There is no reset flag — delete
+    <state_dir>/lsmod.snapshot to start over.
     """
     snapshot_path = Path(state_dir) / "lsmod.snapshot"
     if dry_run:
@@ -686,8 +717,19 @@ def _capture_lsmod_snapshot(state_dir, dry_run):
         )
         return
 
+    out = result.stdout
+    if snapshot_path.exists():
+        try:
+            out = _merge_lsmod(snapshot_path.read_text(), out)
+            _log.info(f"Merged lsmod snapshot (accumulating): {snapshot_path}")
+        except (ValueError, UnicodeDecodeError) as e:
+            _log.warn(
+                f"Existing lsmod snapshot unreadable ({e}) — starting fresh. "
+                f"(Delete {snapshot_path} to reset the accumulated module set.)"
+            )
+
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-    snapshot_path.write_text(result.stdout)
+    snapshot_path.write_text(out)
     _log.ui(f"Captured lsmod snapshot: {snapshot_path}")
 
 
@@ -732,6 +774,99 @@ def _validate_manual_kconfig(entries):
         seen[option] = value
 
     return seen
+
+
+KCONFIG_UI_TARGETS = ("config", "nconfig", "menuconfig", "xconfig", "gconfig")
+KCONFIG_PROMPTING_TARGETS = (
+    "oldconfig",
+    "localmodconfig",
+    "localyesconfig",
+    "mod2yesconfig",
+)
+KCONFIG_SILENT_TARGETS = (
+    "olddefconfig",
+    "defconfig",
+    "allmodconfig",
+    "alldefconfig",
+    "savedefconfig",
+    "listnewconfig",
+)
+# randconfig deliberately absent: a randomized kernel config on a production
+# build path is a boot-safety hazard with no user story.
+
+_KCONFIG_ALL_TARGETS = (
+    KCONFIG_UI_TARGETS + KCONFIG_PROMPTING_TARGETS + KCONFIG_SILENT_TARGETS
+)
+
+_KCONFIG_SILENT_EQUIVALENT = {
+    "oldconfig": "olddefconfig",
+}
+
+
+def resolve_kconfig_targets(kernel_cfg, *, interactive):
+    """
+    Validate and reorder the [kernel] kconfig_targets list from kernel.toml.
+
+    Returns None when the key is unset (feature off, zero behavior change).
+    Otherwise returns the validated list with any UI target (menuconfig,
+    nconfig, xconfig, gconfig, config) moved last, since those must run
+    after any non-interactive targets have shaped the .config.
+
+    Raises ValueError on: an unknown target, more than one UI target, or a
+    prompting target (oldconfig/localmodconfig/localyesconfig/mod2yesconfig)
+    requested when interactive=False.
+    """
+    targets = kernel_cfg.get("kconfig_targets")
+    if not targets:
+        return None
+
+    ui_targets = []
+    other_targets = []
+
+    for target in targets:
+        if target == "randconfig":
+            raise ValueError(
+                "kconfig_targets: randconfig is not allowed — a randomized "
+                "kernel config is a boot-safety hazard"
+            )
+        if target not in _KCONFIG_ALL_TARGETS:
+            raise ValueError(
+                f"kconfig_targets: unknown target {target!r} — allowed targets "
+                f"are {', '.join(_KCONFIG_ALL_TARGETS)}"
+            )
+
+        if not interactive and target in KCONFIG_PROMPTING_TARGETS:
+            if target in _KCONFIG_SILENT_EQUIVALENT:
+                raise ValueError(
+                    f"kconfig_targets: {target!r} requires interactive input — "
+                    f"use {_KCONFIG_SILENT_EQUIVALENT[target]} instead"
+                )
+            raise ValueError(
+                f"kconfig_targets: {target!r} requires interactive input — "
+                f"run the stage interactively"
+            )
+
+        if target in KCONFIG_UI_TARGETS:
+            ui_targets.append(target)
+        else:
+            other_targets.append(target)
+
+    if len(ui_targets) > 1:
+        raise ValueError(
+            f"kconfig_targets: at most one UI target is allowed, got "
+            f"{ui_targets}"
+        )
+
+    for target in other_targets + ui_targets:
+        if target in ("localmodconfig", "localyesconfig"):
+            _log.warn(
+                f"kconfig_targets: {target} over-minimizes the config to "
+                "modules currently loaded on this machine — high risk, low "
+                "reward. It accumulates an lsmod snapshot at "
+                "<state_dir>/lsmod.snapshot; delete that file to reset it."
+            )
+
+    return other_targets + ui_targets
 
 
 def _load_hardware_kconfig(config, state_dir=None):
@@ -1094,10 +1229,16 @@ def _gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
 
     # A2 — localmodconfig strips inactive hardware.
     if bool(kernel_cfg.get("capture_lsmod_snapshot", True)):
+        from sysforge.pipeline.state import resolve_state_dir
+
+        state_dir, _ = resolve_state_dir(options.state_dir)
+        snapshot_path = Path(state_dir) / "lsmod.snapshot"
         _log.warn(
-            "lsmod snapshot captured for `make localmodconfig` — drivers for "
-            "hardware not active right now will be stripped from the build. "
-            "The post-build boot audit (Gate 2) is the backstop."
+            "lsmod snapshot captured for `make localmodconfig` — the snapshot "
+            "accumulates across builds so intermittently-loaded modules are "
+            "kept, but drivers for hardware never active while capturing "
+            f"remain excluded. Delete {snapshot_path} to reset the "
+            "accumulated set."
         )
 
     # F1 — DKMS modules will need rebuilding against the new kernel.
@@ -1476,6 +1617,13 @@ class KernelStage(Stage):
         cfg_interactive = bool(kernel_cfg.get("interactive", True))
         interactive = cfg_interactive and not getattr(options, "non_interactive", False)
 
+        # F37: configured kconfig_targets sequence — resolved/validated here
+        # (config-load time) so a bad list (unknown target, two UI targets, a
+        # prompting target requested non-interactively) raises ValueError and
+        # aborts before any makepkg invocation, rather than failing mid-build.
+        # None when the key is unset — zero behavior change.
+        kconfig_targets = resolve_kconfig_targets(kernel_cfg, interactive=interactive)
+
         # lsmod snapshot — captured before build for localmodconfig
         # reproducibility. Opt-out via `capture_lsmod_snapshot = false` (Gate 1
         # warns that localmodconfig strips drivers for inactive hardware).
@@ -1586,7 +1734,12 @@ class KernelStage(Stage):
             state_dir=state_dir, extra_kconfig=fdo_extra_kconfig,
         )
 
-        kconfig_target = "make nconfig (user-supplied)" if interactive else "make olddefconfig (patched)"
+        if kconfig_targets:
+            kconfig_target = f"{' → '.join(kconfig_targets)} (configured)"
+        elif interactive:
+            kconfig_target = "make nconfig (user-supplied)"
+        else:
+            kconfig_target = "make olddefconfig (patched)"
         _log.info(f"Kernel kconfig target: {kconfig_target}")
 
         # C3: standalone interactive runs require the operator to drive the
@@ -1703,6 +1856,7 @@ class KernelStage(Stage):
                         toolchain_variant=variant if variant != "system" else None,
                         kernel_build_headers=build_headers,
                         kernel_build_docs=build_docs,
+                        kconfig_targets=kconfig_targets,
                         # FDO use-build: profile path make-variables (extra_env →
                         # `make`) + the optimization build_mode that earns the
                         # -sysforge coexist rename. Both None for record/no-FDO.
