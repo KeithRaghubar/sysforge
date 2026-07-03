@@ -20,3 +20,7 @@ https://keepachangelog.com/en/1.1.0/
 - Release script: the Phase-1 release commit omitted `docs/design/00-header.md`
   from `git add`, leaving the stamped version marker uncommitted and blocking
   `--resume` on a dirty tree.
+- `update`: the version check for a coexist-renamed AUR package (installed as
+  `<pkg>-sysforge`) whose `PKGBUILD` uses bash `pkgver` expansion now falls back
+  to the RPC version cached under its stock upstream base via `origin_pkgbase`,
+  instead of missing the rescue and skipping the package (2.0.1-Q2).

@@ -23,11 +23,70 @@ and in release notes.
 Within each subsection, entries are kept in **ascending ID order** (by type
 counter, then version) — sort on every add so the list stays scannable.
 
+**Open questions (`Q`) must be resolved before any implementation.** A `Q`
+entry is undecided by definition; investigation/spikes to inform the decision
+are fine, but before writing production code the question must first be either
+**promoted** to a proper `F`/`B`/`STD` entry (which then follows the normal
+landing flow) or moved to **Abandoned** with a rationale. Never implement
+straight off a `Q`.
+
 ---
 
 ## Planned
 
+### Bugs
+
+- **`2.0.1-B2` — Build-failure recovery prompt omits the failing package name.** The
+  recovery menu and surrounding failure messages never say *which* package failed —
+  in a batch update the `[SYSFORGE][UI][MAKEPKG] Recover:` prompt is ambiguous. The
+  menu builder (`makepkg_invoke._recover_menu_choices` / `_run_recovery_menu`)
+  already receives `pkgbase`; thread it into the `Recover:` header line (e.g.
+  `Recover <pkgbase>:`) and audit the sibling failure-summary lines for the same
+  omission. One home — the fix lives in the existing recovery-menu seam, no
+  parallel prompt. *Priority: medium (users act on this prompt mid-failure;
+  ambiguity invites acting on the wrong package).*
+
 ### Features
+
+- **`2.0.1-F1` — Config keys for `--abi-check` and other common runtime flags.**
+  Recurring per-run flags (`--abi-check` first; audit the CLI surface for other
+  always-passed candidates) should have corresponding keys in the appropriate
+  shipped config file (`etc/sysforge/*.toml`), so a user who always wants the
+  behavior doesn't repeat the flag. CLI flag wins when passed; resolve through the
+  existing config→args seam (same pattern as F30 rebuild-on-drift). Shipped-file
+  edits update fixtures + `check_shipped` allowlists in the same change. *Priority:
+  medium (same UX gap as F30, broader surface).*
+
+- **`2.0.1-F2` — Show old → new versions in the end-of-run `update` summary.** The
+  Phase-3 version-check summary already renders `installed_ver → pkgbuild_ver`, but
+  the end-of-run built/failed/pacman summary lists bare package names. Carry the
+  version pair through to the final summary (fold into the F33 formatting +
+  F38 dependency-category work in `update_summary._print_summary` — one summary
+  renderer). *Priority: low (visibility polish on the most common verb).*
+
+- **`2.0.1-F3` — Integrate archinstall for the bootstrap disk/base-install slice
+  (promoted from Q1).** Replace sysforge's hand-rolled partitioning + base-install
+  logic (`partition.py` ~411 lines, `base_install.py` ~131 lines) with a
+  **translation layer** that maps sysforge's bootstrap config onto archinstall's
+  scriptable, headless API — validated by the 2026-07-03 spike:
+    - **Disk** → `archinstall.lib.disk.device_handler.DeviceHandler` (singleton:
+      `partition()`, `format()`, `wipe_dev()`, `load_devices()`,
+      `create_btrfs_volumes()`), driven by the `DiskLayoutConfiguration` /
+      `DeviceModification` / `PartitionModification` / `FilesystemType` models.
+    - **Base install** → `Installer(target, disk_config, base_packages, kernels,
+      silent=True)` (context manager: `mount_ordered_layout()`,
+      `minimal_installation()`, `genfstab()`, `add_bootloader()`, `set_mirrors()`,
+      `set_locale()`, `set_timezone()`, `create_users()`, `enable_service()`).
+  Constraints: (a) archinstall is a **live-ISO-only** dependency (pulls
+  `pyparted`/`cryptography`) and must not leak into the normal package-build
+  install path — gate it to the bootstrap entry point; (b) pin archinstall and
+  add a compat shim since its models move across releases; (c) `configure.py`
+  (~759 lines) exceeds archinstall's coverage and stays sysforge's; (d) all disk
+  mutation stays behind the existing sentinel-gated verb. First slice: a
+  proof-of-concept `partition` stage that emits a `DiskLayoutConfiguration` and
+  calls `DeviceHandler.partition/format`, validated in the VM harness, before
+  porting base-install. *Priority: medium (removes the highest-risk
+  re-implemented surface: disk/boot setup).*
 
 - **`1.2.0-F9` — Respect a PKGBUILD's per-package `options=()` (spun off Q6).** At
   conf-emit time, honor the parsed `globals["options"]`: **`!lto`** → strip profile
@@ -187,29 +246,28 @@ counter, then version) — sort on every add so the list stays scannable.
 
 ### Open questions
 
-- **`1.2.0-Q11` — Should the kernel stage actively filter out drivers irrelevant to the
-  host (FPGA, SoC, exotic-arch subsystems) on a standard x86 build?** F37 landed:
-  `kernel.toml kconfig_targets` now lets a run opt into `localmodconfig` (or any other
-  target) as part of a validated, ordered sequence, and the lsmod snapshot the PKGBUILD's
-  `make localmodconfig` reads accumulates across builds (`_merge_lsmod`, union by module
-  name) so a module loaded only occasionally isn't dropped just because it wasn't active
-  during the most recent capture. That still leaves two gaps unaddressed by F37: (1)
-  `localmodconfig` strips only *modules* (`=m`) not currently loaded — it doesn't touch
-  **built-in** (`=y`) options, so an irrelevant driver compiled directly into the kernel
-  survives untouched; and (2) the filtering is opt-in and reactive (keyed off what's
-  loaded on the build machine), not a proactive driver-class exclusion for a target
-  architecture. Narrowed question: is an explicit driver-class filter still warranted for
-  those two gaps — a kconfig analogue of the mesa driver filter, deriving `=n` exclusions
-  for built-in options from `hardware_profile`, and/or a non-`localmodconfig` mechanism
-  for target lists that doesn't depend on the build machine's currently-loaded module
-  set — or does the F37 target-sequence plus the accumulating snapshot cover this well
-  enough in practice? If pursued, it must reuse the existing kconfig-override seam
-  (`kernel.toml [kconfig]`/`[kconfig_devices]` fragment merge, not a parallel one) and
-  keep the Gate-1/Gate-2 boot-safety checks authoritative.
+_(none open — resolved questions are either promoted to a Feature/Bug entry
+above or recorded under Abandoned below.)_
 
 ---
 
 ## Abandoned / decided against
+
+- **`1.2.0-Q11` — proactive kernel driver-class filter — decided against 2026-07-03.**
+  The question was whether the kernel stage should *proactively* exclude host-irrelevant
+  drivers (deriving `=n` for built-in `=y` options from `hardware_profile`), covering the
+  two gaps F37 left: `localmodconfig` touches only unloaded *modules* (`=m`), not built-in
+  `=y` options, and its filtering is reactive (keyed off the build machine's loaded module
+  set). Decision: **not worth the boot-safety risk for the marginal benefit.** A built-in
+  driver compiled into the kernel costs image size and a little build time but is inert at
+  runtime; forcing it `=n` from an inferred hardware profile is exactly the kind of
+  proactive exclusion that can silently drop a driver the machine needs at *next* boot
+  (new hardware, a hotplugged device, a rescue scenario), and the kernel stage's whole
+  discipline is that Gate-1/Gate-2 boot-safety stays authoritative. F37's opt-in
+  target-sequence plus the accumulating (union) lsmod snapshot already lets a user who
+  wants a slimmer kernel opt into `localmodconfig` reactively, which is the safe side of
+  the trade. If a concrete boot-size or build-time problem ever motivates revisiting this,
+  it would reopen under a new ID — not resume here.
 
 - **`-sysforge` suffix on the PGO-built toolchain — scrapped 2026-06-24.** The PGO
   toolchain keeps installing under stock names (`clang`, `llvm`, `llvm-libs`, …),

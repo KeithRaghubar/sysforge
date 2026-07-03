@@ -225,11 +225,18 @@ class BuildState:
 
         ``origin_pkgbase`` is the *pre-rename* pkgbase for packages built with
         the ``-sysforge`` suffix (e.g. ``"llvm"`` for an installed
-        ``llvm-sysforge``). The ``pkgbase`` field then holds the renamed value,
-        so ``origin_pkgbase`` is what ``sysforge update`` uses to correlate the
-        artifact back to its upstream identity (version checks, source sync —
-        upstream ships ``llvm``, not ``llvm-sysforge``). None for un-renamed
-        builds. Sticky like the other provenance fields.
+        ``llvm-sysforge``). The ``pkgbase`` field then holds the renamed value.
+        In ``sysforge update`` the version check correlates a renamed artifact
+        back to its upstream mostly through the recorded ``pkgbuild_dir`` (which
+        already points at the stock source, so source sync and the PKGBUILD
+        parse resolve correctly) plus the renamed installed-name lookup for the
+        installed version — ``vercmp`` is name-agnostic, so drift is detected
+        regardless of the suffix. ``origin_pkgbase`` is consumed in exactly one
+        place: the AUR RPC version rescue (``update_version._check_one_pkgbase``),
+        where a PKGBUILD with unresolvable bash expansion needs the RPC cache
+        entry, which is keyed by the stock upstream base (``llvm``) not the
+        renamed one. None for un-renamed builds. Sticky like the other
+        provenance fields.
         """
         entry = {
             "pkgver": pkgver,

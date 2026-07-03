@@ -216,6 +216,37 @@ def test_unresolved_pkgver_without_cache_is_skipped(tmp_path):
     assert result is None
 
 
+def test_unresolved_pkgver_renamed_uses_origin_pkgbase_rpc(tmp_path):
+    """A coexist-renamed package (installed name carries the -sysforge suffix)
+    with unresolvable bash expansion falls back to the RPC version cached under
+    its *origin* pkgbase — the cache is keyed by the stock upstream base, not
+    the renamed one."""
+    renamed = "1password-sysforge"
+    origin = "1password"
+    pkg_dir = tmp_path / origin
+    _write_pkgbuild(
+        pkg_dir,
+        '_tarver=8.12.10-36\npkgname=1password\npkgver=${_tarver//-/_}\npkgrel=36\n',
+    )
+    entry = {"pkgbuild_dir": str(pkg_dir), "origin_pkgbase": origin}
+
+    result = _check_one_pkgbase(
+        pkgbase=renamed,
+        pkgnames=[renamed],
+        entry=entry,
+        sync_failures={},
+        all_installed={renamed: "8.12.10-36"},
+        unrecorded_names=set(),
+        skip_sync_check=False,
+        # RPC cache is keyed by the stock upstream base only — the renamed
+        # base is absent, so the rescue must consult origin_pkgbase.
+        rpc_version_by_base={origin: "8.12.10-36"},
+    )
+    assert result is not None
+    assert result.action == "UP_TO_DATE"
+    assert result.pkgbuild_ver == "8.12.10-36"
+
+
 # ---------------------------------------------------------------------------
 # Live-install-set iteration: override entries for uninstalled packages are
 # silently ignored (no NOT_INSTALLED action under the new model).

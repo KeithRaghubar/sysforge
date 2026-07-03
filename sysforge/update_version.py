@@ -150,7 +150,16 @@ def _check_one_pkgbase(
     # cached in source_meta.toml — it's the authoritative released version
     # and is vercmp-ready (already includes pkgrel and any epoch prefix).
     if _UNRESOLVED_EXPANSION.search(pkgbuild_ver):
+        # For a coexist-renamed package the entry's ``pkgbase`` carries the
+        # renamed value (e.g. ``llvm-sysforge``), but the RPC cache is keyed by
+        # the stock upstream base — so fall back to ``origin_pkgbase`` when the
+        # renamed base misses. This is the sole read of origin_pkgbase in the
+        # update path; the rest of the correlation flows through pkgbuild_dir.
         rpc_ver = rpc_version_by_base.get(pkgbase)
+        if not rpc_ver:
+            origin = entry.get("origin_pkgbase")
+            if origin:
+                rpc_ver = rpc_version_by_base.get(origin)
         if rpc_ver:
             pkgbuild_ver = rpc_ver
         else:
