@@ -1,18 +1,5 @@
 # sysforge (unreleased)
 
-<!--
-Running accumulator for the next release. Every landing commit that COMPLETES a
-ROADMAP item appends its entry here (in the same commit that drops the item from
-ROADMAP.md), under the matching Keep a Changelog section — one of Added, Changed,
-Deprecated, Removed, Fixed, Security, in that order. Reference the roadmap ID
-inline, e.g. (1.2.0-F35). Flag breaking changes with a **Breaking:** prefix and
-the migration path. At release time tools/release.sh (Phase 1) renames this file
-to vX.Y.Z.md, stamps the `# ` title with the version and date, and reseeds a fresh
-accumulator. Run the release-notes skill first to reconcile/lint the entries and
-finalize the one-line summary below (drop this comment). Keep a Changelog:
-https://keepachangelog.com/en/1.1.0/
--->
-
 The optimization release: profile-guided optimization across mesa, the kernel, and
 the LLVM toolchain; signed releases end to end; a GUI-capable installer; and the
 PKGBUILD review trust gate — on top of a large modular refactor.
@@ -79,7 +66,8 @@ PKGBUILD review trust gate — on top of a large modular refactor.
   phantom `git` value errors clearly), and when `pkgname` differs from the upstream the
   cloned PKGBUILD's pkgbase is patched to the local name (coexist rename — installs
   alongside the official package, stacking under the optimized-build `-sysforge`
-  suffix). Pure-local configs are unaffected. — `update` now stamps a
+  suffix). Pure-local configs are unaffected.
+- **Same-variant toolchain drift detection** (`1.2.0-Q9`) — `update` now stamps a
   `toolchain_fingerprint` alongside `toolchain_variant` in `build_state.toml` and flags a
   package when the active toolchain was rebuilt since it was built, even when the variant
   name is unchanged (e.g. a fresh-profdata PGO rebuild with the same libLLVM soname). New
@@ -91,11 +79,12 @@ PKGBUILD review trust gate — on top of a large modular refactor.
   are pinned to the release tag matching pacman's sync-DB version, so source builds
   match what pacman would install; set `[build] repo_track = "main"` in sysforge.toml
   for testing-track builds.
-- Kernel stage: configurable kconfig target sequence via `kernel.toml`
+- **Configurable kernel kconfig targets** (`1.2.0-F37`) — the kconfig target sequence
+  is configurable via `kernel.toml`
   `kconfig_targets` (UI/prompting/silent taxonomy, at most one UI target which
   always runs last, prompting targets rejected in non-interactive runs,
   `randconfig` excluded); the lsmod snapshot now accumulates across builds and
-  `localmodconfig` is warned against as high-risk/low-reward. (`1.2.0-F37`)
+  `localmodconfig` is warned against as high-risk/low-reward.
 
 ## Changed
 

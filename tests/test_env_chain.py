@@ -317,15 +317,23 @@ def test_sysforge_config_source_uses_defaults_profile(tmp_path, monkeypatch):
     # paths.CONFIG_PATHS is bound at import; reload to pick up the new env.
     import importlib
     import sysforge.primitives.paths as _paths_mod
-    importlib.reload(_paths_mod)
     import sysforge.primitives.config as _config_mod
-    importlib.reload(_config_mod)
-    profile_name, kv, err = _read_sysforge_config()
-    assert err is None
-    assert profile_name == "standard"
-    assert kv["CC"] == "gcc"
-    assert kv["CXX"] == "g++"
-    assert kv["CFLAGS"] == "-O2"
+    try:
+        importlib.reload(_paths_mod)
+        importlib.reload(_config_mod)
+        profile_name, kv, err = _read_sysforge_config()
+        assert err is None
+        assert profile_name == "standard"
+        assert kv["CC"] == "gcc"
+        assert kv["CXX"] == "g++"
+        assert kv["CFLAGS"] == "-O2"
+    finally:
+        # Rebind the module-level path constants to the real environment;
+        # otherwise PACKAGES_PATH etc. keep pointing at this test's tmp dir
+        # for the rest of the session.
+        monkeypatch.undo()
+        importlib.reload(_paths_mod)
+        importlib.reload(_config_mod)
 
 
 def test_divergence_reports_unset_runtime_vs_source(monkeypatch):

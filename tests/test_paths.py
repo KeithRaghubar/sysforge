@@ -34,8 +34,10 @@ def reload_paths(monkeypatch):
         return paths
 
     yield _reload
-    # monkeypatch reverts the env; reload once more so the cached module matches
-    # the real environment for any later test that imports paths.
+    # Fixture teardown runs BEFORE monkeypatch's own undo (LIFO), so revert the
+    # env explicitly first, then reload so the cached module matches the real
+    # environment for any later test that imports paths.
+    monkeypatch.undo()
     importlib.reload(paths)
 
 
