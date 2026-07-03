@@ -12,3 +12,8 @@ accumulator. Run the release-notes skill first to reconcile/lint the entries and
 finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
+
+## Fixed
+
+- Release script: the `.SRCINFO-git` generation tmpdir was missing `sysforge.install`,
+  so `makepkg --printsrcinfo` aborted after the v2.0.1 chroot build passed.

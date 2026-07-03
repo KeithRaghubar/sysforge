@@ -629,6 +629,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     # in the sha256/sign step owns EXIT, and a second `trap ... EXIT` would clobber it.
     TMPDIR_GIT=$(mktemp -d)
     cp PKGBUILD-git "$TMPDIR_GIT/PKGBUILD"
+    cp sysforge.install "$TMPDIR_GIT/"
     (cd "$TMPDIR_GIT" && makepkg --printsrcinfo > .SRCINFO)
     cp "$TMPDIR_GIT/.SRCINFO" .SRCINFO-git
     rm -rf "$TMPDIR_GIT"
