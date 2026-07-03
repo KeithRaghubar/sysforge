@@ -3,6 +3,7 @@
 #
 # Usage:
 #   bash tools/release.sh --bump=<major|minor|patch> [--skip-chroot] [--dry-run]
+#   bash tools/release.sh --resume [--skip-chroot] [--dry-run]
 #
 # Driven by `make release-major | release-minor | release-patch`.
 #
@@ -14,7 +15,10 @@
 #
 # If interrupted between phases, re-run the same command. Resume is detected
 # automatically when the local tag for the current pyproject.toml version
-# already exists at HEAD.
+# already exists at HEAD. When a failure *after* the tag needed fix commits on
+# top of the release commit (so the tag is no longer at HEAD), auto-detection
+# cannot fire — pass --resume explicitly to re-enter at Phase 3 for the
+# current version (the tag must be an ancestor of a clean HEAD).
 #
 # Env:
 #   SYSFORGE_CHROOT — override chroot root (default /var/lib/archbuild/extra-x86_64)
@@ -31,15 +35,22 @@ cd "$REPO_ROOT"
 BUMP=""
 DRY_RUN=0
 SKIP_CHROOT=0
+RESUME_REQ=0
 
 usage() {
     cat <<EOF
 Usage: bash tools/release.sh --bump=<major|minor|patch> [--skip-chroot] [--dry-run]
+       bash tools/release.sh --resume [--skip-chroot] [--dry-run]
 
-Required:
+Required (exactly one):
   --bump=major   X.Y.Z -> (X+1).0.0
   --bump=minor   X.Y.Z -> X.(Y+1).0
   --bump=patch   X.Y.Z -> X.Y.(Z+1)
+  --resume       Finish the in-flight release for the *current* pyproject.toml
+                 version: no bump, re-enter at Phase 3 (sha256/chroot/.SRCINFO).
+                 For when a post-tag failure needed fix commits on top of the
+                 release commit; requires tag v<current> to be an ancestor of
+                 a clean HEAD.
 
 Options:
   --skip-chroot  Skip clean-chroot validation (only for iterating on this script).
@@ -52,6 +63,7 @@ EOF
 for arg in "$@"; do
     case "$arg" in
         --bump=major|--bump=minor|--bump=patch) BUMP="${arg#--bump=}" ;;
+        --resume)      RESUME_REQ=1 ;;
         --skip-chroot) SKIP_CHROOT=1 ;;
         --dry-run)     DRY_RUN=1; SKIP_CHROOT=1 ;;
         -h|--help)     usage; exit 0 ;;
@@ -59,8 +71,13 @@ for arg in "$@"; do
     esac
 done
 
-if [[ -z "$BUMP" ]]; then
-    echo "ERROR: --bump=<major|minor|patch> is required" >&2
+if [[ "$RESUME_REQ" -eq 1 && -n "$BUMP" ]]; then
+    echo "ERROR: --resume finishes the current version; it cannot be combined with --bump" >&2
+    usage >&2
+    exit 2
+fi
+if [[ "$RESUME_REQ" -eq 0 && -z "$BUMP" ]]; then
+    echo "ERROR: --bump=<major|minor|patch> (or --resume) is required" >&2
     usage >&2
     exit 2
 fi
@@ -121,20 +138,41 @@ chroot_build() {
 # ---------------------------------------------------------------------------
 
 CUR="$(read_pyproject_version)"
-NEW="$(bump_version "$CUR" "$BUMP")"
-TAG="v$NEW"
 RESUME=0
 
-# If a local tag for the *current* pyproject.toml version points to HEAD,
-# Phase 1 has already run (this is a resume after a Ctrl-C at Phase 2).
-if git rev-parse --quiet --verify "v$CUR" >/dev/null 2>&1; then
-    # Resolve through the tag object to the commit ("^{commit}") — a signed/
-    # annotated tag is its own object, so a bare `git rev-parse v$CUR` would
-    # return the tag SHA (never == HEAD) and silently defeat resume.
-    if [[ "$(git rev-parse "v$CUR^{commit}")" == "$(git rev-parse HEAD)" ]]; then
-        RESUME=1
-        NEW="$CUR"
-        TAG="v$NEW"
+if [[ "$RESUME_REQ" -eq 1 ]]; then
+    # Explicit resume (2.0.0-B1): finish the current version even when fix
+    # commits landed on top of the release commit, so the tag is no longer at
+    # HEAD. An *ancestor* check alone can't drive auto-detection (every
+    # completed release's tag is also an ancestor of HEAD), hence the flag.
+    NEW="$CUR"
+    TAG="v$NEW"
+    if ! git rev-parse --quiet --verify "$TAG" >/dev/null 2>&1; then
+        echo "ERROR: --resume: tag $TAG (current pyproject.toml version) does not exist —" >&2
+        echo "       nothing to resume; Phase 1 has not run for v$CUR." >&2
+        exit 1
+    fi
+    if ! git merge-base --is-ancestor "$TAG^{commit}" HEAD; then
+        echo "ERROR: --resume: tag $TAG is not an ancestor of HEAD —" >&2
+        echo "       HEAD does not contain the v$CUR release commit." >&2
+        exit 1
+    fi
+    RESUME=1
+else
+    NEW="$(bump_version "$CUR" "$BUMP")"
+    TAG="v$NEW"
+
+    # If a local tag for the *current* pyproject.toml version points to HEAD,
+    # Phase 1 has already run (this is a resume after a Ctrl-C at Phase 2).
+    if git rev-parse --quiet --verify "v$CUR" >/dev/null 2>&1; then
+        # Resolve through the tag object to the commit ("^{commit}") — a signed/
+        # annotated tag is its own object, so a bare `git rev-parse v$CUR` would
+        # return the tag SHA (never == HEAD) and silently defeat resume.
+        if [[ "$(git rev-parse "v$CUR^{commit}")" == "$(git rev-parse HEAD)" ]]; then
+            RESUME=1
+            NEW="$CUR"
+            TAG="v$NEW"
+        fi
     fi
 fi
 
@@ -304,7 +342,7 @@ Phase 1 — bump, commit, tag:
   - regenerate man/sysforge.1      (make man)
   - stamp + rename release notes   docs/release-notes/unreleased.md -> $TAG.md (title dated)
   - reseed accumulator             fresh docs/release-notes/unreleased.md
-  - git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 docs/release-notes/$TAG.md docs/release-notes/unreleased.md
+  - git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md docs/design/00-header.md uv.lock man/sysforge.1 docs/release-notes/$TAG.md docs/release-notes/unreleased.md
   - git commit -m "release: $TAG"
   - git tag $TAG
 
@@ -375,11 +413,13 @@ if [[ "$RESUME" -eq 0 ]]; then
     fi
     echo "    PKGBUILD-git: pkgver $CUR -> $NEW (suffix preserved)"
 
-    # README.md and DESIGN.md markers
+    # README.md and DESIGN.md markers. DESIGN.md is generated from
+    # docs/design/, so its marker's *source* (00-header.md) must be rewritten
+    # in the same pass — otherwise the next `make design` reverts the marker.
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        sed -i -E "s|<!--version-->v[0-9]+\\.[0-9]+\\.[0-9]+<!--/version-->|<!--version-->v$NEW<!--/version-->|g" README.md DESIGN.md
+        sed -i -E "s|<!--version-->v[0-9]+\\.[0-9]+\\.[0-9]+<!--/version-->|<!--version-->v$NEW<!--/version-->|g" README.md DESIGN.md docs/design/00-header.md
     fi
-    echo "    README.md, DESIGN.md: marker token -> v$NEW"
+    echo "    README.md, DESIGN.md, docs/design/00-header.md: marker token -> v$NEW"
 
     # uv.lock
     if command -v uv >/dev/null 2>&1; then

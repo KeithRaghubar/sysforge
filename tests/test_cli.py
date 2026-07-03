@@ -519,3 +519,41 @@ def test_dispatch_emits_stats_on_sys_exit(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         cli._dispatch(object, _FakeArgs(py_profile_out=str(out)))
     assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# KeyboardInterrupt handling (1.2.0-F39)
+# ---------------------------------------------------------------------------
+#
+# A Ctrl-C anywhere under main() must exit 130 with one readable abort line
+# (no traceback) and release the ui/progress scroll region — not unwind as a
+# raw KeyboardInterrupt.
+
+
+def test_main_handles_keyboard_interrupt(monkeypatch, capsys):
+    import pytest
+    import sysforge.cli as cli
+    from sysforge.ui import progress
+
+    def _interrupting_dispatch(verb_cls, args):
+        raise KeyboardInterrupt
+
+    shutdown_calls = []
+    monkeypatch.setattr(cli, "_dispatch", _interrupting_dispatch)
+    monkeypatch.setattr(progress, "shutdown", lambda: shutdown_calls.append(1))
+    monkeypatch.setattr("sys.argv", ["sysforge", "env"])
+    # main() applies argv verbosity/color to the global log state — restore
+    # the conftest-pinned levels so this test doesn't leak into later modules.
+    from sysforge import log
+    saved_verbosity = log.get_verbosity()
+    try:
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+    finally:
+        log.set_verbosity(saved_verbosity)
+        log.set_color_mode("auto")
+    assert exc.value.code == 130
+    assert shutdown_calls, "progress scroll region must be released"
+    err = capsys.readouterr().err
+    assert "aborted" in err
+    assert "Traceback" not in err

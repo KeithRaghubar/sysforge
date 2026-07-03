@@ -171,13 +171,14 @@ class TestPkgbuildDrift:
         repo = copy_shipped_tree(tmp_path)
         pkgbuild = repo / "PKGBUILD"
         text = pkgbuild.read_text()
-        new = text.replace(
-            "sha256sums=('0c2c6777d9df13d0c5d8fb88ec6ba08887a249c31bc6b197398024a48e8a25a0'\n"
-            "            'SKIP')",
-            "sha256sums=('SKIP'\n"
-            "            '0c2c6777d9df13d0c5d8fb88ec6ba08887a249c31bc6b197398024a48e8a25a0')",
+        # The tarball hash rotates every release — extract whatever the shipped
+        # PKGBUILD carries rather than hardcoding a stale value.
+        new, n = re.subn(
+            r"sha256sums=\('([0-9a-f]{64})'\n(\s*)'SKIP'\)",
+            r"sha256sums=('SKIP'\n\g<2>'\g<1>')",
+            text, count=1,
         )
-        assert new != text
+        assert n == 1, "sha256sums=(<hash> SKIP) pair not found in shipped PKGBUILD"
         pkgbuild.write_text(new)
 
         res = run_checker(repo=repo, args=["--check=pkgbuild"])

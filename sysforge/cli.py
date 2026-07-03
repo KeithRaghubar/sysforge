@@ -1088,6 +1088,20 @@ def _strip_venv_from_path() -> None:
 
 
 def main():
+    # One home for Ctrl-C (1.2.0-F39): a routine abort must not unwind as a
+    # raw traceback. Verbs keep raising KeyboardInterrupt normally — a
+    # mutating verb's sentinel_scope persists its recovery sentinel on the
+    # way up before this handler sees the interrupt.
+    try:
+        _main()
+    except KeyboardInterrupt:
+        from sysforge.ui import progress
+        progress.shutdown()  # release the DECSTBM scroll region
+        log.error("[SYSFORGE]", "aborted (Ctrl-C)")
+        sys.exit(130)  # 128 + SIGINT, the conventional interrupt exit
+
+
+def _main():
     _strip_venv_from_path()
     from sysforge.primitives.paths import migrate_legacy_user_dirs
     from sysforge.primitives.resource_guard import install as _install_resource_guard

@@ -1091,3 +1091,77 @@ def test_select_unknown_editor_after_install_confirm_no_re_prompts():
     ):
         result = _select_new_editor("", have_prev=False, options=make_options())
     assert result == "vim"
+
+
+# ---------------------------------------------------------------------------
+# _save_sysforge_toml_ui (1.2.0-B13)
+# ---------------------------------------------------------------------------
+#
+# On an installed system SYSFORGE_TOML_PATH is the root-owned /etc/sysforge/
+# sysforge.toml; a plain write_text raises PermissionError and the editor
+# preference silently never persists. The save must fall back to the same
+# staged-temp-file + `sudo cp` pattern the makepkg.conf step uses.
+
+
+def test_save_sysforge_toml_ui_writes_directly_when_writable(tmp_path, monkeypatch):
+    import sysforge.pipeline.stages.reconfigure as rc
+    target = tmp_path / "sysforge.toml"
+    monkeypatch.setattr(rc, "SYSFORGE_TOML_PATH", target)
+    monkeypatch.setattr(rc, "load_sysforge_toml", lambda: {})
+    sudo_calls = []
+    monkeypatch.setattr(rc.subprocess, "run",
+                        lambda argv, **kw: sudo_calls.append(argv))
+    rc._save_sysforge_toml_ui("editor", "vim")
+    assert sudo_calls == []
+    assert tomllib.loads(target.read_text())["ui"]["editor"] == "vim"
+
+
+def test_save_sysforge_toml_ui_falls_back_to_sudo_cp(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    import sysforge.pipeline.stages.reconfigure as rc
+    rodir = tmp_path / "etc"
+    rodir.mkdir()
+    target = rodir / "sysforge.toml"
+    target.write_text("")
+    rodir.chmod(0o555)  # parent unwritable → direct write raises PermissionError
+    try:
+        monkeypatch.setattr(rc, "SYSFORGE_TOML_PATH", target)
+        monkeypatch.setattr(rc, "load_sysforge_toml", lambda: {})
+        target.chmod(0o444)
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            assert argv[:2] == ["sudo", "cp"]
+            staged = Path(argv[2])
+            assert tomllib.loads(staged.read_text())["ui"]["editor"] == "vim"
+            return sp.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(rc.subprocess, "run", fake_run)
+        rc._save_sysforge_toml_ui("editor", "vim")
+        assert len(calls) == 1
+        assert calls[0][3] == str(target)
+    finally:
+        rodir.chmod(0o755)
+
+
+def test_save_sysforge_toml_ui_sudo_cp_failure_raises(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    import sysforge.pipeline.stages.reconfigure as rc
+    rodir = tmp_path / "etc"
+    rodir.mkdir()
+    target = rodir / "sysforge.toml"
+    target.write_text("")
+    rodir.chmod(0o555)
+    try:
+        monkeypatch.setattr(rc, "SYSFORGE_TOML_PATH", target)
+        monkeypatch.setattr(rc, "load_sysforge_toml", lambda: {})
+        target.chmod(0o444)
+        monkeypatch.setattr(rc.subprocess, "run",
+                            lambda argv, **kw: sp.CompletedProcess(argv, 1))
+        with pytest.raises(OSError):
+            rc._save_sysforge_toml_ui("editor", "vim")
+    finally:
+        rodir.chmod(0o755)

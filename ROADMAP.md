@@ -27,50 +27,6 @@ counter, then version) — sort on every add so the list stays scannable.
 
 ## Planned
 
-### Bugs
-
-- **`2.0.0-B1` — `release.sh` cannot resume once fixes land on top of the release
-  commit.** Resume detection (Phase 0a) requires the `v$CUR` tag to point exactly at
-  HEAD, so a failure *after* the tag exists (e.g. the v2.0.0 chroot-validation failure)
-  that needs a fix committed on top of the release commit permanently defeats resume —
-  re-running `make release-*` instead computes a fresh bump (v2.0.0 → v3.0.0) from the
-  already-bumped `pyproject.toml`. The remaining Phase 3/4 steps (chroot validate,
-  `.SRCINFO` regeneration, sha256 commit, AUR instructions) had to be replayed by hand.
-  Fix: allow resume when the `v$CUR` tag exists and is an *ancestor* of a clean HEAD
-  (`git merge-base --is-ancestor`), or add an explicit `--resume`/`--finish` mode that
-  re-enters at Phase 3 for the current version. *Priority: medium (only bites on a
-  mid-release failure, but the manual recovery is error-prone and defeats the script's
-  one-command design).*
-
-- **`1.2.0-B11` — `packages` stage fails at makepkg when a pipeline resumes as root.**
-  Root-caused: a pipeline resumed after an interruption/reboot can re-enter with
-  `euid == 0` instead of the primary (non-root) user the design assumes, and
-  `makepkg` refuses to run as root — surfacing as a stage-7 `packages` failure deep in
-  the build rather than a clear diagnostic. Add an `euid == 0` guard in `pre_check` at
-  pipeline entry, before any makepkg-bearing stage (`packages`, `kernel`, `toolchain`),
-  that fails fast with an actionable message (re-run as the invoking user / via `sudo
-  -u`) instead of letting makepkg's own rejection bubble up unexplained. *Priority:
-  medium (confusing failure mode, no data loss, workaround is just re-invoking
-  correctly).*
-
-- **`1.2.0-B13` — `reconfigure` editor-preference save silently fails on a root-owned
-  `sysforge.toml`.** `_save_sysforge_toml_ui` (`reconfigure.py:123-142`) writes via a bare
-  `SYSFORGE_TOML_PATH.write_text(...)` with no privilege escalation, unlike every other
-  write path in the stage (`_edit_needs_sudo`-gated editor launch for config-file steps,
-  `sudo cp` of a staged temp file for `makepkg.conf`). On an installed system
-  `SYSFORGE_CONFIG_DIR` is unset, so `CONFIG_DIR` resolves to the root-owned FHS path
-  `/etc/sysforge` (`paths.py:29`); a normal user's write raises `PermissionError`, caught
-  as a plain `OSError` in `_step_editor` and merely logged as a warning
-  (`reconfigure.py:623-624`) rather than escalated or treated as fatal. The in-memory
-  selection still satisfies `_require_usable_editor`'s "usable right now" guard for the
-  rest of that reconfigure run, so the stage completes normally while the on-disk
-  `sysforge.toml` keeps its commented-out `# editor = "vim"` default — a later process
-  (e.g. build-failure recovery) re-resolves with nothing saved and, absent `$EDITOR`/
-  `$VISUAL`/`vim`/`nano`, correctly reports no usable editor. Fix by routing the write
-  through the same staged-temp-file + `sudo cp` pattern used for `makepkg.conf`
-  (`reconfigure.py:~1000-1010`) instead of a direct `write_text`. *Priority: medium
-  (silent persistence failure defeats the whole point of "save as sysforge default").*
-
 ### Features
 
 - **`1.2.0-F9` — Respect a PKGBUILD's per-package `options=()` (spun off Q6).** At
@@ -211,15 +167,6 @@ counter, then version) — sort on every add so the list stays scannable.
   gates. *Priority: low (polish, but it's the primary user-facing output of the most
   common verb).*
 
-- **`1.2.0-F34` — `doctor` mesa-failed finding should also advise manual rollback via
-  `state forget`.** When mesa is source-built (`mesa-sysforge`) and installed, the doctor
-  mesa check still reports the stock `mesa` as failed; the message currently only says the
-  warning clears on rebuild. Extend the finding's remediation text to also offer the manual
-  path — `sysforge state forget mesa` (drop the build-state tracking entry) — for users who
-  intentionally reverted. Read-only finding; advice-text only, no new mutation. Keep it in
-  the existing mesa doctor axis — no new producer. *Priority: low (UX — the current advice
-  is technically right but dead-ends a legitimate workflow).*
-
 - **`1.2.0-F36` — Audit logging verbosity levels + configurable default verbosity.** Warning/info
   messages added over successive features have crept into the default verbosity level, eroding the
   meaning of the levels (default output is now noisy). Audit every logging call site to confirm the
@@ -237,20 +184,6 @@ counter, then version) — sort on every add so the list stays scannable.
   sections, so users can see what was pulled in on their behalf. Fold into `_print_summary`
   alongside the F33 summary-formatting work (honour the Unicode/`use_color` gates). *Priority:
   low (visibility into implicit installs).*
-
-- **`1.2.0-F39` — Graceful `Ctrl-C` handling instead of a raw traceback.** `main()` has no
-  top-level `KeyboardInterrupt` handler (`cli.py:1090`), so interrupting any command unwinds as
-  a full Python stack trace — noisy and alarming for what is a normal "I changed my mind" abort.
-  Wrap the dispatch (`_dispatch` / `sys.exit(_dispatch(...))`) in a `try/except
-  KeyboardInterrupt` that prints one readable line (e.g. `[sysforge] aborted (Ctrl-C)` via
-  `log`, honouring the colour/Unicode gates) and exits with the conventional `130` (128 + SIGINT)
-  rather than a traceback. On the way out it must still **release the `ui/progress` DECSTBM scroll
-  region** (reuse the B5 `progress`/`suspended` machinery so the terminal isn't left clamped) and
-  must **not** suppress a mutating stage's sentinel — an interrupted toolchain/kernel/packages
-  install has to keep its recovery sentinel (`sentinel_scope` already persists on interrupt; the
-  handler just needs to avoid swallowing that path). One home for the handler in `main()`; verbs
-  keep raising `KeyboardInterrupt` normally. *Priority: medium (quality-of-life; the current
-  behaviour looks like a crash on a routine abort).*
 
 ### Open questions
 

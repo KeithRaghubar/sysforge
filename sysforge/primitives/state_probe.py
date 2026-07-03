@@ -71,6 +71,12 @@ def collect_state_findings(state_dir: Path | str | None = None,
         remediation = fix_cmd or (
             f"inspect with `sysforge log {pkgbase}`; clears on next successful build"
         )
+        # Intentional-revert escape hatch: the warning is correct but
+        # dead-ends a user who deliberately went back to the repo package.
+        remediation += (
+            f"; if you intentionally reverted to the repo package, "
+            f"`sysforge state forget {pkgbase}` stops tracking it"
+        )
         findings.append(diag.Finding(
             "state", diag.SEV_WARN, f"build_failure:{pkgbase}", detail,
             remediation=remediation, fix_cmd=fix_cmd,

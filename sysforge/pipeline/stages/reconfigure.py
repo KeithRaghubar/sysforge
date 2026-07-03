@@ -138,8 +138,29 @@ def _save_sysforge_toml_ui(key: str, value: str) -> None:
                 lines.append(f"{k} = {v}")
         lines.append("")
 
-    SYSFORGE_TOML_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SYSFORGE_TOML_PATH.write_text("\n".join(lines))
+    content = "\n".join(lines)
+    try:
+        SYSFORGE_TOML_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SYSFORGE_TOML_PATH.write_text(content)
+        return
+    except PermissionError:
+        pass
+    # Root-owned target (installed system: /etc/sysforge/sysforge.toml) —
+    # stage to a temp file and escalate, mirroring the makepkg.conf write path.
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(suffix=".sysforge.toml")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        _log.info(f"  Writing (sudo): {SYSFORGE_TOML_PATH}")
+        rc = subprocess.run(
+            ["sudo", "cp", str(tmp), str(SYSFORGE_TOML_PATH)]
+        ).returncode
+        if rc != 0:
+            raise OSError(f"sudo cp exited {rc} — {SYSFORGE_TOML_PATH} unchanged")
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

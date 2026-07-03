@@ -75,6 +75,22 @@ def test_build_failure_without_fix_cmd_gets_log_hint(monkeypatch):
     assert "sysforge log weston-git" in f.remediation
 
 
+def test_build_failure_remediation_offers_state_forget(monkeypatch):
+    # A user who intentionally reverted to the repo package needs the manual
+    # path out of the warning (1.2.0-F34) — with and without a fix_cmd.
+    _setup(monkeypatch, failures={
+        "mesa": {"failed_at": "2026-05-30T00:00:00Z", "error": "boom"},
+        "gpu-burn-git": {
+            "failed_at": "2026-05-30T00:00:00Z", "error": "boom",
+            "fix_cmd": "makepkg -f",
+        },
+    })
+    by_id = {f.check_id: f for f in state_probe.collect_state_findings(installed={})}
+    assert "sysforge state forget mesa" in by_id["build_failure:mesa"].remediation
+    assert ("sysforge state forget gpu-burn-git"
+            in by_id["build_failure:gpu-burn-git"].remediation)
+
+
 def test_stale_sentinel_is_error_with_recovery(monkeypatch):
     _setup(monkeypatch, sentinel={
         "stage": "toolchain",

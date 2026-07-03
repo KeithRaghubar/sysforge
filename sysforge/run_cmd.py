@@ -15,6 +15,7 @@ the stages themselves, e.g. toolchain via ``sentinel_scope``) own their sentinel
 coverage. Wrapping the verb in another ``sentinel_scope`` would race with the
 inner stage's sentinel against the same ``stage_in_progress.toml``.
 """
+import os
 from pathlib import Path
 
 from sysforge.primitives.config import load_config
@@ -27,13 +28,30 @@ class _RunVerbBase(Verb):
     """Common scaffolding for ``sysforge run <stage>`` verbs."""
 
     requires_sentinel = False
+    # True for verbs that reach a makepkg invocation (pipeline, packages,
+    # kernel, toolchain). makepkg refuses to run as root, and a pipeline
+    # resumed after an interruption/reboot can re-enter with euid == 0 —
+    # fail fast at entry instead of surfacing makepkg's own rejection deep
+    # inside a build stage (1.2.0-B11).
+    makepkg_bearing = False
 
     def pre_check(self, args) -> PreCheckResult:
+        if self.makepkg_bearing and os.geteuid() == 0:
+            return PreCheckResult(
+                blocker=(
+                    "refusing to run as root: this command builds packages "
+                    "with makepkg, which cannot run as root. Re-run as your "
+                    "regular user (e.g. `sudo -u <user> sysforge …`); sysforge "
+                    "escalates with sudo only where needed."
+                ),
+                exit_code=2,
+            )
         return PreCheckResult()
 
 
 class RunPipelineVerb(_RunVerbBase):
     name = "run-pipeline"
+    makepkg_bearing = True
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         from sysforge.pipeline.runner import run_pipeline
@@ -96,6 +114,7 @@ class RunReconfigureVerb(_RunVerbBase):
 
 class RunToolchainVerb(_RunVerbBase):
     name = "run-toolchain"
+    makepkg_bearing = True
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         from sysforge.pipeline.runner import run_stage_standalone
@@ -126,6 +145,7 @@ class RunToolchainVerb(_RunVerbBase):
 
 class RunPackagesVerb(_RunVerbBase):
     name = "run-packages"
+    makepkg_bearing = True
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         from sysforge.pipeline.runner import run_stage_standalone
@@ -149,6 +169,7 @@ class RunPackagesVerb(_RunVerbBase):
 
 class RunKernelVerb(_RunVerbBase):
     name = "run-kernel"
+    makepkg_bearing = True
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         from sysforge.pipeline.runner import run_stage_standalone

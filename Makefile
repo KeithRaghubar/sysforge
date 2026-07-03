@@ -1,7 +1,7 @@
 .PHONY: all dev venv build install clean distclean test test-x lint coverage man \
         check-shipped check-personal check-standards design check-design pre-release \
         sync-config \
-        release-major release-minor release-patch \
+        release-major release-minor release-patch release-resume \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-test
 
@@ -108,6 +108,11 @@ release-minor:
 
 release-patch:
 	bash tools/release.sh --bump=patch
+
+# Finish an in-flight release after a post-tag failure required fix commits on
+# top of the release commit (tag no longer at HEAD): no bump, re-enters Phase 3.
+release-resume:
+	bash tools/release.sh --resume
 
 # scdoc hybrid: hand-written prose in man/sysforge.1.scd.in, COMMANDS
 # sections generated from the argparse tree by tools/gen_options.py.
