@@ -101,6 +101,9 @@ class BuildOutcome:
     # aliases the PhaseTimer's records list, so callers without their own
     # timer can still render a report from the outcome.
     phase_records: list[PhaseRecord] = field(default_factory=list)
+    # F38: repo + AUR dependency pkgnames installed as a build prerequisite
+    # by prepare_deps, surfaced in the end-of-run summary as their own category.
+    installed_deps: list[str] = field(default_factory=list)
 
 
 def target_from_pkgbuild(pkgbuild_path) -> BuildTarget:
@@ -242,6 +245,7 @@ def prepare_deps(
     state_dir: Path | None = None,
     review: str = "off",
     interactive: bool = False,
+    installed_deps_out: list[str] | None = None,
 ) -> bool:
     """Pre-install missing repo makedeps, then resolve + build AUR/local deps.
 
@@ -281,6 +285,8 @@ def prepare_deps(
     if repo_missing:
         try:
             batch_install_makedeps(repo_missing)
+            if installed_deps_out is not None:
+                installed_deps_out.extend(repo_missing)
         except RuntimeError as e:
             _log.error(str(e))
             _log.ui(
@@ -329,7 +335,7 @@ def prepare_deps(
             if decision == DECISION_ABORT:
                 return False
         if aur_deps:
-            build_resolved_deps(
+            built_dep_names = build_resolved_deps(
                 aur_deps,
                 profile_conf=profile_conf,
                 cc_override=cc,
@@ -338,6 +344,8 @@ def prepare_deps(
                 state_dir=state_dir,
                 interactive=interactive,
             )
+            if installed_deps_out is not None:
+                installed_deps_out.extend(built_dep_names)
     except RuntimeError as e:
         _log.error(f"AUR dep resolution failed: {e}")
         _log.ui(
@@ -704,6 +712,7 @@ def build_and_install(
             state_dir=state_dir,
             review=review,
             interactive=interactive,
+            installed_deps_out=outcome.installed_deps,
         )
     if not proceed:
         _log.ui(

@@ -368,6 +368,55 @@ def test_prepare_deps_review_off_never_consults_gate(tmp_path):
     rd.assert_not_called()
 
 
+def test_build_outcome_has_installed_deps_field():
+    o = build_core.BuildOutcome()
+    assert o.installed_deps == []
+
+
+def test_prepare_deps_records_installed_repo_deps(tmp_path):
+    """prepare_deps appends repo makedeps it installs onto the collector."""
+    target = _make_target(tmp_path)
+    with (
+        patch("sysforge.build_core.collect_builddeps", return_value=["libfoo"]),
+        patch("sysforge.build_core.filter_missing_deps", return_value=["libfoo"]),
+        patch("sysforge.build_core.repo_packages", return_value={"libfoo"}),
+        patch("sysforge.build_core.batch_install_makedeps"),
+        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
+              return_value=[]),
+    ):
+        collector: list[str] = []
+        ok = build_core.prepare_deps(
+            [target.pkgbuild_path], config={}, installed_deps_out=collector,
+        )
+    assert ok is True
+    assert "libfoo" in collector
+
+
+def test_prepare_deps_records_installed_aur_deps(tmp_path):
+    """AUR arm records only the names build_resolved_deps actually built."""
+    target = _make_target(tmp_path)
+    aur_deps = [SimpleNamespace(
+        name="libaurdep", source="aur",
+        pkgbuild_path=tmp_path / "libaurdep" / "PKGBUILD",
+    )]
+    with (
+        patch("sysforge.build_core.collect_builddeps", return_value=[]),
+        patch("sysforge.build_core.filter_missing_deps", return_value=[]),
+        patch("sysforge.build_core.repo_packages", return_value=set()),
+        patch("sysforge.build_core.batch_install_makedeps"),
+        patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
+              return_value=aur_deps),
+        patch("sysforge.primitives.aur_resolve.build_resolved_deps",
+              return_value=["libaurdep"]),
+    ):
+        collector: list[str] = []
+        ok = build_core.prepare_deps(
+            [target.pkgbuild_path], config={}, installed_deps_out=collector,
+        )
+    assert ok is True
+    assert collector == ["libaurdep"]
+
+
 def test_build_and_install_dep_review_abort_propagates(tmp_path):
     """A False from prepare_deps surfaces as outcome.aborted with nothing
     built or installed — same clean-return contract as the target gate."""

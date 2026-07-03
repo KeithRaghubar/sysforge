@@ -57,13 +57,6 @@ straight off a `Q`.
   edits update fixtures + `check_shipped` allowlists in the same change. *Priority:
   medium (same UX gap as F30, broader surface).*
 
-- **`2.0.1-F2` — Show old → new versions in the end-of-run `update` summary.** The
-  Phase-3 version-check summary already renders `installed_ver → pkgbuild_ver`, but
-  the end-of-run built/failed/pacman summary lists bare package names. Carry the
-  version pair through to the final summary (fold into the F33 formatting +
-  F38 dependency-category work in `update_summary._print_summary` — one summary
-  renderer). *Priority: low (visibility polish on the most common verb).*
-
 - **`2.0.1-F3` — Integrate archinstall for the bootstrap disk/base-install slice
   (promoted from Q1).** Replace sysforge's hand-rolled partitioning + base-install
   logic (`partition.py` ~411 lines, `base_install.py` ~131 lines) with a
@@ -211,21 +204,6 @@ straight off a `Q`.
   symlinked set matches the packaged set. *Priority: medium (lowers the bar to try
   sysforge / stand up a new workstation).*
 
-- **`1.2.0-F32` — `update`: advise on stage-owned packages with available updates.**
-  `update` skips toolchain/kernel stage-owned packages by design (`owner_stage`), but
-  it should still *detect* that a newer upstream version exists for them and advise the
-  user to run the owning pipeline stage (`run toolchain` / `run kernel`) to rebuild.
-  Detection only — no rebuild from `update`. Surface in the summary, keyed off
-  `stage_ownership.owner_of`. *Priority: medium (silent staleness on the highest-stakes
-  packages otherwise).*
-
-- **`1.2.0-F33` — `update` summary formatting.** The end-of-run summary lacks clear
-  separation between the header, the built/failed/pacman sections, and the package
-  names within each section. Tighten the layout in `_print_summary` (grouped headers,
-  per-section spacing/columns, readable package lists) honoring the Unicode/`use_color`
-  gates. *Priority: low (polish, but it's the primary user-facing output of the most
-  common verb).*
-
 - **`1.2.0-F36` — Audit logging verbosity levels + configurable default verbosity.** Warning/info
   messages added over successive features have crept into the default verbosity level, eroding the
   meaning of the levels (default output is now noisy). Audit every logging call site to confirm the
@@ -236,13 +214,6 @@ straight off a `Q`.
   *correct levelling* plus a *user-settable* default, not changing the shipped default. Route
   through the existing `log` seam / `log.use_color`-style gating — no parallel verbosity switch.
   *Priority: medium (the primary UX regression in day-to-day output).*
-
-- **`1.2.0-F38` — `update`: report installed dependencies as their own summary category.** The
-  end-of-run `update` summary should surface dependency packages that were installed as a build
-  prerequisite (via `prepare_deps`) as a distinct category, separate from the built/failed/pacman
-  sections, so users can see what was pulled in on their behalf. Fold into `_print_summary`
-  alongside the F33 summary-formatting work (honour the Unicode/`use_color` gates). *Priority:
-  low (visibility into implicit installs).*
 
 ### Open questions
 

@@ -13,6 +13,23 @@ finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
 
+## Added
+
+- `update`: the end-of-run summary now reports build dependencies installed as a
+  prerequisite (via `prepare_deps`) as their own `Dependencies:` category,
+  separate from built/failed/pacman (1.2.0-F38).
+- `update`: when a stage-owned (kernel/toolchain) package has a newer upstream
+  version available, the summary advises running the owning pipeline stage
+  (e.g. `run kernel`) instead of silently skipping it. Detection only — never a
+  rebuild from `update` — and it respects `--offline` like every other package
+  (1.2.0-F32).
+
+## Changed
+
+- `update`: the end-of-run summary is consolidated into a single renderer with
+  grouped, aligned sections, and built/failed packages now show their
+  `old → new` versions instead of bare names (2.0.1-F2, 1.2.0-F33).
+
 ## Fixed
 
 - Release script: the `.SRCINFO-git` generation tmpdir was missing `sysforge.install`,

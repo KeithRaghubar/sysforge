@@ -44,7 +44,7 @@ _log = log.get_logger("UPDATE")
 def _assemble_package_set(
     args, bs: BuildState, config: dict,
     build_cfg: dict, overrides_by_name: dict[str, dict],
-) -> tuple[dict[str, dict], set[str]]:
+) -> tuple[dict[str, dict], set[str], dict[str, dict]]:
     """Phase 1: build the unified {pkgname: entry} dict from the live install set.
 
     Iteration scope:
@@ -66,7 +66,12 @@ def _assemble_package_set(
     Override entries whose package is not currently installed are inert
     rules and are not iterated.
 
-    Returns (packages, unrecorded_names).
+    Returns (packages, unrecorded_names, stage_owned_packages) — the third
+    value maps pkgbase-member name -> entry dict (each entry carries an
+    ``owner_stage`` key) for packages skipped from ``packages`` because a
+    pipeline stage owns them; they're partitioned out after entries are
+    built for every target name, not subtracted from scope up front, so the
+    advisory check in ``update.py`` can still version-check them.
     """
     build_state_pkgs = bs.all_packages()
 
@@ -152,7 +157,6 @@ def _assemble_package_set(
                     f"{', '.join(sorted(names))} — run `sysforge run {stage}` "
                     "to update (or pass --include-stage-owned)"
                 )
-            target_names -= set(stage_owned)
 
     packages: dict[str, dict] = {}
     unrecorded_names: set[str] = set()
@@ -271,4 +275,12 @@ def _assemble_package_set(
         filter_set = set(filter_names)
         packages = {k: v for k, v in packages.items() if k in filter_set}
 
-    return packages, unrecorded_names
+    stage_owned_packages: dict[str, dict] = {}
+    for name in list(packages):
+        owner = stage_owned.get(name)
+        if owner is not None:
+            entry = packages.pop(name)
+            entry["owner_stage"] = owner
+            stage_owned_packages[name] = entry
+
+    return packages, unrecorded_names, stage_owned_packages

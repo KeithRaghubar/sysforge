@@ -259,7 +259,7 @@ def test_uninstalled_override_is_silently_skipped(fake_run, state_dir):
     fake_run.respond(["pacman", "-Qm"], stdout="")
     fake_run.respond(["pacman", "-Q"], stdout="mesa 1:25.3.1-1\n")
     overrides = {"mesa-git": {"name": "mesa-git", "source": "aur"}}
-    packages, _ = _assemble_package_set(
+    packages, _, _stage_owned = _assemble_package_set(
         _make_args(), BuildState(state_dir), {}, {}, overrides,
     )
     assert packages == {}
@@ -324,7 +324,7 @@ def test_repo_package_without_override_is_not_iterated(fake_run, state_dir):
     # mesa is an installed repo package; no foreign packages.
     fake_run.respond(["pacman", "-Qm"], stdout="")
     fake_run.respond(["pacman", "-Q"], stdout="mesa 1:25.3.1-1\n")
-    packages, _ = _assemble_package_set(
+    packages, _, _stage_owned = _assemble_package_set(
         _make_args(), BuildState(state_dir), {}, {}, {},
     )
     assert packages == {}
@@ -344,7 +344,7 @@ def test_repo_package_with_override_is_iterated(fake_run, state_dir):
     fake_run.respond(["pacman", "-Qm"], stdout="")
     fake_run.respond(["pacman", "-Q"], stdout=f"{pkgbase} 20.1.0-1\n")
     overrides = {pkgbase: {"name": pkgbase, "source": "repo", "cache": False}}
-    packages, _ = _assemble_package_set(
+    packages, _, _stage_owned = _assemble_package_set(
         _make_args(include_stage_owned=True), BuildState(state_dir), {}, {}, overrides,
     )
     assert set(packages) == {pkgbase}
@@ -355,7 +355,7 @@ def test_repo_mode_profiled_walks_installed_repo_packages(fake_run, state_dir):
     iterated alongside foreign packages — no per-package override needed."""
     fake_run.respond(["pacman", "-Qm"], stdout="")
     fake_run.respond(["pacman", "-Q"], stdout="firefox 131.0-1\n")
-    packages, _ = _assemble_package_set(
+    packages, _, _stage_owned = _assemble_package_set(
         _make_args(), BuildState(state_dir), {}, {"repo_mode": "build_from_source"}, {},
     )
     assert set(packages) == {"firefox"}
@@ -366,7 +366,7 @@ def test_repo_mode_pacman_skips_repo_packages(fake_run, state_dir):
     override stays out of scope. Confirms the gate is load-bearing."""
     fake_run.respond(["pacman", "-Qm"], stdout="")
     fake_run.respond(["pacman", "-Q"], stdout="firefox 131.0-1\n")
-    packages, _ = _assemble_package_set(
+    packages, _, _stage_owned = _assemble_package_set(
         _make_args(), BuildState(state_dir), {}, {"repo_mode": "pacman"}, {},
     )
     assert packages == {}
@@ -382,7 +382,7 @@ def test_bare_source_only_override_is_inert(fake_run, state_dir):
     fake_run.respond(["pacman", "-Qm"], stdout="")
     fake_run.respond(["pacman", "-Q"], stdout="pipewire 1:1.6.5-1\n")
     overrides = {"pipewire": {"name": "pipewire", "source": "repo"}}
-    packages, _ = _assemble_package_set(
+    packages, _, _stage_owned = _assemble_package_set(
         _make_args(), BuildState(state_dir), {}, {}, overrides,
     )
     assert packages == {}
@@ -402,7 +402,7 @@ def test_source_built_repo_package_is_tracked(fake_run, state_dir):
               pkgbase="mesa", pkgbuild_dir=state_dir,
               build_mode="source_built", source="repo")
     bs.save()
-    packages, _ = _assemble_package_set(
+    packages, _, _stage_owned = _assemble_package_set(
         _make_args(), bs, {}, {}, {},
     )
     assert set(packages) == {"mesa"}
@@ -420,10 +420,65 @@ def test_pacman_mode_record_does_not_track_repo_package(fake_run, state_dir):
               pkgbase="mesa", pkgbuild_dir=state_dir,
               build_mode="pacman", source="repo")
     bs.save()
-    packages, _ = _assemble_package_set(
+    packages, _, _stage_owned = _assemble_package_set(
         _make_args(), bs, {}, {}, {},
     )
     assert packages == {}
+
+
+def test_assemble_returns_stage_owned_partition(fake_run, state_dir):
+    """Stage-owned packages are partitioned out of `packages` into a third
+    return value, stamped with `owner_stage`, instead of being subtracted
+    out of scope entirely — the advisory check (Task 4) needs them."""
+    fake_run.respond(["pacman", "-Qm"], stdout="linux-custom 6.19.11-1\n")
+    fake_run.respond(["pacman", "-Q"], stdout="linux-custom 6.19.11-1\nmesa 1:25.3.1-1\n")
+    bs = BuildState(state_dir)
+    bs.record(pkgname="linux-custom", pkgver="6.19.11", pkgrel="1", epoch=None,
+              pkgbase="linux-custom", pkgbuild_dir=state_dir,
+              build_mode="source_built", source="aur", owner_stage="kernel")
+    bs.record(pkgname="mesa", pkgver="25.3.1", pkgrel="1", epoch="1",
+              pkgbase="mesa", pkgbuild_dir=state_dir,
+              build_mode="source_built", source="repo")
+    bs.save()
+    with patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+               state_dir.parent / "no-kernel-toml"):
+        packages, unrecorded, stage_owned = _assemble_package_set(
+            _make_args(), bs, {}, {}, {},
+        )
+    assert "linux-custom" not in packages
+    assert "linux-custom" in stage_owned
+    assert stage_owned["linux-custom"]["owner_stage"] == "kernel"
+    assert "mesa" in packages
+
+
+def test_detect_stage_owned_updates_offline_returns_empty():
+    from sysforge.update import _detect_stage_owned_updates
+    stage_owned = {"linux-custom": {"owner_stage": "kernel", "source": "aur"}}
+    out = _detect_stage_owned_updates(
+        stage_owned, all_installed={"linux-custom": "6.9"},
+        sync_failures={}, rpc_version_by_base={}, pacman_updates_map=None,
+        skip_sync_check=True, offline=True,
+    )
+    assert out == []
+
+
+def test_detect_stage_owned_updates_reports_behind(monkeypatch):
+    import sysforge.update as up
+    from sysforge.update_result import _UpdateResult
+
+    def fake_check(pkgbase, pkgnames, entry, *a, **k):
+        return _UpdateResult(pkgbase=pkgbase, pkgnames=pkgnames,
+                             action="NEEDS_REBUILD", installed_ver="6.9",
+                             pkgbuild_ver="6.10", pkgbuild_path=None)
+    monkeypatch.setattr(up, "_check_one_pkgbase", fake_check)
+
+    stage_owned = {"linux-custom": {"owner_stage": "kernel", "source": "aur"}}
+    out = up._detect_stage_owned_updates(
+        stage_owned, all_installed={"linux-custom": "6.9"},
+        sync_failures={}, rpc_version_by_base={}, pacman_updates_map=None,
+        skip_sync_check=False, offline=False,
+    )
+    assert out == [("linux-custom", "6.9", "6.10", "kernel")]
 
 
 def test_source_built_record_survives_sync_with_installed(state_dir):
@@ -1312,6 +1367,25 @@ def _make_summary_results():
         _UpdateResult("bar", ["bar"], "RATE_LIMITED", None, None,
                       Path("/tmp/bar/PKGBUILD")),
     ]
+
+
+def test_result_summary_carries_version_pairs():
+    from sysforge.update import _build_result_summary
+    from sysforge.update_result import _UpdateResult
+
+    results = [
+        _UpdateResult(pkgbase="mesa", pkgnames=["mesa"], action="NEEDS_REBUILD",
+                      installed_ver="24.0", pkgbuild_ver="24.1",
+                      pkgbuild_path=None),
+    ]
+    summary = _build_result_summary(
+        results=results,
+        built_pkgs=["mesa"], failed_pkgs=[], pacman_upgrade_pkgs=[],
+        installed_deps=[], pgo_skipped_pkgs=[], cleansrc_failures=[],
+        install_only=False, pacman_upgrade_failed=False, skipped=0,
+        stage_owned_updates=[],
+    )
+    assert summary.versions["mesa"] == ("24.0", "24.1")
 
 
 def test_print_summary_default_hides_skip_lines(capsys):

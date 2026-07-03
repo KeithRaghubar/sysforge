@@ -11,6 +11,10 @@ prints — no logging, no state, no external dependencies beyond the result type
 ``update.py`` re-imports ``_print_summary`` for the orchestrator and the test
 surface.
 """
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
 from sysforge.update_result import _UpdateResult
 
 # (tag, count_label, line_template) per action. line_template is formatted
@@ -94,3 +98,119 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
     if no_record_count:
         print("\n  * = no build record")
     print()
+
+
+# Owner-stage → advisory verb hint. kernel → "run kernel", toolchain →
+# "run toolchain". Falls back to "run <stage>" for any future stage.
+def _stage_verb(owner_stage: str) -> str:
+    return f"run {owner_stage}"
+
+
+def _arrow() -> str:
+    """`→` normally, `->` where the Unicode gate degrades glyphs.
+
+    Reuses the same TERM=linux downgrade the rest of the UI honors so the two
+    summaries render consistently.
+    """
+    from sysforge.log import use_unicode
+    return "→" if use_unicode() else "->"
+
+
+@dataclass
+class ResultSummary:
+    built_pkgs: list[str] = field(default_factory=list)
+    failed_pkgs: list[str] = field(default_factory=list)
+    pacman_upgrade_pkgs: list[str] = field(default_factory=list)
+    installed_deps: list[str] = field(default_factory=list)
+    pgo_skipped_pkgs: list[str] = field(default_factory=list)
+    cleansrc_failures: list[str] = field(default_factory=list)
+    install_only: bool = False
+    pacman_upgrade_failed: bool = False
+    skipped: int = 0
+    # pkgbase -> (installed_ver, pkgbuild_ver)
+    versions: dict[str, tuple[str | None, str | None]] = field(default_factory=dict)
+    # (pkgbase, installed_ver, upstream_ver, owner_stage)
+    stage_owned_updates: list[tuple[str, str | None, str | None, str]] = field(
+        default_factory=list
+    )
+
+
+def _fmt_pkg(summary: ResultSummary, pkgbase: str) -> str:
+    """`pkgbase: old → new` when a version pair is known, else bare name."""
+    pair = summary.versions.get(pkgbase)
+    if pair is None:
+        return pkgbase
+    installed_ver, pkgbuild_ver = pair
+    if installed_ver is None or pkgbuild_ver is None:
+        return pkgbase
+    return f"{pkgbase}: {installed_ver} {_arrow()} {pkgbuild_ver}"
+
+
+def _print_result_summary(
+    summary: ResultSummary,
+    *,
+    emit: "Callable[[str], None]" = print,
+) -> None:
+    """Render the end-of-run summary line-by-line through ``emit``.
+
+    ``emit`` defaults to :func:`print` (stdout only), keeping the renderer pure
+    and its tests stdout-based. ``update.py`` passes ``log.ui`` so the summary
+    is mirrored into the unified log the same way the old inline block was.
+    """
+    built_label = "installed" if summary.install_only else "built"
+    header = (
+        f"\n[SYSFORGE] Update complete: "
+        f"{len(summary.built_pkgs)} {built_label}, "
+        f"{len(summary.failed_pkgs)} failed, {summary.skipped} skipped"
+        + (f", {len(summary.pgo_skipped_pkgs)} pgo-skipped"
+           if summary.pgo_skipped_pkgs else "")
+        + (f", {len(summary.pacman_upgrade_pkgs)} pacman-upgraded"
+           if summary.pacman_upgrade_pkgs else "")
+        + (" (pacman -Syu FAILED)" if summary.pacman_upgrade_failed else "")
+        + "."
+    )
+    emit(header)
+
+    def _section(label: str, lines: list[str]) -> None:
+        if not lines:
+            return
+        emit(f"  {label}")
+        for line in lines:
+            emit(f"    {line}")
+
+    if summary.built_pkgs:
+        label = "Installed:" if summary.install_only else "Built:"
+        _section(label, [_fmt_pkg(summary, pb) for pb in summary.built_pkgs])
+
+    if summary.installed_deps:
+        _section("Dependencies:", list(summary.installed_deps))
+
+    if summary.pacman_upgrade_pkgs:
+        suffix = " (transaction FAILED)" if summary.pacman_upgrade_failed else ""
+        _section("Pacman-Syu:", [f"{' '.join(summary.pacman_upgrade_pkgs)}{suffix}"])
+
+    if summary.failed_pkgs:
+        _section("Failed:", [_fmt_pkg(summary, pb) for pb in summary.failed_pkgs])
+
+    if summary.cleansrc_failures:
+        emit(
+            f"  --cleansrc refused {len(summary.cleansrc_failures)} package(s) "
+            "with local work; commit/push or resolve manually before retrying."
+        )
+
+    if summary.pgo_skipped_pkgs:
+        _section(
+            "PGO-skipped:",
+            [f"{' '.join(summary.pgo_skipped_pkgs)} "
+             "(run 'sysforge run toolchain' to rebuild profdata)"],
+        )
+
+    if summary.stage_owned_updates:
+        emit("  Stage-owned updates available:")
+        for pkgbase, installed_ver, upstream_ver, owner_stage in summary.stage_owned_updates:
+            if installed_ver and upstream_ver:
+                ver = f"{installed_ver} {_arrow()} {upstream_ver}"
+            else:
+                ver = upstream_ver or ""
+            emit(f"    {pkgbase}   {ver}   {_stage_verb(owner_stage)}")
+    emit("")

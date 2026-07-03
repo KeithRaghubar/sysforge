@@ -95,7 +95,7 @@ from sysforge.pipeline.state import (
 )
 from sysforge.packages_cmd import entry_is_inert
 from sysforge.update_result import _UpdateResult
-from sysforge.update_summary import _print_summary
+from sysforge.update_summary import _print_summary, _print_result_summary, ResultSummary
 from sysforge.update_version import _check_one_pkgbase
 from sysforge.update_assemble import _assemble_package_set
 from sysforge.update_sync import _sync_sources
@@ -372,6 +372,64 @@ def cmd_update(args) -> None:
                 pass
 
 
+def _detect_stage_owned_updates(
+    stage_owned_packages, *, all_installed, sync_failures,
+    rpc_version_by_base, pacman_updates_map, skip_sync_check, offline,
+) -> list[tuple[str, str | None, str | None, str]]:
+    """Advisory-only: which stage-owned packages have a newer upstream version.
+
+    Reuses the same per-pkgbase check the walk runs. Respects the offline gate
+    exactly as the main walk does — offline skips the network check, so no
+    advisory is produced. Best-effort: a None/failed check omits that package.
+    """
+    if offline or not stage_owned_packages:
+        return []
+    pkgbase_map, pkgbase_entry = group_by_pkgbase(stage_owned_packages)
+    advisories: list[tuple[str, str | None, str | None, str]] = []
+    for pkgbase, pkgnames in sorted(pkgbase_map.items()):
+        entry = pkgbase_entry[pkgbase]
+        owner = entry.get("owner_stage", "")
+        try:
+            r = _check_one_pkgbase(
+                pkgbase, pkgnames, entry, sync_failures, all_installed,
+                set(), skip_sync_check, rpc_version_by_base, False, None,
+                pacman_updates_map,
+            )
+        except Exception:
+            continue
+        if r is not None and r.action in ("NEEDS_REBUILD", "NEEDS_PACMAN_UPGRADE"):
+            advisories.append((pkgbase, r.installed_ver, r.pkgbuild_ver, owner))
+    return advisories
+
+
+def _build_result_summary(
+    *, results, built_pkgs, failed_pkgs, pacman_upgrade_pkgs,
+    installed_deps, pgo_skipped_pkgs, cleansrc_failures,
+    install_only, pacman_upgrade_failed, skipped, stage_owned_updates,
+) -> ResultSummary:
+    """Assemble a ``ResultSummary`` from ``update``'s per-run state.
+
+    Lives here (not in ``update_summary.py``) because it reads ``results``,
+    keeping the renderer pure.
+    """
+    versions = {
+        r.pkgbase: (r.installed_ver, r.pkgbuild_ver) for r in results
+    }
+    return ResultSummary(
+        built_pkgs=list(built_pkgs),
+        failed_pkgs=list(failed_pkgs),
+        pacman_upgrade_pkgs=list(pacman_upgrade_pkgs),
+        installed_deps=list(installed_deps),
+        pgo_skipped_pkgs=list(pgo_skipped_pkgs),
+        cleansrc_failures=list(cleansrc_failures),
+        install_only=install_only,
+        pacman_upgrade_failed=pacman_upgrade_failed,
+        skipped=skipped,
+        versions=versions,
+        stage_owned_updates=list(stage_owned_updates),
+    )
+
+
 def _emit_timings(timer: PhaseTimer, args) -> None:
     """Render the phase wall-clock report under [UPDATE].
 
@@ -465,7 +523,7 @@ def _cmd_update_body(args) -> None:
 
     # ── Phase 1: Package set assembly ─────────────────────────────────────
     _ui_progress.phase("assembling package set")
-    packages, unrecorded_names = _assemble_package_set(
+    packages, unrecorded_names, stage_owned_packages = _assemble_package_set(
         args, bs, config, build_cfg, overrides_by_name,
     )
 
@@ -827,6 +885,7 @@ def _cmd_update_body(args) -> None:
     pgo_skipped_pkgs: list[str] = []
     review_skipped_pkgs: list[str] = []
     install_failed = False
+    outcome = None  # only set on the build_and_install path (Task 3: F38)
 
     if not to_build:
         # Nothing to source-build, but pacman-class upgrades are pending —
@@ -956,33 +1015,32 @@ def _cmd_update_body(args) -> None:
                + len(review_skipped_pkgs))
     if install_only:
         skipped += len(to_build) - len(built_pkgs) - len(failed_pkgs)
-    built_label = "installed" if install_only else "built"
-    _log.ui((
-        f"\n[SYSFORGE] Update complete: "
-        f"{len(built_pkgs)} {built_label}, {len(failed_pkgs)} failed, {skipped} skipped"
-        + (f", {len(pgo_skipped_pkgs)} pgo-skipped" if pgo_skipped_pkgs else "")
-        + (f", {len(pacman_upgrade_pkgs)} pacman-upgraded" if pacman_upgrade_pkgs else "")
-        + (" (pacman -Syu FAILED)" if pacman_upgrade_failed else "")
-        + "."
-    ))
-    if built_pkgs:
-        _label = "Installed:" if install_only else "Built:"
-        _log.ui(f"  {_label:<13}{' '.join(built_pkgs)}")
-    if pacman_upgrade_pkgs:
-        suffix = " (transaction FAILED)" if pacman_upgrade_failed else ""
-        _log.ui(f"  Pacman-Syu:  {' '.join(pacman_upgrade_pkgs)}{suffix}")
-    if failed_pkgs:
-        _log.ui(f"  Failed:      {' '.join(failed_pkgs)}")
-    if cleansrc_failures:
-        _log.ui(
-            f"  --cleansrc refused {len(cleansrc_failures)} package(s) with local work; "
-            "commit/push or resolve manually before retrying."
-        )
-    if pgo_skipped_pkgs:
-        _log.ui(
-            f"  PGO-skipped: {' '.join(pgo_skipped_pkgs)}"
-            " (run 'sysforge run toolchain' to rebuild profdata)"
-        )
+    installed_deps = outcome.installed_deps if outcome is not None else []
+    stage_owned_updates = _detect_stage_owned_updates(
+        stage_owned_packages,
+        all_installed=all_installed,
+        sync_failures=sync_failures,
+        rpc_version_by_base=rpc_version_by_base,
+        pacman_updates_map=pacman_updates_map,
+        skip_sync_check=skip_sync_check,
+        offline=offline,
+    )
+    summary = _build_result_summary(
+        results=results,
+        built_pkgs=built_pkgs,
+        failed_pkgs=failed_pkgs,
+        pacman_upgrade_pkgs=pacman_upgrade_pkgs,
+        installed_deps=installed_deps,
+        pgo_skipped_pkgs=pgo_skipped_pkgs,
+        cleansrc_failures=sorted(cleansrc_failures),
+        install_only=install_only,
+        pacman_upgrade_failed=pacman_upgrade_failed,
+        skipped=skipped,
+        stage_owned_updates=stage_owned_updates,
+    )
+    # Route through _log.ui (not bare print) so the end-of-run summary is
+    # mirrored into the unified log the way the old inline block was.
+    _print_result_summary(summary, emit=_log.ui)
 
     _emit_timings(timer, args)
 
