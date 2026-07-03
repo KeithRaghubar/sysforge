@@ -467,7 +467,7 @@ UNRELEASED_EOF
 
     # Commit + tag
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md uv.lock man/sysforge.1 "docs/release-notes/$TAG.md" "docs/release-notes/unreleased.md"
+        git add pyproject.toml PKGBUILD PKGBUILD-git README.md DESIGN.md docs/design/00-header.md uv.lock man/sysforge.1 "docs/release-notes/$TAG.md" "docs/release-notes/unreleased.md"
         git commit -m "release: $TAG"
         # Signed annotated tag — the release's authenticity anchor. `git tag -v`
         # fails (and aborts the release) if the signature does not verify.

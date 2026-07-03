@@ -17,3 +17,6 @@ https://keepachangelog.com/en/1.1.0/
 
 - Release script: the `.SRCINFO-git` generation tmpdir was missing `sysforge.install`,
   so `makepkg --printsrcinfo` aborted after the v2.0.1 chroot build passed.
+- Release script: the Phase-1 release commit omitted `docs/design/00-header.md`
+  from `git add`, leaving the stamped version marker uncommitted and blocking
+  `--resume` on a dirty tree.
