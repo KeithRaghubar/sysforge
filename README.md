@@ -134,7 +134,7 @@ By default sysforge prints errors plus the primary output only; `-v`/`-vv`/`-vvv
 sysforge run pipeline --state-dir /mnt/var/lib/sysforge
 ```
 
-This runs stages 1–4: partition the disk, `pacstrap` the base system, detect hardware, and configure the installed system (hostname, locale, timezone, mirrorlist, bootloader, services, primary user, and sysforge itself). The pipeline checkpoints after each stage; a failure resumes with `--resume`.
+This runs stages 1–3: **install** (disk partition/format/mount, base install, bootloader, users, services, and system identity — all via archinstall from a generated config), detect hardware, and **configure** the installed system with sysforge-specific tuning (mirrorlist, `makepkg.conf`, desktop group, and sysforge itself). The pipeline checkpoints after each stage; a failure resumes with `--resume`.
 
 ### 5. Reboot and continue
 

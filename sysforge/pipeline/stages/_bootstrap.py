@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: MIT
 
 """
-stages/_bootstrap.py — shared bootstrap config loader for stages 1-4.
+stages/_bootstrap.py — shared bootstrap config loader for stages 1-3.
 
 Reads /etc/sysforge/bootstrap.toml (or a given path) and returns a
-BootstrapConfig dataclass used by the partition, base_install, hardware,
-and configure stages.
+BootstrapConfig dataclass used by the install, hardware, and configure
+stages (and the archinstall config builder they feed).
 """
 
 import tomllib

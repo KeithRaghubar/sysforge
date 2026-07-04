@@ -49,30 +49,6 @@ straight off a `Q`.
 
 ### Features
 
-- **`2.0.1-F3` — Integrate archinstall for the bootstrap disk/base-install slice
-  (promoted from Q1).** Replace sysforge's hand-rolled partitioning + base-install
-  logic (`partition.py` ~411 lines, `base_install.py` ~131 lines) with a
-  **translation layer** that maps sysforge's bootstrap config onto archinstall's
-  scriptable, headless API — validated by the 2026-07-03 spike:
-    - **Disk** → `archinstall.lib.disk.device_handler.DeviceHandler` (singleton:
-      `partition()`, `format()`, `wipe_dev()`, `load_devices()`,
-      `create_btrfs_volumes()`), driven by the `DiskLayoutConfiguration` /
-      `DeviceModification` / `PartitionModification` / `FilesystemType` models.
-    - **Base install** → `Installer(target, disk_config, base_packages, kernels,
-      silent=True)` (context manager: `mount_ordered_layout()`,
-      `minimal_installation()`, `genfstab()`, `add_bootloader()`, `set_mirrors()`,
-      `set_locale()`, `set_timezone()`, `create_users()`, `enable_service()`).
-  Constraints: (a) archinstall is a **live-ISO-only** dependency (pulls
-  `pyparted`/`cryptography`) and must not leak into the normal package-build
-  install path — gate it to the bootstrap entry point; (b) pin archinstall and
-  add a compat shim since its models move across releases; (c) `configure.py`
-  (~759 lines) exceeds archinstall's coverage and stays sysforge's; (d) all disk
-  mutation stays behind the existing sentinel-gated verb. First slice: a
-  proof-of-concept `partition` stage that emits a `DiskLayoutConfiguration` and
-  calls `DeviceHandler.partition/format`, validated in the VM harness, before
-  porting base-install. *Priority: medium (removes the highest-risk
-  re-implemented surface: disk/boot setup).*
-
 - **`1.2.0-F14` — `doctor`: warn on installed instrumented/incomplete-PGO builds of
   *any* package.** Since `--pgo` works on any package (F5), an instrumented
   (record-stage) build can be left live for any target, not just mesa. Add a

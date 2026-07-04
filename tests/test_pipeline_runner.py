@@ -4,8 +4,6 @@ checkpoint/resume logic.
 
 Uses mock stages that record calls without touching real system tools.
 """
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -203,3 +201,24 @@ def test_invalid_depends_on_raises(tmp_path):
     bad = OkStage("b", depends_on=["nonexistent"])
     with pytest.raises(ValueError, match="nonexistent"):
         run_pipeline({}, make_options(state_dir=tmp_path), stages=[bad])
+
+
+def test_shipped_stage_graph_is_valid():
+    """Every depends_on in the real STAGES list must name an existing stage.
+
+    Regression guard for a rename hazard: the runner validates the graph on
+    every pipeline run, but the synthetic-stage tests above never exercise the
+    shipped STAGES list. When the `base_install` stage was folded into `install`
+    (2.0.1-F3), `hardware.depends_on` still pointed at the deleted stage — a
+    dead-on-arrival ValueError that unit tests missed. This asserts the real
+    graph resolves.
+    """
+    from sysforge.pipeline.runner import _validate_stages
+    from sysforge.pipeline.stages import STAGES
+
+    _validate_stages(STAGES)  # raises ValueError on a dangling dependency
+
+    names = {s.name for s in STAGES}
+    for stage in STAGES:
+        for dep in stage.depends_on:
+            assert dep in names, f"{stage.name} depends on unknown stage {dep!r}"

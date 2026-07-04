@@ -3,11 +3,22 @@
 # SPDX-License-Identifier: MIT
 
 """
-stages/configure.py — stage 4: bootstrap configuration
+stages/configure.py — stage 4: sysforge-specific tuning
 
-Applies one-time system identity and mirror configuration to a freshly
-installed system. All operations run inside arch-chroot so the target
-filesystem is modified correctly (symlinks, locale-gen, etc.).
+System identity (hostname, locale, timezone, keymap, bootloader, services,
+sshd, user creation) is largely archinstall's job, applied by the earlier
+``install`` stage. This stage runs after ``install`` and layers
+sysforge-specific tuning on top of the already-identified system: makepkg.conf
+tweaks, pacman ParallelDownloads, a reflector mirrorlist refresh, a pacman db
+sync, shell dotfiles, and the sysforge desktop-group / self-install machinery.
+
+Two identity steps are intentionally re-asserted here as a defensive
+belt-and-suspenders: the root password (``chpasswd``) and the login shell
+(``chsh``). archinstall already sets both from the same bootstrap.toml values,
+so these are normally idempotent no-ops; keeping them means a future change to
+archinstall's password/shell handling (or an unset field) can't silently leave
+the system without a root password or on the wrong shell. All operations run
+inside arch-chroot so the target filesystem is modified correctly.
 
 Reads /etc/sysforge/bootstrap.toml for configuration. Stage fails with a
 clear error if bootstrap.toml is absent or missing required fields.
@@ -69,57 +80,6 @@ def _chroot(target: str, cmd: list[str], check: bool = True) -> subprocess.Compl
 # ---------------------------------------------------------------------------
 # Configuration steps
 # ---------------------------------------------------------------------------
-
-def _set_hostname(cfg: BootstrapConfig) -> None:
-    hostname_file = Path(cfg.target) / "etc/hostname"
-    hostname_file.write_text(cfg.hostname + "\n")
-    _log.ui(f"Hostname: {cfg.hostname}")
-
-
-def _set_locale(cfg: BootstrapConfig) -> None:
-    # Uncomment the locale in /etc/locale.gen inside the chroot
-    locale_gen = Path(cfg.target) / "etc/locale.gen"
-    if locale_gen.exists():
-        text = locale_gen.read_text()
-        # Uncomment lines starting with #<locale> (with optional space)
-        pattern = re.compile(
-            r"^#\s*(" + re.escape(cfg.locale) + r".*)", re.MULTILINE
-        )
-        new_text = pattern.sub(r"\1", text)
-        if new_text != text:
-            locale_gen.write_text(new_text)
-            _log.info(f"Uncommented {cfg.locale} in /etc/locale.gen")
-        else:
-            _log.warn(f"{cfg.locale} not found in /etc/locale.gen — locale-gen may fail")
-    else:
-        _log.warn(f"{cfg.target}/etc/locale.gen not found — skipping locale.gen edit")
-
-    # Write locale.conf
-    locale_conf = Path(cfg.target) / "etc/locale.conf"
-    locale_conf.write_text(f"LANG={cfg.locale}\n")
-    _log.ui(f"Locale: {cfg.locale}")
-
-    # Run locale-gen inside chroot
-    _chroot(cfg.target, ["locale-gen"])
-
-
-def _set_timezone(cfg: BootstrapConfig) -> None:
-    # Create /etc/localtime symlink via timedatectl or direct ln -sf
-    tz_path = f"/usr/share/zoneinfo/{cfg.timezone}"
-    _chroot(cfg.target, ["ln", "-sf", tz_path, "/etc/localtime"])
-    _chroot(cfg.target, ["hwclock", "--systohc"])
-    _log.ui(f"Timezone: {cfg.timezone}")
-
-
-def _set_keymap(cfg: BootstrapConfig) -> None:
-    if not cfg.keymap or cfg.keymap == "us":
-        # us is the kernel default; vconsole.conf is only needed for non-default
-        _log.info("Keymap: us (default, skipping vconsole.conf)")
-        return
-    vconsole = Path(cfg.target) / "etc/vconsole.conf"
-    vconsole.write_text(f"KEYMAP={cfg.keymap}\n")
-    _log.ui(f"Keymap: {cfg.keymap}")
-
 
 def _set_makepkg_conf(cfg: BootstrapConfig) -> None:
     """Apply optional [makepkg] bootstrap keys to the target /etc/makepkg.conf.
@@ -222,81 +182,6 @@ def _sync_pacman_dbs(cfg: BootstrapConfig) -> None:
             )
         else:
             _log.ui(f"pacman {label} db synced ({flag}).")
-
-
-def _install_bootloader(cfg: BootstrapConfig) -> None:
-    """Install systemd-boot and write a minimal loader entry."""
-    _chroot(cfg.target, ["bootctl", "install"])
-
-    loader_conf = Path(cfg.target) / "boot/loader/loader.conf"
-    loader_conf.parent.mkdir(parents=True, exist_ok=True)
-    loader_conf.write_text("default arch.conf\ntimeout 3\nconsole-mode max\n")
-
-    entries_dir = Path(cfg.target) / "boot/loader/entries"
-    entries_dir.mkdir(parents=True, exist_ok=True)
-    (entries_dir / "arch.conf").write_text(
-        "title   Arch Linux\n"
-        "linux   /vmlinuz-linux\n"
-        "initrd  /initramfs-linux.img\n"
-        "options root=LABEL=root rw\n"
-    )
-    _log.ui("Bootloader: systemd-boot installed")
-
-
-def _enable_services(cfg: BootstrapConfig) -> None:
-    """Enable NetworkManager and sshd so they start on first boot."""
-    _chroot(cfg.target, ["systemctl", "enable", "NetworkManager"])
-    _chroot(cfg.target, ["systemctl", "enable", "sshd"])
-    _log.ui("Services enabled: NetworkManager, sshd")
-
-
-def _configure_sshd(cfg: BootstrapConfig) -> None:
-    """Allow root login via SSH (required for initial access)."""
-    sshd_config = Path(cfg.target) / "etc/ssh/sshd_config"
-    if not sshd_config.exists():
-        _log.warn("sshd_config not found — skipping PermitRootLogin config")
-        return
-    text = sshd_config.read_text()
-    new_text, count = re.subn(
-        r"^#?\s*PermitRootLogin\s+.*$",
-        "PermitRootLogin yes",
-        text,
-        flags=re.MULTILINE,
-    )
-    if not count:
-        new_text = text + "\nPermitRootLogin yes\n"
-    if new_text != text:
-        sshd_config.write_text(new_text)
-    _log.ui("sshd: PermitRootLogin yes")
-
-
-def _create_user(cfg: BootstrapConfig) -> None:
-    """Create the primary user, add to wheel, and configure sudo."""
-    # Create user with home dir and wheel group membership
-    result = _chroot(cfg.target, ["useradd", "-m", "-G", "wheel", cfg.username], check=False)
-    if result.returncode not in (0, 9):  # 9 = already exists
-        raise RuntimeError(f"[CONFIGURE] useradd failed for {cfg.username!r} (exit {result.returncode})")
-    _log.ui(f"User: {cfg.username} (wheel)")
-
-    # Allow wheel group to use sudo via a sudoers drop-in
-    sudoers_d = Path(cfg.target) / "etc/sudoers.d"
-    sudoers_d.mkdir(parents=True, exist_ok=True)
-    (sudoers_d / "wheel").write_text("%wheel ALL=(ALL:ALL) ALL\n")
-    _log.ui("sudo: wheel group enabled")
-
-    if cfg.user_password:
-        run_or_raise(
-            ["arch-chroot", cfg.target, "chpasswd"],
-            tag="CONFIGURE", operation="chpasswd",
-            hint=f"failed for {cfg.username!r}",
-            input=f"{cfg.username}:{cfg.user_password}\n",
-        )
-        _log.ui(f"Password set for {cfg.username}.")
-    else:
-        _log.warn(
-            f"No user_password in bootstrap.toml — set it manually after reboot:\n"
-            f"  passwd {cfg.username}"
-        )
 
 
 _BASHRC = (
@@ -688,8 +573,8 @@ def _set_root_password(cfg: BootstrapConfig) -> None:
 
 class ConfigureStage(Stage):
     name = "configure"
-    description = "Bootstrap configuration — hostname, locale, bootloader, services"
-    depends_on = ["hardware"]
+    description = "Sysforge-specific tuning — makepkg.conf, mirrors, desktop group"
+    depends_on = ["install", "hardware"]
 
     def run(self, config, state, options):  # noqa: ARG002
         cfg = load_bootstrap()
@@ -697,17 +582,10 @@ class ConfigureStage(Stage):
         _log.ui(f"Configuring target: {cfg.target}")
 
         if options.dry_run:
-            _log.ui(f"[dry-run] hostname:   {cfg.hostname}")
-            _log.ui(f"[dry-run] locale:     {cfg.locale}")
-            _log.ui(f"[dry-run] timezone:   {cfg.timezone}")
-            _log.ui(f"[dry-run] keymap:     {cfg.keymap}")
             _log.ui(f"[dry-run] ParallelDownloads: {cfg.parallel_downloads}")
             if cfg.mirror_countries:
                 _log.ui(f"[dry-run] reflector countries: {cfg.mirror_countries}")
             _log.ui("[dry-run] would sync pacman dbs: pacman -Sy, pacman -Fy")
-            _log.ui("[dry-run] would install bootloader: systemd-boot")
-            _log.ui("[dry-run] would enable: NetworkManager, sshd")
-            _log.ui("[dry-run] would configure: PermitRootLogin yes")
             if cfg.root_password:
                 _log.ui("[dry-run] would set root password from bootstrap.toml")
             else:
@@ -715,7 +593,7 @@ class ConfigureStage(Stage):
             if cfg.shell != "bash":
                 _log.ui(f"[dry-run] would set default shell: {cfg.shell}")
             _log.ui("[dry-run] would copy /etc/sysforge/ to target")
-            _log.ui("[dry-run] would create /var/lib/sysforge (mode 0777)")
+            _log.ui("[dry-run] would create /var/lib/sysforge (root:sysforge, mode 02775)")
             _log.ui("[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
             _log.ui("[dry-run] would build sysforge in target via makepkg and install with pacman -U (tracked)")
             # Desktop group is written *after* the sysforge install (whose
@@ -726,18 +604,10 @@ class ConfigureStage(Stage):
                 _log.ui("[dry-run] would prompt for a desktop environment (interactive only)")
             return
 
-        _set_hostname(cfg)
-        _set_locale(cfg)
-        _set_timezone(cfg)
-        _set_keymap(cfg)
         _set_pacman_parallel_downloads(cfg)
         _set_makepkg_conf(cfg)
         _run_reflector(cfg)
         _sync_pacman_dbs(cfg)
-        _install_bootloader(cfg)
-        _enable_services(cfg)
-        _configure_sshd(cfg)
-        _create_user(cfg)
         _create_sysforge_group(cfg)
         _configure_shell(cfg)
         _set_default_shell(cfg)

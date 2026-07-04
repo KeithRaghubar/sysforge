@@ -13,6 +13,13 @@ finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
 
+### Changed
+
+- Bootstrap disk + base install + system identity now run through archinstall
+  (generated from `bootstrap.toml` via its headless JSON config + `--silent`),
+  replacing the hand-rolled partition/base-install/identity stages. The
+  `configure` stage now applies only sysforge-specific tuning. (`2.0.1-F3`)
+
 ### Fixed
 
 - Build-failure recovery compiler swaps now persist for single-package

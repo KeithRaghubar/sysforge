@@ -22,21 +22,12 @@ from sysforge.pipeline.stages.hardware import (
 )
 from sysforge.pipeline.stages.configure import (
     ConfigureStage,
-    _set_hostname,
-    _set_locale,
-    _set_timezone,
-    _set_keymap,
     _set_makepkg_conf,
     _set_pacman_parallel_downloads,
     _sync_pacman_dbs,
 )
-from sysforge.pipeline.stages.base_install import BaseInstallStage, _BASE_PACKAGES
-from sysforge.pipeline.stages.partition import (
-    PartitionStage,
-    _partition_disk,
-    _has_existing_partitions,
-    _confirm,
-)
+from sysforge.primitives.archinstall_config import _BASE_PACKAGES
+from sysforge.pipeline.stages._partition_plan import _has_existing_partitions, _confirm
 
 
 # ---------------------------------------------------------------------------
@@ -700,52 +691,6 @@ class TestHardwareStageRun:
 # Configure stage helpers
 # ---------------------------------------------------------------------------
 
-class TestSetHostname:
-    def test_writes_hostname(self, tmp_path):
-        etc = tmp_path / "etc"
-        etc.mkdir()
-        cfg = make_cfg(target=str(tmp_path))
-        _set_hostname(cfg)
-        assert (etc / "hostname").read_text() == "testhost\n"
-
-
-class TestSetLocale:
-    def test_uncomments_locale(self, tmp_path):
-        etc = tmp_path / "etc"
-        etc.mkdir()
-        locale_gen = etc / "locale.gen"
-        locale_gen.write_text(
-            "# en_US.UTF-8 UTF-8\n# de_DE.UTF-8 UTF-8\n"
-        )
-        cfg = make_cfg(target=str(tmp_path))
-
-        with patch("sysforge.pipeline.stages.configure._chroot"):
-            _set_locale(cfg)
-
-        text = locale_gen.read_text()
-        assert text.startswith("en_US.UTF-8 UTF-8")
-        assert "# de_DE.UTF-8" in text
-        assert (etc / "locale.conf").read_text() == "LANG=en_US.UTF-8\n"
-
-    def test_missing_locale_gen_warns(self, tmp_path):
-        etc = tmp_path / "etc"
-        etc.mkdir()
-        cfg = make_cfg(target=str(tmp_path))
-        with patch("sysforge.pipeline.stages.configure._chroot"):
-            # Should not raise even if locale.gen missing
-            _set_locale(cfg)
-
-
-class TestSetTimezone:
-    def test_calls_chroot(self, tmp_path):
-        cfg = make_cfg(target=str(tmp_path), timezone="America/New_York")
-        with patch("sysforge.pipeline.stages.configure._chroot") as mock_chroot:
-            _set_timezone(cfg)
-        calls = [c.args[1] for c in mock_chroot.call_args_list]
-        assert any("America/New_York" in " ".join(c) for c in calls)
-        assert any("hwclock" in c for c in calls)
-
-
 class TestSyncPacmanDbs:
     def test_runs_sy_then_fy_in_chroot(self, tmp_path):
         cfg = make_cfg(target=str(tmp_path))
@@ -769,20 +714,6 @@ class TestSyncPacmanDbs:
         ):
             # A transient mirror failure must not abort configure.
             _sync_pacman_dbs(cfg)
-
-
-class TestSetKeymap:
-    def test_default_us_skipped(self, tmp_path):
-        cfg = make_cfg(target=str(tmp_path), keymap="us")
-        _set_keymap(cfg)
-        assert not (tmp_path / "etc/vconsole.conf").exists()
-
-    def test_non_default_writes_file(self, tmp_path):
-        etc = tmp_path / "etc"
-        etc.mkdir()
-        cfg = make_cfg(target=str(tmp_path), keymap="de")
-        _set_keymap(cfg)
-        assert (etc / "vconsole.conf").read_text() == "KEYMAP=de\n"
 
 
 class TestSetPacmanParallelDownloads:
@@ -867,6 +798,55 @@ class TestConfigureStageDryRun:
         assert not (tmp_path / "etc/hostname").exists()
 
 
+class TestConfigureStageSysforgeTuningOnly:
+    """Regression: identity (hostname/locale/timezone/keymap/bootloader/services/
+    sshd/user-creation) is now archinstall's job, done by the earlier ``install``
+    stage. ``configure`` must no longer expose those helpers, and its ``run()``
+    must still invoke the retained sysforge-specific tuning steps."""
+
+    _REMOVED = (
+        "_set_hostname", "_set_locale", "_set_timezone", "_set_keymap",
+        "_install_bootloader", "_enable_services", "_configure_sshd",
+        "_create_user",
+    )
+
+    _RETAINED_STEP_FUNCS = (
+        "_set_pacman_parallel_downloads", "_set_makepkg_conf", "_run_reflector",
+        "_sync_pacman_dbs", "_create_sysforge_group",
+        "_configure_shell", "_set_default_shell", "_copy_config_files",
+        "_configure_desktop", "_create_state_dir", "_write_resume_reminder",
+        "_install_sysforge", "_set_root_password",
+    )
+
+    def test_identity_helpers_removed(self):
+        from sysforge.pipeline.stages import configure as conf
+        for gone in self._REMOVED:
+            assert not hasattr(conf, gone), f"{gone} should be archinstall's now"
+
+    def test_depends_on_install_and_hardware(self):
+        assert ConfigureStage.depends_on == ["install", "hardware"]
+
+    def test_run_invokes_retained_tuning_steps(self, tmp_path):
+        from unittest.mock import DEFAULT
+
+        stage = ConfigureStage()
+        options = make_options()
+
+        calls: list[str] = []
+        with patch.multiple(
+            "sysforge.pipeline.stages.configure",
+            **{name: DEFAULT for name in self._RETAINED_STEP_FUNCS},
+            load_bootstrap=MagicMock(return_value=make_cfg(target=str(tmp_path))),
+        ) as mocks:
+            for name in self._RETAINED_STEP_FUNCS:
+                mocks[name].side_effect = lambda *a, _n=name, **k: calls.append(_n)
+            stage.run({}, MagicMock(), options)
+
+        assert set(calls) >= {
+            "_set_makepkg_conf", "_run_reflector", "_sync_pacman_dbs",
+        }
+
+
 class TestConfigureStageStepOrder:
     """Regression: the desktop group must be written into packages.toml *after*
     sysforge is installed.
@@ -879,10 +859,8 @@ class TestConfigureStageStepOrder:
     """
 
     _STEP_FUNCS = (
-        "_set_hostname", "_set_locale", "_set_timezone", "_set_keymap",
         "_set_pacman_parallel_downloads", "_set_makepkg_conf", "_run_reflector",
-        "_sync_pacman_dbs", "_install_bootloader", "_enable_services",
-        "_configure_sshd", "_create_user", "_create_sysforge_group",
+        "_sync_pacman_dbs", "_create_sysforge_group",
         "_configure_shell", "_set_default_shell", "_copy_config_files",
         "_configure_desktop", "_create_state_dir", "_write_resume_reminder",
         "_install_sysforge", "_set_root_password",
@@ -910,75 +888,14 @@ class TestConfigureStageStepOrder:
 
 
 # ---------------------------------------------------------------------------
-# BaseInstall stage
+# Base packages (relocated to primitives.archinstall_config in Task 5)
 # ---------------------------------------------------------------------------
 
-class TestBaseInstallStage:
-    def test_dry_run_no_subprocess(self, tmp_path):
-        stage = BaseInstallStage()
-        options = make_options(dry_run=True)
-        with patch("sysforge.pipeline.stages.base_install.load_bootstrap",
-                   return_value=make_cfg(target=str(tmp_path))), \
-             patch("sysforge.pipeline.stages.base_install.subprocess.run") as mock_run:
-            stage.run({}, MagicMock(), options)
-        mock_run.assert_not_called()
-
+class TestBasePackages:
     def test_base_packages_non_empty(self):
         assert len(_BASE_PACKAGES) >= 5
         assert "base" in _BASE_PACKAGES
         assert "linux" in _BASE_PACKAGES
-
-    def test_calls_pacstrap_and_genfstab(self, tmp_path):
-        stage = BaseInstallStage()
-        options = make_options()
-        target = str(tmp_path)
-
-        with patch("sysforge.pipeline.stages.base_install.load_bootstrap",
-                   return_value=make_cfg(target=target)), \
-             patch("sysforge.pipeline.stages.base_install._verify_target_mounted"), \
-             patch("sysforge.pipeline.stages.base_install.subprocess.run") as mock_run:
-
-            mock_run.return_value = MagicMock(returncode=0, stdout="# fstab\n")
-            stage.run({}, MagicMock(), options)
-
-        cmds = [c.args[0] for c in mock_run.call_args_list]
-        assert any(c[0] == "pacstrap" for c in cmds)
-        assert any(c[0] == "genfstab" for c in cmds)
-
-
-# ---------------------------------------------------------------------------
-# Partition stage
-# ---------------------------------------------------------------------------
-
-class TestPartitionStageDryRun:
-    def test_dry_run_no_subprocess(self, tmp_path):
-        stage = PartitionStage()
-        options = make_options(dry_run=True)
-        with patch("sysforge.pipeline.stages.partition.load_bootstrap",
-                   return_value=make_cfg()), \
-             patch("sysforge.pipeline.stages.partition.subprocess.run") as mock_run:
-            stage.run({}, MagicMock(), options)
-        mock_run.assert_not_called()
-
-
-class TestPartitionDevicePaths:
-    """Partition name derivation for different device types."""
-
-    @pytest.mark.parametrize("device,expected_esp,expected_root", [
-        ("/dev/sda",       "/dev/sda1",        "/dev/sda2"),
-        ("/dev/vda",       "/dev/vda1",         "/dev/vda2"),
-        ("/dev/nvme0n1",   "/dev/nvme0n1p1",    "/dev/nvme0n1p2"),
-        ("/dev/mmcblk0",   "/dev/mmcblk0p1",    "/dev/mmcblk0p2"),
-    ])
-    def test_partition_names(self, device, expected_esp, expected_root):
-        cfg = make_cfg(device=device)
-        with patch("sysforge.pipeline.stages.partition.subprocess.run") as mock_run, \
-             patch("sysforge.pipeline.stages.partition.Path") as mock_path:
-            mock_run.return_value = MagicMock(returncode=0)
-            mock_path.return_value.exists.return_value = True
-            esp, root = _partition_disk(cfg)
-        assert esp  == expected_esp
-        assert root == expected_root
 
 
 class TestHasExistingPartitions:
@@ -986,18 +903,18 @@ class TestHasExistingPartitions:
 
     def test_bare_disk_returns_false(self):
         # lsblk lists only the device itself — no child partitions.
-        with patch("sysforge.pipeline.stages.partition.subprocess.run") as mock_run:
+        with patch("sysforge.pipeline.stages._partition_plan.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="sda\n")
             assert _has_existing_partitions("/dev/sda") is False
 
     def test_partitioned_disk_returns_true(self):
-        with patch("sysforge.pipeline.stages.partition.subprocess.run") as mock_run:
+        with patch("sysforge.pipeline.stages._partition_plan.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="sda\nsda1\nsda2\n")
             assert _has_existing_partitions("/dev/sda") is True
 
     def test_lsblk_failure_returns_false(self):
         # Can't determine — fall through to the normal confirm rather than erroring.
-        with patch("sysforge.pipeline.stages.partition.subprocess.run") as mock_run:
+        with patch("sysforge.pipeline.stages._partition_plan.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="")
             assert _has_existing_partitions("/dev/sda") is False
 
@@ -1007,9 +924,9 @@ class TestConfirmOverwrite:
 
     def test_existing_partitions_default_aborts(self):
         cfg = make_cfg(device="/dev/sda")
-        with patch("sysforge.pipeline.stages.partition._has_existing_partitions",
+        with patch("sysforge.pipeline.stages._partition_plan._has_existing_partitions",
                    return_value=True), \
-             patch("sysforge.pipeline.stages.partition.prompt_choice",
+             patch("sysforge.pipeline.stages._partition_plan.prompt_choice",
                    return_value="n") as mock_prompt:
             with pytest.raises(RuntimeError, match="Aborted by user"):
                 _confirm(cfg)
@@ -1018,17 +935,17 @@ class TestConfirmOverwrite:
 
     def test_existing_partitions_yes_proceeds(self):
         cfg = make_cfg(device="/dev/sda")
-        with patch("sysforge.pipeline.stages.partition._has_existing_partitions",
+        with patch("sysforge.pipeline.stages._partition_plan._has_existing_partitions",
                    return_value=True), \
-             patch("sysforge.pipeline.stages.partition.prompt_choice",
+             patch("sysforge.pipeline.stages._partition_plan.prompt_choice",
                    return_value="y"):
             _confirm(cfg)  # no raise
 
     def test_bare_disk_uses_plain_confirm(self):
         cfg = make_cfg(device="/dev/sda")
-        with patch("sysforge.pipeline.stages.partition._has_existing_partitions",
+        with patch("sysforge.pipeline.stages._partition_plan._has_existing_partitions",
                    return_value=False), \
-             patch("sysforge.pipeline.stages.partition.prompt_choice",
+             patch("sysforge.pipeline.stages._partition_plan.prompt_choice",
                    return_value="yes") as mock_prompt:
             _confirm(cfg)
         # Plain confirm keeps the strict "yes" choice set, not the y/N overwrite form.

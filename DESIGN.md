@@ -7,7 +7,7 @@
 
 SysForge is an Arch Linux build and maintenance suite with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles, tracks build state for update detection, and automates the full build lifecycle — from fetching PKGBUILDs to installing profiled packages. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-SysForge manages the profiled AUR-helper surface (install, update, and manage AUR and custom packages with system-tuned profiled builds) and a full bootstrap pipeline (stages 1–4: partition, base install, hardware detection, configure) that automates a fresh Arch install from the ISO. Current release is **<!--version-->v2.1.0<!--/version-->**; per-release changes are recorded in `docs/release-notes/`.
+SysForge manages the profiled AUR-helper surface (install, update, and manage AUR and custom packages with system-tuned profiled builds) and a full bootstrap pipeline (stages 1–3: install via archinstall, hardware detection, configure) that automates a fresh Arch install from the ISO. Current release is **<!--version-->v2.1.0<!--/version-->**; per-release changes are recorded in `docs/release-notes/`.
 
 ---
 
@@ -171,6 +171,8 @@ sysforge/
 │   │   ├── runner.py                  # run_verb dispatch + sentinel wrapping
 │   │   └── helpers.py                 # shared verb helpers (load_config_with_overrides)
 │   └── primitives/
+│       ├── archinstall_config.py      # pure BootstrapConfig → archinstall JSON (schema pin, _BASE_PACKAGES home)
+│       ├── archinstall_invoke.py      # sole archinstall shell-out (which() gate, 0600 tmp config, --silent)
 │       ├── paths.py                   # config path constants + resolve_packages_path()
 │       ├── stage_ownership.py         # stage→package ownership registry (update skip bootstrap)
 │       ├── config.py                  # TOML config loading, path constants, system conf parsing
@@ -217,14 +219,14 @@ sysforge/
 │           ├── __init__.py            # STAGES ordered list
 │           ├── base.py                # Stage base class, RunOptions dataclass
 │           ├── _bootstrap.py          # shared bootstrap config loader (BootstrapConfig dataclass)
-│           ├── partition.py           # stage 1: GPT partitioning, mkfs, mount
-│           ├── base_install.py        # stage 2: pacstrap + genfstab
-│           ├── hardware.py            # stage 3: CPU/GPU/NVMe detection + PCI/USB inventory → hardware_profile.toml
-│           ├── configure.py           # stage 4: hostname, locale, timezone, bootloader, user, services (arch-chroot)
-│           ├── reconfigure.py         # stage 5: pre-build checkpoint
-│           ├── toolchain.py           # stage 6: LLVM/GCC toolchain build (optional 4-pass PGO)
-│           ├── packages.py            # stage 7: package builds
-│           └── kernel.py              # stage 8: kernel build
+│           ├── _partition_plan.py     # shared destructive-op confirmation (plan table, glyph downgrade, _confirm)
+│           ├── install.py             # stage 1: disk + base install + identity via archinstall
+│           ├── hardware.py            # stage 2: CPU/GPU/NVMe detection + PCI/USB inventory → hardware_profile.toml
+│           ├── configure.py           # stage 3: sysforge-specific tuning (makepkg.conf, mirrors, desktop, self-install) (arch-chroot)
+│           ├── reconfigure.py         # stage 4: pre-build checkpoint
+│           ├── toolchain.py           # stage 5: LLVM/GCC toolchain build (optional 4-pass PGO)
+│           ├── packages.py            # stage 6: package builds
+│           └── kernel.py              # stage 7: kernel build
 ├── tests/
 │   ├── conftest.py
 │   ├── data/
@@ -412,7 +414,7 @@ Expansion semantics (single expansion point: `primitives/config.expand_package_g
 `primitives/pkg_catalog.py` ships a curated catalog of desktop-environment groups (`gnome`, `kde`, `xfce`, `mate`, `cinnamon`, `lxqt`, `budgie`, `cosmic`) and is the single home for the catalog, the guided selection prompt (`select_desktop`), the per-entry display-manager pairing (`display_manager_for`), and the `[group.*]` writer (`write_desktop_group`). It lives in the primitives layer because three surfaces consume it:
 
 - **`sysforge packages add-group <de>`** — writes the chosen catalog group into `packages.toml` (idempotent: re-running replaces the same-named group block; other `[[package]]` blocks and tables are preserved byte-for-byte). Creates the file with the standard header if absent.
-- **Configure stage (bootstrap, stage 4)** — after copying config into the target, `select_desktop` resolves the choice: `bootstrap.toml [desktop] environment` wins non-interactively (unattended installs); otherwise a TTY run prompts ("Install a graphical desktop? → numbered menu"); a non-TTY run with no preselection skips. The group is written into the *target's* `packages.toml` so the later packages stage installs it.
+- **Configure stage (bootstrap, stage 3)** — after copying config into the target, `select_desktop` resolves the choice: `bootstrap.toml [desktop] environment` wins non-interactively (unattended installs); otherwise a TTY run prompts ("Install a graphical desktop? → numbered menu"); a non-TTY run with no preselection skips. The group is written into the *target's* `packages.toml` so the later packages stage installs it.
 - **Reconfigure step `desktop`** — offers the same guided selection on a live system, writing to the live manifest.
 
 The writer only adds `[group.*]` text; expansion stays in `config.expand_package_groups`. Each entry is intentionally minimal — a core session plus its display manager (and, for lightdm-based desktops, a greeter); users extend their own group afterward. Every entry declares a `display_manager` package that is also a member of its `packages` tuple, so the package installs *and* its unit can be enabled.
@@ -531,27 +533,28 @@ The hardware detection stage emits `hardware_profile.toml` which feeds kconfig a
 
 Python DAG orchestrator with checkpoint/resume. Stages run in order:
 
-1. **partition** — fully implemented (GPT, ESP + root, mkfs, mount)
-2. **base_install** — fully implemented (pacstrap minimal base, genfstab)
-3. **hardware** — fully implemented (CPU/GPU/NVMe detection → hardware_profile.toml)
-4. **configure** — fully implemented (hostname, locale, timezone, mirrorlist, systemd-boot, user creation + sudo, sshd config, shell dotfiles, passwords via arch-chroot)
-5. **reconfigure** — fully implemented (pre-build checkpoint: config review, disk/network/gpg checks, build preview)
-6. **toolchain** — fully implemented (LLVM/GCC, optional 4-pass PGO bootstrap, compiler propagation to packages/kernel)
-7. **packages** — fully implemented
-8. **kernel** — fully implemented
+1. **install** — fully implemented (disk + base install via archinstall: partition, format, mount, pacstrap, genfstab, bootloader, users, services, and system identity)
+2. **hardware** — fully implemented (CPU/GPU/NVMe detection → hardware_profile.toml)
+3. **configure** — fully implemented (sysforge-specific tuning: makepkg.conf, pacman ParallelDownloads, reflector mirrorlist + db sync, shell dotfiles, desktop group, sysforge self-install via arch-chroot)
+4. **reconfigure** — fully implemented (pre-build checkpoint: config review, disk/network/gpg checks, build preview)
+5. **toolchain** — fully implemented (LLVM/GCC, optional 4-pass PGO bootstrap, compiler propagation to packages/kernel)
+6. **packages** — fully implemented
+7. **kernel** — fully implemented
 
-Stages 1–4 are **bootstrap-only** — they run once from a live install environment. Stages 5–8 are **repeatable** and run on the installed system. Use `sysforge run pipeline --start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds. Stages 5–8 are also available as standalone `sysforge run <stage>` commands for repeated, out-of-pipeline use (e.g. `sysforge run packages`). The toolchain (6) and kernel (8) stages default to `enabled = false` because building a custom toolchain or kernel is an opt-in decision; users who want the stock system compiler and pacman kernel leave them disabled.
+Stages 1–3 are **bootstrap-only** — they run once from a live install environment. Stages 4–7 are **repeatable** and run on the installed system. Use `sysforge run pipeline --start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds. Stages 4–7 are also available as standalone `sysforge run <stage>` commands for repeated, out-of-pipeline use (e.g. `sysforge run packages`). The toolchain (5) and kernel (7) stages default to `enabled = false` because building a custom toolchain or kernel is an opt-in decision; users who want the stock system compiler and pacman kernel leave them disabled.
 
-### Bootstrap workflow (stages 1–4)
+The **install** stage replaces the earlier hand-rolled `partition` + `base_install` stages (and the identity half of the old `configure`): disk layout, formatting, mounting, pacstrap, genfstab, bootloader, user/service creation, and system identity (hostname, locale, timezone, keymap, sshd) are all delegated to **archinstall**, driven from a generated headless JSON config (`archinstall --config <file> --silent`). See *Install stage* below.
 
-Stages 1–4 run from a live Arch install environment (booted from the install ISO). The state dir must be set to the target system so pipeline state persists across the reboot:
+### Bootstrap workflow (stages 1–3)
+
+Stages 1–3 run from a live Arch install environment (booted from the install ISO). The state dir must be set to the target system so pipeline state persists across the reboot:
 
 ```bash
 # From the live environment — iso-install.sh sets this up automatically
 sysforge run pipeline --state-dir /mnt/var/lib/sysforge
 ```
 
-When stage 4 (configure) completes, the reconfigure stage detects it is running on the live ISO (via `/run/archiso`) and raises `BootstrapRebootRequired`. The runner catches this as a clean stop (exit 0), saves state, and prints the resume command. After rebooting into the installed system:
+When stage 3 (configure) completes, the reconfigure stage detects it is running on the live ISO (via `/run/archiso`) and raises `BootstrapRebootRequired`. The runner catches this as a clean stop (exit 0), saves state, and prints the resume command. After rebooting into the installed system:
 
 ```bash
 sysforge run pipeline --resume
@@ -559,7 +562,7 @@ sysforge run pipeline --resume
 
 **`iso-install.sh`** (`tools/iso-install.sh`) automates the live-ISO setup steps: checks connectivity, installs sysforge from the AUR (`sysforge` by default; pass `--git` to install `sysforge-git` instead), and prompts for all required bootstrap values with validation (timezone checked against `/usr/share/zoneinfo/`, passwords entered silently with confirmation). Writes a complete `bootstrap.toml` and prints the pipeline command when done. Builds the AUR package as a temporary unprivileged user (`aurbuild`) since `makepkg` refuses to run as root; the user and its sudoers drop-in are removed on exit.
 
-**`bootstrap.toml`** (`/etc/sysforge/bootstrap.toml`) configures stages 1–4. The package does not install this file directly — it ships a starter template at `/usr/share/sysforge/bootstrap.toml.example`. `iso-install.sh` writes the live file from interactive prompts; for hand-edit setups, copy the example to `/etc/sysforge/` first.
+**`bootstrap.toml`** (`/etc/sysforge/bootstrap.toml`) configures stages 1–3. The package does not install this file directly — it ships a starter template at `/usr/share/sysforge/bootstrap.toml.example`. `iso-install.sh` writes the live file from interactive prompts; for hand-edit setups, copy the example to `/etc/sysforge/` first.
 
 ```toml
 target = "/mnt"          # mount point for the new system
@@ -591,22 +594,21 @@ environment = "gnome"   # optional — gnome|kde|xfce|mate|cinnamon|lxqt|budgie|
                         # configure stage prompts; unset + no TTY → no desktop.
 ```
 
-**Partition stage (stage 1)** prints a partition-plan box and requires explicit confirmation before any destructive operation (skipped under `--dry-run`). Before prompting it inspects the target device with `lsblk` (`_has_existing_partitions`): a device that already carries a partition table gets an overwrite-specific prompt that **defaults to no** (`Overwrite all partitions on <device>? [y/N]`) — empty input, EOF, or anything but an explicit `y`/`yes` aborts with `existing partitions left intact`, so a stray or non-interactive run never silently wipes a populated disk. A bare/unpartitioned device keeps the strict `Type 'yes' to proceed` confirmation. If lsblk can't enumerate the device the stage falls through to the plain confirmation rather than erroring. (Distinct from the *already-mounted* short-circuit: a device fully mounted at `target` + `target/boot` is treated as already prepared and skipped; a partial mount raises.)
+**Install stage (stage 1)** delegates disk + base install + system identity to **archinstall**, driven by a generated headless JSON config. Three pieces, each with one home:
 
-**Configure stage (stage 4)** runs all one-time system identity steps inside `arch-chroot`:
-- Hostname (`/etc/hostname`), locale (`locale-gen`), timezone (`ln -sf /usr/share/zoneinfo/...`), keymap (`/etc/vconsole.conf`), `ParallelDownloads` in `pacman.conf`
-- Reflector mirrorlist (skipped gracefully if `reflector` absent in chroot)
+- `primitives/archinstall_config.py` — **pure** `build_archinstall_config(cfg: BootstrapConfig) -> dict`. No archinstall import, no I/O: it maps the bootstrap config onto the archinstall JSON schema (pinned `ARCHINSTALL_SCHEMA_VERSION = "3.0.15"`). `[partition] device/esp_size_mib/root_fs` → the disk layout (ESP `fat32` at 1 MiB + a root partition of `cfg.root_fs` filling the remaining space, `wipe: true`); `[system]` hostname/locale/keymap/timezone → the matching top-level keys; `root_password`/`username`/`user_password` → `!root-password` + a sudo `users[]` entry; `[mirror] countries` → `mirror_config.mirror_regions` (a baseline the configure stage's reflector step later refines). The base package set — `_BASE_PACKAGES`, whose **sole home** is this module — is emitted as `packages[]` (+ `zsh`/`zsh-completions` and a `chsh` custom command when `shell == "zsh"`). systemd-boot, `services: ["sshd", "NetworkManager"]`, and sshd/serial-console hardening ride as `bootloader_config` + `services` + `custom_commands`, matching the VM fixture (`tools/vm/archinstall-config.json`), which is the golden source of truth for the 3.0.15 schema.
+- `primitives/archinstall_invoke.py` — the **only** side-effecting unit: `run_archinstall(cfg_dict, *, dry_run)`. A `shutil.which("archinstall")` preflight is the sole coupling to archinstall (only present on the live ISO, never imported — keeping the live-ISO-only dependency out of the package-build path); absence raises with live-ISO guidance. It writes the config to a `0600` `mkstemp` temp file, runs `archinstall --config <file> --silent` via `run_or_raise`, and unlinks the temp file in a `finally`. A soft version-drift check (`archinstall --version` vs the pinned major/minor) **warns only**, never hard-fails, so routine archinstall updates aren't blocked. `--dry-run` prints the generated JSON with password fields redacted (`!root-password`, `users[].!password` → `***`) and the command, performing no side effects.
+- `stages/install.py` — orchestration: `load_bootstrap()` → `build_archinstall_config()` → `run_archinstall()`. Because `archinstall --silent` never prompts, the stage **preserves sysforge's own destructive-operation confirmation** before handing off: `_confirm(cfg)` (moved with the partition-plan table + glyph-downgrade + existing-partition-table detection to the shared `stages/_partition_plan.py` helper) prints the plan box and requires explicit confirmation — a device that already carries a partition table gets an overwrite-specific prompt that **defaults to no**, so a stray or non-interactive run never silently wipes a populated disk. `--dry-run` skips the prompt and prints the plan + redacted JSON.
+
+**Configure stage (stage 3)** no longer sets system identity — archinstall did that in the install stage. It runs only sysforge-specific tuning inside `arch-chroot` (and the sysforge bootstrap machinery archinstall can't provide):
+- `ParallelDownloads` in `pacman.conf`; optional `[makepkg]` PACKAGER/MAKEFLAGS in the target `makepkg.conf`
+- Reflector mirrorlist (skipped gracefully if `reflector` absent in chroot) — a fine-tuning pass over the baseline `mirror_regions` archinstall set
 - Pacman db refresh against the fresh mirrorlist: `pacman -Sy` then `pacman -Fy` (`_sync_pacman_dbs`, best-effort — a transient mirror failure warns but never aborts configure). Seeding the **files** db here lets the reconfigure editor picker map an editor binary to its package on first boot without a separate sync.
-- systemd-boot: `bootctl install`, `loader.conf`, `entries/arch.conf` (uses `root=LABEL=root`)
-- `systemctl enable NetworkManager` + `systemctl enable sshd`
-- `PermitRootLogin yes` in `/etc/ssh/sshd_config`
-- `useradd -m -G wheel <username>` + `/etc/sudoers.d/wheel` drop-in
-- Shell dotfiles: `.bashrc` + `.zshrc` for root (red prompt) and primary user (green prompt)
-- Root and user passwords via `chpasswd` (warns if absent from bootstrap.toml)
-- Desktop environment (optional): after copying config into the target, `pkg_catalog.select_desktop` resolves `[desktop] environment` (non-interactive) or prompts on a TTY, then writes the chosen `[group.*]` into the target's `packages.toml` so the packages stage installs it *and* enables its display manager (`_enable_display_managers`, post-reboot — configure can't, the unit isn't installed yet). The only interactive point in an otherwise non-interactive stage; non-TTY runs with no preselection skip silently. See Package Manifest → *Curated desktop catalog*.
-- sysforge install in target via `makepkg -si` from the source tree's PKGBUILD, run as the build user with a temporary `NOPASSWD` sudoers drop-in (removed after install). The configure stage stages the source as `sysforge-$pkgver.tar.gz` so makepkg uses the local copy instead of fetching, runs with `--skipchecksums --skipinteg` since the tarball is locally produced, and ends with sysforge owned by pacman (`pacman -Q sysforge`). This replaces the earlier `uv pip install --system` path, which left files unowned and forced `pacman -U --overwrite='*'` on the first AUR-driven update.
+- The sysforge `root:sysforge` group + `/var/lib/sysforge` state dir (setgid, so post-configure stages inherit the group), the shell dotfiles (root red / user green prompt), the resume-reminder profile.d drop-in, and copying `/etc/sysforge/` into the target
+- sysforge install in target via `makepkg` from the source tree's PKGBUILD, run as the build user with a temporary `NOPASSWD` sudoers drop-in (removed after install). The configure stage stages the source as `sysforge-$pkgver.tar.gz` so makepkg uses the local copy instead of fetching, runs with `--skipchecksums --skipinteg` since the tarball is locally produced, and ends with sysforge owned by pacman (`pacman -Q sysforge`).
+- Desktop environment (optional): **after** the sysforge install (whose `pacman -U --overwrite='/etc/sysforge/*'` restores the shipped `packages.toml`), `pkg_catalog.select_desktop` resolves `[desktop] environment` (non-interactive) or prompts on a TTY, then writes the chosen `[group.*]` into the target's `packages.toml` so the packages stage installs it. The only interactive point in an otherwise non-interactive stage; non-TTY runs with no preselection skip silently. See Package Manifest → *Curated desktop catalog*.
 
-The hardware stage (stage 3) needs no config — it auto-detects and writes `hardware_profile.toml` to `state_dir`. After reboot the file is at its natural path (`/var/lib/sysforge/hardware_profile.toml`) and the kernel stage picks it up automatically.
+The hardware stage (stage 2) needs no config — it auto-detects and writes `hardware_profile.toml` to `state_dir`. After reboot the file is at its natural path (`/var/lib/sysforge/hardware_profile.toml`) and the kernel stage picks it up automatically.
 
 **Full device inventory.** Beyond the scalar CPU/GPU/NVMe summary, the stage enumerates every PCI and USB device via `primitives/device_probe.enumerate_devices()` and appends a `[[devices]]` array-of-tables to `hardware_profile.toml` (bus, address, modalias, class, description, bound driver, expected modules, suggested `CONFIG_*`). The device→module link is resolved against a complete **reference kernel**'s `modules.alias` (newest installed stock kernel, excluding any `custom` modules dir) — a custom kernel that omitted a driver can't resolve the modalias it lacks, so resolving against the reference surfaces the gap. The module→`CONFIG_*` step is widened beyond `device_probe`'s curated table by the cached `kbuild_map` (harvested by the kernel stage's Gate 2 from the last built tree), loaded from the state dir when present. The union of present devices' `suggested_kconfig`, minus anything the heuristic `[kconfig]` table already owns, is emitted as a `[kconfig_devices]` table (all `=m`) for the kernel stage's fragment merge. Any present, functional device with no driver bound is WARNed at the stage and pointed at `sysforge doctor --hardware`. The `[[devices]]` block is emitted after the scalar `[hardware]`/`[kconfig]`/`[kconfig_devices]` tables; existing readers (`tomllib`) are unaffected.
 
@@ -623,7 +625,7 @@ The hardware stage (stage 3) needs no config — it auto-detects and writes `har
 
 Guard against accidental state clobber: if a state file exists and neither `--resume` nor `--start-from` is passed, the runner exits with instructions rather than overwriting. Both flags are supported on `sysforge run pipeline`.
 
-**User-facing output.** The runner emits a welcome banner (sysforge version + ordered stage chain) and a status snapshot (`✓ done`, `▸ running`, `· pending`, `↳ skipped_to`) before the loop, a stage banner before each stage (`[N/M] name` between two `═` rules), a `✓ name complete` line after each stage, and a closing rule on success. All of this routes through `log.ui` so it reaches both stderr and the unified log regardless of `-v` level. Visual primitives live in `sysforge/ui/headers.py` and share the `═` rule + bold-cyan style with `tools/iso-install.sh` (parallel `_double_rule` / `_step` / `_field` helpers in shell). Step counters are 1-based against the full stage list, so `--start-from configure` shows `[4/8]`, not `[1/…]`.
+**User-facing output.** The runner emits a welcome banner (sysforge version + ordered stage chain) and a status snapshot (`✓ done`, `▸ running`, `· pending`, `↳ skipped_to`) before the loop, a stage banner before each stage (`[N/M] name` between two `═` rules), a `✓ name complete` line after each stage, and a closing rule on success. All of this routes through `log.ui` so it reaches both stderr and the unified log regardless of `-v` level. Visual primitives live in `sysforge/ui/headers.py` and share the `═` rule + bold-cyan style with `tools/iso-install.sh` (parallel `_double_rule` / `_step` / `_field` helpers in shell). Step counters are 1-based against the full stage list, so `--start-from configure` shows `[3/7]`, not `[1/…]`.
 
 ### Checkpoint state
 
@@ -657,7 +659,7 @@ The ownership model is a single one for every writable sysforge runtime dir: **`
 
 The build user is resolved once, in `fs_provision.build_user()` (`SUDO_USER` > `USER` > `getpass.getuser()`). The same `SYSFORGE_GROUP`/`SYSFORGE_DIR_MODE` constants are reused by the VM-bootstrap `configure.py` state-dir setup, so bootstrapped and package-installed systems agree. Install-time, the shipped `tmpfiles.d` provisions all four dirs `root:sysforge 2775` and a shipped `sysusers.d` declares the group (so `systemd-sysusers` creates it before `systemd-tmpfiles`) — making the runtime sudo path a no-op on a normally-installed host. `fs_provision.empty_dir_contents(path)` clears a directory's contents while leaving the node intact, used for the PGO purge so a root-owned parent never blocks the cleanup.
 
-### Kernel stage (stage 8)
+### Kernel stage (stage 7)
 
 Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent or has `enabled = false`, so systems using a stock pacman kernel skip it without needing `--start-from`. Opt-in by design — users who want a stock kernel leave the stage disabled.
 
@@ -704,7 +706,7 @@ value  = "y"                     # y | m | n | non-empty string
 
 **The `-sysforge` collapse (intentional):** `patch_package_suffix`'s idempotency guard means a `pkgname` already ending in `-sysforge` gets no second suffix from an optimized (AutoFDO/Propeller `use`) build — the optimized build then *replaces* the prior build under the same name rather than coexisting. To keep an optimized and a stock build installed side-by-side, choose a `pkgname` that does not end in `-sysforge`; documented inline in the shipped `kernel.toml`.
 
-**Kernel-stage compiler override:** `compiler = "gcc" | "llvm"` is independent of the toolchain stage. A system that keeps gcc system-wide can still build the kernel with LLVM (or vice versa). Resolution order: `--compiler` CLI flag > `kernel.toml compiler` > toolchain-stage pipeline state (cc/cxx set by stage 6) > profile defaults. When set to LLVM, the standard `LLVM=1 LLVM_IAS=1` env vars are injected by `makepkg_wrapper` automatically — no extra PKGBUILD changes needed. Note: `compiler = "llvm"` builds the kernel *with* clang but does **not** apply the toolchain's PGO profdata — that profdata trains the clang binary, not the linux target. The kernel's own profile-guided path is sample-based AutoFDO/Propeller (`--autofdo`, LLVM-only), described under *Sample-based kernel FDO* below — a distinct mechanism from the toolchain PGO.
+**Kernel-stage compiler override:** `compiler = "gcc" | "llvm"` is independent of the toolchain stage. A system that keeps gcc system-wide can still build the kernel with LLVM (or vice versa). Resolution order: `--compiler` CLI flag > `kernel.toml compiler` > toolchain-stage pipeline state (cc/cxx set by stage 5) > profile defaults. When set to LLVM, the standard `LLVM=1 LLVM_IAS=1` env vars are injected by `makepkg_wrapper` automatically — no extra PKGBUILD changes needed. Note: `compiler = "llvm"` builds the kernel *with* clang but does **not** apply the toolchain's PGO profdata — that profdata trains the clang binary, not the linux target. The kernel's own profile-guided path is sample-based AutoFDO/Propeller (`--autofdo`, LLVM-only), described under *Sample-based kernel FDO* below — a distinct mechanism from the toolchain PGO.
 
 **Headers/docs subpackages (`build_headers` / `build_docs`):** the kernel image is always built; the optional `-headers` and `-docs` subpackages are toggled independently. `build_headers` defaults **on** (DKMS and any out-of-tree module build need the matching kernel headers to compile); `build_docs` defaults **off** (the docs subpackage is slow to package and rarely needed) — note this drops the `-docs` subpackage that a stock kernel PKGBUILD would otherwise build. Resolution per toggle: CLI flag (`--headers`/`--no-headers`, `--docs`/`--no-docs`, `argparse.BooleanOptionalAction`, default unset → `None`) > `kernel.toml` (`build_headers`/`build_docs`) > hard default. The single home for the resolve is `_resolve_subpackages`. Disabling a subpackage works by **dropping its entry from the PKGBUILD's `pkgname` array** — `pkgbuild_patcher.patch_kernel_subpackages` (called from `makepkg_wrapper` for every kernel build, after `patch_kernel_btf_guard`) removes any array token whose dequoted value ends with `-headers`/`-docs`. It rewrites **both** the initial `pkgname=(...)` literal **and** every `pkgname+=(...)` append — modern Arch kernel PKGBUILDs add the optional subpackages via `pkgname+=("$pkgbase-docs")`, which a single-array walk would miss (leaving `-docs` to build and install; B7); an append that existed solely to add now-dropped subpackage(s) has its whole statement line removed rather than leaving an empty `pkgname+=()`. Standard Arch kernels synthesize each `package_$_p()` via `for _p in "${pkgname[@]}"; do eval …`, so an entry absent from the array is never packaged; the `_package-headers()`/`_package-docs()` helper bodies are left untouched. **Disabling docs additionally neutralizes the doc *build*:** stock Arch `linux` builds the documentation in `build()` (`make htmldocs SPHINXOPTS=-QT`), not only in `_package-docs()`, so dropping the `-docs` pkgname token stops packaging but not the (often multi-minute Sphinx) compile — which would make the summary's `docs=off` a lie. When `build_docs` is off the same patcher neutralizes any doc-target make line (`_neutralize_kernel_doc_build`, two passes over the goals — htmldocs/pdfdocs/infodocs/mandocs/…): a **mixed** line such as `make all htmldocs` loses *only* its `*docs` goals (→ `make all`) so the real build survives, while a line whose goals are **exclusively** `*docs` (with optional `VAR=val`/flag tokens) is commented out whole with a `# sysforge(docs off):` prefix. The patcher needs no sentinel (every edit is self-idempotent — a commented line no longer starts with `make`, a stripped/removed token no longer matches), is a no-op when both subpackages are kept or the targeted subpackage is absent, and preserves both the single-line and one-token-per-line array layouts. When `build_headers` is disabled, Gate 1 escalates the standing DKMS reminder into a hard warning: no `<pkg>-headers` will be installed, so out-of-tree and DKMS modules (nvidia-open-dkms → black screen) cannot rebuild and won't load on reboot; any present DKMS modules are named.
 
@@ -807,7 +809,7 @@ To make a *pre-install* hard-fail possible, the build is **split from the instal
 
 **Concurrency lock.** The build → Gate 2 → install window is additionally wrapped in `primitives.build_lock.build_lock(state_dir / "kernel-build.lock", label="kernel")` so two concurrent `sysforge run kernel` runs sharing a state dir can't clobber `~/builds/<pkgbase>` (the second `nconfig`/makepkg would step on the first's `.config`). This is the **same shared primitive** the toolchain stage's PGO lock (`_pgo_lock`) delegates to — distinct from the sentinel: the *lock* is transient mutual exclusion held only for the run, while the *sentinel* persists an interrupted boot-critical mutation across runs. The kernel lock lives under `state_dir` (not `/var/tmp` like the PGO lock, whose staging dirs are genuinely global), so per-state-dir test runs stay isolated. Skipped in `--dry-run` (nothing is built).
 
-### Packages stage (stage 7)
+### Packages stage (stage 6)
 
 Walks `packages.toml` in order:
 - `source = "repo"` → `sudo pacman -S --needed --noconfirm`
@@ -817,7 +819,7 @@ Walks `packages.toml` in order:
 
 The AUR-dep build and per-package install loop are wrapped in `sentinel_scope(state_name="packages", …)` (no `recovery_cmd` — there's no single shell command that restores a partially-installed package set; the operator verifies with `pacman -Dk` and re-runs `sysforge run packages`). Per-package `RuntimeError` is caught and reported via the state machine; only an interruption or unexpected exception inside the scope preserves the sentinel.
 
-### Toolchain stage (stage 6)
+### Toolchain stage (stage 5)
 
 **Opt-in:** stage is a clean no-op if `/etc/sysforge/toolchain.toml` is absent or has `enabled = false`. Systems that skip this stage use whatever compiler is already installed; packages and kernel stages proceed normally.
 
@@ -2682,7 +2684,7 @@ Build-state-wide flag-drift coverage (profiled entries outside the walk) is hand
 
 **`sysforge doctor`** completes the picture — it is read-only and catches the drift class the others don't: **ABI / linkage drift** on already-installed packages, e.g. a partial graphics-stack rebuild leaving `steam` linked against a `libfoo.so.N` that the system no longer exposes. See the `doctor.py` subsection for the full algorithm. Together: `update` → version + flag drift, `doctor` → ABI drift.
 
-DAG stages are categorised as **bootstrap-only** (partition, base_install, configure) or **repeatable** (hardware, reconfigure, toolchain, packages, kernel). Only repeatable stages participate in drift-driven rebuild runs. `hardware` is repeatable because re-detecting after a hardware change (e.g. GPU swap) is safe and needs no root.
+DAG stages are categorised as **bootstrap-only** (install, configure) or **repeatable** (hardware, reconfigure, toolchain, packages, kernel). Only repeatable stages participate in drift-driven rebuild runs. `hardware` is repeatable because re-detecting after a hardware change (e.g. GPU swap) is safe and needs no root.
 
 ---
 

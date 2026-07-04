@@ -29,6 +29,8 @@ sysforge/
 │   │   ├── runner.py                  # run_verb dispatch + sentinel wrapping
 │   │   └── helpers.py                 # shared verb helpers (load_config_with_overrides)
 │   └── primitives/
+│       ├── archinstall_config.py      # pure BootstrapConfig → archinstall JSON (schema pin, _BASE_PACKAGES home)
+│       ├── archinstall_invoke.py      # sole archinstall shell-out (which() gate, 0600 tmp config, --silent)
 │       ├── paths.py                   # config path constants + resolve_packages_path()
 │       ├── stage_ownership.py         # stage→package ownership registry (update skip bootstrap)
 │       ├── config.py                  # TOML config loading, path constants, system conf parsing
@@ -75,14 +77,14 @@ sysforge/
 │           ├── __init__.py            # STAGES ordered list
 │           ├── base.py                # Stage base class, RunOptions dataclass
 │           ├── _bootstrap.py          # shared bootstrap config loader (BootstrapConfig dataclass)
-│           ├── partition.py           # stage 1: GPT partitioning, mkfs, mount
-│           ├── base_install.py        # stage 2: pacstrap + genfstab
-│           ├── hardware.py            # stage 3: CPU/GPU/NVMe detection + PCI/USB inventory → hardware_profile.toml
-│           ├── configure.py           # stage 4: hostname, locale, timezone, bootloader, user, services (arch-chroot)
-│           ├── reconfigure.py         # stage 5: pre-build checkpoint
-│           ├── toolchain.py           # stage 6: LLVM/GCC toolchain build (optional 4-pass PGO)
-│           ├── packages.py            # stage 7: package builds
-│           └── kernel.py              # stage 8: kernel build
+│           ├── _partition_plan.py     # shared destructive-op confirmation (plan table, glyph downgrade, _confirm)
+│           ├── install.py             # stage 1: disk + base install + identity via archinstall
+│           ├── hardware.py            # stage 2: CPU/GPU/NVMe detection + PCI/USB inventory → hardware_profile.toml
+│           ├── configure.py           # stage 3: sysforge-specific tuning (makepkg.conf, mirrors, desktop, self-install) (arch-chroot)
+│           ├── reconfigure.py         # stage 4: pre-build checkpoint
+│           ├── toolchain.py           # stage 5: LLVM/GCC toolchain build (optional 4-pass PGO)
+│           ├── packages.py            # stage 6: package builds
+│           └── kernel.py              # stage 7: kernel build
 ├── tests/
 │   ├── conftest.py
 │   ├── data/

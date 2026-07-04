@@ -77,6 +77,13 @@ curl http://10.0.2.2:8080/archinstall-config.json -o /root/archinstall-config.js
 archinstall --config /root/archinstall-config.json --silent
 ```
 
+This checked-in `archinstall-config.json` is the manual VM path and also the
+**golden fixture** for `primitives/archinstall_config.py`: the bootstrap
+`install` stage generates an equivalent config from `bootstrap.toml` at runtime
+and runs the same `archinstall --config … --silent` (see DESIGN.md §Pipeline
+Layer → *Install stage*). Keep the fixture in step with the 3.0.15 schema the
+builder targets.
+
 After install completes, shut down the VM:
 
 ```bash

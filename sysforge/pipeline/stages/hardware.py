@@ -568,7 +568,7 @@ def _write_hardware_profile(
 class HardwareStage(Stage):
     name = "hardware"
     description = "Hardware detection — CPU, GPU, storage"
-    depends_on = ["base_install"]
+    depends_on = ["install"]
 
     def run(self, config, state, options):  # noqa: ARG002
         state_dir, _ = resolve_state_dir(options.state_dir)

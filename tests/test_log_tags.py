@@ -37,12 +37,10 @@ import sysforge.doctor as doctor
 import sysforge.fetch as fetch
 import sysforge.packages_cmd as packages_cmd
 import sysforge.pipeline.runner as runner
-import sysforge.pipeline.stages.base_install as base_install
 import sysforge.pipeline.stages.configure as configure
 import sysforge.pipeline.stages.hardware as hardware
 import sysforge.pipeline.stages.kernel as kernel
 import sysforge.pipeline.stages.packages as packages
-import sysforge.pipeline.stages.partition as partition
 import sysforge.pipeline.stages.reconfigure as reconfigure
 import sysforge.pipeline.stages.toolchain as toolchain
 import sysforge.pipeline.state as state
@@ -77,12 +75,10 @@ def test_update_tag():           assert update._log._tag           == "[UPDATE]"
 def test_packages_cmd_tag():     assert packages_cmd._log._tag     == "[PACKAGES]"
 def test_runner_tag():           assert runner._log._tag           == "[PIPELINE]"
 def test_state_tag():            assert state._log._tag            == "[STATE]"
-def test_base_install_tag():     assert base_install._log._tag     == "[BASE_INSTALL]"
 def test_configure_tag():        assert configure._log._tag        == "[CONFIGURE]"
 def test_hardware_tag():         assert hardware._log._tag         == "[HARDWARE]"
 def test_kernel_stage_tag():     assert kernel._log._tag           == "[KERNEL]"
 def test_packages_stage_tag():   assert packages._log._tag         == "[PACKAGES]"
-def test_partition_tag():        assert partition._log._tag        == "[PARTITION]"
 def test_reconfigure_tag():      assert reconfigure._log._tag      == "[RECONFIGURE]"
 def test_toolchain_tag():        assert toolchain._log._tag        == "[TOOLCHAIN]"
 def test_abi_check_tag():        assert abi_check._log._tag        == "[ABI]"
