@@ -6,7 +6,7 @@ The default build profile uses the system gcc. LLVM (clang/lld) is fully support
 
 **Commands:** `build` / `fetch` / `update` / `resolve` build and maintain profiled AUR & custom packages; `packages` / `state` manage the manifest and build state; `doctor` / `log` / `env` inspect system health and configuration; `setup` wires up pacman integration; `run <stage>` drives the bootstrap pipeline. See `sysforge --help` or the [man page](man/sysforge.1) for the full reference.
 
-<sub><!--version-->v2.0.1<!--/version--></sub>
+<sub><!--version-->v2.1.0<!--/version--></sub>
 
 ---
 
