@@ -58,7 +58,7 @@ from sysforge.primitives.source_sync import (
 )
 from sysforge.primitives.config import (
     expand_package_groups, load_config, load_conflict_groups,
-    load_consumes_inference,
+    load_consumes_inference, load_sysforge_toml, resolve_flag_default,
 )
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
@@ -106,6 +106,29 @@ from sysforge.update_sync import _sync_sources
 # killed by Ctrl-C). Written verbatim to stdout from the cmd_update finally
 # block when stdout is a TTY.
 _TERMINAL_RESET = "\x1b[?1049l\x1b[?25h\x1b[0m"
+
+
+def _resolve_drift_axes(args, update_cfg=None) -> tuple[bool, bool, bool]:
+    """Resolve (all, toolchain, flag) rebuild-on-drift from CLI + [update].
+
+    ``--rebuild-on-drift`` (or ``[update] rebuild_on_drift``) is the umbrella
+    that opts into both axes; the per-axis CLI flags / config keys still win
+    independently. One home for this precedence — see
+    ``resolve_flag_default``.
+
+    ``[update]`` lives in sysforge.toml (alongside ``[build]``/``[safety]``),
+    not profiles.toml — loaded via ``load_sysforge_toml()`` unless a config
+    dict is injected directly (tests).
+    """
+    if update_cfg is None:
+        update_cfg = load_sysforge_toml().get("update", {})
+    ucfg = dict(update_cfg or {})
+    rebuild_all = resolve_flag_default(args, "rebuild_on_drift", ucfg, "rebuild_on_drift")
+    rebuild_tc = resolve_flag_default(
+        args, "rebuild_on_toolchain_drift", ucfg, "rebuild_on_toolchain_drift") or rebuild_all
+    rebuild_fl = resolve_flag_default(
+        args, "rebuild_on_flag_drift", ucfg, "rebuild_on_flag_drift") or rebuild_all
+    return rebuild_all, rebuild_tc, rebuild_fl
 
 
 def _suppress_pagers_in_env(interactive: bool) -> None:
@@ -797,10 +820,11 @@ def _cmd_update_body(args) -> None:
         _emit_timings(timer, args)
         return
 
-    # --rebuild-on-drift is the umbrella that opts into both drift axes.
-    _rebuild_all_drift = getattr(args, "rebuild_on_drift", False)
+    # --rebuild-on-drift (or [update] rebuild_on_drift) is the umbrella that
+    # opts into both drift axes; CLI flags still win over config.
+    _rebuild_all_drift, _rebuild_tc_drift, _rebuild_fl_drift = _resolve_drift_axes(args)
 
-    if (getattr(args, "rebuild_on_toolchain_drift", False) or _rebuild_all_drift) and drifted:
+    if _rebuild_tc_drift and drifted:
         drifted_bases = {pb for pb, _, _ in drifted}
         promoted = 0
         unbuildable = 0
@@ -823,7 +847,7 @@ def _cmd_update_body(args) -> None:
                 "— skipped"
             )
 
-    if (getattr(args, "rebuild_on_flag_drift", False) or _rebuild_all_drift) and flag_drifted:
+    if _rebuild_fl_drift and flag_drifted:
         flag_bases = {pb for pb, _ in flag_drifted}
         promoted = 0
         unbuildable = 0
@@ -949,9 +973,9 @@ def _cmd_update_body(args) -> None:
             profile_conf=getattr(args, "profile_conf", None),
             state_dir=state_dir,
             pkg_log=not getattr(args, "no_pkg_log", False),
-            persist_log=getattr(args, "persist_log", False),
+            persist_log=resolve_flag_default(args, "persist_log", build_cfg, "persist_log"),
             log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
-            cache_report=getattr(args, "cache_report", False),
+            cache_report=resolve_flag_default(args, "cache_report", build_cfg, "cache_report"),
             extra_flags=(
                 expand_makepkg_flags(args.makepkg)
                 if getattr(args, "makepkg", None) else None

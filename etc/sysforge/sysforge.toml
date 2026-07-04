@@ -157,3 +157,11 @@ llvm_preflight        = true
 # mesa is always treated as allowed (the original, fully-wired case) whether or
 # not it appears below.
 allow = ["mesa"]
+
+[update]
+# Standing defaults for `sysforge update` drift auto-rebuild. The matching
+# CLI flags (--rebuild-on-drift / --rebuild-on-toolchain-drift /
+# --rebuild-on-flag-drift) still win when passed.
+rebuild_on_drift = false            # umbrella: opts into both axes below
+rebuild_on_toolchain_drift = false  # rebuild on toolchain-variant drift only
+rebuild_on_flag_drift = false       # rebuild on resolved-flag drift only

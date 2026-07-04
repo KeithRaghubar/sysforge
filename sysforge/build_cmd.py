@@ -20,6 +20,7 @@ from sysforge.primitives.aur import is_repo_package
 from sysforge.primitives.config import (
     find_pkgbuild,
     resolve_repo_mode,
+    resolve_flag_default,
     REPO_MODE_SOURCE,
     PKG_KEY_BUILD_FROM_SOURCE,
 )
@@ -363,10 +364,10 @@ class BuildVerb(Verb):
             ld=args.ld,
             state_dir=state_dir,
             pkg_log=not args.no_pkg_log,
-            persist_log=args.persist_log,
+            persist_log=resolve_flag_default(args, "persist_log", build_cfg, "persist_log"),
             log_dir=Path(args.log_dir) if args.log_dir else None,
-            cache_report=args.cache_report,
-            abi_check=args.abi_check,
+            cache_report=resolve_flag_default(args, "cache_report", build_cfg, "cache_report"),
+            abi_check=resolve_flag_default(args, "abi_check", build_cfg, "abi_check"),
             extra_flags=extra_flags,
             active_variant=active_variant,
             toolchain_fingerprint=active_fingerprint,

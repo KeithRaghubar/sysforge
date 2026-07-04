@@ -248,7 +248,8 @@ def _add_build_parser(sub):
              "unbuffered interactive output appear immediately (disables "
              "line-based output classification while set).")
     p.add_argument("--persist-log", action="store_true", dest="persist_log",
-        help="Keep the per-package log file after a successful build.")
+        help="Keep the per-package log file after a successful build. "
+             "Also settable via [build] persist_log = true in packages.toml.")
     p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
         help="Disable the per-package log file.")
     p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
@@ -262,9 +263,11 @@ def _add_build_parser(sub):
     p.add_argument("--ld", metavar="LINKER", dest="ld",
         help="Override linker for this build, e.g. --ld lld.")
     p.add_argument("--cache-report", action="store_true", dest="cache_report",
-        help="Print a structured cache summary (ccache/sccache hit rates) after the build.")
+        help="Print a structured cache summary (ccache/sccache hit rates) after the build. "
+             "Also settable via [build] cache_report = true in packages.toml.")
     p.add_argument("--abi-check", action="store_true", dest="abi_check",
-        help="Run a post-build ABI compatibility check on built shared libraries.")
+        help="Run a post-build ABI compatibility check on built shared libraries. "
+             "Also settable via [build] abi_check = true in packages.toml.")
     p.add_argument("--no-update", action="store_true", dest="no_update",
         help="Skip git pull --rebase before building.")
     p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
@@ -407,18 +410,21 @@ def _add_update_parser(sub):
              "built under a different toolchain than is active now are added "
              "to the rebuild queue. Off by default — drift is reported but "
              "not acted on, since most C/C++ packages don't measurably "
-             "benefit from a re-stamp.")
+             "benefit from a re-stamp. Also settable via "
+             "[update] rebuild_on_toolchain_drift = true in sysforge.toml.")
     p.add_argument("--rebuild-on-flag-drift", action="store_true",
         dest="rebuild_on_flag_drift",
         help="Treat flag drift as an upgrade trigger: profiled packages whose "
              "flags now resolve differently than when built are added to the "
              "rebuild queue. Off by default — flag drift is reported but not "
              "acted on, since one profile edit can drift every profiled "
-             "package.")
+             "package. Also settable via [update] rebuild_on_flag_drift = true "
+             "in sysforge.toml.")
     p.add_argument("--rebuild-on-drift", action="store_true",
         dest="rebuild_on_drift",
         help="Umbrella for both --rebuild-on-toolchain-drift and "
-             "--rebuild-on-flag-drift: rebuild anything that has drifted.")
+             "--rebuild-on-flag-drift: rebuild anything that has drifted. "
+             "Also settable via [update] rebuild_on_drift = true in sysforge.toml.")
     p.add_argument("pkgnames", metavar="PKG", nargs="*",
         help="Limit update to these package names (default: all sysforge-managed packages).")
     p.set_defaults(verb_cls=UpdateVerb)

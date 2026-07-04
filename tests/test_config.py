@@ -545,3 +545,39 @@ def test_resolve_repo_track_unknown_value_falls_back_to_stable():
     from sysforge.primitives.config import resolve_repo_track
 
     assert resolve_repo_track({"repo_track": "testing"}) == "stable"
+
+
+# ---------------------------------------------------------------------------
+# resolve_flag_default (config→flag precedence; mirrors [build] review logic)
+# ---------------------------------------------------------------------------
+
+def _ns(**kw):
+    """Create an argparse Namespace for testing."""
+    import argparse
+    return argparse.Namespace(**kw)
+
+
+def test_resolve_flag_default_cli_true_wins_over_missing_config():
+    from sysforge.primitives.config import resolve_flag_default
+    assert resolve_flag_default(_ns(abi_check=True), "abi_check", {}, "abi_check") is True
+
+
+def test_resolve_flag_default_config_true_applies_when_flag_absent():
+    from sysforge.primitives.config import resolve_flag_default
+    assert resolve_flag_default(_ns(), "abi_check", {"abi_check": True}, "abi_check") is True
+
+
+def test_resolve_flag_default_both_off_is_false():
+    from sysforge.primitives.config import resolve_flag_default
+    assert resolve_flag_default(_ns(abi_check=False), "abi_check", {"abi_check": False}, "abi_check") is False
+
+
+def test_resolve_flag_default_all_absent_uses_fallback():
+    from sysforge.primitives.config import resolve_flag_default
+    assert resolve_flag_default(_ns(), "x", {}, "x") is False
+    assert resolve_flag_default(_ns(), "x", {}, "x", fallback=True) is True
+
+
+def test_resolve_flag_default_cli_true_overrides_config_false():
+    from sysforge.primitives.config import resolve_flag_default
+    assert resolve_flag_default(_ns(abi_check=True), "abi_check", {"abi_check": False}, "abi_check") is True

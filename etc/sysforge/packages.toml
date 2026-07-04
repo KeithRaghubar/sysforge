@@ -65,6 +65,13 @@
 #                          # full source-tree diff and prompt (view/accept/skip/abort).
 #                          # false disables the gate; --no-review disables per run.
 #                          # Non-interactive runs auto-accept with a warning.
+#
+# Standing defaults for build-run flags. The matching CLI flags
+# (--abi-check / --cache-report / --persist-log) still win when passed.
+# Note: --force ignores these (explicit this-run-only override).
+# abi_check = false      # run post-build ABI check (build verb)
+# cache_report = false   # print ccache/sccache summary after each build
+# persist_log = false    # keep the per-package log after a successful build
 
 
 # =============================================================================

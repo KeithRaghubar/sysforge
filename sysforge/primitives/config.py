@@ -129,6 +129,17 @@ def normalize_package_entry(entry: dict) -> dict:
     return entry
 
 
+def resolve_flag_default(args, attr, cfg, key, *, fallback=False) -> bool:
+    """Resolve a ``store_true`` CLI flag against a config default.
+
+    The flag wins only when explicitly True; otherwise the config value at
+    ``cfg[key]``; otherwise ``fallback``. ``args`` is an argparse Namespace,
+    ``cfg`` an already-loaded section dict. One home for the config→flag
+    precedence pattern (mirrors the ``[build] review`` default).
+    """
+    return bool(getattr(args, attr, False)) or bool(cfg.get(key, fallback))
+
+
 def load_sysforge_toml() -> dict:
     """Load /etc/sysforge/sysforge.toml (global sysforge settings).
 

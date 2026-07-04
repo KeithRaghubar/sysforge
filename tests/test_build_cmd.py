@@ -168,6 +168,81 @@ def test_gate_legacy_pkgbuild_patch_counts_as_opted_in(monkeypatch, tmp_path):
     assert [t.pkgbase for t in targets] == ["mesa"]
 
 
+# ---------------------------------------------------------------------------
+# [build] config defaults for abi_check / cache_report / persist_log (F1)
+# ---------------------------------------------------------------------------
+
+def _run_build_capture_kwargs(monkeypatch, tmp_path, pkgname, *, force,
+                               packages_toml_text):
+    """Like _run_build, but captures the kwargs passed to build_and_install
+    instead of the targets, so precedence on the three flag kwargs can be
+    asserted. Uses a non-repo package so the opt-in gate never blocks."""
+    captured: dict = {}
+
+    pkgbuild = tmp_path / pkgname / "PKGBUILD"
+    monkeypatch.setattr(build_cmd, "find_pkgbuild", lambda pkg, cfg: pkgbuild)
+    monkeypatch.setattr(build_cmd, "is_repo_package", lambda name: False)
+    monkeypatch.setattr(build_core, "target_from_pkgbuild",
+                        lambda p: BuildTarget(pkgbase=pkgname, pkgnames=[pkgname],
+                                              pkgbuild_path=Path(p)))
+    monkeypatch.setattr(build_cmd, "is_interactive", lambda: False)
+    monkeypatch.setattr(build_cmd, "prompt_choice", lambda *a, **k: "n")
+
+    def _fake_build_and_install(targets, **kwargs):
+        captured.update(kwargs)
+        return BuildOutcome()
+    monkeypatch.setattr(build_core, "build_and_install", _fake_build_and_install)
+    monkeypatch.setattr(pipeline_state, "resolve_state_dir",
+                        lambda d: (tmp_path, None))
+    monkeypatch.setattr(pipeline_state, "get_toolchain_variant", lambda st: "system")
+    monkeypatch.setattr(pipeline_state, "get_toolchain_fingerprint", lambda st: None)
+    monkeypatch.setattr(pipeline_state, "PipelineState", lambda d: None)
+
+    pkg_path = tmp_path / "packages.toml"
+    pkg_path.write_text(packages_toml_text)
+    cfg = {"packages_file": str(pkg_path)}
+
+    args = types.SimpleNamespace(
+        makepkg=None, pkgbuilds=[pkgname], cleansrc=False, cleansrc_force=False,
+        no_update=True, interactive=False, profile_conf=None, cc=None, cxx=None,
+        ld=None, state_dir=None, no_pkg_log=True, persist_log=False, log_dir=None,
+        cache_report=False, abi_check=False, no_review=True, timings=False,
+        force=force,
+    )
+    BuildVerb().execute(args, PreCheckResult(ctx={"config": cfg}))
+    return captured
+
+
+def test_build_abi_check_config_default_applies(monkeypatch, tmp_path):
+    """abi_check not passed on the CLI, but [build] abi_check = true —
+    the config default reaches build_and_install."""
+    captured = _run_build_capture_kwargs(
+        monkeypatch, tmp_path, "neovim-git", force=False,
+        packages_toml_text='[build]\nabi_check = true\n',
+    )
+    assert captured["abi_check"] is True
+
+
+def test_build_cache_report_and_persist_log_config_defaults_apply(monkeypatch, tmp_path):
+    """Same precedence for cache_report / persist_log."""
+    captured = _run_build_capture_kwargs(
+        monkeypatch, tmp_path, "neovim-git", force=False,
+        packages_toml_text='[build]\ncache_report = true\npersist_log = true\n',
+    )
+    assert captured["cache_report"] is True
+    assert captured["persist_log"] is True
+
+
+def test_build_force_ignores_config_default(monkeypatch, tmp_path):
+    """--force sets build_cfg={} — the [build] abi_check default must NOT
+    apply on a forced run (explicit this-run-only override)."""
+    captured = _run_build_capture_kwargs(
+        monkeypatch, tmp_path, "neovim-git", force=True,
+        packages_toml_text='[build]\nabi_check = true\n',
+    )
+    assert captured["abi_check"] is False
+
+
 def test_summary_lists_built_and_failed(capsys):
     outcome = BuildOutcome(
         built_pkgs=["vulkan-icd-loader-git", "vulkan-utility-libraries-git"],

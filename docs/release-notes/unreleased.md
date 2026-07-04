@@ -23,6 +23,8 @@ https://keepachangelog.com/en/1.1.0/
   (e.g. `run kernel`) instead of silently skipping it. Detection only — never a
   rebuild from `update` — and it respects `--offline` like every other package
   (1.2.0-F32).
+- `update` honors `[update] rebuild_on_drift` (+ per-axis) config defaults; CLI flags still win. (1.2.0-F30)
+- `build` honors `[build] abi_check` / `cache_report` / `persist_log` config defaults; CLI flags still win. (2.0.1-F1)
 
 ## Changed
 

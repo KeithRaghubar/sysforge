@@ -67,3 +67,11 @@ llvm_preflight        = true
 # Packages for which `--pgo` is recommended (suppresses the "not recommended"
 # warning). mesa is always allowed. See etc/sysforge/sysforge.toml for full docs.
 allow = ["mesa"]
+
+[update]
+# Standing defaults for `sysforge update` drift auto-rebuild. The matching
+# CLI flags (--rebuild-on-drift / --rebuild-on-toolchain-drift /
+# --rebuild-on-flag-drift) still win when passed.
+rebuild_on_drift = false            # umbrella: opts into both axes below
+rebuild_on_toolchain_drift = false  # rebuild on toolchain-variant drift only
+rebuild_on_flag_drift = false       # rebuild on resolved-flag drift only

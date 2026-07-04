@@ -17,8 +17,10 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import sysforge.update
 from sysforge.update import (
     _check_one_pkgbase, _sync_sources, _assemble_package_set,
+    _resolve_drift_axes,
 )
 from sysforge.update_common import _is_vcs
 from sysforge.primitives.pacman import get_installed_version, get_foreign_packages
@@ -722,6 +724,39 @@ def test_rebuild_on_drift_umbrella_covers_flag_drift(update_scenario):
         installed=installed, foreign=foreign,
     )
     assert len(builds) == 1
+
+
+def test_update_config_rebuild_on_drift_triggers_both_axes():
+    """[update] rebuild_on_drift = true, no CLI flag -> both axes rebuild."""
+    args = _make_args(rebuild_on_drift=False, rebuild_on_toolchain_drift=False,
+                       rebuild_on_flag_drift=False)
+    assert _resolve_drift_axes(args, update_cfg={"rebuild_on_drift": True}) == (True, True, True)
+
+
+def test_update_cli_flag_wins_when_config_false():
+    """A CLI flag still wins even when the matching config key is false."""
+    args = _make_args(rebuild_on_flag_drift=True)
+    assert _resolve_drift_axes(args, update_cfg={"rebuild_on_flag_drift": False})[2] is True
+
+
+def test_update_both_off_no_rebuild():
+    """No CLI flags and no [update] section -> no axis is enabled."""
+    args = _make_args()
+    assert _resolve_drift_axes(args, update_cfg={}) == (False, False, False)
+
+
+def test_update_config_loaded_from_sysforge_toml_not_profiles(monkeypatch):
+    """Real load path: [update] section must come from sysforge.toml
+    (load_sysforge_toml), not profiles.toml -- this is the bug the F30
+    final-review Critical caught (config source was wired to the wrong
+    loader, making the feature completely inert)."""
+    args = _make_args(rebuild_on_drift=False, rebuild_on_toolchain_drift=False,
+                       rebuild_on_flag_drift=False)
+    monkeypatch.setattr(
+        sysforge.update, "load_sysforge_toml",
+        lambda: {"update": {"rebuild_on_drift": True}},
+    )
+    assert sysforge.update._resolve_drift_axes(args) == (True, True, True)
 
 
 def test_flag_drift_rebuild_installs_through_phase6_filter(update_scenario):

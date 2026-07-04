@@ -144,6 +144,10 @@ writer/injector/loop. Mechanism lives in the cited DESIGN.md section.
 - **PKGBUILD review gate**: `build_core.build_and_install(review=…)` → `pkgbuild_review.review_target`
   (build `prompt`, update `auto`); sticky `reviewed_commit`. New build_state fields go in
   `BuildState._serialize`'s key tuple. §primitives-layer.
+- **Config→flag precedence**: `config.resolve_flag_default(args, attr, cfg, key)` is the sole
+  seam for `store_true` CLI flags that fall back to a config default (CLI flag always wins);
+  reused by `[build] abi_check`/`cache_report`/`persist_log` and `[update] rebuild_on_*`. No
+  parallel resolver. §primitives-layer / §`update.py`.
 - **Build-failure recovery**: `makepkg_invoke._run_recovery_menu`; persists a cc/ld swap via
   `profile_writer.write_package_compiler_override` (the sole `profiles.toml` writer). §Flag/Profile
   / §makepkg-wrapper.

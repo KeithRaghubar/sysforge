@@ -38,6 +38,13 @@ repo_mode = "build_from_source"  # "pacman" (default) | "build_from_source" — 
 # review = true         # PKGBUILD review gate: diff prompt before building changed
 #                       # sources (view/accept/skip/abort). false disables; --no-review
 #                       # disables per run. Non-interactive runs auto-accept + warn.
+#
+# Standing defaults for build-run flags. The matching CLI flags
+# (--abi-check / --cache-report / --persist-log) still win when passed.
+# Note: --force ignores these (explicit this-run-only override).
+# abi_check = false      # run post-build ABI check (build verb)
+# cache_report = false   # print ccache/sccache summary after each build
+# persist_log = false    # keep the per-package log after a successful build
 
 # [group.<name>]        # named package set; expands into [[package]] entries at
 # packages = ["a", "b"] # load time. Optional per-group defaults (source /

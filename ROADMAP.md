@@ -48,15 +48,6 @@ straight off a `Q`.
 
 ### Features
 
-- **`2.0.1-F1` — Config keys for `--abi-check` and other common runtime flags.**
-  Recurring per-run flags (`--abi-check` first; audit the CLI surface for other
-  always-passed candidates) should have corresponding keys in the appropriate
-  shipped config file (`etc/sysforge/*.toml`), so a user who always wants the
-  behavior doesn't repeat the flag. CLI flag wins when passed; resolve through the
-  existing config→args seam (same pattern as F30 rebuild-on-drift). Shipped-file
-  edits update fixtures + `check_shipped` allowlists in the same change. *Priority:
-  medium (same UX gap as F30, broader surface).*
-
 - **`2.0.1-F3` — Integrate archinstall for the bootstrap disk/base-install slice
   (promoted from Q1).** Replace sysforge's hand-rolled partitioning + base-install
   logic (`partition.py` ~411 lines, `base_install.py` ~131 lines) with a
@@ -185,14 +176,6 @@ straight off a `Q`.
   reuse `BuildState.reconcile_external_installs` / `state forget` rather than a
   parallel demotion path. *Priority: medium (rounds out the lifecycle; revert-to-stock
   is a real recovery need).*
-
-- **`1.2.0-F30` — Config default for rebuild-on-drift.** `update` currently requires
-  `--rebuild-on-drift` (and the per-axis `--rebuild-on-toolchain-drift` /
-  `--rebuild-on-flag-drift`) every run. Add an `[update]` config key (e.g.
-  `rebuild_on_drift = true`, with per-axis overrides) so a user who always wants
-  drift auto-resolved doesn't repeat the flag. CLI flag still wins when passed;
-  resolve through the existing `getattr(args, ...)` seam in `update.py` Phase 4.3 — no
-  parallel drift switch. *Priority: medium.*
 
 - **`1.2.0-F31` — `make install` / `make uninstall` via venv + config symlinks.** Add
   verbose Make targets that install sysforge from the git checkout (venv entry point +
