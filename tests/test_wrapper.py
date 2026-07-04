@@ -133,6 +133,31 @@ def test_build_failed_error_carries_diagnosis():
 from sysforge.primitives import makepkg_wrapper
 
 
+# ---------------------------------------------------------------------------
+# _pkgname_from_meta — recovery-prompt label source (2.0.1-B2)
+# ---------------------------------------------------------------------------
+
+
+def test_pkgname_from_meta_falls_back_to_pkgname_without_pkgbase():
+    # 2.0.1-B2 regression: a patched/renamed PKGBUILD (built from a
+    # PKGBUILD.sysforge overlay) may carry no `pkgbase` global. The recovery
+    # menu label must still name the package via `pkgname`, not degrade to the
+    # PKGBUILD filename. The wrapper feeds this resolver's result as the
+    # recovery `pkgbase=` label, so guarding it here guards the prompt.
+    meta = {"globals": {"pkgname": "htop"}}
+    assert makepkg_wrapper._pkgname_from_meta(meta) == "htop"
+
+
+def test_pkgname_from_meta_prefers_pkgbase_and_never_returns_none():
+    assert makepkg_wrapper._pkgname_from_meta(
+        {"globals": {"pkgbase": "llvm", "pkgname": ["llvm", "llvm-libs"]}}
+    ) == "llvm"
+    # Ultimate fallback is a sentinel string, never None/empty — so the
+    # downstream `label = pkgbase or <filename>` never lands on the filename.
+    assert makepkg_wrapper._pkgname_from_meta({"globals": {}}) == "unknown"
+    assert makepkg_wrapper._pkgname_from_meta(None) == "unknown"
+
+
 def _write_mold_pkgbuild(tmp_path):
     p = tmp_path / "PKGBUILD"
     p.write_text(

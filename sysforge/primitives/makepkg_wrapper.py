@@ -699,7 +699,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                         pkgbuild_path, conf_path, resolved_profile,
                         extra_env, extra_flags, interactive, strip_flags,
                         reemit_conf=_reemit_conf,
-                        pkgbase=pkgmeta.get("globals", {}).get("pkgbase"))
+                        pkgbase=_pkgname_from_meta(pkgmeta))
                 _persist_recovery_overrides(
                     pkgmeta.get("globals", {}).get("pkgbase"))
                 break
