@@ -700,8 +700,13 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                         extra_env, extra_flags, interactive, strip_flags,
                         reemit_conf=_reemit_conf,
                         pkgbase=_pkgname_from_meta(pkgmeta))
-                _persist_recovery_overrides(
-                    pkgmeta.get("globals", {}).get("pkgbase"))
+                # Key the persist by the same pkgbase-or-pkgname value the
+                # recovery menu labels with (line above) and that
+                # resolve_profile reads the override back with — a raw
+                # globals["pkgbase"] is absent for non-split PKGBUILDs, so the
+                # write would silently no-op on the `not pkgbase` guard and the
+                # swap would never self-heal the next build (2.1.0-B2).
+                _persist_recovery_overrides(_pkgname_from_meta(pkgmeta))
                 break
             except ToolchainMismatchError as e:
                 if _reactive_retry_used:

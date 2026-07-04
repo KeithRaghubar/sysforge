@@ -47,19 +47,6 @@ straight off a `Q`.
   `profile_writer.write_package_compiler_override` — no parallel path. *Priority: medium
   (an incoherent swap can make the retry fail confusingly).*
 
-- **`2.1.0-B2` — `[package_compiler_overrides]` in `profiles.toml` stays empty after a
-  successful update batch that included compiler-overridden builds.** After an `update`
-  batch where one or more packages built successfully under a recovery-menu compiler
-  override, the auto-managed `[package_compiler_overrides]` table
-  (`profile_writer._SECTION`) is left empty — the override is not persisted, so the next
-  build re-triggers the same failure/prompt instead of reusing the known-good compiler.
-  Trace the write path from `makepkg_invoke._run_recovery_menu` →
-  `profile_writer.write_package_compiler_override` and confirm it fires (and isn't
-  swallowed by the best-effort `False`-on-`OSError` return) on the batch/update path, not
-  just single `build`. Add a regression test on the update path. *Priority: high
-  (defeats the whole point of persisting the swap — a recurring failure never
-  self-heals).*
-
 ### Features
 
 - **`2.0.1-F3` — Integrate archinstall for the bootstrap disk/base-install slice

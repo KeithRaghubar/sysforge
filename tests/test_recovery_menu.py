@@ -203,6 +203,67 @@ def test_wrapper_persists_swap_overrides(monkeypatch, tmp_path):
     assert recorded["cc"] == "gcc"
 
 
+def test_run_build_persists_swap_for_single_package_pkgbase(tmp_path, monkeypatch):
+    """Regression (2.1.0-B2): a recovery-menu compiler swap on a single-package
+    PKGBUILD (no explicit ``pkgbase=`` line — the common case) must persist to
+    ``[package_compiler_overrides]``.
+
+    The recovery menu succeeds under a swap, but ``_run_build`` fed the persist
+    call the raw ``globals['pkgbase']`` (absent here) instead of the
+    pkgbase-or-pkgname key ``resolve_profile`` reads back with, so the write
+    silently no-op'd on the ``not pkgbase`` guard and the next update re-prompted.
+    """
+    from contextlib import contextmanager
+    from unittest.mock import patch
+
+    import sysforge.primitives.makepkg_wrapper as mw
+
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+
+    recorded = {}
+
+    def fake_write(path, pkgbase, cc, cxx, ld):
+        recorded.update(dict(pkgbase=pkgbase, cc=cc, cxx=cxx, ld=ld))
+        return True
+
+    def fake_invoke_with_retry(*a, **k):
+        # Simulate a successful recovery-menu compiler swap (the menu stashes
+        # the outcome in the _LAST_RECOVERY contextvar, drained by persist).
+        mi._LAST_RECOVERY.set(
+            mi.RecoveryOutcome(
+                action="retry",
+                overrides={"cc": "gcc", "cxx": "g++", "ld": "bfd"},
+            )
+        )
+        return None
+
+    @contextmanager
+    def fake_emit(*a, **kw):
+        yield "/tmp/fake_makepkg.conf"
+
+    with (
+        patch("sysforge.primitives.makepkg_wrapper.patch_pkgbuild_groups",
+              return_value=pb),
+        patch("sysforge.primitives.makepkg_wrapper.emit_makepkg_conf",
+              side_effect=fake_emit),
+        patch("sysforge.primitives.makepkg_wrapper.resolve_env_vars",
+              return_value={}),
+        patch("sysforge.primitives.makepkg_wrapper._invoke_with_retry",
+              side_effect=fake_invoke_with_retry),
+        patch("sysforge.primitives.makepkg_wrapper.write_package_compiler_override",
+              side_effect=fake_write),
+    ):
+        mw._run_build(pb, {}, {}, [], extracted_profile=None,
+                      pkgmeta={"globals": {"pkgname": "htop"}})
+
+    assert recorded.get("pkgbase") == "htop", (
+        "single-package recovery swap was not persisted "
+        f"(recorded={recorded!r})"
+    )
+    assert recorded.get("cc") == "gcc"
+
+
 def test_wrapper_persist_partial_overrides_never_raises(monkeypatch):
     import sysforge.primitives.makepkg_wrapper as mw
 

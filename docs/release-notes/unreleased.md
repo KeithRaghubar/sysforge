@@ -15,6 +15,17 @@ https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Build-failure recovery compiler swaps now persist for single-package
+  PKGBUILDs. After a recovery-menu compiler swap on a package without an
+  explicit `pkgbase=` line (the common non-split case), the resulting override
+  was silently dropped: `_run_build` keyed the persist call on the raw,
+  absent `pkgbase` global, so it no-op'd on the empty-key guard and
+  `[package_compiler_overrides]` in `profiles.toml` stayed empty — leaving the
+  next `update` to re-trigger the same failure. The persist now uses the same
+  pkgbase-or-pkgname key the recovery menu labels with and `resolve_profile`
+  reads the override back with, so a known-good swap self-heals subsequent
+  builds. (2.1.0-B2)
+
 - Toolchain stage no longer refuses on a spurious "dirty (no upstream tracking
   branch)" LLVM blocker for release-tag checkouts. A `source=repo` LLVM tree
   pinned to a tag sits on a detached HEAD (no `@{u}`) whose commit is still
