@@ -544,7 +544,12 @@ def _run_fdo_capture(pkgname, propeller, dry_run):
     """
     store = kernel_fdo.resolve_store(pkgname, propeller=propeller)
     sampling = kernel_fdo.detect_branch_sampling()
-    vmlinux = kernel_fdo.resolve_vmlinux(pkgname)
+    # The profiling kernel is built+installed under its coexist record name
+    # (F26), so its build tree — and the vmlinux create_llvm_prof needs — lives
+    # under that name, not the stock pkgname. The store stays keyed on the stock
+    # pkgname (record/capture/use share it).
+    record_name = kernel_fdo.record_pkgname(pkgname)
+    vmlinux = kernel_fdo.resolve_vmlinux(record_name)
 
     if dry_run:
         _log.ui(
@@ -575,7 +580,7 @@ def _run_fdo_capture(pkgname, propeller, dry_run):
 
     _log.ui(
         f"AutoFDO{' + Propeller' if propeller else ''} capture — reboot into "
-        f"{pkgname}, then run these while exercising the machine:"
+        f"{record_name}, then run these while exercising the machine:"
     )
     for line in kernel_fdo.capture_commands(
         store, sampling=sampling, vmlinux=vmlinux, propeller=propeller
@@ -1569,6 +1574,19 @@ class KernelStage(Stage):
             if fdo_mode == "capture":
                 _run_fdo_capture(pkgname, fdo_propeller, options.dry_run)
                 return
+            if fdo_mode == "record":
+                # F26: the instrumented profiling kernel must not overwrite the
+                # production kernel. Install it under a distinct sysforge-owned
+                # coexist name (its own /boot entry, bootloader fallback), applied
+                # via the same rename_pkgbase_to seam as the use-build. The coexist
+                # name is itself the ownership gate — a reinstall only ever
+                # replaces a prior sysforge profiling kernel.
+                fdo_eff_pkgname = kernel_fdo.record_pkgname(pkgname)
+                _log.ui(
+                    f"AutoFDO{' + Propeller' if fdo_propeller else ''} record-build: "
+                    f"profiling kernel installs as {fdo_eff_pkgname} "
+                    f"(coexists with {pkgname}; boot into it to collect samples)"
+                )
             if fdo_mode == "use":
                 _fdo_store = kernel_fdo.resolve_store(pkgname, propeller=fdo_propeller)
                 # Clean pre-build abort if the record→capture profile is missing.
@@ -1862,14 +1880,22 @@ class KernelStage(Stage):
                         # -sysforge coexist rename. Both None for record/no-FDO.
                         extra_env=fdo_env,
                         optimization_build_mode=fdo_opt_build_mode,
-                        # F40 local-rename: patch the cloned upstream's pkgbase
-                        # to the local pkgname (coexist) so the build installs
-                        # alongside the official package. None when the names
-                        # match (or pure-local) → no patch, upstream name.
+                        # Coexist pkgbase rename (patch_pkgbase_rename). For an
+                        # --autofdo=record build the target is the distinct
+                        # profiling name (F26), so the instrumented kernel never
+                        # overwrites the production one. Otherwise it is the F40
+                        # local-rename: patch the cloned upstream's pkgbase to the
+                        # local pkgname so the build installs alongside the
+                        # official package. None when neither applies (names match
+                        # or pure-local) → no patch, upstream name.
                         rename_pkgbase_to=(
-                            pkgname
-                            if upstream_pkgname and pkgname != upstream_pkgname
-                            else None
+                            fdo_eff_pkgname
+                            if fdo_mode == "record"
+                            else (
+                                pkgname
+                                if upstream_pkgname and pkgname != upstream_pkgname
+                                else None
+                            )
                         ),
                     ))
                 except AlreadyBuilt:

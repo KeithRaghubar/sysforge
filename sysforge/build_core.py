@@ -537,6 +537,37 @@ def _order_targets_by_intra_deps(targets) -> tuple[list, dict[str, set[str]]]:
     return ordered, intra_deps
 
 
+def resolve_cleanbuild_flags(
+    *, no_cleanbuild: bool, extra_flags: list | None, pgo_mode: str | None
+) -> tuple[list, set]:
+    """Compute the makepkg ``(batch_flags, strip_flags)`` for the build loop.
+
+    The single home for cleanbuild policy across ``build`` and ``update``:
+
+    - Normally ``-C`` (cleanbuild: wipe ``$srcdir`` before building) is on so a
+      stale ``$srcdir`` from a prior failed run can't cause
+      patch-already-applied errors. ``no_cleanbuild`` opts out, and we also add
+      ``-C``/``--cleanbuild`` to ``strip_flags`` so a user-passed flag can't
+      re-add it.
+    - PGO (``--pgo=record``/``--pgo=use``) forces a full clean build (``-C -c``)
+      regardless of ``no_cleanbuild`` (F24): an instrumentation- or
+      profile-use pass must never reuse stale object files left by a
+      *differently*-instrumented prior run, so the cleanbuild opt-out cannot
+      apply and ``-C``/``-c`` are never stripped.
+    """
+    if pgo_mode:
+        # -C wipes $srcdir before the build (no cross-pass object reuse); -c
+        # cleans work dirs after. Forced on, never stripped.
+        return ["-C", "-c"] + (extra_flags or []), BATCH_STRIP_FLAGS
+    cleanbuild_flags = [] if no_cleanbuild else BATCH_EXTRA_FLAGS
+    batch_flags = cleanbuild_flags + (extra_flags or [])
+    strip_flags = (
+        BATCH_STRIP_FLAGS | {"--cleanbuild", "-C"} if no_cleanbuild
+        else BATCH_STRIP_FLAGS
+    )
+    return batch_flags, strip_flags
+
+
 def build_and_install(
     targets,
     *,
@@ -716,15 +747,10 @@ def build_and_install(
         outcome.aborted = True
         return outcome
 
-    # Cleanbuild (-C) prevents a stale $srcdir from a prior failed run causing
-    # patch-already-applied errors in prepare(). When the caller opts out we
-    # also strip -C/--cleanbuild so a user-passed flag can't re-add it.
-    cleanbuild_flags = [] if no_cleanbuild else BATCH_EXTRA_FLAGS
-    batch_flags = cleanbuild_flags + (extra_flags or [])
-    strip_flags = (
-        BATCH_STRIP_FLAGS | {"--cleanbuild", "-C"} if no_cleanbuild
-        else BATCH_STRIP_FLAGS
-    )
+    # Cleanbuild policy (one home): -C by default, opt-out via no_cleanbuild,
+    # and a forced -C -c under --pgo so a PGO pass never reuses stale objects.
+    batch_flags, strip_flags = resolve_cleanbuild_flags(
+        no_cleanbuild=no_cleanbuild, extra_flags=extra_flags, pgo_mode=pgo_mode)
 
     built_files_by_pkgbase: dict[str, list[Path]] = {}
     # Files handed to the just-in-time install (skipped by the final bulk

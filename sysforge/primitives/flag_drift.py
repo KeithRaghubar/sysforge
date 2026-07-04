@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sysforge.primitives.build_state import BUILD_MODE_SOURCE
-from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives.pkgbuild_meta import option_disabled, parse_pkgbuild
 from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
 from sysforge.primitives.profile import (
     build_mode_uses_extracted_profile,
@@ -41,6 +41,7 @@ from sysforge.primitives.profile import (
 STATUS_DRIFTED = "DRIFTED"            # stored flags differ from a fresh resolution
 STATUS_IN_SYNC = "IN_SYNC"           # stored flags match the current resolution
 STATUS_NOT_PROFILED = "NOT_PROFILED"  # build_mode != "source_built" — no flags to drift
+STATUS_BUILDFLAGS_IGNORED = "BUILDFLAGS_IGNORED"  # PKGBUILD options=('!buildflags'): makepkg ignores conf flags
 STATUS_NO_PKGBUILD = "NO_PKGBUILD"   # recorded pkgbuild_dir has no PKGBUILD
 STATUS_NO_FLAGS = "NO_FLAGS"         # built before flag tracking; nothing stored
 STATUS_PARSE_ERROR = "PARSE_ERROR"   # parse_pkgbuild raised
@@ -119,6 +120,16 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups) -> FlagDriftR
     except Exception as e:  # noqa: BLE001 — best-effort; reported, not raised
         return FlagDriftResult(
             status=STATUS_PARSE_ERROR, pkgbuild_path=pkgbuild_path, error=str(e),
+        )
+
+    # options=('!buildflags'): makepkg discards CFLAGS/CXXFLAGS/CPPFLAGS/LDFLAGS
+    # from the conf entirely, so the resolved profile flags never reach the
+    # build. A change in those flags cannot affect the built package, so flag
+    # drift must not fire a rebuild here (F9).
+    if option_disabled(pkgmeta, "buildflags"):
+        return FlagDriftResult(
+            status=STATUS_BUILDFLAGS_IGNORED, pkgbuild_path=pkgbuild_path,
+            stored_flags=stored_flags,
         )
 
     matched = match_rules(pkgmeta, config.get("rules", []))

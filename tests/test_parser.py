@@ -13,6 +13,7 @@ from sysforge.primitives.pkgbuild_meta import (
     hardcoded_build_linker,
     has_hardcoded_gcc,
     is_musl_static_build,
+    option_disabled,
     parse_pkgbuild,
 )
 
@@ -352,6 +353,42 @@ def _parse_with_build(tmp_path, body):
         "}\n"
     )
     return parse_pkgbuild(pkgbuild)
+
+
+# ---------------------------------------------------------------------------
+# option_disabled — reads the PKGBUILD options=() array (F9)
+# ---------------------------------------------------------------------------
+
+def _parse_with_options(tmp_path, options_line):
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\npkgver=1.0\npkgrel=1\narch=(x86_64)\n"
+        f"{options_line}\n"
+    )
+    return parse_pkgbuild(pkgbuild)
+
+
+def test_option_disabled_detects_bang_lto(tmp_path):
+    parsed = _parse_with_options(tmp_path, "options=('!lto' 'strip')")
+    assert option_disabled(parsed, "lto") is True
+    assert option_disabled(parsed, "buildflags") is False
+
+
+def test_option_disabled_false_when_enabled(tmp_path):
+    parsed = _parse_with_options(tmp_path, "options=('lto')")
+    assert option_disabled(parsed, "lto") is False
+
+
+def test_option_disabled_later_entry_wins(tmp_path):
+    # makepkg semantics: a later options token overrides an earlier one.
+    parsed = _parse_with_options(tmp_path, "options=('!lto' 'lto')")
+    assert option_disabled(parsed, "lto") is False
+
+
+def test_option_disabled_no_options_array(tmp_path):
+    parsed = _parse_with_build(tmp_path, "  true")
+    assert option_disabled(parsed, "lto") is False
+    assert option_disabled(parsed, "buildflags") is False
 
 
 def test_hardcoded_gcc_direct_gcc_invocation(tmp_path):

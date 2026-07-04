@@ -38,6 +38,19 @@ https://keepachangelog.com/en/1.1.0/
 - `update`: the end-of-run summary is consolidated into a single renderer with
   grouped, aligned sections, and built/failed packages now show their
   `old → new` versions instead of bare names (2.0.1-F2, 1.2.0-F33).
+- `build --pgo=record` / `--pgo=use` now force a full clean build (makepkg
+  `-C -c`) regardless of `--no-cleanbuild` / `[build] cleanbuild`, so an
+  instrumentation or profile-use pass never reuses stale object files from a
+  differently-instrumented prior run (1.2.0-F24).
+- A PKGBUILD's `options=()` opt-outs are now honored: `!lto` strips every
+  profile-injected `-flto` flag (including `-flto=thin`) and clears `LTOFLAGS`
+  at conf-emit, and `!buildflags` suppresses `update`'s flag-drift so a package
+  whose build flags makepkg ignores is never needlessly rebuilt (1.2.0-F9).
+- `run kernel --autofdo=record` now installs the instrumented profiling kernel
+  under a distinct sysforge-owned coexist name (`<pkgname>-sysforge-fdo`) with
+  its own boot entry, instead of overwriting the production kernel; `capture`
+  resolves its `vmlinux` from that build tree and directs you to reboot into it
+  (1.2.0-F26).
 
 ## Fixed
 

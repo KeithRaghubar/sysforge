@@ -171,6 +171,26 @@ def _strip_full_lto(flags_val: str) -> tuple[str, list[str]]:
     return " ".join(kept), stripped
 
 
+def _strip_all_lto(flags_val: str) -> tuple[str, list[str]]:
+    """
+    Remove *every* ``-flto`` variant (bare ``-flto``, ``-flto=full/thin/auto``,
+    ``-flto=N``) from a compiler flag string.
+
+    Unlike :func:`_strip_full_lto` (which preserves clang-PGO-compatible
+    ``-flto=thin``), this is for a PKGBUILD ``options=('!lto')`` opt-out where the
+    author declared LTO unsupported outright, so no variant may survive.
+    Returns (cleaned_str, list_of_stripped_tokens).
+    """
+    stripped = []
+    kept = []
+    for token in flags_val.split():
+        if token == "-flto" or token.startswith("-flto="):
+            stripped.append(token)
+        else:
+            kept.append(token)
+    return " ".join(kept), stripped
+
+
 def _strip_lld_flags(ldflags_val):
     """
     Remove lld-specific flags from an LDFLAGS string.

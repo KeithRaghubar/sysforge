@@ -10,6 +10,7 @@ produces the flags_string this module diffs against.
 
 from sysforge.primitives.profile import SYSFORGE_KEYS, serialize_flags
 from sysforge.primitives.flag_drift import (
+    STATUS_BUILDFLAGS_IGNORED,
     STATUS_DRIFTED,
     STATUS_IN_SYNC,
     STATUS_NO_FLAGS,
@@ -156,6 +157,27 @@ def test_drifted(tmp_path):
     assert r.drifted
     assert r.diffs  # at least one per-key diff line
     assert any("CFLAGS" in line for line in r.diffs)
+
+
+def test_buildflags_disabled_suppresses_drift(tmp_path):
+    # A PKGBUILD with options=('!buildflags') tells makepkg to ignore
+    # CFLAGS/CXXFLAGS/LDFLAGS entirely, so a change in the resolved profile
+    # flags can never affect the actual build — flag drift must not fire a
+    # rebuild (F9).
+    d = tmp_path / "foo"
+    d.mkdir()
+    (d / "PKGBUILD").write_text(
+        "pkgname=foo\npkgver=1\npkgrel=1\noptions=('!buildflags')\n"
+    )
+    entry = {
+        "build_mode": "source_built",
+        "pkgbuild_dir": str(d),
+        "flags_string": "CFLAGS=-this-is-stale",  # would drift, but ignored
+    }
+    r = resolve_flag_drift(entry, _MINIMAL_CONFIG, {})
+    assert r.status == STATUS_BUILDFLAGS_IGNORED
+    assert not r.drifted
+    assert r.diffs == []
 
 
 def test_parse_error_is_reported_not_raised(tmp_path, monkeypatch):

@@ -34,6 +34,20 @@ def test_build_mode_maps_propeller():
     assert kernel_fdo.build_mode(propeller=True) == "propeller_kernel"
 
 
+def test_record_pkgname_distinct_coexist_name():
+    # The profiling (record) kernel must install under a distinct, sysforge-owned
+    # name so it never overwrites the stock or -sysforge production kernel and
+    # earns its own boot entry (F26).
+    assert kernel_fdo.record_pkgname("linux-custom") == "linux-custom-sysforge-fdo"
+    # Distinct from the use-build's -sysforge production name.
+    assert kernel_fdo.record_pkgname("linux-custom") != "linux-custom-sysforge"
+
+
+def test_record_pkgname_idempotent():
+    n = kernel_fdo.record_pkgname("linux-custom")
+    assert kernel_fdo.record_pkgname(n) == n
+
+
 def test_build_modes_are_optimized_and_coexist():
     from sysforge.primitives.profile import (
         is_optimized_build_mode,

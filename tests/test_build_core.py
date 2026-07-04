@@ -46,6 +46,43 @@ def _make_target(tmp_path, pkgbase="foo", pkgnames=None):
 
 
 # ---------------------------------------------------------------------------
+# resolve_cleanbuild_flags — the build-flag seam (F24)
+# ---------------------------------------------------------------------------
+
+def test_cleanbuild_default_adds_C_and_keeps_strip():
+    batch, strip = build_core.resolve_cleanbuild_flags(
+        no_cleanbuild=False, extra_flags=None, pgo_mode=None)
+    assert batch == ["-C"]
+    assert strip == BATCH_STRIP_FLAGS
+
+
+def test_cleanbuild_opt_out_drops_C_and_strips_it():
+    batch, strip = build_core.resolve_cleanbuild_flags(
+        no_cleanbuild=True, extra_flags=["-f"], pgo_mode=None)
+    assert batch == ["-f"]  # no -C when opted out
+    assert "-C" in strip and "--cleanbuild" in strip
+
+
+def test_pgo_record_forces_clean_build_even_when_opted_out():
+    # PGO must never reuse stale objects from a differently-instrumented run,
+    # so --pgo overrides --no-cleanbuild: both -C and -c are forced and never
+    # stripped.
+    batch, strip = build_core.resolve_cleanbuild_flags(
+        no_cleanbuild=True, extra_flags=["-f"], pgo_mode="record")
+    assert batch[:2] == ["-C", "-c"]
+    assert "-f" in batch
+    assert strip == BATCH_STRIP_FLAGS
+    assert "-C" not in strip and "-c" not in strip
+
+
+def test_pgo_use_forces_clean_build():
+    batch, strip = build_core.resolve_cleanbuild_flags(
+        no_cleanbuild=False, extra_flags=None, pgo_mode="use")
+    assert batch == ["-C", "-c"]
+    assert strip == BATCH_STRIP_FLAGS
+
+
+# ---------------------------------------------------------------------------
 # target_from_pkgbuild
 # ---------------------------------------------------------------------------
 

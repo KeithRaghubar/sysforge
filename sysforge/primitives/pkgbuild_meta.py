@@ -459,6 +459,43 @@ _HARDCODED_GCC_ASSIGN = re.compile(
 _SCAN_FUNCS_LITERAL = ("prepare", "build", "check", "package")
 
 
+def option_disabled(parsed, name):
+    """
+    True if the PKGBUILD's ``options=()`` array disables option ``name``
+    (i.e. carries the ``!<name>`` token).
+
+    Per PKGBUILD(5), ``options`` is an array of makepkg toggles; a leading ``!``
+    disables one. A later entry overrides an earlier one (makepkg processes the
+    array left-to-right and the last mention of an option wins), so
+    ``options=('!lto' 'lto')`` leaves ``lto`` *enabled*. Returns False when the
+    array is absent or the option is unmentioned — the makepkg default is "not
+    explicitly disabled here".
+
+    Used by the flag layer to honor an author's opt-outs: ``!lto`` strips
+    profile LTO flags at conf-emit (``emit_makepkg_conf``), and ``!buildflags``
+    suppresses flag-drift (makepkg ignores the conf build flags entirely).
+    """
+    if not isinstance(parsed, dict):
+        return False
+    return options_list_disabled(parsed.get("globals", {}).get("options"), name)
+
+
+def options_list_disabled(options, name):
+    """Later-wins ``!<name>`` check over a raw ``options`` token list.
+
+    The list-level core of :func:`option_disabled`, shared with the flag layer
+    (``emit_makepkg_conf`` receives the parsed ``options`` array directly). Keeps
+    the makepkg override semantics (last mention wins) in one home.
+    """
+    disabled = False
+    for tok in options or []:
+        if tok == name:
+            disabled = False
+        elif tok == "!" + name:
+            disabled = True
+    return disabled
+
+
 def has_hardcoded_gcc(parsed):
     """
     True if any PKGBUILD(5) build-time function body invokes gcc/g++ as a

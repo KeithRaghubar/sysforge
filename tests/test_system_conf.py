@@ -162,6 +162,39 @@ def test_emit_missing_system_conf_falls_back_to_profile_only(tmp_path):
     # System-only keys should be absent
     assert "CARCH" not in conf
 
+def test_emit_bang_lto_strips_profile_lto_flags(sys_conf_path):
+    """A PKGBUILD options=('!lto') strips profile LTO flags at conf-emit (F9).
+
+    makepkg's own !lto only suppresses makepkg-injected LTOFLAGS; profile-baked
+    -flto in CFLAGS/CXXFLAGS/LDFLAGS would still reach the compiler, breaking a
+    package whose author declared LTO incompatible. So sysforge strips them.
+    """
+    profile = {
+        "CFLAGS": "-O2 -flto=thin",
+        "CXXFLAGS": "-O2 -flto=thin",
+        "LDFLAGS": "-flto=thin -Wl,-O1",
+        "LTOFLAGS": "-flto=thin",
+    }
+    with emit_makepkg_conf(
+        profile, system_conf_path=sys_conf_path, pkgbuild_options=["!lto"]
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert "-flto" not in conf["CFLAGS"]
+    assert "-flto" not in conf["CXXFLAGS"]
+    assert "-flto" not in conf["LDFLAGS"]
+    assert conf.get("LTOFLAGS", "") == ""
+
+
+def test_emit_no_bang_lto_keeps_lto_flags(sys_conf_path):
+    """Without !lto, profile LTO flags pass through untouched."""
+    profile = {"CFLAGS": "-O2 -flto=thin"}
+    with emit_makepkg_conf(
+        profile, system_conf_path=sys_conf_path, pkgbuild_options=["strip"]
+    ) as conf_path:
+        conf = read_conf(conf_path)
+    assert "-flto=thin" in conf["CFLAGS"]
+
+
 def test_emit_consumes_filters_rust_keys(sys_conf_path):
     """With only 'makepkg' in consumes, RUSTFLAGS is excluded from conf."""
     profile = {"CFLAGS": "-O3", "RUSTFLAGS": "-C opt-level=3"}

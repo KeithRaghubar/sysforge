@@ -673,6 +673,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                     reactive_gcc_fallback=_reactive_retry_used,
                     is_lib32=is_lib32,
                     is_musl_static=is_musl_static,
+                    pkgbuild_options=pkgmeta.get("globals", {}).get("options"),
                     toolchain_variant=toolchain_variant,
                     jobs=resolve_throttle(resolved_profile, config).jobs,
                 )

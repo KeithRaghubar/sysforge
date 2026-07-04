@@ -72,15 +72,6 @@ straight off a `Q`.
   porting base-install. *Priority: medium (removes the highest-risk
   re-implemented surface: disk/boot setup).*
 
-- **`1.2.0-F9` — Respect a PKGBUILD's per-package `options=()` (spun off Q6).** At
-  conf-emit time, honor the parsed `globals["options"]`: **`!lto`** → strip profile
-  LTO flags (`-flto*`) from CFLAGS/CXXFLAGS/LDFLAGS (author declared LTO breaks it —
-  the cosmic-edit/onig mold-failure class); **`!buildflags`** → makepkg ignores conf
-  build flags entirely, so suppress optimization *and* prevent Phase-4.3 flag-drift
-  (`flag_drift.resolve_flag_drift`) from false-triggering a rebuild. Reuse the
-  `emit_makepkg_conf(is_lib32=…/is_musl_static=…)` scrub seam — one home, no parallel
-  rule. *Priority: medium (don't inject flags the PKGBUILD opts out of).*
-
 - **`1.2.0-F14` — `doctor`: warn on installed instrumented/incomplete-PGO builds of
   *any* package.** Since `--pgo` works on any package (F5), an instrumented
   (record-stage) build can be left live for any target, not just mesa. Add a
@@ -132,22 +123,6 @@ straight off a `Q`.
 - **`1.2.0-F22` — Graphics runtime debugging refinement (from the DESIGN roadmap).**
   Tighten the graphics/doctor diagnostics surface (exact scope TBD). A candidate
   when revisiting graphics-related code; not blocking. *Priority: low (candidate).*
-
-- **`1.2.0-F24` — `build --pgo` should imply makepkg `-Cc` (clean build).** Both
-  `--pgo=record` and `--pgo=use` should force a clean build/package
-  (makepkg `-C`/`-c`), so instrumentation and profile-use builds never reuse stale
-  object files from a differently-instrumented prior run. Apply at the build-flag
-  seam, not per-package. *Priority: medium (correctness — stale objects silently
-  corrupt a PGO build).*
-
-- **`1.2.0-F26` — FDO-instrumented kernel must not overwrite the production sysforge
-  kernel.** An AutoFDO/Propeller *instrumented* (record-pass) kernel build currently
-  collides with the production sysforge kernel install. Give the instrumented kernel
-  a *separate* boot entry, overwriting an existing one only when sysforge created it
-  (ownership-gated, like the `owner_stage` + coexist-rename discipline). Reuse the
-  `primitives/kernel_fdo.py` seam and the existing boot-entry path — no parallel
-  writer. *Priority: medium (safety — silently replacing the production kernel is a
-  boot-stability risk).*
 
 - **`1.2.0-F28` — User-owned artifact inventory primitive.** Track the user-owned
   system artifacts now scattered across `~/scripts`, `/etc/systemd/system/`,

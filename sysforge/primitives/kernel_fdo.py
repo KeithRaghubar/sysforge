@@ -93,9 +93,35 @@ class KernelFdoError(Exception):
     kernel."""
 
 
+# Suffix for the profiling (record-pass) kernel's coexist rename. Distinct from
+# the use-build's plain ``-sysforge`` so the instrumented kernel installs
+# alongside *both* the stock and the optimized production kernel.
+RECORD_PKGNAME_SUFFIX = "-sysforge-fdo"
+
+
 def build_mode(*, propeller: bool) -> str:
     """The optimization build_mode this run records (drives the -sysforge rename)."""
     return BUILD_MODE_PROPELLER if propeller else BUILD_MODE_AUTOFDO
+
+
+def record_pkgname(pkgname: str) -> str:
+    """The coexist pkgname the ``--autofdo=record`` profiling kernel installs as.
+
+    A ``record`` build is *instrumented* (CONFIG_AUTOFDO_CLANG adds profiling
+    debug info) and must never overwrite the production kernel — neither the
+    stock ``<pkgname>`` nor the optimized ``<pkgname>-sysforge`` use-build. It
+    gets a distinct, sysforge-owned name (``<pkgname>-sysforge-fdo``), applied as
+    a coexist ``pkgbase`` rename (``rename_pkgbase_to`` → ``patch_pkgbase_rename``,
+    the same seam as the use-build), so it earns its own ``/boot`` entry and its
+    reinstall only ever replaces a prior sysforge profiling kernel — the coexist
+    name *is* the ownership gate (F26). Idempotent.
+
+    Kept in one home so both the record dispatch and the ``capture`` step (which
+    resolves ``vmlinux`` from the renamed build tree) derive the same name.
+    """
+    if pkgname.endswith(RECORD_PKGNAME_SUFFIX):
+        return pkgname
+    return pkgname + RECORD_PKGNAME_SUFFIX
 
 
 def _load_tcfg() -> dict | None:

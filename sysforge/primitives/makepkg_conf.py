@@ -28,12 +28,14 @@ import tempfile
 from sysforge import log
 from sysforge.primitives.build_throttle import apply_jobs_to_makeflags
 from sysforge.primitives.config import parse_system_makepkg_conf
+from sysforge.primitives.pkgbuild_meta import options_list_disabled
 from sysforge.primitives.makepkg_flags import (
     _detect_linker_from_rustflags,
     _detect_linker_from_ldflags,
     _inject_linker,
     _replace_rustflags_linker,
     _scrub_lib32_arch_flags,
+    _strip_all_lto,
     _strip_full_lto,
     _strip_lld_flags,
     _strip_pgo_flags,
@@ -56,6 +58,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       reactive_gcc_fallback: bool = False,
                       is_lib32: bool = False,
                       is_musl_static: bool = False,
+                      pkgbuild_options: list | None = None,
                       toolchain_variant: str | None = None,
                       jobs: int | None = None):
     """
@@ -346,6 +349,34 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         # when OPTIONS contains lto, bypassing the stripping above).
         profile_overrides["LTOFLAGS"] = ""
         _conf_log.info("Cleared LTOFLAGS for PGO pass (LTO disabled)")
+
+    # PKGBUILD options=('!lto') scrub. The author declared LTO breaks this
+    # package (the cosmic-edit/onig mold-failure class). makepkg's own !lto only
+    # suppresses *its* LTOFLAGS injection — profile-baked -flto in CFLAGS/
+    # CXXFLAGS/LDFLAGS still reaches the compiler — so strip those here and clear
+    # LTOFLAGS. Resolve each key's effective value (profile override else
+    # unquoted system conf) and write it back as an owned override, so the
+    # emission loop never re-emits a raw system value carrying -flto (F9).
+    if options_list_disabled(pkgbuild_options, "lto"):
+        _lto_stripped = False
+        for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
+            if key in profile_overrides:
+                val = profile_overrides[key]
+            elif key in system_assignments:
+                raw = system_assignments[key].strip()
+                val = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
+            else:
+                continue
+            cleaned, stripped = _strip_all_lto(val)
+            if stripped:
+                profile_overrides[key] = cleaned
+                _lto_stripped = True
+        # Clear LTOFLAGS so makepkg's lto hook can't re-inject via ${LTOFLAGS:--flto}.
+        if "LTOFLAGS" in profile_overrides or "LTOFLAGS" in system_assignments:
+            profile_overrides["LTOFLAGS"] = ""
+        if _lto_stripped:
+            _conf_log.info("PKGBUILD options=('!lto') — stripped -flto flag(s) "
+                           "and cleared LTOFLAGS (author declared LTO unsupported)")
 
     # Per-invocation compiler flag injection (e.g. PGO generate/use flags).
     # Runs after the linker guard so these flags are never treated as lld-specific.
