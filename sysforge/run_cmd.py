@@ -28,11 +28,13 @@ class _RunVerbBase(Verb):
     """Common scaffolding for ``sysforge run <stage>`` verbs."""
 
     requires_sentinel = False
-    # True for verbs that reach a makepkg invocation (pipeline, packages,
-    # kernel, toolchain). makepkg refuses to run as root, and a pipeline
-    # resumed after an interruption/reboot can re-enter with euid == 0 —
-    # fail fast at entry instead of surfacing makepkg's own rejection deep
-    # inside a build stage (1.2.0-B11).
+    # True for standalone build verbs (packages, kernel, toolchain) that reach
+    # a makepkg invocation and are always run as the regular user — fail fast
+    # at entry instead of surfacing makepkg's own rejection deep inside a build
+    # stage (1.2.0-B11). The full-pipeline verb is deliberately NOT
+    # makepkg_bearing: it spans the root-run bootstrap phase, so the runner
+    # enforces the no-root rule per stage instead (see RunPipelineVerb,
+    # Stage.makepkg_bearing, 2.1.0-B4).
     makepkg_bearing = False
 
     def pre_check(self, args) -> PreCheckResult:
@@ -51,7 +53,12 @@ class _RunVerbBase(Verb):
 
 class RunPipelineVerb(_RunVerbBase):
     name = "run-pipeline"
-    makepkg_bearing = True
+    # NOT makepkg_bearing at the verb level: the pipeline spans the bootstrap
+    # phase (install/hardware/configure/reconfigure), which legitimately runs
+    # as root on the live ISO. The runner enforces the no-root rule per stage
+    # against Stage.makepkg_bearing, so the build stages still fail fast at euid
+    # 0 while the bootstrap phase is allowed through (2.1.0-B4).
+    makepkg_bearing = False
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         from sysforge.pipeline.runner import run_pipeline

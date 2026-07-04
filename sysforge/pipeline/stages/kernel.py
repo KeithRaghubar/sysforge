@@ -1523,6 +1523,7 @@ class KernelStage(Stage):
     name = "kernel"
     description = "Build and install a custom kernel"
     depends_on = ["packages"]
+    makepkg_bearing = True
 
     def run(self, config, state, options):
         from sysforge.pipeline.state import get_toolchain_variant, resolve_state_dir

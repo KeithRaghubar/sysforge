@@ -22,6 +22,7 @@ the runner prints guidance and exits rather than silently overwriting state.
 Public API:
     run_pipeline(config, options, stages=None)
 """
+import os
 import sys
 from sysforge import log
 _log = log.get_logger("PIPELINE")
@@ -232,6 +233,21 @@ def run_pipeline(config, options, stages=None):
                 _emit(stage_lines(global_idx, len(stages),
                                   f"[dry-run] {stage.name}", stage.description))
                 continue
+
+            # makepkg can't run as root. The bootstrap phase runs as root on
+            # the live ISO and stops at the reboot boundary before any
+            # makepkg-bearing stage; a resume that re-enters as root, or a
+            # --start-from that jumps straight to a build stage, must fail fast
+            # here rather than surfacing makepkg's own rejection deep inside the
+            # build (1.2.0-B11, 2.1.0-B4).
+            if getattr(stage, "makepkg_bearing", False) and os.geteuid() == 0:
+                _log.fatal(
+                    f"refusing to run stage {stage.name!r} as root: it builds "
+                    f"packages with makepkg, which cannot run as root. Reboot "
+                    f"into the installed system and resume as your regular user "
+                    f"(e.g. `sudo -u <user> sysforge run pipeline --resume`).",
+                    exit_code=2,
+                )
 
             _emit(stage_lines(global_idx, len(stages), stage.name, stage.description))
 

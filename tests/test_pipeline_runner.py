@@ -18,10 +18,11 @@ from sysforge.pipeline.stages.base import Stage, RunOptions
 
 class OkStage(Stage):
     """Stage that always succeeds and records it was called."""
-    def __init__(self, name, depends_on=None):
+    def __init__(self, name, depends_on=None, makepkg_bearing=False):
         self.name = name
         self.description = f"Mock ok stage: {name}"
         self.depends_on = depends_on or []
+        self.makepkg_bearing = makepkg_bearing
         self.called = False
 
     def run(self, config, state, options):
@@ -201,6 +202,44 @@ def test_invalid_depends_on_raises(tmp_path):
     bad = OkStage("b", depends_on=["nonexistent"])
     with pytest.raises(ValueError, match="nonexistent"):
         run_pipeline({}, make_options(state_dir=tmp_path), stages=[bad])
+
+
+# ---------------------------------------------------------------------------
+# Root guard on makepkg-bearing stages (2.1.0-B4)
+# ---------------------------------------------------------------------------
+
+def test_makepkg_bearing_stage_refuses_root(tmp_path, monkeypatch):
+    """A makepkg-bearing stage reached at euid 0 must fail fast, not run.
+
+    The bootstrap phase runs as root on the live ISO; only the build stages
+    (toolchain/packages/kernel) carry makepkg_bearing and must be blocked at
+    root. Regression guard for the ISO bootstrap being dead-on-arrival when the
+    no-root check lived on the pipeline verb instead of the stage.
+    """
+    monkeypatch.setattr("sysforge.pipeline.runner.os.geteuid", lambda: 0)
+    build = OkStage("packages", makepkg_bearing=True)
+    with pytest.raises(SystemExit):
+        run_pipeline({}, make_options(state_dir=tmp_path), stages=[build])
+    assert not build.called  # blocked before run()
+
+
+def test_bootstrap_stages_run_as_root(tmp_path, monkeypatch):
+    """Non-makepkg (bootstrap) stages must run even at euid 0."""
+    monkeypatch.setattr("sysforge.pipeline.runner.os.geteuid", lambda: 0)
+    stages = [OkStage("install"), OkStage("hardware"), OkStage("configure")]
+    run_pipeline({}, make_options(state_dir=tmp_path), stages=stages)
+    assert all(s.called for s in stages)
+
+
+def test_shipped_build_stages_are_makepkg_bearing():
+    """The three build stages carry the flag; bootstrap stages do not."""
+    from sysforge.pipeline.stages import STAGES
+
+    by_name = {s.name: s for s in STAGES}
+    for name in ("toolchain", "packages", "kernel"):
+        assert by_name[name].makepkg_bearing, f"{name} must be makepkg_bearing"
+    for name in ("install", "hardware", "configure", "reconfigure"):
+        assert not by_name[name].makepkg_bearing, f"{name} must not be makepkg_bearing"
 
 
 def test_shipped_stage_graph_is_valid():

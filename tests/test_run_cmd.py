@@ -42,11 +42,13 @@ def test_run_options_has_reuse_built_field():
     assert RunOptions().reuse_built is False
 
 
-# --- 1.2.0-B11: euid == 0 guard at pipeline entry ---------------------------
+# --- euid == 0 guard on the standalone build verbs (1.2.0-B11, 2.1.0-B4) -----
 #
-# A pipeline resumed after an interruption/reboot can re-enter as root;
-# makepkg then refuses to run deep inside a build stage. The makepkg-bearing
-# run verbs must fail fast in pre_check with an actionable message instead.
+# The standalone build verbs (packages/kernel/toolchain) are always run as the
+# regular user and must fail fast in pre_check when re-entered as root. The
+# full-pipeline verb is deliberately exempt: it spans the root-run bootstrap
+# phase on the live ISO, so the runner enforces the no-root rule per stage
+# (see test_pipeline_runner.py::test_makepkg_bearing_stage_refuses_root).
 
 def _pre_check_as(euid, verb_argv, monkeypatch):
     import sysforge.run_cmd as run_cmd
@@ -55,16 +57,18 @@ def _pre_check_as(euid, verb_argv, monkeypatch):
     return args.verb_cls().pre_check(args)
 
 
-def test_makepkg_bearing_run_verbs_block_as_root(monkeypatch):
-    for verb in (["pipeline"], ["packages"], ["kernel"], ["toolchain"]):
+def test_standalone_build_verbs_block_as_root(monkeypatch):
+    for verb in (["packages"], ["kernel"], ["toolchain"]):
         pre = _pre_check_as(0, verb, monkeypatch)
         assert pre.blocker is not None, f"run {verb[0]} must block as root"
         assert "root" in pre.blocker
         assert "sudo -u" in pre.blocker
 
 
-def test_non_makepkg_run_verbs_proceed_as_root(monkeypatch):
-    for verb in (["hardware"], ["reconfigure"]):
+def test_pipeline_and_bootstrap_verbs_proceed_as_root(monkeypatch):
+    # pipeline must NOT block at the verb level — the runner guards per stage so
+    # the root-run bootstrap phase (ISO) is allowed through.
+    for verb in (["pipeline"], ["hardware"], ["reconfigure"]):
         pre = _pre_check_as(0, verb, monkeypatch)
         assert pre.blocker is None, f"run {verb[0]} must not block as root"
 

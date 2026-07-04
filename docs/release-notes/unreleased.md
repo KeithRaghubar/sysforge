@@ -22,6 +22,16 @@ https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The bootstrap pipeline no longer refuses to start as root on the live ISO.
+  `sysforge run pipeline` blanket-blocked euid 0 because the pipeline verb was
+  marked makepkg-bearing — but the bootstrap phase (install/hardware/configure/
+  reconfigure) legitimately runs as root on the ISO, where root is the only
+  account until the install stage creates the user. The no-root rule now lives
+  on the three build stages (`toolchain`/`packages`/`kernel`) and is enforced
+  per stage by the runner, so the root-run bootstrap phase proceeds and a
+  post-reboot resume that re-enters as root still fails fast at the first build
+  stage. (2.1.0-B4)
+
 - Build-failure recovery compiler swaps now persist for single-package
   PKGBUILDs. After a recovery-menu compiler swap on a package without an
   explicit `pkgbase=` line (the common non-split case), the resulting override

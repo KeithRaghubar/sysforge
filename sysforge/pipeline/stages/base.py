@@ -95,6 +95,14 @@ class Stage:
     description: str = ""
     depends_on: list[str] = []
     stateless: bool = False  # True for stages that don't write pipeline state
+    # True for stages that reach a makepkg invocation (toolchain, packages,
+    # kernel). makepkg refuses to run as root, so the runner fails fast at the
+    # stage boundary if euid == 0. This lives on the stage — not the pipeline
+    # verb — because the bootstrap phase (install/hardware/configure/
+    # reconfigure) legitimately runs as root on the live ISO and stops at the
+    # reboot boundary before any makepkg-bearing stage runs (1.2.0-B11,
+    # 2.1.0-B4).
+    makepkg_bearing: bool = False
 
     def run(self, config, state, options):
         """
