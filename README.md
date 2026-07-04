@@ -125,6 +125,8 @@ A custom kernel goes in `kernel.toml` (not `packages.toml`) and a custom LLVM to
 
 `packages.toml [build]` also carries per-flag defaults for `sysforge build` — `abi_check`, `cache_report`, `persist_log` — so you don't have to pass `--abi-check`/`--cache-report`/`--persist-log` every run; the CLI flag still wins if given. Similarly, `sysforge.toml [update]` carries `rebuild_on_drift` (+ the per-axis `rebuild_on_toolchain_drift`/`rebuild_on_flag_drift`) so `sysforge update` can default to rebuilding drifted packages without passing `--rebuild-on-drift` each time.
 
+By default sysforge prints errors plus the primary output only; `-v`/`-vv`/`-vvv` add warnings/info/debug. To raise that baseline permanently set `sysforge.toml [log] verbosity` (0–3) — for example `verbosity = 2` to always see progress narration. A CLI flag always wins, and `--quiet` forces silence (verbosity 0) for a single run.
+
 ### 4. Run the bootstrap pipeline
 
 ```bash

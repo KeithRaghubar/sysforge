@@ -83,12 +83,49 @@ def _hoist_verbosity_flags(argv):
     """
     verbose_tokens = []
     rest = []
+    # The global --quiet is hoisted like -v so users can place it after the
+    # subcommand (sysforge update --quiet). It is NOT hoisted when the command
+    # is `doctor`, which owns a *local* --quiet/-q with different semantics
+    # (suppress clean lines) — hoisting would let the global parser eat it. The
+    # short -q is doctor-only and never hoisted.
+    hoist_quiet = "doctor" not in argv
     for tok in argv:
         if tok in ("-v", "-vv", "-vvv", "--verbose"):
+            verbose_tokens.append(tok)
+        elif tok == "--quiet" and hoist_quiet:
             verbose_tokens.append(tok)
         else:
             rest.append(tok)
     return verbose_tokens + rest
+
+
+def _resolve_verbosity(args):
+    """Resolve the effective stderr verbosity level (0–3), mirroring
+    :func:`_resolve_color_mode`.
+
+    Precedence (highest first):
+      1. Global ``--quiet`` (``args.quiet_global``) → 0, wins over everything.
+      2. Else any ``-v/-vv/-vvv`` passed (``args.verbose`` count > 0) → that level.
+      3. Else ``[log] verbosity`` config value, clamped to 0–3.
+      4. Else 0.
+
+    An invalid config value (non-int, out of range) or an unreadable config
+    degrades gracefully — clamp or ignore, never abort startup — matching the
+    posture of ``set_color_mode``/``set_unicode_mode``.
+    """
+    if getattr(args, "quiet_global", False):
+        return 0
+    verbose = int(getattr(args, "verbose", 0) or 0)
+    if verbose > 0:
+        return min(3, verbose)
+    try:
+        from sysforge.primitives.config import load_sysforge_toml
+        raw = (load_sysforge_toml().get("log", {}) or {}).get("verbosity")
+    except Exception:
+        raw = None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return 0
+    return max(0, min(3, raw))
 
 
 # Global flags hoisted before the subcommand by _hoist_global_flags.
@@ -984,6 +1021,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--quiet",
+        action="store_true",
+        dest="quiet_global",
+        help=(
+            "Suppress all non-error output (verbosity 0), overriding -v and the "
+            "[log] verbosity config default. File logs are unaffected."
+        ),
+    )
+    parser.add_argument(
         "--py-profile",
         action="store_true",
         dest="py_profile",
@@ -1120,7 +1166,7 @@ def _main():
     )
     parser = _build_parser()
     args = parser.parse_args()
-    log.set_verbosity(args.verbose)
+    log.set_verbosity(_resolve_verbosity(args))
     log.set_color_mode(_resolve_color_mode(getattr(args, "color", None)))
     if getattr(args, "dry_run", False):
         log.set_dry_run_mode()

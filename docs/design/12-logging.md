@@ -3,12 +3,31 @@
 All log output goes to stderr. Format: `[SYSFORGE][LEVEL][TAG] message`
 
 Verbosity controlled by `-v`/`-vv`/`-vvv` on the CLI:
-- Default: `[ERROR]` only
+- Default: `[ERROR]` only (plus `ui()` primary output, which is verbosity-immune)
 - `-v`: adds `[WARN]`
 - `-vv`: adds `[INFO]`
 - `-vvv`: adds `[DEBUG]` — full body dumps of every loaded config, resolved profile, conflict groups, inference map, and temp makepkg.conf
 
-Set once at CLI entry via `log.set_verbosity(args.verbose)`. Tests run at verbosity 2 (all messages visible).
+**The level rubric** (the audit authority — every call site is classified against it):
+
+| Level | Fn | Gate | Reserved for |
+|---|---|---|---|
+| UI | `ui()` | always | The primary output the user ran the command to see — final summaries, `doctor` findings, `state`/`log`/`env` bodies, prompts, tables. **Not** progress narration. |
+| ERROR | `error()`/`fatal()` | always | Failures that abort or degrade the run. |
+| WARN | `warn()` | `-v` | Recoverable anomalies: skips, fallbacks, soname/ABI mismatches that don't block. |
+| INFO | `info()` | `-vv` | Progress/status narration: "syncing X", "wrote temp conf", "building 3/7". |
+| DEBUG | `debug()` | `-vvv` | Full body dumps: config/profile/conf contents, resolved argv, env snapshots. |
+
+Decision test for each site: *is this the answer, or narration about producing the answer?* The answer → `ui()`; narration → `info()` (or `debug()` for full dumps). `ui()` is verbosity-immune and reserved for primary output only — it is **not** a "make this always show up" escape hatch. File logs are unaffected: every level is always written to file regardless of stderr gating, so a demotion never loses forensic detail.
+
+**Configurable default verbosity.** The stderr level when no flag is passed is resolved once at CLI entry by `cli._resolve_verbosity(args)` (mirroring `_resolve_color_mode`), which calls the single `log.set_verbosity` seam — no resolution logic leaks into `log.py`. Precedence (highest first):
+
+1. Global `--quiet` → level 0 (wins over everything; distinct `quiet_global` dest so it never clobbers `doctor`'s local `--quiet/-q`, and it is not hoisted ahead of the `doctor` subcommand).
+2. Else `-v/-vv/-vvv` (argparse `count` > 0) → that level.
+3. Else the `[log] verbosity` key in `sysforge.toml` (integer 0–3, clamped; non-int/unreadable ignored → never aborts startup).
+4. Else 0.
+
+The shipped default stays 0; the config key lets a user opt into a quieter or more verbose baseline without changing it. A golden-output regression test asserts default-level (`verbosity=0`) output of a representative dry-run carries no `[INFO]`/`[WARN]` lines — the primary guard against future features re-leaking narration into `ui()`. Tests run at verbosity 2 (all messages visible).
 
 ### Colour
 

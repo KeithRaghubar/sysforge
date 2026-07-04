@@ -90,7 +90,7 @@ def _load_packages(config):
             f"in {path}. Must be {REPO_MODE_PACMAN!r} or {REPO_MODE_SOURCE!r}."
         )
 
-    _log.ui(f"Loaded {len(packages)} package(s) from {path}")
+    _log.info(f"Loaded {len(packages)} package(s) from {path}")
     return build_cfg, packages
 
 
@@ -124,7 +124,7 @@ def _prompt_failed_packages(failed_names, errors, options):
     With --force-retry: retry all without prompt.
     """
     if options.force_retry:
-        _log.ui(f"--force-retry: retrying all {len(failed_names)} failed package(s)")
+        _log.info(f"--force-retry: retrying all {len(failed_names)} failed package(s)")
         return set(failed_names), set()
 
     _log.warn(f"Resuming with {len(failed_names)} failed package(s):")
@@ -213,7 +213,7 @@ def _install_repo(pkg, options):
     if options.dry_run:
         _log.ui(f"[dry-run] sudo pacman -S --needed {name}")
         return
-    _log.ui(f"Installing from repo: {name}")
+    _log.info(f"Installing from repo: {name}")
     result = subprocess.run(["sudo", "pacman", "-S", "--needed", "--noconfirm", name])
     if result.returncode != 0:
         raise RuntimeError(f"pacman -S failed for {name!r} (exit {result.returncode})")
@@ -262,7 +262,7 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
     if toolchain:
         parts.append("cc=" + toolchain.get("cc_override", ""))
     suffix = f" ({', '.join(p for p in parts if p)})" if parts else ""
-    _log.ui(f"Building {name} from {pkgbuild}{suffix}")
+    _log.info(f"Building {name} from {pkgbuild}{suffix}")
     build_opts = make_build_options(
         "packages", options,
         log_dir=options.log_dir,
@@ -289,7 +289,7 @@ class PackagesStage(Stage):
     def run(self, config, state, options):
         toolchain = _toolchain_overrides(state)
         if toolchain:
-            _log.ui(f"Toolchain override from pipeline: cc={toolchain.get('cc_override', '-')} cxx={toolchain.get('cxx_override', '-')}")
+            _log.info(f"Toolchain override from pipeline: cc={toolchain.get('cc_override', '-')} cxx={toolchain.get('cxx_override', '-')}")
 
         build_cfg, packages = _load_packages(config)
 
@@ -395,10 +395,10 @@ class PackagesStage(Stage):
                     progress = state.get_package_progress()
                     _tick(name)
                     if name in built and name not in retry_set:
-                        _log.ui(f"Skipping {name} (already built)")
+                        _log.info(f"Skipping {name} (already built)")
                         continue
                     if name in skipped or name in skip_set:
-                        _log.ui(f"Skipping {name} (user skipped)")
+                        _log.info(f"Skipping {name} (user skipped)")
                         continue
                     if name not in progress.get("remaining", []) and name not in retry_set:
                         # Was already handled (built or skipped) in a prior run
@@ -418,7 +418,7 @@ class PackagesStage(Stage):
 
                     try:
                         if source == "repo" and effective_mode == REPO_MODE_SOURCE:
-                            _log.ui(f"{name}: repo source with build-from-source mode — building from source")
+                            _log.info(f"{name}: repo source with build-from-source mode — building from source")
                             _build_aur(pkg, build_cfg, config, options, toolchain)
                         elif source == "repo":
                             _install_repo(pkg, options)
@@ -433,7 +433,7 @@ class PackagesStage(Stage):
                         state.mark_package_built(name)
                         state.save()
                         built.add(name)
-                        _log.ui(f"{name}: done")
+                        _log.info(f"{name}: done")
 
                     except RuntimeError as e:
                         state.mark_package_failed(name, str(e))
@@ -469,4 +469,4 @@ class PackagesStage(Stage):
                 f"[PACKAGES] stage finished with failures: {still_failed}"
             )
 
-        _log.ui(f"Stage complete.\n[SYSFORGE][INFO][PACKAGES] {summary}")
+        _log.ui(f"Stage complete. {summary}")

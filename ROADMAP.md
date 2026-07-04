@@ -187,16 +187,16 @@ straight off a `Q`.
   symlinked set matches the packaged set. *Priority: medium (lowers the bar to try
   sysforge / stand up a new workstation).*
 
-- **`1.2.0-F36` — Audit logging verbosity levels + configurable default verbosity.** Warning/info
-  messages added over successive features have crept into the default verbosity level, eroding the
-  meaning of the levels (default output is now noisy). Audit every logging call site to confirm the
-  level matches intent (info vs warning vs debug), and add a configurable default-verbosity key
-  (e.g. `[log] verbosity` in `sysforge.toml`, or the appropriate config home) so users can opt into
-  a quieter or more verbose baseline. CLI `-v/-q` flags still win when passed. Note: the user
-  personally prefers `info` as a default but it's too noisy to force on everyone — so the fix is
-  *correct levelling* plus a *user-settable* default, not changing the shipped default. Route
-  through the existing `log` seam / `log.use_color`-style gating — no parallel verbosity switch.
-  *Priority: medium (the primary UX regression in day-to-day output).*
+- **`1.2.0-F36` — Finish the logging re-levelling audit (interactive stages).** The
+  configurable default verbosity (`[log] verbosity` + global `--quiet`) shipped, along with
+  the level rubric (DESIGN.md §Logging) and a re-levelling of the day-to-day `build`/`update`
+  path (packages stage narration → info; build_core dep-failure cautions → warn) guarded by a
+  golden-output test. **Remaining:** sweep the interactive/bootstrap-time stages against the
+  same rubric — `reconfigure.py` (94 `ui()`), `configure.py` (47), `kernel.py` (42),
+  `toolchain.py` (60), `hardware.py` (19), `partition.py` (14) — demoting progress narration
+  to `info()` while keeping prompts/plan-tables/results as `ui()`. Extend the golden guard to a
+  representative stage run. *Priority: low (bootstrap-time output, not the day-to-day
+  regression, which is resolved).*
 
 ### Open questions
 

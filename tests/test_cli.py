@@ -24,6 +24,7 @@ from sysforge.cli import (
     _extract_implicit_makepkg_flags,
     _hoist_verbosity_flags,
     _patch_makepkg_argv,
+    _resolve_verbosity,
 )
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
 
@@ -84,6 +85,95 @@ def test_hoist_mixed_verbose_and_other_flags():
     assert "--cc" in result
     assert "clang" in result
     assert "--persist-log" in result
+
+
+# ---------------------------------------------------------------------------
+# --quiet hoisting (global flag, distinct from doctor's local --quiet/-q)
+# ---------------------------------------------------------------------------
+
+def test_hoist_quiet_before_subcommand():
+    result = _hoist_verbosity_flags(["update", "--quiet"])
+    assert result == ["--quiet", "update"]
+
+
+def test_hoist_quiet_not_hoisted_for_doctor():
+    # doctor owns a *local* --quiet/-q; hoisting would clobber it.
+    result = _hoist_verbosity_flags(["doctor", "--quiet"])
+    assert result == ["doctor", "--quiet"]
+
+
+def test_hoist_short_q_never_hoisted():
+    # -q is doctor's short form only; global --quiet has no short alias.
+    result = _hoist_verbosity_flags(["doctor", "-q"])
+    assert result == ["doctor", "-q"]
+
+
+# ---------------------------------------------------------------------------
+# _resolve_verbosity — precedence: --quiet > -v/-vv/-vvv > [log] verbosity > 0
+# ---------------------------------------------------------------------------
+
+class _Args:
+    def __init__(self, verbose=0, quiet_global=False):
+        self.verbose = verbose
+        self.quiet_global = quiet_global
+
+
+def _patch_log_cfg(monkeypatch, value):
+    """Make _resolve_verbosity see {'log': {'verbosity': value}} (or {} if None)."""
+    import sysforge.primitives.config as cfg_mod
+
+    body = {} if value is None else {"log": {"verbosity": value}}
+    monkeypatch.setattr(cfg_mod, "load_sysforge_toml", lambda: body)
+
+
+def test_resolve_verbosity_default_zero(monkeypatch):
+    _patch_log_cfg(monkeypatch, None)
+    assert _resolve_verbosity(_Args()) == 0
+
+
+def test_resolve_verbosity_quiet_wins_over_v(monkeypatch):
+    _patch_log_cfg(monkeypatch, None)
+    assert _resolve_verbosity(_Args(verbose=3, quiet_global=True)) == 0
+
+
+def test_resolve_verbosity_quiet_wins_over_config(monkeypatch):
+    _patch_log_cfg(monkeypatch, 3)
+    assert _resolve_verbosity(_Args(quiet_global=True)) == 0
+
+
+def test_resolve_verbosity_cli_v_wins_over_config(monkeypatch):
+    _patch_log_cfg(monkeypatch, 1)
+    assert _resolve_verbosity(_Args(verbose=2)) == 2
+
+
+def test_resolve_verbosity_config_used_when_no_flag(monkeypatch):
+    _patch_log_cfg(monkeypatch, 2)
+    assert _resolve_verbosity(_Args()) == 2
+
+
+def test_resolve_verbosity_config_clamped_high(monkeypatch):
+    _patch_log_cfg(monkeypatch, 9)
+    assert _resolve_verbosity(_Args()) == 3
+
+
+def test_resolve_verbosity_config_clamped_low(monkeypatch):
+    _patch_log_cfg(monkeypatch, -4)
+    assert _resolve_verbosity(_Args()) == 0
+
+
+def test_resolve_verbosity_config_non_int_ignored(monkeypatch):
+    _patch_log_cfg(monkeypatch, "loud")
+    assert _resolve_verbosity(_Args()) == 0
+
+
+def test_resolve_verbosity_config_bad_load_never_aborts(monkeypatch):
+    import sysforge.primitives.config as cfg_mod
+
+    def _boom():
+        raise RuntimeError("unreadable config")
+
+    monkeypatch.setattr(cfg_mod, "load_sysforge_toml", _boom)
+    assert _resolve_verbosity(_Args()) == 0
 
 
 # ---------------------------------------------------------------------------

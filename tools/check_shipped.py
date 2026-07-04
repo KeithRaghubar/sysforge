@@ -77,8 +77,8 @@ class Finding:
 # the deliberate signal that the schema changed; the schema and the file are
 # always edited together.
 _KNOWN_SECTIONS: dict[str, set[str]] = {
-    "sysforge.toml":  {"ui", "git", "aur", "build", "failure_handling", "safety",
-                       "mesa", "pgo", "update"},
+    "sysforge.toml":  {"ui", "log", "git", "aur", "build", "failure_handling",
+                       "safety", "mesa", "pgo", "update"},
     "profiles.toml":  {"paths", "defaults", "profiles", "rules",
                        "append_conflict_groups", "consumes_inference",
                        "package_compiler_overrides"},

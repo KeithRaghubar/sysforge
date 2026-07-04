@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026-07-03"
+.TH "sysforge" "1" "2026-07-04"
 .PP
 .PP
 .SH NAME
@@ -57,7 +57,16 @@ recovery command.\&
 .RS 4
 Increase verbosity.\& Default shows errors only; -v adds warnings, -vv
 informational messages, -vvv debug output (repeatable, position
-independent).\&
+independent).\& The default level (when no flag is passed) can be raised
+via the \fB[log] verbosity\fR key in \fIsysforge.\&toml\fR; a CLI flag always wins.\&
+.PP
+.RE
+\fB--quiet\fR
+.RS 4
+Suppress all non-error output (verbosity 0), overriding both \fB-v\fR and
+the \fB[log] verbosity\fR config default.\& File logs still record every
+level.\& Distinct from \fBdoctor\fR'\&s local \fB--quiet\fR (which suppresses clean
+diagnostic lines).\&
 .PP
 .RE
 \fB-V\fR, \fB--version\fR

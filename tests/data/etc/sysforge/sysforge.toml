@@ -13,6 +13,12 @@ color = "auto"
 #                      # adoption). Resolution: SYSFORGE_MERGE > this > $DIFFPROG
 #                      # > vimdiff. Accepts args, e.g. "nvim -d" or "meld".
 
+[log]
+# Default stderr verbosity when no -v/--quiet flag is passed (0–3). Shipped
+# default 0. CLI flags always win (--quiet=0, -v/-vv/-vvv=1/2/3). Invalid
+# values clamped/ignored.
+# verbosity = 0
+
 [git]
 # Timeout (s) for the per-source git fetch during `sysforge update` (full-history
 # fetch+compare via the scheduler, never `git pull --rebase`). 0 = no timeout.

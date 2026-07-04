@@ -52,7 +52,14 @@ recovery command.
 *-v*, *--verbose*
 	Increase verbosity. Default shows errors only; -v adds warnings, -vv
 	informational messages, -vvv debug output (repeatable, position
-	independent).
+	independent). The default level (when no flag is passed) can be raised
+	via the *[log] verbosity* key in _sysforge.toml_; a CLI flag always wins.
+
+*--quiet*
+	Suppress all non-error output (verbosity 0), overriding both *-v* and
+	the *[log] verbosity* config default. File logs still record every
+	level. Distinct from *doctor*'s local *--quiet* (which suppresses clean
+	diagnostic lines).
 
 *-V*, *--version*
 	Print the sysforge version and exit.

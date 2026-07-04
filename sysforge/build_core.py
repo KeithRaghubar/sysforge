@@ -289,10 +289,7 @@ def prepare_deps(
                 installed_deps_out.extend(repo_missing)
         except RuntimeError as e:
             _log.error(str(e))
-            _log.ui(
-                "[SYSFORGE] Warning: makedep pre-install failed — "
-                "some builds may fail"
-            )
+            _log.warn("makedep pre-install failed — some builds may fail")
 
     # AUR/local deps — resolve transitively, build in topo order.
     from sysforge.primitives.aur_resolve import (
@@ -348,10 +345,7 @@ def prepare_deps(
                 installed_deps_out.extend(built_dep_names)
     except RuntimeError as e:
         _log.error(f"AUR dep resolution failed: {e}")
-        _log.ui(
-            "[SYSFORGE] Warning: AUR dep resolution failed — "
-            "some builds may fail"
-        )
+        _log.warn("AUR dep resolution failed — some builds may fail")
     return True
 
 

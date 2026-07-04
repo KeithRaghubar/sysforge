@@ -123,6 +123,34 @@ def test_load_packages_missing_raises(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# F36 golden guard: at the shipped default verbosity (0), the packages stage
+# emits no progress narration on stderr — the "Loaded N package(s)" line is
+# INFO (-vv), not always-printed UI. This locks the re-levelling and guards
+# against a future change re-leaking narration back into log.ui().
+# ---------------------------------------------------------------------------
+
+def test_load_packages_narration_suppressed_at_default_verbosity(tmp_path, capsys):
+    from sysforge import log
+
+    p = make_packages_toml(tmp_path, tmp_path / "builds")
+    saved = log.get_verbosity()
+    try:
+        log.set_verbosity(0)  # the shipped default
+        _load_packages({"packages_file": str(p)})
+        err_v0 = capsys.readouterr().err
+        log.set_verbosity(2)  # -vv opts into progress narration
+        _load_packages({"packages_file": str(p)})
+        err_v2 = capsys.readouterr().err
+    finally:
+        log.set_verbosity(saved)
+
+    # Default output carries no narration; -vv surfaces it as an INFO line.
+    assert "Loaded" not in err_v0
+    assert "[INFO]" not in err_v0 and "[WARN]" not in err_v0
+    assert "[SYSFORGE][INFO][PACKAGES] Loaded 3 package(s)" in err_v2
+
+
+# ---------------------------------------------------------------------------
 # PackagesStage.run() — happy path
 # ---------------------------------------------------------------------------
 
