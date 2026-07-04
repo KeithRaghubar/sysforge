@@ -25,6 +25,39 @@ def test_abort_returns_clean_outcome(monkeypatch, pkgbuild):
     assert out.overrides is None
 
 
+def test_recover_prompt_names_failing_package(monkeypatch, pkgbuild):
+    # 2.0.1-B2: the recovery menu header must name the failing package so a
+    # batch update's prompt is unambiguous — "Recover <pkgbase>:", not "Recover:".
+    seen = {}
+
+    def capture(msg, choices, **k):
+        seen["msg"] = msg
+        return "a"
+
+    monkeypatch.setattr(mi, "prompt_choice", capture)
+    mi._run_recovery_menu(
+        pkgbuild, Path("/conf"), {}, extra_env=None, extra_flags=None,
+        interactive=True, strip_flags=None, reemit_conf=None, pkgbase="htop",
+    )
+    assert seen["msg"].startswith("Recover htop:")
+
+
+def test_recover_prompt_falls_back_to_filename_without_pkgbase(monkeypatch,
+                                                               pkgbuild):
+    # No pkgbase → fall back to the PKGBUILD's parent-dir name, never a bare
+    # "Recover:".
+    seen = {}
+    monkeypatch.setattr(
+        mi, "prompt_choice",
+        lambda msg, choices, **k: (seen.__setitem__("msg", msg) or "a"))
+    mi._run_recovery_menu(
+        pkgbuild, Path("/conf"), {}, extra_env=None, extra_flags=None,
+        interactive=True, strip_flags=None, reemit_conf=None, pkgbase=None,
+    )
+    assert seen["msg"].startswith("Recover ")
+    assert not seen["msg"].startswith("Recover:")
+
+
 def test_summary_reports_effective_linker(monkeypatch, capsys, pkgbuild):
     # 1.2.0-B4: the "Toolchain used" line must surface LD alongside CC/CXX.
     # A profile carrying -fuse-ld=lld in LDFLAGS resolves to LD=lld.

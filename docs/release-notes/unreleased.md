@@ -63,3 +63,7 @@ https://keepachangelog.com/en/1.1.0/
   `<pkg>-sysforge`) whose `PKGBUILD` uses bash `pkgver` expansion now falls back
   to the RPC version cached under its stock upstream base via `origin_pkgbase`,
   instead of missing the rescue and skipping the package (2.0.1-Q2).
+- Build-failure recovery: the `Recover:` menu header and sibling failure-summary
+  lines now name the failing package (`Recover <pkgbase>:`, `Build failed
+  (<pkgbase>): …`), so a batch `update` prompt is unambiguous about which package
+  to act on (2.0.1-B2).

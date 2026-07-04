@@ -36,16 +36,6 @@ straight off a `Q`.
 
 ### Bugs
 
-- **`2.0.1-B2` — Build-failure recovery prompt omits the failing package name.** The
-  recovery menu and surrounding failure messages never say *which* package failed —
-  in a batch update the `[SYSFORGE][UI][MAKEPKG] Recover:` prompt is ambiguous. The
-  menu builder (`makepkg_invoke._recover_menu_choices` / `_run_recovery_menu`)
-  already receives `pkgbase`; thread it into the `Recover:` header line (e.g.
-  `Recover <pkgbase>:`) and audit the sibling failure-summary lines for the same
-  omission. One home — the fix lives in the existing recovery-menu seam, no
-  parallel prompt. *Priority: medium (users act on this prompt mid-failure;
-  ambiguity invites acting on the wrong package).*
-
 ### Features
 
 - **`2.0.1-F3` — Integrate archinstall for the bootstrap disk/base-install slice

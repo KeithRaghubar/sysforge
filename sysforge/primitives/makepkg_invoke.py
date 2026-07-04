@@ -422,10 +422,11 @@ def take_last_recovery() -> "RecoveryOutcome | None":
     return out
 
 
-def _recover_menu_choices(have_swap: bool) -> tuple[str, tuple[str, ...]]:
+def _recover_menu_choices(have_swap: bool,
+                          label: str) -> tuple[str, tuple[str, ...]]:
     swap_line = "  [c] retry with a different compiler / linker\n" if have_swap else ""
     msg = (
-        "Recover:\n"
+        f"Recover {label}:\n"
         "  [e] edit PKGBUILD in $EDITOR — retries automatically on exit\n"
         f"{swap_line}"
         "  [r] retry as-is            (Enter)\n"
@@ -471,10 +472,11 @@ def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
     have_swap = reemit_conf is not None
     orig_snapshot = pkgbuild_path.with_suffix(pkgbuild_path.suffix + ".orig")
 
+    label = pkgbase or pkgbuild_path.name
     while True:
-        _makepkg_log.ui(f"Build failed: {pkgbase or pkgbuild_path.name}")
+        _makepkg_log.ui(f"Build failed: {label}")
         _makepkg_log.ui(f"  Toolchain used:  CC={cc}  CXX={cxx}  LD={ld}")
-        msg, choices = _recover_menu_choices(have_swap)
+        msg, choices = _recover_menu_choices(have_swap, label)
         choice = prompt_choice(msg, choices, default="r", eof_default="a",
                                tag="MAKEPKG")
 
@@ -532,7 +534,8 @@ def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
                     overrides={"cc": new_cc, "cxx": new_cxx, "ld": new_ld},
                 )
             except subprocess.CalledProcessError:
-                _makepkg_log.error("Build still failed after compiler swap.")
+                _makepkg_log.error(
+                    f"Build still failed after compiler swap: {label}")
                 continue
 
         # choice == "r": retry as-is.
@@ -555,6 +558,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
     to a sudo timeout). In that case the user is offered a sudo re-auth +
     direct pacman -U path instead of a full rebuild.
     """
+    label = pkgbase or Path(pkgbuild_path).name
     if resolved_profile.get("batch", False):
         try:
             invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
@@ -564,7 +568,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
             # before falling back to normal batch-mode failure handling.
             raise
         except subprocess.CalledProcessError as e:
-            _makepkg_log.error(f"Build failed in batch mode, aborting: {e}")
+            _makepkg_log.error(
+                f"Build failed in batch mode, aborting ({label}): {e}")
             raise _build_failed_error(e)
     else:
         while True:
@@ -577,7 +582,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                 # guard instead of prompting the user for manual correction.
                 raise
             except subprocess.CalledProcessError as e:
-                _makepkg_log.error(f"Build failed: {e}")
+                _makepkg_log.error(f"Build failed ({label}): {e}")
                 _makepkg_log.info(f"PKGBUILD location: {pkgbuild_path}")
 
                 installing = extra_flags and any(f in INSTALL_FLAGS for f in extra_flags)
