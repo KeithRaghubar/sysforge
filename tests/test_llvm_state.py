@@ -252,6 +252,25 @@ def test_collect_state_dirty_no_upstream(src_root, config):
     assert "upstream" in (s.dirty_reason or "")
 
 
+def test_collect_state_detached_head_on_upstream_is_clean(src_root, config):
+    """A source=repo checkout pinned to a release tag sits on a detached HEAD
+    (no ``@{u}`` → ``no_tracking``) but its commit is still reachable from
+    ``origin/main`` — that is upstream's own history, not local work, so it
+    must NOT be reported as a dirty blocker.
+    """
+    pkg = src_root / "llvm"
+    _init_repo(pkg, remote_url="https://aur.archlinux.org/llvm.git")
+    # Detach HEAD onto the same commit that origin/main points at.
+    subprocess.run(
+        ["git", "-C", str(pkg), "checkout", "-q", "--detach", "HEAD"],
+        check=True,
+    )
+    report = collect_llvm_state(["llvm"], config)
+    s = report.states[0]
+    assert s.is_dirty is False, s.dirty_reason
+    assert report.has_dirty is False
+
+
 def test_collect_state_offline_does_not_fetch(src_root, config, monkeypatch):
     """probe_fetch=False must NOT call git_fetch_and_compare."""
     pkg = src_root / "llvm-git"

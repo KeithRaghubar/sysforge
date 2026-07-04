@@ -39,6 +39,7 @@ from sysforge.primitives.aur import (
     GitFetchOutcome,
     classify_head_vs_upstream,
     git_fetch_and_compare,
+    head_reachable_from_remote,
 )
 from sysforge.primitives.pkgbuild_patcher import is_llvm_pkgbase
 
@@ -171,12 +172,16 @@ def _resolve_local_only(pkg: str, config: dict | None) -> Path | None:
 def _dirty_reason(pkgbuild_dir: Path) -> tuple[bool, str | None]:
     """Re-derive the reason for a dirty tree so we can render it.
 
-    Mirrors :func:`sysforge.primitives.aur.git_is_dirty` exactly so the report
-    cannot disagree with the dirty-tree gating used by ``purge_src``.
-    Distinguishes ``"N commit(s) ahead of upstream"`` (true unpushed work)
-    from ``"diverged from upstream (N local / M upstream)"`` (forked
-    histories with at least one local-user-authored commit), and treats
-    upstream-only divergence (``diverged_upstream``) as clean.
+    Tracks the dirty-tree gating actually used by ``purge_src`` so the report
+    cannot disagree with what a purge would refuse. Distinguishes
+    ``"N commit(s) ahead of upstream"`` (true unpushed work) from
+    ``"diverged from upstream (N local / M upstream)"`` (forked histories with
+    at least one local-user-authored commit), and treats upstream-only
+    divergence (``diverged_upstream``) as clean. Unlike the blanket
+    ``git_is_dirty`` rule, a ``no_tracking`` detached HEAD whose commit is
+    still reachable from a remote ref is upstream's own history (a release-tag
+    checkout), not local work, and is reported clean — matching
+    ``purge_src``'s ``head_reachable_from_remote`` escape hatch.
     """
     if not pkgbuild_dir.exists():
         return False, None
@@ -194,6 +199,15 @@ def _dirty_reason(pkgbuild_dir: Path) -> tuple[bool, str | None]:
         return True, "uncommitted changes"
 
     if state == "no_tracking":
+        # A source=repo checkout pinned to a release tag sits on a detached
+        # HEAD (no ``@{u}``) whose commit is still reachable from a remote ref
+        # — that is upstream's own history, not local work. ``purge_src``
+        # already treats this as clean via the same predicate; mirror it so
+        # the preflight report cannot disagree with the purge gating (and so a
+        # false "dirty" blocker doesn't wedge the toolchain stage where no
+        # --cleansrc-force can ever clear it).
+        if head_reachable_from_remote(pkgbuild_dir):
+            return False, None
         return True, "no upstream tracking branch"
     if state == "ahead":
         suffix = "s" if n_local != 1 else ""

@@ -12,3 +12,13 @@ accumulator. Run the release-notes skill first to reconcile/lint the entries and
 finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
+
+### Fixed
+
+- Toolchain stage no longer refuses on a spurious "dirty (no upstream tracking
+  branch)" LLVM blocker for release-tag checkouts. A `source=repo` LLVM tree
+  pinned to a tag sits on a detached HEAD (no `@{u}`) whose commit is still
+  reachable from `origin` — upstream's own history, not local work. The
+  pre-flight report now applies the same `head_reachable_from_remote` test
+  `purge_src` already uses, so such clean trees pass and no longer wedge the
+  stage where no `--cleansrc-force` could ever clear the blocker. (2.1.0-B3)

@@ -435,7 +435,7 @@ def git_is_dirty(pkgbuild_dir: Path, *, is_vcs: bool = False) -> bool:
     return state in ("no_tracking", "ahead", "diverged_user")
 
 
-def _head_reachable_from_remote(pkgbuild_dir: Path) -> bool:
+def head_reachable_from_remote(pkgbuild_dir: Path) -> bool:
     """True when HEAD's commit is an ancestor of (or equal to) any remote ref.
 
     A source=repo checkout pinned to a release tag sits on a detached HEAD
@@ -476,7 +476,7 @@ def _purge_refusal_message(pkgbuild_dir: Path, *, is_vcs: bool) -> str | None:
     elif state == "diverged_user":
         causes.append("diverged history with local-user-authored commits")
     elif state == "no_tracking":
-        if not _head_reachable_from_remote(pkgbuild_dir):
+        if not head_reachable_from_remote(pkgbuild_dir):
             causes.append("no upstream tracking branch")
 
     if not causes:
