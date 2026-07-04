@@ -177,6 +177,43 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# In-flight failure advisory
+# ---------------------------------------------------------------------------
+# Once the signed tag exists (a --resume run, an auto-detected resume, or the
+# moment Phase 1 tags in a fresh run) the release is IN-FLIGHT: the bump,
+# commit, and tag are already in place and possibly pushed/published. A failure
+# past that point — most commonly a transient network drop fetching the
+# tarball/.asc, or a chroot flake — is recoverable via `make release-resume`,
+# not a from-scratch redo. Reframe it so `make`'s bare "Error 255" doesn't read
+# as a legitimate, unrecoverable failure. Pre-tag failures keep RESUMABLE=0 and
+# fall through to a plain non-zero exit (there's nothing tagged to resume).
+RESUMABLE=$RESUME
+
+on_error() {
+    local rc=$?
+    trap - ERR
+    if [[ "$RESUMABLE" -eq 1 && "$DRY_RUN" -eq 0 ]]; then
+        cat >&2 <<EOF
+
+==> release INTERRUPTED (exit $rc) — but $TAG is already tagged, so this is an
+    in-flight release, not a from-scratch failure. The version bump, release
+    commit, and signed tag $TAG are in place (and may already be pushed and/or
+    published to GitHub). This is usually transient — a network drop fetching
+    the tarball/.asc, or a clean-chroot flake — and does NOT need to be redone.
+
+    Fix any obvious cause (e.g. wait for connectivity) and re-run:
+
+        make release-resume
+
+    It is idempotent: it re-enters at Phase 3 (sha256, chroot validation,
+    .SRCINFO, final commit) and skips whatever already succeeded.
+EOF
+    fi
+    exit "$rc"
+}
+trap on_error ERR
+
+# ---------------------------------------------------------------------------
 # Phase 0b: pre-flight
 # ---------------------------------------------------------------------------
 
@@ -473,6 +510,10 @@ UNRELEASED_EOF
         # fails (and aborts the release) if the signature does not verify.
         git tag -s "$TAG" -m "sysforge $TAG"
         git tag -v "$TAG" >/dev/null
+        # From here on the release is in-flight: a later failure is resumable
+        # via `make release-resume`, so surface that (see on_error) instead of a
+        # bare non-zero exit.
+        RESUMABLE=1
         echo "    committed: release: $TAG (signed)"
         echo "    tagged:    $TAG (signed, verified)"
     else
