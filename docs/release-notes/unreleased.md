@@ -22,6 +22,17 @@ https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The bootstrap install stage no longer generates an archinstall config that
+  crashes partitioning with `Can't have the end before the start! (… length=0)`.
+  The root partition was emitted with `size: {value: 0}` on the assumption that
+  archinstall reads that (with `total_size: null`) as "fill the remaining
+  disk" — but the 3.0.15 headless schema has no fill sentinel: it converts the
+  size straight to a sector length, so `0` produced a zero-length partition
+  parted rejected. The root size is now a concrete value computed from the real
+  disk (probed with `lsblk`), filling the space after the ESP minus a 1 MiB GPT
+  tail. A real run that can't probe the device fails fast instead of
+  partitioning blind; `--dry-run` uses a nominal size to preview. (2.1.0-B5)
+
 - The bootstrap pipeline no longer refuses to start as root on the live ISO.
   `sysforge run pipeline` blanket-blocked euid 0 because the pipeline verb was
   marked makepkg-bearing — but the bootstrap phase (install/hardware/configure/

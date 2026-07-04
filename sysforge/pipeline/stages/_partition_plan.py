@@ -18,6 +18,31 @@ from sysforge.pipeline.stages._bootstrap import BootstrapConfig
 from sysforge.primitives.prompt import prompt_choice
 
 
+def probe_disk_size_bytes(device: str) -> int | None:
+    """Return the total size of `device` in bytes, or None if it can't be read.
+
+    archinstall's headless (``--config``) disk schema has no "fill remaining"
+    sentinel — every partition size is a concrete value that it converts
+    straight to a sector length (a size of 0 becomes a zero-length partition
+    and parted rejects it). So to size the root partition to "the rest of the
+    disk" we must know the real disk size and compute it ourselves; this is the
+    single probe for that. ``lsblk --nodeps --bytes`` reports the whole-device
+    size without descending into existing partitions. Any failure returns None
+    so the caller can decide (hard-fail for a real run, nominal size for a
+    dry-run preview) rather than crashing here.
+    """
+    result = subprocess.run(
+        ["lsblk", "--noheadings", "--nodeps", "--bytes", "--output", "SIZE", device],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    text = result.stdout.strip().splitlines()
+    if not text or not text[0].strip().isdigit():
+        return None
+    return int(text[0].strip())
+
+
 def _has_existing_partitions(device: str) -> bool:
     """Return True if `device` already carries a partition table with partitions.
 

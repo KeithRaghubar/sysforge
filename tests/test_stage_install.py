@@ -15,6 +15,8 @@ def _patch_cfg(monkeypatch):
     cfg = BootstrapConfig(target="/mnt", device="/dev/vda", hostname="h",
                           locale="en_US.UTF-8", timezone="UTC")
     monkeypatch.setattr(inst, "load_bootstrap", lambda: cfg)
+    # Probe would hit a real /dev/vda; stub a plausible 40 GiB disk.
+    monkeypatch.setattr(inst, "probe_disk_size_bytes", lambda _dev: 40 * 1024**3)
     return cfg
 
 
@@ -49,3 +51,26 @@ def test_real_run_confirms_then_invokes(monkeypatch):
                         lambda cfg_dict, *, dry_run: order.append("run"))
     inst.InstallStage().run(config={}, state=None, options=_Opts(dry_run=False))
     assert order == ["confirm", "run"]
+
+
+def test_unprobeable_disk_aborts_real_run(monkeypatch):
+    _patch_cfg(monkeypatch)
+    monkeypatch.setattr(inst, "probe_disk_size_bytes", lambda _dev: None)
+    monkeypatch.setattr(inst, "_confirm", lambda c: None)
+    ran = []
+    monkeypatch.setattr(inst, "run_archinstall", lambda *a, **k: ran.append(True))
+    with pytest.raises(RuntimeError, match="could not determine the size"):
+        inst.InstallStage().run(config={}, state=None, options=_Opts(dry_run=False))
+    assert ran == []  # never partitioned with an unknown disk size
+
+
+def test_unprobeable_disk_dry_run_uses_nominal_size(monkeypatch):
+    _patch_cfg(monkeypatch)
+    monkeypatch.setattr(inst, "probe_disk_size_bytes", lambda _dev: None)
+    seen = {}
+    monkeypatch.setattr(inst, "run_archinstall",
+                        lambda cfg_dict, *, dry_run: seen.update(cfg_dict=cfg_dict))
+    inst.InstallStage().run(config={}, state=None, options=_Opts(dry_run=True))
+    root = next(p for p in seen["cfg_dict"]["disk_config"]["device_modifications"][0]["partitions"]
+                if p["obj_id"] == "root")
+    assert root["size"]["value"] > 0  # preview still renders a concrete layout
