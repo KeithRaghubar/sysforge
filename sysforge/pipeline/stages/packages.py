@@ -391,19 +391,9 @@ class PackagesStage(Stage):
 
             # Main build loop — walk all_names in manifest order
             from sysforge.ui import progress as _ui_progress
-            with _ui_progress.tracker(len(all_names), "building") as _tick:
+            with _ui_progress.tracker(len(all_names), "packages") as _tick:
                 for name in all_names:
                     progress = state.get_package_progress()
-                    _tick(name)
-                    if name in built and name not in retry_set:
-                        _log.info(f"Skipping {name} (already built)")
-                        continue
-                    if name in skipped or name in skip_set:
-                        _log.info(f"Skipping {name} (user skipped)")
-                        continue
-                    if name not in progress.get("remaining", []) and name not in retry_set:
-                        # Was already handled (built or skipped) in a prior run
-                        continue
 
                     pkg = pkg_map[name]
                     source = pkg.get("source", "aur")
@@ -413,6 +403,28 @@ class PackagesStage(Stage):
                     # enable_build_from_source.
                     repo_mode = resolve_repo_mode(build_cfg)
                     effective_mode = REPO_MODE_SOURCE if pkg.get(PKG_KEY_BUILD_FROM_SOURCE) else repo_mode
+
+                    # Narrate the actual action, not a blanket "building": repo
+                    # packages in pacman mode are installed with `pacman -S`, so
+                    # showing a build progress line for e.g. gnome-shell (a
+                    # pacman install) is misleading. The verb must track the
+                    # branch taken below.
+                    building_from_source = (
+                        source in ("aur", "git", "local")
+                        or (source == "repo" and effective_mode == REPO_MODE_SOURCE)
+                    )
+                    verb = "building" if building_from_source else "installing"
+                    _tick(f"{verb} {name}")
+
+                    if name in built and name not in retry_set:
+                        _log.info(f"Skipping {name} (already built)")
+                        continue
+                    if name in skipped or name in skip_set:
+                        _log.info(f"Skipping {name} (user skipped)")
+                        continue
+                    if name not in progress.get("remaining", []) and name not in retry_set:
+                        # Was already handled (built or skipped) in a prior run
+                        continue
 
                     state.mark_package_building(name)
                     state.save()

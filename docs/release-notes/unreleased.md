@@ -22,6 +22,14 @@ https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The packages stage no longer narrates pacman installs as source builds. The
+  progress bar hardcoded a `building` verb for every manifest entry, so a
+  desktop package installed with `pacman -S` (e.g. `gnome-shell` after choosing
+  GNOME) still showed `building · gnome-shell` even though nothing was compiled.
+  The verb now tracks the branch actually taken — `installing` for repo packages
+  in pacman mode, `building` for source-built (aur/git/local or
+  `build_from_source`) entries. (2.1.0-B7)
+
 - The live-ISO installer no longer writes a mirror country that crashes
   archinstall with `KeyError: 'CA'` during mirror selection. `iso-install.sh`'s
   country prompt accepted a bare ISO code (`CA`) because `reflector --country`

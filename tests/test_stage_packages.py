@@ -225,6 +225,34 @@ def test_packages_stage_continues_after_failure(tmp_path):
     assert "htop" in p["built"]   # continued after llvm failed
     assert "mesa-git" in p["built"]
 
+def test_packages_stage_progress_verb_matches_action(tmp_path):
+    """Progress label must say 'installing' for pacman repo pkgs and 'building'
+    for source-built pkgs — not a blanket 'building' for everything."""
+    builds_dir = tmp_path / "builds"
+    for name in ("llvm", "mesa-git"):
+        make_pkgbuild(builds_dir, name)
+    pkg_file = make_packages_toml(tmp_path, builds_dir)
+
+    state = PipelineState(tmp_path / "state")
+    labels = []
+
+    def capture(current, total, label):
+        labels.append(label)
+
+    with patch("sysforge.pipeline.stages.packages.makepkg_run"), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run") as mock_pacman, \
+         patch("sysforge.ui.progress.render", side_effect=capture):
+        mock_pacman.return_value = MagicMock(returncode=0)
+        PackagesStage().run({"packages_file": str(pkg_file)}, state, make_options())
+
+    joined = "\n".join(labels)
+    # htop is source="repo" (pacman install), llvm/mesa-git are source builds
+    assert any("installing" in lbl and "htop" in lbl for lbl in labels), joined
+    assert any("building" in lbl and "llvm" in lbl for lbl in labels), joined
+    # A pacman-installed package must never be narrated as "building"
+    assert not any("building" in lbl and "htop" in lbl for lbl in labels), joined
+
+
 def test_packages_stage_records_error_message(tmp_path):
     builds_dir = tmp_path / "builds"
     make_pkgbuild(builds_dir, "llvm")
