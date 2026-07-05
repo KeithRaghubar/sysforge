@@ -63,7 +63,9 @@ root_fs = "ext4"
 # =============================================================================
 
 [mirror]
-# List of countries for reflector --country. Omit to use all mirrors.
+# Full country NAMES (not ISO codes) for reflector --country. Omit to use all
+# mirrors. Must be names — archinstall's mirror region selection keys on the
+# full name and rejects a bare code like "CA". Good: ["Canada"], not ["CA"].
 # countries = ["Canada"]
 protocol = "https"
 age      = 12

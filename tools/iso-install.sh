@@ -140,26 +140,36 @@ _prompt_password() {
     done
 }
 
+# Collect the mirror country as a FULL country name (e.g. "Canada"), never a
+# bare ISO code. The value feeds two consumers: `reflector --country` (accepts
+# names *and* codes) and archinstall's mirror_regions (keyed ONLY by the full
+# region names it scrapes from archlinux.org — a code like "CA" raises a
+# KeyError deep in archinstall). So we accept either form for convenience but
+# normalize to the canonical name, which is the intersection both tools accept.
 _prompt_country() {
     local label=$1 value
-    local -A valid=()
+    local -A to_name=()   # lowercased name-or-code -> canonical full name
 
     if command -v reflector &>/dev/null; then
-        while IFS= read -r entry; do
-            [[ -n "$entry" ]] && valid["${entry,,}"]=1
+        while IFS=$'\t' read -r name code; do
+            [[ -z "$name" ]] && continue
+            to_name["${name,,}"]="$name"
+            [[ -n "$code" ]] && to_name["${code,,}"]="$name"
         done < <(
             reflector --list-countries 2>/dev/null \
-                | awk 'NR>2 { code=$(NF-1); $(NF-1)=""; $NF=""; sub(/[ \t]+$/,""); print; print code }'
+                | awk 'NR>2 { code=$(NF-1); $(NF-1)=""; $NF=""; sub(/[ \t]+$/,""); printf "%s\t%s\n", $0, code }'
         )
     fi
 
     while true; do
         read -r -p "  $label: " value
         [[ -z "$value" ]] && { echo ""; return; }
-        if (( ${#valid[@]} == 0 )); then
-            echo "$value"; return
+        if (( ${#to_name[@]} == 0 )); then
+            echo "$value"; return   # no reflector on the ISO — trust the input
         fi
-        [[ -n "${valid[${value,,}]:-}" ]] && { echo "$value"; return; }
+        if [[ -n "${to_name[${value,,}]:-}" ]]; then
+            echo "${to_name[${value,,}]}"; return   # canonical full name
+        fi
         echo "  Invalid country. Run 'reflector --list-countries' for valid names/codes." >&2
     done
 }

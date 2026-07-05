@@ -22,6 +22,15 @@ https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The live-ISO installer no longer writes a mirror country that crashes
+  archinstall with `KeyError: 'CA'` during mirror selection. `iso-install.sh`'s
+  country prompt accepted a bare ISO code (`CA`) because `reflector --country`
+  takes codes *and* names — but archinstall's `mirror_regions` is keyed only by
+  the full region names it scrapes from archlinux.org, so a code raised a
+  `KeyError` deep in `set_mirrors`. The prompt still accepts either form but now
+  normalizes to the canonical full name (`Canada`) before writing
+  `bootstrap.toml`, the value both `reflector` and archinstall accept. (2.1.0-B6)
+
 - The bootstrap install stage no longer generates an archinstall config that
   crashes partitioning with `Can't have the end before the start! (… length=0)`.
   The root partition was emitted with `size: {value: 0}` on the assumption that
