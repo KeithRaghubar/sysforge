@@ -47,6 +47,41 @@ straight off a `Q`.
   `profile_writer.write_package_compiler_override` — no parallel path. *Priority: medium
   (an incoherent swap can make the retry fail confusingly).*
 
+- **`2.1.0-B2` — `repo`+`stable` kernel checkout freezes at its first pinned version
+  and never advances.** A `source = "repo"` checkout on the `stable` track lives in its
+  designed steady state as a detached HEAD pinned to a git tag (`pkgctl repo switch`),
+  which has no tracking branch. `git_is_dirty()` treats a no-tracking repo as dirty by
+  definition (docstring point 4 — the guard meant for purely-local hand-maintained
+  trees), so the re-pin guard at `source_sync.py:478`
+  (`if git_is_dirty(...) → STATUS_DIVERGED "local edits present — not re-pinning"`)
+  fires on *every* pinned checkout and skips the re-pin. Result: once pinned to a
+  version (e.g. `linux` 7.0.14.arch1-1), the tree never advances to a newer sync-DB
+  release (7.1.2.arch3-1) even though the tag exists locally and
+  `get_pacman_sync_version` resolves the newer version correctly. This contradicts the
+  `no_tracking` branch just above (lines 430–445) and `_pin_repo_checkout`'s own
+  docstring, both of which declare detached-HEAD-no-tracking the expected re-pin state.
+  Fix: at `source_sync.py:478` gate the re-pin on *genuine uncommitted tracked edits*
+  via `_uncommitted_dirty_paths(pkgbuild_dir, is_vcs=...)` instead of `git_is_dirty()`,
+  so a pinned detached HEAD re-advances while real operator edits still block. Do **not**
+  touch the separate DIVERGED-reset call at line 464 (its `git_is_dirty` is the flagged
+  auto-resolve path). Ship a repo+stable regression test (pinned detached HEAD → re-pin
+  advances to the newer sync-DB tag) alongside. *Priority: high (kernel/repo packages
+  silently stop tracking upstream).*
+
+- **`2.1.0-B3` — kernel.toml `interactive` key wording implies an nconfig injection that
+  doesn't happen.** `interactive = true` does not *inject* `nconfig`; it only **skips**
+  `patch_noninteractive_kconfig` (`pkgbuild_patcher.py:611`), leaving whatever kconfig
+  target the PKGBUILD already contains. If the PKGBUILD has no interactive target,
+  `interactive = true` prompts nothing. The shipped `etc/sysforge/kernel.toml` comment
+  and the kernel-stage log lines (`kernel.py` ~1630, ~1758, ~1767) say "the PKGBUILD's
+  `make nconfig` runs as written", which wrongly implies sysforge guarantees a prompt and
+  that the target is specifically `nconfig`. Fix: reword to describe the actual mechanism
+  — *interactive leaves the PKGBUILD's own kconfig target unpatched (whatever it is) and
+  does not add one; non-interactive patches interactive targets to `olddefconfig`*.
+  Update the shipped comment (+ fixture parity via `make check-shipped`), the three
+  `kernel.py` log strings, and the kernel-stage design source (`docs/design/*` +
+  `make design`). Doc/wording only — no behavior change. *Priority: low.*
+
 ### Features
 
 - **`1.2.0-F14` — `doctor`: warn on installed instrumented/incomplete-PGO builds of
