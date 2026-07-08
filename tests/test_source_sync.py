@@ -15,6 +15,7 @@ Covers:
 
     get_scheduler / reset_scheduler singleton behaviour
 """
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -536,14 +537,17 @@ def test_repo_fetch_repins_when_head_off_tag(tmp_path):
 
 
 def test_repo_fetch_dirty_tree_diverges_without_pin(tmp_path):
-    """Local edits on a repo checkout → STATUS_DIVERGED, no re-pin."""
+    """Local edits on a repo checkout → STATUS_DIVERGED, no re-pin. The re-pin
+    guard keys on _uncommitted_dirty_paths (B16), so that is the seam mocked
+    here."""
     pkg = _make_repo(tmp_path, "linux")
     sched = _scheduler(tmp_path, repo_track="stable")
     outcome = GitFetchOutcome(status="fetched", head_before="old", head_after="new")
 
     with patch("sysforge.primitives.source_sync.git_fetch_and_compare",
                return_value=outcome), \
-         patch("sysforge.primitives.source_sync.git_is_dirty", return_value=True), \
+         patch("sysforge.primitives.source_sync._uncommitted_dirty_paths",
+               return_value=["PKGBUILD"]), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version") as switch, \
          patch("sysforge.primitives.source_sync.get_pacman_sync_version",
                return_value="7.0.14.arch1-1"), \
@@ -581,6 +585,88 @@ def test_repo_fetch_pinned_detached_head_uses_tags_fetch(tmp_path):
     tags_fetch.assert_called_once()
     assert switched["ver"] == "7.0.14.arch1-1"
     assert res.status == STATUS_UP_TO_DATE
+
+
+def _make_pinned_detached_repo(parent: Path, name: str) -> Path:
+    """A real git repo pinned to a tag on a detached HEAD with no tracking
+    branch — the designed steady state for a source=repo, track=stable
+    checkout (`pkgctl repo switch` to a release tag). `git_is_dirty` treats a
+    no-tracking repo as dirty by definition (2.1.0-B16), so this fixture is
+    what the re-pin guard must NOT mistake for operator edits.
+    """
+    d = parent / name
+    d.mkdir()
+    env = {
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+    }
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(d), *args], check=True,
+                       capture_output=True, text=True, env={**env})
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(d)], check=True,
+                   capture_output=True, text=True)
+    (d / "PKGBUILD").write_text(f"pkgname={name}\npkgver=7.0.14\n")
+    git("add", "PKGBUILD")
+    git("commit", "-q", "-m", "initial")
+    git("tag", "v7.0.14")
+    # Detach onto the tag → detached HEAD, no upstream tracking branch.
+    git("checkout", "-q", "v7.0.14")
+    return d
+
+
+def test_repo_fetch_pinned_detached_head_clean_tree_repins(tmp_path):
+    """2.1.0-B16 regression: a real pinned detached HEAD with a clean tree (no
+    tracking branch) must re-advance to the newer sync-DB tag. The re-pin guard
+    keys on genuine uncommitted edits, not on `git_is_dirty`'s no-tracking =
+    dirty verdict, so this pristine pin is not misread as operator edits.
+    `git_is_dirty` is left REAL — mocking it False (as the sibling test does)
+    hid this bug."""
+    pkg = _make_pinned_detached_repo(tmp_path, "linux")
+    sched = _scheduler(tmp_path, repo_track="stable")
+    outcome = GitFetchOutcome(status="no_tracking", head_before=None, head_after=None)
+    switched = {}
+
+    with patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+               return_value=outcome), \
+         patch("sysforge.primitives.source_sync._fetch_repo_tags",
+               return_value=None), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version",
+               side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value="7.1.2.arch3-1"):
+        res = sched.request(SyncRequest(
+            pkgbase="linux", pkgbuild_dir=pkg, source="repo", force_fetch=True,
+        ))
+
+    assert switched.get("ver") == "7.1.2.arch3-1", (
+        "clean pinned detached HEAD should re-pin to the newer sync-DB tag"
+    )
+    assert res.status != STATUS_DIVERGED
+
+
+def test_repo_fetch_pinned_detached_head_real_edit_stays_diverged(tmp_path):
+    """Parity for 2.1.0-B16: a genuinely uncommitted tracked edit on the same
+    pinned detached HEAD still blocks the re-pin (operator work is respected)."""
+    pkg = _make_pinned_detached_repo(tmp_path, "linux")
+    (pkg / "PKGBUILD").write_text("pkgname=linux\npkgver=7.0.14\n# operator edit\n")
+    sched = _scheduler(tmp_path, repo_track="stable")
+    outcome = GitFetchOutcome(status="no_tracking", head_before=None, head_after=None)
+
+    with patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+               return_value=outcome), \
+         patch("sysforge.primitives.source_sync._fetch_repo_tags",
+               return_value=None), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version") as switch, \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value="7.1.2.arch3-1"):
+        res = sched.request(SyncRequest(
+            pkgbase="linux", pkgbuild_dir=pkg, source="repo", force_fetch=True,
+        ))
+
+    switch.assert_not_called()
+    assert res.status == STATUS_DIVERGED
 
 
 # ---------------------------------------------------------------------------

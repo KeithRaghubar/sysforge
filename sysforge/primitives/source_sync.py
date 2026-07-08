@@ -76,7 +76,11 @@ from sysforge.primitives.aur import (
     is_rate_limit_error,
 )
 from sysforge.primitives.build_prep import pkgctl_checkout, pkgctl_switch_version
-from sysforge.primitives.git_ops import purge_src, purge_srcdest
+from sysforge.primitives.git_ops import (
+    _uncommitted_dirty_paths,
+    purge_src,
+    purge_srcdest,
+)
 from sysforge.primitives.pacman import get_pacman_sync_version, get_srcdest
 from sysforge.primitives.rate_limit import RateLimiter
 from sysforge.primitives.source_meta import SourceMetaCache, _now_iso
@@ -476,7 +480,16 @@ class SourceSyncScheduler:
                 )
 
         if repo_stable and outcome.status in ("up_to_date", "fetched"):
-            if git_is_dirty(pkgbuild_dir, is_vcs=_is_vcs(pkgbase)):
+            # B16: gate the re-pin on *genuine uncommitted tracked edits* only,
+            # not on git_is_dirty(). A pinned checkout is a detached HEAD with
+            # no tracking branch, which git_is_dirty reports as dirty by
+            # definition (its no-tracking = "purely local hand-maintained tree"
+            # rule) — so git_is_dirty would refuse to re-pin *every* pristine
+            # pin and freeze the tree at its first version. _uncommitted_dirty_
+            # paths asks the narrower working-tree question, so a clean pin
+            # re-advances while real operator edits still block. (Distinct from
+            # the DIVERGED auto-reset above, whose git_is_dirty stays.)
+            if _uncommitted_dirty_paths(pkgbuild_dir, is_vcs=_is_vcs(pkgbase)):
                 return SyncResult(
                     pkgbase=pkgbase, status=STATUS_DIVERGED,
                     head_before=outcome.head_before,

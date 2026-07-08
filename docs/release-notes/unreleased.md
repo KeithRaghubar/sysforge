@@ -91,3 +91,15 @@ https://keepachangelog.com/en/1.1.0/
   PKGBUILD, while it still exists) into a sidecar manifest, and the install
   matches against that set precisely, falling back to pkgname scoping only when
   no manifest is present. (2.1.0-B9)
+
+- A `source = "repo"` checkout on the `stable` track no longer freezes at its
+  first pinned version. Such a checkout's steady state is a detached HEAD
+  pinned to a release tag, which has no tracking branch — and `git_is_dirty()`
+  treats a no-tracking repo as dirty by definition, so the re-pin guard read
+  every pristine pin as "local edits present" and refused to advance, stranding
+  e.g. `linux` at `7.0.14.arch1-1` while the sync DB moved to `7.1.2.arch3-1`.
+  The re-pin guard now keys on genuine uncommitted tracked edits
+  (`_uncommitted_dirty_paths`) instead of `git_is_dirty()`, so a clean pin
+  re-advances to the newer sync-DB tag while real operator edits still hold it
+  in `DIVERGED`. The separate diverged-history auto-reset is unchanged.
+  (2.1.0-B16)
