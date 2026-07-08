@@ -15,14 +15,14 @@ drift_detect = "fingerprint"  # "fingerprint" (fast stat) | "content_hash"
 
 # Per-pass staging dirs (extracted binaries used as CC/CXX by the next pass).
 # pgo_staging1 = "/var/tmp/sysforge-llvm-stage1"   # pass-1 (bootstrap) staging
-# pgo_staging  = "/var/tmp/sysforge-llvm-stage2"   # pass-2 (instrumented) staging
-# pgo_staging3 = "/var/tmp/sysforge-llvm-stage3"   # pass-3 (optimized) staging
+# pgo_staging  = "/var/tmp/sysforge-llvm-stage2"   # pass-3 (instrumented) staging
+# pgo_staging3 = "/var/tmp/sysforge-llvm-stage3"   # pass-4 (optimized) staging
 
-# Path where profraw files are written during pass 2 and merged to profdata.
+# Path where profraw files are written during pass 3 and merged to profdata.
 # Profraw files are deleted after merging; profdata is preserved for reuse.
-# On subsequent runs, compatible profdata (same LLVM major) skips passes 1a-2.
+# On subsequent runs, compatible profdata (same LLVM major) skips passes 1-3.
 # Use --rebuild-profdata to force a full 4-pass build.
-# Needs ~500 MB free during pass 2.
+# Needs ~500 MB free during pass 3.
 # pgo_store = "/var/cache/sysforge/llvm-pgo"
 
 # Build-safety Gate 1 (LLVM path only — the GCC path is register-only and skips
@@ -36,11 +36,11 @@ drift_detect = "fingerprint"  # "fingerprint" (fast stat) | "content_hash"
 #                          # rebuilding installed libLLVM consumers (mesa, …)
 #                          # when an LLVM version bump changes the soname.
 #                          # CLI override: --rebuild-soname-consumers.
-# reuse_unchanged = false  # default false. Opt-in: reuse a Pass-3 PGO package
+# reuse_unchanged = false  # default false. Opt-in: reuse a Pass-4 PGO package
 #                          # whose inputs + on-disk artifact are unchanged
 #                          # instead of rebuilding. CLI override: --reuse-built.
 
-# BOLT post-link optimization (Pass 4, LLVM/PGO path) — EXPERIMENTAL; no official
+# BOLT post-link optimization (Pass 5, LLVM/PGO path) — EXPERIMENTAL; no official
 # Arch package, so sysforge builds llvm-bolt itself. See etc/sysforge for docs.
 # `enabled` is the live BOLT-inclusion gate (default off).
 [bolt]
@@ -55,7 +55,7 @@ enabled = false            # opt-in PGO→BOLT "fast clang"; clang executable BO
 # pgo     = ["llvm", "llvm-libs", "clang", "lld"]
 # non_pgo = ["polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
 # lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
-# training_corpus = ["llvm", "mesa"]  # extra Pass-2 corpus (mesa) to enrich
+# training_corpus = ["llvm", "mesa"]  # extra Pass-3 corpus (mesa) to enrich
 #                                     # clang.profdata; never installed. Default
 #                                     # ["llvm"]. See shipped toolchain.toml.
 #

@@ -3,17 +3,17 @@
 # SPDX-License-Identifier: MIT
 
 """
-build_fingerprint.py — input-fingerprint reuse for the PGO toolchain (Pass 3).
+build_fingerprint.py — input-fingerprint reuse for the PGO toolchain (Pass 4).
 
 The PGO toolchain build (``sysforge run toolchain``) is the only multi-package,
-multi-hour build in the suite. When a *late* Pass-3 package fails, rerunning
-rebuilds the already-successful, byte-for-byte-identical earlier Pass-3 packages
+multi-hour build in the suite. When a *late* Pass-4 package fails, rerunning
+rebuilds the already-successful, byte-for-byte-identical earlier Pass-4 packages
 (notably ``llvm``/``llvm-libs``, the heaviest target). This module lets the
 stage *skip* a package whose **inputs are unchanged** — keyed not by an
 impossible-to-predict output hash, but by a fingerprint of everything that feeds
 the build: the PKGBUILD recipe, the source commit, the PGO profdata content, the
 compiler identity, the injected/profile flags, and the installed build-dep
-versions. Pass-3 sub-passes are chained Merkle-style (a consumer folds in its
+versions. Pass-4 sub-passes are chained Merkle-style (a consumer folds in its
 staged deps' fingerprints) so no stale libLLVM can ride through a cache hit.
 
 Correctness posture — this is the module that guards against silent
@@ -198,7 +198,7 @@ def compute_fingerprint(components: dict) -> str:
     ``components`` is built by the caller and is expected to carry (keys are
     advisory — any extra key participates, any missing key is just absent):
 
-      pass_id              — sub-pass identity ("3a"/"3b"/"3c") so the same
+      pass_id              — sub-pass identity ("build-pgo"/"build-nonpgo"/"build-lib32") so the same
                              pkgbase built differently across passes never
                              collides.
       pkgbase              — package identity.
@@ -208,10 +208,10 @@ def compute_fingerprint(components: dict) -> str:
       compiler_flags_extra / linker_flags_extra / cmake_llvm_dir / extra_flags
                            — the per-pass injected flags.
       config_digest        — hash_obj() of the flag-relevant config subset.
-      profdata_sha         — hash_file() of clang.profdata (Pass 3 only).
+      profdata_sha         — hash_file() of clang.profdata (Pass 4 only).
       makedep_versions     — {dep: installed_version} of the build deps.
       staged_dep_fps       — sorted fingerprints of staged sibling builds
-                             (Merkle chain: 3b/3c fold in 3a's fingerprints).
+                             (Merkle chain: 4b/4c fold in 4a's fingerprints).
 
     The ``_schema`` constant is mixed in so an input-set change invalidates all
     prior cache entries.

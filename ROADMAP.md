@@ -99,14 +99,6 @@ straight off a `Q`.
   path. Fix so an unchanged second run reuses the built artifacts. *Priority: medium
   (defeats the whole reuse optimization on the most expensive stage).*
 
-- **`2.1.0-B15` — toolchain stage numbering is inconsistent between docs and progress
-  output.** Some docs/log strings use the internal `1a/1b, 2, 3` numbering while the
-  progress indicator and other sections use `1, 2, 3, 4`. Consolidate on the user-facing
-  `1, 2, 3, 4` scheme across the progress indicator, `kernel`/`toolchain` log strings,
-  and the design source (`docs/design/*` + `make design`), keeping any internal
-  sub-pass detail as a parenthetical rather than a competing scheme. *Priority: low
-  (confusing but cosmetic).*
-
 - **`2.1.0-B17` — interactive kernel build proceeds without ever showing the `nconfig`
   menu.** With `interactive = true` (the kernel-stage default) the build starts and runs
   to completion with no kconfig prompt — the operator never gets the intended

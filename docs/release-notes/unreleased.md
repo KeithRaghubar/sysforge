@@ -15,6 +15,19 @@ https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- The LLVM PGO toolchain now speaks a single, flat pass-numbering scheme
+  end-to-end. The build was always four passes, but internally they were labelled
+  `1a / 1b / 2 / 3` (with BOLT as a second "Pass 4") while the progress bar and
+  user-facing labels counted `1 / 2 / 3 / 4` — so a log line reading "Pass 2"
+  (the training run) sat next to a progress step reading "3/4" for the same work.
+  Everything now uses `Pass 1` (instrument) → `2` (bootstrap) → `3` (train) →
+  `4` (build, sub-passes `4a/4b/4c`), with BOLT as `Pass 5`. Internal identifiers
+  were made numbering-agnostic rather than renumbered (`_run_bolt`,
+  `_extract_built_to_staging`, `_pgo_stage_instrumented`; build-cache sub-pass keys
+  are now role names `build-pgo`/`build-nonpgo`/`build-lib32`), so a future
+  renumber won't reopen the discrepancy. Stale build-cache entries harmlessly
+  refill on the next run. (2.1.0-B15)
+
 - Bootstrap disk + base install + system identity now run through archinstall
   (generated from `bootstrap.toml` via its headless JSON config + `--silent`),
   replacing the hand-rolled partition/base-install/identity stages. The

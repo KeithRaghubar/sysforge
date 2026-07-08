@@ -53,14 +53,14 @@ drift_detect = "fingerprint"
 # the next pass (kept off the live /usr). Each must be on the same filesystem
 # as /usr with ~2 GB free. Defaults shown; override only to relocate them.
 # pgo_staging1 = "/var/tmp/sysforge-llvm-stage1"   # pass-1 (bootstrap) staging
-# pgo_staging  = "/var/tmp/sysforge-llvm-stage2"   # pass-2 (instrumented) staging
-# pgo_staging3 = "/var/tmp/sysforge-llvm-stage3"   # pass-3 (optimized) staging
+# pgo_staging  = "/var/tmp/sysforge-llvm-stage2"   # pass-3 (instrumented) staging
+# pgo_staging3 = "/var/tmp/sysforge-llvm-stage3"   # pass-4 (optimized) staging
 
-# Path where profraw files are written during pass 2 and merged to profdata.
+# Path where profraw files are written during pass 3 and merged to profdata.
 # Profraw files are deleted after merging; profdata is preserved for reuse.
-# On subsequent runs, compatible profdata (same LLVM major) skips passes 1a-2.
+# On subsequent runs, compatible profdata (same LLVM major) skips passes 1-3.
 # Use --rebuild-profdata to force a full 4-pass build.
-# Needs ~500 MB free during pass 2.
+# Needs ~500 MB free during pass 3.
 # pgo_store = "/var/cache/sysforge/llvm-pgo"
 
 # ---------------------------------------------------------------------------
@@ -96,8 +96,8 @@ drift_detect = "fingerprint"
 #                        rebuild manually (`sysforge build <pkgs>`).
 # rebuild_soname_consumers = "prompt"
 
-# Opt-in input-fingerprint reuse for the multi-package PGO build (Pass 3 only).
-# When true (or with --reuse-built), a Pass-3 package whose inputs are unchanged
+# Opt-in input-fingerprint reuse for the multi-package PGO build (Pass 4 only).
+# When true (or with --reuse-built), a Pass-4 package whose inputs are unchanged
 # — PKGBUILD content, source commit, profdata, resolved flags, compiler identity,
 # and installed build-dep versions — and whose built artifact is still on disk is
 # NOT rebuilt; the cached artifact is reused. This lets a rerun after a late
@@ -108,25 +108,25 @@ drift_detect = "fingerprint"
 # reuse_unchanged = false
 
 # ---------------------------------------------------------------------------
-# BOLT post-link optimization (Pass 4 — LLVM/PGO path only) — EXPERIMENTAL
+# BOLT post-link optimization (Pass 5 — LLVM/PGO path only) — EXPERIMENTAL
 #
 # CURRENTLY BLOCKED — keep `enabled = false`. The BOLT tools are all built with
 # DISABLE_LLVM_LINK_LLVM_DYLIB, so they link the per-component static LLVM archives
 # (libLLVMObject.a, libLLVMMC.a, ...). A PGO toolchain — like the stock Arch `llvm`
 # package — ships a dylib-only libLLVM without those archives, so the standalone
-# llvm-bolt build can't link. sysforge detects this and skips Pass 4 with a warning;
+# llvm-bolt build can't link. sysforge detects this and skips Pass 5 with a warning;
 # building BOLT in-tree with LLVM is the planned fix but is not yet implemented.
 #
 # After the PGO passes produce an optimized clang/libLLVM, BOLT (Binary
 # Optimization and Layout Tool) can rewrite the finished binaries for a further
 # layout/locality win — the canonical PGO→BOLT "fast clang" stack. Unlike PGO,
-# BOLT is post-link: Pass 3 links with -Wl,--emit-relocs, then `llvm-bolt`
+# BOLT is post-link: Pass 4 links with -Wl,--emit-relocs, then `llvm-bolt`
 # rewrites the binary using a profile that `perf2bolt` converts from a `perf
 # record` run of clang on a representative compile job.
 #
 # EXPERIMENTAL: there is no official Arch package for BOLT, and the stock `llvm`
 # package does not build it. sysforge therefore builds the BOLT tools itself
-# (Pass 4a): it generates an `llvm-bolt` PKGBUILD version-locked to your llvm and
+# (Pass 5a): it generates an `llvm-bolt` PKGBUILD version-locked to your llvm and
 # builds it from the same llvm-project monorepo tarball the toolchain already
 # downloaded (the `bolt/` subtree rides inside it), then installs it (a persistent
 # pacman package, kept in sync each run). You only need `perf` (linux-tools) for
@@ -155,7 +155,7 @@ enabled = false            # opt-in; build llvm-bolt + BOLT-optimize clang
 # lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
 #
 # training_corpus = ["llvm", "mesa"]
-#   Extra packages compiled by the instrumented stage1 clang during Pass 2 to
+#   Extra packages compiled by the instrumented stage1 clang during Pass 3 to
 #   enrich clang.profdata. "llvm" is the implicit base (the self-build always
 #   trains on LLVM); adding "mesa" broadens the corpus toward graphics/C-heavy
 #   codegen the LLVM self-compilation under-exercises, so the resulting clang is
