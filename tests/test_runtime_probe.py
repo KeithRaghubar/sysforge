@@ -91,3 +91,28 @@ def test_collect_runtime_findings_combines(monkeypatch):
     ids = {f.check_id for f in findings}
     assert "failed_unit:foo.service" in ids
     assert "missing_firmware" in ids
+
+
+# --- boot errors (F19) ------------------------------------------------------
+
+def test_boot_errors_flagged(monkeypatch):
+    log = ("Failed to start Foo Service.\n"
+           "systemd-coredump[123]: Process 9 dumped core.\n"
+           "ordinary info line\n"
+           "EXT4-fs error (device sda1): bad\n")
+    monkeypatch.setattr(runtime_probe, "_run",
+                        _dispatch({"journalctl": _proc(stdout=log, rc=0)}))
+    out = runtime_probe._check_boot_errors()
+    assert len(out) == 1 and out[0].check_id == "boot_errors"
+
+
+def test_boot_errors_clean_when_no_matches(monkeypatch):
+    monkeypatch.setattr(runtime_probe, "_run",
+                        _dispatch({"journalctl": _proc(stdout="all quiet\n", rc=0)}))
+    assert runtime_probe._check_boot_errors() == []
+
+
+def test_boot_errors_journal_unreadable(monkeypatch):
+    monkeypatch.setattr(runtime_probe, "_run",
+                        _dispatch({"journalctl": _proc(stdout="", rc=1)}))
+    assert runtime_probe._check_boot_errors() == []

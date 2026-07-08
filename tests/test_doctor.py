@@ -222,8 +222,8 @@ def test_check_depends_pacman_t_all_satisfied():
 def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
         packages=[], graphics=False, hardware=False, toolchain=False,
-        pacman=False, state=False, boot=False, services=False, audio=False,
-        network=False, all=False, repo=False,
+        pacman=False, state=False, boot=False, storage=False, services=False,
+        audio=False, network=False, all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
         apply=False, no_confirm=False, dry_run=False, state_dir=None,
     )
@@ -244,6 +244,7 @@ def _patch_axes_clean(monkeypatch):
     monkeypatch.setattr(doctor, "_collect_audio_findings", lambda: [])
     monkeypatch.setattr(doctor, "_collect_network_findings", lambda: [])
     monkeypatch.setattr(doctor, "_collect_boot_findings", lambda: [])
+    monkeypatch.setattr(doctor, "_collect_storage_findings", lambda config: [])
 
 
 def test_cmd_doctor_bare_runs_full_system_sweep(monkeypatch, capsys):
@@ -258,10 +259,29 @@ def test_cmd_doctor_bare_runs_full_system_sweep(monkeypatch, capsys):
     # Every system-axis section renders (clean) — the full sweep.
     for label in ("toolchain checks", "hardware checks", "system graphics checks",
                   "pacman / system integrity", "sysforge state integrity",
-                  "boot / kernel runtime", "services / runtime health",
+                  "boot / kernel runtime", "storage / filesystem",
+                  "services / runtime health",
                   "audio / sound stack", "network / connectivity"):
         assert label in err, label
     assert rc == 0
+
+
+def test_cmd_doctor_updates_progress_phase(monkeypatch):
+    """B11: doctor overwrites the runner's generic 'starting…' phase with
+    phase-accurate labels during the sweep."""
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    _patch_axes_clean(monkeypatch)
+
+    calls: list = []
+    from sysforge.ui import progress
+    monkeypatch.setattr(progress, "phase", lambda label=None: calls.append(label))
+
+    doctor.cmd_doctor(_make_args())
+    labels = [c for c in calls if c]
+    assert labels, "expected at least one progress.phase call"
+    assert any(lbl.startswith("doctor:") and "starting" not in lbl
+               for lbl in labels)
 
 
 def test_cmd_doctor_repo_with_nothing_installed_exits_2(monkeypatch, capsys):
@@ -286,7 +306,7 @@ def test_resolve_axis_names_single_new_flag():
 def test_resolve_axis_names_bare_includes_new_axes():
     names = doctor._resolve_axis_names(_make_args())
     for n in ("toolchain", "hardware", "graphics", "pacman", "state",
-              "boot", "services", "audio", "network"):
+              "boot", "storage", "services", "audio", "network"):
         assert n in names
 
 

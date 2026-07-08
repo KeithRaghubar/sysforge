@@ -191,7 +191,8 @@ _sysforge_doctor() {
     '--pacman[local pacman-db consistency, stale lock, .pacnew drift, orphans (read-only)]' \
     '--state[sysforge state integrity: build failures, stale sentinel, state drift]' \
     '--boot[running-system boot readiness: kernel artifacts, fallback, /boot space, DKMS]' \
-    '--services[failed systemd units + firmware a driver could not load]' \
+    '--storage[storage/filesystem: build-dir free space + /etc/fstab integrity]' \
+    '--services[failed systemd units + firmware a driver could not load + boot errors]' \
     '--audio[PipeWire/WirePlumber: failed audio user services + vanished output sink]' \
     '--network[no default route, connection-manager conflicts, DNS provisioner conflict]' \
     '--all[verify every installed package, foreign + non-foreign (pacman -Q)]' \

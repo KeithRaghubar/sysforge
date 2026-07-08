@@ -41,7 +41,7 @@ toolchain and a custom kernel under boot-safety gates.
 
 *sysforge doctor* is the read-only health surface: package depends + ABI
 linkage walks plus system-state axes (hardware, toolchain, pacman db,
-state, boot, services, graphics).
+state, boot, storage, services, graphics).
 
 Install-bearing commands write a stage sentinel before mutating the system;
 an interrupted run is detected on the next invocation and offers a recorded

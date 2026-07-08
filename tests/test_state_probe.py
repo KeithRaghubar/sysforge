@@ -130,3 +130,55 @@ def test_no_drift_finding_when_installed_is_none(monkeypatch):
                         lambda: (_ for _ in ()).throw(RuntimeError("no pacman")))
     findings = state_probe.collect_state_findings(installed=None)
     assert not any(f.check_id == "state_drift:zombies" for f in findings)
+
+
+# --- instrumented / record-only PGO builds (F14) ----------------------------
+
+class _FakeBS:
+    def __init__(self, packages):
+        self._p = packages
+
+    def all_packages(self):
+        return dict(self._p)
+
+
+def test_instrumented_record_only_flagged(monkeypatch, tmp_path):
+    import sysforge.primitives.mesa_pgo as mesa_pgo
+    store = tmp_path / "pgo" / "foo"
+    store.mkdir(parents=True)
+    (store / "x.profraw").write_bytes(b"raw")  # record present, no profdata
+    monkeypatch.setattr(mesa_pgo, "resolve_store", lambda pkgbase=None: store)
+    monkeypatch.setattr(mesa_pgo, "list_profraw",
+                        lambda s: list(s.glob("*.profraw")))
+    monkeypatch.setattr(mesa_pgo, "profdata_path",
+                        lambda pkgbase=None: store / f"{pkgbase}.profdata")
+    bs = _FakeBS({"foo": {"pkgbase": "foo"}})
+    out = state_probe._check_instrumented_builds(bs)
+    assert len(out) == 1 and out[0].check_id == "pgo_record_only:foo"
+
+
+def test_merged_profdata_is_clean(monkeypatch, tmp_path):
+    import sysforge.primitives.mesa_pgo as mesa_pgo
+    store = tmp_path / "pgo" / "foo"
+    store.mkdir(parents=True)
+    (store / "x.profraw").write_bytes(b"raw")
+    (store / "foo.profdata").write_bytes(b"merged")  # PGO finished
+    monkeypatch.setattr(mesa_pgo, "resolve_store", lambda pkgbase=None: store)
+    monkeypatch.setattr(mesa_pgo, "list_profraw",
+                        lambda s: list(s.glob("*.profraw")))
+    monkeypatch.setattr(mesa_pgo, "profdata_path",
+                        lambda pkgbase=None: store / f"{pkgbase}.profdata")
+    bs = _FakeBS({"foo": {"pkgbase": "foo"}})
+    assert state_probe._check_instrumented_builds(bs) == []
+
+
+def test_no_pgo_store_is_clean(monkeypatch, tmp_path):
+    import sysforge.primitives.mesa_pgo as mesa_pgo
+    monkeypatch.setattr(mesa_pgo, "resolve_store",
+                        lambda pkgbase=None: tmp_path / "absent" / pkgbase)
+    monkeypatch.setattr(mesa_pgo, "list_profraw",
+                        lambda s: list(s.glob("*.profraw")) if s.is_dir() else [])
+    monkeypatch.setattr(mesa_pgo, "profdata_path",
+                        lambda pkgbase=None: tmp_path / "absent" / "x.profdata")
+    bs = _FakeBS({"bar": {"pkgbase": "bar"}})
+    assert state_probe._check_instrumented_builds(bs) == []

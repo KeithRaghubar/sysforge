@@ -673,6 +673,16 @@ def _collect_network_findings() -> list[diag.Finding]:
     return network_probe.collect_network_findings()
 
 
+def _collect_storage_findings(config) -> list[diag.Finding]:
+    """Storage / filesystem health: free space on the build dir and /etc/fstab
+    integrity (entries whose device/UUID/label no longer resolve). Read-only —
+    never mounts or writes. See ``primitives/storage_probe.py``."""
+    from sysforge.primitives import config as cfgmod
+    from sysforge.primitives import storage_probe
+    doctor_cfg = cfgmod.load_sysforge_toml().get("doctor", {}) or {}
+    return storage_probe.collect_storage_findings(config, doctor_cfg=doctor_cfg)
+
+
 def _collect_boot_findings() -> list[diag.Finding]:
     """Running-system boot readiness — the analog of the kernel stage's gates
     1/3, reusing ``kernel_safety``: per-kernel boot artifacts (vmlinuz +
@@ -714,8 +724,8 @@ def _collect_boot_findings() -> list[diag.Finding]:
 
 # Canonical order the axes render in.
 _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
-    "toolchain", "hardware", "graphics", "pacman", "state", "boot", "services",
-    "audio", "network",
+    "toolchain", "hardware", "graphics", "pacman", "state", "boot", "storage",
+    "services", "audio", "network",
 )
 
 # CLI flag attribute → axis name. ``--graphics`` is also a package-walk trigger
@@ -727,6 +737,7 @@ _AXIS_FLAGS: dict[str, str] = {
     "pacman": "pacman",
     "state": "state",
     "boot": "boot",
+    "storage": "storage",
     "services": "services",
     "audio": "audio",
     "network": "network",
@@ -762,6 +773,10 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
             "boot", "boot / kernel runtime",
             lambda: _collect_boot_findings(),
             clean_msg="bootable kernel(s) with valid artifacts and a recovery fallback"),
+        "storage": diag.Axis(
+            "storage", "storage / filesystem",
+            lambda: _collect_storage_findings(config),
+            clean_msg="adequate free space; all fstab entries resolve"),
         "services": diag.Axis(
             "services", "services / runtime health",
             lambda: _collect_services_findings(),
@@ -803,9 +818,15 @@ def _run_system_axes(args, config, axis_names: list[str]) -> int:
     """Run + render the selected system axes; return the total error count."""
     if not axis_names:
         return 0
+    from sysforge.ui import progress
     registry = _system_axes(config, args)
     axes = [registry[n] for n in axis_names if n in registry]
-    results = diag.run_axes(axes)
+    # B11: keep the bottom-anchored phase indicator phase-accurate instead of
+    # leaving the runner's generic "doctor: starting…" up for the whole sweep.
+    results: dict[str, list[diag.Finding]] = {}
+    for ax in axes:
+        progress.phase(f"doctor: {ax.label}")
+        results.update(diag.run_axes([ax]))
     errors = 0
     for ax in axes:
         errors += diag.render_axis(
@@ -927,7 +948,10 @@ def cmd_doctor(args):
     # libLLVM target-init absences) across the whole walk → one summary line.
     abi_benign: list[str] = []
 
+    from sysforge.ui import progress
     for pkgname in targets:
+        # B11: surface the in-progress package instead of a static "starting…".
+        progress.phase(f"doctor: auditing {pkgname}")
         dep_issues, abi_issues, so_paths, abi_skipped = _check_one(
             pkgname, ldconfig_set, installed, file_root, benign_sink=abi_benign
         )

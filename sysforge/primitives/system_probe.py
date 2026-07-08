@@ -12,12 +12,17 @@ Read-only checks against the *local* pacman database and the filesystem — neve
   - stale ``db.lck`` — an interrupted pacman transaction left the lock behind.
   - ``*.pacnew`` / ``*.pacsave`` under ``/etc`` — unmerged config drift.
   - ``pacman -Qtdq`` — true orphans (unrequired dependency packages).
+  - package-cache size (``F15``) — the on-disk ``.pkg.tar*`` cache, distinct from
+    the *build* caches (ccache/sccache) reported by ``cache_probe``.
+  - mirrorlist freshness (``F16``) — a stale ``/etc/pacman.d/mirrorlist`` (by file
+    mtime), never a live latency probe.
 
 Returns ``diagnostics.Finding`` objects directly.
 """
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 from sysforge.primitives import diagnostics as diag
@@ -26,6 +31,12 @@ _PACMAN_DB_LOCK = Path("/var/lib/pacman/db.lck")
 _ETC = Path("/etc")
 # Cap the .pacnew/.pacsave sample so a long-neglected /etc doesn't flood output.
 _PACNEW_SAMPLE = 12
+
+_MIRRORLIST = Path("/etc/pacman.d/mirrorlist")
+_GB = 1024 ** 3
+# Thresholds when the [doctor] section omits them.
+DEFAULT_PKG_CACHE_WARN_GB = 5.0
+DEFAULT_MIRRORLIST_STALE_DAYS = 14
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
@@ -148,11 +159,83 @@ def _check_orphans() -> list[diag.Finding]:
     )]
 
 
-def collect_system_findings() -> list[diag.Finding]:
+def _check_pkg_cache(doctor_cfg: dict) -> list[diag.Finding]:
+    """F15: warn when the pacman package cache exceeds a size threshold.
+
+    Resolves the cache dir(s) through pacman's own config
+    (``pacman.get_pacman_cache_dirs``) rather than hardcoding
+    ``/var/cache/pacman/pkg``. Distinct from ``cache_probe`` (build caches).
+    """
+    try:
+        warn_gb = float(doctor_cfg.get("pkg_cache_warn_gb",
+                                       DEFAULT_PKG_CACHE_WARN_GB))
+    except (TypeError, ValueError):
+        warn_gb = DEFAULT_PKG_CACHE_WARN_GB
+    try:
+        from sysforge.primitives.pacman import get_pacman_cache_dirs
+        cache_dirs = get_pacman_cache_dirs()
+    except Exception:
+        return []
+    total = 0
+    seen: set[Path] = set()
+    for d in cache_dirs:
+        if d in seen or not d.is_dir():
+            continue
+        seen.add(d)
+        try:
+            for f in d.glob("*.pkg.tar*"):
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    total_gb = total / _GB
+    if total_gb < warn_gb:
+        return []
+    return [diag.Finding(
+        "pacman", diag.SEV_WARN, "pkg_cache_large",
+        f"pacman package cache is {total_gb:.1f} GB "
+        f"(over the {warn_gb:.0f} GB threshold)",
+        remediation="reclaim space: `paccache -r` (keep the last 3 versions) or "
+                    "`paccache -ruk0` (drop cached packages no longer installed)",
+    )]
+
+
+def _check_mirror_freshness(doctor_cfg: dict) -> list[diag.Finding]:
+    """F16: warn when the mirrorlist is stale (file mtime age). No network call."""
+    try:
+        stale_days = float(doctor_cfg.get("mirrorlist_stale_days",
+                                          DEFAULT_MIRRORLIST_STALE_DAYS))
+    except (TypeError, ValueError):
+        stale_days = DEFAULT_MIRRORLIST_STALE_DAYS
+    try:
+        mtime = _MIRRORLIST.stat().st_mtime
+    except OSError:
+        return []
+    age_days = (time.time() - mtime) / 86400
+    if age_days < stale_days:
+        return []
+    return [diag.Finding(
+        "pacman", diag.SEV_WARN, "mirrorlist_stale",
+        f"/etc/pacman.d/mirrorlist is {age_days:.0f} days old "
+        f"(over the {stale_days:.0f}-day threshold) — mirrors may be slow or "
+        f"lag the repos",
+        remediation="refresh your mirrorlist (e.g. `reflector` or the "
+                    "Arch mirror-status page), then `pacman -Syyu`",
+    )]
+
+
+def collect_system_findings(doctor_cfg: dict | None = None) -> list[diag.Finding]:
     """Run all pacman/system-integrity checks; return findings (read-only)."""
+    if doctor_cfg is None:
+        from sysforge.primitives import config as cfgmod
+        doctor_cfg = cfgmod.load_sysforge_toml().get("doctor", {}) or {}
     findings: list[diag.Finding] = []
     findings += _check_db_consistency()
     findings += _check_stale_lock()
     findings += _check_pacfiles()
     findings += _check_orphans()
+    findings += _check_pkg_cache(doctor_cfg)
+    findings += _check_mirror_freshness(doctor_cfg)
     return findings

@@ -129,4 +129,51 @@ def test_missing_tool_yields_no_findings(monkeypatch):
                         system_probe.Path("/nonexistent/db.lck"))
     monkeypatch.setattr(system_probe, "_ETC",
                         system_probe.Path("/nonexistent/etc"))
-    assert system_probe.collect_system_findings() == []
+    # Neutralise the real-FS cache/mirror checks so this stays a pure "tools
+    # absent → nothing" assertion (they have their own tests below).
+    monkeypatch.setattr(system_probe, "_check_pkg_cache", lambda cfg: [])
+    monkeypatch.setattr(system_probe, "_check_mirror_freshness", lambda cfg: [])
+    assert system_probe.collect_system_findings({}) == []
+
+
+# --- package cache (F15) ----------------------------------------------------
+
+def test_pkg_cache_warns_over_threshold(monkeypatch, tmp_path):
+    (tmp_path / "a.pkg.tar.zst").write_bytes(b"x" * 2048)
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_pacman_cache_dirs", lambda: [tmp_path])
+    out = system_probe._check_pkg_cache({"pkg_cache_warn_gb": 0.0})
+    assert len(out) == 1 and out[0].check_id == "pkg_cache_large"
+
+
+def test_pkg_cache_clean_under_threshold(monkeypatch, tmp_path):
+    (tmp_path / "a.pkg.tar.zst").write_bytes(b"x" * 2048)
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_pacman_cache_dirs", lambda: [tmp_path])
+    assert system_probe._check_pkg_cache({"pkg_cache_warn_gb": 100.0}) == []
+
+
+# --- mirrorlist freshness (F16) ---------------------------------------------
+
+def test_mirrorlist_stale_flagged(monkeypatch, tmp_path):
+    import os
+    import time
+    ml = tmp_path / "mirrorlist"
+    ml.write_text("Server = https://example/\n")
+    old = time.time() - 40 * 86400
+    os.utime(ml, (old, old))
+    monkeypatch.setattr(system_probe, "_MIRRORLIST", ml)
+    out = system_probe._check_mirror_freshness({"mirrorlist_stale_days": 14})
+    assert len(out) == 1 and out[0].check_id == "mirrorlist_stale"
+
+
+def test_mirrorlist_fresh_clean(monkeypatch, tmp_path):
+    ml = tmp_path / "mirrorlist"
+    ml.write_text("Server = https://example/\n")
+    monkeypatch.setattr(system_probe, "_MIRRORLIST", ml)
+    assert system_probe._check_mirror_freshness({"mirrorlist_stale_days": 14}) == []
+
+
+def test_mirrorlist_absent_clean(monkeypatch, tmp_path):
+    monkeypatch.setattr(system_probe, "_MIRRORLIST", tmp_path / "nope")
+    assert system_probe._check_mirror_freshness({}) == []

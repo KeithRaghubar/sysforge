@@ -522,10 +522,16 @@ def _add_doctor_parser(sub):
              "safety primitives): per-kernel boot artifacts (vmlinuz + initramfs "
              "+ boot entry), a recovery fallback kernel, /boot space, and DKMS "
              "modules for the running kernel. Usable on its own (no PKG).")
+    p.add_argument("--storage", action="store_true",
+        help="Check storage/filesystem health: free space on the build dir "
+             "(warns under [doctor] disk_low_gb) and /etc/fstab integrity "
+             "(entries whose UUID/label/device no longer resolves). Read-only; "
+             "never mounts. Usable on its own (no PKG).")
     p.add_argument("--services", action="store_true",
         help="Check live service/driver runtime health: failed systemd units "
-             "(`systemctl --failed`) and firmware a driver requested but could "
-             "not load this boot. Usable on its own (no PKG).")
+             "(`systemctl --failed`), firmware a driver requested but could "
+             "not load this boot, and error-priority journal lines this boot. "
+             "Usable on its own (no PKG).")
     p.add_argument("--audio", action="store_true",
         help="Check live PipeWire/WirePlumber sound-stack health: failed audio "
              "user services (`systemctl --user --failed`) and a vanished output "

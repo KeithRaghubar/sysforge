@@ -68,6 +68,7 @@ from sysforge.primitives.pkg_catalog import (
     select_desktop,
     write_desktop_group,
 )
+from sysforge.primitives import storage_probe
 from sysforge.primitives.provides_lookup import files_db_present, sync_files_db
 from sysforge.primitives.prompt import (
     is_interactive as _interactive,
@@ -1060,11 +1061,9 @@ def _step_makepkg(config, state, options, editor: str) -> str:
                 f"  ⚠  BUILDDIR {str(builddir)!r} does not exist"
             )
         else:
-            try:
-                free_gb = shutil.disk_usage(builddir).free / (1024 ** 3)
-                _log.ui(f"  BUILDDIR free: {free_gb:.1f} GB")
-            except OSError:
-                pass
+            space = storage_probe.probe_free_space(builddir)
+            if space is not None:
+                _log.ui(f"  BUILDDIR free: {space[0]:.1f} GB")
 
     if _interactive() and not options.dry_run:
         _offer_makepkg_defaults(conf, conf_path)
@@ -1131,17 +1130,11 @@ def _step_disk(config, state, options, editor: str) -> str:
         config.get("paths", {}).get("pkgbuild_src_dir", "~")
     ).expanduser()
 
-    check_dir = build_dir
-    while not check_dir.exists() and check_dir != check_dir.parent:
-        check_dir = check_dir.parent
-
-    try:
-        usage = shutil.disk_usage(check_dir)
-        free_gb  = usage.free  / (1024 ** 3)
-        total_gb = usage.total / (1024 ** 3)
-    except OSError as e:
-        _log.warn(f"  Could not check disk space on {check_dir}: {e}")
+    space = storage_probe.probe_free_space(build_dir)
+    if space is None:
+        _log.warn(f"  Could not check disk space on {build_dir}")
         return editor
+    free_gb, total_gb = space
 
     # Count AUR/git packages for estimate
     n_aur = 0

@@ -34,6 +34,51 @@ def _short_error(text: str, limit: int = 160) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
+def _check_instrumented_builds(bs) -> list[diag.Finding]:
+    """F14: flag any package left on a live *record-stage* PGO build — a bare
+    ``.profraw`` store with no merged ``.profdata``. That build is instrumented
+    (unoptimized, transient), so the user should either finish PGO
+    (``--pgo=use``) or roll back to the repo package.
+
+    Detection is provenance-only: resolve each tracked package's PGO store and
+    inspect its files. A package that never used ``--pgo`` has no store dir, so
+    ``list_profraw`` returns ``[]`` and it is silently skipped. Never inspects a
+    binary. Fail-soft: a resolution error yields no findings.
+    """
+    try:
+        from sysforge.primitives import mesa_pgo
+    except Exception:
+        return []
+    out: list[diag.Finding] = []
+    seen: set[str] = set()
+    try:
+        entries = bs.all_packages()
+    except Exception:
+        return []
+    for pkgname, entry in sorted(entries.items()):
+        pkgbase = (entry.get("pkgbase") or entry.get("origin_pkgbase")
+                   or pkgname)
+        if pkgbase in seen:
+            continue
+        seen.add(pkgbase)
+        try:
+            store = mesa_pgo.resolve_store(pkgbase=pkgbase)
+            profraw = mesa_pgo.list_profraw(store)
+            has_profdata = mesa_pgo.profdata_path(pkgbase=pkgbase).exists()
+        except Exception:
+            continue
+        if profraw and not has_profdata:
+            out.append(diag.Finding(
+                "state", diag.SEV_WARN, f"pgo_record_only:{pkgbase}",
+                f"{pkgbase} has a live record-stage PGO build "
+                f"({len(profraw)} .profraw, no merged .profdata) — it is "
+                f"instrumented and unoptimized",
+                remediation=f"finish PGO with `sysforge build {pkgbase} --pgo=use`, "
+                            f"or roll back to the repo package",
+            ))
+    return out
+
+
 def collect_state_findings(state_dir: Path | str | None = None,
                            installed: dict[str, str] | None = None,
                            ) -> list[diag.Finding]:
@@ -108,6 +153,9 @@ def collect_state_findings(state_dir: Path | str | None = None,
             "state", diag.SEV_ERROR, "stale_sentinel", msg,
             remediation=remediation, fix_cmd=recovery_cmd,
         ))
+
+    # --- live instrumented / record-only PGO builds (F14) ------------------
+    findings += _check_instrumented_builds(bs)
 
     # --- build-state drift vs pacman (read-only) ---------------------------
     if installed is None:

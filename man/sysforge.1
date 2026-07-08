@@ -45,7 +45,7 @@ toolchain and a custom kernel under boot-safety gates.\&
 .PP
 \fBsysforge doctor\fR is the read-only health surface: package depends + ABI
 linkage walks plus system-state axes (hardware, toolchain, pacman db,
-state, boot, services, graphics).\&
+state, boot, storage, services, graphics).\&
 .PP
 Install-bearing commands write a stage sentinel before mutating the system;
 an interrupted run is detected on the next invocation and offers a recorded
@@ -468,9 +468,14 @@ Check sysforge'\&s own state integrity: recorded build failures, an interrupted 
 Check running-system boot readiness (reusing the kernel stage'\&s safety primitives): per-kernel boot artifacts (vmlinuz + initramfs + boot entry), a recovery fallback kernel, /boot space, and DKMS modules for the running kernel.\& Usable on its own (no PKG).\&
 .PP
 .RE
+\fB--storage\fR
+.RS 4
+Check storage/filesystem health: free space on the build dir (warns under [doctor] disk_low_gb) and /etc/fstab integrity (entries whose UUID/label/device no longer resolves).\& Read-only; never mounts.\& Usable on its own (no PKG).\&
+.PP
+.RE
 \fB--services\fR
 .RS 4
-Check live service/driver runtime health: failed systemd units (`systemctl --failed`) and firmware a driver requested but could not load this boot.\& Usable on its own (no PKG).\&
+Check live service/driver runtime health: failed systemd units (`systemctl --failed`), firmware a driver requested but could not load this boot, and error-priority journal lines this boot.\& Usable on its own (no PKG).\&
 .PP
 .RE
 \fB--audio\fR

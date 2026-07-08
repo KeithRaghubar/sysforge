@@ -81,3 +81,10 @@ allow = ["mesa"]
 rebuild_on_drift = false            # umbrella: opts into both axes below
 rebuild_on_toolchain_drift = false  # rebuild on toolchain-variant drift only
 rebuild_on_flag_drift = false       # rebuild on resolved-flag drift only
+
+[doctor]
+# Thresholds for the read-only `sysforge doctor` health axes. Each check reads
+# its threshold here, falling back to the documented default when unset.
+pkg_cache_warn_gb     = 5.0    # pacman axis: warn when the package cache exceeds this (GB)
+mirrorlist_stale_days = 14     # pacman axis: warn when /etc/pacman.d/mirrorlist is older than this
+disk_low_gb           = 10.0   # storage axis: warn when build-dir free space is under this (GB)

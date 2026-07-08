@@ -65,13 +65,6 @@ straight off a `Q`.
   (and auto-suggest the override) instead of the generic "not valid". Dual-toolchain:
   ship both a gcc-path and llvm-path test. *Priority: medium.*
 
-- **`2.1.0-B11` — `doctor` progress indicator is stuck on "starting…" for the whole
-  system-package audit.** The longest doctor axis (installed-package check) shows
-  "starting…" for its entire duration with no advancement. Surface the in-progress
-  package name if cheaply available, or at minimum a phase-accurate message
-  ("auditing installed packages"). Progress messaging only — the axis stays read-only.
-  *Priority: low.*
-
 - **`2.1.0-B12` — `update` warns `mesa-sysforge: no sync-DB candidate` after mesa was
   reinstalled from the Arch repos.** `[SYNC] mesa-sysforge: no sync-DB candidate —
   leaving checkout on main (testing-track)` fires even though mesa is now the stock repo
@@ -168,43 +161,6 @@ straight off a `Q`.
   `0.5`) that sysforge translates against the host's total capacity (16 cores →
   `800%`), so the config is portable across machines. Resolve inside
   `build_throttle.resolve_throttle`. *Priority: low.*
-
-- **`1.2.0-F14` — `doctor`: warn on installed instrumented/incomplete-PGO builds of
-  *any* package.** Since `--pgo` works on any package (F5), an instrumented
-  (record-stage) build can be left live for any target, not just mesa. Add a
-  read-only doctor check that flags a live instrumented build and points at the next
-  step (`build <pkg> --pgo=use`, or roll back to the repo package). Detect via the
-  existing provenance trail — `build_state.toml` `build_mode` cross-checked against
-  store state (a bare `.profraw` with no merged `.profdata` = record-only) — not from
-  binaries. *Priority: medium (record-stage builds are unoptimized and transient).*
-
-- **`1.2.0-F15` — `doctor` package-cache axis (from the doctor maintenance-gap audit).** Warn when the
-  pacman package cache (`/var/cache/pacman/pkg`, resolve via the proper config home
-  rather than hardcoding) exceeds a size threshold, with `paccache -r` /
-  `paccache -ruk0` remediation. Distinct from `cache_probe.py`, which only reports
-  *build* caches (ccache/sccache). New read-only axis or fold into the `pacman`
-  axis. *Priority: medium (the most common real-world disk reclaim).*
-
-- **`1.2.0-F16` — `doctor` mirror-freshness check (from the doctor maintenance-gap audit).** Warn when
-  `/etc/pacman.d/mirrorlist` is stale (file age, or newest server's last-sync age)
-  so partial-upgrade/slow-mirror situations surface. Read-only, no network call
-  (don't probe mirror latency live — that flaps). *Priority: low.*
-
-- **`1.2.0-F17` — Promote the disk-space check into a `doctor` axis (from the doctor
-  maintenance-gap audit).** The disk-space check currently lives only in the reconfigure stage
-  (`pipeline/stages/reconfigure.py`), so an ad-hoc `sysforge doctor` run misses it.
-  **Move** the logic to a probe primitive and consume it from both the stage and a
-  new doctor axis (one home — don't duplicate). *Priority: medium.*
-
-- **`1.2.0-F18` — `doctor` fstab integrity (from the doctor maintenance-gap audit).** Flag
-  `/etc/fstab` entries whose UUID/label or device no longer resolves (stale mount).
-  Read-only. *Priority: low.*
-
-- **`1.2.0-F19` — Broaden the journal scan beyond firmware (from the doctor maintenance-gap audit).**
-  `runtime_probe` only greps `journalctl -k -b` for "Direct firmware load … failed".
-  Extend it (or add a sibling check on the services/boot axis) to surface
-  failed-boot / core-dump / repeated-unit-failure errors. Read-only, current-boot
-  scoped. *Priority: low.*
 
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS

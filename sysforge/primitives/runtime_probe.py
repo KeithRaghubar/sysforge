@@ -89,9 +89,49 @@ def _check_missing_firmware() -> list[diag.Finding]:
     )]
 
 
+# Error-priority journal lines worth surfacing beyond firmware — kept broad but
+# capped/deduped so a noisy boot yields one finding, not a flood.
+_RE_BOOT_ERROR = re.compile(
+    r"(core[- ]?dump|Failed to start|segfault|Kernel panic|BUG:|"
+    r"I/O error|EXT4-fs error|Out of memory|oom-kill)",
+    re.IGNORECASE,
+)
+
+
+def _check_boot_errors() -> list[diag.Finding]:
+    """F19: broaden the journal scan beyond firmware — surface error-priority
+    lines from the current boot (failed-start, core dumps, filesystem/OOM
+    errors) as one deduped, capped finding. Current-boot scoped, read-only."""
+    proc = _run(["journalctl", "-b", "-p", "err", "--no-pager", "-o", "cat"])
+    if proc is None or proc.returncode != 0 or not proc.stdout:
+        return []
+    hits: list[str] = []
+    seen: set[str] = set()
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line or not _RE_BOOT_ERROR.search(line):
+            continue
+        key = line[:120]
+        if key in seen:
+            continue
+        seen.add(key)
+        hits.append(key)
+    if not hits:
+        return []
+    sample = " | ".join(hits[:5])
+    more = "" if len(hits) <= 5 else f" (+{len(hits) - 5} more)"
+    return [diag.Finding(
+        "services", diag.SEV_WARN, "boot_errors",
+        f"{len(hits)} error-priority journal line(s) this boot: {sample}{more}",
+        remediation="inspect with `journalctl -b -p err`; investigate any "
+                    "recurring failed-start / core-dump / filesystem error",
+    )]
+
+
 def collect_runtime_findings() -> list[diag.Finding]:
     """Run all services/runtime checks; return findings (read-only)."""
     findings: list[diag.Finding] = []
     findings += _check_failed_units()
     findings += _check_missing_firmware()
+    findings += _check_boot_errors()
     return findings
