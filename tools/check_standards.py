@@ -160,14 +160,28 @@ def check_changelog(repo: Path) -> list[Finding]:
             findings.append(Finding("changelog", "error", rel,
                                     "missing a `# ` title heading"))
         for lineno, ln in enumerate(lines, 1):
-            if ln.startswith("## "):
-                heading = ln[3:].strip()
-                if heading not in _KAC_HEADINGS:
+            m = re.match(r"(#+)\s+(.*)", ln)
+            if not m:
+                continue
+            level, heading = len(m.group(1)), m.group(2).strip()
+            if level == 1:
+                continue  # the `# ` title, validated above
+            if heading in _KAC_HEADINGS:
+                # Category headings must sit at `## ` exactly. A mis-leveled
+                # `### Changed` would otherwise be invisible to this lint and
+                # drift in commit-by-commit, defeating incremental authoring.
+                if level != 2:
                     findings.append(Finding(
                         "changelog", "error", f"{rel}:{lineno}",
-                        f"`## {heading}` is not a Keep a Changelog category "
-                        f"({', '.join(sorted(_KAC_HEADINGS))})",
+                        f"`{'#' * level} {heading}` must be a `## ` "
+                        f"Keep a Changelog section heading",
                     ))
+            elif level == 2:
+                findings.append(Finding(
+                    "changelog", "error", f"{rel}:{lineno}",
+                    f"`## {heading}` is not a Keep a Changelog category "
+                    f"({', '.join(sorted(_KAC_HEADINGS))})",
+                ))
     return findings
 
 
