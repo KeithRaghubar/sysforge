@@ -645,6 +645,29 @@ def test_cmd_doctor_output_goes_through_log_ui(tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
+# _print_report — remediation text for the "owner installed, no candidate" case
+# ---------------------------------------------------------------------------
+
+def test_print_report_installed_owner_does_not_advise_ldconfig(capsys):
+    """When every owning package is already installed (empty candidate list),
+    the soname is provably absent from every dir ldconfig scans, so `sudo
+    ldconfig` cannot fix it (2.1.0-B18). The advice must name the real
+    remedies (files-db refresh / rebuild), not ldconfig."""
+    issue = "soname not found in ldconfig: libfoo.so=2"
+    doctor._print_report(
+        "brokenpkg", "1.0-1",
+        dep_issues=[issue], abi_issues=[], quiet=False,
+        suggestions={issue: (doctor.SUGGEST_KIND_INSTALL, [])},
+    )
+    err = capsys.readouterr().err
+    # The dep-issue label legitimately says "not found in ldconfig"; the defect
+    # is advising the `sudo ldconfig` *command*, which cannot help here.
+    assert "sudo ldconfig" not in err
+    assert "pacman -Fy" in err
+    assert "rebuild" in err
+
+
+# ---------------------------------------------------------------------------
 # _collect_suggestions — soname extraction from depends + ABI issues
 # ---------------------------------------------------------------------------
 
@@ -945,7 +968,8 @@ def test_cmd_doctor_suggest_no_candidate_line(tmp_path, monkeypatch, capsys):
     Empty install candidate list — every plausible owner was filtered out
     by the installed_names check (the reported bug: doctor used to
     re-recommend installing already-installed packages). The user-facing
-    line points at ldconfig instead of repeating the install suggestion.
+    line points at the files-db/rebuild remedies — never `sudo ldconfig`,
+    which cannot help once the soname is off the search path (2.1.0-B18).
     """
     db = tmp_path / "local"
     db.mkdir()
@@ -966,8 +990,9 @@ def test_cmd_doctor_suggest_no_candidate_line(tmp_path, monkeypatch, capsys):
     doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
     err = capsys.readouterr().err
 
-    assert "all owning packages already installed" in err
-    assert "sudo ldconfig" in err
+    assert "owner installed but soname absent" in err
+    assert "sudo pacman -Fy" in err
+    assert "sudo ldconfig" not in err
 
 
 def test_cmd_doctor_suggest_warns_on_stale_files_db(tmp_path, monkeypatch, capsys):

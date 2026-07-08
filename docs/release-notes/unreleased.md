@@ -32,3 +32,8 @@ https://keepachangelog.com/en/1.1.0/
 
 - `doctor` progress indicator no longer sits on "starting…" for the whole run —
   it now advances per axis and per audited package (2.1.0-B11).
+- `doctor` no longer advises `sudo ldconfig` for an unsatisfied soname whose owner
+  is already installed — that branch is only reached once the library is confirmed
+  absent from every directory ldconfig scans, so the cache rebuild cannot help. It
+  now points at refreshing the files db (`sudo pacman -Fy`) or rebuilding the
+  dependent package (2.1.0-B18, promoted from 2.1.0-Q1).

@@ -520,8 +520,15 @@ def _print_report(pkgname: str, version: str | None,
         if cands:
             _log.ui(f"      → {label}: {', '.join(cands)}")
         elif kind == SUGGEST_KIND_INSTALL:
-            _log.ui("      → all owning packages already installed; "
-                    "try `sudo ldconfig`, then re-run doctor")
+            # Reaching here means the soname was absent from both the ld.so
+            # cache AND every directory ldconfig scans (the filesystem fallback
+            # in dep_analysis already checked those), yet the files db names an
+            # installed owner. `sudo ldconfig` cannot help — the file is not on
+            # the search path for it to cache. The real causes are a stale files
+            # db or a soname-version drift, so point at those instead (2.1.0-B18).
+            _log.ui("      → owner installed but soname absent from the library "
+                    "search path; refresh the files db (`sudo pacman -Fy`) or "
+                    "rebuild the dependent package against current libraries")
         else:
             _log.ui(f"      → {label}: no candidate in files db")
 

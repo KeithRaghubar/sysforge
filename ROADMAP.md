@@ -226,21 +226,6 @@ straight off a `Q`.
   representative stage run. *Priority: low (bootstrap-time output, not the day-to-day
   regression, which is resolved).*
 
-### Open questions
-
-- **`2.1.0-Q1` — `doctor`'s `sudo ldconfig` remediation doesn't actually clear the
-  warnings it's attached to.** Most benign doctor findings advise running
-  `sudo ldconfig` (which rebuilds the `ld.so` shared-library cache from
-  `/etc/ld.so.conf` + trusted dirs), but running it did not resolve the warnings.
-  Question: what are these findings really detecting, and is `ldconfig` the correct
-  remediation at all? If the warning persists after a cache rebuild, the finding is
-  keying off something `ldconfig` doesn't touch (stale symlink, a path outside the
-  cache's search dirs, or a detection that doesn't re-check post-fix) — so the advice is
-  wrong or the check is. Investigate the specific findings before changing code; then
-  promote to a Bug (fix the check or the remediation text) or Abandon with rationale.
-  Never implement straight off this Q. *Priority: medium (mis-advises the user on nearly
-  every benign finding).*
-
 ---
 
 ## Abandoned / decided against
