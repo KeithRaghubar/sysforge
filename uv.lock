@@ -10,7 +10,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/fa/33/fb965c94a703b2f62
 
 [[package]]
 name = "sysforge"
-version = "2.1.0"
+version = "2.2.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
