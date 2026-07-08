@@ -22,8 +22,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.cli import (
     _extract_implicit_makepkg_flags,
+    _hoist_global_flags,
     _hoist_verbosity_flags,
     _patch_makepkg_argv,
+    _resolve_throttle_override,
     _resolve_verbosity,
 )
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
@@ -106,6 +108,46 @@ def test_hoist_short_q_never_hoisted():
     # -q is doctor's short form only; global --quiet has no short alias.
     result = _hoist_verbosity_flags(["doctor", "-q"])
     assert result == ["doctor", "-q"]
+
+
+# ---------------------------------------------------------------------------
+# throttle-override global flags: --no-throttle / --turbo (2.1.0-F5)
+# ---------------------------------------------------------------------------
+
+
+def test_hoist_no_throttle_before_subcommand():
+    assert _hoist_global_flags(["build", "PKGBUILD", "--no-throttle"]) == [
+        "--no-throttle", "build", "PKGBUILD",
+    ]
+
+
+def test_hoist_turbo_before_subcommand():
+    assert _hoist_global_flags(["update", "--turbo"]) == ["--turbo", "update"]
+
+
+class _ThrottleArgs:
+    def __init__(self, no_throttle=False, turbo=False):
+        self.no_throttle = no_throttle
+        self.turbo = turbo
+
+
+def test_resolve_throttle_override_none():
+    assert _resolve_throttle_override(_ThrottleArgs()) is None
+
+
+def test_resolve_throttle_override_bypass():
+    assert _resolve_throttle_override(_ThrottleArgs(no_throttle=True)) == "bypass"
+
+
+def test_resolve_throttle_override_boost():
+    assert _resolve_throttle_override(_ThrottleArgs(turbo=True)) == "boost"
+
+
+def test_resolve_throttle_override_turbo_wins_over_no_throttle():
+    # --turbo is the stronger request; it subsumes --no-throttle.
+    assert _resolve_throttle_override(
+        _ThrottleArgs(no_throttle=True, turbo=True)
+    ) == "boost"
 
 
 # ---------------------------------------------------------------------------
@@ -449,49 +491,41 @@ def test_strip_venv_from_path_noop_when_venv_bin_absent(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_hoist_global_py_profile_after_subcommand():
-    from sysforge.cli import _hoist_global_flags
     result = _hoist_global_flags(["update", "--py-profile"])
     assert result == ["--py-profile", "update"]
 
 
 def test_hoist_global_py_profile_out_with_value_token():
-    from sysforge.cli import _hoist_global_flags
     result = _hoist_global_flags(["update", "--py-profile-out", "out.prof", "--dry-run"])
     assert result == ["--py-profile-out", "out.prof", "update", "--dry-run"]
 
 
 def test_hoist_global_py_profile_out_equals_form():
-    from sysforge.cli import _hoist_global_flags
     result = _hoist_global_flags(["build", "PKGBUILD", "--py-profile-out=out.prof"])
     assert result == ["--py-profile-out=out.prof", "build", "PKGBUILD"]
 
 
 def test_hoist_global_timings():
-    from sysforge.cli import _hoist_global_flags
     result = _hoist_global_flags(["update", "--timings"])
     assert result == ["--timings", "update"]
 
 
 def test_hoist_global_no_flags_passthrough():
-    from sysforge.cli import _hoist_global_flags
     result = _hoist_global_flags(["build", "PKGBUILD", "--interactive"])
     assert result == ["build", "PKGBUILD", "--interactive"]
 
 
 def test_hoist_global_composes_with_verbosity_hoist():
-    from sysforge.cli import _hoist_global_flags
     result = _hoist_global_flags(_hoist_verbosity_flags(["update", "-vv", "--timings"]))
     assert result == ["--timings", "-vv", "update"]
 
 
 def test_hoist_global_color_value_token():
-    from sysforge.cli import _hoist_global_flags
     result = _hoist_global_flags(["build", "foo", "--color", "never"])
     assert result == ["--color", "never", "build", "foo"]
 
 
 def test_hoist_global_color_equals_form():
-    from sysforge.cli import _hoist_global_flags
     result = _hoist_global_flags(["update", "--color=always"])
     assert result == ["--color=always", "update"]
 

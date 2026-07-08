@@ -49,6 +49,8 @@ Three top-level flags expose sysforge's own runtime performance (stdlib only, no
 
 A fourth global flag, **`--color=auto|always|never`**, is hoisted the same way (it carries a value token). It feeds the colour authority described in §Logging → Colour: `cli._resolve_color_mode` resolves `--color` flag > `[ui] color` config > `"auto"` and calls `log.set_color_mode()` once at startup. `auto` honours `NO_COLOR`/`FORCE_COLOR` and TTY detection; `always`/`never` force the decision (so colour survives a pager pipe, e.g. the coloured PKGBUILD review diff).
 
+Two further global flags, **`--no-throttle`** and **`--turbo`**, are hoisted the same way (both valueless). They set a run-scoped build-throttle override once at startup: `cli._resolve_throttle_override(args)` maps them to `"bypass"` / `"boost"` (`--turbo` wins when both are given) and calls `build_throttle.set_run_override()`, mirroring the colour authority. `resolve_throttle` reads that process-global when no explicit override is passed, so the flags reach the deep `makepkg_invoke` throttle site without a threaded parameter (see §Flag/Profile System → Build throttling).
+
 **Why not unify with the pipeline `Stage` contract?** Stages already presume multi-stage DAG semantics, per-stage checkpoints, and an opinionated `PipelineState`. Most CLI verbs are single-shot and don't want a pipeline state file. The verb framework reuses `sentinel_scope` for install-bearing protection but otherwise stays independent, so `sysforge env` is not paying for pipeline machinery it doesn't need. The `run` namespace verbs are exactly the thin shim from CLI → pipeline.
 
 ### Shared build engine (`build_core.py`)

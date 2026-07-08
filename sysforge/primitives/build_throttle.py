@@ -31,6 +31,7 @@ Owns the ``[THROTTLE]`` tag.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -38,6 +39,32 @@ from dataclasses import dataclass
 from sysforge import log
 
 _throttle_log = log.get_logger("THROTTLE")
+
+# Niceness applied by the "boost" run-override (2.1.0-F5). Negative == *higher*
+# than default scheduling priority; it deliberately bypasses the unprivileged
+# 0..19 clamp in ``_coerce_nice`` because the user asked to go faster. Lowering
+# niceness needs privilege, so ``wrapper_argv``'s best-effort ``nice`` front-end
+# simply runs at the current priority if the kernel refuses — never a hard fail.
+_BOOST_NICE = -5
+
+# Run-scoped throttle override set once at CLI startup (``set_run_override``),
+# read by ``resolve_throttle`` when no explicit ``override`` is passed. Keeps the
+# global --no-throttle/--turbo flags routed through this one throttle home rather
+# than threading a parameter through every makepkg call site. One of:
+#   None      — honour the configured throttle
+#   "bypass"  — ignore the throttle entirely for this run (--no-throttle)
+#   "boost"   — run at higher-than-default priority for this run (--turbo)
+_RUN_OVERRIDE: str | None = None
+
+
+def set_run_override(mode: str | None) -> None:
+    """Set the process-global throttle override (``None``/``"bypass"``/``"boost"``).
+
+    Called once from ``cli._main`` after argument parsing, mirroring
+    ``log.set_color_mode`` / ``log.set_verbosity``.
+    """
+    global _RUN_OVERRIDE
+    _RUN_OVERRIDE = mode
 
 # ionice scheduling-class names accepted in config → the numeric class passed
 # to ``ionice -c`` (3 = idle, 2 = best-effort). realtime (1) is intentionally
@@ -109,8 +136,27 @@ def _coerce_cpu_quota(raw) -> str | None:
     val = str(raw).strip()
     if _CPU_QUOTA_RE.match(val):
         return val
+    # Relative form (2.1.0-F6): a decimal fraction of the host's total cores,
+    # e.g. 0.5 on a 16-core box → 800%, so the same config is portable across
+    # machines. Only a value carrying a decimal point is treated as a fraction;
+    # a bare integer without "%" stays an error (too ambiguous vs. a percent).
+    if "%" not in val and "." in val:
+        try:
+            frac = float(val)
+        except ValueError:
+            frac = None
+        if frac is not None:
+            if frac <= 0:
+                _throttle_log.warn(
+                    f"[build] cpu_quota = {raw!r} (fraction of cores) must be > 0 — ignoring"
+                )
+                return None
+            cores = os.cpu_count() or 1
+            pct = max(1, round(frac * cores * 100))
+            return f"{pct}%"
     _throttle_log.warn(
-        f"[build] cpu_quota = {raw!r} must look like \"600%\" (N%, 100%=one core) — ignoring"
+        f"[build] cpu_quota = {raw!r} must look like \"600%\" (N%, 100%=one core) "
+        "or a fraction of total cores (e.g. 0.5) — ignoring"
     )
     return None
 
@@ -129,7 +175,9 @@ def _coerce_jobs(raw) -> int | None:
     return j
 
 
-def resolve_throttle(resolved_profile, config: dict | None = None) -> BuildThrottle:
+def resolve_throttle(
+    resolved_profile, config: dict | None = None, override: str | None = None
+) -> BuildThrottle:
     """Resolve build-throttle settings: ``sysforge.toml [build]`` defaults,
     overridden per-key by the resolved profile.
 
@@ -137,10 +185,26 @@ def resolve_throttle(resolved_profile, config: dict | None = None) -> BuildThrot
     (sysforge-internal profile keys; see ``profile.SYSFORGE_KEYS``). A key present
     on the profile wins over the global default; an absent key falls back to it.
 
+    ``override`` is the run-scoped override (2.1.0-F5); when ``None`` it falls back
+    to the process-global ``_RUN_OVERRIDE`` set at CLI startup. ``"bypass"`` ignores
+    the configured throttle entirely (no-op); ``"boost"`` runs at higher-than-default
+    priority (negative niceness + best-effort IO, no CPU ceiling or job cap). Both
+    short-circuit config/profile resolution — this is the sole throttle home.
+
     ``config`` is the parsed ``sysforge.toml`` dict; loaded on demand when ``None``
-    (mirrors ``makepkg_env.resolve_build_python``). Pure — never raises; each
-    malformed value is dropped with a warning by its ``_coerce_*`` helper.
+    (mirrors ``makepkg_env.resolve_build_python``). Never raises; each malformed
+    value is dropped with a warning by its ``_coerce_*`` helper.
     """
+    if override is None:
+        override = _RUN_OVERRIDE
+    if override == "bypass":
+        return BuildThrottle()
+    if override == "boost":
+        # Constructed directly, bypassing _coerce_nice's 0..19 clamp — a boost is
+        # an explicit request for *higher* than default priority. best-effort IO
+        # (class 2) beats the usual idle throttle; no cpu_quota / job cap.
+        return BuildThrottle(nice=_BOOST_NICE, ionice="best-effort")
+
     if config is None:
         from sysforge.primitives.config import load_sysforge_toml
         config = load_sysforge_toml()

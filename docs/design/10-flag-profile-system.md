@@ -189,7 +189,14 @@ Toolchain keys (`CC`, `CXX`) from the **system** makepkg.conf are excluded from 
 
 ### Build throttling
 
-Build CPU/IO throttling has **one home**: `primitives/build_throttle.py`. Four knobs — `nice`, `ionice`, `cpu_quota`, `jobs` — keep packages from saturating the machine. Each is a global default in `sysforge.toml [build]` (see §Config Layer) and a per-profile override: all four are in `profile.SYSFORGE_KEYS`, so a profile may carry them but they are **never** written to the conf or env. `resolve_throttle(resolved_profile, config)` resolves them — a key present on the profile wins over the global default, an absent key falls back to it. The resolver is pure; every malformed value (bad niceness range, non-`N%` quota, etc.) is dropped with a warning so a typo never fails a build.
+Build CPU/IO throttling has **one home**: `primitives/build_throttle.py`. Four knobs — `nice`, `ionice`, `cpu_quota`, `jobs` — keep packages from saturating the machine. Each is a global default in `sysforge.toml [build]` (see §Config Layer) and a per-profile override: all four are in `profile.SYSFORGE_KEYS`, so a profile may carry them but they are **never** written to the conf or env. `resolve_throttle(resolved_profile, config, override=None)` resolves them — a key present on the profile wins over the global default, an absent key falls back to it. The resolver never raises; every malformed value (bad niceness range, non-`N%` quota, etc.) is dropped with a warning so a typo never fails a build.
+
+`cpu_quota` accepts either an absolute `"N%"` (100% = one core) **or** a decimal fraction of the host's total cores (`0.5` on a 16-core box → `800%`), translated against `os.cpu_count()` at resolution — the same config stays portable across machines. Only a value carrying a decimal point is read as a fraction; a bare integer without `%` stays an error, being too ambiguous against a percent.
+
+Two **run-scoped overrides** short-circuit that resolution, set once at CLI startup from the global flags (`cli._resolve_throttle_override` → `set_run_override`, mirroring `log.set_color_mode`) and read by `resolve_throttle` when no explicit `override` is passed — so `--no-throttle`/`--turbo` stay routed through this one home rather than threading a parameter through every makepkg call site:
+
+- `--no-throttle` → `"bypass"`: returns a no-op throttle, ignoring config and profile.
+- `--turbo` → `"boost"`: constructs `BuildThrottle(nice=_BOOST_NICE, ionice="best-effort")` directly, bypassing the `0..19` niceness clamp because a boost is an explicit request for *higher* than default priority (no CPU ceiling or job cap). `--turbo` is the stronger request and wins over `--no-throttle`. Lowering niceness may need privilege; `wrapper_argv`'s best-effort `nice` front-end simply runs at the current priority if the kernel refuses.
 
 Two delivery channels, by mechanism:
 

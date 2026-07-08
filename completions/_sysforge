@@ -12,6 +12,8 @@ _sysforge() {
     '--py-profile-out[write raw cProfile stats to FILE]:file:_files' \
     '--timings[print phase wall-clock timing report after build/update]' \
     '--color[colorize output]:when:(auto always never)' \
+    '--no-throttle[ignore the configured build throttle for this run]' \
+    '--turbo[run the build at higher-than-default priority (stronger than --no-throttle)]' \
     '1: :_sysforge_commands' \
     '*:: :->args'
 

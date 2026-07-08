@@ -105,6 +105,20 @@ such as \fBless -R\fR); \fInever\fR disables it.\& Overrides the \fB[ui] color\f
 key in \fIsysforge.\&toml\fR.\&
 .PP
 .RE
+\fB--no-throttle\fR
+.RS 4
+Ignore the configured build throttle (\fBnice\fR/\fBionice\fR/\fBcpu_quota\fR/\fBjobs\fR
+from \fB[build]\fR) for this run, building at normal unthrottled priority.\&
+.PP
+.RE
+\fB--turbo\fR
+.RS 4
+Run the build at \fIhigher\fR than default priority: negative niceness and
+best-effort IO, with no CPU ceiling or job cap.\& Stronger than
+\fB--no-throttle\fR.\& Lowering niceness may require privilege; when the kernel
+refuses, the build runs at the current priority (best-effort, never fatal).\&
+.PP
+.RE
 .SH COMMANDS
 .PP
 .SS build

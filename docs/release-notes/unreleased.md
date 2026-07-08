@@ -27,6 +27,13 @@ https://keepachangelog.com/en/1.1.0/
 - `doctor` `services` axis: broadened the current-boot journal scan beyond
   firmware to surface failed-start / core-dump / filesystem / OOM errors
   (1.2.0-F19).
+- Global `--no-throttle` / `--turbo` flags: `--no-throttle` ignores the
+  configured build throttle for a run; `--turbo` runs at higher-than-default
+  priority (negative niceness, best-effort IO, no cap). Both route through the
+  one throttle home via a run-scoped override (2.1.0-F5).
+- `[build] cpu_quota` now also accepts a decimal fraction of the host's total
+  cores (e.g. `0.5` → `800%` on a 16-core box), translated against
+  `os.cpu_count()` so the same config is portable across machines (2.1.0-F6).
 
 ## Fixed
 

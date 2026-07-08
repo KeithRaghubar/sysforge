@@ -56,6 +56,69 @@ def test_resolve_drops_malformed_values():
 
 
 # ---------------------------------------------------------------------------
+# resolve_throttle — relative cpu_quota (2.1.0-F6)
+
+
+def test_resolve_cpu_quota_fraction_of_cores(monkeypatch):
+    # 0.5 of a 16-core host → 8 cores' worth == 800%.
+    monkeypatch.setattr(bt.os, "cpu_count", lambda: 16)
+    assert resolve_throttle({}, {"build": {"cpu_quota": 0.5}}).cpu_quota == "800%"
+
+
+def test_resolve_cpu_quota_fraction_string_form(monkeypatch):
+    monkeypatch.setattr(bt.os, "cpu_count", lambda: 8)
+    assert resolve_throttle({}, {"build": {"cpu_quota": "0.25"}}).cpu_quota == "200%"
+
+
+def test_resolve_cpu_quota_absolute_percent_unchanged(monkeypatch):
+    # An explicit N% is portable-as-is; the host core count is irrelevant.
+    monkeypatch.setattr(bt.os, "cpu_count", lambda: 16)
+    assert resolve_throttle({}, {"build": {"cpu_quota": "600%"}}).cpu_quota == "600%"
+
+
+def test_resolve_cpu_quota_fraction_floors_to_one_percent(monkeypatch):
+    monkeypatch.setattr(bt.os, "cpu_count", lambda: 1)
+    assert resolve_throttle({}, {"build": {"cpu_quota": 0.001}}).cpu_quota == "1%"
+
+
+def test_resolve_cpu_quota_fraction_nonpositive_dropped(monkeypatch):
+    monkeypatch.setattr(bt.os, "cpu_count", lambda: 16)
+    assert resolve_throttle({}, {"build": {"cpu_quota": "0.0"}}).cpu_quota is None
+
+
+# ---------------------------------------------------------------------------
+# resolve_throttle — run-scoped override (2.1.0-F5)
+
+
+def test_resolve_override_bypass_forces_noop():
+    cfg = {"build": {"nice": 19, "ionice": "idle", "cpu_quota": "600%", "jobs": 4}}
+    assert resolve_throttle({}, cfg, override="bypass").is_noop
+
+
+def test_resolve_override_boost_raises_priority():
+    cfg = {"build": {"nice": 19, "ionice": "idle"}}
+    t = resolve_throttle({}, cfg, override="boost")
+    assert t.nice is not None and t.nice < 0  # below the unprivileged floor, on purpose
+    assert t.ionice == "best-effort"
+    assert t.cpu_quota is None and t.jobs is None
+
+
+def test_resolve_override_defaults_to_run_global(monkeypatch):
+    # An unpassed override falls back to the process-global set at CLI startup.
+    monkeypatch.setattr(bt, "_RUN_OVERRIDE", "bypass")
+    assert resolve_throttle({}, {"build": {"nice": 19}}).is_noop
+
+
+def test_set_run_override_sets_module_state():
+    try:
+        bt.set_run_override("boost")
+        assert bt._RUN_OVERRIDE == "boost"
+    finally:
+        bt.set_run_override(None)
+    assert bt._RUN_OVERRIDE is None
+
+
+# ---------------------------------------------------------------------------
 # wrapper_argv
 
 

@@ -44,7 +44,7 @@ _sysforge() {
 
     if [[ -z $verb ]]; then
         if [[ $cur == -* ]]; then
-            COMPREPLY=( $(compgen -W "-v --verbose --quiet --py-profile --py-profile-out --timings --color" -- "$cur") )
+            COMPREPLY=( $(compgen -W "-v --verbose --quiet --py-profile --py-profile-out --timings --color --no-throttle --turbo" -- "$cur") )
         else
             COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
         fi

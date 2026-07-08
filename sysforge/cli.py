@@ -135,7 +135,22 @@ _GLOBAL_HOIST_FLAGS = {
     "--py-profile-out": True,
     "--timings": False,
     "--color": True,
+    "--no-throttle": False,
+    "--turbo": False,
 }
+
+
+def _resolve_throttle_override(args):
+    """Map the global throttle flags to a build_throttle run-override.
+
+    ``--turbo`` (boost) is the stronger request and wins over ``--no-throttle``
+    (bypass); neither present → ``None`` (honour the configured throttle).
+    """
+    if getattr(args, "turbo", False):
+        return "boost"
+    if getattr(args, "no_throttle", False):
+        return "bypass"
+    return None
 
 
 def _resolve_color_mode(flag_value):
@@ -1059,6 +1074,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print a wall-clock phase timing report after build/update runs.",
     )
     parser.add_argument(
+        "--no-throttle",
+        action="store_true",
+        dest="no_throttle",
+        help=(
+            "Ignore the configured build throttle (nice/ionice/cpu_quota/jobs) "
+            "for this run — build at normal, unthrottled priority."
+        ),
+    )
+    parser.add_argument(
+        "--turbo",
+        action="store_true",
+        dest="turbo",
+        help=(
+            "Run the build at *higher* than default priority (negative niceness, "
+            "best-effort IO, no CPU/job cap). Stronger than --no-throttle; "
+            "lowering niceness may need privilege (best-effort — degrades quietly)."
+        ),
+    )
+    parser.add_argument(
         "--color",
         choices=["auto", "always", "never"],
         default=None,
@@ -1174,6 +1208,8 @@ def _main():
     args = parser.parse_args()
     log.set_verbosity(_resolve_verbosity(args))
     log.set_color_mode(_resolve_color_mode(getattr(args, "color", None)))
+    from sysforge.primitives.build_throttle import set_run_override
+    set_run_override(_resolve_throttle_override(args))
     if getattr(args, "dry_run", False):
         log.set_dry_run_mode()
     # Snapshot inherited env at startup — DEBUG-only on stderr (-vvv), always

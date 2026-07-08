@@ -150,18 +150,6 @@ straight off a `Q`.
   invoked stage — writes a discoverable log. *Priority: medium (no post-hoc record for
   most verbs today).*
 
-- **`2.1.0-F5` — Global flags to bypass build throttling and to raise priority.** Add a
-  global flag that ignores the configured throttle (nice/ionice/cpu_quota/jobs) for this
-  run, and a second, stronger flag that runs at *higher* than default priority. Both
-  route through the one throttle home (`build_throttle.resolve_throttle`) — no parallel
-  throttle path. *Priority: low.*
-
-- **`2.1.0-F6` — Relative `cpu_quota` as a fraction of available cores.** `cpu_quota`
-  currently takes an absolute percentage (e.g. `800%`). Allow a fractional form (e.g.
-  `0.5`) that sysforge translates against the host's total capacity (16 cores →
-  `800%`), so the config is portable across machines. Resolve inside
-  `build_throttle.resolve_throttle`. *Priority: low.*
-
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
   specificity: more AND'd conditions = higher weight), with manual `priority`

@@ -87,6 +87,16 @@ recovery command.
 	such as *less -R*); _never_ disables it. Overrides the *[ui] color*
 	key in _sysforge.toml_.
 
+*--no-throttle*
+	Ignore the configured build throttle (*nice*/*ionice*/*cpu_quota*/*jobs*
+	from *[build]*) for this run, building at normal unthrottled priority.
+
+*--turbo*
+	Run the build at _higher_ than default priority: negative niceness and
+	best-effort IO, with no CPU ceiling or job cap. Stronger than
+	*--no-throttle*. Lowering niceness may require privilege; when the kernel
+	refuses, the build runs at the current priority (best-effort, never fatal).
+
 # COMMANDS
 
 @OPTIONS@
