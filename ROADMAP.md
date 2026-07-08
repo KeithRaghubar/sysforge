@@ -56,16 +56,6 @@ straight off a `Q`.
   the docs subpackage is absent from the built set when the key is unset. *Priority:
   medium (wasted build time + an unwanted installed package).*
 
-- **`2.1.0-B9` — kernel final-install globs every package starting with `linux`.** The
-  "Installing built package(s)" step at the end of the kernel stage matches **every**
-  `linux*` artifact in the package dir, not just the ones this run built — the observed
-  install list swept in `linux-custom-*`, stale `linux-sysforge-7.0.12-*`,
-  `linux-steam-integration-*`, and multiple older versions. The install set must be the
-  exact artifacts produced by *this* build (track the emitted package filenames from the
-  makepkg run), not a `linux*` prefix glob over the package dir. *Priority: high
-  (installs unrelated/stale kernels — boot-safety-adjacent and can downgrade the running
-  kernel).*
-
 - **`2.1.0-B10` — `lib32-vulkan-icd-loader` fails under clang with a misleading
   "compiler not valid" error.** Building the package with the llvm toolchain fails; a
   gcc per-package override works, but the surfaced error reads as though the compiler

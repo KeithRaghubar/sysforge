@@ -208,19 +208,53 @@ def _find_artifacts(pkgbuild_dir) -> list:
     return found
 
 
+# B9: sidecar recording the exact package basenames a build emitted, written
+# at build time from ``makepkg --packagelist`` while the patched
+# ``PKGBUILD.sysforge`` is still present. The install step (which runs after
+# that patched file is cleaned up, leaving only the un-renamed upstream
+# PKGBUILD) reads it to match this build's artifacts exactly, rather than
+# prefix-globbing a shared PKGDEST — pkgname ``linux`` otherwise sweeps in
+# ``linux-custom``, stale ``linux-sysforge-<oldver>``, etc.
+_BUILT_MANIFEST_NAME = ".sysforge-built.list"
+
+
+def _read_built_manifest(pkgbuild_dir) -> set[str]:
+    """Return the recorded emitted basenames for this build, or empty set."""
+    manifest = Path(pkgbuild_dir) / _BUILT_MANIFEST_NAME
+    if not manifest.is_file():
+        return set()
+    try:
+        return {ln.strip() for ln in manifest.read_text().splitlines() if ln.strip()}
+    except OSError:
+        return set()
+
+
 def _artifacts_for_pkgbuild(pkgbuild_dir) -> list:
     """Return only the artifacts in PKGDEST that belong to ``pkgbuild_dir``.
 
     ``_find_artifacts`` globs the *whole* PKGDEST (shared across every build),
     so on a populated PKGDEST it returns far more than the current build's
-    output. This scopes that union down to the PKGBUILD's own pkgnames by
-    parsing each filename with ``_parse_built_pkg_filename`` — the same
-    name-anchored filter the version-recording path uses. Falls back to the
-    unfiltered union only when the PKGBUILD can't be parsed for pkgnames, so a
-    parse limitation degrades to the old behaviour rather than installing
-    nothing.
+    output. Two-tier scoping:
+
+    1. When a build-time manifest (``_BUILT_MANIFEST_NAME``, from
+       ``makepkg --packagelist``) exists, filter to exactly those basenames —
+       the authoritative set of what *this* build emitted (B9). This is the
+       only reliable answer for a renamed kernel, whose patched PKGBUILD is
+       gone by install time.
+    2. Otherwise fall back to scoping by the PKGBUILD's own pkgnames via
+       ``_parse_built_pkg_filename``; and to the unfiltered union only when the
+       PKGBUILD can't be parsed, so a parse limitation degrades to the old
+       behaviour rather than installing nothing.
     """
     found = _find_artifacts(pkgbuild_dir)
+    wanted = _read_built_manifest(pkgbuild_dir)
+    if wanted:
+        exact = [p for p in found if p.name in wanted]
+        # Only trust the manifest when at least one listed artifact is actually
+        # present; an empty intersection (stale/removed manifest) degrades to
+        # pkgname scoping below rather than installing nothing.
+        if exact:
+            return exact
     pkgbuild_file = Path(pkgbuild_dir) / "PKGBUILD"
     if not pkgbuild_file.is_file():
         return found
@@ -243,6 +277,36 @@ def _artifacts_for_pkgbuild(pkgbuild_dir) -> list:
     # filenames unrecognisable), don't silently install nothing — let the
     # caller's empty-list check raise its clearer error against the full union.
     return scoped or found
+
+
+def _capture_built_manifest(patched_pkgbuild_path) -> None:
+    """Record the exact package basenames this build emits into the sidecar.
+
+    Runs ``makepkg --packagelist`` against the *patched* PKGBUILD (rename +
+    dropped subpackages applied), so the recorded set matches what actually
+    lands in PKGDEST. Called on build success, before the patched PKGBUILD is
+    cleaned up. Best-effort: any failure leaves no sidecar and the install step
+    falls back to pkgname scoping. ``--packagelist`` only sources the PKGBUILD
+    header (no prepare()/build()), so it is cheap and safe for a kernel.
+    """
+    patched = Path(patched_pkgbuild_path)
+    try:
+        r = subprocess.run(
+            ["makepkg", "-p", patched.name, "--packagelist"],
+            cwd=str(patched.parent), capture_output=True, text=True, timeout=60,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return
+    if r.returncode != 0:
+        return
+    names = [Path(ln.strip()).name for ln in r.stdout.splitlines() if ln.strip()]
+    if not names:
+        return
+    try:
+        (patched.parent / _BUILT_MANIFEST_NAME).write_text(
+            "\n".join(names) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
@@ -270,6 +334,14 @@ def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
     result = subprocess.run(cmd)
     if result.returncode != 0:
         raise RuntimeError(f"pacman -U failed (exit {result.returncode})")
+    # B9: the build-time manifest has served its purpose — drop it so a later
+    # unrelated build in the same dir doesn't read a stale artifact list.
+    manifest = Path(pkgbuild_dir) / _BUILT_MANIFEST_NAME
+    if manifest.is_file():
+        try:
+            manifest.unlink()
+        except OSError:
+            pass
     return pkgs
 
 
@@ -757,6 +829,11 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         record_build_result(pkgname, cc_delta, sc_delta)
 
         success = True
+        # B9: record the exact emitted basenames while the patched PKGBUILD is
+        # still present, so the (later, decoupled) install step matches this
+        # build's artifacts precisely instead of prefix-globbing PKGDEST.
+        if extracted_profile is not None:
+            _capture_built_manifest(pkgbuild_path)
     except (RuntimeError, AlreadyBuilt):
         raise
     except Exception as e:

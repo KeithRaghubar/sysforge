@@ -78,3 +78,16 @@ https://keepachangelog.com/en/1.1.0/
   pre-flight report now applies the same `head_reachable_from_remote` test
   `purge_src` already uses, so such clean trees pass and no longer wedge the
   stage where no `--cleansrc-force` could ever clear the blocker. (2.1.0-B3)
+
+- The kernel stage's final install no longer sweeps in unrelated and stale
+  `linux*` packages. The "Installing built package(s)" step discovered
+  artifacts by pkgname-scoping a shared PKGDEST, but a renamed kernel's patched
+  PKGBUILD (`-sysforge` rename, dropped `-docs`) is cleaned up by install time,
+  leaving only the upstream PKGBUILD (pkgbase `linux`) — whose name
+  prefix-matches `linux-custom`, `linux-steam-integration`, and every stale
+  `linux-sysforge-<oldver>`, so the install fell back to the whole PKGDEST and
+  could downgrade the running kernel. The build now records the exact package
+  filenames it emits (from `makepkg --packagelist` against the patched
+  PKGBUILD, while it still exists) into a sidecar manifest, and the install
+  matches against that set precisely, falling back to pkgname scoping only when
+  no manifest is present. (2.1.0-B9)
