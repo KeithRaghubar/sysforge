@@ -47,7 +47,77 @@ straight off a `Q`.
   `profile_writer.write_package_compiler_override` — no parallel path. *Priority: medium
   (an incoherent swap can make the retry fail confusingly).*
 
-- **`2.1.0-B2` — `repo`+`stable` kernel checkout freezes at its first pinned version
+- **`2.1.0-B8` — kernel docs subpackage is still built and installed with no-docs the
+  default.** With no `docs` key set (default off), the kernel stage still builds and
+  installs the `-docs` subpackage (`linux-sysforge-docs-*` observed in a real install).
+  The `_resolve_subpackages` / `patch_kernel_subpackages` path is meant to drop docs
+  unless opted in; something isn't disabling the docs target (or the disable isn't
+  reaching the PKGBUILD's docs `package_*()` split). Fix and add a regression asserting
+  the docs subpackage is absent from the built set when the key is unset. *Priority:
+  medium (wasted build time + an unwanted installed package).*
+
+- **`2.1.0-B9` — kernel final-install globs every package starting with `linux`.** The
+  "Installing built package(s)" step at the end of the kernel stage matches **every**
+  `linux*` artifact in the package dir, not just the ones this run built — the observed
+  install list swept in `linux-custom-*`, stale `linux-sysforge-7.0.12-*`,
+  `linux-steam-integration-*`, and multiple older versions. The install set must be the
+  exact artifacts produced by *this* build (track the emitted package filenames from the
+  makepkg run), not a `linux*` prefix glob over the package dir. *Priority: high
+  (installs unrelated/stale kernels — boot-safety-adjacent and can downgrade the running
+  kernel).*
+
+- **`2.1.0-B10` — `lib32-vulkan-icd-loader` fails under clang with a misleading
+  "compiler not valid" error.** Building the package with the llvm toolchain fails; a
+  gcc per-package override works, but the surfaced error reads as though the compiler
+  itself is invalid rather than naming the real failure (a lib32/multilib clang flag or
+  a package-specific incompatibility). Investigate the actual failure and either fix the
+  lib32 clang path or, if genuinely gcc-only, detect it and emit an accurate message
+  (and auto-suggest the override) instead of the generic "not valid". Dual-toolchain:
+  ship both a gcc-path and llvm-path test. *Priority: medium.*
+
+- **`2.1.0-B11` — `doctor` progress indicator is stuck on "starting…" for the whole
+  system-package audit.** The longest doctor axis (installed-package check) shows
+  "starting…" for its entire duration with no advancement. Surface the in-progress
+  package name if cheaply available, or at minimum a phase-accurate message
+  ("auditing installed packages"). Progress messaging only — the axis stays read-only.
+  *Priority: low.*
+
+- **`2.1.0-B12` — `update` warns `mesa-sysforge: no sync-DB candidate` after mesa was
+  reinstalled from the Arch repos.** `[SYNC] mesa-sysforge: no sync-DB candidate —
+  leaving checkout on main (testing-track)` fires even though mesa is now the stock repo
+  package. Either the external-reinstall demotion
+  (`BuildState.reconcile_external_installs`) isn't firing for mesa, or the sync path
+  looks up the wrong DB name for a `-sysforge`-suffixed source tree. Reconcile so a
+  repo-reinstalled package stops emitting the no-candidate sync warning. *Priority: low
+  (noise, but signals stale tracking state).*
+
+- **`2.1.0-B13` — self-install marker write fails with EACCES during
+  `update --devel --install-only`.** `[RECONCILE] could not record self-install marker
+  (non-fatal): [Errno 13] Permission denied:
+  '/var/lib/sysforge/sentinels/self-install'`. The sentinels dir is provisioned
+  `root:sysforge` setgid 2775 via `fs_provision.py`, so a group-member write should
+  succeed — either the dir/mode drifted or the process isn't in `sysforge`. Confirm the
+  provisioning invariant holds for this path and make the marker write land (or
+  downgrade the message if the marker is legitimately root-only here). *Priority: low
+  (explicitly non-fatal, but points at a provisioning gap).*
+
+- **`2.1.0-B14` — toolchain `reuse_unchanged = true` doesn't skip an unchanged
+  rebuild.** Two consecutive `run toolchain --cleansrc` runs both execute the final
+  build stage; run 2 should compute the same `build_fingerprint` and skip. Either the
+  fingerprint isn't stable across runs (a volatile input — check `_SCHEMA` inputs and
+  whether `--cleansrc` perturbs the hash) or the reuse gate isn't consulted on this
+  path. Fix so an unchanged second run reuses the built artifacts. *Priority: medium
+  (defeats the whole reuse optimization on the most expensive stage).*
+
+- **`2.1.0-B15` — toolchain stage numbering is inconsistent between docs and progress
+  output.** Some docs/log strings use the internal `1a/1b, 2, 3` numbering while the
+  progress indicator and other sections use `1, 2, 3, 4`. Consolidate on the user-facing
+  `1, 2, 3, 4` scheme across the progress indicator, `kernel`/`toolchain` log strings,
+  and the design source (`docs/design/*` + `make design`), keeping any internal
+  sub-pass detail as a parenthetical rather than a competing scheme. *Priority: low
+  (confusing but cosmetic).*
+
+- **`2.1.0-B16` — `repo`+`stable` kernel checkout freezes at its first pinned version
   and never advances.** A `source = "repo"` checkout on the `stable` track lives in its
   designed steady state as a detached HEAD pinned to a git tag (`pkgctl repo switch`),
   which has no tracking branch. `git_is_dirty()` treats a no-tracking repo as dirty by
@@ -68,7 +138,7 @@ straight off a `Q`.
   advances to the newer sync-DB tag) alongside. *Priority: high (kernel/repo packages
   silently stop tracking upstream).*
 
-- **`2.1.0-B3` — kernel.toml `interactive` key wording implies an nconfig injection that
+- **`2.1.0-B17` — kernel.toml `interactive` key wording implies an nconfig injection that
   doesn't happen.** `interactive = true` does not *inject* `nconfig`; it only **skips**
   `patch_noninteractive_kconfig` (`pkgbuild_patcher.py:611`), leaving whatever kconfig
   target the PKGBUILD already contains. If the PKGBUILD has no interactive target,
@@ -83,6 +153,49 @@ straight off a `Q`.
   `make design`). Doc/wording only — no behavior change. *Priority: low.*
 
 ### Features
+
+- **`2.1.0-F1` — Collision-proof roadmap ID allocation with release-notes visibility.**
+  ROADMAP has no view into `docs/release-notes/`, so a shipped ID (e.g. a landed
+  `2.1.0-B2`) and a still-open ROADMAP ID can silently reuse the same number — which is
+  exactly what happened: open `2.1.0-B2`/`B3` collided with *shipped* `2.1.0-B2`–`B7`
+  and had to be hand-renumbered to `2.1.0-B16`/`B17` during triage.
+  Add tooling (fold into `make check-standards` or a new `tools/` check) that scans both
+  ROADMAP.md and the release-notes accumulator/archive, computes the true high-water mark
+  per `<version>-<TYPE>`, and flags any duplicate or gap-jumping ID. Optionally expose a
+  "next free ID" helper so triage allocates monotonically. *Priority: medium (prevents
+  recurring bookkeeping corruption).*
+
+- **`2.1.0-F2` — Kernel config key to force-enable all hotpluggable device drivers.**
+  When minimizing the kernel (e.g. `localmodconfig`), USB and other hotplug-class
+  devices absent at build time get dropped, so a device plugged in later is unsupported.
+  Add a `kernel.toml` opt-in that re-enables the hotpluggable driver classes as modules
+  after minimization, so a slimmed kernel still supports later-attached hardware.
+  Boot-safety stays authoritative (this only *adds* modules). Distinct from the
+  decided-against proactive `=n` filter (`1.2.0-Q11`). *Priority: medium.*
+
+- **`2.1.0-F3` — Before/after package versions for pacman `-Syu` packages in the update
+  summary.** The summary renderer already shows version deltas for source-built
+  packages; extend it to include old→new versions for the repo packages pulled in by the
+  pacman `-Syu` portion of an update. *Priority: low.*
+
+- **`2.1.0-F4` — Log file for every non-pipeline verb and standalone pipeline stage.**
+  There's no log artifact for a `doctor` run (or other non-pipeline verbs), and
+  standalone pipeline stages aren't logged either. Extend the unified run-log
+  (`log.open_unified_log`; `Verb.unified_log_basename`) so every verb — and a directly
+  invoked stage — writes a discoverable log. *Priority: medium (no post-hoc record for
+  most verbs today).*
+
+- **`2.1.0-F5` — Global flags to bypass build throttling and to raise priority.** Add a
+  global flag that ignores the configured throttle (nice/ionice/cpu_quota/jobs) for this
+  run, and a second, stronger flag that runs at *higher* than default priority. Both
+  route through the one throttle home (`build_throttle.resolve_throttle`) — no parallel
+  throttle path. *Priority: low.*
+
+- **`2.1.0-F6` — Relative `cpu_quota` as a fraction of available cores.** `cpu_quota`
+  currently takes an absolute percentage (e.g. `800%`). Allow a fractional form (e.g.
+  `0.5`) that sysforge translates against the host's total capacity (16 cores →
+  `800%`), so the config is portable across machines. Resolve inside
+  `build_throttle.resolve_throttle`. *Priority: low.*
 
 - **`1.2.0-F14` — `doctor`: warn on installed instrumented/incomplete-PGO builds of
   *any* package.** Since `--pgo` works on any package (F5), an instrumented
@@ -187,8 +300,18 @@ straight off a `Q`.
 
 ### Open questions
 
-_(none open — resolved questions are either promoted to a Feature/Bug entry
-above or recorded under Abandoned below.)_
+- **`2.1.0-Q1` — `doctor`'s `sudo ldconfig` remediation doesn't actually clear the
+  warnings it's attached to.** Most benign doctor findings advise running
+  `sudo ldconfig` (which rebuilds the `ld.so` shared-library cache from
+  `/etc/ld.so.conf` + trusted dirs), but running it did not resolve the warnings.
+  Question: what are these findings really detecting, and is `ldconfig` the correct
+  remediation at all? If the warning persists after a cache rebuild, the finding is
+  keying off something `ldconfig` doesn't touch (stale symlink, a path outside the
+  cache's search dirs, or a detection that doesn't re-check post-fix) — so the advice is
+  wrong or the check is. Investigate the specific findings before changing code; then
+  promote to a Bug (fix the check or the remediation text) or Abandon with rationale.
+  Never implement straight off this Q. *Priority: medium (mis-advises the user on nearly
+  every benign finding).*
 
 ---
 
