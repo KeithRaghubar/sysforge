@@ -26,6 +26,9 @@ Public API:
     collect_builddeps(pkgbuild_paths) → list
     filter_missing_deps(deps)       → list
     batch_install_makedeps(deps)    → None
+    install_repo_pkgs(names)        → None
+    remove_pkgs(names)              → None
+    reinstall_repo_pkgs(names)      → None
     get_installed_version(pkgname)  → str | None
     get_all_installed_packages()    → dict[str, str]
     get_foreign_packages()          → dict[str, str]
@@ -573,6 +576,34 @@ def install_repo_pkgs(names: list) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(f"repo install failed (exit {result.returncode})")
+
+
+def remove_pkgs(names: list) -> None:
+    """Remove packages via ``sudo pacman -R --noconfirm``.
+
+    Used by ``revert-to-stock`` to drop a renamed optimized build
+    (e.g. ``mesa-sysforge``) before reinstalling the stock package. No-op
+    on an empty list so callers need not guard.
+    """
+    if not names:
+        return
+    subprocess.run(
+        ["sudo", "pacman", "-R", "--noconfirm", "--", *names],
+        check=True,
+    )
+
+
+def reinstall_repo_pkgs(names: list) -> None:
+    """(Re)install repo packages via ``sudo pacman -S --noconfirm`` (no
+    ``--needed``), so a source-built package at the repo version is replaced
+    by the repo binary. Used by ``revert-to-stock``. No-op on empty list.
+    """
+    if not names:
+        return
+    subprocess.run(
+        ["sudo", "pacman", "-S", "--noconfirm", "--", *names],
+        check=True,
+    )
 
 
 # ---------------------------------------------------------------------------

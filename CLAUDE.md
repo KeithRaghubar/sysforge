@@ -104,6 +104,12 @@ Mechanism lives in the cited §DESIGN section.
 - **`build_state.toml` = steady-state tracking authority** (not packages.toml): `update` rebuilds
   every source-built pkg (`build_mode != "pacman"`), so `build mesa` is durable. Demotion on external
   `pacman -S` via `BuildState.reconcile_external_installs`; stop via `state forget`. §update.
+- **`revert-to-stock` branch = rename mode, not a suffix test**: `revert_cmd.plan_revert` classifies
+  via `profile.is_optimized_build_mode` then `rename_mode_for_build_mode` — plain `source_built`→
+  `reinstall` (`pacman -S <name>`), `conflict` optimized→`replace` (`pacman -S <origin_pkgbase>` **alone**;
+  the `-sysforge` build's `provides`/`conflicts` mean a pre-`-R` breaks reverse deps — pacman does the
+  atomic swap), `coexist` (kernel FDO only)→`derename` (`-R` renamed then `-S` stock). Never collapse
+  conflict+coexist. Demotion reuses `cmd_state_forget` + `reconcile_external_installs`. §CLI Verb.
 - **`build` repo-pkg opt-in gate**: `build_cmd` prompts on TTY (writes via `packages_cmd`) or aborts
   non-interactive; `--force` builds this run only, never writes. One packages.toml writer. §CLI Verb.
 - **Vocabulary** (renamed, legacy aliased on read): build_mode `source_built` (legacy `profiled`);

@@ -52,6 +52,7 @@ from sysforge.run_cmd import (
     RunReconfigureVerb,
     RunToolchainVerb,
 )
+from sysforge.revert_cmd import RevertToStockVerb
 from sysforge.setup_cmd import SetupVerb
 from sysforge.state_cmd import (
     StateFailedVerb,
@@ -709,6 +710,22 @@ def _add_state_parser(sub):
     p_forget.set_defaults(verb_cls=StateForgetVerb)
 
 
+def _add_revert_parser(sub):
+    p_revert = sub.add_parser(
+        "revert-to-stock",
+        help="undo a source-built/optimized package back to the repo version",
+    )
+    p_revert.add_argument("packages", nargs="+", metavar="PKG",
+        help="package name(s) to revert (stock or -sysforge name)")
+    p_revert.add_argument("--force", action="store_true",
+        help="skip the confirmation prompt")
+    p_revert.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory.")
+    p_revert.add_argument("--dry-run", action="store_true", dest="dry_run",
+        help="Show the planned revert without making changes.")
+    p_revert.set_defaults(verb_cls=RevertToStockVerb)
+
+
 def _add_setup_parser(sub):
     p = sub.add_parser("setup",
         help="Configure system integration (pacman IgnoreGroup for sf-build; "
@@ -1120,6 +1137,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_doctor_parser(sub)
     _add_packages_parser(sub)
     _add_state_parser(sub)
+    _add_revert_parser(sub)
     _add_run_parser(sub)
     _add_setup_parser(sub)
     _add_env_parser(sub)

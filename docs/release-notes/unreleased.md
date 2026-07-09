@@ -27,6 +27,16 @@ https://keepachangelog.com/en/1.1.0/
 - `doctor` `services` axis: broadened the current-boot journal scan beyond
   firmware to surface failed-start / core-dump / filesystem / OOM errors
   (1.2.0-F19).
+- `revert-to-stock` verb: undo a source-built or optimized package back to its
+  stock repo version — reinstalls the stock repo package, atomically replacing a
+  conflict-mode `-sysforge` build (a lone `pacman -S`, so reverse deps stay
+  satisfied) or removing-then-reinstalling a coexisting one (kernel FDO), then
+  forgets the build-state entry so `update` stops rebuilding it. (1.2.0-F29)
+- `make dev-install` / `make dev-uninstall`: install sysforge from a git checkout
+  (editable venv entry point + system symlinks mirroring the package layout) for a
+  quick trial or fresh dev-env, without going through the AUR. Verbose, idempotent,
+  and fully reversible; the symlink mapping is parity-checked against the packaged
+  set. (1.2.0-F31)
 - Global `--no-throttle` / `--turbo` flags: `--no-throttle` ignores the
   configured build throttle for a run; `--turbo` runs at higher-than-default
   priority (negative niceness, best-effort IO, no cap). Both route through the

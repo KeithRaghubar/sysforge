@@ -1,4 +1,4 @@
-.PHONY: all dev venv build install clean distclean test test-x lint coverage man \
+.PHONY: all dev venv build install dev-install dev-uninstall clean distclean test test-x lint coverage man \
         check-shipped check-personal check-standards design check-design pre-release \
         sync-config \
         release-major release-minor release-patch release-resume \
@@ -30,6 +30,12 @@ build:
 
 install:
 	makepkg -si
+
+dev-install:
+	tools/dev_install.sh install
+
+dev-uninstall:
+	tools/dev_install.sh uninstall
 
 # Pass extra pytest args via ARGS, e.g.
 #   make test ARGS="tests/test_standards_compliance.py -q"

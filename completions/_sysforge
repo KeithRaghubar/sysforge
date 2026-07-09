@@ -27,6 +27,7 @@ _sysforge() {
         doctor)   _sysforge_doctor   ;;
         packages) _sysforge_packages ;;
         state)    _sysforge_state    ;;
+        revert-to-stock) _sysforge_revert ;;
         run)      _sysforge_run      ;;
         setup)    _sysforge_setup    ;;
         env)      _sysforge_env      ;;
@@ -47,6 +48,7 @@ _sysforge_commands() {
     'doctor:health-check installed package depends + linkage'
     'packages:manage packages.toml override entries (list, add, remove)'
     'state:inspect or repair build_state.toml (list, repair, orphans)'
+    'revert-to-stock:undo a source-built/optimized package back to the repo version'
     'run:execute a pipeline stage'
     'setup:configure system integration (pacman IgnoreGroup for sf-build; install/refresh pacman hooks)'
     'env:print the inherited env chain (shell vars, parent processes, shell init files)'
@@ -337,6 +339,14 @@ _sysforge_state_forget() {
   _arguments \
     '--state-dir[override state directory]:dir:_directories' \
     '*: :_sysforge_state_names'
+}
+
+_sysforge_revert() {
+  _arguments \
+    '--force[skip the confirmation prompt]' \
+    '--state-dir[override state directory]:dir:_directories' \
+    '--dry-run[show planned revert without making changes]' \
+    '*: :_sysforge_pkg_names'
 }
 
 _sysforge_run() {

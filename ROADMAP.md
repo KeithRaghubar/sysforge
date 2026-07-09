@@ -93,28 +93,14 @@ _(none currently planned)_
   inventory. Discuss the UX before committing; it is a concrete first slice of this
   primitive.
 
-- **`1.2.0-F29` — Basic package management verbs (uninstall / search / revert-to-stock).**
+- **`1.2.0-F29` — Basic package management verbs (uninstall / search).**
   Sysforge is build-focused but lacks everyday lifecycle verbs. `search` and
   `uninstall` are largely pacman passthroughs, but must account for the build/install
   paths a sysforge package can take: an `uninstall` has to clear the `build_state.toml`
   entry (`state forget`) and any coexist-renamed `-sysforge` package, not just
-  `pacman -R`. **`revert-to-stock`** is the genuinely sysforge-specific part — undo a
-  source-built/optimized package back to the repo version: reverse coexist-rename,
-  forget build state, reinstall the stock pacman package, and reconcile drift gates.
-  Route through the Verb framework (`requires_sentinel=True` for the mutating verbs);
-  reuse `BuildState.reconcile_external_installs` / `state forget` rather than a
-  parallel demotion path. *Priority: medium (rounds out the lifecycle; revert-to-stock
-  is a real recovery need).*
-
-- **`1.2.0-F31` — `make install` / `make uninstall` via venv + config symlinks.** Add
-  verbose Make targets that install sysforge from the git checkout (venv entry point +
-  symlinked config/hooks/completions/manpage) and a matching uninstall, for quick
-  trial or fresh dev-env setup **without** going through the AUR and **without**
-  permanent system changes. Each target must print every file it creates/removes and
-  whether the operation succeeded (idempotent, reversible). Document the option in
-  README.md (user-facing install path). Cross-check `make check-shipped` parity so the
-  symlinked set matches the packaged set. *Priority: medium (lowers the bar to try
-  sysforge / stand up a new workstation).*
+  `pacman -R`. Route through the Verb framework (`requires_sentinel=True` for the
+  mutating verb); reuse `BuildState.reconcile_external_installs` / `state forget`
+  rather than a parallel demotion path. *Priority: medium (rounds out the lifecycle).*
 
 - **`1.2.0-F36` — Finish the logging re-levelling audit (interactive stages).** The
   configurable default verbosity (`[log] verbosity` + global `--quiet`) shipped, along with

@@ -1035,7 +1035,19 @@ Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`
 | `packages {list,add,remove}` | load packages.toml + validate override fields | rewrite TOML | null | no |
 | `state {list,repair,orphans}` | load state dir | inspect / repair / prune | null | `repair` only |
 | `config merge` | null | scan config dir for `.sfnew`/`.pacnew`; pacdiff-style view/merge/remove loop | null | no |
+| `revert-to-stock` | resolve state dir + `plan_revert` over `BuildState` (pure, no mutation) | prompt/`--force`/`--dry-run` gate, then per-target reinstall / atomic replace / derename-then-reinstall via `pacman` | (state written inline) | yes |
 | `run …` namespace | build `RunOptions` | delegate to `pipeline.run_pipeline` / `run_stage_standalone` | pipeline framework | (pipeline owns it) |
+
+### `revert-to-stock`
+
+Undoes a source-built or optimized package back to its official repo version. `pre_check` resolves the state dir and calls `plan_revert(bs, targets)` (pure — no mutation) to classify each target against `BuildState`, including a reverse lookup (iterated in sorted key order so a stock base always resolves to the same pkgname deterministically) so naming the *stock* base of a renamed build (e.g. `mesa` when the tracked entry is `mesa-sysforge`) still resolves. Four actions, distinguished by `profile.is_optimized_build_mode(mode)` and — for optimized builds — `profile.rename_mode_for_build_mode(mode)`:
+
+- **`skip`** — untracked or already `build_mode = "pacman"`; nothing to do.
+- **`reinstall`** — plain `source_built`, installed under the stock name: just reinstall the repo package (`pacman -S <name>`).
+- **`replace`** — optimized, `conflict` rename (mesa, `pgo`, and every optimization except kernel FDO): the `-sysforge` build declares `provides`/`conflicts` for the stock name, so reverse deps depend on the *stock* name (satisfied by the provides). A `pacman -R <renamed>` would therefore fail ("breaks dependency"). Instead `execute` runs `pacman -S <origin_pkgbase>` **alone** — pacman detects the conflict with the installed `-sysforge` build and removes-plus-installs stock atomically in one transaction, keeping reverse deps satisfied throughout. **No explicit remove.**
+- **`derename`** — optimized, `coexist` rename (kernel FDO only): the renamed build genuinely coexists with stock (parallel-installed, version-suffixed /boot files), so reverting needs `pacman -R <renamed>` **then** `pacman -S <origin_pkgbase>`.
+
+This reuses the same `is_optimized_build_mode`/`rename_mode_for_build_mode` predicates the rename/coexist machinery uses elsewhere — no second "is this optimized?" or mode test. `execute` narrates every plan (including skips), then gates on `--dry-run` (report only) and `--force` (skip the confirmation prompt; non-interactive without `--force` refuses with a hint). Actionable targets are processed in order via `pacman.remove_pkgs`/`pacman.reinstall_repo_pkgs`; a `CalledProcessError` **stops processing remaining targets** and returns exit 1 (partial batches never silently continue), with a message naming the step that actually failed: a `derename` remove-step failure reports "nothing changed" (system intact), a `derename` reinstall-step failure warns the system is left without the package (with a recovery command), and a `replace`/`reinstall` single-call failure reports the atomic reinstall failed (system intact). Each successfully-reverted target calls `cmd_state_forget` (the same `state forget` verb code, not a duplicate) so `update` stops rebuilding it, then a final `BuildState.reconcile_external_installs(install_reconcile.external_install_targets())` pass demotes anything pacman now owns as a belt-and-suspenders check — reusing the one-home demotion path rather than adding a parallel one. `requires_sentinel = True` since `execute` mutates installed packages and state.
 
 ### Global profiling flags
 

@@ -311,6 +311,44 @@ _INSTALL_RE = re.compile(
 _BACKUP_RE = re.compile(r"^backup=\((.*?)\)", re.DOTALL | re.MULTILINE)
 _LOCAL_VAR_RE = re.compile(r'local\s+(\w+)\s*=\s*"([^"]+)"')
 
+# Line-continuation join: several `install -Dm...` calls split src/dst across a
+# `\`-continued line for readability. Join before regex matching so group(2)
+# lands on the real destination token, not the literal backslash.
+_CONT_RE = re.compile(r"\\\s*\n\s*")
+
+# Packaged paths the dev-install symlink mapping intentionally does NOT mirror:
+#   - sysusers.d/tmpfiles.d: generated stubs that provision the sysforge group +
+#     state dirs, not real shipped files.
+#   - bootstrap.toml.example: a per-host template (device/hostname/passwords)
+#     shipped as an example under /usr/share, not a functional config sysforge
+#     reads at runtime — same rationale as the provisioning stubs. Matched by
+#     exact path (not a /usr/share/sysforge/ prefix) so a future real file there
+#     is not silently over-excluded.
+_EXCLUDED_SYSTEM_PATH_MARKERS = (
+    "/usr/lib/sysusers.d/",
+    "/usr/lib/tmpfiles.d/",
+    "/usr/share/sysforge/bootstrap.toml.example",
+)
+
+
+def _parse_pkgbuild_install_targets(text: str) -> set[str]:
+    """Every absolute system path `install -Dm...` writes under $pkgdir.
+
+    Parses the full install-target set from the PKGBUILD `package()` body; used
+    by check_dev_install_parity to verify dev_install.sh's MAPPING covers the
+    packaged set. (check_pkgbuild does its own inline `_INSTALL_RE` scan.)
+    """
+    joined = _CONT_RE.sub(" ", text)
+    local_vars = {f"${name}": val for name, val in _LOCAL_VAR_RE.findall(joined)}
+    targets: set[str] = set()
+    for m in _INSTALL_RE.finditer(joined):
+        dst = m.group(2).strip("'\"")
+        for var, val in local_vars.items():
+            dst = dst.replace(var, val)
+        if dst.startswith("$pkgdir/"):
+            targets.add("/" + dst[len("$pkgdir/"):])
+    return targets
+
 # Placeholder fingerprint shipped in PKGBUILD until the maintainer fills in their
 # real key. tools/release.sh refuses to publish while this is present; check_shipped
 # tolerates it so dev gates pass before a signing key exists.
@@ -868,6 +906,49 @@ def check_provisioning(repo: Path) -> list[Finding]:
 
 
 # ===========================================================================
+# Group: dev_install
+# ===========================================================================
+
+def check_dev_install_parity(repo: Path) -> list[Finding]:
+    """tools/dev_install.sh's MAPPING must mirror exactly the system paths
+    the PKGBUILD package() installs, minus the generated sysusers.d/tmpfiles.d
+    stubs (provisioning only, never symlinked - see dev_install.sh comment).
+    """
+    findings: list[Finding] = []
+    pkgbuild = repo / "PKGBUILD"
+    dev_install = repo / "tools" / "dev_install.sh"
+    if not pkgbuild.exists():
+        return [Finding("dev_install", "error", "PKGBUILD", "missing")]
+    if not dev_install.exists():
+        return [Finding("dev_install", "error", "tools/dev_install.sh", "missing")]
+
+    packaged = _parse_pkgbuild_install_targets(pkgbuild.read_text())
+    packaged = {
+        p for p in packaged
+        if not any(marker in p for marker in _EXCLUDED_SYSTEM_PATH_MARKERS)
+    }
+
+    result = subprocess.run(
+        ["bash", str(dev_install), "print-targets"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return [Finding("dev_install", "error", "tools/dev_install.sh",
+                        f"print-targets failed: {result.stderr.strip()}")]
+    mapped = set(result.stdout.split())
+
+    missing = sorted(packaged - mapped)
+    extra = sorted(mapped - packaged)
+    if missing:
+        findings.append(Finding("dev_install", "error", "tools/dev_install.sh",
+            f"missing from dev_install.sh: {missing}"))
+    if extra:
+        findings.append(Finding("dev_install", "error", "tools/dev_install.sh",
+            f"extra in dev_install.sh: {extra}"))
+    return findings
+
+
+# ===========================================================================
 # Driver
 # ===========================================================================
 
@@ -880,6 +961,7 @@ GROUPS = {
     "completions":     check_completions,
     "versions":        check_versions,
     "manpage":         check_manpage,
+    "dev_install":     check_dev_install_parity,
 }
 
 

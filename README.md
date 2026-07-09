@@ -174,6 +174,29 @@ For the current session only, from the repo root: `fpath=($(pwd)/completions $fp
 
 ---
 
+## Try from a git checkout
+
+For a quick trial or a dev environment, without going through the AUR:
+
+```bash
+make dev-install    # needs sudo
+```
+
+This installs an editable venv entry point and symlinks the repo's config, hooks,
+completions, and manpage into their real system paths (mirroring where the
+packaged install would put them). It's verbose about what it links, idempotent
+to re-run, and fully reversible:
+
+```bash
+make dev-uninstall
+```
+
+Because it links into the real system paths, remove any concurrently-installed
+`sysforge` package first — if a real (non-symlink) file already exists at a
+target path, `dev-install` skips it rather than overwriting it.
+
+---
+
 ## Verifying releases
 
 Releases are GPG-signed end to end with the maintainer key: the release commit, the git tag, and the source tarball. The AUR `sysforge` package verifies the tarball signature automatically at install time via `validpgpkeys`.

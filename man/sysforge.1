@@ -755,6 +755,32 @@ Package name(s) or pkgbase(s) to stop tracking.\& A pkgbase forgets every split-
 Override state directory.\&
 .PP
 .RE
+.SS revert-to-stock
+.PP
+\fBsysforge revert-to-stock\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
+.PP
+Undo a source-built/optimized package back to the repo version.\&
+.PP
+\fBPKG\fR
+.RS 4
+package name(s) to revert (stock or -sysforge name)
+.PP
+.RE
+\fB--force\fR
+.RS 4
+skip the confirmation prompt
+.PP
+.RE
+\fB--state-dir\fR \fIDIR\fR
+.RS 4
+Override state directory.\&
+.PP
+.RE
+\fB--dry-run\fR
+.RS 4
+Show the planned revert without making changes.\&
+.PP
+.RE
 .SS run
 .PP
 \fBsysforge run\fR \fISUBCOMMAND\fR
