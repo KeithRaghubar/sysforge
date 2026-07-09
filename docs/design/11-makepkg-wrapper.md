@@ -121,7 +121,16 @@ to `[e]/[r]/[a]`.
   resolution chain as `config merge`), via the shared `/dev/tty` passthrough
   `run_tty_argv`. On editor exit it retries the build automatically; a
   still-failing retry re-shows the menu rather than raising.
-- **`[c]`** prompts for `CC`/`CXX`/`LD`, then calls the caller-supplied
+- **`[c]`** presents the compiler choice as a **coherent toolchain unit**
+  (`_prompt_toolchain_swap` → `_TOOLCHAIN_UNITS`): the user picks `gcc`
+  (`CC=gcc CXX=g++`) or `clang` (`CC=clang CXX=clang++`), never two independent
+  free-text compilers — a mixed `cc`/`cxx` pair (e.g. `gcc` + `clang++`) only
+  produces an incoherent override that fails the retry confusingly. The menu
+  enumerates **only installed** toolchains (`_available_toolchain_units` gates
+  on `shutil.which` for *both* `cc` and `cxx`), marks the current one, and offers
+  `[m]` (hand-enter a `cc`/`cxx` pair — the advanced escape hatch) and `[b]`
+  (back to the top menu). `LD` is prompted separately (linker choice is
+  orthogonal to the compiler). It then calls the caller-supplied
   `reemit_conf(cc, cxx, ld)` context manager to get a freshly emitted conf
   path and retries against it. `makepkg_invoke` never imports the conf
   emitter itself — `reemit_conf` is a closure the wrapper builds over its own

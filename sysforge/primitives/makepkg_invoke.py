@@ -23,6 +23,7 @@ flag transforms and env resolvers it draws on stay in ``makepkg_flags`` /
 """
 import contextvars
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -459,6 +460,69 @@ def _summary_linker(resolved_profile, conf_path):
     )
 
 
+# Coherent (cc, cxx) toolchain units. The recovery-menu swap offers these as a
+# unit — pick "gcc" or "clang", never two independent free-text compilers — so a
+# retry can't end up with a mismatched cc/cxx (e.g. gcc + clang++), which
+# produces an incoherent override that just fails the retry confusingly
+# (2.1.0-B1). Linker choice stays a separate axis (see _prompt_toolchain_swap).
+_TOOLCHAIN_UNITS = (
+    ("gcc", "gcc", "g++"),
+    ("clang", "clang", "clang++"),
+)
+
+
+def _available_toolchain_units():
+    """The toolchain units whose cc *and* cxx are both resolvable on PATH.
+
+    Enumerating only installed toolchains keeps the menu honest — offering a
+    ``clang`` unit on a machine without clang would just swap one build failure
+    for another."""
+    return [
+        (name, cc, cxx)
+        for (name, cc, cxx) in _TOOLCHAIN_UNITS
+        if shutil.which(cc) and shutil.which(cxx)
+    ]
+
+
+def _prompt_toolchain_swap(resolved_profile):
+    """Prompt for a coherent compiler/linker swap.
+
+    Returns ``(cc, cxx, ld)`` for a retry, or ``None`` if the user backs out
+    (re-show the top recovery menu). CC/CXX always come from one toolchain unit
+    (2.1.0-B1); ``[m]`` is an advanced escape hatch for a hand-entered pair, and
+    LD is prompted separately (linker choice is orthogonal to the compiler)."""
+    cur_cc = resolved_profile.get("CC")
+    cur_cxx = resolved_profile.get("CXX")
+    units = _available_toolchain_units()
+
+    lines = ["Choose a compiler toolchain:"]
+    keys: list[str] = []
+    for name, cc, cxx in units:
+        keys.append(name)
+        marker = "  (current)" if cur_cc == cc and cur_cxx == cxx else ""
+        lines.append(f"  [{name}] CC={cc}  CXX={cxx}{marker}")
+    lines.append("  [m] enter cc/cxx manually")
+    lines.append("  [b] back")
+    keys.extend(["m", "b"])
+    choice = prompt_choice(
+        "\n".join(lines) + "\nToolchain: ", tuple(keys),
+        default="b", eof_default="b", tag="MAKEPKG",
+    )
+
+    if choice == "b":
+        return None
+    if choice == "m":
+        new_cc = prompt_text(f"CC [{cur_cc or 'default'}]: ",
+                             default=cur_cc or "", tag="MAKEPKG")
+        new_cxx = prompt_text(f"CXX [{cur_cxx or 'default'}]: ",
+                              default=cur_cxx or "", tag="MAKEPKG")
+    else:
+        _name, new_cc, new_cxx = next(u for u in units if u[0] == choice)
+    new_ld = prompt_text("LD (e.g. lld, bfd, mold; blank to keep): ",
+                         default="", tag="MAKEPKG")
+    return new_cc, new_cxx, new_ld
+
+
 def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
                        extra_env, extra_flags, interactive, strip_flags,
                        reemit_conf, pkgbase):
@@ -503,17 +567,14 @@ def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
                 continue  # still failing → re-show menu
 
         if choice == "c" and have_swap:
-            # Use the real resolved CC/CXX as prompt defaults, not the "(default)"
-            # display placeholder — pressing Enter must keep the current compiler,
-            # never inject a literal "(default)" string.
-            cur_cc = resolved_profile.get("CC")
-            cur_cxx = resolved_profile.get("CXX")
-            new_cc = prompt_text(f"CC [{cur_cc or 'default'}]: ",
-                                 default=cur_cc or "", tag="MAKEPKG")
-            new_cxx = prompt_text(f"CXX [{cur_cxx or 'default'}]: ",
-                                  default=cur_cxx or "", tag="MAKEPKG")
-            new_ld = prompt_text("LD (e.g. lld, bfd, mold): ", default="",
-                                 tag="MAKEPKG")
+            # Present the compiler choice as a coherent toolchain unit (gcc or
+            # clang), never two independent free-text prompts — a mixed cc/cxx
+            # pair just fails the retry confusingly (2.1.0-B1). A "back" answer
+            # (None) re-shows the top recovery menu.
+            swap = _prompt_toolchain_swap(resolved_profile)
+            if swap is None:
+                continue
+            new_cc, new_cxx, new_ld = swap
             # CC/CXX are env-delivered (resolve_env_vars injects them, and
             # invoke_makepkg applies extra_env LAST, over the conf). Re-emitting
             # the conf alone is not enough — the stale extra_env["CC"]/["CXX"]

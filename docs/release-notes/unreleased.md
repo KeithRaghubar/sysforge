@@ -42,9 +42,20 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Fixed
 
+- Build-failure recovery menu `[c]` now offers the compiler as a coherent
+  toolchain unit (`gcc` = `gcc`/`g++`, `clang` = `clang`/`clang++`) instead of
+  two independent free-text prompts, so a retry can no longer end up with a
+  mismatched `cc`/`cxx` pair; the menu enumerates only installed toolchains and
+  keeps `[m]` as a manual escape hatch (2.1.0-B1).
 - Regression test locks in the kernel `-docs` subpackage drop surviving the
   `-sysforge` coexist rename, with the doc build (`make htmldocs`) neutralized.
   (2.1.0-B8)
+- Postflight diagnostics now recognize the lib32 clang + `ld.lld` `-lgcc_s`
+  failure (`toolchain:lib32-clang-libgcc`): a 32-bit build where lld can't find
+  the `libgcc_s` clang implicitly links, which CMake/meson mis-reports as the
+  compiler being "broken". The diagnosis names the real cause and suggests a
+  per-package `--cc gcc --cxx g++` override instead of the generic message
+  (2.1.0-B10).
 - `doctor` progress indicator no longer sits on "starting…" for the whole run —
   it now advances per axis and per audited package (2.1.0-B11).
 - Interactive `sysforge run kernel` now shows the kconfig review menu even when the

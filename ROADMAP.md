@@ -36,26 +36,6 @@ straight off a `Q`.
 
 ### Bugs
 
-- **`2.1.0-B1` — Build-failure recovery compiler-swap prompt allows a mismatched
-  cc/cxx toolchain and hides available options.** The compiler-change retry prompt in
-  the recovery menu (`makepkg_invoke._run_recovery_menu`) lets the user pick a `cc` and
-  `cxx` from *different* toolchains (e.g. `gcc` cc + `clang++` cxx), which produces an
-  incoherent override, and it doesn't surface the full option set. Fix: present the
-  toolchain choice as a coherent unit (e.g. `gcc`/`clang`) so cc and cxx always come
-  from the same toolchain, and enumerate all available options in the prompt. Persist
-  the resulting swap via the existing sole writer
-  `profile_writer.write_package_compiler_override` — no parallel path. *Priority: medium
-  (an incoherent swap can make the retry fail confusingly).*
-
-- **`2.1.0-B10` — `lib32-vulkan-icd-loader` fails under clang with a misleading
-  "compiler not valid" error.** Building the package with the llvm toolchain fails; a
-  gcc per-package override works, but the surfaced error reads as though the compiler
-  itself is invalid rather than naming the real failure (a lib32/multilib clang flag or
-  a package-specific incompatibility). Investigate the actual failure and either fix the
-  lib32 clang path or, if genuinely gcc-only, detect it and emit an accurate message
-  (and auto-suggest the override) instead of the generic "not valid". Dual-toolchain:
-  ship both a gcc-path and llvm-path test. *Priority: medium.*
-
 - **`2.1.0-B12` — `update` warns `mesa-sysforge: no sync-DB candidate` after mesa was
   reinstalled from the Arch repos.** `[SYNC] mesa-sysforge: no sync-DB candidate —
   leaving checkout on main (testing-track)` fires even though mesa is now the stock repo

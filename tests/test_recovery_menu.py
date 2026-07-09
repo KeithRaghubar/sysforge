@@ -109,12 +109,23 @@ def test_editor_path_snapshots_orig_and_retries(monkeypatch, pkgbuild):
     assert calls["n"] == 1
 
 
+def _both_toolchains_installed(monkeypatch):
+    """Make gcc/g++/clang/clang++ all resolve on PATH so both coherent units
+    are offered by the swap menu."""
+    monkeypatch.setattr(mi.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+
+def _choice_seq(monkeypatch, *answers):
+    seq = iter(answers)
+    monkeypatch.setattr(mi, "prompt_choice", lambda *a, **k: next(seq))
+
+
 def test_swap_path_returns_overrides_on_success(monkeypatch, pkgbuild):
-    # Menu: [c]; prompt_text supplies cc/cxx/ld; reemit_conf yields a conf;
-    # build succeeds → overrides returned.
-    monkeypatch.setattr(mi, "prompt_choice", lambda *a, **k: "c")
-    answers = iter(["gcc", "g++", "bfd"])
-    monkeypatch.setattr(mi, "prompt_text", lambda *a, **k: next(answers))
+    # Menu: [c] → pick the gcc toolchain unit (coherent cc/cxx) → LD via
+    # prompt_text; reemit_conf yields a conf; build succeeds → overrides returned.
+    _both_toolchains_installed(monkeypatch)
+    _choice_seq(monkeypatch, "c", "gcc")
+    monkeypatch.setattr(mi, "prompt_text", lambda *a, **k: "bfd")
 
     @contextmanager
     def fake_reemit(cc, cxx, ld):
@@ -130,13 +141,65 @@ def test_swap_path_returns_overrides_on_success(monkeypatch, pkgbuild):
     assert out.overrides == {"cc": "gcc", "cxx": "g++", "ld": "bfd"}
 
 
+def test_swap_menu_selects_coherent_toolchain_unit(monkeypatch, pkgbuild):
+    # 2.1.0-B1: picking the "clang" unit must set BOTH cc=clang and cxx=clang++
+    # — never a mixed gcc/clang++ pair. The user picks one toolchain, not two
+    # independent free-text compilers.
+    _both_toolchains_installed(monkeypatch)
+    _choice_seq(monkeypatch, "c", "clang")
+    monkeypatch.setattr(mi, "prompt_text", lambda *a, **k: "")  # keep LD
+
+    @contextmanager
+    def fake_reemit(cc, cxx, ld):
+        yield Path("/conf-new")
+
+    monkeypatch.setattr(mi, "invoke_makepkg", lambda *a, **k: None)
+    out = mi._run_recovery_menu(
+        pkgbuild, Path("/conf"), {"CC": "gcc", "CXX": "g++"},
+        extra_env=None, extra_flags=None, interactive=True, strip_flags=None,
+        reemit_conf=fake_reemit, pkgbase="htop",
+    )
+    assert out.overrides == {"cc": "clang", "cxx": "clang++", "ld": ""}
+
+
+def test_swap_menu_omits_uninstalled_toolchain(monkeypatch, pkgbuild):
+    # 2.1.0-B1: the menu enumerates only toolchains whose cc *and* cxx are on
+    # PATH. With no clang installed, the offered choice set excludes it.
+    monkeypatch.setattr(
+        mi.shutil, "which",
+        lambda name: f"/usr/bin/{name}" if name in ("gcc", "g++") else None)
+    offered = {}
+
+    def capture_choice(msg, choices, **k):
+        choices = tuple(choices)
+        if "gcc" in choices:  # the toolchain menu
+            offered["choices"] = choices
+            return "b"  # back out → re-show top menu
+        if "c" in choices and "choices" not in offered:  # top menu, first pass
+            return "c"  # enter the swap flow
+        return "a"  # top menu, second pass → abort
+
+    monkeypatch.setattr(mi, "prompt_choice", capture_choice)
+
+    @contextmanager
+    def fake_reemit(cc, cxx, ld):
+        yield Path("/conf-new")
+
+    mi._run_recovery_menu(
+        pkgbuild, Path("/conf"), {}, extra_env=None, extra_flags=None,
+        interactive=True, strip_flags=None, reemit_conf=fake_reemit, pkgbase="htop",
+    )
+    assert "gcc" in offered["choices"]
+    assert "clang" not in offered["choices"]
+
+
 def test_swap_applies_new_cc_cxx_to_retry_env(monkeypatch, pkgbuild):
     # Regression: the swapped CC/CXX must reach invoke_makepkg's extra_env,
     # not just the re-emitted conf (env.update wins last in invoke_makepkg, so
     # a stale CC/CXX in extra_env would clobber the freshly-emitted conf).
-    monkeypatch.setattr(mi, "prompt_choice", lambda *a, **k: "c")
-    answers = iter(["gcc", "g++", "bfd"])
-    monkeypatch.setattr(mi, "prompt_text", lambda *a, **k: next(answers))
+    _both_toolchains_installed(monkeypatch)
+    _choice_seq(monkeypatch, "c", "gcc")
+    monkeypatch.setattr(mi, "prompt_text", lambda *a, **k: "bfd")
 
     @contextmanager
     def fake_reemit(cc, cxx, ld):

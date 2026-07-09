@@ -188,6 +188,56 @@ def test_runtime_llvm_skew_still_generic():
 
 
 # ---------------------------------------------------------------------------
+# lib32 clang + lld: 32-bit libgcc_s runtime not found (2.1.0-B10)
+# ---------------------------------------------------------------------------
+
+# The real lib32-vulkan-icd-loader failure under the clang/lld profile: CMake's
+# compiler-sanity link (clang -m32 -fuse-ld=lld) implicitly pulls -lgcc_s, but
+# ld.lld can't locate the 32-bit libgcc_s the gcc driver would find — CMake then
+# reports the compiler as "broken / not able to compile a simple test program",
+# which reads as though clang itself is invalid.
+_LIB32_LIBGCC_S_FAIL = (
+    "-- Check for working C compiler: /usr/lib/ccache/bin/clang - broken\n"
+    "  is not able to compile a simple test program.\n"
+    "    [2/2] : && /usr/lib/ccache/bin/clang -m32 -fuse-ld=lld "
+    "CMakeFiles/cmTC.dir/testCCompiler.c.o -o cmTC && :\n"
+    "    ld.lld: error: unable to find library -lgcc_s\n"
+    "    clang: error: linker command failed with exit code 1\n"
+)
+
+
+def test_lib32_clang_libgcc_s_matches():
+    out = diagnose(_lines(_LIB32_LIBGCC_S_FAIL), None)
+    assert [s.signature for s in out] == ["toolchain:lib32-clang-libgcc"]
+    # Names the real cause (lib32/32-bit libgcc_s), not "compiler invalid".
+    assert "libgcc_s" in out[0].message
+    # Auto-suggests the gcc per-package override the user confirmed works.
+    assert out[0].fix_cmd is not None
+    assert "gcc" in out[0].fix_cmd and "g++" in out[0].fix_cmd
+
+
+def test_lib32_clang_libgcc_s_gold_linker_variant():
+    # bfd/gold phrase the same miss as "cannot find -lgcc_s"; still lib32-gated.
+    log = (
+        "clang -m32 conftest.o -o conftest\n"
+        "/usr/bin/ld: cannot find -lgcc_s: No such file or directory\n"
+    )
+    out = diagnose(_lines(log), None)
+    assert [s.signature for s in out] == ["toolchain:lib32-clang-libgcc"]
+
+
+def test_libgcc_s_miss_without_m32_no_match():
+    # A 64-bit build missing -lgcc_s is a different (non-lib32) problem — the
+    # lib32-gated matcher must not claim it.
+    log = (
+        "clang conftest.o -o conftest\n"
+        "ld.lld: error: unable to find library -lgcc_s\n"
+    )
+    out = diagnose(_lines(log), None)
+    assert all(s.signature != "toolchain:lib32-clang-libgcc" for s in out)
+
+
+# ---------------------------------------------------------------------------
 # Side-car log discovery
 # ---------------------------------------------------------------------------
 

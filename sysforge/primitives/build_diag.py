@@ -344,12 +344,51 @@ def _match_broken_llvm_toolchain(text: str, active: str | None) -> FixSuggestion
     )
 
 
+# ---------------------------------------------------------------------------
+# lib32 clang + lld: the 32-bit libgcc_s runtime can't be found (2.1.0-B10)
+# ---------------------------------------------------------------------------
+
+# Under -m32, clang implicitly links -lgcc_s (its unwinder runtime), but ld.lld
+# doesn't resolve the 32-bit libgcc_s the way gcc's own driver does — so even
+# CMake's/meson's trivial compiler-sanity link fails. CMake reports this as the
+# compiler being "broken / not able to compile a simple test program", which
+# reads as though clang itself is invalid rather than naming the real cause.
+# gcc -m32 links its own multilib libgcc fine, so a per-package gcc override is
+# the working escape (confirmed on lib32-vulkan-icd-loader).
+_RE_LIBGCC_S_MISS = re.compile(
+    r"(?:unable to find library|cannot find)\s+-lgcc_s"
+)
+# Only claim this when the build is actually 32-bit — a 64-bit -lgcc_s miss is a
+# different (broken multilib/toolchain) problem the generic matchers can own.
+_RE_M32_SIGNAL = re.compile(r"(?<!\S)-m32(?!\S)|/usr/lib32/|(?<!\S)lib32-")
+
+
+def _match_lib32_clang_libgcc(text: str, active: str | None) -> FixSuggestion | None:
+    del active
+    if not (_RE_LIBGCC_S_MISS.search(text) and _RE_M32_SIGNAL.search(text)):
+        return None
+    return FixSuggestion(
+        signature="toolchain:lib32-clang-libgcc",
+        message=(
+            "clang -m32 + ld.lld can't find the 32-bit libgcc_s runtime it "
+            "implicitly links — CMake/meson then reports the compiler as "
+            "'broken', but clang is fine; this lib32 package needs the gcc "
+            "toolchain (gcc -m32 links its own multilib libgcc)"
+        ),
+        fix_cmd=(
+            "rebuild this package with a gcc override: pass --cc gcc --cxx g++ "
+            "(the interactive recovery menu's [c] can persist it per-package)"
+        ),
+    )
+
+
 _MATCHERS = (
     _match_rust_missing_std,
     _match_gst_ptp,
     _match_meson_unknown_opts,
     _match_cuda_host_gcc,
     _match_lib32_reduced_target_llvm,
+    _match_lib32_clang_libgcc,
     _match_broken_llvm_toolchain,
 )
 
