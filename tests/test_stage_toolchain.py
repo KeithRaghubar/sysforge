@@ -2851,6 +2851,67 @@ def test_pkg_fingerprint_merkle_chain_changes(tmp_path):
     assert fp1 != fp2
 
 
+def _fake_clang(path: Path, version_line: str, filler: str = "") -> str:
+    """A minimal executable that prints ``version_line`` for any argument.
+
+    ``filler`` perturbs the file's bytes/size without changing its --version
+    output — modelling the staged stage-2 clang vs the installed /usr clang,
+    which report the same version but are different binaries at different paths.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'#!/bin/sh\necho "{version_line}"\n# {filler}\n')
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_pkg_fingerprint_stable_across_staged_vs_system_clang(tmp_path):
+    """Pass-4 reuse must survive the staged→installed compiler swap (2.1.0-B14).
+
+    A profgen run records Pass-4 fingerprints under the staged stage-2 clang; a
+    profdata-reuse resume recomputes them under /usr/bin/clang. Both report the
+    same compiler --version line, so the fingerprint must match — otherwise the
+    resume never hits the cache the profgen run populated, defeating reuse.
+    """
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    staged = _fake_clang(tmp_path / "stage2" / "clang", "clang version 19.1.0", "staged")
+    system = _fake_clang(tmp_path / "usr" / "clang", "clang version 19.1.0", "installed-bytes-differ")
+    ctx = _reuse_ctx(tmp_path)
+    _, fp_staged = _pkg_fingerprint(ctx, "llvm", pkgbuild, staged, None, None, None, [])
+    _, fp_system = _pkg_fingerprint(ctx, "llvm", pkgbuild, system, None, None, None, [])
+    assert fp_staged == fp_system
+
+
+def test_pkg_fingerprint_changes_across_compiler_version(tmp_path):
+    """The version line still guards a genuine compiler-version bump: a major
+    version change must invalidate the cache even though the reuse dimension no
+    longer folds in path/size/mtime."""
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    v19 = _fake_clang(tmp_path / "a" / "clang", "clang version 19.1.0")
+    v20 = _fake_clang(tmp_path / "b" / "clang", "clang version 20.0.0")
+    ctx = _reuse_ctx(tmp_path)
+    _, fp19 = _pkg_fingerprint(ctx, "llvm", pkgbuild, v19, None, None, None, [])
+    _, fp20 = _pkg_fingerprint(ctx, "llvm", pkgbuild, v20, None, None, None, [])
+    assert fp19 != fp20
+
+
+def test_reuse_cache_path_survives_pgo_store_purge(tmp_path):
+    """The reuse cache must live outside pgo_store so a fresh 4-pass run's
+    startup purge (empty_dir_contents) can't wipe a prior run's cache (2.1.0-B14)."""
+    from sysforge.pipeline.stages.toolchain import _reuse_cache_path
+    from sysforge.primitives import fs_provision
+
+    pgo_store = tmp_path / "llvm-pgo"
+    pgo_store.mkdir()
+    cache_path = _reuse_cache_path(pgo_store)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text("{}")
+
+    fs_provision.empty_dir_contents(pgo_store)  # the fresh-run purge
+
+    assert cache_path.exists(), "reuse cache must survive the pgo_store purge"
+    assert pgo_store not in cache_path.parents
+
+
 # ---------------------------------------------------------------------------
 # ToolchainStage.run() — custom package list
 # ---------------------------------------------------------------------------

@@ -68,6 +68,15 @@ https://keepachangelog.com/en/1.1.0/
   `sudo sysforge` run) can append to it instead of failing with EACCES; a
   pre-existing umask-644 file is healed on the next owner write. The setgid
   state dir only grants group ownership, not the group-write bit (2.1.0-B13).
+- `run toolchain` input-fingerprint reuse (`reuse_unchanged` / `--reuse-built`)
+  now actually fires on the profdata-reuse resume path. The Pass-4 fingerprint's
+  compiler dimension was keyed on the clang binary's path + size + mtime, so the
+  staged stage-2 clang of the profgen run never matched the `/usr/bin/clang` of a
+  resume — guaranteeing a cache miss and a full rebuild of the heaviest packages.
+  It now keys on the compiler `--version` line only (the trained toolchain is
+  already pinned by the profdata hash), and the reuse cache moved to a sibling of
+  `pgo_store` so a fresh 4-pass run's startup purge no longer wipes it. Fingerprint
+  `_SCHEMA` bumped to 2 (2.1.0-B14).
 - Interactive `sysforge run kernel` now shows the kconfig review menu even when the
   PKGBUILD uses `make oldconfig` (a resolve step was wrongly treated as an operator
   review, suppressing the injected `make nconfig`). (2.1.0-B17)

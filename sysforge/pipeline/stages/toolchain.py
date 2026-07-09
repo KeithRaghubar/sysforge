@@ -664,6 +664,19 @@ def _confirm_or_abort(state_dir) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _reuse_cache_path(pgo_store: Path) -> Path:
+    """Persistent location for the Pass-4 input-fingerprint reuse cache.
+
+    Deliberately a *sibling* of ``pgo_store`` (``<pgo_store>.parent/build-cache/
+    build_cache.json``), never inside it: a fresh 4-pass run empties
+    ``pgo_store`` (``empty_dir_contents``) at startup, which would otherwise wipe
+    the cache a prior run recorded before it is ever consulted. Each cache entry
+    already binds its own ``profdata_sha``, so a surviving-but-stale entry from a
+    different profdata simply misses (fail-safe) rather than mis-hitting (B14).
+    """
+    return pgo_store.parent / "build-cache" / "build_cache.json"
+
+
 @dataclass
 class _ReuseCtx:
     """Per-sub-pass context for input-fingerprint build reuse (Pass 4 only).
@@ -738,7 +751,14 @@ def _pkg_fingerprint(
         "pkgbase": pkgbase,
         "pkgbuild_sha": build_fingerprint.hash_file(pkgbuild_path),
         "source_commit": build_fingerprint.source_commit(pkgbuild_path.parent),
-        "cc_identity": build_fingerprint.clang_identity(cc),
+        # Pass-4 reuse must survive the staged→installed compiler swap: the
+        # profgen run builds with the staged stage-2 clang while a profdata-reuse
+        # resume builds with /usr/bin/clang — different binaries at different
+        # paths, so clang_identity's path+size+mtime would guarantee a cache
+        # miss. Key only on the compiler --version line (a genuine version bump
+        # still invalidates); the actual codegen carrier is pinned by
+        # profdata_sha below, which already folds in the trained toolchain (B14).
+        "cc_identity": build_fingerprint.compiler_version_line(cc),
         "compiler_flags_extra": compiler_flags_extra,
         "linker_flags_extra": linker_flags_extra,
         "cmake_llvm_dir": cmake_llvm_dir,
@@ -2638,16 +2658,20 @@ def _build_llvm_pgo_inner(
         opt = "reusing profdata" if skip_profgen else "PGO 4/4"
         profile_use = f"-fprofile-use={profdata_path}"
 
-        # Input-fingerprint reuse setup (Pass 4 only). The cache lives in
-        # pgo_store, so it is wiped on a fresh 4-pass start but survives a
-        # profdata-reuse resume. The profdata is hashed once (constant across
+        # Input-fingerprint reuse setup (Pass 4 only). The cache lives *outside*
+        # pgo_store (a sibling dir; see _reuse_cache_path) so a fresh 4-pass
+        # start's pgo_store purge doesn't wipe it — a prior run's records survive
+        # for the resume to consult. The profdata is hashed once (constant across
         # 4a/4b/4c). The cache is always *written*; it is only *consulted*
         # (skipping rebuilds) when ``reuse_built`` is opted in.
         reuse_cache: dict = {}
-        reuse_cache_path = pgo_store / "build_cache.json"
+        reuse_cache_path = _reuse_cache_path(pgo_store)
         reuse_profdata_sha: str | None = None
         reuse_pkgdest: Path | None = None
         if not options.dry_run:
+            fs_provision.ensure_writable_dir(
+                reuse_cache_path.parent, dry_run=options.dry_run
+            )
             reuse_cache = build_fingerprint.load_cache(reuse_cache_path)
             reuse_profdata_sha = build_fingerprint.hash_file(profdata_path)
             reuse_pkgdest = get_pkgdest()

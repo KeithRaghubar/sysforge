@@ -36,13 +36,7 @@ straight off a `Q`.
 
 ### Bugs
 
-- **`2.1.0-B14` — toolchain `reuse_unchanged = true` doesn't skip an unchanged
-  rebuild.** Two consecutive `run toolchain --cleansrc` runs both execute the final
-  build stage; run 2 should compute the same `build_fingerprint` and skip. Either the
-  fingerprint isn't stable across runs (a volatile input — check `_SCHEMA` inputs and
-  whether `--cleansrc` perturbs the hash) or the reuse gate isn't consulted on this
-  path. Fix so an unchanged second run reuses the built artifacts. *Priority: medium
-  (defeats the whole reuse optimization on the most expensive stage).*
+_(none currently planned)_
 
 ### Features
 

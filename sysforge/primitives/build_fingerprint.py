@@ -46,7 +46,10 @@ from pathlib import Path
 # Fingerprint schema version. Bump whenever the set of inputs folded into a
 # fingerprint changes, so every previously cached entry is invalidated (a stale
 # entry computed under the old input set would otherwise risk a false hit).
-_SCHEMA = 1
+# v2: the toolchain Pass-4 compiler dimension was narrowed from clang_identity
+# (path+size+mtime+version) to the bare --version line so reuse survives the
+# staged→installed clang swap (2.1.0-B14).
+_SCHEMA = 2
 
 # Chunk size for streaming file hashes (profdata can be hundreds of MiB).
 _HASH_CHUNK = 1024 * 1024
