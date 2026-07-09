@@ -31,6 +31,7 @@ This is the single home for that format; do not parse the sentinels elsewhere.
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -134,8 +135,27 @@ def record_self_install(pkgnames, sentinel_dir=None) -> None:
         d.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         block = ts + "\n" + "\n".join(names) + "\n\n"
-        with open(d / _SELF_INSTALL_NAME, "a", encoding="utf-8") as f:
-            f.write(block)
+        # Create/keep the sentinel group-writable so a later run under a
+        # different uid in the ``sysforge`` group can append. The setgid state
+        # dir (fs_provision, 2775) grants group *ownership* of new files, but
+        # the group-*write* bit still comes from the umask — without this a file
+        # first written by root (a ``sudo sysforge`` run) blocks a later append
+        # by the build user with EACCES (2.1.0-B13). ``0o664`` is masked by the
+        # umask on create, so fchmod explicitly once the fd is open (and we own
+        # it, healing a pre-existing umask-644 file).
+        fd = os.open(
+            d / _SELF_INSTALL_NAME,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            0o664,
+        )
+        try:
+            try:
+                os.fchmod(fd, 0o664)
+            except OSError:
+                pass  # not the owner — the append still succeeds via group-write
+            os.write(fd, block.encode("utf-8"))
+        finally:
+            os.close(fd)
     except OSError as e:
         _log.info(f"could not record self-install marker (non-fatal): {e}")
 

@@ -36,25 +36,6 @@ straight off a `Q`.
 
 ### Bugs
 
-- **`2.1.0-B12` — `update` warns `mesa-sysforge: no sync-DB candidate` after mesa was
-  reinstalled from the Arch repos.** `[SYNC] mesa-sysforge: no sync-DB candidate —
-  leaving checkout on main (testing-track)` fires even though mesa is now the stock repo
-  package. Either the external-reinstall demotion
-  (`BuildState.reconcile_external_installs`) isn't firing for mesa, or the sync path
-  looks up the wrong DB name for a `-sysforge`-suffixed source tree. Reconcile so a
-  repo-reinstalled package stops emitting the no-candidate sync warning. *Priority: low
-  (noise, but signals stale tracking state).*
-
-- **`2.1.0-B13` — self-install marker write fails with EACCES during
-  `update --devel --install-only`.** `[RECONCILE] could not record self-install marker
-  (non-fatal): [Errno 13] Permission denied:
-  '/var/lib/sysforge/sentinels/self-install'`. The sentinels dir is provisioned
-  `root:sysforge` setgid 2775 via `fs_provision.py`, so a group-member write should
-  succeed — either the dir/mode drifted or the process isn't in `sysforge`. Confirm the
-  provisioning invariant holds for this path and make the marker write land (or
-  downgrade the message if the marker is legitimately root-only here). *Priority: low
-  (explicitly non-fatal, but points at a provisioning gap).*
-
 - **`2.1.0-B14` — toolchain `reuse_unchanged = true` doesn't skip an unchanged
   rebuild.** Two consecutive `run toolchain --cleansrc` runs both execute the final
   build stage; run 2 should compute the same `build_fingerprint` and skip. Either the

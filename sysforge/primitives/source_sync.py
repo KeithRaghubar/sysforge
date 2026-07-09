@@ -114,6 +114,12 @@ class SyncRequest:
     pkgbuild_dir: Path
     source: str = "aur"
     force_fetch: bool = False
+    # Stock upstream base used for the pacman sync-DB pin lookup (source=repo).
+    # For a coexist ``-sysforge`` rename the checkout tree/pkgbase is the renamed
+    # value (``mesa-sysforge``) but pacman only knows the stock name (``mesa``);
+    # callers thread ``origin_pkgbase`` here so the pin resolves. None → use
+    # ``pkgbase`` (the common, un-renamed case).
+    sync_db_name: str | None = None
 
 
 @dataclass
@@ -315,7 +321,10 @@ class SourceSyncScheduler:
             needs_clone = True
 
         if needs_clone:
-            return self._clone(pkgbase, pkgbuild_dir, source=req.source)
+            return self._clone(
+                pkgbase, pkgbuild_dir, source=req.source,
+                sync_db_name=req.sync_db_name,
+            )
 
         # --- RPC short-circuit (skip fetch if nothing moved upstream) ---
         # Repo packages have no AUR-RPC equivalent — they fall through to
@@ -335,7 +344,10 @@ class SourceSyncScheduler:
                 head_before=local_head, head_after=local_head,
             )
 
-        return self._fetch(pkgbase, pkgbuild_dir, rpc_entry, source=req.source)
+        return self._fetch(
+            pkgbase, pkgbuild_dir, rpc_entry, source=req.source,
+            sync_db_name=req.sync_db_name,
+        )
 
     def _can_short_circuit(
         self, rpc_entry: dict | None, meta: dict | None, local_head: str | None,
@@ -351,7 +363,8 @@ class SourceSyncScheduler:
         return True
 
     def _clone(self, pkgbase: str, pkgbuild_dir: Path,
-               *, source: str = "aur") -> SyncResult:
+               *, source: str = "aur",
+               sync_db_name: str | None = None) -> SyncResult:
         self.limiter.wait_before_fetch()
         try:
             if source == "repo":
@@ -373,7 +386,7 @@ class SourceSyncScheduler:
             return SyncResult(pkgbase=pkgbase, status=STATUS_FAILED, error=err)
 
         if source == "repo":
-            err = self._pin_repo_checkout(pkgbase, pkgbuild_dir)
+            err = self._pin_repo_checkout(pkgbase, pkgbuild_dir, sync_db_name)
             if err is not None:
                 # Fresh clone: no prior head; report where the failed pin
                 # left the checkout so STATUS_FAILED stays reporting-consistent.
@@ -399,19 +412,28 @@ class SourceSyncScheduler:
             head_before=None, head_after=head,
         )
 
-    def _pin_repo_checkout(self, pkgbase: str, pkgbuild_dir: Path) -> str | None:
+    def _pin_repo_checkout(
+        self, pkgbase: str, pkgbuild_dir: Path, sync_db_name: str | None = None,
+    ) -> str | None:
         """Pin a source=repo checkout to pacman's sync-DB release tag.
 
         Returns an error string (sync becomes STATUS_FAILED) or None on
         success/no-op. No sync-DB candidate → warn and stay on main (never an
         error: the package may live only in a custom repo).
+
+        ``sync_db_name`` is the stock upstream base to query pacman with; for a
+        coexist ``-sysforge`` rename the checkout ``pkgbase`` is the renamed
+        value (``mesa-sysforge``) but pacman only knows the stock name
+        (``mesa``). Falls back to ``pkgbase`` for the common un-renamed case
+        (2.1.0-B12).
         """
         if self.repo_track != "stable":
             return None
-        version = get_pacman_sync_version(pkgbase)
+        db_name = sync_db_name or pkgbase
+        version = get_pacman_sync_version(db_name)
         if version is None:
             _log.warn(
-                f"{pkgbase}: no sync-DB candidate — leaving checkout on main "
+                f"{db_name}: no sync-DB candidate — leaving checkout on main "
                 f"(testing-track)"
             )
             return None
@@ -423,7 +445,7 @@ class SourceSyncScheduler:
 
     def _fetch(
         self, pkgbase: str, pkgbuild_dir: Path, rpc_entry: dict | None,
-        *, source: str = "aur",
+        *, source: str = "aur", sync_db_name: str | None = None,
     ) -> SyncResult:
         outcome: GitFetchOutcome = git_fetch_and_compare(
             pkgbuild_dir, timeout=self.fetch_timeout, limiter=self.limiter,
@@ -497,7 +519,7 @@ class SourceSyncScheduler:
                     error="local edits present — not re-pinning",
                 )
             pre = _head_commit(pkgbuild_dir)
-            err = self._pin_repo_checkout(pkgbase, pkgbuild_dir)
+            err = self._pin_repo_checkout(pkgbase, pkgbuild_dir, sync_db_name)
             if err is not None:
                 return SyncResult(
                     pkgbase=pkgbase, status=STATUS_FAILED,

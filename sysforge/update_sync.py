@@ -102,6 +102,10 @@ def _sync_sources(
         seen_dirs.add(resolved)
         reqs.append(SyncRequest(
             pkgbase=pkgbase, pkgbuild_dir=pkgbuild_dir, source=source,
+            # A coexist ``-sysforge`` rename tracks the renamed pkgbase but
+            # pacman's sync-DB only knows the stock upstream base; pass it so
+            # the repo pin queries the right name (2.1.0-B12).
+            sync_db_name=entry.get("origin_pkgbase"),
         ))
 
     # Prime the RPC batch once so every subsequent request() can hit the

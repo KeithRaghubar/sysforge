@@ -58,6 +58,16 @@ https://keepachangelog.com/en/1.1.0/
   (2.1.0-B10).
 - `doctor` progress indicator no longer sits on "starting…" for the whole run —
   it now advances per axis and per audited package (2.1.0-B11).
+- `update` source-sync no longer warns `no sync-DB candidate` for a coexist
+  `-sysforge`-renamed repo package (e.g. `mesa-sysforge` from `--pgo=use`): the
+  repo pin now queries pacman with the stock upstream base (`origin_pkgbase`,
+  threaded via `SyncRequest.sync_db_name`) instead of the renamed name pacman
+  never knew (2.1.0-B12).
+- Self-install sentinel is now created group-writable so a `sysforge update`
+  run under a different uid in the `sysforge` group (e.g. after a prior
+  `sudo sysforge` run) can append to it instead of failing with EACCES; a
+  pre-existing umask-644 file is healed on the next owner write. The setgid
+  state dir only grants group ownership, not the group-write bit (2.1.0-B13).
 - Interactive `sysforge run kernel` now shows the kconfig review menu even when the
   PKGBUILD uses `make oldconfig` (a resolve step was wrongly treated as an operator
   review, suppressing the injected `make nconfig`). (2.1.0-B17)

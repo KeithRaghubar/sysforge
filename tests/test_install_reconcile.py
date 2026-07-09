@@ -47,6 +47,35 @@ def test_record_self_install_appends(tmp_path):
     assert ir._read_targets(d / "self-install") == {"mesa", "llvm", "htop"}
 
 
+def test_record_self_install_is_group_writable(tmp_path):
+    """2.1.0-B13: the self-install sentinel must be created group-writable so a
+    later run under a different uid in the ``sysforge`` group (e.g. a plain
+    ``sysforge update`` after a prior ``sudo sysforge update``) can append to it
+    rather than failing EACCES. The setgid dir only grants group *ownership*;
+    the group-*write* bit has to be set explicitly against the umask."""
+    import stat
+
+    d = tmp_path / "sentinels"
+    ir.record_self_install(["mesa"], sentinel_dir=d)
+    mode = (d / "self-install").stat().st_mode
+    assert mode & stat.S_IWGRP, oct(mode)
+
+
+def test_record_self_install_heals_non_group_writable_file(tmp_path):
+    """2.1.0-B13: a pre-existing sentinel left non-group-writable by an earlier
+    (pre-fix) run is healed to group-writable when the current process owns it,
+    so it stops blocking cross-uid appends going forward."""
+    import stat
+
+    d = tmp_path / "sentinels"
+    d.mkdir(parents=True)
+    stale = d / "self-install"
+    stale.write_text("2026-06-21T20:07:00Z\nold\n\n")
+    stale.chmod(0o644)  # simulate a umask-644 file from before the fix
+    ir.record_self_install(["mesa"], sentinel_dir=d)
+    assert stale.stat().st_mode & stat.S_IWGRP
+
+
 def test_record_self_install_ignores_empty(tmp_path):
     d = tmp_path / "sentinels"
     ir.record_self_install([], sentinel_dir=d)

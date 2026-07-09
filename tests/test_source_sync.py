@@ -464,6 +464,33 @@ def test_repo_clone_no_sync_candidate_warns_and_stays_on_main(tmp_path):
     switch.assert_not_called()
 
 
+def test_repo_pin_uses_sync_db_name_for_renamed_tree(tmp_path):
+    """2.1.0-B12: a coexist ``-sysforge`` rename (e.g. ``mesa --pgo=use`` →
+    ``mesa-sysforge``) stores the renamed pkgbase in build_state but keeps the
+    stock upstream base in ``origin_pkgbase``. The sync-DB pin must look up the
+    *stock* name (``mesa``) — the renamed name is unknown to pacman and would
+    otherwise emit a spurious ``no sync-DB candidate`` warning."""
+    sched = _scheduler(tmp_path, repo_track="stable")
+    dest = tmp_path / "mesa-sysforge"
+    switched = {}
+
+    with patch("sysforge.primitives.source_sync.pkgctl_checkout",
+               side_effect=_fake_pkgctl_clone), \
+         patch("sysforge.primitives.source_sync.pkgctl_switch_version",
+               side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
+         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+               return_value="1:24.1.5-1") as sync_ver, \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="tagged"):
+        res = sched.request(SyncRequest(
+            pkgbase="mesa-sysforge", pkgbuild_dir=dest, source="repo",
+            sync_db_name="mesa",
+        ))
+
+    assert res.status == "cloned"
+    sync_ver.assert_called_once_with("mesa")
+    assert switched["ver"] == "1:24.1.5-1"
+
+
 def test_repo_clone_pin_failure_is_failed(tmp_path):
     """pkgctl_switch_version raising RuntimeError → STATUS_FAILED."""
     sched = _scheduler(tmp_path, repo_track="stable")
