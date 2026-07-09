@@ -316,6 +316,7 @@ _sysforge_run() {
                 --non-interactive --compiler --bootloader --base-config \
                 --allow-no-fallback --skip-boot-audit \
                 --headers --no-headers --docs --no-docs \
+                --keep-hotplug-drivers --no-keep-hotplug-drivers \
                 --autofdo --propeller --no-pkg-logs \
                 --persist-log --log-dir --cache-report --abi-check \
                 --state-dir --profile-conf" -- "$cur") )

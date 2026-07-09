@@ -4,6 +4,7 @@ test_stage_kernel.py — unit tests for the kernel stage.
 Covers all pure-logic functions. Subprocess calls (lsmod, mkinitcpio,
 bootctl, makepkg) are mocked — nothing real runs.
 """
+import types
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -22,7 +23,9 @@ from sysforge.pipeline.stages.kernel import (
     _merge_lsmod,
     _pkgbuild_path,
     _resolve_fdo,
+    _resolve_keep_hotplug_drivers,
     _validate_manual_kconfig,
+    _write_hotplug_fragment,
     _write_kconfig_fragment,
     resolve_kconfig_targets,
 )
@@ -2871,3 +2874,85 @@ def test_merge_lsmod_current_wins_on_conflict():
     assert "wireguard 90112 1" in merged
     assert "ext4" in merged
     assert merged.count("wireguard") == 1
+
+
+def _hotplug_opts(**kw):
+    ns = types.SimpleNamespace(keep_hotplug_drivers=None, dry_run=False)
+    for k, v in kw.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def test_resolve_keep_hotplug_cli_overrides_toml():
+    # CLI --no-keep-hotplug-drivers (False) beats toml true.
+    assert _resolve_keep_hotplug_drivers(
+        {"keep_hotplug_drivers": True}, _hotplug_opts(keep_hotplug_drivers=False)
+    ) is False
+    # CLI --keep-hotplug-drivers (True) beats toml false.
+    assert _resolve_keep_hotplug_drivers(
+        {"keep_hotplug_drivers": False}, _hotplug_opts(keep_hotplug_drivers=True)
+    ) is True
+
+
+def test_resolve_keep_hotplug_falls_through_to_toml():
+    assert _resolve_keep_hotplug_drivers(
+        {"keep_hotplug_drivers": True}, _hotplug_opts()
+    ) is True
+
+
+def test_resolve_keep_hotplug_default_off():
+    assert _resolve_keep_hotplug_drivers({}, _hotplug_opts()) is False
+
+
+def test_write_hotplug_fragment_writes_when_on(tmp_path, monkeypatch):
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("pkgbase=linux-custom\n")
+    monkeypatch.setattr(_km, "_pkgbuild_path", lambda cfg: pb)
+    path = _write_hotplug_fragment(
+        {"keep_hotplug_drivers": True}, _hotplug_opts(), dry_run=False
+    )
+    assert path == pb.parent / "sysforge.hotplug.config"
+    body = path.read_text()
+    # Every curated symbol lands as =m.
+    assert "CONFIG_USB=m" in body
+    assert "CONFIG_MMC=m" in body
+    assert "CONFIG_HOTPLUG_PCI=m" in body
+    # No `is not set` lines — this fragment only ever enables.
+    assert "is not set" not in body
+
+
+def test_write_hotplug_fragment_removes_stale_when_off(tmp_path, monkeypatch):
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("pkgbase=linux-custom\n")
+    stale = pb.parent / "sysforge.hotplug.config"
+    stale.write_text("CONFIG_USB=m\n")
+    monkeypatch.setattr(_km, "_pkgbuild_path", lambda cfg: pb)
+    result = _write_hotplug_fragment({}, _hotplug_opts(), dry_run=False)
+    assert result is None
+    assert not stale.exists()  # "off" means off
+
+
+def test_write_hotplug_fragment_dry_run_is_noop(tmp_path, monkeypatch):
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("pkgbase=linux-custom\n")
+    monkeypatch.setattr(_km, "_pkgbuild_path", lambda cfg: pb)
+    result = _write_hotplug_fragment(
+        {"keep_hotplug_drivers": True}, _hotplug_opts(), dry_run=True
+    )
+    assert result is None
+    assert not (pb.parent / "sysforge.hotplug.config").exists()
+
+
+def test_cli_keep_hotplug_flag_parses():
+    from sysforge.cli import _build_parser
+
+    parser = _build_parser()
+    assert parser.parse_args(
+        ["run", "kernel", "--keep-hotplug-drivers"]
+    ).keep_hotplug_drivers is True
+    assert parser.parse_args(
+        ["run", "kernel", "--no-keep-hotplug-drivers"]
+    ).keep_hotplug_drivers is False
+    assert parser.parse_args(
+        ["run", "kernel"]
+    ).keep_hotplug_drivers is None

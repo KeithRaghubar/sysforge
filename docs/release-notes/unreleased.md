@@ -34,11 +34,22 @@ https://keepachangelog.com/en/1.1.0/
 - `[build] cpu_quota` now also accepts a decimal fraction of the host's total
   cores (e.g. `0.5` → `800%` on a 16-core box), translated against
   `os.cpu_count()` so the same config is portable across machines (2.1.0-F6).
+- `[kernel] keep_hotplug_drivers` (and `--keep-hotplug-drivers` /
+  `--no-keep-hotplug-drivers`): re-enable hotplug driver classes (USB,
+  USB4/Thunderbolt, MMC/SD, hot-plug PCI/CardBus, hot-plug HID) as modules after
+  config minimization, via a dedicated post-minimization kconfig fragment so
+  `localmodconfig` can't strip them. Off by default. (2.1.0-F2)
 
 ## Fixed
 
+- Regression test locks in the kernel `-docs` subpackage drop surviving the
+  `-sysforge` coexist rename, with the doc build (`make htmldocs`) neutralized.
+  (2.1.0-B8)
 - `doctor` progress indicator no longer sits on "starting…" for the whole run —
   it now advances per axis and per audited package (2.1.0-B11).
+- Interactive `sysforge run kernel` now shows the kconfig review menu even when the
+  PKGBUILD uses `make oldconfig` (a resolve step was wrongly treated as an operator
+  review, suppressing the injected `make nconfig`). (2.1.0-B17)
 - `doctor` no longer advises `sudo ldconfig` for an unsatisfied soname whose owner
   is already installed — that branch is only reached once the library is confirmed
   absent from every directory ldconfig scans, so the cache rebuild cannot help. It

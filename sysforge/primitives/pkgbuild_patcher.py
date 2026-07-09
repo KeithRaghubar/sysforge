@@ -74,6 +74,18 @@ _INTERACTIVE_KCONFIG_RE = re.compile(
     re.MULTILINE,
 )
 
+# Review-only kconfig targets — the ncurses/X menus that constitute an operator
+# review. `oldconfig` is deliberately EXCLUDED: it is a non-interactive *resolve*
+# step (after the fragment merge it prompts for nothing), so it must NOT suppress
+# sysforge's injected `make nconfig` review (B17). Distinct from
+# _INTERACTIVE_KCONFIG_RE, which keeps `oldconfig` because its other consumer,
+# patch_noninteractive_kconfig, rewrites `oldconfig` → `olddefconfig`.
+_REVIEW_KCONFIG_RE = re.compile(
+    r"^(\s*make(?:\s+\w+=\S*)*\s+)(nconfig|menuconfig|xconfig|gconfig|config)"
+    r"(\s*(?:#.*)?)$",
+    re.MULTILINE,
+)
+
 # Anchors for injecting the sysforge.config fragment merge into a stock kernel
 # PKGBUILD's prepare(). Primary: a non-interactive kconfig-resolve line (the
 # point where .config is established) — group 1 captures its indentation.
@@ -741,6 +753,77 @@ def patch_kconfig_targets(patched_path, targets: list[str]) -> None:
     )
 
 
+_HOTPLUG_FRAGMENT = "sysforge.hotplug.config"
+
+
+def patch_hotplug_fragment_merge(patched_path, *, fragment=_HOTPLUG_FRAGMENT):
+    """Inject a post-minimization merge of the hotplug kconfig fragment (F2).
+
+    The fragment (written by the kernel stage when ``keep_hotplug_drivers`` is on)
+    re-enables hotplug driver classes as modules. It MUST merge after any
+    minimizer (``make localmodconfig`` strips drivers for hardware not currently
+    present) and before any UI review target, so the operator reviews — and the
+    build ships — the re-enabled modules.
+
+    Placement: immediately before the LAST review target (``_REVIEW_KCONFIG_RE``)
+    when one exists (the configured UI tail, or the injected ``make nconfig``);
+    otherwise after the last kconfig target line of any kind (``_ANY_KCONFIG_RE``
+    — covers both the sysforge resolve/merge lines and any PKGBUILD-owned/
+    configured invocation such as a minimizing ``make localmodconfig`` with no
+    UI target), so a minimizer can never run after the merge. File-existence
+    guarded, so it is inert when the stage wrote no fragment. Idempotent: a
+    second call finds the fragment reference and returns. Edits
+    ``patched_path`` in place.
+    """
+    patched_path = Path(patched_path)
+    text = patched_path.read_text(encoding="utf-8")
+
+    if fragment in text:
+        return  # already injected
+
+    # Determine insertion offset + indentation.
+    review = list(_REVIEW_KCONFIG_RE.finditer(text))
+    if review:
+        last = review[-1]
+        insert_at = last.start()
+        indent = re.match(r"[ \t]*", last.group(0)).group(0)
+    else:
+        any_matches = list(_ANY_KCONFIG_RE.finditer(text))
+        if any_matches:
+            last = any_matches[-1]
+            line_end = text.find("\n", last.end())
+            insert_at = line_end + 1 if line_end != -1 else len(text)
+            # Skip a trailing guard-block `fi`, mirroring patch_kconfig_targets.
+            next_nl = text.find("\n", insert_at)
+            if next_nl != -1 and text[insert_at:next_nl].strip() == "fi":
+                insert_at = next_nl + 1
+            indent = re.match(r"[ \t]*", text[insert_at:]).group(0)
+        else:
+            # Neither a review target nor a sysforge resolve block exists yet
+            # (e.g. a stock PKGBUILD before patch_kernel_kconfig_apply runs):
+            # fall back to the same kconfig-setup anchor patch_kernel_kconfig_apply
+            # uses (the `make olddefconfig`/`.config` seed line).
+            anchor = _find_kconfig_anchor(text)
+            if anchor is None:
+                _log.warn(
+                    "No kconfig resolve/review anchor found — cannot inject the "
+                    "hotplug fragment merge; hotplug modules will not be re-enabled."
+                )
+                return
+            insert_at, indent = anchor
+
+    block = "\n".join([
+        f"{indent}# sysforge: re-enable hotplug drivers as modules after minimization (F2)",
+        f'{indent}if [ -f "$startdir/{fragment}" ]; then',
+        f'{indent}  ./scripts/kconfig/merge_config.sh -m .config "$startdir/{fragment}"',
+        f"{indent}  make olddefconfig  {_KCONFIG_RESOLVE_SENTINEL}",
+        f"{indent}fi",
+    ]) + "\n"
+
+    patched_path.write_text(text[:insert_at] + block + text[insert_at:], encoding="utf-8")
+    _log.info("Injected post-minimization hotplug fragment merge into kernel PKGBUILD")
+
+
 def _find_kconfig_anchor(text: str):
     """Locate where to inject the fragment-merge in prepare().
 
@@ -805,7 +888,7 @@ def patch_kernel_kconfig_apply(patched_path, *, interactive,
         return
 
     insert_at, indent = anchor
-    add_nconfig = interactive and not _INTERACTIVE_KCONFIG_RE.search(text)
+    add_nconfig = interactive and not _REVIEW_KCONFIG_RE.search(text)
     block = [
         f"{indent}# sysforge: seed the base config (when provided), then merge the fragment",
         f'{indent}if [ -f "$startdir/sysforge.base.config" ]; then',

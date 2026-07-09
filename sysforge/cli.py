@@ -972,6 +972,13 @@ def _add_run_parser(sub):
         action=argparse.BooleanOptionalAction, default=None, dest="build_docs",
         help="Build the kernel -docs subpackage (default: off, per kernel.toml "
              "build_docs). Pass --docs to build the kernel HTML/man documentation.")
+    p_kernel.add_argument("--keep-hotplug-drivers",
+        action=argparse.BooleanOptionalAction, default=None, dest="keep_hotplug_drivers",
+        help="Re-enable hotplug driver classes (USB, USB4/Thunderbolt, MMC/SD, "
+             "hot-plug PCI/CardBus, hot-plug HID) as modules AFTER config "
+             "minimization, so devices plugged in later still work (default: off, "
+             "per kernel.toml keep_hotplug_drivers). Only meaningful when a "
+             "minimizing kconfig_targets sequence (e.g. localmodconfig) is set.")
     p_kernel.add_argument("--autofdo", choices=("record", "capture", "use"),
         dest="kernel_fdo",
         help="Sample-based kernel optimization (AutoFDO; LLVM toolchain only). "

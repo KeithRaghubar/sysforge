@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026-07-08"
+.TH "sysforge" "1" "2026-07-09"
 .PP
 .PP
 .SH NAME
@@ -1100,6 +1100,11 @@ Build the kernel -headers subpackage (default: on, per kernel.\&toml build_heade
 \fB--docs\fR, \fB--no-docs\fR
 .RS 4
 Build the kernel -docs subpackage (default: off, per kernel.\&toml build_docs).\& Pass --docs to build the kernel HTML/man documentation.\&
+.PP
+.RE
+\fB--keep-hotplug-drivers\fR, \fB--no-keep-hotplug-drivers\fR
+.RS 4
+Re-enable hotplug driver classes (USB, USB4/Thunderbolt, MMC/SD, hot-plug PCI/CardBus, hot-plug HID) as modules AFTER config minimization, so devices plugged in later still work (default: off, per kernel.\&toml keep_hotplug_drivers).\& Only meaningful when a minimizing kconfig_targets sequence (e.\&g.\& localmodconfig) is set.\&
 .PP
 .RE
 \fB--autofdo\fR \fIKERNEL_FDO\fR

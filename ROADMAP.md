@@ -47,15 +47,6 @@ straight off a `Q`.
   `profile_writer.write_package_compiler_override` — no parallel path. *Priority: medium
   (an incoherent swap can make the retry fail confusingly).*
 
-- **`2.1.0-B8` — kernel docs subpackage is still built and installed with no-docs the
-  default.** With no `docs` key set (default off), the kernel stage still builds and
-  installs the `-docs` subpackage (`linux-sysforge-docs-*` observed in a real install).
-  The `_resolve_subpackages` / `patch_kernel_subpackages` path is meant to drop docs
-  unless opted in; something isn't disabling the docs target (or the disable isn't
-  reaching the PKGBUILD's docs `package_*()` split). Fix and add a regression asserting
-  the docs subpackage is absent from the built set when the key is unset. *Priority:
-  medium (wasted build time + an unwanted installed package).*
-
 - **`2.1.0-B10` — `lib32-vulkan-icd-loader` fails under clang with a misleading
   "compiler not valid" error.** Building the package with the llvm toolchain fails; a
   gcc per-package override works, but the surfaced error reads as though the compiler
@@ -92,31 +83,6 @@ straight off a `Q`.
   path. Fix so an unchanged second run reuses the built artifacts. *Priority: medium
   (defeats the whole reuse optimization on the most expensive stage).*
 
-- **`2.1.0-B17` — interactive kernel build proceeds without ever showing the `nconfig`
-  menu.** With `interactive = true` (the kernel-stage default) the build starts and runs
-  to completion with no kconfig prompt — the operator never gets the intended
-  review/edit menu. This is a *behavior* bug, not the documentation issue originally
-  filed here: the design is that on the interactive path
-  `pkgbuild_patcher.patch_kernel_kconfig_apply` (called from `makepkg_wrapper.py:488`)
-  injects a `make nconfig` step (guarded by a TTY `read` pause) into the PKGBUILD's
-  `prepare()` whenever the PKGBUILD has no interactive target of its own — see
-  `add_nconfig = interactive and not _INTERACTIVE_KCONFIG_RE.search(text)` at
-  `pkgbuild_patcher.py:808`. So the mechanism to guarantee a prompt *exists*; something
-  is defeating it in practice. Candidate causes to investigate: (a) the injected
-  `if [ -t 0 ]` / `make nconfig` block isn't reaching a real TTY because the makepkg
-  subprocess's stdin isn't the controlling terminal on this path (the ncurses UI needs
-  the tty, not just inherited stdout/stderr); (b) `_INTERACTIVE_KCONFIG_RE` is matching a
-  *commented-out* or otherwise inert interactive target in the stock PKGBUILD, so
-  `add_nconfig` computes False and nothing is injected; (c) a configured
-  `kconfig_targets` sequence (which suppresses the nconfig injection) is set unexpectedly;
-  or (d) the anchor search returns None so the whole fragment/nconfig block is skipped
-  with only a warning. Reproduce against the real stock kernel PKGBUILD, identify which
-  branch drops the prompt, fix so an interactive run actually opens the menu, and add a
-  regression asserting the injected `make nconfig` (or the operator's own interactive
-  target) survives into the patched `prepare()` for the no-configured-sequence
-  interactive path. *Priority: medium (the interactive default silently doesn't work —
-  operators can't review the kernel config).*
-
 ### Features
 
 - **`2.1.0-F1` — Collision-proof roadmap ID allocation with release-notes visibility.**
@@ -129,14 +95,6 @@ straight off a `Q`.
   per `<version>-<TYPE>`, and flags any duplicate or gap-jumping ID. Optionally expose a
   "next free ID" helper so triage allocates monotonically. *Priority: medium (prevents
   recurring bookkeeping corruption).*
-
-- **`2.1.0-F2` — Kernel config key to force-enable all hotpluggable device drivers.**
-  When minimizing the kernel (e.g. `localmodconfig`), USB and other hotplug-class
-  devices absent at build time get dropped, so a device plugged in later is unsupported.
-  Add a `kernel.toml` opt-in that re-enables the hotpluggable driver classes as modules
-  after minimization, so a slimmed kernel still supports later-attached hardware.
-  Boot-safety stays authoritative (this only *adds* modules). Distinct from the
-  decided-against proactive `=n` filter (`1.2.0-Q11`). *Priority: medium.*
 
 - **`2.1.0-F3` — Before/after package versions for pacman `-Syu` packages in the update
   summary.** The summary renderer already shows version deltas for source-built

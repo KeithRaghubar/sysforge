@@ -91,6 +91,18 @@ pkgname = "linux-sysforge"      # LOCAL package name to build/install as. For a
 #                               # to package). Set true (or pass --docs) to build the
 #                               # kernel HTML/man documentation. CLI: --docs/--no-docs
 
+# keep_hotplug_drivers = false  # default: false — re-enable hotplug driver
+#                               # classes (USB host/gadget, USB4/Thunderbolt,
+#                               # MMC/SD, hot-plug PCI + CardBus/PCMCIA, hot-plug
+#                               # HID) as loadable modules AFTER config
+#                               # minimization. localmodconfig strips drivers for
+#                               # hardware not currently plugged in; this merges a
+#                               # dedicated post-minimization fragment so those
+#                               # classes stay available for devices attached
+#                               # later. Only meaningful with a minimizing
+#                               # kconfig_targets sequence. CLI:
+#                               # --keep-hotplug-drivers/--no-keep-hotplug-drivers
+
 # source = "local"              # "local" | "repo" | "aur" — how the kernel
 #                               # PKGBUILD is sourced. "local" uses the tree under
 #                               # pkgbuild_src_dir as-is (no sync); "repo"/"aur"

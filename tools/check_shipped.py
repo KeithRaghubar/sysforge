@@ -104,7 +104,7 @@ _KNOWN_TOP_KEYS: dict[str, set[str]] = {
                        "boot_audit", "min_boot_free_mb",
                        "capture_lsmod_snapshot", "device_kconfig",
                        "kconfig_merge", "build_headers", "build_docs",
-                       "kconfig_targets"},
+                       "kconfig_targets", "keep_hotplug_drivers"},
     "toolchain.toml": {"enabled", "compiler", "pgo", "skip_build",
                        "drift_detect",
                        "pgo_staging", "pgo_staging1", "pgo_staging3",

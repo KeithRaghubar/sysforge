@@ -83,6 +83,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     cleanup_patch_artifacts,
     extract_pkgbuild_profile,
     is_llvm_pkgbase,
+    patch_hotplug_fragment_merge,
     patch_kconfig_targets,
     patch_kernel_btf_guard,
     patch_kernel_config_install,
@@ -583,6 +584,13 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # that).
         if kconfig_targets:
             patch_kconfig_targets(pkgbuild_path, kconfig_targets)
+        # F2: re-enable hotplug driver classes as modules AFTER the minimizer.
+        # Injected after patch_kconfig_targets (so it can anchor before the UI
+        # tail) and before patch_noninteractive_kconfig (which then strips any UI
+        # tail on a non-interactive run — the hotplug merge stays put). Always
+        # called: the block is file-guarded, and the stage decides whether
+        # sysforge.hotplug.config exists.
+        patch_hotplug_fragment_merge(pkgbuild_path)
         if not interactive:
             patch_noninteractive_kconfig(pkgbuild_path)
 

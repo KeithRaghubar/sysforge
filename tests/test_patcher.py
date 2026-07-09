@@ -37,6 +37,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     load_extracted_profile,
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
+    patch_hotplug_fragment_merge,
     patch_kconfig_targets,
     patch_kernel_btf_guard,
     patch_kernel_config_install,
@@ -697,9 +698,55 @@ def test_kconfig_apply_injects_merge_and_nconfig_when_interactive(tmp_path):
     text = pb.read_text()
     assert "merge_config.sh -m .config \"$startdir/sysforge.config\"" in text
     assert "make nconfig" in text
-    # Merge is injected after the anchor (make olddefconfig), before nconfig.
-    assert text.index("make olddefconfig") < text.index("merge_config.sh")
-    assert text.index("merge_config.sh") < text.index("make nconfig")
+
+
+_OLDCONFIG_PREPARE = (
+    "prepare() {\n"
+    "  cd $_srcname\n"
+    "  cp ../config.$CARCH .config\n"
+    "  make oldconfig\n"
+    "  make -s kernelrelease > version\n"
+    "}\n"
+)
+
+
+def test_kconfig_apply_injects_nconfig_despite_oldconfig(tmp_path):
+    """B17: a literal `make oldconfig` is a resolve step, not a review menu — it
+    must NOT suppress the injected nconfig review on the interactive path."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_OLDCONFIG_PREPARE)
+    patch_kernel_kconfig_apply(pb, interactive=True)
+    text = pb.read_text()
+    assert "make nconfig  # sysforge: interactive kconfig review" in text
+    # The TTY-guarded pause precedes the injected review.
+    assert "read -rp" in text
+    assert text.index("read -rp") < text.index("make nconfig")
+
+
+def test_kconfig_apply_suppresses_nconfig_for_real_menu(tmp_path):
+    """A genuine review menu (make menuconfig) still suppresses the injection —
+    no double menu."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(
+        "prepare() {\n"
+        "  cp ../config.$CARCH .config\n"
+        "  make olddefconfig\n"
+        "  make menuconfig\n"
+        "}\n"
+    )
+    patch_kernel_kconfig_apply(pb, interactive=True)
+    text = pb.read_text()
+    assert "make nconfig" not in text
+    assert "merge_config.sh" in text
+
+
+def test_noninteractive_still_rewrites_oldconfig(tmp_path):
+    """B17 guard: the shared regex's other consumer must keep rewriting
+    `oldconfig` → `olddefconfig` on the non-interactive path."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text("  make oldconfig\n")
+    patch_noninteractive_kconfig(pb)
+    assert pb.read_text() == "  make olddefconfig\n"
 
 
 def test_kconfig_apply_pauses_after_merge_before_nconfig(tmp_path):
@@ -1455,6 +1502,50 @@ def test_subpackages_docs_on_keeps_mixed_make_line(tmp_path):
     assert pb.read_text() == _BUILD_MIXED_DOCS
 
 
+# B8: -docs drop survives the -sysforge coexist rename, and the doc build is
+# neutralized — the exact linux-custom production scenario.
+_LINUX_CUSTOM_DOCS = (
+    "pkgbase=linux-custom\n"
+    'pkgname=("${pkgbase}" "${pkgbase}-headers" "${pkgbase}-docs")\n'
+    "build() {\n"
+    "  cd $_srcname\n"
+    "  make all\n"
+    "  make htmldocs\n"
+    "}\n"
+)
+
+
+def test_b8_docs_drop_survives_sysforge_rename(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_LINUX_CUSTOM_DOCS)
+    # Wrapper order: drop subpackages first, then the coexist rename.
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    patch_pkgbase_rename(pb, "linux-custom-sysforge", mode="coexist")
+    text = pb.read_text()
+    # No -docs token survives anywhere in pkgname.
+    assert "-docs" not in text.split("build()")[0]
+    # htmldocs build is neutralized (commented with the docs-off marker).
+    assert "# sysforge(docs off):" in text
+    assert not any(
+        line.lstrip().startswith("make htmldocs") for line in text.splitlines()
+    )
+    # Control: -headers is retained and picks up the coexist rename.
+    assert "headers" in text
+
+
+def test_b8_docs_retained_when_enabled(tmp_path):
+    """Control: with docs=True the -docs token is kept and htmldocs runs."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_LINUX_CUSTOM_DOCS)
+    patch_kernel_subpackages(pb, headers=True, docs=True)
+    text = pb.read_text()
+    assert "-docs" in text
+    assert "# sysforge(docs off):" not in text
+    assert any(
+        line.lstrip().startswith("make htmldocs") for line in text.splitlines()
+    )
+
+
 # ---------------------------------------------------------------------------
 # patch_package_suffix — the -sysforge optimization-provenance rename
 # ---------------------------------------------------------------------------
@@ -1989,6 +2080,82 @@ def test_patch_build_linker_noop_returns_none(tmp_path):
     p.write_text(body)
     assert patch_build_linker(p, "lld") is None
     assert p.read_text() == body
+
+
+# ---------------------------------------------------------------------------
+# patch_hotplug_fragment_merge (F2)
+# ---------------------------------------------------------------------------
+
+def test_hotplug_merge_lands_after_minimizer_before_ui(tmp_path):
+    """F2 ordering: hotplug merge injected after `make localmodconfig` and before
+    the UI review target, so minimization can't strip the re-enabled modules."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    # Reproduce the production patch order: fragment merge, then configured
+    # targets (localmodconfig ... nconfig UI last), then the hotplug merge.
+    patch_kernel_kconfig_apply(pb, interactive=False)
+    patch_kconfig_targets(pb, ["localmodconfig", "nconfig"])
+    patch_hotplug_fragment_merge(pb)
+    text = pb.read_text()
+    assert 'merge_config.sh -m .config "$startdir/sysforge.hotplug.config"' in text
+    i_min = text.index("make localmodconfig")
+    i_hot = text.index("sysforge.hotplug.config")
+    i_ui = text.index("make nconfig")
+    assert i_min < i_hot < i_ui
+
+
+def test_hotplug_merge_is_file_guarded(tmp_path):
+    """The injected block is guarded on the fragment's existence (harmless when
+    the stage didn't write it)."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    patch_hotplug_fragment_merge(pb)
+    text = pb.read_text()
+    assert 'if [ -f "$startdir/sysforge.hotplug.config" ]; then' in text
+    assert "make olddefconfig  # sysforge: kconfig-resolve" in text
+
+
+def test_hotplug_merge_idempotent(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    patch_hotplug_fragment_merge(pb)
+    once = pb.read_text()
+    patch_hotplug_fragment_merge(pb)
+    assert pb.read_text() == once
+
+
+def test_hotplug_merge_no_ui_anchors_after_sentinel(tmp_path):
+    """Non-interactive, no UI target: the merge still lands after the last
+    sysforge resolve block (the merged .config point)."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    patch_kernel_kconfig_apply(pb, interactive=False)  # injects fragment merge + sentinel
+    patch_hotplug_fragment_merge(pb)
+    text = pb.read_text()
+    # hotplug merge comes after the sysforge.config merge block.
+    assert text.index("sysforge.config") < text.index("sysforge.hotplug.config")
+
+
+def test_hotplug_merge_after_minimizer_no_ui_target(tmp_path):
+    """Interactive kernel build with a minimizing kconfig_targets sequence but
+    NO UI review target (e.g. ["localmodconfig"]): the hotplug merge must land
+    after `make localmodconfig`, not before it — otherwise the minimizer strips
+    the very hotplug modules the fragment re-enabled."""
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_STOCK_PREPARE)
+    # Real wrapper order: kconfig_targets configured => apply called with
+    # interactive=False (no injected UI review target).
+    patch_kernel_kconfig_apply(pb, interactive=False)
+    patch_kconfig_targets(pb, ["localmodconfig"])  # minimizing, no UI target
+    patch_hotplug_fragment_merge(pb)
+    text = pb.read_text()
+    i_min = text.index("make localmodconfig")
+    i_hot = text.index("sysforge.hotplug.config")
+    assert i_min < i_hot
+    # The merge must not land inside the seed/sysforge.config guard block:
+    # its own guard block starts after make localmodconfig.
+    i_hotplug_guard = text.index('if [ -f "$startdir/sysforge.hotplug.config" ]; then')
+    assert i_min < i_hotplug_guard
 
 
 # ---------------------------------------------------------------------------
