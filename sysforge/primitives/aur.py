@@ -9,6 +9,7 @@ Public API:
     repo_packages(names)              -> set[str]          subset of names present in pacman sync DBs
     is_repo_package(name)             -> bool              True if name is in pacman sync DBs
     aur_info(names)                   -> dict[str, dict]   batch AUR RPC v5 query (name → result)
+    aur_search(term)                  -> list[dict]        RPC v5 name-desc search (non-fatal)
     aur_clone(name, dest, *, ref=...) -> None              git clone from AUR into dest
     fetch_aur_name_cache()            -> Path | None       refresh ~/.cache/sysforge/aur-packages.txt
 
@@ -97,6 +98,7 @@ __all__ = [
 
 
 AUR_RPC_URL       = "https://aur.archlinux.org/rpc/v5/info"
+AUR_SEARCH_URL    = "https://aur.archlinux.org/rpc/v5/search"
 AUR_GIT_BASE      = "https://aur.archlinux.org"
 AUR_PACKAGES_URL  = "https://aur.archlinux.org/packages.gz"
 AUR_CACHE_PATH    = USER_CACHE_DIR / "aur-packages.txt"
@@ -132,6 +134,28 @@ def aur_info(names: list[str]) -> dict[str, dict]:
     found = {r["Name"]: r for r in results}
     _log.info(f"AUR RPC: {len(found)}/{len(names)} found")
     return found
+
+
+def aur_search(term: str) -> list[dict]:
+    """Search the AUR by name+description via RPC v5 ``/search/<term>``.
+
+    ``by=name-desc`` mirrors pacman ``-Ss`` (matches name and description), so
+    the search verb's three sections behave consistently for one term. Returns
+    the list of result dicts, or ``[]`` on empty term, network error, timeout,
+    or malformed JSON -- search never hard-fails on this optional third source.
+    """
+    if not term:
+        return []
+    url = f"{AUR_SEARCH_URL}/{urllib.parse.quote(term)}?by=name-desc"
+    try:
+        with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        _log.warn(f"AUR search failed: {e}")
+        return []
+    results = data.get("results", [])
+    _log.info(f"AUR search '{term}': {len(results)} result(s)")
+    return results
 
 
 def fetch_aur_name_cache(force: bool = False) -> Path | None:

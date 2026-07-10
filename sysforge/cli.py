@@ -53,6 +53,7 @@ from sysforge.run_cmd import (
     RunToolchainVerb,
 )
 from sysforge.revert_cmd import RevertToStockVerb
+from sysforge.search_cmd import SearchVerb
 from sysforge.setup_cmd import SetupVerb
 from sysforge.state_cmd import (
     StateFailedVerb,
@@ -61,6 +62,7 @@ from sysforge.state_cmd import (
     StateOrphansVerb,
     StateRepairVerb,
 )
+from sysforge.uninstall_cmd import UninstallVerb
 from sysforge.update import UpdateVerb
 from sysforge.verbs import run_verb
 
@@ -726,6 +728,23 @@ def _add_revert_parser(sub):
     p_revert.set_defaults(verb_cls=RevertToStockVerb)
 
 
+def _add_search_parser(sub):
+    p = sub.add_parser("search",
+        help="search installed, repo, and AUR packages for a term")
+    p.add_argument("term", metavar="TERM", help="search term (name + description)")
+    p.set_defaults(verb_cls=SearchVerb)
+
+
+def _add_uninstall_parser(sub):
+    p = sub.add_parser("uninstall",
+        help="remove package(s); demote any sysforge-tracked ones out of build state")
+    p.add_argument("packages", nargs="+", metavar="PKG",
+        help="package name(s) to remove (stock or -sysforge name)")
+    p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+        help="Override state directory.")
+    p.set_defaults(verb_cls=UninstallVerb)
+
+
 def _add_setup_parser(sub):
     p = sub.add_parser("setup",
         help="Configure system integration (pacman IgnoreGroup for sf-build; "
@@ -1139,7 +1158,9 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_state_parser(sub)
     _add_revert_parser(sub)
     _add_run_parser(sub)
+    _add_search_parser(sub)
     _add_setup_parser(sub)
+    _add_uninstall_parser(sub)
     _add_env_parser(sub)
     _add_log_parser(sub)
     _add_config_parser(sub)

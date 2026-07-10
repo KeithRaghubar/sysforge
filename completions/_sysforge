@@ -29,7 +29,9 @@ _sysforge() {
         state)    _sysforge_state    ;;
         revert-to-stock) _sysforge_revert ;;
         run)      _sysforge_run      ;;
+        search)   _sysforge_search   ;;
         setup)    _sysforge_setup    ;;
+        uninstall) _sysforge_uninstall ;;
         env)      _sysforge_env      ;;
         log)      _sysforge_log      ;;
         config)   _sysforge_config   ;;
@@ -50,7 +52,9 @@ _sysforge_commands() {
     'state:inspect or repair build_state.toml (list, repair, orphans)'
     'revert-to-stock:undo a source-built/optimized package back to the repo version'
     'run:execute a pipeline stage'
+    'search:search installed, repo, and AUR packages for a term'
     'setup:configure system integration (pacman IgnoreGroup for sf-build; install/refresh pacman hooks)'
+    'uninstall:remove package(s); demote any sysforge-tracked ones out of build state'
     'env:print the inherited env chain (shell vars, parent processes, shell init files)'
     'log:page the unified or per-package sysforge log through $PAGER'
     'config:adopt .sfnew/.pacnew config companions left by make sync-config (merge)'
@@ -346,6 +350,17 @@ _sysforge_revert() {
     '--force[skip the confirmation prompt]' \
     '--state-dir[override state directory]:dir:_directories' \
     '--dry-run[show planned revert without making changes]' \
+    '*: :_sysforge_pkg_names'
+}
+
+_sysforge_search() {
+  _arguments \
+    '1:term:_sysforge_pkg_names'
+}
+
+_sysforge_uninstall() {
+  _arguments \
+    '--state-dir[override state directory]:dir:_directories' \
     '*: :_sysforge_pkg_names'
 }
 

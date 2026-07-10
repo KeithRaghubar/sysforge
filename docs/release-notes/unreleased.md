@@ -37,6 +37,12 @@ https://keepachangelog.com/en/1.1.0/
   quick trial or fresh dev-env, without going through the AUR. Verbose, idempotent,
   and fully reversible; the symlink mapping is parity-checked against the packaged
   set. (1.2.0-F31)
+- `search` and `uninstall` verbs — everyday package-lifecycle commands.
+  `search <term>` spans installed → repo → AUR (AUR is best-effort, never
+  hard-fails); `uninstall <pkg>...` runs `pacman -Rnsu` and, for a
+  sysforge-tracked package, demotes it out of build state so `update` stops
+  rebuilding it (reuses the revert-to-stock rename resolution + state-forget
+  path). (1.2.0-F42)
 - `check-standards`: new `roadmap_ids` group cross-checks ROADMAP.md against
   `docs/release-notes/` — flags an open ID reusing a shipped number, an ID in
   both Planned and Abandoned, and a shipped `Q`-typed ID; warns on sequence gaps

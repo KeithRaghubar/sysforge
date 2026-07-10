@@ -109,6 +109,31 @@ def _read_targets(path: Path) -> set[str]:
     return targets
 
 
+def resolve_installed_name(bs, name: str) -> str:
+    """Resolve a user-supplied package name to its actually-installed name.
+
+    A build that earned the ``-sysforge`` rename (conflict/coexist modes) is
+    installed under the renamed name while recording the stock base in
+    ``origin_pkgbase``. A user naming the stock base (``mesa``) should still
+    reach the installed ``mesa-sysforge``. Resolution order:
+
+      * exact tracked key            -> returned unchanged
+      * some entry's origin_pkgbase  -> that entry's key (lowest key, so the
+                                        result is deterministic across dict order)
+      * otherwise (untracked / repo) -> returned unchanged
+
+    Single home for this reverse lookup -- both ``revert_cmd`` and
+    ``uninstall_cmd`` call it; never reimplement.
+    """
+    entries = bs.all_packages()
+    if name in entries:
+        return name
+    for key in sorted(entries):
+        if entries[key].get("origin_pkgbase") == name:
+            return key
+    return name
+
+
 def external_install_targets(sentinel_dir=None) -> set[str]:
     """Packages installed externally (``pacman -S``) since the last reconcile.
 

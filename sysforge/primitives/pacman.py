@@ -606,6 +606,49 @@ def reinstall_repo_pkgs(names: list) -> None:
     )
 
 
+def uninstall_pkgs(names: list, extra_flags: list | None = None) -> None:
+    """Remove packages via ``sudo pacman -Rnsu`` (interactive confirmation).
+
+    Distinct from :func:`remove_pkgs` (``-R --noconfirm``, used by
+    revert-to-stock before an immediate reinstall). Here the removal is the
+    whole point, so:
+
+      ``-n`` skip ``.pacsave`` backups; ``-s`` recurse now-orphaned deps;
+      ``-u`` restrict recursion to packages nothing else needs (won't strand a
+      still-required dep).
+
+    No ``--noconfirm`` -- pacman prints its own transaction + confirmation. No-op
+    on an empty list. Raises ``subprocess.CalledProcessError`` on non-zero exit.
+    """
+    if not names:
+        return
+    argv = ["sudo", "pacman", "-Rnsu", *(extra_flags or []), "--", *names]
+    subprocess.run(argv, check=True)
+
+
+def _search(flag: str, term: str) -> str:
+    """Run ``pacman <flag> --color always <term>``; return captured stdout.
+
+    Forced colour preserves pacman's native rendering while capture lets the
+    caller omit an empty section. Empty string on no match (exit != 0).
+    """
+    result = subprocess.run(
+        ["pacman", flag, "--color", "always", term],
+        capture_output=True, text=True,
+    )
+    return result.stdout if result.returncode == 0 else ""
+
+
+def search_local(term: str) -> str:
+    """Installed packages matching ``term`` (``pacman -Qs``). Empty if none."""
+    return _search("-Qs", term)
+
+
+def search_repo(term: str) -> str:
+    """Sync-DB packages matching ``term`` (``pacman -Ss``). Empty if none."""
+    return _search("-Ss", term)
+
+
 # ---------------------------------------------------------------------------
 # Package queries
 # ---------------------------------------------------------------------------

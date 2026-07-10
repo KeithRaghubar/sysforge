@@ -17,7 +17,7 @@ _sysforge() {
         cword=$COMP_CWORD
     fi
 
-    local commands="build fetch update resolve doctor packages state revert-to-stock run setup env log config"
+    local commands="build fetch update resolve doctor packages state revert-to-stock run search setup uninstall env log config"
 
     # Locate the top-level verb (first non-flag arg after `sysforge`) and an
     # optional subverb (first non-flag arg after the verb).
@@ -61,7 +61,9 @@ _sysforge() {
         state)       _sysforge_state       ;;
         revert-to-stock) _sysforge_revert  ;;
         run)         _sysforge_run         ;;
+        search)      _sysforge_search      ;;
         setup)       _sysforge_setup       ;;
+        uninstall)   _sysforge_uninstall   ;;
         env)         _sysforge_env         ;;
         config)      _sysforge_config      ;;
         completions) _sysforge_completions ;;
@@ -281,6 +283,18 @@ _sysforge_state() {
 _sysforge_revert() {
     if [[ $cur == -* ]]; then
         COMPREPLY=( $(compgen -W "--force --state-dir --dry-run" -- "$cur") )
+    else
+        _sysforge_pkg_names
+    fi
+}
+
+_sysforge_search() {
+    _sysforge_pkg_names
+}
+
+_sysforge_uninstall() {
+    if [[ $cur == -* ]]; then
+        COMPREPLY=( $(compgen -W "--state-dir" -- "$cur") )
     else
         _sysforge_pkg_names
     fi

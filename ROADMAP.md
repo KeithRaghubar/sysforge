@@ -111,15 +111,6 @@ straight off a `Q`.
   inventory. Discuss the UX before committing; it is a concrete first slice of this
   primitive.
 
-- **`1.2.0-F42` — Basic package management verbs (uninstall / search).**
-  Sysforge is build-focused but lacks everyday lifecycle verbs. `search` and
-  `uninstall` are largely pacman passthroughs, but must account for the build/install
-  paths a sysforge package can take: an `uninstall` has to clear the `build_state.toml`
-  entry (`state forget`) and any coexist-renamed `-sysforge` package, not just
-  `pacman -R`. Route through the Verb framework (`requires_sentinel=True` for the
-  mutating verb); reuse `BuildState.reconcile_external_installs` / `state forget`
-  rather than a parallel demotion path. *Priority: medium (rounds out the lifecycle).*
-
 - **`1.2.0-F43` — Logging re-levelling audit for interactive/bootstrap stages.**
   Follow-up to the shipped `1.2.0-F36` slice (configurable `[log] verbosity` + `--quiet`,
   the DESIGN.md §Logging rubric, and the re-levelled day-to-day `build`/`update` path

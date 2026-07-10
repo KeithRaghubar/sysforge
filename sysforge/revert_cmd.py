@@ -62,23 +62,14 @@ def plan_revert(bs: BuildState, targets: list) -> list:
     plans: list[RevertPlan] = []
     entries = bs.all_packages()
     for target in targets:
-        entry = entries.get(target)
-        # Reverse lookup: user named the stock base of a renamed build.
-        # Iterate in sorted key order so a given stock base always resolves to
-        # the same pkgname (deterministic across dict ordering). Full
-        # split-package multi-member handling is a documented limitation.
+        # Reverse lookup (shared home): user may have named the stock base of a
+        # renamed build; resolve it to the actually-installed pkgname.
+        target_name = install_reconcile.resolve_installed_name(bs, target)
+        entry = entries.get(target_name)
         if entry is None:
-            for name in sorted(entries):
-                e = entries[name]
-                if e.get("origin_pkgbase") == target:
-                    entry, target_name = e, name
-                    break
-            else:
-                plans.append(RevertPlan(target, "skip", None, None,
-                                        "not tracked by sysforge — already stock"))
-                continue
-        else:
-            target_name = target
+            plans.append(RevertPlan(target, "skip", None, None,
+                                    "not tracked by sysforge — already stock"))
+            continue
 
         mode = entry.get("build_mode")
         if mode is None or mode == "pacman":

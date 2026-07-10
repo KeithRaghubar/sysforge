@@ -4,7 +4,7 @@ SysForge is an Arch Linux build and maintenance suite with compiler optimization
 
 The default build profile uses the system gcc. LLVM (clang/lld) is fully supported but opt-in: install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `toolchain = "llvm"` in `[defaults]` or a profile, or use `sysforge run toolchain --compiler=llvm`.
 
-**Commands:** `build` / `fetch` / `update` / `resolve` build and maintain profiled AUR & custom packages; `packages` / `state` manage the manifest and build state; `doctor` / `log` / `env` inspect system health and configuration; `setup` wires up pacman integration; `run <stage>` drives the bootstrap pipeline. See `sysforge --help` or the [man page](man/sysforge.1) for the full reference.
+**Commands:** `build` / `fetch` / `update` / `resolve` build and maintain profiled AUR & custom packages; `packages` / `state` manage the manifest and build state; `search` / `uninstall` cover everyday package lifecycle; `doctor` / `log` / `env` inspect system health and configuration; `setup` wires up pacman integration; `run <stage>` drives the bootstrap pipeline. See `sysforge --help` or the [man page](man/sysforge.1) for the full reference.
 
 <sub><!--version-->v2.2.0<!--/version--></sub>
 
@@ -65,6 +65,8 @@ sysforge doctor                     # fast full system health sweep
 sysforge doctor mesa-git            # health-check one package's deps + linkage
 sysforge log [PKG]                  # page sysforge logs
 sysforge config merge               # adopt shipped config-default drift (.sfnew)
+sysforge search cosmic              # search installed, repo, and AUR for a term
+sysforge uninstall mesa             # remove a package (demotes it out of build state)
 ```
 
 To override system defaults without touching `/etc/sysforge/`, create user copies in `~/.config/sysforge/`.
