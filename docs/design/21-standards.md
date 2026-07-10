@@ -93,8 +93,15 @@ but inform how SysForge generates and edits PKGBUILDs:
   [package-guidelines manual](https://manual.archlinux.page/package-guidelines/).
 
 These are reference conventions, not a separate gate — they back the existing
-parser/patcher invariants in `CLAUDE.md` (PKGBUILD parsing/detection/patching,
-source-sync) rather than adding a parallel check.
+parser/patcher invariants in `sysforge/CLAUDE.md` (PKGBUILD
+parsing/detection/patching, source-sync) rather than adding a parallel check.
+
+**CLAUDE.md citation freshness.** Guardrail files (`CLAUDE.md` at the repo root
+for process conventions; `sysforge/CLAUDE.md` for code-seam invariants, loaded
+lazily per-directory) cite concrete paths and `module.symbol` seams. The
+`check_standards` `claude_md` group verifies every backticked citation still
+resolves — missing paths and renamed symbols fail; tokens that cannot be mapped
+to a repo file are skipped (fail-safe, no prose false positives).
 
 **OpenPGP signing (16).** Releases are signed end to end with the maintainer key:
 the `release: vX.Y.Z` commit (`commit.gpgsign`), an annotated tag (`git tag -s`,

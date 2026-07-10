@@ -97,9 +97,10 @@ SysForge has no line-count lint for functions or modules; decomposition is
 driven by **ownership and reuse**, not size. The governing rule is *one home per
 concern*: a given decision (a path, a detection, an injection, a gate) is
 computed in exactly one place, and every caller routes through it. The standing
-list of these single-home invariants lives in `CLAUDE.md` ("Project
-Conventions" + the toolchain/kernel deep invariants); this section is the
-*rubric* behind them — when to extract, and where the extracted code belongs.
+list of these single-home invariants lives in `sysforge/CLAUDE.md` (the
+lazily-loaded code-seam fragment: one-home invariants + the toolchain/kernel
+deep invariants; the root `CLAUDE.md` carries only always-on process
+conventions); this section is the *rubric* behind them — when to extract, and where the extracted code belongs.
 
 **Promote logic to a `primitives/` function when** any of:
 
@@ -135,8 +136,9 @@ more readable whole than fragmented across helpers that are each called once.
 (its own module if it owns a subsystem — `mesa_pgo.py`, `bolt.py`, `kernel_fdo.py`
 — else an existing cohesive one); verb-specific orchestration → the command
 module or `pipeline/stages/`; never a "utils" grab-bag. When adding a new
-single-home concern, record it in `CLAUDE.md` so the invariant is discoverable,
-and cross-reference the owning DESIGN.md section.
+single-home concern, record it in `sysforge/CLAUDE.md` so the invariant is
+discoverable, and cross-reference the owning DESIGN.md section. Cited
+paths/symbols are kept fresh by the `check_standards` `claude_md` group.
 
 ---
 
@@ -2875,8 +2877,15 @@ but inform how SysForge generates and edits PKGBUILDs:
   [package-guidelines manual](https://manual.archlinux.page/package-guidelines/).
 
 These are reference conventions, not a separate gate — they back the existing
-parser/patcher invariants in `CLAUDE.md` (PKGBUILD parsing/detection/patching,
-source-sync) rather than adding a parallel check.
+parser/patcher invariants in `sysforge/CLAUDE.md` (PKGBUILD
+parsing/detection/patching, source-sync) rather than adding a parallel check.
+
+**CLAUDE.md citation freshness.** Guardrail files (`CLAUDE.md` at the repo root
+for process conventions; `sysforge/CLAUDE.md` for code-seam invariants, loaded
+lazily per-directory) cite concrete paths and `module.symbol` seams. The
+`check_standards` `claude_md` group verifies every backticked citation still
+resolves — missing paths and renamed symbols fail; tokens that cannot be mapped
+to a repo file are skipped (fail-safe, no prose false positives).
 
 **OpenPGP signing (16).** Releases are signed end to end with the maintainer key:
 the `release: vX.Y.Z` commit (`commit.gpgsign`), an annotated tag (`git tag -s`,

@@ -33,12 +33,19 @@ Groups:
     encoding    UTF-8 discipline: ruff's PLW1514 (preview) reports no text-mode
                 open/read_text/write_text without an explicit encoding. Skipped
                 with a warning if ruff is not available.
+    claude_md   Citation freshness for every CLAUDE.md in the tree: backticked
+                path citations must exist and `module.symbol` / `file.py::sym`
+                citations must grep-resolve in the cited module. Fail-safe:
+                tokens that cannot be mapped to a repo file (class attributes,
+                CLI flags, globs, prose) are skipped, never flagged.
 
 Drift detection cases (verify these still fire after editing this script):
     - Add `Path.home() / ".cache/sysforge"` to a module other than paths.py.
     - Drop the SPDX header from a sysforge/*.py file.
     - Add a `## Notes` heading to a docs/release-notes/*.md file.
     - Add `open(p, "w")` without encoding= to a sysforge/*.py file.
+    - Cite a nonexistent `tools/foo.sh` path in a CLAUDE.md file.
+    - Rename a function cited as `module.symbol` in sysforge/CLAUDE.md.
 """
 
 from __future__ import annotations
@@ -208,6 +215,122 @@ def check_encoding(repo: Path) -> list[Finding]:
 
 
 # ===========================================================================
+# Group: claude_md  (CLAUDE.md citation freshness)
+# ===========================================================================
+
+# Backticked tokens in CLAUDE.md files. A token is only *flagged* when it maps
+# unambiguously to a repo file that is missing, or to a module that no longer
+# contains the cited symbol. Anything ambiguous is skipped — the lint must
+# never force prose rewrites to appease a false positive.
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+
+# Directory trees to ignore when discovering CLAUDE.md files.
+_CLAUDE_MD_SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__"}
+
+# Bare-token first segments that are stdlib/external, never sysforge modules.
+_EXTERNAL_MODULES = {"os", "sys", "re", "json", "pathlib", "subprocess", "shutil"}
+
+# Characters that mark a token as prose/pattern rather than a checkable
+# citation (globs, env reads, placeholders, shell fragments, ellipses).
+_UNCHECKABLE_RE = re.compile(r"[\s*<>\[\]{}$~@=|,'\"§…]")
+
+_PATHLIKE_RE = re.compile(r"^[\w./-]+$")
+_DOTTED_RE = re.compile(r"^[A-Za-z_][\w.]*$")
+
+
+def _resolve_module_file(repo: Path, name: str) -> Path | None:
+    """Locate `<name>.py` in the tree; None if absent or ambiguous."""
+    hits = [p for p in repo.rglob(f"{name}.py")
+            if not _CLAUDE_MD_SKIP_DIRS & set(p.parts)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _check_citation(repo: Path, token: str) -> str | None:
+    """Return an error message for a stale citation, or None (ok/skipped)."""
+    # `file.py::symbol` — resolve the file, then grep for the symbol.
+    if "::" in token:
+        file_part, _, sym = token.partition("::")
+        mod = _resolve_module_file(repo, file_part.removesuffix(".py")) \
+            if file_part.endswith(".py") else None
+        if mod is None or not sym.isidentifier():
+            return None
+        if sym not in mod.read_text(encoding="utf-8"):
+            return f"cites `{token}` but {mod.relative_to(repo)} has no `{sym}`"
+        return None
+
+    # Call syntax: keep only the callee (`pacman.get_pkgdest()` etc.).
+    token = token.split("(", 1)[0]
+    if not token or _UNCHECKABLE_RE.search(token) or token.startswith(("/", "-", ".")):
+        return None
+
+    # Explicit relative path (contains `/`): must exist, repo- or sysforge-
+    # relative (the fragment cites `primitives/paths.py` style paths).
+    if "/" in token:
+        if not _PATHLIKE_RE.match(token):
+            return None
+        rel = token.rstrip("/")
+        if (repo / rel).exists() or (repo / "sysforge" / rel).exists():
+            return None
+        return f"cites path `{token}` which does not exist"
+
+    # Bare script/module filename: resolvable anywhere in the tree.
+    if token.endswith((".py", ".sh")):
+        if (repo / token).exists() or _resolve_module_file(repo, token.rsplit(".", 1)[0]):
+            return None
+        return f"cites `{token}` — no such file in the tree"
+
+    # Dotted `module[.module...].symbol` seam citation.
+    if "." in token and _DOTTED_RE.match(token) and not token.endswith("."):
+        segs = token.split(".")
+        first = segs[0]
+        # Skip stdlib, CamelCase class attrs, and 1-char tails (`build_core.X`).
+        if first in _EXTERNAL_MODULES or not first.islower() or len(segs[-1]) < 2:
+            return None
+        # Literal file in the repo root (`sysforge.install`, `foo.toml`)?
+        if (repo / token).exists():
+            return None
+        # Walk leading segments as packages: `verbs.runner.run_verb` →
+        # sysforge/verbs/runner.py :: run_verb. Longest module prefix wins.
+        mod: Path | None = None
+        sym_segs: list[str] = []
+        for i in range(len(segs) - 1, 0, -1):
+            candidate = "/".join(segs[:i]) + ".py"
+            for base in (repo, repo / "sysforge", repo / "sysforge" / "primitives"):
+                if (base / candidate).is_file():
+                    mod, sym_segs = base / candidate, segs[i:]
+                    break
+            if mod:
+                break
+        if mod is None:
+            mod = _resolve_module_file(repo, first)
+            sym_segs = segs[1:]
+        if mod is None:
+            return None  # can't map — skip, fail-safe
+        if sym_segs and sym_segs[0] not in mod.read_text(encoding="utf-8"):
+            return (f"cites `{token}` but {mod.relative_to(repo)} "
+                    f"has no `{sym_segs[0]}`")
+    return None
+
+
+def check_claude_md(repo: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for md in sorted(repo.rglob("CLAUDE.md")):
+        if _CLAUDE_MD_SKIP_DIRS & set(md.parts):
+            continue
+        rel = md.relative_to(repo).as_posix()
+        seen: set[str] = set()
+        for token in _BACKTICK_RE.findall(md.read_text(encoding="utf-8")):
+            token = token.strip()
+            if token in seen:
+                continue
+            seen.add(token)
+            msg = _check_citation(repo, token)
+            if msg:
+                findings.append(Finding("claude_md", "error", rel, msg))
+    return findings
+
+
+# ===========================================================================
 # Driver
 # ===========================================================================
 
@@ -216,6 +339,7 @@ GROUPS = {
     "spdx":      check_spdx,
     "changelog": check_changelog,
     "encoding":  check_encoding,
+    "claude_md": check_claude_md,
 }
 
 
