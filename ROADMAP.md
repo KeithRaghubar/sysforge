@@ -67,6 +67,20 @@ straight off a `Q`.
   changes trains the user to ignore a genuinely useful rebuild/staleness signal — same
   trust-erosion failure mode as `2.2.0-B1`).*
 
+- **`2.2.0-B3` — `check-shipped` manpage guard couples to the local scdoc version.**
+  The `manpage` check in `tools/check_shipped.py` asserts that committed `man/sysforge.1`
+  byte-matches fresh `make man` output on the current machine. But `make man` runs `scdoc`,
+  whose rendering changes between versions (e.g. 1.11.4→1.11.5 re-escaped every `-` as `\-`
+  and re-stamped the `.TH` date), so the committed artifact is silently pinned to whichever
+  scdoc version last regenerated it. A contributor (or CI) on a different scdoc version sees
+  the inverse reflow — hundreds of cosmetic `\-`↔`-` lines — and the guard fails on changes
+  they never made, conflating "the CLI surface changed" with "the renderer version changed".
+  The escaping is functionally inert (roff renders `\-` and `-` identically). Fix: normalize
+  the comparison in `check_shipped.py` — strip the generator/date comment line and canonicalize
+  hyphen escaping before diffing — so the guard verifies man-page *content* (does it match the
+  argparse tree) rather than scdoc-version-specific byte output. *Priority: low (cosmetic churn
+  + contributor/CI friction; no runtime or rendered-output impact).*
+
 ### Features
 
 - **`2.1.0-F3` — Before/after package versions for pacman `-Syu` packages in the update
