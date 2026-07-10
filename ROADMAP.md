@@ -40,17 +40,6 @@ _(none currently planned)_
 
 ### Features
 
-- **`2.1.0-F1` — Collision-proof roadmap ID allocation with release-notes visibility.**
-  ROADMAP has no view into `docs/release-notes/`, so a shipped ID (e.g. a landed
-  `2.1.0-B2`) and a still-open ROADMAP ID can silently reuse the same number — which is
-  exactly what happened: open `2.1.0-B2`/`B3` collided with *shipped* `2.1.0-B2`–`B7`
-  and had to be hand-renumbered to `2.1.0-B16`/`B17` during triage.
-  Add tooling (fold into `make check-standards` or a new `tools/` check) that scans both
-  ROADMAP.md and the release-notes accumulator/archive, computes the true high-water mark
-  per `<version>-<TYPE>`, and flags any duplicate or gap-jumping ID. Optionally expose a
-  "next free ID" helper so triage allocates monotonically. *Priority: medium (prevents
-  recurring bookkeeping corruption).*
-
 - **`2.1.0-F3` — Before/after package versions for pacman `-Syu` packages in the update
   summary.** The summary renderer already shows version deltas for source-built
   packages; extend it to include old→new versions for the repo packages pulled in by the
@@ -93,7 +82,7 @@ _(none currently planned)_
   inventory. Discuss the UX before committing; it is a concrete first slice of this
   primitive.
 
-- **`1.2.0-F29` — Basic package management verbs (uninstall / search).**
+- **`1.2.0-F42` — Basic package management verbs (uninstall / search).**
   Sysforge is build-focused but lacks everyday lifecycle verbs. `search` and
   `uninstall` are largely pacman passthroughs, but must account for the build/install
   paths a sysforge package can take: an `uninstall` has to clear the `build_state.toml`
@@ -102,16 +91,15 @@ _(none currently planned)_
   mutating verb); reuse `BuildState.reconcile_external_installs` / `state forget`
   rather than a parallel demotion path. *Priority: medium (rounds out the lifecycle).*
 
-- **`1.2.0-F36` — Finish the logging re-levelling audit (interactive stages).** The
-  configurable default verbosity (`[log] verbosity` + global `--quiet`) shipped, along with
-  the level rubric (DESIGN.md §Logging) and a re-levelling of the day-to-day `build`/`update`
-  path (packages stage narration → info; build_core dep-failure cautions → warn) guarded by a
-  golden-output test. **Remaining:** sweep the interactive/bootstrap-time stages against the
-  same rubric — `reconfigure.py` (94 `ui()`), `configure.py` (47), `kernel.py` (42),
-  `toolchain.py` (60), `hardware.py` (19), `partition.py` (14) — demoting progress narration
-  to `info()` while keeping prompts/plan-tables/results as `ui()`. Extend the golden guard to a
-  representative stage run. *Priority: low (bootstrap-time output, not the day-to-day
-  regression, which is resolved).*
+- **`1.2.0-F43` — Logging re-levelling audit for interactive/bootstrap stages.**
+  Follow-up to the shipped `1.2.0-F36` slice (configurable `[log] verbosity` + `--quiet`,
+  the DESIGN.md §Logging rubric, and the re-levelled day-to-day `build`/`update` path
+  under a golden-output test). **Remaining:** sweep the interactive/bootstrap-time stages
+  against the same rubric — `reconfigure.py` (94 `ui()`), `configure.py` (47), `kernel.py`
+  (42), `toolchain.py` (60), `hardware.py` (19), `partition.py` (14) — demoting progress
+  narration to `info()` while keeping prompts/plan-tables/results as `ui()`. Extend the
+  golden guard to a representative stage run. *Priority: low (bootstrap-time output, not the
+  day-to-day regression, which is resolved under F36).*
 
 ---
 

@@ -38,6 +38,10 @@ Groups:
                 citations must grep-resolve in the cited module. Fail-safe:
                 tokens that cannot be mapped to a repo file (class attributes,
                 CLI flags, globs, prose) are skipped, never flagged.
+    roadmap_ids Cross-checks ROADMAP.md (open items) against docs/release-notes/
+                (shipped items): flags an open ID reusing a shipped number, an ID
+                listed both Planned and Abandoned, a shipped Q-typed ID, and
+                (warn) sequence gaps in the active pyproject version's prefix.
 
 Drift detection cases (verify these still fire after editing this script):
     - Add `Path.home() / ".cache/sysforge"` to a module other than paths.py.
@@ -46,6 +50,9 @@ Drift detection cases (verify these still fire after editing this script):
     - Add `open(p, "w")` without encoding= to a sysforge/*.py file.
     - Cite a nonexistent `tools/foo.sh` path in a CLAUDE.md file.
     - Rename a function cited as `module.symbol` in sysforge/CLAUDE.md.
+    - Add an ID to ROADMAP Planned that already appears in a shipped v*.md.
+    - List the same ID in both the Planned and Abandoned ROADMAP sections.
+    - Reference a Q-typed ID in a shipped release-notes file.
 """
 
 from __future__ import annotations
@@ -331,15 +338,177 @@ def check_claude_md(repo: Path) -> list[Finding]:
 
 
 # ===========================================================================
+# Group: roadmap_ids  (ROADMAP.md <-> release-notes ID collision detection)
+# ===========================================================================
+
+# ID grammar: <version>-<TYPE><n>, e.g. 2.1.0-F1 -> ("2.1.0", "F", 1).
+_ID_RE = re.compile(r"(\d+\.\d+\.\d+)-([A-Z]+)(\d+)")
+# A ROADMAP entry: a bullet whose first token is a bold code-span holding an ID.
+# Anchoring here skips the `## ID scheme` section's inline prose examples.
+_ROADMAP_ENTRY_RE = re.compile(r"^- \*\*`(\d+\.\d+\.\d+-[A-Z]+\d+)`")
+# HTML comment blocks carry instructional prose (e.g. the accumulator header's
+# "e.g. (1.2.0-F35)") whose IDs are examples, not entries — strip before scan.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _parse_id(s: str) -> tuple[str, str, int] | None:
+    m = _ID_RE.fullmatch(s)
+    if not m:
+        return None
+    return m.group(1), m.group(2), int(m.group(3))
+
+
+def roadmap_ids_from_text(text: str) -> dict[str, str]:
+    """Map each bold-bullet ROADMAP entry ID to 'planned' or 'abandoned'."""
+    state = "planned"
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        if re.match(r"^##\s+Abandoned", line):
+            state = "abandoned"
+            continue
+        if re.match(r"^##\s+", line):
+            state = "planned"
+            continue
+        m = _ROADMAP_ENTRY_RE.match(line)
+        if m:
+            out[m.group(1)] = state
+    return out
+
+
+def shipped_ids_from_text(text: str) -> set[str]:
+    """Every ID token in release-notes text, after HTML comments are stripped.
+
+    A `promoted from <ID>` citation records historical lineage — the ID it names
+    is the *old* (unshipped) roadmap ID, not a shipped one — so it is stripped
+    before token extraction.
+    """
+    stripped = _HTML_COMMENT_RE.sub("", text)
+    stripped = re.sub(r"promoted from\s+`?" + _ID_RE.pattern, "", stripped)
+    return {m.group(0) for m in _ID_RE.finditer(stripped)}
+
+
+def _project_version(repo: Path) -> str:
+    pyproject = repo / "pyproject.toml"
+    if not pyproject.is_file():
+        return ""
+    for line in pyproject.read_text(encoding="utf-8").splitlines():
+        m = re.match(r'\s*version\s*=\s*"(\d+\.\d+\.\d+)"', line)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _gather_ids(repo: Path) -> tuple[dict[str, str], set[str]]:
+    roadmap: dict[str, str] = {}
+    roadmap_md = repo / "ROADMAP.md"
+    if roadmap_md.is_file():
+        roadmap = roadmap_ids_from_text(roadmap_md.read_text(encoding="utf-8"))
+    shipped: set[str] = set()
+    notes_dir = repo / "docs" / "release-notes"
+    if notes_dir.is_dir():
+        files = sorted(notes_dir.glob("v*.md"))
+        unreleased = notes_dir / "unreleased.md"
+        if unreleased.is_file():
+            files.append(unreleased)
+        for md in files:
+            shipped |= shipped_ids_from_text(md.read_text(encoding="utf-8"))
+    return roadmap, shipped
+
+
+def check_roadmap_ids(repo: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    roadmap, shipped = _gather_ids(repo)
+    planned = {i for i, s in roadmap.items() if s == "planned"}
+    abandoned = {i for i, s in roadmap.items() if s == "abandoned"}
+
+    # Check 1: an open (Planned) ID that reuses a shipped number.
+    for i in sorted(planned & shipped):
+        findings.append(Finding(
+            "roadmap_ids", "error", "ROADMAP.md",
+            f"{i} is open in ROADMAP but already shipped in release-notes "
+            f"(collision — allocate a fresh ID via --next-id)",
+        ))
+    # Check 2: an ID that is both Planned and Abandoned. roadmap_ids_from_text
+    # keeps a single final state per ID (last section wins), so an ID bulleted
+    # under both headers would otherwise vanish from one side of this
+    # intersection — re-scan the raw text tracking both memberships directly.
+    roadmap_md = repo / "ROADMAP.md"
+    if roadmap_md.is_file():
+        state = "planned"
+        seen_planned: set[str] = set()
+        seen_abandoned: set[str] = set()
+        for line in roadmap_md.read_text(encoding="utf-8").splitlines():
+            if re.match(r"^##\s+Abandoned", line):
+                state = "abandoned"
+                continue
+            m = _ROADMAP_ENTRY_RE.match(line)
+            if m:
+                (seen_abandoned if state == "abandoned" else seen_planned).add(m.group(1))
+        for i in sorted(seen_planned & seen_abandoned):
+            findings.append(Finding(
+                "roadmap_ids", "error", "ROADMAP.md",
+                f"{i} is listed in both Planned and Abandoned sections",
+            ))
+    # Check 4: a Q-typed ID that shipped without promotion to F/B/STD. Only the
+    # mutable accumulator (unreleased.md) is checked — released v*.md files are
+    # immutable history and are grandfathered against past-process Q misses.
+    unreleased = repo / "docs" / "release-notes" / "unreleased.md"
+    unreleased_ids: set[str] = set()
+    if unreleased.is_file():
+        unreleased_ids = shipped_ids_from_text(unreleased.read_text(encoding="utf-8"))
+    for i in sorted(unreleased_ids):
+        parsed = _parse_id(i)
+        if parsed and parsed[1] == "Q":
+            findings.append(Finding(
+                "roadmap_ids", "error", "docs/release-notes/",
+                f"{i} is a Q-typed (open-question) ID that appears shipped — "
+                f"a Q must be promoted to F/B/STD before implementation",
+            ))
+    # Check 5: sequence gaps, active version prefix only (warn).
+    active = _project_version(repo)
+    if active:
+        by_type: dict[str, set[int]] = {}
+        for i in planned | abandoned | shipped:
+            p = _parse_id(i)
+            if p and p[0] == active:
+                by_type.setdefault(p[1], set()).add(p[2])
+        for typ, nums in sorted(by_type.items()):
+            for k in range(1, max(nums) + 1):
+                if k not in nums:
+                    findings.append(Finding(
+                        "roadmap_ids", "warn", "ROADMAP.md",
+                        f"{active}-{typ}{k} is missing from the {active}-{typ} "
+                        f"sequence (gap in the active cycle)",
+                    ))
+    return findings
+
+
+def next_id(repo: Path, prefix: str) -> str:
+    """Next free ID for a '<version>-<TYPE>' prefix, across all three sources."""
+    version, sep, typ = prefix.partition("-")
+    if not sep or not re.fullmatch(r"\d+\.\d+\.\d+", version) or not typ:
+        raise ValueError(
+            f"--next-id expects <version>-<TYPE>, e.g. 2.2.0-F; got {prefix!r}"
+        )
+    roadmap, shipped = _gather_ids(repo)
+    nums = [
+        p[2] for i in (set(roadmap) | shipped)
+        if (p := _parse_id(i)) and p[0] == version and p[1] == typ
+    ]
+    return f"{version}-{typ}{(max(nums) + 1) if nums else 1}"
+
+
+# ===========================================================================
 # Driver
 # ===========================================================================
 
 GROUPS = {
-    "paths":     check_paths,
-    "spdx":      check_spdx,
-    "changelog": check_changelog,
-    "encoding":  check_encoding,
-    "claude_md": check_claude_md,
+    "paths":       check_paths,
+    "spdx":        check_spdx,
+    "changelog":   check_changelog,
+    "encoding":    check_encoding,
+    "claude_md":   check_claude_md,
+    "roadmap_ids": check_roadmap_ids,
 }
 
 
@@ -354,7 +523,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--list", action="store_true", help="list groups and exit")
     p.add_argument("--repo", type=Path, default=REPO,
                    help="repo root to validate (default: this script's repo)")
+    p.add_argument("--next-id", metavar="VERSION-TYPE",
+                   help="print the next free roadmap ID for a prefix "
+                        "(e.g. 2.2.0-F) and exit")
     args = p.parse_args(argv)
+
+    if args.next_id:
+        try:
+            print(next_id(args.repo.resolve(), args.next_id))
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        return 0
 
     if args.list:
         for name in GROUPS:

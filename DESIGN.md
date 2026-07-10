@@ -2887,6 +2887,17 @@ lazily per-directory) cite concrete paths and `module.symbol` seams. The
 resolves — missing paths and renamed symbols fail; tokens that cannot be mapped
 to a repo file are skipped (fail-safe, no prose false positives).
 
+**Roadmap ID collision check.** The `check_standards` `roadmap_ids` group
+cross-checks `ROADMAP.md` (open items) against `docs/release-notes/` (shipped
+items). Errors: an open ID reusing a shipped number, an ID in both Planned and
+Abandoned, a shipped `Q`-typed ID. Warn: sequence gaps within the active
+`pyproject.toml` version prefix. Allocate the next ID with
+`python tools/check_standards.py --next-id <version>-<TYPE>`. Known limitation:
+a release-note that mentions a still-Planned ID in prose (a forward or "see
+also" reference) is indistinguishable from a shipped citation and will trip
+the collision check (check 1) — author release-notes to reference only IDs
+that actually shipped in that note.
+
 **OpenPGP signing (16).** Releases are signed end to end with the maintainer key:
 the `release: vX.Y.Z` commit (`commit.gpgsign`), an annotated tag (`git tag -s`,
 verified with `git tag -v`), and a detached signature of the source tarball

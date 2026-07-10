@@ -37,6 +37,11 @@ https://keepachangelog.com/en/1.1.0/
   quick trial or fresh dev-env, without going through the AUR. Verbose, idempotent,
   and fully reversible; the symlink mapping is parity-checked against the packaged
   set. (1.2.0-F31)
+- `check-standards`: new `roadmap_ids` group cross-checks ROADMAP.md against
+  `docs/release-notes/` — flags an open ID reusing a shipped number, an ID in
+  both Planned and Abandoned, and a shipped `Q`-typed ID; warns on sequence gaps
+  in the active version prefix. Adds `--next-id <version>-<TYPE>` to allocate the
+  next free ID monotonically (2.1.0-F1).
 - Global `--no-throttle` / `--turbo` flags: `--no-throttle` ignores the
   configured build throttle for a run; `--turbo` runs at higher-than-default
   priority (negative niceness, best-effort IO, no cap). Both route through the
