@@ -36,7 +36,19 @@ straight off a `Q`.
 
 ### Bugs
 
-_(none currently planned)_
+- **`2.2.0-B1` — Misleading (possibly spurious) external-install demotion message on
+  update.** An `update` run logs e.g. `demoted 19 source-built package(s) reinstalled
+  from the repo: cosmic-*-git, lib32-vulkan-icd-loader-git, vulkan-*-git, …` — but every
+  named package is a `-git` AUR package with **no repo version** to be "reinstalled from
+  the repo" from, so both the wording and the demotion itself look wrong. Reported symptom:
+  the message "doesn't seem correct and also doesn't change update behaviour." Investigate
+  `_reconcile_external_demotions` (`update.py:341`) and the self-install sentinel diff
+  (`primitives/install_reconcile.external_install_targets`): determine whether the sentinels
+  are capturing packages sysforge itself built/installed (false positives) rather than true
+  external `pacman -S` reinstalls, and whether demoting a source-built `-git` package to a
+  `pacman` marker is ever correct. Fix the demotion trigger and/or re-word the message.
+  *Priority: medium (touches the source-built ⇄ pacman state authority; a false demotion
+  silently stops a package from being rebuilt on future updates).*
 
 ### Features
 
@@ -104,6 +116,24 @@ _(none currently planned)_
 ---
 
 ## Abandoned / decided against
+
+- **`2.2.0-Q1` — build-system cohesion audit — decided against 2026-07-10.** The question was
+  whether the kernel, toolchain, and package stages had diverged from a shared build system and
+  warranted consolidation. Investigation found the premise doesn't hold: there are two seams, and
+  the load-bearing one is already the single home. The **low seam** (`makepkg_wrapper.run` /
+  `primitives/makepkg_invoke.py`) — where the real one-home invariants live (flag scrubs, build
+  throttle, PGO/FDO/BOLT rename, review gate, recovery menu) — is used by *every* surface: `build`,
+  `update`, and all three stages. The **high seam** (`build_core.build_and_install`: dep-resolve →
+  batch-order → bulk-install) is used only by `build` and `update`; `packages.py`/`kernel.py`/
+  `toolchain.py` call `makepkg_run` directly, but that divergence is **intentional**, not drift:
+  `toolchain.py` is a 5-pass staged build with no system-install for passes 1–3 (routing it through
+  `build_and_install`'s resolve→build→bulk-install assumption would be wrong), and `kernel.py` is a
+  single interactive-by-default package with an `nconfig` pause, post-install steps, and local
+  pkgbase rename. The only genuine candidate — `packages.py`'s per-package loop partially
+  re-implementing `build_and_install` — is bootstrap-time (not the day-to-day path), carries its own
+  stage resume/progress state, and touches the build-state authority, so the net simplification is
+  marginal against the risk. If that duplication ever becomes a real maintenance cost it reopens as a
+  narrow `F` scoped to the `packages` stage — not a surface-wide audit.
 
 - **`1.2.0-Q11` — proactive kernel driver-class filter — decided against 2026-07-03.**
   The question was whether the kernel stage should *proactively* exclude host-irrelevant
