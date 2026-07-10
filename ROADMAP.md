@@ -50,6 +50,23 @@ straight off a `Q`.
   *Priority: medium (touches the source-built ⇄ pacman state authority; a false demotion
   silently stops a package from being rebuilt on future updates).*
 
+- **`2.2.0-B2` — Spurious kernel/toolchain "changed since last sysforge run" reminders on
+  update.** An `update` run surfaces the pacman-hook sentinel reminders
+  (`Kernel package(s) changed…` / `Toolchain package(s) (llvm/clang/gcc) changed…`) even when
+  the only thing that changed the kernel/toolchain was **a prior `sysforge update` itself** —
+  so the nag fires for work sysforge already did. Mechanism: PostTransaction libalpm hooks drop
+  `/var/lib/sysforge/sentinels/{kernel,toolchain}`; `_consume_pacman_hook_sentinels`
+  (`update.py:309`) surfaces+unlinks pre-existing sentinels at start-of-run (line 380) and does a
+  `silent=True` clear at end-of-run (line 1082) to swallow sentinels sysforge's own Phase 5
+  (`pacman -U`) / Phase 6.5 (`pacman -Syu`) transactions just dropped. The end-of-run clear is a
+  plain sequential call, **not guaranteed on every exit path** — any exception or early return
+  after Phase 6.5 leaves sysforge's own sentinel on disk, and the next run reports it as an
+  external change. Fix: make the end-of-run swallow run unconditionally (e.g. `finally`), or
+  snapshot the sentinel set present at start-of-run and only ever warn on that set so mid-run
+  self-drops can never be surfaced. *Priority: medium (a warning that fires for sysforge's own
+  changes trains the user to ignore a genuinely useful rebuild/staleness signal — same
+  trust-erosion failure mode as `2.2.0-B1`).*
+
 ### Features
 
 - **`2.1.0-F3` — Before/after package versions for pacman `-Syu` packages in the update
