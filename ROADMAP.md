@@ -81,7 +81,28 @@ straight off a `Q`.
   argparse tree) rather than scdoc-version-specific byte output. *Priority: low (cosmetic churn
   + contributor/CI friction; no runtime or rendered-output impact).*
 
+- **`2.2.0-B4` — `doctor --gfxperf` warns about a nonexistent package (`nvidia-vaapi-driver`).**
+  The VA-API video-decode check (`_check_vaapi_driver`, `primitives/gfxperf_probe.py:81`) gates on
+  the installed-package name `nvidia-vaapi-driver`, but that is the *upstream project* name — the
+  Arch package is `libva-nvidia-driver` (the one actually installed). So the check never finds its
+  target on a correct system, permanently emits a WARN, and its remediation tells the user to
+  `Install 'nvidia-vaapi-driver'`, a package that does not exist in the repos. Fix: match on the
+  real package name (`libva-nvidia-driver`), and update the finding message + remediation string
+  accordingly (the upstream name may still be worth a parenthetical for recognisability). Ships in
+  the just-landed `1.2.0-F22` gfxperf axis. *Priority: medium (a permanent false positive that
+  points at a phantom package — same advisory trust-erosion failure mode as `2.2.0-B1`/`B2`).*
+
 ### Features
+
+- **`2.2.0-F1` — ccache/sccache readiness doctor axis.** Split out of `1.2.0-F21`
+  (Configure-stage additions), where it sat awkwardly among build-time *mutations*.
+  This is a **read-only health check**, so it belongs in the doctor-axis family: a
+  producer → `list[diagnostics.Finding]` that verifies ccache/sccache are installed,
+  on `PATH`, and configured with a sane cache dir/size before a build relies on them.
+  Reuse the existing passive probes in `primitives/cache_probe.py`
+  (`probe_ccache()`/`probe_sccache()`) rather than adding a parallel reader. Register
+  in `doctor.py` + `cli.py` + both completions + manpage + `_patch_axes_clean` in the
+  same change (per the doctor-axis one-home invariant). *Priority: low (candidate).*
 
 - **`2.1.0-F3` — Before/after package versions for pacman `-Syu` packages in the update
   summary.** The summary renderer already shows version deltas for source-built
@@ -103,8 +124,9 @@ straight off a `Q`.
   a commitment).*
 
 - **`1.2.0-F21` — Configure-stage additions (from the DESIGN roadmap).** btrfs
-  snapshot before a build runs; ccache/sccache initialisation check; estimated
-  build-time heuristic. *Priority: low (candidate).*
+  snapshot before a build runs; estimated build-time heuristic. (The
+  ccache/sccache readiness check was split out to `2.2.0-F1` — it's a health
+  check, not a configure mutation.) *Priority: low (candidate).*
 
 - **`1.2.0-F28` — User-owned artifact inventory primitive.** Track the user-owned
   system artifacts now scattered across `~/scripts`, `/etc/systemd/system/`,
