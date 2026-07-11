@@ -967,6 +967,17 @@ def test_kernel_stage_noop_when_no_kernel_toml(tmp_path):
         mock_build.assert_not_called()
         mock_sub.assert_not_called()
 
+def test_kernel_stage_skips_snapshot_when_disabled(tmp_path):
+    """F21 regression lock: a disabled/absent kernel.toml must take the
+    early-return path before the pre-build snapshot seam is reached."""
+    import sysforge.pipeline.stages.kernel as _km
+    state = PipelineState(tmp_path / "state")
+
+    with patch.object(_km, "KERNEL_PATH", tmp_path / "nonexistent.toml"), \
+         patch("sysforge.primitives.snapshot.ensure_pre_build_snapshot") as mock_snap:
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+        mock_snap.assert_not_called()
+
 def test_kernel_stage_dry_run_calls_nothing(tmp_path):
     import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
@@ -2574,6 +2585,21 @@ def test_dry_run_omits_interactive_nudge(tmp_path):
     logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
 
     assert not any("Running interactively" in m for m in _info_messages(logs))
+
+
+def test_kernel_stage_invokes_pre_build_snapshot(tmp_path):
+    """F21: KernelStage.run wires the pre-build snapshot seam after the
+    enabled check, so a disabled/absent kernel.toml never triggers it."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = PipelineState(tmp_path / "state")
+    p = make_kernel_toml(tmp_path, builds)
+    opts = make_options(state_dir=tmp_path / "state")
+
+    with patch("sysforge.primitives.snapshot.ensure_pre_build_snapshot") as mock_snap:
+        _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
+
+    mock_snap.assert_called_once_with({}, dry_run=opts.dry_run)
 
 
 # ---------------------------------------------------------------------------

@@ -814,3 +814,39 @@ def test_reviewed_commit_recorded_and_sticky(tmp_path):
               pkgbase="htop", pkgbuild_dir=tmp_path,
               build_mode="source_built", reviewed_commit="bbb222")
     assert bs.get("htop")["reviewed_commit"] == "bbb222"
+
+
+# ---------------------------------------------------------------------------
+# build_seconds field — bounded ring of last 5 build durations
+# ---------------------------------------------------------------------------
+
+def test_build_seconds_ring_appends_and_caps(tmp_path):
+    from sysforge.primitives.build_state import BuildState
+    bs = BuildState(tmp_path)
+    common = dict(pkgver="1", pkgrel="1", epoch="0", pkgbase="foo",
+                  pkgbuild_dir=tmp_path)
+    for s in (100, 110, 120, 130, 140, 150):  # 6 samples, ring caps at 5
+        bs.record("foo", build_seconds=s, **common)
+    assert bs.get("foo")["build_seconds"] == "110,120,130,140,150"
+
+
+def test_build_seconds_none_preserves_ring(tmp_path):
+    from sysforge.primitives.build_state import BuildState
+    bs = BuildState(tmp_path)
+    common = dict(pkgver="1", pkgrel="1", epoch="0", pkgbase="foo",
+                  pkgbuild_dir=tmp_path)
+    bs.record("foo", build_seconds=100, **common)
+    bs.record("foo", build_seconds=None, **common)  # backfill: no timing
+    assert bs.get("foo")["build_seconds"] == "100"
+
+
+def test_build_seconds_round_trips_through_disk(tmp_path):
+    from sysforge.primitives.build_state import BuildState
+    common = dict(pkgver="1", pkgrel="1", epoch="0", pkgbase="foo",
+                  pkgbuild_dir=tmp_path)
+    bs = BuildState(tmp_path)
+    bs.record("foo", build_seconds=100, **common)
+    bs.record("foo", build_seconds=110, **common)
+    bs.save()
+    reloaded = BuildState(tmp_path)
+    assert reloaded.get("foo")["build_seconds"] == "100,110"

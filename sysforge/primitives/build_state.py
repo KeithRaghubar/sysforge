@@ -176,7 +176,8 @@ class BuildState:
                toolchain_variant: str | None = None,
                toolchain_fingerprint: str | None = None,
                reviewed_commit: str | None = None,
-               origin_pkgbase: str | None = None) -> None:
+               origin_pkgbase: str | None = None,
+               build_seconds: int | None = None) -> None:
         """Record build metadata for a single package name.
 
         ``built_at`` defaults to now; callers performing a repair pass may
@@ -291,6 +292,17 @@ class BuildState:
             entry["origin_pkgbase"] = origin_pkgbase
         elif "origin_pkgbase" in prior:
             entry["origin_pkgbase"] = prior["origin_pkgbase"]
+        # build_seconds — a bounded ring (last 5 whole-second build durations,
+        # newest last) serialized as a CSV string, so a per-package build-time
+        # estimate can take the outlier-robust median. A None caller (backfill /
+        # repair with no measured duration) preserves the existing ring; only a
+        # real measurement appends. Capped at 5 → O(1) storage per entry.
+        ring = [s for s in (prior.get("build_seconds", "").split(",")) if s]
+        if build_seconds is not None:
+            ring.append(str(int(build_seconds)))
+            ring = ring[-5:]
+        if ring:
+            entry["build_seconds"] = ",".join(ring)
         self._data[pkgname] = entry
         # A successful build clears any recorded failure for this pkgbase so
         # `sysforge state failed` self-heals on the next good build.
@@ -426,7 +438,7 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant", "toolchain_fingerprint", "reviewed_commit", "origin_pkgbase"):
+            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant", "toolchain_fingerprint", "reviewed_commit", "origin_pkgbase", "build_seconds"):
                 if key in entry:
                     val = _toml_escape(entry[key])
                     lines.append(f'{key} = "{val}"')

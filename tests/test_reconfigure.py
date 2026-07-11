@@ -425,6 +425,25 @@ def test_step_preview_default_repo_mode_shows_pacman(tmp_path):
     assert "pacman -S --needed" in combined  # htop has no enable_build_from_source
 
 
+def test_step_preview_shows_build_estimate(tmp_path):
+    """F21: preview footer surfaces the learned build-time estimate."""
+    from sysforge.primitives import build_estimate
+
+    p = make_packages_toml(tmp_path, _BASIC_TOML)
+    config = {"packages_file": str(p), "rules": [], "defaults": {}}
+    logged = []
+
+    with patch("sysforge.log.ui", side_effect=lambda tag, msg: logged.append(msg)), \
+         patch.object(
+             build_estimate, "format_estimate",
+             lambda *a, **k: "Estimated build time: ~1h 00m (1 of 1 packages have history; 0 unknown)",
+         ):
+        _step_preview(config, None, make_options(), "vi")
+
+    combined = " ".join(logged)
+    assert "Estimated build time: ~1h 00m" in combined
+
+
 # ---------------------------------------------------------------------------
 # Editor gate: _editor_usable / _require_usable_editor / gated _run_selected_steps
 # ---------------------------------------------------------------------------

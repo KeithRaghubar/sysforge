@@ -158,6 +158,45 @@ def test_pkgname_from_meta_prefers_pkgbase_and_never_returns_none():
     assert makepkg_wrapper._pkgname_from_meta(None) == "unknown"
 
 
+def test_record_build_state_threads_measured_duration(tmp_path, monkeypatch):
+    """_record_build_state passes the measured build_elapsed into bs.record()
+    as build_seconds (1.2.0-F21). Spies BuildState.record to capture kwargs."""
+    import sysforge.primitives.build_state as bs_mod
+
+    captured = {}
+
+    class _SpyState(bs_mod.BuildState):
+        def record(self, *a, **k):
+            captured.update(k)
+
+        def save(self):
+            pass
+
+    monkeypatch.setattr(bs_mod, "BuildState", _SpyState)
+
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=foo\npkgver=1\npkgrel=1\n")
+
+    from types import SimpleNamespace
+    options = SimpleNamespace(
+        state_dir=None,
+        source=None,
+        owner_stage=None,
+        toolchain_variant=None,
+        toolchain_fingerprint=None,
+    )
+    pkgmeta = {"globals": {"pkgname": "foo", "pkgbase": "foo",
+                           "pkgver": "1", "pkgrel": "1", "epoch": "0"}}
+
+    makepkg_wrapper._record_build_state(
+        pkgbuild, pkgmeta, None, options,
+        rename=None, record_build_mode=None, build_elapsed=123,
+    )
+
+    assert captured["build_seconds"] == 123
+    assert isinstance(captured["build_seconds"], int)
+
+
 def _write_mold_pkgbuild(tmp_path):
     p = tmp_path / "PKGBUILD"
     p.write_text(

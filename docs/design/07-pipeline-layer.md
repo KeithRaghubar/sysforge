@@ -5,7 +5,7 @@ Python DAG orchestrator with checkpoint/resume. Stages run in order:
 1. **install** — fully implemented (disk + base install via archinstall: partition, format, mount, pacstrap, genfstab, bootloader, users, services, and system identity)
 2. **hardware** — fully implemented (CPU/GPU/NVMe detection → hardware_profile.toml)
 3. **configure** — fully implemented (sysforge-specific tuning: makepkg.conf, pacman ParallelDownloads, reflector mirrorlist + db sync, shell dotfiles, desktop group, sysforge self-install via arch-chroot)
-4. **reconfigure** — fully implemented (pre-build checkpoint: config review, disk/network/gpg checks, build preview)
+4. **reconfigure** — fully implemented (pre-build checkpoint: config review, disk/network/gpg checks, build preview). The preview footer includes a median-based build-time estimate (see *Build-time estimate* below) when history exists.
 5. **toolchain** — fully implemented (LLVM/GCC, optional 4-pass PGO bootstrap, compiler propagation to packages/kernel)
 6. **packages** — fully implemented
 7. **kernel** — fully implemented
@@ -13,6 +13,12 @@ Python DAG orchestrator with checkpoint/resume. Stages run in order:
 Stages 1–3 are **bootstrap-only** — they run once from a live install environment. Stages 4–7 are **repeatable** and run on the installed system. Use `sysforge run pipeline --start-from reconfigure` to run the pre-build checkpoint on a live system; use `--start-from packages` to skip straight to builds. Stages 4–7 are also available as standalone `sysforge run <stage>` commands for repeated, out-of-pipeline use (e.g. `sysforge run packages`). The toolchain (5) and kernel (7) stages default to `enabled = false` because building a custom toolchain or kernel is an opt-in decision; users who want the stock system compiler and pacman kernel leave them disabled.
 
 The **install** stage replaces the earlier hand-rolled `partition` + `base_install` stages (and the identity half of the old `configure`): disk layout, formatting, mounting, pacstrap, genfstab, bootloader, user/service creation, and system identity (hostname, locale, timezone, keymap, sshd) are all delegated to **archinstall**, driven from a generated headless JSON config (`archinstall --config <file> --silent`). See *Install stage* below.
+
+### Build-time estimate and pre-build snapshot
+
+**Build-time estimate.** Every build_state record carries a `build_seconds` ring — the last 5 whole-second durations of a successful build (see §Primitives Layer → `build_state.py`). `primitives/build_estimate.py` sums the **median** of each target's ring per distinct pkgbase (a split package is counted once, not once per pkgname); a target with no build history contributes nothing and is called out as unknown rather than silently zeroed. The reconfigure stage's build preview (`_step_preview`) and the `build`/`update` verbs print this as a one-line estimate before the build loop starts (`build_estimate.format_estimate`), and `build_core.build_and_install` prints a second, post-build **estimated-vs-actual** line (`format_estimate_vs_actual`) once the real wall-clock duration is known — the estimate is self-calibrating: each build feeds its own ring for the next one.
+
+**Pre-build snapshot.** `[build] pre_build_snapshot` (ships commented-out, off by default) opts into a pre-build btrfs snapshot taken by `primitives/snapshot.py`'s `ensure_pre_build_snapshot(config, *, dry_run, interactive)`. It fires at the three build-orchestrator seams — `build_core.build_and_install` (the `build`/`update` engine), the packages stage, and the kernel stage — each call site guarded by the same module-level once-guard so a single process (even one that runs several of these seams, e.g. a full pipeline run) takes **at most one** snapshot. Resolution: delegate to snapper when a config already covers `/` (snapper owns retention for that subvolume); otherwise take a raw read-only `btrfs subvolume snapshot`. Either way **sysforge takes but does not reap snapshots** — cleanup is the operator's job, mirroring the boundary the toolchain/kernel rollback snapshots already establish. The primitive is a no-op on a non-btrfs root and under `--dry-run`, and is deliberately non-fatal: a snapshot failure never blocks a build.
 
 ### Bootstrap workflow (stages 1–3)
 
@@ -130,7 +136,7 @@ The build user is resolved once, in `fs_provision.build_user()` (`SUDO_USER` > `
 
 ### Kernel stage (stage 7)
 
-Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent or has `enabled = false`, so systems using a stock pacman kernel skip it without needing `--start-from`. Opt-in by design — users who want a stock kernel leave the stage disabled.
+Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent or has `enabled = false`, so systems using a stock pacman kernel skip it without needing `--start-from`. Opt-in by design — users who want a stock kernel leave the stage disabled. Also fires the opt-in pre-build snapshot (see *Build-time estimate and pre-build snapshot* above) before the build, sharing the same process-wide once-guard as the packages stage and `build_and_install`.
 
 **`kernel.toml` structure:**
 
@@ -283,6 +289,8 @@ To make a *pre-install* hard-fail possible, the build is **split from the instal
 **Concurrency lock.** The build → Gate 2 → install window is additionally wrapped in `primitives.build_lock.build_lock(state_dir / "kernel-build.lock", label="kernel")` so two concurrent `sysforge run kernel` runs sharing a state dir can't clobber `~/builds/<pkgbase>` (the second `nconfig`/makepkg would step on the first's `.config`). This is the **same shared primitive** the toolchain stage's PGO lock (`_pgo_lock`) delegates to — distinct from the sentinel: the *lock* is transient mutual exclusion held only for the run, while the *sentinel* persists an interrupted boot-critical mutation across runs. The kernel lock lives under `state_dir` (not `/var/tmp` like the PGO lock, whose staging dirs are genuinely global), so per-state-dir test runs stay isolated. Skipped in `--dry-run` (nothing is built).
 
 ### Packages stage (stage 6)
+
+Fires the opt-in pre-build snapshot (see *Build-time estimate and pre-build snapshot* above) once, before the build loop starts.
 
 Walks `packages.toml` in order:
 - `source = "repo"` → `sudo pacman -S --needed --noconfirm`

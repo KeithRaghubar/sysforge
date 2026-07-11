@@ -197,6 +197,26 @@ def test_packages_stage_checkpoints_after_each(tmp_path):
     assert built_order.index("llvm") < built_order.index("mesa-git")
 
 
+def test_packages_stage_invokes_pre_build_snapshot(tmp_path):
+    """F21: PackagesStage.run wires the pre-build snapshot seam."""
+    builds_dir = tmp_path / "builds"
+    for name in ("llvm", "mesa-git"):
+        make_pkgbuild(builds_dir, name)
+    pkg_file = make_packages_toml(tmp_path, builds_dir)
+
+    state = PipelineState(tmp_path / "state")
+    config = {"packages_file": str(pkg_file)}
+    options = make_options(state_dir=tmp_path / "state")
+
+    with patch("sysforge.pipeline.stages.packages.makepkg_run"), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run") as mock_pacman, \
+         patch("sysforge.primitives.snapshot.ensure_pre_build_snapshot") as mock_snap:
+        mock_pacman.return_value = MagicMock(returncode=0)
+        PackagesStage().run(config, state, options)
+
+    mock_snap.assert_called_once_with(config, dry_run=options.dry_run)
+
+
 # ---------------------------------------------------------------------------
 # PackagesStage.run() — failure handling
 # ---------------------------------------------------------------------------

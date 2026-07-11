@@ -700,6 +700,23 @@ def build_and_install(
         if not targets:
             return outcome
 
+    # Pre-build: optional snapshot + learned time estimate (1.2.0-F21).
+    from sysforge.primitives import snapshot as _snapshot
+    from sysforge.primitives import build_estimate as _estimate
+    _snapshot.ensure_pre_build_snapshot(config, interactive=interactive)
+    _target_names = [pn for t in targets for pn in (getattr(t, "pkgnames", None) or [])]
+    if review_active:
+        _bs_est = bs_review  # reuse the review-gate reader
+    else:
+        from sysforge.pipeline.state import resolve_state_dir
+        _est_state_dir = state_dir or resolve_state_dir(None)[0]
+        _bs_est = BuildState(_est_state_dir)
+    _est_line = _estimate.format_estimate(_target_names, _bs_est)
+    _est_seconds, _est_known, _ = _estimate.estimate_seconds(_target_names, _bs_est)
+    if _est_line:
+        _log.ui(f"[SYSFORGE] {_est_line}")
+    _actual_start = time.monotonic()
+
     # Artifacts land in PKGDEST when the system makepkg.conf sets one — the
     # snapshot/AlreadyBuilt scans must look there, not in the PKGBUILD dir.
     # Resolved here (not per caller) so `build` and `update` cannot drift:
@@ -872,6 +889,11 @@ def build_and_install(
                     _log.error(f"Build failed for {target.pkgbase!r}: {e}")
                     outcome.failed_pkgs.append(target.pkgbase)
                     _record_build_failure(state_dir, target, e)
+
+    # Post-build feedback: estimated vs actual (only when history existed).
+    if _est_known > 0:
+        _actual = int(time.monotonic() - _actual_start)
+        _log.ui(f"[SYSFORGE] {_estimate.format_estimate_vs_actual(_est_seconds, _actual)}")
 
     # Final bulk install: everything built this run except files the
     # just-in-time path already installed (re-running pacman -U on those

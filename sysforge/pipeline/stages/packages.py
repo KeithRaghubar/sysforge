@@ -294,6 +294,9 @@ class PackagesStage(Stage):
 
         build_cfg, packages = _load_packages(config)
 
+        from sysforge.primitives import snapshot
+        snapshot.ensure_pre_build_snapshot(config, dry_run=options.dry_run)
+
         # Build ordered name list and initialise progress (idempotent on resume)
         all_names = [p["name"] for p in packages]
         pkg_map = {p["name"]: p for p in packages}

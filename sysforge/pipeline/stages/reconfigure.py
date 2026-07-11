@@ -1388,6 +1388,16 @@ def _step_preview(config, state, options, editor: str) -> str:
     else:
         _log.ui("  Kernel: no kernel.toml — kernel stage will be a no-op")
 
+    from sysforge.primitives import build_estimate
+    from sysforge.primitives.build_state import BuildState
+    _sd, _ = resolve_state_dir(getattr(options, "state_dir", None))
+    _names = [p.get("name") for p in packages if p.get("name")]
+    _est = build_estimate.format_estimate(_names, BuildState(_sd))
+    if _est:
+        _log.ui(f"  {_est}")
+    else:
+        _log.info("  Build-time estimate: no build history yet")
+
     return editor
 
 

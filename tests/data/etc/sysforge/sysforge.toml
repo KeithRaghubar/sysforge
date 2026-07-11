@@ -49,6 +49,14 @@ clone_timeout = 60
 # cpu_quota = "600%" # hard CPU ceiling via systemd-run scope (100% = one core)
 # jobs = 6           # parallel jobs; rewrites -j in MAKEFLAGS
 
+# pre_build_snapshot — take an optional btrfs snapshot before builds run.
+# Off by default. When on and the root is btrfs: delegates to snapper if a
+# config covers "/" (that config's retention governs cleanup), otherwise takes
+# a raw read-only `btrfs subvolume snapshot` that sysforge does NOT auto-reap
+# (you own its cleanup). No-op on non-btrfs roots and under --dry-run. A
+# snapshot failure never blocks the build.
+# pre_build_snapshot = false
+
 [failure_handling]
 # Build-failure auto-repair (DESIGN.md §1242).
 vendored_deps_missing = "auto_repair"

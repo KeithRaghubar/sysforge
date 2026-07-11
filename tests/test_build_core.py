@@ -498,6 +498,66 @@ def _patch_build_env(*, run_side_effect, snapshot_return, install_capture):
     ]
 
 
+def test_build_and_install_empty_targets_skips_snapshot(monkeypatch):
+    """Empty target list hits the early return before any wiring — the
+    pre-build snapshot must never be invoked."""
+    from sysforge.primitives import snapshot
+    seen = {"snap": 0}
+    monkeypatch.setattr(snapshot, "reset_guard", lambda: None)
+    monkeypatch.setattr(
+        snapshot, "ensure_pre_build_snapshot",
+        lambda *a, **k: seen.__setitem__("snap", seen["snap"] + 1),
+    )
+    build_core.build_and_install([], config={"build": {}}, sync_source=False)
+    assert seen["snap"] == 0
+
+
+def test_build_and_install_invokes_snapshot_and_estimate(tmp_path, monkeypatch):
+    """A non-empty target list must trigger exactly one pre-build snapshot
+    call and emit the estimate line via ``_log.ui``."""
+    from sysforge.primitives import snapshot, build_estimate
+
+    target = _make_target(tmp_path)
+    artifact = target.pkgbuild_path.parent / "foo-1-1-x86_64.pkg.tar.zst"
+
+    seen = {"snap": 0}
+    monkeypatch.setattr(snapshot, "reset_guard", lambda: None)
+    monkeypatch.setattr(
+        snapshot, "ensure_pre_build_snapshot",
+        lambda *a, **k: seen.__setitem__("snap", seen["snap"] + 1),
+    )
+    monkeypatch.setattr(
+        build_estimate, "format_estimate", lambda names, bs: "estimate: ~1m"
+    )
+    monkeypatch.setattr(
+        build_estimate, "estimate_seconds", lambda names, bs: (60, 1, 1)
+    )
+    monkeypatch.setattr(
+        build_estimate, "format_estimate_vs_actual",
+        lambda est, actual: f"est {est} actual {actual}",
+    )
+
+    ui_lines = []
+    with contextlib.ExitStack() as stack:
+        for p in _patch_build_env(
+            run_side_effect=lambda *a, **k: _touch_future(artifact),
+            snapshot_return=frozenset({artifact}),
+            install_capture=lambda paths, **_kw: True,
+        ):
+            stack.enter_context(p)
+        stack.enter_context(patch("sysforge.log.ui",
+                                   side_effect=lambda tag, msg: ui_lines.append(msg)))
+        outcome = build_core.build_and_install(
+            [target], config={"build": {}}, sync_source=False,
+            review="off", state_dir=tmp_path / "state",
+        )
+
+    assert seen["snap"] == 1
+    assert outcome.built_pkgs == ["foo"]
+    assert any("estimate: ~1m" in line for line in ui_lines)
+    assert any("est 60 actual" in line for line in ui_lines)
+
+
 def test_build_and_install_strips_syncdeps_and_install_flags(tmp_path):
     """The whole point: makepkg runs with -s/--syncdeps/-i stripped and
     force_batch on, so makepkg never resolves deps via pacman itself."""

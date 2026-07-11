@@ -1630,6 +1630,9 @@ class KernelStage(Stage):
             _log.ui("kernel.toml absent or disabled — stage is a no-op")
             return
 
+        from sysforge.primitives import snapshot
+        snapshot.ensure_pre_build_snapshot(config, dry_run=options.dry_run)
+
         # pkgbuild_src_dir is optional in kernel.toml: when unset, fall back to
         # the global [paths] pkgbuild_src_dir. Resolve once and stamp it back so
         # the kernel_cfg-only _pkgbuild_path() call sites pick up the global

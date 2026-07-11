@@ -123,11 +123,6 @@ straight off a `Q`.
   auto-priority causes ordering problems in practice. *Priority: low (candidate, not
   a commitment).*
 
-- **`1.2.0-F21` — Configure-stage additions (from the DESIGN roadmap).** btrfs
-  snapshot before a build runs; estimated build-time heuristic. (The
-  ccache/sccache readiness check was split out to `2.2.0-F1` — it's a health
-  check, not a configure mutation.) *Priority: low (candidate).*
-
 - **`1.2.0-F28` — User-owned artifact inventory primitive.** Track the user-owned
   system artifacts now scattered across `~/scripts`, `/etc/systemd/system/`,
   `/etc/pacman.d/hooks/`, etc.: a tracked-file inventory, a repo-controlled

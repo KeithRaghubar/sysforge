@@ -924,6 +924,98 @@ class BuildOptions:
     rename_pkgbase_to: str | None = None  # F40: patch the cloned upstream's pkgbase to this local name (coexist) — set by the kernel stage when pkgname != upstream_pkgname
 
 
+def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
+                        rename, record_build_mode, build_elapsed):
+    """Record build metadata for `sysforge update` (non-fatal).
+
+    The single per-build record site: called once after a successful build.
+    build_elapsed is the measured wall-clock build duration in whole seconds,
+    threaded into BuildState.record(build_seconds=...) (1.2.0-F21).
+    """
+    try:
+        from sysforge.primitives.build_state import BuildState, BUILD_MODE_SOURCE
+        from sysforge.pipeline.state import resolve_state_dir
+        from sysforge.primitives.vcs_pkgver import read_built_upstream_commit
+        _state_dir, _ = resolve_state_dir(options.state_dir)
+        bs = BuildState(_state_dir)
+        globals_ = pkgmeta.get("globals", {})
+        pkgnames = globals_.get("pkgname", [])
+        if isinstance(pkgnames, str):
+            pkgnames = [pkgnames]
+        pkgbase = globals_.get("pkgbase") or (pkgnames[0] if pkgnames else "unknown")
+        fs = serialize_flags(resolved_profile) if resolved_profile is not None else None
+
+        # An optimization rename (-sysforge) changes what landed on disk: the
+        # built artifacts and installed packages carry the suffix, so that is
+        # what build_state must track (and what the filename_versions match
+        # below keys on). origin_pkgbase preserves the upstream correlation so
+        # `sysforge update`'s source-sync still finds the original tree.
+        origin_pkgbase = None
+        if rename:
+            pkgnames = list(rename["renamed_pkgnames"])
+            pkgbase = rename["renamed_pkgbase"] or pkgbase
+            origin_pkgbase = rename["origin_pkgbase"]
+
+        # Single-git-source VCS packages: capture the just-built upstream
+        # SHA from the cloned srcdir so the next `sysforge update --devel`
+        # can short-circuit pkgver() resolution via `git ls-remote`.
+        # Returns None for non-VCS, multi-git-source, or unparseable
+        # source URLs — recorded entries simply omit the field and fall
+        # through to the full path on the next check.
+        upstream_commit = read_built_upstream_commit(pkgbuild_path.parent)
+
+        # Prefer pkgver/pkgrel/epoch from the built .pkg.tar.* filenames
+        # over the static PKGBUILD parse. The parser intentionally leaves
+        # shell parameter-expansion forms (e.g. ``${_ver/[a-z]/.${_ver//[0-9.]/}}``)
+        # untouched, so packages using them would otherwise record a
+        # literal ``$...`` string as pkgver and always mismatch vercmp.
+        filename_versions: dict[str, tuple[str, str, str]] = {}
+        for p in _find_artifacts(pkgbuild_path.resolve().parent):
+            for name in pkgnames:
+                if name in filename_versions:
+                    continue
+                parsed = _parse_built_pkg_filename(name, p.name)
+                if parsed is not None:
+                    filename_versions[name] = parsed
+
+        # The clone HEAD of the build that just succeeded becomes the
+        # review baseline: the PKGBUILD review gate (pkgbuild_review.py)
+        # diffs future HEADs against it. Stamped here — the single
+        # record site — so dep builds and pipeline stages are covered
+        # without every caller threading the value. None (non-git dir)
+        # leaves any prior value sticky.
+        from sysforge.primitives.pkgbuild_review import head_commit as _review_head
+        _reviewed = _review_head(pkgbuild_path.parent)
+        for name in pkgnames:
+            ep, ver, rel = filename_versions.get(name, (
+                globals_.get("epoch", "0"),
+                globals_.get("pkgver", ""),
+                globals_.get("pkgrel", "1"),
+            ))
+            bs.record(
+                pkgname=name,
+                pkgver=ver,
+                pkgrel=rel,
+                epoch=ep,
+                pkgbase=pkgbase,
+                pkgbuild_dir=pkgbuild_path.parent,
+                build_mode=record_build_mode or BUILD_MODE_SOURCE,
+                flags_string=fs,
+                built_upstream_commit=upstream_commit,
+                source=options.source,
+                owner_stage=options.owner_stage,
+                toolchain_variant=options.toolchain_variant,
+                toolchain_fingerprint=options.toolchain_fingerprint,
+                reviewed_commit=_reviewed,
+                origin_pkgbase=origin_pkgbase,
+                build_seconds=build_elapsed,
+            )
+        bs.save()
+        _build_log.info(f"Recorded build state for {pkgbase!r}")
+    except Exception as e:
+        _build_log.warn(f"Failed to record build state: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -1222,6 +1314,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 rename_pkgbase_to=options.rename_pkgbase_to,
             )
         build_success = True
+        build_elapsed = int(_time.time() - _build_start)
 
         # Post-build: abort if profraw files are accumulating outside PGO pass 2.
         # This catches instrumented LLVM binaries leaking onto the system after a
@@ -1274,87 +1367,10 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             report_post_build_abi(_find_artifacts(pkgbuild_path.resolve().parent))
 
         # Record build metadata for `sysforge update` (non-fatal)
-        try:
-            from sysforge.primitives.build_state import BuildState, BUILD_MODE_SOURCE
-            from sysforge.pipeline.state import resolve_state_dir
-            from sysforge.primitives.vcs_pkgver import read_built_upstream_commit
-            _state_dir, _ = resolve_state_dir(options.state_dir)
-            bs = BuildState(_state_dir)
-            globals_ = pkgmeta.get("globals", {})
-            pkgnames = globals_.get("pkgname", [])
-            if isinstance(pkgnames, str):
-                pkgnames = [pkgnames]
-            pkgbase = globals_.get("pkgbase") or (pkgnames[0] if pkgnames else "unknown")
-            fs = serialize_flags(resolved_profile) if resolved_profile is not None else None
-
-            # An optimization rename (-sysforge) changes what landed on disk: the
-            # built artifacts and installed packages carry the suffix, so that is
-            # what build_state must track (and what the filename_versions match
-            # below keys on). origin_pkgbase preserves the upstream correlation so
-            # `sysforge update`'s source-sync still finds the original tree.
-            origin_pkgbase = None
-            if rename:
-                pkgnames = list(rename["renamed_pkgnames"])
-                pkgbase = rename["renamed_pkgbase"] or pkgbase
-                origin_pkgbase = rename["origin_pkgbase"]
-
-            # Single-git-source VCS packages: capture the just-built upstream
-            # SHA from the cloned srcdir so the next `sysforge update --devel`
-            # can short-circuit pkgver() resolution via `git ls-remote`.
-            # Returns None for non-VCS, multi-git-source, or unparseable
-            # source URLs — recorded entries simply omit the field and fall
-            # through to the full path on the next check.
-            upstream_commit = read_built_upstream_commit(pkgbuild_path.parent)
-
-            # Prefer pkgver/pkgrel/epoch from the built .pkg.tar.* filenames
-            # over the static PKGBUILD parse. The parser intentionally leaves
-            # shell parameter-expansion forms (e.g. ``${_ver/[a-z]/.${_ver//[0-9.]/}}``)
-            # untouched, so packages using them would otherwise record a
-            # literal ``$...`` string as pkgver and always mismatch vercmp.
-            filename_versions: dict[str, tuple[str, str, str]] = {}
-            for p in _find_artifacts(pkgbuild_path.resolve().parent):
-                for name in pkgnames:
-                    if name in filename_versions:
-                        continue
-                    parsed = _parse_built_pkg_filename(name, p.name)
-                    if parsed is not None:
-                        filename_versions[name] = parsed
-
-            # The clone HEAD of the build that just succeeded becomes the
-            # review baseline: the PKGBUILD review gate (pkgbuild_review.py)
-            # diffs future HEADs against it. Stamped here — the single
-            # record site — so dep builds and pipeline stages are covered
-            # without every caller threading the value. None (non-git dir)
-            # leaves any prior value sticky.
-            from sysforge.primitives.pkgbuild_review import head_commit as _review_head
-            _reviewed = _review_head(pkgbuild_path.parent)
-            for name in pkgnames:
-                ep, ver, rel = filename_versions.get(name, (
-                    globals_.get("epoch", "0"),
-                    globals_.get("pkgver", ""),
-                    globals_.get("pkgrel", "1"),
-                ))
-                bs.record(
-                    pkgname=name,
-                    pkgver=ver,
-                    pkgrel=rel,
-                    epoch=ep,
-                    pkgbase=pkgbase,
-                    pkgbuild_dir=pkgbuild_path.parent,
-                    build_mode=record_build_mode or BUILD_MODE_SOURCE,
-                    flags_string=fs,
-                    built_upstream_commit=upstream_commit,
-                    source=options.source,
-                    owner_stage=options.owner_stage,
-                    toolchain_variant=options.toolchain_variant,
-                    toolchain_fingerprint=options.toolchain_fingerprint,
-                    reviewed_commit=_reviewed,
-                    origin_pkgbase=origin_pkgbase,
-                )
-            bs.save()
-            _build_log.info(f"Recorded build state for {pkgbase!r}")
-        except Exception as e:
-            _build_log.warn(f"Failed to record build state: {e}")
+        _record_build_state(
+            pkgbuild_path, pkgmeta, resolved_profile, options,
+            rename, record_build_mode, build_elapsed,
+        )
 
     finally:
         if options.pkg_log:

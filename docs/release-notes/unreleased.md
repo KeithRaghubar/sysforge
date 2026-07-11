@@ -27,6 +27,12 @@ https://keepachangelog.com/en/1.1.0/
 - `doctor` `services` axis: broadened the current-boot journal scan beyond
   firmware to surface failed-start / core-dump / filesystem / OOM errors
   (1.2.0-F19).
+- Build-time estimate + optional pre-build snapshot: builds now record their
+  duration (a 5-sample median ring in `build_state`), the reconfigure preview
+  and `build`/`update` show a learned time estimate, and a post-build
+  estimated-vs-actual line calibrates it. New opt-in `[build] pre_build_snapshot`
+  takes a btrfs snapshot before builds (snapper if configured for `/`, else a
+  non-reaped raw snapshot; btrfs-only, never blocks a build) (1.2.0-F21).
 - Advisory `doctor --gfxperf` axis: a read-only checklist of static
   configuration that predisposes the system to graphics runtime degradation
   (stutter/tearing/frame drops) — video-decode path, GPU power/clock state, CPU

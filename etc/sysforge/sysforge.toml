@@ -101,6 +101,14 @@ clone_timeout = 60
 #   directly bounds peak parallelism.
 # jobs = 6
 
+# pre_build_snapshot — take an optional btrfs snapshot before builds run.
+# Off by default. When on and the root is btrfs: delegates to snapper if a
+# config covers "/" (that config's retention governs cleanup), otherwise takes
+# a raw read-only `btrfs subvolume snapshot` that sysforge does NOT auto-reap
+# (you own its cleanup). No-op on non-btrfs roots and under --dry-run. A
+# snapshot failure never blocks the build.
+# pre_build_snapshot = false
+
 # [failure_handling]
 # Per-scenario behaviour for build-failure auto-repair (DESIGN.md §1242).
 # Values: "auto_repair" | "auto_repair_with_warning" | "prompt_user" |
