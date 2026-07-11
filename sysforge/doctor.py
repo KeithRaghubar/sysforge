@@ -50,6 +50,7 @@ from sysforge.primitives.dep_analysis import (
     _parse_ldconfig,
     soname_available,
 )
+from sysforge.primitives.gfxperf_probe import check_gfxperf
 from sysforge.primitives.graphics_probe import check_system_graphics
 from sysforge.primitives.provides_lookup import (
     files_db_present,
@@ -614,6 +615,14 @@ def _collect_graphics_findings(config) -> list[diag.Finding]:
     return diag.adapt_many("graphics", check_system_graphics(config, gpu_vendors=gpu_vendors))
 
 
+def _collect_gfxperf_findings(config) -> list[diag.Finding]:
+    """Advisory graphics runtime-degradation checklist (video-decode path, GPU
+    power/clock state, CPU governor, frame pacing, thermal/memory snapshots).
+    Opt-in via --gfxperf; never contributes an error (WARN/INFO only)."""
+    gpu_vendors = _read_gpu_vendors(config)
+    return diag.adapt_many("gfxperf", check_gfxperf(config, gpu_vendors=gpu_vendors))
+
+
 def _collect_pacman_findings() -> list[diag.Finding]:
     """Local pacman-db consistency, stale lock, unmerged .pacnew/.pacsave,
     orphans, plus sysforge libalpm-hook drift. Read-only — never syncs or
@@ -729,11 +738,14 @@ def _collect_boot_findings() -> list[diag.Finding]:
     return _with_reboot_hint(out, only=lambda f: f.check_id.startswith("dkms:"))
 
 
-# Canonical order the axes render in.
+# Canonical order every KNOWN axis renders in (explicit flags select from here).
 _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
-    "toolchain", "hardware", "graphics", "pacman", "state", "boot", "storage",
-    "services", "audio", "network",
+    "toolchain", "hardware", "graphics", "gfxperf", "pacman", "state", "boot",
+    "storage", "services", "audio", "network",
 )
+
+# Axes excluded from the default/`--all` sweep — advisory, opt-in via their flag.
+_OPT_IN_AXES: frozenset[str] = frozenset({"gfxperf"})
 
 # CLI flag attribute → axis name. ``--graphics`` is also a package-walk trigger
 # (the graphics-stack closure); both effects fire when it is set.
@@ -741,6 +753,7 @@ _AXIS_FLAGS: dict[str, str] = {
     "toolchain": "toolchain",
     "hardware": "hardware",
     "graphics": "graphics",
+    "gfxperf": "gfxperf",
     "pacman": "pacman",
     "state": "state",
     "boot": "boot",
@@ -768,6 +781,10 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
             "graphics", "system graphics checks",
             lambda: _collect_graphics_findings(config),
             clean_msg="no graphics misconfiguration detected"),
+        "gfxperf": diag.Axis(
+            "gfxperf", "graphics performance checks",
+            lambda: _collect_gfxperf_findings(config),
+            clean_msg="no graphics-performance issues detected"),
         "pacman": diag.Axis(
             "pacman", "pacman / system integrity",
             lambda: _collect_pacman_findings(),
@@ -815,9 +832,9 @@ def _resolve_axis_names(args) -> list[str]:
     if explicit:
         return [n for n in _SYSTEM_AXIS_ORDER if n in explicit]
     if getattr(args, "all", False):
-        return list(_SYSTEM_AXIS_ORDER)
+        return [n for n in _SYSTEM_AXIS_ORDER if n not in _OPT_IN_AXES]
     if not args.packages and not getattr(args, "repo", False):
-        return list(_SYSTEM_AXIS_ORDER)
+        return [n for n in _SYSTEM_AXIS_ORDER if n not in _OPT_IN_AXES]
     return []
 
 

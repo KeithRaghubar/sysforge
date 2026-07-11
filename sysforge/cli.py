@@ -515,6 +515,11 @@ def _add_doctor_parser(sub):
              "per-vendor drivers from the hardware overlay's gpu_vendors) AND "
              "run system-state probes (nvidia-drm modeset, driver version skew, "
              "Wayland explicit-sync protocol, Steam GPU accel, session type).")
+    p.add_argument("--gfxperf", action="store_true",
+        help="Advisory graphics-performance sweep (stutter/tearing/frame-drop "
+             "contributors: video-decode path, GPU power/clocks, CPU governor, "
+             "frame pacing, thermal). Opt-in; never fails. Combine with "
+             "--graphics for the full graphics picture.")
     p.add_argument("--hardware", action="store_true",
         help="Run system-state hardware probes: inventory all PCI/USB devices, "
              "flag any present device with no kernel driver bound, and audit the "

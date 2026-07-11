@@ -204,7 +204,7 @@ _sysforge_resolve() {
 }
 
 _sysforge_doctor() {
-    local flags="--graphics --hardware --toolchain --pacman --state --boot --storage --services --audio --network \
+    local flags="--graphics --gfxperf --hardware --toolchain --pacman --state --boot --storage --services --audio --network \
         --all --repo --shallow -q --quiet -s --suggest --apply --no-confirm --dry-run"
     if [[ $cur == -* ]]; then
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )

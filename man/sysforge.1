@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-07\-10"
+.TH "sysforge" "1" "2026\-07\-11"
 .PP
 .PP
 .SH NAME
@@ -455,6 +455,11 @@ One or more installed package names to verify (package depends + ABI linkage wal
 \fB\-\-graphics\fR
 .RS 4
 Expand to the graphics stack (mesa, vulkan, libglvnd, wayland, libdrm, libva, libvdpau, egl\-wayland, xwayland, gamescope, plus per\-vendor drivers from the hardware overlay'\&s gpu_vendors) AND run system\-state probes (nvidia\-drm modeset, driver version skew, Wayland explicit\-sync protocol, Steam GPU accel, session type).\&
+.PP
+.RE
+\fB\-\-gfxperf\fR
+.RS 4
+Advisory graphics\-performance sweep (stutter/tearing/frame\-drop contributors: video\-decode path, GPU power/clocks, CPU governor, frame pacing, thermal).\& Opt\-in; never fails.\& Combine with \-\-graphics for the full graphics picture.\&
 .PP
 .RE
 \fB\-\-hardware\fR

@@ -27,6 +27,11 @@ https://keepachangelog.com/en/1.1.0/
 - `doctor` `services` axis: broadened the current-boot journal scan beyond
   firmware to surface failed-start / core-dump / filesystem / OOM errors
   (1.2.0-F19).
+- Advisory `doctor --gfxperf` axis: a read-only checklist of static
+  configuration that predisposes the system to graphics runtime degradation
+  (stutter/tearing/frame drops) — video-decode path, GPU power/clock state, CPU
+  governor, frame pacing, and thermal/memory snapshots. Opt-in and never
+  fails; combine with `--graphics` for the full graphics picture. (1.2.0-F22)
 - `revert-to-stock` verb: undo a source-built or optimized package back to its
   stock repo version — reinstalls the stock repo package, atomically replacing a
   conflict-mode `-sysforge` build (a lone `pacman -S`, so reverse deps stay

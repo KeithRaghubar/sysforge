@@ -222,6 +222,7 @@ def test_check_depends_pacman_t_all_satisfied():
 def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
         packages=[], graphics=False, hardware=False, toolchain=False,
+        gfxperf=False,
         pacman=False, state=False, boot=False, storage=False, services=False,
         audio=False, network=False, all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
@@ -238,6 +239,7 @@ def _patch_axes_clean(monkeypatch):
     monkeypatch.setattr(doctor, "_collect_toolchain_findings", lambda config: [])
     monkeypatch.setattr(doctor, "_collect_hardware_findings", lambda: [])
     monkeypatch.setattr(doctor, "_collect_graphics_findings", lambda config: [])
+    monkeypatch.setattr(doctor, "_collect_gfxperf_findings", lambda config: [])
     monkeypatch.setattr(doctor, "_collect_pacman_findings", lambda: [])
     monkeypatch.setattr(doctor, "_collect_state_findings", lambda args: [])
     monkeypatch.setattr(doctor, "_collect_services_findings", lambda: [])
@@ -292,6 +294,24 @@ def test_cmd_doctor_repo_with_nothing_installed_exits_2(monkeypatch, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "nothing to check" in err
+
+
+def test_gfxperf_selectable_by_flag(monkeypatch, capsys):
+    monkeypatch.setattr(doctor, "_read_gpu_vendors", lambda config: [])
+    monkeypatch.setattr(doctor, "_collect_gfxperf_findings", lambda config: [])
+    args = _make_args(gfxperf=True)
+    assert "gfxperf" in doctor._resolve_axis_names(args)
+
+
+def test_gfxperf_excluded_from_default_sweep():
+    args = _make_args()  # bare invocation
+    assert "gfxperf" not in doctor._resolve_axis_names(args)
+    assert "graphics" in doctor._resolve_axis_names(args)
+
+
+def test_gfxperf_excluded_from_all():
+    args = _make_args(all=True)
+    assert "gfxperf" not in doctor._resolve_axis_names(args)
 
 
 def test_resolve_axis_names_single_new_flag():

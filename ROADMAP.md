@@ -106,10 +106,6 @@ straight off a `Q`.
   snapshot before a build runs; ccache/sccache initialisation check; estimated
   build-time heuristic. *Priority: low (candidate).*
 
-- **`1.2.0-F22` — Graphics runtime debugging refinement (from the DESIGN roadmap).**
-  Tighten the graphics/doctor diagnostics surface (exact scope TBD). A candidate
-  when revisiting graphics-related code; not blocking. *Priority: low (candidate).*
-
 - **`1.2.0-F28` — User-owned artifact inventory primitive.** Track the user-owned
   system artifacts now scattered across `~/scripts`, `/etc/systemd/system/`,
   `/etc/pacman.d/hooks/`, etc.: a tracked-file inventory, a repo-controlled
