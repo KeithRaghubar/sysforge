@@ -117,3 +117,21 @@ https://keepachangelog.com/en/1.1.0/
   absent from every directory ldconfig scans, so the cache rebuild cannot help. It
   now points at refreshing the files db (`sudo pacman -Fy`) or rebuilding the
   dependent package (2.1.0-B18, promoted from 2.1.0-Q1).
+- `update` no longer falsely demotes source-built `-git` packages as "reinstalled
+  from the repo". The external-install reconcile now only demotes a package that
+  actually exists in a sync repo (`get_pacman_sync_version`), since only a repo
+  package can be `pacman -S`'d; a `-git` build has no repo counterpart, so its
+  presence in the buildstate sentinel is sysforge's own `pacman -U`. Root cause:
+  the libalpm hook, running as root, could create the sentinel dir `root:root`
+  and block the unprivileged `update` process from writing the self-install
+  sentinel that distinguishes sysforge's own installs — the hook now heals the
+  dir to `root:sysforge 2775` (2.2.0-B1).
+- `update` no longer re-surfaces the kernel/toolchain "changed since last run"
+  reminder for a change sysforge itself made. The end-of-run swallow of
+  sysforge's own Phase 5/6.5 sentinel drops now runs in a `finally`, so an early
+  return or exception after the `pacman -Syu` can't leave the sentinel to be
+  reported as an external change next run (2.2.0-B2).
+- `doctor --gfxperf` VA-API check now gates on the real Arch package
+  `libva-nvidia-driver` instead of the upstream project name `nvidia-vaapi-driver`
+  (not a repo package), fixing a permanent false-positive WARN whose remediation
+  pointed at a package that does not exist (2.2.0-B4).

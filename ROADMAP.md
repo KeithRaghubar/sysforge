@@ -36,37 +36,6 @@ straight off a `Q`.
 
 ### Bugs
 
-- **`2.2.0-B1` — Misleading (possibly spurious) external-install demotion message on
-  update.** An `update` run logs e.g. `demoted 19 source-built package(s) reinstalled
-  from the repo: cosmic-*-git, lib32-vulkan-icd-loader-git, vulkan-*-git, …` — but every
-  named package is a `-git` AUR package with **no repo version** to be "reinstalled from
-  the repo" from, so both the wording and the demotion itself look wrong. Reported symptom:
-  the message "doesn't seem correct and also doesn't change update behaviour." Investigate
-  `_reconcile_external_demotions` (`update.py:341`) and the self-install sentinel diff
-  (`primitives/install_reconcile.external_install_targets`): determine whether the sentinels
-  are capturing packages sysforge itself built/installed (false positives) rather than true
-  external `pacman -S` reinstalls, and whether demoting a source-built `-git` package to a
-  `pacman` marker is ever correct. Fix the demotion trigger and/or re-word the message.
-  *Priority: medium (touches the source-built ⇄ pacman state authority; a false demotion
-  silently stops a package from being rebuilt on future updates).*
-
-- **`2.2.0-B2` — Spurious kernel/toolchain "changed since last sysforge run" reminders on
-  update.** An `update` run surfaces the pacman-hook sentinel reminders
-  (`Kernel package(s) changed…` / `Toolchain package(s) (llvm/clang/gcc) changed…`) even when
-  the only thing that changed the kernel/toolchain was **a prior `sysforge update` itself** —
-  so the nag fires for work sysforge already did. Mechanism: PostTransaction libalpm hooks drop
-  `/var/lib/sysforge/sentinels/{kernel,toolchain}`; `_consume_pacman_hook_sentinels`
-  (`update.py:309`) surfaces+unlinks pre-existing sentinels at start-of-run (line 380) and does a
-  `silent=True` clear at end-of-run (line 1082) to swallow sentinels sysforge's own Phase 5
-  (`pacman -U`) / Phase 6.5 (`pacman -Syu`) transactions just dropped. The end-of-run clear is a
-  plain sequential call, **not guaranteed on every exit path** — any exception or early return
-  after Phase 6.5 leaves sysforge's own sentinel on disk, and the next run reports it as an
-  external change. Fix: make the end-of-run swallow run unconditionally (e.g. `finally`), or
-  snapshot the sentinel set present at start-of-run and only ever warn on that set so mid-run
-  self-drops can never be surfaced. *Priority: medium (a warning that fires for sysforge's own
-  changes trains the user to ignore a genuinely useful rebuild/staleness signal — same
-  trust-erosion failure mode as `2.2.0-B1`).*
-
 - **`2.2.0-B3` — `check-shipped` manpage guard couples to the local scdoc version.**
   The `manpage` check in `tools/check_shipped.py` asserts that committed `man/sysforge.1`
   byte-matches fresh `make man` output on the current machine. But `make man` runs `scdoc`,
@@ -80,17 +49,6 @@ straight off a `Q`.
   hyphen escaping before diffing — so the guard verifies man-page *content* (does it match the
   argparse tree) rather than scdoc-version-specific byte output. *Priority: low (cosmetic churn
   + contributor/CI friction; no runtime or rendered-output impact).*
-
-- **`2.2.0-B4` — `doctor --gfxperf` warns about a nonexistent package (`nvidia-vaapi-driver`).**
-  The VA-API video-decode check (`_check_vaapi_driver`, `primitives/gfxperf_probe.py:81`) gates on
-  the installed-package name `nvidia-vaapi-driver`, but that is the *upstream project* name — the
-  Arch package is `libva-nvidia-driver` (the one actually installed). So the check never finds its
-  target on a correct system, permanently emits a WARN, and its remediation tells the user to
-  `Install 'nvidia-vaapi-driver'`, a package that does not exist in the repos. Fix: match on the
-  real package name (`libva-nvidia-driver`), and update the finding message + remediation string
-  accordingly (the upstream name may still be worth a parenthetical for recognisability). Ships in
-  the just-landed `1.2.0-F22` gfxperf axis. *Priority: medium (a permanent false positive that
-  points at a phantom package — same advisory trust-erosion failure mode as `2.2.0-B1`/`B2`).*
 
 ### Features
 

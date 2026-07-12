@@ -79,17 +79,22 @@ def _check_cpu_governor() -> GraphicsFinding | None:
 # ---------------------------------------------------------------------------
 
 def _check_vaapi_driver(installed: dict[str, str]) -> GraphicsFinding | None:
-    if "nvidia-vaapi-driver" in installed:
+    # The VA-API↔NVDEC bridge ships in the Arch package `libva-nvidia-driver`.
+    # `nvidia-vaapi-driver` is only the upstream *project* name and is not a repo
+    # package — gating on it made this check a permanent false positive that told
+    # the user to install a package that does not exist (B4).
+    if "libva-nvidia-driver" in installed:
         return GraphicsFinding(
             SEV_INFO, "vaapi_driver",
-            "hardware video-decode bridge present (nvidia-vaapi-driver).")
+            "hardware video-decode bridge present (libva-nvidia-driver).")
     return GraphicsFinding(
         SEV_WARN, "vaapi_driver",
-        "nvidia-vaapi-driver is not installed — browsers and players fall back "
+        "libva-nvidia-driver is not installed — browsers and players fall back "
         "to CPU video decode, which drops frames on high-resolution / "
         "high-framerate video (a common cause of in-browser video stutter).",
-        "Install 'nvidia-vaapi-driver', enable hardware video decode in your "
-        "browser, and set LIBVA_DRIVER_NAME=nvidia in your session.",
+        "Install 'libva-nvidia-driver' (the upstream nvidia-vaapi-driver bridge), "
+        "enable hardware video decode in your browser, and set "
+        "LIBVA_DRIVER_NAME=nvidia in your session.",
     )
 
 

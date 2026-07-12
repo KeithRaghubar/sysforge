@@ -10,8 +10,11 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from sysforge import update as up
 from sysforge.update import _consume_pacman_hook_sentinels
 
 
@@ -121,3 +124,65 @@ def test_silent_default_is_false(tmp_path):
         _consume_pacman_hook_sentinels()
 
     assert mock_log.warn.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# B1 — external-install reconcile must not demote packages absent from repos
+# ---------------------------------------------------------------------------
+
+def test_reconcile_skips_packages_absent_from_sync_repos(tmp_path):
+    """B1: a source-built ``-git`` package sysforge installs via its own
+    ``pacman -U`` lands in the buildstate sentinel; when the self-install
+    sentinel is missing/incomplete it looks 'external'. Such a package has no
+    repo counterpart, so it could not have been 'reinstalled from the repo' —
+    the demotion must skip anything ``get_pacman_sync_version`` reports as not
+    in a sync database."""
+    sentinels = tmp_path / "sentinels"
+    sentinels.mkdir()
+    (sentinels / "buildstate").write_text(
+        "2026-07-11T10:00:00Z\ncosmic-comp-git\nmesa\n\n")
+    # No self-install file at all — the perms asymmetry on the real system.
+    bs = MagicMock()
+    bs.reconcile_external_installs.return_value = ["mesa"]
+
+    def fake_sync_version(name):
+        return "24.1-1" if name == "mesa" else None  # -git pkg not in repos
+
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), \
+         patch("sysforge.primitives.pacman.get_pacman_sync_version",
+               side_effect=fake_sync_version), _stub_logger():
+        up._reconcile_external_demotions(bs)
+
+    # Only the genuine repo package is offered to the build-state demotion.
+    called = bs.reconcile_external_installs.call_args[0][0]
+    assert called == {"mesa"}
+
+
+# ---------------------------------------------------------------------------
+# B2 — sysforge's own kernel/toolchain sentinel drops must be swallowed on
+#      every exit path, not only the normal end-of-run.
+# ---------------------------------------------------------------------------
+
+def test_reminder_sentinels_swallowed_on_body_exception(tmp_path):
+    """B2: if the update body raises after Phase 6.5 has dropped kernel/toolchain
+    sentinels (sysforge's own ``pacman -Syu``), the finally must still swallow
+    them so the next run doesn't surface sysforge's own change as an external
+    'changed since last run' reminder."""
+    sentinels = tmp_path / "sentinels"
+    sentinels.mkdir()
+
+    def boom(args):
+        # Simulate Phase 6.5 dropping sysforge's own sentinels mid-run, then an
+        # early failure before the normal end-of-run swallow.
+        (sentinels / "kernel").write_text("ts\nlinux\n")
+        (sentinels / "toolchain").write_text("ts\nllvm\n")
+        raise RuntimeError("interrupted after Phase 6.5")
+
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), \
+         patch("sysforge.update._cmd_update_body", side_effect=boom), \
+         patch("sysforge.update._suppress_pagers_in_env"), _stub_logger():
+        with pytest.raises(RuntimeError):
+            up.cmd_update(MagicMock(interactive=False))
+
+    assert not (sentinels / "kernel").exists()
+    assert not (sentinels / "toolchain").exists()

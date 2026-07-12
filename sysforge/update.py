@@ -354,6 +354,22 @@ def _reconcile_external_demotions(bs: BuildState) -> None:
     try:
         external = external_install_targets(_SENTINEL_DIR)
         if external:
+            # B1: only a package that actually exists in a sync repo could have
+            # been "reinstalled from the repo" via ``pacman -S``. A source-built
+            # ``-git`` package has no repo counterpart, so its presence in the
+            # buildstate sentinel is sysforge's own ``pacman -U`` (recorded by
+            # the root-run libalpm hook) — not an external install. Without this
+            # filter a missing/incomplete self-install sentinel (e.g. the state
+            # dir was created root:root by the hook's mkdir before the group
+            # provisioning took effect) makes ``external`` the entire buildstate
+            # and mass-demotes every source-built ``-git`` package.
+            # ``get_pacman_sync_version`` reads local sync DBs (offline-safe),
+            # returning None for anything not in a repo.
+            from sysforge.primitives.pacman import get_pacman_sync_version
+            external = {
+                n for n in external if get_pacman_sync_version(n) is not None
+            }
+        if external:
             demoted = bs.reconcile_external_installs(external)
             if demoted:
                 bs.save()
@@ -383,6 +399,16 @@ def cmd_update(args) -> None:
     try:
         _cmd_update_body(args)
     finally:
+        # B2: sysforge's own Phase 5 (pacman -U) / Phase 6.5 (pacman -Syu)
+        # transactions drop kernel/toolchain reminder sentinels. Swallow them
+        # here so an early return or exception after Phase 6.5 can't leave
+        # sysforge's own change to be re-surfaced as an external "changed since
+        # last run" reminder on the next invocation. reminders_only=True leaves
+        # the reconcile (buildstate/self-install) sentinels for the body's
+        # reconcile step; on the error path they persist for the next run, where
+        # sysforge's own -U entries appear in both and cancel out. The body's
+        # end-of-run call still clears the reconcile pair on the success path.
+        _consume_pacman_hook_sentinels(silent=True, reminders_only=True)
         # Defensive: if any subprocess (pacman hook, makepkg subshell, etc.)
         # entered alt-screen mode and died without restoring, emit the reset
         # so the caller's scrollback isn't lost. No-op when stdout isn't a

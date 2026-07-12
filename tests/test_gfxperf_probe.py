@@ -52,11 +52,24 @@ def test_check_gfxperf_never_errors(monkeypatch):
 def test_vaapi_missing_warns():
     f = gp._check_vaapi_driver({})
     assert f.severity == gp.SEV_WARN and f.check_id == "vaapi_driver"
+    # B4: remediation must name the real Arch package, not the phantom upstream one.
+    assert "libva-nvidia-driver" in f.remediation
+    assert "Install 'nvidia-vaapi-driver'" not in f.remediation
 
 
 def test_vaapi_present_info():
-    f = gp._check_vaapi_driver({"nvidia-vaapi-driver": "0.0.13-1"})
+    # B4: gate on the real Arch package name (libva-nvidia-driver), which is
+    # what is actually installed on a correct system.
+    f = gp._check_vaapi_driver({"libva-nvidia-driver": "0.0.17-1"})
     assert f.severity == gp.SEV_INFO
+
+
+def test_vaapi_upstream_name_not_matched():
+    """B4: nvidia-vaapi-driver is the upstream project name, not an Arch package.
+    Matching on it never fires on a real system (permanent false negative on the
+    OK path); the gate must key on libva-nvidia-driver only."""
+    f = gp._check_vaapi_driver({"nvidia-vaapi-driver": "0.0.13-1"})
+    assert f.severity == gp.SEV_WARN
 
 
 def test_libva_env_always_info(monkeypatch):
