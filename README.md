@@ -2,6 +2,8 @@
 
 SysForge is an Arch Linux build and maintenance suite with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
+**Relationship to `makepkg` and `pacman`.** `build` and `update` wrap `makepkg` — with makepkg flag passthrough — to build the packages SysForge manages, injecting your compiler-flag profile via a temporary `makepkg.conf`; they are a profiled front-end for those packages, not a general `makepkg` replacement. On the pacman side, SysForge wraps *part* of the surface — search/query, install (through `build`/`update`/`packages`), and uninstall (`sudo pacman -R` plus build-state demotion) — but deliberately does not, and is not meant to, cover all of pacman. Pacman remains the package-database authority.
+
 The default build profile uses the system gcc. LLVM (clang/lld) is fully supported but opt-in: install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `toolchain = "llvm"` in `[defaults]` or a profile, or use `sysforge run toolchain --compiler=llvm`.
 
 **Commands:** `build` / `fetch` / `update` / `resolve` build and maintain profiled AUR & custom packages; `packages` / `state` manage the manifest and build state; `search` / `uninstall` cover everyday package lifecycle; `doctor` / `log` / `env` inspect system health and configuration; `setup` wires up pacman integration; `run <stage>` drives the bootstrap pipeline. See `sysforge --help` or the [man page](man/sysforge.1) for the full reference.

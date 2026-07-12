@@ -62,6 +62,16 @@ straight off a `Q`.
   in `doctor.py` + `cli.py` + both completions + manpage + `_patch_axes_clean` in the
   same change (per the doctor-axis one-home invariant). *Priority: low (candidate).*
 
+- **`2.2.0-F2` — Colourize the `search` AUR section + blank-line section separators.**
+  In `search_cmd.py`, the Installed/Repo sections are pacman passthroughs captured with
+  forced colour, but the AUR section is sysforge-rendered by `render_aur()` as plain text
+  (`aur/name version` + indented desc) — so it reads as visibly uncoloured next to the
+  pacman blocks. Restyle `render_aur()` to match pacman's `repo/name version` colouring
+  (source-prefix + bold name), routed through `log.use_color()` so `NO_COLOR`/non-TTY
+  degrade cleanly. Separately, emit a blank line between consecutive non-empty sections in
+  the execute loop so the three sources are visually delimited. *Priority: low (cosmetic
+  UX polish).*
+
 - **`2.1.0-F3` — Before/after package versions for pacman `-Syu` packages in the update
   summary.** The summary renderer already shows version deltas for source-built
   packages; extend it to include old→new versions for the repo packages pulled in by the
