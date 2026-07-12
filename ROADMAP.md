@@ -50,6 +50,58 @@ straight off a `Q`.
   argparse tree) rather than scdoc-version-specific byte output. *Priority: low (cosmetic churn
   + contributor/CI friction; no runtime or rendered-output impact).*
 
+- **`2.2.0-B5` — `record_self_install` bypasses `fs_provision`, so the self-install
+  sentinel silently never records.** `install_reconcile.record_self_install` creates
+  `/var/lib/sysforge/sentinels/` with a bare `d.mkdir(...)` + `os.open(...)` instead of
+  routing through `fs_provision.ensure_writable_dir`. The sentinels dir is written by
+  *two* actors at different privilege levels: root (the libalpm hooks drop
+  `buildstate`/`kernel`/`toolchain`) and the *unprivileged* sysforge process (this
+  function appends `self-install` from the `pacman -U` chokepoint in `pacman.py`). Because
+  root's hooks create the dir first, it lands `0755 root:root` and is never healed to the
+  `2775 root:sysforge` that `fs_provision` designs for exactly this coexistence — so the
+  unprivileged append fails with `EACCES` and the marker is never written. Observed live:
+  dir is `drwxr-xr-x root root`, no `self-install` file exists, yet the build user *is* in
+  the `sysforge` group (the group-write path would work if the mode were correct). The
+  `2.1.0-B13` fchmod-heal only repairs the *file* once created; it cannot heal a
+  root-owned parent the user can't write into. **Impact (trust-erosion, same family as the
+  shipped B1/B2/B4 cluster):** with `self-install` perpetually empty,
+  `external_install_targets = buildstate − ∅` misclassifies every package sysforge itself
+  installs via `pacman -U` as an external `pacman -S`, risking spurious `build_mode`
+  demotion on the next `update` reconcile. The recurring `[RECONCILE] could not record
+  self-install marker (non-fatal): [Errno 13] Permission denied` INFO line is only the
+  surface symptom. Fix: route the sentinel-dir creation through
+  `fs_provision.ensure_writable_dir` (or provision the sentinels dir group-writable in
+  `setup`) so both the root hooks and the unprivileged append share a `2775 root:sysforge`
+  tree. *Priority: medium (silent reconcile mis-classification + visible per-install
+  warning; best-effort catch means no crash).*
+
+- **`2.2.0-B6` — `fs_provision.ensure_writable_dir` fast path skips group/mode
+  enforcement, leaving user-created dirs `user:user` instead of `root:sysforge`.** The fast
+  path (`fs_provision.py:132-138`) does `mkdir(parents=True)` then `if os.access(path,
+  os.W_OK): return path` — so **any already-writable directory is returned untouched**, and
+  the `SYSFORGE_GROUP` / setgid `SYSFORGE_DIR_MODE` (`2775`) are only ever applied on the
+  sudo *slow* path (root-owned ancestor). Consequence: a cache/state dir first created by
+  the unprivileged build user lands `user:user 0755` with **no setgid bit**, so every child
+  created under it also fails to inherit the `sysforge` group. Observed live:
+  `/var/cache/sysforge/llvm-pgo/` and all three of its files are `keith:keith`, while
+  sibling stores that happened to hit the slow path (`pgo-mesa`, `propeller/linux-sysforge`,
+  `autofdo/linux-sysforge`) are correctly `root:sysforge 2775`. This is the general form of
+  `2.2.0-B5` (which is the sentinel-dir-specific instance): a second writer at a different
+  uid — the libalpm hooks (root), or a later `sudo` rebuild — then can't write the
+  user-owned tree, and the group-write coexistence the design promises silently doesn't
+  hold. Fix: in the fast path, after landing a writable dir, **best-effort self-heal the
+  group + setgid when the current user owns it and belongs to `SYSFORGE_GROUP`** (a plain
+  `chgrp`/`chmod` needs no sudo in that case), falling through to the slow path only when it
+  can't. Fixing this subsumes the ownership half of B5. Related environmental facet (track
+  here, not a separate ID): the shipped `tmpfiles.d`/`sysusers.d` correctly declare `2775
+  root sysforge`, but `dev_install.sh` skips symlinking them (`tools/dev_install.sh:64`) and
+  the libalpm hooks then create `/var/lib/sysforge` + sentinel files as `root:root` before
+  anything provisions the group — so a *dev-install* box never gets the group baseline a
+  packaged install does. Consider having `dev_install.sh` install + `systemd-tmpfiles
+  --create` the shipped configs, or a `doctor`/`setup` heal pass over the managed trees.
+  *Priority: medium (silent group-ownership drift → cross-uid write failures in the
+  best-effort paths; same trust-erosion family as B5).*
+
 ### Features
 
 - **`2.2.0-F1` — ccache/sccache readiness doctor axis.** Split out of `1.2.0-F21`
