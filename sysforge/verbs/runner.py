@@ -87,15 +87,31 @@ def _run_verb_inner(verb: Verb, args, _log) -> int:
     else:
         scope = nullcontext()
 
+    logged = False
     try:
         with _consolidated_log(verb, args, _log) as log_state, scope:
-            result = verb.execute(args, pre)
-            verb.post_validate(args, pre, result)
+            try:
+                result = verb.execute(args, pre)
+                verb.post_validate(args, pre, result)
+            except RuntimeError as e:
+                # Record the terminating error while the consolidated-log
+                # handle is still open, so the run log carries an explicit
+                # FAILED marker (parallel to the standalone-stage path in
+                # pipeline/runner.py). Mark the log failed and re-raise for the
+                # shared exit-code handler below.
+                log_state["success"] = False
+                _log.error(f"{verb.name}: FAILED — {e}")
+                logged = True
+                raise
             log_state["success"] = bool(
                 result.artifacts.get("log_success", result.exit_code == 0)
             )
     except RuntimeError as e:
-        _log.error(str(e))
+        # execute/post_validate failures are already logged (into the run log)
+        # above; a RuntimeError from entering the log/sentinel scope itself
+        # lands here unlogged, so surface it to the terminal.
+        if not logged:
+            _log.error(str(e))
         return 1
 
     return result.exit_code

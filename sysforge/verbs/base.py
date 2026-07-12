@@ -82,6 +82,12 @@ class Verb(ABC):
 
     name: str = ""
     requires_sentinel: bool = False
+    #: Opt in to a consolidated run log at ``sysforge-<name>.log`` (opened and
+    #: closed by ``verbs.runner._consolidated_log``: purged before ``execute``,
+    #: kept ``persist=True`` after, skipped on dry-run). Substantial verbs set
+    #: this True; pure printers / read-only reports leave it False. Verbs that
+    #: need a non-derived basename override ``unified_log_basename`` instead.
+    wants_run_log: bool = False
 
     @abstractmethod
     def pre_check(self, args) -> PreCheckResult:
@@ -122,9 +128,10 @@ class Verb(ABC):
         pipeline return ``None`` here because they own richer log lifecycles
         (their own purge/persist/success policy) and call
         :func:`~sysforge.log.open_unified_log` directly.
+        Setting ``wants_run_log = True`` derives the basename from ``self.name``.
         """
         del args
-        return None
+        return f"sysforge-{self.name}.log" if self.wants_run_log else None
 
     def sentinel_metadata(self, args, pre: PreCheckResult) -> dict[str, Any]:
         """Extra fields persisted in the sentinel file.

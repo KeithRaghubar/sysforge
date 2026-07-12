@@ -507,6 +507,7 @@ class StateRepairVerb(Verb):
     """
 
     name = "state-repair"
+    wants_run_log = True
     requires_sentinel = True
 
     def pre_check(self, args) -> PreCheckResult:
@@ -567,6 +568,7 @@ class StateForgetVerb(Verb):
     """
 
     name = "state-forget"
+    wants_run_log = True
     requires_sentinel = True
 
     def pre_check(self, args) -> PreCheckResult:

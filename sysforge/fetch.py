@@ -90,6 +90,7 @@ class FetchVerb(Verb):
     """
 
     name = "fetch"
+    wants_run_log = True
     requires_sentinel = False
 
     def pre_check(self, args) -> PreCheckResult:

@@ -77,13 +77,6 @@ straight off a `Q`.
   packages; extend it to include old→new versions for the repo packages pulled in by the
   pacman `-Syu` portion of an update. *Priority: low.*
 
-- **`2.1.0-F4` — Log file for every non-pipeline verb and standalone pipeline stage.**
-  There's no log artifact for a `doctor` run (or other non-pipeline verbs), and
-  standalone pipeline stages aren't logged either. Extend the unified run-log
-  (`log.open_unified_log`; `Verb.unified_log_basename`) so every verb — and a directly
-  invoked stage — writes a discoverable log. *Priority: medium (no post-hoc record for
-  most verbs today).*
-
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
   specificity: more AND'd conditions = higher weight), with manual `priority`

@@ -172,6 +172,21 @@ def test_consolidated_log_written_and_persisted(tmp_path):
     assert "log cleared" not in body
 
 
+def test_consolidated_log_failure_writes_failed_marker(tmp_path):
+    """A verb that raises leaves a kept log carrying a FAILED marker."""
+    v = _LoggingVerb(raise_in="execute")
+    rc = run_verb(
+        v, _args(state_dir=str(tmp_path), log_dir=str(tmp_path), dry_run=False)
+    )
+    assert rc == 1
+    log_path = tmp_path / "sysforge-build.log"
+    assert log_path.exists()
+    body = log_path.read_text()
+    # The pre-failure output and an explicit FAILED marker are both captured.
+    assert "hello from execute" in body
+    assert "FAILED" in body
+
+
 def test_consolidated_log_skipped_on_dry_run(tmp_path):
     """Dry runs never write the consolidated log to disk."""
     v = _LoggingVerb()
@@ -191,6 +206,29 @@ def test_consolidated_log_opt_out_writes_nothing(tmp_path):
 def test_consolidated_log_default_basename_is_none():
     """The base Verb opts out by default, so most verbs are unaffected."""
     assert _CountingVerb().unified_log_basename(_args()) is None
+
+
+def test_wants_run_log_derives_basename_from_name():
+    """A verb opting in via the flag logs to sysforge-<name>.log."""
+    v = _CountingVerb()
+    v.name = "doctor"
+    v.wants_run_log = True
+    assert v.unified_log_basename(_args()) == "sysforge-doctor.log"
+
+
+def test_wants_run_log_preserves_hyphenated_names():
+    """Hyphenated verb names map straight through (state-repair, etc.)."""
+    v = _CountingVerb()
+    v.name = "state-repair"
+    v.wants_run_log = True
+    assert v.unified_log_basename(_args()) == "sysforge-state-repair.log"
+
+
+def test_wants_run_log_defaults_off():
+    """The flag defaults False, so the base verb still opts out."""
+    v = _CountingVerb()
+    assert v.wants_run_log is False
+    assert v.unified_log_basename(_args()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -261,3 +299,52 @@ def test_sentinel_metadata_persisted(tmp_path):
     assert record is not None
     assert record["compiler"] == "llvm"
     assert record["pgo"] is True
+
+
+# ---------------------------------------------------------------------------
+# Substantial verbs opt in to per-verb run logs (2.1.0-F4)
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_verb_writes_kept_run_log(tmp_path):
+    """A real substantial verb (doctor) leaves a kept sysforge-doctor.log."""
+    from sysforge.doctor import DoctorVerb
+    assert DoctorVerb().unified_log_basename(_args(apply=False, dry_run=False)) == (
+        "sysforge-doctor.log"
+    )
+
+
+def test_doctor_verb_logs_on_dry_run_apply(tmp_path):
+    """`doctor --apply --dry-run` still opens its own run log — the rebuild
+    delegation to cmd_update only happens on a real (non-dry-run) apply."""
+    from sysforge.doctor import DoctorVerb
+    assert DoctorVerb().unified_log_basename(_args()) == "sysforge-doctor.log"
+    assert DoctorVerb().unified_log_basename(
+        _args(apply=True, dry_run=True)
+    ) == "sysforge-doctor.log"
+
+
+def test_doctor_verb_opts_out_of_run_log_on_real_apply(tmp_path):
+    """`doctor --apply` (non-dry-run) delegates to cmd_update, which opens its
+    own sysforge-update.log on the process-global unified-log handle
+    (2.1.0-F4). Doctor must not also open a log here — the singleton has no
+    reentrancy guard, so a doctor-opened handle would be leaked (never
+    closed) and rebuild output would silently land in the wrong file."""
+    from sysforge.doctor import DoctorVerb
+    assert DoctorVerb().unified_log_basename(
+        _args(apply=True, dry_run=False)
+    ) is None
+
+
+def test_flagged_verb_persists_log_via_runner(tmp_path):
+    """Through run_verb, a wants_run_log verb keeps its log on success."""
+    v = _CountingVerb()
+    v.name = "doctor"
+    v.wants_run_log = True
+    rc = run_verb(
+        v, _args(state_dir=str(tmp_path), log_dir=str(tmp_path), dry_run=False)
+    )
+    assert rc == 0
+    log_path = tmp_path / "sysforge-doctor.log"
+    assert log_path.exists()
+    assert "log cleared" not in log_path.read_text()

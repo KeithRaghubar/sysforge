@@ -1218,11 +1218,25 @@ class DoctorVerb(Verb):
     synthesizes an update args namespace and invokes the existing function
     directly — no sentinel needed here, since ``UpdateVerb`` is not in
     play. The sentinel for the rebuild itself is installed by the
-    delegated rebuild path's ``BuildOptions`` flow.
+    delegated rebuild path's ``BuildOptions`` flow. ``--apply`` (non-dry-run)
+    also opts out of this verb's own run log, since ``cmd_update`` opens its
+    own on the process-global unified-log handle (see
+    ``unified_log_basename``).
     """
 
     name = "doctor"
     requires_sentinel = False
+
+    def unified_log_basename(self, args) -> str | None:
+        # Opt into sysforge-doctor.log for a read-only run, but NOT for
+        # `--apply` (non-dry-run): that path delegates to cmd_update, which
+        # opens its own sysforge-update.log on the process-global unified-log
+        # handle. Opening a doctor log here would be orphaned (leaked FD, no
+        # rebuild output) by that reassignment, so the rebuild's record
+        # correctly lives in sysforge-update.log instead (2.1.0-F4).
+        if getattr(args, "apply", False) and not getattr(args, "dry_run", False):
+            return None
+        return "sysforge-doctor.log"
 
     def pre_check(self, args) -> PreCheckResult:
         # cmd_doctor reads args.config; the cli.py wrapper used to set this.

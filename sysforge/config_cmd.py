@@ -182,6 +182,7 @@ class ConfigMergeVerb(Verb):
     fully reversible and never builds/installs, so it carries no sentinel."""
 
     name = "config-merge"
+    wants_run_log = True
     requires_sentinel = False
 
     def pre_check(self, args) -> PreCheckResult:

@@ -77,3 +77,19 @@ def test_run_verbs_proceed_as_normal_user(monkeypatch):
     for verb in (["pipeline"], ["packages"], ["kernel"], ["toolchain"]):
         pre = _pre_check_as(1000, verb, monkeypatch)
         assert pre.blocker is None
+
+
+# --- Hardware/reconfigure unified logging (2.1.0-F4) -----
+
+def test_run_hardware_enables_unified_log(monkeypatch):
+    captured = _capture_options(monkeypatch)
+    args = _build_parser().parse_args(["run", "hardware"])
+    args.verb_cls().execute(args, pre=None)
+    assert captured["options"].no_unified_log is False
+
+
+def test_run_reconfigure_enables_unified_log(monkeypatch):
+    captured = _capture_options(monkeypatch)
+    args = _build_parser().parse_args(["run", "reconfigure"])
+    args.verb_cls().execute(args, pre=None)
+    assert captured["options"].no_unified_log is False

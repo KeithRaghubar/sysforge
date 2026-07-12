@@ -97,7 +97,7 @@ def run_stage_standalone(stage, config, options):
     log_dir = options.log_dir or state_dir
     unified_log_active = not options.no_unified_log and not options.dry_run
     if unified_log_active:
-        unified_log_path = log_dir / "sysforge.log"
+        unified_log_path = log_dir / f"sysforge-run-{stage.name}.log"
         try:
             log.open_unified_log(unified_log_path, purge=options.purge_log)
             _log.info(f"Unified log: {unified_log_path}")
@@ -125,7 +125,7 @@ def run_stage_standalone(stage, config, options):
         _log.fatal(f"{stage.name}: FAILED — {e}")
     finally:
         if unified_log_active:
-            log.close_unified_log(success=success, persist=options.persist_log)
+            log.close_unified_log(success=success, persist=True)
         if options.cache_report:
             emit_session_report()
 

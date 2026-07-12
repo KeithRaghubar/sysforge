@@ -59,6 +59,14 @@ https://keepachangelog.com/en/1.1.0/
   both Planned and Abandoned, and a shipped `Q`-typed ID; warns on sequence gaps
   in the active version prefix. Adds `--next-id <version>-<TYPE>` to allocate the
   next free ID monotonically (2.1.0-F1).
+- `[kernel] keep_hotplug_drivers` (and `--keep-hotplug-drivers` /
+  `--no-keep-hotplug-drivers`): re-enable hotplug driver classes (USB,
+  USB4/Thunderbolt, MMC/SD, hot-plug PCI/CardBus, hot-plug HID) as modules after
+  config minimization, via a dedicated post-minimization kconfig fragment so
+  `localmodconfig` can't strip them. Off by default. (2.1.0-F2)
+- Every substantial verb and standalone `run <stage>` now writes a discoverable,
+  kept-on-success consolidated log (`sysforge-<name>.log` / `sysforge-run-<stage>.log`),
+  so a `doctor` run and hand-invoked stages leave a post-hoc record. (`2.1.0-F4`)
 - Global `--no-throttle` / `--turbo` flags: `--no-throttle` ignores the
   configured build throttle for a run; `--turbo` runs at higher-than-default
   priority (negative niceness, best-effort IO, no cap). Both route through the
@@ -66,11 +74,6 @@ https://keepachangelog.com/en/1.1.0/
 - `[build] cpu_quota` now also accepts a decimal fraction of the host's total
   cores (e.g. `0.5` → `800%` on a 16-core box), translated against
   `os.cpu_count()` so the same config is portable across machines (2.1.0-F6).
-- `[kernel] keep_hotplug_drivers` (and `--keep-hotplug-drivers` /
-  `--no-keep-hotplug-drivers`): re-enable hotplug driver classes (USB,
-  USB4/Thunderbolt, MMC/SD, hot-plug PCI/CardBus, hot-plug HID) as modules after
-  config minimization, via a dedicated post-minimization kconfig fragment so
-  `localmodconfig` can't strip them. Off by default. (2.1.0-F2)
 
 ## Fixed
 

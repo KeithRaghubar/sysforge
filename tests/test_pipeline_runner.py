@@ -261,3 +261,46 @@ def test_shipped_stage_graph_is_valid():
     for stage in STAGES:
         for dep in stage.depends_on:
             assert dep in names, f"{stage.name} depends on unknown stage {dep!r}"
+
+
+# ---------------------------------------------------------------------------
+# Standalone run logging (2.1.0-F4)
+# ---------------------------------------------------------------------------
+
+def test_standalone_stage_writes_per_stage_log(tmp_path, monkeypatch):
+    """Standalone run leaves sysforge-run-<stage>.log, not shared sysforge.log."""
+    from sysforge.pipeline import runner as _runner
+    monkeypatch.setattr(_runner, "emit_system_probes", lambda: None)
+    monkeypatch.setattr(_runner, "reset_session", lambda: None)
+    stage = OkStage("kernel")
+    stage.stateless = True
+    _runner.run_stage_standalone(
+        stage, {}, make_options(state_dir=tmp_path, log_dir=tmp_path))
+    assert (tmp_path / "sysforge-run-kernel.log").exists()
+    assert not (tmp_path / "sysforge.log").exists()
+
+
+def test_standalone_stage_log_persisted_on_success(tmp_path, monkeypatch):
+    """Kept on success even with the default persist_log=False."""
+    from sysforge.pipeline import runner as _runner
+    monkeypatch.setattr(_runner, "emit_system_probes", lambda: None)
+    monkeypatch.setattr(_runner, "reset_session", lambda: None)
+    stage = OkStage("kernel")
+    stage.stateless = True
+    opts = make_options(state_dir=tmp_path, log_dir=tmp_path)
+    assert opts.persist_log is False
+    _runner.run_stage_standalone(stage, {}, opts)
+    body = (tmp_path / "sysforge-run-kernel.log").read_text()
+    assert "log cleared" not in body
+
+
+def test_standalone_stage_skips_log_on_dry_run(tmp_path, monkeypatch):
+    """Dry runs write nothing."""
+    from sysforge.pipeline import runner as _runner
+    monkeypatch.setattr(_runner, "emit_system_probes", lambda: None)
+    monkeypatch.setattr(_runner, "reset_session", lambda: None)
+    stage = OkStage("kernel")
+    stage.stateless = True
+    _runner.run_stage_standalone(
+        stage, {}, make_options(state_dir=tmp_path, log_dir=tmp_path, dry_run=True))
+    assert not (tmp_path / "sysforge-run-kernel.log").exists()

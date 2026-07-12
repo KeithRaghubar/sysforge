@@ -100,6 +100,7 @@ class RevertToStockVerb(Verb):
     """Undo a source-built/optimized package back to the repo version."""
 
     name = "revert-to-stock"
+    wants_run_log = True
     requires_sentinel = True
 
     def pre_check(self, args) -> PreCheckResult:

@@ -233,6 +233,7 @@ class SetupVerb(Verb):
     """Configure pacman.conf IgnoreGroup for sysforge-built packages."""
 
     name = "setup"
+    wants_run_log = True
     requires_sentinel = False
 
     def pre_check(self, args) -> PreCheckResult:

@@ -51,6 +51,7 @@ class UninstallVerb(Verb):
     """Remove package(s) and demote any sysforge-tracked ones."""
 
     name = "uninstall"
+    wants_run_log = True
     requires_sentinel = True
 
     def pre_check(self, args) -> PreCheckResult:
