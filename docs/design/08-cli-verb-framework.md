@@ -55,7 +55,7 @@ This reuses the same `is_optimized_build_mode`/`rename_mode_for_build_mode` pred
 
 ### `search`
 
-Read-only lifecycle verb (`requires_sentinel = False`). One term is queried against three sources in fixed order — installed (`pacman -Qs`), repo sync DBs (`pacman -Ss`), and the AUR (RPC v5 `search/<term>?by=name-desc`) — and each non-empty section is printed under a header; an empty section is omitted. Local/repo are pacman passthroughs captured with `--color always` (native rendering preserved, emptiness detectable via `pacman.search_local`/`search_repo`); the AUR section is sysforge-rendered from `aur.aur_search` (`aur/<name> <version>` + indented description). AUR is the one optional source: `aur_search` swallows network/timeout/JSON errors and returns `[]`, so a search never hard-fails on the third source.
+Read-only lifecycle verb (`requires_sentinel = False`). One term is queried against three sources in fixed order — installed (`pacman -Qs`), repo sync DBs (`pacman -Ss`), and the AUR (RPC v5 `search/<term>?by=name-desc`) — and each non-empty section is printed under a header; an empty section is omitted. Local/repo are pacman passthroughs captured with `--color always` (native rendering preserved, emptiness detectable via `pacman.search_local`/`search_repo`); the AUR section is sysforge-rendered from `aur.aur_search` (`aur/<name> <version>` + indented description, colour-matched to the pacman blocks — coloured source prefix, bold name, green version, via `log.use_color()`). Consecutive non-empty sections are separated by a blank line. AUR is the one optional source: `aur_search` swallows network/timeout/JSON errors and returns `[]`, so a search never hard-fails on the third source.
 
 ### `uninstall`
 

@@ -186,8 +186,9 @@ def _print_result_summary(
         _section("Dependencies:", list(summary.installed_deps))
 
     if summary.pacman_upgrade_pkgs:
-        suffix = " (transaction FAILED)" if summary.pacman_upgrade_failed else ""
-        _section("Pacman-Syu:", [f"{' '.join(summary.pacman_upgrade_pkgs)}{suffix}"])
+        label = ("Pacman-Syu (transaction FAILED):"
+                 if summary.pacman_upgrade_failed else "Pacman-Syu:")
+        _section(label, [_fmt_pkg(summary, pb) for pb in summary.pacman_upgrade_pkgs])
 
     if summary.failed_pkgs:
         _section("Failed:", [_fmt_pkg(summary, pb) for pb in summary.failed_pkgs])

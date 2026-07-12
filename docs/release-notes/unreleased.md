@@ -75,6 +75,18 @@ https://keepachangelog.com/en/1.1.0/
   cores (e.g. `0.5` → `800%` on a 16-core box), translated against
   `os.cpu_count()` so the same config is portable across machines (2.1.0-F6).
 
+## Changed
+
+- `update` summary now shows old → new versions for the repo packages pulled in
+  by the `pacman -Syu` portion of a run (the `Pacman-Syu:` section), matching the
+  version deltas already shown for source-built packages instead of listing bare
+  names; a failed transaction is flagged in the section label (2.1.0-F3).
+- `search` AUR results are now colourized to match the pacman-rendered
+  Installed/Repo sections (coloured source prefix, bold name, green version)
+  instead of reading as plain text, and a blank line now separates the three
+  sources. Colour routes through `log.use_color()`, so `NO_COLOR`/non-TTY degrade
+  to plain output (2.2.0-F2).
+
 ## Fixed
 
 - Build-failure recovery menu `[c]` now offers the compiler as a coherent

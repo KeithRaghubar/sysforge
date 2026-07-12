@@ -119,3 +119,28 @@ def test_pacman_upgrade_failed_marker(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "glibc" in out
     assert "FAILED" in out
+
+
+def test_pacman_upgrade_shows_version_deltas(capsys, monkeypatch):
+    """F3: repo packages pulled in by pacman -Syu render old → new per line,
+    reusing the same version-pair machinery as the source-built section."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    s = _empty(
+        pacman_upgrade_pkgs=["glibc", "nano"],
+        versions={"glibc": ("2.39-1", "2.40-1"), "nano": ("7.2-1", "8.0-1")},
+    )
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "glibc: 2.39-1 → 2.40-1" in out
+    assert "nano: 7.2-1 → 8.0-1" in out
+
+
+def test_pacman_upgrade_unknown_version_falls_back_to_bare_name(capsys, monkeypatch):
+    """F3: a pacman package with no known version pair still lists by name."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    s = _empty(pacman_upgrade_pkgs=["glibc"], versions={})
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "glibc" in out
+    assert "→" not in out
