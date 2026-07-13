@@ -36,6 +36,19 @@ straight off a `Q`.
 
 ### Bugs
 
+- **`2.3.0-B2` — `--cache-report` renderer bypasses the logger.** `cache_probe.emit_session_report`
+  writes with raw `print(..., file=sys.stderr)` instead of routing through `sysforge.log`. Three
+  consequences: (1) the report is **not captured by the unified run-log** (`log.ui`/`info` fan out to
+  `_write_to_files` → `_unified_log_fh`/`_pkg_log_fh`; a bare `print` does not), so `sysforge log`
+  captures silently omit it; (2) its `─` divider hardcodes the box-drawing glyph, **bypassing
+  `log.use_unicode()`/`downgrade_glyphs`** — under `NO_UNICODE`/`--ascii` it still emits U+2500,
+  exactly what the glyph gate exists to catch; (3) it hand-rolls the `[SYSFORGE][CACHE]` prefix
+  instead of `_format_line`, so it misses `use_color()` gating and any future prefix change. Almost
+  certainly age, not intent — `cache_probe.py` predates both the unified run-log and the Unicode gate
+  and never got swept into either migration. Fix: route the report through `log.ui`/`info` (+ the
+  unicode gate) like the diagnostics renderer (`render_axis`) already does. *Priority: low (cosmetic +
+  run-log completeness; no functional build impact).*
+
 - **`2.2.0-B3` — `check-shipped` manpage guard couples to the local scdoc version.**
   The `manpage` check in `tools/check_shipped.py` asserts that committed `man/sysforge.1`
   byte-matches fresh `make man` output on the current machine. But `make man` runs `scdoc`,
