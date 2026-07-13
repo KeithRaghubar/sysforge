@@ -42,13 +42,13 @@ Run **before** `make release-major`, `make release-minor`, or `make release-patc
 for the target version. If it doesn't exist yet, run the `/release-notes` skill to
 draft it before invoking the release command.
 
-## Coverage ratchet (opt-in)
+## Coverage ratchet (on by default)
 
-The preflight skips the coverage ratchet by default — the instrumented suite is
-slow. To include it, run with `RUN_COVERAGE=1`:
+The preflight runs the coverage ratchet by default. The instrumented suite is
+slow, so to skip it on a quick check, set `RUN_COVERAGE=0`:
 
 ```bash
-RUN_COVERAGE=1 bash .claude/skills/release-prep/scripts/preflight.sh
+RUN_COVERAGE=0 bash .claude/skills/release-prep/scripts/preflight.sh
 ```
 
 It runs `make coverage` and compares the TOTAL against the floor in
