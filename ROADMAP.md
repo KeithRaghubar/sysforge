@@ -125,6 +125,39 @@ straight off a `Q`.
   golden guard to a representative stage run. *Priority: low (bootstrap-time output, not the
   day-to-day regression, which is resolved under F36).*
 
+### Questions
+
+- **`2.3.0-Q1` — should throttle percentages be sanity-checked against host core count?**
+  Prompted by "what happens if a throttling setting is set higher than 100%?" The premise
+  (any value >100% is nonsensical and should be ignored) does **not** hold for the one
+  percent-valued throttle knob that exists: `cpu_quota` is a systemd `CPUQuota` where
+  `100%` = one core's worth, so `"600%"` (six cores) is valid and intended
+  (`build_throttle._CPU_QUOTA_RE`, `_coerce_cpu_quota`). The real open question is the
+  *upper* bound: `_coerce_cpu_quota` accepts arbitrarily large values (`"9999%"`) with no
+  check against `os.cpu_count()`, so a typo or a config copied from a bigger box silently
+  asks for more cores than exist (systemd clamps effectively, but the user gets no signal).
+  Decide: (a) leave as-is (systemd's effective cap is harmless), (b) warn — not drop — when
+  `N% > cores*100`, mirroring the existing warn-and-degrade style of the other `_coerce_*`
+  helpers, or (c) clamp to `cores*100`. Note the fraction form already self-limits via
+  `round(frac*cores*100)`, so only the explicit `N%` form is affected. Resolve to a `B`/`F`
+  or Abandoned before touching `build_throttle.py`. *Leaning: (b) warn-only — consistent with
+  the module's "never raise, degrade with a warning" contract.*
+
+- **`2.3.0-Q2` — inconsistent handling of invalid/unparseable string-value config settings.**
+  Prompted by "how do the string-value config settings handle invalid values?" Audit finds
+  three different policies for the same class of setting: `config.resolve_repo_mode` returns an
+  unrecognized value **through unchanged** (`return raw`), so a typo like `repo_mode = "pacmn"`
+  flows downstream unvalidated; `config.resolve_repo_track` **silently** coerces unknowns to
+  `"stable"` with no warning; the throttle `_coerce_*` helpers **warn-and-drop**. This is
+  organic drift (chokepoints written at different times), the same root-cause shape as
+  `2.3.0-B2`. The question is whether to adopt one policy — most likely *validate against the
+  known vocabulary, warn on mismatch, fall back to the documented default* — across the
+  string-valued readers, and how wide the sweep should be (repo_mode/repo_track first, then a
+  census of the other string keys: `[log] verbosity`, `ionice` class names, etc.). Resolve to
+  a scoped `F`/`STD` (a shared "known-enum resolver" seam is a candidate) or Abandoned before
+  implementing. *Priority: low (robustness/consistency; no correctness failure today — bad
+  values either pass through inertly or coerce to a safe default).*
+
 ---
 
 ## Abandoned / decided against
