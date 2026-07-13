@@ -60,7 +60,11 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   extend in the same change. §Shipped-file pre-release checks.
 - **Standards have one home**: `docs/design/21-standards.md`; enforced by `tools/check_standards.py`
   + `tests/test_standards_compliance.py`. User paths → `primitives/paths.py`; colour →
-  `log.use_color()`.
+  `log.use_color()`. **Update the standards table in the same commit as any change that adopts,
+  extends, or alters conformance to an external spec** (same in-commit rule as doc-update-order) —
+  add/extend the row and wire its enforcement in that commit; never let a row lag the behaviour. A
+  spec the code doesn't yet conform to stays a ROADMAP `Q`/`F`/`STD` (which names its target row),
+  not a premature row.
 
 ## Interaction Preferences
 

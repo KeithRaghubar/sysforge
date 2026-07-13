@@ -103,7 +103,9 @@ straight off a `Q`.
   the canonical Arch extension mechanism; hooking it means the trigger is correct-by-construction even
   when the user runs bare `pacman`. Decompose per trigger (not one mega-hook) and keep each behind the
   existing sentinel/verb boundary. *Priority: low (strategic; depends on which triggers earn a hook —
-  pair with F28).*
+  pair with F28).* **Spec:** `alpm-hooks(5)` — already cited by standards row 11. **Standards home on
+  adoption:** extend row 11's Scope ("SysForge *fires* alpm hooks, not just ships them") + enforcement
+  pointer, in the landing commit.
 
 - **`2.3.0-F5` — Declarative provisioning via `tmpfiles.d`/`sysusers.d` instead of imperative healing.**
   `fs_provision.py`/`stage_ownership.py` create directories and fix ownership/permissions imperatively.
@@ -113,7 +115,9 @@ straight off a `Q`.
   becomes "invoke `systemd-tmpfiles --create`" rather than a bespoke walk. Scope to the provisioning that
   is genuinely static (fixed dirs/modes/users); anything computed at runtime stays in the primitive.
   Fallback needed for non-systemd hosts. *Priority: low (simplification + OS-integration; overlaps the
-  systemd-run decision in `2.3.0-Q3`).*
+  systemd-run decision in `2.3.0-Q3`).* **Spec:** `tmpfiles.d(5)`, `sysusers.d(5)`, `systemd-tmpfiles(8)`.
+  **Standards home on adoption:** extend row 2 (FHS + `file-hierarchy(7)`) — same footprint, declarative
+  mechanism; rationale in the `fs_provision` design area.
 
 - **`2.3.0-F6` — Mirror system-mutating verbs to `journald`.** The `log.py` unified run-log is the right
   user-facing capture and stays authoritative. The complementary hook is a second sink: emit the
@@ -121,7 +125,10 @@ straight off a `Q`.
   `sd_journal` so sysforge's changes appear in `journalctl` alongside everything else that touched the
   system — the place an admin looks during incident review. Structured fields (verb, target, exit) make
   it queryable. Not a replacement for the run-log; an additive, system-integrated sink for mutations
-  only. Gate on systemd presence. *Priority: low (observability/defense-in-depth; additive).*
+  only. Gate on systemd presence. *Priority: low (observability/defense-in-depth; additive).* **Spec:**
+  `systemd.journal-fields(7)`, `sd_journal_send(3)`/`systemd-cat(1)`. **Standards home on adoption:** new
+  standards row (status `target`→`enforced` once a `test_standards_compliance.py` case guards it) +
+  rationale in `docs/design/12-logging.md`, in the landing commit.
 
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
@@ -220,7 +227,10 @@ straight off a `Q`.
   lands** rather than reworking after. Investigate: `--user` scope availability under the build user,
   interaction with makepkg's own process handling, and the fallback contract. Resolve to an `F`/`STD`
   or Abandoned. *Leaning: adopt `systemd-run` primary + `rlimit` fallback — it is the "hook the OS,
-  don't layer" fix and subsumes part of F4.*
+  don't layer" fix and subsumes part of F4.* **Spec:** `systemd.resource-control(5)` (`MemoryMax`/
+  `CPUQuota`/`IOWeight`), `systemd-run(1)`, cgroup-v2. **Standards home on promotion:** new standards row
+  (status `target`→`enforced`) + rationale in the throttle/resource-control design chapter, in the
+  landing commit.
 
 - **`2.3.0-Q4` — what is sysforge's privilege-escalation model for system-mutating verbs?** A
   build-and-maintenance suite that runs `pacman -Syu` and writes under `/etc` needs elevation, but the
@@ -232,7 +242,9 @@ straight off a `Q`.
   where the code assumes it is already root vs. where it shells out expecting escalation, so the actual
   surface is known. Resolve to an `F`/`STD` (a privilege seam that all mutating verbs route through is a
   candidate) or Abandoned before touching escalation. *Priority: medium (security posture; touches every
-  mutating verb — decide the model before the surface grows).*
+  mutating verb — decide the model before the surface grows).* **Spec:** `sudoers(5)`, `polkit(8)` +
+  `polkit.action(5)`. **Standards home on promotion:** new standards row + rationale in a (likely new,
+  cross-cutting) privilege-seam design chapter, in the landing commit.
 
 ---
 

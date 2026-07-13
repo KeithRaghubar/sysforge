@@ -132,5 +132,14 @@ enforcement mechanism), wire the mechanical check into `check_standards.py` or a
 behavioural test, and update the `check-standards` coverage. Do not maintain a
 parallel standards list elsewhere; CLAUDE.md points here.
 
+**Update this table in the same commit as any change that adopts, extends, or
+alters conformance to an external spec** — the same in-commit discipline as the
+`docs/design/*.md → make design` doc-update rule. If a change starts honouring a
+new spec (or a new facet of one already listed), add or extend its row and wire
+the enforcement in that commit; a row must never lag the behaviour it records.
+Conversely, do not add a row for a spec the code does not yet conform to — those
+live in `ROADMAP.md` as `Q`/`F`/`STD` items until the adopting change lands (each
+such roadmap entry names its target row here).
+
 ---
 
