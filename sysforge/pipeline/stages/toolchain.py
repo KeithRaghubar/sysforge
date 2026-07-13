@@ -140,7 +140,7 @@ from sysforge.primitives.makepkg_flags import SYNC_FLAGS
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 from sysforge.build_core import make_build_options
 from sysforge.primitives.prompt import is_interactive, prompt_choice
-from sysforge.primitives.resource_guard import lift_for_child
+from sysforge.primitives.resource_guard import make_child_preexec
 from sysforge.primitives.stage_sentinel import sentinel_scope
 from sysforge.ui import progress
 from sysforge.primitives.source_sync import (
@@ -1102,7 +1102,9 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> tuple[int, int]:
             ["llvm-profdata", "merge", "--output", str(tmp_path)] + inputs,
             capture_output=True,
             text=True,
-            preexec_fn=lift_for_child,
+            # lift-only (no mem cap): a memory ceiling on the profdata merge would
+            # masquerade as a merge failure and trip the batch-size backoff below.
+            preexec_fn=make_child_preexec(None),
         )
         if result.returncode != 0:
             if batch_size > _PROFRAW_MERGE_BATCH_MIN:

@@ -27,6 +27,8 @@ Public API:
     record_build_result(pkgname, cc_delta, sc_delta)
     emit_session_report()
 """
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -206,6 +208,130 @@ def emit_build_stats(pkgname: str, cc_delta: dict | None, sc_delta: dict | None)
         else:
             _log.info(f"{pkgname}: sccache — no compilations recorded "
                       f"(cache={sc_delta['size_str']})")
+
+
+# ---------------------------------------------------------------------------
+# Cache readiness (2.2.0-F1 — doctor `cache` axis)
+#
+# Point-in-time "is the compile cache set up correctly *before* a build relies
+# on it?" — the readiness lens, distinct from the per-build effectiveness
+# tracked by --cache-report. Kept here (the one home for cache knowledge) so no
+# cache subprocess logic leaks into doctor.py. Best-effort throughout: a missing
+# tool or unreadable config degrades to a fact, never a hard failure.
+# ---------------------------------------------------------------------------
+
+# Leading numeric part of a size string ("5.0 GB", "10 GiB", "0"). We only need
+# to know whether a configured max size is non-zero, so the unit is ignored.
+_LEADING_NUM_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)")
+
+
+def _size_is_nonzero(raw: str | None) -> bool:
+    """True when a size string carries a numeric value greater than zero."""
+    if not raw:
+        return False
+    m = _LEADING_NUM_RE.match(raw)
+    if not m:
+        return False
+    try:
+        return float(m.group(1)) > 0
+    except ValueError:
+        return False
+
+
+def _dir_writable(path: str | None) -> bool:
+    """True when ``path`` is an existing writable directory, or (when it does
+    not exist yet) its nearest existing ancestor is writable — a cache dir that
+    ccache/sccache will create on first use still counts as ready."""
+    if not path:
+        return False
+    p = Path(path)
+    while True:
+        if p.is_dir():
+            return os.access(p, os.W_OK | os.X_OK)
+        parent = p.parent
+        if parent == p:
+            return False
+        p = parent
+
+
+def _ccache_readiness() -> dict:
+    if not shutil.which("ccache"):
+        return {"tool": "ccache", "installed": False, "state": "absent",
+                "detail": "ccache is not installed", "remediation": None}
+    cache_dir = _run_command(["ccache", "--get-config", "cache_dir"])
+    max_size = _run_command(["ccache", "--get-config", "max_size"])
+    cache_dir = cache_dir.strip() if cache_dir else None
+    max_size = max_size.strip() if max_size else None
+
+    problems: list[str] = []
+    if not _dir_writable(cache_dir):
+        problems.append(f"cache dir not writable ({cache_dir or 'unknown'})")
+    if not _size_is_nonzero(max_size):
+        problems.append(f"max cache size unset or zero ({max_size or 'unknown'})")
+
+    if problems:
+        return {"tool": "ccache", "installed": True, "state": "misconfigured",
+                "detail": "; ".join(problems),
+                "remediation": "set a cache size cap with `ccache -M <size>` "
+                               "(e.g. `ccache -M 20G`) and ensure its cache dir "
+                               "is writable"}
+    return {"tool": "ccache", "installed": True, "state": "ok",
+            "detail": f"cache dir {cache_dir}, max size {max_size}",
+            "remediation": None}
+
+
+def _sccache_readiness() -> dict:
+    if not shutil.which("sccache"):
+        return {"tool": "sccache", "installed": False, "state": "absent",
+                "detail": "sccache is not installed", "remediation": None}
+
+    stats = _run_command(["sccache", "--show-stats"]) or ""
+    # Max size: SCCACHE_CACHE_SIZE env wins, else the "Max cache size" stat line.
+    max_size = os.environ.get("SCCACHE_CACHE_SIZE")
+    if not max_size:
+        for line in stats.splitlines():
+            if line.strip().startswith("Max cache size"):
+                max_size = line.split("size", 1)[1].strip()
+                break
+    # Local disk dir: SCCACHE_DIR env, else the quoted path on the location line.
+    cache_dir = os.environ.get("SCCACHE_DIR")
+    if not cache_dir:
+        for line in stats.splitlines():
+            if "Local disk:" in line:
+                m = re.search(r'Local disk:\s*"?([^"]+)"?', line)
+                if m:
+                    cache_dir = m.group(1).strip()
+                break
+
+    problems: list[str] = []
+    # A cloud-backed sccache has no local disk dir; only fault an *unwritable*
+    # local dir, not an absent one.
+    if cache_dir and not _dir_writable(cache_dir):
+        problems.append(f"cache dir not writable ({cache_dir})")
+    if not _size_is_nonzero(max_size):
+        problems.append(f"max cache size unset or zero ({max_size or 'unknown'})")
+
+    if problems:
+        return {"tool": "sccache", "installed": True, "state": "misconfigured",
+                "detail": "; ".join(problems),
+                "remediation": "set a non-zero `SCCACHE_CACHE_SIZE` (e.g. "
+                               "`SCCACHE_CACHE_SIZE=20G`) and ensure its cache "
+                               "dir is writable"}
+    return {"tool": "sccache", "installed": True, "state": "ok",
+            "detail": f"cache dir {cache_dir or 'default/remote'}, "
+                      f"max size {max_size}",
+            "remediation": None}
+
+
+def check_cache_readiness() -> list[dict]:
+    """Report per-tool readiness of the compile caches (ccache, sccache).
+
+    Each entry is ``{"tool", "installed", "state", "detail", "remediation"}``
+    where ``state`` is ``"absent"`` (not installed), ``"ok"`` (installed with a
+    writable cache dir and a non-zero size cap), or ``"misconfigured"`` (a fault
+    the user can fix). Best-effort; never raises. Consumed by doctor's ``cache``
+    axis (:func:`sysforge.doctor._collect_cache_findings`)."""
+    return [_ccache_readiness(), _sccache_readiness()]
 
 
 # ---------------------------------------------------------------------------

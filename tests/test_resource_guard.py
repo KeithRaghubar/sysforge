@@ -97,3 +97,44 @@ class TestLiftForChild:
              patch.object(rg.resource, "setrlimit",
                           side_effect=OSError("EPERM")):
             rg.lift_for_child()  # no exception
+
+
+class TestMakeChildPreexec:
+    def test_none_cap_is_lift_only(self):
+        # A None cap composes to exactly today's lift_for_child: restore the hard
+        # limit, no extra RLIMIT_AS clamp.
+        saved = 4 * 1024 * 1024 * 1024
+        preexec = rg.make_child_preexec(None)
+        with patch.object(rg, "_original_as_hard", saved), \
+             patch.object(rg.resource, "setrlimit") as setr:
+            preexec()
+        setr.assert_called_once_with(resource.RLIMIT_AS, (saved, saved))
+
+    def test_cap_composes_lift_then_setrlimit(self):
+        # A byte cap runs the lift first, then clamps RLIMIT_AS to (cap, cap).
+        saved = 32 * 1024 * 1024 * 1024
+        cap = 24 * 1024 * 1024 * 1024
+        preexec = rg.make_child_preexec(cap)
+        with patch.object(rg, "_original_as_hard", saved), \
+             patch.object(rg.resource, "setrlimit") as setr:
+            preexec()
+        assert setr.call_args_list[0][0] == (resource.RLIMIT_AS, (saved, saved))
+        assert setr.call_args_list[1][0] == (resource.RLIMIT_AS, (cap, cap))
+
+    def test_cap_clamped_to_hard_limit(self):
+        # A cap above the current hard limit is clamped down to it — never raise
+        # the ceiling above what the kernel allows.
+        hard = 8 * 1024 * 1024 * 1024
+        cap = 64 * 1024 * 1024 * 1024
+        preexec = rg.make_child_preexec(cap)
+        with patch.object(rg, "_original_as_hard", hard), \
+             patch.object(rg.resource, "setrlimit") as setr:
+            preexec()
+        assert setr.call_args_list[1][0] == (resource.RLIMIT_AS, (hard, hard))
+
+    def test_cap_setrlimit_failure_is_swallowed(self):
+        # Best-effort: a raising clamp must not propagate into the child exec.
+        with patch.object(rg, "_original_as_hard", resource.RLIM_INFINITY), \
+             patch.object(rg.resource, "setrlimit",
+                          side_effect=OSError("EPERM")):
+            rg.make_child_preexec(24 * 1024 * 1024 * 1024)()  # no exception

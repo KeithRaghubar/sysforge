@@ -79,6 +79,12 @@ _CPU_QUOTA_RE = re.compile(r"^\d+%$")
 # GNU long ``--jobs=N`` token, so an existing job count can be replaced in place.
 _JOBS_RE = re.compile(r"(?:^|(?<=\s))(?:-j\s*\d+|--jobs=\d+)")
 
+# A memory size: an integer or decimal with an optional binary suffix. Suffixes
+# are binary (K=1024) to match systemd's MemoryMax / the RLIMIT_AS byte count;
+# a bare number is already bytes. "B" is accepted (and no-op) for symmetry.
+_MEM_SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([KMGT]i?B?|B)?$", re.IGNORECASE)
+_MEM_SUFFIX_POW = {"": 0, "b": 0, "k": 1, "m": 2, "g": 3, "t": 4}
+
 
 @dataclass(frozen=True)
 class BuildThrottle:
@@ -88,6 +94,7 @@ class BuildThrottle:
     ionice: str | None = None
     cpu_quota: str | None = None
     jobs: int | None = None
+    mem_limit_bytes: int | None = None
 
     @property
     def is_noop(self) -> bool:
@@ -96,6 +103,7 @@ class BuildThrottle:
             and self.ionice is None
             and self.cpu_quota is None
             and self.jobs is None
+            and self.mem_limit_bytes is None
         )
 
 
@@ -175,6 +183,30 @@ def _coerce_jobs(raw) -> int | None:
     return j
 
 
+def _coerce_mem_limit(raw) -> int | None:
+    """Parse a per-build memory ceiling into bytes, or drop it with a warning.
+
+    Accepts a bare byte count or a binary-suffixed size (``24G``, ``512M``,
+    ``2Gi``); the ``i``/``B`` are cosmetic since suffixes are already binary.
+    Junk, negative, or zero → ``None`` + warning (same drop-with-warning family
+    as :func:`_coerce_cpu_quota` / :func:`_coerce_jobs`)."""
+    if raw is None:
+        return None
+    m = _MEM_SIZE_RE.match(str(raw).strip())
+    if not m:
+        _throttle_log.warn(
+            f"[build] mem_limit = {raw!r} must look like \"24G\" (K/M/G/T binary "
+            "suffix) or a byte count — ignoring"
+        )
+        return None
+    value = float(m.group(1)) * (1024 ** _MEM_SUFFIX_POW[(m.group(2) or "")[:1].lower()])
+    n = int(value)
+    if n <= 0:
+        _throttle_log.warn(f"[build] mem_limit = {raw!r} must be > 0 — ignoring")
+        return None
+    return n
+
+
 def resolve_throttle(
     resolved_profile, config: dict | None = None, override: str | None = None
 ) -> BuildThrottle:
@@ -222,6 +254,7 @@ def resolve_throttle(
         ionice=_coerce_ionice(pick("ionice")),
         cpu_quota=_coerce_cpu_quota(pick("cpu_quota")),
         jobs=_coerce_jobs(pick("jobs")),
+        mem_limit_bytes=_coerce_mem_limit(pick("mem_limit")),
     )
 
 
@@ -258,8 +291,16 @@ def wrapper_argv(throttle: BuildThrottle) -> list[str]:
 
     if throttle.cpu_quota is not None:
         if shutil.which("systemd-run"):
-            return ["systemd-run", "--scope", "--user", "--quiet",
-                    "-p", f"CPUQuota={throttle.cpu_quota}"] + front
+            argv = ["systemd-run", "--scope", "--user", "--quiet",
+                    "-p", f"CPUQuota={throttle.cpu_quota}"]
+            # A memory ceiling delivered here (cgroup MemoryMax) is tighter and
+            # more accurate than RLIMIT_AS, and — unlike a preexec rlimit set on
+            # this systemd-run *client* — it actually reaches the scoped payload,
+            # which runs as a child of PID 1. resolve_child_mem_cap suppresses the
+            # rlimit path in this case so the two mechanisms never double-apply.
+            if throttle.mem_limit_bytes is not None:
+                argv += ["-p", f"MemoryMax={throttle.mem_limit_bytes}"]
+            return argv + front
         # No systemd-run: we cannot enforce the hard ceiling. Fall back to the
         # nice/ionice front-ends so the build is at least de-prioritised.
         _throttle_log.warn(
@@ -268,6 +309,21 @@ def wrapper_argv(throttle: BuildThrottle) -> list[str]:
         )
 
     return front
+
+
+def resolve_child_mem_cap(throttle: BuildThrottle) -> int | None:
+    """The ``RLIMIT_AS`` byte cap for the makepkg-child preexec path, or ``None``.
+
+    Returns ``None`` when a ``cpu_quota`` is active — that path wraps the build in
+    a ``systemd-run --scope`` whose ``MemoryMax`` owns the ceiling, and an
+    ``RLIMIT_AS`` set in the client's ``preexec_fn`` would never reach the scoped
+    payload (a child of PID 1), so applying it would be silently ineffective *and*
+    risk double-counting. Otherwise returns ``mem_limit_bytes`` (possibly
+    ``None``) for the plain-child rlimit path. Pairs with the ``MemoryMax``
+    injection in :func:`wrapper_argv`."""
+    if throttle.cpu_quota is not None:
+        return None
+    return throttle.mem_limit_bytes
 
 
 def apply_jobs_to_makeflags(makeflags: str, jobs: int | None) -> str:

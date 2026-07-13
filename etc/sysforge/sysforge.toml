@@ -100,6 +100,13 @@ clone_timeout = 60
 #   phases still use a full core and some build systems ignore it — but it
 #   directly bounds peak parallelism.
 # jobs = 6
+#
+# mem_limit — per-build memory ceiling so a runaway build (OOM-prone link,
+#   sanitizer, LTO) can't take down the workstation. A byte count or a binary
+#   size suffix (e.g. "24G", "512M"). Off the cpu_quota path it's an RLIMIT_AS
+#   clamp on the makepkg child; with cpu_quota set it's delivered as the tighter
+#   cgroup MemoryMax on the systemd-run scope instead. Unset = no ceiling.
+# mem_limit = "24G"
 
 # pre_build_snapshot — take an optional btrfs snapshot before builds run.
 # Off by default. When on and the root is btrfs: delegates to snapper if a

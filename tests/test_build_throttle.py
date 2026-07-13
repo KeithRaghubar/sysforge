@@ -11,6 +11,7 @@ import sysforge.primitives.build_throttle as bt
 from sysforge.primitives.build_throttle import (
     BuildThrottle,
     apply_jobs_to_makeflags,
+    resolve_child_mem_cap,
     resolve_throttle,
     wrapper_argv,
 )
@@ -192,3 +193,86 @@ def test_jobs_nproc_form_appended_and_wins():
     # honours the last -j, so the cap wins.
     out = apply_jobs_to_makeflags("-j$(nproc)", 6)
     assert out == "-j$(nproc) -j6"
+
+
+# ---------------------------------------------------------------------------
+# mem_limit (2.2.0-F4) — _coerce_mem_limit, resolve, is_noop
+_GiB = 1024 ** 3
+_MiB = 1024 ** 2
+
+
+def test_resolve_mem_limit_binary_suffixes():
+    assert resolve_throttle({}, {"build": {"mem_limit": "24G"}}).mem_limit_bytes == 24 * _GiB
+    assert resolve_throttle({}, {"build": {"mem_limit": "512M"}}).mem_limit_bytes == 512 * _MiB
+
+
+def test_resolve_mem_limit_bare_bytes():
+    assert resolve_throttle({}, {"build": {"mem_limit": "1048576"}}).mem_limit_bytes == 1048576
+
+
+def test_resolve_mem_limit_junk_dropped_with_warning():
+    t = resolve_throttle({}, {"build": {"mem_limit": "lots"}})
+    assert t.mem_limit_bytes is None
+
+
+def test_resolve_mem_limit_nonpositive_dropped():
+    assert resolve_throttle({}, {"build": {"mem_limit": "0G"}}).mem_limit_bytes is None
+    assert resolve_throttle({}, {"build": {"mem_limit": "-8G"}}).mem_limit_bytes is None
+
+
+def test_resolve_mem_limit_unset_is_none():
+    assert resolve_throttle({}, {"build": {"nice": 19}}).mem_limit_bytes is None
+
+
+def test_mem_limit_only_is_not_noop():
+    assert not BuildThrottle(mem_limit_bytes=24 * _GiB).is_noop
+
+
+def test_mem_limit_profile_override(monkeypatch):
+    monkeypatch.setattr(bt, "_RUN_OVERRIDE", None)
+    cfg = {"build": {"mem_limit": "24G"}}
+    t = resolve_throttle({"mem_limit": "8G"}, cfg)
+    assert t.mem_limit_bytes == 8 * _GiB
+
+
+# ---------------------------------------------------------------------------
+# wrapper_argv — MemoryMax injection on the systemd-run scope path
+
+
+def test_wrapper_injects_memory_max_with_cpu_quota(monkeypatch):
+    monkeypatch.setattr(bt.shutil, "which", lambda _: "/usr/bin/" + _)
+    argv = wrapper_argv(BuildThrottle(cpu_quota="600%", mem_limit_bytes=24 * _GiB))
+    assert "-p" in argv
+    assert f"MemoryMax={24 * _GiB}" in argv
+
+
+def test_wrapper_no_memory_max_without_cpu_quota(monkeypatch):
+    # mem_limit alone → no systemd scope → no MemoryMax (rlimit path owns it).
+    monkeypatch.setattr(bt.shutil, "which", lambda _: "/usr/bin/" + _)
+    argv = wrapper_argv(BuildThrottle(mem_limit_bytes=24 * _GiB))
+    assert not any(a.startswith("MemoryMax=") for a in argv)
+
+
+def test_wrapper_no_memory_max_when_mem_limit_unset(monkeypatch):
+    monkeypatch.setattr(bt.shutil, "which", lambda _: "/usr/bin/" + _)
+    argv = wrapper_argv(BuildThrottle(cpu_quota="600%"))
+    assert not any(a.startswith("MemoryMax=") for a in argv)
+
+
+# ---------------------------------------------------------------------------
+# resolve_child_mem_cap — arbitrates rlimit vs. cgroup so caps never double-apply
+
+
+def test_child_mem_cap_none_when_cpu_quota_active():
+    # The systemd scope owns the cap via MemoryMax; rlimit on the client would
+    # not reach the scoped payload, so it must be suppressed.
+    assert resolve_child_mem_cap(BuildThrottle(cpu_quota="600%", mem_limit_bytes=24 * _GiB)) is None
+
+
+def test_child_mem_cap_bytes_without_cpu_quota():
+    assert resolve_child_mem_cap(BuildThrottle(mem_limit_bytes=24 * _GiB)) == 24 * _GiB
+
+
+def test_child_mem_cap_none_when_mem_limit_unset():
+    assert resolve_child_mem_cap(BuildThrottle(cpu_quota="600%")) is None
+    assert resolve_child_mem_cap(BuildThrottle()) is None

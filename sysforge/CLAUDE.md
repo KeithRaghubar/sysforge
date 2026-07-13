@@ -27,8 +27,12 @@ Mechanism lives in the cited §DESIGN section.
 
 - **Flag scrubs** (lib32/musl-static/PGO): `emit_makepkg_conf(is_lib32=|is_musl_static=)`, reuse
   `_strip_lld_flags`/`_strip_pgo_flags`; musl via `pkgbuild_meta.is_musl_static_build`. §Flag/Profile.
-- **Build throttle** (nice/ionice/cpu_quota/jobs): `build_throttle.resolve_throttle`; channels
-  `wrapper_argv` + `apply_jobs_to_makeflags`. §Flag/Profile.
+- **Build throttle** (nice/ionice/cpu_quota/jobs/mem_limit): `build_throttle.resolve_throttle`;
+  channels `wrapper_argv` + `apply_jobs_to_makeflags`. `mem_limit` is dual-mechanism: off the
+  cpu_quota path it's an `RLIMIT_AS` clamp via the shared `resource_guard.make_child_preexec(cap)`
+  preexec (the one home replacing all three raw `lift_for_child` sites); with cpu_quota it becomes
+  `-p MemoryMax=` on the systemd-run scope. `resolve_child_mem_cap` arbitrates so the two never
+  double-apply (returns `None` when the scope owns the cap). §Flag/Profile.
 - **makepkg path resolution**: `pacman.get_pkgdest()`/`get_builddir()`/`get_srcdest()`/
   `get_logdest()` — never read `os.environ["BUILDDIR"]` or assume `~/builds`. Write conf keys via
   `config.set_makepkg_conf_keys`. §primitives-layer.

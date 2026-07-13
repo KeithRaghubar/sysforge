@@ -30,7 +30,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives.build_throttle import resolve_throttle, wrapper_argv
+from sysforge.primitives.build_throttle import (
+    resolve_child_mem_cap,
+    resolve_throttle,
+    wrapper_argv,
+)
 from sysforge.primitives.editor import editor_usable, resolve_editor, run_tty_argv
 from sysforge.primitives.makepkg_artifacts import _find_built_packages
 from sysforge.primitives.makepkg_env import (
@@ -44,8 +48,8 @@ from sysforge.primitives.makepkg_flags import (
 )
 from sysforge.primitives.profile import CONF_KEY_MAP
 from sysforge.primitives.prompt import prompt_choice, prompt_text
+from sysforge.primitives.resource_guard import make_child_preexec
 from sysforge.primitives.pty_runner import run_with_pty, strip_ansi
-from sysforge.primitives.resource_guard import lift_for_child
 
 _makepkg_log = log.get_logger("MAKEPKG")
 
@@ -181,6 +185,14 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     prefix = wrapper_argv(throttle)
     if prefix:
         _makepkg_log.info(f"Throttling build: {' '.join(prefix)}")
+    # Per-build memory ceiling ([build] mem_limit, 2.2.0-F4). On the systemd-run
+    # --scope path wrapper_argv already carried it as MemoryMax, so
+    # resolve_child_mem_cap returns None here and the child preexec applies no
+    # rlimit; off that path it returns the byte cap for RLIMIT_AS. make_child_preexec
+    # always runs lift_for_child first, so the None case is exactly today's behaviour.
+    child_mem_cap = resolve_child_mem_cap(throttle)
+    if child_mem_cap is not None:
+        _makepkg_log.info(f"Capping build memory (RLIMIT_AS): {child_mem_cap} bytes")
     cmd = prefix + ["makepkg", "-p", pkgbuild_path.name] + flags
 
     _makepkg_log.info(f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
@@ -194,7 +206,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     if interactive:
         proc = subprocess.Popen(
             cmd, cwd=build_dir, env=env,
-            preexec_fn=lift_for_child,
+            preexec_fn=make_child_preexec(child_mem_cap),
         )
         returncode = proc.wait()
         if returncode != 0:
@@ -300,7 +312,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         cmd, cwd=build_dir, env=env,
         line_callback=_on_line,
         forward_bytes=forward_bytes,
-        preexec_fn=lift_for_child,
+        preexec_fn=make_child_preexec(child_mem_cap),
         idle_callback=_on_idle,
         idle_timeout_s=MAKEPKG_HEARTBEAT_S,
         reserve_bottom_rows=progress.reserved_rows(),

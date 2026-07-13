@@ -445,3 +445,104 @@ def test_emit_system_probes_thinlto(capsys, tmp_path):
 
     captured = capsys.readouterr()
     assert "ThinLTO" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# check_cache_readiness (2.2.0-F1 — doctor cache axis)
+# ---------------------------------------------------------------------------
+from sysforge.primitives.cache_probe import check_cache_readiness  # noqa: E402
+
+
+def _readiness_for(tool, rows):
+    return next(r for r in rows if r["tool"] == tool)
+
+
+def test_readiness_ccache_absent(monkeypatch):
+    monkeypatch.setattr("sysforge.primitives.cache_probe.shutil.which",
+                        lambda name: None)
+    row = _readiness_for("ccache", check_cache_readiness())
+    assert row["installed"] is False
+    assert row["state"] == "absent"
+    assert row["remediation"] is None
+
+
+def test_readiness_ccache_ok(monkeypatch, tmp_path):
+    monkeypatch.setattr("sysforge.primitives.cache_probe.shutil.which",
+                        lambda name: f"/usr/bin/{name}")
+
+    def fake_run(cmd):
+        if cmd[:2] == ["ccache", "--get-config"]:
+            return {"cache_dir": str(tmp_path), "max_size": "5.0 GB"}[cmd[2]]
+        return None
+    monkeypatch.setattr("sysforge.primitives.cache_probe._run_command", fake_run)
+    row = _readiness_for("ccache", check_cache_readiness())
+    assert row["installed"] is True
+    assert row["state"] == "ok"
+    assert row["remediation"] is None
+
+
+def test_readiness_ccache_zero_max_is_misconfigured(monkeypatch, tmp_path):
+    monkeypatch.setattr("sysforge.primitives.cache_probe.shutil.which",
+                        lambda name: f"/usr/bin/{name}")
+
+    def fake_run(cmd):
+        if cmd[:2] == ["ccache", "--get-config"]:
+            return {"cache_dir": str(tmp_path), "max_size": "0"}[cmd[2]]
+        return None
+    monkeypatch.setattr("sysforge.primitives.cache_probe._run_command", fake_run)
+    row = _readiness_for("ccache", check_cache_readiness())
+    assert row["state"] == "misconfigured"
+    assert row["remediation"] is not None
+    assert "ccache -M" in row["remediation"]
+
+
+def test_readiness_ccache_unwritable_dir_is_misconfigured(monkeypatch):
+    monkeypatch.setattr("sysforge.primitives.cache_probe.shutil.which",
+                        lambda name: f"/usr/bin/{name}")
+
+    def fake_run(cmd):
+        if cmd[:2] == ["ccache", "--get-config"]:
+            return {"cache_dir": "/nonexistent/ccache/dir",
+                    "max_size": "5.0 GB"}[cmd[2]]
+        return None
+    monkeypatch.setattr("sysforge.primitives.cache_probe._run_command", fake_run)
+    row = _readiness_for("ccache", check_cache_readiness())
+    assert row["state"] == "misconfigured"
+
+
+def test_readiness_sccache_absent(monkeypatch):
+    monkeypatch.setattr("sysforge.primitives.cache_probe.shutil.which",
+                        lambda name: "/usr/bin/ccache" if name == "ccache" else None)
+    row = _readiness_for("sccache", check_cache_readiness())
+    assert row["installed"] is False
+    assert row["state"] == "absent"
+
+
+def test_readiness_sccache_ok_from_show_stats(monkeypatch, tmp_path):
+    monkeypatch.setattr("sysforge.primitives.cache_probe.shutil.which",
+                        lambda name: f"/usr/bin/{name}")
+    monkeypatch.delenv("SCCACHE_CACHE_SIZE", raising=False)
+    monkeypatch.delenv("SCCACHE_DIR", raising=False)
+    stats = (f'Cache location                  Local disk: "{tmp_path}"\n'
+             "Max cache size                        10 GiB\n")
+
+    def fake_run(cmd):
+        if cmd == ["sccache", "--show-stats"]:
+            return stats
+        return None
+    monkeypatch.setattr("sysforge.primitives.cache_probe._run_command", fake_run)
+    row = _readiness_for("sccache", check_cache_readiness())
+    assert row["installed"] is True
+    assert row["state"] == "ok"
+
+
+def test_readiness_sccache_zero_size_env_is_misconfigured(monkeypatch, tmp_path):
+    monkeypatch.setattr("sysforge.primitives.cache_probe.shutil.which",
+                        lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv("SCCACHE_CACHE_SIZE", "0")
+    monkeypatch.setenv("SCCACHE_DIR", str(tmp_path))
+    monkeypatch.setattr("sysforge.primitives.cache_probe._run_command",
+                        lambda cmd: None)
+    row = _readiness_for("sccache", check_cache_readiness())
+    assert row["state"] == "misconfigured"
+    assert row["remediation"] is not None

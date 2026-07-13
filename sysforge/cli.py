@@ -530,6 +530,12 @@ def _add_doctor_parser(sub):
              "toolchain.toml requests a custom LLVM toolchain (compiler = llvm, "
              "optionally PGO) but stock repo LLVM is installed — or the PGO "
              "profdata is version-skewed — report it. Usable on its own (no PKG).")
+    p.add_argument("--cache", action="store_true",
+        help="Check compile-cache readiness *before* a build relies on it: "
+             "whether ccache/sccache are installed, their cache dir is writable, "
+             "and a non-zero size cap is set. Absence is informational, not a "
+             "failure. Distinct from build verbs' --cache-report, which measures "
+             "per-package hit rates *after* a build. Usable on its own (no PKG).")
     p.add_argument("--pacman", action="store_true",
         help="Check local package-database integrity (read-only, never syncs): "
              "`pacman -Dk` dependency consistency, a stale db.lck, unmerged "

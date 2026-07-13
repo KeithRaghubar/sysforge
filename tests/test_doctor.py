@@ -222,7 +222,7 @@ def test_check_depends_pacman_t_all_satisfied():
 def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
         packages=[], graphics=False, hardware=False, toolchain=False,
-        gfxperf=False,
+        cache=False, gfxperf=False,
         pacman=False, state=False, boot=False, storage=False, services=False,
         audio=False, network=False, all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
@@ -237,6 +237,7 @@ def _patch_axes_clean(monkeypatch):
     deterministic (they otherwise probe real hardware/toolchain/graphics/
     pacman/state/boot/services)."""
     monkeypatch.setattr(doctor, "_collect_toolchain_findings", lambda config: [])
+    monkeypatch.setattr(doctor, "_collect_cache_findings", lambda config: [])
     monkeypatch.setattr(doctor, "_collect_hardware_findings", lambda: [])
     monkeypatch.setattr(doctor, "_collect_graphics_findings", lambda config: [])
     monkeypatch.setattr(doctor, "_collect_gfxperf_findings", lambda config: [])
@@ -328,6 +329,66 @@ def test_resolve_axis_names_bare_includes_new_axes():
     for n in ("toolchain", "hardware", "graphics", "pacman", "state",
               "boot", "storage", "services", "audio", "network"):
         assert n in names
+
+
+def _set_cache_readiness(monkeypatch, rows):
+    from sysforge.primitives import cache_probe
+    monkeypatch.setattr(cache_probe, "check_cache_readiness", lambda: rows)
+
+
+def test_collect_cache_findings_both_absent_is_info(monkeypatch):
+    from sysforge.primitives import diagnostics as diag
+    _set_cache_readiness(monkeypatch, [
+        {"tool": "ccache", "installed": False, "state": "absent",
+         "detail": "not installed", "remediation": None},
+        {"tool": "sccache", "installed": False, "state": "absent",
+         "detail": "not installed", "remediation": None},
+    ])
+    findings = doctor._collect_cache_findings(None)
+    assert len(findings) == 1
+    assert findings[0].severity == diag.SEV_INFO
+    assert findings[0].category == "cache"
+    assert not findings[0].is_error
+
+
+def test_collect_cache_findings_misconfigured_is_warn(monkeypatch):
+    from sysforge.primitives import diagnostics as diag
+    _set_cache_readiness(monkeypatch, [
+        {"tool": "ccache", "installed": True, "state": "misconfigured",
+         "detail": "max cache size unset or zero (0)",
+         "remediation": "set a cache size cap with `ccache -M <size>`"},
+        {"tool": "sccache", "installed": False, "state": "absent",
+         "detail": "not installed", "remediation": None},
+    ])
+    findings = doctor._collect_cache_findings(None)
+    assert len(findings) == 1
+    assert findings[0].severity == diag.SEV_WARN
+    assert findings[0].remediation
+    assert not findings[0].is_error  # a cache warning must never fail doctor
+
+
+def test_collect_cache_findings_all_ok_is_clean(monkeypatch):
+    _set_cache_readiness(monkeypatch, [
+        {"tool": "ccache", "installed": True, "state": "ok",
+         "detail": "cache dir /x, max size 20G", "remediation": None},
+        {"tool": "sccache", "installed": True, "state": "ok",
+         "detail": "cache dir /y, max size 10 GiB", "remediation": None},
+    ])
+    assert doctor._collect_cache_findings(None) == []
+
+
+def test_cache_axis_registered_between_toolchain_and_hardware():
+    order = doctor._SYSTEM_AXIS_ORDER
+    assert "cache" in order
+    assert order.index("cache") == order.index("toolchain") + 1
+    assert order.index("cache") < order.index("hardware")
+    assert doctor._AXIS_FLAGS.get("cache") == "cache"
+
+
+def test_cache_axis_in_default_sweep():
+    # Read-only + cheap → part of the default/--all sweep, not opt-in.
+    assert "cache" in doctor._resolve_axis_names(_make_args())
+    assert "cache" not in doctor._OPT_IN_AXES
 
 
 def _patch_kernel_safety(monkeypatch, *, kernels, verify=None, space=None,

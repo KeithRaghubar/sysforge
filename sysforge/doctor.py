@@ -593,6 +593,37 @@ def _collect_toolchain_findings(config) -> list[diag.Finding]:
     return diag.adapt_many("toolchain", detect_toolchain_config_mismatch(config))
 
 
+def _collect_cache_findings(config) -> list[diag.Finding]:
+    """Compile-cache *readiness* before a build relies on it (2.2.0-F1) — the
+    point-in-time analog of ``--cache-report``'s per-build effectiveness. Reuses
+    ``cache_probe.check_cache_readiness`` (the one home for cache knowledge); no
+    cache subprocess logic lives here. Read-only.
+
+    Absence is optional, not a defect: when *neither* tool is installed it's a
+    single INFO (matches the boot axis's "missing-but-optional = INFO"); a tool
+    that is installed but misconfigured (unwritable dir / unset-or-zero size cap)
+    is a WARN carrying its remediation. A ready tool contributes to the axis's
+    clean message — no finding."""
+    from sysforge.primitives import cache_probe
+
+    rows = cache_probe.check_cache_readiness()
+    if all(r["state"] == "absent" for r in rows):
+        return [diag.Finding(
+            "cache", diag.SEV_INFO, "cache_none",
+            "no compile cache configured (ccache/sccache absent); builds won't "
+            "benefit from caching",
+            remediation="install ccache and/or sccache to speed up rebuilds")]
+
+    out: list[diag.Finding] = []
+    for r in rows:
+        if r["state"] == "misconfigured":
+            out.append(diag.Finding(
+                "cache", diag.SEV_WARN, f"cache_misconfigured:{r['tool']}",
+                f"{r['tool']} installed but not ready: {r['detail']}",
+                remediation=r["remediation"] or ""))
+    return out
+
+
 def _collect_hardware_findings() -> list[diag.Finding]:
     """Device-driver coverage + the *running* kernel's boot-config gaps — the
     on-the-spot analog of the kernel stage's audit ("device X has no driver")."""
@@ -740,8 +771,8 @@ def _collect_boot_findings() -> list[diag.Finding]:
 
 # Canonical order every KNOWN axis renders in (explicit flags select from here).
 _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
-    "toolchain", "hardware", "graphics", "gfxperf", "pacman", "state", "boot",
-    "storage", "services", "audio", "network",
+    "toolchain", "cache", "hardware", "graphics", "gfxperf", "pacman", "state",
+    "boot", "storage", "services", "audio", "network",
 )
 
 # Axes excluded from the default/`--all` sweep — advisory, opt-in via their flag.
@@ -751,6 +782,7 @@ _OPT_IN_AXES: frozenset[str] = frozenset({"gfxperf"})
 # (the graphics-stack closure); both effects fire when it is set.
 _AXIS_FLAGS: dict[str, str] = {
     "toolchain": "toolchain",
+    "cache": "cache",
     "hardware": "hardware",
     "graphics": "graphics",
     "gfxperf": "gfxperf",
@@ -773,6 +805,10 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
             lambda: _collect_toolchain_findings(config),
             clean_msg=("toolchain config matches the installed LLVM "
                        "(or no custom LLVM toolchain is configured)")),
+        "cache": diag.Axis(
+            "cache", "compile-cache readiness",
+            lambda: _collect_cache_findings(config),
+            clean_msg="compile cache(s) ready (writable dir, size cap set)"),
         "hardware": diag.Axis(
             "hardware", "hardware checks",
             lambda: _collect_hardware_findings(),

@@ -65,34 +65,6 @@ straight off a `Q`.
 
 ### Features
 
-- **`2.2.0-F1` — ccache/sccache readiness doctor axis.** Split out of `1.2.0-F21`
-  (Configure-stage additions), where it sat awkwardly among build-time *mutations*.
-  This is a **read-only health check**, so it belongs in the doctor-axis family: a
-  producer → `list[diagnostics.Finding]` that verifies ccache/sccache are installed,
-  on `PATH`, and configured with a sane cache dir/size before a build relies on them.
-  Reuse the existing passive probes in `primitives/cache_probe.py`
-  (`probe_ccache()`/`probe_sccache()`) rather than adding a parallel reader. Register
-  in `doctor.py` + `cli.py` + both completions + manpage + `_patch_axes_clean` in the
-  same change (per the doctor-axis one-home invariant). *Priority: low (candidate).*
-
-- **`2.2.0-F4` — Shared child-process resource-policy seam (`resource_guard` ↔
-  `build_throttle`).** The two primitives look mergeable ("both limit resources") but
-  point in opposite directions: `resource_guard` constrains the *controller*
-  (`setrlimit(RLIMIT_AS)` on the Python parent, then `lift_for_child()` lifts it for
-  makepkg children); `build_throttle.resolve_throttle` constrains the *children*
-  (nice/ionice front-ends + `systemd-run --scope` CPUQuota + jobs via MAKEFLAGS). The
-  mechanisms don't overlap, so **don't force a merge.** What they *do* share is a
-  pattern (best-effort, never-fails-the-build, `shutil.which`/silent-`except`
-  guarded) and a seam (both attach at the makepkg child launch in `makepkg_invoke.py`
-  — one via `preexec_fn`, one via argv prefix). The concrete reuse opportunity:
-  `RLIMIT_AS` is a *missing throttle knob* — a per-build memory ceiling
-  (`[build] mem_limit`) would use `resource.setrlimit` via a `preexec_fn`, the same
-  syscall family `lift_for_child` owns. If that knob is ever wanted, factor a shared
-  "child preexec policy" helper (compose lift + memory-cap in one `preexec_fn`) rather
-  than a second `setrlimit` site — and verify the rlimit propagates through
-  `systemd-run --scope` when both a cpu_quota and a mem cap apply. *Priority: low
-  (candidate — only pull the trigger if a memory-ceiling knob is actually wanted).*
-
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
   specificity: more AND'd conditions = higher weight), with manual `priority`
