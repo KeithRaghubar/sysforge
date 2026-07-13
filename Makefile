@@ -1,4 +1,4 @@
-.PHONY: all dev venv build install dev-install dev-uninstall clean distclean test test-x lint coverage man \
+.PHONY: all dev venv build install dev-install dev-uninstall clean distclean test test-x lint coverage coverage-ratchet coverage-ratchet-update man \
         check-shipped check-personal check-standards design check-design pre-release \
         sync-config \
         release-major release-minor release-patch release-resume \
@@ -58,6 +58,19 @@ coverage:
 	  --cov-report=term-missing:skip-covered \
 	  --cov-report=json:coverage.json \
 	  -o addopts="" -q
+
+# Soft coverage ratchet (F5). Runs the instrumented suite, then compares the
+# TOTAL against the floor in tests/COVERAGE_BASELINE.md. Advisory: reports
+# HOLD / IMPROVE / DROP and exits non-zero only on a DROP so the release-prep
+# preflight can surface it as a [WARN], never a hard gate.
+coverage-ratchet: coverage
+	uv run --no-sync python tools/coverage_ratchet.py --check
+
+# Re-stamp the baseline floor from the current suite. Pass TESTS=<n> to record
+# the suite size (otherwise the recorded count is left as-is). Run when cutting
+# a release so the floor tracks the shipped suite. Commit the updated baseline.
+coverage-ratchet-update: coverage
+	uv run --no-sync python tools/coverage_ratchet.py --update $(if $(TESTS),--tests $(TESTS),)
 
 # Pre-release shipped-file validator. Runs the seven check groups in
 # tools/check_shipped.py (configs, pkgbuild, pkgbuild_parity, hooks,

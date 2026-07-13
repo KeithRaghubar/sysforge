@@ -62,22 +62,6 @@ straight off a `Q`.
   in `doctor.py` + `cli.py` + both completions + manpage + `_patch_axes_clean` in the
   same change (per the doctor-axis one-home invariant). *Priority: low (candidate).*
 
-- **`2.2.0-F3` — Characterization tests for cold load-bearing primitives.**
-  A `make coverage` run on 2026-07-13 (suite total 84.7%, up from the 80.3% June
-  baseline) surfaced two under-tested modules that sit in the build hot path.
-  **`primitives/resource_guard.py` (57.9%)** — the *entire* body of
-  `lift_for_child()` (the `preexec_fn` that un-caps `RLIMIT_AS` for every makepkg
-  child) is unexercised (missing lines 47–50), as are `install()`'s hard-limit clamp
-  and silent-`except` (34, 36–37). **`primitives/auto_repair.py` (72.9%, 49 missing
-  lines)** — the `_detect_*` matchers are covered but the `_repair_*` **mutation**
-  functions are not (`_repair_vendored_deps` 156–183, `_printsrcinfo` error paths
-  236–251, `detect/repair_srcinfo_drift` 261–277, `preflight_srcinfo` 297–305). Add
-  characterization tests that lock in current behavior (both the success path and the
-  best-effort error-swallow), starting with `resource_guard` (≈7 lines, in every
-  build's process tree). Note: `env_chain.py` (88%) and `pkgbuild_review.py` (94%)
-  were *cleared* by the same run — well-covered indirectly despite few dedicated test
-  files. *Priority: low (defensive coverage, not a known defect).*
-
 - **`2.2.0-F4` — Shared child-process resource-policy seam (`resource_guard` ↔
   `build_throttle`).** The two primitives look mergeable ("both limit resources") but
   point in opposite directions: `resource_guard` constrains the *controller*
@@ -95,17 +79,6 @@ straight off a `Q`.
   than a second `setrlimit` site — and verify the rlimit propagates through
   `systemd-run --scope` when both a cpu_quota and a mem cap apply. *Priority: low
   (candidate — only pull the trigger if a memory-ceiling knob is actually wanted).*
-
-- **`2.2.0-F5` — Wire `make coverage` into release prep as a soft ratchet.** The
-  coverage tooling (added 2026-06-06) and `tests/COVERAGE_BASELINE.md` (seeded
-  2026-06-02 at 80.3% / 2294 tests) have been used **once** and are referenced by
-  nothing — not `tools/release.sh`, not any skill, not any doc. The suite is now
-  84.7% / 3661 tests, so the recorded floor is stale. Re-seed the baseline to current
-  numbers and have the `release-notes`/release-prep flow run `make coverage`, diff
-  total against the baseline, **warn** (not hard-fail — the instrumented full suite is
-  slow and preflight is already heavily gated) on a drop, and re-stamp the baseline as
-  part of cutting a release. Turns a one-time June snapshot into an actual ratchet.
-  *Priority: low (dev-process hygiene).*
 
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS

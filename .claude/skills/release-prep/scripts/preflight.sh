@@ -191,6 +191,27 @@ fi
 echo
 
 # ---------------------------------------------------------------------------
+# Section 7: coverage ratchet (opt-in — instrumented suite is slow)
+# ---------------------------------------------------------------------------
+echo "Coverage ratchet"
+if [[ "${RUN_COVERAGE:-0}" == "1" ]]; then
+    if make --no-print-directory coverage >/dev/null 2>&1; then
+        RATCHET_OUT="$(python3 tools/coverage_ratchet.py --check 2>&1)"
+        RATCHET_RC=$?
+        if [[ $RATCHET_RC -eq 3 ]]; then
+            warn "$RATCHET_OUT"
+        else
+            pass "$RATCHET_OUT"
+        fi
+    else
+        warn "make coverage failed — could not compute the ratchet"
+    fi
+else
+    pass "skipped (set RUN_COVERAGE=1 to run the instrumented suite + ratchet)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "==> Summary: $PASS pass, $WARN warn, $FAIL fail"

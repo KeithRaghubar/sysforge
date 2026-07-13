@@ -53,6 +53,70 @@ class TestVendoredDeps:
         assert ar.VENDORED_DEPS.detect(a) is None
 
 
+    def test_repair_meson_runs_subprojects_download(self, tmp_path):
+        # meson branch: locate the meson.build closest to ${srcdir} and run
+        # `meson subprojects download` from that project root (lines 163-173).
+        project = tmp_path / "src" / "myproj"
+        project.mkdir(parents=True)
+        (project / "meson.build").write_text("project('x')\n")
+        info = ar.MatchInfo(detail={"kind": "meson"})
+        with patch("sysforge.primitives.auto_repair.shutil.which",
+                   return_value="/usr/bin/meson"), \
+             patch("sysforge.primitives.auto_repair.subprocess.run") as run:
+            ar._repair_vendored_deps(tmp_path, info)
+        run.assert_called_once_with(
+            ["/usr/bin/meson", "subprojects", "download"],
+            cwd=str(project), check=True,
+        )
+
+    def test_repair_meson_raises_without_project(self, tmp_path):
+        # No meson.build under srcdir → RuntimeError (line 166).
+        (tmp_path / "src").mkdir()
+        info = ar.MatchInfo(detail={"kind": "meson"})
+        with pytest.raises(RuntimeError, match="no meson project"):
+            ar._repair_vendored_deps(tmp_path, info)
+
+    def test_repair_meson_raises_when_meson_absent(self, tmp_path):
+        project = tmp_path / "src" / "myproj"
+        project.mkdir(parents=True)
+        (project / "meson.build").write_text("project('x')\n")
+        info = ar.MatchInfo(detail={"kind": "meson"})
+        with patch("sysforge.primitives.auto_repair.shutil.which",
+                   return_value=None):
+            with pytest.raises(RuntimeError, match="meson binary not on PATH"):
+                ar._repair_vendored_deps(tmp_path, info)
+
+    def test_repair_git_submodule_runs_update(self, tmp_path):
+        # git_submodule branch: run `git submodule update --init --recursive`
+        # from the recorded project root (lines 175-181).
+        root = tmp_path / "src" / "myproj"
+        root.mkdir(parents=True)
+        info = ar.MatchInfo(detail={"kind": "git_submodule",
+                                    "project_root": str(root)})
+        with patch("sysforge.primitives.auto_repair.shutil.which",
+                   return_value="/usr/bin/git"), \
+             patch("sysforge.primitives.auto_repair.subprocess.run") as run:
+            ar._repair_vendored_deps(tmp_path, info)
+        run.assert_called_once_with(
+            ["/usr/bin/git", "submodule", "update", "--init", "--recursive"],
+            cwd=str(root), check=True,
+        )
+
+    def test_repair_git_submodule_raises_when_git_absent(self, tmp_path):
+        info = ar.MatchInfo(detail={"kind": "git_submodule",
+                                    "project_root": str(tmp_path)})
+        with patch("sysforge.primitives.auto_repair.shutil.which",
+                   return_value=None):
+            with pytest.raises(RuntimeError, match="git binary not on PATH"):
+                ar._repair_vendored_deps(tmp_path, info)
+
+    def test_repair_raises_on_unknown_kind(self, tmp_path):
+        # Defensive else-branch (lines 182-183).
+        info = ar.MatchInfo(detail={"kind": "bogus"})
+        with pytest.raises(RuntimeError, match="unknown kind 'bogus'"):
+            ar._repair_vendored_deps(tmp_path, info)
+
+
 # ---------------------------------------------------------------------------
 # pgp_key_missing
 # ---------------------------------------------------------------------------
@@ -128,6 +192,93 @@ class TestSrcinfoDrift:
             with pytest.raises(RuntimeError, match=".SRCINFO drift"):
                 ar.preflight_srcinfo(tmp_path, "abort")
         # File NOT modified on abort.
+        assert (tmp_path / ".SRCINFO").read_text() == "stale\n"
+
+    # -- _printsrcinfo helper error paths (lines 236-251) -------------------
+
+    def test_printsrcinfo_returns_none_when_makepkg_absent(self, tmp_path):
+        with patch("sysforge.primitives.auto_repair.shutil.which",
+                   return_value=None):
+            assert ar._printsrcinfo(tmp_path) is None
+
+    def test_printsrcinfo_returns_none_on_subprocess_error(self, tmp_path):
+        with patch("sysforge.primitives.auto_repair.shutil.which",
+                   return_value="/usr/bin/makepkg"), \
+             patch("sysforge.primitives.auto_repair.subprocess.run",
+                   side_effect=ar.subprocess.SubprocessError("boom")):
+            assert ar._printsrcinfo(tmp_path) is None
+
+    def test_printsrcinfo_returns_none_on_nonzero_returncode(self, tmp_path):
+        class _R:
+            returncode = 1
+            stdout = "partial"
+        with patch("sysforge.primitives.auto_repair.shutil.which",
+                   return_value="/usr/bin/makepkg"), \
+             patch("sysforge.primitives.auto_repair.subprocess.run",
+                   return_value=_R()):
+            assert ar._printsrcinfo(tmp_path) is None
+
+    def test_printsrcinfo_returns_stdout_on_success(self, tmp_path):
+        class _R:
+            returncode = 0
+            stdout = "pkgbase = foo\n"
+        with patch("sysforge.primitives.auto_repair.shutil.which",
+                   return_value="/usr/bin/makepkg"), \
+             patch("sysforge.primitives.auto_repair.subprocess.run",
+                   return_value=_R()):
+            assert ar._printsrcinfo(tmp_path) == "pkgbase = foo\n"
+
+    # -- detect/repair OSError arms (lines 261-277) ------------------------
+
+    def test_detect_drift_false_when_printsrcinfo_fails(self, tmp_path):
+        (tmp_path / ".SRCINFO").write_text("stale\n")
+        with patch("sysforge.primitives.auto_repair._printsrcinfo",
+                   return_value=None):
+            assert ar.detect_srcinfo_drift(tmp_path) is False
+
+    def test_detect_drift_false_when_srcinfo_unreadable(self, tmp_path):
+        (tmp_path / ".SRCINFO").write_text("stale\n")
+        with patch("sysforge.primitives.auto_repair._printsrcinfo",
+                   return_value="fresh\n"), \
+             patch("pathlib.Path.read_text", side_effect=OSError("EACCES")):
+            assert ar.detect_srcinfo_drift(tmp_path) is False
+
+    def test_repair_returns_false_when_printsrcinfo_fails(self, tmp_path):
+        with patch("sysforge.primitives.auto_repair._printsrcinfo",
+                   return_value=None):
+            assert ar.repair_srcinfo_drift(tmp_path) is False
+
+    def test_repair_returns_false_when_write_fails(self, tmp_path):
+        with patch("sysforge.primitives.auto_repair._printsrcinfo",
+                   return_value="fresh\n"), \
+             patch("pathlib.Path.write_text", side_effect=OSError("EROFS")):
+            assert ar.repair_srcinfo_drift(tmp_path) is False
+
+    # -- preflight remaining behaviour arms (lines 296-305) ----------------
+
+    def test_preflight_returns_false_when_regeneration_fails(self, tmp_path):
+        (tmp_path / ".SRCINFO").write_text("stale\n")
+        with patch("sysforge.primitives.auto_repair.detect_srcinfo_drift",
+                   return_value=True), \
+             patch("sysforge.primitives.auto_repair.repair_srcinfo_drift",
+                   return_value=False):
+            assert ar.preflight_srcinfo(tmp_path, "auto_repair") is False
+
+    def test_preflight_plain_auto_repair_uses_info_log(self, tmp_path):
+        # behaviour == "auto_repair" (no warning) still returns True after fix.
+        (tmp_path / ".SRCINFO").write_text("stale\n")
+        with patch("sysforge.primitives.auto_repair._printsrcinfo",
+                   return_value="fresh\n"):
+            assert ar.preflight_srcinfo(tmp_path, "auto_repair") is True
+        assert (tmp_path / ".SRCINFO").read_text() == "fresh\n"
+
+    def test_preflight_unhandled_behaviour_warns_and_skips(self, tmp_path):
+        # Any other behaviour (e.g. warn_and_fallback) → drift left unrepaired.
+        (tmp_path / ".SRCINFO").write_text("stale\n")
+        with patch("sysforge.primitives.auto_repair._printsrcinfo",
+                   return_value="fresh\n"):
+            assert ar.preflight_srcinfo(tmp_path, "warn_and_fallback") is False
+        # File NOT modified — this behaviour only logs.
         assert (tmp_path / ".SRCINFO").read_text() == "stale\n"
 
 

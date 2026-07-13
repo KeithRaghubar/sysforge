@@ -74,6 +74,13 @@ https://keepachangelog.com/en/1.1.0/
 - `[build] cpu_quota` now also accepts a decimal fraction of the host's total
   cores (e.g. `0.5` → `800%` on a 16-core box), translated against
   `os.cpu_count()` so the same config is portable across machines (2.1.0-F6).
+- Soft coverage ratchet for release prep: `make coverage-ratchet` runs the
+  instrumented suite and compares the TOTAL against the floor recorded in
+  `tests/COVERAGE_BASELINE.md` (re-seeded to the current 85.0% / 3750 tests),
+  reporting HOLD / IMPROVE / DROP. A drop surfaces as an opt-in `[WARN]` in the
+  `release-prep` preflight (`RUN_COVERAGE=1`) — advisory, never a hard gate —
+  and `make coverage-ratchet-update` re-stamps the floor when cutting a release.
+  Turns the one-time June coverage snapshot into a living ratchet (2.2.0-F5).
 
 ## Changed
 
@@ -86,6 +93,12 @@ https://keepachangelog.com/en/1.1.0/
   instead of reading as plain text, and a blank line now separates the three
   sources. Colour routes through `log.use_color()`, so `NO_COLOR`/non-TTY degrade
   to plain output (2.2.0-F2).
+- Characterization tests pin two cold, build-hot-path primitives that were
+  under-covered: `resource_guard` (the `RLIMIT_AS` controller cap + the
+  `lift_for_child` `preexec_fn` that un-caps it for makepkg children —
+  57.9% → 100%) and the `auto_repair` `_repair_*` mutators / `.SRCINFO`-drift
+  paths (72.9% → 93.6%), locking in both the success path and the best-effort
+  silent-`except` arms (2.2.0-F3).
 
 ## Fixed
 

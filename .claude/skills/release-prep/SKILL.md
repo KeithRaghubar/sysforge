@@ -42,6 +42,24 @@ Run **before** `make release-major`, `make release-minor`, or `make release-patc
 for the target version. If it doesn't exist yet, run the `/release-notes` skill to
 draft it before invoking the release command.
 
+## Coverage ratchet (opt-in)
+
+The preflight skips the coverage ratchet by default — the instrumented suite is
+slow. To include it, run with `RUN_COVERAGE=1`:
+
+```bash
+RUN_COVERAGE=1 bash .claude/skills/release-prep/scripts/preflight.sh
+```
+
+It runs `make coverage` and compares the TOTAL against the floor in
+`tests/COVERAGE_BASELINE.md`. A drop below the floor is a `[WARN]` (advisory,
+never a `[FAIL]`). If the drop is intended — or coverage improved — re-stamp the
+floor before releasing and commit it:
+
+```bash
+make coverage-ratchet-update TESTS=$(make test 2>/dev/null | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+')
+```
+
 ## What this skill does NOT check
 
 - **Tests pass** — too slow to run automatically (1547 tests). Tell the user: "Run `make test` separately before releasing if you haven't already."

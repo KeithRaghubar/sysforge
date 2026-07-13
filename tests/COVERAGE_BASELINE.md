@@ -1,36 +1,45 @@
 # Coverage baseline (ratchet floor)
 
-Established 2026-06-02 on branch `refactor/cohesive-modules`, **before** the
-Phase 0 behavior-first test rewrite. No sub-step of the cohesive-modules
-refactor may lower total or per-target-module coverage below these values.
+Re-seeded 2026-07-13 from `make coverage`.
 
-Regenerate with `make coverage` (layers `pytest-cov` via a `uv run --no-sync`
-overlay; branch coverage on; writes `coverage.json`).
+The **soft ratchet floor** for the suite. `make coverage-ratchet` runs the
+instrumented suite and compares the current TOTAL against the **TOTAL** row
+below, reporting HOLD / IMPROVE / DROP; a DROP surfaces as a `[WARN]` in the
+`release-prep` preflight (`RUN_COVERAGE=1`), never a hard gate — the
+instrumented suite is slow and a drop is advisory. Re-stamp when cutting a
+release with `make coverage-ratchet-update TESTS=<n>` so the floor tracks the
+shipped suite; commit the result.
 
-Suite at baseline: **2294 tests passing**, total **80.3%**.
+Only the **TOTAL** row is gated. The per-module rows are informational
+(refreshed on re-stamp for awareness) — they flag decomposition targets and
+historically thin modules, not additional gates.
+
+Regenerate the report with `make coverage` (layers `pytest-cov` via a
+`uv run --no-sync` overlay; branch coverage on; writes `coverage.json`).
+
+Suite at baseline: **3750 tests passing**, total **85.0%**.
 
 | Scope | Coverage |
 |---|---|
-| **TOTAL** | **80.3%** |
-| `sysforge/cli.py` | 25.9% |
-| `sysforge/update.py` | 76.2% |
-| `sysforge/build_core.py` | 87.6% |
-| `sysforge/doctor.py` | 88.1% |
-| `sysforge/primitives/makepkg_wrapper.py` | 71.9% |
-| `sysforge/primitives/aur.py` | 90.8% |
-| `sysforge/primitives/profile.py` | 92.2% |
-| `sysforge/pipeline/stages/kernel.py` | 90.6% |
-| `sysforge/pipeline/stages/toolchain.py` | 83.5% |
-| `sysforge/pipeline/stages/packages.py` | 67.4% |
+| **TOTAL** | **85.0%** |
+| `sysforge/cli.py` | 96.4% |
+| `sysforge/update.py` | 84.7% |
+| `sysforge/build_core.py` | 91.5% |
+| `sysforge/doctor.py` | 88.0% |
+| `sysforge/primitives/makepkg_wrapper.py` | 61.4% |
+| `sysforge/primitives/aur.py` | 96.4% |
+| `sysforge/primitives/profile.py` | 94.2% |
+| `sysforge/primitives/resource_guard.py` | 100.0% |
+| `sysforge/primitives/auto_repair.py` | 94.3% |
+| `sysforge/pipeline/stages/kernel.py` | 86.8% |
+| `sysforge/pipeline/stages/toolchain.py` | 83.4% |
+| `sysforge/pipeline/stages/packages.py` | 71.0% |
 
 Notes:
 
-- `cli.py` (25.9%) is the lowest-covered decomposition target — its inline
-  `Verb` classes are exercised only indirectly. The Phase 0 verb behavior
-  harness (P0.3) is expected to raise it well before `cli.py` is thinned in
-  Phase 2c.
-- `makepkg_wrapper.py` (71.9%) and `update.py` (76.2%) sit below the total;
-  the behavior-first rewrite must raise them, not just preserve them.
-- Lowest non-target modules at baseline (for awareness, not gated):
-  `pager.py` 24.4%, `resource_guard.py` 26.3%, `paths.py` 48.9%,
-  `reconfigure.py` 57.3%.
+- `makepkg_wrapper.py` (61.4%) is the lowest-covered tracked module and the
+  furthest below the total; treat a further slip there as worth a closer look
+  even when the TOTAL holds. `packages.py` (71.0%) is the next-thinnest.
+- `resource_guard.py` and `auto_repair.py` were the 2.2.0-F3 characterization
+  targets; they are tracked here so a future regression in those cold,
+  build-hot-path primitives is visible.
