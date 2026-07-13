@@ -54,15 +54,38 @@ unlink_one() {
   fi
 }
 
+# The sysusers.d/tmpfiles.d configs are generated inline in the PKGBUILD (no
+# checkout file to symlink), so a dev-install must reproduce their effect here:
+# create the sysforge group + the root:sysforge 2775 runtime dirs. Without this
+# the libalpm hooks (root) create /var/lib/sysforge as root:root before anything
+# provisions the group, and the unprivileged fast-path heal in fs_provision.py
+# has no group to heal to (2.2.0-B6). Kept in lockstep with the PKGBUILD block.
+provision_runtime_dirs() {
+  echo "-- provision sysforge group + runtime dirs (sysusers.d/tmpfiles.d analogue) --"
+  if ! getent group sysforge >/dev/null; then
+    echo "+ groupadd -r sysforge"
+    sudo groupadd -r sysforge
+  fi
+  local user="${SUDO_USER:-$USER}"
+  if [[ -n "$user" && "$user" != "root" ]] && ! id -nG "$user" | tr ' ' '\n' | grep -qx sysforge; then
+    echo "+ usermod -aG sysforge $user (takes effect next login)"
+    sudo usermod -aG sysforge "$user"
+  fi
+  local d
+  for d in /var/lib/sysforge /var/lib/sysforge/sentinels \
+           /var/cache/sysforge /var/cache/sysforge/llvm-pgo; do
+    echo "+ install -d -m 2775 -g sysforge $d"
+    sudo install -d -m 2775 -g sysforge "$d"
+    sudo chgrp sysforge "$d"; sudo chmod 2775 "$d"  # heal a pre-existing root:root dir
+  done
+}
+
 do_install() {
   echo "== dev-install from $REPO =="
   echo "-- editable venv entry point (uv pip install -e .) --"
   uv pip install -e "$REPO"
   for pair in "${MAPPING[@]}"; do link_one "${pair%%|*}" "${pair##*|}"; done
-  if ! getent group sysforge >/dev/null; then
-    echo "note: group 'sysforge' absent — install the package to provision"
-    echo "      the group + state dirs (sysusers.d/tmpfiles.d not symlinked)."
-  fi
+  provision_runtime_dirs
   echo "== done =="
 }
 

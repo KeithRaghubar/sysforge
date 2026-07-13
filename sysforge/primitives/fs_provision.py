@@ -98,6 +98,41 @@ def _user_in_group(user: str, group: str) -> bool:
         return False
 
 
+def _heal_owned_dir_group(path: Path, group: str, mode: int) -> None:
+    """Best-effort, sudo-free repair of the fast-path group/setgid gap (2.2.0-B6).
+
+    A directory first created by the unprivileged build user lands
+    ``user:user 0755`` with no setgid bit, so children never inherit
+    ``SYSFORGE_GROUP`` and a second writer at a different uid (the root libalpm
+    hooks, a later ``sudo`` rebuild) can't write the tree. When we *own* the node
+    and *hold* ``group`` among our process groups, a plain ``chgrp``/``chmod``
+    needs no elevation — so heal it here and let the sudo slow path handle only
+    root-owned ancestors. Any failure is swallowed: the dir is already writable,
+    the group/setgid fix is a bonus.
+    """
+    try:
+        import grp
+
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        return  # group not created yet — nothing to heal to
+    try:
+        st = os.stat(path)
+    except OSError:
+        return
+    if st.st_uid != os.geteuid():
+        return  # not the owner — chgrp/chmod would need sudo (slow path's job)
+    if gid not in os.getgroups():
+        return  # can't chgrp to a group we don't hold without sudo
+    try:
+        if st.st_gid != gid:
+            os.chown(path, -1, gid)
+        if (st.st_mode & 0o7777) != mode:
+            os.chmod(path, mode)
+    except OSError:
+        pass
+
+
 def ensure_writable_dir(
     path: Path | str,
     *,
@@ -110,7 +145,9 @@ def ensure_writable_dir(
 
     Fast path: a plain ``mkdir`` that lands a writable directory (already
     provisioned, or a user-owned location like an XDG dir) returns immediately
-    and never touches sudo.
+    and never touches sudo. If we own the landed dir and hold ``group``, its
+    group + setgid ``mode`` are best-effort self-healed sudo-free
+    (:func:`_heal_owned_dir_group`, 2.2.0-B6) so children inherit the group.
 
     Slow path (root-owned ancestor / not writable): provision under ``group``
     with setgid ``mode`` via sudo —
@@ -133,6 +170,7 @@ def ensure_writable_dir(
     try:
         path.mkdir(parents=True, exist_ok=True)
         if os.access(path, os.W_OK):
+            _heal_owned_dir_group(path, group, mode)
             return path
     except PermissionError:
         pass

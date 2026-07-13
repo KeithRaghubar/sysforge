@@ -128,7 +128,7 @@ The ownership model is a single one for every writable sysforge runtime dir: **`
 
 `fs_provision.ensure_writable_dir(path)`:
 
-- **Fast path** — a plain `mkdir` landing a writable directory (already provisioned by the shipped `tmpfiles.d`, or a user-owned location like an XDG dir) returns immediately and never touches sudo.
+- **Fast path** — a plain `mkdir` landing a writable directory (already provisioned by the shipped `tmpfiles.d`, or a user-owned location like an XDG dir) returns immediately and never touches sudo. Before returning, if the process **owns** the landed dir and **holds** `SYSFORGE_GROUP` among its groups, the dir's group + setgid mode are best-effort self-healed with a sudo-free `chgrp`/`chmod` — so a dir first created `user:user 0755` by the unprivileged build user (no setgid bit, children can't inherit the group) is corrected in place without falling to the sudo slow path. Any heal failure is swallowed: the dir is already writable.
 - **Slow path** (root-owned ancestor / not writable) — provisions via sudo: create the group if missing (`groupadd -f`), add the build user durably (`usermod -aG`, effective next login), then `install -d -m 2775 -g sysforge` and `chgrp`/`chmod` to **repair** an already-existing dir whose ownership predates this policy. The durable group add plus the per-run `chgrp`/`chmod` together mean the dir is usable *this* run even before the user's new group membership takes effect.
 - **Fail-safe** — when sudo is unavailable it raises `FsProvisionError`; callers fall back to a user-writable location (the state-dir resolver drops to the XDG state dir; logging drops to a plain `mkdir`).
 

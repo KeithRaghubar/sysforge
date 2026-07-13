@@ -76,6 +76,43 @@ def test_record_self_install_heals_non_group_writable_file(tmp_path):
     assert stale.stat().st_mode & stat.S_IWGRP
 
 
+def test_record_self_install_provisions_dir_via_fs_provision(tmp_path):
+    """2.2.0-B5: the sentinel dir must be created through fs_provision (which
+    self-heals group + setgid) rather than a bare mkdir, so the dir lands
+    root:sysforge 2775 and both the root hooks and the unprivileged append share
+    a group-writable tree. A bare mkdir left it user:user 0755 and the append
+    failed EACCES."""
+    from unittest.mock import patch
+
+    d = tmp_path / "sentinels"
+    with patch("sysforge.primitives.fs_provision.ensure_writable_dir") as mock_prov:
+        mock_prov.side_effect = lambda p, **kw: (Path(p).mkdir(parents=True, exist_ok=True), Path(p))[1]
+        ir.record_self_install(["mesa"], sentinel_dir=d)
+
+    mock_prov.assert_called_once()
+    assert mock_prov.call_args.args[0] == d
+    # Best-effort, unprivileged chokepoint — must never sudo-prompt.
+    assert mock_prov.call_args.kwargs.get("allow_sudo") is False
+
+
+def test_record_self_install_survives_fs_provision_failure(tmp_path):
+    """If fs_provision can't provision (FsProvisionError), record_self_install
+    still falls back to a plain mkdir + append — it is best-effort and never
+    raises out of the pacman -U chokepoint."""
+    from unittest.mock import patch
+
+    from sysforge.primitives.fs_provision import FsProvisionError
+
+    d = tmp_path / "sentinels"
+    with patch(
+        "sysforge.primitives.fs_provision.ensure_writable_dir",
+        side_effect=FsProvisionError("no sudo"),
+    ):
+        ir.record_self_install(["mesa"], sentinel_dir=d)
+
+    assert ir._read_targets(d / "self-install") == {"mesa"}
+
+
 def test_record_self_install_ignores_empty(tmp_path):
     d = tmp_path / "sentinels"
     ir.record_self_install([], sentinel_dir=d)

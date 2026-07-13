@@ -150,3 +150,15 @@ https://keepachangelog.com/en/1.1.0/
   `libva-nvidia-driver` instead of the upstream project name `nvidia-vaapi-driver`
   (not a repo package), fixing a permanent false-positive WARN whose remediation
   pointed at a package that does not exist (2.2.0-B4).
+- Runtime directories first created by the unprivileged build user no longer land
+  `user:user 0755` with no setgid bit, which left children unable to inherit the
+  `sysforge` group and blocked a second writer at a different uid (the root
+  libalpm hooks, a later `sudo` rebuild). `fs_provision.ensure_writable_dir`'s
+  fast path now best-effort self-heals the group + setgid mode via a sudo-free
+  `chgrp`/`chmod` when it owns the dir and holds the group (2.2.0-B6), and
+  `record_self_install` routes its sentinel-dir creation through
+  `fs_provision` (instead of a bare `mkdir`) so the self-install marker actually
+  records — fixing the silent reconcile mis-classification that risked spurious
+  `build_mode` demotion (2.2.0-B5). `make dev-install` now also provisions the
+  `sysforge` group + `root:sysforge 2775` runtime dirs so a dev-install box gets
+  the same group baseline a packaged install does.

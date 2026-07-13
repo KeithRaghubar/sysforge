@@ -5,6 +5,8 @@
 """Tests for primitives/fs_provision.py — the one home for sysforge runtime
 directory provisioning (root:sysforge 2775; usermod + per-run repair)."""
 
+import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -58,6 +60,85 @@ def test_ensure_writable_dir_dry_run_noop(tmp_path):
         ensure_writable_dir(target, dry_run=True)
     assert not target.exists()
     mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# ensure_writable_dir — fast-path group/setgid self-heal (2.2.0-B6)
+# ---------------------------------------------------------------------------
+
+
+def test_fast_path_heals_group_and_setgid_when_owned_member(tmp_path):
+    """A user-created (writable) dir landing user:user 0755 is self-healed to
+    SYSFORGE_GROUP + setgid mode via a plain chgrp/chmod — no sudo — when we own
+    it and hold the group. This closes the fast-path gap that left children
+    unable to inherit the group."""
+    target = tmp_path / "cache" / "sysforge" / "llvm-pgo"
+    fake_gid = 6000  # differs from the test user's real gid → chgrp needed
+    with patch("grp.getgrnam", return_value=SimpleNamespace(gr_gid=fake_gid, gr_mem=[])), \
+         patch("os.getgroups", return_value=[fake_gid]), \
+         patch("os.chown") as mock_chown, \
+         patch("os.chmod") as mock_chmod, \
+         patch("subprocess.run") as mock_run:
+        out = ensure_writable_dir(target)
+
+    assert out == target
+    mock_run.assert_not_called()  # heal is sudo-free
+    mock_chown.assert_called_once_with(target, -1, fake_gid)
+    mock_chmod.assert_called_once_with(target, SYSFORGE_DIR_MODE)
+
+
+def test_fast_path_skips_heal_when_not_group_member(tmp_path):
+    """When the current process does not hold SYSFORGE_GROUP, no unprivileged
+    chgrp/chmod is attempted (it would fail with EPERM)."""
+    target = tmp_path / "cache" / "x"
+    with patch("grp.getgrnam", return_value=SimpleNamespace(gr_gid=6000, gr_mem=[])), \
+         patch("os.getgroups", return_value=[1000]), \
+         patch("os.chown") as mock_chown, \
+         patch("os.chmod") as mock_chmod:
+        ensure_writable_dir(target)
+
+    mock_chown.assert_not_called()
+    mock_chmod.assert_not_called()
+
+
+def test_fast_path_skips_heal_when_not_owner(tmp_path):
+    """A writable-but-not-owned dir is left to the slow path (chgrp/chmod would
+    need sudo); the fast-path heal only touches dirs we own."""
+    target = tmp_path / "cache" / "y"
+    with patch("grp.getgrnam", return_value=SimpleNamespace(gr_gid=6000, gr_mem=[])), \
+         patch("os.getgroups", return_value=[6000]), \
+         patch("os.geteuid", return_value=os.geteuid() + 12345), \
+         patch("os.chown") as mock_chown, \
+         patch("os.chmod") as mock_chmod:
+        ensure_writable_dir(target)
+
+    mock_chown.assert_not_called()
+    mock_chmod.assert_not_called()
+
+
+def test_fast_path_heal_is_best_effort(tmp_path):
+    """A chgrp/chmod failure during heal is swallowed — the dir is already
+    writable, so the call still succeeds."""
+    target = tmp_path / "cache" / "z"
+    with patch("grp.getgrnam", return_value=SimpleNamespace(gr_gid=6000, gr_mem=[])), \
+         patch("os.getgroups", return_value=[6000]), \
+         patch("os.chown", side_effect=PermissionError(1, "nope")):
+        out = ensure_writable_dir(target)
+
+    assert out == target
+
+
+def test_fast_path_no_heal_when_group_unknown(tmp_path):
+    """If SYSFORGE_GROUP does not exist yet, there is nothing to heal to and no
+    chown/chmod is attempted."""
+    target = tmp_path / "cache" / "w"
+    with patch("grp.getgrnam", side_effect=KeyError("sysforge")), \
+         patch("os.chown") as mock_chown, \
+         patch("os.chmod") as mock_chmod:
+        ensure_writable_dir(target)
+
+    mock_chown.assert_not_called()
+    mock_chmod.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

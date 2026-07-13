@@ -157,7 +157,18 @@ def record_self_install(pkgnames, sentinel_dir=None) -> None:
         return
     d = _dir(sentinel_dir)
     try:
-        d.mkdir(parents=True, exist_ok=True)
+        # Route through fs_provision so the sentinels dir lands (or is healed to)
+        # root:sysforge 2775 — the same group-writable tree the root libalpm
+        # hooks write into (2.2.0-B5). ``allow_sudo=False``: this runs from the
+        # unprivileged ``pacman -U`` chokepoint and must never sudo-prompt. If
+        # provisioning can't heal ownership (FsProvisionError), fall back to a
+        # bare mkdir — the append below is still best-effort.
+        from sysforge.primitives import fs_provision
+
+        try:
+            fs_provision.ensure_writable_dir(d, allow_sudo=False)
+        except fs_provision.FsProvisionError:
+            d.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         block = ts + "\n" + "\n".join(names) + "\n\n"
         # Create/keep the sentinel group-writable so a later run under a
