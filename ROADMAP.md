@@ -36,6 +36,26 @@ straight off a `Q`.
 
 ### Bugs
 
+- **`2.3.0-B1` — pager corruption on the `update --interactive` PKGBUILD-review path.**
+  Reproduces with `sysforge update --devel --interactive` (observed on `libinput-git`): the
+  terminal ends up in the alt-screen / desynced-redraw state we fixed under `2.2.0-B5` (blank
+  open, scroll-up-only, looping top), and the corruption first *shows up* on the following build
+  subprocess's output (the meson/ninja config for the `-git` target), which is why it reads as a
+  "ninja prebuild summary" glitch. Root cause is a **seam interaction**, not a single site:
+  `_suppress_pagers_in_env` (`update.py:147`) short-circuits entirely when `--interactive` is set,
+  so the review gate's unconditional `maybe_pager(True)` (`pkgbuild_review.py:181`/`:269`) spawns
+  the user's *raw* `$PAGER`/`$LESS` — which can carry `-X`, the exact alt-screen flag
+  `pager._pager_candidates` deliberately avoids in its `less -RF` fallback (`pager.py:33`). Once
+  that pager leaves the terminal mangled mid-run, `_TERMINAL_RESET` can't help: it only fires in
+  `cmd_update`'s `finally` at whole-command exit, after the build output has already painted into
+  the corrupted screen. Fix shape is open (decided defect, undecided remedy — a `B`, not a `Q`):
+  either (a) narrow the interactive suppression skip so it still neutralizes `-X`/alt-screen-hostile
+  flags for build-subprocess pagers while leaving sysforge's *own* interactive prompts/pagers free,
+  or (b) sanitize the flag set at the `maybe_pager` seam so an inherited `$PAGER`/`$LESS` can never
+  reintroduce the B5 `-X` mangling regardless of the caller's mode. Prefer the seam fix (b) so the
+  guarantee holds for every `maybe_pager` caller, not just this path. *Priority: medium (opt-in
+  `--interactive`/`--devel` path, but a real-use B5 regression leaking through a suppression gap).*
+
 - **`2.2.0-B3` — `check-shipped` manpage guard couples to the local scdoc version.**
   The `manpage` check in `tools/check_shipped.py` asserts that committed `man/sysforge.1`
   byte-matches fresh `make man` output on the current machine. But `make man` runs `scdoc`,
