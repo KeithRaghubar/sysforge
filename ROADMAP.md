@@ -65,6 +65,64 @@ straight off a `Q`.
 
 ### Features
 
+- **`2.3.0-F1` — Expand the `ruff` lint select to the security/bug rulesets.** `[tool.ruff.lint]`
+  currently sets only `ignore` (E402), so the effective select is the default `E`/`F` — the
+  bundled bandit port (`S`) and `flake8-bugbear` (`B`) never run. For a tool that shells out at
+  224 subprocess sites, `S` is the highest-leverage gate available at zero new dependency: it flags
+  `shell=True` (`S602/S604`), hardcoded `/tmp` paths (`S108`), and weak-hash use, forcing every such
+  site to carry an explicit justified `# noqa`. The one known `shell=True`
+  (`toolchain_preflight.py:_run_fix`, `:477`) is defensible — the run string is internally generated
+  and must be byte-identical to what's printed as the suggested fix — and would get a documented
+  `# noqa: S602`. `B` (mutable-default args, bare-`except` swallowing) is the stability half. Land as
+  `select = ["E", "F", "S", "B", "SIM", "PTH"]`, sweep the resulting findings (expect mostly `noqa`
+  annotations on the run seam plus a few real fixes), and keep `make lint` green in the same change.
+  *Priority: medium (one-time sweep; retroactively audits all subprocess sites; no runtime dep).*
+
+- **`2.3.0-F2` — Enforced type-checking gate in `pre-release`.** `pyright` is configured in
+  `pyproject.toml` (it owns type analysis; ruff owns lint-style overlap) but nothing in the Makefile
+  runs it, so type regressions only surface in-editor. Add a `make typecheck` target using the same
+  ephemeral overlay pattern as `make coverage` (`uv run --no-sync --with pyright`, no venv mutation)
+  and wire it into the `pre-release` chain. Catches None-handling and argument-shape bugs — the
+  stability half of the hardening — before release. Baseline may need a first-pass sweep to reach a
+  clean floor. *Priority: medium (stability gate; dev-time only).*
+
+- **`2.3.0-F3` — Dev/build-chain supply-chain audit target.** The runtime dep surface is
+  near-empty by design (only the `tomli` backport + optional `pyalpm`), but the dev/build toolchain
+  (`hatchling`, `pytest`, `ruff`, `pyright`, coverage overlay) is still a supply-chain surface. Add a
+  `make audit` target that runs `pip-audit` (or `uv`'s native auditing) over the resolved lockfile to
+  flag known CVEs in the build/test chain, run manually and optionally in `pre-release`. Dev-time
+  only — nothing enters the shipped wheel or PKGBUILD. *Priority: low (defense-in-depth; the small
+  dep surface keeps real exposure low).*
+
+- **`2.3.0-F4` — Emit package-adjacent operations through alpm transaction hooks.** sysforge already
+  ships `primitives/pacman_hooks.py` and optionally reads via `pyalpm`, so it is adjacent to alpm's
+  native extension point but does not yet *fire from inside the transaction*. For work that must happen
+  around package operations — snapshot triggers, the `1.2.0-F28` artifact-drift check, cache/state
+  reconciliation — a `PreTransaction`/`PostTransaction` alpm hook runs at exactly the right moment
+  inside pacman's own transaction rather than sysforge polling or wrapping `pacman` externally. This is
+  the canonical Arch extension mechanism; hooking it means the trigger is correct-by-construction even
+  when the user runs bare `pacman`. Decompose per trigger (not one mega-hook) and keep each behind the
+  existing sentinel/verb boundary. *Priority: low (strategic; depends on which triggers earn a hook —
+  pair with F28).*
+
+- **`2.3.0-F5` — Declarative provisioning via `tmpfiles.d`/`sysusers.d` instead of imperative healing.**
+  `fs_provision.py`/`stage_ownership.py` create directories and fix ownership/permissions imperatively.
+  The Arch-native mechanism for the same outcome is a shipped `tmpfiles.d` snippet run by
+  `systemd-tmpfiles` (idempotent, applied at boot, the packaging-expected path), plus `sysusers.d` for
+  any service user. Delegating means the rules are declarative and inspectable, and the healing logic
+  becomes "invoke `systemd-tmpfiles --create`" rather than a bespoke walk. Scope to the provisioning that
+  is genuinely static (fixed dirs/modes/users); anything computed at runtime stays in the primitive.
+  Fallback needed for non-systemd hosts. *Priority: low (simplification + OS-integration; overlaps the
+  systemd-run decision in `2.3.0-Q3`).*
+
+- **`2.3.0-F6` — Mirror system-mutating verbs to `journald`.** The `log.py` unified run-log is the right
+  user-facing capture and stays authoritative. The complementary hook is a second sink: emit the
+  privileged/system-mutating operations (the sentinel-gated verbs) to `journald` via `systemd-cat`/
+  `sd_journal` so sysforge's changes appear in `journalctl` alongside everything else that touched the
+  system — the place an admin looks during incident review. Structured fields (verb, target, exit) make
+  it queryable. Not a replacement for the run-log; an additive, system-integrated sink for mutations
+  only. Gate on systemd presence. *Priority: low (observability/defense-in-depth; additive).*
+
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
   specificity: more AND'd conditions = higher weight), with manual `priority`
@@ -85,7 +143,11 @@ straight off a `Q`.
   system; sysforge should be able to *offer* (not force) them — open question whether
   the surface is the `setup` stage, a dedicated verb, or a sync mode of this
   inventory. Discuss the UX before committing; it is a concrete first slice of this
-  primitive.
+  primitive. **Drift detection should hook `pacman`, not reimplement it:** for any artifact
+  that belongs to a package, prefer `pacman -Qkk` (file integrity/ownership/permission
+  verification against alpm's stored `mtree`) over a hand-rolled tree walk — the OS already
+  knows which files belong to which package and whether they changed. The hand-rolled path is
+  only for genuinely package-less user artifacts.
 
 - **`1.2.0-F43` — Logging re-levelling audit for interactive/bootstrap stages.**
   Follow-up to the shipped `1.2.0-F36` slice (configurable `[log] verbosity` + `--quiet`,
@@ -96,6 +158,22 @@ straight off a `Q`.
   narration to `info()` while keeping prompts/plan-tables/results as `ui()`. Extend the
   golden guard to a representative stage run. *Priority: low (bootstrap-time output, not the
   day-to-day regression, which is resolved under F36).*
+
+### Standards
+
+- **`2.3.0-STD1` — All external-command execution routes through the run seam.** `primitives/run.py`
+  (`run_or_raise`) already centralizes the "run a command, raise a tagged error" pattern, but nothing
+  enforces that the 224 subprocess sites actually use it — modules still call `subprocess.run` directly
+  and could regress to `shell=True` or string commands without review. Promote the existing convention
+  to an enforced standard in `docs/design/21-standards.md`, checked by `tools/check_standards.py` +
+  `tests/test_standards_compliance.py` (same mechanism as "user paths → `primitives/paths.py`, colour →
+  `log.use_color()`"): external commands go through the run seam, argv-**list** form only (never a
+  shell string), and any `shell=True` requires a justified inline `# noqa: S602` naming why the input is
+  trusted. Pairs with `2.3.0-F1` — the ruff `S` rules catch new `shell=True`; this standard governs the
+  seam discipline the rules can't express. Scope decision needed on how much of the 224-site surface must
+  migrate to the seam vs. be grandfathered with a documented carve-out (streaming/interactive callers
+  that deliberately bypass `run_or_raise`'s capture). *Priority: medium (locks in an existing invariant;
+  prevents subprocess-seam drift).*
 
 ### Questions
 
@@ -129,6 +207,32 @@ straight off a `Q`.
   a scoped `F`/`STD` (a shared "known-enum resolver" seam is a candidate) or Abandoned before
   implementing. *Priority: low (robustness/consistency; no correctness failure today — bad
   values either pass through inertly or coerce to a safe default).*
+
+- **`2.3.0-Q3` — should `systemd-run --scope` become the primary build resource-enforcement
+  mechanism?** Today throttle/limit enforcement is (or, per the `2.2.0-F4` `mem_limit` design, will
+  be) a child `preexec_fn` `rlimit` plus a systemd `MemoryMax`/`CPUQuota` layer. The `rlimit` path is
+  the layered one: an `rlimit` set on a single preexec applies to that child but is easy to escape as
+  makepkg forks its own subprocess tree, whereas `systemd-run --user --scope -p MemoryMax= -p CPUQuota=
+  -p IOWeight=` places the *entire* build in a cgroup-v2 slice the kernel enforces hierarchically
+  across all descendants, inspectable via `systemctl status`. The question: make `systemd-run` the
+  primary enforcement with `rlimit` as the non-systemd fallback, or keep the current dual scheme?
+  This overlaps in-flight `2.2.0-F4` and the throttle knobs in `2.3.0-Q1`, so **decide before F4
+  lands** rather than reworking after. Investigate: `--user` scope availability under the build user,
+  interaction with makepkg's own process handling, and the fallback contract. Resolve to an `F`/`STD`
+  or Abandoned. *Leaning: adopt `systemd-run` primary + `rlimit` fallback — it is the "hook the OS,
+  don't layer" fix and subsumes part of F4.*
+
+- **`2.3.0-Q4` — what is sysforge's privilege-escalation model for system-mutating verbs?** A
+  build-and-maintenance suite that runs `pacman -Syu` and writes under `/etc` needs elevation, but the
+  model is currently implicit. The question is whether to (a) require the whole process run as ambient
+  root, or (b) run unprivileged and escalate per privileged operation through the OS's own mechanisms —
+  `sudo` (inheriting the user's existing sudoers policy, timestamp cache, and audit trail) and/or a
+  `polkit` action file scoping the specific sentinel-gated verbs. (b) is the "hook, don't layer" path:
+  no re-implemented auth prompt, and the admin's existing policy governs. First step is an audit of
+  where the code assumes it is already root vs. where it shells out expecting escalation, so the actual
+  surface is known. Resolve to an `F`/`STD` (a privilege seam that all mutating verbs route through is a
+  candidate) or Abandoned before touching escalation. *Priority: medium (security posture; touches every
+  mutating verb — decide the model before the surface grows).*
 
 ---
 
