@@ -130,6 +130,57 @@ straight off a `Q`.
   standards row (status `target`→`enforced` once a `test_standards_compliance.py` case guards it) +
   rationale in `docs/design/12-logging.md`, in the landing commit.
 
+- **`2.3.0-F7` — Warn when `cpu_quota` exceeds host core count (promoted from `2.3.0-Q1`).**
+  `_coerce_cpu_quota` (`build_throttle.py`) accepts arbitrarily large quotas (`"9999%"`, or a
+  fraction like `"2.0"`) with no check against `os.cpu_count()`, so a typo or a config copied from a
+  bigger box silently asks for more cores than exist (systemd clamps effectively, but the user gets
+  no signal). Emit a warning — not a drop or clamp — when the **resolved** percentage exceeds
+  `cpu_count*100`, guarding the single resolved `pct` *after* both the `N%` and fraction branches
+  converge (both forms can exceed; the earlier "only the `N%` form is affected" framing was wrong —
+  the fraction form's `round(frac*cores*100)` overshoots for `frac > 1`). Warn-only keeps the
+  module's "never raise, degrade with a warning" contract; systemd's own effective cap does the
+  harmless clamping. *Priority: low.*
+
+- **`2.3.0-F8` — Shared known-enum resolver for string-valued config (promoted from `2.3.0-Q2`).**
+  Three chokepoints handle unrecognized string values three ways: `config.resolve_repo_mode` returns
+  unknowns **through unchanged** (`return raw`, so `repo_mode = "pacmn"` flows downstream
+  unvalidated), `config.resolve_repo_track` **silently** coerces to `"stable"`, and the throttle
+  `_coerce_*` helpers **warn-and-drop**. Adopt one policy — validate against the known vocabulary,
+  warn on mismatch, fall back to the documented default — via a shared
+  `resolve_enum(raw, known, default, *, key)` seam. Scope to `repo_mode` + `repo_track` first; the
+  enum check must run **after** `repo_mode`'s legacy-alias mapping (`profiled`→`build_from_source`),
+  not replace it. Defer any `check_standards` enforcement (a future `STD`) until a census
+  (`[log] verbosity`, ionice class names, …) shows enough readers to justify locking it down.
+  *Priority: low (robustness/consistency; no correctness failure today — bad values either pass
+  through inertly or coerce to a safe default).*
+
+- **`2.3.0-F9` — `systemd-run --scope` as the primary tier for *all* build resource enforcement
+  (promoted from `2.3.0-Q3`).** As shipped by `2.2.0-F4`, `build_throttle.wrapper_argv` already
+  routes a `cpu_quota` build (and its `MemoryMax`) through a `systemd-run --scope --user` cgroup, but
+  a `mem_limit` set **alone** (no `cpu_quota`) still falls to an `RLIMIT_AS` preexec — the escapable
+  path, since an rlimit on the single preexec child leaks across makepkg's fork tree whereas a
+  cgroup `MemoryMax` is kernel-enforced hierarchically over all descendants. Emit a scope carrying
+  `-p MemoryMax=` even when `cpu_quota` is absent, demoting `RLIMIT_AS` to a pure non-systemd
+  fallback; `resolve_child_mem_cap` already arbitrates so the two never double-apply. *Priority: low
+  (hardening; "hook the OS, don't layer").* **Spec:** `systemd.resource-control(5)`
+  (`MemoryMax`/`CPUQuota`/`IOWeight`), `systemd-run(1)`, cgroup-v2. **Standards home on adoption:**
+  new standards row (status `target`→`enforced` once a `test_standards_compliance.py` case guards
+  it) + rationale in the throttle/resource-control design chapter, in the landing commit.
+
+- **`2.3.0-F10` — Privilege seam for system-mutating operations (promoted from `2.3.0-Q4`).** The
+  escalation *model* is already de-facto decided — sysforge runs unprivileged and escalates per
+  operation via `sudo` — but ad-hoc: ~20 hardcoded `["sudo", …]` prefixes across `pacman.py`,
+  `kernel.py`, `reconfigure.py`, `toolchain.py`, `fs_provision.py`, so there is no single audit
+  point, no way to offer `polkit` scoping, and no guarantee a new mutating verb escalates
+  consistently. Introduce a `run_privileged(argv)` seam all mutating operations route through,
+  layered on the `2.3.0-STD1` run seam (not a parallel abstraction). First task is the audit of where
+  code assumes it is already root (`reconfigure.py` branches on `os.geteuid() == 0`) vs. shells out
+  expecting escalation, so the actual surface is known. *Priority: medium (security posture; touches
+  every mutating verb — decide the seam before the surface grows).* **Spec:** `sudoers(5)`,
+  `polkit(8)` + `polkit.action(5)`. **Standards home on adoption:** new standards row + rationale in
+  a (likely new, cross-cutting) privilege-seam design chapter, in the landing commit; pairs with
+  `2.3.0-STD1`.
+
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
   specificity: more AND'd conditions = higher weight), with manual `priority`
@@ -181,70 +232,6 @@ straight off a `Q`.
   migrate to the seam vs. be grandfathered with a documented carve-out (streaming/interactive callers
   that deliberately bypass `run_or_raise`'s capture). *Priority: medium (locks in an existing invariant;
   prevents subprocess-seam drift).*
-
-### Questions
-
-- **`2.3.0-Q1` — should throttle percentages be sanity-checked against host core count?**
-  Prompted by "what happens if a throttling setting is set higher than 100%?" The premise
-  (any value >100% is nonsensical and should be ignored) does **not** hold for the one
-  percent-valued throttle knob that exists: `cpu_quota` is a systemd `CPUQuota` where
-  `100%` = one core's worth, so `"600%"` (six cores) is valid and intended
-  (`build_throttle._CPU_QUOTA_RE`, `_coerce_cpu_quota`). The real open question is the
-  *upper* bound: `_coerce_cpu_quota` accepts arbitrarily large values (`"9999%"`) with no
-  check against `os.cpu_count()`, so a typo or a config copied from a bigger box silently
-  asks for more cores than exist (systemd clamps effectively, but the user gets no signal).
-  Decide: (a) leave as-is (systemd's effective cap is harmless), (b) warn — not drop — when
-  `N% > cores*100`, mirroring the existing warn-and-degrade style of the other `_coerce_*`
-  helpers, or (c) clamp to `cores*100`. Note the fraction form already self-limits via
-  `round(frac*cores*100)`, so only the explicit `N%` form is affected. Resolve to a `B`/`F`
-  or Abandoned before touching `build_throttle.py`. *Leaning: (b) warn-only — consistent with
-  the module's "never raise, degrade with a warning" contract.*
-
-- **`2.3.0-Q2` — inconsistent handling of invalid/unparseable string-value config settings.**
-  Prompted by "how do the string-value config settings handle invalid values?" Audit finds
-  three different policies for the same class of setting: `config.resolve_repo_mode` returns an
-  unrecognized value **through unchanged** (`return raw`), so a typo like `repo_mode = "pacmn"`
-  flows downstream unvalidated; `config.resolve_repo_track` **silently** coerces unknowns to
-  `"stable"` with no warning; the throttle `_coerce_*` helpers **warn-and-drop**. This is
-  organic drift (chokepoints written at different times), the same root-cause shape as
-  `2.3.0-B2`. The question is whether to adopt one policy — most likely *validate against the
-  known vocabulary, warn on mismatch, fall back to the documented default* — across the
-  string-valued readers, and how wide the sweep should be (repo_mode/repo_track first, then a
-  census of the other string keys: `[log] verbosity`, `ionice` class names, etc.). Resolve to
-  a scoped `F`/`STD` (a shared "known-enum resolver" seam is a candidate) or Abandoned before
-  implementing. *Priority: low (robustness/consistency; no correctness failure today — bad
-  values either pass through inertly or coerce to a safe default).*
-
-- **`2.3.0-Q3` — should `systemd-run --scope` become the primary build resource-enforcement
-  mechanism?** Today throttle/limit enforcement is (or, per the `2.2.0-F4` `mem_limit` design, will
-  be) a child `preexec_fn` `rlimit` plus a systemd `MemoryMax`/`CPUQuota` layer. The `rlimit` path is
-  the layered one: an `rlimit` set on a single preexec applies to that child but is easy to escape as
-  makepkg forks its own subprocess tree, whereas `systemd-run --user --scope -p MemoryMax= -p CPUQuota=
-  -p IOWeight=` places the *entire* build in a cgroup-v2 slice the kernel enforces hierarchically
-  across all descendants, inspectable via `systemctl status`. The question: make `systemd-run` the
-  primary enforcement with `rlimit` as the non-systemd fallback, or keep the current dual scheme?
-  This overlaps in-flight `2.2.0-F4` and the throttle knobs in `2.3.0-Q1`, so **decide before F4
-  lands** rather than reworking after. Investigate: `--user` scope availability under the build user,
-  interaction with makepkg's own process handling, and the fallback contract. Resolve to an `F`/`STD`
-  or Abandoned. *Leaning: adopt `systemd-run` primary + `rlimit` fallback — it is the "hook the OS,
-  don't layer" fix and subsumes part of F4.* **Spec:** `systemd.resource-control(5)` (`MemoryMax`/
-  `CPUQuota`/`IOWeight`), `systemd-run(1)`, cgroup-v2. **Standards home on promotion:** new standards row
-  (status `target`→`enforced`) + rationale in the throttle/resource-control design chapter, in the
-  landing commit.
-
-- **`2.3.0-Q4` — what is sysforge's privilege-escalation model for system-mutating verbs?** A
-  build-and-maintenance suite that runs `pacman -Syu` and writes under `/etc` needs elevation, but the
-  model is currently implicit. The question is whether to (a) require the whole process run as ambient
-  root, or (b) run unprivileged and escalate per privileged operation through the OS's own mechanisms —
-  `sudo` (inheriting the user's existing sudoers policy, timestamp cache, and audit trail) and/or a
-  `polkit` action file scoping the specific sentinel-gated verbs. (b) is the "hook, don't layer" path:
-  no re-implemented auth prompt, and the admin's existing policy governs. First step is an audit of
-  where the code assumes it is already root vs. where it shells out expecting escalation, so the actual
-  surface is known. Resolve to an `F`/`STD` (a privilege seam that all mutating verbs route through is a
-  candidate) or Abandoned before touching escalation. *Priority: medium (security posture; touches every
-  mutating verb — decide the model before the surface grows).* **Spec:** `sudoers(5)`, `polkit(8)` +
-  `polkit.action(5)`. **Standards home on promotion:** new standards row + rationale in a (likely new,
-  cross-cutting) privilege-seam design chapter, in the landing commit.
 
 ---
 
