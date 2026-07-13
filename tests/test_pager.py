@@ -65,6 +65,44 @@ def test_empty_pager_env_ignored(monkeypatch):
     assert pager._pager_candidates() == [["less", "-RF"], ["more"]]
 
 
+def test_pager_env_less_dash_x_combined_is_stripped(monkeypatch):
+    # $PAGER="less -RFX" — a combined short-flag cluster smuggling -X. The seam
+    # must strip only the X, keeping -RF, so an inherited $PAGER can't
+    # reintroduce the B5 alt-screen mangling on the --interactive review path.
+    monkeypatch.setenv("PAGER", "less -RFX")
+    cands = pager._pager_candidates()
+    assert cands[0] == ["less", "-RF"]
+    for c in cands:
+        assert not any("X" in tok for tok in c if tok.startswith("-")), c
+
+
+def test_pager_env_less_separate_dash_x_stripped(monkeypatch):
+    monkeypatch.setenv("PAGER", "less -R -X")
+    assert pager._pager_candidates()[0] == ["less", "-R"]
+
+
+def test_pager_env_less_no_init_long_flag_stripped(monkeypatch):
+    # --no-init is the long spelling of -X; it must go too.
+    monkeypatch.setenv("PAGER", "less --no-init -R")
+    assert pager._pager_candidates()[0] == ["less", "-R"]
+
+
+def test_pager_env_non_less_pager_untouched(monkeypatch):
+    # Only `less` reads -X as alt-screen suppression; leave other pagers'
+    # flags alone (a foreign pager may use -X for its own meaning).
+    monkeypatch.setenv("PAGER", "most -X")
+    assert pager._pager_candidates()[0] == ["most", "-X"]
+
+
+def test_sanitize_less_value_strips_x():
+    assert pager._sanitize_less_value("-RFX") == "-RF"
+    assert pager._sanitize_less_value("-R -X") == "-R"
+    assert pager._sanitize_less_value("--no-init -R") == "-R"
+    assert pager._sanitize_less_value("-RF") == "-RF"
+    assert pager._sanitize_less_value("-X") == ""
+    assert pager._sanitize_less_value("") == ""
+
+
 class _FakeProc:
     def __init__(self):
         import io
@@ -101,3 +139,29 @@ def test_pager_releases_progress_region_around_subprocess(monkeypatch):
 
     # Region released before the body writes to the pager, restored after.
     assert events == ["suspend-enter", "body", "suspend-exit"]
+
+
+def test_maybe_pager_strips_dash_x_from_less_env(monkeypatch):
+    """An inherited ``$LESS`` carrying ``-X`` is read by less *automatically*
+    even when the argv is the built-in ``less -RF`` fallback — so the seam must
+    hand the pager subprocess a sanitized ``$LESS``. This is the second B1
+    vector (the first being the ``$PAGER`` argv, covered above)."""
+    monkeypatch.delenv("PAGER", raising=False)
+    monkeypatch.setenv("LESS", "-RFX")
+    monkeypatch.setattr(pager.sys.stdout, "isatty", lambda: True, raising=False)
+
+    captured: dict = {}
+
+    def _fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        captured["env"] = kw.get("env")
+        return _FakeProc()
+
+    monkeypatch.setattr(pager.subprocess, "Popen", _fake_popen)
+
+    with pager.maybe_pager(True):
+        pass
+
+    env = captured["env"]
+    assert env is not None, "pager must run with an explicit sanitized env"
+    assert "X" not in env.get("LESS", ""), env.get("LESS")
