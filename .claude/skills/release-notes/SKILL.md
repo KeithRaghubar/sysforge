@@ -20,8 +20,18 @@ date-stamp, or commit** — the release script owns those steps.
 ## What to do when invoked
 
 1. **Determine the target version.** Read the current version from
-   `pyproject.toml` and compute the bump. If the user hasn't said which bump kind
-   (major/minor/patch) they intend, ask.
+   `pyproject.toml` and compute the bump. **Suggest the bump kind from the
+   accumulator's Keep a Changelog sections** (SemVer signals), then confirm with
+   the user before proceeding:
+
+   - any `**Breaking:**`-prefixed entry, or a `## Removed` section → **major**
+   - a `## Added` section (and no breaking/removed) → **minor**
+   - only `## Fixed` / `## Security` / `## Deprecated` → **patch**
+
+   State the recommendation and the entries that drove it (e.g. "Recommend
+   **minor**: two `Added` items, no breaking changes"). If the user already named
+   a bump kind, honour it but flag any mismatch (e.g. they said "patch" but the
+   notes contain a `Removed` section).
 
 2. **Read the accumulator** (`docs/release-notes/unreleased.md`) — this holds the
    per-task entries appended as items shipped this cycle. Cross-check for gaps
