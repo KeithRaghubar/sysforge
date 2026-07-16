@@ -70,6 +70,19 @@ def _use_pyalpm() -> bool:
     return _HAS_PYALPM and not os.environ.get("SYSFORGE_PACMAN_NO_PYALPM")
 
 
+def _alpm():
+    """Return the ``pyalpm`` module, narrowed away from its None fallback.
+
+    pyalpm has no type stubs and is an optional import (``pyalpm = None`` when
+    absent, see above) so every attribute access on it reads as Optional to
+    pyright. Every call site below is already gated by ``_use_pyalpm()``,
+    which is True only when the real import succeeded — so this is always
+    non-None in practice; the assert makes that provable at each use.
+    """
+    assert pyalpm is not None  # noqa: S101 — internal invariant, guarded by _use_pyalpm()
+    return pyalpm
+
+
 _PACMAN_CONF = Path("/etc/pacman.conf")
 _alpm_handle = None
 
@@ -85,7 +98,7 @@ def _read_sync_repo_names() -> list[str]:
     repos: list[str] = []
     section_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
     try:
-        with open(_PACMAN_CONF, encoding="utf-8") as f:
+        with _PACMAN_CONF.open(encoding="utf-8") as f:
             for line in f:
                 m = section_re.match(line)
                 if m and m.group(1) != "options":
@@ -100,11 +113,11 @@ def _get_alpm_handle():
     global _alpm_handle
     if _alpm_handle is not None:
         return _alpm_handle
-    handle = pyalpm.Handle("/", "/var/lib/pacman")
+    handle = _alpm().Handle("/", "/var/lib/pacman")
     for repo in _read_sync_repo_names():
         try:
             handle.register_syncdb(repo, 0)
-        except pyalpm.error:
+        except _alpm().error:
             continue
     _alpm_handle = handle
     return _alpm_handle
@@ -146,7 +159,7 @@ def _resolve_makepkg_path(key: str) -> Path | None:
     raw = raw.strip().strip("\"'")
     if not raw:
         return None
-    return Path(os.path.expanduser(os.path.expandvars(raw)))
+    return Path(os.path.expandvars(raw)).expanduser()
 
 
 def get_pkgdest() -> Path | None:
@@ -273,7 +286,7 @@ def get_pacman_cache_dirs() -> list[Path]:
     dirs: list[Path] = []
     in_options = False
     try:
-        with open(_PACMAN_CONF, encoding="utf-8") as f:
+        with _PACMAN_CONF.open(encoding="utf-8") as f:
             for raw in f:
                 line = raw.strip()
                 if line.startswith("[") and line.endswith("]"):
@@ -411,11 +424,7 @@ def filter_pkgs_to_installed(
     dropped: list = []
     for p in pkg_paths:
         pn = read_pkgname_from_file(p)
-        if pn is None:
-            keep.append(p)
-        elif pn in installed:
-            keep.append(p)
-        elif read_pkg_replaces_from_file(p) & installed:
+        if pn is None or pn in installed or read_pkg_replaces_from_file(p) & installed:
             keep.append(p)
         else:
             dropped.append((p, pn))
@@ -541,9 +550,9 @@ def filter_missing_deps(deps: list) -> list:
             localdb = _get_alpm_handle().get_localdb()
             return [
                 dep for dep in deps
-                if pyalpm.find_satisfier(localdb.pkgcache, dep) is None
+                if _alpm().find_satisfier(localdb.pkgcache, dep) is None
             ]
-        except pyalpm.error:
+        except _alpm().error:
             pass
     result = subprocess.run(
         ["pacman", "-T"] + deps,
@@ -659,7 +668,7 @@ def get_installed_version(pkgname: str) -> str | None:
         try:
             pkg = _get_alpm_handle().get_localdb().get_pkg(pkgname)
             return pkg.version if pkg else None
-        except pyalpm.error:
+        except _alpm().error:
             pass
     result = subprocess.run(
         ["pacman", "-Q", pkgname],
@@ -679,7 +688,7 @@ def get_all_installed_packages() -> dict[str, str]:
         try:
             localdb = _get_alpm_handle().get_localdb()
             return {pkg.name: pkg.version for pkg in localdb.pkgcache}
-        except pyalpm.error:
+        except _alpm().error:
             pass
     result = subprocess.run(["pacman", "-Q"], capture_output=True, text=True)
     if result.returncode != 0:
@@ -708,7 +717,7 @@ def get_foreign_packages() -> dict[str, str]:
                 for pkg in handle.get_localdb().pkgcache
                 if pkg.name not in sync_names
             }
-        except pyalpm.error:
+        except _alpm().error:
             pass
     result = subprocess.run(["pacman", "-Qm"], capture_output=True, text=True)
     if result.returncode != 0:
@@ -730,7 +739,7 @@ def get_pacman_sync_version(pkgname: str) -> str | None:
                 if pkg:
                     return pkg.version
             return None
-        except pyalpm.error:
+        except _alpm().error:
             pass
     result = subprocess.run(["pacman", "-Si", "--", pkgname], capture_output=True, text=True)
     if result.returncode != 0:

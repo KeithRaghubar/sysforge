@@ -110,39 +110,37 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sysforge import log
+
 _log = log.get_logger("TOOLCHAIN")
+from sysforge.build_core import make_build_options
 from sysforge.pipeline.stages.base import Stage
+from sysforge.primitives import build_fingerprint, fs_provision, toolchain_safety
 from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.config import (
+    REPO_MODE_PACMAN,
     find_pkgbuild,
     load_sysforge_toml,
-    set_default_toolchain,
     resolve_repo_mode,
     resolve_repo_track,
-    REPO_MODE_PACMAN,
+    set_default_toolchain,
 )
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
     evaluate_strict,
     render_preflight,
 )
-from sysforge.primitives.paths import TOOLCHAIN_PATH, resolve_packages_path
-from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
-from sysforge.primitives import build_fingerprint, fs_provision, toolchain_safety
+from sysforge.primitives.makepkg_flags import SYNC_FLAGS
 from sysforge.primitives.makepkg_pgo import resolve_pgo_store
+from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 from sysforge.primitives.pacman import (
     batch_install_pkgs,
     cached_pkg_files_for,
     get_pkgdest,
     install_repo_pkgs,
 )
-from sysforge.primitives.makepkg_flags import SYNC_FLAGS
-from sysforge.primitives.makepkg_wrapper import run as makepkg_run
-from sysforge.build_core import make_build_options
+from sysforge.primitives.paths import TOOLCHAIN_PATH, resolve_packages_path
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import make_child_preexec
-from sysforge.primitives.stage_sentinel import sentinel_scope
-from sysforge.ui import progress
 from sysforge.primitives.source_sync import (
     STATUS_DIVERGED,
     STATUS_FAILED,
@@ -151,6 +149,9 @@ from sysforge.primitives.source_sync import (
     SyncRequest,
     get_scheduler,
 )
+from sysforge.primitives.stage_sentinel import sentinel_scope
+from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
+from sysforge.ui import progress
 
 _SYNC_BLOCKING_STATUSES = frozenset({
     STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED,
@@ -224,7 +225,7 @@ def _sync_pkgbuild_dirs(
             pkgbuild_dir=pkgbuild_dir,
             source="repo" if pkgbase in in_repo else "aur",
         )
-        for pkgbase, pkgbuild_dir in zip(pkgbases, dirs)
+        for pkgbase, pkgbuild_dir in zip(pkgbases, dirs, strict=True)
     ]
 
     # Repo packages have no AUR-RPC entry; priming the RPC with their
@@ -278,13 +279,13 @@ _DEFAULT_LLVM_NON_PGO = ["clang", "lld", "polly", "compiler-rt", "openmp", "spir
 # ._maybe_patch_llvm_targets) and the lib32 PGO scrub (makepkg_conf) keep that
 # path correct.
 _DEFAULT_LLVM_LIB32: list[str] = []
-_DEFAULT_STAGING_1 = "/var/tmp/sysforge-llvm-stage1"
-_DEFAULT_STAGING = "/var/tmp/sysforge-llvm-stage2"
+_DEFAULT_STAGING_1 = "/var/tmp/sysforge-llvm-stage1"  # noqa: S108 — stable multi-stage LLVM build path (cross-stage ABI coherence), not a temp file
+_DEFAULT_STAGING = "/var/tmp/sysforge-llvm-stage2"  # noqa: S108 — stable multi-stage LLVM build path (cross-stage ABI coherence), not a temp file
 # Pass-4 staging prefix. Holds the *final optimized* libLLVM (+ headers + cmake
 # configs) so the non-pgo suite (clang, lld, …) links against the exact libLLVM
 # that ships — guaranteeing ABI coherence. Distinct from stage2 (the Pass-3
 # training binaries) so the two never conflate. See _build_llvm_pgo_inner Pass 4.
-_DEFAULT_STAGING_3 = "/var/tmp/sysforge-llvm-stage3"
+_DEFAULT_STAGING_3 = "/var/tmp/sysforge-llvm-stage3"  # noqa: S108 — stable multi-stage LLVM build path (cross-stage ABI coherence), not a temp file
 # pgo_store resolution (toolchain.toml > SYSFORGE_PGO_STORE > /var/cache default)
 # lives in primitives.makepkg_pgo.resolve_pgo_store — the one home shared with
 # the reader (_resolve_pgo_state) and the wrapper's orphan-profraw guard.
@@ -336,7 +337,7 @@ def _load_toolchain_config() -> dict | None:
     if not TOOLCHAIN_PATH.exists():
         return None
     try:
-        with open(TOOLCHAIN_PATH, "rb") as f:
+        with TOOLCHAIN_PATH.open("rb") as f:
             return tomllib.load(f)
     except Exception as e:
         raise RuntimeError(
@@ -354,7 +355,7 @@ def _resolve_packages_repo_mode(config: dict) -> str:
     """
     try:
         path = resolve_packages_path(config)
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return REPO_MODE_PACMAN
@@ -1850,7 +1851,7 @@ def _check_llvm_link_resolution() -> list[str]:
                 continue
             libllvm_paths.append(tail[0])
         for p in libllvm_paths:
-            if "/var/tmp/sysforge-llvm-stage" in p:
+            if "/var/tmp/sysforge-llvm-stage" in p:  # noqa: S108 — reference literal for a diagnostic substring check, not a temp file created here
                 issues.append(
                     f"{label} resolves libLLVM from a staging prefix: {p} "
                     "— Pass 4 packaged a bad RPATH or the install is incomplete"
@@ -2291,8 +2292,10 @@ def _build_llvm_pgo_inner(
 
     if skip_profgen:
         _log.ui(
-            f"[PGO] Skipping passes 1-3 (instrument/bootstrap/train), building with existing profdata  "
-            f"({n_total} package(s) across {len(set({**pgo_map, **non_pgo_map, **lib32_map}.values()))} PKGBUILD(s))  "
+            f"[PGO] Skipping passes 1-3 (instrument/bootstrap/train), "
+            f"building with existing profdata  "
+            f"({n_total} package(s) across "
+            f"{len(set({**pgo_map, **non_pgo_map, **lib32_map}.values()))} PKGBUILD(s))  "
             f"pgo_store={pgo_store}",
         )
 
@@ -2414,10 +2417,8 @@ def _build_llvm_pgo_inner(
             if not options.dry_run:
                 spurious = list(pgo_store.glob("**/*.profraw"))
                 for f in spurious:
-                    try:
+                    with contextlib.suppress(OSError):
                         f.unlink()
-                    except OSError:
-                        pass
                 if spurious:
                     _log.info(
                         f"[PGO] Purged {len(spurious)} spurious profraw file(s) "
@@ -3603,12 +3604,10 @@ def _run_bolt(tcfg: dict, config: dict, options, variant: str | None) -> None:
 
         # Provenance sidecar (the build_state entry stays the PGO record; this
         # marks that a post-link BOLT pass was applied on top).
-        try:
+        with contextlib.suppress(OSError):
             (store / "applied.txt").write_text(
                 f"bolt_llvm applied to {clang}\n", encoding="utf-8"
             )
-        except OSError:
-            pass
         _log.ui(
             "[BOLT] Pass 5 complete — /usr/bin/clang is now PGO+BOLT optimized "
             f"(build_mode {_bolt.BUILD_MODE})"

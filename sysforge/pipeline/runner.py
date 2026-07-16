@@ -24,6 +24,7 @@ Public API:
 """
 import os
 import sys
+from pathlib import Path
 from sysforge import log
 _log = log.get_logger("PIPELINE")
 
@@ -118,7 +119,9 @@ def run_stage_standalone(stage, config, options):
                 try:
                     state.save()
                 except PermissionError:
-                    _log.warn(f"Cannot write state to {state_dir} — progress will not be checkpointed")
+                    _log.warn(
+                        f"Cannot write state to {state_dir} — progress will not be checkpointed"
+                    )
             _log.info(f"{stage.name}: complete")
         success = True
     except RuntimeError as e:
@@ -202,6 +205,7 @@ def run_pipeline(config, options, stages=None):
 
     # Open unified log
     unified_log_active = not options.no_unified_log and not options.dry_run
+    unified_log_path: Path | None = None
     if unified_log_active:
         log_dir = options.log_dir or state_dir
         unified_log_path = log_dir / "sysforge.log"

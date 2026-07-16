@@ -121,7 +121,7 @@ def resolve_method_store(
 def _try_load_toml(path: Path) -> dict | None:
     """Load a TOML file, returning None on any error."""
     try:
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             return tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError, KeyError, ValueError):
         return None
@@ -150,7 +150,7 @@ def _resolve_pgo_state(pkgbuild_path: Path) -> tuple[str, str]:
     if not toolchain_path.exists():
         return ("absent", "toolchain.toml not found — no pgo_store configured")
     try:
-        with open(toolchain_path, "rb") as f:
+        with toolchain_path.open("rb") as f:
             tcfg = tomllib.load(f)
     except Exception as e:
         return ("absent", f"cannot read toolchain.toml: {e}")

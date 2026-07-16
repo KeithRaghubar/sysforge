@@ -64,7 +64,7 @@ def _read_toolchain_targets(path: Path):
     if not path.is_file():
         return None
     try:
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError) as e:
         _log.warn(f"failed to read {path}: {e} — falling back to autodetect")
@@ -89,7 +89,7 @@ def _read_hardware_targets(path: Path):
     if not path.is_file():
         return None
     try:
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return None

@@ -583,10 +583,7 @@ def _format_group(
 ) -> list[str]:
     lines = [f"  {title}:"]
     for k, v in group.items():
-        if v is None:
-            base = f"    {k} = <unset>"
-        else:
-            base = f"    {k} = {v}"
+        base = f"    {k} = <unset>" if v is None else f"    {k} = {v}"
         if divergences is not None:
             base += _annotate_var(k, v, divergences)
         lines.append(base)
@@ -661,7 +658,10 @@ def format_env_chain(snap: EnvChainSnapshot, *, verbosity: int = 0) -> str:
         count = len(snap.sources[source_name])
         lines.append(f"    {source_name}: {count} var(s)")
     if snap.sysforge_config_profile and "sysforge_config" in snap.sources:
-        lines.append(f"    (sysforge_config uses [defaults] profile = {snap.sysforge_config_profile!r})")
+        lines.append(
+            f"    (sysforge_config uses [defaults] profile = "
+            f"{snap.sysforge_config_profile!r})"
+        )
     if snap.config_load_error:
         lines.append(f"    sysforge_config: not loaded — {snap.config_load_error}")
     if snap.parse_caveats:

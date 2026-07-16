@@ -33,7 +33,8 @@ _ACTION_FORMATS: dict[str, tuple[str, str, str]] = {
     "DEVEL_EVAL_FAILED": ("DEVEL_EVAL_FAILED", "devel-eval-failed",
                           "{pkgbase}: pkgver() resolution failed (skipped){star}"),
     "DOWNGRADE":         ("DOWNGRADE",         "downgrade",
-                          "{pkgbase}: installed {installed_ver} > pkgbuild {pkgbuild_ver} (skipped){star}"),
+                          "{pkgbase}: installed {installed_ver} > pkgbuild "
+                          "{pkgbuild_ver} (skipped){star}"),
     "PULL_FAILED":       ("PULL_FAILED",       "pull failed",
                           "{pkgbase}: git pull failed (skipped){star}"),
     "RATE_LIMITED":      ("RATE_LIMITED",      "rate-limited",

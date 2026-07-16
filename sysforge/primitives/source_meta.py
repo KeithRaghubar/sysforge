@@ -59,7 +59,7 @@ class SourceMetaCache:
         if not self.path.exists():
             return {}, {"schema_version": SCHEMA_VERSION}
         try:
-            with open(self.path, "rb") as f:
+            with self.path.open("rb") as f:
                 raw = tomllib.load(f)
         except (OSError, tomllib.TOMLDecodeError):
             return {}, {"schema_version": SCHEMA_VERSION}

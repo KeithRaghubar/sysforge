@@ -30,80 +30,14 @@ import os
 import shutil
 import subprocess
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
-
-from sysforge.primitives.config import (
-    _active_profiles_path,
-    find_pkgbuild,
-    load_config,
-    load_conflict_groups,
-    load_consumes_inference,
-    parse_system_makepkg_conf,
-)
-from sysforge.primitives.paths import SYSFORGE_TOML_PATH, TOOLCHAIN_PATH
-from sysforge.primitives.pkgbuild_meta import (
-    hardcoded_build_linker,
-    has_hardcoded_gcc,
-    is_musl_static_build,
-    parse_pkgbuild,
-)
-# Flag-string manipulation lives in makepkg_flags (owns the [FLAG] tag).
-# Re-exported here so emit_makepkg_conf and the CLI/update call sites
-# that import `expand_makepkg_flags` from makepkg_wrapper keep working.
-from sysforge.primitives.makepkg_artifacts import (
-    _find_built_packages,
-    _parse_built_pkg_filename,
-)
+from sysforge import log
+from sysforge.primitives.aur import import_pgp_keys
 from sysforge.primitives.build_throttle import resolve_throttle
-from sysforge.primitives.makepkg_conf import emit_makepkg_conf
-from sysforge.primitives.makepkg_env import resolve_env_vars
-from sysforge.primitives.makepkg_invoke import (
-    AlreadyBuilt,
-    RecoveryOutcome,  # noqa: F401  (re-export; tests build outcomes via mw.RecoveryOutcome)
-    ToolchainMismatchError,
-    _build_failed_error,
-    _invoke_with_retry,
-    take_last_recovery,
-)
-from sysforge.profile_writer import write_package_compiler_override
-from sysforge.primitives.makepkg_pgo import (
-    _resolve_pgo_state,
-    _try_load_toml,
-    PGOBuildSkipped,
-    resolve_pgo_store,
-)
-from sysforge.primitives.makepkg_flags import INSTALL_FLAGS
-from sysforge.primitives.makepkg_flags import expand_makepkg_flags  # noqa: F401  (re-export)
-from sysforge.primitives.makepkg_flags import resolve_effective_linker
-from sysforge.primitives.pkgbuild_patcher import (
-    apply_patch_pkgbuild,
-    cleanup_patch_artifacts,
-    extract_pkgbuild_profile,
-    is_llvm_pkgbase,
-    patch_hotplug_fragment_merge,
-    patch_kconfig_targets,
-    patch_kernel_btf_guard,
-    patch_kernel_config_install,
-    patch_kernel_kconfig_apply,
-    patch_kernel_subpackages,
-    patch_llvm_dir,
-    patch_llvm_targets,
-    patch_build_linker,
-    patch_mesa_drivers,
-    patch_noninteractive_kconfig,
-    patch_package_suffix,
-    patch_pkgbase_rename,
-    patch_pkgbuild_groups,
-    patch_subshell_env_reset,
-    validate_patched_meson_pkgbuild,
-    validate_patched_pkgbuild,
-    warn_artifacts_left,
-    write_extracted_profile,
-)
-from sysforge.primitives.prompt import prompt_choice
 from sysforge.primitives.cache_probe import (
     diff_ccache,
     diff_sccache,
@@ -116,14 +50,88 @@ from sysforge.primitives.cache_probe import (
     report_thinlto_cache,
     reset_session,
 )
-from sysforge.primitives.aur import import_pgp_keys
-from sysforge.primitives.source_sync import (
-    STATUS_DIVERGED, STATUS_FAILED, STATUS_PURGE_REFUSED, STATUS_RATE_LIMITED,
-    SyncRequest, get_scheduler,
+from sysforge.primitives.config import (
+    _active_profiles_path,
+    find_pkgbuild,
+    load_config,
+    load_conflict_groups,
+    load_consumes_inference,
+    parse_system_makepkg_conf,
 )
 from sysforge.primitives.dep_analysis import run_dep_analysis
 from sysforge.primitives.failure import handle_failure
-from sysforge import log
+
+# Flag-string manipulation lives in makepkg_flags (owns the [FLAG] tag).
+# Re-exported here so emit_makepkg_conf and the CLI/update call sites
+# that import `expand_makepkg_flags` from makepkg_wrapper keep working.
+from sysforge.primitives.makepkg_artifacts import (
+    _find_built_packages,
+    _parse_built_pkg_filename,
+)
+from sysforge.primitives.makepkg_conf import emit_makepkg_conf
+from sysforge.primitives.makepkg_env import resolve_env_vars
+from sysforge.primitives.makepkg_flags import (
+    INSTALL_FLAGS,
+    expand_makepkg_flags,  # noqa: F401  (re-export)
+    resolve_effective_linker,
+)
+from sysforge.primitives.makepkg_invoke import (
+    AlreadyBuilt,
+    RecoveryOutcome,  # noqa: F401  (re-export; tests build outcomes via mw.RecoveryOutcome)
+    ToolchainMismatchError,
+    _build_failed_error,
+    _invoke_with_retry,
+    take_last_recovery,
+)
+from sysforge.primitives.makepkg_pgo import (
+    PGOBuildSkipped,
+    _resolve_pgo_state,
+    _try_load_toml,
+    resolve_pgo_store,
+)
+from sysforge.primitives.paths import SYSFORGE_TOML_PATH, TOOLCHAIN_PATH
+from sysforge.primitives.pkgbuild_meta import (
+    hardcoded_build_linker,
+    has_hardcoded_gcc,
+    is_musl_static_build,
+    parse_pkgbuild,
+)
+from sysforge.primitives.pkgbuild_patcher import (
+    apply_patch_pkgbuild,
+    cleanup_patch_artifacts,
+    extract_pkgbuild_profile,
+    is_llvm_pkgbase,
+    patch_build_linker,
+    patch_hotplug_fragment_merge,
+    patch_kconfig_targets,
+    patch_kernel_btf_guard,
+    patch_kernel_config_install,
+    patch_kernel_kconfig_apply,
+    patch_kernel_subpackages,
+    patch_llvm_dir,
+    patch_llvm_targets,
+    patch_mesa_drivers,
+    patch_noninteractive_kconfig,
+    patch_package_suffix,
+    patch_pkgbase_rename,
+    patch_pkgbuild_groups,
+    patch_subshell_env_reset,
+    validate_patched_meson_pkgbuild,
+    validate_patched_pkgbuild,
+    warn_artifacts_left,
+    write_extracted_profile,
+)
+from sysforge.primitives.prompt import prompt_choice
+from sysforge.primitives.source_sync import (
+    STATUS_DIVERGED,
+    STATUS_FAILED,
+    STATUS_PURGE_REFUSED,
+    STATUS_RATE_LIMITED,
+    SyncRequest,
+    get_scheduler,
+)
+from sysforge.profile_writer import write_package_compiler_override
+
 # ABI / CACHE / PATCH tags are emitted by their owning modules (abi_check.py,
 # cache_probe.py, pkgbuild_patcher.py); CONF lives in makepkg_conf.py — this
 # orchestrator delegates to them.
@@ -144,13 +152,32 @@ from sysforge.primitives.profile import (
     variant_env_overlay,
 )
 
-
 # ---------------------------------------------------------------------------
 # Built-package install
 #
 # Conf emission / flag utils / env resolution / makepkg invocation now live in
 # makepkg_conf / makepkg_flags / makepkg_env / makepkg_invoke respectively.
 # ---------------------------------------------------------------------------
+
+
+class _ConfKwargs(TypedDict):
+    """Keyword shape re-used across the initial ``emit_makepkg_conf`` call and
+    the ``_reemit_conf`` retry closure in ``_run_build`` — mirrors that
+    function's keyword parameters field-for-field so the ``**_conf_kwargs``
+    expansion keeps each value's real type instead of widening to
+    ``bool | str | int | None``."""
+
+    kernel_build: bool
+    compiler_flags_extra: str | None
+    linker_flags_extra: str | None
+    strip_full_lto: bool
+    pkgbuild_has_hardcoded_gcc: bool
+    reactive_gcc_fallback: bool
+    is_lib32: bool
+    is_musl_static: bool
+    pkgbuild_options: list | None
+    toolchain_variant: str | None
+    jobs: int | None
 
 
 def _persist_recovery_overrides(pkgbase) -> None:
@@ -303,11 +330,9 @@ def _capture_built_manifest(patched_pkgbuild_path) -> None:
     names = [Path(ln.strip()).name for ln in r.stdout.splitlines() if ln.strip()]
     if not names:
         return
-    try:
+    with suppress(OSError):
         (patched.parent / _BUILT_MANIFEST_NAME).write_text(
             "\n".join(names) + "\n", encoding="utf-8")
-    except OSError:
-        pass
 
 
 def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
@@ -339,10 +364,8 @@ def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
     # unrelated build in the same dir doesn't read a stale artifact list.
     manifest = Path(pkgbuild_dir) / _BUILT_MANIFEST_NAME
     if manifest.is_file():
-        try:
+        with suppress(OSError):
             manifest.unlink()
-        except OSError:
-            pass
     return pkgs
 
 
@@ -725,7 +748,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         try:
             _ar.preflight_srcinfo(pkgbuild_path.parent, _srcinfo_behaviour)
         except RuntimeError as _e:
-            raise _build_failed_error(_e)
+            raise _build_failed_error(_e) from _e
 
         # Outer loop: on ToolchainMismatchError, regenerate the makepkg.conf
         # once with reactive_gcc_fallback=True (forcing the GCC+LTO guard on)
@@ -744,22 +767,27 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         is_musl_static = is_musl_static_build(pkgmeta)
         while True:
             try:
-                _conf_kwargs = dict(
-                    kernel_build=kernel_build,
-                    compiler_flags_extra=compiler_flags_extra,
-                    linker_flags_extra=linker_flags_extra,
-                    strip_full_lto=strip_full_lto,
-                    pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
-                    reactive_gcc_fallback=_reactive_retry_used,
-                    is_lib32=is_lib32,
-                    is_musl_static=is_musl_static,
-                    pkgbuild_options=pkgmeta.get("globals", {}).get("options"),
-                    toolchain_variant=toolchain_variant,
-                    jobs=resolve_throttle(resolved_profile, config).jobs,
-                )
+                # TypedDict keeps each keyword's real type (bool/str/int/None
+                # per-field) through the **_conf_kwargs expansion below —
+                # a plain dict() call would widen every value to the union
+                # of all of them (bool | str | int | None), which pyright
+                # then rejects against emit_makepkg_conf's narrow params.
+                _conf_kwargs: _ConfKwargs = {
+                    "kernel_build": kernel_build,
+                    "compiler_flags_extra": compiler_flags_extra,
+                    "linker_flags_extra": linker_flags_extra,
+                    "strip_full_lto": strip_full_lto,
+                    "pkgbuild_has_hardcoded_gcc": pkgbuild_has_hardcoded_gcc,
+                    "reactive_gcc_fallback": _reactive_retry_used,
+                    "is_lib32": is_lib32,
+                    "is_musl_static": is_musl_static,
+                    "pkgbuild_options": (pkgmeta or {}).get("globals", {}).get("options"),
+                    "toolchain_variant": toolchain_variant,
+                    "jobs": resolve_throttle(resolved_profile, config).jobs,
+                }
 
                 @contextmanager
-                def _reemit_conf(cc, cxx, ld, _kw=_conf_kwargs):
+                def _reemit_conf(cc, cxx, ld, _kw: _ConfKwargs = _conf_kwargs):
                     # ld is folded into LDFLAGS by emit via ld_override.
                     with emit_makepkg_conf(
                             resolved_profile, active_consumes,
@@ -794,7 +822,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                         "Toolchain mismatch persists after auto-retry — "
                         "aborting (check the PKGBUILD and profile flags)"
                     )
-                    raise _build_failed_error(e)
+                    raise _build_failed_error(e) from e
                 _build_log.warn(
                     "Auto-retrying build with GCC-compatible flags "
                     "(rewriting clang-only flags like -flto=thin)"
@@ -831,8 +859,16 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         pkgname = _pkgname_from_meta(pkgmeta)
         after_cc = probe_ccache()
         after_sc = probe_sccache()
-        cc_delta = diff_ccache(before_cc, after_cc) if before_cc is not None and after_cc is not None else None
-        sc_delta = diff_sccache(before_sc, after_sc) if before_sc is not None and after_sc is not None else None
+        cc_delta = (
+            diff_ccache(before_cc, after_cc)
+            if before_cc is not None and after_cc is not None
+            else None
+        )
+        sc_delta = (
+            diff_sccache(before_sc, after_sc)
+            if before_sc is not None and after_sc is not None
+            else None
+        )
         emit_build_stats(pkgname, cc_delta, sc_delta)
         record_build_result(pkgname, cc_delta, sc_delta)
 
@@ -858,7 +894,9 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                     pkgbuild_path.unlink()
                     _build_log.info(f"Removed patched PKGBUILD: {pkgbuild_path}")
             else:
-                _build_log.warn(f"Build failed — leaving patched PKGBUILD in place: {pkgbuild_path}")
+                _build_log.warn(
+                    f"Build failed — leaving patched PKGBUILD in place: {pkgbuild_path}"
+                )
 
     # The rename dict (or None) rides back to run() so build_state records the
     # renamed names + origin_pkgbase. When both the kernel local-rename and the
@@ -915,13 +953,23 @@ class BuildOptions:
     no_install: bool = False  # strip -i/--install: build the package but do not install it
     pgo_managed: bool = False
     source: str | None = None  # "aur" | "repo" | "git" | "local" — persisted in build_state
-    owner_stage: str | None = None  # e.g. "kernel" — persisted so `sysforge update` skips by default
-    toolchain_variant: str | None = None  # "gcc" | "stock_llvm" | "pgo_llvm" — persisted so `sysforge update` can flag drift
-    toolchain_fingerprint: str | None = None  # Q9: opaque active-toolchain identity — persisted so `sysforge update` flags same-variant rebuilds
-    cmake_llvm_dir: str | None = None  # force -DLLVM_DIR at a staged libLLVM prefix (toolchain PGO passes 1b/3b/3c)
-    pgo_mode: str | None = None  # "record" | "use" — mesa instrumentation PGO (`build --pgo`); no-op for non-mesa pkgbases
-    optimization_build_mode: str | None = None  # e.g. "autofdo_kernel" — stage-supplied optimization mode; seeds record_build_mode → -sysforge rename + build_state. mesa --pgo=use sets its own ("pgo_mesa") internally.
-    rename_pkgbase_to: str | None = None  # F40: patch the cloned upstream's pkgbase to this local name (coexist) — set by the kernel stage when pkgname != upstream_pkgname
+    # e.g. "kernel" — persisted so `sysforge update` skips by default
+    owner_stage: str | None = None
+    # "gcc" | "stock_llvm" | "pgo_llvm" — persisted so `sysforge update` can flag drift
+    toolchain_variant: str | None = None
+    # Q9: opaque active-toolchain identity — persisted so `sysforge update` flags
+    # same-variant rebuilds
+    toolchain_fingerprint: str | None = None
+    # force -DLLVM_DIR at a staged libLLVM prefix (toolchain PGO passes 1b/3b/3c)
+    cmake_llvm_dir: str | None = None
+    # "record" | "use" — mesa instrumentation PGO (`build --pgo`); no-op for non-mesa pkgbases
+    pgo_mode: str | None = None
+    # e.g. "autofdo_kernel" — stage-supplied optimization mode; seeds record_build_mode →
+    # -sysforge rename + build_state. mesa --pgo=use sets its own ("pgo_mesa") internally.
+    optimization_build_mode: str | None = None
+    # F40: patch the cloned upstream's pkgbase to this local name (coexist) — set by the
+    # kernel stage when pkgname != upstream_pkgname
+    rename_pkgbase_to: str | None = None
 
 
 def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
@@ -933,8 +981,8 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
     threaded into BuildState.record(build_seconds=...) (1.2.0-F21).
     """
     try:
-        from sysforge.primitives.build_state import BuildState, BUILD_MODE_SOURCE
         from sysforge.pipeline.state import resolve_state_dir
+        from sysforge.primitives.build_state import BUILD_MODE_SOURCE, BuildState
         from sysforge.primitives.vcs_pkgver import read_built_upstream_commit
         _state_dir, _ = resolve_state_dir(options.state_dir)
         bs = BuildState(_state_dir)
@@ -1104,11 +1152,16 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             profiles = config.get("profiles", {})
             if options.profile_override not in profiles:
                 raise RuntimeError(
-                    f"[BUILD] profile_override {options.profile_override!r} not found in loaded config"
+                    f"[BUILD] profile_override {options.profile_override!r} "
+                    "not found in loaded config"
                 )
-            resolved_profile = merge_extends(options.profile_override, profiles, conflict_groups=conflict_groups)
+            resolved_profile = merge_extends(
+                options.profile_override, profiles, conflict_groups=conflict_groups
+            )
             build_mode = normalize_build_mode(resolved_profile.get("build_mode"))
-            _build_log.info(f"Profile override: {options.profile_override!r} (build_mode={build_mode!r})")
+            _build_log.info(
+                f"Profile override: {options.profile_override!r} (build_mode={build_mode!r})"
+            )
         else:
             build_mode = get_build_mode(matched_rules, config)
             resolved_profile = None  # resolved below after extracted_profile is known
@@ -1257,6 +1310,10 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 pkgmeta, matched_rules, config, conflict_groups,
                 extracted_profile=extracted_profile,
             )
+        # resolved_profile is set on both branches above (profile_override
+        # path at line ~1158, the None path just above) — never actually None
+        # here, but pyright can't correlate the two separate `if` tests.
+        assert resolved_profile is not None  # noqa: S101 — internal invariant, not input validation
         if options.force_batch and not resolved_profile.get("batch", False):
             resolved_profile = dict(resolved_profile)
             resolved_profile["batch"] = True
@@ -1290,7 +1347,11 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         rename = _run_build(
                 pkgbuild_path, resolved_profile, config, groups,
                 active_consumes=active_consumes,
-                extracted_profile=extracted_profile if build_mode_uses_extracted_profile(build_mode) else None,
+                extracted_profile=(
+                    extracted_profile
+                    if build_mode_uses_extracted_profile(build_mode)
+                    else None
+                ),
                 pkgmeta=pkgmeta,
                 extra_flags=options.extra_flags,
                 interactive=options.interactive,
@@ -1351,10 +1412,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                 if _orphan_profraw:
                     _orphan_bytes = sum(p.stat().st_size for p in _orphan_profraw)
                     for _f in _orphan_profraw:
-                        try:
+                        with suppress(OSError):
                             _f.unlink()
-                        except OSError:
-                            pass
                     _build_log.info(
                         f"Purged {len(_orphan_profraw)} orphaned .profraw file(s) "
                         f"({_orphan_bytes / 1024 / 1024:.1f} MiB) from {_pgo_store} "

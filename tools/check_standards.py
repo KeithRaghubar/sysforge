@@ -42,6 +42,9 @@ Groups:
                 (shipped items): flags an open ID reusing a shipped number, an ID
                 listed both Planned and Abandoned, a shipped Q-typed ID, and
                 (warn) sequence gaps in the active pyproject version's prefix.
+    run_seam    External-command execution discipline: subprocess calls use
+                argv-list form (never a string command), and shell=True carries
+                a justified `# noqa: S602` from the single-site allowlist.
 
 Drift detection cases (verify these still fire after editing this script):
     - Add `Path.home() / ".cache/sysforge"` to a module other than paths.py.
@@ -53,11 +56,14 @@ Drift detection cases (verify these still fire after editing this script):
     - Add an ID to ROADMAP Planned that already appears in a shipped v*.md.
     - List the same ID in both the Planned and Abandoned ROADMAP sections.
     - Reference a Q-typed ID in a shipped release-notes file.
+    - Add `subprocess.run("echo hi")` (string form) to a sysforge/*.py file.
+    - Add `shell=True` without `# noqa: S602` to a sysforge/*.py file.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import shutil
 import subprocess
@@ -499,6 +505,86 @@ def next_id(repo: Path, prefix: str) -> str:
 
 
 # ===========================================================================
+# Group: run_seam  (subprocess-seam discipline — STD row 17)
+# ===========================================================================
+
+_SUBPROCESS_CALLS = {"run", "Popen", "call", "check_call", "check_output"}
+# Allowlist of paths permitted a justified shell=True (each entry also needs
+# an inline "noqa: S602" marker at the call site). Empty: no sysforge/ site
+# currently uses shell=True — this standard exists to keep it that way. A
+# future justified shell=True would add its path here in the same commit.
+_RUN_SEAM_SHELL_ALLOWLIST: frozenset[str] = frozenset()
+
+
+def check_run_seam(repo: Path) -> list[Finding]:
+    """External commands: argv-list form only; shell=True needs a justified noqa."""
+    findings: list[Finding] = []
+    for py in sorted((repo / "sysforge").rglob("*.py")):
+        rel = py.relative_to(repo).as_posix()
+        src = py.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(src, filename=rel)
+        except SyntaxError:
+            continue  # fail-safe: unparseable files are skipped, never flagged
+        lines = src.splitlines()
+        # Resolve how `subprocess` is imported in THIS file so aliased module
+        # imports (`import subprocess as _sp`) and direct function imports
+        # (`from subprocess import run`) are covered too — not just the literal
+        # `subprocess.run(...)` spelling. Row 17 claims *all* subprocess sites.
+        module_aliases: set[str] = set()
+        direct_funcs: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "subprocess":
+                        module_aliases.add(alias.asname or "subprocess")
+            elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+                for alias in node.names:
+                    if alias.name in _SUBPROCESS_CALLS:
+                        direct_funcs.add(alias.asname or alias.name)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # module-qualified: subprocess.run(...) / _sp.run(...)
+            is_seam_call = (
+                isinstance(func, ast.Attribute)
+                and func.attr in _SUBPROCESS_CALLS
+                and isinstance(func.value, ast.Name)
+                and func.value.id in module_aliases
+            )
+            # bare name from `from subprocess import run`
+            if not is_seam_call:
+                is_seam_call = isinstance(func, ast.Name) and func.id in direct_funcs
+            if not is_seam_call:
+                continue
+            lineno = node.lineno
+            # (a) first positional arg must not be a string literal
+            if node.args and isinstance(node.args[0], ast.Constant) \
+                    and isinstance(node.args[0].value, str):
+                findings.append(Finding(
+                    "run_seam", "error", f"{rel}:{lineno}",
+                    "subprocess call with a string command — use argv-list form "
+                    "(STD row 17)",
+                ))
+            # (b) shell=True must carry a "noqa: S602" marker and sit in the allowlist
+            for kw in node.keywords:
+                if kw.arg == "shell" and isinstance(kw.value, ast.Constant) \
+                        and kw.value.value is True:
+                    # scan the call's source lines for the noqa marker
+                    end = getattr(node, "end_lineno", lineno)
+                    span = "\n".join(lines[lineno - 1:end])
+                    justified = "noqa: S602" in span
+                    if not (justified and rel in _RUN_SEAM_SHELL_ALLOWLIST):
+                        findings.append(Finding(
+                            "run_seam", "error", f"{rel}:{lineno}",
+                            "shell=True requires a justified `# noqa: S602` and "
+                            "allowlist entry (STD row 17)",
+                        ))
+    return findings
+
+
+# ===========================================================================
 # Driver
 # ===========================================================================
 
@@ -509,6 +595,7 @@ GROUPS = {
     "encoding":    check_encoding,
     "claude_md":   check_claude_md,
     "roadmap_ids": check_roadmap_ids,
+    "run_seam":    check_run_seam,
 }
 
 

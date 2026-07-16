@@ -44,28 +44,39 @@ class RunOptions:
     # Profile / build configuration
     profile_conf: str | None = None  # path to alternate profiles.toml for PKGBUILD patching
     # Kernel stage
-    non_interactive: bool = False    # opt out of interactive kconfig (kernel default is interactive)
-    bootloader: str | None = None    # CLI override for kernel.toml bootloader (systemd-boot|grub|none)
+    # opt out of interactive kconfig (kernel default is interactive)
+    non_interactive: bool = False
+    # CLI override for kernel.toml bootloader (systemd-boot|grub|none)
+    bootloader: str | None = None
     compiler: str | None = None      # kernel-stage compiler override ("gcc" or "llvm")
-    base_config: str | None = None   # CLI override for kernel.toml base_config (pkgbuild|running|<path>)
+    # CLI override for kernel.toml base_config (pkgbuild|running|<path>)
+    base_config: str | None = None
     allow_no_fallback: bool = False  # kernel: override the fallback-kernel guarantee (Gate 1)
     skip_boot_audit: bool = False    # kernel: override the pre-install boot-critical audit (Gate 2)
-    build_headers: bool | None = None  # kernel: build -headers subpackage; None → kernel.toml (default on)
-    build_docs: bool | None = None     # kernel: build -docs subpackage; None → kernel.toml (default off)
-    kernel_fdo: str | None = None      # kernel: sample-based FDO step ("record"|"capture"|"use"); LLVM-only
+    # kernel: build -headers subpackage; None → kernel.toml (default on)
+    build_headers: bool | None = None
+    # kernel: build -docs subpackage; None → kernel.toml (default off)
+    build_docs: bool | None = None
+    # kernel: sample-based FDO step ("record"|"capture"|"use"); LLVM-only
+    kernel_fdo: str | None = None
     kernel_propeller: bool = False     # kernel: layer Propeller on the --autofdo cycle
     # Extra makepkg flags (appended after profile makepkg_flags)
     makepkg_flags: list[str] = field(default_factory=list)
     # PGO profdata
     rebuild_profdata: bool = False   # force full 4-pass PGO even if compatible profdata exists
     auto_pgo: bool = False           # bypass PGO confirmation prompts (required for non-TTY PGO)
-    reuse_built: bool = False        # toolchain: consult the Pass-3 build cache to skip unchanged rebuilds
+    # toolchain: consult the Pass-3 build cache to skip unchanged rebuilds
+    reuse_built: bool = False
     # LLVM safety pre-flight
     allow_dirty_llvm: bool = False   # bypass refuse-on-dirty/diverged for the toolchain stage
     # Toolchain Gate-1 overrides (mirror kernel's allow_no_fallback/skip_boot_audit)
-    allow_version_skew: bool = False     # toolchain: override the PKGBUILD pkgver-skew brick (Gate 1)
-    skip_build_space_check: bool = False # toolchain: override the build-space-headroom brick (Gate 1)
-    rebuild_soname_consumers: str | None = None  # toolchain: prompt|auto|off for libLLVM soname-bump consumer rebuild (CLI override of toolchain.toml)
+    # toolchain: override the PKGBUILD pkgver-skew brick (Gate 1)
+    allow_version_skew: bool = False
+    # toolchain: override the build-space-headroom brick (Gate 1)
+    skip_build_space_check: bool = False
+    # toolchain: prompt|auto|off for libLLVM soname-bump consumer rebuild (CLI override of
+    # toolchain.toml)
+    rebuild_soname_consumers: str | None = None
     # Execution context
     standalone: bool = False         # True when running a single stage outside the pipeline
 

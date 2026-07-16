@@ -40,7 +40,7 @@ def build_lock(lock_path: Path, *, label: str):
         except BlockingIOError:
             holder = ""
             try:
-                with open(lock_path, encoding="utf-8") as f:
+                with lock_path.open(encoding="utf-8") as f:
                     holder = f.read().strip()
             except OSError:
                 pass
@@ -49,23 +49,19 @@ def build_lock(lock_path: Path, *, label: str):
                 raise RuntimeError(
                     f"Another sysforge {label} build is running "
                     f"(pid {holder}); refuse to start a second one."
-                )
+                ) from None
             raise RuntimeError(
                 f"sysforge {label} build lock at {lock_path} is held; "
                 "refuse to start a second concurrent build."
-            )
+            ) from None
         os.ftruncate(fd, 0)
         os.write(fd, f"{os.getpid()}\n".encode())
         os.fsync(fd)
         try:
             yield
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.close(fd)
-        except OSError:
-            pass

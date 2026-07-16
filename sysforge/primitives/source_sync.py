@@ -358,9 +358,7 @@ class SourceSyncScheduler:
             return False
         if rpc_entry.get("LastModified") != meta.get("rpc_last_modified"):
             return False
-        if local_head != meta.get("head_commit"):
-            return False
-        return True
+        return local_head == meta.get("head_commit")
 
     def _clone(self, pkgbase: str, pkgbuild_dir: Path,
                *, source: str = "aur",

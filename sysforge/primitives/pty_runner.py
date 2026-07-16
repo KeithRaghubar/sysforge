@@ -32,6 +32,7 @@ Public API:
                  preexec_fn=None, idle_callback=None, idle_timeout_s=30.0) -> int
 """
 import codecs
+import contextlib
 import errno
 import fcntl
 import os
@@ -72,10 +73,8 @@ def strip_ansi(text: str) -> str:
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
-    try:
+    with contextlib.suppress(OSError):
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-    except OSError:
-        pass
 
 
 def run_with_pty(
@@ -111,7 +110,9 @@ def run_with_pty(
     _set_winsize(slave_fd, max(1, sz.lines - reserve_bottom_rows), sz.columns)
 
     try:
-        stdin_arg = sys.stdin.fileno() if sys.stdin and sys.stdin.fileno() >= 0 else subprocess.DEVNULL
+        stdin_arg = (
+            sys.stdin.fileno() if sys.stdin and sys.stdin.fileno() >= 0 else subprocess.DEVNULL
+        )
     except (OSError, ValueError):
         stdin_arg = subprocess.DEVNULL
 
@@ -194,19 +195,13 @@ def run_with_pty(
         return proc.returncode
     finally:
         if is_main_thread and prev_winch is not None:
-            try:
+            with contextlib.suppress(OSError, ValueError):
                 signal.signal(signal.SIGWINCH, prev_winch)
-            except (OSError, ValueError):
-                pass
         if slave_fd >= 0:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(slave_fd)
-            except OSError:
-                pass
-        try:
+        with contextlib.suppress(OSError):
             os.close(master_fd)
-        except OSError:
-            pass
         if proc is not None and proc.returncode is None:
             try:
                 proc.terminate()
@@ -215,5 +210,5 @@ def run_with_pty(
                 try:
                     proc.kill()
                     proc.wait(timeout=5)
-                except Exception:
+                except Exception:  # noqa: S110 — best-effort process teardown, failure is non-fatal
                     pass

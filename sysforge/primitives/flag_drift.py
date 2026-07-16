@@ -41,7 +41,8 @@ from sysforge.primitives.profile import (
 STATUS_DRIFTED = "DRIFTED"            # stored flags differ from a fresh resolution
 STATUS_IN_SYNC = "IN_SYNC"           # stored flags match the current resolution
 STATUS_NOT_PROFILED = "NOT_PROFILED"  # build_mode != "source_built" — no flags to drift
-STATUS_BUILDFLAGS_IGNORED = "BUILDFLAGS_IGNORED"  # PKGBUILD options=('!buildflags'): makepkg ignores conf flags
+STATUS_BUILDFLAGS_IGNORED = "BUILDFLAGS_IGNORED"  # PKGBUILD options=('!buildflags'):
+# makepkg ignores conf flags
 STATUS_NO_PKGBUILD = "NO_PKGBUILD"   # recorded pkgbuild_dir has no PKGBUILD
 STATUS_NO_FLAGS = "NO_FLAGS"         # built before flag tracking; nothing stored
 STATUS_PARSE_ERROR = "PARSE_ERROR"   # parse_pkgbuild raised

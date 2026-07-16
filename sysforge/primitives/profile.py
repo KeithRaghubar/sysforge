@@ -242,7 +242,10 @@ def _merge_append_value(parent_val, child_append_val, conflict_groups):
             removed = [t for t in result if t in group_members]
             result = [t for t in result if t not in group_members]
             if removed:
-                _log.info(f"Conflict group '{flag_to_group_name[child_token]}': removed {removed}, inserted {child_token!r}")
+                _log.info(
+                    f"Conflict group '{flag_to_group_name[child_token]}': "
+                    f"removed {removed}, inserted {child_token!r}"
+                )
             result.append(child_token)
             continue
 
@@ -303,7 +306,9 @@ def merge_extends(profile_name, profiles, visited=None, conflict_groups=None):
 
     if parent_name is None:
         if append_overrides:
-            _log.warn(f"profile '{profile_name}' has [append] but no parent — append section ignored")
+            _log.warn(
+                f"profile '{profile_name}' has [append] but no parent — append section ignored"
+            )
         return profile
 
     parent = merge_extends(
@@ -314,11 +319,17 @@ def merge_extends(profile_name, profiles, visited=None, conflict_groups=None):
 
     for key, child_append_val in append_overrides.items():
         if key in profile:
-            _log.warn(f"key '{key}' set both directly and in [append] on profile '{profile_name}' — direct value wins, append ignored")
+            _log.warn(
+                f"key '{key}' set both directly and in [append] on profile "
+                f"'{profile_name}' — direct value wins, append ignored"
+            )
             continue
         parent_val = parent.get(key, "")
         merged[key] = _merge_append_value(parent_val, child_append_val, conflict_groups)
-        _log.info(f"[{profile_name}] append merge {key!r}: {parent_val!r} + {child_append_val!r} → {merged[key]!r}")
+        _log.info(
+            f"[{profile_name}] append merge {key!r}: "
+            f"{parent_val!r} + {child_append_val!r} → {merged[key]!r}"
+        )
 
     return merged
 
@@ -452,14 +463,22 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
             discarded.append(rule)
 
     for rule in discarded:
-        _log.info(f"[{pkgname}] Discarded rule (priority {rule.get('priority', 0)}): profile={rule.get('profile')!r}")
+        _log.info(
+            f"[{pkgname}] Discarded rule (priority {rule.get('priority', 0)}): "
+            f"profile={rule.get('profile')!r}"
+        )
 
     if winner:
         profile_name = winner["profile"]
-        _log.info(f"[{pkgname}] Matched profile {profile_name!r} (priority {winner.get('priority', 0)})")
+        _log.info(
+            f"[{pkgname}] Matched profile {profile_name!r} (priority {winner.get('priority', 0)})"
+        )
     else:
         if matched_rules:
-            _log.info(f"[{pkgname}] Rules matched but none specified a profile, using default: {default_profile!r}")
+            _log.info(
+                f"[{pkgname}] Rules matched but none specified a profile, "
+                f"using default: {default_profile!r}"
+            )
         else:
             _log.info(f"[{pkgname}] No rules matched, using default: {default_profile!r}")
         profile_name = default_profile
@@ -470,7 +489,9 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
     # onto it.
     if extracted_profile:
         profiles = dict(profiles)
-        profiles["pkgbuild_extracted"] = {k: v for k, v in extracted_profile.items() if not k.startswith("__")}
+        profiles["pkgbuild_extracted"] = {
+            k: v for k, v in extracted_profile.items() if not k.startswith("__")
+        }
         # Rebase bare onto extracted: if bare has no extends, give it one.
         bare = dict(profiles.get("bare", {}))
         if "extends" not in bare:
@@ -485,7 +506,10 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
     # already present in `result` are preserved (setdefault).
     _expand_toolchain(result, defaults.get("toolchain"))
     _apply_package_compiler_override(result, config, pkgname)
-    _log.debug(f"[{pkgname}] Full resolved profile ({profile_name}):\n{pprint.pformat(result, indent=2, sort_dicts=False)}")
+    _log.debug(
+        f"[{pkgname}] Full resolved profile ({profile_name}):\n"
+        f"{pprint.pformat(result, indent=2, sort_dicts=False)}"
+    )
     return result
 
 
@@ -502,10 +526,7 @@ def match_rules(pkgmeta, rules):
     globals_ = pkgmeta.get("globals", {})
 
     pkgname = globals_.get("pkgname", "")
-    if isinstance(pkgname, list):
-        pkgnames = list(pkgname)
-    else:
-        pkgnames = [pkgname] if pkgname else []
+    pkgnames = list(pkgname) if isinstance(pkgname, list) else [pkgname] if pkgname else []
 
     # Always include pkgbase in the names set. Split packages set pkgname to an
     # array of sub-package names (often containing unexpanded shell refs like
@@ -544,37 +565,28 @@ def match_rules(pkgmeta, rules):
 
     matched = []
     for rule in rules:
-        if "pkgnames" in rule:
-            if not _glob_any_match(rule["pkgnames"], pkgnames):
-                continue
-        if "not_pkgnames" in rule:
-            if not _glob_all_absent(rule["not_pkgnames"], pkgnames):
-                continue
+        if "pkgnames" in rule and not _glob_any_match(rule["pkgnames"], pkgnames):
+            continue
+        if "not_pkgnames" in rule and not _glob_all_absent(rule["not_pkgnames"], pkgnames):
+            continue
         if "groups" in rule:
             meta_groups = globals_.get("groups", [])
             if not _glob_all_match(rule["groups"], meta_groups):
                 continue
-        if "not_groups" in rule:
-            if not _exact_all_absent("not_groups", "groups"):
-                continue
-        if "depends_any" in rule:
-            if not _exact_any("depends_any", "depends"):
-                continue
-        if "depends_all" in rule:
-            if not _exact_all("depends_all", "depends"):
-                continue
-        if "not_depends" in rule:
-            if not _exact_all_absent("not_depends", "depends"):
-                continue
-        if "makedepends_any" in rule:
-            if not _exact_any("makedepends_any", "makedepends"):
-                continue
-        if "makedepends_all" in rule:
-            if not _exact_all("makedepends_all", "makedepends"):
-                continue
-        if "not_makedepends" in rule:
-            if not _exact_all_absent("not_makedepends", "makedepends"):
-                continue
+        if "not_groups" in rule and not _exact_all_absent("not_groups", "groups"):
+            continue
+        if "depends_any" in rule and not _exact_any("depends_any", "depends"):
+            continue
+        if "depends_all" in rule and not _exact_all("depends_all", "depends"):
+            continue
+        if "not_depends" in rule and not _exact_all_absent("not_depends", "depends"):
+            continue
+        if "makedepends_any" in rule and not _exact_any("makedepends_any", "makedepends"):
+            continue
+        if "makedepends_all" in rule and not _exact_all("makedepends_all", "makedepends"):
+            continue
+        if "not_makedepends" in rule and not _exact_all_absent("not_makedepends", "makedepends"):
+            continue
         matched.append(rule)
 
     if matched:

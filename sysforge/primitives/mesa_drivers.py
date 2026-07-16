@@ -64,7 +64,7 @@ def _read_switch_and_overrides(path: Path):
     if not path.is_file():
         return (False, None, None)
     try:
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError) as e:
         _log.warn(f"failed to read {path}: {e} — mesa driver filtering disabled")
@@ -89,7 +89,7 @@ def _read_hardware_drivers(path: Path):
     if not path.is_file():
         return (None, None)
     try:
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return (None, None)

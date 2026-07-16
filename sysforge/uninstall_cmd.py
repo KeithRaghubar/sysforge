@@ -63,7 +63,9 @@ class UninstallVerb(Verb):
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         items = pre.ctx["items"]
         for it in items:
-            renamed = "" if it.installed_name == it.target else f" (installed as {it.installed_name})"
+            renamed = (
+                "" if it.installed_name == it.target else f" (installed as {it.installed_name})"
+            )
             tag = "sysforge-tracked" if it.tracked else "repo/untracked"
             _log.ui(f"[uninstall] {it.target}{renamed} — {tag}")
 

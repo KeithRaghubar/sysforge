@@ -56,6 +56,7 @@ from sysforge.primitives.provides_lookup import (
     files_db_present,
     suggest_for_soname,
 )
+import contextlib
 
 # [DOCTOR], matching the verb name (the runner derives the same tag from
 # verb.name at dispatch) — [DOC] read like "documentation" and broke the
@@ -133,7 +134,7 @@ def _read_gpu_vendors(config) -> list[str]:
         path = Path(hw_path).expanduser()
         if path.is_file():
             try:
-                with open(path, "rb") as f:
+                with path.open("rb") as f:
                     hw = tomllib.load(f)
                 vendors = hw.get("hardware", {}).get("gpu_vendors", [])
                 result = [v for v in vendors if isinstance(v, str)]
@@ -757,11 +758,9 @@ def _collect_boot_findings() -> list[diag.Finding]:
     space = kernel_safety.check_boot_mount_space()
     if space is not None:
         kfindings.append(space)
-    try:
+    with contextlib.suppress(Exception):
         kfindings += kernel_safety.check_dkms_for_kernel(
             kernel_safety.running_kernel_release())
-    except Exception:
-        pass
 
     out += diag.adapt_many("boot", kfindings)
     # Boot-artifact / /boot-space findings are filesystem-live (clear on the

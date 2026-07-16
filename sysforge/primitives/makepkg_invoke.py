@@ -124,7 +124,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     _strip_keys = CONF_KEY_MAP.get("makepkg", set()) | CONF_KEY_MAP.get("toolchain", set())
     for k in sorted(_strip_keys):
         if k in env:
-            _makepkg_log.info(f"Stripped from shell env (superseded by profile): {k}={env.pop(k)!r}")
+            _makepkg_log.info(
+                f"Stripped from shell env (superseded by profile): {k}={env.pop(k)!r}"
+            )
 
     # LLVM_PROFILE_FILE is only meaningful during PGO pass 2, where the
     # toolchain stage injects it via extra_env.  If inherited from the shell
@@ -132,7 +134,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # files into an unrelated directory.
     _llvm_pf = env.pop("LLVM_PROFILE_FILE", None)
     if _llvm_pf:
-        _makepkg_log.info(f"Stripped inherited LLVM_PROFILE_FILE={_llvm_pf!r} (only set during PGO pass 2)")
+        _makepkg_log.info(
+            f"Stripped inherited LLVM_PROFILE_FILE={_llvm_pf!r} (only set during PGO pass 2)"
+        )
 
     env["MAKEPKG_CONF"] = str(conf_path)
 
@@ -233,10 +237,12 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 _suggestions = _build_diagnose(_log_lines, diag_dir)
                 if _suggestions:
                     _makepkg_log.info(_render_diag_suggestions(_suggestions))
-                    cpe.diagnosis = _suggestions
+                    # Deliberate dynamic attr, read via getattr by callers.
+                    cpe.diagnosis = _suggestions  # pyright: ignore[reportAttributeAccessIssue]
             except Exception as _diag_e:
                 _makepkg_log.debug(f"interactive postflight diagnosis skipped: {_diag_e}")
-            cpe.captured_output = []
+            # Deliberate dynamic attr, read via getattr by callers.
+            cpe.captured_output = []  # pyright: ignore[reportAttributeAccessIssue]
             raise cpe
         return
 
@@ -371,7 +377,8 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 "the package's build system likely invokes a hardcoded gcc/g++"
             )
             err = ToolchainMismatchError(returncode, "makepkg")
-            err.captured_output = captured_lines
+            # Deliberate dynamic attr, read via getattr by callers.
+            err.captured_output = captured_lines  # pyright: ignore[reportAttributeAccessIssue]
             raise err
 
         # Postflight diagnosis — scan captured output + side-car logs (meson,
@@ -396,12 +403,13 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             _makepkg_log.debug(f"postflight diagnosis skipped: {_diag_e}")
 
         cpe = subprocess.CalledProcessError(returncode, "makepkg")
-        cpe.captured_output = captured_lines  # consumed by auto_repair
+        # consumed by auto_repair; deliberate dynamic attr, read via getattr by callers
+        cpe.captured_output = captured_lines  # pyright: ignore[reportAttributeAccessIssue]
         # Postflight diagnosis (build_diag suggestions) — carried up so the
         # caller (sysforge update) can persist signature/fix_cmd alongside the
         # failure in build_state.toml. List of FixSuggestion; [] when nothing
-        # matched.
-        cpe.diagnosis = _suggestions
+        # matched. Deliberate dynamic attr, read via getattr by callers.
+        cpe.diagnosis = _suggestions  # pyright: ignore[reportAttributeAccessIssue]
         raise cpe
 
 def _build_failed_error(cause: Exception, message: str | None = None) -> RuntimeError:
@@ -413,8 +421,12 @@ def _build_failed_error(cause: Exception, message: str | None = None) -> Runtime
     the interactive user-abort raises, which keep their own wording but still
     carry the diagnosis recovered from the build's side-car logs)."""
     err = RuntimeError(message or f"[build_failed] {cause}")
-    err.diagnosis = getattr(cause, "diagnosis", None)
-    err.captured_output = getattr(cause, "captured_output", None)
+    # Deliberate dynamic attrs, mirroring the CalledProcessError/
+    # ToolchainMismatchError carriers above; read via getattr by callers.
+    err.diagnosis = getattr(cause, "diagnosis", None)  # pyright: ignore[reportAttributeAccessIssue]
+    err.captured_output = getattr(  # pyright: ignore[reportAttributeAccessIssue]
+        cause, "captured_output", None
+    )
     return err
 
 @dataclass
@@ -643,7 +655,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
         except subprocess.CalledProcessError as e:
             _makepkg_log.error(
                 f"Build failed in batch mode, aborting ({label}): {e}")
-            raise _build_failed_error(e)
+            raise _build_failed_error(e) from e
     else:
         while True:
             try:
@@ -704,11 +716,11 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                 raise _build_failed_error(
                                     e,
                                     "[build_failed] Aborted by user after install failure",
-                                )
+                                ) from e
                     elif response == "abort":
                         raise _build_failed_error(
                             e, "[build_failed] Aborted by user after build failure"
-                        )
+                        ) from e
                     # anything else: fall through to retry the full build
                     _makepkg_log.info("Retrying build...")
                 else:
@@ -720,7 +732,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                     if outcome.action == "abort":
                         raise _build_failed_error(
                             e, "[build_failed] Aborted by user after build failure"
-                        )
+                        ) from e
                     # Menu's retry already ran a successful build. This function
                     # returns None, so surface any recovered overrides to the
                     # caller through the read-once _LAST_RECOVERY contextvar

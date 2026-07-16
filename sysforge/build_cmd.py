@@ -127,7 +127,7 @@ def _review_config_enabled(config) -> bool:
     from sysforge.primitives.paths import resolve_packages_path
     try:
         path = resolve_packages_path(config)
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             return tomllib.load(f).get("build", {}).get("review", True) is not False
     except Exception:
         return True
@@ -147,7 +147,7 @@ def _load_repo_optin(config) -> tuple[dict, set[str]]:
     from sysforge.primitives.paths import resolve_packages_path
     try:
         path = resolve_packages_path(config)
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             data = tomllib.load(f)
     except Exception:
         return {}, set()

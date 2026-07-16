@@ -31,13 +31,13 @@ def vercmp(ver_a: str, ver_b: str) -> int:
             text=True,
         )
     except FileNotFoundError:
-        raise RuntimeError("vercmp not found on PATH — is pacman installed?")
+        raise RuntimeError("vercmp not found on PATH — is pacman installed?") from None
 
     stdout = result.stdout.strip()
     try:
         n = int(stdout)
     except ValueError:
-        raise RuntimeError(f"vercmp returned unexpected output: {stdout!r}")
+        raise RuntimeError(f"vercmp returned unexpected output: {stdout!r}") from None
 
     if n < 0:
         return -1

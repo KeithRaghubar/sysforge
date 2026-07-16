@@ -159,10 +159,14 @@ def cmd_setup(args) -> None:
     conf_text = conf_path.read_text(encoding="utf-8")
 
     if _check_ignore_group(conf_text):
-        print(f"[SYSFORGE] Already configured: IgnoreGroup = {_IGNORE_GROUP} is present in {conf_path}.")
+        print(
+            f"[SYSFORGE] Already configured: IgnoreGroup = {_IGNORE_GROUP} "
+            f"is present in {conf_path}."
+        )
     else:
         print(
-            f"\n  sysforge stamps every package it builds with the '{_IGNORE_GROUP}' pacman group.\n"
+            f"\n  sysforge stamps every package it builds with the "
+            f"'{_IGNORE_GROUP}' pacman group.\n"
             f"  Adding 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path} prevents 'pacman -Syu'\n"
             f"  from overwriting those packages with unoptimized repo binaries.\n"
         )
@@ -219,7 +223,8 @@ def _setup_pacman_hooks() -> None:
         return
 
     for dest, state in written:
-        print(f"[SYSFORGE] {'installed' if state == pacman_hooks.STATE_MISSING else 'refreshed'} {dest}.")
+        action = "installed" if state == pacman_hooks.STATE_MISSING else "refreshed"
+        print(f"[SYSFORGE] {action} {dest}.")
 
 
 # ---------------------------------------------------------------------------

@@ -31,8 +31,8 @@ Mutates nothing — never enables/restarts a unit or rewrites resolv.conf.
 """
 from __future__ import annotations
 
-import os
 import subprocess
+from pathlib import Path
 
 from sysforge.primitives import diagnostics as diag
 
@@ -47,7 +47,7 @@ _CONNECTION_MANAGERS: tuple[str, ...] = (
     "netctl.service",
 )
 
-_RESOLV_CONF = "/etc/resolv.conf"
+_RESOLV_CONF = Path("/etc/resolv.conf")
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
@@ -82,12 +82,12 @@ def _resolv_conf_state() -> tuple[str, str | None]:
     """Classify ``/etc/resolv.conf`` as ``("symlink", target)`` / ``("file",
     None)`` / ``("missing", None)``. Read-only stat; never opens the file."""
     try:
-        if os.path.islink(_RESOLV_CONF):
+        if _RESOLV_CONF.is_symlink():
             try:
-                return ("symlink", os.readlink(_RESOLV_CONF))
+                return ("symlink", str(_RESOLV_CONF.readlink()))
             except OSError:
                 return ("symlink", None)
-        if os.path.exists(_RESOLV_CONF):
+        if _RESOLV_CONF.exists():
             return ("file", None)
     except OSError:
         return ("missing", None)

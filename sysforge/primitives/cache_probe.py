@@ -489,8 +489,11 @@ def emit_session_report() -> None:
             total = hits + misses
             pct = f"{100 * hits // total}%" if total > 0 else "n/a"
             size = _fmt_bytes(cc["size_bytes"])
-            print(f"[SYSFORGE][CACHE]   {pkgname}: ccache {hits}/{hits + misses} hits ({pct}) cache={size}",
-                  file=sys.stderr)
+            print(
+                f"[SYSFORGE][CACHE]   {pkgname}: ccache {hits}/{hits + misses} hits "
+                f"({pct}) cache={size}",
+                file=sys.stderr,
+            )
 
         if sc is not None:
             has_sc = True
@@ -500,20 +503,29 @@ def emit_session_report() -> None:
             total_sc_misses += misses
             total = hits + misses
             pct = f"{100 * hits // total}%" if total > 0 else "n/a"
-            print(f"[SYSFORGE][CACHE]   {pkgname}: sccache {hits}/{hits + misses} hits ({pct}) cache={sc['size_str']}",
-                  file=sys.stderr)
+            print(
+                f"[SYSFORGE][CACHE]   {pkgname}: sccache {hits}/{hits + misses} hits "
+                f"({pct}) cache={sc['size_str']}",
+                file=sys.stderr,
+            )
 
     print(divider, file=sys.stderr)
 
     if has_cc:
         total = total_cc_hits + total_cc_misses
         pct = f"{100 * total_cc_hits // total}%" if total > 0 else "n/a"
-        print(f"[SYSFORGE][CACHE]   ccache total: {total_cc_hits}/{total} hits ({pct})", file=sys.stderr)
+        print(
+            f"[SYSFORGE][CACHE]   ccache total: {total_cc_hits}/{total} hits ({pct})",
+            file=sys.stderr,
+        )
 
     if has_sc:
         total = total_sc_hits + total_sc_misses
         pct = f"{100 * total_sc_hits // total}%" if total > 0 else "n/a"
-        print(f"[SYSFORGE][CACHE]   sccache total: {total_sc_hits}/{total} hits ({pct})", file=sys.stderr)
+        print(
+            f"[SYSFORGE][CACHE]   sccache total: {total_sc_hits}/{total} hits ({pct})",
+            file=sys.stderr,
+        )
 
     if not has_cc and not has_sc:
         print("[SYSFORGE][CACHE]   ccache and sccache not installed.", file=sys.stderr)

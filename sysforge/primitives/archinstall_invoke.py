@@ -7,16 +7,18 @@ Writes the generated config to a 0600 temp file and runs
 ``archinstall --config <file> --silent``. archinstall is only present on the
 live ISO, so a which() preflight gates the whole feature; never imported.
 """
+import contextlib
 import copy
 import json
 import os
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives.run import run_or_raise
 from sysforge.primitives.archinstall_config import ARCHINSTALL_SCHEMA_VERSION
+from sysforge.primitives.run import run_or_raise
 
 _log = log.get_logger("INSTALL")
 
@@ -70,7 +72,5 @@ def run_archinstall(cfg_dict: dict, *, dry_run: bool) -> None:
             hint="Check the archinstall log for the failing step.",
         )
     finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            Path(path).unlink()

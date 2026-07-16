@@ -202,10 +202,11 @@ _ZSHRC = (
 )
 
 
-_RESUME_REMINDER = """\
-# Written by sysforge bootstrap. Removed automatically when the pipeline resumes.
-[ -t 1 ] && printf '\\n  SysForge bootstrap complete. Resume the pipeline:\\n    sysforge run pipeline --resume\\n\\n'
-"""
+_RESUME_REMINDER = (
+    "# Written by sysforge bootstrap. Removed automatically when the pipeline resumes.\n"
+    "[ -t 1 ] && printf '\\n  SysForge bootstrap complete. Resume the pipeline:\\n"
+    "    sysforge run pipeline --resume\\n\\n'\n"
+)
 
 _RESUME_REMINDER_PATH = Path("etc/profile.d/sysforge-resume.sh")
 
@@ -253,7 +254,7 @@ def _find_sysforge_source() -> Path | None:
         for candidate in (pkg_dir.parent, pkg_dir.parent.parent):
             if (candidate / "pyproject.toml").exists():
                 return candidate
-    except Exception:
+    except Exception:  # noqa: S110 — best-effort repo-root probe, failure falls through to None
         pass
 
     return None
@@ -595,11 +596,17 @@ class ConfigureStage(Stage):
             _log.ui("[dry-run] would copy /etc/sysforge/ to target")
             _log.ui("[dry-run] would create /var/lib/sysforge (root:sysforge, mode 02775)")
             _log.ui("[dry-run] would write resume reminder to /etc/profile.d/sysforge-resume.sh")
-            _log.ui("[dry-run] would build sysforge in target via makepkg and install with pacman -U (tracked)")
+            _log.ui(
+                "[dry-run] would build sysforge in target via makepkg and install "
+                "with pacman -U (tracked)"
+            )
             # Desktop group is written *after* the sysforge install (whose
             # pacman -U --overwrite restores the shipped packages.toml).
             if cfg.desktop:
-                _log.ui(f"[dry-run] would select desktop: {cfg.desktop} (writes [group.{cfg.desktop}])")
+                _log.ui(
+                    f"[dry-run] would select desktop: {cfg.desktop} "
+                    f"(writes [group.{cfg.desktop}])"
+                )
             else:
                 _log.ui("[dry-run] would prompt for a desktop environment (interactive only)")
             return

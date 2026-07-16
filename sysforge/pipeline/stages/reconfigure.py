@@ -89,7 +89,8 @@ _STEPS = [
     ("config",     "Config file review",
      "Review profiles.toml, packages.toml, toolchain.toml, kernel.toml, hardware_profile.toml"),
     ("build_mode", "Build mode",
-     "View/set packages.toml repo_mode (pacman | build_from_source); show per-package enable_build_from_source overrides"),
+     "View/set packages.toml repo_mode (pacman | build_from_source); show per-package "
+     "enable_build_from_source overrides"),
     ("desktop",    "Desktop environment",
      "Pick a curated desktop environment (GNOME / KDE) to install as a packages.toml group"),
     ("makepkg",    "makepkg.conf review",
@@ -176,7 +177,7 @@ def _show_stage_summary(state) -> None:
         "running":    "→",
         "failed":     "✗",
     }
-    for name, desc in _pipeline_stages():
+    for name, _desc in _pipeline_stages():
         status = state.stage_status(name)
         if name == "reconfigure":
             symbol, label = "→", "running"
@@ -227,7 +228,7 @@ def _parse_step_selection(raw: str) -> tuple[list[str], list[str]]:
     invalid: list[str] = []
 
     for token in raw.split():
-        if token == "0":
+        if token == "0":  # noqa: S105 — parsing token, not a secret
             return [], []
         # Range: 2-6
         if re.match(r"^\d+-\d+$", token):
@@ -654,7 +655,7 @@ def _step_editor(config, state, options, editor: str) -> str:
 
 def _validate_flag_profiles(path: Path) -> tuple[bool, str]:
     try:
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             tomllib.load(f)  # pre-validate TOML syntax
     except Exception as e:
         return False, f"TOML parse error: {e}"
@@ -850,7 +851,9 @@ def _set_repo_mode(pkg_path: Path, mode: str) -> None:
         return
 
     # No [build] section — append one
-    pkg_path.write_text(text.rstrip("\n") + f'\n\n[build]\nrepo_mode = "{mode}"\n', encoding="utf-8")
+    pkg_path.write_text(
+        text.rstrip("\n") + f'\n\n[build]\nrepo_mode = "{mode}"\n', encoding="utf-8"
+    )
 
 
 def _step_build_mode(config, state, options, editor: str) -> str:
@@ -862,7 +865,7 @@ def _step_build_mode(config, state, options, editor: str) -> str:
         return editor
 
     try:
-        with open(pkg_path, "rb") as f:
+        with pkg_path.open("rb") as f:
             data = tomllib.load(f)
     except Exception as e:
         _log.warn(f"  Could not load packages.toml: {e}")
@@ -1141,7 +1144,7 @@ def _step_disk(config, state, options, editor: str) -> str:
     try:
         pkg_path = resolve_packages_path(config)
         if pkg_path.exists():
-            with open(pkg_path, "rb") as f:
+            with pkg_path.open("rb") as f:
                 data = tomllib.load(f)
             n_aur = sum(
                 1 for p in expand_package_groups(data)
@@ -1296,7 +1299,7 @@ def _step_preview(config, state, options, editor: str) -> str:
         return editor
 
     try:
-        with open(pkg_path, "rb") as f:
+        with pkg_path.open("rb") as f:
             pkg_data = tomllib.load(f)
         packages  = expand_package_groups(pkg_data)
         build_cfg = pkg_data.get("build", {})
@@ -1347,7 +1350,10 @@ def _step_preview(config, state, options, editor: str) -> str:
                     winner = max(matched, key=lambda r: r.get("priority", 0))
                     action = f"build  [{winner['profile']}]"
                 else:
-                    action = f"build  [{config.get('defaults', {}).get('profile', 'standard')}] (default)"
+                    action = (
+                        f"build  [{config.get('defaults', {}).get('profile', 'standard')}]"
+                        " (default)"
+                    )
             else:
                 action = "build"
         _log.ui(f"  {name:<30}  {source:<6}  {action}")
@@ -1364,7 +1370,7 @@ def _step_preview(config, state, options, editor: str) -> str:
 
     if TOOLCHAIN_PATH.exists():
         try:
-            with open(TOOLCHAIN_PATH, "rb") as f:
+            with TOOLCHAIN_PATH.open("rb") as f:
                 tcfg = tomllib.load(f)
             compiler = tcfg.get("compiler", "gcc")
             pgo = tcfg.get("pgo", True) if compiler == "llvm" else False
@@ -1377,7 +1383,7 @@ def _step_preview(config, state, options, editor: str) -> str:
 
     if KERNEL_PATH.exists():
         try:
-            with open(KERNEL_PATH, "rb") as f:
+            with KERNEL_PATH.open("rb") as f:
                 kcfg = tomllib.load(f)
             _log.ui(
                 f"  Kernel: {kcfg.get('pkgname', '?')}  "
@@ -1450,10 +1456,10 @@ def _validate_all_configs(config) -> None:
     pkg_path = resolve_packages_path(config)
     if pkg_path.exists():
         try:
-            with open(pkg_path, "rb") as f:
+            with pkg_path.open("rb") as f:
                 tomllib.load(f)
         except tomllib.TOMLDecodeError as e:
-            raise RuntimeError(f"[RECONFIGURE] {pkg_path}: TOML parse error: {e}")
+            raise RuntimeError(f"[RECONFIGURE] {pkg_path}: TOML parse error: {e}") from e
 
     profiles_path = CONFIG_DIR / "profiles.toml"
     if profiles_path.exists():
@@ -1463,15 +1469,15 @@ def _validate_all_configs(config) -> None:
             for name in cfg.get("profiles", {}):
                 merge_extends(name, cfg["profiles"], conflict_groups=conflict_groups)
         except (tomllib.TOMLDecodeError, ValueError, KeyError) as e:
-            raise RuntimeError(f"[RECONFIGURE] {profiles_path}: {e}")
+            raise RuntimeError(f"[RECONFIGURE] {profiles_path}: {e}") from e
 
     for path in (TOOLCHAIN_PATH, KERNEL_PATH):
         if path.exists():
             try:
-                with open(path, "rb") as f:
+                with path.open("rb") as f:
                     tomllib.load(f)
             except tomllib.TOMLDecodeError as e:
-                raise RuntimeError(f"[RECONFIGURE] {path}: TOML parse error: {e}")
+                raise RuntimeError(f"[RECONFIGURE] {path}: TOML parse error: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -1495,7 +1501,9 @@ class ReconfigureStage(Stage):
                     shutil.copy2(state.path, chroot_state_dir / state.path.name)
                     _log.info(f"State file copied to {chroot_state_dir / state.path.name}")
                 except shutil.SameFileError:
-                    _log.info(f"State file already up-to-date at {chroot_state_dir / state.path.name}")
+                    _log.info(
+                        f"State file already up-to-date at {chroot_state_dir / state.path.name}"
+                    )
             raise BootstrapRebootRequired(
                 "Bootstrap complete (stages 1–4 done). "
                 "Reboot into the installed system before continuing."

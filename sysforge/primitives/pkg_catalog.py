@@ -344,10 +344,7 @@ def write_desktop_group(path: Path, de_key: str) -> None:
         )
 
     path = Path(path)
-    if path.exists():
-        text = path.read_text()
-    else:
-        text = _GROUP_HEADER + _GROUP_BUILD
+    text = path.read_text() if path.exists() else _GROUP_HEADER + _GROUP_BUILD
 
     lines = text.splitlines(keepends=True)
     lines = _strip_group_block(lines, de_key)

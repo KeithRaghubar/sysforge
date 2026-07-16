@@ -312,7 +312,10 @@ def _extract_flag_assignments(function_body, pkgname="unknown"):
 
         # Skip if complex bash expression remains (e.g. ${VAR/-g /-g1 })
         if _VARREF_RE.search(stripped):
-            _log.info(f"[{pkgname}] Skipped (complex expression, not extractable): {key}{op}... — line will still be removed")
+            _log.info(
+                f"[{pkgname}] Skipped (complex expression, not extractable): "
+                f"{key}{op}... — line will still be removed"
+            )
             continue
 
         tokens = _tokenize_flag_value(stripped)
@@ -428,9 +431,12 @@ def extract_pkgbuild_profile(pkgmeta, pkgbuild_path):
 
     for func_name, body in functions.items():
         # Phase 1: log conditional blocks that will be removed by apply_patch_pkgbuild
-        for start, end, keys, block_text in _extract_conditional_blocks(body, pkgname):
+        for _start, _end, keys, block_text in _extract_conditional_blocks(body, pkgname):
             preview = block_text.splitlines()[0][:60]
-            _log.info(f"[{pkgname}] Removing entire conditional block in {func_name!r} (contains {keys}): {preview!r}...")
+            _log.info(
+                f"[{pkgname}] Removing entire conditional block in {func_name!r} "
+                f"(contains {keys}): {preview!r}..."
+            )
 
         # Phase 2: extract assignments
         for key, tokens in _extract_flag_assignments(body, pkgname).items():
@@ -499,7 +505,7 @@ def load_extracted_profile(pkgbuild_path):
     if not toml_path.exists():
         return {}
 
-    with open(toml_path, "rb") as f:
+    with toml_path.open("rb") as f:
         data = tomllib.load(f)
 
     profile = data.get("profiles", {}).get("pkgbuild_extracted", {})
@@ -574,7 +580,10 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta):
                 # Find line number for the log
                 line_no = i + 1
                 preview = lines[i].rstrip()[:60]
-                _log.info(f"[{pkgname}] Removing conditional block at line {line_no} (keys: {sorted(keys_found)}): {preview!r}")
+                _log.info(
+                    f"[{pkgname}] Removing conditional block at line {line_no} "
+                    f"(keys: {sorted(keys_found)}): {preview!r}"
+                )
                 conditional_spans.append((block_start, block_end, sorted(keys_found)))
             i = j
         else:
@@ -786,7 +795,8 @@ def patch_hotplug_fragment_merge(patched_path, *, fragment=_HOTPLUG_FRAGMENT):
     if review:
         last = review[-1]
         insert_at = last.start()
-        indent = re.match(r"[ \t]*", last.group(0)).group(0)
+        _indent_m = re.match(r"[ \t]*", last.group(0))
+        indent = _indent_m.group(0) if _indent_m else ""
     else:
         any_matches = list(_ANY_KCONFIG_RE.finditer(text))
         if any_matches:
@@ -797,7 +807,8 @@ def patch_hotplug_fragment_merge(patched_path, *, fragment=_HOTPLUG_FRAGMENT):
             next_nl = text.find("\n", insert_at)
             if next_nl != -1 and text[insert_at:next_nl].strip() == "fi":
                 insert_at = next_nl + 1
-            indent = re.match(r"[ \t]*", text[insert_at:]).group(0)
+            _indent_m = re.match(r"[ \t]*", text[insert_at:])
+            indent = _indent_m.group(0) if _indent_m else ""
         else:
             # Neither a review target nor a sysforge resolve block exists yet
             # (e.g. a stock PKGBUILD before patch_kernel_kconfig_apply runs):
@@ -977,8 +988,14 @@ def patch_kernel_config_install(patched_path, *, pkgname):
     block = [
         "",
         f"{indent}# sysforge: install the resolved kernel config to /boot",
-        f'{indent}_sf_rel=$(find "$srcdir" -path \'*/include/config/kernel.release\' -type f 2>/dev/null | head -n1)',
-        f'{indent}if [ -n "$_sf_rel" ] && [ -f "${{_sf_rel%/include/config/kernel.release}}/.config" ]; then',
+        (
+            f'{indent}_sf_rel=$(find "$srcdir" '
+            r"-path '*/include/config/kernel.release' -type f 2>/dev/null | head -n1)"
+        ),
+        (
+            f'{indent}if [ -n "$_sf_rel" ] && '
+            f'[ -f "${{_sf_rel%/include/config/kernel.release}}/.config" ]; then'
+        ),
         f'{indent}  install -Dm644 "${{_sf_rel%/include/config/kernel.release}}/.config" \\',
         f'{indent}    "$pkgdir/boot/config-$(<"$_sf_rel")"',
         f"{indent}fi",
@@ -1033,7 +1050,8 @@ def patch_kernel_btf_guard(patched_path):
     if mb:
         indent = mb.group(1)
         wrapped = (
-            f"{indent}if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF) = y ]]; then  {_BTF_GUARD_SENTINEL}\n"
+            f"{indent}if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF) = y ]]; then  "
+            f"{_BTF_GUARD_SENTINEL}\n"
             f"{indent}  {mb.group(2)}\n"
             f"{indent}fi"
         )
@@ -1049,7 +1067,8 @@ def patch_kernel_btf_guard(patched_path):
         indent = mi.group(1)
         stmt_stripped = _BPFTOOL_VMLINUX_H_INSTALL_TOKEN_RE.sub("", mi.group(0))
         guarded = (
-            f"\n{indent}if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF) = y ]]; then  {_BTF_GUARD_SENTINEL}\n"
+            f"\n{indent}if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF) = y ]]; then  "
+            f"{_BTF_GUARD_SENTINEL}\n"
             f'{indent}  install -Dt "$builddir" -m644 tools/bpf/bpftool/vmlinux.h\n'
             f"{indent}fi"
         )
@@ -1379,7 +1398,10 @@ def _merge_or_create_array(text: str, key: str, values: list[str], anchor_end: i
     open_idx, close_idx = span
     inner = text[open_idx + 1:close_idx]
     existing = set(re.findall(r"\S+", inner))
-    add = [q for q, v in zip(quoted, values) if q not in existing and v not in existing]
+    add = [
+        q for q, v in zip(quoted, values, strict=True)
+        if q not in existing and v not in existing
+    ]
     if not add:
         return text
     pad = "" if (not inner or inner.endswith((" ", "\n", "\t"))) else " "
@@ -2400,7 +2422,7 @@ def _validate_rename(orig: dict, patched: dict, rename: dict,
         orig_names = _as_list(orig.get("pkgname")) or _as_list(orig.get("pkgbase"))
         renamed = [None] * len(orig_names)
 
-    for stock, new in zip(orig_names, renamed):
+    for stock, new in zip(orig_names, renamed, strict=True):
         _, stock_val = _dequote(stock)
         body = patched_functions.get(f"package_{new}") if new else None
         # Body reassignment (if any) overrides the global; else inherit global.
@@ -2479,7 +2501,7 @@ def validate_patched_pkgbuild(original_path, patched_path, *, rename=None) -> No
     if rename is not None:
         patched_text = Path(patched_path).read_text(encoding="utf-8")
         for orig, new in zip(
-            rename.get("origin_pkgnames", []), rename.get("renamed_pkgnames", [])
+            rename.get("origin_pkgnames", []), rename.get("renamed_pkgnames", []), strict=True
         ):
             if orig == new:
                 continue

@@ -39,7 +39,6 @@ Public API:
 """
 import hashlib
 import json
-import os
 import subprocess
 from pathlib import Path
 
@@ -64,7 +63,7 @@ def hash_file(path) -> str | None:
     """
     try:
         h = hashlib.sha256()
-        with open(path, "rb") as f:
+        with Path(path).open("rb") as f:
             for chunk in iter(lambda: f.read(_HASH_CHUNK), b""):
                 h.update(chunk)
         return h.hexdigest()
@@ -132,7 +131,7 @@ def clang_identity(cc) -> str:
         return "none"
     parts = [str(cc)]
     try:
-        st = os.stat(cc)
+        st = Path(cc).stat()
         parts.append(f"size={st.st_size}")
         parts.append(f"mtime={st.st_mtime_ns}")
     except OSError:
@@ -201,7 +200,8 @@ def compute_fingerprint(components: dict) -> str:
     ``components`` is built by the caller and is expected to carry (keys are
     advisory — any extra key participates, any missing key is just absent):
 
-      pass_id              — sub-pass identity ("build-pgo"/"build-nonpgo"/"build-lib32") so the same
+      pass_id              — sub-pass identity ("build-pgo"/"build-nonpgo"/
+                             "build-lib32") so the same
                              pkgbase built differently across passes never
                              collides.
       pkgbase              — package identity.
@@ -234,7 +234,7 @@ def cache_key(pass_id: str, pkgbase: str) -> str:
 def load_cache(path) -> dict:
     """Load the JSON build cache, or ``{}`` on any error (fail safe)."""
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return {}

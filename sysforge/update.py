@@ -44,62 +44,79 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from sysforge import log
+
 _log = log.get_logger("UPDATE")
-from sysforge.ui import progress as _ui_progress  # noqa: E402
-from sysforge.primitives.build_state import (
-    BuildState,
-    group_by_pkgbase,
-    BUILD_MODE_SOURCE,
-)
-from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
-from sysforge.primitives.aur import fetch_aur_name_cache
-from sysforge.primitives.source_sync import (
-    STATUS_PURGE_REFUSED, get_scheduler,
-)
-from sysforge.primitives.config import (
-    expand_package_groups, load_config, load_conflict_groups,
-    load_consumes_inference, load_sysforge_toml, resolve_flag_default,
-)
-from sysforge.primitives.llvm_state import (
-    collect_llvm_state,
-    render_preflight as render_llvm_preflight,
-)
-from sysforge.primitives.profile import (
-    match_rules, resolve_profile, resolve_consumes,
-)
-from sysforge.primitives.flag_drift import (
-    STATUS_PARSE_ERROR,
-    resolve_flag_drift,
-)
-from sysforge.primitives.toolchain_preflight import (
-    collect_required_toolchains,
-    run_preflight as run_toolchain_preflight,
-    render_preflight as render_toolchain_preflight,
-    auto_remediate as auto_remediate_toolchain,
-)
-from sysforge.primitives.paths import resolve_packages_path
-from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
-from sysforge.primitives.timing import PhaseTimer, render_report
-from sysforge.primitives.pacman import (
-    get_pkgdest,
-    get_all_installed_packages,
-    checkupdates_map,
-)
+import contextlib
+
 from sysforge import build_core
 from sysforge.build_core import _find_existing_artifacts
+from sysforge.packages_cmd import entry_is_inert
 from sysforge.pipeline.state import (
     PipelineState,
     get_toolchain_fingerprint,
     get_toolchain_variant,
     resolve_state_dir,
 )
-from sysforge.packages_cmd import entry_is_inert
-from sysforge.update_result import _UpdateResult
-from sysforge.update_summary import _print_summary, _print_result_summary, ResultSummary
-from sysforge.update_version import _check_one_pkgbase
+from sysforge.primitives.aur import fetch_aur_name_cache
+from sysforge.primitives.build_state import (
+    BUILD_MODE_SOURCE,
+    BuildState,
+    group_by_pkgbase,
+)
+from sysforge.primitives.config import (
+    expand_package_groups,
+    load_config,
+    load_conflict_groups,
+    load_consumes_inference,
+    load_sysforge_toml,
+    resolve_flag_default,
+)
+from sysforge.primitives.flag_drift import (
+    STATUS_PARSE_ERROR,
+    resolve_flag_drift,
+)
+from sysforge.primitives.llvm_state import (
+    collect_llvm_state,
+)
+from sysforge.primitives.llvm_state import (
+    render_preflight as render_llvm_preflight,
+)
+from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
+from sysforge.primitives.pacman import (
+    checkupdates_map,
+    get_all_installed_packages,
+    get_pkgdest,
+)
+from sysforge.primitives.paths import resolve_packages_path
+from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives.profile import (
+    match_rules,
+    resolve_consumes,
+    resolve_profile,
+)
+from sysforge.primitives.source_sync import (
+    STATUS_PURGE_REFUSED,
+    get_scheduler,
+)
+from sysforge.primitives.timing import PhaseTimer, render_report
+from sysforge.primitives.toolchain_preflight import (
+    auto_remediate as auto_remediate_toolchain,
+)
+from sysforge.primitives.toolchain_preflight import (
+    collect_required_toolchains,
+)
+from sysforge.primitives.toolchain_preflight import (
+    render_preflight as render_toolchain_preflight,
+)
+from sysforge.primitives.toolchain_preflight import (
+    run_preflight as run_toolchain_preflight,
+)
+from sysforge.ui import progress as _ui_progress  # noqa: E402
 from sysforge.update_assemble import _assemble_package_set
+from sysforge.update_result import _UpdateResult
+from sysforge.update_summary import ResultSummary, _print_result_summary, _print_summary
 from sysforge.update_sync import _sync_sources
-
+from sysforge.update_version import _check_one_pkgbase
 
 # Escape sequences to restore the terminal after an interrupted child that
 # entered alt-screen / hid the cursor / left SGR state set (e.g. a pager
@@ -252,7 +269,7 @@ def _load_overrides(path: Path) -> tuple[dict, dict[str, dict]]:
     if not path.exists():
         return {}, {}
     try:
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             data = tomllib.load(f)
         build_cfg = dict(data.get("build", {}))
         overrides: dict[str, dict] = {}
@@ -328,10 +345,8 @@ def _consume_pacman_hook_sentinels(
         if path.exists():
             if not silent:
                 _log.warn(reminder)
-            try:
+            with contextlib.suppress(OSError):
                 path.unlink()
-            except OSError:
-                pass
     if reminders_only:
         return
     from sysforge.primitives.install_reconcile import clear_reconcile_sentinels
@@ -444,7 +459,7 @@ def _detect_stage_owned_updates(
                 set(), skip_sync_check, rpc_version_by_base, False, None,
                 pacman_updates_map,
             )
-        except Exception:
+        except Exception:  # noqa: S112 — best-effort per-pkgbase check, skip on failure
             continue
         if r is not None and r.action in ("NEEDS_REBUILD", "NEEDS_PACMAN_UPGRADE"):
             advisories.append((pkgbase, r.installed_ver, r.pkgbuild_ver, owner))
@@ -541,14 +556,19 @@ def _cmd_update_body(args) -> None:
 
     # Unified log — always on, always truncate.
     unified_log_active = not getattr(args, "dry_run", False)
-    unified_log_path = (Path(args.log_dir) if getattr(args, "log_dir", None) else state_dir) / "sysforge-update.log"
+    unified_log_path = (
+        Path(args.log_dir) if getattr(args, "log_dir", None) else state_dir
+    ) / "sysforge-update.log"
     if unified_log_active:
         try:
             log.open_unified_log(unified_log_path, purge=True)
             _log.info(f"Unified log: {unified_log_path}")
         except OSError as e:
             unified_log_active = False
-            _log.warn(f"Cannot write unified log to {unified_log_path}: {e} — logging to terminal only")
+            _log.warn(
+                f"Cannot write unified log to {unified_log_path}: {e} — "
+                f"logging to terminal only"
+            )
 
     config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
     config = load_config(config_paths=config_paths) or {}

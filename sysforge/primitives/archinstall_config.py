@@ -20,7 +20,8 @@ _MIB = 1024 * 1024
 _GPT_TAIL_MIB = 1
 
 # Minimal packages installed via pacstrap.
-# - base-devel:       build toolchain meta-package (make, gcc, fakeroot, binutils, etc.); required for makepkg
+# - base-devel:       build toolchain meta-package (make, gcc, fakeroot, binutils,
+#                      etc.); required for makepkg
 # - base:             core userspace (glibc, bash, coreutils, systemd, pacman, ...)
 # - devtools:         provides pkgctl; required to clone repo PKGBUILDs in `sysforge build/update`
 # - git:              required for cloning PKGBUILDs and sysforge itself
@@ -29,7 +30,8 @@ _GPT_TAIL_MIB = 1
 # - networkmanager:   network management daemon (needed for post-boot connectivity)
 # - openssh:          SSH server/client (required for remote access)
 # - python:           required by sysforge itself
-# - reflector:        mirror ranking tool; run during configure stage to select fastest pacman mirrors
+# - reflector:        mirror ranking tool; run during configure stage to select
+#                      fastest pacman mirrors
 # - sudo:             privilege escalation for the build user
 # - uv:               Python package installer (required by sysforge PKGBUILD)
 _BASE_PACKAGES = [
@@ -51,7 +53,8 @@ _BASE_PACKAGES = [
 _SSHD_CUSTOM_COMMANDS = [
     "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
     "sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config",
-    "sed -i '/^options /{/console=ttyS0/!s/$/ console=tty0 console=ttyS0,115200/}' /boot/loader/entries/*.conf",
+    "sed -i '/^options /{/console=ttyS0/!s/$/ console=tty0 console=ttyS0,115200/}' "
+    "/boot/loader/entries/*.conf",
 ]
 
 
@@ -127,7 +130,11 @@ def build_archinstall_config(cfg: BootstrapConfig, disk_size_bytes: int) -> dict
         "disk_config": {
             "config_type": "default_layout",
             "device_modifications": [
-                {"device": cfg.device, "partitions": _partitions(cfg, disk_size_bytes), "wipe": True},
+                {
+                    "device": cfg.device,
+                    "partitions": _partitions(cfg, disk_size_bytes),
+                    "wipe": True,
+                },
             ],
         },
         "hostname": cfg.hostname,

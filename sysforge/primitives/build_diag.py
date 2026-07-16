@@ -27,7 +27,6 @@ that contradicts the real root cause is worse than no hint at all.
 """
 from __future__ import annotations
 
-import glob
 import re
 import shutil
 from dataclasses import dataclass
@@ -217,7 +216,7 @@ def _highest_gpp_upto(major: int) -> str | None:
     """Return the path to the highest installed ``/usr/bin/g++-N`` with
     ``N <= major``, or None when none is installed."""
     best: tuple[int, str] | None = None
-    for path in glob.glob("/usr/bin/g++-*"):
+    for path in (str(p) for p in Path("/usr/bin").glob("g++-*")):
         suffix = path.rsplit("-", 1)[-1]
         if not suffix.isdigit():
             continue

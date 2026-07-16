@@ -37,7 +37,8 @@ _FALLBACK_STATE_DIR = USER_STATE_DIR
 
 
 def _state_dir_is_writable(path: Path) -> bool:
-    """Return True if path exists and is writable, or its parent is writable (so mkdir can succeed)."""
+    """Return True if path exists and is writable, or its parent is writable
+    (so mkdir can succeed)."""
     if path.exists():
         return os.access(path, os.W_OK)
     return path.parent.exists() and os.access(path.parent, os.W_OK)
@@ -132,7 +133,7 @@ class PipelineState:
     def _load(self):
         if not self.path.exists():
             return {"meta": {}, "stages": {}}
-        with open(self.path, "rb") as f:
+        with self.path.open("rb") as f:
             return tomllib.load(f)
 
     def save(self):

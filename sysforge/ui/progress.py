@@ -103,7 +103,7 @@ def _write(seq: str) -> None:
     try:
         sys.stderr.write(seq)
         sys.stderr.flush()
-    except Exception:
+    except Exception:  # noqa: S110 — best-effort terminal write, failure is non-fatal
         pass
 
 

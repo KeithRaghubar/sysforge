@@ -158,7 +158,7 @@ def _check_nvidia_powerd() -> GraphicsFinding | None:
 # ---------------------------------------------------------------------------
 
 def _check_gl_frame_pacing() -> GraphicsFinding | None:
-    mfa = os.environ.get("__GL_MaxFramesAllowed", "")
+    mfa = os.environ.get("__GL_MaxFramesAllowed", "")  # noqa: SIM112 — actual NVIDIA driver env var name, case-sensitive
     vsync = os.environ.get("__GL_SYNC_TO_VBLANK", "")
     return GraphicsFinding(
         SEV_INFO, "gl_frame_pacing",

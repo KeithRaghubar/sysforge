@@ -93,7 +93,7 @@ def _load_tcfg() -> dict | None:
     if not TOOLCHAIN_PATH.exists():
         return None
     try:
-        with open(TOOLCHAIN_PATH, "rb") as f:
+        with TOOLCHAIN_PATH.open("rb") as f:
             return tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return None

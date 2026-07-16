@@ -214,3 +214,90 @@ def test_source_date_epoch_not_stripped_from_build_env():
 
     stripped = CONF_KEY_MAP.get("makepkg", set()) | CONF_KEY_MAP.get("toolchain", set())
     assert "SOURCE_DATE_EPOCH" not in stripped
+
+
+def _load_check_standards():
+    """Load tools/check_standards.py as a module, registered in sys.modules.
+
+    Registration is required so dataclasses (e.g. Finding) can resolve their
+    deferred `from __future__ import annotations` string annotations against
+    the module's own namespace.
+    """
+    import importlib.util
+    import sys
+    spec = importlib.util.spec_from_file_location(
+        "check_standards", "tools/check_standards.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_run_seam_flags_string_command(tmp_path):
+    """A subprocess call with a string first-arg (shell-string form) is flagged."""
+    repo = tmp_path
+    (repo / "sysforge").mkdir()
+    (repo / "sysforge" / "bad.py").write_text(
+        "import subprocess\n"
+        "subprocess.run('echo hi')\n",
+        encoding="utf-8",
+    )
+    mod = _load_check_standards()
+    findings = mod.check_run_seam(repo)
+    assert any("bad.py" in f.location for f in findings), findings
+
+
+def test_run_seam_flags_unjustified_shell_true(tmp_path):
+    """shell=True without a `# noqa: S602` and outside the allowlist is flagged."""
+    repo = tmp_path
+    (repo / "sysforge").mkdir()
+    (repo / "sysforge" / "bad2.py").write_text(
+        "import subprocess\n"
+        "subprocess.run(['sh', '-c', 'x'], shell=True)\n",
+        encoding="utf-8",
+    )
+    mod = _load_check_standards()
+    findings = mod.check_run_seam(repo)
+    assert any("bad2.py" in f.location for f in findings), findings
+
+
+def test_run_seam_allows_list_form(tmp_path):
+    """A plain argv-list call is not flagged."""
+    repo = tmp_path
+    (repo / "sysforge").mkdir()
+    (repo / "sysforge" / "good.py").write_text(
+        "import subprocess\n"
+        "subprocess.run(['pacman', '-Q'])\n",
+        encoding="utf-8",
+    )
+    mod = _load_check_standards()
+    findings = mod.check_run_seam(repo)
+    assert not findings, findings
+
+
+def test_run_seam_flags_string_command_via_module_alias(tmp_path):
+    """An aliased module import (`import subprocess as _sp`) doesn't evade the check."""
+    repo = tmp_path
+    (repo / "sysforge").mkdir()
+    (repo / "sysforge" / "aliased.py").write_text(
+        "import subprocess as _sp\n"
+        "_sp.run('echo hi')\n",
+        encoding="utf-8",
+    )
+    mod = _load_check_standards()
+    findings = mod.check_run_seam(repo)
+    assert any("aliased.py" in f.location for f in findings), findings
+
+
+def test_run_seam_flags_string_command_via_direct_import(tmp_path):
+    """A direct func import (`from subprocess import run`) doesn't evade the check."""
+    repo = tmp_path
+    (repo / "sysforge").mkdir()
+    (repo / "sysforge" / "direct.py").write_text(
+        "from subprocess import run\n"
+        "run('echo hi')\n",
+        encoding="utf-8",
+    )
+    mod = _load_check_standards()
+    findings = mod.check_run_seam(repo)
+    assert any("direct.py" in f.location for f in findings), findings

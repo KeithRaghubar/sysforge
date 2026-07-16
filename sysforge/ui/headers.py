@@ -80,7 +80,9 @@ def welcome_lines(stage_names: list[str]) -> list[str]:
     ]
 
 
-def closing_lines(message: str = "Pipeline complete — all stages finished successfully.") -> list[str]:
+def closing_lines(
+    message: str = "Pipeline complete — all stages finished successfully.",
+) -> list[str]:
     """Closing banner for a successful pipeline run."""
     return [
         _rule(),
@@ -112,10 +114,7 @@ def stage_list_lines(
     out = [f"  {_bold('Stages:')}"]
     width = max(len(n) for n in names) if names else 0
     for i, name in enumerate(names):
-        if i == next_idx:
-            key = "running"
-        else:
-            key = statuses.get(name, "pending")
+        key = "running" if i == next_idx else statuses.get(name, "pending")
         glyph, fmt = _STATUS_GLYPHS.get(key, _STATUS_GLYPHS["pending"])
         label = name.ljust(width)
         out.append(f"    {fmt(glyph)} {label}  {_dim(key)}")

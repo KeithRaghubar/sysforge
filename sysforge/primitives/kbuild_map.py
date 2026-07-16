@@ -134,7 +134,7 @@ def save_map(path: Path, mapping: dict[str, str], kernel_release: str | None) ->
     }
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
-    os.replace(tmp, path)
+    tmp.replace(path)
 
 
 def load_map(path: Path) -> tuple[dict[str, str], str] | None:

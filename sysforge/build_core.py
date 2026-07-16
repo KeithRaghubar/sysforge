@@ -27,7 +27,8 @@ Public API:
     BuildTarget, BuildOutcome
     prepare_deps(pkgbuild_paths, config, ...)
     build_and_install(targets, ...) -> BuildOutcome
-    install_built(built_pkg_files, *, always_install=frozenset(), interactive=False) -> tuple[list[Path], bool]
+    install_built(built_pkg_files, *, always_install=frozenset(), interactive=False)
+        -> tuple[list[Path], bool]
     _find_existing_artifacts(...)        # also consumed by update's install_only scan
     _record_build_failure(state_dir, target, exc)
 """
@@ -62,6 +63,7 @@ from sysforge.primitives.pkgbuild_review import (
     review_target,
 )
 from sysforge.ui import progress as _ui_progress
+import contextlib
 
 _log = log.get_logger("BUILD")
 
@@ -194,10 +196,8 @@ def _find_existing_artifacts(
         if not candidates:
             continue
 
-        try:
+        with contextlib.suppress(RuntimeError):
             candidates.sort(key=cmp_to_key(lambda a, b: vercmp(a[0], b[0])))
-        except RuntimeError:
-            pass
         found.append(candidates[-1][1])
 
     return found
@@ -305,7 +305,7 @@ def prepare_deps(
         # makepkg_wrapper records them unconditionally.
         buildable = [
             d for d in aur_deps
-            if d.source == "aur" and getattr(d, "pkgbuild_path", None)
+            if d.source == "aur" and getattr(d, "pkgbuild_path", None) is not None
         ] if review in ("prompt", "auto") else []
         if buildable:
             if state_dir is None:
@@ -318,15 +318,17 @@ def prepare_deps(
                 # Hand the bottom row back to the terminal before the
                 # single-keypress prompt (mirrors the target gate).
                 _ui_progress.clear()
+            def _review_row(d):
+                # buildable was filtered to pkgbuild_path is not None above.
+                assert d.pkgbuild_path is not None  # noqa: S101 — buildable filter above guarantees this, not input validation
+                return (
+                    d.name,
+                    d.pkgbuild_path.parent,
+                    (bs_deps.get(d.name) or {}).get("reviewed_commit"),
+                )
+
             decision = review_deps(
-                [
-                    (
-                        d.name,
-                        Path(d.pkgbuild_path).parent,
-                        (bs_deps.get(d.name) or {}).get("reviewed_commit"),
-                    )
-                    for d in buildable
-                ],
+                [_review_row(d) for d in buildable],
                 interactive=(review == "prompt"),
             )
             if decision == DECISION_ABORT:
@@ -392,11 +394,10 @@ def install_built(
             for path, pn in dropped:
                 _log.info(f"  - {pn} ({path.name})")
 
-    if built_pkg_files:
-        if not batch_install_pkgs(built_pkg_files, interactive=interactive):
-            _log.error("Batch package install failed")
-            _log.error("packages were built but not installed")
-            install_failed = True
+    if built_pkg_files and not batch_install_pkgs(built_pkg_files, interactive=interactive):
+        _log.error("Batch package install failed")
+        _log.error("packages were built but not installed")
+        install_failed = True
 
     return built_pkg_files, install_failed
 
@@ -539,7 +540,7 @@ def _order_targets_by_intra_deps(targets) -> tuple[list, dict[str, set[str]]]:
 
 def resolve_cleanbuild_flags(
     *, no_cleanbuild: bool, extra_flags: list | None, pgo_mode: str | None
-) -> tuple[list, set]:
+) -> tuple[list, frozenset]:
     """Compute the makepkg ``(batch_flags, strip_flags)`` for the build loop.
 
     The single home for cleanbuild policy across ``build`` and ``update``:
@@ -660,6 +661,7 @@ def build_and_install(
                 ))
             except Exception as e:
                 _log.debug(f"review pre-sync {t.pkgbase}: {e}")
+    bs_review: BuildState | None = None
     if review_active:
         if state_dir is None:
             from sysforge.pipeline.state import resolve_state_dir

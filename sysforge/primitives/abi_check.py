@@ -351,7 +351,10 @@ def _demangle(symbols: list[str]) -> dict[str, str]:
     if result.returncode != 0:
         return {s: s for s in symbols}
     demangled = result.stdout.splitlines()
-    return {s: d for s, d in zip(symbols, demangled)}
+    # strict=False: c++filt can collapse/split lines on malformed input; pair what
+    # lines up and let any unpaired symbol fall through to the caller's
+    # dm.get(sym, sym) identity fallback (the original bare-zip behavior).
+    return {s: d for s, d in zip(symbols, demangled, strict=False)}
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +554,10 @@ def check_package_abi(pkg_path: Path) -> list[str]:
         _log.info(f"{pkg_path.name}: no shared libraries — skipping ABI check")
         return []
 
-    _log.info(f"{pkg_path.name}: checking {len(so_members)} shared librar{'y' if len(so_members) == 1 else 'ies'}")
+    _log.info(
+        f"{pkg_path.name}: checking {len(so_members)} shared "
+        f"librar{'y' if len(so_members) == 1 else 'ies'}"
+    )
 
     with tempfile.TemporaryDirectory(prefix="sysforge-abi-") as tmpdir:
         extracted = _extract_sos(pkg_path, so_members, Path(tmpdir))

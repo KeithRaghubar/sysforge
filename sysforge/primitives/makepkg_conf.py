@@ -21,9 +21,9 @@ conf.  The flag-string transforms themselves stay pure in ``makepkg_flags``
 Re-exported from ``makepkg_wrapper`` as ``emit_makepkg_conf``.
 """
 import contextlib
-import os
 import shutil
 import tempfile
+from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.build_throttle import apply_jobs_to_makeflags
@@ -126,10 +126,11 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     toolchain_keys = CONF_KEY_MAP.get("toolchain", set())
     conf_exclude_keys = env_keys | toolchain_keys
 
+    allowed_keys: set[str] | None
     if active_consumes is None:
         allowed_keys = None
     else:
-        allowed_keys: set[str] = set()
+        allowed_keys = set()
         for conf_type in active_consumes:
             if conf_type == "env":
                 continue
@@ -233,7 +234,10 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             _profile_ldflags if _ldflags_source == "profile" else _system_ldflags
         )
         if declared_linker and not shutil.which(declared_linker):
-            _conf_log.warn(f"Declared linker '{declared_linker}' not found on PATH — treating effective linker as 'ld'")
+            _conf_log.warn(
+                f"Declared linker '{declared_linker}' not found on PATH — "
+                "treating effective linker as 'ld'"
+            )
 
         # Only strip lld-only flags from LDFLAGS we own (profile_overrides). The
         # system conf is read-only here; if its LDFLAGS contains lld-only flags
@@ -242,7 +246,10 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
         if effective_linker != "lld" and _ldflags_source == "profile":
             cleaned, stripped_tokens = _strip_lld_flags(profile_overrides["LDFLAGS"])
             if stripped_tokens:
-                _conf_log.warn(f"Effective linker is '{effective_linker}' (not lld) — stripping lld-specific flags from LDFLAGS")
+                _conf_log.warn(
+                    f"Effective linker is '{effective_linker}' (not lld) — "
+                    "stripping lld-specific flags from LDFLAGS"
+                )
                 for tok in stripped_tokens:
                     _conf_log.warn(f"Stripped lld-only flag: {tok}")
                 profile_overrides["LDFLAGS"] = cleaned
@@ -566,5 +573,5 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     try:
         yield tmp_path
     finally:
-        os.unlink(tmp_path)
+        Path(tmp_path).unlink()
         _conf_log.info(f"Removed temp makepkg.conf: {tmp_path}")

@@ -72,6 +72,12 @@ coverage-ratchet: coverage
 coverage-ratchet-update: coverage
 	uv run --no-sync python tools/coverage_ratchet.py --update $(if $(TESTS),--tests $(TESTS),)
 
+# Type-check gate. Layers pyright into an ephemeral uv overlay (same
+# `uv run --no-sync` pattern as coverage/check-shipped) so nothing is added to
+# the system or the venv. Pyright config lives in pyproject [tool.pyright].
+typecheck:
+	uv run --no-sync --with pyright pyright sysforge/
+
 # Pre-release shipped-file validator. Runs the seven check groups in
 # tools/check_shipped.py (configs, pkgbuild, pkgbuild_parity, hooks,
 # completions, versions, manpage). tools/release.sh invokes this from
@@ -117,7 +123,7 @@ sync-config:
 # Composite gate: lint + tests + shipped-file consistency + impersonal docs +
 # DESIGN.md freshness + standards compliance. Run before kicking off
 # `make release-{major,minor,patch}`.
-pre-release: lint test check-shipped check-personal check-design check-standards
+pre-release: lint typecheck test check-shipped check-personal check-design check-standards
 
 release-major:
 	bash tools/release.sh --bump=major

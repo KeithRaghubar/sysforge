@@ -117,7 +117,7 @@ def _heal_owned_dir_group(path: Path, group: str, mode: int) -> None:
     except KeyError:
         return  # group not created yet — nothing to heal to
     try:
-        st = os.stat(path)
+        st = path.stat()
     except OSError:
         return
     if st.st_uid != os.geteuid():
@@ -128,7 +128,7 @@ def _heal_owned_dir_group(path: Path, group: str, mode: int) -> None:
         if st.st_gid != gid:
             os.chown(path, -1, gid)
         if (st.st_mode & 0o7777) != mode:
-            os.chmod(path, mode)
+            path.chmod(mode)
     except OSError:
         pass
 

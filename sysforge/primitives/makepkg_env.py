@@ -62,7 +62,7 @@ def resolve_build_python(cfg: dict | None = None) -> Path | None:
     candidate: Path | None = None
     if setting and str(setting).strip().lower() != "system":
         raw = str(setting).strip()
-        if os.path.isabs(raw):
+        if Path(raw).is_absolute():
             candidate = Path(raw)
         elif all(part.isdigit() for part in raw.split(".")):
             candidate = Path(f"/usr/bin/python{raw}")
@@ -141,7 +141,10 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
             unknown.append(key)
 
     if unknown:
-        _env_log.warn(f"Unclassified profile keys injected via env (consider adding to CONF_KEY_MAP): {sorted(unknown)}")
+        _env_log.warn(
+            "Unclassified profile keys injected via env "
+            f"(consider adding to CONF_KEY_MAP): {sorted(unknown)}"
+        )
 
     return result
 
@@ -162,7 +165,7 @@ def _effective_build_dir(pkgbuild_path, resolved_profile) -> Path:
     # makepkg.conf (a user may set BUILDDIR only in /etc/makepkg.conf).
     builddir = resolved_profile.get("BUILDDIR") or get_builddir()
     if builddir:
-        expanded = Path(os.path.expanduser(os.path.expandvars(str(builddir))))
+        expanded = Path(os.path.expandvars(str(builddir))).expanduser()
         candidate = expanded / pkgbuild_dir.name
         if (candidate / "src").is_dir():
             return candidate

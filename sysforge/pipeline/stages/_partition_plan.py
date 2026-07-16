@@ -117,7 +117,7 @@ def _fullrow(text: str) -> str:
 
 def _colrow(cells: tuple[str, ...]) -> str:
     """Column content row; each cell padded/truncated to its column width."""
-    return "  │" + "│".join(_pad(c, w) for c, w in zip(cells, _COLS)) + "│"
+    return "  │" + "│".join(_pad(c, w) for c, w in zip(cells, _COLS, strict=True)) + "│"
 
 
 def _plan_table(cfg: BootstrapConfig) -> list[str]:

@@ -71,11 +71,11 @@ def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
     except FileNotFoundError:
         raise RuntimeError(
             "pkgctl not found on PATH. Install it with: sudo pacman -S --needed devtools"
-        )
+        ) from None
 
     output_lines: list[str] = []
     proc_stdout = proc.stdout
-    assert proc_stdout is not None  # set above by stdout=subprocess.PIPE
+    assert proc_stdout is not None  # noqa: S101 — internal invariant (stdout=PIPE guarantees it), not input validation
 
     def _drain():
         for line in proc_stdout:
@@ -95,7 +95,7 @@ def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
         raise RuntimeError(
             f"pkgctl checkout timed out after {timeout}s for {name!r}. "
             "Increase [git] clone_timeout in sysforge.toml on slow networks."
-        )
+        ) from None
     drainer.join(timeout=1)
 
     if proc.returncode != 0:
@@ -125,9 +125,11 @@ def pkgctl_switch_version(dest: Path, version: str, *, timeout: int | None = 60)
     except FileNotFoundError:
         raise RuntimeError(
             "pkgctl not found on PATH. Install it with: sudo pacman -S --needed devtools"
-        )
+        ) from None
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"pkgctl repo switch {version!r} timed out after {timeout}s")
+        raise RuntimeError(
+            f"pkgctl repo switch {version!r} timed out after {timeout}s"
+        ) from None
     if result.returncode != 0:
         raise RuntimeError(
             f"pkgctl repo switch {version!r} failed: {(result.stderr or result.stdout).strip()}"

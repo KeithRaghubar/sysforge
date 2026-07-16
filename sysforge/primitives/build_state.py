@@ -162,7 +162,7 @@ class BuildState:
     def _load(self):
         if not self.path.exists():
             return {}
-        with open(self.path, "rb") as f:
+        with self.path.open("rb") as f:
             return tomllib.load(f)
 
     def record(self, pkgname: str, pkgver: str, pkgrel: str,
@@ -438,7 +438,24 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in ("pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir", "build_mode", "flags_string", "built_at", "built_upstream_commit", "source", "owner_stage", "toolchain_variant", "toolchain_fingerprint", "reviewed_commit", "origin_pkgbase", "build_seconds"):
+            for key in (
+                "pkgver",
+                "pkgrel",
+                "epoch",
+                "pkgbase",
+                "pkgbuild_dir",
+                "build_mode",
+                "flags_string",
+                "built_at",
+                "built_upstream_commit",
+                "source",
+                "owner_stage",
+                "toolchain_variant",
+                "toolchain_fingerprint",
+                "reviewed_commit",
+                "origin_pkgbase",
+                "build_seconds",
+            ):
                 if key in entry:
                     val = _toml_escape(entry[key])
                     lines.append(f'{key} = "{val}"')

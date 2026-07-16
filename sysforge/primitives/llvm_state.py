@@ -461,7 +461,7 @@ def _load_toolchain_cfg() -> dict | None:
     if not TOOLCHAIN_PATH.exists():
         return None
     try:
-        with open(TOOLCHAIN_PATH, "rb") as f:
+        with TOOLCHAIN_PATH.open("rb") as f:
             return tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return None
@@ -513,7 +513,7 @@ def _packages_repo_mode_is_pacman() -> bool:
         path = resolve_packages_path({})
         if not path.exists():
             return False
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             data = tomllib.load(f)
         return resolve_repo_mode(data.get("build", {})) == REPO_MODE_PACMAN
     except Exception as e:  # noqa: BLE001 — advisory; default to "not pacman"

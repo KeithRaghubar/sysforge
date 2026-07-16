@@ -10,6 +10,7 @@ cannot consume all system memory. The limit is lifted for makepkg child
 processes (which need whatever memory they need for real builds) via
 lift_for_child(), intended as a subprocess preexec_fn.
 """
+import contextlib
 import resource
 from collections.abc import Callable
 
@@ -45,10 +46,8 @@ def lift_for_child() -> None:
     Intended as a subprocess preexec_fn so makepkg and other build tools
     are not constrained by the sysforge controller limit.
     """
-    try:
+    with contextlib.suppress(ValueError, OSError):
         resource.setrlimit(resource.RLIMIT_AS, (_original_as_hard, _original_as_hard))
-    except (ValueError, OSError):
-        pass
 
 
 def make_child_preexec(rlimit_as_bytes: int | None) -> Callable[[], None]:
@@ -72,9 +71,7 @@ def make_child_preexec(rlimit_as_bytes: int | None) -> Callable[[], None]:
         cap = rlimit_as_bytes
         if _original_as_hard != resource.RLIM_INFINITY and cap > _original_as_hard:
             cap = _original_as_hard
-        try:
+        with contextlib.suppress(ValueError, OSError):
             resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
-        except (ValueError, OSError):
-            pass
 
     return _preexec

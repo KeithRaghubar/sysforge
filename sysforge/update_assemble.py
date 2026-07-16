@@ -76,7 +76,9 @@ def _assemble_package_set(
     build_state_pkgs = bs.all_packages()
 
     pkgbuild_src_dir_raw = resolve_pkgbuild_src_dir(config, build_cfg)
-    pkgbuild_src_dir_base = Path(pkgbuild_src_dir_raw).expanduser() if pkgbuild_src_dir_raw else None
+    pkgbuild_src_dir_base = (
+        Path(pkgbuild_src_dir_raw).expanduser() if pkgbuild_src_dir_raw else None
+    )
 
     foreign = set(get_foreign_packages().keys())
     # Behavior-changing overrides (enable_build_from_source / cache / reason) are what
@@ -217,7 +219,10 @@ def _assemble_package_set(
         resolved_source = _resolve_source(name, override, bs_entry)
         resolved_repo_class = _resolve_repo_class(name, resolved_source, bs_entry)
 
-        if bs_entry is not None and bs_entry.get("build_mode", BUILD_MODE_SOURCE) != BUILD_MODE_PACMAN:
+        if (
+            bs_entry is not None
+            and bs_entry.get("build_mode", BUILD_MODE_SOURCE) != BUILD_MODE_PACMAN
+        ):
             pkg = dict(bs_entry)
             if resolved_source and "source" not in pkg:
                 pkg["source"] = resolved_source
@@ -271,7 +276,10 @@ def _assemble_package_set(
         unknown = [n for n in filter_names if n not in packages]
         if unknown:
             for name in unknown:
-                _log.warn(f"{name}: not in update scope (not installed, or repo package without an override) — skipping")
+                _log.warn(
+                    f"{name}: not in update scope (not installed, or repo package "
+                    f"without an override) — skipping"
+                )
         filter_set = set(filter_names)
         packages = {k: v for k, v in packages.items() if k in filter_set}
 

@@ -34,6 +34,7 @@ without being silently swallowed.
 """
 from __future__ import annotations
 
+import contextlib
 import signal
 import threading
 
@@ -118,7 +119,5 @@ class InterruptScope:
             raise KeyboardInterrupt()
         self._flag.set()
         if self._on_signal is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._on_signal()
-            except Exception:
-                pass

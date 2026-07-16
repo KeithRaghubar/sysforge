@@ -56,12 +56,37 @@ reportUnusedVariable = "none"
 reportUnusedExpression = "none"
 reportDuplicateImport = "none"
 
+[tool.ruff]
+# The codebase was informally written to ~100 cols (454 lines over 88, only
+# 125 over 100). 100 ratifies the existing grain; see 2.3.0-F1.
+line-length = 100
+
 [tool.ruff.lint]
-# E402: SysForge modules deliberately set `_log = log.get_logger("TAG")`
-# between imports so the logger is bound to the module's tag at the top
-# of the file. The pattern is consistent across the codebase and has no
-# runtime side effect — get_logger() is pure.
-ignore = ["E402"]
+# Security (bandit port `S`), bug-prone patterns (`B`), simplifications (`SIM`),
+# and pathlib migration (`PTH`) on top of the pyflakes/pycodestyle baseline.
+# E501 enables the line-length=100 enforcement above (it lives in the E5 group,
+# which the E4/E7/E9 selectors do not cover). 2.3.0-STD1 governs the
+# subprocess-seam discipline the noisy S-rules can't.
+select = ["E4", "E7", "E9", "E501", "F", "S", "B", "SIM", "PTH"]
+ignore = [
+    # E402: SysForge modules deliberately set `_log = log.get_logger("TAG")`
+    # between imports so the logger binds to the module's tag. Pure, no side effect.
+    "E402",
+    # S603: subprocess-without-shell=True fires on every safe argv-list call
+    # (124 sites). 2.3.0-STD1's run_seam check governs the actual seam discipline.
+    "S603",
+    # S607: partial-executable-path fires on every intentional PATH lookup
+    # (101 sites) — PATH resolution is deliberate for a CLI tool.
+    "S607",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test code is not production attack surface: pytest uses bare `assert` (S101),
+# fixtures construct throwaway /tmp paths (S108) and dummy credentials
+# (S105–S107), and exercise the subprocess/shell seams directly (S602/S604).
+# The bandit `S` rules target shipped code; `make lint` scopes to sysforge/ but
+# this keeps `ruff check tests/` and the edit hook coherent. (2.3.0-F1)
+"tests/**" = ["S"]
 
 # Coverage is run via `make coverage`, which layers pytest-cov into an
 # ephemeral `uv run --no-sync --with pytest-cov` overlay (no system/venv

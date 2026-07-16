@@ -82,7 +82,7 @@ def _detect_linker_from_rustflags(rustflags_val):
     for i, token in enumerate(tokens):
         # Handle both "-C link-arg=-fuse-ld=X" (two tokens) and
         # "-Clink-arg=-fuse-ld=X" (single token)
-        if token == "-C" and i + 1 < len(tokens):
+        if token == "-C" and i + 1 < len(tokens):  # noqa: S105 — CLI flag token, not a secret
             arg = tokens[i + 1]
             if arg.startswith("link-arg=-fuse-ld="):
                 return arg[len("link-arg=-fuse-ld="):]
@@ -97,7 +97,11 @@ def _replace_rustflags_linker(rustflags_val, new_linker):
     out = []
     i = 0
     while i < len(tokens):
-        if tokens[i] == "-C" and i + 1 < len(tokens) and tokens[i + 1].startswith("link-arg=-fuse-ld="):
+        if (
+            tokens[i] == "-C"
+            and i + 1 < len(tokens)
+            and tokens[i + 1].startswith("link-arg=-fuse-ld=")
+        ):
             out.append("-C")
             out.append(f"link-arg=-fuse-ld={new_linker}")
             i += 2
@@ -184,7 +188,7 @@ def _strip_all_lto(flags_val: str) -> tuple[str, list[str]]:
     stripped = []
     kept = []
     for token in flags_val.split():
-        if token == "-flto" or token.startswith("-flto="):
+        if token == "-flto" or token.startswith("-flto="):  # noqa: S105 — CLI flag token, not a secret
             stripped.append(token)
         else:
             kept.append(token)

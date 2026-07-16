@@ -14,6 +14,7 @@ Public API:
     is_musl_static_build(parsed) -> bool
 """
 import re
+from pathlib import Path
 
 
 def _strip_comments(text):
@@ -64,10 +65,7 @@ def _extract_functions(text):
     i = 0
     func_start = re.compile(r"([\w][\w-]*)\s*\(\s*\)\s*\{")
     while i < len(text):
-        if i == 0 or text[i - 1] == "\n":
-            m = func_start.match(text, i)
-        else:
-            m = None
+        m = func_start.match(text, i) if i == 0 or text[i - 1] == "\n" else None
         if m:
             func_name = m.group(1)
             j = m.end()
@@ -179,10 +177,7 @@ def _expand_braces(token):
 
             inner = token[i + 1:j]
             parts = _split_top_commas(inner)
-            if len(parts) > 1:
-                options = parts
-            else:
-                options = _expand_sequence(inner)
+            options = parts if len(parts) > 1 else _expand_sequence(inner)
             if not options:
                 # Not a valid brace expansion: keep braces literal, scan on.
                 i = j + 1
@@ -674,7 +669,7 @@ def parse_pkgbuild(path):
     depends+=() inside functions. The wrapper falls back to the default
     profile when parsing fails.
     """
-    text = _strip_comments(open(path, encoding="utf-8").read())
+    text = _strip_comments(Path(path).read_text(encoding="utf-8"))
     result = {"globals": {}, "functions": {}}
     result["functions"], global_text = _extract_functions(text)
     # Retain the raw top-level script body (functions removed). Some PKGBUILDs

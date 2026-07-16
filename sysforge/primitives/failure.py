@@ -50,7 +50,9 @@ def handle_failure(scenario, message, config, fallback=None):
         behaviour = "abort"
 
     if behaviour not in _VALID_BEHAVIOURS:
-        _log.error(f"Unknown behaviour {behaviour!r} for scenario {scenario!r} — defaulting to abort")
+        _log.error(
+            f"Unknown behaviour {behaviour!r} for scenario {scenario!r} — defaulting to abort"
+        )
         behaviour = "abort"
 
     if behaviour == "abort":

@@ -46,6 +46,7 @@ toolchain the build will use, not the workstation default.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -401,15 +402,15 @@ def _probe_cc(compiler: str) -> ToolchainCheck:
 def _probe_one(token: str) -> ToolchainCheck:
     if token.startswith("cc:"):
         return _probe_cc(token[len("cc:") :])
-    if token == "rust:native":
+    if token == "rust:native":  # noqa: S105 — toolchain-spec token, not a secret
         return _probe_rust_native()
     if token.startswith("rust:cross:"):
         body = token[len("rust:cross:") :]
         target, _, pin = body.partition("@")
         return _probe_rust_cross(target, pin or None)
-    if token == "cmake":
+    if token == "cmake":  # noqa: S105 — toolchain-spec token, not a secret
         return _probe_cmake()
-    if token == "meson":
+    if token == "meson":  # noqa: S105 — toolchain-spec token, not a secret
         return _probe_meson()
     return ToolchainCheck(
         name=token, ok=True,
@@ -467,14 +468,23 @@ def render_preflight(report: ToolchainPreflightReport) -> str:
 # ---------------------------------------------------------------------------
 
 def _run_fix(fix_cmd: str) -> tuple[int, str]:
-    """Execute a fix command via shell. Returns ``(exit, combined_output)``.
+    """Execute a fix command. Returns ``(exit, combined_output)``.
 
-    Shell is used so the same string we *print to the user as the suggested
-    fix* is what we run — pasting from the preflight output and running it
-    here must be byte-identical.
+    The fix string is parsed into an argv with ``shlex.split`` and run WITHOUT
+    a shell. Only ``auto_remediable`` fixes reach here, all of the shape
+    ``rustup target add --toolchain <tc> <target>`` — where ``<tc>`` can be a
+    toolchain pin extracted from an untrusted PKGBUILD's ``RUSTUP_TOOLCHAIN``.
+    Running without a shell keeps any metacharacters in that pin (``$()``,
+    backticks, ``&&``) inert literal arguments rather than shell commands.
     """
+    try:
+        argv = shlex.split(fix_cmd)
+    except ValueError:
+        return 1, f"could not parse fix command: {fix_cmd!r}"
+    if not argv:
+        return 1, "empty fix command"
     r = subprocess.run(
-        fix_cmd, shell=True, capture_output=True, text=True,
+        argv, capture_output=True, text=True,
     )
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 

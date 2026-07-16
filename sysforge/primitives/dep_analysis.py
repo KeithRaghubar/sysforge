@@ -371,7 +371,10 @@ def _probe_libguestfs(pkgname, config, run_fn):
     if diagnostics:
         detail = "; ".join(diagnostics)
     else:
-        detail = "appliance failed to boot (run LIBGUESTFS_DEBUG=1 guestfish add /dev/null : run for details)"
+        detail = (
+            "appliance failed to boot (run LIBGUESTFS_DEBUG=1 guestfish add /dev/null "
+            ": run for details)"
+        )
 
     issue = f"makedep 'libguestfs' probe failed: {detail}"
     _log.error(f"[{pkgname}] {issue}")

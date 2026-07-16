@@ -177,7 +177,7 @@ def _check_one_pkgbase(
         if ver is not None:
             installed_ver = ver
             break
-    assert installed_ver is not None, f"{pkgbase}: no installed pkgname in {pkgnames}"
+    assert installed_ver is not None, f"{pkgbase}: no installed pkgname in {pkgnames}"  # noqa: S101 — internal invariant (live-install-set guarantees a hit), not input validation
 
     # VCS packages under --devel: static pkgver is just the seed; the real
     # version comes from running pkgver() against the fetched upstream

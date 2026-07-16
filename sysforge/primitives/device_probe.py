@@ -248,7 +248,7 @@ def _parse_reference_aliases(ref_dir: Path) -> list[tuple[re.Pattern[str], str]]
         for record in raw.split(b"\x00"):
             try:
                 text = record.decode("utf-8", "replace")
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort record decode, skip malformed entries
                 continue
             if ".alias=" not in text:
                 continue
@@ -273,9 +273,8 @@ def resolve_expected_modules(modalias: str, ref_dir: Path | None) -> list[str]:
     pairs = _parse_reference_aliases(ref_dir)
     seen: list[str] = []
     for rx, module in pairs:
-        if rx.match(modalias):
-            if module not in seen:
-                seen.append(module)
+        if rx.match(modalias) and module not in seen:
+            seen.append(module)
     return seen
 
 

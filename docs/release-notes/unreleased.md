@@ -27,6 +27,30 @@ https://keepachangelog.com/en/1.1.0/
   `cpu_quota` path, or a tighter cgroup `MemoryMax` on the `systemd-run --scope` path
   when `cpu_quota` is also set, arbitrated so the two never double-apply. Unset = no
   change. (2.2.0-F4)
+- Enforced subprocess-seam standard (row 17): external commands must use
+  argv-**list** form (never a shell string), and `shell=True` requires both a
+  justified inline `# noqa: S602` and an entry in the `run_seam` allowlist
+  (currently empty — no site uses `shell=True`). Checked by a new AST-based
+  `check_standards` `run_seam` group, closing the gap ruff's `S602` leaves (a
+  string-form `subprocess.run("cmd")` that silently fails at runtime). Existing
+  direct `subprocess` callers are a documented carve-out — no migration forced.
+  (2.3.0-STD1)
+- `make typecheck` — a `pyright` type-check gate wired into the `pre-release`
+  chain, run via the same ephemeral `uv run --no-sync --with pyright` overlay as
+  `make coverage` (no venv/system mutation). Type regressions (None-handling,
+  argument-shape) now fail the release preflight instead of only surfacing
+  in-editor; the baseline was swept to a clean floor. (2.3.0-F2)
+
+## Changed
+
+- Expanded the `ruff` lint surface to the security (`S`), bug-prone (`B`),
+  simplification (`SIM`), and pathlib (`PTH`) rulesets on top of the pyflakes /
+  pycodestyle baseline, at a 100-column line length. The noisy `S603`/`S607`
+  bandit rules are globally ignored (they fire on every safe argv-list call and
+  intentional PATH lookup); the remaining security findings were swept — the AUR-RPC
+  url-open sites carry justified `# noqa` annotations, the sole `shell=True` site was
+  refactored to an argv list (see Security), and exception chaining (`B904`) is now
+  enforced. Test code is exempted from the `S` rules via a per-file-ignore. (2.3.0-F1)
 
 ## Fixed
 
@@ -37,3 +61,15 @@ https://keepachangelog.com/en/1.1.0/
   `-X`/`--no-init` flags from an inherited `$PAGER` `less` argv and sanitizes the
   `$LESS` environment variable for the pager subprocess, so the fix holds for every
   `maybe_pager` caller regardless of the caller's mode. (2.3.0-B1)
+
+## Security
+
+- Toolchain-preflight auto-remediation no longer runs its suggested fix via a
+  shell. The one `auto_remediable` fix (`rustup target add --toolchain <pin>
+  <target>`) interpolated a rust-toolchain pin extracted from an untrusted
+  PKGBUILD's `RUSTUP_TOOLCHAIN`; the extraction regex still admits `$()`,
+  backticks, and `&&`, so a crafted lib32-rust PKGBUILD could inject shell
+  commands that executed when a user accepted the interactive remediation
+  prompt. `_run_fix` now parses the command with `shlex.split` and runs the
+  argv list without `shell=True`, so any metacharacters in the pin are inert
+  literal arguments. Surfaced by the `2.3.0-F1` bandit (`S602`) audit. (2.3.0-F1)

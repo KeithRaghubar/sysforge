@@ -390,7 +390,9 @@ def _presync_kernel_source(pkgbuild_dir, options, state_dir, source="local"):
     ``source = "local"`` short-circuits the scheduler — there's no remote to
     fetch against. The PKGBUILD must already be present at ``pkgbuild_dir``.
     """
-    cleansrc = bool(getattr(options, "cleansrc", False) or getattr(options, "cleansrc_force", False))
+    cleansrc = bool(
+        getattr(options, "cleansrc", False) or getattr(options, "cleansrc_force", False)
+    )
     if source == "local" and not cleansrc:
         # Hand-maintained PKGBUILD: nothing to sync. Skip silently.
         return False
@@ -622,7 +624,7 @@ def _load_kernel_config():
     if not path.exists():
         return None
 
-    with open(path, "rb") as f:
+    with path.open("rb") as f:
         data = tomllib.load(f)
 
     _log.ui(f"Loaded kernel config from {path}")
@@ -943,7 +945,8 @@ def _load_hardware_kconfig(config, state_dir=None):
         hw_path = state_dir / "hardware_profile.toml"
     if not hw_path:
         _log.ui(
-            "No hardware_profile configured — hardware kconfig entries skipped (hardware stage not run)",
+            "No hardware_profile configured — hardware kconfig entries skipped "
+            "(hardware stage not run)",
         )
         return {}, {}
 
@@ -954,7 +957,7 @@ def _load_hardware_kconfig(config, state_dir=None):
         )
         return {}, {}
 
-    with open(hw_path, "rb") as f:
+    with hw_path.open("rb") as f:
         hw = tomllib.load(f)
 
     kconfig = hw.get("kconfig", {})
@@ -1590,7 +1593,10 @@ def _log_resolution_summary(
     )
     _log.ui("Kernel build plan:")
     _log.ui(f"  package:    {pkgname}")
-    _log.ui(f"  compiler:   {compiler_label} (from {compiler_origin}; cc={cc or '-'} cxx={cxx or '-'})")
+    _log.ui(
+        f"  compiler:   {compiler_label} (from {compiler_origin}; "
+        f"cc={cc or '-'} cxx={cxx or '-'})"
+    )
     _log.ui(f"  variant:    {variant}")
     _log.ui(f"  bootloader: {bootloader}{boot_note}")
     _log.ui(f"  source:     {source}")
@@ -1893,7 +1899,9 @@ class KernelStage(Stage):
             cxx=cxx,
             variant=variant,
             bootloader=bootloader,
-            bootloader_installed=(bootloader == "none" or bootloader in _probe_installed_bootloader()),
+            bootloader_installed=(
+                bootloader == "none" or bootloader in _probe_installed_bootloader()
+            ),
             source=source,
             kconfig_target=kconfig_target,
             base_config_source=base_config_source,
@@ -1966,7 +1974,10 @@ class KernelStage(Stage):
                     makepkg_run(pkgbuild, options=make_build_options(
                         "kernel", options,
                         log_dir=options.log_dir,
-                        profile_conf=getattr(options, "profile_conf", None) or config.get("profile_conf"),
+                        profile_conf=(
+                            getattr(options, "profile_conf", None)
+                            or config.get("profile_conf")
+                        ),
                         update=(not options.no_update) and not synced,
                         interactive=interactive,
                         cc_override=cc,

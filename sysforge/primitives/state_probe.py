@@ -65,7 +65,7 @@ def _check_instrumented_builds(bs) -> list[diag.Finding]:
             store = mesa_pgo.resolve_store(pkgbase=pkgbase)
             profraw = mesa_pgo.list_profraw(store)
             has_profdata = mesa_pgo.profdata_path(pkgbase=pkgbase).exists()
-        except Exception:
+        except Exception:  # noqa: S112 — best-effort PGO-state probe, skip on failure
             continue
         if profraw and not has_profdata:
             out.append(diag.Finding(

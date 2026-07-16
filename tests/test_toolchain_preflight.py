@@ -283,8 +283,8 @@ def test_auto_remediate_runs_and_reprobes(monkeypatch):
         "sysforge.primitives.toolchain_preflight.prompt_choice",
         lambda *a, **kw: "y",
     )
-    # First call: the shell fix command; second call: the re-probe via
-    # _probe_rust_cross which invokes rustc with --target. Both succeed.
+    # First call: the fix command as an argv list (no shell); second call: the
+    # re-probe via _probe_rust_cross which invokes rustc with --target. Both succeed.
     monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
     monkeypatch.setenv("RUSTUP_TOOLCHAIN", "stable")
 
@@ -297,9 +297,58 @@ def test_auto_remediate_runs_and_reprobes(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     new_rep = auto_remediate(rep, non_interactive=False)
-    # Fix shell command must have been invoked at least once.
-    assert any("rustup target add" in str(c) for c in calls)
+    # Fix command must have been invoked as an argv list (never a shell string),
+    # so a PKGBUILD-supplied toolchain pin can't inject shell metacharacters.
+    assert any(
+        isinstance(c, list) and c[:3] == ["rustup", "target", "add"]
+        for c in calls
+    )
     assert not new_rep.failed
+
+
+def test_auto_remediate_does_not_shell_inject_from_pin(monkeypatch):
+    """A metacharacter-bearing toolchain pin (as could be extracted from an
+    untrusted PKGBUILD's RUSTUP_TOOLCHAIN) must reach subprocess.run as a single
+    literal argv token, never a shell string — no shell=True, no interpretation.
+
+    The payload is space-free because the extraction regex (update.py) captures
+    ``[^\\s"';#]+`` — excluding whitespace/quotes/`;`/`#` but still admitting the
+    command-substitution characters ``$``, ``(``, ``)``, which is the real vector."""
+    injected = "$(reboot)"
+    rep = ToolchainPreflightReport(checks=(
+        ToolchainCheck(
+            "rust:cross:i686-unknown-linux-gnu@" + injected, False, "missing target",
+            f"rustup target add --toolchain {injected} i686-unknown-linux-gnu", True,
+        ),
+    ))
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_preflight.is_interactive", lambda: True,
+    )
+    monkeypatch.setattr(
+        "sysforge.primitives.toolchain_preflight.prompt_choice",
+        lambda *a, **kw: "y",
+    )
+    monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
+    monkeypatch.setenv("RUSTUP_TOOLCHAIN", "stable")
+
+    seen: list = []
+
+    def fake_run(cmd, *a, **kw):
+        seen.append((cmd, kw))
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    auto_remediate(rep, non_interactive=False)
+
+    fix_calls = [(cmd, kw) for cmd, kw in seen
+                 if isinstance(cmd, list) and cmd[:3] == ["rustup", "target", "add"]]
+    assert fix_calls, seen
+    for cmd, kw in fix_calls:
+        # Never dispatched through a shell...
+        assert kw.get("shell") is not True
+        # ...and the injected payload survives intact as ONE literal argv element,
+        # proving it was neither word-split nor command-substituted.
+        assert injected in cmd
 
 
 # ---------------------------------------------------------------------------

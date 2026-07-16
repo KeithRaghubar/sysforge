@@ -59,7 +59,7 @@ def _resolve_packages_file(args_packages: str | None) -> Path:
 
 
 def _load_toml(path: Path) -> dict:
-    with open(path, "rb") as f:
+    with path.open("rb") as f:
         return tomllib.load(f)
 
 

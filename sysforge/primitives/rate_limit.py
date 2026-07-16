@@ -153,7 +153,7 @@ def http_get_with_rate_limit(
     """
     limiter.wait_before_rpc()
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 — caller-supplied AUR endpoint constant, scheme not user-controlled
             return resp.read()
     except urllib.error.HTTPError as e:
         if e.code in (429, 503):

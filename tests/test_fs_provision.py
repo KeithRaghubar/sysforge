@@ -84,7 +84,7 @@ def test_fast_path_heals_group_and_setgid_when_owned_member(tmp_path):
     assert out == target
     mock_run.assert_not_called()  # heal is sudo-free
     mock_chown.assert_called_once_with(target, -1, fake_gid)
-    mock_chmod.assert_called_once_with(target, SYSFORGE_DIR_MODE)
+    mock_chmod.assert_called_once_with(target, SYSFORGE_DIR_MODE, follow_symlinks=True)
 
 
 def test_fast_path_skips_heal_when_not_group_member(tmp_path):

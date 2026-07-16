@@ -31,6 +31,7 @@ This is the single home for that format; do not parse the sentinels elsewhere.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -185,10 +186,8 @@ def record_self_install(pkgnames, sentinel_dir=None) -> None:
             0o664,
         )
         try:
-            try:
-                os.fchmod(fd, 0o664)
-            except OSError:
-                pass  # not the owner — the append still succeeds via group-write
+            with contextlib.suppress(OSError):
+                os.fchmod(fd, 0o664)  # not the owner — the append still succeeds via group-write
             os.write(fd, block.encode("utf-8"))
         finally:
             os.close(fd)
@@ -200,7 +199,5 @@ def clear_reconcile_sentinels(sentinel_dir=None) -> None:
     """Unlink the buildstate + self-install sentinels (best-effort)."""
     d = _dir(sentinel_dir)
     for path in (d / _BUILDSTATE_NAME, d / _SELF_INSTALL_NAME):
-        try:
+        with contextlib.suppress(OSError):
             path.unlink()
-        except OSError:
-            pass

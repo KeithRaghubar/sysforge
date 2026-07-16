@@ -65,7 +65,7 @@ class CompletionsVerb(Verb):
             import tomllib as _tomllib
             pkg_path = resolve_packages_path(config)
             if pkg_path.exists():
-                with open(pkg_path, "rb") as _f:
+                with pkg_path.open("rb") as _f:
                     data = _tomllib.load(_f)
                 for entry in expand_package_groups(data):
                     name = entry.get("name")
@@ -89,10 +89,9 @@ class CompletionsVerb(Verb):
             d = Path(raw).expanduser()
             if d.is_dir():
                 for sub in sorted(d.iterdir()):
-                    if sub.is_dir() and (sub / "PKGBUILD").exists():
-                        if sub.name not in seen:
-                            seen.add(sub.name)
-                            print(sub.name)
+                    if sub.is_dir() and (sub / "PKGBUILD").exists() and sub.name not in seen:
+                        seen.add(sub.name)
+                        print(sub.name)
 
         r = _sp.run(["pacman", "-Ssq"], capture_output=True, text=True)
         if r.returncode == 0:

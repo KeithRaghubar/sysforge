@@ -20,6 +20,7 @@ import shlex
 import subprocess
 import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 
 def _strip_altscreen_hostile(tokens: list[str]) -> list[str]:
@@ -79,7 +80,7 @@ def _pager_candidates() -> list[list[str]]:
     if pager_env:
         parts = shlex.split(pager_env)
         if parts:
-            if os.path.basename(parts[0]) == "less":
+            if Path(parts[0]).name == "less":
                 parts = [parts[0], *_strip_altscreen_hostile(parts[1:])]
             candidates.append(parts)
     candidates.append(["less", "-RF"])

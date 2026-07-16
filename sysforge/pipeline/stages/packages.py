@@ -15,7 +15,8 @@ the manifest.
 Walks packages.toml and builds/installs each entry:
   source = "repo", effective_mode = "pacman"           → pacman -S --needed <name>
   source = "repo", effective_mode = "build_from_source" → locate PKGBUILD, build like AUR
-  source = "aur"                                        → locate PKGBUILD via find_pkgbuild(), call makepkg_wrapper.run()
+  source = "aur"                                        → locate PKGBUILD via find_pkgbuild(),
+                                                            call makepkg_wrapper.run()
   source = "git"                                        → same as aur
 
 Effective build mode for repo packages:
@@ -75,7 +76,7 @@ def _load_packages(config):
             f"Pass --packages or place packages.toml at {PACKAGES_PATH}."
         )
 
-    with open(path, "rb") as f:
+    with path.open("rb") as f:
         data = tomllib.load(f)
 
     build_cfg = data.get("build", {})
@@ -132,7 +133,10 @@ def _prompt_failed_packages(failed_names, errors, options):
         err = errors.get(name, "unknown error")
         _log.warn(f"  - {name}  ({err})")
 
-    _log.warn("\nOptions:\n  [r] Retry all failed\n  [s] Skip all failed\n  [c] Choose per package\n  [a] Abort")
+    _log.warn(
+        "\nOptions:\n  [r] Retry all failed\n  [s] Skip all failed\n"
+        "  [c] Choose per package\n  [a] Abort"
+    )
 
     choice = prompt_choice(
         "Choice [r/s/c/a]: ",
@@ -202,7 +206,9 @@ def _enable_display_managers(packages, built, *, dry_run):
             continue
         result = subprocess.run(["sudo", "systemctl", "enable", f"{dm}.service"])
         if result.returncode != 0:
-            _log.warn(f"Could not enable {dm}.service (enable it manually to boot into the desktop)")
+            _log.warn(
+                f"Could not enable {dm}.service (enable it manually to boot into the desktop)"
+            )
         else:
             _log.ui(f"Display manager enabled: {dm}.service (starts on next boot)")
 
@@ -250,7 +256,11 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
             build_cfg.get("pkgbuild_src_dir")
             or config.get("paths", {}).get("pkgbuild_src_dir", "")
         )
-        expected = Path(pkgbuild_src_dir).expanduser() / name / "PKGBUILD" if pkgbuild_src_dir else f"<pkgbuild_src_dir>/{name}/PKGBUILD"
+        expected = (
+            Path(pkgbuild_src_dir).expanduser() / name / "PKGBUILD"
+            if pkgbuild_src_dir
+            else f"<pkgbuild_src_dir>/{name}/PKGBUILD"
+        )
         parts = []
         if toolchain.get("cc_override"):
             parts.append("cc=" + toolchain["cc_override"])
@@ -290,7 +300,10 @@ class PackagesStage(Stage):
     def run(self, config, state, options):
         toolchain = _toolchain_overrides(state)
         if toolchain:
-            _log.info(f"Toolchain override from pipeline: cc={toolchain.get('cc_override', '-')} cxx={toolchain.get('cxx_override', '-')}")
+            _log.info(
+                f"Toolchain override from pipeline: cc={toolchain.get('cc_override', '-')} "
+                f"cxx={toolchain.get('cxx_override', '-')}"
+            )
 
         build_cfg, packages = _load_packages(config)
 
@@ -405,7 +418,9 @@ class PackagesStage(Stage):
                     # global repo_mode default, overridden by per-package
                     # enable_build_from_source.
                     repo_mode = resolve_repo_mode(build_cfg)
-                    effective_mode = REPO_MODE_SOURCE if pkg.get(PKG_KEY_BUILD_FROM_SOURCE) else repo_mode
+                    effective_mode = (
+                        REPO_MODE_SOURCE if pkg.get(PKG_KEY_BUILD_FROM_SOURCE) else repo_mode
+                    )
 
                     # Narrate the actual action, not a blanket "building": repo
                     # packages in pacman mode are installed with `pacman -S`, so
@@ -434,7 +449,10 @@ class PackagesStage(Stage):
 
                     try:
                         if source == "repo" and effective_mode == REPO_MODE_SOURCE:
-                            _log.info(f"{name}: repo source with build-from-source mode — building from source")
+                            _log.info(
+                                f"{name}: repo source with build-from-source mode — "
+                                "building from source"
+                            )
                             _build_aur(pkg, build_cfg, config, options, toolchain)
                         elif source == "repo":
                             _install_repo(pkg, options)
@@ -480,7 +498,10 @@ class PackagesStage(Stage):
         )
 
         if still_failed:
-            _log.error(f"Stage complete with failures.\n[SYSFORGE][ERROR][PACKAGES] {summary}\n[SYSFORGE][ERROR][PACKAGES] Failed packages: {still_failed}")
+            _log.error(
+                f"Stage complete with failures.\n[SYSFORGE][ERROR][PACKAGES] {summary}\n"
+                f"[SYSFORGE][ERROR][PACKAGES] Failed packages: {still_failed}"
+            )
             raise RuntimeError(
                 f"[PACKAGES] stage finished with failures: {still_failed}"
             )

@@ -33,6 +33,7 @@ Store resolution defers to :func:`makepkg_pgo.resolve_method_store` (method
 covers it. The profraw merge shells out to ``llvm-profdata`` (LLVM only — this
 whole feature is gated on the LLVM toolchain upstream); everything else is pure.
 """
+import contextlib
 import shutil
 import subprocess
 import tomllib
@@ -93,7 +94,7 @@ def _load_tcfg() -> dict | None:
     if not TOOLCHAIN_PATH.exists():
         return None
     try:
-        with open(TOOLCHAIN_PATH, "rb") as f:
+        with TOOLCHAIN_PATH.open("rb") as f:
             return tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return None
@@ -223,9 +224,7 @@ def merge_profraw(
     # Prune the consumed raw — without this every record→use cycle leaks its
     # .profraw into the store unbounded (Q5). The signal now lives in `out`.
     for p in profraw:
-        try:
+        with contextlib.suppress(OSError):
             p.unlink()
-        except OSError:
-            pass
     _log.info(f"Merged mesa profile: {out} ({out.stat().st_size} bytes)")
     return out

@@ -24,6 +24,7 @@ This is a pure UX nicety — it never blocks a command and never raises. The
 marker is only ever *created* by the package scriptlet, so deleting it is an
 unambiguous dismissal (sysforge never recreates it).
 """
+import contextlib
 import os
 from pathlib import Path
 
@@ -72,10 +73,8 @@ def maybe_emit_init_notice(state_dir: Path | str | None = None) -> str | None:
         pending = [s for s in _REQUIRED_STAGES if ps.stage_status(s) != "done"]
 
         if not pending:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 path.unlink()
-            except FileNotFoundError:
-                pass
             return "cleared"
 
         cmds = " && ".join(f"sysforge run {s}" for s in pending)

@@ -45,6 +45,7 @@ Usage:
     log.open_pkg_log(path)
     log.close_pkg_log(success=True, persist=False)
 """
+import contextlib
 import os
 import sys
 from datetime import datetime
@@ -225,9 +226,7 @@ def use_unicode() -> bool:
     enc = (getattr(_out(), "encoding", None) or "").lower()
     if enc and "utf" not in enc:
         return False
-    if os.environ.get("TERM") == "linux":
-        return False
-    return True
+    return os.environ.get("TERM") != "linux"
 
 
 # Decorative glyph → ASCII fallback. Applied only to terminal-bound text when
@@ -299,14 +298,12 @@ def open_unified_log(path, purge: bool = False) -> None:
     except Exception:
         path.parent.mkdir(parents=True, exist_ok=True)
     mode = "w" if purge else "a"
-    _unified_log_fh = open(path, mode, buffering=1)  # line-buffered
+    _unified_log_fh = path.open(mode, buffering=1)  # noqa: SIM115 — line-buffered handle held open across calls, closed by close_unified_log
     # Group-writable so other sysforge-group members (e.g. post-reboot primary
     # user) can append on subsequent invocations. Best-effort: silently skip if
     # we don't own the file (e.g. appending an existing root-owned log).
-    try:
+    with contextlib.suppress(OSError):
         path.chmod(0o664)
-    except OSError:
-        pass
     _write_to_files(_session_header("sysforge pipeline"), raw=True)
 
 
@@ -315,11 +312,9 @@ def close_unified_log(success: bool = True, persist: bool = False) -> None:
     Close the unified log. Truncates on success unless persist=True.
     """
     global _unified_log_fh
-    try:
+    with contextlib.suppress(Exception):
         from sysforge.ui import progress as _progress
         _progress.shutdown()
-    except Exception:
-        pass
     if _unified_log_fh is None:
         return
     if success and not persist:
@@ -336,7 +331,7 @@ def open_pkg_log(path, argv=None) -> None:
     global _pkg_log_fh
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    _pkg_log_fh = open(path, "a", encoding="utf-8", buffering=1)
+    _pkg_log_fh = path.open("a", encoding="utf-8", buffering=1)  # noqa: SIM115 — line-buffered handle held open across calls, closed by close_pkg_log
     _write_to_files(_session_header(f"sysforge build {path.parent.name}"), raw=True)
     if argv:
         _write_to_files(f"# invocation: {' '.join(str(a) for a in argv)}\n", raw=True)
@@ -361,10 +356,8 @@ def _write_to_files(line: str, raw: bool = False) -> None:
     """Write a line to all open file handles. raw=True skips formatting."""
     for fh in (_unified_log_fh, _pkg_log_fh):
         if fh is not None:
-            try:
-                fh.write(line)
-            except Exception:
-                pass  # never let file I/O break the build
+            with contextlib.suppress(Exception):
+                fh.write(line)  # never let file I/O break the build
 
 
 # ---------------------------------------------------------------------------
@@ -429,23 +422,23 @@ def get_logger(tag: str) -> Logger:
 
 
 def newline() -> None:
-    """Emit a blank line to the output stream. Use before async log messages to avoid mid-line appends."""
+    """Emit a blank line to the output stream. Use before async log messages to
+    avoid mid-line appends."""
     print("", file=_out())
 
 
 def ui(tag: str, message: str) -> None:
-    """Always printed regardless of verbosity. Always written to log files. For interactive output."""
+    """Always printed regardless of verbosity. Always written to log files.
+    For interactive output."""
     print(downgrade_glyphs(message), file=_out())
     _write_to_files(f"[SYSFORGE][UI]{tag} {message}\n")
 
 
 def fatal(tag: str, message: str, exit_code: int = 1) -> NoReturn:
     """Print an error message, write to log files, and terminate the process."""
-    try:
+    with contextlib.suppress(Exception):
         from sysforge.ui import progress as _progress
         _progress.shutdown()
-    except Exception:
-        pass
     error(tag, message)
     sys.exit(exit_code)
 

@@ -6,12 +6,14 @@
 aur.py — AUR RPC queries, git clone, and AUR name-cache refresh
 
 Public API:
-    repo_packages(names)              -> set[str]          subset of names present in pacman sync DBs
+    repo_packages(names)              -> set[str]          subset of names
+                                         present in pacman sync DBs
     is_repo_package(name)             -> bool              True if name is in pacman sync DBs
     aur_info(names)                   -> dict[str, dict]   batch AUR RPC v5 query (name → result)
     aur_search(term)                  -> list[dict]        RPC v5 name-desc search (non-fatal)
     aur_clone(name, dest, *, ref=...) -> None              git clone from AUR into dest
-    fetch_aur_name_cache()            -> Path | None       refresh ~/.cache/sysforge/aur-packages.txt
+    fetch_aur_name_cache()            -> Path | None       refresh
+                                         ~/.cache/sysforge/aur-packages.txt
 
 Two neighbouring concerns were split into their own modules and are re-exported
 from here so existing ``from sysforge.primitives.aur import …`` call sites and
@@ -124,7 +126,7 @@ def aur_info(names: list[str]) -> dict[str, dict]:
     url = f"{AUR_RPC_URL}?{query}"
 
     try:
-        with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT) as resp:
+        with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT) as resp:  # noqa: S310 — fixed https AUR RPC endpoint, scheme not user-controlled
             data = json.loads(resp.read().decode())
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         _log.warn(f"AUR RPC query failed: {e}")
@@ -148,7 +150,7 @@ def aur_search(term: str) -> list[dict]:
         return []
     url = f"{AUR_SEARCH_URL}/{urllib.parse.quote(term)}?by=name-desc"
     try:
-        with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT) as resp:
+        with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT) as resp:  # noqa: S310 — fixed https AUR search endpoint, scheme not user-controlled
             data = json.loads(resp.read().decode())
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         _log.warn(f"AUR search failed: {e}")
@@ -176,7 +178,7 @@ def fetch_aur_name_cache(force: bool = False) -> Path | None:
 
     _log.info(f"refreshing AUR name cache → {cache}")
     try:
-        with urllib.request.urlopen(AUR_PACKAGES_URL, timeout=_REQUEST_TIMEOUT) as resp:
+        with urllib.request.urlopen(AUR_PACKAGES_URL, timeout=_REQUEST_TIMEOUT) as resp:  # noqa: S310 — fixed https AUR packages endpoint, scheme not user-controlled
             raw = resp.read()
         names = gzip.decompress(raw).decode().splitlines()
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -261,7 +263,7 @@ def aur_clone(
             raise RuntimeError(
                 f"AUR clone timed out after {timeout}s for {name!r} (after retry). "
                 "Check network connectivity, or increase [git] clone_timeout in sysforge.toml."
-            )
+            ) from None
 
         if result.returncode == 0:
             return

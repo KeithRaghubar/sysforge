@@ -48,6 +48,7 @@ from sysforge import log
 _log = log.get_logger("HARDWARE")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.state import resolve_state_dir
+import contextlib
 
 
 # ---------------------------------------------------------------------------
@@ -91,15 +92,11 @@ def _parse_cpuinfo(cpuinfo_text: str) -> dict:
         if key == "vendor_id" and "cpu_vendor" not in result:
             result["cpu_vendor"] = value
         elif key == "cpu family" and "cpu_family" not in result:
-            try:
+            with contextlib.suppress(ValueError):
                 result["cpu_family"] = int(value)
-            except ValueError:
-                pass
         elif key == "model" and "cpu_model" not in result:
-            try:
+            with contextlib.suppress(ValueError):
                 result["cpu_model"] = int(value)
-            except ValueError:
-                pass
         if len(result) == 3:
             break
     return result
@@ -580,7 +577,7 @@ class HardwareStage(Stage):
         try:
             cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8")
         except OSError as e:
-            raise RuntimeError(f"[HARDWARE] Cannot read /proc/cpuinfo: {e}")
+            raise RuntimeError(f"[HARDWARE] Cannot read /proc/cpuinfo: {e}") from e
 
         cpu_info = _parse_cpuinfo(cpuinfo)
         _log.ui(

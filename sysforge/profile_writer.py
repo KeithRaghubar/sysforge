@@ -12,7 +12,6 @@ comments and reorder the user's hand-authored profiles/rules).
 """
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -81,7 +80,7 @@ def write_package_compiler_override(
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         tmp.write_text("".join(lines))
-        os.replace(tmp, path)
+        tmp.replace(path)
     except OSError as e:
         _log.warn(f"profiles.toml override write failed: {e}")
         return False

@@ -10,10 +10,13 @@ network-clone concerns. Everything here operates on an on-disk packaging repo
 (``pkgbuild_dir``) and never mutates remote state.
 
 Public API:
-    git_fetch_and_compare(dir, ...)   -> GitFetchOutcome   shallow fetch + HEAD compare (no destructive ops)
+    git_fetch_and_compare(dir, ...)   -> GitFetchOutcome   shallow fetch + HEAD
+                                         compare (no destructive ops)
     classify_head_vs_upstream(dir)    -> (state, n_local, n_upstream)
-    git_is_dirty(pkgbuild_dir)        -> bool              True if git repo has uncommitted/unpushed work
-    purge_src(pkgbuild_dir)           -> None              rm -rf pkgbuild_dir; refuses if local work would be lost
+    git_is_dirty(pkgbuild_dir)        -> bool              True if git repo has
+                                         uncommitted/unpushed work
+    purge_src(pkgbuild_dir)           -> None              rm -rf pkgbuild_dir;
+                                         refuses if local work would be lost
 
 Also exports the ``GitFetchOutcome`` result dataclass plus the
 ``TRANSIENT_GIT_ERRORS`` / ``RATE_LIMIT_GIT_ERRORS`` string tuples and their
@@ -141,7 +144,10 @@ def git_fetch_and_compare(
     if r.returncode != 0:
         combined = ((r.stdout or "") + (r.stderr or "")).strip()
         status = "rate_limited" if is_rate_limit_error(combined) else "failed"
-        _log.warn(f"{pkgbuild_dir.name}: git fetch failed: {combined.splitlines()[0] if combined else 'no output'}")
+        _log.warn(
+            f"{pkgbuild_dir.name}: git fetch failed: "
+            f"{combined.splitlines()[0] if combined else 'no output'}"
+        )
         return GitFetchOutcome(
             status=status, head_before=head_before, head_after=None, error=combined,
         )
@@ -475,9 +481,8 @@ def _purge_refusal_message(pkgbuild_dir: Path, *, is_vcs: bool) -> str | None:
         causes.append(f"{n_local} unpushed commit(s) ahead of upstream")
     elif state == "diverged_user":
         causes.append("diverged history with local-user-authored commits")
-    elif state == "no_tracking":
-        if not head_reachable_from_remote(pkgbuild_dir):
-            causes.append("no upstream tracking branch")
+    elif state == "no_tracking" and not head_reachable_from_remote(pkgbuild_dir):
+        causes.append("no upstream tracking branch")
 
     if not causes:
         return None

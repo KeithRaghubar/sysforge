@@ -65,27 +65,6 @@ straight off a `Q`.
 
 ### Features
 
-- **`2.3.0-F1` — Expand the `ruff` lint select to the security/bug rulesets.** `[tool.ruff.lint]`
-  currently sets only `ignore` (E402), so the effective select is the default `E`/`F` — the
-  bundled bandit port (`S`) and `flake8-bugbear` (`B`) never run. For a tool that shells out at
-  224 subprocess sites, `S` is the highest-leverage gate available at zero new dependency: it flags
-  `shell=True` (`S602/S604`), hardcoded `/tmp` paths (`S108`), and weak-hash use, forcing every such
-  site to carry an explicit justified `# noqa`. The one known `shell=True`
-  (`toolchain_preflight.py:_run_fix`, `:477`) is defensible — the run string is internally generated
-  and must be byte-identical to what's printed as the suggested fix — and would get a documented
-  `# noqa: S602`. `B` (mutable-default args, bare-`except` swallowing) is the stability half. Land as
-  `select = ["E", "F", "S", "B", "SIM", "PTH"]`, sweep the resulting findings (expect mostly `noqa`
-  annotations on the run seam plus a few real fixes), and keep `make lint` green in the same change.
-  *Priority: medium (one-time sweep; retroactively audits all subprocess sites; no runtime dep).*
-
-- **`2.3.0-F2` — Enforced type-checking gate in `pre-release`.** `pyright` is configured in
-  `pyproject.toml` (it owns type analysis; ruff owns lint-style overlap) but nothing in the Makefile
-  runs it, so type regressions only surface in-editor. Add a `make typecheck` target using the same
-  ephemeral overlay pattern as `make coverage` (`uv run --no-sync --with pyright`, no venv mutation)
-  and wire it into the `pre-release` chain. Catches None-handling and argument-shape bugs — the
-  stability half of the hardening — before release. Baseline may need a first-pass sweep to reach a
-  clean floor. *Priority: medium (stability gate; dev-time only).*
-
 - **`2.3.0-F3` — Dev/build-chain supply-chain audit target.** The runtime dep surface is
   near-empty by design (only the `tomli` backport + optional `pyalpm`), but the dev/build toolchain
   (`hatchling`, `pytest`, `ruff`, `pyright`, coverage overlay) is still a supply-chain surface. Add a
@@ -216,22 +195,6 @@ straight off a `Q`.
   narration to `info()` while keeping prompts/plan-tables/results as `ui()`. Extend the
   golden guard to a representative stage run. *Priority: low (bootstrap-time output, not the
   day-to-day regression, which is resolved under F36).*
-
-### Standards
-
-- **`2.3.0-STD1` — All external-command execution routes through the run seam.** `primitives/run.py`
-  (`run_or_raise`) already centralizes the "run a command, raise a tagged error" pattern, but nothing
-  enforces that the 224 subprocess sites actually use it — modules still call `subprocess.run` directly
-  and could regress to `shell=True` or string commands without review. Promote the existing convention
-  to an enforced standard in `docs/design/21-standards.md`, checked by `tools/check_standards.py` +
-  `tests/test_standards_compliance.py` (same mechanism as "user paths → `primitives/paths.py`, colour →
-  `log.use_color()`"): external commands go through the run seam, argv-**list** form only (never a
-  shell string), and any `shell=True` requires a justified inline `# noqa: S602` naming why the input is
-  trusted. Pairs with `2.3.0-F1` — the ruff `S` rules catch new `shell=True`; this standard governs the
-  seam discipline the rules can't express. Scope decision needed on how much of the 224-site surface must
-  migrate to the seam vs. be grandfathered with a documented carve-out (streaming/interactive callers
-  that deliberately bypass `run_or_raise`'s capture). *Priority: medium (locks in an existing invariant;
-  prevents subprocess-seam drift).*
 
 ---
 

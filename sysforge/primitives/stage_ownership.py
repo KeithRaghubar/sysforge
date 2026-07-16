@@ -45,7 +45,7 @@ def _load_toml(path: Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             return tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return None

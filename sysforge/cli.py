@@ -14,7 +14,8 @@ Top-level commands:
 
 Namespaces:
     sysforge packages       Manage packages.toml (list / add / remove / sync)
-    sysforge run            Execute pipeline stages (pipeline / hardware / reconfigure / toolchain / packages / kernel)
+    sysforge run            Execute pipeline stages (pipeline / hardware / reconfigure /
+                             toolchain / packages / kernel)
 
 Every verb is a ``Verb`` subclass dispatched through
 :func:`sysforge.verbs.runner.run_verb`. The pre_check / execute /
@@ -93,9 +94,7 @@ def _hoist_verbosity_flags(argv):
     # short -q is doctor-only and never hoisted.
     hoist_quiet = "doctor" not in argv
     for tok in argv:
-        if tok in ("-v", "-vv", "-vvv", "--verbose"):
-            verbose_tokens.append(tok)
-        elif tok == "--quiet" and hoist_quiet:
+        if tok in ("-v", "-vv", "-vvv", "--verbose") or tok == "--quiet" and hoist_quiet:
             verbose_tokens.append(tok)
         else:
             rest.append(tok)
@@ -421,7 +420,8 @@ def _add_update_parser(sub):
              "(e.g. --skippgpcheck), flags that take a value (-p, -D), or "
              "flags sysforge claims for itself (-h, -V).")
     p.add_argument("--interactive", action="store_true",
-        help="Pause on build failures to allow manual correction (default: log failure and continue).")
+        help="Pause on build failures to allow manual correction "
+             "(default: log failure and continue).")
     p.add_argument("--no-cleanbuild", action="store_true", dest="no_cleanbuild",
         help="Skip the automatic --cleanbuild (-C) added for update runs. "
              "Useful when packages are already built and you only need to re-run the install step.")
@@ -816,7 +816,8 @@ def _add_config_parser(sub):
 def _add_run_parser(sub):
     """run namespace: pipeline / reconfigure / toolchain / packages / kernel"""
     p = sub.add_parser("run",
-        help="Execute a pipeline stage (pipeline, hardware, reconfigure, toolchain, packages, kernel).")
+        help="Execute a pipeline stage "
+             "(pipeline, hardware, reconfigure, toolchain, packages, kernel).")
     run_sub = p.add_subparsers(dest="run_stage", metavar="STAGE")
     run_sub.required = True
 
@@ -1001,7 +1002,8 @@ def _add_run_parser(sub):
              "global toolchain stage — lets you keep gcc system-wide but build "
              "the kernel with LLVM (or vice versa). Resolution order: this flag > "
              "kernel.toml compiler > toolchain-stage pipeline state.")
-    p_kernel.add_argument("--bootloader", choices=["systemd-boot", "grub", "none"], dest="bootloader",
+    p_kernel.add_argument(
+        "--bootloader", choices=["systemd-boot", "grub", "none"], dest="bootloader",
         help="Override kernel.toml bootloader for this invocation (systemd-boot is the default).")
     p_kernel.add_argument("--base-config", metavar="SRC", dest="base_config",
         help="Override kernel.toml base_config for this run: the starting .config "
@@ -1206,9 +1208,7 @@ def _gate_sentinel_check(args) -> bool:
     cmd = getattr(args, "command", None)
     if cmd not in _INSTALL_BEARING_COMMANDS:
         return False
-    if getattr(args, "dry_run", False):
-        return False
-    return True
+    return not getattr(args, "dry_run", False)
 
 
 def _strip_venv_from_path() -> None:

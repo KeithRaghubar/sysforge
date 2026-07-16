@@ -394,10 +394,7 @@ def audit_resolved_config(
     (``device_probe.Device`` list). Brick-class drops are flagged
     ``is_brick=True``; the kernel stage decides what to do with them.
     """
-    if isinstance(config, dict):
-        parsed = config
-    else:
-        parsed = parse_kconfig(Path(config))
+    parsed = config if isinstance(config, dict) else parse_kconfig(Path(config))
     if parsed is None:
         return [KernelFinding(
             SEV_WARN, "kconfig_unreadable",
@@ -481,16 +478,14 @@ def _boot_entry_references(pkgname: str) -> bool:
     entries_dir = _BOOT_DIR / "loader" / "entries"
     try:
         loader_entries = list(entries_dir.glob("*.conf"))
-    except (OSError,):
+    except OSError:
         loader_entries = []
     for conf in loader_entries:
         text = _read_text(conf) or ""
         if needle in text or pkgname in text:
             return True
     grub_cfg = _read_text(_BOOT_DIR / "grub" / "grub.cfg")
-    if grub_cfg and needle in grub_cfg:
-        return True
-    return False
+    return bool(grub_cfg and needle in grub_cfg)
 
 
 def verify_boot_artifacts(pkgname: str, bootloader: str = "systemd-boot") -> list[KernelFinding]:

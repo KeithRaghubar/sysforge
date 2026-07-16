@@ -123,7 +123,9 @@ def render_report(timer: PhaseTimer, *, title: str = "Phase timings") -> list[st
     lines = [f"{title}:"]
     lines.extend(
         f"  {r.name.ljust(name_w)}  {d.rjust(dur_w)}  {_bar(r.duration_ms, max_ms)}".rstrip()
-        for r, d in zip(timer.records, durations)
+        # durations has one extra trailing entry (the total, appended above and
+        # consumed separately below) — ragged by design, not a bug.
+        for r, d in zip(timer.records, durations, strict=False)
     )
     lines.append(f"  {'total'.ljust(name_w)}  {durations[-1].rjust(dur_w)}")
     return lines

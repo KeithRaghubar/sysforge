@@ -38,7 +38,6 @@ warns on the rest.
 """
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -63,7 +62,7 @@ _LIBLLVM_SUPPORT_A = Path("/usr/lib/libLLVMSupport.a")
 # A staging prefix appearing in an installed binary's ldd output is the
 # Pass-3-bad-RPATH hazard: the live toolchain about to load a libLLVM from
 # /var/tmp that is about to be wiped.
-_STAGING_PREFIX_MARKER = "/var/tmp/sysforge-llvm-stage"
+_STAGING_PREFIX_MARKER = "/var/tmp/sysforge-llvm-stage"  # noqa: S108 — string marker matched against ldd output, not a temp-file path we create
 
 
 @dataclass(frozen=True)
@@ -718,7 +717,7 @@ def _device_of(path: Path) -> tuple[int, Path] | None:
     while True:
         if p.exists():
             try:
-                return os.stat(p).st_dev, p
+                return p.stat().st_dev, p
             except OSError:
                 return None
         if p.parent == p:

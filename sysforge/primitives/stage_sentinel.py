@@ -31,13 +31,14 @@ Schema (TOML):
     pgo           = true
     # ... arbitrary additional keys
 
-The file is removed in its entirety on ``clear()``. Atomic write-then-rename matches the rest of the state dir.
+The file is removed in its entirety on ``clear()``. Atomic write-then-rename matches the rest
+of the state dir.
 """
 import os
 import subprocess
 import tomllib
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,9 +62,9 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
     """Detect and offer recovery for a stale stage-in-progress sentinel.
 
     Called from CLI entry for every install-bearing command (build,
-    update, run pipeline, run toolchain, run packages, run kernel). If a sentinel from a prior interrupted run is present,
-    surfaces what was in flight and prompts the operator with the stage's
-    recorded ``recovery_cmd`` (e.g. ``sudo pacman -S llvm llvm-libs ...``).
+    update, run pipeline, run toolchain, run packages, run kernel). If a sentinel from a
+    prior interrupted run is present, surfaces what was in flight and prompts the operator
+    with the stage's recorded ``recovery_cmd`` (e.g. ``sudo pacman -S llvm llvm-libs ...``).
 
     Returns True if it is safe to proceed (no sentinel, or recovery
     succeeded). Returns False if the operator declined recovery or
@@ -197,7 +198,7 @@ class StageSentinel:
         if not self.path.exists():
             return None
         try:
-            with open(self.path, "rb") as f:
+            with self.path.open("rb") as f:
                 data = tomllib.load(f)
         except (OSError, tomllib.TOMLDecodeError):
             return None
@@ -224,10 +225,8 @@ class StageSentinel:
 
     def clear(self) -> None:
         """Remove the sentinel file. No-op if absent."""
-        try:
+        with suppress(FileNotFoundError):
             self.path.unlink()
-        except FileNotFoundError:
-            pass
 
     # ------------------------------------------------------------------
     # internals
