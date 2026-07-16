@@ -36,6 +36,7 @@ from these sources.
 | `19-known-gaps.md` | Known Gaps |
 | `20-scope.md` | Scope & Non-Goals |
 | `21-standards.md` | Standards & Specifications |
+| `22-privilege-seam.md` | Privilege-Escalation Seam |
 
 ## Planned reorganization
 

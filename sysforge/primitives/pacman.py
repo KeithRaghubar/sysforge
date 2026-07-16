@@ -47,6 +47,7 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives.aur_resolve import _looks_unresolved, _strip_version
 from sysforge.primitives.makepkg_flags import INSTALL_FLAGS, SYNC_FLAGS
+from sysforge.primitives.privilege import privileged_argv
 
 _log = log.get_logger("PACMAN")
 
@@ -460,7 +461,7 @@ def batch_install_pkgs(pkg_paths: list, *, interactive: bool = False) -> bool:
         _log.error("No package files remain to install after filtering missing paths")
         return False
     _log.info(f"Batch-installing {len(pkg_paths)} built package file(s)")
-    argv = ["sudo", "pacman", "-U"]
+    argv = privileged_argv(["pacman", "-U"])
     if not interactive:
         argv.append("--noconfirm")
         # Auto-confirm only the intended drop-in replacement (a built pkg whose
@@ -567,7 +568,7 @@ def filter_missing_deps(deps: list) -> list:
 def batch_install_makedeps(deps: list) -> None:
     _log.info(f"Batch-installing {len(deps)} missing makedep(s): {deps}")
     result = subprocess.run(
-        ["sudo", "pacman", "-S", "--needed", "--noconfirm"] + deps
+        privileged_argv(["pacman", "-S", "--needed", "--noconfirm"]) + deps
     )
     if result.returncode != 0:
         raise RuntimeError(f"makedep install failed (exit {result.returncode})")
@@ -581,7 +582,7 @@ def install_repo_pkgs(names: list) -> None:
     """
     _log.info(f"Installing {len(names)} repo package(s): {names}")
     result = subprocess.run(
-        ["sudo", "pacman", "-S", "--needed", "--noconfirm"] + list(names)
+        privileged_argv(["pacman", "-S", "--needed", "--noconfirm"]) + list(names)
     )
     if result.returncode != 0:
         raise RuntimeError(f"repo install failed (exit {result.returncode})")
@@ -597,7 +598,7 @@ def remove_pkgs(names: list) -> None:
     if not names:
         return
     subprocess.run(
-        ["sudo", "pacman", "-R", "--noconfirm", "--", *names],
+        privileged_argv(["pacman", "-R", "--noconfirm", "--", *names]),
         check=True,
     )
 
@@ -610,7 +611,7 @@ def reinstall_repo_pkgs(names: list) -> None:
     if not names:
         return
     subprocess.run(
-        ["sudo", "pacman", "-S", "--noconfirm", "--", *names],
+        privileged_argv(["pacman", "-S", "--noconfirm", "--", *names]),
         check=True,
     )
 
@@ -631,7 +632,7 @@ def uninstall_pkgs(names: list, extra_flags: list | None = None) -> None:
     """
     if not names:
         return
-    argv = ["sudo", "pacman", "-Rnsu", *(extra_flags or []), "--", *names]
+    argv = privileged_argv(["pacman", "-Rnsu", *(extra_flags or []), "--", *names])
     subprocess.run(argv, check=True)
 
 

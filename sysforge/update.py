@@ -89,6 +89,7 @@ from sysforge.primitives.pacman import (
 )
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.profile import (
     match_rules,
     resolve_consumes,
@@ -1059,7 +1060,7 @@ def _cmd_update_body(args) -> None:
     pacman_upgrade_failed = False
     if pacman_upgrade_pkgs and not offline:
         noconfirm = getattr(args, "noconfirm", False)
-        cmd = ["sudo", "pacman", "-Syu"]
+        cmd = privileged_argv(["pacman", "-Syu"])
         if noconfirm:
             cmd.append("--noconfirm")
         _log.info(

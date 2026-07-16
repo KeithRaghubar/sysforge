@@ -33,6 +33,7 @@ adhered to, partially or fully guarded · **target** = adopted, gap being closed
 | 15 | Reproducible builds | Builds SysForge produces | followed | does not strip reproducibility OPTIONS / honours `SOURCE_DATE_EPOCH`; `tests/test_standards_compliance.py` |
 | 16 | OpenPGP signing (RFC 4880) + makepkg `validpgpkeys` | Release provenance (signed commits, tags, tarball) | followed | `tools/release.sh` (signing preflight + `git tag -s` + tarball `.asc`); `check_shipped` `pkgbuild` group (`validpgpkeys` + signature-aware `SKIP`); verified downstream by `makepkg` |
 | 17 | Subprocess-seam discipline (argv-list execution) | External-command execution (all `subprocess` sites) | enforced | argv-**list** form only, `shell=True` needs justified `# noqa: S602`; `primitives/run.py` (`run_or_raise`) sanctioned seam, direct callers a documented carve-out for streaming/returncode/stdout-parsing; ruff `S602` + `check_standards` `run_seam` group |
+| 18 | Privilege-escalation seam | Root-escalating subprocess invocations | enforced | `primitives/privilege.py` (`privileged_argv`/`run_privileged`) is the sole home for `sudo`-prefixed escalation; raw `["sudo", …]` argv outside it is forbidden except the allowlisted auth-probe (`sudo -v`, `sudo -n true`) and drop-privilege (`sudo -u <user>`) forms; `check_standards` `privilege_seam` group + `tests/test_standards_compliance.py` |
 
 ### Notes on selected standards
 
@@ -96,6 +97,13 @@ but inform how SysForge generates and edits PKGBUILDs:
 These are reference conventions, not a separate gate — they back the existing
 parser/patcher invariants in `sysforge/CLAUDE.md` (PKGBUILD
 parsing/detection/patching, source-sync) rather than adding a parallel check.
+
+**Privilege-escalation seam (18).** Escalation is `sudo`-based and per-operation;
+`privileged_argv` makes the single "prepend sudo unless already root" decision so
+there is one audit point. Auth probes (`sudo -v`, `sudo -n true`) and
+drop-privilege (`sudo -u`) are not escalation and are allowlisted structurally.
+Polkit/`pkexec` was evaluated and declined for this tool's TTY-bound execution
+model; the seam is the insertion point should that change. See §22.
 
 **CLAUDE.md citation freshness.** Guardrail files (`CLAUDE.md` at the repo root
 for process conventions; `sysforge/CLAUDE.md` for code-seam invariants, loaded

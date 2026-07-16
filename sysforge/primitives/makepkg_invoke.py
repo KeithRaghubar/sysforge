@@ -42,6 +42,7 @@ from sysforge.primitives.makepkg_env import (
     _logdest_tail,
     resolve_build_python,
 )
+from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.makepkg_flags import (
     INSTALL_FLAGS,
     resolve_effective_linker,
@@ -697,7 +698,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                             _makepkg_log.ui("Refreshing sudo credentials...")
                             subprocess.run(["sudo", "-v"])
                             result = subprocess.run(
-                                ["sudo", "pacman", "-U", "--noconfirm"]
+                                privileged_argv(["pacman", "-U", "--noconfirm"])
                                 + [str(p) for p in built_pkgs]
                             )
                             if result.returncode == 0:

@@ -22,6 +22,7 @@ import subprocess
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.privilege import privileged_argv
 
 _log = log.get_logger("PROV")
 
@@ -54,7 +55,7 @@ def sync_files_db() -> bool:
     if not shutil.which("pacman"):
         return False
     try:
-        result = subprocess.run(["sudo", "pacman", "-Fy"])
+        result = subprocess.run(privileged_argv(["pacman", "-Fy"]))
     except FileNotFoundError:
         return False
     return result.returncode == 0

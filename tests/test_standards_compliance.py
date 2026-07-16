@@ -34,6 +34,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 from sysforge import log
 
@@ -178,26 +179,25 @@ def test_options_preserved_verbatim_for_clang_build():
     from sysforge.primitives.makepkg_conf import emit_makepkg_conf
 
     options = "(strip docs !libtool staticlibs emptydirs zipman purge debug lto)"
-    sysconf = tempfile.NamedTemporaryFile(
+    with tempfile.NamedTemporaryFile(
         "w", suffix=".conf", encoding="utf-8", delete=False
-    )
-    try:
+    ) as sysconf:
         sysconf.write(
             'CARCH="x86_64"\nCHOST="x86_64-pc-linux-gnu"\n'
             f"OPTIONS={options}\n"
         )
-        sysconf.close()
+    try:
         profile = {"CC": "clang", "CXX": "clang++",
                    "CFLAGS": "-O2", "LDFLAGS": "-fuse-ld=lld"}
         with emit_makepkg_conf(
             profile, active_consumes=None, system_conf_path=sysconf.name
         ) as path:
             emitted = next(
-                ln for ln in open(path, encoding="utf-8").read().splitlines()
+                ln for ln in Path(path).read_text(encoding="utf-8").splitlines()
                 if ln.startswith("OPTIONS=")
             )
     finally:
-        os.unlink(sysconf.name)
+        Path(sysconf.name).unlink()
     # Verbatim: lto stays lto (not !lto) and no token is dropped.
     assert emitted == f"OPTIONS={options}"
 
@@ -301,3 +301,44 @@ def test_run_seam_flags_string_command_via_direct_import(tmp_path):
     mod = _load_check_standards()
     findings = mod.check_run_seam(repo)
     assert any("direct.py" in f.location for f in findings), findings
+
+
+def _privilege_seam_flags(src: str) -> list:
+    import ast
+    mod = _load_check_standards()
+    tree = ast.parse(src)
+    return mod._privilege_seam_findings_for_tree(tree, "sysforge/x.py")
+
+
+def test_privilege_seam_flags_raw_sudo_list():
+    assert _privilege_seam_flags('subprocess.run(["sudo", "pacman", "-Syu"])')
+
+
+def test_privilege_seam_allows_auth_probe_v():
+    assert not _privilege_seam_flags('subprocess.run(["sudo", "-v"])')
+
+
+def test_privilege_seam_allows_auth_probe_n_true():
+    assert not _privilege_seam_flags('subprocess.run(["sudo", "-n", "true"])')
+
+
+def test_privilege_seam_allows_drop_privilege_any_user():
+    assert not _privilege_seam_flags(
+        'subprocess.run(["sudo", "-u", cfg.username, "git", "clone"])'
+    )
+
+
+def test_privilege_seam_ignores_non_first_sudo():
+    # a "sudo" string that is not the argv[0] literal is not an escalation prefix
+    assert not _privilege_seam_flags('x = ["--flag", "sudo", "thing"]')
+
+
+def test_privilege_seam_behaviour():
+    """Row 18: privileged_argv is the escalation authority."""
+    from unittest.mock import patch
+
+    from sysforge.primitives import privilege
+    with patch("sysforge.primitives.privilege.os.geteuid", return_value=1000):
+        assert privilege.privileged_argv(["pacman", "-Syu"])[0] == "sudo"
+    with patch("sysforge.primitives.privilege.os.geteuid", return_value=0):
+        assert privilege.privileged_argv(["pacman", "-Syu"]) == ["pacman", "-Syu"]

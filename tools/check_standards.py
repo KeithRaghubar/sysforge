@@ -45,6 +45,9 @@ Groups:
     run_seam    External-command execution discipline: subprocess calls use
                 argv-list form (never a string command), and shell=True carries
                 a justified `# noqa: S602` from the single-site allowlist.
+    privilege_seam  Escalation discipline: root-escalating argv routes through
+                    primitives/privilege.py; raw ["sudo", ...] outside it is an
+                    error (probe/drop-priv forms allowlisted).
 
 Drift detection cases (verify these still fire after editing this script):
     - Add `Path.home() / ".cache/sysforge"` to a module other than paths.py.
@@ -58,6 +61,7 @@ Drift detection cases (verify these still fire after editing this script):
     - Reference a Q-typed ID in a shipped release-notes file.
     - Add `subprocess.run("echo hi")` (string form) to a sysforge/*.py file.
     - Add `shell=True` without `# noqa: S602` to a sysforge/*.py file.
+    - Add `subprocess.run(["sudo", ...])` (raw escalation) outside privilege.py.
 """
 
 from __future__ import annotations
@@ -585,17 +589,74 @@ def check_run_seam(repo: Path) -> list[Finding]:
 
 
 # ===========================================================================
+# Group: privilege_seam  (escalation-seam discipline — STD row 18)
+# ===========================================================================
+
+# Structural allowlist of NON-escalation sudo forms (matched on the argv tail
+# after the "sudo" head). Anything else must route through privilege.py.
+def _is_allowlisted_sudo(elts: list) -> bool:
+    """elts: the ast list elements AFTER the leading "sudo" constant."""
+    def const(e):
+        return e.value if isinstance(e, ast.Constant) else object()
+    if not elts:
+        return False
+    head = const(elts[0])
+    if head == "-v":                       # sudo -v  (cred refresh)
+        return True
+    if head == "-n" and len(elts) >= 2 and const(elts[1]) == "true":
+        return True                        # sudo -n true  (probe)
+    if head == "-u":                       # sudo -u <any> ...  (drop-privilege)
+        return True
+    return False
+
+
+def _privilege_seam_findings_for_tree(tree: ast.AST, rel: str) -> list[Finding]:
+    findings: list[Finding] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.List) or not node.elts:
+            continue
+        first = node.elts[0]
+        if not (isinstance(first, ast.Constant) and first.value == "sudo"):
+            continue
+        if _is_allowlisted_sudo(node.elts[1:]):
+            continue
+        findings.append(Finding(
+            "privilege_seam", "error", f"{rel}:{node.lineno}",
+            "raw sudo escalation — route through primitives/privilege.py "
+            "(privileged_argv/run_privileged) (STD row 18)",
+        ))
+    return findings
+
+
+def check_privilege_seam(repo: Path) -> list[Finding]:
+    """Root-escalating argv must go through primitives/privilege.py."""
+    findings: list[Finding] = []
+    for py in sorted((repo / "sysforge").rglob("*.py")):
+        rel = py.relative_to(repo).as_posix()
+        if rel == "sysforge/primitives/privilege.py":
+            continue  # the sanctioned home
+        src = py.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(src, filename=rel)
+        except SyntaxError:
+            continue  # fail-safe: unparseable files skipped, never flagged
+        findings.extend(_privilege_seam_findings_for_tree(tree, rel))
+    return findings
+
+
+# ===========================================================================
 # Driver
 # ===========================================================================
 
 GROUPS = {
-    "paths":       check_paths,
-    "spdx":        check_spdx,
-    "changelog":   check_changelog,
-    "encoding":    check_encoding,
-    "claude_md":   check_claude_md,
-    "roadmap_ids": check_roadmap_ids,
-    "run_seam":    check_run_seam,
+    "paths":          check_paths,
+    "spdx":           check_spdx,
+    "changelog":      check_changelog,
+    "encoding":       check_encoding,
+    "claude_md":      check_claude_md,
+    "roadmap_ids":    check_roadmap_ids,
+    "run_seam":       check_run_seam,
+    "privilege_seam": check_privilege_seam,
 }
 
 

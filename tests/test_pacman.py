@@ -5,6 +5,8 @@ get_installed_version, snapshot_pkg_dir.
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from sysforge.primitives.pacman import (
     cached_pkg_files_for,
     collect_builddeps,
@@ -22,6 +24,11 @@ from sysforge.primitives.pacman import (
     read_pkgname_from_file,
     snapshot_pkg_dir,
 )
+
+
+@pytest.fixture(autouse=True)
+def _force_non_root(monkeypatch):
+    monkeypatch.setattr("sysforge.primitives.privilege.os.geteuid", lambda: 1000)
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +314,8 @@ class TestReadPkgnameFromFile:
             stdout="pkgname = foo-bar-git\npkgver = 1.0.0\n",
             returncode=0,
         )
-        assert read_pkgname_from_file("/tmp/foo-bar-git-1.0.0-1-x86_64.pkg.tar.zst") == "foo-bar-git"
+        pkg = "/tmp/foo-bar-git-1.0.0-1-x86_64.pkg.tar.zst"
+        assert read_pkgname_from_file(pkg) == "foo-bar-git"
 
     @patch("sysforge.primitives.pacman.subprocess.run")
     def test_missing_pkgname_field(self, mock_run):
@@ -367,7 +375,8 @@ class TestFilterPkgsToInstalled:
         }
         mock_read.side_effect = lambda p: pkg_map[str(p)]
         keep, dropped = filter_pkgs_to_installed(list(pkg_map), installed={"foo", "foo-dev"})
-        assert set(str(p) for p in keep) == {"/tmp/foo-1-1.pkg.tar.zst", "/tmp/foo-dev-1-1.pkg.tar.zst"}
+        expected = {"/tmp/foo-1-1.pkg.tar.zst", "/tmp/foo-dev-1-1.pkg.tar.zst"}
+        assert set(str(p) for p in keep) == expected
         assert [pn for _, pn in dropped] == ["foo-bar"]
 
     @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file")

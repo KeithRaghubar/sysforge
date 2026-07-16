@@ -54,6 +54,7 @@ from sysforge.primitives.config import (
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 from sysforge.build_core import make_build_options
+from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.prompt import prompt_choice
 from sysforge.primitives.stage_sentinel import sentinel_scope
 
@@ -204,7 +205,7 @@ def _enable_display_managers(packages, built, *, dry_run):
         if dry_run:
             _log.ui(f"[dry-run] would enable display manager: {dm}.service")
             continue
-        result = subprocess.run(["sudo", "systemctl", "enable", f"{dm}.service"])
+        result = subprocess.run(privileged_argv(["systemctl", "enable", f"{dm}.service"]))
         if result.returncode != 0:
             _log.warn(
                 f"Could not enable {dm}.service (enable it manually to boot into the desktop)"
@@ -220,7 +221,7 @@ def _install_repo(pkg, options):
         _log.ui(f"[dry-run] sudo pacman -S --needed {name}")
         return
     _log.info(f"Installing from repo: {name}")
-    result = subprocess.run(["sudo", "pacman", "-S", "--needed", "--noconfirm", name])
+    result = subprocess.run(privileged_argv(["pacman", "-S", "--needed", "--noconfirm", name]))
     if result.returncode != 0:
         raise RuntimeError(f"pacman -S failed for {name!r} (exit {result.returncode})")
 

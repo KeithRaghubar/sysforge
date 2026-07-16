@@ -96,6 +96,7 @@ from sysforge.primitives.pkgbuild_meta import (
     is_musl_static_build,
     parse_pkgbuild,
 )
+from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.pkgbuild_patcher import (
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
@@ -351,7 +352,7 @@ def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
     if not pkgs:
         raise RuntimeError(
             f"no built package found in {pkgbuild_dir} — nothing to install")
-    cmd = ["sudo", "pacman", "-U"]
+    cmd = privileged_argv(["pacman", "-U"])
     if noconfirm:
         cmd.append("--noconfirm")
     cmd += [str(p) for p in pkgs]

@@ -146,20 +146,6 @@ straight off a `Q`.
   new standards row (status `target`→`enforced` once a `test_standards_compliance.py` case guards
   it) + rationale in the throttle/resource-control design chapter, in the landing commit.
 
-- **`2.3.0-F10` — Privilege seam for system-mutating operations (promoted from `2.3.0-Q4`).** The
-  escalation *model* is already de-facto decided — sysforge runs unprivileged and escalates per
-  operation via `sudo` — but ad-hoc: ~20 hardcoded `["sudo", …]` prefixes across `pacman.py`,
-  `kernel.py`, `reconfigure.py`, `toolchain.py`, `fs_provision.py`, so there is no single audit
-  point, no way to offer `polkit` scoping, and no guarantee a new mutating verb escalates
-  consistently. Introduce a `run_privileged(argv)` seam all mutating operations route through,
-  layered on the `2.3.0-STD1` run seam (not a parallel abstraction). First task is the audit of where
-  code assumes it is already root (`reconfigure.py` branches on `os.geteuid() == 0`) vs. shells out
-  expecting escalation, so the actual surface is known. *Priority: medium (security posture; touches
-  every mutating verb — decide the seam before the surface grows).* **Spec:** `sudoers(5)`,
-  `polkit(8)` + `polkit.action(5)`. **Standards home on adoption:** new standards row + rationale in
-  a (likely new, cross-cutting) privilege-seam design chapter, in the landing commit; pairs with
-  `2.3.0-STD1`.
-
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
   specificity: more AND'd conditions = higher weight), with manual `priority`

@@ -139,6 +139,7 @@ from sysforge.primitives.pacman import (
     install_repo_pkgs,
 )
 from sysforge.primitives.paths import TOOLCHAIN_PATH, resolve_packages_path
+from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import make_child_preexec
 from sysforge.primitives.source_sync import (
@@ -1254,7 +1255,7 @@ def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> No
     for p in pkgs:
         _log.ui(f"  {p.name}")
     result = subprocess.run(
-        ["sudo", "pacman", "-U", "--noconfirm"] + [str(p) for p in pkgs]
+        privileged_argv(["pacman", "-U", "--noconfirm"]) + [str(p) for p in pkgs]
     )
     if result.returncode != 0:
         raise RuntimeError(

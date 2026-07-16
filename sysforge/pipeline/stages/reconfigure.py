@@ -69,6 +69,7 @@ from sysforge.primitives.pkg_catalog import (
     write_desktop_group,
 )
 from sysforge.primitives import storage_probe
+from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.provides_lookup import files_db_present, sync_files_db
 from sysforge.primitives.prompt import (
     is_interactive as _interactive,
@@ -157,7 +158,7 @@ def _save_sysforge_toml_ui(key: str, value: str) -> None:
             f.write(content)
         _log.info(f"  Writing (sudo): {SYSFORGE_TOML_PATH}")
         rc = subprocess.run(
-            ["sudo", "cp", str(tmp), str(SYSFORGE_TOML_PATH)]
+            privileged_argv(["cp", str(tmp), str(SYSFORGE_TOML_PATH)])
         ).returncode
         if rc != 0:
             raise OSError(f"sudo cp exited {rc} — {SYSFORGE_TOML_PATH} unchanged")
@@ -451,7 +452,7 @@ def _try_install_editor(editor_cmd: str, options) -> bool:
         editor=editor_cmd,
     ):
         result = subprocess.run(
-            ["sudo", "pacman", "-S", "--needed", "--noconfirm", pkg_name]
+            privileged_argv(["pacman", "-S", "--needed", "--noconfirm", pkg_name])
         )
     if result.returncode != 0 or not shutil.which(editor_cmd):
         _log.ui(
@@ -712,7 +713,7 @@ def _open_in_editor(path: Path, editor: str) -> bool:
         return False
     argv = [editor, str(path)]
     if _edit_needs_sudo(path):
-        argv = ["sudo", *argv]
+        argv = privileged_argv(argv)
         _log.ui(f"  Opening (sudo): {editor} {path}")
     else:
         _log.ui(f"  Opening: {editor} {path}")
@@ -1030,7 +1031,7 @@ def _offer_makepkg_defaults(conf: dict, conf_path: Path) -> None:
     try:
         set_makepkg_conf_keys(conf_path, pending, dest=tmp)
         _log.info(f"  Writing (sudo): {', '.join(pending)} → {conf_path}")
-        rc = subprocess.run(["sudo", "cp", str(tmp), str(conf_path)]).returncode
+        rc = subprocess.run(privileged_argv(["cp", str(tmp), str(conf_path)])).returncode
         if rc != 0:
             _log.warn(f"  sudo cp exited {rc} — {conf_path} unchanged")
     finally:
@@ -1080,7 +1081,7 @@ def _step_makepkg(config, state, options, editor: str) -> str:
                 )
             else:
                 _log.info(f"  Opening (sudo): {editor} {conf_path}")
-                rc = _run_editor_argv(["sudo", editor, str(conf_path)])
+                rc = _run_editor_argv(privileged_argv([editor, str(conf_path)]))
                 if rc == -1:
                     _log.warn(f"  Editor not found: {editor!r}")
                 elif rc != 0:
@@ -1521,7 +1522,7 @@ class ReconfigureStage(Stage):
                 # at a password prompt (this path runs from a profile.d login
                 # chain on some systems; that has no TTY).
                 result = subprocess.run(
-                    ["sudo", "-n", "rm", "-f", str(reminder)],
+                    privileged_argv(["rm", "-f", str(reminder)], noninteractive=True),
                     capture_output=True,
                 )
                 if result.returncode == 0:

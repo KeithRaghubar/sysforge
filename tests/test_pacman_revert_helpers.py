@@ -6,7 +6,14 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from sysforge.primitives import pacman
+
+
+@pytest.fixture(autouse=True)
+def _force_non_root(monkeypatch):
+    monkeypatch.setattr("sysforge.primitives.privilege.os.geteuid", lambda: 1000)
 
 
 def test_remove_pkgs_argv():

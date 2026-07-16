@@ -38,6 +38,7 @@ import subprocess
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.privilege import privileged_argv
 
 _log = log.get_logger("FSPROV")
 
@@ -70,7 +71,7 @@ def _run_priv(argv: list[str]) -> None:
     """Run a privileged command via sudo, translating failure into
     FsProvisionError so callers get one exception type to catch."""
     try:
-        subprocess.run(["sudo", *argv], check=True)
+        subprocess.run(privileged_argv(argv), check=True)
     except FileNotFoundError as e:  # sudo not installed
         raise FsProvisionError(f"sudo not available: {e}") from e
     except subprocess.CalledProcessError as e:

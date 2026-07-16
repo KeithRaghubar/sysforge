@@ -40,6 +40,9 @@ https://keepachangelog.com/en/1.1.0/
   `make coverage` (no venv/system mutation). Type regressions (None-handling,
   argument-shape) now fail the release preflight instead of only surfacing
   in-editor; the baseline was swept to a clean floor. (2.3.0-F2)
+- Privilege-escalation seam: all root-escalating operations route through a single
+  audited `primitives/privilege.py` (`privileged_argv`/`run_privileged`), enforced
+  by a new standards gate (row 18). (2.3.0-F10)
 
 ## Changed
 

@@ -81,6 +81,7 @@ from sysforge.primitives import device_probe, kbuild_map, kernel_fdo, kernel_saf
 from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.config import load_sysforge_toml, resolve_repo_track
 from sysforge.primitives.paths import KERNEL_PATH
+from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.makepkg_wrapper import (
     AlreadyBuilt,
     install_built_packages,
@@ -1237,7 +1238,7 @@ def _run_mkinitcpio(dry_run):
         _log.ui("[dry-run] would run: sudo mkinitcpio -P")
         return
     _log.ui("Running mkinitcpio -P")
-    result = subprocess.run(["sudo", "mkinitcpio", "-P"])
+    result = subprocess.run(privileged_argv(["mkinitcpio", "-P"]))
     if result.returncode != 0:
         raise RuntimeError(f"[KERNEL] mkinitcpio -P failed (exit {result.returncode})")
 
@@ -1249,10 +1250,10 @@ def _update_bootloader(bootloader, dry_run):
         return
 
     if bootloader == "grub":
-        cmd = ["sudo", "grub-mkconfig", "-o", "/boot/grub/grub.cfg"]
+        cmd = privileged_argv(["grub-mkconfig", "-o", "/boot/grub/grub.cfg"])
         label = "grub-mkconfig"
     elif bootloader == "systemd-boot":
-        cmd = ["sudo", "bootctl", "update"]
+        cmd = privileged_argv(["bootctl", "update"])
         label = "bootctl update"
     else:
         _log.warn(f"Unknown bootloader {bootloader!r} — skipping update")

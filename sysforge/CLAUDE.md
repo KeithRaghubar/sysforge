@@ -109,6 +109,9 @@ Mechanism lives in the cited §DESIGN section.
   new cross targets plug into `collect_required_toolchains` + `rust:cross:<target>`.
 - **Stage-owned packages** stamp `owner_stage` (kernel/toolchain) so `update` skips them; policy
   `stage_ownership.owner_of`; `lib32-*` excluded from prefix-ownership. §Toolchain stage.
+- **Privilege escalation**: `primitives/privilege.py` (`privileged_argv`/
+  `run_privileged`) — never hand-roll `["sudo", …]`; auth probes (`-v`/`-n true`)
+  and drop-priv (`-u`) are the only exceptions. §22.
 
 ## Toolchain & kernel deep invariants (rationale: DESIGN.md §07)
 
