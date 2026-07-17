@@ -190,6 +190,9 @@ targets validate.
 
 #### Sanity checks after install
 
+Run `make vm-smoke` to assert all of the following automatically (exits non-zero
+if any fail), or check them by hand:
+
 ```bash
 make vm-ssh
 # Inside the VM:
