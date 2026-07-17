@@ -48,7 +48,7 @@ backup=(
 validpgpkeys=('23774499080F9288FEFB49CE7AAE22E6E1B4B22C')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz"
         "$pkgname-$pkgver.tar.gz.asc::$url/releases/download/v$pkgver/sysforge-$pkgver.tar.gz.asc")
-sha256sums=('36827185a8ff03b17e21608a614db5d640be3f9c13cc608aa5ab74117169d803'
+sha256sums=('e4b789faefcbb0ca2f9dc0defa93659b2baa947893477fc3cd57f117bb61fc18'
             'SKIP')
 
 build() {
