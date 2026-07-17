@@ -88,6 +88,49 @@ def test_resolve_cpu_quota_fraction_nonpositive_dropped(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# resolve_throttle — cpu_quota overshoot warning (2.3.0-F7)
+
+
+class _WarnRecorder:
+    """Minimal stand-in for the throttle logger that records warn() messages."""
+
+    def __init__(self):
+        self.messages: list[str] = []
+
+    def warn(self, msg):
+        self.messages.append(msg)
+
+
+def test_cpu_quota_percent_overshoot_warns_but_keeps(monkeypatch):
+    # An absolute N% above cpu_count*100 is kept (systemd clamps effectively) but
+    # the user gets a signal — warn-only, never drop or clamp.
+    monkeypatch.setattr(bt.os, "cpu_count", lambda: 16)
+    rec = _WarnRecorder()
+    monkeypatch.setattr(bt, "_throttle_log", rec)
+    t = resolve_throttle({}, {"build": {"cpu_quota": "2000%"}})
+    assert t.cpu_quota == "2000%"
+    assert any("2000%" in m and "16" in m for m in rec.messages)
+
+
+def test_cpu_quota_fraction_overshoot_warns_but_keeps(monkeypatch):
+    # The fraction form can also overshoot (frac > 1): 2.0 * 8 cores = 1600% > 800%.
+    monkeypatch.setattr(bt.os, "cpu_count", lambda: 8)
+    rec = _WarnRecorder()
+    monkeypatch.setattr(bt, "_throttle_log", rec)
+    t = resolve_throttle({}, {"build": {"cpu_quota": "2.0"}})
+    assert t.cpu_quota == "1600%"
+    assert any("1600%" in m for m in rec.messages)
+
+
+def test_cpu_quota_within_core_count_no_warn(monkeypatch):
+    monkeypatch.setattr(bt.os, "cpu_count", lambda: 16)
+    rec = _WarnRecorder()
+    monkeypatch.setattr(bt, "_throttle_log", rec)
+    assert resolve_throttle({}, {"build": {"cpu_quota": "600%"}}).cpu_quota == "600%"
+    assert rec.messages == []
+
+
+# ---------------------------------------------------------------------------
 # resolve_throttle — run-scoped override (2.1.0-F5)
 
 
@@ -246,11 +289,24 @@ def test_wrapper_injects_memory_max_with_cpu_quota(monkeypatch):
     assert f"MemoryMax={24 * _GiB}" in argv
 
 
-def test_wrapper_no_memory_max_without_cpu_quota(monkeypatch):
-    # mem_limit alone → no systemd scope → no MemoryMax (rlimit path owns it).
+def test_wrapper_injects_memory_max_mem_limit_alone(monkeypatch):
+    # 2.3.0-F9: mem_limit alone, with systemd-run available, now earns a scope
+    # carrying MemoryMax (kernel-enforced, hierarchical) — not the escapable
+    # RLIMIT_AS preexec. No CPUQuota is emitted when cpu_quota is unset.
     monkeypatch.setattr(bt.shutil, "which", lambda _: "/usr/bin/" + _)
     argv = wrapper_argv(BuildThrottle(mem_limit_bytes=24 * _GiB))
-    assert not any(a.startswith("MemoryMax=") for a in argv)
+    assert argv == ["systemd-run", "--scope", "--user", "--quiet",
+                    "-p", f"MemoryMax={24 * _GiB}"]
+    assert not any(a.startswith("CPUQuota=") for a in argv)
+
+
+def test_wrapper_mem_limit_alone_falls_back_without_systemd_run(monkeypatch):
+    # 2.3.0-F9: no systemd-run → no scope; the RLIMIT_AS preexec (resolve_child_mem_cap)
+    # is the pure non-systemd fallback, so wrapper_argv emits no MemoryMax here.
+    monkeypatch.setattr(bt.shutil, "which",
+                        lambda name: None if name == "systemd-run" else "/usr/bin/" + name)
+    argv = wrapper_argv(BuildThrottle(mem_limit_bytes=24 * _GiB))
+    assert argv == []
 
 
 def test_wrapper_no_memory_max_when_mem_limit_unset(monkeypatch):
@@ -260,19 +316,31 @@ def test_wrapper_no_memory_max_when_mem_limit_unset(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# resolve_child_mem_cap — arbitrates rlimit vs. cgroup so caps never double-apply
+# resolve_child_mem_cap — arbitrates rlimit vs. cgroup so caps never double-apply.
+# 2.3.0-F9: the scope owns the cap whenever mem_limit is set AND systemd-run is
+# present (independent of cpu_quota); otherwise the rlimit fallback owns it.
+_HAS_SYSTEMD_RUN = staticmethod(lambda name: "/usr/bin/" + name)
+_NO_SYSTEMD_RUN = staticmethod(lambda name: None if name == "systemd-run" else "/usr/bin/" + name)
 
 
-def test_child_mem_cap_none_when_cpu_quota_active():
-    # The systemd scope owns the cap via MemoryMax; rlimit on the client would
-    # not reach the scoped payload, so it must be suppressed.
+def test_child_mem_cap_none_when_scope_owns_cap(monkeypatch):
+    # systemd-run present → the scope's MemoryMax owns the ceiling; rlimit on the
+    # client would not reach the scoped payload, so it must be suppressed.
+    monkeypatch.setattr(bt.shutil, "which", _HAS_SYSTEMD_RUN)
     assert resolve_child_mem_cap(BuildThrottle(cpu_quota="600%", mem_limit_bytes=24 * _GiB)) is None
+    assert resolve_child_mem_cap(BuildThrottle(mem_limit_bytes=24 * _GiB)) is None
 
 
-def test_child_mem_cap_bytes_without_cpu_quota():
+def test_child_mem_cap_bytes_when_no_systemd_run(monkeypatch):
+    # No systemd-run → no scope carries MemoryMax, so the rlimit fallback owns the
+    # cap even when cpu_quota is set (closes the silent-drop gap F9 targets).
+    monkeypatch.setattr(bt.shutil, "which", _NO_SYSTEMD_RUN)
     assert resolve_child_mem_cap(BuildThrottle(mem_limit_bytes=24 * _GiB)) == 24 * _GiB
+    assert resolve_child_mem_cap(
+        BuildThrottle(cpu_quota="600%", mem_limit_bytes=24 * _GiB)) == 24 * _GiB
 
 
-def test_child_mem_cap_none_when_mem_limit_unset():
+def test_child_mem_cap_none_when_mem_limit_unset(monkeypatch):
+    monkeypatch.setattr(bt.shutil, "which", _HAS_SYSTEMD_RUN)
     assert resolve_child_mem_cap(BuildThrottle(cpu_quota="600%")) is None
     assert resolve_child_mem_cap(BuildThrottle()) is None

@@ -12,3 +12,20 @@ accumulator. Run the release-notes skill first to reconcile/lint the entries and
 finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
+
+## Changed
+
+- `[build] cpu_quota` now **warns** when the resolved percentage exceeds the
+  host's core count (`cpu_count*100`) — a typo or a config copied from a bigger
+  box. The value is kept (systemd's effective cap clamps it harmlessly); the
+  warning just gives the otherwise-silent overshoot a signal. Applies to both the
+  absolute `"N%"` and the decimal-fraction forms, which now converge on a single
+  resolved percentage before the check. (2.3.0-F7)
+- `[build] mem_limit` is now enforced by a kernel-level cgroup `MemoryMax`
+  (`systemd-run --scope`) even when `cpu_quota` is **unset**, wherever
+  `systemd-run` is available — the escapable `RLIMIT_AS` preexec is demoted to a
+  pure non-systemd fallback. A cgroup ceiling is hierarchical over makepkg's whole
+  fork tree, whereas an rlimit on the single preexec child leaks across the fork
+  tree. This also closes a gap where a `cpu_quota` set on a host without
+  `systemd-run` silently dropped the memory cap: the rlimit fallback now owns it
+  in that case. (2.3.0-F9)

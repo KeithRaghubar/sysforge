@@ -109,17 +109,6 @@ straight off a `Q`.
   standards row (status `target`→`enforced` once a `test_standards_compliance.py` case guards it) +
   rationale in `docs/design/12-logging.md`, in the landing commit.
 
-- **`2.3.0-F7` — Warn when `cpu_quota` exceeds host core count (promoted from `2.3.0-Q1`).**
-  `_coerce_cpu_quota` (`build_throttle.py`) accepts arbitrarily large quotas (`"9999%"`, or a
-  fraction like `"2.0"`) with no check against `os.cpu_count()`, so a typo or a config copied from a
-  bigger box silently asks for more cores than exist (systemd clamps effectively, but the user gets
-  no signal). Emit a warning — not a drop or clamp — when the **resolved** percentage exceeds
-  `cpu_count*100`, guarding the single resolved `pct` *after* both the `N%` and fraction branches
-  converge (both forms can exceed; the earlier "only the `N%` form is affected" framing was wrong —
-  the fraction form's `round(frac*cores*100)` overshoots for `frac > 1`). Warn-only keeps the
-  module's "never raise, degrade with a warning" contract; systemd's own effective cap does the
-  harmless clamping. *Priority: low.*
-
 - **`2.3.0-F8` — Shared known-enum resolver for string-valued config (promoted from `2.3.0-Q2`).**
   Three chokepoints handle unrecognized string values three ways: `config.resolve_repo_mode` returns
   unknowns **through unchanged** (`return raw`, so `repo_mode = "pacmn"` flows downstream
@@ -132,19 +121,6 @@ straight off a `Q`.
   (`[log] verbosity`, ionice class names, …) shows enough readers to justify locking it down.
   *Priority: low (robustness/consistency; no correctness failure today — bad values either pass
   through inertly or coerce to a safe default).*
-
-- **`2.3.0-F9` — `systemd-run --scope` as the primary tier for *all* build resource enforcement
-  (promoted from `2.3.0-Q3`).** As shipped by `2.2.0-F4`, `build_throttle.wrapper_argv` already
-  routes a `cpu_quota` build (and its `MemoryMax`) through a `systemd-run --scope --user` cgroup, but
-  a `mem_limit` set **alone** (no `cpu_quota`) still falls to an `RLIMIT_AS` preexec — the escapable
-  path, since an rlimit on the single preexec child leaks across makepkg's fork tree whereas a
-  cgroup `MemoryMax` is kernel-enforced hierarchically over all descendants. Emit a scope carrying
-  `-p MemoryMax=` even when `cpu_quota` is absent, demoting `RLIMIT_AS` to a pure non-systemd
-  fallback; `resolve_child_mem_cap` already arbitrates so the two never double-apply. *Priority: low
-  (hardening; "hook the OS, don't layer").* **Spec:** `systemd.resource-control(5)`
-  (`MemoryMax`/`CPUQuota`/`IOWeight`), `systemd-run(1)`, cgroup-v2. **Standards home on adoption:**
-  new standards row (status `target`→`enforced` once a `test_standards_compliance.py` case guards
-  it) + rationale in the throttle/resource-control design chapter, in the landing commit.
 
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS

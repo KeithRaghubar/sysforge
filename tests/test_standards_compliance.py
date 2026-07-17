@@ -216,6 +216,27 @@ def test_source_date_epoch_not_stripped_from_build_env():
     assert "SOURCE_DATE_EPOCH" not in stripped
 
 
+# ---------------------------------------------------------------------------
+# systemd.resource-control(5) — cgroup is the primary tier for build resource
+# enforcement (standards row 19 / 2.3.0-F9). A configured build ceiling
+# (cpu_quota or mem_limit) must reach the makepkg fork tree via a systemd-run
+# --scope cgroup (CPUQuota=/MemoryMax=), not solely via an escapable RLIMIT_AS
+# preexec, whenever systemd-run is available.
+
+
+def test_mem_limit_enforced_via_cgroup_scope_when_systemd_available(monkeypatch):
+    """A mem_limit alone earns a MemoryMax cgroup scope, not just the rlimit."""
+    import sysforge.primitives.build_throttle as bt
+
+    monkeypatch.setattr(bt.shutil, "which", lambda name: "/usr/bin/" + name)
+    throttle = bt.BuildThrottle(mem_limit_bytes=24 * 1024 ** 3)
+    argv = bt.wrapper_argv(throttle)
+    assert argv[:4] == ["systemd-run", "--scope", "--user", "--quiet"]
+    assert f"MemoryMax={24 * 1024 ** 3}" in argv
+    # The cgroup owns the cap, so the rlimit preexec is suppressed (no double-apply).
+    assert bt.resolve_child_mem_cap(throttle) is None
+
+
 def _load_check_standards():
     """Load tools/check_standards.py as a module, registered in sys.modules.
 

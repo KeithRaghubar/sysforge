@@ -13,11 +13,14 @@ them into either a command-prefix that wraps the ``makepkg`` invocation
 
 Two delivery channels, by mechanism:
 
-  * ``nice`` / ``ionice`` / ``cpu_quota`` → :func:`wrapper_argv` builds an argv
-    prefix prepended to the ``makepkg`` command at the subprocess chokepoint
-    (``makepkg_invoke.invoke_makepkg``). ``cpu_quota`` wraps the build in a
-    transient ``systemd-run --scope`` so the cgroup ``CPUQuota`` applies; the
-    scope keeps the controlling TTY so interactive prompts still work.
+  * ``nice`` / ``ionice`` / ``cpu_quota`` / ``mem_limit`` → :func:`wrapper_argv`
+    builds an argv prefix prepended to the ``makepkg`` command at the subprocess
+    chokepoint (``makepkg_invoke.invoke_makepkg``). A ``cpu_quota`` or a
+    ``mem_limit`` wraps the build in a transient ``systemd-run --scope`` so the
+    cgroup ``CPUQuota``/``MemoryMax`` applies kernel-hierarchically over the whole
+    fork tree (the escapable ``RLIMIT_AS`` preexec is a non-systemd fallback for
+    ``mem_limit``); the scope keeps the controlling TTY so interactive prompts
+    still work.
   * ``jobs`` → :func:`apply_jobs_to_makeflags` rewrites the ``-jN`` token in the
     ``MAKEFLAGS`` value written to the temp makepkg.conf
     (``makepkg_conf.emit_makepkg_conf``).
@@ -142,13 +145,18 @@ def _coerce_cpu_quota(raw) -> str | None:
     if raw is None:
         return None
     val = str(raw).strip()
+    cores = os.cpu_count() or 1
+    # Resolve both accepted forms to a single integer percentage so the
+    # overshoot check (2.3.0-F7) guards one converged value — both the absolute
+    # N% form and the fraction form can exceed the host's core count.
+    pct: int | None = None
     if _CPU_QUOTA_RE.match(val):
-        return val
-    # Relative form (2.1.0-F6): a decimal fraction of the host's total cores,
-    # e.g. 0.5 on a 16-core box → 800%, so the same config is portable across
-    # machines. Only a value carrying a decimal point is treated as a fraction;
-    # a bare integer without "%" stays an error (too ambiguous vs. a percent).
-    if "%" not in val and "." in val:
+        pct = int(val[:-1])
+    elif "%" not in val and "." in val:
+        # Relative form (2.1.0-F6): a decimal fraction of the host's total cores,
+        # e.g. 0.5 on a 16-core box → 800%, so the same config is portable across
+        # machines. Only a value carrying a decimal point is treated as a fraction;
+        # a bare integer without "%" stays an error (too ambiguous vs. a percent).
         try:
             frac = float(val)
         except ValueError:
@@ -159,14 +167,23 @@ def _coerce_cpu_quota(raw) -> str | None:
                     f"[build] cpu_quota = {raw!r} (fraction of cores) must be > 0 — ignoring"
                 )
                 return None
-            cores = os.cpu_count() or 1
             pct = max(1, round(frac * cores * 100))
-            return f"{pct}%"
-    _throttle_log.warn(
-        f"[build] cpu_quota = {raw!r} must look like \"600%\" (N%, 100%=one core) "
-        "or a fraction of total cores (e.g. 0.5) — ignoring"
-    )
-    return None
+    if pct is None:
+        _throttle_log.warn(
+            f"[build] cpu_quota = {raw!r} must look like \"600%\" (N%, 100%=one core) "
+            "or a fraction of total cores (e.g. 0.5) — ignoring"
+        )
+        return None
+    # Warn-only (2.3.0-F7): a quota above cpu_count*100 asks for more cores than
+    # exist. systemd's own effective cap does the harmless clamping, so we keep
+    # the value and just signal the likely typo / copied-from-a-bigger-box config.
+    if pct > cores * 100:
+        _throttle_log.warn(
+            f"[build] cpu_quota = {raw!r} resolves to {pct}% but this host has only "
+            f"{cores} core(s) ({cores * 100}%) — keeping it; systemd will clamp to "
+            "the available CPUs"
+        )
+    return f"{pct}%"
 
 
 def _coerce_jobs(raw) -> int | None:
@@ -262,10 +279,11 @@ def wrapper_argv(throttle: BuildThrottle) -> list[str]:
     """Build the argv prefix that wraps the ``makepkg`` invocation for the
     scheduling/IO/quota knobs (``jobs`` is delivered separately, via MAKEFLAGS).
 
-    A hard ``cpu_quota`` requires a cgroup, so it wraps the build in a transient
-    ``systemd-run --scope --user`` carrying ``CPUQuota=``. ``nice`` / ``ionice``
+    A hard ``cpu_quota`` **or** ``mem_limit`` requires a cgroup, so either wraps the
+    build in a transient ``systemd-run --scope --user`` carrying ``CPUQuota=`` and/or
+    ``MemoryMax=`` (2.3.0-F9). ``nice`` / ``ionice``
     are *always* applied as front-end commands (``nice -n N ionice -c C makepkg``),
-    nested inside the scope when a quota is present. They are **not** folded into
+    nested inside the scope when one is present. They are **not** folded into
     ``systemd-run -p``: ``--scope`` runs the command in the caller's context (so the
     controlling TTY is kept for prompts), so systemd never execs it and rejects exec
     properties like ``Nice=`` / ``IOSchedulingClass=`` ("Unknown assignment").
@@ -289,39 +307,56 @@ def wrapper_argv(throttle: BuildThrottle) -> list[str]:
         else:
             _throttle_log.warn("ionice not found on PATH — skipping IO-priority throttle")
 
-    if throttle.cpu_quota is not None:
+    # A systemd scope is the primary tier for *both* resource ceilings (2.3.0-F9):
+    # a cgroup CPUQuota and/or MemoryMax is kernel-enforced hierarchically over
+    # makepkg's whole fork tree, whereas an RLIMIT_AS preexec set on this client
+    # leaks across the fork tree and is escapable. So we open a scope whenever
+    # either ceiling is configured — not only for cpu_quota.
+    wants_scope = throttle.cpu_quota is not None or throttle.mem_limit_bytes is not None
+    if wants_scope:
         if shutil.which("systemd-run"):
-            argv = ["systemd-run", "--scope", "--user", "--quiet",
-                    "-p", f"CPUQuota={throttle.cpu_quota}"]
-            # A memory ceiling delivered here (cgroup MemoryMax) is tighter and
-            # more accurate than RLIMIT_AS, and — unlike a preexec rlimit set on
-            # this systemd-run *client* — it actually reaches the scoped payload,
-            # which runs as a child of PID 1. resolve_child_mem_cap suppresses the
-            # rlimit path in this case so the two mechanisms never double-apply.
+            argv = ["systemd-run", "--scope", "--user", "--quiet"]
+            if throttle.cpu_quota is not None:
+                argv += ["-p", f"CPUQuota={throttle.cpu_quota}"]
+            # MemoryMax reaches the scoped payload (a child of PID 1); the client's
+            # preexec rlimit would not. resolve_child_mem_cap suppresses the rlimit
+            # path here so the two mechanisms never double-apply.
             if throttle.mem_limit_bytes is not None:
                 argv += ["-p", f"MemoryMax={throttle.mem_limit_bytes}"]
             return argv + front
-        # No systemd-run: we cannot enforce the hard ceiling. Fall back to the
-        # nice/ionice front-ends so the build is at least de-prioritised.
-        _throttle_log.warn(
-            "cpu_quota set but systemd-run not found — cannot enforce a hard CPU "
-            "ceiling; falling back to nice/ionice only"
-        )
+        # No systemd-run: we cannot enforce a hard cgroup ceiling. A cpu_quota has
+        # no fallback, so warn; a mem_limit degrades silently to the RLIMIT_AS
+        # preexec (resolve_child_mem_cap owns that non-systemd fallback).
+        if throttle.cpu_quota is not None:
+            _throttle_log.warn(
+                "cpu_quota set but systemd-run not found — cannot enforce a hard CPU "
+                "ceiling; falling back to nice/ionice only"
+            )
 
     return front
+
+
+def _scope_owns_mem_cap(throttle: BuildThrottle) -> bool:
+    """Whether the systemd scope (not the rlimit preexec) carries the memory cap.
+
+    True iff a ``mem_limit`` is set *and* ``systemd-run`` is available — the same
+    condition under which :func:`wrapper_argv` emits a ``MemoryMax`` scope. Keeps
+    the two functions' decision in lockstep so the cap is applied exactly once."""
+    return throttle.mem_limit_bytes is not None and shutil.which("systemd-run") is not None
 
 
 def resolve_child_mem_cap(throttle: BuildThrottle) -> int | None:
     """The ``RLIMIT_AS`` byte cap for the makepkg-child preexec path, or ``None``.
 
-    Returns ``None`` when a ``cpu_quota`` is active — that path wraps the build in
-    a ``systemd-run --scope`` whose ``MemoryMax`` owns the ceiling, and an
-    ``RLIMIT_AS`` set in the client's ``preexec_fn`` would never reach the scoped
-    payload (a child of PID 1), so applying it would be silently ineffective *and*
-    risk double-counting. Otherwise returns ``mem_limit_bytes`` (possibly
-    ``None``) for the plain-child rlimit path. Pairs with the ``MemoryMax``
-    injection in :func:`wrapper_argv`."""
-    if throttle.cpu_quota is not None:
+    Returns ``None`` when the ``systemd-run --scope`` owns the ceiling via
+    ``MemoryMax`` (i.e. :func:`_scope_owns_mem_cap`) — an ``RLIMIT_AS`` set in the
+    client's ``preexec_fn`` would never reach the scoped payload (a child of PID 1),
+    so applying it would be silently ineffective *and* risk double-counting. This
+    is now keyed on scope emission, not on ``cpu_quota`` (2.3.0-F9): a ``mem_limit``
+    set alone also earns a scope. Otherwise returns ``mem_limit_bytes`` (possibly
+    ``None``) for the plain-child rlimit fallback — the non-systemd path. Pairs
+    with the ``MemoryMax`` injection in :func:`wrapper_argv`."""
+    if _scope_owns_mem_cap(throttle):
         return None
     return throttle.mem_limit_bytes
 
