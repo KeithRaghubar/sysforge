@@ -162,6 +162,21 @@ straight off a `Q`.
 
 ## Abandoned / decided against
 
+- **`2.4.0-Q1` — machine-readable AI-inclusion disclosure — decided against 2026-07-17.**
+  The question was whether to adopt a standardized, machine-readable declaration of AI involvement
+  (beyond the existing README prose noting Claude Code usage), for visibility to users who prefer to
+  avoid AI-touched code. Investigation found **no ratified standard as of mid-2026**, only three
+  competing, still-converging conventions: the `Assisted-by:`/`Generated-by:` git commit trailer
+  (the strongest convergence, prescribed by the Linux kernel), the `AI_DISCLOSURE.md` +
+  `SPDX-AI-Disclosure:` per-file line-tag convention (W3C AI Content Disclosure vocab × SPDX line-tag
+  format), and the `AI-DECLARATION.md` + README-badge approach. Decision: **wait for convergence
+  rather than bet on one.** Adopting any of these = a Standards-table row committing sysforge to an
+  external spec; picking a non-ratified convention risks churning that row (and, for the file-tag
+  variant, every source file) when the community settles elsewhere. The existing README prose plus
+  the `Co-Authored-By: Claude` commit trailer already give honest, human-readable disclosure. If one
+  convention becomes clearly dominant (most likely `Assisted-by:`, given the kernel precedent and the
+  Arch/Linux idiom), this reopens as a `STD` naming its target Standards row — not here.
+
 - **`2.2.0-Q1` — build-system cohesion audit — decided against 2026-07-10.** The question was
   whether the kernel, toolchain, and package stages had diverged from a shared build system and
   warranted consolidation. Investigation found the premise doesn't hold: there are two seams, and
