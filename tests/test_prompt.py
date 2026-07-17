@@ -242,6 +242,74 @@ def test_prompt_key_tag_prefix(monkeypatch):
     assert captured == ["[SYSFORGE][UI][REVIEW] Q? "]
 
 
+# prompt_key (raw cbreak TTY path — single keypress, no Enter)
+# ---------------------------------------------------------------------------
+# The fallback tests above use pytest's non-TTY stdin. These simulate a real
+# terminal: stdin.isatty() is forced True and termios/tty are stubbed as
+# no-ops (OS scaffolding), so the assertions land on the byte→outcome mapping
+# — the actual logic (control keys abort, Enter is "no answer", a printable
+# key returns lowercased).
+
+def _fake_tty_key(monkeypatch, char, *, tcgetattr_exc=None):
+    """Force a TTY stdin that yields ``char`` from a single read, with termios/
+    tty stubbed. When ``tcgetattr_exc`` is set, raw-mode setup fails and the
+    function falls back to line input."""
+    import sys as _sys
+    import termios
+    import tty
+
+    class _Stdin:
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            return 0
+
+        def read(self, _n=1):
+            return char
+
+    monkeypatch.setattr(_sys, "stdin", _Stdin())
+    if tcgetattr_exc is not None:
+        def _raise(_fd):
+            raise tcgetattr_exc
+        monkeypatch.setattr(termios, "tcgetattr", _raise)
+    else:
+        monkeypatch.setattr(termios, "tcgetattr", lambda _fd: "OLD")
+    monkeypatch.setattr(termios, "tcsetattr", lambda *a, **k: None)
+    monkeypatch.setattr(tty, "setcbreak", lambda *a, **k: None)
+
+
+def test_prompt_key_tty_printable_char_lowercased(monkeypatch):
+    _fake_tty_key(monkeypatch, "Y")
+    assert prompt_key("Q? ") == "y"
+
+
+def test_prompt_key_tty_enter_returns_empty(monkeypatch):
+    """A bare Enter in raw mode returns '' — 'no answer', so callers re-prompt."""
+    _fake_tty_key(monkeypatch, "\r")
+    assert prompt_key("Q? ") == ""
+
+
+def test_prompt_key_tty_ctrl_c_raises_keyboardinterrupt(monkeypatch):
+    """cbreak delivers Ctrl-C as \\x03 (no signal) — mapped to KeyboardInterrupt."""
+    _fake_tty_key(monkeypatch, "\x03")
+    with pytest.raises(KeyboardInterrupt):
+        prompt_key("Q? ")
+
+
+def test_prompt_key_tty_ctrl_d_raises_eof(monkeypatch):
+    _fake_tty_key(monkeypatch, "\x04")
+    with pytest.raises(EOFError):
+        prompt_key("Q? ")
+
+
+def test_prompt_key_tty_raw_mode_setup_failure_falls_back(monkeypatch):
+    """When tcgetattr refuses raw mode, degrade to line input, not crash."""
+    _fake_tty_key(monkeypatch, "ignored", tcgetattr_exc=OSError)
+    _scripted_input(monkeypatch, ["z"])
+    assert prompt_key("Q? ") == "z"
+
+
 # ---------------------------------------------------------------------------
 # Progress-bar suspend before prompting
 #
