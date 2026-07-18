@@ -95,6 +95,7 @@ from sysforge.primitives.profile import (
     resolve_consumes,
     resolve_profile,
 )
+from sysforge.primitives import restart_probe
 from sysforge.primitives.source_sync import (
     STATUS_PURGE_REFUSED,
     get_scheduler,
@@ -493,6 +494,34 @@ def _build_result_summary(
         versions=versions,
         stage_owned_updates=list(stage_owned_updates),
     )
+
+
+def _emit_restart_notice(*, emit) -> None:
+    """One-line advisory when upgraded packages have not taken effect yet.
+
+    Best-effort by construction: the update itself already succeeded, so a probe
+    failure must never turn a successful run into a failed one.
+    """
+    try:
+        report = restart_probe.scan_stale_processes()
+    except Exception:  # noqa: BLE001 — advisory only; never fail a completed update
+        return
+    if not report.entries or report.highest_tier is None:
+        return
+
+    top_entries = [e for e in report.entries if e.tier == report.highest_tier]
+    if any(restart_probe.is_kernel_entry(e) for e in top_entries):
+        subject = "the running kernel"
+    else:
+        pkgs = sorted({e.package for e in top_entries if e.package})
+        subject = ", ".join(pkgs) if pkgs else "some packages"
+    action = {
+        restart_probe.TIER_REBOOT: "reboot to apply",
+        restart_probe.TIER_RELOGIN: "log out and back in to apply",
+        restart_probe.TIER_RESTART_UNIT: "restart the affected service(s) to apply",
+    }[report.highest_tier]
+    emit(f"still running superseded code: {subject} — {action} "
+         f"(details: sysforge doctor --restart)")
 
 
 def _emit_timings(timer: PhaseTimer, args) -> None:
@@ -1112,6 +1141,7 @@ def _cmd_update_body(args) -> None:
     # Route through _log.ui (not bare print) so the end-of-run summary is
     # mirrored into the unified log the way the old inline block was.
     _print_result_summary(summary, emit=_log.ui)
+    _emit_restart_notice(emit=_log.ui)
 
     _emit_timings(timer, args)
 

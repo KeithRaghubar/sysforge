@@ -13,13 +13,12 @@ Covers:
     cmd_doctor               — clean pkg, missing depends, unsatisfied
                                ABI symbol, pkg-not-installed, exit codes
 """
-import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).parent / ".."))
 
 from sysforge import doctor
 from sysforge.primitives import pacman as pacman_mod
@@ -223,7 +222,7 @@ def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
         packages=[], graphics=False, hardware=False, toolchain=False,
         cache=False, gfxperf=False,
-        pacman=False, state=False, boot=False, storage=False, services=False,
+        pacman=False, state=False, boot=False, restart=False, storage=False, services=False,
         audio=False, network=False, all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
         apply=False, no_confirm=False, dry_run=False, state_dir=None,
@@ -247,6 +246,7 @@ def _patch_axes_clean(monkeypatch):
     monkeypatch.setattr(doctor, "_collect_audio_findings", lambda: [])
     monkeypatch.setattr(doctor, "_collect_network_findings", lambda: [])
     monkeypatch.setattr(doctor, "_collect_boot_findings", lambda: [])
+    monkeypatch.setattr(doctor, "_collect_restart_findings", lambda: [])
     monkeypatch.setattr(doctor, "_collect_storage_findings", lambda config: [])
 
 
@@ -262,7 +262,7 @@ def test_cmd_doctor_bare_runs_full_system_sweep(monkeypatch, capsys):
     # Every system-axis section renders (clean) — the full sweep.
     for label in ("toolchain checks", "hardware checks", "system graphics checks",
                   "pacman / system integrity", "sysforge state integrity",
-                  "boot / kernel runtime", "storage / filesystem",
+                  "boot / kernel runtime", "pending restarts", "storage / filesystem",
                   "services / runtime health",
                   "audio / sound stack", "network / connectivity"):
         assert label in err, label
@@ -1690,3 +1690,127 @@ def test_cmd_doctor_toolchain_clean_exit_zero(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "toolchain config matches" in err
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# restart axis (2.4.0-F2)
+# ---------------------------------------------------------------------------
+
+def test_restart_axis_registered():
+    axes = doctor._system_axes(None, args=None)
+    assert "restart" in axes
+    assert "restart" in doctor._SYSTEM_AXIS_ORDER
+    assert doctor._AXIS_FLAGS["restart"] == "restart"
+
+
+def test_restart_findings_warn_per_package(monkeypatch):
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(
+        entries=[rp.StaleEntry(pid=100, comm="NetworkManager",
+                               tier=rp.TIER_RESTART_UNIT, package="libxau",
+                               path="/usr/lib/libXau.so.6.0.0",
+                               unit="NetworkManager.service", is_user_unit=False)],
+        highest_tier=rp.TIER_RESTART_UNIT, partial=False)
+    monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
+                        lambda **kw: rep)
+
+    findings = doctor._collect_restart_findings()
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.severity == doctor.diag.SEV_WARN
+    assert "libxau" in f.message
+    assert "systemctl restart NetworkManager.service" in f.remediation
+
+
+def test_restart_findings_user_unit_uses_user_flag(monkeypatch):
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(
+        entries=[rp.StaleEntry(pid=101, comm="wireplumber",
+                               tier=rp.TIER_RESTART_UNIT, package="libxau",
+                               path="/usr/lib/libXau.so.6.0.0",
+                               unit="wireplumber.service", is_user_unit=True)],
+        highest_tier=rp.TIER_RESTART_UNIT, partial=False)
+    monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
+                        lambda **kw: rep)
+
+    findings = doctor._collect_restart_findings()
+    assert "systemctl --user restart wireplumber.service" in findings[0].remediation
+
+
+def test_restart_findings_partial_adds_info(monkeypatch):
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(entries=[], highest_tier=None, partial=True)
+    monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
+                        lambda **kw: rep)
+
+    findings = doctor._collect_restart_findings()
+    assert len(findings) == 1
+    assert findings[0].severity == doctor.diag.SEV_INFO
+    assert "sudo" in findings[0].remediation
+
+
+def test_restart_findings_clean_is_empty(monkeypatch):
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(entries=[], highest_tier=None, partial=False)
+    monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
+                        lambda **kw: rep)
+
+    assert doctor._collect_restart_findings() == []
+
+
+def test_restart_findings_kernel_reboot_names_kernel(monkeypatch):
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(
+        entries=[rp.StaleEntry(pid=0, comm="kernel", tier=rp.TIER_REBOOT,
+                               package=None, path="/usr/lib/modules/6.19.1-arch1-1")],
+        highest_tier=rp.TIER_REBOOT, partial=False)
+    monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
+                        lambda **kw: rep)
+
+    findings = doctor._collect_restart_findings()
+    assert len(findings) == 1
+    assert "installed kernel" in findings[0].remediation
+
+
+def test_restart_findings_pid1_reboot_does_not_mention_kernel(monkeypatch):
+    """pid 1 (systemd) mapping a deleted /usr/lib file is TIER_REBOOT too, but
+    it is NOT the kernel entry — the remediation must not claim otherwise
+    (e.g. an everyday systemd/libcap upgrade, not a kernel upgrade)."""
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(
+        entries=[rp.StaleEntry(pid=1, comm="systemd", tier=rp.TIER_REBOOT,
+                               package="systemd", path="/usr/lib/systemd/systemd")],
+        highest_tier=rp.TIER_REBOOT, partial=False)
+    monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
+                        lambda **kw: rep)
+
+    findings = doctor._collect_restart_findings()
+    assert len(findings) == 1
+    assert "kernel" not in findings[0].remediation
+    assert "reboot" in findings[0].remediation
+
+
+def test_restart_findings_untiered_entry_reported_as_info_no_remediation(monkeypatch):
+    """Spec pipeline step 4: an entry with no recognizable cgroup tier is
+    still reported (SEV_INFO, no remediation) rather than silently dropped —
+    dropping it would let the axis report clean while stale mappings exist."""
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(
+        entries=[rp.StaleEntry(pid=300, comm="oddproc", tier=None,
+                               package="oddpkg", path="/usr/bin/oddproc")],
+        highest_tier=None, partial=False)
+    monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
+                        lambda **kw: rep)
+
+    findings = doctor._collect_restart_findings()
+    assert len(findings) == 1
+    assert findings[0].severity == doctor.diag.SEV_INFO
+    assert findings[0].remediation == ""
+    assert "oddpkg" in findings[0].message

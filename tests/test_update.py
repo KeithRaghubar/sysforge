@@ -9,13 +9,12 @@ packages selected by overrides). packages.toml entries are overrides only;
 override entries with no installed counterpart are inert and silently
 skipped (no NOT_INSTALLED action).
 """
-import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).parent / ".."))
 
 import sysforge.update
 from sysforge.update import (
@@ -1822,3 +1821,84 @@ def test_record_build_failure_without_diagnosis(tmp_path):
     assert "signature" not in rec
     assert "fix_cmd" not in rec
     assert "boom" in rec["error"]
+
+
+def test_update_emits_restart_line_when_stale(monkeypatch):
+    from sysforge import update
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(
+        entries=[rp.StaleEntry(pid=100, comm="cosmic-comp", tier=rp.TIER_RELOGIN,
+                               package="cosmic-comp", path="/usr/bin/cosmic-comp")],
+        highest_tier=rp.TIER_RELOGIN, partial=False)
+    monkeypatch.setattr(update.restart_probe, "scan_stale_processes", lambda **kw: rep)
+
+    lines = []
+    update._emit_restart_notice(emit=lines.append)
+    assert len(lines) == 1
+    assert "cosmic-comp" in lines[0]
+    assert "log out" in lines[0]
+
+
+def test_update_restart_notice_names_kernel_not_some_packages(monkeypatch):
+    """The kernel entry deliberately carries package=None; the notice must
+    name the running kernel explicitly rather than degrading to the
+    "some packages" fallback that hides the single highest-value message."""
+    from sysforge import update
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(
+        entries=[rp.StaleEntry(pid=0, comm="kernel", tier=rp.TIER_REBOOT,
+                               package=None, path="/usr/lib/modules/6.19.1-arch1-1")],
+        highest_tier=rp.TIER_REBOOT, partial=False)
+    monkeypatch.setattr(update.restart_probe, "scan_stale_processes", lambda **kw: rep)
+
+    lines = []
+    update._emit_restart_notice(emit=lines.append)
+    assert len(lines) == 1
+    assert "the running kernel" in lines[0]
+    assert "some packages" not in lines[0]
+
+
+def test_update_restart_notice_falls_back_when_package_unknown(monkeypatch):
+    """A non-kernel entry with no owning package still falls back to "some
+    packages" — only the kernel entry gets the special-cased wording."""
+    from sysforge import update
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(
+        entries=[rp.StaleEntry(pid=1, comm="systemd", tier=rp.TIER_REBOOT,
+                               package=None, path="/usr/lib/systemd/systemd")],
+        highest_tier=rp.TIER_REBOOT, partial=False)
+    monkeypatch.setattr(update.restart_probe, "scan_stale_processes", lambda **kw: rep)
+
+    lines = []
+    update._emit_restart_notice(emit=lines.append)
+    assert len(lines) == 1
+    assert "some packages" in lines[0]
+    assert "the running kernel" not in lines[0]
+
+
+def test_update_silent_when_nothing_stale(monkeypatch):
+    from sysforge import update
+    from sysforge.primitives import restart_probe as rp
+
+    rep = rp.StaleReport(entries=[], highest_tier=None, partial=False)
+    monkeypatch.setattr(update.restart_probe, "scan_stale_processes", lambda **kw: rep)
+
+    lines = []
+    update._emit_restart_notice(emit=lines.append)
+    assert lines == []
+
+
+def test_update_restart_notice_never_raises(monkeypatch):
+    # A probe failure must not fail the update that already succeeded.
+    from sysforge import update
+
+    def boom(**kw):
+        raise OSError("procfs unavailable")
+
+    monkeypatch.setattr(update.restart_probe, "scan_stale_processes", boom)
+    lines = []
+    update._emit_restart_notice(emit=lines.append)
+    assert lines == []

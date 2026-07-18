@@ -3,10 +3,12 @@ test_pacman.py — tests for pacman.py: collect_makedeps, filter_missing_deps,
 get_installed_version, snapshot_pkg_dir.
 """
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
 
+from sysforge.primitives import pacman
 from sysforge.primitives.pacman import (
     cached_pkg_files_for,
     collect_builddeps,
@@ -748,3 +750,63 @@ class TestPacmanCache:
                             lambda n: "22.1.5-1")
         result = cached_pkg_files_for(["lld"])
         assert result["lld"] is None
+
+
+# ---------------------------------------------------------------------------
+# owners_of_paths (batched reverse owner lookup)
+# ---------------------------------------------------------------------------
+
+
+
+class TestOwnersOfPaths:
+
+    def test_owners_of_paths_parses_batched_output(self, monkeypatch):
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            return SimpleNamespace(
+                returncode=0,
+                stdout=("/usr/bin/bash is owned by bash 5.3.15-1\n"
+                        "/usr/bin/ls is owned by coreutils 9.11-2\n"),
+                stderr="",
+            )
+
+        monkeypatch.setattr(pacman.subprocess, "run", fake_run)
+        out = pacman.owners_of_paths(["/usr/bin/bash", "/usr/bin/ls"])
+        assert out == {"/usr/bin/bash": "bash", "/usr/bin/ls": "coreutils"}
+        # One subprocess for N paths — batching is the whole point.
+        assert len(calls) == 1
+
+    def test_owners_of_paths_omits_unowned(self, monkeypatch):
+        def fake_run(argv, **kw):
+            return SimpleNamespace(
+                returncode=1,
+                stdout="/usr/bin/bash is owned by bash 5.3.15-1\n",
+                stderr="error: No package owns /usr/local/bin/custom\n",
+            )
+
+        monkeypatch.setattr(pacman.subprocess, "run", fake_run)
+        out = pacman.owners_of_paths(["/usr/bin/bash", "/usr/local/bin/custom"])
+        assert out == {"/usr/bin/bash": "bash"}
+
+    def test_owners_of_paths_strips_trailing_slash_on_directory(self, monkeypatch):
+        # pacman echoes directory paths with a trailing '/' even though the
+        # query itself has none; the result must still key by the bare path.
+        def fake_run(argv, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="/usr/lib/modules/6.1.0-arch1-1/ is owned by linux 6.1.0.arch1-1\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(pacman.subprocess, "run", fake_run)
+        out = pacman.owners_of_paths(["/usr/lib/modules/6.1.0-arch1-1"])
+        assert out == {"/usr/lib/modules/6.1.0-arch1-1": "linux"}
+
+    def test_owners_of_paths_empty_input_runs_nothing(self, monkeypatch):
+        def boom(*a, **kw):
+            raise AssertionError("should not run a subprocess for empty input")
+
+        monkeypatch.setattr(pacman.subprocess, "run", boom)
+        assert pacman.owners_of_paths([]) == {}

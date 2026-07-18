@@ -36,6 +36,7 @@ Public API:
     checkupdates_map(timeout=60.0)  → dict[str, str] | None
     get_local_db_entry(pkgname)     → Path | None
     get_package_files(pkgname)      → list[str]
+    owners_of_paths(paths)          → dict[str, str]
     get_package_depends(pkgname)    → list[str]
     get_pkgbase(pkgname)            → str | None
 """
@@ -871,6 +872,40 @@ def get_package_files(pkgname: str, root: Path | None = None) -> list[str]:
             break
         paths.append(line)
     return paths
+
+
+_QO_LINE_RE = re.compile(r"^(?P<path>.+) is owned by (?P<pkg>\S+) \S+$")
+
+
+def owners_of_paths(paths: list[str]) -> dict[str, str]:
+    """Map each path to its owning package name (the reverse of
+    :func:`get_package_files`). Paths with no owning package are absent from
+    the result rather than raising.
+
+    Deliberately does **not** take the ``_use_pyalpm()`` fast path: pyalpm
+    exposes no reverse index, so answering these lookups through it means
+    iterating every installed package's file list (~960k entries, ~0.33s)
+    versus one batched subprocess (~0.09s at 300 paths, near-flat in N).
+    ``_use_pyalpm()`` exists to avoid subprocess cost on queries pyalpm can
+    answer directly; this is the one query shape it cannot. Do not "restore"
+    the pyalpm path here.
+    """
+    if not paths:
+        return {}
+    proc = subprocess.run(  # noqa: S603 — fixed argv, paths are not shell-interpreted
+        ["pacman", "-Qo", *paths],
+        capture_output=True, text=True, check=False,
+    )
+    out: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        m = _QO_LINE_RE.match(line.strip())
+        if m:
+            # pacman echoes a directory query with a trailing '/' (e.g. querying
+            # ".../modules/6.1.0" prints ".../modules/6.1.0/ is owned by ..."),
+            # so strip it to key the result by the path the caller asked about.
+            path = m.group("path").rstrip("/")
+            out[path] = m.group("pkg")
+    return out
 
 
 def get_pkgbase(pkgname: str, root: Path | None = None) -> str | None:

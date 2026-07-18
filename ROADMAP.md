@@ -84,24 +84,6 @@ straight off a `Q`.
   adoption:** extend row 20 (`systemd.journal-fields(7)`) scope note — same mechanism, more verbs
   supplying a target; per-verb tests alongside the existing `test_journal.py` hook tests.
 
-- **`2.4.0-F2` — Detect and report updates that need a re-login or reboot.** After `update`
-  (and on demand), nothing tells the user that an upgraded package has not actually taken effect —
-  a replaced `cosmic-comp`/session binary keeps running from the old on-disk file until the session
-  restarts, and a new kernel until reboot. Report this from **evidence, not a heuristic package
-  list**: scan `/proc/*/maps` for mappings marked `(deleted)` (the running process is using a file
-  that was replaced on disk), resolve each path to its owning package via alpm (`pacman -Qo`, or
-  `pyalpm` where available), then classify by which process holds it — a systemd unit → *restart
-  unit*; a process in the graphical session → *re-login*; PID 1 or a running-kernel mismatch
-  (installed kernel package version vs `uname -r`) → *reboot*. Reboot outranks re-login outranks
-  restart; report the highest tier plus the packages that triggered it. Read-only advisory, so no
-  sentinel — but system-wide `/proc` coverage needs the `2.3.0-F10` `run_privileged()` seam, and
-  degrading to the user's own processes when unprivileged is acceptable. Natural surfaces: a
-  `doctor` probe plus an end-of-`update` summary line. *Priority: medium (real day-to-day
-  correctness gap on this workstation — a COSMIC upgrade silently not taking effect is the exact
-  case that motivated it; additive and low-risk).* **Standards home on adoption:** none new —
-  `/proc/[pid]/maps` is `proc(5)`, already inside the existing procfs usage; add a row only if the
-  probe grows a documented external contract.
-
 - **`2.4.0-F3` — Doctor probe: report which Rust toolchain a build will actually use.** Rust
   PKGBUILDs declare `makedepends=(cargo|rust)` and invoke bare `cargo`, so the toolchain is decided
   entirely by what owns `/usr/bin/cargo` — the distro `rust` package, or a `rustup` proxy that

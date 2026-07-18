@@ -551,6 +551,13 @@ def _add_doctor_parser(sub):
              "safety primitives): per-kernel boot artifacts (vmlinuz + initramfs "
              "+ boot entry), a recovery fallback kernel, /boot space, and DKMS "
              "modules for the running kernel. Usable on its own (no PKG).")
+    p.add_argument("--restart", action="store_true",
+        help="Check whether upgraded packages have actually taken effect: scans "
+             "running processes for files replaced on disk (a `(deleted)` "
+             "mapping) and reports whether the fix is a unit restart, a "
+             "re-login, or a reboot. Read-only; never escalates, so coverage of "
+             "other users' processes is reported as incomplete rather than "
+             "prompting. Usable on its own (no PKG).")
     p.add_argument("--storage", action="store_true",
         help="Check storage/filesystem health: free space on the build dir "
              "(warns under [doctor] disk_low_gb) and /etc/fstab integrity "

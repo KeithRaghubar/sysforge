@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-07\-17"
+.TH "sysforge" "1" "2026\-07\-18"
 .PP
 .PP
 .SH NAME
@@ -490,6 +490,11 @@ Check sysforge'\&s own state integrity: recorded build failures, an interrupted 
 \fB\-\-boot\fR
 .RS 4
 Check running\-system boot readiness (reusing the kernel stage'\&s safety primitives): per\-kernel boot artifacts (vmlinuz + initramfs + boot entry), a recovery fallback kernel, /boot space, and DKMS modules for the running kernel.\& Usable on its own (no PKG).\&
+.PP
+.RE
+\fB\-\-restart\fR
+.RS 4
+Check whether upgraded packages have actually taken effect: scans running processes for files replaced on disk (a `(deleted)` mapping) and reports whether the fix is a unit restart, a re\-login, or a reboot.\& Read\-only; never escalates, so coverage of other users'\& processes is reported as incomplete rather than prompting.\& Usable on its own (no PKG).\&
 .PP
 .RE
 \fB\-\-storage\fR

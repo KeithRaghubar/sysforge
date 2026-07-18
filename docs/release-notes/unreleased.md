@@ -18,6 +18,10 @@ https://keepachangelog.com/en/1.1.0/
 - System-mutating verbs are now mirrored to the systemd journal as structured,
   queryable records (`journalctl -t sysforge`, `journalctl SYSFORGE_VERB=build`),
   additively alongside the unified run-log. No-op on non-systemd hosts. (2.3.0-F6)
+- `doctor --restart` and an end-of-`update` advisory now report when an upgraded
+  package has not taken effect because running processes still map the replaced
+  files, classifying the fix as a unit restart, a re-login, or a reboot
+  (`2.4.0-F2`).
 
 ## Changed
 

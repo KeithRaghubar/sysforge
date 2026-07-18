@@ -38,6 +38,7 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives import diagnostics as diag
 from sysforge.primitives import pacman
+from sysforge.primitives import restart_probe
 from sysforge.primitives.abi_check import (
     check_so_files,
     is_abi_check_skipped_package,
@@ -768,10 +769,71 @@ def _collect_boot_findings() -> list[diag.Finding]:
     return _with_reboot_hint(out, only=lambda f: f.check_id.startswith("dkms:"))
 
 
+def _collect_restart_findings() -> list[diag.Finding]:
+    """Processes still running superseded code after an upgrade (2.4.0-F2).
+
+    Evidence-based: a ``(deleted)`` mapping in ``/proc/<pid>/maps`` means the
+    process is using a file that was replaced on disk. Advisory (never brick-
+    class) — unlike the ``boot`` axis nothing here can leave the machine
+    unbootable, it just means an upgrade has not taken effect yet. Read-only and
+    never escalates.
+    """
+    report = restart_probe.scan_stale_processes()
+
+    out: list[diag.Finding] = []
+    # One finding per package, at that package's worst tier — a package mapped
+    # by 290 processes is one problem, not 290. Tiered and untiered entries are
+    # reduced separately: an untiered entry has no remediation to compare by
+    # tier, but must still surface (spec step 4) rather than vanish, or the
+    # axis can report clean while stale mappings genuinely exist.
+    worst: dict[str, restart_probe.StaleEntry] = {}
+    untiered: dict[str, restart_probe.StaleEntry] = {}
+    for e in report.entries:
+        key = e.package or e.path
+        if e.tier is None:
+            untiered.setdefault(key, e)
+            continue
+        prev = worst.get(key)
+        if prev is None or restart_probe.tier_rank(e.tier) > restart_probe.tier_rank(prev.tier):
+            worst[key] = e
+
+    for key, e in sorted(worst.items()):
+        subject = e.package or e.path
+        if e.tier == restart_probe.TIER_REBOOT:
+            if restart_probe.is_kernel_entry(e):
+                remediation = "reboot to start using the installed kernel"
+            else:
+                remediation = "reboot to start using the replaced files"
+        elif e.tier == restart_probe.TIER_RELOGIN:
+            remediation = "log out and back in to restart the affected session processes"
+        else:
+            flag = " --user" if e.is_user_unit else ""
+            remediation = f"systemctl{flag} restart {e.unit}"
+        out.append(diag.Finding(
+            "restart", diag.SEV_WARN, f"restart:{key}",
+            f"{subject} was upgraded but running processes still use the "
+            f"replaced files ({e.comm or f'pid {e.pid}'})",
+            remediation=remediation))
+
+    for key, e in sorted(untiered.items()):
+        subject = e.package or e.path
+        out.append(diag.Finding(
+            "restart", diag.SEV_INFO, f"restart:{key}",
+            f"{subject} was upgraded but running processes still use the "
+            f"replaced files ({e.comm or f'pid {e.pid}'})"))
+
+    if report.partial:
+        out.append(diag.Finding(
+            "restart", diag.SEV_INFO, "restart:partial_coverage",
+            "some processes could not be inspected, so this list may be incomplete",
+            remediation="re-run as `sudo sysforge doctor --restart` for full coverage"))
+    return out
+
+
 # Canonical order every KNOWN axis renders in (explicit flags select from here).
 _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
     "toolchain", "cache", "hardware", "graphics", "gfxperf", "pacman", "state",
-    "boot", "storage", "services", "audio", "network",
+    "boot", "restart", "storage", "services", "audio", "network",
 )
 
 # Axes excluded from the default/`--all` sweep — advisory, opt-in via their flag.
@@ -788,6 +850,7 @@ _AXIS_FLAGS: dict[str, str] = {
     "pacman": "pacman",
     "state": "state",
     "boot": "boot",
+    "restart": "restart",
     "storage": "storage",
     "services": "services",
     "audio": "audio",
@@ -832,6 +895,10 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
             "boot", "boot / kernel runtime",
             lambda: _collect_boot_findings(),
             clean_msg="bootable kernel(s) with valid artifacts and a recovery fallback"),
+        "restart": diag.Axis(
+            "restart", "pending restarts",
+            lambda: _collect_restart_findings(),
+            clean_msg="no processes running superseded code; no restart pending"),
         "storage": diag.Axis(
             "storage", "storage / filesystem",
             lambda: _collect_storage_findings(config),
