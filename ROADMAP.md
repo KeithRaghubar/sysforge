@@ -102,6 +102,24 @@ straight off a `Q`.
   `/proc/[pid]/maps` is `proc(5)`, already inside the existing procfs usage; add a row only if the
   probe grows a documented external contract.
 
+- **`2.4.0-F3` — Doctor probe: report which Rust toolchain a build will actually use.** Rust
+  PKGBUILDs declare `makedepends=(cargo|rust)` and invoke bare `cargo`, so the toolchain is decided
+  entirely by what owns `/usr/bin/cargo` — the distro `rust` package, or a `rustup` proxy that
+  resolves through the user's *default* toolchain. On a workstation whose rustup default is
+  `nightly`, every Rust package silently builds under nightly, which is neither what the packager
+  tested nor what the user intended. A tree-level `rust-toolchain.toml` overrides both and makes
+  rustup *download* a pinned toolchain mid-build, turning an apparent local build into a network
+  fetch. All three cases are invisible today. Add a read-only `doctor` probe that resolves the
+  `cargo`/`rustc` owner (`pacman -Qo`, or the alpm seam), reports the effective toolchain
+  (`rustup show active-toolchain` when rustup owns it, else the `rust` package version), and — when
+  given a PKGBUILD dir — flags a `rust-toolchain.toml` pin plus whether that toolchain is already
+  installed. Advisory only: report the mismatch, never rewrite the pin (patching a pin builds a
+  package against a toolchain its authors never tested, trading reproducibility for nothing).
+  Read-only, so no sentinel; subprocess calls go through the existing seam. *Priority: low
+  (diagnostic clarity, not a correctness gap — but the nightly-default case is live on this
+  workstation).* **Standards home on adoption:** none new — `rust-toolchain.toml` is a rustup
+  convention, not a ratified spec; add a row only if the probe grows a documented external contract.
+
 - **`2.3.0-F3` — Dev/build-chain supply-chain audit target.** The runtime dep surface is
   near-empty by design (only the `tomli` backport + optional `pyalpm`), but the dev/build toolchain
   (`hatchling`, `pytest`, `ruff`, `pyright`, coverage overlay) is still a supply-chain surface. Add a
