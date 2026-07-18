@@ -13,6 +13,12 @@ finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
 
+## Added
+
+- System-mutating verbs are now mirrored to the systemd journal as structured,
+  queryable records (`journalctl -t sysforge`, `journalctl SYSFORGE_VERB=build`),
+  additively alongside the unified run-log. No-op on non-systemd hosts. (2.3.0-F6)
+
 ## Changed
 
 - `[build] cpu_quota` now **warns** when the resolved percentage exceeds the

@@ -219,6 +219,10 @@ class BuildVerb(Verb):
         del args
         return "sysforge-build.log"
 
+    def journal_target(self, args) -> str | None:
+        pkgs = getattr(args, "packages", None) or []
+        return " ".join(pkgs) if pkgs else None
+
     def pre_check(self, args) -> PreCheckResult:
         if args.no_pkg_log and args.log_dir:
             print(

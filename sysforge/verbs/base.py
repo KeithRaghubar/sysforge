@@ -133,6 +133,16 @@ class Verb(ABC):
         del args
         return f"sysforge-{self.name}.log" if self.wants_run_log else None
 
+    def journal_target(self, args) -> str | None:
+        """The ``SYSFORGE_TARGET`` value for this verb's journald record, or ``None``.
+
+        Default: no target (the verb name alone is the record). Verbs with a
+        meaningful subject (e.g. ``build`` → package names) override this.
+        Only consulted for ``requires_sentinel`` verbs. See ``primitives/journal.py``.
+        """
+        del args
+        return None
+
     def sentinel_metadata(self, args, pre: PreCheckResult) -> dict[str, Any]:
         """Extra fields persisted in the sentinel file.
 

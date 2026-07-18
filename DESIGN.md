@@ -2392,6 +2392,26 @@ The lifecycle primitive (`log.open_unified_log` / `close_unified_log`) is the si
 | `--cleansrc` | `build`, `update`, `fetch`, `run toolchain` | Purge each package's src dir and re-clone before fetching/building. Refuses (per package) on uncommitted changes, ahead-of-upstream commits, or `diverged_user` state |
 | `--cleansrc-force` | `build`, `update`, `fetch`, `run toolchain` | Like `--cleansrc` but bypasses the dirty/diverged guard. Use when the upstream rewrote history (e.g. Arch packaging repos force-push every release) and the local commits have no value to preserve |
 
+### journald mirror (2.3.0-F6)
+
+The unified run-log is the authoritative, user-facing capture. Complementing it,
+every **sentinel-gated** (system-mutating) verb also emits one structured record
+to the systemd journal via `primitives/journal.py`, so SysForge's changes appear
+in `journalctl` alongside everything else that touched the system — where an
+admin looks during incident review. This is additive and never load-bearing: on
+a non-systemd host (no journal socket) it is a silent no-op.
+
+Records carry queryable fields:
+
+    journalctl -t sysforge                 # all SysForge mutations
+    journalctl SYSFORGE_VERB=build         # just build invocations
+    journalctl SYSFORGE_TARGET=mesa        # mutations touching a package
+    journalctl -p err -t sysforge          # failed mutations (PRIORITY=3)
+
+Fields are `SYSFORGE_`-prefixed to avoid colliding with journald's reserved
+well-known names. Emission is keyed off `Verb.requires_sentinel` in
+`verbs/runner.py`, so any future mutating verb is mirrored automatically.
+
 ### Tags in use
 
 **Core build subsystem** (`makepkg_wrapper.py` and related):
@@ -2842,6 +2862,7 @@ adhered to, partially or fully guarded · **target** = adopted, gap being closed
 | 17 | Subprocess-seam discipline (argv-list execution) | External-command execution (all `subprocess` sites) | enforced | argv-**list** form only, `shell=True` needs justified `# noqa: S602`; `primitives/run.py` (`run_or_raise`) sanctioned seam, direct callers a documented carve-out for streaming/returncode/stdout-parsing; ruff `S602` + `check_standards` `run_seam` group |
 | 18 | Privilege-escalation seam | Root-escalating subprocess invocations | enforced | `primitives/privilege.py` (`privileged_argv`/`run_privileged`) is the sole home for `sudo`-prefixed escalation; raw `["sudo", …]` argv outside it is forbidden except the allowlisted auth-probe (`sudo -v`, `sudo -n true`) and drop-privilege (`sudo -u <user>`) forms; `check_standards` `privilege_seam` group + `tests/test_standards_compliance.py` |
 | 19 | [`systemd.resource-control(5)`](https://www.freedesktop.org/software/systemd/man/systemd.resource-control.html) (cgroup-v2 `CPUQuota`/`MemoryMax` via `systemd-run(1)`) | Build resource enforcement (CPU/memory ceilings on the makepkg fork tree) | enforced | a configured `cpu_quota`/`mem_limit` is enforced by a kernel-level cgroup `systemd-run --scope` (hierarchical over all build descendants), not solely an escapable `RLIMIT_AS` preexec, whenever `systemd-run` is available; `primitives/build_throttle.py` (`wrapper_argv`/`_scope_owns_mem_cap`/`resolve_child_mem_cap`); `tests/test_standards_compliance.py` |
+| 20 | [`systemd.journal-fields(7)`](https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html) + native journal socket protocol (`sd_journal_send(3)` wire format) | System-mutating operations mirrored to the journal | enforced | every sentinel-gated verb emits one structured record (`SYSFORGE_VERB`/`SYSFORGE_TARGET`/`SYSFORGE_EXIT` + `MESSAGE`/`PRIORITY`/`SYSLOG_IDENTIFIER`), additively alongside the unified run-log, no-op when journald absent; `primitives/journal.py` (`journal_send`/`record_verb`), `verbs/runner.py`; `tests/test_standards_compliance.py` + `tests/test_journal.py` |
 
 ### Notes on selected standards
 

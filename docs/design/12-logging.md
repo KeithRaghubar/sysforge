@@ -89,6 +89,26 @@ The lifecycle primitive (`log.open_unified_log` / `close_unified_log`) is the si
 | `--cleansrc` | `build`, `update`, `fetch`, `run toolchain` | Purge each package's src dir and re-clone before fetching/building. Refuses (per package) on uncommitted changes, ahead-of-upstream commits, or `diverged_user` state |
 | `--cleansrc-force` | `build`, `update`, `fetch`, `run toolchain` | Like `--cleansrc` but bypasses the dirty/diverged guard. Use when the upstream rewrote history (e.g. Arch packaging repos force-push every release) and the local commits have no value to preserve |
 
+### journald mirror (2.3.0-F6)
+
+The unified run-log is the authoritative, user-facing capture. Complementing it,
+every **sentinel-gated** (system-mutating) verb also emits one structured record
+to the systemd journal via `primitives/journal.py`, so SysForge's changes appear
+in `journalctl` alongside everything else that touched the system — where an
+admin looks during incident review. This is additive and never load-bearing: on
+a non-systemd host (no journal socket) it is a silent no-op.
+
+Records carry queryable fields:
+
+    journalctl -t sysforge                 # all SysForge mutations
+    journalctl SYSFORGE_VERB=build         # just build invocations
+    journalctl SYSFORGE_TARGET=mesa        # mutations touching a package
+    journalctl -p err -t sysforge          # failed mutations (PRIORITY=3)
+
+Fields are `SYSFORGE_`-prefixed to avoid colliding with journald's reserved
+well-known names. Emission is keyed off `Verb.requires_sentinel` in
+`verbs/runner.py`, so any future mutating verb is mirrored automatically.
+
 ### Tags in use
 
 **Core build subsystem** (`makepkg_wrapper.py` and related):

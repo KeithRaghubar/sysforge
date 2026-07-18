@@ -98,17 +98,6 @@ straight off a `Q`.
   **Standards home on adoption:** extend row 2 (FHS + `file-hierarchy(7)`) — same footprint, declarative
   mechanism; rationale in the `fs_provision` design area.
 
-- **`2.3.0-F6` — Mirror system-mutating verbs to `journald`.** The `log.py` unified run-log is the right
-  user-facing capture and stays authoritative. The complementary hook is a second sink: emit the
-  privileged/system-mutating operations (the sentinel-gated verbs) to `journald` via `systemd-cat`/
-  `sd_journal` so sysforge's changes appear in `journalctl` alongside everything else that touched the
-  system — the place an admin looks during incident review. Structured fields (verb, target, exit) make
-  it queryable. Not a replacement for the run-log; an additive, system-integrated sink for mutations
-  only. Gate on systemd presence. *Priority: low (observability/defense-in-depth; additive).* **Spec:**
-  `systemd.journal-fields(7)`, `sd_journal_send(3)`/`systemd-cat(1)`. **Standards home on adoption:** new
-  standards row (status `target`→`enforced` once a `test_standards_compliance.py` case guards it) +
-  rationale in `docs/design/12-logging.md`, in the landing commit.
-
 - **`2.3.0-F8` — Shared known-enum resolver for string-valued config (promoted from `2.3.0-Q2`).**
   Three chokepoints handle unrecognized string values three ways: `config.resolve_repo_mode` returns
   unknowns **through unchanged** (`return raw`, so `repo_mode = "pacmn"` flows downstream

@@ -32,6 +32,7 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import journal
 from sysforge.primitives.stage_sentinel import sentinel_scope
 from sysforge.ui import progress
 from sysforge.verbs.base import Verb
@@ -112,8 +113,12 @@ def _run_verb_inner(verb: Verb, args, _log) -> int:
         # lands here unlogged, so surface it to the terminal.
         if not logged:
             _log.error(str(e))
+        if verb.requires_sentinel:
+            journal.record_verb(verb.name, verb.journal_target(args), 1)
         return 1
 
+    if verb.requires_sentinel:
+        journal.record_verb(verb.name, verb.journal_target(args), result.exit_code)
     return result.exit_code
 
 

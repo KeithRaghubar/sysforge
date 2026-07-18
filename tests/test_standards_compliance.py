@@ -363,3 +363,54 @@ def test_privilege_seam_behaviour():
         assert privilege.privileged_argv(["pacman", "-Syu"])[0] == "sudo"
     with patch("sysforge.primitives.privilege.os.geteuid", return_value=0):
         assert privilege.privileged_argv(["pacman", "-Syu"]) == ["pacman", "-Syu"]
+
+
+def test_journald_mirror_emits_only_for_sentinel_verbs(tmp_path, monkeypatch):
+    """STD row 20: run_verb mirrors sentinel-gated verbs to journald, and only those.
+
+    Structural invariant — emission is keyed off ``requires_sentinel``, not a
+    hard-coded verb list — so it cannot rot as verbs are added.
+    """
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from sysforge.verbs import runner
+    from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
+
+    calls: list[tuple[str, str | None, int]] = []
+    monkeypatch.setattr(
+        runner.journal, "record_verb",
+        lambda verb, target, exit_code: calls.append((verb, target, exit_code)),
+    )
+    # Isolate from the real sentinel file lifecycle.
+    monkeypatch.setattr(runner, "sentinel_scope", lambda *a, **k: nullcontext())
+
+    class _Mut(Verb):
+        name = "mut"
+        requires_sentinel = True
+
+        def pre_check(self, args):
+            return PreCheckResult()
+
+        def execute(self, args, pre):
+            return ExecResult(exit_code=0)
+
+        def journal_target(self, args):
+            return "widget"
+
+    class _Ro(Verb):
+        name = "ro"
+        requires_sentinel = False
+
+        def pre_check(self, args):
+            return PreCheckResult()
+
+        def execute(self, args, pre):
+            return ExecResult(exit_code=0)
+
+    args = SimpleNamespace(state_dir=str(tmp_path), dry_run=True)
+
+    assert runner.run_verb(_Mut(), args) == 0
+    assert runner.run_verb(_Ro(), args) == 0
+
+    assert calls == [("mut", "widget", 0)]  # ro emitted nothing
