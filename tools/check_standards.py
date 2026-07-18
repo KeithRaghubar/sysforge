@@ -494,11 +494,26 @@ def check_roadmap_ids(repo: Path) -> list[Finding]:
 
 
 def next_id(repo: Path, prefix: str) -> str:
-    """Next free ID for a '<version>-<TYPE>' prefix, across all three sources."""
-    version, sep, typ = prefix.partition("-")
-    if not sep or not re.fullmatch(r"\d+\.\d+\.\d+", version) or not typ:
+    """Next free ID for a roadmap prefix, across all three sources.
+
+    Accepts either a bare ``<TYPE>`` (e.g. ``F``) — the version is derived from
+    ``pyproject.toml`` so the caller can't misattribute the cycle, which is the
+    whole point of the tool — or a full ``<version>-<TYPE>`` (e.g. ``2.2.0-F``)
+    to target a cycle other than the current one.
+    """
+    if "-" in prefix:
+        version, _, typ = prefix.partition("-")
+    else:
+        version, typ = _project_version(repo), prefix
+        if not version:
+            raise ValueError(
+                "--next-id: could not read the current version from "
+                "pyproject.toml; pass an explicit <version>-<TYPE> instead"
+            )
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version) or not re.fullmatch(r"[A-Z]+", typ):
         raise ValueError(
-            f"--next-id expects <version>-<TYPE>, e.g. 2.2.0-F; got {prefix!r}"
+            f"--next-id expects <TYPE> (e.g. F) or <version>-<TYPE> "
+            f"(e.g. 2.2.0-F); got {prefix!r}"
         )
     roadmap, shipped = _gather_ids(repo)
     nums = [
@@ -671,9 +686,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--list", action="store_true", help="list groups and exit")
     p.add_argument("--repo", type=Path, default=REPO,
                    help="repo root to validate (default: this script's repo)")
-    p.add_argument("--next-id", metavar="VERSION-TYPE",
-                   help="print the next free roadmap ID for a prefix "
-                        "(e.g. 2.2.0-F) and exit")
+    p.add_argument("--next-id", metavar="TYPE",
+                   help="print the next free roadmap ID and exit; a bare TYPE "
+                        "(e.g. F) derives the current cycle from pyproject.toml, "
+                        "or pass VERSION-TYPE (e.g. 2.2.0-F) for another cycle")
     args = p.parse_args(argv)
 
     if args.next_id:

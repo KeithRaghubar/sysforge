@@ -41,7 +41,10 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
 - **Doc update order**: `docs/design/*.md` (+ `make design`) → README.md → CLAUDE.md.
 - **DESIGN = implemented only; `/ROADMAP.md` = planned + abandoned.** Roadmap IDs
   (`<version>-<TYPE><n>`, e.g. `1.2.0-F1`; counters reset on major/minor bump, not patch) live in
-  ROADMAP + `docs/release-notes/`, never DESIGN. Triage `notes.txt` into ROADMAP. Implementing an
+  ROADMAP + `docs/release-notes/`, never DESIGN. **Never hand-pick an ID for a new item — run `make
+  next-id TYPE=F` (F/B/Q/STD)**, which derives the cycle from `pyproject.toml` (open items keep their
+  origin-cycle prefixes, so copying a neighbour mis-numbers new items right after a release). Triage
+  `notes.txt` into ROADMAP. Implementing an
   item **removes it from ROADMAP in the same commit** (git history is the record — drop the whole
   entry, no "done" marker) and **appends its release-note entry to `docs/release-notes/unreleased.md`**
   (Keep a Changelog section, inline roadmap ID). Keep entries in ascending ID order — re-sort on

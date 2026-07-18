@@ -115,7 +115,8 @@ def test_shipped_q_id_is_error(tmp_path):
     repo = _mkrepo(
         tmp_path,
         "## Planned\n\n_(none)_\n",
-        {"unreleased.md": "# sysforge (unreleased)\n\n## Changed\n\n- shipped a question (2.2.0-Q4).\n"},
+        {"unreleased.md":
+         "# sysforge (unreleased)\n\n## Changed\n\n- shipped a question (2.2.0-Q4).\n"},
     )
     findings = check_standards.check_roadmap_ids(repo)
     assert any(f.severity == "error" and "2.2.0-Q4" in f.message for f in findings), findings
@@ -206,3 +207,40 @@ def test_next_id_rejects_malformed_prefix(tmp_path):
     repo = _mkrepo(tmp_path, "## Planned\n\n_(none)_\n", {})
     with pytest.raises(ValueError):
         check_standards.next_id(repo, "2.2.0")
+
+
+def test_next_id_bare_type_derives_version_from_pyproject(tmp_path):
+    # No version in the prefix: the cycle comes from pyproject.toml, so the
+    # caller can't misattribute a new item to a stale cycle (the whole point).
+    repo = _mkrepo(
+        tmp_path,
+        "## Planned\n\n- **`2.3.0-F9`** — older-cycle item, keeps its ID.\n",
+        {},
+        version="2.4.0",
+    )
+    # Counter resets on the minor bump: the 2.3.0-F9 does not carry into 2.4.0.
+    assert check_standards.next_id(repo, "F") == "2.4.0-F1"
+
+
+def test_next_id_bare_type_counts_only_the_active_cycle(tmp_path):
+    repo = _mkrepo(
+        tmp_path,
+        "## Planned\n\n- **`2.4.0-F1`** — current-cycle item.\n"
+        "- **`2.3.0-F9`** — older cycle, ignored for the 2.4.0 counter.\n",
+        {},
+        version="2.4.0",
+    )
+    assert check_standards.next_id(repo, "F") == "2.4.0-F2"
+
+
+def test_next_id_bare_type_flag_via_main(tmp_path, capsys):
+    _mkrepo(tmp_path, "## Planned\n\n- **`2.4.0-Q1`** — a.\n", {}, version="2.4.0")
+    rc = check_standards.main(["--next-id", "Q", "--repo", str(tmp_path)])
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "2.4.0-Q2"
+
+
+def test_next_id_rejects_lowercase_bare_type(tmp_path):
+    repo = _mkrepo(tmp_path, "## Planned\n\n_(none)_\n", {}, version="2.4.0")
+    with pytest.raises(ValueError):
+        check_standards.next_id(repo, "f")

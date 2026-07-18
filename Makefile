@@ -1,5 +1,5 @@
 .PHONY: all dev venv build install dev-install dev-uninstall clean distclean test test-x lint coverage coverage-ratchet coverage-ratchet-update man \
-        check-shipped check-personal check-standards design check-design pre-release \
+        check-shipped check-personal check-standards next-id design check-design pre-release \
         sync-config \
         release-major release-minor release-patch release-resume \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
@@ -109,6 +109,14 @@ check-design:
 # (tests/test_standards_compliance.py). Source of truth: docs/design/21-standards.md.
 check-standards:
 	uv run --no-sync --with reuse python tools/check_standards.py
+
+# Allocate the next free ROADMAP ID for the CURRENT release cycle. TYPE is one
+# of F/B/Q/STD; the version prefix is derived from pyproject.toml (counter
+# resets on a minor/major bump), so a new item can't be misattributed to a
+# stale cycle. Always run this before adding a ROADMAP entry.
+#   make next-id TYPE=F   ->  e.g. 2.4.0-F1
+next-id:
+	@uv run --no-sync python tools/check_standards.py --next-id $(TYPE)
 
 # Merge new shipped defaults (etc/sysforge/) into the live config dir
 # ($SYSFORGE_CONFIG_DIR itself, else /etc/sysforge). Add-only: injects new

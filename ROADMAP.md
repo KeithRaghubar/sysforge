@@ -20,6 +20,13 @@ time keeps its existing ID
 (it records the cycle the item originated in, not its target). IDs appear only here
 and in release notes.
 
+**Never hand-pick an ID — derive it.** The open items above keep their origin-cycle
+prefixes, so eyeballing a neighbour gives the wrong cycle (and the wrong counter)
+right after a release. Run `make next-id TYPE=F` (or `B`/`Q`/`STD`) — it reads the
+current `pyproject.toml` version, scopes to that cycle's counter, and prints the next
+free ID (e.g. `2.4.0-F1`). `make check-standards` also flags collisions and
+active-cycle sequence gaps.
+
 Within each subsection, entries are kept in **ascending ID order** (by type
 counter, then version) — sort on every add so the list stays scannable.
 
@@ -64,6 +71,18 @@ straight off a `Q`.
   + contributor/CI friction; no runtime or rendered-output impact).*
 
 ### Features
+
+- **`2.4.0-F1` — Journal `SYSFORGE_TARGET` for the other mutating verbs (follow-up to `2.3.0-F6`).**
+  The journald mirror emits `SYSFORGE_TARGET` only for `build`, because `build` is the only verb that
+  overrides `Verb.journal_target` (the others fall to the `None` default and emit the verb name alone).
+  But `uninstall`, `revert`, and `state` are all sentinel-gated and carry a meaningful package-name
+  subject, so `journalctl SYSFORGE_TARGET=<pkg>` misses the operations most worth correlating during
+  incident review. Add a `journal_target` override on each — deriving the target from the verb's own
+  args (uninstall/revert package name; `state` subcommand target) — mirroring the `build` override. No
+  new seam: `record_verb`/runner emission are unchanged; this only widens which verbs supply a target.
+  *Priority: low (observability completeness; additive, no correctness impact).* **Standards home on
+  adoption:** extend row 20 (`systemd.journal-fields(7)`) scope note — same mechanism, more verbs
+  supplying a target; per-verb tests alongside the existing `test_journal.py` hook tests.
 
 - **`2.3.0-F3` — Dev/build-chain supply-chain audit target.** The runtime dep surface is
   near-empty by design (only the `tomli` backport + optional `pyalpm`), but the dev/build toolchain
