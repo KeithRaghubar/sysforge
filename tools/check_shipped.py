@@ -78,7 +78,7 @@ class Finding:
 # always edited together.
 _KNOWN_SECTIONS: dict[str, set[str]] = {
     "sysforge.toml":  {"ui", "log", "git", "aur", "build", "failure_handling",
-                       "safety", "mesa", "pgo", "update", "doctor"},
+                       "safety", "mesa", "pgo", "update", "doctor", "artifacts"},
     "profiles.toml":  {"paths", "defaults", "profiles", "rules",
                        "append_conflict_groups", "consumes_inference",
                        "package_compiler_overrides"},

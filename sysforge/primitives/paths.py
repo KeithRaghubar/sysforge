@@ -15,9 +15,10 @@ system (env unset) is unaffected: it resolves to /etc/sysforge as before.
 
 User-side paths follow the XDG Base Directory Specification: config lives
 under $XDG_CONFIG_HOME (default ~/.config), regenerable cache under
-$XDG_CACHE_HOME (default ~/.cache), and fallback runtime state under
-$XDG_STATE_HOME (default ~/.local/state) — three separate roots, each
-honouring its env var when set.
+$XDG_CACHE_HOME (default ~/.cache), fallback runtime state under
+$XDG_STATE_HOME (default ~/.local/state), and authoritative user-authored
+data under $XDG_DATA_HOME (default ~/.local/share) — four separate roots,
+each honouring its env var when set.
 """
 import os
 import shutil
@@ -38,6 +39,10 @@ def _xdg_base(env: str, default_rel: str) -> Path:
 USER_CONFIG_DIR = _xdg_base("XDG_CONFIG_HOME", ".config")      / "sysforge"
 USER_CACHE_DIR  = _xdg_base("XDG_CACHE_HOME",  ".cache")       / "sysforge"
 USER_STATE_DIR  = _xdg_base("XDG_STATE_HOME",  ".local/state") / "sysforge"
+# Authoritative user-authored data (managed artifact content). Distinct from
+# config (not user-edited settings), cache (not regenerable) and state (not
+# derived) — losing it is unrecoverable, so it gets XDG's data root.
+USER_DATA_DIR   = _xdg_base("XDG_DATA_HOME",   ".local/share") / "sysforge"
 
 # profiles.toml search order (user, then system)
 # Holds [paths] [defaults] [profiles.*] [[rules]] plus the consolidated

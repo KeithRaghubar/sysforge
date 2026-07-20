@@ -22,6 +22,19 @@ https://keepachangelog.com/en/1.1.0/
   package has not taken effect because running processes still map the replaced
   files, classifying the fix as a unit restart, a re-login, or a reboot
   (`2.4.0-F2`).
+- Artifact inventory: `sysforge artifact list [--unmanaged]` discovers and reports
+  user-authored scripts, systemd units, and pacman hooks, excluding package-owned
+  files and labelling sysforge's own hooks read-only. Warns when the configured
+  script root is not on `PATH` (abstaining under `sudo`, where `secure_path`
+  makes the process `PATH` unrepresentative). (`2.4.0-F4`)
+- Artifact curation: `sysforge artifact adopt` / `edit` bring artifacts under
+  management and track authoritative-vs-deployed drift with a three-way status
+  (`ok`/`pending`/`drifted`/`conflict`/`missing`). (`2.4.0-F5`)
+- Artifact deployment: `sysforge artifact deploy` / `remove` push managed content
+  to the live system with per-class contracts (systemd `daemon-reload`,
+  `disable --now` before unit removal). `deploy` refuses on external drift unless
+  given `--force` or `--adopt-live`; `remove` likewise refuses on external drift
+  without `--force`. (`2.4.0-F6`)
 
 ## Changed
 

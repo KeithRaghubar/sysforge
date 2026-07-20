@@ -196,3 +196,14 @@ rebuild_on_flag_drift = false       # rebuild on resolved-flag drift only
 pkg_cache_warn_gb     = 5.0    # pacman axis: warn when the package cache exceeds this (GB)
 mirrorlist_stale_days = 14     # pacman axis: warn when /etc/pacman.d/mirrorlist is older than this
 disk_low_gb           = 10.0   # storage axis: warn when build-dir free space is under this (GB)
+
+# Roots scanned by `sysforge artifact list --unmanaged` for user-authored
+# artifacts. Package-owned files are excluded automatically (the OS already
+# knows what it shipped); sysforge's own hooks are shown but read-only.
+# Adding a root here is configuration, not code.
+[artifacts]
+roots = [
+    { path = "~/scripts",           class = "script" },
+    { path = "/etc/systemd/system", class = "systemd-unit" },
+    { path = "/etc/pacman.d/hooks", class = "pacman-hook" },
+]

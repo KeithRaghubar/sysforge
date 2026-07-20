@@ -430,6 +430,196 @@ The single home for the two pacman-hook sentinels under `/var/lib/sysforge/senti
 
 The single home for **installing/refreshing sysforge's libalpm hooks** (the producers of the `install_reconcile` sentinels above). The three shipped hooks + `pacman-hook-helper.sh` are normally installed by the PKGBUILD `package()` step, which leaves a source-checkout dev workflow (or an edited hook) with missing/stale copies that silently disable `update`'s reminder/auto-demote logic. `shipped_sources()` resolves the canonical content — repo checkout (`etc/pacman.d/hooks/` + `tools/pacman-hook-helper.sh`, two parents up from the module) preferred, else the wheel's bundled `sysforge/_data/` copy shipped via a `force-include` in `pyproject.toml`. `diff_status()` byte-compares each artifact against its install destination (`/usr/share/libalpm/hooks/*.hook`, `/usr/lib/sysforge/pacman-hook-helper.sh`) returning `ok`/`missing`/`stale` (pure read). `provision()` writes the missing/stale artifacts via `fs_provision._run_priv` (`install -Dm<mode>` from a temp file — no second sudo path, no dependence on root reading the checkout); a privileged failure raises `FsProvisionError`. Two consumers: `setup_cmd` (provision, after the IgnoreGroup step) and `doctor._collect_hook_findings` (read-only warnings on the `--pacman` axis). `tools/check_shipped.py::check_hooks` asserts `HOOK_NAMES` matches the shipped `.hook` files and that the `force-include` ships the hooks dir + helper.
 
+### `artifacts.py`
+
+Inventory primitive for **user-authored** system artifacts — shell scripts, systemd units,
+pacman hooks — the personally-created files scattered across `~/scripts`,
+`/etc/systemd/system/`, `/etc/pacman.d/hooks/`, etc. that `build_state.py`/`pacman_hooks.py`
+never touch because they aren't package- or sysforge-owned. Three locations, three distinct
+roles: `USER_DATA_DIR/artifacts/` (see `paths.py`'s fourth XDG root, `$XDG_DATA_HOME/sysforge`)
+holds the **authoritative** content — irreplaceable, the one copy sysforge treats as truth;
+`<state_dir>/artifacts.toml` (`ArtifactRegistry`, same state-dir chain as `build_state.py`:
+explicit arg > `SYSFORGE_STATE_DIR` > `/var/lib/sysforge`) holds **metadata only, never
+content** — regenerable by re-hashing, so the authoritative copy has exactly one home and the
+two cannot silently diverge; the **live filesystem** is the deploy target, owned by the OS.
+`ArtifactRegistry.load()` raises `ArtifactRegistryError` on a corrupt/unreadable
+`artifacts.toml` rather than folding it into "empty" — this file is the sole record of managed
+artifacts, and a subsequent `save()` writes the complete entry set, so silently returning `{}`
+would let the next save discard every managed artifact with no diagnostic.
+
+**Artifact classes** are an explicit registry field (`class = "script" | "systemd-unit" |
+"pacman-hook"`, `CLASS_SCRIPT`/`CLASS_UNIT`/`CLASS_HOOK`) rather than inferred from the
+destination path at use time — adding a class is a table entry, not a new branch in every code
+path.
+
+**Discovery (`scan()`)** walks config-declared roots (`roots_from_config()`, reading `[artifacts]
+roots` from `sysforge.toml`, falling back to `DEFAULT_ROOTS` — `~/scripts`,
+`/etc/systemd/system`, `/etc/pacman.d/hooks`) through a three-stage filter:
+
+1. **Structural noise excluded by rule** — `.pacnew`/`.pacsave`/`.pacorig` (pacman conflict
+   artifacts), `*~` (editor backups), `.#*` (editor lock files), any `.wants`/`.requires`
+   subdirectory (systemd's `systemctl enable` symlink dirs — enablement *state*, not authored
+   files; adopting one would yield a dead managed copy and a `remove` that fights `systemctl
+   disable`), and **any symlinked entry** (`/etc/systemd/system` holds `systemctl enable`/alias
+   links pointing at unit sources elsewhere — same enablement-vs-authored rationale; adopting one
+   would copy the *target's* content into a managed regular file and a later deploy would clobber
+   the link with that copy).
+2. **Package-owned files excluded** via `pacman.owners_of()` — a batched `pacman -Qo` lookup
+   with a tri-state contract distinct from same-module `owners_of_paths()`: a path mapped to a
+   package name is owned, mapped to `None` is *definitively* unowned, and **absent from the dict
+   entirely** means ownership could not be determined at all (the `pacman -Qo` call failed
+   wholesale). `scan()` must not collapse absent into unowned — that would present system files
+   as user-authored candidates — so it labels absent paths `owner = "unknown"` rather than
+   `"you"`.
+3. **sysforge's own hooks kept but labelled read-only** — `_sysforge_owned_paths()` derives the
+   three `pacman-hook`-class exclusions from `pacman_hooks.HOOK_NAMES`/`HELPER_DEST` (no
+   duplicated list, so a fourth shipped hook updates the guard automatically) and surfaces them
+   as `owner = "sysforge"` candidates instead of hiding them.
+
+**Status (`status_of()`) is computed, never stored** — the filesystem is the untrusted side; it
+must be read, not remembered. It is a three-way comparison of `auth_hash` (the authoritative
+copy's hash, stored in the registry), `deployed_hash` (what sysforge last wrote to `dest`, also
+stored), and the live file's hash (read fresh every call via `hash_file()`, which folds
+unreadable into `None` — a root-owned file we can't read is indistinguishable from absent for
+status purposes). `deployed_hash` is what makes a difference *attributable*: with only
+authoritative-vs-live there is one bit of information ("same or different") and no way to tell
+which side moved. Five states result: `ok` (neither moved), `pending` (authoritative moved, live
+didn't — the managed copy was edited but not yet deployed), `drifted` (live moved, authoritative
+didn't — something changed the deployed file outside sysforge), `conflict` (both moved, or
+nothing was ever deployed but `dest` already holds unrelated content), `missing` (no live file).
+A later slice makes `deploy` **refuse** on `drifted`/`conflict` rather than overwrite — sound
+only because these two states are distinguishable from each other and from `pending`.
+
+**Unified view, not unified registry.** `unified_rows()` — backing `sysforge artifact list` — is
+the join point for the CLI: it emits one row per registry entry (`status_of()` against each) plus
+one row per sysforge-owned hook, but the sysforge-owned rows are rendered by *delegating* to
+`pacman_hooks.diff_status()` (mapped onto the same status vocabulary via
+`_HOOK_STATE_TO_STATUS`) rather than being entered into the registry. Folding them into the
+registry would create a second authority over files `pacman_hooks.py` already governs, and would
+expose registry-only verbs (`edit`/`remove`, later slices) on files whose removal breaks
+`sysforge update`'s auto-demote path. Each artifact keeps exactly one authority; this is a
+presentation-layer join.
+
+**`script_root_on_path()`** is a tri-state PATH check (`True`/`False`/`None`) over the
+`script`-class root: comparison is on `Path.resolve()` so `$HOME/scripts` vs. an absolute path
+vs. a symlinked entry all match, but it returns `None` — abstains — under an escalated
+(`SUDO_USER` set) invocation, where the process `PATH` is sudo's `secure_path` rather than the
+user's PATH; warning off that would be a confident false positive. `ArtifactListVerb` surfaces a
+`warn` only on a confirmed `False`.
+
+Wired by `verbs/artifact.py` → `ArtifactListVerb` (`sysforge artifact list [--unmanaged]`,
+`requires_sentinel = False`, no sentinel — read-only, all logic delegated to this module).
+`--unmanaged` additionally prints `scan()` candidates not already in the registry and not
+sysforge-owned.
+
+**Adoption (`adopt(registry, src, cls=None)`)** copies a live file's bytes into
+`registry.content_path(name)` — the source is read, never moved, so the live file is untouched and
+adoption cannot itself cause drift. `cls` defaults to `class_for_path()` (inferred from which
+config-declared root contains `src`); an unresolvable or invalid class raises `ArtifactError`. The
+`CLASS_HOOK`-scoped sysforge-ownership guard from `scan()` step 3 is re-checked here too — adopting
+a sysforge-owned hook by name is rejected with a pointer to `sysforge setup` / `doctor --pacman`,
+mirroring the same one-authority rule `unified_rows()` enforces for display. **`deployed_hash` is
+seeded equal to `auth_hash`** (both hashes of the just-copied bytes): at the moment of adoption the
+live file *is* the last-deployed state by definition, so a fresh entry reads `ok` rather than a
+false `pending`. A name already present in the registry raises rather than silently overwriting.
+
+**Editing (`rehash(registry, name)`)** re-hashes the managed copy after `artifact edit` has handed
+it to an external editor (`primitives/editor.py::resolve_editor()` / `run_tty_argv()`) and persists
+the new `auth_hash`, leaving `deployed_hash` (and the live file) untouched — this is what makes a
+plain edit surface as `STATUS_PENDING` (authoritative moved, live didn't) rather than mutating
+anything outside the managed copy. `ArtifactEditVerb` refuses (exit 1, no editor launched) when
+`name` isn't in the registry or no editor is resolvable, and reports the post-edit `status_of()`
+result — with a `sysforge artifact deploy <name>` hint specifically on `STATUS_PENDING`, since that
+is the only status a successful edit can produce.
+
+Both are wired by `verbs/artifact.py` → `ArtifactAdoptVerb` (`sysforge artifact adopt <path>
+[--class C]`) and `ArtifactEditVerb` (`sysforge artifact edit <name>`), both
+`requires_sentinel = False` — they touch only `USER_DATA_DIR/artifacts/` and `artifacts.toml`,
+never the live filesystem, so they carry none of the privileged/destructive surface `deploy`/
+`remove` carry.
+
+**Per-class deploy/remove contracts.** Three module-level tables/functions encode what "push to
+the live system" and "remove from the live system" mean per `class`, so a class's behaviour is a
+table entry, not a branch scattered across `deploy`/`remove`:
+
+- **`_LIVE_MODE`** — the mode written at the live destination: `CLASS_SCRIPT` 0755 (executable,
+  user-owned), `CLASS_UNIT`/`CLASS_HOOK` 0644 (data files root reads, doesn't execute directly).
+- **`_PRIVILEGED_CLASSES`** (`CLASS_UNIT`, `CLASS_HOOK`) — destinations under root-owned system
+  dirs. `write_live()` branches on membership: `CLASS_SCRIPT` writes directly (`mkdir` + `write_bytes`
+  + `chmod`, no escalation — it's the user's own tree); a privileged class stages the content through
+  a `NamedTemporaryFile` (mode 0600, owned by the invoking user — readable by root, not by other
+  unprivileged users) and installs it via `run_privileged(["install", "-Dm<mode>", tmp, dest])`, then
+  unlinks the temp file in a `finally`.
+- **`post_deploy(art)`** — class post-write action. `CLASS_UNIT` runs `systemctl daemon-reload`
+  (privileged) so systemd picks up a new/changed unit file immediately; the other two classes have
+  no post-action (a hook is read fresh by pacman's own hook loader on the next transaction; a script
+  needs nothing).
+- **`unit_is_enabled(unit)`** — unprivileged, non-raising `systemctl is-enabled --quiet` probe;
+  any error (including a missing `systemctl`) reads as "not enabled," which is the correct default
+  for `pre_remove`'s purposes (nothing to stop).
+- **`pre_remove(art)`** — class pre-unlink action. `CLASS_UNIT`, when currently enabled, runs
+  `systemctl disable --now <unit>` (privileged) *before* the file is removed, so a running/enabled
+  service doesn't survive its unit file's disappearance in a half-stopped state. `CLASS_HOOK` gets
+  no systemd-equivalent quiesce step — the verb layer (`ArtifactRemoveVerb`) instead emits a warning
+  that removing a hook changes what happens on the next pacman transaction, since there is nothing to
+  "stop" about a hook.
+- **`remove_live(art)`** — unlinks the live file, `run_privileged(["rm", "-f", dest])` for the two
+  privileged classes, a direct `unlink(missing_ok=True)` for `CLASS_SCRIPT`.
+
+**`deploy(registry, name, *, force=False, adopt_live=False) -> str`** pushes the managed copy to
+`dest`. `force` and `adopt_live` are mutually exclusive (`ArtifactError` if both are set). On
+`STATUS_OK` it is a no-op (nothing changed on either side); on `STATUS_PENDING`/`STATUS_MISSING` it
+writes unconditionally — those states have exactly one side that could plausibly be wrong, and it
+isn't the live file's own unrelated content. On `STATUS_DRIFTED`/`STATUS_CONFLICT` it **refuses**
+(`ArtifactError`, no write) unless given an explicit resolution — **there is deliberately no
+default**, because silently picking a side is data loss in the other direction:
+
+- **`--force`** — managed copy wins; the live edit that caused the drift is discarded on write.
+- **`--adopt-live`** — live file wins first: its bytes are read and written back into the managed
+  copy (`registry.content_path(name)`), `rehash()` recomputes `auth_hash` from them, and *then* the
+  (now-matching) content is written to `dest` and `post_deploy` runs — so the managed copy absorbs
+  what the live file already had rather than sysforge overwriting a live edit it didn't author.
+  Because it overwrites the authoritative copy, `--adopt-live` is **fenced** to the states where
+  that is the intent: `drifted`/`conflict` (the drift it resolves) and `ok` (a harmless no-op). It
+  **refuses** (`ArtifactError`, nothing written) on `STATUS_PENDING` — where it would silently
+  discard an undeployed managed edit with older live content — and on `STATUS_MISSING` — where
+  there is no live file to adopt (this also fences the read, so a missing live file never surfaces
+  as an unguarded traceback).
+
+A successful, non-no-op deploy re-hashes the written bytes and persists `auth_hash == deployed_hash`
+(both the freshly-hashed content) plus `deployed_at = now`, so the artifact reads back `ok`
+immediately after — `deployed_hash` is exactly "what sysforge last wrote," and a deploy is the only
+thing that advances it.
+
+**`remove(registry, name, *, purge=False, force=False) -> None`** runs `pre_remove` then
+`remove_live`. It **refuses** on `STATUS_DRIFTED`/`STATUS_CONFLICT` unless `force`, symmetric with
+`deploy`: the live file carries edits made outside sysforge that exist nowhere else, so unlinking
+it (a privileged `rm` for units/hooks) would destroy them silently — `--force` proceeds anyway, and
+`deploy --adopt-live` first is the escape hatch that saves the live version into the managed copy
+before removal. `ok`/`pending`/`missing` remove without force — the live file is either reproducible
+from the managed copy or already gone (an already-missing live file is a successful no-op unlink,
+not an error). Without `purge`, the managed copy and registry row survive with
+`deployed_hash`/`deployed_at` cleared back to `None` — removal from the live system is not the same
+decision as discarding the content, so the artifact can be `deploy`ed again later without
+re-adopting it. With `purge`, the managed copy's content file is also unlinked and the registry
+entry dropped entirely — the artifact is fully forgotten.
+
+Wired by `verbs/artifact.py` → `ArtifactDeployVerb` (`sysforge artifact deploy <name>|--all
+[--force|--adopt-live]`) and `ArtifactRemoveVerb` (`sysforge artifact remove <name> [--purge]
+[--force]`), both
+`requires_sentinel = True` (they mutate the live filesystem) and both supply a `journal_target`
+(the artifact name, or `"all"` for a batched deploy) so `journalctl SYSFORGE_TARGET=<name>` finds
+them (§Standards row 20). `--all` deploys every registered artifact in one run, continuing past a
+per-artifact failure (accumulates a failure count, nonzero exit if any failed, rather than aborting
+the batch on the first refusal) rather than stopping the whole run on one drifted artifact. After the
+loop, `ArtifactDeployVerb` emits the same PATH warning `artifact list` does — **once per run, not
+per artifact**, and **only when a script actually landed** (`CLASS_SCRIPT` deployed this run **and**
+`script_root_on_path()` is confirmed `False`, never on the `None` abstain) — the problem is concrete
+at deploy time (something was just installed by name and it may not be runnable), so it earns a
+narrower, deploy-specific warning rather than reusing `artifact list`'s unconditional check.
+`ArtifactRemoveVerb` warns before removing a `CLASS_HOOK` artifact (the pre-remove hint noted above)
+and reports `purge`d vs. plain removal in its confirmation line.
+
 ### `pkgbuild_review.py`
 
 The PKGBUILD review gate. Before a package is built, compares the source clone's HEAD against the `reviewed_commit` recorded in `build_state.toml` (the clone HEAD at the last successful build — stamped sticky by `makepkg_wrapper`'s single `record()` site, so dep builds and pipeline stages are covered without caller threading) and, on a difference, shows the **full source-tree diff** — not just the PKGBUILD, so changes hiding in `.install` files, patches, or new sources are visible — and prompts: `[v]iew` (full patch through `pager.maybe_pager`) / `[a]ccept` / `[s]kip package` / `a[b]ort run`. The prompt reads a single keypress via `prompt.prompt_key` — no Enter needed. EOF/Ctrl-C at the prompt aborts (no answer is not consent). A package with no recorded `reviewed_commit`, or whose recorded sha vanished (purge + re-clone), is reviewed against git's empty tree — a full-content review. The comparison is commit-based (recorded → HEAD), deliberately not worktree-based: upstream changes arrive as commits via source sync, while uncommitted local edits are user-authored (the STATUS_DIVERGED case) and are not re-presented to their author. Auto-accept paths (logged, never prompt): non-interactive runs (stdin or stdout not a TTY), and callers passing `interactive=False` — `sysforge update`'s default mode. Owns the `[REVIEW]` tag. API: `head_commit(dir)`, `commit_exists(dir, sha)`, `review_target(pkgbase, dir, reviewed_commit, interactive=True) -> DECISION_*`, `review_deps(deps, interactive=True) -> DECISION_*`.

@@ -17,7 +17,7 @@ _sysforge() {
         cword=$COMP_CWORD
     fi
 
-    local commands="build fetch update resolve doctor packages state revert-to-stock run search setup uninstall env log config"
+    local commands="artifact build fetch update resolve doctor packages state revert-to-stock run search setup uninstall env log config"
 
     # Locate the top-level verb (first non-flag arg after `sysforge`) and an
     # optional subverb (first non-flag arg after the verb).
@@ -52,6 +52,7 @@ _sysforge() {
     fi
 
     case "$verb" in
+        artifact)    _sysforge_artifact    ;;
         build)       _sysforge_build       ;;
         fetch)       _sysforge_fetch       ;;
         update)      _sysforge_update      ;;
@@ -87,6 +88,10 @@ _sysforge_flag_arg() {
             ;;
         --ld)
             COMPREPLY=( $(compgen -W "lld mold ld bfd" -- "$cur") )
+            return 0
+            ;;
+        --class)
+            COMPREPLY=( $(compgen -W "script systemd-unit pacman-hook" -- "$cur") )
             return 0
             ;;
         --start-from)
@@ -211,6 +216,34 @@ _sysforge_doctor() {
     else
         _sysforge_installed_pkg_names
     fi
+}
+
+_sysforge_artifact() {
+    _sysforge_flag_arg && return
+    if [[ -z $subverb ]]; then
+        COMPREPLY=( $(compgen -W "list adopt edit deploy remove" -- "$cur") )
+        return
+    fi
+    case "$subverb" in
+        list)
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--unmanaged" -- "$cur") )
+            ;;
+        adopt)
+            if [[ $cur == -* ]]; then
+                COMPREPLY=( $(compgen -W "--class" -- "$cur") )
+            else
+                _filedir
+            fi
+            ;;
+        edit)
+            ;;
+        deploy)
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--all --force --adopt-live" -- "$cur") )
+            ;;
+        remove)
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--purge --force" -- "$cur") )
+            ;;
+    esac
 }
 
 _sysforge_packages() {

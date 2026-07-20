@@ -43,6 +43,7 @@ from sysforge.packages_cmd import (
     PackagesListVerb,
     PackagesRemoveVerb,
 )
+from sysforge.primitives import artifacts
 from sysforge.primitives.pkg_catalog import valid_desktops
 from sysforge.resolve import ResolveVerb
 from sysforge.run_cmd import (
@@ -66,6 +67,13 @@ from sysforge.state_cmd import (
 from sysforge.uninstall_cmd import UninstallVerb
 from sysforge.update import UpdateVerb
 from sysforge.verbs import run_verb
+from sysforge.verbs.artifact import (
+    ArtifactAdoptVerb,
+    ArtifactDeployVerb,
+    ArtifactEditVerb,
+    ArtifactListVerb,
+    ArtifactRemoveVerb,
+)
 
 _PACKAGES_HELP = (
     "Path to packages.toml (default: /etc/sysforge/packages.toml; "
@@ -608,6 +616,53 @@ def _add_doctor_parser(sub):
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
         help="Report what --apply would rebuild without invoking the build.")
     p.set_defaults(verb_cls=DoctorVerb)
+
+
+def _add_artifact_parser(sub):
+    """artifact namespace: list, adopt, edit."""
+    p = sub.add_parser("artifact",
+        help="inventory user-authored scripts, units, and pacman hooks")
+    asub = p.add_subparsers(dest="artifact_cmd", required=True)
+
+    a_list = asub.add_parser("list", help="list managed artifacts")
+    a_list.add_argument(
+        "--unmanaged",
+        action="store_true",
+        help="also show discovered candidates not yet adopted",
+    )
+    a_list.set_defaults(verb_cls=ArtifactListVerb)
+
+    a_adopt = asub.add_parser("adopt", help="bring a live artifact under management")
+    a_adopt.add_argument("path", help="path to the artifact to adopt")
+    a_adopt.add_argument(
+        "--class", dest="cls", choices=list(artifacts.ARTIFACT_CLASSES),
+        default=None, help="artifact class (inferred from the scan root if omitted)",
+    )
+    a_adopt.set_defaults(verb_cls=ArtifactAdoptVerb)
+
+    a_edit = asub.add_parser("edit", help="edit the managed copy of an artifact")
+    a_edit.add_argument("name", help="registry name of the artifact")
+    a_edit.set_defaults(verb_cls=ArtifactEditVerb)
+
+    a_dep = asub.add_parser("deploy", help="push managed content to the live system")
+    grp = a_dep.add_mutually_exclusive_group(required=True)
+    grp.add_argument("name", nargs="?", help="registry name of the artifact")
+    grp.add_argument("--all", action="store_true", help="deploy every managed artifact")
+    res = a_dep.add_mutually_exclusive_group()
+    res.add_argument("--force", action="store_true",
+        help="managed copy wins, discarding the live edit")
+    res.add_argument("--adopt-live", dest="adopt_live", action="store_true",
+        help="live file wins, updating the managed copy")
+    a_dep.set_defaults(verb_cls=ArtifactDeployVerb)
+
+    a_rm = asub.add_parser("remove", help="remove an artifact from the live system")
+    a_rm.add_argument("name", help="registry name of the artifact")
+    a_rm.add_argument("--purge", action="store_true",
+        help="also delete the managed copy and registry entry")
+    a_rm.add_argument("--force", action="store_true",
+        help="remove even though the live file changed outside sysforge "
+             "(discards those live-only edits)")
+    a_rm.set_defaults(verb_cls=ArtifactRemoveVerb)
 
 
 def _add_packages_parser(sub):
@@ -1169,6 +1224,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True
 
+    _add_artifact_parser(sub)
     _add_build_parser(sub)
     _add_fetch_parser(sub)
     _add_update_parser(sub)

@@ -20,6 +20,7 @@ _sysforge() {
   case $state in
     args)
       case $words[1] in
+        artifact) _sysforge_artifact ;;
         build)    _sysforge_build    ;;
         fetch)    _sysforge_fetch    ;;
         update)   _sysforge_update   ;;
@@ -43,6 +44,7 @@ _sysforge() {
 
 _sysforge_commands() {
   local commands=(
+    'artifact:inventory user-authored scripts, units, and pacman hooks'
     'build:build a package from a PKGBUILD'
     'fetch:download PKGBUILD(s) into pkgbuild_src_dir without building'
     'update:check for and rebuild outdated sysforge-managed packages'
@@ -215,6 +217,69 @@ _sysforge_doctor() {
     '--no-confirm[skip the y/N prompt before --apply rebuilds]' \
     '--dry-run[report --apply work without rebuilding]' \
     '*:installed package:_sysforge_installed_pkg_names'
+}
+
+_sysforge_artifact() {
+  local context state state_descr line
+  typeset -A opt_args
+
+  _arguments -C \
+    '1: :_sysforge_artifact_subcommands' \
+    '*:: :->args'
+
+  case $state in
+    args)
+      case $words[1] in
+        list) _sysforge_artifact_list ;;
+        adopt) _sysforge_artifact_adopt ;;
+        edit) _sysforge_artifact_edit ;;
+        deploy) _sysforge_artifact_deploy ;;
+        remove) _sysforge_artifact_remove ;;
+      esac
+      ;;
+  esac
+}
+
+_sysforge_artifact_subcommands() {
+  local subcommands=(
+    'list:list managed artifacts'
+    'adopt:bring a live artifact under management'
+    'edit:edit the managed copy of an artifact'
+    'deploy:push managed content to the live system'
+    'remove:remove an artifact from the live system'
+  )
+  _describe 'subcommand' subcommands
+}
+
+_sysforge_artifact_list() {
+  _arguments \
+    '--unmanaged[also show discovered candidates not yet adopted]'
+}
+
+_sysforge_artifact_adopt() {
+  _arguments \
+    '--class[artifact class (inferred from the scan root if omitted)]:class:(script systemd-unit pacman-hook)' \
+    '1:path:_files'
+}
+
+_sysforge_artifact_edit() {
+  _arguments \
+    '1:name:'
+}
+
+_sysforge_artifact_deploy() {
+  _arguments \
+    '--all[deploy every managed artifact]' \
+    '--force[managed copy wins, discarding the live edit]' \
+    '--adopt-live[live file wins, updating the managed copy]' \
+    '1:name:'
+}
+
+_sysforge_artifact_remove() {
+  _arguments \
+    '--purge[also delete the managed copy and registry entry]' \
+    '--force[remove even though the live file changed outside sysforge]' \
+    '1:name:'
 }
 
 _sysforge_installed_pkg_names() {

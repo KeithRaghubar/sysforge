@@ -19,7 +19,10 @@ import pytest
 
 import sysforge.primitives.paths as paths
 
-_XDG_VARS = ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "SYSFORGE_CONFIG_DIR")
+_XDG_VARS = (
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME",
+    "SYSFORGE_CONFIG_DIR",
+)
 
 
 @pytest.fixture
@@ -47,9 +50,10 @@ def reload_paths(monkeypatch):
 
 def test_user_dirs_default_to_xdg_spec(reload_paths, tmp_path):
     p = reload_paths({"HOME": tmp_path})
-    assert p.USER_CONFIG_DIR == tmp_path / ".config/sysforge"
-    assert p.USER_CACHE_DIR == tmp_path / ".cache/sysforge"
-    assert p.USER_STATE_DIR == tmp_path / ".local/state/sysforge"
+    assert tmp_path / ".config/sysforge" == p.USER_CONFIG_DIR
+    assert tmp_path / ".cache/sysforge" == p.USER_CACHE_DIR
+    assert tmp_path / ".local/state/sysforge" == p.USER_STATE_DIR
+    assert tmp_path / ".local/share/sysforge" == p.USER_DATA_DIR
 
 
 def test_cache_and_state_are_separate_roots(reload_paths, tmp_path):
@@ -69,10 +73,12 @@ def test_user_dirs_honor_xdg_env(reload_paths, tmp_path):
         "XDG_CONFIG_HOME": tmp_path / "cfg",
         "XDG_CACHE_HOME": tmp_path / "ca",
         "XDG_STATE_HOME": tmp_path / "st",
+        "XDG_DATA_HOME": tmp_path / "da",
     })
-    assert p.USER_CONFIG_DIR == tmp_path / "cfg/sysforge"
-    assert p.USER_CACHE_DIR == tmp_path / "ca/sysforge"
-    assert p.USER_STATE_DIR == tmp_path / "st/sysforge"
+    assert tmp_path / "cfg/sysforge" == p.USER_CONFIG_DIR
+    assert tmp_path / "ca/sysforge" == p.USER_CACHE_DIR
+    assert tmp_path / "st/sysforge" == p.USER_STATE_DIR
+    assert tmp_path / "da/sysforge" == p.USER_DATA_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -83,20 +89,20 @@ def test_config_dir_is_env_dir_directly(reload_paths, tmp_path):
     """SYSFORGE_CONFIG_DIR is the config dir itself, not an FHS root prefix —
     the TOML files live directly under it (no etc/sysforge subpath)."""
     p = reload_paths({"SYSFORGE_CONFIG_DIR": tmp_path})
-    assert p.CONFIG_DIR == tmp_path
-    assert p.BOOTSTRAP_PATH == tmp_path / "bootstrap.toml"
-    assert p.PACKAGES_PATH == tmp_path / "packages.toml"
-    assert p.KERNEL_PATH == tmp_path / "kernel.toml"
-    assert p.TOOLCHAIN_PATH == tmp_path / "toolchain.toml"
-    assert p.SYSFORGE_TOML_PATH == tmp_path / "sysforge.toml"
+    assert tmp_path == p.CONFIG_DIR
+    assert tmp_path / "bootstrap.toml" == p.BOOTSTRAP_PATH
+    assert tmp_path / "packages.toml" == p.PACKAGES_PATH
+    assert tmp_path / "kernel.toml" == p.KERNEL_PATH
+    assert tmp_path / "toolchain.toml" == p.TOOLCHAIN_PATH
+    assert tmp_path / "sysforge.toml" == p.SYSFORGE_TOML_PATH
     assert p.CONFIG_PATHS[-1] == tmp_path / "profiles.toml"
 
 
 def test_config_dir_default_is_fhs_etc(reload_paths):
     """SYSFORGE_CONFIG_DIR unset → the FHS system path /etc/sysforge."""
     p = reload_paths({})
-    assert p.CONFIG_DIR == p.Path("/etc/sysforge")
-    assert p.BOOTSTRAP_PATH == p.Path("/etc/sysforge/bootstrap.toml")
+    assert p.Path("/etc/sysforge") == p.CONFIG_DIR
+    assert p.Path("/etc/sysforge/bootstrap.toml") == p.BOOTSTRAP_PATH
 
 
 # ---------------------------------------------------------------------------

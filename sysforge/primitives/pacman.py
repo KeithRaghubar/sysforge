@@ -37,6 +37,7 @@ Public API:
     get_local_db_entry(pkgname)     → Path | None
     get_package_files(pkgname)      → list[str]
     owners_of_paths(paths)          → dict[str, str]
+    owners_of(candidates)           → dict[Path, str | None]
     get_package_depends(pkgname)    → list[str]
     get_pkgbase(pkgname)            → str | None
 """
@@ -875,12 +876,20 @@ def get_package_files(pkgname: str, root: Path | None = None) -> list[str]:
 
 
 _QO_LINE_RE = re.compile(r"^(?P<path>.+) is owned by (?P<pkg>\S+) \S+$")
+_QO_NOTFOUND_RE = re.compile(r"^error: No package owns (?P<path>.+)$")
 
 
-def owners_of_paths(paths: list[str]) -> dict[str, str]:
-    """Map each path to its owning package name (the reverse of
-    :func:`get_package_files`). Paths with no owning package are absent from
-    the result rather than raising.
+def owners_of(candidates: list[Path]) -> dict[Path, str | None]:
+    """Map each path in *candidates* to its owning package name, or None.
+
+    Contract (distinct from :func:`owners_of_paths`, which just omits
+    unowned paths): a path present with a package name is owned; present
+    with ``None`` is **definitively unowned** (pacman said so explicitly);
+    a path **absent from the dict entirely** means ownership could not be
+    determined (the ``pacman -Qo`` command failed wholesale, e.g. a locked
+    or missing DB). Callers doing artifact-inventory subtraction must not
+    collapse absent into ``None`` — that would present system files as
+    user-authored artifacts.
 
     Deliberately does **not** take the ``_use_pyalpm()`` fast path: pyalpm
     exposes no reverse index, so answering these lookups through it means
@@ -888,24 +897,48 @@ def owners_of_paths(paths: list[str]) -> dict[str, str]:
     versus one batched subprocess (~0.09s at 300 paths, near-flat in N).
     ``_use_pyalpm()`` exists to avoid subprocess cost on queries pyalpm can
     answer directly; this is the one query shape it cannot. Do not "restore"
-    the pyalpm path here.
+    the pyalpm path here. Same rationale applies to :func:`owners_of_paths`,
+    which is implemented in terms of this function.
+    """
+    paths_in = [Path(p) for p in candidates]
+    if not paths_in:
+        return {}
+    try:
+        proc = subprocess.run(  # noqa: S603 — fixed argv, paths are not shell-interpreted
+            ["pacman", "-Qo", *[str(p) for p in paths_in]],
+            capture_output=True, text=True, check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        # Lookup unavailable wholesale — return {} (absent), never a dict of
+        # Nones that would read as "confirmed unowned".
+        return {}
+
+    out: dict[Path, str | None] = {}
+    for line in (proc.stdout or "").splitlines():
+        m = _QO_LINE_RE.match(line.strip())
+        if m:
+            out[Path(m.group("path").rstrip("/"))] = m.group("pkg")
+    for line in (proc.stderr or "").splitlines():
+        m = _QO_NOTFOUND_RE.match(line.strip())
+        if m:
+            out[Path(m.group("path").rstrip("/"))] = None
+    return out
+
+
+def owners_of_paths(paths: list[str]) -> dict[str, str]:
+    """Map each path to its owning package name (the reverse of
+    :func:`get_package_files`). Paths with no owning package are absent from
+    the result rather than raising.
+
+    Thin wrapper over :func:`owners_of` (see its docstring for the batched
+    ``pacman -Qo`` rationale and the deliberate pyalpm skip): keeps only the
+    owned entries, dropping the unowned/undetermined distinction that
+    :func:`owners_of` exposes.
     """
     if not paths:
         return {}
-    proc = subprocess.run(  # noqa: S603 — fixed argv, paths are not shell-interpreted
-        ["pacman", "-Qo", *paths],
-        capture_output=True, text=True, check=False,
-    )
-    out: dict[str, str] = {}
-    for line in proc.stdout.splitlines():
-        m = _QO_LINE_RE.match(line.strip())
-        if m:
-            # pacman echoes a directory query with a trailing '/' (e.g. querying
-            # ".../modules/6.1.0" prints ".../modules/6.1.0/ is owned by ..."),
-            # so strip it to key the result by the path the caller asked about.
-            path = m.group("path").rstrip("/")
-            out[path] = m.group("pkg")
-    return out
+    result = owners_of([Path(p) for p in paths])
+    return {str(p): pkg for p, pkg in result.items() if pkg is not None}
 
 
 def get_pkgbase(pkgname: str, root: Path | None = None) -> str | None:

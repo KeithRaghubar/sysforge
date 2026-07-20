@@ -810,3 +810,63 @@ class TestOwnersOfPaths:
 
         monkeypatch.setattr(pacman.subprocess, "run", boom)
         assert pacman.owners_of_paths([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# owners_of (artifact-inventory ownership lookup: absent-vs-None contract)
+# ---------------------------------------------------------------------------
+
+
+class TestOwnersOf:
+
+    def test_owners_of_batches_into_single_subprocess(self, monkeypatch):
+        """The fallback must issue ONE `pacman -Qo` call, not one per file."""
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            return SimpleNamespace(
+                returncode=1,
+                stdout="/etc/a.hook is owned by pkg-a 1.0\n",
+                stderr="error: No package owns /etc/b.hook\n",
+            )
+
+        monkeypatch.setattr(pacman.subprocess, "run", fake_run)
+        out = pacman.owners_of([Path("/etc/a.hook"), Path("/etc/b.hook")])
+
+        assert len(calls) == 1, "must batch, not loop per file"
+        assert out[Path("/etc/a.hook")] == "pkg-a"
+        assert out[Path("/etc/b.hook")] is None
+
+    def test_owners_of_empty_input_makes_no_call(self, monkeypatch):
+        def boom(*a, **kw):
+            raise AssertionError("should not shell out for empty input")
+
+        monkeypatch.setattr(pacman.subprocess, "run", boom)
+        assert pacman.owners_of([]) == {}
+
+    def test_owners_of_absent_on_command_failure(self, monkeypatch):
+        """A wholesale lookup failure (DB locked/missing) must return {} —
+        never a dict of Nones, which would misattribute system files as
+        user artifacts."""
+        def boom(*a, **kw):
+            raise FileNotFoundError("pacman not found")
+
+        monkeypatch.setattr(pacman.subprocess, "run", boom)
+        out = pacman.owners_of([Path("/etc/a.hook"), Path("/etc/b.hook")])
+        assert out == {}
+
+    def test_owners_of_unrecognized_path_stays_absent(self, monkeypatch):
+        """A path pacman says nothing about at all is absent, not None —
+        e.g. when a batched query partially fails to enumerate a path."""
+        def fake_run(argv, **kw):
+            return SimpleNamespace(
+                returncode=1,
+                stdout="/etc/a.hook is owned by pkg-a 1.0\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(pacman.subprocess, "run", fake_run)
+        out = pacman.owners_of([Path("/etc/a.hook"), Path("/etc/mystery.hook")])
+        assert out == {Path("/etc/a.hook"): "pkg-a"}
+        assert Path("/etc/mystery.hook") not in out

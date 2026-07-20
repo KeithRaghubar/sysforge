@@ -41,6 +41,11 @@ Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`
 | `search` | null | print installed → repo → AUR sections (fixed order, empty omitted) for one term | null | no |
 | `uninstall` | resolve state dir + `plan_uninstall` over `BuildState` (pure) | `pacman -Rnsu`, then demote any tracked target via `state forget` + reconcile | (state written inline) | yes |
 | `run …` namespace | build `RunOptions` | delegate to `pipeline.run_pipeline` / `run_stage_standalone` | pipeline framework | (pipeline owns it) |
+| `artifact list` | null | `primitives/artifacts.unified_rows()` + PATH check + optional `scan()` for `--unmanaged` | null | no |
+| `artifact adopt <path>` | null | `primitives/artifacts.adopt()` — copy live → managed, seed registry entry | null | no |
+| `artifact edit <name>` | null | launch editor on managed copy, then `primitives/artifacts.rehash()` | null | no |
+| `artifact deploy <name>\|--all` | null | `primitives/artifacts.deploy()` — per-class live write + post-deploy action; refuses on `drifted`/`conflict` without `--force`/`--adopt-live` | null | yes |
+| `artifact remove <name>` | null | `primitives/artifacts.remove()` — per-class pre-remove action + live unlink; refuses on `drifted`/`conflict` without `--force`; `--purge` also drops the managed copy | null | yes |
 
 ### `revert-to-stock`
 
@@ -60,6 +65,78 @@ Read-only lifecycle verb (`requires_sentinel = False`). One term is queried agai
 ### `uninstall`
 
 Mutating lifecycle verb (`requires_sentinel = True`). `pre_check` resolves each name through the shared `resolve_installed_name` (so naming a stock base reaches its `-sysforge` build) and builds a pure `plan_uninstall` classifying each target's installed name + whether it's tracked. `execute` narrates the plan, removes via `pacman.uninstall_pkgs` (`pacman -Rnsu`, interactive — pacman prints its own confirmation; a `CalledProcessError` returns exit 1 and demotes nothing), then for any tracked target demotes it out of the build-state authority via `cmd_state_forget` (the same `state forget` code) followed by a `BuildState.reconcile_external_installs(install_reconcile.external_install_targets())` pass. This is the exact demotion composition `revert-to-stock` uses — no parallel path — so `update` stops rebuilding an uninstalled package.
+
+### `artifact list`
+
+Read-only lifecycle verb (`requires_sentinel = False`). All logic lives in
+`primitives/artifacts.py` (see §Primitives Layer → `artifacts.py`); the verb is a thin shell that
+renders `unified_rows()` (managed registry entries joined with sysforge's own hooks via
+`pacman_hooks.diff_status()`) as a `STATUS OWNER CLASS NAME` table, warns when
+`script_root_on_path()` confirms `False` (never on `None` — an escalated `sudo` invocation
+abstains rather than false-warn), and with `--unmanaged` additionally lists `scan()` discovery
+candidates not already in the registry and not sysforge-owned.
+
+### `artifact adopt` / `artifact edit`
+
+Both read-only-of-the-live-system lifecycle verbs (`requires_sentinel = False`) — they mutate only
+`USER_DATA_DIR/artifacts/` and `artifacts.toml`, never a live file, so neither needs the sentinel
+protection that guards actual system mutation. All logic lives in `primitives/artifacts.py` (see
+§Primitives Layer → `artifacts.py`); the verbs are thin shells.
+
+`artifact adopt <path> [--class C]` copies the file at `<path>` into the managed set via
+`artifacts.adopt()` and prints the resulting name/class/dest. `--class` overrides the
+root-inferred class; an unknown class, an unreadable source, an already-managed name, or an
+attempt to adopt a sysforge-owned hook by name all fail with a clear message and exit 1.
+
+`artifact edit <name>` resolves `name` against the registry (exit 1 if unmanaged), opens the
+managed copy in the configured editor (`primitives/editor.py`), and on a clean editor exit calls
+`artifacts.rehash()` to recompute `auth_hash` from the saved content. It then prints
+`status_of()`'s result for the artifact — `ok`/`pending`/`drifted`/`conflict`/`missing`, computed
+fresh from the three-way `auth_hash`/`deployed_hash`/live-file-hash comparison described in
+§Primitives Layer → `artifacts.py` — with a `sysforge artifact deploy <name>` hint when the result
+is `pending` (a plain edit's expected outcome, since the edit alone can't touch `deployed_hash` or
+the live file). A nonzero editor exit status skips the re-hash so a botched edit session doesn't
+falsely promote a corrupted save to "current."
+
+### `artifact deploy` / `artifact remove`
+
+Mutating lifecycle verbs (`requires_sentinel = True`) — the only two `artifact` subcommands that
+touch the live filesystem, so they carry the sentinel protection and the journal mirror
+(`journal_target` returns the artifact name, or `"all"` for a batched deploy — §Standards row 20)
+that `list`/`adopt`/`edit` don't need. All contract logic lives in `primitives/artifacts.py` (see
+§Primitives Layer → `artifacts.py` → *Per-class deploy/remove contracts*); the verbs are thin shells
+over `deploy()`/`remove()`.
+
+`artifact deploy <name>` pushes one managed artifact's authoritative content to its live
+destination; `--all` deploys every registered artifact in one run, tallying failures rather than
+aborting the batch on the first refusal. A `drifted`/`conflict` artifact (the live file changed
+outside sysforge, or already held unrelated content) makes `deploy` **refuse** rather than silently
+pick a side — resolve it with one of two mutually exclusive escape hatches: **`--force`** (the
+managed copy wins, discarding the live edit) or **`--adopt-live`** (the live file wins: its content
+is pulled back into the managed copy and re-hashed, then written back out — the artifact ends up
+`ok` with the live file's content now authoritative). There is no default resolution — silently
+choosing a side is data loss in one direction or the other. `--adopt-live` is fenced to the drift
+states plus `ok`: it refuses on `pending` (it would discard an undeployed managed edit) and on
+`missing` (no live file to adopt), so neither an unguarded read nor a silent overwrite of
+irreplaceable managed content is possible. An already-`ok` artifact is reported as unchanged rather
+than as if it were rewritten. A unit deploy runs `systemctl
+daemon-reload` afterward so systemd sees the change immediately. After the run, `deploy` prints the
+same PATH warning `artifact list` does, but narrower: once per run (not per artifact) and only when
+a `script`-class artifact actually landed *and* `script_root_on_path()` confirms `False` — never on
+the `None` abstain (an escalated `sudo` invocation, where `PATH` is `secure_path` and unrepresentative
+of the user's own shell).
+
+`artifact remove <name>` removes one managed artifact from the live system. Symmetric with `deploy`,
+it **refuses** on a `drifted`/`conflict` artifact unless **`--force`**: the live file holds edits
+made outside sysforge that exist nowhere else, so unlinking it would destroy them silently
+(`deploy --adopt-live` first is the way to keep them). An enabled systemd unit
+is disabled (`systemctl disable --now`) before its file is unlinked, so nothing is left
+running-but-file-less. Removing a `pacman-hook`-class artifact prints a warning first — there is no
+systemd-equivalent quiesce step for a hook, so the verb itself flags that removal changes what
+happens on the next pacman transaction. **`--purge`** additionally drops the managed copy and its
+registry row; without it, the managed copy survives (`deployed_hash`/`deployed_at` cleared) so the
+same artifact can be `deploy`ed again later without re-adopting it — removing from the live system
+and discarding the content are different decisions.
 
 ### Global profiling flags
 

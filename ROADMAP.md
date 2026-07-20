@@ -102,6 +102,21 @@ straight off a `Q`.
   workstation).* **Standards home on adoption:** none new — `rust-toolchain.toml` is a rustup
   convention, not a ratified spec; add a row only if the probe grows a documented external contract.
 
+- **`2.4.0-F7` — Doctor probe: `pacman -Qkk` package-file verification (spun out of `1.2.0-F28`).**
+  The artifact inventory (`2.4.0-F4`–`F6`) deliberately excludes package-owned files at discovery
+  (`pacman.owners_of()`) — it only ever manages user-authored content. The complement — verifying
+  that files pacman *does* own still match what the package declared (existence, hash/size where
+  recorded, mode/ownership) — is a distinct, standalone concern: full integrity verification against
+  alpm's stored `mtree` via `pacman -Qkk` (quiet `-Qk` catches missing files only; `-Qkk` additionally
+  checks properties). Add a read-only `doctor` probe that runs `pacman -Qkk` (optionally scoped to a
+  package argument) and surfaces mismatches as findings — modified/missing package-owned files a user
+  or a misbehaving install script altered outside pacman's own transaction. Read-only, so no sentinel;
+  subprocess calls go through the existing seam. *Priority: low (diagnostic completeness — the
+  artifact inventory's population and this probe's population are now proven disjoint and jointly
+  exhaustive over "files sysforge might care about").* **Standards home on adoption:** a new row
+  covering `pacman -Qkk` / `libalpm` mtree verification as a consumed external contract — none of the
+  existing rows (11 is authoring artefacts, not verifying installed ones) fit; add when this lands.
+
 - **`2.3.0-F3` — Dev/build-chain supply-chain audit target.** The runtime dep surface is
   near-empty by design (only the `tomli` backport + optional `pyalpm`), but the dev/build toolchain
   (`hatchling`, `pytest`, `ruff`, `pyright`, coverage overlay) is still a supply-chain surface. Add a
@@ -155,24 +170,21 @@ straight off a `Q`.
   auto-priority causes ordering problems in practice. *Priority: low (candidate, not
   a commitment).*
 
-- **`1.2.0-F28` — User-owned artifact inventory primitive.** Track the user-owned
-  system artifacts now scattered across `~/scripts`, `/etc/systemd/system/`,
-  `/etc/pacman.d/hooks/`, etc.: a tracked-file inventory, a repo-controlled
-  source-of-truth dir, an install/sync command, and drift detection vs the
-  filesystem, tied into the existing config/profile/manifest layers. Anything that
-  mutates the system stays behind a sentinel-gated verb. Stays inside the boundary in
-  DESIGN.md §Scope & Non-Goals (this is steady-state health of a managed system, not
-  backup/config-management). *Priority: low (strategic — coarse; decompose before
-  building).* **Sub-thread to design: opt-in offering of user-owned systemd
-  services and pacman hooks.** The user keeps custom units and hooks on the live
-  system; sysforge should be able to *offer* (not force) them — open question whether
-  the surface is the `setup` stage, a dedicated verb, or a sync mode of this
-  inventory. Discuss the UX before committing; it is a concrete first slice of this
-  primitive. **Drift detection should hook `pacman`, not reimplement it:** for any artifact
-  that belongs to a package, prefer `pacman -Qkk` (file integrity/ownership/permission
-  verification against alpm's stored `mtree`) over a hand-rolled tree walk — the OS already
-  knows which files belong to which package and whether they changed. The hand-rolled path is
-  only for genuinely package-less user artifacts.
+- **`1.2.0-F28` — User-owned artifact inventory: opt-in offering.** The inventory primitive
+  itself — tracked-file registry, `USER_DATA_DIR` source-of-truth dir, discovery, and drift
+  detection — is landing incrementally under its own `2.4.0-Fn` IDs (see release notes and git
+  history as each slice ships); this entry now tracks only its unconsumed remainder. **Sub-thread
+  to design: opt-in offering of user-owned systemd services and pacman hooks.** The user keeps
+  custom units and hooks on the live system; sysforge should be able to *offer* (not force) them
+  rather than relying solely on the user running `artifact` verbs unprompted — open question
+  whether the surface is the `setup` stage, a dedicated verb, or a sync mode of the inventory.
+  Discuss the UX before committing. **`pacman -Qkk` package-file verification spun out as
+  `2.4.0-F7`.** Full drift detection for package-owned files (file integrity/ownership/permission
+  verification against alpm's stored `mtree`) was scoped out of this primitive entirely: discovery
+  here excludes package-owned files at the outset (`pacman.owners_of()`), so `-Qkk` verification
+  operates on the complement of this feature's population and is tracked as its own standalone item,
+  not a sub-thread of the (genuinely package-less) user-artifact inventory. *Priority: low
+  (strategic — a UX question, not a primitive gap).*
 
 - **`1.2.0-F43` — Logging re-levelling audit for interactive/bootstrap stages.**
   Follow-up to the shipped `1.2.0-F36` slice (configurable `[log] verbosity` + `--quiet`,

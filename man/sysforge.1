@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-07\-18"
+.TH "sysforge" "1" "2026\-07\-20"
 .PP
 .PP
 .SH NAME
@@ -121,6 +121,97 @@ refuses, the build runs at the current priority (best\-effort, never fatal).\&
 .RE
 .SH COMMANDS
 .PP
+.SS artifact
+.PP
+\fBsysforge artifact\fR \fISUBCOMMAND\fR
+.PP
+Inventory user\-authored scripts, units, and pacman hooks.\&
+.PP
+.SS artifact list
+.PP
+\fBsysforge artifact list\fR [\fIOPTIONS\fR]
+.PP
+List managed artifacts.\&
+.PP
+\fB\-\-unmanaged\fR
+.RS 4
+also show discovered candidates not yet adopted
+.PP
+.RE
+.SS artifact adopt
+.PP
+\fBsysforge artifact adopt\fR [\fIOPTIONS\fR] \fIPATH\fR
+.PP
+Bring a live artifact under management.\&
+.PP
+\fBPATH\fR
+.RS 4
+path to the artifact to adopt
+.PP
+.RE
+\fB\-\-class\fR \fICLS\fR
+.RS 4
+artifact class (inferred from the scan root if omitted)
+.PP
+.RE
+.SS artifact edit
+.PP
+\fBsysforge artifact edit\fR \fINAME\fR
+.PP
+Edit the managed copy of an artifact.\&
+.PP
+\fBNAME\fR
+.RS 4
+registry name of the artifact
+.PP
+.RE
+.SS artifact deploy
+.PP
+\fBsysforge artifact deploy\fR [\fIOPTIONS\fR] \fI[NAME]\fR
+.PP
+Push managed content to the live system.\&
+.PP
+\fBNAME\fR
+.RS 4
+registry name of the artifact
+.PP
+.RE
+\fB\-\-all\fR
+.RS 4
+deploy every managed artifact
+.PP
+.RE
+\fB\-\-force\fR
+.RS 4
+managed copy wins, discarding the live edit
+.PP
+.RE
+\fB\-\-adopt\-live\fR
+.RS 4
+live file wins, updating the managed copy
+.PP
+.RE
+.SS artifact remove
+.PP
+\fBsysforge artifact remove\fR [\fIOPTIONS\fR] \fINAME\fR
+.PP
+Remove an artifact from the live system.\&
+.PP
+\fBNAME\fR
+.RS 4
+registry name of the artifact
+.PP
+.RE
+\fB\-\-purge\fR
+.RS 4
+also delete the managed copy and registry entry
+.PP
+.RE
+\fB\-\-force\fR
+.RS 4
+remove even though the live file changed outside sysforge (discards those live\-only edits)
+.PP
+.RE
 .SS build
 .PP
 \fBsysforge build\fR [\fIOPTIONS\fR] \fIPKGBUILD.\&.\&.\&\fR
