@@ -628,7 +628,7 @@ def _load_kernel_config():
     with path.open("rb") as f:
         data = tomllib.load(f)
 
-    _log.ui(f"Loaded kernel config from {path}")
+    _log.info(f"Loaded kernel config from {path}")
     return data
 
 
@@ -753,7 +753,7 @@ def _capture_lsmod_snapshot(state_dir, dry_run):
 
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path.write_text(out)
-    _log.ui(f"Captured lsmod snapshot: {snapshot_path}")
+    _log.info(f"Captured lsmod snapshot: {snapshot_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -1105,7 +1105,7 @@ def _write_kconfig_fragment(
     merged = {**device_kconfig, **hw_kconfig, **extra_kconfig, **manual_kconfig}
 
     if not merged:
-        _log.ui("No kconfig entries from any source — skipping fragment")
+        _log.info("No kconfig entries from any source — skipping fragment")
         return None, 0, 0, 0, 0
 
     pkgbuild = _pkgbuild_path(kernel_cfg)
@@ -1223,7 +1223,7 @@ def _write_base_config(kernel_cfg, dry_run, options=None):
         _log.ui(f"[dry-run] would write base kernel config ({source_label}): {base_path}")
         return source_label
     base_path.write_text(text if text.endswith("\n") else text + "\n")
-    _log.ui(f"Wrote base kernel config ({source_label}): {base_path}")
+    _log.info(f"Wrote base kernel config ({source_label}): {base_path}")
     return source_label
 
 
@@ -1237,7 +1237,7 @@ def _run_mkinitcpio(dry_run):
     if dry_run:
         _log.ui("[dry-run] would run: sudo mkinitcpio -P")
         return
-    _log.ui("Running mkinitcpio -P")
+    _log.info("Running mkinitcpio -P")
     result = subprocess.run(privileged_argv(["mkinitcpio", "-P"]))
     if result.returncode != 0:
         raise RuntimeError(f"[KERNEL] mkinitcpio -P failed (exit {result.returncode})")
@@ -1246,7 +1246,7 @@ def _run_mkinitcpio(dry_run):
 def _update_bootloader(bootloader, dry_run):
     """Update the bootloader config to pick up the new kernel."""
     if bootloader == "none" or not bootloader:
-        _log.ui("Bootloader update skipped (bootloader = 'none')")
+        _log.info("Bootloader update skipped (bootloader = 'none')")
         return
 
     if bootloader == "grub":
@@ -1263,7 +1263,7 @@ def _update_bootloader(bootloader, dry_run):
         _log.ui(f"[dry-run] would run: {' '.join(cmd)}")
         return
 
-    _log.ui(f"Updating bootloader: {label}")
+    _log.info(f"Updating bootloader: {label}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
         _log.warn(
@@ -1440,7 +1440,7 @@ def _gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None):
         )
         return
 
-    _log.ui(f"Gate 2: auditing resolved kernel config {config_path}")
+    _log.info(f"Gate 2: auditing resolved kernel config {config_path}")
 
     kconfig_map = None
     try:
@@ -1789,9 +1789,9 @@ class KernelStage(Stage):
         else:
             compiler_origin = "profile default"
         if compiler:
-            _log.ui(f"Kernel compiler override: {compiler}  (cc={cc}  cxx={cxx})")
+            _log.info(f"Kernel compiler override: {compiler}  (cc={cc}  cxx={cxx})")
         elif cc:
-            _log.ui(f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}")
+            _log.info(f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}")
         else:
             _log.info("No kernel compiler override — profile defaults apply")
 
@@ -1970,7 +1970,7 @@ class KernelStage(Stage):
                 # pause here would fire before makepkg runs those in-prepare()
                 # merges — the exact "confirm before the config is assembled"
                 # defeat B6 describes — so it is deliberately not emitted here.
-                _log.ui(f"Building kernel (no install): {pkgname} from {pkgbuild}")
+                _log.info(f"Building kernel (no install): {pkgname} from {pkgbuild}")
                 try:
                     makepkg_run(pkgbuild, options=make_build_options(
                         "kernel", options,
@@ -2057,4 +2057,4 @@ class KernelStage(Stage):
                 if not options.dry_run:
                     _gate3_verify(pkgbuild.parent, fdo_eff_pkgname, bootloader)
 
-        _log.ui(f"Kernel stage complete: {fdo_eff_pkgname}")
+        _log.info(f"Kernel stage complete: {fdo_eff_pkgname}")

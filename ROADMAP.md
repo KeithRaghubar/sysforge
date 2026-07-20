@@ -117,14 +117,6 @@ straight off a `Q`.
   covering `pacman -Qkk` / `libalpm` mtree verification as a consumed external contract — none of the
   existing rows (11 is authoring artefacts, not verifying installed ones) fit; add when this lands.
 
-- **`2.3.0-F3` — Dev/build-chain supply-chain audit target.** The runtime dep surface is
-  near-empty by design (only the `tomli` backport + optional `pyalpm`), but the dev/build toolchain
-  (`hatchling`, `pytest`, `ruff`, `pyright`, coverage overlay) is still a supply-chain surface. Add a
-  `make audit` target that runs `pip-audit` (or `uv`'s native auditing) over the resolved lockfile to
-  flag known CVEs in the build/test chain, run manually and optionally in `pre-release`. Dev-time
-  only — nothing enters the shipped wheel or PKGBUILD. *Priority: low (defense-in-depth; the small
-  dep surface keeps real exposure low).*
-
 - **`2.3.0-F4` — Emit package-adjacent operations through alpm transaction hooks.** sysforge already
   ships `primitives/pacman_hooks.py` and optionally reads via `pyalpm`, so it is adjacent to alpm's
   native extension point but does not yet *fire from inside the transaction*. For work that must happen
@@ -150,19 +142,6 @@ straight off a `Q`.
   **Standards home on adoption:** extend row 2 (FHS + `file-hierarchy(7)`) — same footprint, declarative
   mechanism; rationale in the `fs_provision` design area.
 
-- **`2.3.0-F8` — Shared known-enum resolver for string-valued config (promoted from `2.3.0-Q2`).**
-  Three chokepoints handle unrecognized string values three ways: `config.resolve_repo_mode` returns
-  unknowns **through unchanged** (`return raw`, so `repo_mode = "pacmn"` flows downstream
-  unvalidated), `config.resolve_repo_track` **silently** coerces to `"stable"`, and the throttle
-  `_coerce_*` helpers **warn-and-drop**. Adopt one policy — validate against the known vocabulary,
-  warn on mismatch, fall back to the documented default — via a shared
-  `resolve_enum(raw, known, default, *, key)` seam. Scope to `repo_mode` + `repo_track` first; the
-  enum check must run **after** `repo_mode`'s legacy-alias mapping (`profiled`→`build_from_source`),
-  not replace it. Defer any `check_standards` enforcement (a future `STD`) until a census
-  (`[log] verbosity`, ionice class names, …) shows enough readers to justify locking it down.
-  *Priority: low (robustness/consistency; no correctness failure today — bad values either pass
-  through inertly or coerce to a safe default).*
-
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
   specificity: more AND'd conditions = higher weight), with manual `priority`
@@ -185,16 +164,6 @@ straight off a `Q`.
   operates on the complement of this feature's population and is tracked as its own standalone item,
   not a sub-thread of the (genuinely package-less) user-artifact inventory. *Priority: low
   (strategic — a UX question, not a primitive gap).*
-
-- **`1.2.0-F43` — Logging re-levelling audit for interactive/bootstrap stages.**
-  Follow-up to the shipped `1.2.0-F36` slice (configurable `[log] verbosity` + `--quiet`,
-  the DESIGN.md §Logging rubric, and the re-levelled day-to-day `build`/`update` path
-  under a golden-output test). **Remaining:** sweep the interactive/bootstrap-time stages
-  against the same rubric — `reconfigure.py` (94 `ui()`), `configure.py` (47), `kernel.py`
-  (42), `toolchain.py` (60), `hardware.py` (19), `partition.py` (14) — demoting progress
-  narration to `info()` while keeping prompts/plan-tables/results as `ui()`. Extend the
-  golden guard to a representative stage run. *Priority: low (bootstrap-time output, not the
-  day-to-day regression, which is resolved under F36).*
 
 ---
 

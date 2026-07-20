@@ -27,7 +27,7 @@ Decision test for each site: *is this the answer, or narration about producing t
 3. Else the `[log] verbosity` key in `sysforge.toml` (integer 0–3, clamped; non-int/unreadable ignored → never aborts startup).
 4. Else 0.
 
-The shipped default stays 0; the config key lets a user opt into a quieter or more verbose baseline without changing it. A golden-output regression test asserts default-level (`verbosity=0`) output of a representative dry-run carries no `[INFO]`/`[WARN]` lines — the primary guard against future features re-leaking narration into `ui()`. Tests run at verbosity 2 (all messages visible).
+The shipped default stays 0; the config key lets a user opt into a quieter or more verbose baseline without changing it. Golden-output regression tests assert that default-level (`verbosity=0`) output of a representative dry-run carries no `[INFO]`/`[WARN]` lines — the primary guard against future features re-leaking narration into `ui()`. Two stages anchor the guard: the day-to-day `packages` stage (`_load_packages`) and, extending the sweep to the interactive/bootstrap path, the `configure` stage's dry-run (both in their respective stage tests). The re-levelling audit covers every stage — `partition`/`install`, `hardware`, `configure`, `reconfigure`, `kernel`, `toolchain` — demoting progress narration ("Probing hardware…", "Building kernel…", "[PGO] 3/4 complete", per-step "wrote/synced/installed" confirmations) to `info()` while keeping prompts, plan tables, section headers, dry-run previews, and check results as `ui()`. Tests run at verbosity 2 (all messages visible).
 
 ### Colour
 

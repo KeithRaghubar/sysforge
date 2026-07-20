@@ -891,7 +891,7 @@ def _build_pass(
         for name, pkgbuild_path in pkgbuild_map.items():
             pkg_dir = pkgbuild_path.parent
             if pkg_dir in seen_dirs:
-                _log.ui(f"  {name} (split — built with {pkg_dir.name})")
+                _log.info(f"  {name} (split — built with {pkg_dir.name})")
                 continue
             seen_dirs.add(pkg_dir)
             tick(name)
@@ -957,7 +957,7 @@ def _build_pass(
 def _extract_pkg_to_staging(pkg_file: Path, staging: Path) -> None:
     """Extract a .pkg.tar.* file to the staging directory."""
     staging.mkdir(parents=True, exist_ok=True)
-    _log.ui(f"  Extracting {pkg_file.name} → {staging}")
+    _log.info(f"  Extracting {pkg_file.name} → {staging}")
     result = subprocess.run(
         [
             "tar",
@@ -1032,7 +1032,7 @@ def _extract_built_to_staging(
             )
         for pkg_file in pkgs:
             _extract_pkg_to_staging(pkg_file, staging)
-        _log.ui(f"  {name}: staged")
+        _log.info(f"  {name}: staged")
 
 
 def _assert_staging_has_llvm_cmake(staging: Path) -> None:
@@ -1059,7 +1059,7 @@ def _remove_staging(staging: Path) -> None:
     import shutil
 
     if staging.exists():
-        _log.ui(f"Removing staging prefix: {staging}")
+        _log.info(f"Removing staging prefix: {staging}")
         shutil.rmtree(staging)
 
 
@@ -1251,9 +1251,9 @@ def _pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> No
             f"[TOOLCHAIN] No built packages found for {label} — "
             "check that the build completed successfully"
         )
-    _log.ui(f"[PGO] Installing {len(pkgs)} package(s) ({label}):")
+    _log.info(f"[PGO] Installing {len(pkgs)} package(s) ({label}):")
     for p in pkgs:
-        _log.ui(f"  {p.name}")
+        _log.info(f"  {p.name}")
     result = subprocess.run(
         privileged_argv(["pacman", "-U", "--noconfirm"]) + [str(p) for p in pkgs]
     )
@@ -1294,7 +1294,7 @@ def _pgo_stage_instrumented(
             "check that the build completed successfully"
         )
 
-    _log.ui(f"[PGO] Staging {len(all_pkgs)} Pass 1 package(s) → {staging1}:")
+    _log.info(f"[PGO] Staging {len(all_pkgs)} Pass 1 package(s) → {staging1}:")
     for pkg_file in all_pkgs:
         _extract_pkg_to_staging(pkg_file, staging1)
 
@@ -2403,7 +2403,7 @@ def _build_llvm_pgo_inner(
                 toolchain_variant="pgo_llvm",
             )
             _pgo_stage_instrumented(pgo_map, staging1, options.dry_run)
-            _log.ui("[PGO] 1/4 complete (staged to "
+            _log.info("[PGO] 1/4 complete (staged to "
                     f"{staging1} — system /usr untouched)")
 
             # Purge any profraw accumulated during Pass 1 + 2. CMake feature-
@@ -2475,7 +2475,7 @@ def _build_llvm_pgo_inner(
                 toolchain_variant="pgo_llvm",
             )
             _extract_built_to_staging(non_pgo_map, staging1, options.dry_run)
-            _log.ui(f"[PGO] 2/4 complete (stage1 self-sufficient at {staging1})")
+            _log.info(f"[PGO] 2/4 complete (stage1 self-sufficient at {staging1})")
 
             # Pass 3 — training run. CC is stage1's freshly built clang (built
             # in Pass 2 against stage1's instrumented libLLVM), so the running
@@ -2596,7 +2596,7 @@ def _build_llvm_pgo_inner(
                 stop_event.set()
                 if not options.dry_run:
                     monitor.join()
-            _log.ui("[PGO] 3/4 complete")
+            _log.info("[PGO] 3/4 complete")
 
             # Final sweep: merge any profraw not yet handled by the daemon
             profdata_path = _merge_profraw(pgo_store, options.dry_run)
@@ -2627,7 +2627,7 @@ def _build_llvm_pgo_inner(
                         options=options,
                         abort_msg="user declined Pass 4 due to suspicious profdata",
                     )
-            _log.ui(f"[PGO] Profile data ready: {profdata_path}")
+            _log.info(f"[PGO] Profile data ready: {profdata_path}")
             # Write the sidecar now (right after Pass 3 has produced the
             # profdata, before Pass 4 starts) so an aborted Pass 4 still
             # leaves recoverable profdata that the next run can reuse via
@@ -2833,9 +2833,9 @@ def _build_llvm_pgo_inner(
         # out of the build function means a Gate-2 abort leaves nothing
         # installed and no sentinel.
         if skip_profgen:
-            _log.ui("[PGO] Optimized build complete (profdata reused) — pending audit + install")
+            _log.info("[PGO] Optimized build complete (profdata reused) — pending audit + install")
         else:
-            _log.ui("[PGO] 4/4 build complete — pending audit + install")
+            _log.info("[PGO] 4/4 build complete — pending audit + install")
 
     finally:
         sudo_stop.set()
@@ -3171,7 +3171,7 @@ def _gate2_audit(
         # Nothing to audit (e.g. AlreadyBuilt with PKGDEST cleared) — the
         # install step will surface a missing-package error of its own.
         return []
-    _log.ui(f"Gate 2: auditing {len(pkgs)} built package(s) for ABI hazards")
+    _log.info(f"Gate 2: auditing {len(pkgs)} built package(s) for ABI hazards")
     findings = toolchain_safety.scan_abi_hazards(pkgs)
     if findings:
         joined = "\n".join(f"  - {f.message}" for f in findings)

@@ -44,6 +44,17 @@ REPO_MODE_PACMAN = "pacman"
 REPO_MODE_SOURCE = "build_from_source"
 _LEGACY_REPO_MODE_SOURCE = "profiled"
 
+# The raw `repo_mode` tokens the packages loader accepts at its authoritative
+# load point (current vocabulary + legacy alias). `_load_packages` validates the
+# *raw* value against this and hard-fails on anything else, because at that
+# boundary a typo should abort loudly rather than silently fall back to
+# "pacman" (which would disable the source builds the user configured).
+# resolve_repo_mode itself stays lenient (warn + fall back) for the many
+# defensive readers that only compare the resolved value. See 2.3.0-F8.
+REPO_MODE_ACCEPTED_INPUTS = frozenset(
+    {REPO_MODE_PACMAN, REPO_MODE_SOURCE, _LEGACY_REPO_MODE_SOURCE}
+)
+
 # Per-package opt-in key. "enable_build_from_source" replaced the misleading
 # "pkgbuild_patch" (which never patched anything — it forced the source-build
 # path for a repo package). Stays boolean. Legacy entries are normalized to the
@@ -60,6 +71,30 @@ REPO_TRACK_STABLE = "stable"
 REPO_TRACK_MAIN = "main"
 
 
+_REPO_MODE_VALUES = {REPO_MODE_PACMAN, REPO_MODE_SOURCE}
+_REPO_TRACK_VALUES = {REPO_TRACK_STABLE, REPO_TRACK_MAIN}
+
+
+def resolve_enum(raw, known, default, *, key: str):
+    """Resolve a string-valued config option against a known vocabulary (2.3.0-F8).
+
+    Shared policy for the previously-divergent enum chokepoints: a recognized
+    value passes through; anything else is **warned about and replaced with the
+    documented default** rather than flowing downstream unvalidated
+    (``resolve_repo_mode``'s old ``return raw``) or being silently coerced
+    (``resolve_repo_track``). ``key`` is the human-facing config name (e.g.
+    ``"[build] repo_mode"``) named in the warning. Callers that carry a legacy
+    alias must map it to a current value *before* calling this — the enum check
+    validates against the current vocabulary only.
+    """
+    if raw in known:
+        return raw
+    _log.warn(
+        f"{key} = {raw!r} is not one of {sorted(known)} — using {default!r}"
+    )
+    return default
+
+
 def resolve_repo_mode(build_cfg: dict | None) -> str:
     """Resolve packages.toml ``[build] repo_mode`` to a current-vocabulary value.
 
@@ -67,12 +102,14 @@ def resolve_repo_mode(build_cfg: dict | None) -> str:
     ``"profiled"`` token is mapped to ``"build_from_source"`` so existing
     untracked user configs keep working. This is the single read chokepoint for
     ``repo_mode``; every consumer routes through it instead of reading the raw
-    key, so the legacy alias is honored in exactly one place.
+    key, so the legacy alias is honored in exactly one place. Unrecognized
+    values warn and fall back to ``"pacman"`` via :func:`resolve_enum` — the
+    legacy mapping runs first, so ``"profiled"`` is not flagged.
     """
     raw = (build_cfg or {}).get("repo_mode", REPO_MODE_PACMAN)
     if raw == _LEGACY_REPO_MODE_SOURCE:
-        return REPO_MODE_SOURCE
-    return raw
+        raw = REPO_MODE_SOURCE
+    return resolve_enum(raw, _REPO_MODE_VALUES, REPO_MODE_PACMAN, key="[build] repo_mode")
 
 
 def resolve_repo_track(build_cfg: dict | None) -> str:
@@ -80,10 +117,11 @@ def resolve_repo_track(build_cfg: dict | None) -> str:
 
     Single read chokepoint (mirrors :func:`resolve_repo_mode`). Returns
     ``"stable"`` (default, and the fallback for unrecognized values) or
-    ``"main"``.
+    ``"main"``. Unrecognized values now warn (via :func:`resolve_enum`) instead
+    of coercing silently.
     """
     raw = (build_cfg or {}).get("repo_track", REPO_TRACK_STABLE)
-    return raw if raw in (REPO_TRACK_STABLE, REPO_TRACK_MAIN) else REPO_TRACK_STABLE
+    return resolve_enum(raw, _REPO_TRACK_VALUES, REPO_TRACK_STABLE, key="[build] repo_track")
 
 
 def resolve_pgo_allowlist(sysforge_cfg: dict | None) -> set[str]:

@@ -104,7 +104,7 @@ def _set_makepkg_conf(cfg: BootstrapConfig) -> None:
 
     from sysforge.primitives.config import set_makepkg_conf_keys
     set_makepkg_conf_keys(conf_path, pending)
-    _log.ui(f"makepkg.conf: set {', '.join(pending)}")
+    _log.info(f"makepkg.conf: set {', '.join(pending)}")
 
 
 def _set_pacman_parallel_downloads(cfg: BootstrapConfig) -> None:
@@ -133,7 +133,7 @@ def _set_pacman_parallel_downloads(cfg: BootstrapConfig) -> None:
 
     if new_text != text:
         pacman_conf.write_text(new_text)
-        _log.ui(f"ParallelDownloads: {n}")
+        _log.info(f"ParallelDownloads: {n}")
 
 
 def _run_reflector(cfg: BootstrapConfig) -> None:
@@ -156,12 +156,12 @@ def _run_reflector(cfg: BootstrapConfig) -> None:
         for country in cfg.mirror_countries:
             cmd += ["--country", country]
 
-    _log.ui(f"Running reflector: {' '.join(cmd[1:])}")
+    _log.info(f"Running reflector: {' '.join(cmd[1:])}")
     result = _chroot(cfg.target, cmd, check=False)
     if result.returncode != 0:
         _log.warn(f"reflector exited {result.returncode} — mirrorlist may be unchanged")
     else:
-        _log.ui("Mirrorlist updated.")
+        _log.info("Mirrorlist updated.")
 
 
 def _sync_pacman_dbs(cfg: BootstrapConfig) -> None:
@@ -181,7 +181,7 @@ def _sync_pacman_dbs(cfg: BootstrapConfig) -> None:
                 f"{label} db may be unsynced"
             )
         else:
-            _log.ui(f"pacman {label} db synced ({flag}).")
+            _log.info(f"pacman {label} db synced ({flag}).")
 
 
 _BASHRC = (
@@ -298,7 +298,7 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
         if target_src.exists():
             shutil.rmtree(target_src)
         shutil.copytree(src, target_src)
-        _log.ui(f"sysforge source copied to target ({src} → /root/sysforge)")
+        _log.info(f"sysforge source copied to target ({src} → /root/sysforge)")
     else:
         if target_src.exists():
             shutil.rmtree(target_src)
@@ -307,7 +307,7 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
             f"{_SYSFORGE_REPO_URL} inside the chroot."
         )
         _chroot(cfg.target, ["git", "clone", "--depth", "1", _SYSFORGE_REPO_URL, "/root/sysforge"])
-        _log.ui("sysforge source cloned into target (/root/sysforge)")
+        _log.info("sysforge source cloned into target (/root/sysforge)")
 
     pkgbuild = target_src / "PKGBUILD"
     if not pkgbuild.is_file():
@@ -423,7 +423,7 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
     finally:
         sudoers_drop.unlink(missing_ok=True)
 
-    _log.ui(f"sysforge {pkgver} installed via pacman (tracked).")
+    _log.info(f"sysforge {pkgver} installed via pacman (tracked).")
 
 
 def _create_sysforge_group(cfg: BootstrapConfig) -> None:
@@ -435,7 +435,7 @@ def _create_sysforge_group(cfg: BootstrapConfig) -> None:
     """
     _chroot(cfg.target, ["groupadd", "-f", SYSFORGE_GROUP])
     _chroot(cfg.target, ["usermod", "-aG", SYSFORGE_GROUP, cfg.username])
-    _log.ui(f"Group {SYSFORGE_GROUP} created, {cfg.username} added")
+    _log.info(f"Group {SYSFORGE_GROUP} created, {cfg.username} added")
 
 
 def _create_state_dir(cfg: BootstrapConfig) -> None:
@@ -459,7 +459,7 @@ def _create_state_dir(cfg: BootstrapConfig) -> None:
     _chroot(cfg.target, ["sh", "-c",
         f"find /var/lib/sysforge -mindepth 1 -type d -exec chmod {mode} {{}} +; "
         "find /var/lib/sysforge -mindepth 1 -type f -exec chmod g+w {} +"])
-    _log.ui(f"State dir: /var/lib/sysforge (root:{SYSFORGE_GROUP}, mode {mode}, contents g+w)")
+    _log.info(f"State dir: /var/lib/sysforge (root:{SYSFORGE_GROUP}, mode {mode}, contents g+w)")
 
 
 def _copy_config_files(cfg: BootstrapConfig) -> None:
@@ -473,7 +473,7 @@ def _copy_config_files(cfg: BootstrapConfig) -> None:
     bootstrap = dst / "bootstrap.toml"
     if bootstrap.exists():
         bootstrap.chmod(0o600)
-    _log.ui("Config files copied to target /etc/sysforge/")
+    _log.info("Config files copied to target /etc/sysforge/")
 
 
 def _configure_desktop(cfg: BootstrapConfig) -> None:
@@ -492,7 +492,7 @@ def _configure_desktop(cfg: BootstrapConfig) -> None:
         return
     pkgs_path = Path(cfg.target) / "etc/sysforge/packages.toml"
     write_desktop_group(pkgs_path, choice)
-    _log.ui(f"Desktop: wrote [group.{choice}] to {pkgs_path} (installs in the packages stage).")
+    _log.info(f"Desktop: wrote [group.{choice}] to {pkgs_path} (installs in the packages stage).")
 
 
 def _write_resume_reminder(cfg: BootstrapConfig) -> None:
@@ -501,7 +501,7 @@ def _write_resume_reminder(cfg: BootstrapConfig) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(_RESUME_REMINDER)
     dest.chmod(0o644)
-    _log.ui("Resume reminder written to /etc/profile.d/sysforge-resume.sh (mode 0644)")
+    _log.info("Resume reminder written to /etc/profile.d/sysforge-resume.sh (mode 0644)")
 
 
 def _configure_shell(cfg: BootstrapConfig) -> None:
@@ -526,7 +526,7 @@ def _configure_shell(cfg: BootstrapConfig) -> None:
             _ZSHRC + r"PROMPT='%B%F{green}[%n@%m %1~]%#%f%b '" + "\n"
         )
 
-    _log.ui(f"Shell: dotfiles written for root and {cfg.username}")
+    _log.info(f"Shell: dotfiles written for root and {cfg.username}")
 
 
 def _set_default_shell(cfg: BootstrapConfig) -> None:
@@ -548,7 +548,7 @@ def _set_default_shell(cfg: BootstrapConfig) -> None:
     for user in ("root", cfg.username):
         _chroot(cfg.target, ["chsh", "-s", shell_path, user])
 
-    _log.ui(f"Default shell: {cfg.shell} (root + {cfg.username})")
+    _log.info(f"Default shell: {cfg.shell} (root + {cfg.username})")
 
 
 def _set_root_password(cfg: BootstrapConfig) -> None:
@@ -560,7 +560,7 @@ def _set_root_password(cfg: BootstrapConfig) -> None:
             hint="root password not set",
             input=f"root:{cfg.root_password}\n",
         )
-        _log.ui("Root password set.")
+        _log.info("Root password set.")
     else:
         _log.warn(
             "No root_password in bootstrap.toml — set it manually after reboot:\n"
@@ -580,7 +580,7 @@ class ConfigureStage(Stage):
     def run(self, config, state, options):  # noqa: ARG002
         cfg = load_bootstrap()
 
-        _log.ui(f"Configuring target: {cfg.target}")
+        _log.info(f"Configuring target: {cfg.target}")
 
         if options.dry_run:
             _log.ui(f"[dry-run] ParallelDownloads: {cfg.parallel_downloads}")
@@ -633,4 +633,4 @@ class ConfigureStage(Stage):
         _configure_desktop(cfg)
         _set_root_password(cfg)
 
-        _log.ui("Configure stage complete.")
+        _log.info("Configure stage complete.")

@@ -1,5 +1,5 @@
 .PHONY: all dev venv build install dev-install dev-uninstall clean distclean test test-x lint coverage coverage-ratchet coverage-ratchet-update man \
-        check-shipped check-personal check-standards next-id design check-design pre-release \
+        check-shipped check-personal check-standards next-id design check-design pre-release audit \
         sync-config \
         release-major release-minor release-patch release-resume \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
@@ -47,6 +47,20 @@ test-x:
 
 lint:
 	ruff check sysforge/
+
+# Supply-chain audit (2.3.0-F3). The runtime dep surface is near-empty by
+# design (tomli backport + optional pyalpm), but the dev/build toolchain
+# (hatchling, pytest, ruff, pyright, coverage overlay, …) is still a
+# supply-chain surface. Scans the active dev environment for packages with
+# known CVEs via pip-audit in an ephemeral uv overlay (same --no-sync --with
+# idiom as coverage/check-shipped) — nothing enters the shipped wheel or
+# PKGBUILD. --skip-editable drops the local editable sysforge install (not on
+# PyPI) so only the third-party build/test chain is reported. Run manually,
+# and optionally before a release; kept out of the pre-release hard gate
+# because it needs network and a fresh advisory shouldn't block a release.
+# Pass e.g. ARGS="--fix" or a --requirement to scope it.
+audit:
+	uv run --no-sync --with pip-audit pip-audit --skip-editable $(ARGS)
 
 # Coverage report. Layers pytest-cov into an ephemeral uv overlay (same
 # `uv run --no-sync` pattern as check-shipped/man) so nothing is added to

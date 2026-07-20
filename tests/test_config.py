@@ -17,6 +17,17 @@ from sysforge.primitives.config import (
 )
 
 
+class _WarnRecorder:
+    """Records warn() messages, standing in for a module logger (mirrors the
+    throttle tests' recorder) so enum-fallback warnings can be asserted."""
+
+    def __init__(self):
+        self.messages: list[str] = []
+
+    def warn(self, msg):
+        self.messages.append(msg)
+
+
 # ---------------------------------------------------------------------------
 # resolve_drift_detect (Q9 — [toolchain] drift_detect)
 # ---------------------------------------------------------------------------
@@ -58,9 +69,26 @@ class TestResolveRepoMode:
     def test_legacy_profiled_maps_to_build_from_source(self):
         assert resolve_repo_mode({"repo_mode": "profiled"}) == "build_from_source"
 
-    def test_unknown_value_passed_through(self):
-        # Validation happens at the call site; resolve only maps the legacy alias.
-        assert resolve_repo_mode({"repo_mode": "hybrid"}) == "hybrid"
+    def test_unknown_value_warns_and_falls_back_to_pacman(self, monkeypatch):
+        # 2.3.0-F8: unknowns no longer pass through unvalidated. resolve_enum
+        # validates against the known vocabulary, warns, and falls back to the
+        # documented default (pacman).
+        import sysforge.primitives.config as cfg
+
+        rec = _WarnRecorder()
+        monkeypatch.setattr(cfg, "_log", rec)
+        assert resolve_repo_mode({"repo_mode": "hybrid"}) == "pacman"
+        assert any("hybrid" in m and "repo_mode" in m for m in rec.messages)
+
+    def test_legacy_alias_maps_before_enum_check_no_warn(self, monkeypatch):
+        # The legacy→current mapping must run *before* the enum validation, so
+        # "profiled" resolves cleanly to a known value without a spurious warning.
+        import sysforge.primitives.config as cfg
+
+        rec = _WarnRecorder()
+        monkeypatch.setattr(cfg, "_log", rec)
+        assert resolve_repo_mode({"repo_mode": "profiled"}) == "build_from_source"
+        assert rec.messages == []
 
 
 # ---------------------------------------------------------------------------
@@ -541,10 +569,46 @@ def test_resolve_repo_track_main_opt_out():
     assert resolve_repo_track({"repo_track": "main"}) == "main"
 
 
-def test_resolve_repo_track_unknown_value_falls_back_to_stable():
+def test_resolve_repo_track_unknown_value_warns_and_falls_back_to_stable(monkeypatch):
+    import sysforge.primitives.config as cfg
     from sysforge.primitives.config import resolve_repo_track
 
+    rec = _WarnRecorder()
+    monkeypatch.setattr(cfg, "_log", rec)
     assert resolve_repo_track({"repo_track": "testing"}) == "stable"
+    assert any("testing" in m and "repo_track" in m for m in rec.messages)
+
+
+# ---------------------------------------------------------------------------
+# resolve_enum (2.3.0-F8: shared known-vocabulary resolver)
+# ---------------------------------------------------------------------------
+
+class TestResolveEnum:
+    def test_known_value_returned_unchanged(self):
+        from sysforge.primitives.config import resolve_enum
+
+        assert resolve_enum("b", {"a", "b"}, "a", key="[x] k") == "b"
+
+    def test_default_returned_without_warning(self, monkeypatch):
+        import sysforge.primitives.config as cfg
+        from sysforge.primitives.config import resolve_enum
+
+        rec = _WarnRecorder()
+        monkeypatch.setattr(cfg, "_log", rec)
+        assert resolve_enum("a", {"a", "b"}, "a", key="[x] k") == "a"
+        assert rec.messages == []
+
+    def test_unknown_value_warns_and_falls_back(self, monkeypatch):
+        import sysforge.primitives.config as cfg
+        from sysforge.primitives.config import resolve_enum
+
+        rec = _WarnRecorder()
+        monkeypatch.setattr(cfg, "_log", rec)
+        assert resolve_enum("zzz", {"a", "b"}, "a", key="[x] k") == "a"
+        assert len(rec.messages) == 1
+        # The warning names the offending value, the config key, and the fallback.
+        msg = rec.messages[0]
+        assert "zzz" in msg and "[x] k" in msg and "a" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +633,10 @@ def test_resolve_flag_default_config_true_applies_when_flag_absent():
 
 def test_resolve_flag_default_both_off_is_false():
     from sysforge.primitives.config import resolve_flag_default
-    assert resolve_flag_default(_ns(abi_check=False), "abi_check", {"abi_check": False}, "abi_check") is False
+    assert (
+        resolve_flag_default(_ns(abi_check=False), "abi_check", {"abi_check": False}, "abi_check")
+        is False
+    )
 
 
 def test_resolve_flag_default_all_absent_uses_fallback():
@@ -580,4 +647,7 @@ def test_resolve_flag_default_all_absent_uses_fallback():
 
 def test_resolve_flag_default_cli_true_overrides_config_false():
     from sysforge.primitives.config import resolve_flag_default
-    assert resolve_flag_default(_ns(abi_check=True), "abi_check", {"abi_check": False}, "abi_check") is True
+    assert (
+        resolve_flag_default(_ns(abi_check=True), "abi_check", {"abi_check": False}, "abi_check")
+        is True
+    )

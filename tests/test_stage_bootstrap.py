@@ -299,9 +299,10 @@ _LSPCI_NVIDIA = """\
 01:00.1 Audio device: NVIDIA Corporation GA102 High Definition Audio Controller
 """
 
-_LSPCI_AMD = """\
-00:02.0 VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Navi 21 [Radeon RX 6800 XT]
-"""
+_LSPCI_AMD = (
+    "00:02.0 VGA compatible controller: Advanced Micro Devices, Inc. "
+    "[AMD/ATI] Navi 21 [Radeon RX 6800 XT]\n"
+)
 
 _LSPCI_INTEL = """\
 00:02.0 VGA compatible controller: Intel Corporation Alder Lake-P GT2 [Iris Xe Graphics]
@@ -312,10 +313,11 @@ _LSPCI_MULTI = """\
 01:00.0 3D controller: NVIDIA Corporation TU117M [GeForce GTX 1650 Mobile]
 """
 
-_LSPCI_NVME = """\
-00:1d.0 PCI bridge: Intel Corporation
-05:00.0 Non-Volatile memory controller: Samsung Electronics Co Ltd NVMe SSD Controller PM9A1/PM9A3/980PRO
-"""
+_LSPCI_NVME = (
+    "00:1d.0 PCI bridge: Intel Corporation\n"
+    "05:00.0 Non-Volatile memory controller: Samsung Electronics Co Ltd "
+    "NVMe SSD Controller PM9A1/PM9A3/980PRO\n"
+)
 
 
 class TestParseGpuVendors:
@@ -375,7 +377,7 @@ class TestWriteHardwareProfile:
 
         assert out.exists()
         import tomllib
-        with open(out, "rb") as f:
+        with open(out, "rb") as f:  # noqa: PTH123
             data = tomllib.load(f)
 
         assert data["hardware"]["cpu_vendor"] == "AuthenticAMD"
@@ -395,7 +397,7 @@ class TestWriteHardwareProfile:
               "gpu_vendors": [], "nvme": False}
         _write_hardware_profile(out, hw, {}, dry_run=False)
         import tomllib
-        with open(out, "rb") as f:
+        with open(out, "rb") as f:  # noqa: PTH123
             data = tomllib.load(f)
         assert "kconfig" not in data
 
@@ -414,7 +416,7 @@ class TestWriteHardwareProfile:
         _write_hardware_profile(out, hw, {"CONFIG_MZEN3": "y"},
                                 dry_run=False, devices=devices)
         import tomllib
-        with open(out, "rb") as f:
+        with open(out, "rb") as f:  # noqa: PTH123
             data = tomllib.load(f)
         # Control chars in the modalias must not break TOML parsing.
         assert len(data["devices"]) == 1
@@ -434,7 +436,7 @@ class TestWriteHardwareProfile:
                                 dry_run=False,
                                 device_kconfig={"CONFIG_IGC": "m"})
         import tomllib
-        with open(out, "rb") as f:
+        with open(out, "rb") as f:  # noqa: PTH123
             data = tomllib.load(f)
         assert data["kconfig_devices"] == {"CONFIG_IGC": "m"}
         assert data["kconfig"]["CONFIG_BLK_DEV_NVME"] == "y"
@@ -445,7 +447,7 @@ class TestWriteHardwareProfile:
               "gpu_vendors": [], "nvme": False}
         _write_hardware_profile(out, hw, {}, dry_run=False, device_kconfig={})
         import tomllib
-        with open(out, "rb") as f:
+        with open(out, "rb") as f:  # noqa: PTH123
             data = tomllib.load(f)
         assert "kconfig_devices" not in data
 
@@ -557,7 +559,7 @@ class TestHardwareStageRun:
 
             # Re-implement: patch at a higher level to avoid Path complexity
             with patch("builtins.open", side_effect=lambda p, *a, **kw:
-                       open(p, *a, **kw) if str(p) != "/proc/cpuinfo" else None):
+                       open(p, *a, **kw) if str(p) != "/proc/cpuinfo" else None):  # noqa: PTH123
                 pass  # tested via direct unit tests above
 
         # Direct integration test using real functions
@@ -588,7 +590,7 @@ class TestHardwareStageRun:
         out = tmp_path / "hardware_profile.toml"
         assert out.exists()
         import tomllib
-        with open(out, "rb") as f:
+        with open(out, "rb") as f:  # noqa: PTH123
             data = tomllib.load(f)
         assert data["hardware"]["cpu_vendor"] == "AuthenticAMD"
         assert data["hardware"]["host_arch"]
@@ -655,7 +657,7 @@ class TestHardwareStageRun:
             stage.run({}, MagicMock(), options)
 
         import tomllib
-        with open(tmp_path / "hardware_profile.toml", "rb") as f:
+        with open(tmp_path / "hardware_profile.toml", "rb") as f:  # noqa: PTH123
             data = tomllib.load(f)
         assert data["kconfig"]["CONFIG_BLK_DEV_NVME"] == "y"
         assert data["kconfig_devices"] == {"CONFIG_SND_HDA_INTEL": "m"}
@@ -797,6 +799,33 @@ class TestConfigureStageDryRun:
         # No files should have been written
         assert not (tmp_path / "etc/hostname").exists()
 
+    def test_narration_suppressed_at_default_verbosity(self, tmp_path, capsys):
+        # 2.4.0-F43 golden guard (extends the F36 packages guard to a bootstrap
+        # stage): at the shipped default verbosity the configure stage emits no
+        # progress narration on stderr — "Configuring target: …" is INFO (-vv),
+        # not always-printed UI — while the dry-run plan (the answer) stays UI.
+        from sysforge import log
+
+        stage = ConfigureStage()
+        options = make_options(dry_run=True)
+        saved = log.get_verbosity()
+        try:
+            with patch("sysforge.pipeline.stages.configure.load_bootstrap",
+                       return_value=make_cfg(target=str(tmp_path))):
+                log.set_verbosity(0)  # the shipped default
+                stage.run({}, MagicMock(), options)
+                err_v0 = capsys.readouterr().err
+                log.set_verbosity(2)  # -vv opts into progress narration
+                stage.run({}, MagicMock(), options)
+                err_v2 = capsys.readouterr().err
+        finally:
+            log.set_verbosity(saved)
+
+        assert "Configuring target" not in err_v0
+        assert "[INFO]" not in err_v0 and "[WARN]" not in err_v0
+        assert "[dry-run] would copy /etc/sysforge/ to target" in err_v0
+        assert "[SYSFORGE][INFO][CONFIGURE] Configuring target" in err_v2
+
 
 class TestConfigureStageSysforgeTuningOnly:
     """Regression: identity (hostname/locale/timezone/keymap/bootloader/services/
@@ -924,7 +953,7 @@ class TestConfirmOverwrite:
 
     def test_existing_partitions_default_aborts(self):
         cfg = make_cfg(device="/dev/sda")
-        with patch("sysforge.pipeline.stages._partition_plan._has_existing_partitions",
+        with patch("sysforge.pipeline.stages._partition_plan._has_existing_partitions",  # noqa: SIM117
                    return_value=True), \
              patch("sysforge.pipeline.stages._partition_plan.prompt_choice",
                    return_value="n") as mock_prompt:
@@ -935,7 +964,7 @@ class TestConfirmOverwrite:
 
     def test_existing_partitions_yes_proceeds(self):
         cfg = make_cfg(device="/dev/sda")
-        with patch("sysforge.pipeline.stages._partition_plan._has_existing_partitions",
+        with patch("sysforge.pipeline.stages._partition_plan._has_existing_partitions",  # noqa: SIM117
                    return_value=True), \
              patch("sysforge.pipeline.stages._partition_plan.prompt_choice",
                    return_value="y"):
@@ -943,7 +972,7 @@ class TestConfirmOverwrite:
 
     def test_bare_disk_uses_plain_confirm(self):
         cfg = make_cfg(device="/dev/sda")
-        with patch("sysforge.pipeline.stages._partition_plan._has_existing_partitions",
+        with patch("sysforge.pipeline.stages._partition_plan._has_existing_partitions",  # noqa: SIM117
                    return_value=False), \
              patch("sysforge.pipeline.stages._partition_plan.prompt_choice",
                    return_value="yes") as mock_prompt:

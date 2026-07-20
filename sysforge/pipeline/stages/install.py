@@ -53,4 +53,4 @@ class InstallStage(Stage):
             _confirm(cfg)  # destructive-op gate; raises to abort
 
         run_archinstall(cfg_dict, dry_run=options.dry_run)
-        _log.ui("Base install complete.")
+        _log.info("Base install complete.")

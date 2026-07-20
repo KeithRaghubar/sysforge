@@ -47,6 +47,7 @@ from sysforge.primitives.config import (
     find_pkgbuild,
     resolve_pkgbuild_src_dir,
     resolve_repo_mode,
+    REPO_MODE_ACCEPTED_INPUTS,
     REPO_MODE_PACMAN,
     REPO_MODE_SOURCE,
     PKG_KEY_BUILD_FROM_SOURCE,
@@ -83,12 +84,15 @@ def _load_packages(config):
     build_cfg = data.get("build", {})
     packages = expand_package_groups(data)
 
-    # resolve_repo_mode maps the legacy "profiled" token to "build_from_source"
-    # so old configs keep working; validate the resolved (current) vocabulary.
-    repo_mode = resolve_repo_mode(build_cfg)
-    if repo_mode not in (REPO_MODE_PACMAN, REPO_MODE_SOURCE):
+    # This is repo_mode's authoritative load point: validate the *raw* value and
+    # hard-fail on a typo, because silently falling back to "pacman" here would
+    # drop the source builds the user configured. (resolve_repo_mode itself is
+    # lenient — warn + fall back — for the defensive downstream readers; 2.3.0-F8.)
+    # The legacy "profiled" alias is accepted and mapped by resolve_repo_mode.
+    raw_repo_mode = (build_cfg or {}).get("repo_mode")
+    if raw_repo_mode is not None and raw_repo_mode not in REPO_MODE_ACCEPTED_INPUTS:
         raise ValueError(
-            f"[PACKAGES] Invalid [build] repo_mode={build_cfg.get('repo_mode')!r} "
+            f"[PACKAGES] Invalid [build] repo_mode={raw_repo_mode!r} "
             f"in {path}. Must be {REPO_MODE_PACMAN!r} or {REPO_MODE_SOURCE!r}."
         )
 

@@ -555,7 +555,7 @@ def _write_hardware_profile(
     tmp = path.with_suffix(".tmp")
     tmp.write_text(content)
     tmp.rename(path)
-    _log.ui(f"Wrote hardware_profile.toml: {path}")
+    _log.info(f"Wrote hardware_profile.toml: {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +571,7 @@ class HardwareStage(Stage):
         state_dir, _ = resolve_state_dir(options.state_dir)
         output_path = state_dir / "hardware_profile.toml"
 
-        _log.ui("Probing hardware...")
+        _log.info("Probing hardware...")
 
         # --- CPU ---
         try:
@@ -580,7 +580,7 @@ class HardwareStage(Stage):
             raise RuntimeError(f"[HARDWARE] Cannot read /proc/cpuinfo: {e}") from e
 
         cpu_info = _parse_cpuinfo(cpuinfo)
-        _log.ui(
+        _log.info(
             f"CPU: vendor={cpu_info.get('cpu_vendor', '?')}  "
             f"family={cpu_info.get('cpu_family', '?')}  "
             f"model={cpu_info.get('cpu_model', '?')}",
@@ -602,21 +602,21 @@ class HardwareStage(Stage):
         nvme = _has_nvme(lspci_text)
 
         if gpu_vendors:
-            _log.ui(f"GPU(s): {', '.join(gpu_vendors)}")
+            _log.info(f"GPU(s): {', '.join(gpu_vendors)}")
         else:
-            _log.ui("GPU: none detected via lspci")
+            _log.info("GPU: none detected via lspci")
 
         if nvme:
-            _log.ui("NVMe: present")
+            _log.info("NVMe: present")
 
         # --- Host arch + LLVM target list ---
         host_arch = detect_host_arch()
         llvm_targets = derive_llvm_targets(host_arch, gpu_vendors)
         mesa_drivers = derive_mesa_drivers(gpu_vendors)
-        _log.ui(f"host_arch: {host_arch}")
+        _log.info(f"host_arch: {host_arch}")
         if llvm_targets:
-            _log.ui(f"llvm_targets: {';'.join(llvm_targets)}")
-        _log.ui(
+            _log.info(f"llvm_targets: {';'.join(llvm_targets)}")
+        _log.info(
             "mesa drivers: gallium={} vulkan={}".format(
                 ",".join(mesa_drivers["gallium"]),
                 ",".join(mesa_drivers["vulkan"]),
@@ -637,19 +637,19 @@ class HardwareStage(Stage):
         arch_disable = _arch_disable_kconfig(host_arch)
         kconfig.update(arch_disable)
         if arch_disable:
-            _log.ui(
+            _log.info(
                 f"Arch-disable: {len(arch_disable)} kconfig entries set to 'n' "
                 f"(non-{host_arch} architecture/SoC umbrellas)",
             )
 
         if kconfig:
-            _log.ui(
+            _log.info(
                 f"kconfig entries: {len(kconfig)} total "
                 f"({len(kconfig) - len(arch_disable)} hardware-driven, "
                 f"{len(arch_disable)} arch-disable)",
             )
         else:
-            _log.ui("No kconfig entries generated")
+            _log.info("No kconfig entries generated")
 
         # --- Full PCI/USB device inventory + driver-coverage check ---
         from sysforge.primitives import device_probe, kbuild_map
@@ -660,12 +660,12 @@ class HardwareStage(Stage):
         cached = kbuild_map.load_map(state_dir / kbuild_map.KBUILD_MAP_FILENAME)
         if cached is not None:
             kconfig_map, map_release = cached
-            _log.ui(
+            _log.info(
                 f"Loaded kbuild module→kconfig map: {len(kconfig_map)} modules "
                 f"(from kernel {map_release or '?'})",
             )
         devices = device_probe.enumerate_devices(kconfig_map=kconfig_map)
-        _log.ui(f"Devices: {len(devices)} PCI/USB endpoint(s) inventoried")
+        _log.info(f"Devices: {len(devices)} PCI/USB endpoint(s) inventoried")
         unsupported = device_probe.check_unsupported_devices(devices=devices)
         for finding in unsupported:
             _log.warn(f"{finding.message} {finding.remediation}".strip())
@@ -682,7 +682,7 @@ class HardwareStage(Stage):
                 if sym not in kconfig:
                     device_kconfig.setdefault(sym, "m")
         if device_kconfig:
-            _log.ui(
+            _log.info(
                 f"Device-driven kconfig entries: {len(device_kconfig)} "
                 "(emitted =m; heuristic [kconfig] wins on overlap)",
             )
@@ -711,7 +711,7 @@ class HardwareStage(Stage):
                 for line in drift:
                     _log.warn(line)
             else:
-                _log.ui(f"Hardware profile unchanged vs. existing {output_path.name}")
+                _log.info(f"Hardware profile unchanged vs. existing {output_path.name}")
 
         # --- Write output ---
         _write_hardware_profile(
@@ -719,4 +719,4 @@ class HardwareStage(Stage):
             device_kconfig=device_kconfig,
         )
 
-        _log.ui("Hardware detection complete.")
+        _log.info("Hardware detection complete.")

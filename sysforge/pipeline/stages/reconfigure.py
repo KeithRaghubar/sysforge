@@ -297,7 +297,7 @@ def _select_steps(options) -> list[str]:
         if invalid:
             _log.warn(f"  Ignoring unrecognized tokens: {' '.join(invalid)}")
 
-        _log.ui(f"Running steps: {', '.join(steps)}")
+        _log.info(f"Running steps: {', '.join(steps)}")
         return steps
 
 
@@ -363,7 +363,7 @@ def _choose_install_package(editor_cmd: str, options=None) -> str | None:
         if options is not None and getattr(options, "dry_run", False):
             _log.ui("  [dry-run] would sync the pacman files db (sudo pacman -Fy)")
         else:
-            _log.ui("  Syncing the pacman files db (sudo pacman -Fy)…")
+            _log.info("  Syncing the pacman files db (sudo pacman -Fy)…")
             if not sync_files_db():
                 _log.warn(
                     "  Could not sync the files db; "
@@ -714,9 +714,9 @@ def _open_in_editor(path: Path, editor: str) -> bool:
     argv = [editor, str(path)]
     if _edit_needs_sudo(path):
         argv = privileged_argv(argv)
-        _log.ui(f"  Opening (sudo): {editor} {path}")
+        _log.info(f"  Opening (sudo): {editor} {path}")
     else:
-        _log.ui(f"  Opening: {editor} {path}")
+        _log.info(f"  Opening: {editor} {path}")
     rc = _run_editor_argv(argv)
     if rc == -1:
         _log.ui(f"  Editor not found: {editor!r}")
@@ -764,7 +764,7 @@ def _review_config_file(
             return
         if validate_fn is None:
             break
-        _log.ui(f"    Validating {label}...")
+        _log.info(f"    Validating {label}...")
         ok, msg = validate_fn(path)
         if ok:
             _log.ui(f"    ✓ {msg}")
@@ -1277,12 +1277,12 @@ def _step_gpg(config, state, options, editor: str) -> str:
             default="n",
         )
         if choice == "y":
-            _log.ui("Running gpg --refresh-keys (this may take a while)...")
+            _log.info("Running gpg --refresh-keys (this may take a while)...")
             r = subprocess.run(["gpg", "--refresh-keys"])
             if r.returncode != 0:
                 _log.warn("  gpg --refresh-keys failed")
             else:
-                _log.ui("GPG: keyring refresh complete")
+                _log.info("GPG: keyring refresh complete")
 
     return editor
 
@@ -1553,4 +1553,4 @@ class ReconfigureStage(Stage):
                     "[RECONFIGURE] Aborted by user. Run with --resume to return to this stage."
                 )
 
-        _log.ui("Pre-build checkpoint complete.")
+        _log.info("Pre-build checkpoint complete.")
