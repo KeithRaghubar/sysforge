@@ -924,3 +924,51 @@ def test_iter_offerable_without_ignore_shows_declined(tmp_path, monkeypatch):
     monkeypatch.setattr(artifacts, "scan", lambda roots=None: [_cand(declined)])
 
     assert [c.path for c in artifacts.iter_offerable(reg)] == [declined]
+
+
+def test_iter_drifted_includes_drifted_conflict_missing(tmp_path):
+    reg = _reg(tmp_path)
+    # Adopt + deploy so status starts ok, then mutate the live file → drifted.
+    src = tmp_path / "d.sh"
+    src.write_text("orig")
+    art = artifacts.adopt(reg, src, cls=artifacts.CLASS_SCRIPT)
+    artifacts.deploy(reg, "d.sh")           # live == deployed == auth → ok
+    assert artifacts.status_of(reg, art) not in (
+        artifacts.STATUS_DRIFTED, artifacts.STATUS_CONFLICT, artifacts.STATUS_MISSING
+    )
+    art.dest.write_text("changed-by-pacman")  # live moves → drifted
+    drifted = artifacts.iter_drifted(reg)
+    assert [a.name for a in drifted] == ["d.sh"]
+
+
+def test_iter_drifted_excludes_ok_and_pending(tmp_path):
+    reg = _reg(tmp_path)
+    src = tmp_path / "p.sh"
+    src.write_text("orig")
+    artifacts.adopt(reg, src, cls=artifacts.CLASS_SCRIPT)
+    artifacts.deploy(reg, "p.sh")            # ok
+    # Edit managed copy only → pending, not drift.
+    reg.content_path("p.sh").write_text("edited")
+    artifacts.rehash(reg, "p.sh")
+    assert artifacts.iter_drifted(reg) == []
+
+
+def test_iter_drifted_missing_live_file_is_reported(tmp_path):
+    reg = _reg(tmp_path)
+    src = tmp_path / "m.sh"
+    src.write_text("orig")
+    art = artifacts.adopt(reg, src, cls=artifacts.CLASS_SCRIPT)
+    artifacts.deploy(reg, "m.sh")
+    art.dest.unlink()                        # pacman removed it → missing
+    assert [a.name for a in artifacts.iter_drifted(reg)] == ["m.sh"]
+
+
+def test_shipped_artifacts_hook_is_posttransaction_no_needstargets():
+    hook = (
+        Path(__file__).resolve().parents[1]
+        / "etc/pacman.d/hooks/sysforge-artifacts.hook"
+    )
+    text = hook.read_text()
+    assert "When = PostTransaction" in text
+    assert "NeedsTargets" not in text          # re-scans; targets are moot
+    assert "pacman-hook-helper.sh artifacts" in text

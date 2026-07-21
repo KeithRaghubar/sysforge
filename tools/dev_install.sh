@@ -25,6 +25,7 @@ MAPPING=(
   "etc/pacman.d/hooks/sysforge-kernel.hook|/usr/share/libalpm/hooks/sysforge-kernel.hook"
   "etc/pacman.d/hooks/sysforge-toolchain.hook|/usr/share/libalpm/hooks/sysforge-toolchain.hook"
   "etc/pacman.d/hooks/sysforge-buildstate.hook|/usr/share/libalpm/hooks/sysforge-buildstate.hook"
+  "etc/pacman.d/hooks/sysforge-artifacts.hook|/usr/share/libalpm/hooks/sysforge-artifacts.hook"
   "tools/pacman-hook-helper.sh|/usr/lib/sysforge/pacman-hook-helper.sh"
 )
 

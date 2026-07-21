@@ -111,6 +111,8 @@ package() {
         "$pkgdir/usr/share/libalpm/hooks/sysforge-toolchain.hook"
     install -Dm644 etc/pacman.d/hooks/sysforge-buildstate.hook \
         "$pkgdir/usr/share/libalpm/hooks/sysforge-buildstate.hook"
+    install -Dm644 etc/pacman.d/hooks/sysforge-artifacts.hook \
+        "$pkgdir/usr/share/libalpm/hooks/sysforge-artifacts.hook"
     install -Dm755 tools/pacman-hook-helper.sh \
         "$pkgdir/usr/lib/sysforge/pacman-hook-helper.sh"
 }

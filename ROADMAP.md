@@ -117,19 +117,6 @@ straight off a `Q`.
   covering `pacman -Qkk` / `libalpm` mtree verification as a consumed external contract — none of the
   existing rows (11 is authoring artefacts, not verifying installed ones) fit; add when this lands.
 
-- **`2.3.0-F4` — Emit package-adjacent operations through alpm transaction hooks.** sysforge already
-  ships `primitives/pacman_hooks.py` and optionally reads via `pyalpm`, so it is adjacent to alpm's
-  native extension point but does not yet *fire from inside the transaction*. For work that must happen
-  around package operations — snapshot triggers, the `1.2.0-F28` artifact-drift check, cache/state
-  reconciliation — a `PreTransaction`/`PostTransaction` alpm hook runs at exactly the right moment
-  inside pacman's own transaction rather than sysforge polling or wrapping `pacman` externally. This is
-  the canonical Arch extension mechanism; hooking it means the trigger is correct-by-construction even
-  when the user runs bare `pacman`. Decompose per trigger (not one mega-hook) and keep each behind the
-  existing sentinel/verb boundary. *Priority: low (strategic; depends on which triggers earn a hook —
-  pair with F28).* **Spec:** `alpm-hooks(5)` — already cited by standards row 11. **Standards home on
-  adoption:** extend row 11's Scope ("SysForge *fires* alpm hooks, not just ships them") + enforcement
-  pointer, in the landing commit.
-
 - **`2.3.0-F5` — Declarative provisioning via `tmpfiles.d`/`sysusers.d` instead of imperative healing.**
   `fs_provision.py`/`stage_ownership.py` create directories and fix ownership/permissions imperatively.
   The Arch-native mechanism for the same outcome is a shipped `tmpfiles.d` snippet run by

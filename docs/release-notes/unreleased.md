@@ -27,6 +27,10 @@ https://keepachangelog.com/en/1.1.0/
   package has not taken effect because running processes still map the replaced
   files, classifying the fix as a unit restart, a re-login, or a reboot
   (`2.4.0-F2`).
+- Artifact-drift alpm hook: a fourth libalpm PostTransaction hook records every
+  pacman transaction so the next `sysforge update` reruns the artifact-inventory
+  scans and nudges you to `sysforge artifact review` when a managed artifact
+  drifted or a new adoptable candidate appeared. (2.3.0-F4)
 - Artifact inventory: `sysforge artifact list [--unmanaged]` discovers and reports
   user-authored scripts, systemd units, and pacman hooks, excluding package-owned
   files and labelling sysforge's own hooks read-only. Warns when the configured

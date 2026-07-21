@@ -501,6 +501,25 @@ def iter_offerable(registry, ignore=None, roots=None) -> list:
     return out
 
 
+def iter_drifted(registry) -> list:
+    """Managed artifacts whose live copy no longer matches managed content.
+
+    Sibling of :func:`iter_offerable`: that scanner offers *unmanaged*
+    candidates for adoption; this one reports *managed* artifacts whose live
+    file drifted (:data:`STATUS_DRIFTED` / :data:`STATUS_CONFLICT`) or was
+    removed outside sysforge (:data:`STATUS_MISSING`) — the shapes a pacman
+    transaction can leave behind. Pure read; the sole home for managed-drift
+    enumeration (consumers never re-run a ``status_of`` loop).
+    """
+    out: list = []
+    for art in registry.load().values():
+        if status_of(registry, art) in (
+            STATUS_DRIFTED, STATUS_CONFLICT, STATUS_MISSING
+        ):
+            out.append(art)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Status — three-way comparison, computed, never stored
 # ---------------------------------------------------------------------------

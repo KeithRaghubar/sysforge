@@ -355,6 +355,49 @@ def _consume_pacman_hook_sentinels(
     clear_reconcile_sentinels(_SENTINEL_DIR)
 
 
+def _consume_artifact_sentinel(silent: bool = False) -> None:
+    """Surface artifact-inventory changes flagged by the ``artifacts`` pacman
+    PostTransaction hook since the last run, then unlink the sentinel.
+
+    The hook only records that *a* transaction happened; the real check runs
+    here, as the user, where the registry + ignore-list live. Warn only when
+    something actually drifted or a new candidate appeared — most transactions
+    touch nothing in the inventory, so a fixed reminder would be pure noise
+    (this is why it is not a static ``_SENTINEL_REMINDERS`` entry). Best-effort:
+    a corrupt registry/ignore-list or IO error never aborts ``sysforge update``;
+    the sentinel is unlinked regardless.
+
+    ``silent=True`` unlinks without scanning or warning — the end-of-run clear
+    of a sentinel sysforge's own Phase 5/6.5 transactions just dropped.
+    """
+    path = _SENTINEL_DIR / "artifacts"
+    if not path.exists():
+        return
+    if not silent:
+        from sysforge.primitives import artifacts
+        drifted: list = []
+        new_cands: list = []
+        try:
+            registry = artifacts.ArtifactRegistry()
+            ignore = artifacts.IgnoreList()
+            drifted = artifacts.iter_drifted(registry)
+            new_cands = artifacts.iter_offerable(registry, ignore)
+        except (artifacts.ArtifactError, OSError):
+            drifted, new_cands = [], []
+        if drifted or new_cands:
+            parts: list[str] = []
+            if drifted:
+                parts.append(
+                    f"{len(drifted)} managed artifact(s) changed on disk "
+                    "since the last transaction"
+                )
+            if new_cands:
+                parts.append(f"{len(new_cands)} new adoptable candidate(s)")
+            _log.warn("; ".join(parts) + " — run `sysforge artifact review`.")
+    with contextlib.suppress(OSError):
+        path.unlink()
+
+
 def _reconcile_external_demotions(bs: BuildState) -> None:
     """Demote source-built packages reinstalled externally via ``pacman -S``.
 
@@ -411,6 +454,7 @@ def cmd_update(args) -> None:
     # reminders_only: leave the buildstate + self-install sentinels in place so
     # the body's _reconcile_external_demotions can read them; it unlinks them.
     _consume_pacman_hook_sentinels(reminders_only=True)
+    _consume_artifact_sentinel()
     _suppress_pagers_in_env(getattr(args, "interactive", False))
 
     try:
@@ -426,6 +470,7 @@ def cmd_update(args) -> None:
         # sysforge's own -U entries appear in both and cancel out. The body's
         # end-of-run call still clears the reconcile pair on the success path.
         _consume_pacman_hook_sentinels(silent=True, reminders_only=True)
+        _consume_artifact_sentinel(silent=True)
         # Defensive: if any subprocess (pacman hook, makepkg subshell, etc.)
         # entered alt-screen mode and died without restoring, emit the reset
         # so the caller's scrollback isn't lost. No-op when stdout isn't a

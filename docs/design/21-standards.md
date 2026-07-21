@@ -82,6 +82,12 @@ specs** — `PKGBUILD(5)`, `.SRCINFO`, `alpm-hooks(5)`, `makepkg.conf` — are
 guarded by `check_shipped` (`pkgbuild`/`hooks` groups) and the `pkgbuild-*`
 skills, and are the authority any parser/patcher change cross-checks (array vs
 string fields, escape and brace-expansion rules, the `_<arch>` array families).
+SysForge doesn't just ship `alpm-hooks(5)`-conforming files — it *fires* them:
+the four libalpm PostTransaction hooks (kernel, toolchain, buildstate,
+artifacts) each drop a sentinel that a corresponding `update` consumer picks up
+on the next run (§update.md). `check_shipped`'s `hooks` group parity check
+(`check_hooks`) already covers the new `artifacts` hook via `HOOK_NAMES`, so no
+enforcement wiring beyond the existing group was needed.
 Layered on top are the **prose conventions** that aren't mechanically lintable
 but inform how SysForge generates and edits PKGBUILDs:
 

@@ -57,6 +57,7 @@ HOOK_NAMES = (
     "sysforge-kernel.hook",
     "sysforge-toolchain.hook",
     "sysforge-buildstate.hook",
+    "sysforge-artifacts.hook",
 )
 
 HELPER_NAME = "pacman-hook-helper.sh"

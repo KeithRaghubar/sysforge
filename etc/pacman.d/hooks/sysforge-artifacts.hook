@@ -1,0 +1,21 @@
+# sysforge — artifact-inventory drift signal
+#
+# Drops a sentinel under /var/lib/sysforge/sentinels/artifacts on any pacman
+# transaction. The next `sysforge update` reruns the F28 inventory scans
+# (managed-drift + new-candidate) against the user's registry and, only when
+# something changed, nudges the user to run `sysforge artifact review` — then
+# unlinks the sentinel. The consumer re-scans the live filesystem itself, so
+# this hook does not scope to specific targets. The hook fires for every
+# package, so the helper must stay near-instant — a single mkdir + append.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Recording pacman transaction for sysforge artifact-drift check...
+When = PostTransaction
+Exec = /usr/lib/sysforge/pacman-hook-helper.sh artifacts

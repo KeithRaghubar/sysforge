@@ -5,6 +5,7 @@
 #   kernel       — kernel package changed
 #   toolchain    — toolchain package changed
 #   buildstate   — any package changed (build-state refresh nudge)
+#   artifacts    — any package changed (artifact-drift recheck nudge)
 #
 # Hooks run as root mid-pacman-transaction. Two correctness rules:
 #   (1) never fail — exit 0 even on permission/IO errors so we cannot

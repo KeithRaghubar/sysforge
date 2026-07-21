@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge import update as up
 from sysforge.update import _consume_pacman_hook_sentinels
+from sysforge.update import _consume_artifact_sentinel
 
 
 def _stub_logger():
@@ -186,3 +187,88 @@ def test_reminder_sentinels_swallowed_on_body_exception(tmp_path):
 
     assert not (sentinels / "kernel").exists()
     assert not (sentinels / "toolchain").exists()
+
+
+# ---------------------------------------------------------------------------
+# F4 — artifact-drift sentinel consumption
+# ---------------------------------------------------------------------------
+
+def _artifacts_sentinel(tmp_path):
+    sentinels = tmp_path / "sentinels"
+    sentinels.mkdir()
+    (sentinels / "artifacts").write_text("2026-07-21T00:00:00Z\n")
+    return sentinels
+
+
+def test_artifact_sentinel_absent_is_noop(tmp_path):
+    with patch("sysforge.update._SENTINEL_DIR", tmp_path / "none"), \
+         _stub_logger() as mock_log:
+        _consume_artifact_sentinel()
+    mock_log.warn.assert_not_called()
+
+
+def test_artifact_sentinel_clean_is_silent_and_unlinks(tmp_path):
+    sentinels = _artifacts_sentinel(tmp_path)
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), \
+         patch("sysforge.primitives.artifacts.iter_drifted", return_value=[]), \
+         patch("sysforge.primitives.artifacts.iter_offerable", return_value=[]), \
+         patch("sysforge.primitives.artifacts.ArtifactRegistry"), \
+         patch("sysforge.primitives.artifacts.IgnoreList"), \
+         _stub_logger() as mock_log:
+        _consume_artifact_sentinel()
+    mock_log.warn.assert_not_called()
+    assert not (sentinels / "artifacts").exists()
+
+
+def test_artifact_sentinel_drift_warns_with_counts(tmp_path):
+    sentinels = _artifacts_sentinel(tmp_path)
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), \
+         patch("sysforge.primitives.artifacts.iter_drifted",
+               return_value=[object(), object()]), \
+         patch("sysforge.primitives.artifacts.iter_offerable",
+               return_value=[object()]), \
+         patch("sysforge.primitives.artifacts.ArtifactRegistry"), \
+         patch("sysforge.primitives.artifacts.IgnoreList"), \
+         _stub_logger() as mock_log:
+        _consume_artifact_sentinel()
+    mock_log.warn.assert_called_once()
+    msg = mock_log.warn.call_args[0][0]
+    assert "2 managed artifact" in msg
+    assert "1 new adoptable candidate" in msg
+    assert "sysforge artifact review" in msg
+    assert not (sentinels / "artifacts").exists()
+
+
+def test_artifact_sentinel_only_candidates_omits_drift_clause(tmp_path):
+    sentinels = _artifacts_sentinel(tmp_path)
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), \
+         patch("sysforge.primitives.artifacts.iter_drifted", return_value=[]), \
+         patch("sysforge.primitives.artifacts.iter_offerable",
+               return_value=[object()]), \
+         patch("sysforge.primitives.artifacts.ArtifactRegistry"), \
+         patch("sysforge.primitives.artifacts.IgnoreList"), \
+         _stub_logger() as mock_log:
+        _consume_artifact_sentinel()
+    msg = mock_log.warn.call_args[0][0]
+    assert "managed artifact" not in msg
+    assert "1 new adoptable candidate" in msg
+
+
+def test_artifact_sentinel_silent_flag_unlinks_without_warn(tmp_path):
+    sentinels = _artifacts_sentinel(tmp_path)
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), _stub_logger() as mock_log:
+        _consume_artifact_sentinel(silent=True)
+    mock_log.warn.assert_not_called()
+    assert not (sentinels / "artifacts").exists()
+
+
+def test_artifact_sentinel_corrupt_registry_swallowed(tmp_path):
+    sentinels = _artifacts_sentinel(tmp_path)
+    from sysforge.primitives import artifacts as _a
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), \
+         patch("sysforge.primitives.artifacts.ArtifactRegistry",
+               side_effect=_a.ArtifactError("corrupt")), \
+         _stub_logger() as mock_log:
+        _consume_artifact_sentinel()
+    mock_log.warn.assert_not_called()
+    assert not (sentinels / "artifacts").exists()
