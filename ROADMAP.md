@@ -84,6 +84,28 @@ straight off a `Q`.
   adoption:** extend row 20 (`systemd.journal-fields(7)`) scope note — same mechanism, more verbs
   supplying a target; per-verb tests alongside the existing `test_journal.py` hook tests.
 
+- **`2.5.0-F1` — Categorize top-level `COMMAND` help by usage tier instead of one flat list.**
+  `sysforge --help` prints all 16 subcommands in a single "positional arguments" block, in parser
+  *registration* order (`_build_parser`). That mixes daily drivers (`build`, `update`, `doctor`) with
+  ad-hoc introspection (`env`, `log`, `resolve`, `state`, `config`, `completions`), so a new user can't
+  tell which verbs are for routine use. Group them under labelled tiers (e.g. *Everyday*, *Inspect*,
+  *Maintain*) in the help output. **Feasibility:** argparse collapses every subparser into one
+  positional pseudo-group, so tiering needs a custom `HelpFormatter` (or emitted section headers), not
+  a config flag — the one non-trivial part. Keep the man-page COMMANDS generator (`tools/gen_options.py`)
+  and both completions in lockstep with whatever grouping the help emits. *Priority: low (discoverability,
+  no behavioural change).* **Standards home on adoption:** none new — presentation-only; add a row only
+  if the tiering encodes an external convention (it does not).
+
+- **`2.5.0-F2` — `help` verb (aliases `--help`) + advertise `-h/--help` in completions.** Two related
+  gaps in help discoverability: (1) there is no `sysforge help [COMMAND]` verb — users must know the
+  `--help` flag; (2) `-h/--help` is auto-added by argparse and *does* appear in `sysforge --help` and
+  works at every level (`sysforge build -h`), but the hand-written zsh/bash completions never offer it
+  (verified — this resolves the "is `--help` missing?" note: not a help-text bug, only a completions
+  omission). Add a `help` subparser that prints top-level help, or delegates to `<COMMAND> --help` when
+  given an argument, wired through the Verb framework (read-only, no sentinel — mirror `env`/`resolve`).
+  Add `-h/--help` to both completion files in the same change. *Priority: low (convenience + completion
+  completeness).* **Standards home on adoption:** none new.
+
 - **`2.4.0-F3` — Doctor probe: report which Rust toolchain a build will actually use.** Rust
   PKGBUILDs declare `makedepends=(cargo|rust)` and invoke bare `cargo`, so the toolchain is decided
   entirely by what owns `/usr/bin/cargo` — the distro `rust` package, or a `rustup` proxy that
