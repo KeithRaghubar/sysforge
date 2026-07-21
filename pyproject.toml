@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sysforge"
-version = "2.4.0"
+version = "2.5.0"
 description = "Arch Linux build and maintenance suite for system setup and package management with compiler-optimized builds"
 license = "MIT"
 license-files = ["LICENSE"]
