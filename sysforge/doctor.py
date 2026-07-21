@@ -38,6 +38,7 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives import diagnostics as diag
 from sysforge.primitives import pacman
+from sysforge.primitives import pkgfiles_probe
 from sysforge.primitives import restart_probe
 from sysforge.primitives.abi_check import (
     check_so_files,
@@ -830,14 +831,23 @@ def _collect_restart_findings() -> list[diag.Finding]:
     return out
 
 
+def _collect_integrity_findings(args) -> list[diag.Finding]:
+    """`pacman -Qkk` package-file verification (opt-in --integrity axis).
+
+    Read-only. Honors package targets so `doctor --integrity <pkg>` scopes the
+    scan; a bare `--integrity` verifies every installed package."""
+    packages = list(getattr(args, "packages", None) or [])
+    return pkgfiles_probe.collect_integrity_findings(packages or None)
+
+
 # Canonical order every KNOWN axis renders in (explicit flags select from here).
 _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
     "toolchain", "cache", "hardware", "graphics", "gfxperf", "pacman", "state",
-    "boot", "restart", "storage", "services", "audio", "network",
+    "boot", "restart", "storage", "services", "audio", "network", "integrity",
 )
 
 # Axes excluded from the default/`--all` sweep — advisory, opt-in via their flag.
-_OPT_IN_AXES: frozenset[str] = frozenset({"gfxperf"})
+_OPT_IN_AXES: frozenset[str] = frozenset({"gfxperf", "integrity"})
 
 # CLI flag attribute → axis name. ``--graphics`` is also a package-walk trigger
 # (the graphics-stack closure); both effects fire when it is set.
@@ -855,6 +865,7 @@ _AXIS_FLAGS: dict[str, str] = {
     "services": "services",
     "audio": "audio",
     "network": "network",
+    "integrity": "integrity",
 }
 
 
@@ -916,6 +927,10 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
             lambda: _collect_network_findings(),
             clean_msg=("default route present; one connection manager; DNS "
                        "provisioning consistent")),
+        "integrity": diag.Axis(
+            "integrity", "package-file integrity",
+            lambda: _collect_integrity_findings(args),
+            clean_msg="all package-owned files match their recorded mtree"),
     }
 
 

@@ -27,6 +27,11 @@ https://keepachangelog.com/en/1.1.0/
   package has not taken effect because running processes still map the replaced
   files, classifying the fix as a unit restart, a re-login, or a reboot
   (`2.4.0-F2`).
+- Read-only `doctor --integrity` axis: verifies package-owned files against alpm's
+  recorded mtree via `pacman -Qkk`, surfacing files altered or removed outside a
+  pacman transaction (backup-array config edits reported as informational; missing
+  files as errors). Opt-in and package-scopable; complements the user-authored
+  artifact inventory. (2.4.0-F7)
 - Artifact-drift alpm hook: a fourth libalpm PostTransaction hook records every
   pacman transaction so the next `sysforge update` reruns the artifact-inventory
   scans and nudges you to `sysforge artifact review` when a managed artifact

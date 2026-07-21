@@ -589,6 +589,13 @@ def _add_doctor_parser(sub):
              "provisioner conflict (systemd-resolved active but "
              "/etc/resolv.conf is a static override). Read-only; no live "
              "network calls. Usable on its own (no PKG).")
+    p.add_argument("--integrity", action="store_true",
+        help="Verify package-owned files against alpm's recorded mtree via "
+             "`pacman -Qkk`: files an admin or a misbehaving install script "
+             "altered or removed outside a pacman transaction. Opt-in (excluded "
+             "from the bare/full sweep because a whole-system scan re-hashes "
+             "every packaged file); scope it with `doctor --integrity PKG…`. "
+             "Read-only; never restores. Usable on its own (no PKG).")
     p.add_argument("--all", action="store_true", dest="all",
         help="Run every system-state axis AND the full per-package walk over "
              "every installed package — foreign and non-foreign (pacman -Q). "

@@ -208,6 +208,7 @@ _sysforge_doctor() {
     '--services[failed systemd units + firmware a driver could not load + boot errors]' \
     '--audio[PipeWire/WirePlumber: failed audio user services + vanished output sink]' \
     '--network[no default route, connection-manager conflicts, DNS provisioner conflict]' \
+    '--integrity[verify package-owned files vs alpm mtree via pacman -Qkk (opt-in; scope with PKG)]' \
     '--all[verify every installed package, foreign + non-foreign (pacman -Q)]' \
     '--repo[verify every non-foreign (native repo) package]' \
     '--shallow[do not recurse into transitive dependencies]' \

@@ -223,7 +223,7 @@ def _make_args(**overrides) -> SimpleNamespace:
         packages=[], graphics=False, hardware=False, toolchain=False,
         cache=False, gfxperf=False,
         pacman=False, state=False, boot=False, restart=False, storage=False, services=False,
-        audio=False, network=False, all=False, repo=False,
+        audio=False, network=False, integrity=False, all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
         apply=False, no_confirm=False, dry_run=False, state_dir=None,
     )
@@ -313,6 +313,35 @@ def test_gfxperf_excluded_from_default_sweep():
 def test_gfxperf_excluded_from_all():
     args = _make_args(all=True)
     assert "gfxperf" not in doctor._resolve_axis_names(args)
+
+
+def test_integrity_selectable_by_flag(monkeypatch):
+    monkeypatch.setattr(doctor, "_collect_integrity_findings", lambda args: [])
+    args = _make_args(integrity=True)
+    assert doctor._resolve_axis_names(args) == ["integrity"]
+
+
+def test_integrity_excluded_from_default_sweep():
+    assert "integrity" not in doctor._resolve_axis_names(_make_args())
+
+
+def test_integrity_excluded_from_all():
+    assert "integrity" not in doctor._resolve_axis_names(_make_args(all=True))
+
+
+def test_integrity_is_opt_in_axis():
+    assert "integrity" in doctor._OPT_IN_AXES
+    assert "integrity" in doctor._SYSTEM_AXIS_ORDER
+
+
+def test_integrity_producer_forwards_packages(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        doctor.pkgfiles_probe, "collect_integrity_findings",
+        lambda packages=None: seen.setdefault("pkgs", packages) or [],
+    )
+    doctor._collect_integrity_findings(_make_args(packages=["pacman"]))
+    assert seen["pkgs"] == ["pacman"]
 
 
 def test_resolve_axis_names_single_new_flag():

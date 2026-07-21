@@ -414,3 +414,22 @@ def test_journald_mirror_emits_only_for_sentinel_verbs(tmp_path, monkeypatch):
     assert runner.run_verb(_Ro(), args) == 0
 
     assert calls == [("mut", "widget", 0)]  # ro emitted nothing
+
+
+def test_qkk_mtree_contract_backup_and_missing_classification(monkeypatch):
+    """STD row 22: the `pacman -Qkk` / libalpm mtree contract is consumed with
+    pacman's own backup-vs-altered classification (backup edits are expected;
+    a missing package-owned file is an integrity error)."""
+    from types import SimpleNamespace
+
+    from sysforge.primitives import diagnostics as diag
+    from sysforge.primitives import pkgfiles_probe
+
+    monkeypatch.setattr(pkgfiles_probe, "_run", lambda packages: SimpleNamespace(
+        stdout="backup file: pacman: /etc/pacman.conf (SHA256 checksum mismatch)\n",
+        stderr="warning: coreutils: /usr/bin/ls (No such file or directory)\n",
+        returncode=1,
+    ))
+    findings = {f.check_id: f for f in pkgfiles_probe.collect_integrity_findings()}
+    assert findings["integrity_backup_edited"].severity == diag.SEV_INFO
+    assert findings["integrity_missing"].severity == diag.SEV_ERROR

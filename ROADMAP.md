@@ -102,21 +102,6 @@ straight off a `Q`.
   workstation).* **Standards home on adoption:** none new — `rust-toolchain.toml` is a rustup
   convention, not a ratified spec; add a row only if the probe grows a documented external contract.
 
-- **`2.4.0-F7` — Doctor probe: `pacman -Qkk` package-file verification (spun out of `1.2.0-F28`).**
-  The artifact inventory (`2.4.0-F4`–`F6`) deliberately excludes package-owned files at discovery
-  (`pacman.owners_of()`) — it only ever manages user-authored content. The complement — verifying
-  that files pacman *does* own still match what the package declared (existence, hash/size where
-  recorded, mode/ownership) — is a distinct, standalone concern: full integrity verification against
-  alpm's stored `mtree` via `pacman -Qkk` (quiet `-Qk` catches missing files only; `-Qkk` additionally
-  checks properties). Add a read-only `doctor` probe that runs `pacman -Qkk` (optionally scoped to a
-  package argument) and surfaces mismatches as findings — modified/missing package-owned files a user
-  or a misbehaving install script altered outside pacman's own transaction. Read-only, so no sentinel;
-  subprocess calls go through the existing seam. *Priority: low (diagnostic completeness — the
-  artifact inventory's population and this probe's population are now proven disjoint and jointly
-  exhaustive over "files sysforge might care about").* **Standards home on adoption:** a new row
-  covering `pacman -Qkk` / `libalpm` mtree verification as a consumed external contract — none of the
-  existing rows (11 is authoring artefacts, not verifying installed ones) fit; add when this lands.
-
 - **`2.3.0-F5` — Declarative provisioning via `tmpfiles.d`/`sysusers.d` instead of imperative healing.**
   `fs_provision.py`/`stage_ownership.py` create directories and fix ownership/permissions imperatively.
   The Arch-native mechanism for the same outcome is a shipped `tmpfiles.d` snippet run by
