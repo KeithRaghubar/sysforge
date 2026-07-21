@@ -825,3 +825,102 @@ def test_scan_against_real_pacman_excludes_package_owned(tmp_path):
     assert all(c.owner == artifacts.OWNER_YOU for c in artifacts.scan(
         [(str(root), artifacts.CLASS_HOOK)]
     ))
+
+
+# ---------------------------------------------------------------------------
+# IgnoreList tests (Task 1)
+# ---------------------------------------------------------------------------
+
+
+def _ignore(tmp_path):
+    return artifacts.IgnoreList(state_dir=tmp_path / "state")
+
+
+def test_ignorelist_roundtrip(tmp_path):
+    ig = _ignore(tmp_path)
+    live = tmp_path / "u.sh"
+    live.write_text("x")
+    ig.save({live: "d" * 64})
+    assert ig.load() == {live: "d" * 64}
+
+
+def test_ignorelist_load_prunes_missing_file(tmp_path):
+    ig = _ignore(tmp_path)
+    present = tmp_path / "here.sh"
+    present.write_text("x")
+    gone = tmp_path / "gone.sh"
+    ig.save({present: "a" * 64, gone: "b" * 64})
+    # gone.sh never created — a deleted-then-recreated file must be re-offerable.
+    assert ig.load() == {present: "a" * 64}
+
+
+def test_ignorelist_corrupt_raises(tmp_path):
+    ig = _ignore(tmp_path)
+    ig.path.parent.mkdir(parents=True, exist_ok=True)
+    ig.path.write_text("this is not [ valid toml")
+    with pytest.raises(artifacts.ArtifactRegistryError, match="ignore-list"):
+        ig.load()
+
+
+# ---------------------------------------------------------------------------
+# iter_offerable tests (Task 2)
+# ---------------------------------------------------------------------------
+
+
+def _cand(path, cls=artifacts.CLASS_SCRIPT, owner=artifacts.OWNER_YOU):
+    return artifacts.Candidate(path=path, cls=cls, owner=owner)
+
+
+def test_iter_offerable_excludes_managed_and_sysforge(tmp_path, monkeypatch):
+    reg = _reg(tmp_path)
+    managed = tmp_path / "managed.sh"
+    managed.write_text("m")
+    artifacts.adopt(reg, managed, cls=artifacts.CLASS_SCRIPT)
+
+    free = tmp_path / "free.sh"
+    free.write_text("f")
+    owned = tmp_path / "sf.hook"
+    owned.write_text("s")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        _cand(managed),
+        _cand(free),
+        _cand(owned, cls=artifacts.CLASS_HOOK, owner=artifacts.OWNER_SYSFORGE),
+    ])
+
+    got = [c.path for c in artifacts.iter_offerable(reg)]
+    assert got == [free]
+
+
+def test_iter_offerable_drops_ignored_matching_hash(tmp_path, monkeypatch):
+    reg = _reg(tmp_path)
+    ig = _ignore(tmp_path)
+    declined = tmp_path / "no.sh"
+    declined.write_text("body")
+    ig.save({declined: artifacts.hash_file(declined)})
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [_cand(declined)])
+
+    assert artifacts.iter_offerable(reg, ig) == []
+
+
+def test_iter_offerable_reoffers_when_content_changed(tmp_path, monkeypatch):
+    reg = _reg(tmp_path)
+    ig = _ignore(tmp_path)
+    declined = tmp_path / "no.sh"
+    declined.write_text("body")
+    ig.save({declined: artifacts.hash_file(declined)})
+    declined.write_text("body v2")  # content moved on
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [_cand(declined)])
+
+    assert [c.path for c in artifacts.iter_offerable(reg, ig)] == [declined]
+
+
+def test_iter_offerable_without_ignore_shows_declined(tmp_path, monkeypatch):
+    # Parity with `list --unmanaged`: ignore=None means the ignore step is skipped.
+    reg = _reg(tmp_path)
+    ig = _ignore(tmp_path)
+    declined = tmp_path / "no.sh"
+    declined.write_text("body")
+    ig.save({declined: artifacts.hash_file(declined)})
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [_cand(declined)])
+
+    assert [c.path for c in artifacts.iter_offerable(reg)] == [declined]

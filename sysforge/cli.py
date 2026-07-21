@@ -73,6 +73,7 @@ from sysforge.verbs.artifact import (
     ArtifactEditVerb,
     ArtifactListVerb,
     ArtifactRemoveVerb,
+    ArtifactReviewVerb,
 )
 
 _PACKAGES_HELP = (
@@ -619,7 +620,7 @@ def _add_doctor_parser(sub):
 
 
 def _add_artifact_parser(sub):
-    """artifact namespace: list, adopt, edit."""
+    """artifact namespace: list, review, adopt, edit, deploy, remove."""
     p = sub.add_parser("artifact",
         help="inventory user-authored scripts, units, and pacman hooks")
     asub = p.add_subparsers(dest="artifact_cmd", required=True)
@@ -631,6 +632,10 @@ def _add_artifact_parser(sub):
         help="also show discovered candidates not yet adopted",
     )
     a_list.set_defaults(verb_cls=ArtifactListVerb)
+
+    a_review = asub.add_parser(
+        "review", help="interactively offer discovered candidates for adoption")
+    a_review.set_defaults(verb_cls=ArtifactReviewVerb)
 
     a_adopt = asub.add_parser("adopt", help="bring a live artifact under management")
     a_adopt.add_argument("path", help="path to the artifact to adopt")

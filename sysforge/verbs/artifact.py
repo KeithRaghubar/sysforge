@@ -12,7 +12,7 @@ carry no sentinel; the mutating ones (deploy/remove) set
 from __future__ import annotations
 
 from sysforge import log
-from sysforge.primitives import artifacts, editor
+from sysforge.primitives import artifacts, editor, prompt
 from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
 
 _log = log.get_logger("ARTIFACT")
@@ -59,12 +59,9 @@ class ArtifactListVerb(Verb):
             )
 
         if getattr(args, "unmanaged", False):
-            managed_dests = {r["dest"] for r in rows}
-            cands = [
-                c for c in artifacts.scan()
-                if c.path not in managed_dests
-                and c.owner != artifacts.OWNER_SYSFORGE
-            ]
+            # Shared own/managed filter with `artifact review` — ignore=None so
+            # declined candidates still appear here (visibility, not curation).
+            cands = artifacts.iter_offerable(registry)
             _log.ui("")
             if not cands:
                 _log.ui("No unmanaged candidates found.")
@@ -75,6 +72,81 @@ class ArtifactListVerb(Verb):
                         c.owner == artifacts.OWNER_UNKNOWN
                     ) else ""
                     _log.ui(f"  {c.cls:<13} {c.path}{suffix}")
+        return ExecResult(exit_code=0)
+
+
+class ArtifactReviewVerb(Verb):
+    """Interactively offer discovered user-owned artifacts for adoption.
+
+    Read-only w.r.t. the live system: adoption is copy-only (no sentinel).
+    Off-TTY it lists candidates and the adopt hint instead of prompting.
+    """
+
+    name = "artifact-review"
+    requires_sentinel = False
+
+    def pre_check(self, args) -> PreCheckResult:
+        del args
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        del pre
+        state_dir = getattr(args, "state_dir", None)
+        registry = artifacts.ArtifactRegistry(state_dir=state_dir)
+        ignore = artifacts.IgnoreList(state_dir=state_dir)
+        try:
+            cands = artifacts.iter_offerable(registry, ignore)
+        except artifacts.ArtifactError as exc:
+            # Corrupt registry or ignore-list: surface repair guidance.
+            _log.error(str(exc))
+            return ExecResult(exit_code=1)
+
+        if not cands:
+            _log.ui("No candidates to review.")
+            return ExecResult(exit_code=0)
+
+        if not prompt.is_interactive():
+            _log.ui(f"Reviewable candidates ({len(cands)}):")
+            for c in cands:
+                suffix = "  [ownership unknown]" if (
+                    c.owner == artifacts.OWNER_UNKNOWN
+                ) else ""
+                _log.ui(f"  {c.cls:<13} {c.path}{suffix}")
+            _log.ui("")
+            _log.ui("Not a terminal; adopt one with "
+                    "`sysforge artifact adopt <path>`.")
+            return ExecResult(exit_code=0)
+
+        for c in cands:
+            suffix = "  [ownership unknown]" if (
+                c.owner == artifacts.OWNER_UNKNOWN
+            ) else ""
+            choice = prompt.prompt_choice(
+                f"{c.cls} {c.path}{suffix}  [a]dopt / [s]kip / [i]gnore / [q]uit? ",
+                ("a", "s", "i", "q"),
+                default="s",
+                eof_default="q",
+                tag="ARTIFACT",
+            )
+            if choice == "q":
+                break
+            if choice == "a":
+                try:
+                    art = artifacts.adopt(registry, c.path, cls=c.cls)
+                except artifacts.ArtifactError as exc:
+                    _log.error(str(exc))
+                    continue
+                _log.ui(f"Adopted {art.name} ({art.cls})")
+            elif choice == "i":
+                h = artifacts.hash_file(c.path)
+                if h is None:
+                    _log.warn(f"{c.path} is no longer readable; nothing to ignore")
+                    continue
+                entries = ignore.load()
+                entries[c.path] = h
+                ignore.save(entries)
+                _log.ui(f"Ignoring {c.path} until its content changes")
+            # skip: nothing — re-offered next run.
         return ExecResult(exit_code=0)
 
 

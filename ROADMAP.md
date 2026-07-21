@@ -149,22 +149,6 @@ straight off a `Q`.
   auto-priority causes ordering problems in practice. *Priority: low (candidate, not
   a commitment).*
 
-- **`1.2.0-F28` — User-owned artifact inventory: opt-in offering.** The inventory primitive
-  itself — tracked-file registry, `USER_DATA_DIR` source-of-truth dir, discovery, and drift
-  detection — is landing incrementally under its own `2.4.0-Fn` IDs (see release notes and git
-  history as each slice ships); this entry now tracks only its unconsumed remainder. **Sub-thread
-  to design: opt-in offering of user-owned systemd services and pacman hooks.** The user keeps
-  custom units and hooks on the live system; sysforge should be able to *offer* (not force) them
-  rather than relying solely on the user running `artifact` verbs unprompted — open question
-  whether the surface is the `setup` stage, a dedicated verb, or a sync mode of the inventory.
-  Discuss the UX before committing. **`pacman -Qkk` package-file verification spun out as
-  `2.4.0-F7`.** Full drift detection for package-owned files (file integrity/ownership/permission
-  verification against alpm's stored `mtree`) was scoped out of this primitive entirely: discovery
-  here excludes package-owned files at the outset (`pacman.owners_of()`), so `-Qkk` verification
-  operates on the complement of this feature's population and is tracked as its own standalone item,
-  not a sub-thread of the (genuinely package-less) user-artifact inventory. *Priority: low
-  (strategic — a UX question, not a primitive gap).*
-
 ---
 
 ## Abandoned / decided against

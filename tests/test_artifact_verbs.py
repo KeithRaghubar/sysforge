@@ -194,3 +194,158 @@ def test_remove_verb_passes_force_through(tmp_path, monkeypatch):
     assert captured.get("force") is True
     assert result.exit_code == 0
     assert not src.exists()
+
+
+def _review_args(tmp_path):
+    return argparse.Namespace(state_dir=tmp_path / "state")
+
+
+def _mk_live(tmp_path, name, body="x"):
+    p = tmp_path / name
+    p.write_text(body)
+    return p
+
+
+def test_review_verb_is_read_only():
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    assert ArtifactReviewVerb.requires_sentinel is False
+
+
+def test_review_adopts_on_a(tmp_path, monkeypatch):
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    live = _mk_live(tmp_path, "hello.sh")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=live, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU)
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: True)
+    monkeypatch.setattr(prompt, "prompt_choice", lambda *a, **k: "a")
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path), None)
+
+    assert rc.exit_code == 0
+    reg = artifacts.ArtifactRegistry(state_dir=tmp_path / "state")
+    assert "hello.sh" in reg.load()
+
+
+def test_review_ignores_on_i(tmp_path, monkeypatch):
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    live = _mk_live(tmp_path, "skip.sh", "body")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=live, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU)
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: True)
+    monkeypatch.setattr(prompt, "prompt_choice", lambda *a, **k: "i")
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path), None)
+
+    assert rc.exit_code == 0
+    ig = artifacts.IgnoreList(state_dir=tmp_path / "state")
+    assert ig.load() == {live: artifacts.hash_file(live)}
+    # Not adopted.
+    assert "skip.sh" not in artifacts.ArtifactRegistry(
+        state_dir=tmp_path / "state").load()
+
+
+def test_review_ignore_skips_gone_file(tmp_path, monkeypatch):
+    # TOCTOU: file vanishes between scan and the user's [i]gnore answer —
+    # hash_file returns None; must not persist a junk "None" hash row.
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    live = _mk_live(tmp_path, "gone.sh")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=live, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU)
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: True)
+    monkeypatch.setattr(prompt, "prompt_choice", lambda *a, **k: "i")
+    monkeypatch.setattr(artifacts, "hash_file", lambda path: None)
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path), None)
+
+    assert rc.exit_code == 0
+    ig = artifacts.IgnoreList(state_dir=tmp_path / "state")
+    assert ig.load() == {}
+    assert "gone.sh" not in artifacts.ArtifactRegistry(
+        state_dir=tmp_path / "state").load()
+
+
+def test_review_non_tty_flags_ownership_unknown(tmp_path, monkeypatch, capsys):
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    live = _mk_live(tmp_path, "mystery.sh")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=live, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_UNKNOWN)
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: False)
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path), None)
+
+    assert rc.exit_code == 0
+    out = "".join(capsys.readouterr())
+    assert "mystery.sh" in out
+    assert "[ownership unknown]" in out
+
+
+def test_review_quits_on_q_before_second_candidate(tmp_path, monkeypatch):
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    first = _mk_live(tmp_path, "a.sh")
+    second = _mk_live(tmp_path, "b.sh")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=first, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU),
+        artifacts.Candidate(path=second, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU),
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: True)
+    monkeypatch.setattr(prompt, "prompt_choice", lambda *a, **k: "q")
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path), None)
+
+    assert rc.exit_code == 0
+    # Quit on the first prompt — neither adopted.
+    assert artifacts.ArtifactRegistry(state_dir=tmp_path / "state").load() == {}
+
+
+def test_review_non_tty_lists_and_exits_zero(tmp_path, monkeypatch, capsys):
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    live = _mk_live(tmp_path, "hello.sh")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=live, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU)
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: False)
+
+    def _boom(*a, **k):
+        raise AssertionError("must not prompt without a TTY")
+    monkeypatch.setattr(prompt, "prompt_choice", _boom)
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path), None)
+
+    assert rc.exit_code == 0
+    out = "".join(capsys.readouterr())
+    assert "hello.sh" in out
+    assert "artifact adopt" in out
+    # Nothing adopted.
+    assert artifacts.ArtifactRegistry(state_dir=tmp_path / "state").load() == {}
+
+
+def test_cli_wires_artifact_review():
+    from sysforge.cli import _build_parser
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    ns = _build_parser().parse_args(["artifact", "review"])
+    assert ns.verb_cls is ArtifactReviewVerb

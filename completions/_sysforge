@@ -231,6 +231,7 @@ _sysforge_artifact() {
     args)
       case $words[1] in
         list) _sysforge_artifact_list ;;
+        review) _sysforge_artifact_review ;;
         adopt) _sysforge_artifact_adopt ;;
         edit) _sysforge_artifact_edit ;;
         deploy) _sysforge_artifact_deploy ;;
@@ -243,6 +244,7 @@ _sysforge_artifact() {
 _sysforge_artifact_subcommands() {
   local subcommands=(
     'list:list managed artifacts'
+    'review:interactively offer discovered candidates for adoption'
     'adopt:bring a live artifact under management'
     'edit:edit the managed copy of an artifact'
     'deploy:push managed content to the live system'
@@ -254,6 +256,10 @@ _sysforge_artifact_subcommands() {
 _sysforge_artifact_list() {
   _arguments \
     '--unmanaged[also show discovered candidates not yet adopted]'
+}
+
+_sysforge_artifact_review() {
+  _arguments
 }
 
 _sysforge_artifact_adopt() {

@@ -42,6 +42,7 @@ Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`
 | `uninstall` | resolve state dir + `plan_uninstall` over `BuildState` (pure) | `pacman -Rnsu`, then demote any tracked target via `state forget` + reconcile | (state written inline) | yes |
 | `run …` namespace | build `RunOptions` | delegate to `pipeline.run_pipeline` / `run_stage_standalone` | pipeline framework | (pipeline owns it) |
 | `artifact list` | null | `primitives/artifacts.unified_rows()` + PATH check + optional `scan()` for `--unmanaged` | null | no |
+| `artifact review` | null | interactively offer discovered candidates for adoption via `primitives/artifacts.iter_offerable()`; off-TTY lists candidates + adopt hint | null | no |
 | `artifact adopt <path>` | null | `primitives/artifacts.adopt()` — copy live → managed, seed registry entry | null | no |
 | `artifact edit <name>` | null | launch editor on managed copy, then `primitives/artifacts.rehash()` | null | no |
 | `artifact deploy <name>\|--all` | null | `primitives/artifacts.deploy()` — per-class live write + post-deploy action; refuses on `drifted`/`conflict` without `--force`/`--adopt-live` | null | yes |
@@ -75,6 +76,23 @@ renders `unified_rows()` (managed registry entries joined with sysforge's own ho
 `script_root_on_path()` confirms `False` (never on `None` — an escalated `sudo` invocation
 abstains rather than false-warn), and with `--unmanaged` additionally lists `scan()` discovery
 candidates not already in the registry and not sysforge-owned.
+
+### `artifact review`
+
+Read-only lifecycle verb (`requires_sentinel = False`) — adoption it triggers is copy-only, never a
+live-system write, so it needs no sentinel. Interactively offers discovered candidates for adoption:
+`primitives/artifacts.iter_offerable(registry, ignore)` composes discovery
+(`scan()`) with the existing managed/sysforge-owned exclusions and a third — declined candidates
+recorded in a persistent ignore-list (`<state_dir>/artifacts-ignored.toml`, `path → content-hash`).
+The ignore-list is a sibling of the registry, deliberately kept in its own file: the registry is
+documented as regenerable (rebuildable from managed content), so folding declines into it would let
+a registry rebuild silently forget every "no". It is keyed by both path and the content-hash seen at
+decline time, and self-prunes entries whose file no longer exists on `load()`, so a candidate
+re-surfaces once its content changes or the ignore entry goes stale. For each remaining candidate the
+verb prompts `[a]dopt / [s]kip / [i]gnore / [q]uit` — `a` calls `artifacts.adopt()` as `artifact
+adopt` does, `i` records the path+hash into the ignore-list, `s` leaves it to be re-offered next run,
+`q` stops the walk early. Off a TTY it never prompts: it lists the reviewable candidates and prints a
+`sysforge artifact adopt <path>` hint, exiting 0.
 
 ### `artifact adopt` / `artifact edit`
 

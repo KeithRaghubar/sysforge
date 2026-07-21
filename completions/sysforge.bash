@@ -221,7 +221,7 @@ _sysforge_doctor() {
 _sysforge_artifact() {
     _sysforge_flag_arg && return
     if [[ -z $subverb ]]; then
-        COMPREPLY=( $(compgen -W "list adopt edit deploy remove" -- "$cur") )
+        COMPREPLY=( $(compgen -W "list review adopt edit deploy remove" -- "$cur") )
         return
     fi
     case "$subverb" in

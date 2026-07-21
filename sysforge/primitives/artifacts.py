@@ -48,6 +48,7 @@ CLASS_HOOK = "pacman-hook"
 ARTIFACT_CLASSES = (CLASS_SCRIPT, CLASS_UNIT, CLASS_HOOK)
 
 _REGISTRY_NAME = "artifacts.toml"
+_IGNORE_NAME = "artifacts-ignored.toml"
 _DEFAULT_STATE_DIR = Path("/var/lib/sysforge")
 
 
@@ -216,6 +217,85 @@ class ArtifactRegistry:
                 lines.append(f'deployed_hash = "{_toml_escape(art.deployed_hash)}"')
             if art.deployed_at:
                 lines.append(f'deployed_at = "{_toml_escape(art.deployed_at)}"')
+            lines.append("")
+        tmp = self.path.with_suffix(".toml.tmp")
+        tmp.write_text("\n".join(lines))
+        tmp.replace(self.path)
+
+
+class IgnoreList:
+    """Persistent record of *declined* discovery candidates: path -> content-hash.
+
+    A sibling of :class:`ArtifactRegistry`, deliberately in its own file. The
+    registry is documented as regenerable (rebuildable from managed content);
+    this decline-intent is not — coupling them would let a registry rebuild
+    silently forget every "no". Keyed by path + the content-hash seen at decline
+    time so a candidate re-surfaces once its content changes.
+    """
+
+    def __init__(self, state_dir=None):
+        if state_dir is not None:
+            base = Path(state_dir)
+        else:
+            env = os.environ.get("SYSFORGE_STATE_DIR")
+            base = Path(env) if env else _DEFAULT_STATE_DIR
+        self._state_dir = base
+
+    @property
+    def path(self) -> Path:
+        """The ignore-list TOML file."""
+        return self._state_dir / _IGNORE_NAME
+
+    def load(self) -> dict[Path, str]:
+        """Parse the ignore-list, pruning entries whose file no longer exists.
+
+        Missing file → empty (expected first-run). Corrupt/unreadable → raise
+        :class:`ArtifactRegistryError` with repair guidance, mirroring the
+        registry: this is the sole record of declines and ``save()`` writes the
+        complete set, so folding a parse error into "empty" would let the next
+        save erase real declines.
+        """
+        if not self.path.exists():
+            return {}
+        try:
+            raw = tomllib.loads(self.path.read_text())
+        except tomllib.TOMLDecodeError as exc:
+            raise ArtifactRegistryError(
+                f"artifact ignore-list at {self.path} is corrupt and could not "
+                "be parsed as TOML; repair it by hand or remove it (this "
+                "re-offers every previously declined candidate) before continuing"
+            ) from exc
+        except OSError as exc:
+            raise ArtifactRegistryError(
+                f"artifact ignore-list at {self.path} exists but could not be "
+                f"read ({exc}); check permissions before continuing"
+            ) from exc
+        out: dict[Path, str] = {}
+        for row in raw.get("ignored", []):
+            if not isinstance(row, dict):
+                continue
+            p = row.get("path")
+            h = row.get("hash")
+            if not p or not h:
+                continue
+            path = Path(p)
+            if not path.exists():
+                continue  # deleted file: legitimately re-offerable next scan
+            out[path] = h
+        return out
+
+    def save(self, entries: dict[Path, str]) -> None:
+        """Write the ignore-list atomically (temp file + replace)."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lines: list[str] = [
+            "# sysforge artifact ignore-list — declined discovery candidates.",
+            "# Managed by `sysforge artifact review`; hand-edits are overwritten.",
+            "",
+        ]
+        for path in sorted(entries):
+            lines.append("[[ignored]]")
+            lines.append(f'path = "{_toml_escape(path)}"')
+            lines.append(f'hash = "{_toml_escape(entries[path])}"')
             lines.append("")
         tmp = self.path.with_suffix(".toml.tmp")
         tmp.write_text("\n".join(lines))
@@ -394,6 +474,30 @@ def scan(roots=None) -> list:
         if owners[path] is not None:
             continue  # package-owned: the OS already knows what it shipped
         out.append(Candidate(path=path, cls=cls, owner=OWNER_YOU))
+    return out
+
+
+def iter_offerable(registry, ignore=None, roots=None) -> list:
+    """Discovery candidates worth *offering* for adoption.
+
+    The single composition point over :func:`scan`. Always excludes
+    sysforge-owned candidates and any already present in *registry*. When
+    *ignore* is a non-``None`` :class:`IgnoreList`, additionally drops a
+    candidate whose current content-hash matches a recorded decline (a changed
+    file re-surfaces). ``ignore=None`` skips that step — the shape
+    ``artifact list --unmanaged`` uses, which still shows declined candidates.
+    """
+    managed_dests = {art.dest for art in registry.load().values()}
+    ignored = ignore.load() if ignore is not None else {}
+    out: list = []
+    for c in scan(roots):
+        if c.owner == OWNER_SYSFORGE:
+            continue
+        if c.path in managed_dests:
+            continue
+        if c.path in ignored and ignored[c.path] == hash_file(c.path):
+            continue
+        out.append(c)
     return out
 
 

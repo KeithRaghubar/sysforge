@@ -40,6 +40,11 @@ https://keepachangelog.com/en/1.1.0/
   `disable --now` before unit removal). `deploy` refuses on external drift unless
   given `--force` or `--adopt-live`; `remove` likewise refuses on external drift
   without `--force`. (`2.4.0-F6`)
+- Artifact offering: `sysforge artifact review` interactively offers discovered
+  user-owned scripts, units, and hooks for adoption (`[a]dopt`/`[s]kip`/`[i]gnore`
+  /`[q]uit`), remembering declines in a persistent ignore-list keyed by
+  content-hash so a candidate re-surfaces only when its content changes. Off-TTY
+  it lists candidates and the `artifact adopt` hint without prompting. (`1.2.0-F28`)
 
 ## Changed
 
