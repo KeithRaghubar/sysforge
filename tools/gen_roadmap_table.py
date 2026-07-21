@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
+"""gen_roadmap_table.py -- generate the Planned summary table in ROADMAP.md.
+
+ROADMAP.md's `## Planned` section opens with a GENERATED at-a-glance table
+(ID / item / priority / effort), derived from the `*Priority: <level> · Effort:
+<size>*` tag that closes every Planned entry. This mirrors the `make design` /
+`make check-design` generate-and-check pattern -- edit the entries (and their
+tags), run `make roadmap-table`, and `make check-roadmap-table` guards against
+the committed table drifting from the entries (wired into the release preflight).
+
+The tool is the *sole* parser of the Priority/Effort vocabulary, so it also
+validates the tags: a Planned entry missing a tag, or using a level/size outside
+the allowed vocabulary, is a hard error in both modes (there is no valid table to
+emit from a malformed entry).
+
+Usage:
+    python tools/gen_roadmap_table.py            # rewrite the table in place
+    python tools/gen_roadmap_table.py --check     # exit 1 if the table is stale
+    python tools/gen_roadmap_table.py --repo DIR  # operate on another tree (tests)
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+
+_BEGIN = "<!-- BEGIN roadmap-table"
+_END = "<!-- END roadmap-table -->"
+
+# Allowed vocabulary, ordered best-to-triage first (used as the sort rank).
+_PRIORITY_ORDER = ["high", "med", "low"]
+_EFFORT_ORDER = ["small", "medium", "large"]
+
+# An entry bullet: `- **`<ID>` — <title>.** ...`. The ID is a code-span; the
+# title is the remaining bold text up to the closing `**` of the lead span.
+_ENTRY_RE = re.compile(r"^- \*\*`(\d+\.\d+\.\d+-[A-Z]+\d+)`\s*—\s*(.*?)\*\*", re.DOTALL)
+# The machine-readable tag closing a Planned entry.
+_TAG_RE = re.compile(r"\*Priority:\s*(\w+)\s*·\s*Effort:\s*(\w+)\*")
+# ID grammar for sorting: <version>-<TYPE><n>.
+_ID_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)-([A-Z]+)(\d+)")
+
+
+@dataclass
+class Entry:
+    id: str
+    title: str
+    priority: str
+    effort: str
+
+
+class RoadmapError(Exception):
+    """A Planned entry is missing or has an invalid Priority/Effort tag."""
+
+
+def _planned_section(text: str) -> str:
+    """The text of `## Planned` up to the next `##`/`---` (the entries only)."""
+    lines = text.splitlines()
+    out: list[str] = []
+    in_planned = False
+    for line in lines:
+        if re.match(r"^##\s+Planned\b", line):
+            in_planned = True
+            continue
+        if in_planned and (re.match(r"^##\s+", line) or line.strip() == "---"):
+            break
+        if in_planned:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _split_entries(section: str) -> list[str]:
+    """Split a section into per-entry blobs (bullet line + indented continuation)."""
+    blobs: list[str] = []
+    cur: list[str] = []
+    for line in section.splitlines():
+        if line.startswith("- **"):
+            if cur:
+                blobs.append("\n".join(cur))
+            cur = [line]
+        elif cur:
+            cur.append(line)
+    if cur:
+        blobs.append("\n".join(cur))
+    return blobs
+
+
+def parse_entries(text: str) -> list[Entry]:
+    """Parse every Planned entry, validating its Priority/Effort tag.
+
+    Raises RoadmapError on a malformed or untagged entry, or one whose tag uses
+    a level/size outside the allowed vocabulary.
+    """
+    entries: list[Entry] = []
+    for blob in _split_entries(_planned_section(text)):
+        m = _ENTRY_RE.match(blob)
+        if not m:
+            continue  # not an ID-bulleted entry (defensive; shouldn't happen)
+        entry_id, raw_title = m.group(1), m.group(2)
+        # Title: drop the ID code-span already consumed; collapse whitespace and
+        # inline code backticks so the table cell renders on one clean line.
+        title = re.sub(r"\s+", " ", raw_title).strip().rstrip(".")
+        title = title.replace("`", "")
+        tag = _TAG_RE.search(blob)
+        if not tag:
+            raise RoadmapError(
+                f"{entry_id}: Planned entry has no `*Priority: … · Effort: …*` tag"
+            )
+        priority, effort = tag.group(1), tag.group(2)
+        if priority not in _PRIORITY_ORDER:
+            raise RoadmapError(
+                f"{entry_id}: priority {priority!r} not in {_PRIORITY_ORDER}"
+            )
+        if effort not in _EFFORT_ORDER:
+            raise RoadmapError(
+                f"{entry_id}: effort {effort!r} not in {_EFFORT_ORDER}"
+            )
+        entries.append(Entry(entry_id, title, priority, effort))
+    return entries
+
+
+def _sort_key(e: Entry) -> tuple:
+    m = _ID_RE.match(e.id)
+    ver = (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+    typ = m.group(4) if m else ""
+    num = int(m.group(5)) if m else 0
+    # Triage order: highest priority first, then cheapest effort, then ID.
+    return (_PRIORITY_ORDER.index(e.priority), _EFFORT_ORDER.index(e.effort),
+            typ, ver, num)
+
+
+def render_table(entries: list[Entry]) -> str:
+    rows = [
+        f"| `{e.id}` | {e.title} | {e.priority} | {e.effort} |"
+        for e in sorted(entries, key=_sort_key)
+    ]
+    body = "\n".join([
+        "| ID | Item | Priority | Effort |",
+        "|----|------|----------|--------|",
+        *rows,
+    ])
+    return f"{body}\n"
+
+
+def _splice_table(text: str, table: str) -> str:
+    """Replace the content between the BEGIN/END markers with `table`."""
+    begin = text.index(_BEGIN)
+    begin_eol = text.index("\n", begin) + 1
+    end = text.index(_END, begin_eol)
+    return text[:begin_eol] + table + text[end:]
+
+
+def build(text: str) -> str:
+    return _splice_table(text, render_table(parse_entries(text)))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Generate the Planned summary table in ROADMAP.md."
+    )
+    ap.add_argument("--check", action="store_true",
+                    help="exit 1 if the committed table is stale")
+    ap.add_argument("--repo", type=Path, default=REPO,
+                    help="repo root to operate on (default: this script's repo)")
+    args = ap.parse_args()
+
+    roadmap = args.repo.resolve() / "ROADMAP.md"
+    text = roadmap.read_text(encoding="utf-8")
+    try:
+        regenerated = build(text)
+    except RoadmapError as e:
+        print(f"ROADMAP.md: {e}", file=sys.stderr)
+        return 1
+
+    if args.check:
+        if regenerated != text:
+            print("ROADMAP.md summary table is stale — run `make roadmap-table`.",
+                  file=sys.stderr)
+            return 1
+        return 0
+
+    roadmap.write_text(regenerated, encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

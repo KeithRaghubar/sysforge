@@ -50,6 +50,11 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   (Keep a Changelog section, inline roadmap ID). Keep entries in ascending ID order — re-sort on
   every add/remove. `tools/release.sh` Phase 1 renames the accumulator to `vX.Y.Z.md` + reseeds;
   the `release-notes` skill only reconciles before a release. `make check-standards` lints it.
+- **Every Planned ROADMAP entry ends with a `*Priority: <low|med|high> · Effort: <small|medium|large>*`
+  tag** (§ROADMAP.md "Priority & effort tags"). The `## Planned` summary table is **generated** from
+  those tags — run `make roadmap-table` after any add/remove/retag; `make check-roadmap-table`
+  (preflight-wired, mirrors `check-design`) fails on drift or an untagged/invalid entry. Abandoned
+  entries carry no tag.
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same change.
 - **CLI verbs go through the Verb framework**: `Verb` subclass dispatched by `verbs.runner.run_verb`
   (`pre_check`/`execute`/`post_validate`; `requires_sentinel=True` if it mutates). Wire via

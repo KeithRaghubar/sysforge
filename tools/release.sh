@@ -322,6 +322,13 @@ preflight_fresh() {
         echo "ERROR: DESIGN.md is stale — run 'make design' and commit the result." >&2
         exit 1
     fi
+    # ROADMAP.md summary-table drift gate. The Planned table is generated from each
+    # entry's Priority/Effort tag; fail if the committed table is stale or an entry
+    # is untagged (mirrors the DESIGN.md drift gate above).
+    if ! make --no-print-directory check-roadmap-table >&2; then
+        echo "ERROR: ROADMAP.md table is stale/invalid — run 'make roadmap-table' and commit the result." >&2
+        exit 1
+    fi
     # Standards-compliance gate. Validates the mechanically-checkable committed
     # standards (XDG/FHS paths, SPDX/REUSE licensing, Keep a Changelog headings,
     # UTF-8 encoding) documented in docs/design/21-standards.md.

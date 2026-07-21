@@ -1,5 +1,6 @@
 .PHONY: all dev venv build install dev-install dev-uninstall clean distclean test test-x lint coverage coverage-ratchet coverage-ratchet-update man \
         check-shipped check-personal check-standards next-id design check-design pre-release audit \
+        roadmap-table check-roadmap-table \
         sync-config \
         release-major release-minor release-patch release-resume \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
@@ -116,6 +117,16 @@ design:
 check-design:
 	uv run --no-sync python tools/build_design.py --check
 
+# Regenerate the Planned summary table in ROADMAP.md from each entry's
+# `*Priority: … · Effort: …*` tag. Run after any add/remove/retag.
+roadmap-table:
+	uv run --no-sync python tools/gen_roadmap_table.py
+
+# ROADMAP.md summary-table drift gate (mirrors check-design). Also validates that
+# every Planned entry carries a well-formed Priority/Effort tag. Wired into preflight.
+check-roadmap-table:
+	uv run --no-sync python tools/gen_roadmap_table.py --check
+
 # Standards-compliance gate. Runs the mechanically-checkable groups in
 # tools/check_standards.py (paths/XDG-FHS, SPDX/REUSE, Keep a Changelog
 # headings, UTF-8 encoding). The behavioural subset (NO_COLOR, --version,
@@ -145,7 +156,7 @@ sync-config:
 # Composite gate: lint + tests + shipped-file consistency + impersonal docs +
 # DESIGN.md freshness + standards compliance. Run before kicking off
 # `make release-{major,minor,patch}`.
-pre-release: lint typecheck test check-shipped check-personal check-design check-standards
+pre-release: lint typecheck test check-shipped check-personal check-design check-roadmap-table check-standards
 
 release-major:
 	bash tools/release.sh --bump=major
