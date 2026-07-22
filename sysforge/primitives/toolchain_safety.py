@@ -114,6 +114,21 @@ def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess | None:
 # Installed-suite version skew (post-install / verify facet)
 # ---------------------------------------------------------------------------
 
+# Suite members that share a single pkgbase (hence one pkgrel counter) and so
+# must match on the *full* pkgver-pkgrel, not just pkgver: ``llvm`` and
+# ``llvm-libs`` are both built from the ``llvm`` PKGBUILD, and a pkgrel split
+# between them means one half of the libLLVM.so split package landed while the
+# other stayed behind — a genuine interrupted install.
+_SHARED_PKGBASE_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({"llvm", "llvm-libs"}),
+)
+
+
+def _pkgver_only(version: str) -> str:
+    """Drop the trailing ``-pkgrel`` from a ``[epoch:]pkgver-pkgrel`` string."""
+    return version.rsplit("-", 1)[0]
+
+
 def detect_suite_skew(
     installed_versions: Mapping[str, str | None],
 ) -> ToolchainFinding | None:
@@ -122,14 +137,34 @@ def detect_suite_skew(
     ``installed_versions`` maps suite member → ``pkgver-pkgrel`` (None = not
     installed), typically the result of one ``pacman -Q``. A disagreement is
     the canonical interrupted-install symptom (one pass of a ``pacman -U``
-    landed while the rest stayed behind). Compares the full version string so a
-    pkgrel-only bump still surfaces here — the install verifier wants exact
-    lockstep, unlike the looser preflight skew probe. Returns None when fewer
-    than two members are installed or all agree.
+    landed while the rest stayed behind).
+
+    The suite spans several independent pkgbases (``clang``, ``lld``, … each
+    carry their own pkgrel counter), so the lockstep invariant is on **pkgver**
+    — the upstream release the ``LLVM_<ver>`` ABI namespace is keyed to. A
+    pkgrel-only divergence across pkgbases (e.g. an ``llvm`` -2 rebuild beside
+    ``clang`` -1) is a legitimate packaging state and must NOT brick; comparing
+    the full version string there was a false positive that forced needless
+    Gate-3 rollbacks. Only :data:`_SHARED_PKGBASE_GROUPS` (``llvm``/``llvm-libs``,
+    one pkgbase) are held to full ``pkgver-pkgrel`` lockstep. Returns None when
+    fewer than two members are installed or everything agrees.
     """
     installed = {n: v for n, v in installed_versions.items() if v is not None}
-    if len(set(installed.values())) <= 1:
+    if len(installed) < 2:
         return None
+
+    # Suite-wide: pkgver (release) must agree across every installed member.
+    skewed = len({_pkgver_only(v) for v in installed.values()}) > 1
+    # Shared-pkgbase groups: additionally require full pkgver-pkgrel lockstep.
+    if not skewed:
+        for group in _SHARED_PKGBASE_GROUPS:
+            present = {installed[n] for n in group if n in installed}
+            if len(present) > 1:
+                skewed = True
+                break
+    if not skewed:
+        return None
+
     detail = ", ".join(f"{n}={v}" for n, v in sorted(installed.items()))
     return ToolchainFinding(
         SEV_ERROR, "suite_skew",

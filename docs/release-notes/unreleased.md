@@ -12,3 +12,11 @@ accumulator. Run the release-notes skill first to reconcile/lint the entries and
 finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
+
+## Fixed
+
+- Toolchain Gate-3 no longer false-rolls-back on a pkgrel-only LLVM suite skew:
+  an independent `llvm` rebuild (e.g. `-2`) beside `clang`/`lld`/… at `-1` is a
+  legitimate state, not an interrupted install. `detect_suite_skew` now enforces
+  pkgver lockstep across the suite plus full `pkgver-pkgrel` lockstep only within
+  the shared-pkgbase pair `llvm`/`llvm-libs`. (2.5.1-B1)

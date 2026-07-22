@@ -38,10 +38,37 @@ def test_detect_suite_skew_disagreement_is_brick():
     assert "versions disagree" in finding.message
 
 
-def test_detect_suite_skew_pkgrel_only_bump_still_brick():
-    """The install verifier wants exact lockstep — a pkgrel bump is a skew."""
+def test_detect_suite_skew_pkgrel_split_within_llvm_pair_is_brick():
+    """llvm/llvm-libs share a pkgbase — a pkgrel split between them is a real
+    interrupted install of the split package (libLLVM.so halves disagree)."""
     versions = {"llvm": "22.0.0-1", "llvm-libs": "22.0.0-2"}
-    assert ts.detect_suite_skew(versions) is not None
+    finding = ts.detect_suite_skew(versions)
+    assert finding is not None
+    assert finding.is_brick
+
+
+def test_detect_suite_skew_pkgrel_bump_across_pkgbases_no_finding():
+    """Independent pkgbases carry independent pkgrel counters — an llvm -2
+    rebuild alongside clang/lld -1 is a legitimate state, not a brick.
+
+    Regression: this pkgrel-only cross-pkgbase divergence used to false-trip
+    Gate-3 and force an unnecessary rollback to the prior toolchain.
+    """
+    versions = {
+        "llvm": "22.1.8-2", "llvm-libs": "22.1.8-2", "clang": "22.1.8-1",
+        "lld": "22.1.8-1", "compiler-rt": "22.1.8-1", "polly": "22.1.8-1",
+        "openmp": "22.1.8-1",
+    }
+    assert ts.detect_suite_skew(versions) is None
+
+
+def test_detect_suite_skew_pkgver_split_across_pkgbases_is_brick():
+    """A genuine interrupted install shows as a pkgver split — still a brick."""
+    versions = {"llvm": "22.1.8-1", "clang": "22.1.7-1"}
+    finding = ts.detect_suite_skew(versions)
+    assert finding is not None
+    assert finding.is_brick
+    assert finding.check_id == "suite_skew"
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +320,9 @@ def test_check_multilib_enabled_present_no_finding(tmp_path, monkeypatch):
 
 def test_check_multilib_disabled_is_brick(tmp_path, monkeypatch):
     conf = tmp_path / "pacman.conf"
-    conf.write_text("[options]\n[core]\n[extra]\n#[multilib]\n#Include = /etc/pacman.d/mirrorlist\n")
+    conf.write_text(
+        "[options]\n[core]\n[extra]\n#[multilib]\n#Include = /etc/pacman.d/mirrorlist\n"
+    )
     monkeypatch.setattr(ts, "_PACMAN_CONF", conf)
     finding = ts.check_multilib_enabled(lib32_in_scope=True)
     assert finding is not None and finding.is_brick
