@@ -12,3 +12,14 @@ accumulator. Run the release-notes skill first to reconcile/lint the entries and
 finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
+
+## Changed
+
+- `sysforge --help` now groups the top-level `COMMAND` list into usage tiers —
+  **Everyday** (`build`, `update`, `fetch`, `search`), **Inspect** (`doctor`,
+  `resolve`, `env`, `log`, `state`, `artifact`), and **Maintain** (`setup`,
+  `config`, `packages`, `run`, `revert-to-stock`, `uninstall`) — instead of one
+  flat, registration-ordered block, so routine drivers are easy to tell apart
+  from ad-hoc introspection. Presentation only, no behavioural change; the
+  man-page COMMANDS section and both shell completions follow the same order.
+  (2.5.0-F1)

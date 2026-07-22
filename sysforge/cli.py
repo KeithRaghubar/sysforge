@@ -1148,6 +1148,62 @@ def _add_run_parser(sub):
 # Entry point
 # ---------------------------------------------------------------------------
 
+# Top-level COMMAND help tiers (2.5.0-F1). Presentation-only grouping so a new
+# user can tell routine verbs from ad-hoc introspection instead of reading one
+# flat, registration-ordered block. This tuple is the single source of truth:
+# `_TieredHelpFormatter` renders `sysforge --help` from it, and
+# tools/gen_options.py orders the man-page COMMANDS sections by
+# `tiered_command_order()` — keep every user-facing verb in exactly one tier
+# (a `check_completions`-style parity test guards against drift). The internal
+# `completions` verb is deliberately absent (it carries no help text and never
+# appears in the listing).
+_COMMAND_TIERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Everyday", ("build", "update", "fetch", "search")),
+    ("Inspect", ("doctor", "resolve", "env", "log", "state", "artifact")),
+    ("Maintain",
+     ("setup", "config", "packages", "run", "revert-to-stock", "uninstall")),
+)
+
+
+def tiered_command_order() -> list[str]:
+    """Flat top-level COMMAND order matching the ``sysforge --help`` tiers
+    (2.5.0-F1). Consumed by tools/gen_options.py to keep the man-page COMMANDS
+    section in lockstep with the help grouping."""
+    return [name for _label, names in _COMMAND_TIERS for name in names]
+
+
+class _TieredHelpFormatter(argparse.HelpFormatter):
+    """Render the top-level COMMAND list grouped into usage tiers (2.5.0-F1)
+    rather than one flat block.
+
+    argparse collapses every subparser into a single ``_SubParsersAction``
+    pseudo-group, so there is no per-command category hook — we intercept that
+    one action here and re-emit its choices under ``_COMMAND_TIERS`` headers.
+    Every other action (options, the ``COMMAND`` metavar line, per-verb help)
+    formats exactly as the base class would; sub-verb help (``sysforge build
+    --help``) is untouched because those parsers use the default formatter."""
+
+    def _format_action(self, action):
+        if not isinstance(action, argparse._SubParsersAction):
+            return super()._format_action(action)
+
+        subactions = {sa.dest: sa for sa in action._get_subactions()}
+        # Bare ``COMMAND`` metavar line (matches argparse's no-help header).
+        parts = ["%*s%s\n" % (self._current_indent, "",
+                              self._format_action_invocation(action))]
+        self._indent()  # tier labels one level under COMMAND
+        for label, names in _COMMAND_TIERS:
+            parts.append("%*s%s:\n" % (self._current_indent, "", label))
+            self._indent()  # commands one level under the tier label
+            for name in names:
+                sa = subactions.get(name)
+                if sa is not None:
+                    parts.append(super()._format_action(sa))
+            self._dedent()
+        self._dedent()
+        return self._join_parts(parts)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Return the top-level ArgumentParser. Called by main(), tools/gen_options.py
     (man-page COMMANDS generation), and tools/check_shipped.py (completions parity)."""
@@ -1155,6 +1211,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sysforge",
         description="Arch Linux build and maintenance suite with compiler-optimized builds.",
+        formatter_class=_TieredHelpFormatter,
     )
     parser.add_argument(
         "-V", "--version",

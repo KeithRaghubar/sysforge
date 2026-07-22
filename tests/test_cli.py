@@ -16,9 +16,10 @@ Covers:
 """
 import os
 import sys
+from pathlib import Path
 
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, str(Path(__file__).parent / ".."))
 
 from sysforge.cli import (
     _extract_implicit_makepkg_flags,
@@ -681,3 +682,61 @@ def test_main_handles_keyboard_interrupt(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "aborted" in err
     assert "Traceback" not in err
+
+
+# ---------------------------------------------------------------------------
+# Tiered top-level COMMAND help (2.5.0-F1)
+# ---------------------------------------------------------------------------
+
+def _top_level_verbs():
+    """Every user-facing top-level command name (excludes the internal
+    `completions` plumbing verb)."""
+    import argparse
+
+    from sysforge.cli import _build_parser
+    parser = _build_parser()
+    sub = next(a for a in parser._actions
+               if isinstance(a, argparse._SubParsersAction))
+    return {n for n in sub.choices if n != "completions"}
+
+
+def test_tiered_command_order_covers_every_verb_exactly_once():
+    """The tier map is the source of truth for both `--help` and the man page;
+    it must partition the user-facing verbs — no verb missing, none duplicated,
+    nothing stale."""
+    from sysforge.cli import tiered_command_order
+
+    order = tiered_command_order()
+    assert len(order) == len(set(order)), "duplicate verb in tier map"
+    assert set(order) == _top_level_verbs()
+
+
+def test_help_groups_commands_under_usage_tiers():
+    """`sysforge --help` prints the COMMAND list under Everyday/Inspect/Maintain
+    headers, each verb under its assigned tier, instead of one flat block."""
+    from sysforge.cli import _build_parser
+
+    text = _build_parser().format_help()
+    for label in ("Everyday:", "Inspect:", "Maintain:"):
+        assert label in text, f"missing tier header {label!r}"
+
+    # Tier headers appear in declared order.
+    assert (text.index("Everyday:") < text.index("Inspect:")
+            < text.index("Maintain:"))
+
+    # A representative verb sits under its own tier and not an earlier one:
+    # `build` (Everyday) precedes the Inspect header; `doctor` (Inspect) sits
+    # between the Inspect and Maintain headers.
+    assert text.index("build") < text.index("Inspect:")
+    assert text.index("Inspect:") < text.index("doctor") < text.index("Maintain:")
+
+
+def test_help_hides_internal_completions_verb():
+    """The tiered formatter must not surface the internal `completions` verb —
+    it is registered without help text and stays out of the listing."""
+    from sysforge.cli import _build_parser
+
+    text = _build_parser().format_help()
+    # `completions` should not appear as a listed COMMAND entry.
+    assert "\n    completions" not in text
+    assert "completions:" not in text

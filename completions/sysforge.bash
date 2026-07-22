@@ -17,7 +17,9 @@ _sysforge() {
         cword=$COMP_CWORD
     fi
 
-    local commands="artifact build fetch update resolve doctor packages state revert-to-stock run search setup uninstall env log config"
+    # Ordered by usage tier to mirror `sysforge --help` (2.5.0-F1):
+    # Everyday, then Inspect, then Maintain.
+    local commands="build update fetch search doctor resolve env log state artifact setup config packages run revert-to-stock uninstall"
 
     # Locate the top-level verb (first non-flag arg after `sysforge`) and an
     # optional subverb (first non-flag arg after the verb).

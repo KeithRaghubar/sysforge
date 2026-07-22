@@ -69,7 +69,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small |
 | `2.2.0-B3` | check-shipped manpage guard couples to the local scdoc version | low | medium |
 | `1.2.0-F20` | Rule priority auto-calculation (from the DESIGN roadmap) | low | medium |
-| `2.5.0-F1` | Categorize top-level COMMAND help by usage tier instead of one flat list | low | medium |
 | `2.3.0-F5` | Declarative provisioning via tmpfiles.d/sysusers.d instead of imperative healing | low | large |
 <!-- END roadmap-table -->
 
@@ -115,18 +114,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   *Priority: low · Effort: small* — observability completeness; additive, no correctness impact. **Standards home on
   adoption:** extend row 20 (`systemd.journal-fields(7)`) scope note — same mechanism, more verbs
   supplying a target; per-verb tests alongside the existing `test_journal.py` hook tests.
-
-- **`2.5.0-F1` — Categorize top-level `COMMAND` help by usage tier instead of one flat list.**
-  `sysforge --help` prints all 16 subcommands in a single "positional arguments" block, in parser
-  *registration* order (`_build_parser`). That mixes daily drivers (`build`, `update`, `doctor`) with
-  ad-hoc introspection (`env`, `log`, `resolve`, `state`, `config`, `completions`), so a new user can't
-  tell which verbs are for routine use. Group them under labelled tiers (e.g. *Everyday*, *Inspect*,
-  *Maintain*) in the help output. **Feasibility:** argparse collapses every subparser into one
-  positional pseudo-group, so tiering needs a custom `HelpFormatter` (or emitted section headers), not
-  a config flag — the one non-trivial part. Keep the man-page COMMANDS generator (`tools/gen_options.py`)
-  and both completions in lockstep with whatever grouping the help emits. *Priority: low · Effort:
-  medium* — discoverability, no behavioural change. **Standards home on adoption:** none new — presentation-only; add a row only
-  if the tiering encodes an external convention (it does not).
 
 - **`2.5.0-F2` — `help` verb (aliases `--help`) + advertise `-h/--help` in completions.** Two related
   gaps in help discoverability: (1) there is no `sysforge help [COMMAND]` verb — users must know the

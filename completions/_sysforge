@@ -43,23 +43,25 @@ _sysforge() {
 }
 
 _sysforge_commands() {
+  # Ordered by usage tier to mirror `sysforge --help` (2.5.0-F1):
+  # Everyday, then Inspect, then Maintain.
   local commands=(
-    'artifact:inventory user-authored scripts, units, and pacman hooks'
     'build:build a package from a PKGBUILD'
-    'fetch:download PKGBUILD(s) into pkgbuild_src_dir without building'
     'update:check for and rebuild outdated sysforge-managed packages'
-    'resolve:show which profile would apply to a package'
-    'doctor:health-check installed package depends + linkage'
-    'packages:manage packages.toml override entries (list, add, remove)'
-    'state:inspect or repair build_state.toml (list, repair, orphans)'
-    'revert-to-stock:undo a source-built/optimized package back to the repo version'
-    'run:execute a pipeline stage'
+    'fetch:download PKGBUILD(s) into pkgbuild_src_dir without building'
     'search:search installed, repo, and AUR packages for a term'
-    'setup:configure system integration (pacman IgnoreGroup for sf-build; install/refresh pacman hooks)'
-    'uninstall:remove package(s); demote any sysforge-tracked ones out of build state'
+    'doctor:health-check installed package depends + linkage'
+    'resolve:show which profile would apply to a package'
     'env:print the inherited env chain (shell vars, parent processes, shell init files)'
     'log:page the unified or per-package sysforge log through $PAGER'
+    'state:inspect or repair build_state.toml (list, repair, orphans)'
+    'artifact:inventory user-authored scripts, units, and pacman hooks'
+    'setup:configure system integration (pacman IgnoreGroup for sf-build; install/refresh pacman hooks)'
     'config:adopt .sfnew/.pacnew config companions left by make sync-config (merge)'
+    'packages:manage packages.toml override entries (list, add, remove)'
+    'run:execute a pipeline stage'
+    'revert-to-stock:undo a source-built/optimized package back to the repo version'
+    'uninstall:remove package(s); demote any sysforge-tracked ones out of build state'
   )
   _describe 'command' commands
 }

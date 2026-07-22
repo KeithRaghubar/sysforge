@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sysforge.cli import _build_parser  # noqa: E402
+from sysforge.cli import _build_parser, tiered_command_order  # noqa: E402
 
 MARKER = "@OPTIONS@"
 
@@ -123,13 +123,23 @@ def _pos_token(action) -> str:
     return mv
 
 
-def _iter_commands(parser, prefix=""):
-    """Yield (qualified name, subparser, help) depth-first in CLI order."""
+def _iter_commands(parser, prefix="", order=None):
+    """Yield (qualified name, subparser, help) depth-first.
+
+    Top-level commands follow ``order`` (the ``sysforge --help`` usage tiers,
+    2.5.0-F1) so the man-page COMMANDS section stays in lockstep with the help
+    grouping; any command absent from ``order`` sorts to the end (defensive —
+    should never happen while the parity test holds). Sub-commands keep their
+    registration order (``order`` is only threaded at the top level)."""
     for act in parser._actions:
         if not isinstance(act, argparse._SubParsersAction):
             continue
         helps = {ca.dest: ca.help for ca in act._choices_actions}
-        for name, sub in act.choices.items():
+        names = list(act.choices)
+        if order is not None:
+            names.sort(key=lambda n: order.index(n) if n in order else len(order))
+        for name in names:
+            sub = act.choices[name]
             # Parsers registered without help= are internal plumbing
             # (`completions`); they stay out of the man page.
             if helps.get(name) is None:
@@ -189,7 +199,7 @@ def main() -> int:
 
     parser = _build_parser()
     body_lines: list[str] = []
-    for name, sub, help_txt in _iter_commands(parser):
+    for name, sub, help_txt in _iter_commands(parser, order=tiered_command_order()):
         body_lines += _command_section(name, sub, help_txt)
     body = "\n".join(body_lines).rstrip() + "\n"
 

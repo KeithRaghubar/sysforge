@@ -121,103 +121,6 @@ refuses, the build runs at the current priority (best\-effort, never fatal).\&
 .RE
 .SH COMMANDS
 .PP
-.SS artifact
-.PP
-\fBsysforge artifact\fR \fISUBCOMMAND\fR
-.PP
-Inventory user\-authored scripts, units, and pacman hooks.\&
-.PP
-.SS artifact list
-.PP
-\fBsysforge artifact list\fR [\fIOPTIONS\fR]
-.PP
-List managed artifacts.\&
-.PP
-\fB\-\-unmanaged\fR
-.RS 4
-also show discovered candidates not yet adopted
-.PP
-.RE
-.SS artifact review
-.PP
-\fBsysforge artifact review\fR
-.PP
-Interactively offer discovered candidates for adoption.\&
-.PP
-.SS artifact adopt
-.PP
-\fBsysforge artifact adopt\fR [\fIOPTIONS\fR] \fIPATH\fR
-.PP
-Bring a live artifact under management.\&
-.PP
-\fBPATH\fR
-.RS 4
-path to the artifact to adopt
-.PP
-.RE
-\fB\-\-class\fR \fICLS\fR
-.RS 4
-artifact class (inferred from the scan root if omitted)
-.PP
-.RE
-.SS artifact edit
-.PP
-\fBsysforge artifact edit\fR \fINAME\fR
-.PP
-Edit the managed copy of an artifact.\&
-.PP
-\fBNAME\fR
-.RS 4
-registry name of the artifact
-.PP
-.RE
-.SS artifact deploy
-.PP
-\fBsysforge artifact deploy\fR [\fIOPTIONS\fR] \fI[NAME]\fR
-.PP
-Push managed content to the live system.\&
-.PP
-\fBNAME\fR
-.RS 4
-registry name of the artifact
-.PP
-.RE
-\fB\-\-all\fR
-.RS 4
-deploy every managed artifact
-.PP
-.RE
-\fB\-\-force\fR
-.RS 4
-managed copy wins, discarding the live edit
-.PP
-.RE
-\fB\-\-adopt\-live\fR
-.RS 4
-live file wins, updating the managed copy
-.PP
-.RE
-.SS artifact remove
-.PP
-\fBsysforge artifact remove\fR [\fIOPTIONS\fR] \fINAME\fR
-.PP
-Remove an artifact from the live system.\&
-.PP
-\fBNAME\fR
-.RS 4
-registry name of the artifact
-.PP
-.RE
-\fB\-\-purge\fR
-.RS 4
-also delete the managed copy and registry entry
-.PP
-.RE
-\fB\-\-force\fR
-.RS 4
-remove even though the live file changed outside sysforge (discards those live\-only edits)
-.PP
-.RE
 .SS build
 .PP
 \fBsysforge build\fR [\fIOPTIONS\fR] \fIPKGBUILD.\&.\&.\&\fR
@@ -327,46 +230,6 @@ Override state directory for build_state.\&toml.\&
 \fBConfiguration:\fR profiles.\&toml, packages.\&toml ([build]), sysforge.\&toml ([git])
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $PAGER (review diffs)
-.PP
-.SS fetch
-.PP
-\fBsysforge fetch\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
-.PP
-Download PKGBUILD(s) into pkgbuild_src_dir without building.\&
-.PP
-\fBPKG\fR
-.RS 4
-One or more package names to download.\&
-.PP
-.RE
-\fB\-\-no\-update\fR
-.RS 4
-Skip git pull \-\-rebase for packages that are already cloned.\&
-.PP
-.RE
-\fB\-\-cleansrc\fR
-.RS 4
-Purge each package'\&s src dir and re\-clone.\& Refuses (per package) if the existing clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream tracking branch.\&
-.PP
-.RE
-\fB\-\-cleansrc\-force\fR
-.RS 4
-Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local tree unconditionally.\&
-.PP
-.RE
-\fB\-\-no\-llvm\-preflight\fR
-.RS 4
-Suppress the LLVM source pre\-flight summary.\&
-.PP
-.RE
-\fB\-\-profile\-conf\fR \fIFILE\fR
-.RS 4
-Path to a profiles.\&toml to use instead of the default.\&
-.PP
-.RE
-\fBConfiguration:\fR profiles.\&toml ([paths]), sysforge.\&toml ([git])
-.PP
-\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
 .PP
 .SS update
 .PP
@@ -508,25 +371,35 @@ Umbrella for both \-\-rebuild\-on\-toolchain\-drift and \-\-rebuild\-on\-flag\-d
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $PAGER (review diffs)
 .PP
-.SS resolve
+.SS fetch
 .PP
-\fBsysforge resolve\fR [\fIOPTIONS\fR] \fIPKG\fR
+\fBsysforge fetch\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
 .PP
-Show which profile would be applied to a package and why.\&
+Download PKGBUILD(s) into pkgbuild_src_dir without building.\&
 .PP
 \fBPKG\fR
 .RS 4
-Path to a PKGBUILD file, or bare package name.\&
+One or more package names to download.\&
 .PP
 .RE
-\fB\-\-show\-flags\fR
+\fB\-\-no\-update\fR
 .RS 4
-Print the full resolved flag set.\&
+Skip git pull \-\-rebase for packages that are already cloned.\&
 .PP
 .RE
-\fB\-\-deps\fR
+\fB\-\-cleansrc\fR
 .RS 4
-Show transitive dependency tree with build order instead of profile info.\&
+Purge each package'\&s src dir and re\-clone.\& Refuses (per package) if the existing clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream tracking branch.\&
+.PP
+.RE
+\fB\-\-cleansrc\-force\fR
+.RS 4
+Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local tree unconditionally.\&
+.PP
+.RE
+\fB\-\-no\-llvm\-preflight\fR
+.RS 4
+Suppress the LLVM source pre\-flight summary.\&
 .PP
 .RE
 \fB\-\-profile\-conf\fR \fIFILE\fR
@@ -534,10 +407,21 @@ Show transitive dependency tree with build order instead of profile info.\&
 Path to a profiles.\&toml to use instead of the default.\&
 .PP
 .RE
-\fBConfiguration:\fR profiles.\&toml
+\fBConfiguration:\fR profiles.\&toml ([paths]), sysforge.\&toml ([git])
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
 .PP
+.SS search
+.PP
+\fBsysforge search\fR \fITERM\fR
+.PP
+Search installed, repo, and AUR packages for a term.\&
+.PP
+\fBTERM\fR
+.RS 4
+search term (name + description)
+.PP
+.RE
 .SS doctor
 .PP
 \fBsysforge doctor\fR [\fIOPTIONS\fR] \fI[PKG.\&.\&.\&]\fR
@@ -663,110 +547,71 @@ Report what \-\-apply would rebuild without invoking the build.\&
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
 .PP
-.SS packages
+.SS resolve
 .PP
-\fBsysforge packages\fR [\fIOPTIONS\fR] \fISUBCOMMAND\fR
+\fBsysforge resolve\fR [\fIOPTIONS\fR] \fIPKG\fR
 .PP
-Manage packages.\&toml override entries (list, add, add\-group, remove).\&
+Show which profile would be applied to a package and why.\&
 .PP
-\fB\-\-packages\fR \fIFILE\fR
+\fBPKG\fR
 .RS 4
-Path to packages.\&toml (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
+Path to a PKGBUILD file, or bare package name.\&
 .PP
 .RE
-\fB\-\-orphans\fR
+\fB\-\-show\-flags\fR
 .RS 4
-With list: show only entries whose package is not currently installed.\&
+Print the full resolved flag set.\&
 .PP
 .RE
-\fBConfiguration:\fR packages.\&toml (read/write)
+\fB\-\-deps\fR
+.RS 4
+Show transitive dependency tree with build order instead of profile info.\&
+.PP
+.RE
+\fB\-\-profile\-conf\fR \fIFILE\fR
+.RS 4
+Path to a profiles.\&toml to use instead of the default.\&
+.PP
+.RE
+\fBConfiguration:\fR profiles.\&toml
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
 .PP
-.SS packages list
+.SS env
 .PP
-\fBsysforge packages list\fR [\fIOPTIONS\fR]
+\fBsysforge env\fR
 .PP
-Show override entries in packages.\&toml.\&
+Print the inherited env chain, all contributing sources (shell init files, systemd\-user, PAM env, sysforge [defaults] profile), and a mismatches block when sources disagree.\& \-vv adds inline per\-var divergence annotations.\&
 .PP
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml.\&
+\fBConfiguration:\fR profiles.\&toml
 .PP
-.RE
-\fB\-\-orphans\fR
-.RS 4
-Show only entries whose package is not currently installed.\&
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
 .PP
-.RE
-.SS packages add
+.SS log
 .PP
-\fBsysforge packages add\fR [\fIOPTIONS\fR] \fIPKG\fR
+\fBsysforge log\fR [\fIOPTIONS\fR] \fI[PKG]\fR
 .PP
-Add or update an override entry.\& Requires at least one of \-\-enable\-build\-from\-source / \-\-no\-cache / \-\-reason.\&
+Page the unified or per\-package sysforge log through $PAGER.\&
 .PP
 \fBPKG\fR
 .RS 4
-Package name to add or update.\&
+Package name (resolves to <pkgbuild_src_dir>/<pkg>/sysforge_<pkg>.\&log).\& Omit to page the unified log.\&
 .PP
 .RE
-\fB\-\-source\fR \fISOURCE\fR
+\fB\-\-state\-dir\fR \fIDIR\fR
 .RS 4
-Pin routing (metadata; doesn'\&t satisfy validation on its own).\& `local` marks a hand\-maintained PKGBUILD with no remote to sync from.\&
+Override state directory (used to locate the unified log).\&
 .PP
 .RE
-\fB\-\-enable\-build\-from\-source\fR
+\fB\-\-no\-pager\fR
 .RS 4
-Build this repo package from source instead of installing the binary via pacman.\&
+Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
 .PP
 .RE
-\fB\-\-no\-cache\fR
-.RS 4
-Disable ccache/sccache for this package (required for PGO).\&
+\fBConfiguration:\fR per\-package logs under the state directory
 .PP
-.RE
-\fB\-\-reason\fR \fITEXT\fR
-.RS 4
-Free\-form note attached to the entry.\&
+\fBEnvironment:\fR $SYSFORGE_STATE_DIR, $PAGER
 .PP
-.RE
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml.\&
-.PP
-.RE
-.SS packages add\-group
-.PP
-\fBsysforge packages add\-group\fR [\fIOPTIONS\fR] \fIDESKTOP\fR
-.PP
-Write a curated desktop\-environment package group (installs via '\&sysforge run packages'\&).\&
-.PP
-\fBDESKTOP\fR
-.RS 4
-Desktop environment to add (gnome | kde | xfce | mate | cinnamon | lxqt | budgie | cosmic).\&
-.PP
-.RE
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml.\&
-.PP
-.RE
-.SS packages remove
-.PP
-\fBsysforge packages remove\fR [\fIOPTIONS\fR] \fIPKG\fR
-.PP
-Remove an override entry.\&
-.PP
-\fBPKG\fR
-.RS 4
-Package name to remove.\&
-.PP
-.RE
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml.\&
-.PP
-.RE
 .SS state
 .PP
 \fBsysforge state\fR \fISUBCOMMAND\fR
@@ -872,30 +717,248 @@ Package name(s) or pkgbase(s) to stop tracking.\& A pkgbase forgets every split\
 Override state directory.\&
 .PP
 .RE
-.SS revert\-to\-stock
+.SS artifact
 .PP
-\fBsysforge revert\-to\-stock\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
+\fBsysforge artifact\fR \fISUBCOMMAND\fR
 .PP
-Undo a source\-built/optimized package back to the repo version.\&
+Inventory user\-authored scripts, units, and pacman hooks.\&
 .PP
-\fBPKG\fR
+.SS artifact list
+.PP
+\fBsysforge artifact list\fR [\fIOPTIONS\fR]
+.PP
+List managed artifacts.\&
+.PP
+\fB\-\-unmanaged\fR
 .RS 4
-package name(s) to revert (stock or \-sysforge name)
+also show discovered candidates not yet adopted
+.PP
+.RE
+.SS artifact review
+.PP
+\fBsysforge artifact review\fR
+.PP
+Interactively offer discovered candidates for adoption.\&
+.PP
+.SS artifact adopt
+.PP
+\fBsysforge artifact adopt\fR [\fIOPTIONS\fR] \fIPATH\fR
+.PP
+Bring a live artifact under management.\&
+.PP
+\fBPATH\fR
+.RS 4
+path to the artifact to adopt
+.PP
+.RE
+\fB\-\-class\fR \fICLS\fR
+.RS 4
+artifact class (inferred from the scan root if omitted)
+.PP
+.RE
+.SS artifact edit
+.PP
+\fBsysforge artifact edit\fR \fINAME\fR
+.PP
+Edit the managed copy of an artifact.\&
+.PP
+\fBNAME\fR
+.RS 4
+registry name of the artifact
+.PP
+.RE
+.SS artifact deploy
+.PP
+\fBsysforge artifact deploy\fR [\fIOPTIONS\fR] \fI[NAME]\fR
+.PP
+Push managed content to the live system.\&
+.PP
+\fBNAME\fR
+.RS 4
+registry name of the artifact
+.PP
+.RE
+\fB\-\-all\fR
+.RS 4
+deploy every managed artifact
 .PP
 .RE
 \fB\-\-force\fR
 .RS 4
-skip the confirmation prompt
+managed copy wins, discarding the live edit
 .PP
 .RE
-\fB\-\-state\-dir\fR \fIDIR\fR
+\fB\-\-adopt\-live\fR
 .RS 4
-Override state directory.\&
+live file wins, updating the managed copy
+.PP
+.RE
+.SS artifact remove
+.PP
+\fBsysforge artifact remove\fR [\fIOPTIONS\fR] \fINAME\fR
+.PP
+Remove an artifact from the live system.\&
+.PP
+\fBNAME\fR
+.RS 4
+registry name of the artifact
+.PP
+.RE
+\fB\-\-purge\fR
+.RS 4
+also delete the managed copy and registry entry
+.PP
+.RE
+\fB\-\-force\fR
+.RS 4
+remove even though the live file changed outside sysforge (discards those live\-only edits)
+.PP
+.RE
+.SS setup
+.PP
+\fBsysforge setup\fR [\fIOPTIONS\fR]
+.PP
+Configure system integration (pacman IgnoreGroup for sf\-build; install/refresh sysforge'\&s pacman hooks).\&
+.PP
+\fB\-\-pacman\-conf\fR \fIFILE\fR
+.RS 4
+Path to pacman.\&conf (default: /etc/pacman.\&conf).\&
+.PP
+.RE
+.SS config
+.PP
+\fBsysforge config\fR \fISUBCOMMAND\fR
+.PP
+Manage live sysforge config files (adopt shipped\-default drift).\&
+.PP
+.SS config merge
+.PP
+\fBsysforge config merge\fR [\fIOPTIONS\fR]
+.PP
+Interactively adopt or clear .\&sfnew companions (and pacman'\&s .\&pacnew/.\&pacsave for sysforge config) left by `make sync\-config`.\& pacdiff\-style: view diff, merge in a tool, skip, remove, or overwrite.\& Merge tool: SYSFORGE_MERGE > sysforge.\&toml [ui].\&merge > $DIFFPROG > vimdiff.\&
+.PP
+\fB\-\-config\-dir\fR \fIDIR\fR
+.RS 4
+Live config dir to scan (default: $SYSFORGE_CONFIG_DIR, else /etc/sysforge).\&
+.PP
+.RE
+\fB\-\-list\fR
+.RS 4
+List companion files and their live targets without prompting (non\-interactive; for scripting/CI).\& Alias: \-\-dry\-run.\&
 .PP
 .RE
 \fB\-\-dry\-run\fR
 .RS 4
-Show the planned revert without making changes.\&
+Same as \-\-list: report companions without merging.\&
+.PP
+.RE
+\fB\-\-no\-pager\fR
+.RS 4
+Don'\&t pipe diffs through $PAGER (default: paginate when stdout is a TTY).\&
+.PP
+.RE
+.SS packages
+.PP
+\fBsysforge packages\fR [\fIOPTIONS\fR] \fISUBCOMMAND\fR
+.PP
+Manage packages.\&toml override entries (list, add, add\-group, remove).\&
+.PP
+\fB\-\-packages\fR \fIFILE\fR
+.RS 4
+Path to packages.\&toml (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
+.PP
+.RE
+\fB\-\-orphans\fR
+.RS 4
+With list: show only entries whose package is not currently installed.\&
+.PP
+.RE
+\fBConfiguration:\fR packages.\&toml (read/write)
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
+.PP
+.SS packages list
+.PP
+\fBsysforge packages list\fR [\fIOPTIONS\fR]
+.PP
+Show override entries in packages.\&toml.\&
+.PP
+\fB\-\-packages\fR \fIFILE\fR
+.RS 4
+Path to packages.\&toml.\&
+.PP
+.RE
+\fB\-\-orphans\fR
+.RS 4
+Show only entries whose package is not currently installed.\&
+.PP
+.RE
+.SS packages add
+.PP
+\fBsysforge packages add\fR [\fIOPTIONS\fR] \fIPKG\fR
+.PP
+Add or update an override entry.\& Requires at least one of \-\-enable\-build\-from\-source / \-\-no\-cache / \-\-reason.\&
+.PP
+\fBPKG\fR
+.RS 4
+Package name to add or update.\&
+.PP
+.RE
+\fB\-\-source\fR \fISOURCE\fR
+.RS 4
+Pin routing (metadata; doesn'\&t satisfy validation on its own).\& `local` marks a hand\-maintained PKGBUILD with no remote to sync from.\&
+.PP
+.RE
+\fB\-\-enable\-build\-from\-source\fR
+.RS 4
+Build this repo package from source instead of installing the binary via pacman.\&
+.PP
+.RE
+\fB\-\-no\-cache\fR
+.RS 4
+Disable ccache/sccache for this package (required for PGO).\&
+.PP
+.RE
+\fB\-\-reason\fR \fITEXT\fR
+.RS 4
+Free\-form note attached to the entry.\&
+.PP
+.RE
+\fB\-\-packages\fR \fIFILE\fR
+.RS 4
+Path to packages.\&toml.\&
+.PP
+.RE
+.SS packages add\-group
+.PP
+\fBsysforge packages add\-group\fR [\fIOPTIONS\fR] \fIDESKTOP\fR
+.PP
+Write a curated desktop\-environment package group (installs via '\&sysforge run packages'\&).\&
+.PP
+\fBDESKTOP\fR
+.RS 4
+Desktop environment to add (gnome | kde | xfce | mate | cinnamon | lxqt | budgie | cosmic).\&
+.PP
+.RE
+\fB\-\-packages\fR \fIFILE\fR
+.RS 4
+Path to packages.\&toml.\&
+.PP
+.RE
+.SS packages remove
+.PP
+\fBsysforge packages remove\fR [\fIOPTIONS\fR] \fIPKG\fR
+.PP
+Remove an override entry.\&
+.PP
+\fBPKG\fR
+.RS 4
+Package name to remove.\&
+.PP
+.RE
+\fB\-\-packages\fR \fIFILE\fR
+.RS 4
+Path to packages.\&toml.\&
 .PP
 .RE
 .SS run
@@ -1309,26 +1372,30 @@ Override the pre\-install boot\-critical kconfig audit (Gate 2).\& By default a 
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
 .PP
-.SS search
+.SS revert\-to\-stock
 .PP
-\fBsysforge search\fR \fITERM\fR
+\fBsysforge revert\-to\-stock\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
 .PP
-Search installed, repo, and AUR packages for a term.\&
+Undo a source\-built/optimized package back to the repo version.\&
 .PP
-\fBTERM\fR
+\fBPKG\fR
 .RS 4
-search term (name + description)
+package name(s) to revert (stock or \-sysforge name)
 .PP
 .RE
-.SS setup
-.PP
-\fBsysforge setup\fR [\fIOPTIONS\fR]
-.PP
-Configure system integration (pacman IgnoreGroup for sf\-build; install/refresh sysforge'\&s pacman hooks).\&
-.PP
-\fB\-\-pacman\-conf\fR \fIFILE\fR
+\fB\-\-force\fR
 .RS 4
-Path to pacman.\&conf (default: /etc/pacman.\&conf).\&
+skip the confirmation prompt
+.PP
+.RE
+\fB\-\-state\-dir\fR \fIDIR\fR
+.RS 4
+Override state directory.\&
+.PP
+.RE
+\fB\-\-dry\-run\fR
+.RS 4
+Show the planned revert without making changes.\&
 .PP
 .RE
 .SS uninstall
@@ -1345,73 +1412,6 @@ package name(s) to remove (stock or \-sysforge name)
 \fB\-\-state\-dir\fR \fIDIR\fR
 .RS 4
 Override state directory.\&
-.PP
-.RE
-.SS env
-.PP
-\fBsysforge env\fR
-.PP
-Print the inherited env chain, all contributing sources (shell init files, systemd\-user, PAM env, sysforge [defaults] profile), and a mismatches block when sources disagree.\& \-vv adds inline per\-var divergence annotations.\&
-.PP
-\fBConfiguration:\fR profiles.\&toml
-.PP
-\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
-.PP
-.SS log
-.PP
-\fBsysforge log\fR [\fIOPTIONS\fR] \fI[PKG]\fR
-.PP
-Page the unified or per\-package sysforge log through $PAGER.\&
-.PP
-\fBPKG\fR
-.RS 4
-Package name (resolves to <pkgbuild_src_dir>/<pkg>/sysforge_<pkg>.\&log).\& Omit to page the unified log.\&
-.PP
-.RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory (used to locate the unified log).\&
-.PP
-.RE
-\fB\-\-no\-pager\fR
-.RS 4
-Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
-.PP
-.RE
-\fBConfiguration:\fR per\-package logs under the state directory
-.PP
-\fBEnvironment:\fR $SYSFORGE_STATE_DIR, $PAGER
-.PP
-.SS config
-.PP
-\fBsysforge config\fR \fISUBCOMMAND\fR
-.PP
-Manage live sysforge config files (adopt shipped\-default drift).\&
-.PP
-.SS config merge
-.PP
-\fBsysforge config merge\fR [\fIOPTIONS\fR]
-.PP
-Interactively adopt or clear .\&sfnew companions (and pacman'\&s .\&pacnew/.\&pacsave for sysforge config) left by `make sync\-config`.\& pacdiff\-style: view diff, merge in a tool, skip, remove, or overwrite.\& Merge tool: SYSFORGE_MERGE > sysforge.\&toml [ui].\&merge > $DIFFPROG > vimdiff.\&
-.PP
-\fB\-\-config\-dir\fR \fIDIR\fR
-.RS 4
-Live config dir to scan (default: $SYSFORGE_CONFIG_DIR, else /etc/sysforge).\&
-.PP
-.RE
-\fB\-\-list\fR
-.RS 4
-List companion files and their live targets without prompting (non\-interactive; for scripting/CI).\& Alias: \-\-dry\-run.\&
-.PP
-.RE
-\fB\-\-dry\-run\fR
-.RS 4
-Same as \-\-list: report companions without merging.\&
-.PP
-.RE
-\fB\-\-no\-pager\fR
-.RS 4
-Don'\&t pipe diffs through $PAGER (default: paginate when stdout is a TTY).\&
 .PP
 .RE
 .SH FILES

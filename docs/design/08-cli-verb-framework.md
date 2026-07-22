@@ -156,6 +156,10 @@ registry row; without it, the managed copy survives (`deployed_hash`/`deployed_a
 same artifact can be `deploy`ed again later without re-adopting it — removing from the live system
 and discarding the content are different decisions.
 
+### Top-level help tiers
+
+`sysforge --help` groups the top-level `COMMAND` list into three usage tiers — **Everyday** (`build`, `update`, `fetch`, `search`), **Inspect** (`doctor`, `resolve`, `env`, `log`, `state`, `artifact`), and **Maintain** (`setup`, `config`, `packages`, `run`, `revert-to-stock`, `uninstall`) — instead of one flat, registration-ordered block, so a new user can tell routine drivers from ad-hoc introspection. The grouping is presentation-only (no behavioural change, no config flag). argparse folds every subparser into a single `_SubParsersAction` pseudo-group with no per-command category hook, so the tiering lives in `cli._TieredHelpFormatter`, which intercepts that one action and re-emits its choices under the tier headers; every other action (options, the `COMMAND` metavar line, per-verb and sub-verb `--help`) formats via the base `HelpFormatter` untouched. The tier map `cli._COMMAND_TIERS` is the single source of truth: `cli.tiered_command_order()` flattens it, and `tools/gen_options.py` orders the man-page COMMANDS sections by that list so the page stays in lockstep with the help (both completions mirror the order too). A `check_completions`-style parity test asserts the map partitions the user-facing verbs exactly (none missing, none duplicated); the internal `completions` verb is registered without help text and stays out of both the map and the listing.
+
 ### Global profiling flags
 
 Three top-level flags expose sysforge's own runtime performance (stdlib only, no new dependencies). All are position-independent: `_hoist_global_flags` in `cli.py` (a sibling of `_hoist_verbosity_flags`, run in the same argv-preprocessing pipeline) moves them — including `--py-profile-out`'s value token and its `=FILE` form — before the subcommand so argparse accepts them anywhere.
