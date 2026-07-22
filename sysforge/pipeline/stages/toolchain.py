@@ -688,6 +688,12 @@ class _ReuseCtx:
     so a first, non-opted-in run still populates it for a later resume.
     ``staged_dep_fps`` carries the prior sub-pass's fingerprints (Merkle chain:
     4b/4c fold in 4a's so a rebuilt libLLVM forces its consumers to rebuild).
+    ``exclude_deps`` is the toolchain build-set (llvm, llvm-libs, clang, …) whose
+    *installed* version must be kept out of ``makedep_versions``: Pass 4 satisfies
+    those from the staging prefix (``--nodeps``), so their live-``/usr`` version is
+    not a build input, and the staged libLLVM they actually link is already folded
+    in via ``staged_dep_fps``. Including it would spuriously invalidate every
+    Pass-4 fingerprint the moment the suite is self-installed (2.5.1-B2).
     """
     pass_id: str
     cache: dict
@@ -697,17 +703,26 @@ class _ReuseCtx:
     pkgdest: Path | None
     consult: bool
     staged_dep_fps: list[str] = field(default_factory=list)
+    exclude_deps: frozenset[str] = frozenset()
 
 
-def _dep_versions_from_globals(globals_: dict) -> dict[str, str | None]:
+def _dep_versions_from_globals(
+    globals_: dict, exclude: frozenset[str] | set[str] = frozenset(),
+) -> dict[str, str | None]:
     """Installed versions of a PKGBUILD's build deps, for fingerprinting.
 
     Takes already-parsed PKGBUILD globals, collects depends+makedepends+
     checkdepends (arch arrays already merged by ``parse_pkgbuild``), strips
     version constraints, drops unresolved ``${...}``/``$(...)`` tokens, and
-    queries pacman for each installed version. Staged deps (e.g. ``llvm=<ver>``
-    satisfied by a stage prefix) map to None — that dimension stays constant in
-    the staged context and the staged libLLVM is captured via ``staged_dep_fps``.
+    queries pacman for each installed version.
+
+    ``exclude`` names the toolchain build-set members (llvm, llvm-libs, clang, …)
+    to omit: during Pass 4 those are satisfied from a stage prefix (``--nodeps``),
+    so their *installed* version is not a build input and the staged libLLVM they
+    link is already captured via ``staged_dep_fps``. Folding their live-``/usr``
+    version in here would flip every consumer's fingerprint the instant the suite
+    is self-installed, defeating cache reuse on a post-install re-run (2.5.1-B2).
+    External deps (cmake, ninja, glibc, …) do come from ``/usr`` and stay.
     """
     from sysforge.primitives.aur_resolve import _looks_unresolved, _strip_version
 
@@ -717,7 +732,7 @@ def _dep_versions_from_globals(globals_: dict) -> dict[str, str | None]:
             if not tok or _looks_unresolved(tok):
                 continue
             bare = _strip_version(tok)
-            if bare:
+            if bare and bare not in exclude:
                 names.add(bare)
     if not names:
         return {}
@@ -767,7 +782,7 @@ def _pkg_fingerprint(
         "extra_flags": list(extra_flags or []),
         "config_digest": ctx.config_digest,
         "profdata_sha": ctx.profdata_sha,
-        "makedep_versions": _dep_versions_from_globals(globals_),
+        "makedep_versions": _dep_versions_from_globals(globals_, ctx.exclude_deps),
         "staged_dep_fps": sorted(ctx.staged_dep_fps),
     }
     return pkgbase, build_fingerprint.compute_fingerprint(components)
@@ -2685,6 +2700,11 @@ def _build_llvm_pgo_inner(
                     f"reused from cache at {reuse_cache_path}",
                 )
 
+        # The full toolchain build-set (all pgo/non_pgo/lib32 package names).
+        # Every member is built and staged this run, so its *installed* version
+        # is not a Pass-4 build input — exclude it from makedep_versions (2.5.1-B2).
+        _build_set_names = frozenset(all_pass3)
+
         def _mk_reuse_ctx(pass_id: str, staged_dep_fps: list[str]) -> _ReuseCtx:
             return _ReuseCtx(
                 pass_id=pass_id,
@@ -2695,6 +2715,7 @@ def _build_llvm_pgo_inner(
                 pkgdest=reuse_pkgdest,
                 consult=reuse_built,
                 staged_dep_fps=staged_dep_fps,
+                exclude_deps=_build_set_names,
             )
         # Pass 4 is split into coherent sub-passes (4a pgo → stage3 → 4b non_pgo
         # → 4c lib32) so the non-pgo suite links against the *final optimized*

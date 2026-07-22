@@ -416,9 +416,8 @@ def test_resolve_all_pkgbuilds_blocker_status_raises(tmp_path):
          patch("sysforge.primitives.aur.repo_packages", return_value=set()), \
          patch("sysforge.pipeline.stages.toolchain.STATUS_FAILED", "failed"), \
          patch("sysforge.pipeline.stages.toolchain._SYNC_BLOCKING_STATUSES",
-               frozenset({"failed"})):
-        with pytest.raises(RuntimeError, match="PKGBUILD sync failed"):
-            _resolve_all_pkgbuilds(["llvm"], config, update=True)
+               frozenset({"failed"})), pytest.raises(RuntimeError, match="PKGBUILD sync failed"):
+        _resolve_all_pkgbuilds(["llvm"], config, update=True)
 
 
 def test_sync_pkgbuild_dirs_classifies_repo_vs_aur(tmp_path):
@@ -2608,9 +2607,8 @@ def test_merge_profraw_fresh_raws_no_profdata_raises(tmp_path):
     """Fresh profraw + no profdata → error (no usable data at all)."""
     (tmp_path / "fresh.profraw").touch()
 
-    with patch("subprocess.run"):
-        with pytest.raises(RuntimeError, match="too fresh"):
-            _merge_profraw(tmp_path, dry_run=False)
+    with patch("subprocess.run"), pytest.raises(RuntimeError, match="too fresh"):
+        _merge_profraw(tmp_path, dry_run=False)
 
 
 def test_settle_secs_constant_is_positive():
@@ -2892,6 +2890,81 @@ def test_pkg_fingerprint_changes_across_compiler_version(tmp_path):
     _, fp19 = _pkg_fingerprint(ctx, "llvm", pkgbuild, v19, None, None, None, [])
     _, fp20 = _pkg_fingerprint(ctx, "llvm", pkgbuild, v20, None, None, None, [])
     assert fp19 != fp20
+
+
+def test_dep_versions_excludes_build_set_members(monkeypatch):
+    """2.5.1-B2: build-set members (llvm/llvm-libs/…) are satisfied from the
+    staging prefix during Pass 4 (--nodeps), so their *installed* version is not
+    a build input and must be excluded from makedep_versions. External build deps
+    (cmake/…) come from the live /usr and stay."""
+    from sysforge.pipeline.stages import toolchain
+
+    monkeypatch.setattr(
+        toolchain, "_query_pacman_versions",
+        lambda names: {n: "9.9-9" for n in names},
+    )
+    globals_ = {
+        "makedepends": ["cmake", "llvm=1.0", "ninja"],
+        "depends": ["llvm-libs"],
+    }
+    result = toolchain._dep_versions_from_globals(
+        globals_, exclude={"llvm", "llvm-libs"},
+    )
+    assert set(result) == {"cmake", "ninja"}  # build-set members dropped
+
+
+# Installed versions before/after the suite self-install. cmake is a live-/usr
+# build dep (constant); llvm/llvm-libs are build-set members whose installed
+# version moves when Pass 4's output is installed.
+_DEPS_BEFORE_INSTALL = {"cmake": "3.0-1", "llvm": "22.1.6-1", "llvm-libs": "22.1.6-1"}
+_DEPS_AFTER_INSTALL = {"cmake": "3.0-1", "llvm": "22.1.8-2", "llvm-libs": "22.1.8-2"}
+
+
+def _clang_pkgbuild(tmp_path) -> Path:
+    pb = tmp_path / "clang" / "PKGBUILD"
+    pb.parent.mkdir(parents=True, exist_ok=True)
+    pb.write_text(
+        "pkgname=clang\npkgver=1.0\npkgrel=1\n"
+        "depends=('llvm-libs')\nmakedepends=('cmake' 'llvm')\n"
+    )
+    return pb
+
+
+def test_pkg_fingerprint_stable_across_build_set_member_install(tmp_path, monkeypatch):
+    """2.5.1-B2: a sanity re-run after installing the built suite must still hit
+    the cache. Pass 4 links the *staged* libLLVM (captured by staged_dep_fps), so
+    the bumped *installed* llvm-libs version must not move the fingerprint."""
+    from sysforge.pipeline.stages import toolchain
+
+    pb = _clang_pkgbuild(tmp_path)
+    ctx = _reuse_ctx(tmp_path, pass_id="build-nonpgo", staged_dep_fps=["fp-llvm"])
+    ctx.exclude_deps = frozenset({"llvm", "llvm-libs", "clang"})
+
+    monkeypatch.setattr(toolchain, "_query_pacman_versions",
+                        lambda names: {n: _DEPS_BEFORE_INSTALL[n] for n in names})
+    _, fp_before = _pkg_fingerprint(ctx, "clang", pb, None, None, None, None, [])
+    monkeypatch.setattr(toolchain, "_query_pacman_versions",
+                        lambda names: {n: _DEPS_AFTER_INSTALL[n] for n in names})
+    _, fp_after = _pkg_fingerprint(ctx, "clang", pb, None, None, None, None, [])
+    assert fp_before == fp_after
+
+
+def test_pkg_fingerprint_changes_when_external_dep_bumps(tmp_path, monkeypatch):
+    """The exclusion is surgical: an external build dep (cmake) bumping still
+    invalidates the fingerprint — only build-set members are exempted."""
+    from sysforge.pipeline.stages import toolchain
+
+    pb = _clang_pkgbuild(tmp_path)
+    ctx = _reuse_ctx(tmp_path, pass_id="build-nonpgo", staged_dep_fps=["fp-llvm"])
+    ctx.exclude_deps = frozenset({"llvm", "llvm-libs", "clang"})
+
+    monkeypatch.setattr(toolchain, "_query_pacman_versions",
+                        lambda names: {n: {"cmake": "3.0-1"}.get(n, "0") for n in names})
+    _, fp_old = _pkg_fingerprint(ctx, "clang", pb, None, None, None, None, [])
+    monkeypatch.setattr(toolchain, "_query_pacman_versions",
+                        lambda names: {n: {"cmake": "3.1-1"}.get(n, "0") for n in names})
+    _, fp_new = _pkg_fingerprint(ctx, "clang", pb, None, None, None, None, [])
+    assert fp_old != fp_new
 
 
 def test_reuse_cache_path_survives_pgo_store_purge(tmp_path):
@@ -3917,9 +3990,8 @@ def test_validate_pgo_environment_instrumented_tty_decline_raises():
          patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
                return_value=True), \
          patch("sys.stdin.isatty", return_value=True), \
-         patch("builtins.input", return_value="n"):
-        with pytest.raises(RuntimeError, match="Aborted"):
-            _validate_pgo_environment(dry_run=False)
+         patch("builtins.input", return_value="n"), pytest.raises(RuntimeError, match="Aborted"):
+        _validate_pgo_environment(dry_run=False)
 
 
 def test_validate_pgo_environment_instrumented_non_tty_raises():
@@ -4019,14 +4091,13 @@ def test_pgo_confirm_tty_no_raises():
     with patch("sysforge.pipeline.stages.toolchain.is_interactive",
                return_value=True), \
          patch("sysforge.pipeline.stages.toolchain.prompt_choice",
-               return_value="n"):
-        with pytest.raises(_PGOAborted, match="user declined the build"):
-            _pgo_confirm(
-                "fake prompt",
-                default="n", eof_default="n",
-                options=_confirm_options(),
-                abort_msg="user declined the build",
-            )
+               return_value="n"), pytest.raises(_PGOAborted, match="user declined the build"):
+        _pgo_confirm(
+            "fake prompt",
+            default="n", eof_default="n",
+            options=_confirm_options(),
+            abort_msg="user declined the build",
+        )
 
 
 # ---------------------------------------------------------------------------

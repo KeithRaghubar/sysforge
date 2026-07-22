@@ -344,6 +344,22 @@ def test_collect_state_records_foreign_install(src_root, config, monkeypatch):
     assert s.installed_ver == "20.0.0.r1-1"
 
 
+def test_collect_state_marks_split_member(src_root, config):
+    """A split member (llvm-libs) has no tree of its own; it is tagged with the
+    pkgbase whose PKGBUILD produces it so the pre-flight can annotate it instead
+    of showing empty source columns (2.5.1-B2 summary readability)."""
+    pkg = src_root / "llvm"
+    _init_repo(pkg, remote_url="https://aur.archlinux.org/llvm.git")
+    (pkg / "PKGBUILD").write_text(
+        "pkgname=('llvm' 'llvm-libs')\npkgver=22.1.8\npkgrel=2\narch=('x86_64')\n"
+    )
+    report = collect_llvm_state(["llvm", "llvm-libs"], config)
+    by_base = {s.pkgbase: s for s in report.states}
+    assert by_base["llvm"].split_of is None        # owns its source tree
+    assert by_base["llvm-libs"].split_of == "llvm"  # split of the llvm PKGBUILD
+    assert by_base["llvm-libs"].pkgbuild_dir is None
+
+
 def test_collect_state_skips_non_llvm():
     report = collect_llvm_state(["mesa-git", "linux-firmware"], config={})
     assert report.states == ()
@@ -503,6 +519,26 @@ def test_render_verbose_shows_all_rows():
     # --verbose is the escape hatch: even non-actionable rows render.
     out = render_preflight(_report(_repo_origin_noise_state()), verbose=True)
     assert "lib32-llvm" in out
+
+
+def test_render_annotates_split_member_row():
+    # A split-off binary (llvm-libs from the llvm PKGBUILD) has no source tree of
+    # its own, so its source columns are meaningless. Render it as a split of its
+    # pkgbase instead of showing empty origin=missing/sync=missing noise.
+    out = render_preflight(_report(
+        _state(pkgbase="llvm", source_origin="aur", divergence="up_to_date",
+               build_mode="pgo_llvm_toolchain"),
+        _state(pkgbase="llvm-libs", pkgbuild_dir=None, source_origin="missing",
+               divergence="missing", build_mode=None, installed_ver="22.1.8-2",
+               split_of="llvm"),
+    ), verbose=True)
+    assert "(split of llvm)" in out
+    # The redundant source columns must not appear on the split row.
+    split_line = next(ln for ln in out.splitlines() if "llvm-libs" in ln)
+    assert "origin=missing" not in split_line
+    assert "sync=missing" not in split_line
+    # ...but its installed version is still surfaced (it's a real install).
+    assert "22.1.8-2" in split_line
 
 
 def test_render_keeps_repo_origin_when_source_built():

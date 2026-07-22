@@ -68,6 +68,11 @@ class LlvmPackageState:
     pkgbuild_ver: str | None
     build_mode: str | None
     pgo_profdata_mismatch: bool
+    # pkgbase this package is a split member of (e.g. llvm-libs → "llvm"), or
+    # None when it has its own source tree. A split member ships no PKGBUILD dir
+    # of its own, so its source-state columns are meaningless; the renderer
+    # collapses them to a "(split of <base>)" annotation instead of noise.
+    split_of: str | None = None
 
 
 @dataclass(frozen=True)
@@ -336,9 +341,32 @@ def collect_llvm_state(
     has_diverged = False
     has_pgo_mismatch = False
 
+    # Map split members → their pkgbase (e.g. llvm-libs → "llvm"). A member with
+    # no PKGBUILD dir of its own is covered by whichever in-scope base lists it in
+    # its ``pkgname`` array; the renderer uses this to annotate the row instead of
+    # showing empty source-state columns. Best-effort — a parse failure just
+    # leaves the member unannotated (falls back to the old row).
+    split_parent: dict[str, str] = {}
+    for base in in_scope:
+        base_path = _resolve_local_only(base, config)
+        if base_path is None:
+            continue
+        try:
+            members = parse_pkgbuild(base_path).get("globals", {}).get("pkgname", [])
+        except (OSError, KeyError, ValueError):
+            continue
+        if isinstance(members, str):
+            members = [members]
+        for member in members:
+            if member != base:
+                split_parent.setdefault(member, base)
+
     for name in in_scope:
         pkgbuild_path = _resolve_local_only(name, config)
         pkgbuild_dir = pkgbuild_path.parent if pkgbuild_path else None
+        # A member with no source tree of its own but covered by a sibling base
+        # is a split package — flag it so the renderer collapses its dead columns.
+        split_of = split_parent.get(name) if pkgbuild_dir is None else None
 
         origin, remote_url = _classify_origin(pkgbuild_dir)
 
@@ -413,6 +441,7 @@ def collect_llvm_state(
             pkgbuild_ver=pkgbuild_ver,
             build_mode=build_mode,
             pgo_profdata_mismatch=pgo_mismatch,
+            split_of=split_of,
         ))
 
     for s in states:
@@ -685,6 +714,18 @@ def render_preflight(report: LlvmPreflightReport, *, verbose: bool = False) -> s
     )
 
     for s in shown:
+        # A split member (llvm-libs from the llvm PKGBUILD) has no source tree of
+        # its own — origin/clean/sync/mode all describe a tree it doesn't own — so
+        # collapse those dead columns to a "(split of <base>)" note and keep only
+        # the real install facts.
+        if s.split_of:
+            ver = _format_version_pair(s.installed_ver, s.pkgbuild_ver)
+            lines.append(
+                f"    {s.pkgbase:<24} (split of {s.split_of})"
+                f"{' ' * 6}installed={s.install_origin:<14} ver={ver}"
+            )
+            continue
+
         clean = "clean" if not s.is_dirty else f"DIRTY ({s.dirty_reason})"
         sync = s.divergence
         if s.head_short and s.upstream_short and sync != "up_to_date":

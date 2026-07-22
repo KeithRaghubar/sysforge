@@ -48,7 +48,10 @@ from pathlib import Path
 # v2: the toolchain Pass-4 compiler dimension was narrowed from clang_identity
 # (path+size+mtime+version) to the bare --version line so reuse survives the
 # staged→installed clang swap (2.1.0-B14).
-_SCHEMA = 2
+# v3: makedep_versions now excludes the toolchain build-set members (llvm,
+# llvm-libs, clang, …) — those are staged, not consumed from /usr, so their
+# installed version is no longer a fingerprint input (2.5.1-B2).
+_SCHEMA = 3
 
 # Chunk size for streaming file hashes (profdata can be hundreds of MiB).
 _HASH_CHUNK = 1024 * 1024
@@ -212,7 +215,10 @@ def compute_fingerprint(components: dict) -> str:
                            — the per-pass injected flags.
       config_digest        — hash_obj() of the flag-relevant config subset.
       profdata_sha         — hash_file() of clang.profdata (Pass 4 only).
-      makedep_versions     — {dep: installed_version} of the build deps.
+      makedep_versions     — {dep: installed_version} of the *external* build
+                             deps (toolchain build-set members are excluded —
+                             they are staged, not consumed from /usr; see
+                             toolchain._dep_versions_from_globals).
       staged_dep_fps       — sorted fingerprints of staged sibling builds
                              (Merkle chain: 4b/4c fold in 4a's fingerprints).
 

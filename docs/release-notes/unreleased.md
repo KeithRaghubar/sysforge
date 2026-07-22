@@ -13,8 +13,24 @@ finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
 
+## Changed
+
+- Toolchain LLVM source pre-flight now annotates split-off members (e.g.
+  `llvm-libs`, built from the `llvm` PKGBUILD) as `(split of llvm)` instead of
+  showing empty `origin=missing`/`sync=missing` source columns for a tree they
+  don't own. The pre-flight guards source trees (pkgbases), so a split binary's
+  per-member row was pure noise. (2.5.1-B2)
+
 ## Fixed
 
+- Pass-4 toolchain build-reuse cache no longer misses on a post-install sanity
+  re-run. The input fingerprint folded in the *installed* versions of the LLVM
+  suite (`llvm`/`llvm-libs`/…), but Pass 4 links the *staged* libLLVM
+  (`--nodeps`), so installing the just-built suite moved those versions and
+  invalidated every otherwise-identical package. Build-set members are now
+  excluded from `makedep_versions` (the staged libLLVM is still pinned via the
+  Merkle-chained `staged_dep_fps`); external build-deps still invalidate.
+  Fingerprint schema bumped to v3. (2.5.1-B2)
 - Toolchain Gate-3 no longer false-rolls-back on a pkgrel-only LLVM suite skew:
   an independent `llvm` rebuild (e.g. `-2`) beside `clang`/`lld`/… at `-1` is a
   legitimate state, not an interrupted install. `detect_suite_skew` now enforces
