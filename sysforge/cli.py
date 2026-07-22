@@ -1193,7 +1193,7 @@ class _TieredHelpFormatter(argparse.HelpFormatter):
                               self._format_action_invocation(action))]
         self._indent()  # tier labels one level under COMMAND
         for label, names in _COMMAND_TIERS:
-            parts.append("%*s%s:\n" % (self._current_indent, "", label))
+            parts.append("\n%*s%s:\n" % (self._current_indent, "", label))
             self._indent()  # commands one level under the tier label
             for name in names:
                 sa = subactions.get(name)
