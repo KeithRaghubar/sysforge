@@ -54,11 +54,15 @@ def _parse_built_pkg_filename(pkgname: str, filename: str) -> tuple[str, str, st
     if not stem.startswith(prefix):
         return None
     rest = stem[len(prefix):]
-    try:
-        ver_rel, _arch = rest.rsplit("-", 1)
-        ver_part, pkgrel = ver_rel.rsplit("-", 1)
-    except ValueError:
+    # A valid tail is exactly ``[epoch:]pkgver-pkgrel-arch`` — three
+    # hyphen-delimited fields, because PKGBUILD(5) forbids hyphens in pkgver,
+    # pkgrel and arch. Anything else means ``pkgname`` is only a hyphen-prefix
+    # of a *different* package (e.g. ``linux`` vs ``linux-custom``), which must
+    # not match — a looser rsplit would let pkgver absorb the extra hyphens.
+    parts = rest.split("-")
+    if len(parts) != 3:
         return None
+    ver_part, pkgrel, _arch = parts
     epoch = "0"
     if ":" in ver_part:
         epoch, _, ver_part = ver_part.partition(":")

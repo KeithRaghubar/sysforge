@@ -23,6 +23,11 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Fixed
 
+- Toolchain Gate-3 no longer false-rolls-back on a pkgrel-only LLVM suite skew:
+  an independent `llvm` rebuild (e.g. `-2`) beside `clang`/`lld`/… at `-1` is a
+  legitimate state, not an interrupted install. `detect_suite_skew` now enforces
+  pkgver lockstep across the suite plus full `pkgver-pkgrel` lockstep only within
+  the shared-pkgbase pair `llvm`/`llvm-libs`. (2.5.1-B1)
 - Pass-4 toolchain build-reuse cache no longer misses on a post-install sanity
   re-run. The input fingerprint folded in the *installed* versions of the LLVM
   suite (`llvm`/`llvm-libs`/…), but Pass 4 links the *staged* libLLVM
@@ -31,8 +36,12 @@ https://keepachangelog.com/en/1.1.0/
   excluded from `makedep_versions` (the staged libLLVM is still pinned via the
   Merkle-chained `staged_dep_fps`); external build-deps still invalidate.
   Fingerprint schema bumped to v3. (2.5.1-B2)
-- Toolchain Gate-3 no longer false-rolls-back on a pkgrel-only LLVM suite skew:
-  an independent `llvm` rebuild (e.g. `-2`) beside `clang`/`lld`/… at `-1` is a
-  legitimate state, not an interrupted install. `detect_suite_skew` now enforces
-  pkgver lockstep across the suite plus full `pkgver-pkgrel` lockstep only within
-  the shared-pkgbase pair `llvm`/`llvm-libs`. (2.5.1-B1)
+- Kernel-stage install no longer sweeps in unrelated `linux-*` packages. When
+  the build-time manifest was absent, install scoping fell back to pkgname
+  matching, whose filename parser anchored on a bare `<pkgname>-` prefix — so a
+  kernel with pkgname `linux` matched `linux-custom`, `linux-sysforge`,
+  `linux-steam-integration`, etc., and a lenient `rsplit` let the bogus tail
+  parse as a valid version. The parser now requires an exact
+  `[epoch:]pkgver-pkgrel-arch` tail (three hyphen-delimited fields, per
+  `PKGBUILD(5)`'s no-hyphens-in-pkgver rule), rejecting foreign prefix matches.
+  (2.5.1-B3)

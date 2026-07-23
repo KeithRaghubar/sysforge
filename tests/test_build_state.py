@@ -585,6 +585,24 @@ def test_parse_built_pkg_filename_non_pkg_file_returns_none():
     assert _parse_built_pkg_filename("htop", "htop-3.4.1-1-x86_64.sig") is None
 
 
+def test_parse_built_pkg_filename_prefix_name_not_matched():
+    # A pkgname that is a hyphen-prefix of *another* package's name must not
+    # match: pkgver cannot contain hyphens (PKGBUILD(5)), so the tail after
+    # `linux-` in `linux-custom-...` is not a valid ver-rel-arch triple.
+    # Regression: pkgname `linux` was sweeping in linux-custom, linux-sysforge,
+    # linux-steam-integration during the kernel-stage install.
+    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+    assert _parse_built_pkg_filename(
+        "linux", "linux-7.1.2.arch3-1-x86_64.pkg.tar"
+    ) == ("0", "7.1.2.arch3", "1")
+    for other in (
+        "linux-custom-7.0.11.arch1-1-x86_64.pkg.tar",
+        "linux-sysforge-docs-7.1.4.arch1-1-x86_64.pkg.tar",
+        "linux-steam-integration-0.7.3-10-x86_64.pkg.tar",
+    ):
+        assert _parse_built_pkg_filename("linux", other) is None
+
+
 def test_parse_built_pkg_filename_alt_compression():
     from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
     assert _parse_built_pkg_filename(
