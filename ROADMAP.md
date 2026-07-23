@@ -64,7 +64,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | ID | Item | Priority | Effort |
 |----|------|----------|--------|
 | `2.4.0-F3` | Doctor probe: report which Rust toolchain a build will actually use | med | medium |
-| `2.5.1-F2` | One AlreadyBuilt policy seam | med | medium |
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large |
 | `2.3.0-B2` | --cache-report renderer bypasses the logger | low | small |
 | `2.4.0-F1` | Journal SYSFORGE_TARGET for the other mutating verbs (follow-up to 2.3.0-F6) | low | small |
@@ -115,12 +114,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   comments, and a misordered registration fails a structural test instead of corrupting `prepare()`.
   *Priority: med · Effort: large* — refactor, no behavior change; the 2.5.1-B5/B8 fix cycle showed
   this seam is where kernel-stage bugs concentrate.
-
-- **`2.5.1-F2` — One AlreadyBuilt policy seam.** makepkg exit 13 is interpreted independently at each
-  catch site (kernel stage, build_core, toolchain), and 2.5.1-B3/B4/B5 were all consequences of those
-  sites disagreeing about what "already built" means. Centralize the decision (reuse / prompt / force)
-  in one policy helper parameterized by interactivity and caller intent, and have every catch site
-  route through it. *Priority: med · Effort: medium* — prevents the next B5-class divergence.
 
 - **`2.4.0-F1` — Journal `SYSFORGE_TARGET` for the other mutating verbs (follow-up to `2.3.0-F6`).**
   The journald mirror emits `SYSFORGE_TARGET` only for `build`, because `build` is the only verb that

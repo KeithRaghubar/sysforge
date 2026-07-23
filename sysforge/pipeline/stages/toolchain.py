@@ -129,7 +129,9 @@ from sysforge.primitives.llvm_state import (
     evaluate_strict,
     render_preflight,
 )
+from sysforge.primitives.already_built import resolve_already_built
 from sysforge.primitives.makepkg_flags import SYNC_FLAGS
+from sysforge.primitives.makepkg_invoke import AlreadyBuilt
 from sysforge.primitives.makepkg_pgo import resolve_pgo_store
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
 from sysforge.primitives.pacman import (
@@ -834,22 +836,32 @@ def _build_pkg(
                 f"instrumentation sequence: {dropped}",
             )
     combined_flags = list(extra_flags or []) + user_flags
-    makepkg_run(pkgbuild_path, options=make_build_options(
-        "toolchain", options,
-        extra_flags=combined_flags,
-        compiler_flags_extra=compiler_flags_extra,
-        linker_flags_extra=linker_flags_extra,
-        cc_override=cc,
-        cxx_override=cxx,
-        init_session=init_session,
-        update=not options.no_update,
-        strip_full_lto=pgo_build,
-        extra_env=pgo_env,
-        strip_flags=strip_flags,
-        toolchain_variant=toolchain_variant,
-        owner_stage=owner_stage,
-        cmake_llvm_dir=cmake_llvm_dir,
-    ))
+    try:
+        makepkg_run(pkgbuild_path, options=make_build_options(
+            "toolchain", options,
+            extra_flags=combined_flags,
+            compiler_flags_extra=compiler_flags_extra,
+            linker_flags_extra=linker_flags_extra,
+            cc_override=cc,
+            cxx_override=cxx,
+            init_session=init_session,
+            update=not options.no_update,
+            strip_full_lto=pgo_build,
+            extra_env=pgo_env,
+            strip_flags=strip_flags,
+            toolchain_variant=toolchain_variant,
+            owner_stage=owner_stage,
+            cmake_llvm_dir=cmake_llvm_dir,
+        ))
+    except AlreadyBuilt:
+        # 2.5.1-F2: previously uncaught — a stale same-version artifact in
+        # PKGDEST crashed the pass. Passes stage/install from PKGDEST, so the
+        # existing artifact is the product; route the decision and continue.
+        resolve_already_built("reuse", interactive=False, tag="TOOLCHAIN")
+        _log.info(
+            f"{name}: package already built — reusing existing artifact "
+            "in PKGDEST"
+        )
 
 
 def _build_pass(

@@ -1156,10 +1156,14 @@ def test_already_built_installs_existing_artifact(update_scenario):
     update_scenario.add_artifact("htop-3.4.1-1-x86_64.pkg.tar.zst", "htop")
     update_scenario.build_raises_already_built("htop")
 
-    update_scenario.run(
-        _make_args(),
-        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
-    )
+    import sysforge.primitives.already_built as _ab
+    with patch("sysforge.build_core.resolve_already_built",
+               wraps=_ab.resolve_already_built) as routed:
+        update_scenario.run(
+            _make_args(),
+            installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+        )
+    assert routed.call_count == 1
 
     assert update_scenario.installed_pkg_files() == [
         ["htop-3.4.1-1-x86_64.pkg.tar.zst"]]

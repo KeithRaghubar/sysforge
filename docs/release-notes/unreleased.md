@@ -20,6 +20,12 @@ https://keepachangelog.com/en/1.1.0/
   showing empty `origin=missing`/`sync=missing` source columns for a tree they
   don't own. The pre-flight guards source trees (pkgbases), so a split binary's
   per-member row was pure noise. (2.5.1-B2)
+- One AlreadyBuilt policy seam (`2.5.1-F2`): makepkg exit 13 is now interpreted
+  by a single policy helper (`primitives/already_built.resolve_already_built`)
+  routed from all three catch sites — kernel (unchanged B5 prompt semantics),
+  build_core (unchanged silent reuse), and toolchain, where a stale PKGDEST
+  artifact previously crashed the pass with an unhandled error and now reuses
+  the artifact.
 
 ## Fixed
 

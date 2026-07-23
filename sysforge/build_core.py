@@ -54,6 +54,7 @@ from sysforge.primitives.pacman import (
     get_pkgdest,
 )
 from sysforge.primitives.aur import repo_packages
+from sysforge.primitives.already_built import resolve_already_built
 # Module-top (not lazy) so tests can monkeypatch
 # ``sysforge.build_core.review_target`` to drive gate decisions.
 from sysforge.primitives.pkgbuild_review import (
@@ -868,6 +869,9 @@ def build_and_install(
                     _log.warn(str(e))
                     outcome.pgo_skipped_pkgs.append(target.pkgbase)
                 except AlreadyBuilt:
+                    # 2.5.1-F2: policy-routed. "reuse" is trivially REUSE today;
+                    # the seam call is the one home any future policy lands in.
+                    resolve_already_built("reuse", interactive=interactive)
                     existing = _find_existing_artifacts(
                         search_dir, target.pkgnames, target.pkgbuild_ver,
                     )

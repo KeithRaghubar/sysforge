@@ -322,47 +322,30 @@ def _check_pkgname_repo_collision(pkgname, options):
 def _resolve_already_built_action(options, interactive):
     """Decide what an AlreadyBuilt (makepkg exit 13) kernel build does next (B5).
 
-    A stale same-version package in PKGDEST makes makepkg skip the build
-    entirely — prepare() never runs, so the in-prepare() kconfig review an
-    interactive run promised never happened. An interactive run must not
-    silently install a config it was never shown:
-
-      * interactive run → WARN + prompt: install as-built (``"install"``),
-        rebuild with ``-f`` so the review actually runs (``"rebuild"``), or
-        abort (raises);
-      * unattended run (``--non-interactive``, ``interactive = false``, or no
-        TTY) → keep the proceed behaviour: ``"install"``.
+    Policy lives in the one-home seam (2.5.1-F2):
+    ``primitives.already_built.resolve_already_built`` with the
+    ``review-gated`` posture — a stale same-version package in PKGDEST made
+    makepkg skip the build, so the in-prepare() kconfig review an interactive
+    run promised never happened. This wrapper only adapts the seam's action
+    enum to the stage's ``"install"``/``"rebuild"`` vocabulary.
     """
-    from sysforge.primitives.prompt import is_interactive, prompt_choice
+    from sysforge.primitives.already_built import (
+        AlreadyBuiltAction,
+        resolve_already_built,
+    )
 
-    unattended = (
-        not interactive
-        or bool(getattr(options, "non_interactive", False))
-        or not is_interactive()
-    )
-    if unattended:
-        _log.info("Kernel package already built — proceeding to audit + install")
-        return "install"
-    _log.warn(
-        "Kernel package already built (stale package in PKGDEST) — makepkg "
-        "skipped the build, so the interactive kconfig review did NOT run."
-    )
-    choice = prompt_choice(
-        "Install as-built (i), rebuild with -f to review the config (r), "
-        "or abort (a)? [i/r/A]: ",
-        choices=("i", "r", "a"),
-        default="a",
-        eof_default="a",
+    action = resolve_already_built(
+        "review-gated",
+        interactive=interactive,
+        non_interactive=bool(getattr(options, "non_interactive", False)),
         tag="KERNEL",
-        level="WARN",
+        abort_hint=(
+            "the kconfig review did not run. Rebuild with `-f` (choice r), "
+            "bump pkgver/pkgrel, or remove the stale package from PKGDEST "
+            "for a fresh build."
+        ),
     )
-    if choice == "a":
-        raise RuntimeError(
-            "[KERNEL] aborted: package already built — the kconfig review did "
-            "not run. Rebuild with `-f` (choice r), bump pkgver/pkgrel, or "
-            "remove the stale package from PKGDEST for a fresh build."
-        )
-    return "rebuild" if choice == "r" else "install"
+    return "rebuild" if action is AlreadyBuiltAction.REBUILD else "install"
 
 
 def _resolve_names(kernel_cfg):

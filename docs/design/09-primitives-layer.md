@@ -306,6 +306,11 @@ High-level flow:
 10. Resolve env vars for subprocess injection
 11. Invoke `makepkg -p PKGBUILD.sysforge` with temp conf and injected env
 
+The `AlreadyBuilt` *policy* (what a catch site does next) lives in
+`already_built.py` (`resolve_already_built`, postures `reuse`/`review-gated`)
+— decide-only, no tag of its own (logs under the caller's tag); the exception
+itself stays in `makepkg_invoke.py`.
+
 **System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
 
 **Flag guards in `emit_makepkg_conf`:** before writing the conf, several scrubs run so a known-broken flag never reaches makepkg:

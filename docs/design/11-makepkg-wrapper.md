@@ -45,7 +45,21 @@ TOOLCHAIN_MISMATCH_PATTERNS = (
 
 When any pattern matches and the process exits non-zero, `invoke_makepkg` raises `ToolchainMismatchError` (a `subprocess.CalledProcessError` subclass) instead of the plain exception. `_invoke_with_retry` re-raises this type unchanged — bypassing the interactive "correct manually" prompt — and `_run_build` catches it, sets `reactive_gcc_fallback=True`, and re-enters `emit_makepkg_conf` exactly once. The second attempt fires guards 3–4 (thin-LTO rewrite, LTO-disable for lld) regardless of the profile's CC and typically succeeds. If the retry also fails, the error bubbles out as a normal build failure.
 
-`AlreadyBuilt` (carries the offending pkgbuild path) is raised when the makepkg run exits 13 (`E_ALREADY_BUILT`) or its stdout contains `"A package has already been built"` — covers chroot wrappers that may rewrite the exit code. Distinct from `CalledProcessError` so callers (currently `update.py`'s build loop) can locate the existing `.pkg.tar` in PKGDEST and install it instead of marking the build failed. `PGOBuildSkipped` is the third wrapper-specific exception: raised from `_run_build` when a `pgo_llvm_toolchain` build needs profdata that's absent/incompatible and the user (or non-interactive default) chose to skip.
+`AlreadyBuilt` (carries the offending pkgbuild path) is raised when the makepkg run exits 13 (`E_ALREADY_BUILT`) or its stdout contains `"A package has already been built"` — covers chroot wrappers that may rewrite the exit code. Distinct from `CalledProcessError` so callers can act on it instead of marking the build failed.
+
+Interpretation is centralized (2.5.1-F2): every catch site routes its decision
+through `primitives/already_built.resolve_already_built` — a decide-only policy
+seam with two postures. `"reuse"` (build_core's batch loop, the toolchain
+passes) treats the existing PKGDEST artifact as the product and proceeds;
+`"review-gated"` (kernel stage) preserves the B5 semantics — the skipped build
+also skipped the promised in-prepare() kconfig review, so interactive runs get
+an install-as-built / rebuild-with-`-f` / abort prompt while unattended runs
+proceed. The unattended arbitration (caller interactivity ∧ `--non-interactive`
+∧ TTY) lives only in the seam. `makepkg_wrapper`'s own `except AlreadyBuilt`
+(manifest capture for renamed builds) is a side-effect that fires regardless of
+policy, then re-raises.
+
+`PGOBuildSkipped` is the third wrapper-specific exception: raised from `_run_build` when a `pgo_llvm_toolchain` build needs profdata that's absent/incompatible and the user (or non-interactive default) chose to skip.
 
 To make the pattern scan work for every build mode, `invoke_makepkg` uses a `Popen`-with-tee capture path for non-interactive builds: each line is matched against the patterns, then forwarded to stdout (or to `[DEBUG][MAKEPKG]` when verbosity ≥ 3). stdin remains inherited so sudo prompts still work. The capture path is **skipped entirely when `interactive=True`** (see §Interactive mode) — in that branch the child inherits stdout/stderr directly, so the toolchain-mismatch auto-retry is unavailable. Batch flows (`update`, pipeline stages other than `kernel`) leave `interactive=False`, so they retain the retry.
 
