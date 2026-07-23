@@ -302,10 +302,17 @@ def _artifacts_for_pkgbuild(pkgbuild_dir) -> list:
         if any(_parse_built_pkg_filename(name, p.name) is not None
                for name in pkgnames)
     ]
-    # If nothing matched (e.g. unresolved pkgver in the static parse left the
-    # filenames unrecognisable), don't silently install nothing — let the
-    # caller's empty-list check raise its clearer error against the full union.
-    return scoped or found
+    # Return the scoped set even when empty — do NOT degrade to the full PKGDEST
+    # union. When the PKGBUILD parses cleanly and advertises pkgnames but none of
+    # them match any artifact, this build's output simply isn't here under those
+    # names — the common cause being a rename (kernel ``linux`` → ``linux-sysforge``
+    # via patch_pkgbase_rename), whose renamed artifacts the un-patched on-disk
+    # PKGBUILD can't name. That case is handled by the build-time manifest (tier 1
+    # above); if the manifest is somehow absent, the caller must fail loudly
+    # ("nothing to install") rather than hand a shared PKGDEST of hundreds of
+    # unrelated packages — old kernels, downgrades, conflicting -git builds — to
+    # ``pacman -U`` and risk bricking the system.
+    return scoped
 
 
 def _capture_built_manifest(patched_pkgbuild_path) -> None:
@@ -874,10 +881,17 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         record_build_result(pkgname, cc_delta, sc_delta)
 
         success = True
-        # B9: record the exact emitted basenames while the patched PKGBUILD is
-        # still present, so the (later, decoupled) install step matches this
-        # build's artifacts precisely instead of prefix-globbing PKGDEST.
-        if extracted_profile is not None:
+        # B9/B3: record the exact emitted basenames while the patched PKGBUILD
+        # is still present, so the (later, decoupled) install step matches this
+        # build's artifacts precisely instead of prefix-globbing PKGDEST. Fire
+        # whenever the on-disk names may differ from the un-patched PKGBUILD —
+        # i.e. an extracted profile OR a rename (kernel local-rename / -sysforge
+        # suffix). A rename is exactly the case pkgname scoping can't recover at
+        # install time (``linux`` PKGBUILD, ``linux-sysforge-*`` artifacts), so
+        # without the manifest the install would find nothing to attribute.
+        # ``pkgbuild_path`` here is the patched sidecar, so --packagelist emits
+        # the renamed names.
+        if extracted_profile is not None or rename or local_rename:
             _capture_built_manifest(pkgbuild_path)
     except (RuntimeError, AlreadyBuilt):
         raise

@@ -401,6 +401,74 @@ def test_install_built_packages_scopes_to_pkgbuild_pkgnames(tmp_path, monkeypatc
     assert not any("firefox" in arg or "ripgrep" in arg for arg in calls["cmd"])
 
 
+def test_install_built_packages_renamed_no_manifest_refuses_full_pkgdest(
+        tmp_path, monkeypatch):
+    """A renamed build with no manifest must NOT install the whole PKGDEST.
+
+    Regression (near-brick): a locally-renamed kernel (``linux`` →
+    ``linux-sysforge``) leaves the on-disk PKGBUILD advertising pkgname
+    ``linux``, which matches none of the renamed ``linux-sysforge-*``
+    artifacts. When the build-time manifest was also absent, scoping fell
+    through to ``return scoped or found`` and handed the *entire shared
+    PKGDEST* — hundreds of unrelated packages, old kernels, downgrades — to
+    ``pacman -U``. It must refuse (raise) rather than install what it cannot
+    positively attribute to this build.
+    """
+    from sysforge.primitives import makepkg_wrapper as mw
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
+    # The renamed kernel's real output...
+    (pkgdest / "linux-sysforge-7.1.4.arch1-1-x86_64.pkg.tar").touch()
+    (pkgdest / "linux-sysforge-headers-7.1.4.arch1-1-x86_64.pkg.tar").touch()
+    # ...amid a populated shared PKGDEST.
+    (pkgdest / "firefox-130-1-x86_64.pkg.tar.zst").touch()
+    (pkgdest / "linux-custom-7.0.11.arch1-1-x86_64.pkg.tar").touch()
+    # On-disk PKGBUILD is the un-renamed upstream (patched sidecar is gone).
+    (tmp_path / "PKGBUILD").write_text(
+        "pkgbase=linux\n"
+        "pkgname=('linux' 'linux-headers')\n"
+        "pkgver=7.1.4.arch1\npkgrel=1\narch=('x86_64')\n"
+    )
+
+    def fake_run(cmd, *a, **k):
+        raise AssertionError(f"pacman must not run on unscoped set: {cmd}")
+
+    with patch("sysforge.primitives.makepkg_wrapper.subprocess.run", fake_run), \
+            pytest.raises(RuntimeError, match="nothing to install|could not scope"):
+        mw.install_built_packages(tmp_path)
+
+
+def test_install_built_packages_uses_manifest_for_renamed_build(
+        tmp_path, monkeypatch):
+    """With a build-time manifest, a renamed kernel installs exactly its set."""
+    from sysforge.primitives import makepkg_wrapper as mw
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
+    (pkgdest / "linux-sysforge-7.1.4.arch1-1-x86_64.pkg.tar").touch()
+    (pkgdest / "linux-sysforge-headers-7.1.4.arch1-1-x86_64.pkg.tar").touch()
+    (pkgdest / "linux-custom-7.0.11.arch1-1-x86_64.pkg.tar").touch()
+    (tmp_path / "PKGBUILD").write_text("pkgbase=linux\npkgname=linux\n")
+    (tmp_path / mw._BUILT_MANIFEST_NAME).write_text(
+        "linux-sysforge-7.1.4.arch1-1-x86_64.pkg.tar\n"
+        "linux-sysforge-headers-7.1.4.arch1-1-x86_64.pkg.tar\n"
+    )
+    calls = {}
+
+    def fake_run(cmd, *a, **k):
+        calls["cmd"] = cmd
+        return SimpleNamespace(returncode=0)
+
+    with patch("sysforge.primitives.makepkg_wrapper.subprocess.run", fake_run):
+        pkgs = mw.install_built_packages(tmp_path)
+    assert {p.name for p in pkgs} == {
+        "linux-sysforge-7.1.4.arch1-1-x86_64.pkg.tar",
+        "linux-sysforge-headers-7.1.4.arch1-1-x86_64.pkg.tar",
+    }
+    assert not any("linux-custom" in a for a in calls["cmd"])
+
+
 def test_install_built_packages_no_artifact_raises(tmp_path, monkeypatch):
     from sysforge.primitives import makepkg_wrapper as mw
     monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: None)
@@ -413,9 +481,9 @@ def test_install_built_packages_pacman_failure_raises(tmp_path, monkeypatch):
     monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: None)
     (tmp_path / "linux-custom-1-1-x86_64.pkg.tar.zst").touch()
     with patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
-               lambda cmd, *a, **k: SimpleNamespace(returncode=1)):
-        with pytest.raises(RuntimeError, match="pacman -U failed"):
-            mw.install_built_packages(tmp_path)
+               lambda cmd, *a, **k: SimpleNamespace(returncode=1)), \
+            pytest.raises(RuntimeError, match="pacman -U failed"):
+        mw.install_built_packages(tmp_path)
 
 
 def test_no_install_option_default_false():

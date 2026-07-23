@@ -36,12 +36,18 @@ https://keepachangelog.com/en/1.1.0/
   excluded from `makedep_versions` (the staged libLLVM is still pinned via the
   Merkle-chained `staged_dep_fps`); external build-deps still invalidate.
   Fingerprint schema bumped to v3. (2.5.1-B2)
-- Kernel-stage install no longer sweeps in unrelated `linux-*` packages. When
-  the build-time manifest was absent, install scoping fell back to pkgname
-  matching, whose filename parser anchored on a bare `<pkgname>-` prefix — so a
-  kernel with pkgname `linux` matched `linux-custom`, `linux-sysforge`,
-  `linux-steam-integration`, etc., and a lenient `rsplit` let the bogus tail
-  parse as a valid version. The parser now requires an exact
+- Kernel-stage install no longer installs the wrong packages — in the worst
+  case the *entire shared PKGDEST*. Three faults compounded: (1) the built-file
+  parser anchored on a bare `<pkgname>-` prefix, so pkgname `linux` matched
+  `linux-custom`, `linux-sysforge`, `linux-steam-integration`, etc. (a lenient
+  `rsplit` let the bogus tail parse as a valid version); (2) the build-time
+  manifest that scopes a *renamed* kernel (`linux` → `linux-sysforge`) was
+  captured only for builds with an extracted profile, so a rename-only kernel
+  build never recorded one; (3) with no manifest and no pkgname match, artifact
+  scoping degraded to the full PKGDEST union and handed hundreds of unrelated
+  packages to `pacman -U`. Fixes: the parser now requires an exact
   `[epoch:]pkgver-pkgrel-arch` tail (three hyphen-delimited fields, per
-  `PKGBUILD(5)`'s no-hyphens-in-pkgver rule), rejecting foreign prefix matches.
-  (2.5.1-B3)
+  `PKGBUILD(5)`'s no-hyphens-in-pkgver rule); the manifest is captured for any
+  name-affecting build (extracted profile **or** rename); and scoping never
+  degrades to the full PKGDEST — an unscopable install now fails loudly rather
+  than installing everything. (2.5.1-B3)
