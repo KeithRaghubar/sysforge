@@ -760,3 +760,77 @@ def test_run_build_rename_noop_when_names_match(tmp_path):
                           kernel_build=True, rename_pkgbase_to="linux-zen")
     assert info is None
     assert "pkgbase=linux-zen" in (tmp_path / "PKGBUILD.sysforge").read_text()
+
+
+# ---------------------------------------------------------------------------
+# kernel_build derivation — stage authority (2.5.1-B9)
+#
+# run() derived kernel_build solely from profile rule matching
+# (build_mode == "kernel"), so with no [[rules]] entry mapping the kernel
+# package to the kernel profile (the shipped default — the rule ships
+# commented out), every kernel patcher silently no-oped: no fragment merge,
+# no kconfig_targets block, no nconfig. The invoking stage already stamps
+# owner_stage="kernel"; that authority must win regardless of profile rules.
+# ---------------------------------------------------------------------------
+
+def test_run_owner_stage_kernel_forces_kernel_build(tmp_path):
+    """owner_stage="kernel" → _run_build gets kernel_build=True even when no
+    profile rule resolves build_mode="kernel"."""
+    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.primitives.makepkg_wrapper import BuildOptions
+
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=linux-unruled\npkgver=1\npkgrel=1\n")
+
+    captured = {}
+
+    def fake_run_build(pb, profile, config, matched, **kwargs):
+        captured.update(kwargs)
+
+    with patch.object(mw, "_run_build", side_effect=fake_run_build):
+        mw.run(pkgbuild, options=BuildOptions(
+            update=False, pkg_log=False, owner_stage="kernel"))
+
+    assert captured.get("kernel_build") is True
+
+
+def test_run_no_owner_stage_keeps_profile_derivation(tmp_path):
+    """Without owner_stage, kernel_build still follows profile build_mode
+    (False here — no rule maps this package to the kernel profile)."""
+    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.primitives.makepkg_wrapper import BuildOptions
+
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=linux-unruled\npkgver=1\npkgrel=1\n")
+
+    captured = {}
+
+    def fake_run_build(pb, profile, config, matched, **kwargs):
+        captured.update(kwargs)
+
+    with patch.object(mw, "_run_build", side_effect=fake_run_build):
+        mw.run(pkgbuild, options=BuildOptions(update=False, pkg_log=False))
+
+    assert captured.get("kernel_build") is False
+
+
+def test_run_profile_override_kernel_derives_kernel_build(tmp_path):
+    """The profile-derived path still works without owner_stage: an explicit
+    kernel profile (build_mode="kernel") yields kernel_build=True. Pins the
+    rule-routed derivation the fixture's (now commented) kernel rule covered."""
+    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.primitives.makepkg_wrapper import BuildOptions
+
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=linux-unruled\npkgver=1\npkgrel=1\n")
+
+    captured = {}
+
+    def fake_run_build(pb, profile, config, matched, **kwargs):
+        captured.update(kwargs)
+
+    with patch.object(mw, "_run_build", side_effect=fake_run_build):
+        mw.run(pkgbuild, options=BuildOptions(
+            update=False, pkg_log=False, profile_override="kernel"))
+
+    assert captured.get("kernel_build") is True

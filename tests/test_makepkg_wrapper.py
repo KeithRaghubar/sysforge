@@ -111,3 +111,28 @@ def test_install_built_packages_drops_manifest_on_success(
     makepkg_wrapper.install_built_packages(tmp_path)
 
     assert not manifest.exists()
+
+
+def test_install_built_packages_failure_names_artifacts(
+        monkeypatch, _capture_run, tmp_path):
+    """B7: the failure names what it tried to install — the exit code alone
+    is undiagnosable after the fact."""
+    _capture_run["rc"] = 1
+    pkg = Path("/pkgdest/foo-1-1-x86_64.pkg.tar.zst")
+    _fake_artifacts(monkeypatch, [pkg])
+
+    with pytest.raises(RuntimeError, match="foo-1-1-x86_64"):
+        makepkg_wrapper.install_built_packages(tmp_path)
+
+
+def test_install_built_packages_interactive_failure_notes_tty(
+        monkeypatch, _capture_run, tmp_path):
+    """B7: interactive installs (noconfirm=False) inherit stdio, so pacman's
+    output was never captured — the error must say where it went and that a
+    declined prompt also exits 1."""
+    _capture_run["rc"] = 1
+    pkg = Path("/pkgdest/foo-1-1-x86_64.pkg.tar.zst")
+    _fake_artifacts(monkeypatch, [pkg])
+
+    with pytest.raises(RuntimeError, match="terminal"):
+        makepkg_wrapper.install_built_packages(tmp_path, noconfirm=False)

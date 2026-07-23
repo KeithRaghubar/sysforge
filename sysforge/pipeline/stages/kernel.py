@@ -319,6 +319,52 @@ def _check_pkgname_repo_collision(pkgname, options):
         )
 
 
+def _resolve_already_built_action(options, interactive):
+    """Decide what an AlreadyBuilt (makepkg exit 13) kernel build does next (B5).
+
+    A stale same-version package in PKGDEST makes makepkg skip the build
+    entirely — prepare() never runs, so the in-prepare() kconfig review an
+    interactive run promised never happened. An interactive run must not
+    silently install a config it was never shown:
+
+      * interactive run → WARN + prompt: install as-built (``"install"``),
+        rebuild with ``-f`` so the review actually runs (``"rebuild"``), or
+        abort (raises);
+      * unattended run (``--non-interactive``, ``interactive = false``, or no
+        TTY) → keep the proceed behaviour: ``"install"``.
+    """
+    from sysforge.primitives.prompt import is_interactive, prompt_choice
+
+    unattended = (
+        not interactive
+        or bool(getattr(options, "non_interactive", False))
+        or not is_interactive()
+    )
+    if unattended:
+        _log.info("Kernel package already built — proceeding to audit + install")
+        return "install"
+    _log.warn(
+        "Kernel package already built (stale package in PKGDEST) — makepkg "
+        "skipped the build, so the interactive kconfig review did NOT run."
+    )
+    choice = prompt_choice(
+        "Install as-built (i), rebuild with -f to review the config (r), "
+        "or abort (a)? [i/r/A]: ",
+        choices=("i", "r", "a"),
+        default="a",
+        eof_default="a",
+        tag="KERNEL",
+        level="WARN",
+    )
+    if choice == "a":
+        raise RuntimeError(
+            "[KERNEL] aborted: package already built — the kconfig review did "
+            "not run. Rebuild with `-f` (choice r), bump pkgver/pkgrel, or "
+            "remove the stale package from PKGDEST for a fresh build."
+        )
+    return "rebuild" if choice == "r" else "install"
+
+
 def _resolve_names(kernel_cfg):
     """Resolve ``(upstream_pkgname, pkgname)`` from kernel.toml (F40).
 
@@ -1511,8 +1557,13 @@ def _gate2_kconfig_drift(pkgbuild_dir, fragment_path):
 
     config_path = _resolve_built_config(pkgbuild_dir)
     if config_path is None:
-        _log.info(
-            "kconfig drift check skipped — resolved .config not found in build tree"
+        # B6: WARN, not INFO — on the AlreadyBuilt path there is no build
+        # tree at all, so this advisory audit silently never runs exactly
+        # where a stale build makes it most relevant. Say so, visibly.
+        _log.warn(
+            "kconfig drift check did not run — resolved .config not found in "
+            "build tree (no fresh build this run, e.g. package already built): "
+            "merged kconfig options were NOT verified against the built kernel"
         )
         return
 
@@ -1739,8 +1790,22 @@ class KernelStage(Stage):
         # (typically `make nconfig`) runs as written, and the makepkg
         # subprocess inherits the parent's stdout/stderr so ncurses-driven
         # kconfig UIs render on the controlling TTY.
+        # B8: interactive requires config ∧ ¬--non-interactive ∧ TTY — the
+        # same three-way resolution the stage's sibling prompts (repo-pkgname
+        # collision, diverged-source confirm) already use. Without the TTY leg
+        # the stage promised an nconfig review that a piped/captured run could
+        # never render, then silently EOF'd through it.
+        from sysforge.primitives.prompt import is_interactive as _tty
         cfg_interactive = bool(kernel_cfg.get("interactive", True))
-        interactive = cfg_interactive and not getattr(options, "non_interactive", False)
+        flag_non_interactive = bool(getattr(options, "non_interactive", False))
+        interactive = cfg_interactive and not flag_non_interactive and _tty()
+        if cfg_interactive and not flag_non_interactive and not interactive:
+            _log.warn(
+                "interactive kconfig review requested (kernel.toml "
+                "interactive = true) but no TTY is attached — running "
+                "unattended; the config review will NOT run. Pass "
+                "--non-interactive to make this explicit."
+            )
 
         # F37: configured kconfig_targets sequence — resolved/validated here
         # (config-load time) so a bad list (unknown target, two UI targets, a
@@ -1960,6 +2025,10 @@ class KernelStage(Stage):
             # any mutation and the running kernel stays bootable. The build
             # itself mutates nothing, so it runs outside the install sentinel;
             # a Gate 2 abort therefore leaves no sentinel behind.
+            # B7: True when the install below installs a previously built
+            # (stale) package rather than this run's fresh build — the
+            # install-failure guidance keys on it to break the re-run loop.
+            already_built = False
             if options.dry_run:
                 _log.ui(f"[dry-run] would build {pkgname} (no install) from {pkgbuild}")
             else:
@@ -1971,9 +2040,14 @@ class KernelStage(Stage):
                 # merges — the exact "confirm before the config is assembled"
                 # defeat B6 describes — so it is deliberately not emitted here.
                 _log.info(f"Building kernel (no install): {pkgname} from {pkgbuild}")
-                try:
-                    makepkg_run(pkgbuild, options=make_build_options(
+
+                def _kernel_build_options(extra_flags=None):
+                    # One builder for both the normal build and the B5
+                    # AlreadyBuilt "rebuild to review" retry (which adds -f) —
+                    # so the retry can never drift from the real build's options.
+                    return make_build_options(
                         "kernel", options,
+                        extra_flags=extra_flags,
                         log_dir=options.log_dir,
                         profile_conf=(
                             getattr(options, "profile_conf", None)
@@ -2010,11 +2084,22 @@ class KernelStage(Stage):
                                 else None
                             )
                         ),
-                    ))
-                except AlreadyBuilt:
-                    _log.info(
-                        "Kernel package already built — proceeding to audit + install",
                     )
+
+                try:
+                    makepkg_run(pkgbuild, options=_kernel_build_options())
+                except AlreadyBuilt:
+                    # B5: makepkg exit 13 skipped the build — and with it the
+                    # in-prepare() kconfig review an interactive run promised.
+                    # Ask the operator (install as-built / rebuild with -f to
+                    # review / abort); unattended runs keep the proceed path.
+                    if _resolve_already_built_action(options, interactive) == "rebuild":
+                        makepkg_run(
+                            pkgbuild,
+                            options=_kernel_build_options(extra_flags=["-f"]),
+                        )
+                    else:
+                        already_built = True
 
                 # Gate 2 — resolved-.config audit (raises on brick, pre-install).
                 _gate2_audit(
@@ -2044,7 +2129,22 @@ class KernelStage(Stage):
                 if options.dry_run:
                     _log.ui(f"[dry-run] would install {fdo_eff_pkgname} and wire it into boot")
                 else:
-                    install_built_packages(pkgbuild.parent, noconfirm=not interactive)
+                    try:
+                        install_built_packages(
+                            pkgbuild.parent, noconfirm=not interactive)
+                    except RuntimeError as e:
+                        if already_built:
+                            # B7: AlreadyBuilt → install-as-built → install
+                            # failure is the state that reproduces itself on
+                            # every re-run (the stale package keeps
+                            # short-circuiting the build). Point at the exit.
+                            raise RuntimeError(
+                                f"[KERNEL] {e} — installing a previously built "
+                                "(stale) package failed; break the loop with a "
+                                "fresh build: bump pkgver/pkgrel, or remove the "
+                                "stale package(s) from PKGDEST and re-run."
+                            ) from e
+                        raise
 
                 _run_mkinitcpio(options.dry_run)
                 _update_bootloader(bootloader, options.dry_run)

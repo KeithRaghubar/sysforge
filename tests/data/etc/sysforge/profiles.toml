@@ -229,10 +229,14 @@ profile = "cosmic"
 priority = 10
 append_groups = ["cosmic-patched"]
 
-[[rules]]
-pkgnames = ["linux-custom"]
-profile = "kernel"
-priority = 20
+# Kernel routing ships commented out (matching etc/sysforge/profiles.toml) —
+# kernel_build authority comes from the stage's owner_stage stamp (2.5.1-B9),
+# not this rule. Tests that exercise RULE-routed kernel builds construct the
+# rule explicitly; keeping it active here masked the shipped-default state.
+# [[rules]]
+# pkgnames = ["linux-custom"]
+# profile = "kernel"
+# priority = 20
 
 [[rules]]
 pkgnames = ["llvm", "clang", "lld"]

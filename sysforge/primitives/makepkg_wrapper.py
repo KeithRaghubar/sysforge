@@ -367,7 +367,19 @@ def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
         f"Installing built package(s): {', '.join(p.name for p in pkgs)}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        raise RuntimeError(f"pacman -U failed (exit {result.returncode})")
+        # B7: pacman inherits stdio here, so its output was never captured —
+        # name the artifacts and (interactive) where the output went, or the
+        # failure is undiagnosable from the log after the fact.
+        msg = (
+            f"pacman -U failed (exit {result.returncode}) installing "
+            f"{', '.join(p.name for p in pkgs)}"
+        )
+        if not noconfirm:
+            msg += (
+                " — pacman's output went to the terminal (not captured); "
+                "note a declined pacman prompt also exits 1"
+            )
+        raise RuntimeError(msg)
     # B9: the build-time manifest has served its purpose — drop it so a later
     # unrelated build in the same dir doesn't read a stale artifact list.
     manifest = Path(pkgbuild_dir) / _BUILT_MANIFEST_NAME
@@ -1194,7 +1206,14 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             build_mode = get_build_mode(matched_rules, config)
             resolved_profile = None  # resolved below after extracted_profile is known
 
-        kernel_build = (build_mode == "kernel")
+        # B9: the invoking stage's authority wins — the kernel stage stamps
+        # owner_stage="kernel" into BuildOptions, and its build must get the
+        # kernel patchers regardless of whether the user's profiles.toml has a
+        # [[rules]] entry mapping the package to the kernel profile (the
+        # shipped default ships that rule commented out, which silently
+        # no-oped every kernel patcher: no fragment merge, no kconfig_targets,
+        # no nconfig). Profile derivation remains for rule-routed builds.
+        kernel_build = (build_mode == "kernel") or options.owner_stage == "kernel"
 
         # pgo_llvm_toolchain: inject -fprofile-use if saved profdata is compatible,
         # otherwise prompt to plain-build or skip (default: skip).

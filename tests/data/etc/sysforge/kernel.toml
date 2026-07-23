@@ -56,8 +56,10 @@ pkgname = "linux-sysforge"      # LOCAL package name to build/install as. For a
 
 # interactive = true            # default: true — the PKGBUILD's `make nconfig`
 #                               # / `menuconfig` runs as written so the user can
-#                               # review/edit the resolved kconfig. Set to false
-#                               # (or pass `--non-interactive`) to patch interactive
+#                               # review/edit the resolved kconfig. Requires a
+#                               # real TTY: piped/captured runs downgrade to
+#                               # unattended with a warning. Set to false (or
+#                               # pass `--non-interactive`) to patch interactive
 #                               # targets to `make olddefconfig` for unattended runs.
 
 # compiler = "gcc"              # "gcc" | "llvm" — kernel-stage compiler override.

@@ -63,3 +63,38 @@ https://keepachangelog.com/en/1.1.0/
   guard, so the decoupled install step can locate the existing artifacts. This
   completes 2.5.1-B3, which fixed the fresh-rename case but not the re-run one.
   (2.5.1-B4)
+- An interactive kernel run no longer silently skips the promised kconfig
+  review when makepkg short-circuits with "package already built" (a stale
+  same-version package in PKGDEST — exit 13 skips `prepare()`, and the
+  interactive `make nconfig` review lives inside it). The stage now warns that
+  the review did not run and prompts: install as-built, rebuild with `-f` so
+  the review actually happens, or abort (the default). Unattended runs
+  (`--non-interactive`, `interactive = false`, or no TTY) keep the proceed
+  behaviour. (2.5.1-B5)
+- The kernel Gate-2 kconfig drift check now WARNs (was INFO) when it cannot
+  run because no resolved `.config` exists in the build tree — the standing
+  state on every "package already built" re-run, where the advisory audit
+  silently never verified the merged options against the built kernel. The
+  message now names the cause and the consequence. (2.5.1-B6)
+- Kernel install failures are now diagnosable and the stale-package re-run
+  loop is broken: `pacman -U` failures name the artifacts they tried to
+  install (and, on interactive installs, note that pacman's output went to
+  the terminal uncaptured and that a declined prompt also exits 1); when the
+  failed install was of a previously built package (the "already built"
+  path), the error points at the exit — fresh build via pkgver/pkgrel bump or
+  removing the stale package(s) from PKGDEST. (2.5.1-B7)
+- The kernel stage's interactive-kconfig gate now requires a real TTY, matching
+  the stage's other prompts (config ∧ no `--non-interactive` ∧ TTY). Previously
+  it consulted only config + flag, so a piped/captured run "promised" an
+  nconfig review that could never render and silently EOF'd through it. A
+  config-requested review downgraded by a missing TTY is now WARNed instead of
+  silent. (2.5.1-B8)
+- Kernel-stage builds now always get the kernel PKGBUILD patchers. The wrapper
+  derived `kernel_build` solely from profile rule matching (`build_mode ==
+  "kernel"`), so without a `[[rules]]` entry mapping the kernel package to the
+  kernel profile — the shipped default ships that rule commented out — every
+  kernel patcher silently no-oped: no `sysforge.config` fragment merge, no
+  `kconfig_targets` sequence, no interactive `make nconfig`, while the stage
+  logged the full kconfig plan as if it applied. The stage's
+  `owner_stage="kernel"` stamp is now authoritative; profile derivation remains
+  for rule-routed builds. (2.5.1-B9)

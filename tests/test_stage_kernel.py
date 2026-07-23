@@ -170,7 +170,8 @@ def test_format_kconfig_n():
     assert _format_kconfig_line("CONFIG_NOUVEAU", "n") == "# CONFIG_NOUVEAU is not set"
 
 def test_format_kconfig_string():
-    assert _format_kconfig_line("CONFIG_LOCALVERSION", "-sysforge") == 'CONFIG_LOCALVERSION="-sysforge"'
+    assert (_format_kconfig_line("CONFIG_LOCALVERSION", "-sysforge")
+            == 'CONFIG_LOCALVERSION="-sysforge"')
 
 def test_format_kconfig_integer_string():
     assert _format_kconfig_line("CONFIG_HZ", "1000") == 'CONFIG_HZ="1000"'
@@ -729,8 +730,12 @@ def test_gate2_kconfig_drift_no_resolved_config_skips(tmp_path, monkeypatch):
     with _capture_logs() as logs:
         _km._gate2_kconfig_drift(tmp_path, fragment)
 
-    assert not _warn_messages(logs)
-    assert any("resolved .config not found" in m for m in _info_messages(logs))
+    # B6: the skip is a WARN, not an INFO — on the AlreadyBuilt path there is
+    # no build tree, so the advisory audit silently never ran. The message
+    # names the why (no build tree) so the operator knows the audit is dead.
+    warned = _warn_messages(logs)
+    assert any("resolved .config not found" in m for m in warned)
+    assert any("did not run" in m for m in warned)
 
 def test_write_kconfig_fragment_dry_run_no_file(tmp_path):
     builds = tmp_path / "builds"
@@ -1108,9 +1113,10 @@ def test_kernel_stage_mkinitcpio_failure_raises(tmp_path):
 
     with patch.object(_km, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
-         patch("sysforge.pipeline.stages.kernel.subprocess.run", side_effect=fail_mkinitcpio):
-        with pytest.raises(RuntimeError, match="mkinitcpio"):
-            KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+         patch("sysforge.pipeline.stages.kernel.subprocess.run",
+               side_effect=fail_mkinitcpio), \
+         pytest.raises(RuntimeError, match="mkinitcpio"):
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
 
 def test_kernel_stage_writes_kconfig_fragment_when_hw_profile_present(tmp_path):
     import sysforge.pipeline.stages.kernel as _km
@@ -1324,6 +1330,7 @@ def test_gate1_warns_when_headers_disabled(monkeypatch):
 
 
 def test_kernel_stage_passes_interactive_true_by_default(tmp_path):
+    # B8: "by default" now means config-default AND a TTY — pin the TTY.
     import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
@@ -1332,6 +1339,7 @@ def test_kernel_stage_passes_interactive_true_by_default(tmp_path):
 
     with patch.object(_km, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
@@ -1573,9 +1581,9 @@ def test_kernel_stage_sync_failure_raises(tmp_path):
          patch("sysforge.pipeline.stages.kernel.get_scheduler",
                return_value=scheduler_mock), \
          patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
-         patch("sysforge.pipeline.stages.kernel.subprocess.run"):
-        with pytest.raises(RuntimeError, match="source sync failed"):
-            KernelStage().run({}, state, opts)
+         patch("sysforge.pipeline.stages.kernel.subprocess.run"), \
+         pytest.raises(RuntimeError, match="source sync failed"):
+        KernelStage().run({}, state, opts)
 
 
 def _run_kernel_diverged(tmp_path, *, interactive, answer="n"):
@@ -1630,9 +1638,9 @@ def test_kernel_stage_sync_diverged_aborts_unattended(tmp_path):
                return_value=("diverged_upstream", 1, 2)), \
          patch("sysforge.primitives.prompt.is_interactive", return_value=False), \
          patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
-         patch("sysforge.pipeline.stages.kernel.subprocess.run"):
-        with pytest.raises(RuntimeError, match="diverged source unattended"):
-            KernelStage().run({}, state, opts)
+         patch("sysforge.pipeline.stages.kernel.subprocess.run"), \
+         pytest.raises(RuntimeError, match="diverged source unattended"):
+        KernelStage().run({}, state, opts)
     mock_build.assert_not_called()
 
 
@@ -1886,9 +1894,8 @@ def test_kernel_stage_preserves_sentinel_on_mkinitcpio_failure(tmp_path):
     with patch.object(_km, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run",
-               side_effect=fail_mkinitcpio):
-        with pytest.raises(RuntimeError, match="mkinitcpio"):
-            KernelStage().run({}, state, make_options(state_dir=state_dir))
+               side_effect=fail_mkinitcpio), pytest.raises(RuntimeError, match="mkinitcpio"):
+        KernelStage().run({}, state, make_options(state_dir=state_dir))
 
     record = StageSentinel(state_dir).get_active()
     assert record is not None
@@ -1923,9 +1930,8 @@ def test_kernel_stage_sentinel_records_compiler_metadata_gcc(tmp_path):
     with patch.object(_km, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run",
-               side_effect=fail_mkinitcpio):
-        with pytest.raises(RuntimeError):
-            KernelStage().run({}, state, opts)
+               side_effect=fail_mkinitcpio), pytest.raises(RuntimeError):
+        KernelStage().run({}, state, opts)
 
     assert seen.get("compiler") == "gcc"
     assert seen.get("pkgname") == "linux-git"
@@ -1958,9 +1964,8 @@ def test_kernel_stage_sentinel_records_compiler_metadata_llvm(tmp_path):
     with patch.object(_km, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run",
-               side_effect=fail_mkinitcpio):
-        with pytest.raises(RuntimeError):
-            KernelStage().run({}, state, opts)
+               side_effect=fail_mkinitcpio), pytest.raises(RuntimeError):
+        KernelStage().run({}, state, opts)
 
     assert seen.get("compiler") == "llvm"
     assert seen.get("pkgname") == "linux-git"
@@ -2039,9 +2044,9 @@ def test_kernel_stage_invalid_source_rejected(tmp_path):
     )
     state = PipelineState(tmp_path / "state")
 
-    with patch.object(_km, "KERNEL_PATH", p):
-        with pytest.raises(RuntimeError, match="invalid kernel.toml source"):
-            KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    with patch.object(_km, "KERNEL_PATH", p), \
+         pytest.raises(RuntimeError, match="invalid kernel.toml source"):
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
 
 
 # ---------------------------------------------------------------------------
@@ -2073,6 +2078,7 @@ def _run_kernel_with_state(tmp_path, kernel_cfg_state, opts_override=None):
          _capture_logs() as logs, \
          patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
          patch("sysforge.pipeline.stages.kernel._probe_installed_bootloader",
                return_value={"systemd-boot"}):
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
@@ -2261,6 +2267,7 @@ def test_run_warns_when_bootloader_mismatch(tmp_path):
          _capture_logs() as logs, \
          patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
          patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
          patch("sysforge.pipeline.stages.kernel._probe_installed_bootloader",
                return_value={"systemd-boot"}):
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
@@ -2510,9 +2517,9 @@ def test_kernel_stage_refuses_when_lock_held(tmp_path):
     state_dir.mkdir(parents=True, exist_ok=True)
 
     # Hold the lock the stage will try to acquire.
-    with build_lock(state_dir / "kernel-build.lock", label="kernel"):
-        with pytest.raises(RuntimeError, match="Another sysforge kernel build"):
-            _run_kernel_with_state(
+    with build_lock(state_dir / "kernel-build.lock", label="kernel"), \
+         pytest.raises(RuntimeError, match="Another sysforge kernel build"):
+        _run_kernel_with_state(
                 tmp_path, (state, p),
                 opts_override=make_options(state_dir=state_dir),
             )
@@ -2630,9 +2637,9 @@ def test_pkgname_collision_unattended_aborts():
 
     opts = make_options()
     with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
-         patch("sysforge.primitives.prompt.is_interactive", return_value=False):
-        with pytest.raises(RuntimeError, match="Aborting unattended"):
-            _check_pkgname_repo_collision("linux", opts)
+         patch("sysforge.primitives.prompt.is_interactive", return_value=False), \
+         pytest.raises(RuntimeError, match="Aborting unattended"):
+        _check_pkgname_repo_collision("linux", opts)
 
 
 def test_pkgname_collision_interactive_confirm_proceeds():
@@ -2651,9 +2658,9 @@ def test_pkgname_collision_interactive_decline_aborts():
     opts = make_options()
     with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
          patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
-         patch("sysforge.primitives.prompt.prompt_choice", return_value="n"):
-        with pytest.raises(RuntimeError, match="not confirmed"):
-            _check_pkgname_repo_collision("linux", opts)
+         patch("sysforge.primitives.prompt.prompt_choice", return_value="n"), \
+         pytest.raises(RuntimeError, match="not confirmed"):
+        _check_pkgname_repo_collision("linux", opts)
 
 
 # ---------------------------------------------------------------------------
@@ -2982,3 +2989,203 @@ def test_cli_keep_hotplug_flag_parses():
     assert parser.parse_args(
         ["run", "kernel"]
     ).keep_hotplug_drivers is None
+
+
+# ---------------------------------------------------------------------------
+# AlreadyBuilt × interactive semantics (2.5.1-B5)
+#
+# makepkg exit 13 (stale same-version package in PKGDEST) skips prepare()
+# entirely — so the interactive `make nconfig` review the stage promised
+# never ran. An interactive run must say so and ask (install as-built /
+# rebuild with -f to review / abort); unattended runs keep the proceed
+# behaviour. The build itself was skipped, so "rebuild" re-invokes makepkg
+# with -f to force a real build (and with it the in-prepare() review).
+# ---------------------------------------------------------------------------
+
+def _run_stage_already_built(tmp_path, *, prompt_ret=None, tty=True,
+                             non_interactive=False, rebuild_raises=False):
+    """Drive KernelStage.run() with makepkg raising AlreadyBuilt on the first
+    call. Returns (mock_build, mock_prompt, mock_install, logs, excinfo)."""
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path / "state")
+    if non_interactive:
+        opts.non_interactive = True
+
+    calls = []
+
+    def fake_makepkg(pkgbuild, *, options):
+        calls.append(options)
+        if len(calls) == 1:
+            raise AlreadyBuilt(pkgbuild)
+        if rebuild_raises:
+            raise AlreadyBuilt(pkgbuild)
+
+    excinfo = None
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run",
+               side_effect=fake_makepkg) as mock_build, \
+         patch("sysforge.primitives.prompt.prompt_choice",
+               return_value=prompt_ret) as mock_prompt, \
+         patch("sysforge.primitives.prompt.is_interactive",
+               return_value=tty), \
+         patch.object(_km, "install_built_packages") as mock_install, \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         _capture_logs() as logs:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        try:
+            KernelStage().run({}, state, opts)
+        except RuntimeError as e:
+            excinfo = e
+    return mock_build, mock_prompt, mock_install, logs, excinfo
+
+
+def test_already_built_interactive_abort_raises(tmp_path):
+    """Interactive run, operator picks abort → RuntimeError, nothing installed."""
+    mock_build, mock_prompt, mock_install, logs, exc = _run_stage_already_built(
+        tmp_path, prompt_ret="a")
+    assert exc is not None and "review" in str(exc).lower()
+    assert mock_build.call_count == 1
+    mock_install.assert_not_called()
+
+
+def test_already_built_interactive_warns_review_skipped(tmp_path):
+    """The prompt is preceded by a WARN that the config review did not run."""
+    _, _, _, logs, _ = _run_stage_already_built(tmp_path, prompt_ret="a")
+    warned = " ".join(str(c.args[1]) for c in logs.warn.call_args_list)
+    assert "review" in warned and "already built" in warned
+
+
+def test_already_built_interactive_rebuild_forces_makepkg(tmp_path):
+    """Operator picks rebuild → makepkg re-invoked with -f, then install."""
+    mock_build, mock_prompt, mock_install, logs, exc = _run_stage_already_built(
+        tmp_path, prompt_ret="r")
+    assert exc is None
+    assert mock_build.call_count == 2
+    second_opts = mock_build.call_args_list[1].kwargs["options"]
+    assert "-f" in (second_opts.extra_flags or [])
+    mock_install.assert_called_once()
+
+
+def test_already_built_interactive_install_proceeds(tmp_path):
+    """Operator picks install-as-built → no rebuild, install proceeds."""
+    mock_build, mock_prompt, mock_install, logs, exc = _run_stage_already_built(
+        tmp_path, prompt_ret="i")
+    assert exc is None
+    assert mock_build.call_count == 1
+    mock_install.assert_called_once()
+
+
+def test_already_built_unattended_proceeds_without_prompt(tmp_path):
+    """--non-interactive keeps today's behaviour: proceed, never prompt."""
+    mock_build, mock_prompt, mock_install, logs, exc = _run_stage_already_built(
+        tmp_path, non_interactive=True)
+    assert exc is None
+    mock_prompt.assert_not_called()
+    assert mock_build.call_count == 1
+    mock_install.assert_called_once()
+
+
+def test_already_built_no_tty_proceeds_without_prompt(tmp_path):
+    """Interactive per config but no TTY → treated as unattended (no hang)."""
+    mock_build, mock_prompt, mock_install, logs, exc = _run_stage_already_built(
+        tmp_path, tty=False)
+    assert exc is None
+    mock_prompt.assert_not_called()
+    mock_install.assert_called_once()
+
+
+def test_already_built_install_failure_suggests_fresh_build(tmp_path):
+    """B7 loop breaker: AlreadyBuilt → install-as-built → pacman failure is
+    the state that reproduces itself on every re-run. The error must point at
+    the way out (rebuild / remove the stale PKGDEST package)."""
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path / "state")
+    opts.non_interactive = True
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run",
+               side_effect=AlreadyBuilt(builds / "PKGBUILD")), \
+         patch.object(_km, "install_built_packages",
+                      side_effect=RuntimeError("pacman -U failed (exit 1)")), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         pytest.raises(RuntimeError, match="stale"):
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+
+
+# ---------------------------------------------------------------------------
+# Unified interactivity resolution (2.5.1-B8)
+#
+# The kconfig gate resolved interactive from config + --non-interactive only,
+# never consulting the TTY — so a piped/captured run "promised" an nconfig
+# review that could never render, then silently EOF'd through it. The gate
+# now matches the stage's sibling decisions (collision/diverged prompts):
+# interactive requires config ∧ ¬flag ∧ TTY, and a config-requested review
+# downgraded by a missing TTY says so at WARN.
+# ---------------------------------------------------------------------------
+
+def _run_stage_tty(tmp_path, *, tty):
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run") as mock_build, \
+         patch("sysforge.primitives.prompt.is_interactive", return_value=tty), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         _capture_logs() as logs:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    return mock_build.call_args.kwargs["options"], logs
+
+
+def test_kernel_stage_no_tty_resolves_non_interactive(tmp_path):
+    """Config-default interactive but no TTY → build runs non-interactive."""
+    build_opts, logs = _run_stage_tty(tmp_path, tty=False)
+    assert build_opts.interactive is False
+
+
+def test_kernel_stage_no_tty_warns_review_downgraded(tmp_path):
+    """The TTY-forced downgrade of a config-requested review is WARNed."""
+    _, logs = _run_stage_tty(tmp_path, tty=False)
+    warned = " ".join(str(c.args[1]) for c in logs.warn.call_args_list)
+    assert "no TTY" in warned and "review" in warned
+
+
+def test_kernel_stage_tty_keeps_interactive(tmp_path):
+    """With a TTY, config-default interactive stays interactive."""
+    build_opts, logs = _run_stage_tty(tmp_path, tty=True)
+    assert build_opts.interactive is True
+
+
+def test_kernel_stage_non_interactive_flag_no_tty_warn(tmp_path):
+    """--non-interactive is an explicit request — no downgrade warn."""
+    import sysforge.pipeline.stages.kernel as _km
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path / "state")
+    opts.non_interactive = True
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch("sysforge.primitives.prompt.is_interactive", return_value=False), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         _capture_logs() as logs:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+    warned = " ".join(str(c.args[1]) for c in logs.warn.call_args_list)
+    assert "no TTY" not in warned
