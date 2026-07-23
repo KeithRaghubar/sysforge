@@ -127,6 +127,62 @@ def test_non_kernel_build_no_llvm_injection(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# AlreadyBuilt → manifest capture (2.5.1-B4)
+#
+# When PKGDEST already holds this build's renamed artifacts from a prior run,
+# makepkg refuses to rebuild and invoke_makepkg raises AlreadyBuilt. No fresh
+# build runs, so the success-path manifest capture is skipped — but the
+# decoupled install step still needs the manifest to locate renamed artifacts
+# the un-patched on-disk PKGBUILD cannot name (``linux`` PKGBUILD vs
+# ``linux-sysforge-*`` artifacts). Without capture on this path the kernel
+# stage fails with "no built package found — nothing to install".
+# ---------------------------------------------------------------------------
+
+def test_already_built_captures_manifest_for_renamed_build(tmp_path):
+    """AlreadyBuilt on a renamed build → manifest captured, then re-raised."""
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+
+    def _raise_already_built(*a, **kw):
+        raise AlreadyBuilt(tmp_path / "PKGBUILD.sysforge")
+
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.primitives.makepkg_wrapper._invoke_with_retry",
+              side_effect=_raise_already_built),
+        patch("sysforge.primitives.makepkg_wrapper._capture_built_manifest") as cap,
+        pytest.raises(AlreadyBuilt),
+    ):
+        # extracted_profile set (kernel kconfig fragment) satisfies the same
+        # rename/extracted-profile guard the success path uses.
+        _run_build(pkgbuild, _minimal_profile(), {}, [],
+                   extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
+                   kernel_build=True)
+    cap.assert_called_once()
+
+
+def test_already_built_skips_manifest_when_no_rename(tmp_path):
+    """AlreadyBuilt on a plain (un-renamed) build → no manifest capture."""
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+
+    def _raise_already_built(*a, **kw):
+        raise AlreadyBuilt(tmp_path / "PKGBUILD.sysforge")
+
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.primitives.makepkg_wrapper._invoke_with_retry",
+              side_effect=_raise_already_built),
+        patch("sysforge.primitives.makepkg_wrapper._capture_built_manifest") as cap,
+        pytest.raises(AlreadyBuilt),
+    ):
+        # No extracted profile and no rename → the guard is false, so pkgname
+        # scoping can recover the artifacts and no manifest is needed.
+        _run_build(pkgbuild, _minimal_profile(), {}, [],
+                   extracted_profile=None, pkgmeta=_minimal_pkgmeta(),
+                   kernel_build=False)
+    cap.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # kconfig patching toggle
 # ---------------------------------------------------------------------------
 

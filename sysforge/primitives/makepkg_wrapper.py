@@ -893,7 +893,20 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # the renamed names.
         if extracted_profile is not None or rename or local_rename:
             _capture_built_manifest(pkgbuild_path)
-    except (RuntimeError, AlreadyBuilt):
+    except AlreadyBuilt:
+        # PKGDEST already holds this build's renamed artifacts from a prior run,
+        # so makepkg refused to rebuild — no fresh build ran and the success-path
+        # capture above was skipped. But the decoupled install step still needs
+        # the manifest to locate renamed artifacts the un-patched on-disk PKGBUILD
+        # cannot name (``linux`` PKGBUILD vs ``linux-sysforge-*`` artifacts);
+        # without it, pkgname scoping matches nothing and the kernel stage fails
+        # with "nothing to install". The patched sidecar is still on disk here
+        # (a failed/refused build leaves it in place), so --packagelist against it
+        # emits the renamed names. Same rename/extracted-profile guard as above.
+        if extracted_profile is not None or rename or local_rename:
+            _capture_built_manifest(pkgbuild_path)
+        raise
+    except RuntimeError:
         raise
     except Exception as e:
         handle_failure("tempfile_write_failed", str(e), config)

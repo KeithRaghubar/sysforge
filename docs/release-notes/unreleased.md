@@ -51,3 +51,15 @@ https://keepachangelog.com/en/1.1.0/
   name-affecting build (extracted profile **or** rename); and scoping never
   degrades to the full PKGDEST — an unscopable install now fails loudly rather
   than installing everything. (2.5.1-B3)
+- Kernel-stage re-run no longer fails with "no built package found — nothing to
+  install" when the renamed artifacts already exist in PKGDEST from a prior run.
+  makepkg refuses to rebuild an already-built package and surfaces `AlreadyBuilt`,
+  which the stage correctly treats as "proceed to install" — but the build-time
+  manifest that scopes a *renamed* kernel (`linux` → `linux-sysforge`) was only
+  captured on the fresh-build success path, so the `AlreadyBuilt` short-circuit
+  left no manifest and pkgname scoping (reading the un-patched on-disk PKGBUILD)
+  couldn't name the `linux-sysforge-*` artifacts. The manifest is now also
+  captured on the `AlreadyBuilt` path, under the same rename/extracted-profile
+  guard, so the decoupled install step can locate the existing artifacts. This
+  completes 2.5.1-B3, which fixed the fresh-rename case but not the re-run one.
+  (2.5.1-B4)
