@@ -4112,8 +4112,18 @@ def _single_pass_setup(tmp_path, pkgs=("llvm", "clang")):
     """A non-PGO (single-pass) LLVM toolchain config + built package fixtures."""
     toml_path = tmp_path / "toolchain.toml"
     import json as _json
+    # Scope every build path (staging dirs + pgo_store, hence the PGO build lock
+    # at <staging1>.parent/sysforge-pgo.lock) into tmp_path. Without this, a test
+    # that drives ToolchainStage.run far enough grabs the real
+    # /var/tmp/sysforge-pgo.lock and collides with a concurrent live
+    # `sysforge run toolchain` (2.5.1-B2 follow-up).
+    build = tmp_path / "pgo"
     toml_path.write_text(
         'enabled = true\ncompiler = "llvm"\npgo = false\n'
+        f'pgo_staging1 = "{build / "stage1"}"\n'
+        f'pgo_staging = "{build / "stage2"}"\n'
+        f'pgo_staging3 = "{build / "stage3"}"\n'
+        f'pgo_store = "{build / "store"}"\n'
         f"[packages]\npgo = {_json.dumps(list(pkgs))}\nnon_pgo = []\nlib32 = []\n"
     )
     pkgbuild_dir = tmp_path / "builds"
@@ -4124,6 +4134,28 @@ def _single_pass_setup(tmp_path, pkgs=("llvm", "clang")):
     config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
     options = make_options(dry_run=False, state_dir=tmp_path / "state")
     return toml_path, state, config, options
+
+
+def test_single_pass_setup_isolates_build_paths(tmp_path):
+    """Fixture hygiene: the toolchain config must keep the staging dirs, pgo_store,
+    and thus the PGO build lock under tmp_path. Otherwise a test that drives
+    ToolchainStage.run far enough grabs the real /var/tmp/sysforge-pgo.lock and
+    collides with a concurrent live `sysforge run toolchain` (2.5.1-B2 follow-up)."""
+    import tomllib
+
+    from sysforge.pipeline.stages.toolchain import _DEFAULT_STAGING_1, _pgo_lock_path
+    from sysforge.primitives.makepkg_pgo import resolve_pgo_store
+
+    toml_path, *_ = _single_pass_setup(tmp_path)
+    with toml_path.open("rb") as f:
+        tcfg = tomllib.load(f)
+
+    staging1 = Path(tcfg.get("pgo_staging1", _DEFAULT_STAGING_1))
+    assert str(staging1).startswith(str(tmp_path)), "staging1 must be tmp-scoped"
+    assert str(_pgo_lock_path(staging1)).startswith(str(tmp_path)), \
+        "PGO build lock must be tmp-scoped, not /var/tmp"
+    assert str(resolve_pgo_store(tcfg)).startswith(str(tmp_path)), \
+        "pgo_store must be tmp-scoped"
 
 
 def _sentinel_exists(state_dir):
