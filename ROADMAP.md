@@ -67,6 +67,7 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | `2.3.0-B2` | --cache-report renderer bypasses the logger | low | small |
 | `2.5.1-B10` | doctor --rust mislabels a non-pacman rustup install as the distro rust package | low | small |
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small |
+| `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small |
 | `2.2.0-B3` | check-shipped manpage guard couples to the local scdoc version | low | medium |
 | `1.2.0-F20` | Rule priority auto-calculation (from the DESIGN roadmap) | low | medium |
 | `2.3.0-F5` | Declarative provisioning via tmpfiles.d/sysusers.d instead of imperative healing | low | large |
@@ -126,6 +127,17 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   comments, and a misordered registration fails a structural test instead of corrupting `prepare()`.
   *Priority: med · Effort: large* — refactor, no behavior change; the 2.5.1-B5/B8 fix cycle showed
   this seam is where kernel-stage bugs concentrate.
+
+- **`2.5.1-F3` — `state failed --clear-all` emits no `SYSFORGE_TARGET`.** Follow-up to `2.4.0-F1`,
+  which gave every sentinel-gated verb a `journal_target` override. `StateFailedVerb.journal_target`
+  keys only on `args.clear` (single pkgbase → `pkg:<name>`), so a `--clear-all` invocation — which is
+  equally sentinel-gated because it rewrites `build_state.toml` — falls to `None` and emits the verb
+  name alone. This is the one spot where 2.4.0-F1's "every mutating verb supplies a meaningful target"
+  goal isn't met. Emit a subjectless `mode:` target (e.g. `journal.mode_target("failed-clear-all")`)
+  on the clear-all path, and add the gcc/llvm-independent dual test (clear-all → `mode:...`, alongside
+  the existing single-clear and no-clear cases in `test_journal.py`). No new seam; the standards row 20
+  scope note already covers per-verb `SYSFORGE_TARGET`. *Priority: low · Effort: small* — observability
+  completeness; additive, no correctness impact.
 
 - **`2.5.0-F2` — `help` verb (aliases `--help`) + advertise `-h/--help` in completions.** Two related
   gaps in help discoverability: (1) there is no `sysforge help [COMMAND]` verb — users must know the
