@@ -65,6 +65,7 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 |----|------|----------|--------|
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large |
 | `2.3.0-B2` | --cache-report renderer bypasses the logger | low | small |
+| `2.5.1-B10` | doctor --rust mislabels a non-pacman rustup install as the distro rust package | low | small |
 | `2.4.0-F1` | Journal SYSFORGE_TARGET for the other mutating verbs (follow-up to 2.3.0-F6) | low | small |
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small |
 | `2.2.0-B3` | check-shipped manpage guard couples to the local scdoc version | low | medium |
@@ -100,6 +101,19 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   hyphen escaping before diffing — so the guard verifies man-page *content* (does it match the
   argparse tree) rather than scdoc-version-specific byte output. *Priority: low · Effort: medium* —
   cosmetic churn + contributor/CI friction; no runtime or rendered-output impact.
+
+- **`2.5.1-B10` — `doctor --rust` mislabels a non-pacman rustup install as the distro `rust` package.**
+  `rust_probe._owner_pkg` resolves the effective toolchain by running `pacman -Qo` on the first
+  `cargo`/`rustc` on `PATH`. When rustup is installed via its upstream shell installer rather than the
+  `rustup` package, `~/.cargo/bin/cargo` shadows `/usr/bin/cargo`, `pacman -Qo` finds no owner and
+  returns `None`, and the probe falls through to the distro-`rust` branch — emitting
+  `effective Rust toolchain: distro package \`rust (version unknown)\`` for a machine that is actually
+  running rustup. The finding is advisory `info` only (never affects exit code) and does not occur on
+  pacman-managed workstations where `rustup` owns `cargo`, so it was deferred out of `2.4.0-F3`. Fix:
+  when `_owner_pkg` returns `None` but the resolved binary lives under a rustup layout (`~/.cargo/bin`
+  / `RUSTUP_HOME`), report it as a user-local rustup install (and surface its active toolchain) instead
+  of assuming the distro package. *Priority: low · Effort: small* — provenance accuracy for an
+  environment outside the tested-hardware scope; a mislabel, not a correctness gap.
 
 ### Features
 
