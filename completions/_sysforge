@@ -201,6 +201,7 @@ _sysforge_doctor() {
     '--gfxperf[advisory graphics-performance sweep (stutter/tearing contributors)]' \
     '--hardware[inventory PCI/USB devices + audit running kernel for missing drivers / boot-config gaps]' \
     '--toolchain[check configured toolchain (toolchain.toml) matches the installed LLVM]' \
+    '--rust[report the Rust toolchain a build will use: rustup channel/distro rust, non-stable default (WARN), rust-toolchain.toml pin (opt-in; scope with PKG)]' \
     '--cache[compile-cache readiness: ccache/sccache installed, dir writable, size cap set]' \
     '--pacman[local pacman-db consistency, stale lock, .pacnew drift, orphans (read-only)]' \
     '--state[sysforge state integrity: build failures, stale sentinel, state drift]' \

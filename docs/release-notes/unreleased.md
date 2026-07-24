@@ -13,6 +13,15 @@ finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
 
+## Added
+
+- **`2.4.0-F3`** — `doctor --rust`: advisory, read-only axis reporting the Rust
+  toolchain a build will actually use — the effective cargo/rustc owner (rustup
+  channel or distro `rust` package), a warning when the active rustup default is
+  non-stable (nightly/beta/pinned), and, for named package targets, a
+  `rust-toolchain.toml` pin plus whether that toolchain is installed (uninstalled
+  = a mid-build network fetch). Never rewrites a pin; never fails a run. Opt-in.
+
 ## Changed
 
 - Toolchain LLVM source pre-flight now annotates split-off members (e.g.

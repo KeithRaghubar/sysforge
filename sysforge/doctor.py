@@ -596,6 +596,15 @@ def _collect_toolchain_findings(config) -> list[diag.Finding]:
     return diag.adapt_many("toolchain", detect_toolchain_config_mismatch(config))
 
 
+def _collect_rust_findings(config, args) -> list[diag.Finding]:
+    """Rust-toolchain provenance (effective toolchain, non-stable default, and
+    rust-toolchain.toml pins for named package targets). Advisory, read-only —
+    see ``primitives/rust_probe.py``."""
+    from sysforge.primitives import rust_probe
+    packages = getattr(args, "packages", None) if args is not None else None
+    return rust_probe.collect_rust_findings(config, packages=packages)
+
+
 def _collect_cache_findings(config) -> list[diag.Finding]:
     """Compile-cache *readiness* before a build relies on it (2.2.0-F1) — the
     point-in-time analog of ``--cache-report``'s per-build effectiveness. Reuses
@@ -842,17 +851,19 @@ def _collect_integrity_findings(args) -> list[diag.Finding]:
 
 # Canonical order every KNOWN axis renders in (explicit flags select from here).
 _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
-    "toolchain", "cache", "hardware", "graphics", "gfxperf", "pacman", "state",
-    "boot", "restart", "storage", "services", "audio", "network", "integrity",
+    "toolchain", "rust", "cache", "hardware", "graphics", "gfxperf", "pacman",
+    "state", "boot", "restart", "storage", "services", "audio", "network",
+    "integrity",
 )
 
 # Axes excluded from the default/`--all` sweep — advisory, opt-in via their flag.
-_OPT_IN_AXES: frozenset[str] = frozenset({"gfxperf", "integrity"})
+_OPT_IN_AXES: frozenset[str] = frozenset({"gfxperf", "integrity", "rust"})
 
 # CLI flag attribute → axis name. ``--graphics`` is also a package-walk trigger
 # (the graphics-stack closure); both effects fire when it is set.
 _AXIS_FLAGS: dict[str, str] = {
     "toolchain": "toolchain",
+    "rust": "rust",
     "cache": "cache",
     "hardware": "hardware",
     "graphics": "graphics",
@@ -878,6 +889,11 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
             lambda: _collect_toolchain_findings(config),
             clean_msg=("toolchain config matches the installed LLVM "
                        "(or no custom LLVM toolchain is configured)")),
+        "rust": diag.Axis(
+            "rust", "rust toolchain provenance",
+            lambda: _collect_rust_findings(config, args),
+            clean_msg=("Rust toolchain identified; no non-stable default or "
+                       "uninstalled pin")),
         "cache": diag.Axis(
             "cache", "compile-cache readiness",
             lambda: _collect_cache_findings(config),

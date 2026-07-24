@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-07\-22"
+.TH "sysforge" "1" "2026\-07\-24"
 .PP
 .PP
 .SH NAME
@@ -451,6 +451,11 @@ Run system\-state hardware probes: inventory all PCI/USB devices, flag any prese
 \fB\-\-toolchain\fR
 .RS 4
 Check that the configured toolchain matches what'\&s installed: when toolchain.\&toml requests a custom LLVM toolchain (compiler = llvm, optionally PGO) but stock repo LLVM is installed — or the PGO profdata is version\-skewed — report it.\& Usable on its own (no PKG).\&
+.PP
+.RE
+\fB\-\-rust\fR
+.RS 4
+Report which Rust toolchain a build will actually use: the effective cargo/rustc owner (rustup channel or distro `rust` package), a WARN if the active rustup default is non\-stable (nightly/beta/pinned), and — with PKG targets — a rust\-toolchain.\&toml pin plus whether that toolchain is installed (uninstalled = mid\-build network fetch).\& Advisory, read\-only; never fails, never rewrites a pin.\& Opt\-in.\& Usable on its own.\&
 .PP
 .RE
 \fB\-\-cache\fR

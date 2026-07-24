@@ -409,7 +409,9 @@ def test_collect_cache_findings_all_ok_is_clean(monkeypatch):
 def test_cache_axis_registered_between_toolchain_and_hardware():
     order = doctor._SYSTEM_AXIS_ORDER
     assert "cache" in order
-    assert order.index("cache") == order.index("toolchain") + 1
+    # The provenance axes lead: toolchain, then the opt-in rust axis, then cache.
+    assert order.index("rust") == order.index("toolchain") + 1
+    assert order.index("cache") == order.index("rust") + 1
     assert order.index("cache") < order.index("hardware")
     assert doctor._AXIS_FLAGS.get("cache") == "cache"
 
@@ -1843,3 +1845,21 @@ def test_restart_findings_untiered_entry_reported_as_info_no_remediation(monkeyp
     assert findings[0].severity == doctor.diag.SEV_INFO
     assert findings[0].remediation == ""
     assert "oddpkg" in findings[0].message
+
+
+def test_rust_axis_is_opt_in(monkeypatch):
+    from sysforge import doctor
+    # rust must be excluded from the default sweep and from --all
+    assert "rust" in doctor._SYSTEM_AXIS_ORDER
+    assert "rust" in doctor._OPT_IN_AXES
+
+
+def test_rust_flag_selects_only_rust_axis():
+    from sysforge import doctor
+    from types import SimpleNamespace
+    args = SimpleNamespace(packages=[], repo=False, rust=True,
+                           **{a: False for a in doctor._AXIS_FLAGS
+                              if a != "rust"})
+    # every other axis flag defaults False; only --rust set
+    names = doctor._resolve_axis_names(args)
+    assert names == ["rust"]

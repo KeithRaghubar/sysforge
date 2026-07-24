@@ -539,6 +539,14 @@ def _add_doctor_parser(sub):
              "toolchain.toml requests a custom LLVM toolchain (compiler = llvm, "
              "optionally PGO) but stock repo LLVM is installed — or the PGO "
              "profdata is version-skewed — report it. Usable on its own (no PKG).")
+    p.add_argument("--rust", action="store_true",
+        help="Report which Rust toolchain a build will actually use: the "
+             "effective cargo/rustc owner (rustup channel or distro `rust` "
+             "package), a WARN if the active rustup default is non-stable "
+             "(nightly/beta/pinned), and — with PKG targets — a "
+             "rust-toolchain.toml pin plus whether that toolchain is installed "
+             "(uninstalled = mid-build network fetch). Advisory, read-only; "
+             "never fails, never rewrites a pin. Opt-in. Usable on its own.")
     p.add_argument("--cache", action="store_true",
         help="Check compile-cache readiness *before* a build relies on it: "
              "whether ccache/sccache are installed, their cache dir is writable, "
