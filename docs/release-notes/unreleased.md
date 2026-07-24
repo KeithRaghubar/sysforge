@@ -15,6 +15,14 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Added
 
+- **`2.4.0-F1`** — `SYSFORGE_TARGET` is now emitted for every sentinel-gated
+  mutating verb (`uninstall`, `revert-to-stock`, `state forget`,
+  `state failed --clear`, `state repair`, `state orphans --prune`), not just
+  `build`. Values are namespaced `pkg:<names>` for package subjects and
+  `mode:<subcommand>` for subjectless state operations, so
+  `journalctl SYSFORGE_TARGET=pkg:<pkg>` correlates the operations most worth
+  reviewing during an incident. Prefixes are formatted in one place
+  (`journal.pkg_target`/`journal.mode_target`).
 - **`2.4.0-F3`** — `doctor --rust`: advisory, read-only axis reporting the Rust
   toolchain a build will actually use — the effective cargo/rustc owner (rustup
   channel or distro `rust` package), a warning when the active rustup default is
@@ -24,6 +32,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Changed
 
+- **Breaking (journald):** `build`'s `SYSFORGE_TARGET` value is now namespaced
+  `pkg:<names>` (was the bare `<names>`), bringing it into the same scheme as the
+  other mutating verbs. Migration: update any `journalctl SYSFORGE_TARGET=<pkg>`
+  filter for `build` to `journalctl SYSFORGE_TARGET=pkg:<pkg>`. (2.4.0-F1)
 - Toolchain LLVM source pre-flight now annotates split-off members (e.g.
   `llvm-libs`, built from the `llvm` PKGBUILD) as `(split of llvm)` instead of
   showing empty `origin=missing`/`sync=missing` source columns for a tree they

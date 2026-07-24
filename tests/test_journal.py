@@ -72,11 +72,68 @@ def test_record_verb_failure_priority_and_no_target(tmp_path, monkeypatch):
     assert b"SYSFORGE_EXIT=1\n" in data
 
 
+def test_pkg_target_prefixes_and_joins():
+    assert journal.pkg_target(["mesa"]) == "pkg:mesa"
+    assert journal.pkg_target(["mesa", "llvm"]) == "pkg:mesa llvm"
+
+
+def test_pkg_target_empty_is_none():
+    assert journal.pkg_target([]) is None
+
+
+def test_mode_target_prefixes():
+    assert journal.mode_target("repair") == "mode:repair"
+    assert journal.mode_target("orphans") == "mode:orphans"
 
 
 def test_build_verb_journal_target_joins_packages():
     from sysforge.build_cmd import BuildVerb
 
     verb = BuildVerb()
-    assert verb.journal_target(SimpleNamespace(packages=["mesa", "llvm"])) == "mesa llvm"
+    assert verb.journal_target(SimpleNamespace(packages=["mesa", "llvm"])) == "pkg:mesa llvm"
     assert verb.journal_target(SimpleNamespace(packages=[])) is None
+
+
+def test_uninstall_verb_journal_target():
+    from sysforge.uninstall_cmd import UninstallVerb
+
+    verb = UninstallVerb()
+    assert verb.journal_target(SimpleNamespace(packages=["mesa"])) == "pkg:mesa"
+    assert verb.journal_target(SimpleNamespace(packages=[])) is None
+
+
+def test_revert_verb_journal_target():
+    from sysforge.revert_cmd import RevertToStockVerb
+
+    verb = RevertToStockVerb()
+    assert verb.journal_target(SimpleNamespace(packages=["mesa", "llvm"])) == "pkg:mesa llvm"
+    assert verb.journal_target(SimpleNamespace(packages=[])) is None
+
+
+def test_state_forget_verb_journal_target():
+    from sysforge.state_cmd import StateForgetVerb
+
+    verb = StateForgetVerb()
+    assert verb.journal_target(SimpleNamespace(pkgnames=["mesa"])) == "pkg:mesa"
+    assert verb.journal_target(SimpleNamespace(pkgnames=[])) is None
+
+
+def test_state_failed_verb_journal_target():
+    from sysforge.state_cmd import StateFailedVerb
+
+    verb = StateFailedVerb()
+    assert verb.journal_target(SimpleNamespace(clear="mesa")) == "pkg:mesa"
+    # no --clear: not sentinel-gated, no subject
+    assert verb.journal_target(SimpleNamespace(clear=None)) is None
+
+
+def test_state_repair_verb_journal_target():
+    from sysforge.state_cmd import StateRepairVerb
+
+    assert StateRepairVerb().journal_target(SimpleNamespace()) == "mode:repair"
+
+
+def test_state_orphans_verb_journal_target():
+    from sysforge.state_cmd import StateOrphansVerb
+
+    assert StateOrphansVerb().journal_target(SimpleNamespace(prune=True)) == "mode:orphans"

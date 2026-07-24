@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from sysforge import build_core, log
+from sysforge.primitives import journal
 from sysforge.primitives.aur import is_repo_package
 from sysforge.primitives.config import (
     find_pkgbuild,
@@ -220,8 +221,7 @@ class BuildVerb(Verb):
         return "sysforge-build.log"
 
     def journal_target(self, args) -> str | None:
-        pkgs = getattr(args, "packages", None) or []
-        return " ".join(pkgs) if pkgs else None
+        return journal.pkg_target(getattr(args, "packages", None) or [])
 
     def pre_check(self, args) -> PreCheckResult:
         if args.no_pkg_log and args.log_dir:

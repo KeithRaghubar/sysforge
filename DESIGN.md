@@ -2723,12 +2723,28 @@ Records carry queryable fields:
 
     journalctl -t sysforge                 # all SysForge mutations
     journalctl SYSFORGE_VERB=build         # just build invocations
-    journalctl SYSFORGE_TARGET=mesa        # mutations touching a package
+    journalctl SYSFORGE_TARGET=pkg:mesa    # mutations touching a package
+    journalctl SYSFORGE_TARGET=mode:repair # a subjectless state operation
     journalctl -p err -t sysforge          # failed mutations (PRIORITY=3)
 
 Fields are `SYSFORGE_`-prefixed to avoid colliding with journald's reserved
 well-known names. Emission is keyed off `Verb.requires_sentinel` in
 `verbs/runner.py`, so any future mutating verb is mirrored automatically.
+
+`SYSFORGE_TARGET` is supplied by every sentinel-gated verb via a
+`Verb.journal_target(args)` override (`build`, `uninstall`, `revert-to-stock`,
+`state forget`, `state failed --clear`, `state repair`, `state orphans --prune`),
+and is namespaced so a consumer can tell a package subject from a whole-state
+operation without knowing which verb produced the record:
+
+- `pkg:<space-joined names>` — the subject is one or more packages.
+- `mode:<subcommand>` — a subjectless state operation (the mode is the only
+  meaningful discriminator; the token is derived from the verb name).
+
+The `pkg:`/`mode:` prefixes are formatted in one place — `journal.pkg_target` /
+`journal.mode_target` in `primitives/journal.py`. `build`'s value was namespaced
+into this scheme in 2.4.0-F1: it now emits `pkg:<names>` where it previously
+emitted the bare names.
 
 ### Tags in use
 
@@ -3180,7 +3196,7 @@ adhered to, partially or fully guarded · **target** = adopted, gap being closed
 | 17 | Subprocess-seam discipline (argv-list execution) | External-command execution (all `subprocess` sites) | enforced | argv-**list** form only, `shell=True` needs justified `# noqa: S602`; `primitives/run.py` (`run_or_raise`) sanctioned seam, direct callers a documented carve-out for streaming/returncode/stdout-parsing; ruff `S602` + `check_standards` `run_seam` group |
 | 18 | Privilege-escalation seam | Root-escalating subprocess invocations | enforced | `primitives/privilege.py` (`privileged_argv`/`run_privileged`) is the sole home for `sudo`-prefixed escalation; raw `["sudo", …]` argv outside it is forbidden except the allowlisted auth-probe (`sudo -v`, `sudo -n true`) and drop-privilege (`sudo -u <user>`) forms; `check_standards` `privilege_seam` group + `tests/test_standards_compliance.py` |
 | 19 | [`systemd.resource-control(5)`](https://www.freedesktop.org/software/systemd/man/systemd.resource-control.html) (cgroup-v2 `CPUQuota`/`MemoryMax` via `systemd-run(1)`) | Build resource enforcement (CPU/memory ceilings on the makepkg fork tree) | enforced | a configured `cpu_quota`/`mem_limit` is enforced by a kernel-level cgroup `systemd-run --scope` (hierarchical over all build descendants), not solely an escapable `RLIMIT_AS` preexec, whenever `systemd-run` is available; `primitives/build_throttle.py` (`wrapper_argv`/`_scope_owns_mem_cap`/`resolve_child_mem_cap`); `tests/test_standards_compliance.py` |
-| 20 | [`systemd.journal-fields(7)`](https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html) + native journal socket protocol (`sd_journal_send(3)` wire format) | System-mutating operations mirrored to the journal | enforced | every sentinel-gated verb emits one structured record (`SYSFORGE_VERB`/`SYSFORGE_TARGET`/`SYSFORGE_EXIT` + `MESSAGE`/`PRIORITY`/`SYSLOG_IDENTIFIER`), additively alongside the unified run-log, no-op when journald absent; `primitives/journal.py` (`journal_send`/`record_verb`), `verbs/runner.py`; `tests/test_standards_compliance.py` + `tests/test_journal.py` |
+| 20 | [`systemd.journal-fields(7)`](https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html) + native journal socket protocol (`sd_journal_send(3)` wire format) | System-mutating operations mirrored to the journal | enforced | every sentinel-gated verb emits one structured record (`SYSFORGE_VERB`/`SYSFORGE_TARGET`/`SYSFORGE_EXIT` + `MESSAGE`/`PRIORITY`/`SYSLOG_IDENTIFIER`), additively alongside the unified run-log, no-op when journald absent; `SYSFORGE_TARGET` is supplied by every mutating verb via `Verb.journal_target` and namespaced `pkg:<names>` / `mode:<subcommand>` (one-home formatters `journal.pkg_target`/`journal.mode_target`); `primitives/journal.py` (`journal_send`/`record_verb`), `verbs/runner.py`; `tests/test_standards_compliance.py` + `tests/test_journal.py` |
 | 21 | `systemctl(1)` unit lifecycle (`daemon-reload`, `is-enabled`, `disable --now`) | Deploying/removing a user-authored systemd unit through the artifact inventory | enforced | `primitives/artifacts.py` (`post_deploy` runs `daemon-reload` after a unit write via `run_privileged`; `unit_is_enabled` queries `systemctl is-enabled --quiet` unprivileged; `pre_remove` runs `systemctl disable --now` before unlinking an enabled unit); `tests/test_artifacts.py` |
 | 22 | `pacman -Qk`/`-Qkk` package-file verification against libalpm's stored `mtree` | Verifying package-owned files still match what the package declared (existence, size, mode, hash, type) | followed | read-only `doctor --integrity` axis consumes `pacman -Qkk` with pacman's own backup-vs-altered classification (backup-array edits → `info`, non-backup drift → `warn`, missing → `error`, mtime-only → `info`); run unprivileged, access-error reasons (`failed to calculate SHA256 checksum`, `Permission denied`) are stripped before classification — a path with only access-error reasons is access-limited, not drift, and rolls into one counted `integrity_partial_coverage` `info` advisory rather than a per-path finding, while a path with genuine signal alongside an access error keeps its real drift severity; `primitives/pkgfiles_probe.py` (`collect_integrity_findings`); `tests/test_pkgfiles_probe.py` + `tests/test_standards_compliance.py` |
 

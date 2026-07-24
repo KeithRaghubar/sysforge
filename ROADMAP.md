@@ -66,7 +66,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large |
 | `2.3.0-B2` | --cache-report renderer bypasses the logger | low | small |
 | `2.5.1-B10` | doctor --rust mislabels a non-pacman rustup install as the distro rust package | low | small |
-| `2.4.0-F1` | Journal SYSFORGE_TARGET for the other mutating verbs (follow-up to 2.3.0-F6) | low | small |
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small |
 | `2.2.0-B3` | check-shipped manpage guard couples to the local scdoc version | low | medium |
 | `1.2.0-F20` | Rule priority auto-calculation (from the DESIGN roadmap) | low | medium |
@@ -127,18 +126,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   comments, and a misordered registration fails a structural test instead of corrupting `prepare()`.
   *Priority: med · Effort: large* — refactor, no behavior change; the 2.5.1-B5/B8 fix cycle showed
   this seam is where kernel-stage bugs concentrate.
-
-- **`2.4.0-F1` — Journal `SYSFORGE_TARGET` for the other mutating verbs (follow-up to `2.3.0-F6`).**
-  The journald mirror emits `SYSFORGE_TARGET` only for `build`, because `build` is the only verb that
-  overrides `Verb.journal_target` (the others fall to the `None` default and emit the verb name alone).
-  But `uninstall`, `revert`, and `state` are all sentinel-gated and carry a meaningful package-name
-  subject, so `journalctl SYSFORGE_TARGET=<pkg>` misses the operations most worth correlating during
-  incident review. Add a `journal_target` override on each — deriving the target from the verb's own
-  args (uninstall/revert package name; `state` subcommand target) — mirroring the `build` override. No
-  new seam: `record_verb`/runner emission are unchanged; this only widens which verbs supply a target.
-  *Priority: low · Effort: small* — observability completeness; additive, no correctness impact. **Standards home on
-  adoption:** extend row 20 (`systemd.journal-fields(7)`) scope note — same mechanism, more verbs
-  supplying a target; per-verb tests alongside the existing `test_journal.py` hook tests.
 
 - **`2.5.0-F2` — `help` verb (aliases `--help`) + advertise `-h/--help` in completions.** Two related
   gaps in help discoverability: (1) there is no `sysforge help [COMMAND]` verb — users must know the

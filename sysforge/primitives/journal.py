@@ -54,6 +54,24 @@ def journal_send(**fields: str | int) -> None:
         return
 
 
+TARGET_PKG_PREFIX = "pkg:"
+TARGET_MODE_PREFIX = "mode:"
+
+
+def pkg_target(names) -> str | None:
+    """`pkg:`-namespaced ``SYSFORGE_TARGET`` for a package-subject verb.
+
+    Returns ``None`` for an empty name list so ``record_verb`` omits the field.
+    """
+    joined = " ".join(names)
+    return f"{TARGET_PKG_PREFIX}{joined}" if joined else None
+
+
+def mode_target(mode: str) -> str:
+    """`mode:`-namespaced ``SYSFORGE_TARGET`` for a subjectless state op."""
+    return f"{TARGET_MODE_PREFIX}{mode}"
+
+
 def record_verb(verb: str, target: str | None, exit_code: int) -> None:
     """Emit one structured record for a completed system-mutating verb."""
     message = f"sysforge: {verb}" + (f" {target}" if target else "") + f" exited {exit_code}"

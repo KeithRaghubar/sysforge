@@ -102,12 +102,28 @@ Records carry queryable fields:
 
     journalctl -t sysforge                 # all SysForge mutations
     journalctl SYSFORGE_VERB=build         # just build invocations
-    journalctl SYSFORGE_TARGET=mesa        # mutations touching a package
+    journalctl SYSFORGE_TARGET=pkg:mesa    # mutations touching a package
+    journalctl SYSFORGE_TARGET=mode:repair # a subjectless state operation
     journalctl -p err -t sysforge          # failed mutations (PRIORITY=3)
 
 Fields are `SYSFORGE_`-prefixed to avoid colliding with journald's reserved
 well-known names. Emission is keyed off `Verb.requires_sentinel` in
 `verbs/runner.py`, so any future mutating verb is mirrored automatically.
+
+`SYSFORGE_TARGET` is supplied by every sentinel-gated verb via a
+`Verb.journal_target(args)` override (`build`, `uninstall`, `revert-to-stock`,
+`state forget`, `state failed --clear`, `state repair`, `state orphans --prune`),
+and is namespaced so a consumer can tell a package subject from a whole-state
+operation without knowing which verb produced the record:
+
+- `pkg:<space-joined names>` — the subject is one or more packages.
+- `mode:<subcommand>` — a subjectless state operation (the mode is the only
+  meaningful discriminator; the token is derived from the verb name).
+
+The `pkg:`/`mode:` prefixes are formatted in one place — `journal.pkg_target` /
+`journal.mode_target` in `primitives/journal.py`. `build`'s value was namespaced
+into this scheme in 2.4.0-F1: it now emits `pkg:<names>` where it previously
+emitted the bare names.
 
 ### Tags in use
 

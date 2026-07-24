@@ -24,6 +24,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import journal
 from sysforge.primitives.pager import maybe_pager as _maybe_pager
 from sysforge.primitives.prompt import prompt_choice
 
@@ -510,6 +511,10 @@ class StateRepairVerb(Verb):
     wants_run_log = True
     requires_sentinel = True
 
+    def journal_target(self, args) -> str | None:
+        del args
+        return journal.mode_target(self.name.split("-", 1)[-1])
+
     def pre_check(self, args) -> PreCheckResult:
         if getattr(args, "dry_run", False):
             # Dry-run is read-only; downgrade to no-sentinel for this run.
@@ -530,6 +535,10 @@ class StateOrphansVerb(Verb):
     name = "state-orphans"
     requires_sentinel = False
 
+    def journal_target(self, args) -> str | None:
+        del args
+        return journal.mode_target(self.name.split("-", 1)[-1])
+
     def pre_check(self, args) -> PreCheckResult:
         self.requires_sentinel = bool(getattr(args, "prune", False))
         return PreCheckResult()
@@ -548,6 +557,9 @@ class StateFailedVerb(Verb):
 
     name = "state-failed"
     requires_sentinel = False
+
+    def journal_target(self, args) -> str | None:
+        return journal.pkg_target([args.clear]) if args.clear else None
 
     def pre_check(self, args) -> PreCheckResult:
         self.requires_sentinel = bool(
@@ -570,6 +582,9 @@ class StateForgetVerb(Verb):
     name = "state-forget"
     wants_run_log = True
     requires_sentinel = True
+
+    def journal_target(self, args) -> str | None:
+        return journal.pkg_target(args.pkgnames)
 
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()

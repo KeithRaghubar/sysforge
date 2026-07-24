@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from sysforge import log
 from sysforge.pipeline.state import resolve_state_dir
-from sysforge.primitives import install_reconcile, pacman
+from sysforge.primitives import install_reconcile, journal, pacman
 from sysforge.primitives.build_state import BuildState
 from sysforge.state_cmd import cmd_state_forget
 from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
@@ -53,6 +53,9 @@ class UninstallVerb(Verb):
     name = "uninstall"
     wants_run_log = True
     requires_sentinel = True
+
+    def journal_target(self, args) -> str | None:
+        return journal.pkg_target(args.packages)
 
     def pre_check(self, args) -> PreCheckResult:
         state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
