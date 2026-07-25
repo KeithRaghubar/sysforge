@@ -1,6 +1,6 @@
 # Coverage baseline (ratchet floor)
 
-Re-seeded 2026-07-16 from `make coverage`.
+Re-seeded 2026-07-25 from `make coverage`.
 
 The **soft ratchet floor** for the suite. `make coverage-ratchet` runs the
 instrumented suite and compares the current TOTAL against the **TOTAL** row
@@ -17,22 +17,22 @@ historically thin modules, not additional gates.
 Regenerate the report with `make coverage` (layers `pytest-cov` via a
 `uv run --no-sync` overlay; branch coverage on; writes `coverage.json`).
 
-Suite at baseline: **3829 tests passing**, total **85.7%**.
+Suite at baseline: **4117 tests passing**, total **86.1%**.
 
 | Scope | Coverage |
 |---|---|
-| **TOTAL** | **85.7%** |
-| `sysforge/cli.py` | 96.3% |
-| `sysforge/update.py` | 84.8% |
-| `sysforge/build_core.py` | 91.9% |
+| **TOTAL** | **86.1%** |
+| `sysforge/cli.py` | 96.5% |
+| `sysforge/update.py` | 85.9% |
+| `sysforge/build_core.py` | 92.0% |
 | `sysforge/doctor.py` | 88.5% |
-| `sysforge/primitives/makepkg_wrapper.py` | 62.6% |
+| `sysforge/primitives/makepkg_wrapper.py` | 74.9% |
 | `sysforge/primitives/aur.py` | 96.4% |
 | `sysforge/primitives/profile.py` | 93.8% |
 | `sysforge/primitives/resource_guard.py` | 100.0% |
 | `sysforge/primitives/auto_repair.py` | 94.3% |
-| `sysforge/pipeline/stages/kernel.py` | 86.8% |
-| `sysforge/pipeline/stages/toolchain.py` | 83.6% |
+| `sysforge/pipeline/stages/kernel.py` | 87.1% |
+| `sysforge/pipeline/stages/toolchain.py` | 84.2% |
 | `sysforge/pipeline/stages/packages.py` | 71.1% |
 
 Notes:

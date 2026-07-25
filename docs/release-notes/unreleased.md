@@ -1,17 +1,9 @@
 # sysforge (unreleased)
 
-<!--
-Running accumulator for the next release. Every landing commit that COMPLETES a
-ROADMAP item appends its entry here (in the same commit that drops the item from
-ROADMAP.md), under the matching Keep a Changelog section — one of Added, Changed,
-Deprecated, Removed, Fixed, Security, in that order. Reference the roadmap ID
-inline, e.g. (1.2.0-F35). Flag breaking changes with a **Breaking:** prefix and
-the migration path. At release time tools/release.sh (Phase 1) renames this file
-to vX.Y.Z.md, stamps the `# ` title with the version and date, and reseeds a fresh
-accumulator. Run the release-notes skill first to reconcile/lint the entries and
-finalize the one-line summary below (drop this comment). Keep a Changelog:
-https://keepachangelog.com/en/1.1.0/
--->
+A kernel-stage correctness release: kernel builds now install exactly the
+packages they built and never degrade to the full package cache, the interactive
+kconfig review can no longer be silently skipped, and `SYSFORGE_TARGET` journald
+correlation is extended to every mutating verb under one namespaced scheme.
 
 ## Added
 
@@ -125,3 +117,12 @@ https://keepachangelog.com/en/1.1.0/
   logged the full kconfig plan as if it applied. The stage's
   `owner_stage="kernel"` stamp is now authoritative; profile derivation remains
   for rule-routed builds. (2.5.1-B9)
+- The `check-roadmap-table` guard's own tests no longer silently stop testing
+  anything when `ROADMAP.md` is reworded. Four tests cloned the live roadmap and
+  mutated it with `str.replace()` keyed on an exact prose substring; because
+  `str.replace()` cannot fail, a reword (and the shipping of the entry they keyed
+  on) turned every mutation into a no-op, so the generator was handed an
+  unmodified file and the "drift is detected" assertions failed. They now build a
+  synthetic roadmap fixture and retag entries by **ID**, asserting the edit
+  actually changed something — so a fixture that stops matching fails loudly as a
+  fixture error instead of degrading into a vacuous test. (2.5.1-B11)
