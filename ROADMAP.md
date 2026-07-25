@@ -64,8 +64,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | ID | Item | Priority | Effort |
 |----|------|----------|--------|
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large |
-| `2.3.0-B2` | --cache-report renderer bypasses the logger | low | small |
-| `2.5.1-B10` | doctor --rust mislabels a non-pacman rustup install as the distro rust package | low | small |
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small |
 | `2.2.0-B3` | check-shipped manpage guard couples to the local scdoc version | low | medium |
@@ -74,19 +72,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 <!-- END roadmap-table -->
 
 ### Bugs
-
-- **`2.3.0-B2` — `--cache-report` renderer bypasses the logger.** `cache_probe.emit_session_report`
-  writes with raw `print(..., file=sys.stderr)` instead of routing through `sysforge.log`. Three
-  consequences: (1) the report is **not captured by the unified run-log** (`log.ui`/`info` fan out to
-  `_write_to_files` → `_unified_log_fh`/`_pkg_log_fh`; a bare `print` does not), so `sysforge log`
-  captures silently omit it; (2) its `─` divider hardcodes the box-drawing glyph, **bypassing
-  `log.use_unicode()`/`downgrade_glyphs`** — under `NO_UNICODE`/`--ascii` it still emits U+2500,
-  exactly what the glyph gate exists to catch; (3) it hand-rolls the `[SYSFORGE][CACHE]` prefix
-  instead of `_format_line`, so it misses `use_color()` gating and any future prefix change. Almost
-  certainly age, not intent — `cache_probe.py` predates both the unified run-log and the Unicode gate
-  and never got swept into either migration. Fix: route the report through `log.ui`/`info` (+ the
-  unicode gate) like the diagnostics renderer (`render_axis`) already does. *Priority: low · Effort:
-  small* — cosmetic + run-log completeness; no functional build impact.
 
 - **`2.2.0-B3` — `check-shipped` manpage guard couples to the local scdoc version.**
   The `manpage` check in `tools/check_shipped.py` asserts that committed `man/sysforge.1`
@@ -101,19 +86,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   hyphen escaping before diffing — so the guard verifies man-page *content* (does it match the
   argparse tree) rather than scdoc-version-specific byte output. *Priority: low · Effort: medium* —
   cosmetic churn + contributor/CI friction; no runtime or rendered-output impact.
-
-- **`2.5.1-B10` — `doctor --rust` mislabels a non-pacman rustup install as the distro `rust` package.**
-  `rust_probe._owner_pkg` resolves the effective toolchain by running `pacman -Qo` on the first
-  `cargo`/`rustc` on `PATH`. When rustup is installed via its upstream shell installer rather than the
-  `rustup` package, `~/.cargo/bin/cargo` shadows `/usr/bin/cargo`, `pacman -Qo` finds no owner and
-  returns `None`, and the probe falls through to the distro-`rust` branch — emitting
-  `effective Rust toolchain: distro package \`rust (version unknown)\`` for a machine that is actually
-  running rustup. The finding is advisory `info` only (never affects exit code) and does not occur on
-  pacman-managed workstations where `rustup` owns `cargo`, so it was deferred out of `2.4.0-F3`. Fix:
-  when `_owner_pkg` returns `None` but the resolved binary lives under a rustup layout (`~/.cargo/bin`
-  / `RUSTUP_HOME`), report it as a user-local rustup install (and surface its active toolchain) instead
-  of assuming the distro package. *Priority: low · Effort: small* — provenance accuracy for an
-  environment outside the tested-hardware scope; a mislabel, not a correctness gap.
 
 ### Features
 

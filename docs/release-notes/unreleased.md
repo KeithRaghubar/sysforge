@@ -12,3 +12,15 @@ accumulator. Run the release-notes skill first to reconcile/lint the entries and
 finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
+
+## Fixed
+
+- `--cache-report` now routes its summary through the sysforge logger instead of
+  raw `print()`, so the report is captured by the unified run-log (`sysforge log`
+  no longer omits it) and its divider honours the Unicode gate — `NO_UNICODE` /
+  `--ascii` runs no longer emit raw box-drawing glyphs (2.3.0-B2).
+- `doctor --rust` no longer reports a shell-installed (non-pacman) rustup as the
+  distro `rust` package. An unowned `cargo`/`rustc` inside a rustup tree
+  (`RUSTUP_HOME`, `CARGO_HOME`, or `~/.cargo`) is now reported as a user-local
+  rustup install with its active toolchain, and the non-stable-channel warning
+  applies to it as well (2.5.1-B10).

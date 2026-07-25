@@ -74,6 +74,79 @@ def test_distro_rust_package_is_info(monkeypatch):
     assert "rust" in findings[0].message
 
 
+# --- 2.5.1-B10: a non-pacman rustup install is not the distro package -------
+
+def test_userlocal_rustup_is_not_labelled_distro(monkeypatch, tmp_path):
+    """Shell-installed rustup shadows /usr/bin/cargo and pacman -Qo finds no
+    owner; the probe must still report rustup, not the distro `rust` package."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CARGO_HOME", raising=False)
+    monkeypatch.delenv("RUSTUP_HOME", raising=False)
+    cargo = tmp_path / ".cargo" / "bin" / "cargo"
+    monkeypatch.setattr(rust_probe, "_which", lambda tool: str(cargo))
+    monkeypatch.setattr(rust_probe, "_owner_pkg", lambda path: None)
+    monkeypatch.setattr(rust_probe, "_run", _dispatch({
+        ("rustup", "show"): _proc(
+            stdout="stable-x86_64-unknown-linux-gnu (default)\n"),
+    }))
+
+    findings = rust_probe.collect_active_findings()
+    assert [f.check_id for f in findings] == ["rust-active"]
+    assert findings[0].severity == diag.SEV_INFO
+    assert "distro package" not in findings[0].message
+    assert "rustup" in findings[0].message
+    assert "stable-x86_64-unknown-linux-gnu" in findings[0].message
+
+
+def test_userlocal_rustup_nightly_still_warns(monkeypatch, tmp_path):
+    """The non-stable warning applies to a user-local rustup too."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CARGO_HOME", raising=False)
+    monkeypatch.delenv("RUSTUP_HOME", raising=False)
+    cargo = tmp_path / ".cargo" / "bin" / "cargo"
+    monkeypatch.setattr(rust_probe, "_which", lambda tool: str(cargo))
+    monkeypatch.setattr(rust_probe, "_owner_pkg", lambda path: None)
+    monkeypatch.setattr(rust_probe, "_run", _dispatch({
+        ("rustup", "show"): _proc(
+            stdout="nightly-x86_64-unknown-linux-gnu (default)\n"),
+    }))
+
+    findings = rust_probe.collect_active_findings()
+    assert "rust-nightly-default" in {f.check_id for f in findings}
+
+
+def test_userlocal_rustup_honours_rustup_home(monkeypatch, tmp_path):
+    """An explicit RUSTUP_HOME layout is recognised outside ~/.cargo."""
+    monkeypatch.setenv("HOME", str(tmp_path / "elsewhere"))
+    monkeypatch.delenv("CARGO_HOME", raising=False)
+    monkeypatch.setenv("RUSTUP_HOME", str(tmp_path / "opt" / "rustup"))
+    cargo = tmp_path / "opt" / "rustup" / "bin" / "cargo"
+    monkeypatch.setattr(rust_probe, "_which", lambda tool: str(cargo))
+    monkeypatch.setattr(rust_probe, "_owner_pkg", lambda path: None)
+    monkeypatch.setattr(rust_probe, "_run", _dispatch({
+        ("rustup", "show"): _proc(stdout="stable-x86_64-unknown-linux-gnu\n"),
+    }))
+
+    findings = rust_probe.collect_active_findings()
+    assert "distro package" not in findings[0].message
+
+
+def test_unowned_cargo_outside_rustup_layout_stays_distro(monkeypatch, tmp_path):
+    """An unowned cargo that is *not* a rustup layout keeps the distro label."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CARGO_HOME", raising=False)
+    monkeypatch.delenv("RUSTUP_HOME", raising=False)
+    monkeypatch.setattr(rust_probe, "_which", lambda tool: "/usr/local/bin/cargo")
+    monkeypatch.setattr(rust_probe, "_owner_pkg", lambda path: None)
+    monkeypatch.setattr(rust_probe, "_run", _dispatch({
+        "pacman": _proc(stdout="rust 1.79.0-1\n"),
+    }))
+
+    findings = rust_probe.collect_active_findings()
+    assert [f.check_id for f in findings] == ["rust-active"]
+    assert "distro package" in findings[0].message
+
+
 def test_no_finding_is_ever_error():
     # Guards the advisory-only invariant across the whole module surface.
     assert diag.SEV_ERROR not in {diag.SEV_INFO, diag.SEV_WARN}

@@ -31,7 +31,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -461,14 +460,14 @@ def emit_session_report() -> None:
     Always shown regardless of verbosity level.
     Called at end of run when --cache-report is set.
     """
-    divider = "[SYSFORGE][CACHE] " + "─" * 46
-    print(divider, file=sys.stderr)
-    print("[SYSFORGE][CACHE] Cache Report", file=sys.stderr)
-    print(divider, file=sys.stderr)
+    divider = "─" * 46
+    _log.ui(divider)
+    _log.ui("Cache Report")
+    _log.ui(divider)
 
     if not _SESSION_RECORDS:
-        print("[SYSFORGE][CACHE]   No cache data recorded.", file=sys.stderr)
-        print(divider, file=sys.stderr)
+        _log.ui("  No cache data recorded.")
+        _log.ui(divider)
         return
 
     total_cc_hits = total_cc_misses = 0
@@ -489,10 +488,9 @@ def emit_session_report() -> None:
             total = hits + misses
             pct = f"{100 * hits // total}%" if total > 0 else "n/a"
             size = _fmt_bytes(cc["size_bytes"])
-            print(
-                f"[SYSFORGE][CACHE]   {pkgname}: ccache {hits}/{hits + misses} hits "
-                f"({pct}) cache={size}",
-                file=sys.stderr,
+            _log.ui(
+                f"  {pkgname}: ccache {hits}/{hits + misses} hits "
+                f"({pct}) cache={size}"
             )
 
         if sc is not None:
@@ -503,31 +501,24 @@ def emit_session_report() -> None:
             total_sc_misses += misses
             total = hits + misses
             pct = f"{100 * hits // total}%" if total > 0 else "n/a"
-            print(
-                f"[SYSFORGE][CACHE]   {pkgname}: sccache {hits}/{hits + misses} hits "
-                f"({pct}) cache={sc['size_str']}",
-                file=sys.stderr,
+            _log.ui(
+                f"  {pkgname}: sccache {hits}/{hits + misses} hits "
+                f"({pct}) cache={sc['size_str']}"
             )
 
-    print(divider, file=sys.stderr)
+    _log.ui(divider)
 
     if has_cc:
         total = total_cc_hits + total_cc_misses
         pct = f"{100 * total_cc_hits // total}%" if total > 0 else "n/a"
-        print(
-            f"[SYSFORGE][CACHE]   ccache total: {total_cc_hits}/{total} hits ({pct})",
-            file=sys.stderr,
-        )
+        _log.ui(f"  ccache total: {total_cc_hits}/{total} hits ({pct})")
 
     if has_sc:
         total = total_sc_hits + total_sc_misses
         pct = f"{100 * total_sc_hits // total}%" if total > 0 else "n/a"
-        print(
-            f"[SYSFORGE][CACHE]   sccache total: {total_sc_hits}/{total} hits ({pct})",
-            file=sys.stderr,
-        )
+        _log.ui(f"  sccache total: {total_sc_hits}/{total} hits ({pct})")
 
     if not has_cc and not has_sc:
-        print("[SYSFORGE][CACHE]   ccache and sccache not installed.", file=sys.stderr)
+        _log.ui("  ccache and sccache not installed.")
 
-    print(divider, file=sys.stderr)
+    _log.ui(divider)

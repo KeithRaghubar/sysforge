@@ -22,16 +22,15 @@ Covers:
 """
 import os
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 _DATA = Path(__file__).parent / "data"
 
+from sysforge import log
 from sysforge.primitives.cache_probe import (
     _fmt_bytes,
     _parse_ccache_tab,
@@ -407,6 +406,56 @@ def test_emit_session_report_no_cache_installed(capsys):
     emit_session_report()
     captured = capsys.readouterr()
     assert "not installed" in captured.err
+
+
+# --- 2.3.0-B2: the report must go through sysforge.log, not raw print() ------
+
+def test_emit_session_report_captured_by_unified_log(tmp_path, capsys):
+    """The report lands in the unified run-log, not just on stderr."""
+    reset_session()
+    cc = {"direct_hits": 10, "preprocessed_hits": 0, "misses": 5,
+          "files": 100, "size_bytes": 1048576}
+    record_build_result("pkg-a", cc, None)
+
+    path = tmp_path / "sysforge.log"
+    log.open_unified_log(path)
+    try:
+        emit_session_report()
+    finally:
+        log.close_unified_log(success=True, persist=True)
+    capsys.readouterr()
+
+    body = path.read_text()
+    assert "Cache Report" in body
+    assert "pkg-a" in body
+    assert "ccache total" in body
+
+
+def test_emit_session_report_divider_respects_unicode_gate(capsys):
+    """Under the ASCII gate the divider degrades instead of emitting U+2500."""
+    reset_session()
+    log.set_unicode_mode("never")
+    try:
+        emit_session_report()
+    finally:
+        log.set_unicode_mode("auto")
+
+    captured = capsys.readouterr()
+    assert "─" not in captured.err
+    assert "-" * 10 in captured.err
+
+
+def test_emit_session_report_unicode_divider_when_enabled(capsys):
+    """With glyphs enabled the divider keeps the box-drawing rule."""
+    reset_session()
+    log.set_unicode_mode("always")
+    try:
+        emit_session_report()
+    finally:
+        log.set_unicode_mode("auto")
+
+    captured = capsys.readouterr()
+    assert "─" in captured.err
 
 
 # ---------------------------------------------------------------------------

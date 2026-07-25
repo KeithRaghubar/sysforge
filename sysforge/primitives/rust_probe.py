@@ -21,6 +21,7 @@ Returns :class:`diagnostics.Finding` (category ``"rust"``).
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tomllib
@@ -55,6 +56,30 @@ def _owner_pkg(path: str) -> str | None:
     if len(parts) != 2:
         return None
     return parts[1].split()[0] or None
+
+
+def _is_rustup_layout(path: str) -> bool:
+    """True iff *path* lives inside a rustup-managed tree.
+
+    Covers the upstream shell installer, which is not pacman-managed: its
+    ``cargo`` shadows ``/usr/bin/cargo`` on PATH but has no owning package, so
+    ``_owner_pkg`` returns None. Honours ``RUSTUP_HOME``/``CARGO_HOME`` before
+    falling back to the default ``~/.cargo`` root.
+    """
+    candidates = []
+    for env in ("RUSTUP_HOME", "CARGO_HOME"):
+        val = os.environ.get(env)
+        if val:
+            candidates.append(Path(val))
+    candidates.append(Path.home() / ".cargo")
+    resolved = Path(path)
+    for root in candidates:
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def _channel_of(active: str) -> str:
@@ -95,7 +120,12 @@ def collect_active_findings() -> list[diag.Finding]:
             message="no Rust toolchain detected (no cargo/rustc on PATH)")]
 
     owner = _owner_pkg(cargo)
-    if owner == "rustup":
+    # An unowned cargo inside a rustup tree is the upstream shell installer —
+    # rustup all the same, just not pacman-managed. Without this the probe would
+    # fall through and mislabel it as the distro `rust` package (2.5.1-B10).
+    user_local = owner is None and _is_rustup_layout(cargo)
+    if owner == "rustup" or user_local:
+        provenance = "rustup (user-local)" if user_local else "rustup"
         active = _rustup_active()
         if active is None:
             return [diag.Finding(
@@ -106,7 +136,7 @@ def collect_active_findings() -> list[diag.Finding]:
         channel = _channel_of(active)
         findings = [diag.Finding(
             category=_CATEGORY, severity=diag.SEV_INFO, check_id="rust-active",
-            message=f"effective Rust toolchain: rustup `{active}`")]
+            message=f"effective Rust toolchain: {provenance} `{active}`")]
         if channel != "stable":
             findings.append(diag.Finding(
                 category=_CATEGORY, severity=diag.SEV_WARN,
