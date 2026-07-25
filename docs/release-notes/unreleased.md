@@ -126,3 +126,14 @@ correlation is extended to every mutating verb under one namespaced scheme.
   synthetic roadmap fixture and retag entries by **ID**, asserting the edit
   actually changed something — so a fixture that stops matching fails loudly as a
   fixture error instead of degrading into a vacuous test. (2.5.1-B11)
+- The test suite no longer creates `MagicMock/mock.state_dir/<id>/` directories
+  in the working tree. `unittest.mock` gives every `MagicMock` a working
+  `__fspath__` returning that relative path, so passing one where production
+  code expects a directory does not raise — it resolves against the CWD and is
+  created there. Three `_step_editor` test classes built their pipeline options
+  as a bare `MagicMock`, and the install branch wraps `pacman -S` in a
+  `sentinel_scope(options.state_dir, ...)`, so the sentinel wrote outside
+  `tmp_path` and the tests asserted against a directory they never used. The
+  options stand-in now carries the `state_dir` fixture, and a session-scoped
+  guard in `tests/conftest.py` fails the run if any `MagicMock/` path appears.
+  (2.5.1-B12)

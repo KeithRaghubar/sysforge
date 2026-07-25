@@ -845,7 +845,29 @@ class TestOpenInEditor:
             assert _run_editor_argv(["nope"]) == -1
 
 
-class TestStepEditorRejectsUnresolvable:
+class _EditorOptsMixin:
+    """Shared pipeline-options stand-in for the ``_step_editor`` tests.
+
+    ``state_dir`` must be a real directory: the install branch wraps
+    ``pacman -S`` in a ``sentinel_scope(options.state_dir, ...)``, and a bare
+    ``MagicMock`` there resolves through ``__fspath__`` to the relative path
+    ``MagicMock/mock.state_dir/<id>``, which the sentinel then creates under
+    the CWD — i.e. in the repo (2.5.1-B12). The ``state_dir`` fixture keeps
+    the write inside ``tmp_path``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _wire_state_dir(self, state_dir):
+        self._state_dir = state_dir
+
+    def _opts(self, dry_run=False):
+        opts = MagicMock()
+        opts.dry_run = dry_run
+        opts.state_dir = self._state_dir
+        return opts
+
+
+class TestStepEditorRejectsUnresolvable(_EditorOptsMixin):
     """
     The editor step has three failure modes that must never silently leave
     the stage with an unusable editor: the user types a missing editor and
@@ -856,11 +878,6 @@ class TestStepEditorRejectsUnresolvable:
     through ``_prompt_choice``; free-text prompts (editor name, pkg name)
     go through ``_prompt``.
     """
-
-    def _opts(self, dry_run=False):
-        opts = MagicMock()
-        opts.dry_run = dry_run
-        return opts
 
     def test_rejects_when_install_doesnt_provide_binary(self):
         # User types nvim, picks install, the install runs but the binary
@@ -977,7 +994,7 @@ class TestStepEditorRejectsUnresolvable:
         save.assert_not_called()
 
 
-class TestStepEditorNoEditorOnPath:
+class TestStepEditorNoEditorOnPath(_EditorOptsMixin):
     """
     When _resolve_editor returns ``("", "none")`` (no editor on PATH at
     all), the step must not offer a "[↵] keep" branch — there's nothing
@@ -986,11 +1003,6 @@ class TestStepEditorNoEditorOnPath:
     config-review prompt. The user is forced to pick one (or cancel out
     with the empty-editor sentinel).
     """
-
-    def _opts(self, dry_run=False):
-        opts = MagicMock()
-        opts.dry_run = dry_run
-        return opts
 
     def test_no_keep_prompt_when_no_editor(self):
         # The "Change? [e]dit / [↵] keep" prompt must be skipped entirely
@@ -1044,14 +1056,9 @@ class TestStepEditorNoEditorOnPath:
         save.assert_not_called()
 
 
-class TestStepEditorRetryFlow:
+class TestStepEditorRetryFlow(_EditorOptsMixin):
     """The [r]e-enter editor option lets a user fix a typo without having
     to abort and re-run the whole step."""
-
-    def _opts(self, dry_run=False):
-        opts = MagicMock()
-        opts.dry_run = dry_run
-        return opts
 
     def test_re_enter_after_typo(self):
         # Typo "vimm" → choose [r]e-enter → type "vim" (which exists).

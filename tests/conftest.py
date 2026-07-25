@@ -43,6 +43,41 @@ import sysforge.log as _sf_log
 _sf_log.set_verbosity(2)
 
 
+REPO_ROOT = TESTS_DIR.parent
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_mock_derived_paths():
+    """
+    Fail the session if a `MagicMock/` tree appears in the working tree.
+
+    `unittest.mock` gives every `MagicMock` a working `__fspath__` whose
+    default return value is the string ``"MagicMock/<mock-name>/<id>"``. So
+    handing a mock where production code expects a path does *not* raise —
+    `Path(mock)` yields that as a **relative** path, which then resolves
+    against the CWD (the repo root under pytest) and gets happily `mkdir`'d.
+    The affected test's writes never land where it asserts they do, and the
+    suite quietly mutates the source tree (2.5.1-B12).
+
+    A `.gitignore` entry would be the wrong fix — the directory should never
+    exist. Route the mock through the `state_dir` fixture (or any real
+    `tmp_path`) instead.
+    """
+    stray = REPO_ROOT / "MagicMock"
+    yield
+    if stray.exists():
+        import shutil as _shutil
+        leaked = sorted(p.name for p in stray.glob("*"))
+        _shutil.rmtree(stray, ignore_errors=True)
+        pytest.fail(
+            f"a mock reached code that resolved it as a filesystem path: "
+            f"{stray} was created (mock attributes: {leaked}). Pass a real "
+            f"directory (the `state_dir` fixture) instead of a bare "
+            f"MagicMock. The stray tree has been removed.",
+            pytrace=False,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _isolate_filesystem_soname_cache(monkeypatch):
     """
@@ -180,7 +215,7 @@ class _WhichMap:
         return self
 
     def __call__(self, name, *args, **kwargs):
-        return self._paths.get(os.path.basename(name))
+        return self._paths.get(Path(name).name)
 
 
 @pytest.fixture
@@ -621,7 +656,7 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
                 args.profile_conf = str(profiles_path)
             if not getattr(args, "packages", None):
                 args.packages = str(packages_path)
-            setattr(args, "no_llvm_preflight", getattr(args, "no_llvm_preflight", True))
+            args.no_llvm_preflight = getattr(args, "no_llvm_preflight", True)
             fake_run.respond(["pacman", "-Qm"],
                              stdout="".join(f"{n} {v}\n" for n, v in foreign.items()))
             fake_run.respond(["pacman", "-Q"],
