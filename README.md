@@ -9,7 +9,7 @@ The default build profile uses the system gcc. LLVM (clang/lld) is fully support
 **Commands:** `build` / `fetch` / `update` / `resolve` build and maintain profiled AUR & custom packages; `packages` / `state` manage the manifest and build state; `search` / `uninstall` cover everyday package lifecycle; `artifact list` inventories your own scripts, systemd units, and pacman hooks,
 `artifact adopt`/`edit` bring one under management and track drift, and `artifact deploy`/`remove` push a managed artifact to (or off) the live system — `deploy` refuses on an artifact whose live copy drifted outside SysForge unless you pass `--force` (managed copy wins) or `--adopt-live` (live copy wins, folded back into the managed copy), and `remove` likewise refuses on drift without `--force`; `doctor` / `log` / `env` inspect system health and configuration; `setup` wires up pacman integration; `run <stage>` drives the bootstrap pipeline. See `sysforge --help` or the [man page](man/sysforge.1) for the full reference.
 
-<sub><!--version-->v2.5.1<!--/version--></sub>
+<sub><!--version-->v2.6.0<!--/version--></sub>
 
 ---
 
