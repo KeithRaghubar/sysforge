@@ -65,6 +65,7 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 |----|------|----------|--------|
 | `2.6.1-B1` | git_fetch_and_compare warns "keeping local PKGBUILD" for every -git package with a pending pkgver() bump | med | small |
 | `2.6.1-F2` | Distro-parameterized container tier for the packaging/build smoke tests | med | medium |
+| `2.6.1-STD1` | Arch-derivative portability as an enforced standard (new row 23) | med | medium |
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large |
 | `2.6.1-F1` | doctor: restructure the flat flag surface into system / pkg subcommands | med | large |
 | `2.6.1-B2` | VM ISO path is hardcoded to archlinux.iso, so a second-distro VM cannot boot | low | small |
@@ -138,7 +139,9 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   probes, restart detection. Also add an `os-release` probe to `doctor` — there is currently no
   distro detection anywhere in `sysforge/` (which is *why* it ports cleanly, but leaves nowhere to
   report the running distro or hang distro-conditional behaviour). Depends on nothing; `2.6.1-B2`
-  is the independent VM-tier half. *Priority: med · Effort: medium* — test infrastructure, no
+  is the independent VM-tier half. **Blocks `2.6.1-STD1`**, which turns this tier's coverage into an
+  enforced standards row plus a per-minor release gate — the container harness and the `os-release`
+  probe delivered here are its hard prerequisites. *Priority: med · Effort: medium* — test infrastructure, no
   runtime behaviour change beyond the `doctor` probe. **Standards home on adoption:** none new.
 
 - **`2.5.1-F3` — `state failed --clear-all` emits no `SYSFORGE_TARGET`.** Follow-up to `2.4.0-F1`,
@@ -220,6 +223,40 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   wired into a routine `make` target, where an unrebuildable snapshot would rot silently.
   Unblocks the VM half of `2.6.1-F2`. *Priority: low · Effort: small* — test-infrastructure only, no
   shipped-code change.
+
+### Standards
+
+- **`2.6.1-STD1` — Arch-derivative portability as an enforced standard (new row 23).** SysForge runs
+  on CachyOS today by accident, not by assertion: there is no distro detection anywhere in
+  `sysforge/`, no code-level invariant forbidding the assumptions that would break a derivative, and
+  no release gate that would notice a regression. Add standards row 23 (cited spec: `os-release(5)`,
+  the only external spec in play), scoped to repo, toolchain-default, and version-comparison
+  assumptions on Arch-derived hosts, asserting three sub-invariants — one per risk class enumerated
+  in `2.6.1-F2`: (a) **no hardcoded sync-repo names**, the `["core", "extra"]` literal at
+  `pacman.py:93` being the sole allowlisted occurrence and only as an I/O fallback (this is the
+  `build_core.prepare_deps` repo-vs-AUR makedep split — same failure class as the exit-8 regression
+  at `build_core.py:268`); (b) **the system `makepkg.conf` is the merge baseline, never replaced**,
+  with `makepkg_conf.py:8` the single home, so a derivative's `-march=x86-64-v3`/LTO defaults survive
+  profile-key override intact; (c) **distro identity read from `os-release(5)` through one
+  primitive**, never `pacman.conf` sniffing, `/etc/arch-release`, or hostname heuristics. Enforced by
+  a new `check_standards` group `distro_portability` (static scans in the style of `run_seam` /
+  `privilege_seam`) plus cases in `tests/test_standards_compliance.py`; row and enforcement land in
+  the same commit. Pair it with a per-minor gate: `preflight.sh` section 9 runs the CachyOS container
+  arm, **WARN** on absent infrastructure and **FAIL** on a real break, mirroring section 8's
+  `vm-smoke` policy at `preflight.sh:224-226`; the per-minor cadence itself is enforced in
+  `.claude/skills/release-prep/SKILL.md` (a minor/major bump needs section 9 *green*, not merely
+  non-failing) rather than by version-conditional severity in the script, which would be the first
+  exception to that script's uniform policy. User-facing docs move to a tiered support matrix — Arch
+  primary/full-VM · CachyOS validated each minor via containers · other derivatives expected-but-
+  unvalidated — across `README.md`, `docs/design/20-scope.md`, and `man/sysforge.1.scd`.
+  **Hard-blocked on `2.6.1-F2`**, which delivers the container harness and the `os-release` probe;
+  sub-invariant (c) is unimplementable until it ships, so this cannot be started even partially.
+  Deliberately *not* in scope: non-Arch-derived distros, any distro-conditional *behaviour* (the row
+  forbids assumptions, it does not add per-distro code paths), and the VM-tier concerns F2 already
+  excludes (bootstrap/archinstall, kernel staging, graphics/DKMS, restart detection). Design:
+  `docs/superpowers/specs/2026-07-25-cachyos-portability-standard-design.md`.
+  *Priority: med · Effort: medium* — closes an unasserted portability claim and makes the support
+  matrix honest; touches the standards table, `check_standards`, preflight, and three doc surfaces.
 
 ---
 
