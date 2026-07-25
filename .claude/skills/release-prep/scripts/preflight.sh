@@ -212,6 +212,41 @@ fi
 echo
 
 # ---------------------------------------------------------------------------
+# Section 8: VM packaging smoke (advisory; RUN_VM_SMOKE=0 skips)
+#
+# tools/vm/smoke.sh asserts the post-install packaging invariants a real pacman
+# install must produce (hooks, completions, tmpfiles.d sentinel dir, -Qi
+# registration). Nothing else in this preflight covers them: check-shipped
+# validates the *sources* in the repo, not that an installed package lays them
+# down. It is surfaced here as a checklist line rather than skill prose because
+# the skill reports this script's output verbatim — prose gets skimmed.
+#
+# Never a [FAIL] on absence: the VM is optional infrastructure and a missing VM
+# must not block a release. A *failing* smoke run is a real packaging break and
+# does fail.
+# ---------------------------------------------------------------------------
+echo "VM packaging smoke"
+if [[ "${RUN_VM_SMOKE:-1}" != "1" ]]; then
+    pass "skipped (RUN_VM_SMOKE=0 set)"
+elif ! timeout 3 bash -c "</dev/tcp/localhost/10022" 2>/dev/null; then
+    warn "VM not running — post-install packaging invariants unverified. Boot it with 'make vm-snapshot', then 'make vm-test' (build + install + smoke)."
+else
+    SMOKE_OUT="$(bash tools/vm/smoke.sh 2>&1)" && SMOKE_RC=0 || SMOKE_RC=$?
+    if [[ $SMOKE_RC -ne 0 ]]; then
+        printf '%s\n' "$SMOKE_OUT" | sed 's/^/      /'
+        fail "vm-smoke failed — an install is missing expected artifacts (see above)"
+    # smoke.sh's version gate is liveness-only: it accepts ANY version, so a VM
+    # holding a build of an older release still passes every check. Compare the
+    # reported version against pyproject to catch that staleness.
+    elif printf '%s\n' "$SMOKE_OUT" | grep -q "sysforge --version runs (.*$PYVER"; then
+        pass "vm-smoke passed against an installed v$PYVER"
+    else
+        warn "vm-smoke passed, but the VM's installed sysforge is not v$PYVER — the result covers an older build. Re-run 'make vm-test' to build and install the current tree first."
+    fi
+fi
+echo
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "==> Summary: $PASS pass, $WARN warn, $FAIL fail"

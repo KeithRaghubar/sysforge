@@ -64,8 +64,10 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | ID | Item | Priority | Effort |
 |----|------|----------|--------|
 | `2.6.1-B1` | git_fetch_and_compare warns "keeping local PKGBUILD" for every -git package with a pending pkgver() bump | med | small |
+| `2.6.1-F2` | Distro-parameterized container tier for the packaging/build smoke tests | med | medium |
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large |
 | `2.6.1-F1` | doctor: restructure the flat flag surface into system / pkg subcommands | med | large |
+| `2.6.1-B2` | VM ISO path is hardcoded to archlinux.iso, so a second-distro VM cannot boot | low | small |
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small |
 | `1.2.0-F20` | Rule priority auto-calculation (from the DESIGN roadmap) | low | medium |
@@ -104,6 +106,41 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   *Priority: med · Effort: large* — UX/discoverability, no new diagnostics; touches both
   completions, the manpage, and `docs/design/verbs/doctor.md`. **Standards home on adoption:** none new.
 
+- **`2.5.0-F2` — `help` verb (aliases `--help`) + advertise `-h/--help` in completions.** Two related
+  gaps in help discoverability: (1) there is no `sysforge help [COMMAND]` verb — users must know the
+  `--help` flag; (2) `-h/--help` is auto-added by argparse and *does* appear in `sysforge --help` and
+  works at every level (`sysforge build -h`), but the hand-written zsh/bash completions never offer it
+  (verified — this resolves the "is `--help` missing?" note: not a help-text bug, only a completions
+  omission). Add a `help` subparser that prints top-level help, or delegates to `<COMMAND> --help` when
+  given an argument, wired through the Verb framework (read-only, no sentinel — mirror `env`/`resolve`).
+  Add `-h/--help` to both completion files in the same change. *Priority: low · Effort: small* —
+  convenience + completion completeness. **Standards home on adoption:** none new.
+
+- **`2.6.1-F2` — Distro-parameterized container tier for the packaging/build smoke tests.** Every
+  check in `tools/vm/smoke.sh` is container-satisfiable — filesystem layout (3 hooks, both
+  completions, the tmpfiles.d sentinel dir), `pacman -Qi sysforge`, and a `sysforge --version`
+  liveness gate. None needs a kernel, bootloader, or real hardware, so `make vm-smoke` currently
+  pays VM startup+snapshot cost for a test a container answers in seconds. The script is already
+  shaped for this: it gathers every fact in one `REMOTE_SCRIPT` invocation and evaluates host-side,
+  so the transport (`ssh -p 10022` → `podman exec`) is substitutable without touching check logic.
+  Add a container harness (`tools/vm/` → a sibling `tools/container/`, or a transport flag on the
+  existing scripts) parameterized by distro: Arch base, and an Arch base with the CachyOS repos +
+  their `makepkg.conf` layered in. The CachyOS arm is the point — it covers the three risk classes
+  a same-distro test cannot: (a) **repo/AUR shadowing**, since CachyOS carries a slice of the AUR in
+  its own sync DBs, so `build_core.prepare_deps`' repo-vs-AUR makedep split resolves differently
+  (same failure class as the exit-8 regression at `build_core.py:268`); (b) **`makepkg.conf` merge**
+  — `makepkg_conf.py:8` merges the system conf as baseline, so their `-march=x86-64-v3`/LTO defaults
+  must survive profile-key override intact; (c) **version compare / already-built fingerprints**
+  (`primitives/already_built.py`, the suite-skew detector) against their bumped `pkgrel`s on core
+  packages. Repo *discovery* itself needs no work — `pacman.py:93` already parses
+  `/etc/pacman.conf` section names dynamically with `["core", "extra"]` only as an I/O fallback.
+  Out of scope, and left to the VM tier: bootstrap/archinstall, kernel staging, graphics/DKMS
+  probes, restart detection. Also add an `os-release` probe to `doctor` — there is currently no
+  distro detection anywhere in `sysforge/` (which is *why* it ports cleanly, but leaves nowhere to
+  report the running distro or hang distro-conditional behaviour). Depends on nothing; `2.6.1-B2`
+  is the independent VM-tier half. *Priority: med · Effort: medium* — test infrastructure, no
+  runtime behaviour change beyond the `doctor` probe. **Standards home on adoption:** none new.
+
 - **`2.5.1-F3` — `state failed --clear-all` emits no `SYSFORGE_TARGET`.** Follow-up to `2.4.0-F1`,
   which gave every sentinel-gated verb a `journal_target` override. `StateFailedVerb.journal_target`
   keys only on `args.clear` (single pkgbase → `pkg:<name>`), so a `--clear-all` invocation — which is
@@ -132,16 +169,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   invariant, this file's header prose, `check_standards.py`'s docstring, and the covering tests.
   *Priority: low · Effort: medium* — readability only, and the guard rework is the real cost; the
   cheap half (tightening entry prose) is already done.
-
-- **`2.5.0-F2` — `help` verb (aliases `--help`) + advertise `-h/--help` in completions.** Two related
-  gaps in help discoverability: (1) there is no `sysforge help [COMMAND]` verb — users must know the
-  `--help` flag; (2) `-h/--help` is auto-added by argparse and *does* appear in `sysforge --help` and
-  works at every level (`sysforge build -h`), but the hand-written zsh/bash completions never offer it
-  (verified — this resolves the "is `--help` missing?" note: not a help-text bug, only a completions
-  omission). Add a `help` subparser that prints top-level help, or delegates to `<COMMAND> --help` when
-  given an argument, wired through the Verb framework (read-only, no sentinel — mirror `env`/`resolve`).
-  Add `-h/--help` to both completion files in the same change. *Priority: low · Effort: small* —
-  convenience + completion completeness. **Standards home on adoption:** none new.
 
 - **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
   Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
@@ -173,6 +200,26 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   default-arg compatible; add the dual VCS/non-VCS pair (dirty pkgver bump on a `-git` repo → no
   warn, `fetched`; a real edit → warn, `diverged`). *Priority: med · Effort: small* — misleading
   operator log on a live system, no behavioral change to the sync outcome.
+
+- **`2.6.1-B2` — VM ISO path is hardcoded to `archlinux.iso`, so a second-distro VM cannot boot.**
+  `tools/vm/boot.sh:48` pins `ISO_PATH="$VM_DIR/archlinux.iso"`. Everything else in the VM tooling is
+  already distro-agnostic — the qcow2, savevm/loadvm, the root-only SSH policy (`Makefile:237`), and
+  `build-pkg.sh`/`install-pkg.sh`/`smoke.sh`, which all drive an installed system over SSH — and
+  `boot.sh` already honours `SYSFORGE_VM_DIR`, so a parallel VM tree is otherwise possible today with
+  no code change:
+  ```
+  SYSFORGE_VM_DIR=~/.cache/sysforge-vm-cachy make vm-image vm-iso
+  ```
+  The hardcoded filename is the only blocker. Fix: accept an override (`VM_ISO_NAME`, or glob `*.iso`
+  in `$VM_DIR` and fail only on zero/multiple matches) and update the not-found message at
+  `boot.sh:207-210`, which names `archlinux.iso` in its remediation text. Note `tools/vm/README.md`
+  documents the ISO placement and needs the same edit. Deliberately *not* in scope: an unattended
+  second-distro install — `tools/vm/archinstall-config.json` drives the Arch install, and CachyOS
+  ships its own installer, so its VM is a hand-built one-time snapshot that no target can regenerate.
+  For that reason the second VM should stay operator-invoked for kernel/graphics work rather than
+  wired into a routine `make` target, where an unrebuildable snapshot would rot silently.
+  Unblocks the VM half of `2.6.1-F2`. *Priority: low · Effort: small* — test-infrastructure only, no
+  shipped-code change.
 
 ---
 

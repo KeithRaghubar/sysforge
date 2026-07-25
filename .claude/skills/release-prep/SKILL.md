@@ -1,6 +1,6 @@
 ---
 name: release-prep
-description: Pre-flight checks before `make release-{major,minor,patch}`. Verifies branch/working-tree state, version-marker consistency across pyproject.toml/PKGBUILD/PKGBUILD-git/README.md/DESIGN.md, lint passes, completions/_sysforge has every CLI verb, and chroot infrastructure is ready. Use whenever you are about to cut a release.
+description: Pre-flight checks before `make release-{major,minor,patch}`. Verifies branch/working-tree state, version-marker consistency across pyproject.toml/PKGBUILD/PKGBUILD-git/README.md/DESIGN.md, lint passes, completions/_sysforge has every CLI verb, chroot infrastructure is ready, and the VM post-install packaging smoke has been run against a current build. Use whenever you are about to cut a release.
 disable-model-invocation: true
 ---
 
@@ -59,6 +59,34 @@ floor before releasing and commit it:
 ```bash
 make coverage-ratchet-update TESTS=$(make test 2>/dev/null | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+')
 ```
+
+## VM packaging smoke (on by default)
+
+The preflight ends with a `VM packaging smoke` section. This is the only check that
+verifies the *installed* result rather than the repo sources — `check-shipped`
+validates that `etc/sysforge`, hooks, completions, and the manpage are correct **in
+the tree**, but nothing else confirms a real `pacman -U` lays them down where they
+belong. That is what `tools/vm/smoke.sh` asserts (3 hooks, both completions, the
+tmpfiles.d sentinel dir, `pacman -Qi` registration).
+
+Behaviour, and how to act on each outcome:
+
+| Outcome | Meaning | What to tell the user |
+|---|---|---|
+| `[PASS] vm-smoke passed against an installed vX.Y.Z` | VM holds a current build; invariants hold | Nothing to do |
+| `[WARN] VM not running` | Unverified — the VM is optional infra, so absence never blocks | Offer to boot it (`make vm-snapshot`) and run `make vm-test` |
+| `[WARN] … not vX.Y.Z` | Smoke passed, but against an **older build** | Recommend `make vm-test` before trusting the result |
+| `[FAIL] vm-smoke failed` | Real packaging break | Release must not proceed; the indented smoke output names the missing artifact |
+
+Skip it with `RUN_VM_SMOKE=0` (mirrors `RUN_COVERAGE=0`):
+
+```bash
+RUN_VM_SMOKE=0 bash .claude/skills/release-prep/scripts/preflight.sh
+```
+
+Note `make vm-smoke` alone only *checks* an already-installed sysforge — it does not
+build or install. `make vm-test` is the full round-trip (`vm-pkg-stable` →
+`vm-install-stable` → `vm-smoke`) and is what refreshes a stale VM.
 
 ## What this skill does NOT check
 
