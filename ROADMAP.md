@@ -66,26 +66,9 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large |
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small |
-| `2.2.0-B3` | check-shipped manpage guard couples to the local scdoc version | low | medium |
 | `1.2.0-F20` | Rule priority auto-calculation (from the DESIGN roadmap) | low | medium |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium |
 <!-- END roadmap-table -->
-
-### Bugs
-
-- **`2.2.0-B3` — `check-shipped` manpage guard couples to the local scdoc version.**
-  The `manpage` check in `tools/check_shipped.py` asserts that committed `man/sysforge.1`
-  byte-matches fresh `make man` output on the current machine. But `make man` runs `scdoc`,
-  whose rendering changes between versions (e.g. 1.11.4→1.11.5 re-escaped every `-` as `\-`
-  and re-stamped the `.TH` date), so the committed artifact is silently pinned to whichever
-  scdoc version last regenerated it. A contributor (or CI) on a different scdoc version sees
-  the inverse reflow — hundreds of cosmetic `\-`↔`-` lines — and the guard fails on changes
-  they never made, conflating "the CLI surface changed" with "the renderer version changed".
-  The escaping is functionally inert (roff renders `\-` and `-` identically). Fix: normalize
-  the comparison in `check_shipped.py` — strip the generator/date comment line and canonicalize
-  hyphen escaping before diffing — so the guard verifies man-page *content* (does it match the
-  argparse tree) rather than scdoc-version-specific byte output. *Priority: low · Effort: medium* —
-  cosmetic churn + contributor/CI friction; no runtime or rendered-output impact.
 
 ### Features
 
