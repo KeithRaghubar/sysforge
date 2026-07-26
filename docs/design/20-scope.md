@@ -29,6 +29,19 @@ than a package builder:
 - the broader general-recommendations territory — networking, user management,
   locale/input configuration, and security hardening as a whole.
 
+**Distribution support tiers.** SysForge assumes `pacman`/`makepkg` and nothing
+narrower. Three tiers, mirroring the tested-hardware tier language:
+
+| Tier | Distro | What is validated |
+|------|--------|-------------------|
+| primary | **Arch Linux** | everything, including the VM-only concerns: bootstrap/install, kernel staging, graphics/DKMS probes, restart detection |
+| validated derivative | **CachyOS** | each minor, via the container tier: packaging invariants, dependency resolution, the `makepkg.conf` merge, version compare and already-built fingerprints (Standards row 23). The VM-only concerns above are **not** validated here |
+| expected | **other Arch derivatives** | unvalidated, but expected to work: Standards row 23 forbids the repo-name, toolchain-default, and distro-identity assumptions that would break them |
+
+Non-Arch-derived distributions are out of scope. So is distro-conditional
+*behaviour*: row 23 forbids assumptions, it does not introduce per-distro code
+paths. A genuine behavioural divergence is a new roadmap item, not a branch.
+
 **North star.** When deciding what SysForge should help *set up, monitor, and
 debug*, the Arch wiki's
 [System maintenance](https://wiki.archlinux.org/title/System_maintenance) and

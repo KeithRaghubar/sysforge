@@ -169,6 +169,29 @@ PAGER
 	Pager for *sysforge log*, *state* listings, and PKGBUILD review
 	diffs in *build*/*update* (falls back to less -RFX, then more).
 
+# DISTRIBUTIONS
+
+SysForge assumes *pacman*(8) and *makepkg*(8), and nothing narrower. It has no
+distro-conditional behaviour: distro identity is reported, never branched on.
+
+Arch Linux
+	The primary supported base. Everything is validated here, including
+	bootstrap/install, kernel staging, and the graphics/DKMS probes.
+
+CachyOS
+	A validated derivative, re-checked each minor release for packaging
+	invariants, dependency resolution, *makepkg.conf*(5) handling, and
+	version comparison. The bootstrap, kernel-staging and graphics/DKMS
+	features are *not* validated here.
+
+Other Arch derivatives
+	Expected to work but unvalidated. SysForge hardcodes no sync-repo
+	names and never replaces the system *makepkg.conf*(5), so a derivative's
+	own repos and toolchain defaults are honoured.
+
+Run *sysforge doctor --distro* to see which tier the running system falls in.
+Anything not Arch-derived is out of scope.
+
 # EXIT STATUS
 
 0 on success. 1 on build/install/verification failure. 2 when the user

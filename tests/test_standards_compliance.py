@@ -436,7 +436,11 @@ def test_qkk_mtree_contract_backup_and_missing_classification(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# distro_identity group — os-release(5) single home (STD row 23)
+# distro_portability group — Arch-derivative portability (STD row 23)
+#
+# Three sub-invariants: (a) no hardcoded sync-repo names, (b) the system
+# makepkg.conf is the merge baseline, (c) distro identity from os-release(5)
+# through one primitive.
 # ---------------------------------------------------------------------------
 
 def _repo_with_os_release_home(tmp_path):
@@ -449,13 +453,13 @@ def _repo_with_os_release_home(tmp_path):
     return tmp_path
 
 
-def test_distro_identity_allows_the_one_home(tmp_path):
+def test_distro_portability_c_allows_the_one_home(tmp_path):
     repo = _repo_with_os_release_home(tmp_path)
     mod = _load_check_standards()
-    assert mod.check_distro_identity(repo) == []
+    assert mod._check_identity_home(repo) == []
 
 
-def test_distro_identity_flags_os_release_read_elsewhere(tmp_path):
+def test_distro_portability_c_flags_os_release_read_elsewhere(tmp_path):
     repo = _repo_with_os_release_home(tmp_path)
     (repo / "sysforge" / "sneaky.py").write_text(
         'from pathlib import Path\n'
@@ -463,11 +467,11 @@ def test_distro_identity_flags_os_release_read_elsewhere(tmp_path):
         encoding="utf-8",
     )
     mod = _load_check_standards()
-    findings = mod.check_distro_identity(repo)
+    findings = mod._check_identity_home(repo)
     assert any("sneaky.py" in f.location for f in findings), findings
 
 
-def test_distro_identity_flags_arch_release_marker(tmp_path):
+def test_distro_portability_c_flags_arch_release_marker(tmp_path):
     """/etc/arch-release identifies nothing — derivatives ship it too."""
     repo = _repo_with_os_release_home(tmp_path)
     (repo / "sysforge" / "sniff.py").write_text(
@@ -476,19 +480,150 @@ def test_distro_identity_flags_arch_release_marker(tmp_path):
         encoding="utf-8",
     )
     mod = _load_check_standards()
-    findings = mod.check_distro_identity(repo)
+    findings = mod._check_identity_home(repo)
     assert any("sniff.py" in f.location for f in findings), findings
 
 
-def test_distro_identity_flags_missing_home(tmp_path):
+def test_distro_portability_c_flags_missing_home(tmp_path):
     (tmp_path / "sysforge").mkdir()
     mod = _load_check_standards()
-    findings = mod.check_distro_identity(tmp_path)
+    findings = mod._check_identity_home(tmp_path)
     assert any("os_release.py" in f.location for f in findings), findings
 
 
-def test_distro_identity_clean_on_the_real_tree():
-    """The shipped tree conforms: no os-release read outside the one primitive."""
+# --- sub-invariant (a): no hardcoded sync-repo names ------------------------
+
+def _repo_with_pacman_home(tmp_path):
+    """Synthetic repo carrying the allowlisted repo-name fallback."""
+    home = tmp_path / "sysforge" / "primitives" / "pacman.py"
+    home.parent.mkdir(parents=True)
+    home.write_text('def _read_sync_repo_names():\n    return ["core", "extra"]\n',
+                    encoding="utf-8")
+    return tmp_path
+
+
+def test_distro_portability_a_allows_the_pacman_fallback(tmp_path):
+    repo = _repo_with_pacman_home(tmp_path)
+    mod = _load_check_standards()
+    assert mod._check_repo_name_literals(repo) == []
+
+
+def test_distro_portability_a_flags_repo_name_list_elsewhere(tmp_path):
+    repo = _repo_with_pacman_home(tmp_path)
+    (repo / "sysforge" / "deps.py").write_text(
+        'SYNC_REPOS = ["core", "extra", "multilib"]\n', encoding="utf-8")
+    mod = _load_check_standards()
+    findings = mod._check_repo_name_literals(repo)
+    assert len(findings) == 3, findings
+    assert all("deps.py" in f.location for f in findings)
+
+
+def test_distro_portability_a_flags_repo_name_comparison(tmp_path):
+    """The failure class: deciding repo-vs-AUR by comparing a repo name."""
+    repo = _repo_with_pacman_home(tmp_path)
+    (repo / "sysforge" / "split.py").write_text(
+        'def is_repo(db):\n    return db == "extra"\n', encoding="utf-8")
+    mod = _load_check_standards()
+    findings = mod._check_repo_name_literals(repo)
+    assert any("split.py" in f.location for f in findings), findings
+
+
+def test_distro_portability_a_ignores_non_decision_strings(tmp_path):
+    """A bare string that isn't a repo-name decision is not a violation —
+    'extra' and 'core' are ordinary English words."""
+    repo = _repo_with_pacman_home(tmp_path)
+    (repo / "sysforge" / "prose.py").write_text(
+        'def f(**kw):\n'
+        '    msg = "extra"\n'
+        '    return kw.get("core")\n',
+        encoding="utf-8",
+    )
+    mod = _load_check_standards()
+    assert mod._check_repo_name_literals(repo) == []
+
+
+# --- sub-invariant (b): system makepkg.conf is the merge baseline -----------
+
+_EMITTER_OK = (
+    'from sysforge.primitives.config import parse_system_makepkg_conf\n'
+    'def emit():\n'
+    '    system_assignments = parse_system_makepkg_conf(None)\n'
+    '    lines = []\n'
+    '    for key, raw_val in system_assignments.items():\n'
+    '        lines.append(f"{key}={raw_val}")\n'
+    '    return lines\n'
+)
+
+
+def _repo_with_emitter(tmp_path, emitter_src=_EMITTER_OK, conf_home=True):
+    prim = tmp_path / "sysforge" / "primitives"
+    prim.mkdir(parents=True)
+    (prim / "makepkg_conf.py").write_text(emitter_src, encoding="utf-8")
+    if conf_home:
+        (prim / "config.py").write_text(
+            'from pathlib import Path\n'
+            'SYSTEM_MAKEPKG_CONF = Path("/etc/makepkg.conf")\n',
+            encoding="utf-8")
+    return tmp_path
+
+
+def test_distro_portability_b_allows_baseline_merge(tmp_path):
+    repo = _repo_with_emitter(tmp_path)
+    mod = _load_check_standards()
+    assert mod._check_makepkg_baseline(repo) == []
+
+
+def test_distro_portability_b_flags_conf_path_outside_config(tmp_path):
+    repo = _repo_with_emitter(tmp_path)
+    (repo / "sysforge" / "peek.py").write_text(
+        'from pathlib import Path\n'
+        'CONF = Path("/etc/makepkg.conf").read_text()\n',
+        encoding="utf-8",
+    )
+    mod = _load_check_standards()
+    findings = mod._check_makepkg_baseline(repo)
+    assert any("peek.py" in f.location for f in findings), findings
+
+
+def test_distro_portability_b_flags_dropped_baseline_load(tmp_path):
+    """An emitter that stops loading the system conf replaces the derivative's
+    -march/LTO defaults instead of overriding them."""
+    repo = _repo_with_emitter(tmp_path, emitter_src=(
+        'def emit():\n'
+        '    system_assignments = {}\n'
+        '    for key, raw_val in system_assignments.items():\n'
+        '        pass\n'
+    ))
+    mod = _load_check_standards()
+    findings = mod._check_makepkg_baseline(repo)
+    assert any("parse_system_makepkg_conf" in f.message for f in findings), findings
+
+
+def test_distro_portability_b_flags_unemitted_baseline(tmp_path):
+    """Loading the baseline but not writing it out drops every key the
+    derivative set — a read alone is not a merge."""
+    repo = _repo_with_emitter(tmp_path, emitter_src=(
+        'from sysforge.primitives.config import parse_system_makepkg_conf\n'
+        'def emit():\n'
+        '    system_assignments = parse_system_makepkg_conf(None)\n'
+        '    return ["CFLAGS=-O2"]\n'
+    ))
+    mod = _load_check_standards()
+    findings = mod._check_makepkg_baseline(repo)
+    assert any("iterates system_assignments" in f.message for f in findings), findings
+
+
+def test_distro_portability_b_flags_missing_emitter(tmp_path):
+    (tmp_path / "sysforge").mkdir()
+    mod = _load_check_standards()
+    findings = mod._check_makepkg_baseline(tmp_path)
+    assert any("makepkg_conf.py" in f.location for f in findings), findings
+
+
+# --- the whole group on the shipped tree ------------------------------------
+
+def test_distro_portability_clean_on_the_real_tree():
+    """The shipped tree conforms to all three sub-invariants."""
     from pathlib import Path
     mod = _load_check_standards()
-    assert mod.check_distro_identity(Path(".")) == []
+    assert mod.check_distro_portability(Path(".")) == []

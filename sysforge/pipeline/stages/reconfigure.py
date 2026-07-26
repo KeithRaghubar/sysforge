@@ -1041,9 +1041,12 @@ def _offer_makepkg_defaults(conf: dict, conf_path: Path) -> None:
 def _step_makepkg(config, state, options, editor: str) -> str:
     _log.ui("─── System makepkg.conf ─────────────────────────────")
 
-    from sysforge.primitives.config import parse_system_makepkg_conf
+    from sysforge.primitives.config import (
+        SYSTEM_MAKEPKG_CONF,
+        parse_system_makepkg_conf,
+    )
 
-    conf_path = Path("/etc/makepkg.conf")
+    conf_path = SYSTEM_MAKEPKG_CONF
     conf = parse_system_makepkg_conf()
 
     if not conf:

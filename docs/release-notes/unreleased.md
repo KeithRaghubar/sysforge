@@ -61,8 +61,8 @@ https://keepachangelog.com/en/1.1.0/
 ## Changed
 
 - **Standards row 23** (`os-release(5)`, enforced) records the distro-identity
-  invariant adopted above (2.6.1-F2), guarded by the new `check_standards`
-  `distro_identity` group: identity is read from `/etc/os-release` (then
+  invariant adopted above (2.6.1-F2), guarded by the `check_standards`
+  `distro_portability` group: identity is read from `/etc/os-release` (then
   `/usr/lib/os-release`) through `primitives/os_release.py` alone, never
   inferred from `pacman.conf` section names, `/etc/arch-release`, or a hostname.
 
@@ -76,6 +76,38 @@ https://keepachangelog.com/en/1.1.0/
   resolved. An unreachable target now exits `3` (was `1`), distinguishing
   absent optional infrastructure from a real failure for callers that warn
   rather than fail.
+
+- **Standards row 23 is now the full Arch-derivative portability standard**
+  (2.6.1-STD1), extended from the identity-only invariant that shipped with
+  2.6.1-F2 to all three sub-invariants: **(a)** no hardcoded sync-repo names —
+  the `["core", "extra"]` literal in `primitives/pacman.py` is the sole
+  allowlisted occurrence and only as an I/O fallback, and repo membership is
+  asked of pacman rather than inferred; **(b)** the system `makepkg.conf` is the
+  merge baseline, never replaced, so a derivative's own `-march`/LTO defaults
+  survive profile-key override; **(c)** distro identity from `os-release(5)`
+  through one primitive. Enforced statically by the `check_standards`
+  `distro_portability` group (widened from the identity-only checks) and
+  behaviourally by the new `tests/test_distro_portability.py` against a
+  synthetic derivative. `config.SYSTEM_MAKEPKG_CONF` is the one home for the
+  system conf path, replacing a second `/etc/makepkg.conf` literal in the
+  reconfigure stage. The row forbids *assumptions* — sysforge still has no
+  distro-conditional behaviour.
+
+- The release preflight gained section 9, running the container tier's
+  derivative arm (2.6.1-STD1) — the only check that exercises row 23 against a
+  real derivative rather than synthetic input. Same policy as section 8: warn
+  when the harness is unavailable (no podman, no network, unpullable image),
+  fail on a real break. Because a warn cannot enforce a cadence, the
+  release-prep skill now states the rule a script can't: a **minor or major**
+  bump needs section 9 *green*, and a yellow section 9 is acceptable for a
+  patch release only. Skip with `RUN_DISTRO_SMOKE=0`.
+
+- Documented distribution support tiers (2.6.1-STD1) across `README.md`,
+  `docs/design/20-scope.md`, and a new `DISTRIBUTIONS` section in the manpage:
+  Arch primary (everything, including bootstrap/kernel/graphics), CachyOS
+  validated each minor via the container tier (packaging invariants only), other
+  Arch derivatives expected but unvalidated. `sysforge doctor --distro` reports
+  which tier the running system is in.
 
 ## Fixed
 
@@ -95,6 +127,11 @@ https://keepachangelog.com/en/1.1.0/
   other boot modes are unaffected. Combined with `SYSFORGE_VM_DIR`, a VM tree for a
   second Arch-derived distro now needs no code change. Only the Arch install stays
   automated — see `tools/vm/README.md`.
+
+- The container harness now exits `3` ("unavailable") rather than `1` when no
+  built package is present (2.6.1-STD1). An unbuilt package is a missing
+  prerequisite, not a portability break; at `1` the new preflight section would
+  have blocked a release over it. Found by running the harness for real.
 
 - Three shell defects the new `shellcheck` gate surfaced (2.6.1-F4): the release
   preflight's `cd "$REPO_ROOT"` was unguarded, so under `set -u` without `-e` a

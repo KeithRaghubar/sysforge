@@ -21,7 +21,12 @@ SysForge started as a tool to streamline its author's own Arch Linux build and m
 
 ## Requirements
 
-- Arch Linux (or Arch ISO for fresh installs)
+- Arch Linux (or Arch ISO for fresh installs) — the primary supported base.
+  **Arch derivatives:** CachyOS is validated each minor release for packaging,
+  dependency resolution, `makepkg.conf` handling and version comparison; other
+  Arch derivatives are expected to work but are unvalidated. The bootstrap,
+  kernel-staging and graphics/DKMS features are validated on Arch only.
+  `sysforge doctor --distro` reports which tier the machine you are on falls in.
 - Python 3.11+
 - `makepkg`, `pacman`, `sudo`
 - An AUR helper is **not** required — SysForge handles AUR builds directly

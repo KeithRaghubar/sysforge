@@ -260,6 +260,48 @@ fi
 echo
 
 # ---------------------------------------------------------------------------
+# Section 9: derivative portability (advisory; RUN_DISTRO_SMOKE=0 skips)
+#
+# Runs the container tier's derivative arm — the only check that exercises
+# Standards row 23 against a real Arch derivative rather than a fixture: extra
+# sync DBs ahead of core/extra, a -march=x86-64-v3 + LTO makepkg.conf baseline,
+# and bumped pkgrels on core packages. tests/test_distro_portability.py covers
+# the same invariants against synthetic input; only this reaches a real one.
+#
+# Policy mirrors section 8 exactly: never a [FAIL] on absence (the container
+# harness is optional infrastructure — no podman, no network, or an unpullable
+# base image must not block a release), always a [FAIL] on a real break.
+# harness.sh exits 3 for "unavailable" precisely so the two are distinguishable
+# here; any other non-zero exit is a genuine portability failure.
+#
+# The per-minor cadence is NOT enforced here — a WARN cannot enforce it. For a
+# minor or major bump this section must be *green*, which SKILL.md's checklist
+# states; a yellow section 9 is acceptable for a patch release only. Keeping the
+# version-sensitivity in the skill leaves this script's policy uniform across
+# every section.
+# ---------------------------------------------------------------------------
+echo "Derivative portability (container tier)"
+if [[ "${RUN_DISTRO_SMOKE:-1}" != "1" ]]; then
+    pass "skipped (RUN_DISTRO_SMOKE=0 set)"
+elif ! command -v podman >/dev/null 2>&1; then
+    warn "podman not installed — derivative portability unverified. Install it with 'make dev-deps-container', then 'make vm-pkg-stable && make container-smoke-cachyos'."
+else
+    DISTRO_OUT="$(bash tools/container/harness.sh smoke --distro=cachyos 2>&1)" \
+        && DISTRO_RC=0 || DISTRO_RC=$?
+    if [[ $DISTRO_RC -eq 3 ]]; then
+        warn "container harness unavailable (no network, or the derivative base image could not be pulled) — derivative portability unverified"
+    elif [[ $DISTRO_RC -ne 0 ]]; then
+        printf '%s\n' "$DISTRO_OUT" | sed 's/^/      /'
+        fail "derivative portability failed — a Standards row 23 invariant does not hold on the derivative (see above)"
+    elif printf '%s\n' "$DISTRO_OUT" | grep -q "sysforge --version runs (.*$PYVER"; then
+        pass "derivative portability passed against an installed v$PYVER"
+    else
+        warn "derivative portability passed, but the container's installed sysforge is not v$PYVER — the result covers an older build. Re-run 'make vm-pkg-stable' first."
+    fi
+fi
+echo
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo "==> Summary: $PASS pass, $WARN warn, $FAIL fail"

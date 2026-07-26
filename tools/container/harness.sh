@@ -138,7 +138,10 @@ if (( ${#MATCHES[@]} == 0 )); then
 ERROR: no $FLAVOR package matching '$PKG_GLOB' in $PKG_DIR
        Run: make vm-pkg-$FLAVOR
 EOF
-    exit 1
+    # Unavailable, not failed: an unbuilt package is a missing prerequisite, and
+    # a caller that warns on absent infrastructure (the release preflight's
+    # section 9) must not read it as a portability break.
+    exit "$EXIT_UNAVAILABLE"
 fi
 PKG="${MATCHES[0]}"
 PKG_BASENAME=$(basename "$PKG")

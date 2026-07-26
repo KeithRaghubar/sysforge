@@ -89,6 +89,39 @@ Note `make vm-smoke` alone only *checks* an already-installed sysforge — it do
 build or install. `make vm-test` is the full round-trip (`vm-pkg-stable` →
 `vm-install-stable` → `vm-smoke`) and is what refreshes a stale VM.
 
+## Derivative portability (on by default)
+
+The preflight's last section runs the container tier's derivative arm
+(`tools/container/harness.sh smoke --distro=cachyos`) — the only check that
+exercises **Standards row 23** against a real Arch derivative instead of
+synthetic input: extra sync DBs ahead of `core`/`extra`, the derivative's own
+`makepkg.conf` baseline, and bumped `pkgrel`s on core packages. It costs seconds,
+not a VM boot.
+
+| Outcome | Meaning | What to tell the user |
+|---|---|---|
+| `[PASS] derivative portability passed against an installed vX.Y.Z` | Row 23 holds on the derivative | Nothing to do |
+| `[WARN] podman not installed` | Unverified — optional infra, so absence never blocks | Offer `make dev-deps-container`, then `make vm-pkg-stable && make container-smoke-cachyos` |
+| `[WARN] container harness unavailable` | No network, or the base image could not be pulled | Retry when online; do not treat as a break |
+| `[WARN] … not vX.Y.Z` | Passed, but against an **older build** | Recommend `make vm-pkg-stable` first |
+| `[FAIL] derivative portability failed` | A row 23 invariant does not hold | Release must not proceed; the indented output names the failing check |
+
+**Cadence — this is the part a script cannot enforce.** Because absence only
+warns, the script alone cannot make "validated each minor" true. So:
+
+> For a **minor or major** version bump, section 9 must be **green** — a
+> `[WARN]` is not good enough. A yellow section 9 is acceptable for a **patch**
+> release only.
+
+Check the bump kind against that rule explicitly and say so in the report. If the
+bump is minor/major and section 9 is yellow, the fix is to install podman / get
+online and re-run — not to proceed. Keeping the version-sensitivity here rather
+than in the script leaves `preflight.sh`'s policy uniform across all nine
+sections.
+
+Skip it with `RUN_DISTRO_SMOKE=0` (mirrors `RUN_VM_SMOKE=0`), which is only
+appropriate for a patch release.
+
 ## What this skill does NOT check
 
 - **Tests pass** — too slow to run automatically (1547 tests). Tell the user: "Run `make test` separately before releasing if you haven't already."

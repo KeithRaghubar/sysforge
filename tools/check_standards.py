@@ -660,7 +660,7 @@ def check_privilege_seam(repo: Path) -> list[Finding]:
 
 
 # ===========================================================================
-# Group: distro_identity  (os-release(5) single home — STD row 23)
+# Group: distro_portability  (Arch-derivative portability — STD row 23)
 # ===========================================================================
 
 # The one module permitted to read os-release, and the identity sources that are
@@ -674,8 +674,8 @@ _OS_RELEASE_PATHS = ("/etc/os-release", "/usr/lib/os-release")
 _FORBIDDEN_IDENTITY_MARKERS = ("/etc/arch-release", "/etc/lsb-release")
 
 
-def check_distro_identity(repo: Path) -> list[Finding]:
-    """Distro identity comes from os-release(5), through one primitive."""
+def _check_identity_home(repo: Path) -> list[Finding]:
+    """Sub-invariant (c): distro identity comes from os-release(5), one primitive."""
     findings: list[Finding] = []
     for py in sorted((repo / "sysforge").rglob("*.py")):
         rel = py.relative_to(repo).as_posix()
@@ -690,22 +690,144 @@ def check_distro_identity(repo: Path) -> list[Finding]:
             val = node.value
             if val in _OS_RELEASE_PATHS and rel != _OS_RELEASE_HOME:
                 findings.append(Finding(
-                    "distro_identity", "error", f"{rel}:{node.lineno}",
+                    "distro_portability", "error", f"{rel}:{node.lineno}",
                     f"os-release read outside {_OS_RELEASE_HOME} — distro "
                     "identity has one home (STD row 23)",
                 ))
             elif val in _FORBIDDEN_IDENTITY_MARKERS:
                 findings.append(Finding(
-                    "distro_identity", "error", f"{rel}:{node.lineno}",
+                    "distro_portability", "error", f"{rel}:{node.lineno}",
                     f"{val} is not a distro identity (an Arch derivative ships "
                     "it too) — use primitives/os_release.py (STD row 23)",
                 ))
     if not (repo / _OS_RELEASE_HOME).is_file():
         findings.append(Finding(
-            "distro_identity", "error", _OS_RELEASE_HOME,
+            "distro_portability", "error", _OS_RELEASE_HOME,
             "the os-release home is missing (STD row 23)",
         ))
     return findings
+
+
+# --- sub-invariant (a): no hardcoded sync-repo names ------------------------
+#
+# A derivative carries its own sync DBs, often ahead of core/extra, and drops or
+# renames others. Any module that decides "is this a repo package?" by comparing
+# against a repo-name literal is wrong there — ask pacman instead
+# (`aur.repo_packages` runs `pacman -Si`, which is why the repo-vs-AUR makedep
+# split in `build_core.prepare_deps` already ports; that split is the failure
+# class behind the exit-8 regression documented at build_core.py:268).
+#
+# The sole allowlisted home is pacman.py's I/O fallback, used only when
+# /etc/pacman.conf cannot be read at all.
+_REPO_NAMES_HOME = "sysforge/primitives/pacman.py"
+_REPO_NAME_LITERALS = frozenset({
+    "core", "extra", "multilib", "community", "testing",
+    "core-testing", "extra-testing", "multilib-testing",
+})
+
+
+def _check_repo_name_literals(repo: Path) -> list[Finding]:
+    """Sub-invariant (a): sync-repo names are read, never hardcoded."""
+    findings: list[Finding] = []
+    for py in sorted((repo / "sysforge").rglob("*.py")):
+        rel = py.relative_to(repo).as_posix()
+        if rel == _REPO_NAMES_HOME:
+            continue  # the sanctioned fallback
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"), filename=rel)
+        except SyntaxError:
+            continue  # fail-safe: unparseable files skipped, never flagged
+        for node in ast.walk(tree):
+            # Only *collection* members and comparison operands: a bare string
+            # elsewhere (a kwarg name, a log word) is not a repo-name decision.
+            if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+                operands = node.elts
+            elif isinstance(node, ast.Compare):
+                operands = [node.left, *node.comparators]
+            else:
+                continue
+            for e in operands:
+                if isinstance(e, ast.Constant) and e.value in _REPO_NAME_LITERALS:
+                    findings.append(Finding(
+                        "distro_portability", "error", f"{rel}:{e.lineno}",
+                        f"hardcoded sync-repo name {e.value!r} — resolve repos from "
+                        "/etc/pacman.conf (pacman._read_sync_repo_names) or ask "
+                        "pacman (aur.repo_packages) (STD row 23)",
+                    ))
+    return findings
+
+
+# --- sub-invariant (b): the system makepkg.conf is the merge baseline -------
+#
+# A derivative ships its own -march/LTO defaults in /etc/makepkg.conf. They must
+# arrive as the *baseline* that profile keys override, never be replaced by a
+# value sysforge invented. Two structural facts keep that true: the path is read
+# in exactly one place, and the emitter both loads the system assignments and
+# writes them out.
+_MAKEPKG_CONF_PATH_HOME = "sysforge/primitives/config.py"
+_MAKEPKG_CONF_PATH = "/etc/makepkg.conf"
+_MAKEPKG_EMITTER = "sysforge/primitives/makepkg_conf.py"
+_MAKEPKG_BASELINE_CALL = "parse_system_makepkg_conf"
+_MAKEPKG_BASELINE_VAR = "system_assignments"
+
+
+def _check_makepkg_baseline(repo: Path) -> list[Finding]:
+    """Sub-invariant (b): the system makepkg.conf is read once and merged, not
+    replaced."""
+    findings: list[Finding] = []
+
+    for py in sorted((repo / "sysforge").rglob("*.py")):
+        rel = py.relative_to(repo).as_posix()
+        if rel == _MAKEPKG_CONF_PATH_HOME:
+            continue  # the sanctioned home (config.SYSTEM_MAKEPKG_CONF)
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"), filename=rel)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant)
+                    and node.value == _MAKEPKG_CONF_PATH):
+                findings.append(Finding(
+                    "distro_portability", "error", f"{rel}:{node.lineno}",
+                    f"{_MAKEPKG_CONF_PATH} read outside "
+                    f"{_MAKEPKG_CONF_PATH_HOME} — use "
+                    "config.SYSTEM_MAKEPKG_CONF / parse_system_makepkg_conf "
+                    "(STD row 23)",
+                ))
+
+    emitter = repo / _MAKEPKG_EMITTER
+    if not emitter.is_file():
+        findings.append(Finding(
+            "distro_portability", "error", _MAKEPKG_EMITTER,
+            "the makepkg.conf emitter is missing (STD row 23)",
+        ))
+        return findings
+    src = emitter.read_text(encoding="utf-8")
+    if _MAKEPKG_BASELINE_CALL not in src:
+        findings.append(Finding(
+            "distro_portability", "error", _MAKEPKG_EMITTER,
+            f"emitter no longer calls {_MAKEPKG_BASELINE_CALL}() — the system "
+            "conf must be the merge baseline (STD row 23)",
+        ))
+    # The baseline must be *emitted*, not merely read: the conf is assembled by
+    # iterating the system assignments and substituting overrides, so a lost
+    # iteration would silently drop every key the derivative set.
+    if f"for key, raw_val in {_MAKEPKG_BASELINE_VAR}.items()" not in src:
+        findings.append(Finding(
+            "distro_portability", "error", _MAKEPKG_EMITTER,
+            f"emitter no longer iterates {_MAKEPKG_BASELINE_VAR} when building "
+            "conf lines — system conf keys would be dropped from the merged "
+            "conf (STD row 23)",
+        ))
+    return findings
+
+
+def check_distro_portability(repo: Path) -> list[Finding]:
+    """STD row 23 — repo, toolchain-default, and identity assumptions that would
+    break an Arch derivative. Three sub-invariants, one group."""
+    return (_check_repo_name_literals(repo)
+            + _check_makepkg_baseline(repo)
+            + _check_identity_home(repo))
 
 
 # ===========================================================================
@@ -721,7 +843,7 @@ GROUPS = {
     "roadmap_ids":    check_roadmap_ids,
     "run_seam":       check_run_seam,
     "privilege_seam": check_privilege_seam,
-    "distro_identity": check_distro_identity,
+    "distro_portability": check_distro_portability,
 }
 
 

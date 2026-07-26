@@ -582,6 +582,14 @@ _MAKEPKG_ASSIGN_RE = _re.compile(
 )
 
 
+# The system makepkg.conf. Named here because this module owns the only read of
+# it (Standards row 23, sub-invariant b): a derivative ships its own -march/LTO
+# defaults in this file, and they must reach the merge as the baseline rather
+# than being replaced by a value sysforge invented. Consumers call
+# parse_system_makepkg_conf(), never this path.
+SYSTEM_MAKEPKG_CONF = Path("/etc/makepkg.conf")
+
+
 def _parse_one_makepkg_conf(path: Path) -> dict:
     """Parse a single makepkg.conf file into {key: raw_value_string}."""
     if not path.exists():
@@ -826,10 +834,11 @@ def parse_system_makepkg_conf(path=None):
         return result
 
     # Layer system conf then user conf(s), later entries win.
-    result = _parse_one_makepkg_conf(Path("/etc/makepkg.conf"))
+    result = _parse_one_makepkg_conf(SYSTEM_MAKEPKG_CONF)
     if not result:
         _log.warn(
-            "System makepkg.conf not found at /etc/makepkg.conf — will use profile values only"
+            f"System makepkg.conf not found at {SYSTEM_MAKEPKG_CONF} — "
+            "will use profile values only"
         )
 
     xdg_config = _os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")

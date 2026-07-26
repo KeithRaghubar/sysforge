@@ -1510,6 +1510,35 @@ Pager for \fBsysforge log\fR, \fBstate\fR listings, and PKGBUILD review
 diffs in \fBbuild\fR/\fBupdate\fR (falls back to less \-RFX, then more).\&
 .PP
 .RE
+.SH DISTRIBUTIONS
+.PP
+SysForge assumes \fBpacman\fR(8) and \fBmakepkg\fR(8), and nothing narrower.\& It has no
+distro\-conditional behaviour: distro identity is reported, never branched on.\&
+.PP
+Arch Linux
+.RS 4
+The primary supported base.\& Everything is validated here, including
+bootstrap/install, kernel staging, and the graphics/DKMS probes.\&
+.PP
+.RE
+CachyOS
+.RS 4
+A validated derivative, re\-checked each minor release for packaging
+invariants, dependency resolution, \fBmakepkg.\&conf\fR(5) handling, and
+version comparison.\& The bootstrap, kernel\-staging and graphics/DKMS
+features are \fBnot\fR validated here.\&
+.PP
+.RE
+Other Arch derivatives
+.RS 4
+Expected to work but unvalidated.\& SysForge hardcodes no sync\-repo
+names and never replaces the system \fBmakepkg.\&conf\fR(5), so a derivative'\&s
+own repos and toolchain defaults are honoured.\&
+.PP
+.RE
+Run \fBsysforge doctor \-\-distro\fR to see which tier the running system falls in.\&
+Anything not Arch\-derived is out of scope.\&
+.PP
 .SH EXIT STATUS
 .PP
 0 on success.\& 1 on build/install/verification failure.\& 2 when the user
