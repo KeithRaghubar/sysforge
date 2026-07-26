@@ -15,6 +15,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Python, TOML config.
 ## Commands (canonical: the Makefile — never invoke `pytest` directly)
 
 ```bash
+make dev-deps        # all dev system deps (dev-deps-list shows per-tier state)
 make test / test-x   # full suite / stop on first failure
 make lint            # ruff
 make design          # regenerate DESIGN.md after editing docs/design/*

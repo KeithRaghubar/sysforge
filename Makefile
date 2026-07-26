@@ -1,4 +1,5 @@
 .PHONY: all dev venv build install dev-install dev-uninstall clean distclean test test-x lint coverage coverage-ratchet coverage-ratchet-update man \
+        dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-list \
         check-shipped check-personal check-standards next-id design check-design pre-release audit \
         roadmap-table check-roadmap-table \
         sync-config \
@@ -6,6 +7,44 @@
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-smoke vm-test \
         container-build container-smoke container-smoke-cachyos container-shell container-clean
+
+# ---------------------------------------------------------------------------
+# Dev system dependencies (2.6.1-F3)
+#
+# The one record of what a development environment needs, split by the tier that
+# needs it. Every `pacman -S` in this file resolves from a variable here — a
+# target that grows a new tool adds it to the matching set, never its own
+# install preamble.
+#
+# Python tooling is deliberately almost absent: apart from pytest and ruff
+# (wanted on PATH for editor/hook integration), it is resolved per-invocation by
+# `uv run --no-sync --with …` — pyright, reuse, pip-audit, pytest-cov, tomlkit
+# never touch the system or the venv, so there is nothing to install or record.
+# This is also why there is no `[dependency-groups] dev` in pyproject.toml: it
+# would duplicate the overlays while claiming to be the source of truth.
+# ---------------------------------------------------------------------------
+
+# Suite, lint, manpage, editable install. `make test` / `lint` / `man` / `dev`.
+DEV_DEPS_CORE      = python-pytest ruff scdoc uv git base-devel
+# makechrootpkg — clean-chroot package builds: vm-pkg-*, tools/release.sh.
+DEV_DEPS_PKG       = devtools
+# QEMU test VM: vm-boot, vm-snapshot, vm-console, vm-monitor (socat), …
+DEV_DEPS_VM        = qemu-desktop edk2-ovmf gtk-vnc socat
+# Container test tier: container-smoke, container-smoke-cachyos.
+DEV_DEPS_CONTAINER = podman
+# Release: GPG-signed commit/tag/tarball + the GitHub release upload.
+DEV_DEPS_RELEASE   = gnupg github-cli
+
+DEV_DEPS_ALL = $(DEV_DEPS_CORE) $(DEV_DEPS_PKG) $(DEV_DEPS_VM) \
+               $(DEV_DEPS_CONTAINER) $(DEV_DEPS_RELEASE)
+
+# $(call pacman_needed,<packages>) — install only if the set isn't already
+# satisfied, so a complete environment never prompts for sudo. `pacman -Qq`
+# exits non-zero if ANY package is missing; --needed then makes the install a
+# no-op for the ones already present.
+define pacman_needed
+@pacman -Qq $(1) >/dev/null 2>&1 || sudo pacman -S --needed $(1)
+endef
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
 VM_DISK = $(VM_DIR)/arch-sysforge.qcow2
@@ -19,9 +58,45 @@ all: test
 # Python dev
 # ---------------------------------------------------------------------------
 
-dev:
-	@pacman -Qq python-pytest ruff scdoc >/dev/null 2>&1 \
-	    || sudo pacman -S --needed python-pytest ruff scdoc
+# Everything a full dev environment needs, every tier. Start here on a new
+# machine: `make dev-deps && make dev`.
+dev-deps:
+	$(call pacman_needed,$(DEV_DEPS_ALL))
+
+# Per-tier subsets, for a machine that only needs one of them.
+dev-deps-core:
+	$(call pacman_needed,$(DEV_DEPS_CORE))
+
+dev-deps-pkg:
+	$(call pacman_needed,$(DEV_DEPS_PKG))
+
+dev-deps-container:
+	$(call pacman_needed,$(DEV_DEPS_CONTAINER))
+
+dev-deps-release:
+	$(call pacman_needed,$(DEV_DEPS_RELEASE))
+
+# Show what each tier needs and whether it is installed. Read-only, no sudo —
+# run this before dev-deps to see what a full install would add.
+dev-deps-list:
+	@printf '%-12s %s\n' TIER PACKAGES
+	@printf '%-12s %s\n' ---- --------
+	@printf '%-12s %s\n' core '$(DEV_DEPS_CORE)'
+	@printf '%-12s %s\n' pkg '$(DEV_DEPS_PKG)'
+	@printf '%-12s %s\n' vm '$(DEV_DEPS_VM)'
+	@printf '%-12s %s\n' container '$(DEV_DEPS_CONTAINER)'
+	@printf '%-12s %s\n' release '$(DEV_DEPS_RELEASE)'
+	@echo
+	@for p in $(DEV_DEPS_ALL); do \
+		if pacman -Qq "$$p" >/dev/null 2>&1; then s=installed; else s=MISSING; fi; \
+		printf '  %-9s %s\n' "$$s" "$$p"; \
+	done
+	@echo
+	@echo "Python tooling (pyright, reuse, pip-audit, pytest-cov, tomlkit) is"
+	@echo "resolved per-invocation by 'uv run --with' and needs no install."
+
+# The core tier plus the editable install of sysforge itself.
+dev: dev-deps-core
 	uv pip install -e .
 
 venv:
@@ -196,8 +271,7 @@ distclean: clean
 # ---------------------------------------------------------------------------
 
 vm-deps:
-	@pacman -Qq qemu-desktop edk2-ovmf gtk-vnc socat >/dev/null 2>&1 \
-	    || sudo pacman -S --needed qemu-desktop edk2-ovmf gtk-vnc socat
+	$(call pacman_needed,$(DEV_DEPS_VM))
 
 vm-image:
 	mkdir -p $(VM_DIR)

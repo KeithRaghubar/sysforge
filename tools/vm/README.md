@@ -18,7 +18,11 @@ make vm-deps
 
 Installs: `qemu-desktop`, `edk2-ovmf`, `gtk-vnc` (provides `gvncviewer` for the
 ISO install / GUI steps), and `socat` (used by `vm-monitor`, `vm-console`,
-`vm-savevm`, `vm-stop`).
+`vm-savevm`, `vm-stop`) — the `DEV_DEPS_VM` set in the Makefile.
+
+`make vm-pkg-*` additionally needs `devtools` (`make dev-deps-pkg`) for the clean
+chroot. `make dev-deps` installs every tier at once; `make dev-deps-list` shows
+what each needs and what is already present.
 
 ## Directory layout
 

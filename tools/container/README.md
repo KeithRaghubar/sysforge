@@ -39,10 +39,12 @@ container run is not a release gate on its own.
 ## Dependencies
 
 ```bash
-sudo pacman -S podman
+make dev-deps-container    # podman
 ```
 
-Rootless podman is fine — nothing here needs a privileged container.
+Rootless podman is fine — nothing here needs a privileged container. The full
+dev-dependency set for every tier is `make dev-deps`; `make dev-deps-list` shows
+what each tier needs and what is already installed.
 
 ## Use
 

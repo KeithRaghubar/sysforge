@@ -35,6 +35,19 @@ https://keepachangelog.com/en/1.1.0/
   kernel staging, graphics/DKMS and restart detection stay with the VM tier.
   Requires `podman`; see `tools/container/README.md`.
 
+- `make dev-deps` installs every dev system dependency in one step, and
+  `make dev-deps-list` shows what each tier needs and what is already present
+  (2.6.1-F3). The dependency sets are now recorded once in the Makefile
+  (`DEV_DEPS_CORE`/`_PKG`/`_VM`/`_CONTAINER`/`_RELEASE`) and every `pacman -S`
+  in it resolves from them, so a tier cannot grow a private install preamble.
+  Previously `make dev` covered three packages and `make vm-deps` four, while
+  `devtools`, `podman`, `uv` and `github-cli` were recorded nowhere — a fresh
+  `make dev` could not build a package, run either test tier, or cut a release.
+  `make dev` and `make vm-deps` are unchanged in name and now delegate to the
+  shared sets. Python tooling is deliberately still unrecorded: `pyright`,
+  `reuse`, `pip-audit`, `pytest-cov` and `tomlkit` are resolved per-invocation
+  by `uv run --with`, which is also why there is no `[dependency-groups] dev`.
+
 ## Changed
 
 - **Standards row 23** (`os-release(5)`, enforced) records the distro-identity
