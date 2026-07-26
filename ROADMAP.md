@@ -71,7 +71,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | `2.6.1-B2` | VM ISO path is hardcoded to archlinux.iso, so a second-distro VM cannot boot | low | small |
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small |
-| `1.2.0-F20` | Rule priority auto-calculation (from the DESIGN roadmap) | low | medium |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium |
 <!-- END roadmap-table -->
 
@@ -173,13 +172,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   *Priority: low · Effort: medium* — readability only, and the guard rework is the real cost; the
   cheap half (tightening entry prose) is already done.
 
-- **`1.2.0-F20` — Rule priority auto-calculation (from the DESIGN roadmap).**
-  Auto-calculate a baseline specificity score from rule conditions (mirrors CSS
-  specificity: more AND'd conditions = higher weight), with manual `priority`
-  override for ties. Deferred until enough real rules exist to validate whether
-  auto-priority causes ordering problems in practice. *Priority: low · Effort: medium* — candidate,
-  not a commitment.
-
 ### Bugs
 
 - **`2.6.1-B1` — `git_fetch_and_compare` warns "keeping local PKGBUILD" for every `-git` package
@@ -261,6 +253,27 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 ---
 
 ## Abandoned / decided against
+
+- **`1.2.0-F20` — rule `priority` auto-calculation from condition specificity — decided against
+  2026-07-25.** Would have derived a baseline 0–99 score per `[[rules]]` entry from how many
+  conditions it AND's together (CSS-specificity analogue), making `priority` optional and reserving
+  it for tie-breaks. Rejected because its own deferral condition never came true and cannot: the
+  entry was parked "until enough real rules exist to validate whether auto-priority causes ordering
+  problems in practice", but `etc/sysforge/profiles.toml` ships **zero** live rules (lines 220–243
+  are commented examples only), so there is no corpus of real ordering conflicts to weight against
+  and no way to test a mis-ordering. Weighting ten match fields (`pkgnames` globs vs `depends_all`
+  vs the `not_*` negations) without that evidence would fix the guesses as config-schema surface.
+  Separately, the tiering it would provide largely exists: `config.py` bumps user rules by +100 on
+  merge, which is the one precedence question that has actually come up, and a computed score would
+  have to stay inside 0–99 to avoid punching through that tier. Cost of *not* doing it is one
+  required integer per rule. **Reopens if** a shipped or field config accumulates enough rules to
+  produce a genuine priority tie, or if manual priorities are observed being edited to fix ordering
+  rather than to express intent — at which point the corpus supplies the weights. Implementation
+  hazard on revisit: priority is read in three places (`profile.py:458` resolver,
+  `resolve.py:64` explain view, `reconfigure.py:1351`) and all three must move together, or
+  `sysforge resolve` reports an order the build does not use. Related: the cancelled
+  `[env_precedence]` table below, rejected for the same "configurable precedence nobody needs"
+  reason.
 
 - **`2.3.0-F5` — declarative provisioning via `tmpfiles.d`/`sysusers.d` — decided against 2026-07-25.**
   Would have replaced the imperative provisioning in `fs_provision.py`/`stage_ownership.py` with a
