@@ -87,7 +87,9 @@ class Finding:
     ``hardware``, ``toolchain``, ``kernel``, ``pacman``, ``state``, ``boot``,
     ``services``). ``fix_cmd`` / ``auto_remediable`` carry an optional
     remediation that a future ``--fix`` can execute; ``is_brick`` flags a
-    boot-fatal condition (preserved from ``KernelFinding``).
+    boot-fatal condition (preserved from ``KernelFinding``). ``subject`` is an
+    optional group key used only by ``render_axis(grouped=True)``; ignored in
+    the default flat mode.
     """
     category: str
     severity: str
@@ -97,6 +99,9 @@ class Finding:
     fix_cmd: str | None = None
     auto_remediable: bool = False
     is_brick: bool = False
+    #: Optional group key/label. Used only by ``render_axis(grouped=True)``;
+    #: ignored in the default flat mode so existing axes are unaffected.
+    subject: str = ""
 
     @property
     def is_error(self) -> bool:
@@ -228,6 +233,7 @@ def render_axis(
     *,
     clean_msg: str = "no issues detected",
     quiet: bool = False,
+    grouped: bool = False,
 ) -> int:
     """Render one axis section through ``logger`` and return its error count.
 
@@ -238,6 +244,8 @@ def render_axis(
         <label>: N finding(s), M error(s).
     A clean axis prints ``clean_msg`` (suppressed under ``quiet``). Returns the
     number of error-severity / brick findings for the exit-code reducer.
+    When ``grouped=True``, findings are grouped by their ``subject`` field,
+    ordered by worst severity, then alphabetically.
     """
     logger.newline()
     logger.ui(f"== {label} ==")
@@ -246,15 +254,37 @@ def render_axis(
             logger.ui(f"  {clean_msg}")
         return 0
 
-    # Most-severe first so the important lines lead each section.
-    ordered = sorted(findings, key=lambda f: severity_rank(f.severity), reverse=True)
-    errors = 0
-    for f in ordered:
+    errors = sum(1 for f in findings if f.is_error)
+
+    def _emit(f: Finding, indent: str) -> None:
         sev = _color_severity(f.severity)
-        logger.ui(f"  [{sev}] {f.check_id}: {f.message}")
+        logger.ui(f"{indent}[{sev}] {f.check_id}: {f.message}")
         if f.remediation:
-            logger.ui(f"      {log.green('→')} {f.remediation}")
-        if f.is_error:
-            errors += 1
+            logger.ui(f"{indent}    {log.green('→')} {f.remediation}")
+
+    if grouped:
+        groups: dict[str, list[Finding]] = {}
+        for f in findings:
+            groups.setdefault(f.subject, []).append(f)
+        # Groups ordered by their worst finding, then by name for stability.
+        for subject in sorted(
+            groups,
+            key=lambda s: (
+                -max(severity_rank(f.severity) for f in groups[s]),
+                s,
+            ),
+        ):
+            if subject:
+                logger.ui(f"  {subject}")
+            for f in sorted(groups[subject],
+                            key=lambda f: severity_rank(f.severity),
+                            reverse=True):
+                _emit(f, "    " if subject else "  ")
+    else:
+        # Most-severe first so the important lines lead each section.
+        for f in sorted(findings, key=lambda f: severity_rank(f.severity),
+                        reverse=True):
+            _emit(f, "  ")
+
     logger.ui(f"{label}: {len(findings)} finding(s), {errors} error(s).")
     return errors

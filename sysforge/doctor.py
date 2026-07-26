@@ -32,7 +32,7 @@ import subprocess
 import tomllib
 from collections import deque
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from sysforge import log
@@ -497,56 +497,271 @@ _SUGGEST_LABEL = {
 }
 
 
-def _print_report(pkgname: str, version: str | None,
-                  dep_issues: list[str], abi_issues: list[str],
-                  quiet: bool,
-                  suggestions: dict[str, tuple[str, list[str]]] | None = None,
-                  origin: str = "",
-                  abi_skipped: bool = False) -> None:
-    clean = not dep_issues and not abi_issues
-    if clean and quiet and not abi_skipped:
-        return
-    header = f"== {pkgname} {version or '(not installed)'}"
-    if origin:
-        header += f" {origin}"
-    header += " =="
-    _log.ui(header)
-    if clean and not abi_skipped:
-        _log.ui("  clean")
-        return
+def _suggestion_remediation(kind: str, cands: list[str]) -> str:
+    """Render one classified suggestion as a ``Finding.remediation`` string.
 
-    def _emit_issue(issue: str) -> None:
-        _log.ui(f"    - {issue}")
-        if suggestions is None or issue not in suggestions:
-            return
-        kind, cands = suggestions[issue]
-        label = _SUGGEST_LABEL.get(kind, "candidate")
-        if cands:
-            _log.ui(f"      → {label}: {', '.join(cands)}")
-        elif kind == SUGGEST_KIND_INSTALL:
-            # Reaching here means the soname was absent from both the ld.so
-            # cache AND every directory ldconfig scans (the filesystem fallback
-            # in dep_analysis already checked those), yet the files db names an
-            # installed owner. `sudo ldconfig` cannot help — the file is not on
-            # the search path for it to cache. The real causes are a stale files
-            # db or a soname-version drift, so point at those instead (2.1.0-B18).
-            _log.ui("      → owner installed but soname absent from the library "
-                    "search path; refresh the files db (`sudo pacman -Fy`) or "
-                    "rebuild the dependent package against current libraries")
-        else:
-            _log.ui(f"      → {label}: no candidate in files db")
+    The abi axis attaches these to its findings so ``--suggest`` candidates
+    render as the renderer's ``→`` remediation line, instead of doctor
+    hand-rolling a second printer (2.6.1-F1).
+    """
+    label = _SUGGEST_LABEL.get(kind, "candidate")
+    if cands:
+        return f"{label}: {', '.join(cands)}"
+    if kind == SUGGEST_KIND_INSTALL:
+        # Reaching here means the soname was absent from both the ld.so cache
+        # AND every directory ldconfig scans (the filesystem fallback in
+        # dep_analysis already checked those), yet the files db names an
+        # installed owner. `sudo ldconfig` cannot help — the file is not on the
+        # search path for it to cache. The real causes are a stale files db or a
+        # soname-version drift, so point at those instead (2.1.0-B18).
+        return ("owner installed but soname absent from the library search "
+                "path; refresh the files db (`sudo pacman -Fy`) or rebuild the "
+                "dependent package against current libraries")
+    return f"{label}: no candidate in files db"
 
-    if dep_issues:
-        _log.ui(f"  [DEPENDS] {len(dep_issues)} issue(s):")
-        for i in dep_issues:
-            _emit_issue(i)
-    if abi_skipped:
-        _log.ui("  [ABI] skipped: vendored prebuilt binaries "
-                "(reinstall cannot change on-disk symbols)")
-    elif abi_issues:
-        _log.ui(f"  [ABI] {len(abi_issues)} issue(s):")
-        for i in abi_issues:
-            _emit_issue(i)
+
+@dataclass
+class WalkResult:
+    """One package's raw walk output. Consumed by the ``--suggest``/``--apply``
+    bridge, which needs the structured issue lists and soname paths that
+    ``Finding`` deliberately does not carry (2.6.1-F1)."""
+    pkgname: str
+    version: str | None
+    origin: str
+    dep_issues: list[str]
+    abi_issues: list[str]
+    so_paths: list[Path]
+    abi_skipped: bool
+
+
+class AbiWalk:
+    """The depends + ABI linkage walk, as an axis producer.
+
+    ``run()`` returns ``Finding``s for rendering AND retains the structured
+    ``WalkResult`` list on ``self.results`` for the ``--apply`` bridge. The
+    side-channel is a deliberate, documented coupling: ``Finding`` carries no
+    structured payload, and ``--apply`` needs classified candidates rather than
+    rendered text. ``results`` is ``None`` until ``run()`` completes, and the
+    bridge MUST treat ``None`` as a programming error, not an empty result
+    (see ``_apply_rebuilds``).
+
+    ``benign`` accumulates the optional-symbol cases demoted by
+    ``check_so_files`` (reduced-target libLLVM target-init absences) across
+    the whole walk, mirroring ``cmd_doctor``'s ``abi_benign`` list, so a later
+    task can render the same one-line summary.
+    """
+
+    def __init__(self, args, config):
+        self.args = args
+        self.config = config
+        self.results: list[WalkResult] | None = None
+        self.benign: list[str] = []
+        # Populated by ``run()``; the ``--suggest``/``--apply`` bridge needs the
+        # same installed/foreign view the walk classified against, and must not
+        # re-shell out to pacman to rebuild it.
+        self.installed: dict[str, str] = {}
+        self.foreign: set[str] = set()
+        # --suggest classification, accumulated across the whole walk. These are
+        # the structured candidates ``--apply`` consumes; they deliberately do
+        # not ride inside ``Finding`` (which carries no payload) — see the
+        # class docstring's note on the side-channel.
+        self.install_candidates: list[str] = []
+        self.rebuild_candidates: list[str] = []
+        self.repo_rebuild_candidates: list[str] = []
+        self.drift_candidates: list[str] = []
+        self.per_pkg_suggestions: list[
+            tuple[str, list[str], list[str], list[str], list[str]]
+        ] = []
+        self.total_issues = 0
+        self.affected: list[tuple[str, int, str]] = []
+        self.scanned = 0
+
+    def _roots(self, installed, foreign) -> list[str]:
+        roots: list[str] = list(getattr(self.args, "packages", None) or [])
+        if getattr(self.args, "graphics", False):
+            roots.extend(_expand_graphics_targets(self.config, installed))
+        if getattr(self.args, "all", False):
+            roots.extend(installed.keys())
+        if getattr(self.args, "repo", False):
+            roots.extend(n for n in installed if n not in foreign)
+        seen: set[str] = set()
+        return [r for r in roots if not (r in seen or seen.add(r))]
+
+    def run(self) -> list[diag.Finding]:
+        installed = pacman.get_all_installed_packages()
+        foreign = set(pacman.get_foreign_packages().keys())
+        self.installed = installed
+        self.foreign = foreign
+        roots = self._roots(installed, foreign)
+        for r in roots:
+            if r not in installed:
+                _log.warn(f"{r}: not installed — will report as missing")
+
+        targets = _walk_closure(roots, shallow=getattr(self.args, "shallow", False))
+        ldconfig_set = _parse_ldconfig(_default_ldconfig_fn())
+        file_root = Path("/")
+
+        tracked_names: set[str] | None = None
+        try:
+            from sysforge.primitives.build_state import BuildState
+            from sysforge.pipeline.state import resolve_state_dir
+            state_dir, _ = resolve_state_dir(getattr(self.args, "state_dir", None))
+            tracked_names = set(BuildState(state_dir).all_packages())
+        except Exception:
+            tracked_names = None
+
+        suggest = bool(getattr(self.args, "suggest", False))
+        if suggest and not files_db_present():
+            _log.warn("--suggest: pacman files db not synced; "
+                      "run `sudo pacman -Fy` (or `-Fyy`) first — "
+                      "no candidate lookups will be performed")
+            suggest = False
+        installed_name_set = set(installed.keys())
+        suggest_cache: dict[tuple[str, bool, bool], list[str]] = {}
+
+        results: list[WalkResult] = []
+        findings: list[diag.Finding] = []
+        from sysforge.ui import progress
+        for pkgname in targets:
+            # B11: surface the in-progress package instead of a static "starting…".
+            progress.phase(f"doctor: auditing {pkgname}")
+            dep_issues, abi_issues, so_paths, abi_skipped = _check_one(
+                pkgname, ldconfig_set, installed, file_root,
+                benign_sink=self.benign)
+            version = installed.get(pkgname)
+            origin = _origin_tag(pkgname, foreign, installed, tracked=tracked_names)
+            results.append(WalkResult(pkgname, version, origin, dep_issues,
+                                      abi_issues, so_paths, abi_skipped))
+
+            n = len(dep_issues) + len(abi_issues)
+            if n:
+                self.affected.append((pkgname, n, origin))
+                self.total_issues += n
+
+            suggestions = (
+                _collect_suggestions(pkgname, dep_issues, abi_issues, so_paths,
+                                     cache=suggest_cache,
+                                     installed_names=installed_name_set,
+                                     foreign=foreign)
+                if suggest else None
+            )
+            if suggestions:
+                self._classify(pkgname, suggestions)
+
+            subject = f"{pkgname} {version or '(not installed)'}"
+            if origin:
+                subject += f" {origin}"
+
+            # `_sugg` binds this iteration's suggestions — a bare closure over
+            # the loop variable would resolve late and mis-attribute
+            # remediations across packages (ruff B023).
+            def _remediation(issue: str, _sugg=suggestions) -> str:
+                if not _sugg or issue not in _sugg:
+                    return ""
+                kind, cands = _sugg[issue]
+                return _suggestion_remediation(kind, cands)
+
+            for issue in dep_issues:
+                findings.append(diag.Finding(
+                    "abi", diag.SEV_WARN, f"abi:depends:{pkgname}",
+                    issue, remediation=_remediation(issue), subject=subject))
+            for issue in abi_issues:
+                findings.append(diag.Finding(
+                    "abi", diag.SEV_WARN, f"abi:linkage:{pkgname}",
+                    issue, remediation=_remediation(issue), subject=subject))
+            if abi_skipped:
+                findings.append(diag.Finding(
+                    "abi", diag.SEV_INFO, f"abi:skipped:{pkgname}",
+                    "ABI check skipped: vendored prebuilt binaries "
+                    "(reinstall cannot change on-disk symbols)",
+                    subject=subject))
+        self.scanned = len(targets)
+        self.results = results
+        return findings
+
+    def _classify(self, pkgname: str, suggestions: dict) -> None:
+        """Bucket one package's classified suggestions into the walk-wide
+        candidate lists ``--apply`` reads, preserving first-seen order."""
+        pkg_install: list[str] = []
+        pkg_rebuild: list[str] = []
+        pkg_repo_rebuild: list[str] = []
+        pkg_drift: list[str] = []
+        buckets = {
+            SUGGEST_KIND_INSTALL: (pkg_install, self.install_candidates),
+            SUGGEST_KIND_REBUILD: (pkg_rebuild, self.rebuild_candidates),
+            SUGGEST_KIND_REPO_REBUILD: (pkg_repo_rebuild,
+                                        self.repo_rebuild_candidates),
+            SUGGEST_KIND_ABI_DRIFT: (pkg_drift, self.drift_candidates),
+        }
+        for kind, cands in suggestions.values():
+            if kind not in buckets:
+                continue
+            local, gbl = buckets[kind]
+            for c in cands:
+                if c not in local:
+                    local.append(c)
+                if c not in gbl:
+                    gbl.append(c)
+        if pkg_install or pkg_rebuild or pkg_repo_rebuild or pkg_drift:
+            self.per_pkg_suggestions.append(
+                (pkgname, pkg_install, pkg_rebuild, pkg_repo_rebuild, pkg_drift)
+            )
+
+
+def _require_completed_walk(walk: "AbiWalk") -> None:
+    """Guard the ``--apply`` side-channel against a misordered call.
+
+    ``AbiWalk`` hands ``--suggest``/``--apply`` its classified candidates via
+    ``walk.results`` rather than through ``Finding``, because ``Finding``
+    carries no structured payload. That makes the apply bridge depend on the
+    abi axis having already run — an ordering the type system cannot enforce.
+    An unpopulated channel is a wiring bug, not an empty result, so it must
+    fail loudly rather than silently apply nothing (2.6.1-F1).
+    """
+    if walk.results is None:
+        raise RuntimeError(
+            "--apply: the ABI walk did not run — its structured results are "
+            "unavailable. This is a wiring bug: the abi axis must execute "
+            "before the apply bridge (2.6.1-F1)."
+        )
+
+
+def _abi_walk_for(args, config) -> AbiWalk:
+    """One AbiWalk per invocation, cached on args so the axis producer and the
+    ``--apply`` bridge share the same instance (and therefore the same
+    side-channel results)."""
+    walk = getattr(args, "_abi_walk", None)
+    if walk is None:
+        walk = AbiWalk(args, config)
+        args._abi_walk = walk
+    return walk
+
+
+def _derive_pkg_targets(args, config) -> list[str]:
+    """Split package targets by provenance and record the derived ones.
+
+    Explicitly named targets stay in ``args.packages``; targets a broad selector
+    (``--all`` / ``--repo`` / ``--graphics``) expanded to go to
+    ``args.derived_targets``, so the rust axis can collapse them into one survey
+    finding instead of emitting a per-package line for hundreds of packages
+    (2.6.1-F1). Idempotent: returns the recorded list.
+    """
+    installed = pacman.get_all_installed_packages()
+    foreign = set(pacman.get_foreign_packages().keys())
+    derived: list[str] = []
+    if getattr(args, "graphics", False):
+        derived.extend(_expand_graphics_targets(config, installed))
+    if getattr(args, "all", False):
+        derived.extend(installed.keys())
+    if getattr(args, "repo", False):
+        derived.extend(n for n in installed if n not in foreign)
+    named = set(getattr(args, "packages", None) or [])
+    seen: set[str] = set()
+    args.derived_targets = [
+        d for d in derived
+        if d not in named and not (d in seen or seen.add(d))
+    ]
+    return args.derived_targets
 
 
 # ---------------------------------------------------------------------------
@@ -598,11 +813,13 @@ def _collect_toolchain_findings(config) -> list[diag.Finding]:
 
 def _collect_rust_findings(config, args) -> list[diag.Finding]:
     """Rust-toolchain provenance (effective toolchain, non-stable default, and
-    rust-toolchain.toml pins for named package targets). Advisory, read-only —
+    rust-toolchain.toml pins for package targets). Advisory, read-only —
     see ``primitives/rust_probe.py``."""
     from sysforge.primitives import rust_probe
     packages = getattr(args, "packages", None) if args is not None else None
-    return rust_probe.collect_rust_findings(config, packages=packages)
+    derived = getattr(args, "derived_targets", None) if args is not None else None
+    return rust_probe.collect_rust_findings(config, packages=packages,
+                                            derived=derived or ())
 
 
 def _collect_cache_findings(config) -> list[diag.Finding]:
@@ -863,6 +1080,11 @@ _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
     "distro", "toolchain", "rust", "cache", "hardware", "graphics", "gfxperf",
     "pacman", "state", "boot", "restart", "storage", "services", "audio",
     "network", "integrity",
+    # `abi` is registered here so axis lookup/selection is uniform, but it is
+    # package-scoped: it never runs in a system sweep (_resolve_axis_names
+    # excludes it) and its render order at package scope comes from
+    # _PKG_AXES. Kept last so `distro` keeps leading the system report.
+    "abi",
 )
 
 # Axes excluded from the default/`--all` sweep — advisory, opt-in via their flag.
@@ -871,6 +1093,7 @@ _OPT_IN_AXES: frozenset[str] = frozenset({"gfxperf", "integrity", "rust"})
 # CLI flag attribute → axis name. ``--graphics`` is also a package-walk trigger
 # (the graphics-stack closure); both effects fire when it is set.
 _AXIS_FLAGS: dict[str, str] = {
+    "abi": "abi",
     "distro": "distro",
     "toolchain": "toolchain",
     "rust": "rust",
@@ -894,6 +1117,11 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
     """Build the axis registry. Producer lookups go through module globals so
     tests can monkeypatch a ``_collect_*`` function."""
     return {
+        "abi": diag.Axis(
+            "abi", "package depends + ABI linkage",
+            lambda: _abi_walk_for(args, config).run(),
+            clean_msg=("every target's depends are satisfied and all sonames "
+                       "resolve")),
         "distro": diag.Axis(
             "distro", "distribution identity",
             # `--distro` also means "tell me what I'm on", so the explicit flag
@@ -966,25 +1194,99 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
     }
 
 
-def _resolve_axis_names(args) -> list[str]:
-    """Which system axes to run, in canonical order.
+# Axes that run at *package* scope, in canonical order. ``abi`` is the walk;
+# ``rust``/``integrity`` are the two axes that scope themselves to targets.
+_PKG_AXES: tuple[str, ...] = ("abi", "rust", "integrity")
 
-    - Explicit axis flags (``--toolchain``/``--hardware``/``--graphics``/…) →
-      exactly those.
-    - ``--all`` or a *bare* invocation (no packages, no ``--repo``, no axis
-      flags) → every axis (the comprehensive system sweep).
-    - Package targets or ``--repo`` without an axis flag → no system axes
-      (a focused package walk).
+
+def _resolve_axis_names(args) -> list[str]:
+    """Which system axes to run, in canonical order. Explicit axis flags select
+    exactly those; otherwise the 13 non-opt-in axes (the full sweep).
+
+    ``abi`` is never part of a system sweep — a package walk is `doctor pkg`'s
+    job and package targets no longer reach this function (2.6.1-F1).
     """
     explicit = {name for attr, name in _AXIS_FLAGS.items()
                 if getattr(args, attr, False)}
     if explicit:
         return [n for n in _SYSTEM_AXIS_ORDER if n in explicit]
-    if getattr(args, "all", False):
-        return [n for n in _SYSTEM_AXIS_ORDER if n not in _OPT_IN_AXES]
-    if not args.packages and not getattr(args, "repo", False):
-        return [n for n in _SYSTEM_AXIS_ORDER if n not in _OPT_IN_AXES]
-    return []
+    return [n for n in _SYSTEM_AXIS_ORDER
+            if n not in _OPT_IN_AXES and n != "abi"]
+
+
+# Old flat `doctor` flags → their 3.0.0 replacement. **Delete this table in
+# 3.1.0** (2.6.1-F1). Every flag removed from the flat surface MUST have a row;
+# the structural test in tests/test_doctor.py enforces that, so a flag dropped
+# later without a row fails rather than surprising a user.
+_DOCTOR_MIGRATION: dict[str, str] = {
+    "--graphics": ("it split by scope:\n"
+                   "    sysforge doctor system --graphics   # system probes\n"
+                   "    sysforge doctor pkg --graphics      # graphics-stack targets"),
+    "--all": ("it is now two commands:\n"
+              "    sysforge doctor system\n"
+              "    sysforge doctor pkg --all"),
+    "--repo": "sysforge doctor pkg --repo",
+    "--rust": ("it split by scope:\n"
+               "    sysforge doctor system --rust    # effective toolchain\n"
+               "    sysforge doctor pkg PKG --rust   # rust-toolchain.toml pin"),
+    "--integrity": ("it split by scope:\n"
+                    "    sysforge doctor system --integrity     # whole system\n"
+                    "    sysforge doctor pkg PKG --integrity    # scoped"),
+    **{f"--{axis}": f"sysforge doctor system --{axis}"
+       for axis in ("gfxperf", "hardware", "distro", "toolchain", "cache",
+                    "pacman", "state", "boot", "restart", "storage",
+                    "services", "audio", "network")},
+}
+
+
+def doctor_migration_hint(argv: list[str]) -> str | None:
+    """Translation hint for a pre-3.0.0 flat ``doctor`` invocation, or None.
+
+    Only fires when ``doctor`` is followed by a removed flag rather than a
+    subcommand, so a valid ``doctor system …`` / ``doctor pkg …`` never
+    matches. Printed before argparse errors, because argparse's own
+    "unrecognized arguments" says nothing about where the flag went
+    (2.6.1-F1).
+    """
+    if not argv or argv[0] != "doctor":
+        return None
+    rest = argv[1:]
+    if rest and rest[0] in ("system", "pkg"):
+        return None
+    for token in rest:
+        if token in _DOCTOR_MIGRATION:
+            repl = _DOCTOR_MIGRATION[token]
+            # Single-command rows read as "use: <cmd>"; multi-command rows
+            # carry their own connective ("it split by scope: …").
+            lead = "" if repl.startswith("it ") else "use "
+            return f"{token} was removed in 3.0.0 — {lead}{repl}"
+    return None
+
+
+def _resolve_pkg_axis_names(args) -> list[str]:
+    """Which axes run at package scope, in canonical order.
+
+    Rule 1: no axis flag → that scope's defaults (abi + rust + integrity).
+    Rule 2: a broad target selector (``--all``/``--repo``) suppresses the
+    opt-ins, leaving ``--abi`` only — a whole-system rust/integrity scan is
+    minutes of work nobody asked for. Naming an opt-in axis explicitly
+    overrides rule 2.
+    """
+    explicit = {name for attr, name in _AXIS_FLAGS.items()
+                if name in _PKG_AXES and getattr(args, attr, False)}
+    # --suggest/--apply consume the abi walk's classified candidates, so they
+    # imply --abi. Without this, `doctor pkg PKG --rust --apply` selects only
+    # the rust axis, the walk never runs, and the apply bridge's ordering guard
+    # fires an internal "wiring bug" error at a perfectly ordinary invocation.
+    if explicit and (getattr(args, "suggest", False)
+                     or getattr(args, "apply", False)):
+        explicit.add("abi")
+    if explicit:
+        return [n for n in _PKG_AXES if n in explicit]
+    broad = getattr(args, "all", False) or getattr(args, "repo", False)
+    if broad:
+        return ["abi"]
+    return list(_PKG_AXES)
 
 
 def _run_system_axes(args, config, axis_names: list[str]) -> int:
@@ -1013,242 +1315,157 @@ def _run_system_axes(args, config, axis_names: list[str]) -> int:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-def cmd_doctor(args):
-    """
-    sysforge doctor entry point.
+def _render_pkg_axes(args, config, axis_names: list[str], walk: AbiWalk) -> int:
+    """Run + render the selected package-scope axes; return the error count.
 
-    args attributes:
-        packages: list[str]       — positional package names
-        graphics: bool            — expand to curated graphics stack
-        all: bool                 — verify every installed package (foreign
-                                    and non-foreign)
-        repo: bool                — verify every non-foreign package
-        shallow: bool             — skip transitive dep closure
-        quiet: bool               — suppress clean lines in output
-        suggest: bool             — look up candidate packages for each
-                                    unsatisfied soname via `pacman -Fq`
-        apply: bool               — hand REBUILD candidates to sysforge
-                                    update for actual rebuild (implies suggest)
-        no_confirm: bool          — skip the y/N prompt before --apply
-        dry_run: bool             — report --apply work without rebuilding
-        config: dict (optional)   — passed through for --graphics overlay read
+    ``abi`` renders grouped by package (its findings carry a ``subject``), the
+    other package-scope axes render flat like every system axis.
+    """
+    from sysforge.ui import progress
+    registry = _system_axes(config, args)
+    errors = 0
+    for name in axis_names:
+        ax = registry.get(name)
+        if ax is None:
+            continue
+        progress.phase(f"doctor: {ax.label}")
+        findings = diag.run_axes([ax])[ax.name]
+        errors += diag.render_axis(
+            _log, ax.label, findings,
+            clean_msg=ax.clean_msg, quiet=args.quiet,
+            grouped=(name == "abi"),
+        )
+    return errors
+
+
+def _render_walk_summary(walk: AbiWalk, suggest: bool) -> None:
+    """The walk's tail: scan counts, the benign-demotion line, the affected
+    list, and the ``--suggest`` candidate breakdown."""
+    if walk.scanned:
+        _log.newline()
+        _log.ui(
+            f"Scanned {walk.scanned} package(s); "
+            f"{len(walk.affected)} with issues, "
+            f"{walk.total_issues} total finding(s)."
+        )
+        if walk.benign:
+            _log.ui(
+                f"ABI: {len(walk.benign)} optional LLVM target-init symbol(s) "
+                "absent from reduced-target libLLVM (benign; -v to list)."
+            )
+    if walk.affected:
+        names = ", ".join(
+            f"{name} {tag} ({n})" if tag else f"{name} ({n})"
+            for name, n, tag in walk.affected
+        )
+        _log.ui(f"Affected: {names}")
+    if not suggest:
+        return
+    if not (walk.install_candidates or walk.rebuild_candidates
+            or walk.repo_rebuild_candidates or walk.drift_candidates):
+        return
+    _log.ui("Suggestions:")
+    for name, inst, rebuild, repo_rebuild, drift in walk.per_pkg_suggestions:
+        parts: list[str] = []
+        if inst:
+            parts.append(f"install: {', '.join(inst)}")
+        if rebuild:
+            parts.append(f"rebuild: {', '.join(rebuild)}")
+        if repo_rebuild:
+            parts.append(f"repo-rebuild: {', '.join(repo_rebuild)}")
+        if drift:
+            parts.append(f"ABI-drift: {', '.join(drift)}")
+        _log.ui(f"  {name}: {' | '.join(parts)}")
+    if walk.install_candidates:
+        _log.ui(f"Install candidates: {', '.join(walk.install_candidates)}")
+    if walk.rebuild_candidates:
+        _log.ui(
+            "Rebuild candidates (foreign; ABI drift): "
+            f"{', '.join(walk.rebuild_candidates)}"
+        )
+    if walk.repo_rebuild_candidates:
+        _log.ui(
+            "Repo packages with ABI drift "
+            "(await repo update or `sudo pacman -S` to reinstall): "
+            f"{', '.join(walk.repo_rebuild_candidates)}"
+        )
+    if walk.drift_candidates:
+        _log.ui(
+            "ABI-drift candidates (rebuild or upgrade, not reinstall): "
+            f"{', '.join(walk.drift_candidates)}"
+        )
+
+
+def cmd_doctor_system(args):
+    """``sysforge doctor system`` — system-state axes only.
+
+    Bare ``sysforge doctor`` routes here too: with no axis flag it runs the 13
+    non-opt-in axes, the fast full sweep that is the everyday entry point. No
+    package targets reach this scope; the depends+ABI walk is ``doctor pkg``'s
+    ``--abi`` axis (2.6.1-F1).
     """
     config = getattr(args, "config", None) or {}
-    file_root = Path("/")
+    axis_names = _resolve_axis_names(args)
+    if not axis_names:
+        _log.error("nothing to check — pass an axis flag, or run bare "
+                   "`sysforge doctor system` for the full sweep")
+        return 2
+    return 1 if _run_system_axes(args, config, axis_names) else 0
+
+
+def cmd_doctor_pkg(args):
+    """``sysforge doctor pkg`` — package-scoped axes (abi / rust / integrity).
+
+    args attributes:
+        packages: list[str]       — positional package names (explicit targets)
+        graphics: bool            — target the installed graphics stack
+        all: bool                 — target every installed package
+        repo: bool                — target every non-foreign package
+        abi/rust/integrity: bool  — axis selectors
+        shallow: bool             — skip transitive dep closure
+        quiet: bool               — suppress clean lines in output
+        suggest: bool             — look up candidate packages per soname
+        apply: bool               — hand REBUILD candidates to sysforge update
+        no_confirm: bool          — skip the y/N prompt before --apply
+        dry_run: bool             — report --apply work without rebuilding
+    """
+    config = getattr(args, "config", None) or {}
     apply_requested = bool(getattr(args, "apply", False))
     if apply_requested:
         # --apply has nothing to act on without --suggest's classified candidates.
         args.suggest = True
 
-    installed = pacman.get_all_installed_packages()
-    foreign = set(pacman.get_foreign_packages().keys())
-
-    # Assemble root targets
-    roots: list[str] = list(args.packages or [])
-    if args.graphics:
-        roots.extend(_expand_graphics_targets(config, installed))
-    if args.all:
-        roots.extend(installed.keys())
-    if getattr(args, "repo", False):
-        roots.extend(name for name in installed if name not in foreign)
-    # Dedupe preserving order
-    seen_roots: set[str] = set()
-    deduped: list[str] = []
-    for p in roots:
-        if p not in seen_roots:
-            seen_roots.add(p)
-            deduped.append(p)
-    roots = deduped
-
-    # Which system-state axes to run: bare invocation or --all → every axis;
-    # explicit axis flags → just those; a focused package walk → none.
-    axis_names = _resolve_axis_names(args)
-    if not roots and not axis_names:
+    axis_names = _resolve_pkg_axis_names(args)
+    # Resolve broad selectors before deciding there is nothing to do: a
+    # `--repo`/`--all` that expands to zero packages is a usage error, not a
+    # silent clean run (idempotent — DoctorPkgVerb.pre_check may have run it).
+    derived = _derive_pkg_targets(args, config)
+    if not (getattr(args, "packages", None) or []) and not derived:
         _log.error(
-            "nothing to check — pass PKG, --graphics, --hardware, --toolchain, "
-            "--all, or --repo (bare `doctor` runs the full system sweep)"
+            "nothing to check — pass PKG, --all, --repo, or --graphics "
+            "(e.g. `sysforge doctor pkg mesa`)"
         )
         return 2
 
-    # Package walk (depends + ABI linkage). A bare / system-only invocation has
-    # no roots — the walk below is a no-op and only the system axes render.
-    # Warn on any root that isn't installed — the closure walk will still
-    # include it so the report shows it explicitly.
-    for r in roots:
-        if r not in installed:
-            _log.warn(f"{r}: not installed — will report as missing")
+    walk = _abi_walk_for(args, config)
+    axis_error_count = _render_pkg_axes(args, config, axis_names, walk)
 
-    targets = _walk_closure(roots, shallow=args.shallow)
+    ran_abi = "abi" in axis_names
+    if ran_abi:
+        _render_walk_summary(walk, bool(getattr(args, "suggest", False)))
 
-    ldconfig_set = _parse_ldconfig(_default_ldconfig_fn())
-
-    suggest = bool(getattr(args, "suggest", False))
-    if suggest and not files_db_present():
-        _log.warn("--suggest: pacman files db not synced; "
-                  "run `sudo pacman -Fy` (or `-Fyy`) first — "
-                  "no candidate lookups will be performed")
-        suggest = False
-
-    installed_name_set = set(installed.keys())
-
-    # Used to tag foreign packages with `[untracked]` when they have no
-    # build_state.toml entry. Failure to read the state file is non-fatal —
-    # without `tracked` the legacy behaviour (no [untracked] suffix) holds.
-    tracked_names: set[str] | None = None
-    try:
-        from sysforge.primitives.build_state import BuildState
-        from sysforge.pipeline.state import resolve_state_dir
-        state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
-        tracked_names = set(BuildState(state_dir).all_packages())
-    except Exception:
-        tracked_names = None
-
-    total_issues = 0
-    affected_pkgs: list[tuple[str, int, str]] = []
-    per_pkg_suggestions: list[
-        tuple[str, list[str], list[str], list[str], list[str]]
-    ] = []
-    global_install: list[str] = []
-    global_rebuild: list[str] = []
-    global_repo_rebuild: list[str] = []
-    global_drift: list[str] = []
-    global_install_seen: set[str] = set()
-    global_rebuild_seen: set[str] = set()
-    global_repo_rebuild_seen: set[str] = set()
-    global_drift_seen: set[str] = set()
-    suggest_cache: dict[tuple[str, bool, bool], list[str]] = {}
-    # Accumulates optional-symbol cases demoted by check_so_files (reduced-target
-    # libLLVM target-init absences) across the whole walk → one summary line.
-    abi_benign: list[str] = []
-
-    from sysforge.ui import progress
-    for pkgname in targets:
-        # B11: surface the in-progress package instead of a static "starting…".
-        progress.phase(f"doctor: auditing {pkgname}")
-        dep_issues, abi_issues, so_paths, abi_skipped = _check_one(
-            pkgname, ldconfig_set, installed, file_root, benign_sink=abi_benign
-        )
-        origin = _origin_tag(pkgname, foreign, installed, tracked=tracked_names)
-        n = len(dep_issues) + len(abi_issues)
-        if n:
-            affected_pkgs.append((pkgname, n, origin))
-            total_issues += n
-        suggestions = (
-            _collect_suggestions(pkgname, dep_issues, abi_issues, so_paths,
-                                 cache=suggest_cache,
-                                 installed_names=installed_name_set,
-                                 foreign=foreign)
-            if suggest else None
-        )
-        _print_report(
-            pkgname, installed.get(pkgname),
-            dep_issues, abi_issues, quiet=args.quiet,
-            suggestions=suggestions,
-            origin=origin,
-            abi_skipped=abi_skipped,
-        )
-        if suggest and suggestions:
-            pkg_install: list[str] = []
-            pkg_rebuild: list[str] = []
-            pkg_repo_rebuild: list[str] = []
-            pkg_drift: list[str] = []
-            pkg_install_seen: set[str] = set()
-            pkg_rebuild_seen: set[str] = set()
-            pkg_repo_rebuild_seen: set[str] = set()
-            pkg_drift_seen: set[str] = set()
-            buckets = {
-                SUGGEST_KIND_INSTALL: (pkg_install, pkg_install_seen,
-                                       global_install, global_install_seen),
-                SUGGEST_KIND_REBUILD: (pkg_rebuild, pkg_rebuild_seen,
-                                       global_rebuild, global_rebuild_seen),
-                SUGGEST_KIND_REPO_REBUILD: (pkg_repo_rebuild,
-                                            pkg_repo_rebuild_seen,
-                                            global_repo_rebuild,
-                                            global_repo_rebuild_seen),
-                SUGGEST_KIND_ABI_DRIFT: (pkg_drift, pkg_drift_seen,
-                                         global_drift, global_drift_seen),
-            }
-            for kind, cands in suggestions.values():
-                if kind not in buckets:
-                    continue
-                local, local_seen, gbl, gbl_seen = buckets[kind]
-                for c in cands:
-                    if c not in local_seen:
-                        local_seen.add(c)
-                        local.append(c)
-                    if c not in gbl_seen:
-                        gbl_seen.add(c)
-                        gbl.append(c)
-            if pkg_install or pkg_rebuild or pkg_repo_rebuild or pkg_drift:
-                per_pkg_suggestions.append(
-                    (pkgname, pkg_install, pkg_rebuild,
-                     pkg_repo_rebuild, pkg_drift)
-                )
-
-    if targets:
-        _log.newline()
-        _log.ui(
-            f"Scanned {len(targets)} package(s); "
-            f"{len(affected_pkgs)} with issues, {total_issues} total finding(s)."
-        )
-        if abi_benign:
-            _log.ui(
-                f"ABI: {len(abi_benign)} optional LLVM target-init symbol(s) "
-                "absent from reduced-target libLLVM (benign; -v to list)."
-            )
-    if affected_pkgs:
-        names = ", ".join(
-            f"{name} {tag} ({n})" if tag else f"{name} ({n})"
-            for name, n, tag in affected_pkgs
-        )
-        _log.ui(f"Affected: {names}")
-    if suggest and (global_install or global_rebuild
-                    or global_repo_rebuild or global_drift):
-        _log.ui("Suggestions:")
-        for name, inst, rebuild, repo_rebuild, drift in per_pkg_suggestions:
-            parts: list[str] = []
-            if inst:
-                parts.append(f"install: {', '.join(inst)}")
-            if rebuild:
-                parts.append(f"rebuild: {', '.join(rebuild)}")
-            if repo_rebuild:
-                parts.append(f"repo-rebuild: {', '.join(repo_rebuild)}")
-            if drift:
-                parts.append(f"ABI-drift: {', '.join(drift)}")
-            _log.ui(f"  {name}: {' | '.join(parts)}")
-        if global_install:
-            _log.ui(f"Install candidates: {', '.join(global_install)}")
-        if global_rebuild:
-            _log.ui(
-                "Rebuild candidates (foreign; ABI drift): "
-                f"{', '.join(global_rebuild)}"
-            )
-        if global_repo_rebuild:
-            _log.ui(
-                "Repo packages with ABI drift "
-                "(await repo update or `sudo pacman -S` to reinstall): "
-                f"{', '.join(global_repo_rebuild)}"
-            )
-        if global_drift:
-            _log.ui(
-                "ABI-drift candidates (rebuild or upgrade, not reinstall): "
-                f"{', '.join(global_drift)}"
-            )
-
-    # System-state axes (toolchain / hardware / graphics / …) — selected by
-    # _resolve_axis_names and rendered + exit-coded through the unified
-    # diagnostics renderer.
-    axis_error_count = _run_system_axes(args, config, axis_names)
-
-    # --apply bridge: hand REBUILD candidates to `sysforge update`.
+    # --apply bridge: hand REBUILD candidates to `sysforge update`. The guard
+    # turns a misordered wiring into a loud failure rather than a silent no-op.
     if apply_requested:
-        rc = _apply_rebuilds(args, global_rebuild, global_install,
-                             foreign, installed)
+        _require_completed_walk(walk)
+        rc = _apply_rebuilds(args, walk.rebuild_candidates,
+                             walk.install_candidates,
+                             walk.foreign, walk.installed)
         # When apply runs, its return code dominates so a successful rebuild
         # produces exit 0 even if doctor found issues.
         return rc
 
-    if affected_pkgs or axis_error_count:
+    if (ran_abi and walk.affected) or axis_error_count:
         return 1
     return 0
 
@@ -1359,21 +1576,41 @@ from sysforge.primitives.config import load_config as _load_config  # noqa: E402
 from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
 
 
-class DoctorVerb(Verb):
-    """Health-check installed package depends and ABI linkage.
+class DoctorSystemVerb(Verb):
+    """``doctor system`` — system-state axes. Read-only; no sentinel.
 
-    Read-only by default (``cmd_doctor`` only prints findings). ``--apply``
-    delegates to ``cmd_update`` for actual rebuild, but that path
-    synthesizes an update args namespace and invokes the existing function
-    directly — no sentinel needed here, since ``UpdateVerb`` is not in
-    play. The sentinel for the rebuild itself is installed by the
-    delegated rebuild path's ``BuildOptions`` flow. ``--apply`` (non-dry-run)
-    also opts out of this verb's own run log, since ``cmd_update`` opens its
-    own on the process-global unified-log handle (see
-    ``unified_log_basename``).
+    Bare ``sysforge doctor`` dispatches here as well, so this verb owns the
+    everyday full-sweep entry point (2.6.1-F1).
     """
 
-    name = "doctor"
+    name = "doctor system"
+    requires_sentinel = False
+
+    def unified_log_basename(self, args) -> str | None:
+        return "sysforge-doctor.log"
+
+    def pre_check(self, args) -> PreCheckResult:
+        # cmd_doctor_system reads args.config; the cli.py wrapper used to set it.
+        if not hasattr(args, "config") or args.config is None:
+            args.config = _load_config() or {}
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        return ExecResult(exit_code=cmd_doctor_system(args) or 0)
+
+
+class DoctorPkgVerb(Verb):
+    """``doctor pkg`` — package-scoped axes (abi / rust / integrity).
+
+    Read-only by default (``cmd_doctor_pkg`` only prints findings). ``--apply``
+    delegates to ``cmd_update`` for actual rebuild, but that path synthesizes
+    an update args namespace and invokes the existing function directly — no
+    sentinel needed here, since ``UpdateVerb`` is not in play. The sentinel for
+    the rebuild itself is installed by the delegated rebuild path's
+    ``BuildOptions`` flow.
+    """
+
+    name = "doctor pkg"
     requires_sentinel = False
 
     def unified_log_basename(self, args) -> str | None:
@@ -1388,11 +1625,12 @@ class DoctorVerb(Verb):
         return "sysforge-doctor.log"
 
     def pre_check(self, args) -> PreCheckResult:
-        # cmd_doctor reads args.config; the cli.py wrapper used to set this.
         if not hasattr(args, "config") or args.config is None:
             args.config = _load_config() or {}
+        # Split targets by provenance so the rust axis can collapse
+        # broad-selector targets into one survey finding (2.6.1-F1).
+        _derive_pkg_targets(args, args.config)
         return PreCheckResult()
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
-        rc = cmd_doctor(args) or 0
-        return ExecResult(exit_code=rc)
+        return ExecResult(exit_code=cmd_doctor_pkg(args) or 0)

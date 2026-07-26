@@ -181,42 +181,82 @@ def _toolchain_installed(channel: str) -> bool:
                for line in proc.stdout.splitlines() if line.strip())
 
 
-def collect_pin_findings(config_dict, packages) -> list[diag.Finding]:
+def collect_pin_findings(config_dict, packages, *, derived=()) -> list[diag.Finding]:
+    """Rust pin findings for package targets.
+
+    ``packages`` are targets the user named explicitly; each gets its own
+    finding, including the negative results (2.6.1-F1). ``derived`` are targets
+    pulled in by a broad selector (``--all`` / ``--repo`` / ``--graphics``);
+    those collapse into a single survey finding so a whole-system sweep does not
+    emit several hundred near-identical lines.
+    """
     findings: list[diag.Finding] = []
     for pkg in packages or []:
-        try:
-            pkgbuild = config.find_pkgbuild(pkg, config_dict)
-        except Exception:  # noqa: S112
-            continue  # unresolvable target — nothing to say about its pin
-        src_dir = Path(pkgbuild).parent
-        try:
-            pin = _pin_for_dir(src_dir)
-        except ValueError as exc:
-            findings.append(diag.Finding(
-                category=_CATEGORY, severity=diag.SEV_WARN,
-                check_id="rust-pin-unreadable",
-                message=f"{pkg}: unreadable rust-toolchain.toml "
-                        f"({src_dir}/rust-toolchain.toml): {exc}"))
-            continue
-        if pin is None:
-            continue
-        channel, _raw = pin
-        if _toolchain_installed(channel):
-            findings.append(diag.Finding(
-                category=_CATEGORY, severity=diag.SEV_INFO, check_id="rust-pin",
-                message=f"{pkg}: pins Rust `{channel}` via rust-toolchain.toml "
-                        f"(installed)"))
-        else:
-            findings.append(diag.Finding(
-                category=_CATEGORY, severity=diag.SEV_WARN,
-                check_id="rust-pin-missing",
-                message=f"{pkg}: pins Rust `{channel}` via rust-toolchain.toml "
-                        f"— not installed; rustup will fetch it mid-build",
-                remediation=f"rustup toolchain install {channel}"))
+        findings.extend(_pin_findings_for(config_dict, pkg))
+
+    derived = list(derived or [])
+    if derived:
+        pinned = unresolved = unpinned = 0
+        for pkg in derived:
+            for f in _pin_findings_for(config_dict, pkg):
+                if f.check_id == "rust-pin-unresolved":
+                    unresolved += 1
+                elif f.check_id == "rust-no-pin":
+                    unpinned += 1
+                else:
+                    pinned += 1
+        findings.append(diag.Finding(
+            category=_CATEGORY, severity=diag.SEV_INFO,
+            check_id="rust-pin-survey",
+            message=(f"{len(derived)} scanned; {pinned} pinned, "
+                     f"{unpinned} no pin, {unresolved} unresolvable"),
+            remediation="name a package explicitly to see its pin in detail"))
     return findings
 
 
-def collect_rust_findings(config_dict, packages=None) -> list[diag.Finding]:
-    """Public axis producer: effective-toolchain findings plus, for any named
-    package targets, rust-toolchain.toml pin findings."""
-    return collect_active_findings() + collect_pin_findings(config_dict, packages)
+def _pin_findings_for(config_dict, pkg) -> list[diag.Finding]:
+    """Findings for exactly one target. Always returns at least one finding —
+    every path that previously `continue`d now reports (2.6.1-F1)."""
+    try:
+        pkgbuild = config.find_pkgbuild(pkg, config_dict)
+    except Exception:  # noqa: BLE001 — any resolution failure is reportable
+        return [diag.Finding(
+            category=_CATEGORY, severity=diag.SEV_WARN,
+            check_id="rust-pin-unresolved",
+            message=f"{pkg}: no PKGBUILD under pkgbuild_src_dir — "
+                    f"cannot check for a rust-toolchain.toml pin",
+            remediation="check the name, or fetch its sources first")]
+    src_dir = Path(pkgbuild).parent
+    try:
+        pin = _pin_for_dir(src_dir)
+    except ValueError as exc:
+        return [diag.Finding(
+            category=_CATEGORY, severity=diag.SEV_WARN,
+            check_id="rust-pin-unreadable",
+            message=f"{pkg}: unreadable rust-toolchain.toml "
+                    f"({src_dir}/rust-toolchain.toml): {exc}")]
+    if pin is None:
+        return [diag.Finding(
+            category=_CATEGORY, severity=diag.SEV_INFO,
+            check_id="rust-no-pin",
+            message=f"{pkg}: no rust-toolchain.toml — builds with the "
+                    f"effective default toolchain")]
+    channel, _raw = pin
+    if _toolchain_installed(channel):
+        return [diag.Finding(
+            category=_CATEGORY, severity=diag.SEV_INFO, check_id="rust-pin",
+            message=f"{pkg}: pins Rust `{channel}` via rust-toolchain.toml "
+                    f"(installed)")]
+    return [diag.Finding(
+        category=_CATEGORY, severity=diag.SEV_WARN,
+        check_id="rust-pin-missing",
+        message=f"{pkg}: pins Rust `{channel}` via rust-toolchain.toml "
+                f"— not installed; rustup will fetch it mid-build",
+        remediation=f"rustup toolchain install {channel}")]
+
+
+def collect_rust_findings(config_dict, packages=None, *, derived=()) -> list[diag.Finding]:
+    """Public axis producer: effective-toolchain findings plus, for any package
+    targets, rust-toolchain.toml pin findings."""
+    return (collect_active_findings()
+            + collect_pin_findings(config_dict, packages, derived=derived))

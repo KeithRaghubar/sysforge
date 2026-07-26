@@ -196,13 +196,40 @@ _sysforge_resolve() {
 
 
 _sysforge_doctor() {
+  local context state state_descr line
+  typeset -A opt_args
+
+  _arguments -C \
+    '1: :_sysforge_doctor_subcommands' \
+    '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only findings]' \
+    '*:: :->args'
+
+  case $state in
+    args)
+      case $words[1] in
+        system) _sysforge_doctor_system ;;
+        pkg) _sysforge_doctor_pkg ;;
+      esac
+      ;;
+  esac
+}
+
+_sysforge_doctor_subcommands() {
+  local subcommands=(
+    'system:system-state axes (bare `doctor` runs these)'
+    'pkg:package-scoped axes over one or more targets'
+  )
+  _describe 'subcommand' subcommands
+}
+
+_sysforge_doctor_system() {
   _arguments \
-    '--graphics[expand to curated graphics stack (mesa/vulkan/libglvnd + driver)]' \
+    '--graphics[graphics system-state probes: nvidia-drm modeset, driver skew, explicit-sync, Steam GPU accel, session type]' \
     '--gfxperf[advisory graphics-performance sweep (stutter/tearing contributors)]' \
     '--hardware[inventory PCI/USB devices + audit running kernel for missing drivers / boot-config gaps]' \
     '--distro[report the running distribution and its support tier, from os-release(5)]' \
     '--toolchain[check configured toolchain (toolchain.toml) matches the installed LLVM]' \
-    '--rust[report the Rust toolchain a build will use: rustup channel/distro rust, non-stable default (WARN), rust-toolchain.toml pin (opt-in; scope with PKG)]' \
+    '--rust[effective Rust toolchain owner + non-stable rustup default (WARN); opt-in]' \
     '--cache[compile-cache readiness: ccache/sccache installed, dir writable, size cap set]' \
     '--pacman[local pacman-db consistency, stale lock, .pacnew drift, orphans (read-only)]' \
     '--state[sysforge state integrity: build failures, stale sentinel, state drift]' \
@@ -212,11 +239,20 @@ _sysforge_doctor() {
     '--services[failed systemd units + firmware a driver could not load + boot errors]' \
     '--audio[PipeWire/WirePlumber: failed audio user services + vanished output sink]' \
     '--network[no default route, connection-manager conflicts, DNS provisioner conflict]' \
-    '--integrity[verify package-owned files vs alpm mtree via pacman -Qkk (opt-in; scope with PKG)]' \
-    '--all[verify every installed package, foreign + non-foreign (pacman -Q)]' \
-    '--repo[verify every non-foreign (native repo) package]' \
+    '--integrity[verify package-owned files vs alpm mtree via pacman -Qkk (opt-in)]' \
+    '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only findings]'
+}
+
+_sysforge_doctor_pkg() {
+  _arguments \
+    '--abi[depends-satisfaction + soname/ABI linkage walk over the targets]' \
+    '--rust[per-target rust-toolchain.toml pin + whether that toolchain is installed]' \
+    '--integrity[verify the targets package-owned files vs alpm mtree via pacman -Qkk]' \
+    '--all[target every installed package, foreign + non-foreign (suppresses opt-in axes)]' \
+    '--repo[target every non-foreign (native repo) package (suppresses opt-in axes)]' \
+    '--graphics[target the installed graphics stack; a peer of --all / --repo]' \
     '--shallow[do not recurse into transitive dependencies]' \
-    '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only issues]' \
+    '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only packages with issues]' \
     '(-s --suggest)'{-s,--suggest}'[reverse-lookup candidate packages for each missing soname via pacman -Fq]' \
     '--apply[hand REBUILD candidates to sysforge update; implies --suggest]' \
     '--no-confirm[skip the y/N prompt before --apply rebuilds]' \

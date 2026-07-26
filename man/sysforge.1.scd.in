@@ -39,9 +39,34 @@ hardware detection, configure), and the repeatable stages (toolchain,
 kernel, packages, reconfigure) that build an optionally PGO-optimized LLVM
 toolchain and a custom kernel under boot-safety gates.
 
-*sysforge doctor* is the read-only health surface: package depends + ABI
-linkage walks plus system-state axes (hardware, toolchain, pacman db,
-state, boot, storage, services, graphics).
+*sysforge doctor* is the read-only health surface, split into two scopes.
+*doctor system* runs the system-state axes (hardware, toolchain, pacman db,
+state, boot, storage, services, graphics); bare *sysforge doctor* is that
+sweep. *doctor pkg* runs the package-scoped axes over one or more targets:
+*--abi* (depends + ABI linkage), *--rust* (rust-toolchain.toml pins), and
+*--integrity* (pacman -Qkk). With no axis flag each scope runs its defaults;
+a broad target selector (*--all*, *--repo*) suppresses the opt-in axes unless
+named explicitly.
+
+The flat *doctor* flags were removed in 3.0.0. Each one now prints its
+replacement and exits 2; that hint table is itself removed in 3.1.0.
+
+[[ *removed*
+:< *replacement*
+|  _--boot_, _--hardware_, _--toolchain_, _--cache_, _--pacman_, _--state_, _--restart_, _--storage_, _--services_, _--audio_, _--network_, _--distro_, _--gfxperf_
+:< *sysforge doctor system* _<same flag>_
+|  _--all_
+:< *sysforge doctor system* then *sysforge doctor pkg --all*
+|  _--repo_
+:< *sysforge doctor pkg --repo*
+|  _--graphics_
+:< *sysforge doctor system --graphics* (probes) or *sysforge doctor pkg --graphics* (targets)
+|  _--rust_
+:< *sysforge doctor system --rust* (effective toolchain) or *sysforge doctor pkg* _PKG_ *--rust* (pin)
+|  _--integrity_
+:< *sysforge doctor system --integrity* or *sysforge doctor pkg* _PKG_ *--integrity*
+|  _PKG_ (bare positional)
+:< *sysforge doctor pkg* _PKG_
 
 Install-bearing commands write a stage sentinel before mutating the system;
 an interrupted run is detected on the next invocation and offers a recorded
@@ -189,7 +214,7 @@ Other Arch derivatives
 	names and never replaces the system *makepkg.conf*(5), so a derivative's
 	own repos and toolchain defaults are honoured.
 
-Run *sysforge doctor --distro* to see which tier the running system falls in.
+Run *sysforge doctor system --distro* to see which tier the running system falls in.
 Anything not Arch-derived is out of scope.
 
 # EXIT STATUS

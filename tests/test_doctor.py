@@ -13,10 +13,13 @@ Covers:
     cmd_doctor               — clean pkg, missing depends, unsatisfied
                                ABI symbol, pkg-not-installed, exit codes
 """
+import argparse
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent / ".."))
 
@@ -226,9 +229,26 @@ def _make_args(**overrides) -> SimpleNamespace:
         audio=False, network=False, integrity=False, all=False, repo=False,
         shallow=False, quiet=False, suggest=False, config={},
         apply=False, no_confirm=False, dry_run=False, state_dir=None,
+        # 2.6.1-F1: `abi` is the package walk's axis flag; `derived_targets` is
+        # the broad-selector target list DoctorPkgVerb.pre_check records.
+        abi=False, derived_targets=[],
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
+
+
+def _walked(args) -> list[str]:
+    """Package names the abi walk actually covered.
+
+    2.6.1-F1: grouped rendering groups *findings*, so a clean package emits no
+    per-package block. Scope-coverage tests therefore assert against the walk's
+    structured results (the side-channel) rather than printed headers — a
+    stronger check that does not re-break if the renderer changes again.
+    """
+    walk = getattr(args, "_abi_walk", None)
+    assert walk is not None, "abi walk was never constructed"
+    assert walk.results is not None, "abi walk did not run"
+    return [r.pkgname for r in walk.results]
 
 
 def _patch_axes_clean(monkeypatch):
@@ -256,7 +276,7 @@ def test_cmd_doctor_bare_runs_full_system_sweep(monkeypatch, capsys):
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
     _patch_axes_clean(monkeypatch)
 
-    rc = doctor.cmd_doctor(_make_args())
+    rc = doctor.cmd_doctor_system(_make_args())
     err = capsys.readouterr().err
     assert "nothing to check" not in err
     # Every system-axis section renders (clean) — the full sweep.
@@ -280,7 +300,7 @@ def test_cmd_doctor_updates_progress_phase(monkeypatch):
     from sysforge.ui import progress
     monkeypatch.setattr(progress, "phase", lambda label=None: calls.append(label))
 
-    doctor.cmd_doctor(_make_args())
+    doctor.cmd_doctor_system(_make_args())
     labels = [c for c in calls if c]
     assert labels, "expected at least one progress.phase call"
     assert any(lbl.startswith("doctor:") and "starting" not in lbl
@@ -291,7 +311,7 @@ def test_cmd_doctor_repo_with_nothing_installed_exits_2(monkeypatch, capsys):
     """--repo with no installed packages selects no roots and no axes → usage."""
     monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
-    rc = doctor.cmd_doctor(_make_args(repo=True))
+    rc = doctor.cmd_doctor_pkg(_make_args(repo=True))
     assert rc == 2
     err = capsys.readouterr().err
     assert "nothing to check" in err
@@ -538,7 +558,7 @@ def test_cmd_doctor_hardware_standalone_bypasses_empty_roots(monkeypatch, capsys
         DeviceFinding(SEV_WARN, "unsupported_device",
                       "pci device 0000:0d:00.4 has no driver", "Enable CONFIG_X")])
 
-    rc = doctor.cmd_doctor(_make_args(hardware=True))
+    rc = doctor.cmd_doctor_system(_make_args(hardware=True))
     err = capsys.readouterr().err
     assert "no packages to check" not in err
     assert "hardware checks" in err
@@ -556,7 +576,7 @@ def test_cmd_doctor_hardware_brick_finding_nonzero_exit(monkeypatch, capsys):
                       "CONFIG_EXT4_FS is not enabled", "Set CONFIG_EXT4_FS=y",
                       is_brick=True)])
 
-    rc = doctor.cmd_doctor(_make_args(hardware=True))
+    rc = doctor.cmd_doctor_system(_make_args(hardware=True))
     err = capsys.readouterr().err
     assert "boot_kconfig:CONFIG_EXT4_FS" in err
     assert rc == 1
@@ -566,7 +586,7 @@ def test_cmd_doctor_hardware_clean_exit_zero(monkeypatch, capsys):
     monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
     _patch_hw(monkeypatch, running_cfg=None)
-    rc = doctor.cmd_doctor(_make_args(hardware=True))
+    rc = doctor.cmd_doctor_system(_make_args(hardware=True))
     err = capsys.readouterr().err
     assert "no unsupported devices or boot-config gaps detected" in err
     assert rc == 0
@@ -584,10 +604,13 @@ def test_cmd_doctor_clean_package(tmp_path, monkeypatch, capsys):
     # No .so in files → check_so_files never walks; no ldconfig/subprocess needed.
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
-    rc = doctor.cmd_doctor(_make_args(packages=["cleanpkg"]))
+    args = _make_args(packages=["cleanpkg"])
+    rc = doctor.cmd_doctor_pkg(args)
     err = capsys.readouterr().err
-    assert "cleanpkg 1.0-1" in err
-    assert "clean" in err
+    # 2.6.1-F1: a clean package emits no per-package block; the axis clean
+    # message covers it and the walk's results record the coverage.
+    assert _walked(args) == ["cleanpkg"]
+    assert "every target's depends are satisfied" in err
     # No findings → no Affected: line
     assert "Affected:" not in err
     assert rc == 0
@@ -607,11 +630,11 @@ def test_cmd_doctor_reports_missing_dep(tmp_path, monkeypatch, capsys):
 
     with patch("sysforge.doctor.subprocess.run",
                side_effect=_pacman_t_mock(["missinglib>=2.0"], 127)):
-        rc = doctor.cmd_doctor(_make_args(packages=["brokenpkg"]))
+        rc = doctor.cmd_doctor_pkg(_make_args(packages=["brokenpkg"]))
 
     err = capsys.readouterr().err
     assert "brokenpkg" in err
-    assert "[DEPENDS]" in err
+    assert "abi:depends:brokenpkg" in err
     assert "missinglib" in err
     assert "Affected: brokenpkg [repo] (1)" in err
     assert rc == 1
@@ -625,7 +648,7 @@ def test_cmd_doctor_not_installed(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
-    rc = doctor.cmd_doctor(_make_args(packages=["ghost"]))
+    rc = doctor.cmd_doctor_pkg(_make_args(packages=["ghost"]))
     err = capsys.readouterr().err
     assert "ghost" in err
     assert "not installed" in err
@@ -643,7 +666,7 @@ def test_cmd_doctor_quiet_hides_clean(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
-    rc = doctor.cmd_doctor(_make_args(packages=["cleanpkg"], quiet=True))
+    rc = doctor.cmd_doctor_pkg(_make_args(packages=["cleanpkg"], quiet=True))
     err = capsys.readouterr().err
     # Clean package header suppressed
     assert "cleanpkg 1.0-1" not in err
@@ -676,7 +699,7 @@ def test_cmd_doctor_affected_line_lists_multiple_packages(tmp_path, monkeypatch,
         return r
 
     with patch("sysforge.doctor.subprocess.run", side_effect=fake_pacman_t):
-        rc = doctor.cmd_doctor(_make_args(packages=["pkga", "pkgb"]))
+        rc = doctor.cmd_doctor_pkg(_make_args(packages=["pkga", "pkgb"]))
 
     err = capsys.readouterr().err
     assert "Affected: pkga [repo] (1), pkgb [repo] (1)" in err
@@ -712,11 +735,11 @@ def test_cmd_doctor_affected_line_tags_mixed_origins(tmp_path, monkeypatch, caps
         return r
 
     with patch("sysforge.doctor.subprocess.run", side_effect=fake_pacman_t):
-        doctor.cmd_doctor(_make_args(packages=["nativepkg", "foreignpkg"]))
+        doctor.cmd_doctor_pkg(_make_args(packages=["nativepkg", "foreignpkg"]))
 
     err = capsys.readouterr().err
-    assert "== nativepkg 1.0-1 [repo] ==" in err
-    assert "== foreignpkg 1.0-1 [aur] ==" in err
+    assert "nativepkg 1.0-1 [repo]" in err
+    assert "foreignpkg 1.0-1 [aur]" in err
     assert "Affected: nativepkg [repo] (1), foreignpkg [aur] (1)" in err
 
 
@@ -729,9 +752,9 @@ def test_cmd_doctor_not_installed_header_has_no_tag(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
-    doctor.cmd_doctor(_make_args(packages=["ghost"]))
+    doctor.cmd_doctor_pkg(_make_args(packages=["ghost"]))
     err = capsys.readouterr().err
-    assert "== ghost (not installed) ==" in err
+    assert "ghost (not installed)" in err
     assert "[repo]" not in err
     assert "[aur]" not in err
 
@@ -748,35 +771,35 @@ def test_cmd_doctor_output_goes_through_log_ui(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
-    doctor.cmd_doctor(_make_args(packages=["cleanpkg"]))
+    doctor.cmd_doctor_pkg(_make_args(packages=["cleanpkg"]))
     captured = capsys.readouterr()
 
     assert captured.out == ""
-    assert "== cleanpkg 1.0-1 [repo] ==" in captured.err
+    # 2.6.1-F1: grouped rendering groups *findings*, so a clean package gets no
+    # per-package block — the axis's clean message plus the scan count cover it.
+    assert "every target's depends are satisfied" in captured.err
+    # The name still appears in the progress line, which is not the report;
+    # what must be absent is a per-package findings block.
+    assert "cleanpkg 1.0-1" not in captured.err
     assert "Scanned 1 package(s)" in captured.err
 
 
 # ---------------------------------------------------------------------------
-# _print_report — remediation text for the "owner installed, no candidate" case
+# _suggestion_remediation — text for the "owner installed, no candidate" case
+# (was _print_report's inline branch before the 2.6.1-F1 renderer split)
 # ---------------------------------------------------------------------------
 
-def test_print_report_installed_owner_does_not_advise_ldconfig(capsys):
+def test_installed_owner_remediation_does_not_advise_ldconfig():
     """When every owning package is already installed (empty candidate list),
     the soname is provably absent from every dir ldconfig scans, so `sudo
     ldconfig` cannot fix it (2.1.0-B18). The advice must name the real
     remedies (files-db refresh / rebuild), not ldconfig."""
-    issue = "soname not found in ldconfig: libfoo.so=2"
-    doctor._print_report(
-        "brokenpkg", "1.0-1",
-        dep_issues=[issue], abi_issues=[], quiet=False,
-        suggestions={issue: (doctor.SUGGEST_KIND_INSTALL, [])},
-    )
-    err = capsys.readouterr().err
+    text = doctor._suggestion_remediation(doctor.SUGGEST_KIND_INSTALL, [])
     # The dep-issue label legitimately says "not found in ldconfig"; the defect
     # is advising the `sudo ldconfig` *command*, which cannot help here.
-    assert "sudo ldconfig" not in err
-    assert "pacman -Fy" in err
-    assert "rebuild" in err
+    assert "sudo ldconfig" not in text
+    assert "pacman -Fy" in text
+    assert "rebuild" in text
 
 
 # ---------------------------------------------------------------------------
@@ -1067,7 +1090,7 @@ def test_cmd_doctor_suggest_renders_candidate_line(tmp_path, monkeypatch, capsys
         lambda entry, *, lib32=False, run_fn=None, installed_names=None: ["core/missinglib"],
     )
 
-    rc = doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
+    rc = doctor.cmd_doctor_pkg(_make_args(packages=["brokenpkg"], suggest=True))
     err = capsys.readouterr().err
 
     assert "soname not found in ldconfig: libmissing.so=3" in err
@@ -1099,7 +1122,7 @@ def test_cmd_doctor_suggest_no_candidate_line(tmp_path, monkeypatch, capsys):
         lambda entry, *, lib32=False, run_fn=None, installed_names=None: [],
     )
 
-    doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
+    doctor.cmd_doctor_pkg(_make_args(packages=["brokenpkg"], suggest=True))
     err = capsys.readouterr().err
 
     assert "owner installed but soname absent" in err
@@ -1126,7 +1149,7 @@ def test_cmd_doctor_suggest_warns_on_stale_files_db(tmp_path, monkeypatch, capsy
         raise AssertionError("suggest_for_soname must not run when db is stale")
     monkeypatch.setattr(doctor, "suggest_for_soname", fail_if_called)
 
-    rc = doctor.cmd_doctor(_make_args(packages=["brokenpkg"], suggest=True))
+    rc = doctor.cmd_doctor_pkg(_make_args(packages=["brokenpkg"], suggest=True))
     err = capsys.readouterr().err
 
     # Issue still reported; no candidate line; exit code unchanged.
@@ -1158,7 +1181,7 @@ def test_cmd_doctor_suggest_summary_rollup(tmp_path, monkeypatch, capsys):
         }.get(entry, []),
     )
 
-    doctor.cmd_doctor(_make_args(packages=["pkga", "pkgb"], suggest=True))
+    doctor.cmd_doctor_pkg(_make_args(packages=["pkga", "pkgb"], suggest=True))
     err = capsys.readouterr().err
 
     # Grouped per-pkg lines, preserving per-pkg order
@@ -1212,7 +1235,7 @@ def test_cmd_doctor_suggest_abi_drift_summary(tmp_path, monkeypatch, capsys):
         lambda pkgname, file_root: [abs_so],
     )
 
-    rc = doctor.cmd_doctor(_make_args(packages=["driftpkg"], suggest=True))
+    rc = doctor.cmd_doctor_pkg(_make_args(packages=["driftpkg"], suggest=True))
     err = capsys.readouterr().err
 
     assert "→ repo rebuild candidate (await repo update): core/glibc" in err
@@ -1274,7 +1297,7 @@ def test_cmd_doctor_suggest_abi_drift_foreign_stays_actionable(
         lambda pkgname, file_root: [abs_so],
     )
 
-    rc = doctor.cmd_doctor(_make_args(packages=["driftpkg"], suggest=True))
+    rc = doctor.cmd_doctor_pkg(_make_args(packages=["driftpkg"], suggest=True))
     err = capsys.readouterr().err
 
     assert "→ rebuild candidate: libfoo-git" in err
@@ -1357,11 +1380,11 @@ def test_cmd_doctor_abi_check_skipped_for_vendored_package(
         raise AssertionError("check_so_files must be skipped for steam")
     monkeypatch.setattr(doctor, "check_so_files", fail_if_called)
 
-    rc = doctor.cmd_doctor(_make_args(packages=["steam"]))
+    rc = doctor.cmd_doctor_pkg(_make_args(packages=["steam"]))
     err = capsys.readouterr().err
 
-    assert "[ABI] skipped: vendored prebuilt binaries" in err
-    assert "[DEPENDS] 1 issue(s):" in err
+    assert "ABI check skipped: vendored prebuilt binaries" in err
+    assert "abi:depends:" in err
     assert "libmissing.so=9" in err
     assert rc == 1
 
@@ -1383,7 +1406,7 @@ def test_cmd_doctor_all_covers_repo_packages(tmp_path, monkeypatch, capsys):
 
     with patch("sysforge.doctor.subprocess.run",
                side_effect=_pacman_t_mock(["missinglib>=1"], 127)):
-        rc = doctor.cmd_doctor(_make_args(all=True))
+        rc = doctor.cmd_doctor_pkg(_make_args(all=True))
 
     err = capsys.readouterr().err
     assert "steam" in err
@@ -1406,9 +1429,12 @@ def test_cmd_doctor_untracked_foreign_gets_untracked_tag(tmp_path, monkeypatch, 
     from sysforge.primitives import build_state as _bs_mod
     monkeypatch.setattr(_bs_mod.BuildState, "all_packages", lambda self: {})
 
-    doctor.cmd_doctor(_make_args(packages=["wildpkg"]))
-    err = capsys.readouterr().err
-    assert "== wildpkg 1.0-1 [aur][untracked] ==" in err
+    args = _make_args(packages=["wildpkg"])
+    doctor.cmd_doctor_pkg(args)
+    # wildpkg is clean, so it renders no block (2.6.1-F1) — assert the origin
+    # tag on the walk's structured result instead.
+    walk = args._abi_walk
+    assert [r.origin for r in walk.results] == ["[aur][untracked]"]
 
 
 def test_cmd_doctor_all_includes_foreign_and_native(tmp_path, monkeypatch, capsys):
@@ -1430,10 +1456,9 @@ def test_cmd_doctor_all_includes_foreign_and_native(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(_bs_mod.BuildState, "all_packages",
                         lambda self: {"foreignpkg": {}})
 
-    doctor.cmd_doctor(_make_args(all=True))
-    err = capsys.readouterr().err
-    assert "== nativepkg 1.0-1 [repo] ==" in err
-    assert "== foreignpkg 1.0-1 [aur] ==" in err
+    args = _make_args(all=True)
+    doctor.cmd_doctor_pkg(args)
+    assert set(_walked(args)) == {"nativepkg", "foreignpkg"}
 
 
 def test_cmd_doctor_repo_excludes_foreign(tmp_path, monkeypatch, capsys):
@@ -1450,10 +1475,9 @@ def test_cmd_doctor_repo_excludes_foreign(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: foreign)
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
-    doctor.cmd_doctor(_make_args(repo=True))
-    err = capsys.readouterr().err
-    assert "== nativepkg 1.0-1 [repo] ==" in err
-    assert "foreignpkg" not in err
+    args = _make_args(repo=True)
+    doctor.cmd_doctor_pkg(args)
+    assert _walked(args) == ["nativepkg"]
 
 
 # ---------------------------------------------------------------------------
@@ -1574,7 +1598,7 @@ def test_apply_dry_run_does_not_invoke_update(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sysforge.update.cmd_update",
                         lambda args: called.append(args))
 
-    rc = doctor.cmd_doctor(_make_args(
+    rc = doctor.cmd_doctor_pkg(_make_args(
         packages=["driftpkg"], apply=True, dry_run=True, no_confirm=True,
     ))
 
@@ -1592,7 +1616,7 @@ def test_apply_invokes_cmd_update_with_eligible_pkgnames(tmp_path, monkeypatch, 
     monkeypatch.setattr("sysforge.update.cmd_update",
                         lambda args: captured.append(args))
 
-    rc = doctor.cmd_doctor(_make_args(
+    rc = doctor.cmd_doctor_pkg(_make_args(
         packages=["driftpkg"], apply=True, no_confirm=True,
     ))
 
@@ -1616,7 +1640,7 @@ def test_apply_repo_candidate_only_suggests_pacman(tmp_path, monkeypatch, capsys
     monkeypatch.setattr("sysforge.update.cmd_update",
                         lambda args: called.append(args))
 
-    rc = doctor.cmd_doctor(_make_args(
+    rc = doctor.cmd_doctor_pkg(_make_args(
         packages=["driftpkg"], apply=True, no_confirm=True,
     ))
 
@@ -1643,7 +1667,7 @@ def test_apply_prompt_decline_skips_rebuild(tmp_path, monkeypatch, capsys):
                         lambda args: called.append(args))
     monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
 
-    rc = doctor.cmd_doctor(_make_args(
+    rc = doctor.cmd_doctor_pkg(_make_args(
         packages=["driftpkg"], apply=True, no_confirm=False,
     ))
 
@@ -1660,7 +1684,7 @@ def test_apply_prompt_y_invokes_update(tmp_path, monkeypatch, capsys):
                         lambda args: called.append(args))
     monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
 
-    rc = doctor.cmd_doctor(_make_args(
+    rc = doctor.cmd_doctor_pkg(_make_args(
         packages=["driftpkg"], apply=True, no_confirm=False,
     ))
 
@@ -1675,7 +1699,7 @@ def test_apply_implies_suggest(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sysforge.update.cmd_update",
                         lambda args: captured.append(args))
 
-    rc = doctor.cmd_doctor(_make_args(
+    rc = doctor.cmd_doctor_pkg(_make_args(
         packages=["driftpkg"], apply=True, no_confirm=True, suggest=False,
     ))
 
@@ -1702,7 +1726,7 @@ def test_cmd_doctor_toolchain_mismatch_nonzero_exit(monkeypatch, capsys):
                 "stock repo LLVM is installed", "run sysforge run toolchain"),
         ))
 
-    rc = doctor.cmd_doctor(_make_args(toolchain=True))
+    rc = doctor.cmd_doctor_system(_make_args(toolchain=True))
     err = capsys.readouterr().err
     assert "no packages to check" not in err
     assert "toolchain checks" in err
@@ -1717,7 +1741,7 @@ def test_cmd_doctor_toolchain_clean_exit_zero(monkeypatch, capsys):
         "sysforge.primitives.llvm_state.detect_toolchain_config_mismatch",
         lambda *a, **k: ())
 
-    rc = doctor.cmd_doctor(_make_args(toolchain=True))
+    rc = doctor.cmd_doctor_system(_make_args(toolchain=True))
     err = capsys.readouterr().err
     assert "toolchain config matches" in err
     assert rc == 0
@@ -1906,3 +1930,242 @@ def test_distro_axis_passes_explicit_only_when_flag_set(monkeypatch):
     doctor._system_axes(None, _make_args(distro=True))["distro"].run()
     doctor._system_axes(None, _make_args())["distro"].run()
     assert seen == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# AbiWalk — ABI walk as a Finding producer (2.6.1-F1)
+# ---------------------------------------------------------------------------
+
+def test_abiwalk_results_is_none_before_run():
+    walk = doctor.AbiWalk(argparse.Namespace(packages=["mesa"]), {})
+    assert walk.results is None
+
+
+def test_abiwalk_emits_findings_with_package_subject(monkeypatch):
+    args = argparse.Namespace(packages=["mesa"], graphics=False, all=False,
+                              repo=False, shallow=True, quiet=False)
+    monkeypatch.setattr(doctor.pacman, "get_all_installed_packages",
+                        lambda: {"mesa": "25.1"})
+    monkeypatch.setattr(doctor.pacman, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_walk_closure", lambda roots, shallow: ["mesa"])
+    monkeypatch.setattr(doctor, "_parse_ldconfig", lambda fn: set())
+    monkeypatch.setattr(doctor, "_check_one",
+                        lambda *a, **k: (["missing dep: libfoo"],
+                                         ["unsatisfied soname: libbar.so.2"],
+                                         [], False))
+    walk = doctor.AbiWalk(args, {})
+    findings = walk.run()
+    assert all(f.subject.startswith("mesa") for f in findings)
+    assert {f.category for f in findings} == {"abi"}
+    assert len(findings) == 2
+
+
+def test_abiwalk_populates_results_after_run(monkeypatch):
+    args = argparse.Namespace(packages=["mesa"], graphics=False, all=False,
+                              repo=False, shallow=True, quiet=False)
+    monkeypatch.setattr(doctor.pacman, "get_all_installed_packages",
+                        lambda: {"mesa": "25.1"})
+    monkeypatch.setattr(doctor.pacman, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_walk_closure", lambda roots, shallow: ["mesa"])
+    monkeypatch.setattr(doctor, "_parse_ldconfig", lambda fn: set())
+    monkeypatch.setattr(doctor, "_check_one",
+                        lambda *a, **k: ([], ["unsatisfied soname: libbar.so.2"],
+                                         [], False))
+    walk = doctor.AbiWalk(args, {})
+    walk.run()
+    assert walk.results is not None
+    assert walk.results[0].pkgname == "mesa"
+    assert walk.results[0].abi_issues == ["unsatisfied soname: libbar.so.2"]
+
+
+def test_abiwalk_clean_package_yields_no_findings(monkeypatch):
+    args = argparse.Namespace(packages=["mesa"], graphics=False, all=False,
+                              repo=False, shallow=True, quiet=False)
+    monkeypatch.setattr(doctor.pacman, "get_all_installed_packages",
+                        lambda: {"mesa": "25.1"})
+    monkeypatch.setattr(doctor.pacman, "get_foreign_packages", lambda: {})
+    monkeypatch.setattr(doctor, "_walk_closure", lambda roots, shallow: ["mesa"])
+    monkeypatch.setattr(doctor, "_parse_ldconfig", lambda fn: set())
+    monkeypatch.setattr(doctor, "_check_one", lambda *a, **k: ([], [], [], False))
+    walk = doctor.AbiWalk(args, {})
+    # A clean package produces no findings; render_axis prints clean_msg.
+    assert walk.run() == []
+    assert walk.results[0].dep_issues == []
+
+
+def test_require_completed_walk_raises_when_results_unpopulated():
+    """Guard against a misordered call: unpopulated channel must fail loudly."""
+    walk = doctor.AbiWalk(argparse.Namespace(packages=["mesa"]), {})
+    # The side-channel is an ordering dependency the type system cannot catch,
+    # so an unpopulated channel must fail loudly rather than silently no-op.
+    with pytest.raises(RuntimeError, match="walk did not run"):
+        doctor._require_completed_walk(walk)
+
+
+def test_require_completed_walk_passes_after_run():
+    """An empty result set is a VALID completed walk; the guard should pass."""
+    walk = doctor.AbiWalk(argparse.Namespace(packages=["mesa"]), {})
+    walk.results = []          # an empty result set is a VALID completed walk
+    assert doctor._require_completed_walk(walk) is None
+
+
+# ---------------------------------------------------------------------------
+# 2.6.1-F1 — migration hints for the removed flat `doctor` flags
+# ---------------------------------------------------------------------------
+
+def test_migration_hint_for_removed_axis_flag():
+    hint = doctor.doctor_migration_hint(["doctor", "--boot"])
+    assert hint is not None
+    assert "sysforge doctor system --boot" in hint
+
+
+def test_migration_hint_for_all_names_both_commands():
+    hint = doctor.doctor_migration_hint(["doctor", "--all"])
+    assert hint is not None
+    assert "sysforge doctor system" in hint
+    assert "sysforge doctor pkg --all" in hint
+
+
+def test_migration_hint_for_graphics_names_both_scopes():
+    hint = doctor.doctor_migration_hint(["doctor", "--graphics"])
+    assert hint is not None
+    assert "doctor system --graphics" in hint
+    assert "doctor pkg --graphics" in hint
+
+
+def test_migration_hint_for_rust_names_both_scopes():
+    """The original complaint's flag must point at the package scope, since
+    that is where a rust-toolchain.toml pin is actually checked."""
+    hint = doctor.doctor_migration_hint(["doctor", "--rust"])
+    assert hint is not None
+    assert "doctor pkg PKG --rust" in hint
+
+
+def test_no_hint_for_valid_new_invocations():
+    assert doctor.doctor_migration_hint(["doctor", "system", "--boot"]) is None
+    assert doctor.doctor_migration_hint(["doctor", "pkg", "mesa"]) is None
+    assert doctor.doctor_migration_hint(["doctor", "pkg", "--all"]) is None
+    assert doctor.doctor_migration_hint(["doctor"]) is None
+
+
+def test_no_hint_for_other_verbs():
+    """A flag name shared with another verb must not be hijacked."""
+    assert doctor.doctor_migration_hint(["update", "--all"]) is None
+    assert doctor.doctor_migration_hint([]) is None
+
+
+def test_migration_table_covers_every_removed_flag():
+    """Structural guard: a flag removed from the flat surface without a
+    migration row must fail here, not surprise a user (2.6.1-F1)."""
+    removed = {
+        "--graphics", "--gfxperf", "--hardware", "--distro", "--toolchain",
+        "--rust", "--cache", "--pacman", "--state", "--boot", "--restart",
+        "--storage", "--services", "--audio", "--network", "--integrity",
+        "--all", "--repo",
+    }
+    assert removed <= set(doctor._DOCTOR_MIGRATION)
+
+
+def test_migration_table_covers_every_system_axis():
+    """Derived from the axis registry rather than a hand-list, so a NEW axis
+    added before 3.1.0 without a migration row also fails."""
+    for axis in doctor._SYSTEM_AXIS_ORDER:
+        if axis == "abi":
+            continue  # never had a flat flag — it is new in 3.0.0
+        assert f"--{axis}" in doctor._DOCTOR_MIGRATION, axis
+
+
+def test_flat_axis_flags_are_gone_from_the_parser():
+    """`doctor --boot` must no longer parse — the hint replaces it."""
+    from sysforge.cli import _build_parser
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["doctor", "--boot"])
+
+
+# ---------------------------------------------------------------------------
+# 2.6.1-F1 — --graphics splits by scope
+# ---------------------------------------------------------------------------
+
+def test_system_graphics_selects_only_the_graphics_axis():
+    """`doctor system --graphics` runs system-state probes and nothing else —
+    it must NOT pull in a package walk the way the flat flag used to."""
+    from sysforge.cli import _build_parser
+    ns = _build_parser().parse_args(["doctor", "system", "--graphics"])
+    assert doctor._resolve_axis_names(ns) == ["graphics"]
+    assert "abi" not in doctor._resolve_axis_names(ns)
+
+
+def test_system_graphics_injects_no_package_targets(monkeypatch):
+    """The flat --graphics injected _expand_graphics_targets() into the walk
+    roots. At system scope that injection is gone entirely (2.6.1-F1)."""
+    called = []
+    monkeypatch.setattr(doctor, "_expand_graphics_targets",
+                        lambda cfg, inst: called.append(1) or ["mesa"])
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages",
+                        lambda: {"mesa": "25.1"})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+    _patch_axes_clean(monkeypatch)
+    monkeypatch.setattr(doctor, "_collect_graphics_findings", lambda config: [])
+
+    args = _make_args(graphics=True)
+    doctor.cmd_doctor_system(args)
+    assert not called, "system scope must not expand graphics package targets"
+    assert not getattr(args, "derived_targets", [])
+
+
+def test_pkg_graphics_expands_to_the_graphics_stack(monkeypatch):
+    """At package scope --graphics is a target selector, a peer of --all."""
+    monkeypatch.setattr(doctor, "_expand_graphics_targets",
+                        lambda cfg, inst: ["mesa", "vulkan-icd-loader"])
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages",
+                        lambda: {"mesa": "25.1", "vulkan-icd-loader": "1.4"})
+    monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
+
+    args = _make_args(graphics=True)
+    derived = doctor._derive_pkg_targets(args, {})
+    assert set(derived) == {"mesa", "vulkan-icd-loader"}
+    assert set(args.derived_targets) == {"mesa", "vulkan-icd-loader"}
+
+
+def test_pkg_graphics_is_a_target_not_an_axis():
+    """--graphics at pkg scope selects targets; it must not appear as an axis."""
+    from sysforge.cli import _build_parser
+    ns = _build_parser().parse_args(["doctor", "pkg", "--graphics"])
+    axes = doctor._resolve_pkg_axis_names(ns)
+    assert "graphics" not in axes
+    # No axis flag named → the pkg-scope defaults, minus nothing (a target
+    # selector is not a broad selector for rule 2 purposes).
+    assert "abi" in axes
+
+
+def test_suggest_implies_the_abi_axis():
+    """--suggest consumes the abi walk's classified candidates, so naming
+    another axis alongside it must not deselect abi (2.6.1-F1)."""
+    from sysforge.cli import _build_parser
+    ns = _build_parser().parse_args(["doctor", "pkg", "mesa", "--rust", "--suggest"])
+    assert "abi" in doctor._resolve_pkg_axis_names(ns)
+
+
+def test_apply_implies_the_abi_axis():
+    """Regression: `doctor pkg PKG --rust --apply` used to select only the rust
+    axis, so the walk never ran and the apply bridge's ordering guard fired an
+    internal 'wiring bug' error at an ordinary invocation (2.6.1-F1)."""
+    from sysforge.cli import _build_parser
+    ns = _build_parser().parse_args(["doctor", "pkg", "mesa", "--rust", "--apply"])
+    axes = doctor._resolve_pkg_axis_names(ns)
+    assert "abi" in axes
+    assert "rust" in axes
+
+
+def test_apply_alone_still_runs_the_pkg_defaults():
+    """--apply with no axis flag keeps the default selection (abi included)."""
+    from sysforge.cli import _build_parser
+    ns = _build_parser().parse_args(["doctor", "pkg", "mesa", "--apply"])
+    assert "abi" in doctor._resolve_pkg_axis_names(ns)
+
+
+def test_suggest_does_not_resurrect_opt_ins_for_broad_selectors():
+    """--suggest implies abi, but must not undo rule 2 for --all/--repo."""
+    from sysforge.cli import _build_parser
+    ns = _build_parser().parse_args(["doctor", "pkg", "--all", "--suggest"])
+    assert doctor._resolve_pkg_axis_names(ns) == ["abi"]

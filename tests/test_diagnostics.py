@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+
 from sysforge import log
 from sysforge.primitives import diagnostics as diag
 
@@ -180,3 +181,50 @@ def test_render_axis_colours_severity_when_enabled(capsys, monkeypatch):
 def test_color_severity_plain_when_disabled(monkeypatch):
     monkeypatch.setattr(log, "_COLOR_MODE", "never")
     assert diag._color_severity(diag.SEV_ERROR) == "ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Finding.subject and grouped rendering
+# ---------------------------------------------------------------------------
+
+
+def test_finding_subject_defaults_to_empty():
+    f = diag.Finding("abi", diag.SEV_WARN, "abi:x", "msg")
+    assert f.subject == ""
+
+
+def test_render_axis_grouped_groups_by_subject(capsys):
+    logger = log.get_logger("TEST")
+    findings = [
+        diag.Finding("abi", diag.SEV_INFO, "abi:a", "info a",
+                     subject="mesa 25.1"),
+        diag.Finding("abi", diag.SEV_ERROR, "abi:b", "err b",
+                     subject="cosmic-comp-git 1.0"),
+        diag.Finding("abi", diag.SEV_WARN, "abi:c", "warn c",
+                     subject="mesa 25.1"),
+    ]
+    errors = diag.render_axis(logger, "ABI & depends",
+                              findings, grouped=True)
+    out = capsys.readouterr().err
+    assert errors == 1
+    # Groups ordered by worst severity: cosmic-comp-git (ERROR) before mesa (WARN).
+    assert out.index("cosmic-comp-git 1.0") < out.index("mesa 25.1")
+    # Within a group, severity descending: warn c before info a.
+    assert out.index("warn c") < out.index("info a")
+    # Each finding sits under its own group header, not re-sorted globally.
+    assert out.index("cosmic-comp-git 1.0") < out.index("err b") < out.index("mesa 25.1")
+
+
+def test_render_axis_ungrouped_is_unchanged(capsys):
+    logger = log.get_logger("TEST")
+    findings = [
+        diag.Finding("abi", diag.SEV_INFO, "abi:a", "info a",
+                     subject="mesa 25.1"),
+        diag.Finding("abi", diag.SEV_ERROR, "abi:b", "err b",
+                     subject="cosmic-comp-git 1.0"),
+    ]
+    diag.render_axis(logger, "ABI", findings)
+    out = capsys.readouterr().err
+    # Default mode ignores subject entirely — flat, severity-sorted.
+    assert "mesa 25.1" not in out
+    assert out.index("err b") < out.index("info a")

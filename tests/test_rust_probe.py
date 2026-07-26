@@ -194,13 +194,19 @@ def test_pin_not_installed_is_warn(monkeypatch, tmp_path):
     assert "rustup toolchain install 1.70.0" in warn.remediation
 
 
-def test_no_pin_yields_no_pin_findings(monkeypatch, tmp_path):
+def test_no_pin_yields_no_pin_info_finding(monkeypatch, tmp_path):
+    # 2.6.1-F1: an explicitly named package with no rust-toolchain.toml used to
+    # be silently skipped (`collect_pin_findings(...) == []`). It now reports
+    # an explicit INFO so the negative result is visible.
     d = tmp_path / "plainpkg"
     d.mkdir()
     (d / "PKGBUILD").write_text("pkgname=plainpkg\n")
     monkeypatch.setattr(rust_probe.config, "find_pkgbuild",
                         lambda pkg, config=None: d / "PKGBUILD")
-    assert rust_probe.collect_pin_findings({}, ["plainpkg"]) == []
+    out = rust_probe.collect_pin_findings({}, ["plainpkg"])
+    assert [f.check_id for f in out] == ["rust-no-pin"]
+    assert out[0].severity == diag.SEV_INFO
+    assert "plainpkg" in out[0].message
 
 
 def test_malformed_pin_is_warn(monkeypatch, tmp_path):
@@ -224,3 +230,63 @@ def test_collect_rust_findings_merges_active_and_pin(monkeypatch, tmp_path):
     findings = rust_probe.collect_rust_findings({}, packages=["mypkg"])
     ids = [f.check_id for f in findings]
     assert "rust-none" in ids and "rust-pin" in ids
+
+
+# --- 2.6.1-F1: explicit vs derived targets no longer silently skip ----------
+
+def test_explicit_unresolvable_target_warns(monkeypatch):
+    monkeypatch.setattr(rust_probe.config, "find_pkgbuild",
+                        lambda pkg, cfg: (_ for _ in ()).throw(FileNotFoundError(pkg)))
+    out = rust_probe.collect_pin_findings({}, ["mesa"])
+    assert [f.check_id for f in out] == ["rust-pin-unresolved"]
+    assert out[0].severity == diag.SEV_WARN
+    assert "mesa" in out[0].message
+
+
+def test_explicit_resolvable_without_pin_is_info(monkeypatch, tmp_path):
+    (tmp_path / "PKGBUILD").write_text("pkgname=foo\n")
+    monkeypatch.setattr(rust_probe.config, "find_pkgbuild",
+                        lambda pkg, cfg: str(tmp_path / "PKGBUILD"))
+    monkeypatch.setattr(rust_probe, "_pin_for_dir", lambda d: None)
+    out = rust_probe.collect_pin_findings({}, ["foo"])
+    assert [f.check_id for f in out] == ["rust-no-pin"]
+    assert out[0].severity == diag.SEV_INFO
+
+
+def test_derived_targets_collapse_into_one_survey(monkeypatch, tmp_path):
+    (tmp_path / "PKGBUILD").write_text("pkgname=foo\n")
+
+    def _find(pkg, cfg):
+        if pkg == "resolvable":
+            return str(tmp_path / "PKGBUILD")
+        raise FileNotFoundError(pkg)
+
+    monkeypatch.setattr(rust_probe.config, "find_pkgbuild", _find)
+    monkeypatch.setattr(rust_probe, "_pin_for_dir", lambda d: None)
+    out = rust_probe.collect_pin_findings(
+        {}, [], derived=["resolvable", "nope1", "nope2"])
+    assert [f.check_id for f in out] == ["rust-pin-survey"]
+    assert out[0].severity == diag.SEV_INFO
+    assert "3 scanned" in out[0].message
+    assert "2 unresolvable" in out[0].message
+
+
+def test_explicit_and_derived_coexist(monkeypatch, tmp_path):
+    (tmp_path / "PKGBUILD").write_text("pkgname=foo\n")
+    monkeypatch.setattr(rust_probe.config, "find_pkgbuild",
+                        lambda pkg, cfg: (_ for _ in ()).throw(FileNotFoundError(pkg)))
+    out = rust_probe.collect_pin_findings({}, ["named"], derived=["a", "b"])
+    ids = [f.check_id for f in out]
+    # Explicit target keeps its own per-target finding; derived collapse.
+    assert ids == ["rust-pin-unresolved", "rust-pin-survey"]
+
+
+def test_pinned_derived_target_still_counted(monkeypatch, tmp_path):
+    (tmp_path / "PKGBUILD").write_text("pkgname=foo\n")
+    monkeypatch.setattr(rust_probe.config, "find_pkgbuild",
+                        lambda pkg, cfg: str(tmp_path / "PKGBUILD"))
+    monkeypatch.setattr(rust_probe, "_pin_for_dir", lambda d: ("nightly", "nightly"))
+    monkeypatch.setattr(rust_probe, "_toolchain_installed", lambda c: True)
+    out = rust_probe.collect_pin_findings({}, [], derived=["a", "b"])
+    assert [f.check_id for f in out] == ["rust-pin-survey"]
+    assert "2 pinned" in out[0].message

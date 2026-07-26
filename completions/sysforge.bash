@@ -218,13 +218,32 @@ _sysforge_resolve() {
 }
 
 _sysforge_doctor() {
-    local flags="--distro --graphics --gfxperf --hardware --toolchain --rust --cache --pacman --state --boot --restart --storage --services --audio --network --integrity \
-        --all --repo --shallow -q --quiet -s --suggest --apply --no-confirm --dry-run"
-    if [[ $cur == -* ]]; then
-        COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
-    else
-        _sysforge_installed_pkg_names
+    _sysforge_flag_arg && return
+    if [[ -z $subverb ]]; then
+        if [[ $cur == -* ]]; then
+            COMPREPLY=( $(compgen -W "-q --quiet" -- "$cur") )
+        else
+            COMPREPLY=( $(compgen -W "system pkg" -- "$cur") )
+        fi
+        return
     fi
+    case "$subverb" in
+        system)
+            local sys_flags="--distro --graphics --gfxperf --hardware --toolchain \
+                --rust --cache --pacman --state --boot --restart --storage \
+                --services --audio --network --integrity -q --quiet"
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "$sys_flags" -- "$cur") )
+            ;;
+        pkg)
+            local pkg_flags="--abi --rust --integrity --all --repo --graphics \
+                --shallow -q --quiet -s --suggest --apply --no-confirm --dry-run"
+            if [[ $cur == -* ]]; then
+                COMPREPLY=( $(compgen -W "$pkg_flags" -- "$cur") )
+            else
+                _sysforge_installed_pkg_names
+            fi
+            ;;
+    esac
 }
 
 _sysforge_artifact() {

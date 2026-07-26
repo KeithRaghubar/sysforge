@@ -308,8 +308,8 @@ def test_sentinel_metadata_persisted(tmp_path):
 
 def test_doctor_verb_writes_kept_run_log(tmp_path):
     """A real substantial verb (doctor) leaves a kept sysforge-doctor.log."""
-    from sysforge.doctor import DoctorVerb
-    assert DoctorVerb().unified_log_basename(_args(apply=False, dry_run=False)) == (
+    from sysforge.doctor import DoctorPkgVerb
+    assert DoctorPkgVerb().unified_log_basename(_args(apply=False, dry_run=False)) == (
         "sysforge-doctor.log"
     )
 
@@ -317,9 +317,9 @@ def test_doctor_verb_writes_kept_run_log(tmp_path):
 def test_doctor_verb_logs_on_dry_run_apply(tmp_path):
     """`doctor --apply --dry-run` still opens its own run log — the rebuild
     delegation to cmd_update only happens on a real (non-dry-run) apply."""
-    from sysforge.doctor import DoctorVerb
-    assert DoctorVerb().unified_log_basename(_args()) == "sysforge-doctor.log"
-    assert DoctorVerb().unified_log_basename(
+    from sysforge.doctor import DoctorPkgVerb
+    assert DoctorPkgVerb().unified_log_basename(_args()) == "sysforge-doctor.log"
+    assert DoctorPkgVerb().unified_log_basename(
         _args(apply=True, dry_run=True)
     ) == "sysforge-doctor.log"
 
@@ -330,8 +330,8 @@ def test_doctor_verb_opts_out_of_run_log_on_real_apply(tmp_path):
     (2.1.0-F4). Doctor must not also open a log here — the singleton has no
     reentrancy guard, so a doctor-opened handle would be leaked (never
     closed) and rebuild output would silently land in the wrong file."""
-    from sysforge.doctor import DoctorVerb
-    assert DoctorVerb().unified_log_basename(
+    from sysforge.doctor import DoctorPkgVerb
+    assert DoctorPkgVerb().unified_log_basename(
         _args(apply=True, dry_run=False)
     ) is None
 

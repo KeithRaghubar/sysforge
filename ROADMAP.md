@@ -64,7 +64,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | ID | Item | Priority | Effort |
 |----|------|----------|--------|
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large |
-| `2.6.1-F1` | doctor: restructure the flat flag surface into system / pkg subcommands | med | large |
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium |
@@ -82,25 +81,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   comments, and a misordered registration fails a structural test instead of corrupting `prepare()`.
   *Priority: med · Effort: large* — refactor, no behavior change; the 2.5.1-B5/B8 fix cycle showed
   this seam is where kernel-stage bugs concentrate.
-
-- **`2.6.1-F1` — `doctor`: restructure the flat flag surface into `system` / `pkg` subcommands.**
-  `doctor` exposes 21 flags in one flat argparse block. The taxonomy exists in code
-  (`_SYSTEM_AXIS_ORDER`, `_OPT_IN_AXES`, `_AXIS_FLAGS` in `doctor.py`) but never reaches `--help`,
-  so the user cannot tell what a bare invocation covers, what is opt-in, or which flags select
-  packages rather than checks. `PKG` is overloaded three ways: a target for the depends+ABI walk, a
-  scope qualifier for the `rust`/`integrity` axes, and — via `--graphics` — a target *injector*
-  (`_expand_graphics_targets`). The visible symptom is `doctor --rust PKG`, which appears to ignore
-  its argument: `rust_probe.collect_pin_findings` silently `continue`s both when `find_pkgbuild`
-  fails (any repo package) and when no `rust-toolchain.toml` exists, while the positional
-  additionally triggers an unrequested linkage walk. Split into `doctor system [AXIS…]` and
-  `doctor pkg [TARGETS] [AXIS…]`, promote the ABI walk to an explicit `--abi` axis so no check is
-  implicit, split `--graphics` by subcommand (system probes vs graphics-stack target set), and give
-  the rust axis explicit negative results. Breaking (3.0.0): the flat flags are removed with a
-  migration-hint table naming each replacement, dropped in 3.1.0. Design:
-  `docs/superpowers/specs/2026-07-25-doctor-subcommand-restructure-design.md` (open questions
-  remain — axis-registry refactor and `--suggest`/`--apply` survival are unspecified).
-  *Priority: med · Effort: large* — UX/discoverability, no new diagnostics; touches both
-  completions, the manpage, and `docs/design/verbs/doctor.md`. **Standards home on adoption:** none new.
 
 - **`2.5.0-F2` — `help` verb (aliases `--help`) + advertise `-h/--help` in completions.** Two related
   gaps in help discoverability: (1) there is no `sysforge help [COMMAND]` verb — users must know the

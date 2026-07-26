@@ -43,10 +43,69 @@ hardware detection, configure), and the repeatable stages (toolchain,
 kernel, packages, reconfigure) that build an optionally PGO\-optimized LLVM
 toolchain and a custom kernel under boot\-safety gates.\&
 .PP
-\fBsysforge doctor\fR is the read\-only health surface: package depends + ABI
-linkage walks plus system\-state axes (hardware, toolchain, pacman db,
-state, boot, storage, services, graphics).\&
+\fBsysforge doctor\fR is the read\-only health surface, split into two scopes.\&
+\fBdoctor system\fR runs the system\-state axes (hardware, toolchain, pacman db,
+state, boot, storage, services, graphics); bare \fBsysforge doctor\fR is that
+sweep.\& \fBdoctor pkg\fR runs the package\-scoped axes over one or more targets:
+\fB\-\-abi\fR (depends + ABI linkage), \fB\-\-rust\fR (rust\-toolchain.\&toml pins), and
+\fB\-\-integrity\fR (pacman \-Qkk).\& With no axis flag each scope runs its defaults;
+a broad target selector (\fB\-\-all\fR, \fB\-\-repo\fR) suppresses the opt\-in axes unless
+named explicitly.\&
 .PP
+The flat \fBdoctor\fR flags were removed in 3.\&0.\&0.\& Each one now prints its
+replacement and exits 2; that hint table is itself removed in 3.\&1.\&0.\&
+.PP
+.TS
+allbox;l lx
+l lx
+l lx
+l lx
+l lx
+l lx
+l lx
+l lx.
+T{
+\fBremoved\fR
+T}	T{
+\fBreplacement\fR
+T}
+T{
+\fI\-\-boot\fR, \fI\-\-hardware\fR, \fI\-\-toolchain\fR, \fI\-\-cache\fR, \fI\-\-pacman\fR, \fI\-\-state\fR, \fI\-\-restart\fR, \fI\-\-storage\fR, \fI\-\-services\fR, \fI\-\-audio\fR, \fI\-\-network\fR, \fI\-\-distro\fR, \fI\-\-gfxperf\fR
+T}	T{
+\fBsysforge doctor system\fR \fI<same flag>\fR
+T}
+T{
+\fI\-\-all\fR
+T}	T{
+\fBsysforge doctor system\fR then \fBsysforge doctor pkg \-\-all\fR
+T}
+T{
+\fI\-\-repo\fR
+T}	T{
+\fBsysforge doctor pkg \-\-repo\fR
+T}
+T{
+\fI\-\-graphics\fR
+T}	T{
+\fBsysforge doctor system \-\-graphics\fR (probes) or \fBsysforge doctor pkg \-\-graphics\fR (targets)
+T}
+T{
+\fI\-\-rust\fR
+T}	T{
+\fBsysforge doctor system \-\-rust\fR (effective toolchain) or \fBsysforge doctor pkg\fR \fIPKG\fR \fB\-\-rust\fR (pin)
+T}
+T{
+\fI\-\-integrity\fR
+T}	T{
+\fBsysforge doctor system \-\-integrity\fR or \fBsysforge doctor pkg\fR \fIPKG\fR \fB\-\-integrity\fR
+T}
+T{
+\fIPKG\fR (bare positional)
+T}	T{
+\fBsysforge doctor pkg\fR \fIPKG\fR
+T}
+.TE
+.sp 1
 Install\-bearing commands write a stage sentinel before mutating the system;
 an interrupted run is detected on the next invocation and offers a recorded
 recovery command.\&
@@ -424,18 +483,28 @@ search term (name + description)
 .RE
 .SS doctor
 .PP
-\fBsysforge doctor\fR [\fIOPTIONS\fR] \fI[PKG.\&.\&.\&]\fR
+\fBsysforge doctor\fR [\fIOPTIONS\fR] \fISUBCOMMAND\fR
 .PP
-Diagnose sysforge\-managed system health (linkage, toolchain, hardware, graphics, pacman, state, boot, services, audio, network).\&
+Diagnose system health (`doctor system`) or package health (`doctor pkg`).\& Bare `doctor` runs the full system sweep.\&
 .PP
-\fBPKG\fR
+\fB\-\-quiet\fR, \fB\-q\fR
 .RS 4
-One or more installed package names to verify (package depends + ABI linkage walk).\& With no PKG and no axis flag, bare `doctor` runs every system\-state axis — the fast full sweep.\&
+Suppress clean lines; print only findings.\&
 .PP
 .RE
+\fBConfiguration:\fR profiles.\&toml; toolchain.\&toml and kernel.\&toml on their axes
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
+.PP
+.SS doctor system
+.PP
+\fBsysforge doctor system\fR [\fIOPTIONS\fR]
+.PP
+System\-state axes: toolchain, cache, hardware, graphics, pacman, state, boot, restart, storage, services, audio, network, distro.\& With no axis flag, runs all 13 non\-opt\-in axes.\&
+.PP
 \fB\-\-graphics\fR
 .RS 4
-Expand to the graphics stack (mesa, vulkan, libglvnd, wayland, libdrm, libva, libvdpau, egl\-wayland, xwayland, gamescope, plus per\-vendor drivers from the hardware overlay'\&s gpu_vendors) AND run system\-state probes (nvidia\-drm modeset, driver version skew, Wayland explicit\-sync protocol, Steam GPU accel, session type).\&
+Run graphics system\-state probes: nvidia\-drm modeset, driver version skew, Wayland explicit\-sync protocol, Steam GPU accel, and session type.\& Does not select packages — for the graphics package set use `doctor pkg \-\-graphics`.\&
 .PP
 .RE
 \fB\-\-gfxperf\fR
@@ -445,82 +514,118 @@ Advisory graphics\-performance sweep (stutter/tearing/frame\-drop contributors: 
 .RE
 \fB\-\-hardware\fR
 .RS 4
-Run system\-state hardware probes: inventory all PCI/USB devices, flag any present device with no kernel driver bound, and audit the running kernel'\&s .\&config for boot\-critical / device\-driver gaps (the missing\-driver class of bug).\& Usable on its own (no PKG).\&
+Run system\-state hardware probes: inventory all PCI/USB devices, flag any present device with no kernel driver bound, and audit the running kernel'\&s .\&config for boot\-critical / device\-driver gaps (the missing\-driver class of bug).\&
 .PP
 .RE
 \fB\-\-distro\fR
 .RS 4
-Report the running distribution and its support tier, read from os\-release(5): Arch is the primary base, an Arch\-derived distro (ID_LIKE=arch) has its packaging/dependency/makepkg.\&conf invariants validated but not the bootstrap/kernel/graphics checks, and anything else warns.\& Read\-only, no subprocess; on plain Arch the bare sweep stays silent, this flag always prints the identity.\& Usable on its own (no PKG).\&
+Report the running distribution and its support tier, read from os\-release(5): Arch is the primary base, an Arch\-derived distro (ID_LIKE=arch) has its packaging/dependency/makepkg.\&conf invariants validated but not the bootstrap/kernel/graphics checks, and anything else warns.\& Read\-only, no subprocess; on plain Arch the bare sweep stays silent, this flag always prints the identity.\&
 .PP
 .RE
 \fB\-\-toolchain\fR
 .RS 4
-Check that the configured toolchain matches what'\&s installed: when toolchain.\&toml requests a custom LLVM toolchain (compiler = llvm, optionally PGO) but stock repo LLVM is installed — or the PGO profdata is version\-skewed — report it.\& Usable on its own (no PKG).\&
+Check that the configured toolchain matches what'\&s installed: when toolchain.\&toml requests a custom LLVM toolchain (compiler = llvm, optionally PGO) but stock repo LLVM is installed — or the PGO profdata is version\-skewed — report it.\&
 .PP
 .RE
 \fB\-\-rust\fR
 .RS 4
-Report which Rust toolchain a build will actually use: the effective cargo/rustc owner (rustup channel or distro `rust` package), a WARN if the active rustup default is non\-stable (nightly/beta/pinned), and — with PKG targets — a rust\-toolchain.\&toml pin plus whether that toolchain is installed (uninstalled = mid\-build network fetch).\& Advisory, read\-only; never fails, never rewrites a pin.\& Opt\-in.\& Usable on its own.\&
+Report which Rust toolchain a build will actually use: the effective cargo/rustc owner (rustup channel or distro `rust` package) and a WARN if the active rustup default is non\-stable (nightly/beta/pinned).\& Advisory, read\-only; never fails, never rewrites a pin.\& Opt\-in.\& For per\-package rust\-toolchain.\&toml pins use `doctor pkg PKG \-\-rust`.\&
 .PP
 .RE
 \fB\-\-cache\fR
 .RS 4
-Check compile\-cache readiness *before* a build relies on it: whether ccache/sccache are installed, their cache dir is writable, and a non\-zero size cap is set.\& Absence is informational, not a failure.\& Distinct from build verbs'\& \-\-cache\-report, which measures per\-package hit rates *after* a build.\& Usable on its own (no PKG).\&
+Check compile\-cache readiness *before* a build relies on it: whether ccache/sccache are installed, their cache dir is writable, and a non\-zero size cap is set.\& Absence is informational, not a failure.\& Distinct from build verbs'\& \-\-cache\-report, which measures per\-package hit rates *after* a build.\&
 .PP
 .RE
 \fB\-\-pacman\fR
 .RS 4
-Check local package\-database integrity (read\-only, never syncs): `pacman \-Dk` dependency consistency, a stale db.\&lck, unmerged .\&pacnew/.\&pacsave config files under /etc, and orphan packages.\& Usable on its own (no PKG).\&
+Check local package\-database integrity (read\-only, never syncs): `pacman \-Dk` dependency consistency, a stale db.\&lck, unmerged .\&pacnew/.\&pacsave config files under /etc, and orphan packages.\&
 .PP
 .RE
 \fB\-\-state\fR
 .RS 4
-Check sysforge'\&s own state integrity: recorded build failures, an interrupted stage sentinel from a prior run, and build_state drift vs the live pacman database.\& Read\-only (does not recover).\& Usable on its own (no PKG).\&
+Check sysforge'\&s own state integrity: recorded build failures, an interrupted stage sentinel from a prior run, and build_state drift vs the live pacman database.\& Read\-only (does not recover).\&
 .PP
 .RE
 \fB\-\-boot\fR
 .RS 4
-Check running\-system boot readiness (reusing the kernel stage'\&s safety primitives): per\-kernel boot artifacts (vmlinuz + initramfs + boot entry), a recovery fallback kernel, /boot space, and DKMS modules for the running kernel.\& Usable on its own (no PKG).\&
+Check running\-system boot readiness (reusing the kernel stage'\&s safety primitives): per\-kernel boot artifacts (vmlinuz + initramfs + boot entry), a recovery fallback kernel, /boot space, and DKMS modules for the running kernel.\&
 .PP
 .RE
 \fB\-\-restart\fR
 .RS 4
-Check whether upgraded packages have actually taken effect: scans running processes for files replaced on disk (a `(deleted)` mapping) and reports whether the fix is a unit restart, a re\-login, or a reboot.\& Read\-only; never escalates, so coverage of other users'\& processes is reported as incomplete rather than prompting.\& Usable on its own (no PKG).\&
+Check whether upgraded packages have actually taken effect: scans running processes for files replaced on disk (a `(deleted)` mapping) and reports whether the fix is a unit restart, a re\-login, or a reboot.\& Read\-only; never escalates, so coverage of other users'\& processes is reported as incomplete rather than prompting.\&
 .PP
 .RE
 \fB\-\-storage\fR
 .RS 4
-Check storage/filesystem health: free space on the build dir (warns under [doctor] disk_low_gb) and /etc/fstab integrity (entries whose UUID/label/device no longer resolves).\& Read\-only; never mounts.\& Usable on its own (no PKG).\&
+Check storage/filesystem health: free space on the build dir (warns under [doctor] disk_low_gb) and /etc/fstab integrity (entries whose UUID/label/device no longer resolves).\& Read\-only; never mounts.\&
 .PP
 .RE
 \fB\-\-services\fR
 .RS 4
-Check live service/driver runtime health: failed systemd units (`systemctl \-\-failed`), firmware a driver requested but could not load this boot, and error\-priority journal lines this boot.\& Usable on its own (no PKG).\&
+Check live service/driver runtime health: failed systemd units (`systemctl \-\-failed`), firmware a driver requested but could not load this boot, and error\-priority journal lines this boot.\&
 .PP
 .RE
 \fB\-\-audio\fR
 .RS 4
-Check live PipeWire/WirePlumber sound\-stack health: failed audio user services (`systemctl \-\-user \-\-failed`) and a vanished output sink (only the dummy auto_null device present).\& User\-scoped, so it degrades to clean under sudo.\& Usable on its own (no PKG).\&
+Check live PipeWire/WirePlumber sound\-stack health: failed audio user services (`systemctl \-\-user \-\-failed`) and a vanished output sink (only the dummy auto_null device present).\& User\-scoped, so it degrades to clean under sudo.\&
 .PP
 .RE
 \fB\-\-network\fR
 .RS 4
-Check network/connectivity configuration: no default route, connection\-manager ownership conflicts (more than one of NetworkManager/systemd\-networkd/dhcpcd/… enabled), and a DNS provisioner conflict (systemd\-resolved active but /etc/resolv.\&conf is a static override).\& Read\-only; no live network calls.\& Usable on its own (no PKG).\&
+Check network/connectivity configuration: no default route, connection\-manager ownership conflicts (more than one of NetworkManager/systemd\-networkd/dhcpcd/… enabled), and a DNS provisioner conflict (systemd\-resolved active but /etc/resolv.\&conf is a static override).\& Read\-only; no live network calls.\&
 .PP
 .RE
 \fB\-\-integrity\fR
 .RS 4
-Verify package\-owned files against alpm'\&s recorded mtree via `pacman \-Qkk`: files an admin or a misbehaving install script altered or removed outside a pacman transaction.\& Opt\-in (excluded from the bare/full sweep because a whole\-system scan re\-hashes every packaged file); scope it with `doctor \-\-integrity PKG…`.\& Read\-only; never restores.\& Usable on its own (no PKG).\&
+Verify package\-owned files against alpm'\&s recorded mtree via `pacman \-Qkk`: files an admin or a misbehaving install script altered or removed outside a pacman transaction.\& Opt\-in (excluded from the bare/full sweep because a whole\-system scan re\-hashes every packaged file); scope it with `doctor pkg PKG \-\-integrity`.\& Read\-only; never restores.\&
+.PP
+.RE
+\fB\-\-quiet\fR, \fB\-q\fR
+.RS 4
+Suppress clean lines; print only findings.\&
+.PP
+.RE
+.SS doctor pkg
+.PP
+\fBsysforge doctor pkg\fR [\fIOPTIONS\fR] \fI[PKG.\&.\&.\&]\fR
+.PP
+Package\-scoped axes over one or more targets: \-\-abi (depends + ABI linkage), \-\-rust (rust\-toolchain.\&toml pins), \-\-integrity (pacman \-Qkk).\& With no axis flag, runs all three.\&
+.PP
+\fBPKG\fR
+.RS 4
+Installed package names to check.\&
+.PP
+.RE
+\fB\-\-abi\fR
+.RS 4
+Walk each target'\&s depends and ABI linkage: unsatisfied dependencies and unresolved sonames, over the transitive dependency closure unless \-\-shallow.\&
+.PP
+.RE
+\fB\-\-rust\fR
+.RS 4
+Report each target'\&s rust\-toolchain.\&toml pin and whether that toolchain is installed (uninstalled = mid\-build network fetch).\& A named target with no PKGBUILD or no pin now says so explicitly instead of staying silent.\&
+.PP
+.RE
+\fB\-\-integrity\fR
+.RS 4
+Verify each target'\&s package\-owned files against alpm'\&s recorded mtree via `pacman \-Qkk`.\& Read\-only; never restores.\&
 .PP
 .RE
 \fB\-\-all\fR
 .RS 4
-Run every system\-state axis AND the full per\-package walk over every installed package — foreign and non\-foreign (pacman \-Q).\& The exhaustive '\&is anything broken anywhere'\& sweep.\&
+Target every installed package, foreign and non\-foreign (pacman \-Q).\& Suppresses the opt\-in axes — runs \-\-abi only unless you name another axis explicitly.\&
 .PP
 .RE
 \fB\-\-repo\fR
 .RS 4
-Walk every non\-foreign (native repo) package.\& Package walk only, no system axes; narrower than \-\-all.\&
+Target every non\-foreign (native repo) package.\& Narrower than \-\-all; suppresses the opt\-in axes the same way.\&
+.PP
+.RE
+\fB\-\-graphics\fR
+.RS 4
+Target the installed graphics stack (mesa, vulkan, libglvnd, wayland, libdrm, libva, libvdpau, egl\-wayland, xwayland, gamescope, plus per\-vendor drivers from the hardware overlay'\&s gpu_vendors).\& A peer of \-\-all / \-\-repo.\& For graphics system\-state probes use `doctor system \-\-graphics`.\&
 .PP
 .RE
 \fB\-\-shallow\fR
@@ -553,10 +658,6 @@ Skip the y/N prompt before \-\-apply rebuilds.\&
 Report what \-\-apply would rebuild without invoking the build.\&
 .PP
 .RE
-\fBConfiguration:\fR profiles.\&toml; toolchain.\&toml and kernel.\&toml on their axes
-.PP
-\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
-.PP
 .SS resolve
 .PP
 \fBsysforge resolve\fR [\fIOPTIONS\fR] \fIPKG\fR
@@ -1536,7 +1637,7 @@ names and never replaces the system \fBmakepkg.\&conf\fR(5), so a derivative'\&s
 own repos and toolchain defaults are honoured.\&
 .PP
 .RE
-Run \fBsysforge doctor \-\-distro\fR to see which tier the running system falls in.\&
+Run \fBsysforge doctor system \-\-distro\fR to see which tier the running system falls in.\&
 Anything not Arch\-derived is out of scope.\&
 .PP
 .SH EXIT STATUS

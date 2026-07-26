@@ -60,6 +60,33 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Changed
 
+- **Breaking:** `sysforge doctor` is now two subcommands (2.6.1-F1).
+  `doctor system [AXIS…]` runs the system-state axes; `doctor pkg [TARGETS]
+  [AXIS…]` runs the package-scoped ones (`--abi`, `--rust`, `--integrity`).
+  **Bare `sysforge doctor` is unchanged** — it is `doctor system`, the 13-axis
+  full sweep, and remains the everyday entry point. Migration: every removed
+  flat flag prints its replacement and exits 2 (that hint table is itself
+  removed in 3.1.0); `doctor --all` becomes `doctor system` followed by
+  `doctor pkg --all`.
+
+  The split exists because a single `PKG` positional meant three different
+  things — a walk target, a scope qualifier for the `rust`/`integrity` axes,
+  and, via `--graphics`, a target *injector* — none of which `--help`
+  distinguished, so a user could not tell what a bare invocation covered or
+  which flags selected packages rather than checks. Two rules now apply at both
+  scopes: no axis flag runs that scope's defaults, and a broad target selector
+  (`--all`/`--repo`) suppresses the opt-in axes unless named explicitly.
+
+  The depends + ABI linkage walk is now the explicit `--abi` axis rather than an
+  implicit side effect of passing `PKG`, so no check is unrequested. `--graphics`
+  splits by scope: system-state probes under `doctor system`, the graphics-stack
+  target set under `doctor pkg`. Running both reproduces the old behaviour.
+
+  Two output changes follow from routing the walk through the shared renderer:
+  `--abi` findings render grouped per package (groups ordered worst-severity
+  first), and a **clean package no longer prints a per-package block** — the
+  axis clean message and the `Scanned N package(s)` line cover it.
+
 - **Standards row 23** (`os-release(5)`, enforced) records the distro-identity
   invariant adopted above (2.6.1-F2), guarded by the `check_standards`
   `distro_portability` group: identity is read from `/etc/os-release` (then
@@ -109,6 +136,15 @@ https://keepachangelog.com/en/1.1.0/
   Arch derivatives expected but unvalidated. `sysforge doctor --distro` reports
   which tier the running system is in.
 
+## Removed
+
+- The flat `doctor` flags (2.6.1-F1): the axis flags `--graphics --gfxperf
+  --hardware --distro --toolchain --rust --cache --pacman --state --boot
+  --restart --storage --services --audio --network --integrity`, the target
+  selectors `--all` and `--repo`, and the bare `PKG` positional no longer parse
+  at the top level. Each prints its
+  replacement and exits 2. The hint table is deleted in 3.1.0.
+
 ## Fixed
 
 - Source sync no longer warns `working tree has local modifications — keeping local
@@ -132,6 +168,19 @@ https://keepachangelog.com/en/1.1.0/
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would
   have blocked a release over it. Found by running the harness for real.
+
+- `sysforge doctor --rust PKG` no longer appears to ignore its argument
+  (2.6.1-F1). It never did — it skipped silently, in two places: a package that
+  could not be resolved to a PKGBUILD, and one with no `rust-toolchain.toml`,
+  each swallowed by a bare `continue`, so the output was identical to a bare
+  `--rust`. Both are now explicit, with severity by provenance: an
+  **explicitly named** target that cannot be resolved warns
+  (`rust-pin-unresolved`), and one that resolves with no pin reports
+  `rust-no-pin`. Targets pulled in by a broad selector collapse into a single
+  `rust-pin-survey` line carrying the counts, so `doctor pkg --all --rust`
+  summarises instead of emitting several hundred near-identical lines. The
+  invocation is now `sysforge doctor pkg PKG --rust`, which also no longer runs
+  an unrequested linkage walk.
 
 - Three shell defects the new `shellcheck` gate surfaced (2.6.1-F4): the release
   preflight's `cd "$REPO_ROOT"` was unguarded, so under `set -u` without `-e` a
