@@ -67,7 +67,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | `2.6.1-STD1` | Arch-derivative portability as an enforced standard (new row 23) | med | medium |
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large |
 | `2.6.1-F1` | doctor: restructure the flat flag surface into system / pkg subcommands | med | large |
-| `2.6.1-B2` | VM ISO path is hardcoded to archlinux.iso, so a second-distro VM cannot boot | low | small |
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium |
@@ -136,8 +135,9 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   Out of scope, and left to the VM tier: bootstrap/archinstall, kernel staging, graphics/DKMS
   probes, restart detection. Also add an `os-release` probe to `doctor` — there is currently no
   distro detection anywhere in `sysforge/` (which is *why* it ports cleanly, but leaves nowhere to
-  report the running distro or hang distro-conditional behaviour). Depends on nothing; `2.6.1-B2`
-  is the independent VM-tier half. **Blocks `2.6.1-STD1`**, which turns this tier's coverage into an
+  report the running distro or hang distro-conditional behaviour). Depends on nothing; the VM-tier
+  half (a distro-agnostic installer-ISO lookup in `tools/vm/boot.sh`) already shipped in the 2.6.1
+  cycle. **Blocks `2.6.1-STD1`**, which turns this tier's coverage into an
   enforced standards row plus a per-minor release gate — the container harness and the `os-release`
   probe delivered here are its hard prerequisites. *Priority: med · Effort: medium* — test infrastructure, no
   runtime behaviour change beyond the `doctor` probe. **Standards home on adoption:** none new.
@@ -170,28 +170,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   invariant, this file's header prose, `check_standards.py`'s docstring, and the covering tests.
   *Priority: low · Effort: medium* — readability only, and the guard rework is the real cost; the
   cheap half (tightening entry prose) is already done.
-
-### Bugs
-
-- **`2.6.1-B2` — VM ISO path is hardcoded to `archlinux.iso`, so a second-distro VM cannot boot.**
-  `tools/vm/boot.sh:48` pins `ISO_PATH="$VM_DIR/archlinux.iso"`. Everything else in the VM tooling is
-  already distro-agnostic — the qcow2, savevm/loadvm, the root-only SSH policy (`Makefile:237`), and
-  `build-pkg.sh`/`install-pkg.sh`/`smoke.sh`, which all drive an installed system over SSH — and
-  `boot.sh` already honours `SYSFORGE_VM_DIR`, so a parallel VM tree is otherwise possible today with
-  no code change:
-  ```
-  SYSFORGE_VM_DIR=~/.cache/sysforge-vm-cachy make vm-image vm-iso
-  ```
-  The hardcoded filename is the only blocker. Fix: accept an override (`VM_ISO_NAME`, or glob `*.iso`
-  in `$VM_DIR` and fail only on zero/multiple matches) and update the not-found message at
-  `boot.sh:207-210`, which names `archlinux.iso` in its remediation text. Note `tools/vm/README.md`
-  documents the ISO placement and needs the same edit. Deliberately *not* in scope: an unattended
-  second-distro install — `tools/vm/archinstall-config.json` drives the Arch install, and CachyOS
-  ships its own installer, so its VM is a hand-built one-time snapshot that no target can regenerate.
-  For that reason the second VM should stay operator-invoked for kernel/graphics work rather than
-  wired into a routine `make` target, where an unrebuildable snapshot would rot silently.
-  Unblocks the VM half of `2.6.1-F2`. *Priority: low · Effort: small* — test-infrastructure only, no
-  shipped-code change.
 
 ### Standards
 

@@ -4,7 +4,7 @@
 # Usage:
 #   ./tools/vm/boot.sh              # boot normally (changes persist)
 #   ./tools/vm/boot.sh --snapshot   # boot in ephemeral mode, discard changes on exit
-#   ./tools/vm/boot.sh --iso        # boot from Arch ISO for initial install
+#   ./tools/vm/boot.sh --iso        # boot from an installer ISO for initial install
 #   ./tools/vm/boot.sh --gui        # boot installed disk with a VNC display
 #   ./tools/vm/boot.sh --loadvm NAME  # restore named savevm snapshot at startup
 #                                     # (combine with --gui for a graphical restore)
@@ -23,8 +23,14 @@
 #
 # ISO mode (--iso) and GUI mode (--gui) open a VNC display:
 #   gvncviewer localhost
-# --iso is for the interactive Arch install; --gui boots the already-installed
+# --iso is for the interactive install; --gui boots the already-installed
 # disk with a display so a desktop environment is visible.
+#
+# --iso picks the ISO out of $VM_DIR: the single *.iso there, or whatever
+# SYSFORGE_VM_ISO names (bare filename relative to $VM_DIR, or an absolute
+# path) when the directory holds more than one. Nothing here assumes a distro,
+# so a parallel VM tree for a second one needs no code change:
+#   SYSFORGE_VM_DIR=~/.cache/sysforge-vm-other make vm-image vm-iso
 #
 # QEMU monitor (for loadvm, info snapshots, etc.):
 #   make vm-monitor               (wraps socat to ~/.local/share/sysforge-vm/qemu-monitor.sock)
@@ -45,7 +51,46 @@ DISK_IMAGE="$VM_DIR/arch-sysforge.qcow2"
 OVMF_VARS_TEMPLATE="/usr/share/edk2/x64/OVMF_VARS.4m.fd"
 OVMF_CODE="/usr/share/edk2/x64/OVMF_CODE.4m.fd"
 OVMF_VARS="$VM_DIR/OVMF_VARS.4m.qcow2"  # per-VM writable copy (qcow2 for snapshot support)
-ISO_PATH="$VM_DIR/archlinux.iso"
+ISO_PATH=""  # resolved lazily by resolve_iso(); only --iso needs it
+
+# Resolve the installer ISO for --iso mode into ISO_PATH, or exit 1 with
+# remediation. Deliberately lazy: every other boot mode ignores the ISO
+# entirely, so a VM dir with zero (or several) ISOs must not block a normal
+# boot. An explicit SYSFORGE_VM_ISO always wins; otherwise the directory must
+# hold exactly one *.iso — ambiguity is an error rather than a silent pick,
+# since booting the wrong installer yields a VM that only looks correct.
+resolve_iso() {
+    if [[ -n "${SYSFORGE_VM_ISO:-}" ]]; then
+        case "$SYSFORGE_VM_ISO" in
+            */*) ISO_PATH="$SYSFORGE_VM_ISO" ;;          # path, used as given
+            *)   ISO_PATH="$VM_DIR/$SYSFORGE_VM_ISO" ;;  # bare name, under $VM_DIR
+        esac
+        if [[ ! -f "$ISO_PATH" ]]; then
+            echo "Installer ISO not found: $ISO_PATH" >&2
+            echo "SYSFORGE_VM_ISO is set to '$SYSFORGE_VM_ISO' but no such file exists." >&2
+            exit 1
+        fi
+        return
+    fi
+
+    local isos=()
+    shopt -s nullglob
+    isos=("$VM_DIR"/*.iso)
+    shopt -u nullglob
+
+    case ${#isos[@]} in
+        1) ISO_PATH="${isos[0]}" ;;
+        0)  echo "No installer ISO found in $VM_DIR" >&2
+            echo "Download an ISO for the distro you want to install and place it there," >&2
+            echo "or set SYSFORGE_VM_DIR to a directory containing one." >&2
+            exit 1 ;;
+        *)  echo "Multiple ISOs found in $VM_DIR:" >&2
+            printf '  %s\n' "${isos[@]##*/}" >&2
+            echo "Pick one with SYSFORGE_VM_ISO=<filename> (or use a separate" >&2
+            echo "SYSFORGE_VM_DIR per distro, which also keeps their disk images apart)." >&2
+            exit 1 ;;
+    esac
+}
 
 CPU_CORES=4
 RAM_MB=4096
@@ -204,12 +249,7 @@ fi
 VNC_PORT=5900
 
 if [[ $USE_ISO -eq 1 ]]; then
-    if [[ ! -f "$ISO_PATH" ]]; then
-        echo "Arch ISO not found: $ISO_PATH"
-        echo "Download an Arch ISO and place it at $ISO_PATH"
-        echo "Or set SYSFORGE_VM_DIR to the directory containing archlinux.iso"
-        exit 1
-    fi
+    resolve_iso
     QEMU_ARGS+=(
         -cdrom "$ISO_PATH"
         -boot order=dc
@@ -224,7 +264,7 @@ if [[ $USE_ISO -eq 1 ]]; then
         -device "virtio-vga,edid=on,xres=1280,yres=720"
         -display "vnc=127.0.0.1:0"
     )
-    echo "Booting from Arch ISO: $ISO_PATH"
+    echo "Booting from installer ISO: $ISO_PATH"
     echo "  Console: gvncviewer localhost"
     echo "  Serial:  make vm-console"
     echo "  Stop:    make vm-stop (or 'quit' in make vm-monitor)"

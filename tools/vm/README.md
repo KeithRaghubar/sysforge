@@ -22,19 +22,38 @@ Nothing in this directory is committed — it holds large binary files.
 ~/.local/share/sysforge-vm/
     arch-sysforge.qcow2    # disk image (created by make vm-image)
     OVMF_VARS.4m.qcow2     # per-VM EFI vars (qcow2 for savevm support; created on first boot)
-    archlinux.iso          # Arch ISO (you provide this)
+    *.iso                  # installer ISO (you provide this; any filename)
     known_hosts            # VM-local SSH known hosts (avoids ~/.ssh/known_hosts pollution)
     qemu-monitor.sock      # QEMU monitor socket (created at runtime)
 ```
 
 ## First-time setup
 
-### 1. Place an Arch ISO
+### 1. Place an installer ISO
 
-Download the latest Arch ISO and put it at:
+Download the latest Arch ISO and drop it in the VM directory — the filename does
+not matter:
 ```
-~/.local/share/sysforge-vm/archlinux.iso
+~/.local/share/sysforge-vm/
 ```
+
+`make vm-iso` uses the single `*.iso` it finds there. If the directory holds more
+than one, name the one to boot:
+```bash
+SYSFORGE_VM_ISO=archlinux-2026.01.01-x86_64.iso make vm-iso
+```
+`SYSFORGE_VM_ISO` takes a bare filename (resolved under the VM directory) or an
+absolute path.
+
+Nothing in the VM tooling assumes a distro, so a parallel tree for a second one
+works with no code change — give it its own directory so the disk images and
+snapshots stay separate:
+```bash
+SYSFORGE_VM_DIR=~/.cache/sysforge-vm-other make vm-image vm-iso
+```
+Note that only the Arch install is automated: `tools/vm/archinstall-config.json`
+drives it. Another distro ships its own installer, so its VM is a hand-built
+one-time snapshot that no target can regenerate.
 
 ### 2. Create the disk image
 

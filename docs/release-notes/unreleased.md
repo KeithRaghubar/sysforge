@@ -15,6 +15,15 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Fixed
 
+- `make vm-iso` no longer requires the installer ISO to be named `archlinux.iso`
+  (2.6.1-B2). It now boots the single `*.iso` in the VM directory whatever its
+  filename, or the one named by the new `SYSFORGE_VM_ISO` variable (bare filename
+  or absolute path) when several are present; zero or ambiguous matches fail with
+  remediation instead of a stale path. Lookup happens only in `--iso` mode, so
+  other boot modes are unaffected. Combined with `SYSFORGE_VM_DIR`, a VM tree for a
+  second Arch-derived distro now needs no code change. Only the Arch install stays
+  automated — see `tools/vm/README.md`.
+
 - Source sync no longer warns `working tree has local modifications — keeping local
   PKGBUILD` for every `-git` package carrying makepkg's routine `pkgver()` auto-bump
   (2.6.1-B1). The warning contradicted the very next log line, which reset the same
