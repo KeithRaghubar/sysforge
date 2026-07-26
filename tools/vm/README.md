@@ -3,6 +3,13 @@
 QEMU/KVM test environment for validating the kernel stage and other pipeline
 work that requires a real system (mkinitcpio, bootloader, actual kernel boot).
 
+**Two test tiers.** This is the heavy one. The packaging and portability checks
+in `tools/smoke.sh` need none of the above, so they also run against a throwaway
+container in seconds, on Arch *and* on a derivative — see
+[`tools/container/README.md`](../container/README.md). Use the VM for what only a
+booted machine can answer: bootstrap/install, kernel staging, graphics/DKMS,
+restart detection.
+
 ## Dependencies
 
 ```bash
@@ -210,7 +217,10 @@ targets validate.
 #### Sanity checks after install
 
 Run `make vm-smoke` to assert all of the following automatically (exits non-zero
-if any fail), or check them by hand:
+if any fail), or check them by hand. It also asserts the portability invariants
+(distro identity, sync-repo discovery, `makepkg.conf` merge baseline, version
+compare) — the same checks the container tier runs, from the one copy in
+`tools/smoke.sh`:
 
 ```bash
 make vm-ssh

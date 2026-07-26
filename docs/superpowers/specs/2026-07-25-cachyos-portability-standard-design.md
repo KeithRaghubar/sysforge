@@ -1,6 +1,9 @@
 # Arch-derivative portability as an enforced standard (`2.6.1-STD1`)
 
-**Status:** design approved 2026-07-25 · **Blocked on:** `2.6.1-F2`
+**Status:** design approved 2026-07-25 · **Unblocked** — `2.6.1-F2` shipped 2026-07-25
+(container harness + `doctor --distro`). Sub-invariant 3 and standards row 23 landed with it,
+since the standards rule forbids a row lagging the behaviour that adopts its spec; what remains
+here is sub-invariants 1 and 2, the release gate, and the user-facing tier docs.
 **Roadmap ID:** `2.6.1-STD1` (allocated via `make next-id TYPE=STD`)
 
 ## Problem

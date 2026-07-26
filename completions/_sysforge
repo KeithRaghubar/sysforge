@@ -200,6 +200,7 @@ _sysforge_doctor() {
     '--graphics[expand to curated graphics stack (mesa/vulkan/libglvnd + driver)]' \
     '--gfxperf[advisory graphics-performance sweep (stutter/tearing contributors)]' \
     '--hardware[inventory PCI/USB devices + audit running kernel for missing drivers / boot-config gaps]' \
+    '--distro[report the running distribution and its support tier, from os-release(5)]' \
     '--toolchain[check configured toolchain (toolchain.toml) matches the installed LLVM]' \
     '--rust[report the Rust toolchain a build will use: rustup channel/distro rust, non-stable default (WARN), rust-toolchain.toml pin (opt-in; scope with PKG)]' \
     '--cache[compile-cache readiness: ccache/sccache installed, dir writable, size cap set]' \

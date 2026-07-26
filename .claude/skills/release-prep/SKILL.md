@@ -66,7 +66,7 @@ The preflight ends with a `VM packaging smoke` section. This is the only check t
 verifies the *installed* result rather than the repo sources — `check-shipped`
 validates that `etc/sysforge`, hooks, completions, and the manpage are correct **in
 the tree**, but nothing else confirms a real `pacman -U` lays them down where they
-belong. That is what `tools/vm/smoke.sh` asserts (3 hooks, both completions, the
+belong. That is what `tools/smoke.sh` asserts (3 hooks, both completions, the
 tmpfiles.d sentinel dir, `pacman -Qi` registration).
 
 Behaviour, and how to act on each outcome:

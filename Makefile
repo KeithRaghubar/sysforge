@@ -4,7 +4,8 @@
         sync-config \
         release-major release-minor release-patch release-resume \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-savevm vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
-        vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-smoke vm-test
+        vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-smoke vm-test \
+        container-build container-smoke container-smoke-cachyos container-shell container-clean
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
 VM_DISK = $(VM_DIR)/arch-sysforge.qcow2
@@ -369,6 +370,34 @@ vm-install-git:
 
 # Full round-trip; assumes the VM is already booted (e.g. `make vm-snapshot`).
 vm-smoke:
-	./tools/vm/smoke.sh
+	./tools/smoke.sh
 
 vm-test: vm-pkg-stable vm-install-stable vm-smoke
+
+# ---------------------------------------------------------------------------
+# Container tier (2.6.1-F2)
+#
+# The same checks as vm-smoke, over `podman exec` instead of SSH, against a
+# throwaway container — seconds instead of a boot + snapshot. Parameterized by
+# distro: the `cachyos` arm is the one that exercises repo/AUR shadowing, a
+# different makepkg.conf baseline, and bumped pkgrels on core packages.
+#
+# Needs a package built first (make vm-pkg-stable). Bootstrap, kernel staging,
+# graphics/DKMS and restart detection stay with the VM tier.
+# See tools/container/README.md.
+# ---------------------------------------------------------------------------
+
+container-build:
+	./tools/container/harness.sh build --distro=$(or $(DISTRO),arch)
+
+container-smoke:
+	./tools/container/harness.sh smoke --distro=$(or $(DISTRO),arch) --pkg-dir=$(VM_BUILD_DIR)
+
+container-smoke-cachyos:
+	./tools/container/harness.sh smoke --distro=cachyos --pkg-dir=$(VM_BUILD_DIR)
+
+container-shell:
+	./tools/container/harness.sh shell --distro=$(or $(DISTRO),arch) --pkg-dir=$(VM_BUILD_DIR)
+
+container-clean:
+	./tools/container/harness.sh clean --distro=$(or $(DISTRO),arch)

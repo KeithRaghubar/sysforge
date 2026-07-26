@@ -214,7 +214,7 @@ echo
 # ---------------------------------------------------------------------------
 # Section 8: VM packaging smoke (advisory; RUN_VM_SMOKE=0 skips)
 #
-# tools/vm/smoke.sh asserts the post-install packaging invariants a real pacman
+# tools/smoke.sh asserts the post-install packaging invariants a real pacman
 # install must produce (hooks, completions, tmpfiles.d sentinel dir, -Qi
 # registration). Nothing else in this preflight covers them: check-shipped
 # validates the *sources* in the repo, not that an installed package lays them
@@ -231,7 +231,7 @@ if [[ "${RUN_VM_SMOKE:-1}" != "1" ]]; then
 elif ! timeout 3 bash -c "</dev/tcp/localhost/10022" 2>/dev/null; then
     warn "VM not running — post-install packaging invariants unverified. Boot it with 'make vm-snapshot', then 'make vm-test' (build + install + smoke)."
 else
-    SMOKE_OUT="$(bash tools/vm/smoke.sh 2>&1)" && SMOKE_RC=0 || SMOKE_RC=$?
+    SMOKE_OUT="$(bash tools/smoke.sh 2>&1)" && SMOKE_RC=0 || SMOKE_RC=$?
     if [[ $SMOKE_RC -ne 0 ]]; then
         printf '%s\n' "$SMOKE_OUT" | sed 's/^/      /'
         fail "vm-smoke failed — an install is missing expected artifacts (see above)"

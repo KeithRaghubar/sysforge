@@ -220,7 +220,7 @@ def test_check_depends_pacman_t_all_satisfied():
 
 def _make_args(**overrides) -> SimpleNamespace:
     defaults = dict(
-        packages=[], graphics=False, hardware=False, toolchain=False,
+        packages=[], distro=False, graphics=False, hardware=False, toolchain=False,
         cache=False, gfxperf=False,
         pacman=False, state=False, boot=False, restart=False, storage=False, services=False,
         audio=False, network=False, integrity=False, all=False, repo=False,
@@ -1863,3 +1863,46 @@ def test_rust_flag_selects_only_rust_axis():
     # every other axis flag defaults False; only --rust set
     names = doctor._resolve_axis_names(args)
     assert names == ["rust"]
+
+
+# ---------------------------------------------------------------------------
+# distro axis (2.6.1-F2)
+# ---------------------------------------------------------------------------
+
+def test_distro_axis_registered_first():
+    axes = doctor._system_axes(None, args=None)
+    assert "distro" in axes
+    # Identity is context for every other axis, so it leads the report.
+    assert doctor._SYSTEM_AXIS_ORDER[0] == "distro"
+    assert doctor._AXIS_FLAGS["distro"] == "distro"
+
+
+def test_distro_axis_in_default_sweep():
+    # A pure file read: cheap enough for the bare sweep, so a derivative or a
+    # missing os-release is reported without the user knowing to ask.
+    assert "distro" in doctor._resolve_axis_names(_make_args())
+    assert "distro" in doctor._resolve_axis_names(_make_args(all=True))
+    assert "distro" not in doctor._OPT_IN_AXES
+
+
+def test_distro_flag_selects_only_distro_axis():
+    assert doctor._resolve_axis_names(_make_args(distro=True)) == ["distro"]
+
+
+def test_distro_producer_delegates_to_the_one_primitive(monkeypatch):
+    from sysforge.primitives import os_release
+    seen = {}
+    monkeypatch.setattr(os_release, "collect_distro_findings",
+                        lambda **kw: seen.update(kw) or [])
+    doctor._collect_distro_findings(explicit=True)
+    assert seen == {"explicit": True}
+
+
+def test_distro_axis_passes_explicit_only_when_flag_set(monkeypatch):
+    from sysforge.primitives import os_release
+    seen = []
+    monkeypatch.setattr(os_release, "collect_distro_findings",
+                        lambda **kw: seen.append(kw["explicit"]) or [])
+    doctor._system_axes(None, _make_args(distro=True))["distro"].run()
+    doctor._system_axes(None, _make_args())["distro"].run()
+    assert seen == [True, False]

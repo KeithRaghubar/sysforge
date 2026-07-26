@@ -13,6 +13,7 @@ path = [
     "etc/**",
     "tools/*.sh",
     "tools/vm/**",
+    "tools/container/**",
     "**.md",
     "**.toml",
     "**.lock",

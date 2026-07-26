@@ -1,0 +1,27 @@
+# Container tier for the packaging / portability smoke checks (2.6.1-F2).
+#
+# One Containerfile, parameterized by base image, because every distro this tier
+# targets is pacman-based by definition — an Arch derivative that needed
+# different prep here would already be out of scope. The base image is the whole
+# difference between flavors: it carries the repo set, the makepkg.conf defaults
+# and the os-release identity being tested, so those are never synthesized here.
+# A hand-built /etc/os-release or hand-pasted repo stanzas would make the tier
+# assert its own fixture instead of the distro.
+#
+# Built by tools/container/harness.sh; see tools/container/README.md.
+ARG BASE_IMAGE=docker.io/library/archlinux:base-devel
+FROM ${BASE_IMAGE}
+
+# Refresh the sync DBs and install what an installed sysforge needs to run
+# (python + pyalpm) plus what the checks call (pacman's own vercmp is in
+# pacman-contrib-free core pacman; awk/sed/paste come from base). Kept minimal:
+# the tier is about the package's post-install invariants, not about building.
+#
+# -Syu, not -Sy: a partial upgrade would leave python and libalpm skewed against
+# the base image's libraries, which fails in ways that look like sysforge bugs.
+RUN pacman -Syu --noconfirm --needed python pyalpm \
+    && pacman -Scc --noconfirm
+
+# The smoke checks are driven from the host over `podman exec`, so the container
+# only has to stay alive. No init, no systemd: nothing here needs a service.
+CMD ["sleep", "infinity"]

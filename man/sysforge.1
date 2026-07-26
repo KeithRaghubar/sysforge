@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-07\-25"
+.TH "sysforge" "1" "2026\-07\-26"
 .PP
 .PP
 .SH NAME
@@ -446,6 +446,11 @@ Advisory graphics\-performance sweep (stutter/tearing/frame\-drop contributors: 
 \fB\-\-hardware\fR
 .RS 4
 Run system\-state hardware probes: inventory all PCI/USB devices, flag any present device with no kernel driver bound, and audit the running kernel'\&s .\&config for boot\-critical / device\-driver gaps (the missing\-driver class of bug).\& Usable on its own (no PKG).\&
+.PP
+.RE
+\fB\-\-distro\fR
+.RS 4
+Report the running distribution and its support tier, read from os\-release(5): Arch is the primary base, an Arch\-derived distro (ID_LIKE=arch) has its packaging/dependency/makepkg.\&conf invariants validated but not the bootstrap/kernel/graphics checks, and anything else warns.\& Read\-only, no subprocess; on plain Arch the bare sweep stays silent, this flag always prints the identity.\& Usable on its own (no PKG).\&
 .PP
 .RE
 \fB\-\-toolchain\fR

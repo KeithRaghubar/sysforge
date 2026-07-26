@@ -660,6 +660,55 @@ def check_privilege_seam(repo: Path) -> list[Finding]:
 
 
 # ===========================================================================
+# Group: distro_identity  (os-release(5) single home — STD row 23)
+# ===========================================================================
+
+# The one module permitted to read os-release, and the identity sources that are
+# forbidden outright. Distro identity read anywhere else — or inferred from
+# pacman.conf, /etc/arch-release or a hostname — is what breaks on an Arch
+# derivative, silently and only on someone else's machine.
+_OS_RELEASE_HOME = "sysforge/primitives/os_release.py"
+_OS_RELEASE_PATHS = ("/etc/os-release", "/usr/lib/os-release")
+# Legacy/heuristic identity markers. /etc/arch-release is the classic one: it is
+# present on derivatives too, so it identifies nothing.
+_FORBIDDEN_IDENTITY_MARKERS = ("/etc/arch-release", "/etc/lsb-release")
+
+
+def check_distro_identity(repo: Path) -> list[Finding]:
+    """Distro identity comes from os-release(5), through one primitive."""
+    findings: list[Finding] = []
+    for py in sorted((repo / "sysforge").rglob("*.py")):
+        rel = py.relative_to(repo).as_posix()
+        src = py.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(src, filename=rel)
+        except SyntaxError:
+            continue  # fail-safe: unparseable files skipped, never flagged
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            val = node.value
+            if val in _OS_RELEASE_PATHS and rel != _OS_RELEASE_HOME:
+                findings.append(Finding(
+                    "distro_identity", "error", f"{rel}:{node.lineno}",
+                    f"os-release read outside {_OS_RELEASE_HOME} — distro "
+                    "identity has one home (STD row 23)",
+                ))
+            elif val in _FORBIDDEN_IDENTITY_MARKERS:
+                findings.append(Finding(
+                    "distro_identity", "error", f"{rel}:{node.lineno}",
+                    f"{val} is not a distro identity (an Arch derivative ships "
+                    "it too) — use primitives/os_release.py (STD row 23)",
+                ))
+    if not (repo / _OS_RELEASE_HOME).is_file():
+        findings.append(Finding(
+            "distro_identity", "error", _OS_RELEASE_HOME,
+            "the os-release home is missing (STD row 23)",
+        ))
+    return findings
+
+
+# ===========================================================================
 # Driver
 # ===========================================================================
 
@@ -672,6 +721,7 @@ GROUPS = {
     "roadmap_ids":    check_roadmap_ids,
     "run_seam":       check_run_seam,
     "privilege_seam": check_privilege_seam,
+    "distro_identity": check_distro_identity,
 }
 
 

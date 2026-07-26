@@ -666,6 +666,15 @@ def _collect_gfxperf_findings(config) -> list[diag.Finding]:
     return diag.adapt_many("gfxperf", check_gfxperf(config, gpu_vendors=gpu_vendors))
 
 
+def _collect_distro_findings(*, explicit: bool = False) -> list[diag.Finding]:
+    """Report the running distribution and its support tier, read from
+    ``os-release(5)``. Read-only, no subprocess. ``primitives/os_release.py`` is
+    the *only* home for distro identity — never sniff ``pacman.conf``,
+    ``/etc/arch-release``, or the hostname."""
+    from sysforge.primitives import os_release
+    return os_release.collect_distro_findings(explicit=explicit)
+
+
 def _collect_pacman_findings() -> list[diag.Finding]:
     """Local pacman-db consistency, stale lock, unmerged .pacnew/.pacsave,
     orphans, plus sysforge libalpm-hook drift. Read-only — never syncs or
@@ -851,9 +860,9 @@ def _collect_integrity_findings(args) -> list[diag.Finding]:
 
 # Canonical order every KNOWN axis renders in (explicit flags select from here).
 _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
-    "toolchain", "rust", "cache", "hardware", "graphics", "gfxperf", "pacman",
-    "state", "boot", "restart", "storage", "services", "audio", "network",
-    "integrity",
+    "distro", "toolchain", "rust", "cache", "hardware", "graphics", "gfxperf",
+    "pacman", "state", "boot", "restart", "storage", "services", "audio",
+    "network", "integrity",
 )
 
 # Axes excluded from the default/`--all` sweep — advisory, opt-in via their flag.
@@ -862,6 +871,7 @@ _OPT_IN_AXES: frozenset[str] = frozenset({"gfxperf", "integrity", "rust"})
 # CLI flag attribute → axis name. ``--graphics`` is also a package-walk trigger
 # (the graphics-stack closure); both effects fire when it is set.
 _AXIS_FLAGS: dict[str, str] = {
+    "distro": "distro",
     "toolchain": "toolchain",
     "rust": "rust",
     "cache": "cache",
@@ -884,6 +894,12 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
     """Build the axis registry. Producer lookups go through module globals so
     tests can monkeypatch a ``_collect_*`` function."""
     return {
+        "distro": diag.Axis(
+            "distro", "distribution identity",
+            # `--distro` also means "tell me what I'm on", so the explicit flag
+            # turns the identity line on even when there is nothing to warn about.
+            lambda: _collect_distro_findings(explicit=getattr(args, "distro", False)),
+            clean_msg="running the primary supported base (Arch Linux)"),
         "toolchain": diag.Axis(
             "toolchain", "toolchain checks",
             lambda: _collect_toolchain_findings(config),

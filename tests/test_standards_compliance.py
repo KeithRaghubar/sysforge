@@ -433,3 +433,62 @@ def test_qkk_mtree_contract_backup_and_missing_classification(monkeypatch):
     findings = {f.check_id: f for f in pkgfiles_probe.collect_integrity_findings()}
     assert findings["integrity_backup_edited"].severity == diag.SEV_INFO
     assert findings["integrity_missing"].severity == diag.SEV_ERROR
+
+
+# ---------------------------------------------------------------------------
+# distro_identity group — os-release(5) single home (STD row 23)
+# ---------------------------------------------------------------------------
+
+def _repo_with_os_release_home(tmp_path):
+    """A synthetic repo whose os-release home exists, so only the module under
+    test can produce a finding."""
+    home = tmp_path / "sysforge" / "primitives" / "os_release.py"
+    home.parent.mkdir(parents=True)
+    home.write_text('P = "/etc/os-release"\nQ = "/usr/lib/os-release"\n',
+                    encoding="utf-8")
+    return tmp_path
+
+
+def test_distro_identity_allows_the_one_home(tmp_path):
+    repo = _repo_with_os_release_home(tmp_path)
+    mod = _load_check_standards()
+    assert mod.check_distro_identity(repo) == []
+
+
+def test_distro_identity_flags_os_release_read_elsewhere(tmp_path):
+    repo = _repo_with_os_release_home(tmp_path)
+    (repo / "sysforge" / "sneaky.py").write_text(
+        'from pathlib import Path\n'
+        'ID = Path("/etc/os-release").read_text()\n',
+        encoding="utf-8",
+    )
+    mod = _load_check_standards()
+    findings = mod.check_distro_identity(repo)
+    assert any("sneaky.py" in f.location for f in findings), findings
+
+
+def test_distro_identity_flags_arch_release_marker(tmp_path):
+    """/etc/arch-release identifies nothing — derivatives ship it too."""
+    repo = _repo_with_os_release_home(tmp_path)
+    (repo / "sysforge" / "sniff.py").write_text(
+        'from pathlib import Path\n'
+        'IS_ARCH = Path("/etc/arch-release").exists()\n',
+        encoding="utf-8",
+    )
+    mod = _load_check_standards()
+    findings = mod.check_distro_identity(repo)
+    assert any("sniff.py" in f.location for f in findings), findings
+
+
+def test_distro_identity_flags_missing_home(tmp_path):
+    (tmp_path / "sysforge").mkdir()
+    mod = _load_check_standards()
+    findings = mod.check_distro_identity(tmp_path)
+    assert any("os_release.py" in f.location for f in findings), findings
+
+
+def test_distro_identity_clean_on_the_real_tree():
+    """The shipped tree conforms: no os-release read outside the one primitive."""
+    from pathlib import Path
+    mod = _load_check_standards()
+    assert mod.check_distro_identity(Path(".")) == []

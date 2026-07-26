@@ -22,6 +22,7 @@ make check-design    # guard: DESIGN.md in sync with sources
 make check-shipped   # guard: etc/sysforge, PKGBUILD*, hooks, completions, manpage parity
 make check-standards
 make sync-config     # adopt new shipped defaults into untracked live config (add-only)
+make container-smoke[-cachyos]  # packaging + portability checks in a container (needs make vm-pkg-stable first)
 make release-{major,minor,patch}
 ```
 

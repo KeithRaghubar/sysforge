@@ -534,6 +534,14 @@ def _add_doctor_parser(sub):
              "flag any present device with no kernel driver bound, and audit the "
              "running kernel's .config for boot-critical / device-driver gaps "
              "(the missing-driver class of bug). Usable on its own (no PKG).")
+    p.add_argument("--distro", action="store_true",
+        help="Report the running distribution and its support tier, read from "
+             "os-release(5): Arch is the primary base, an Arch-derived distro "
+             "(ID_LIKE=arch) has its packaging/dependency/makepkg.conf "
+             "invariants validated but not the bootstrap/kernel/graphics "
+             "checks, and anything else warns. Read-only, no subprocess; on "
+             "plain Arch the bare sweep stays silent, this flag always prints "
+             "the identity. Usable on its own (no PKG).")
     p.add_argument("--toolchain", action="store_true",
         help="Check that the configured toolchain matches what's installed: when "
              "toolchain.toml requests a custom LLVM toolchain (compiler = llvm, "
