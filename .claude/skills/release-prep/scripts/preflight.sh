@@ -8,7 +8,9 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-cd "$REPO_ROOT"
+# `|| exit`: with set -u but no -e, a failed cd would silently run every check
+# against the caller's directory and report a green preflight for the wrong tree.
+cd "$REPO_ROOT" || exit 1
 
 PASS=0
 WARN=0
@@ -109,7 +111,18 @@ if command -v ruff >/dev/null 2>&1; then
         fail "ruff check failed (run: make lint)"
     fi
 else
-    warn "ruff not on PATH — install with: sudo pacman -S ruff"
+    warn "ruff not on PATH — install with: make dev-deps-core"
+fi
+if command -v shellcheck >/dev/null 2>&1; then
+    # The shell tooling IS the release path (release.sh, build-pkg.sh, smoke.sh),
+    # so a quoting bug here fails a release or, worse, verifies the wrong tree.
+    if make -s lint-sh >/dev/null 2>&1; then
+        pass "shellcheck clean (all tracked scripts + bash completion)"
+    else
+        fail "shellcheck failed (run: make lint-sh)"
+    fi
+else
+    warn "shellcheck not on PATH — install with: make dev-deps-core"
 fi
 echo
 

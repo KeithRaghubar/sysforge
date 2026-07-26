@@ -1,5 +1,6 @@
 .PHONY: all dev venv build install dev-install dev-uninstall clean distclean test test-x lint coverage coverage-ratchet coverage-ratchet-update man \
         dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-list \
+        lint-py lint-sh \
         check-shipped check-personal check-standards next-id design check-design pre-release audit \
         roadmap-table check-roadmap-table \
         sync-config \
@@ -24,8 +25,9 @@
 # would duplicate the overlays while claiming to be the source of truth.
 # ---------------------------------------------------------------------------
 
-# Suite, lint, manpage, editable install. `make test` / `lint` / `man` / `dev`.
-DEV_DEPS_CORE      = python-pytest ruff scdoc uv git base-devel
+# Suite, lint (Python + shell), manpage, editable install. `make test` / `lint`
+# / `man` / `dev`.
+DEV_DEPS_CORE      = python-pytest ruff shellcheck scdoc uv git base-devel
 # makechrootpkg — clean-chroot package builds: vm-pkg-*, tools/release.sh.
 DEV_DEPS_PKG       = devtools
 # QEMU test VM: vm-boot, vm-snapshot, vm-console, vm-monitor (socat), …
@@ -122,8 +124,28 @@ test:
 test-x:
 	pytest -x $(ARGS)
 
-lint:
+# Both linters. Shell is not a second-class language here: 12 of the repo's
+# scripts are the test/release tooling, where a quoting bug fails a release or
+# silently tests the wrong tree.
+lint: lint-py lint-sh
+
+lint-py:
 	ruff check sysforge/
+
+# Every tracked shell script plus the bash completion (which has no shebang, so
+# it declares `shellcheck shell=bash` inline). Run at shellcheck's default
+# severity — including info/style — because the tree is clean at that level and
+# the cost of holding it there is one justified `disable=` comment per genuine
+# exception, which is cheaper than the drift a laxer gate accumulates.
+# `wildcard` filters the git list down to paths that exist on disk: a tracked
+# script deleted but not yet committed would otherwise make shellcheck abort on
+# a missing file instead of linting the rest.
+LINT_SH_FILES = $(wildcard $(shell git ls-files '*.sh') completions/sysforge.bash)
+
+lint-sh:
+	@command -v shellcheck >/dev/null 2>&1 \
+	    || { echo "shellcheck not found — install with: make dev-deps-core"; exit 1; }
+	shellcheck $(LINT_SH_FILES)
 
 # Supply-chain audit (2.3.0-F3). The runtime dep surface is near-empty by
 # design (tomli backport + optional pyalpm), but the dev/build toolchain

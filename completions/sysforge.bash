@@ -1,5 +1,12 @@
 # bash completion for sysforge
 #
+# shellcheck shell=bash
+# shellcheck disable=SC2207
+# No shebang (this file is sourced, never executed), so the shell is declared
+# above. SC2207 is disabled file-wide: `COMPREPLY=( $(compgen …) )` is the
+# documented bash-completion idiom, and the suggested mapfile/read -a
+# alternatives do not preserve compgen's word splitting on the candidates.
+#
 # Mirrors completions/_sysforge (zsh). Source of truth for the CLI surface is
 # sysforge/cli.py.
 #

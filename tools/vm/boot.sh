@@ -44,7 +44,6 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VM_DIR="${SYSFORGE_VM_DIR:-$HOME/.local/share/sysforge-vm}"
 
 DISK_IMAGE="$VM_DIR/arch-sysforge.qcow2"

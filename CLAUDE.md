@@ -17,7 +17,7 @@ Repo: <https://github.com/KeithRaghubar/sysforge.git> — Python, TOML config.
 ```bash
 make dev-deps        # all dev system deps (dev-deps-list shows per-tier state)
 make test / test-x   # full suite / stop on first failure
-make lint            # ruff
+make lint            # ruff + shellcheck (lint-py / lint-sh individually)
 make design          # regenerate DESIGN.md after editing docs/design/*
 make check-design    # guard: DESIGN.md in sync with sources
 make check-shipped   # guard: etc/sysforge, PKGBUILD*, hooks, completions, manpage parity

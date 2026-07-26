@@ -48,6 +48,16 @@ https://keepachangelog.com/en/1.1.0/
   `reuse`, `pip-audit`, `pytest-cov` and `tomlkit` are resolved per-invocation
   by `uv run --with`, which is also why there is no `[dependency-groups] dev`.
 
+- `make lint` now lints shell as well as Python (2.6.1-F4). `shellcheck` covers
+  every tracked `*.sh` plus the bash completion, and is wired into the release
+  preflight's lint section with the same policy as `ruff` — warn if the tool is
+  absent, fail on findings. `make lint-py` / `make lint-sh` run one side alone.
+  The repo's shell scripts *are* its test and release tooling, and nothing had
+  ever checked them; the three findings this surfaced are fixed below.
+  Run at shellcheck's default severity (info and style included), so a genuine
+  exception takes an inline `disable=` with a justifying comment rather than a
+  laxer global threshold.
+
 ## Changed
 
 - **Standards row 23** (`os-release(5)`, enforced) records the distro-identity
@@ -69,6 +79,14 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Fixed
 
+- Source sync no longer warns `working tree has local modifications — keeping local
+  PKGBUILD` for every `-git` package carrying makepkg's routine `pkgver()` auto-bump
+  (2.6.1-B1). The warning contradicted the very next log line, which reset the same
+  tree to upstream after re-asking the question VCS-aware; it is now an `INFO` for
+  VCS checkouts whose only working-tree change is the generated `pkgver`/`.SRCINFO`
+  churn. Deliberate edits, and genuine upstream divergence, still warn as before.
+  The sync outcome is unchanged.
+
 - `make vm-iso` no longer requires the installer ISO to be named `archlinux.iso`
   (2.6.1-B2). It now boots the single `*.iso` in the VM directory whatever its
   filename, or the one named by the new `SYSFORGE_VM_ISO` variable (bare filename
@@ -78,10 +96,9 @@ https://keepachangelog.com/en/1.1.0/
   second Arch-derived distro now needs no code change. Only the Arch install stays
   automated — see `tools/vm/README.md`.
 
-- Source sync no longer warns `working tree has local modifications — keeping local
-  PKGBUILD` for every `-git` package carrying makepkg's routine `pkgver()` auto-bump
-  (2.6.1-B1). The warning contradicted the very next log line, which reset the same
-  tree to upstream after re-asking the question VCS-aware; it is now an `INFO` for
-  VCS checkouts whose only working-tree change is the generated `pkgver`/`.SRCINFO`
-  churn. Deliberate edits, and genuine upstream divergence, still warn as before.
-  The sync outcome is unchanged.
+- Three shell defects the new `shellcheck` gate surfaced (2.6.1-F4): the release
+  preflight's `cd "$REPO_ROOT"` was unguarded, so under `set -u` without `-e` a
+  failed `cd` would have run every check against the caller's directory and
+  reported a green preflight for the wrong tree; `tools/vm/boot.sh` carried a
+  dead `SCRIPT_DIR` assignment; and `tools/vm/build-pkg.sh`'s `ls` summary now
+  documents why it is not the `find` the linter suggests.

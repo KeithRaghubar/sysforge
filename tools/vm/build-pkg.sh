@@ -118,4 +118,9 @@ makechrootpkg -c -u -r "$CHROOT"
 
 echo
 echo "Built packages in $OUT:"
+# shellcheck disable=SC2012
+# `ls -lh` on purpose: this is a human-readable summary of what was just
+# built (size + mtime, aligned), not machine parsing — nothing downstream
+# consumes it, and the glob is fixed. install-pkg.sh, which DOES parse the
+# result, uses find -printf.
 ls -lh "$OUT"/*.pkg.tar.zst 2>/dev/null | tail -5

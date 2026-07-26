@@ -34,6 +34,7 @@ Run **before** `make release-major`, `make release-minor`, or `make release-patc
 | `README.md version marker mismatch` | Edit the `<!--version-->vX.Y.Z<!--/version-->` token to match pyproject.toml |
 | `DESIGN.md version marker mismatch` | Same — there are 3 markers in DESIGN.md; sync all three |
 | `ruff check failed` | Run `make lint` and fix the reported issues, or `ruff check --fix sysforge/` for autofixable ones |
+| `shellcheck failed` | Run `make lint-sh` and fix the reported issues; a genuine exception takes an inline `# shellcheck disable=SC…` **with a justifying comment** (see `tools/vm/build-pkg.sh`) |
 | `completions missing CLI verb '<verb>'` | Add `<verb>) _sysforge_<verb> ;;` to the case in `completions/_sysforge` and define `_sysforge_<verb>()` |
 
 ## Prerequisite: release notes
