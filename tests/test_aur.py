@@ -1613,6 +1613,105 @@ def test_git_fetch_and_compare_unshallows_shallow_repo(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# git_fetch_and_compare — is_vcs warning suppression (2.6.1-B1)
+#
+# These use real git, because the bug lives in how the pkgver()/.SRCINFO diff
+# shape is classified, which a stubbed subprocess cannot reproduce.
+#
+# Note the status stays ``diverged`` in every case: the ff-merge gate is
+# deliberately NOT relaxed. A dirty tree makes ``git merge --ff-only`` abort
+# whenever upstream's commit also touched PKGBUILD (the common AUR case), which
+# would return ``failed`` — a scheduler blocker. ``is_vcs`` only decides whether
+# the operator is told they have local modifications.
+# ---------------------------------------------------------------------------
+
+def _advance_vcs_upstream(tmp_path: Path, *, touch_pkgbuild: bool = True) -> None:
+    """Push one new upstream commit to the repo seeded by _seed_vcs_pkgbuild.
+
+    ``touch_pkgbuild`` mirrors the common AUR case where the upstream commit
+    edits PKGBUILD itself; the alternative edits a sibling file only.
+    """
+    seed = tmp_path / "seed"
+    if touch_pkgbuild:
+        p = seed / "PKGBUILD"
+        p.write_text(p.read_text() + "makedepends=('git')\n")
+    else:
+        (seed / "fix.patch").write_text("upstream patch\n")
+        _git("add", "fix.patch", cwd=seed)
+    _git("commit", "-am", "upstream advance", cwd=seed)
+    _git("push", "origin", "main", cwd=seed)
+
+
+def _warn_msgs(mock_warn) -> list[str]:
+    """Logger.warn(msg) forwards to log.warn(tag, msg) → args[1]."""
+    return [c.args[1] for c in mock_warn.call_args_list]
+
+
+def test_git_fetch_and_compare_vcs_pkgver_bump_does_not_warn(tmp_path):
+    """B1: a -git tree carrying only makepkg's pkgver() auto-bump is not
+    operator work, so is_vcs=True must not claim "local modifications"."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    _advance_vcs_upstream(tmp_path)
+    _bump_pkgver_line(local, new_value="1.2.3.r5.gabc1234")
+
+    with patch("sysforge.log.warn") as mock_warn:
+        outcome = git_fetch_and_compare(local, is_vcs=True)
+
+    # Status is unchanged — the caller's VCS-aware reset lands FETCH_HEAD.
+    assert outcome.status == "diverged"
+    assert not any("local modifications" in m for m in _warn_msgs(mock_warn))
+
+
+def test_git_fetch_and_compare_non_vcs_pkgver_bump_still_warns(tmp_path):
+    """Back-compat: the same tree without is_vcs keeps the existing warning."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    _advance_vcs_upstream(tmp_path)
+    _bump_pkgver_line(local, new_value="1.2.3.r5.gabc1234")
+
+    with patch("sysforge.log.warn") as mock_warn:
+        outcome = git_fetch_and_compare(local)
+
+    assert outcome.status == "diverged"
+    assert any("local modifications" in m for m in _warn_msgs(mock_warn))
+
+
+def test_git_fetch_and_compare_vcs_real_edit_still_warns(tmp_path):
+    """is_vcs must not blanket-silence: a deliberate edit still warns."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    _advance_vcs_upstream(tmp_path)
+    text = (local / "PKGBUILD").read_text()
+    (local / "PKGBUILD").write_text(text + "options=(!strip)\n")
+
+    with patch("sysforge.log.warn") as mock_warn:
+        outcome = git_fetch_and_compare(local, is_vcs=True)
+
+    assert outcome.status == "diverged"
+    assert any("local modifications" in m for m in _warn_msgs(mock_warn))
+
+
+def test_git_fetch_and_compare_vcs_true_divergence_still_warns(tmp_path):
+    """is_vcs only governs the dirty-tree message; a genuinely non-ancestor
+    HEAD keeps its "divergent:" warning regardless."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    # Local commits its own history, then upstream rewrites — HEAD is no
+    # longer an ancestor of FETCH_HEAD.
+    (local / "local-only.txt").write_text("local\n")
+    _git("add", "local-only.txt", cwd=local)
+    _git("commit", "-m", "local work", cwd=local)
+    seed = tmp_path / "seed"
+    p = seed / "PKGBUILD"
+    p.write_text(p.read_text() + "# rewritten\n")
+    _git("commit", "--amend", "-am", "upstream force-push", cwd=seed)
+    _git("push", "--force", "origin", "main", cwd=seed)
+
+    with patch("sysforge.log.warn") as mock_warn:
+        outcome = git_fetch_and_compare(local, is_vcs=True)
+
+    assert outcome.status == "diverged"
+    assert any("divergent:" in m for m in _warn_msgs(mock_warn))
+
+
+# ---------------------------------------------------------------------------
 # is_transient_git_error / is_rate_limit_error
 # ---------------------------------------------------------------------------
 

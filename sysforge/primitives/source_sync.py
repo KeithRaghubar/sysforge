@@ -104,8 +104,18 @@ STATUS_PURGE_REFUSED = "purge_refused"
 _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
 
 
-def _is_vcs(pkgbase: str) -> bool:
+def is_vcs_pkgbase(pkgbase: str) -> bool:
+    """True for VCS packaging repos (``-git``/``-svn``/``-hg``/``-bzr``).
+
+    Public because the VCS-aware dirty-tree question is asked outside this
+    module too (``llvm_state``); ``_VCS_SUFFIXES`` stays the single home for
+    the suffix list.
+    """
     return any(pkgbase.endswith(s) for s in _VCS_SUFFIXES)
+
+
+# Internal alias — the in-module call sites read better short.
+_is_vcs = is_vcs_pkgbase
 
 
 @dataclass
@@ -447,6 +457,7 @@ class SourceSyncScheduler:
     ) -> SyncResult:
         outcome: GitFetchOutcome = git_fetch_and_compare(
             pkgbuild_dir, timeout=self.fetch_timeout, limiter=self.limiter,
+            is_vcs=_is_vcs(pkgbase),
         )
 
         repo_stable = source == "repo" and self.repo_track == "stable"

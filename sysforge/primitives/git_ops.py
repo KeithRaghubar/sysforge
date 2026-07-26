@@ -65,6 +65,7 @@ def git_fetch_and_compare(
     *,
     timeout: int | None = 30,
     limiter=None,
+    is_vcs: bool = False,
 ) -> GitFetchOutcome:
     """Shallow-fetch upstream and report the outcome without destructive ops.
 
@@ -76,6 +77,12 @@ def git_fetch_and_compare(
     When ``limiter`` is provided, the git invocation goes through
     ``rate_limit.run_throttled_git`` so the Retry-After window is enforced
     across RPC and git paths.
+
+    ``is_vcs`` marks a VCS packaging repo (``-git``/``-svn``/``-hg``/``-bzr``)
+    and affects **only the operator-facing message** on a dirty tree: when the
+    working-tree diff is nothing but makepkg's ``pkgver()`` auto-bump, saying
+    "local modifications" is a false positive. It deliberately does NOT relax
+    the fast-forward gate — see the comment at the dirty branch below.
     """
     timeout = timeout or None  # 0 → disable
 
@@ -172,12 +179,28 @@ def git_fetch_and_compare(
         capture_output=True,
     )
     if ancestor.returncode != 0 or git_is_dirty(pkgbuild_dir):
-        err = (
-            f"divergent: HEAD {head_before[:10]} vs FETCH_HEAD {fetch_head[:10]}"
-            if ancestor.returncode != 0
-            else "working tree has local modifications"
-        )
-        _log.warn(f"{pkgbuild_dir.name}: {err} — keeping local PKGBUILD")
+        if ancestor.returncode != 0:
+            err = f"divergent: HEAD {head_before[:10]} vs FETCH_HEAD {fetch_head[:10]}"
+            _log.warn(f"{pkgbuild_dir.name}: {err} — keeping local PKGBUILD")
+        elif is_vcs and not git_is_dirty(pkgbuild_dir, is_vcs=True):
+            # 2.6.1-B1: the only working-tree change is makepkg's pkgver()
+            # auto-bump (plus the regenerated .SRCINFO) — a build artifact, not
+            # operator work. Warning that the operator has "local
+            # modifications" is a false positive, and it contradicts the
+            # caller: SourceSync re-asks this question VCS-aware, gets clean,
+            # and hard-resets to FETCH_HEAD.
+            #
+            # The ff-merge is still skipped. Relaxing the gate above would let
+            # `git merge --ff-only` run against a dirty tree, which aborts
+            # ("local changes would be overwritten") whenever the upstream
+            # commit also touched PKGBUILD — the common AUR case — returning
+            # `failed`, a scheduler blocker. `diverged` is the outcome the
+            # caller's reset already heals correctly.
+            err = "working tree carries only VCS pkgver churn"
+            _log.info(f"{pkgbuild_dir.name}: {err} — deferring to caller reset")
+        else:
+            err = "working tree has local modifications"
+            _log.warn(f"{pkgbuild_dir.name}: {err} — keeping local PKGBUILD")
         return GitFetchOutcome(
             status="diverged", head_before=head_before, head_after=fetch_head,
             error=err,

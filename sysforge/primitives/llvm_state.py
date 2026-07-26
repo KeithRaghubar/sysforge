@@ -324,7 +324,7 @@ def collect_llvm_state(
     )
     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
     from sysforge.primitives.profile import get_build_mode, match_rules
-    from sysforge.primitives.source_sync import get_scheduler
+    from sysforge.primitives.source_sync import get_scheduler, is_vcs_pkgbase
     from sysforge.primitives.version import format_version
 
     foreign = get_foreign_packages()
@@ -389,7 +389,12 @@ def collect_llvm_state(
                     pkgbuild_dir, cache_all.get(name),
                 )
             else:
-                outcome = git_fetch_and_compare(pkgbuild_dir)
+                # is_vcs suppresses the false "local modifications" warning on
+                # an ``llvm-git``-style tree carrying only a pkgver() bump
+                # (2.6.1-B1); the reported divergence itself is unchanged.
+                outcome = git_fetch_and_compare(
+                    pkgbuild_dir, is_vcs=is_vcs_pkgbase(name),
+                )
                 divergence = _divergence_from_outcome(outcome)
                 # For ``diverged``, head_after is the upstream FETCH_HEAD —
                 # the local HEAD is in head_before. For other statuses

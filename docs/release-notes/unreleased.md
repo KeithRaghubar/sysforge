@@ -12,3 +12,13 @@ accumulator. Run the release-notes skill first to reconcile/lint the entries and
 finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
+
+## Fixed
+
+- Source sync no longer warns `working tree has local modifications — keeping local
+  PKGBUILD` for every `-git` package carrying makepkg's routine `pkgver()` auto-bump
+  (2.6.1-B1). The warning contradicted the very next log line, which reset the same
+  tree to upstream after re-asking the question VCS-aware; it is now an `INFO` for
+  VCS checkouts whose only working-tree change is the generated `pkgver`/`.SRCINFO`
+  churn. Deliberate edits, and genuine upstream divergence, still warn as before.
+  The sync outcome is unchanged.
