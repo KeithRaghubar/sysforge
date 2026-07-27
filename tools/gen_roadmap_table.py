@@ -7,16 +7,18 @@
 """gen_roadmap_table.py -- generate the Planned summary table in ROADMAP.md.
 
 ROADMAP.md's `## Planned` section opens with a GENERATED at-a-glance table
-(ID / item / priority / effort), derived from the `*Priority: <level> · Effort:
-<size>*` tag that closes every Planned entry. This mirrors the `make design` /
-`make check-design` generate-and-check pattern -- edit the entries (and their
-tags), run `make roadmap-table`, and `make check-roadmap-table` guards against
-the committed table drifting from the entries (wired into the release preflight).
+(ID / item / priority / effort / bump), derived from the `*Priority: <level> ·
+Effort: <size> · Bump: <patch|minor|major>*` tag that closes every Planned
+entry. This mirrors the `make design` / `make check-design` generate-and-check
+pattern -- edit the entries (and their tags), run `make roadmap-table`, and
+`make check-roadmap-table` guards against the committed table drifting from the
+entries (wired into the release preflight).
 
-The tool is the *sole* parser of the Priority/Effort vocabulary, so it also
-validates the tags: a Planned entry missing a tag, or using a level/size outside
-the allowed vocabulary, is a hard error in both modes (there is no valid table to
-emit from a malformed entry).
+The tool is the *sole* parser of the Priority/Effort/Bump tag grammar, so it
+also validates the tags: a Planned entry missing a tag, or using a level/size/
+bump outside the allowed vocabulary, is a hard error in both modes (there is no
+valid table to emit from a malformed entry). It shares the Bump *vocabulary*
+(not the parsing) with `check_standards.py` via `tools/_semver_vocab.py`.
 
 Usage:
     python tools/gen_roadmap_table.py            # rewrite the table in place
@@ -31,6 +33,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+# Priority/Effort below are this tool's own vocabulary. Bump is NOT: it is the
+# SemVer impact the entry will carry when it lands (standards row 3), and
+# check_standards.py derives the same values from the release-notes accumulator.
+# One definition in tools/_semver_vocab.py, imported by both, so they cannot drift.
+from _semver_vocab import BUMP_ORDER
+
 REPO = Path(__file__).resolve().parent.parent
 
 _BEGIN = "<!-- BEGIN roadmap-table"
@@ -44,7 +52,8 @@ _EFFORT_ORDER = ["small", "medium", "large"]
 # title is the remaining bold text up to the closing `**` of the lead span.
 _ENTRY_RE = re.compile(r"^- \*\*`(\d+\.\d+\.\d+-[A-Z]+\d+)`\s*—\s*(.*?)\*\*", re.DOTALL)
 # The machine-readable tag closing a Planned entry.
-_TAG_RE = re.compile(r"\*Priority:\s*(\w+)\s*·\s*Effort:\s*(\w+)\*")
+_TAG_RE = re.compile(
+    r"\*Priority:\s*(\w+)\s*·\s*Effort:\s*(\w+)\s*·\s*Bump:\s*(\w+)\*")
 # ID grammar for sorting: <version>-<TYPE><n>.
 _ID_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)-([A-Z]+)(\d+)")
 
@@ -55,6 +64,7 @@ class Entry:
     title: str
     priority: str
     effort: str
+    bump: str
 
 
 class RoadmapError(Exception):
@@ -112,9 +122,10 @@ def parse_entries(text: str) -> list[Entry]:
         tag = _TAG_RE.search(blob)
         if not tag:
             raise RoadmapError(
-                f"{entry_id}: Planned entry has no `*Priority: … · Effort: …*` tag"
+                f"{entry_id}: Planned entry has no "
+                f"`*Priority: … · Effort: … · Bump: …*` tag"
             )
-        priority, effort = tag.group(1), tag.group(2)
+        priority, effort, bump = tag.group(1), tag.group(2), tag.group(3)
         if priority not in _PRIORITY_ORDER:
             raise RoadmapError(
                 f"{entry_id}: priority {priority!r} not in {_PRIORITY_ORDER}"
@@ -123,7 +134,11 @@ def parse_entries(text: str) -> list[Entry]:
             raise RoadmapError(
                 f"{entry_id}: effort {effort!r} not in {_EFFORT_ORDER}"
             )
-        entries.append(Entry(entry_id, title, priority, effort))
+        if bump not in BUMP_ORDER:
+            raise RoadmapError(
+                f"{entry_id}: bump {bump!r} not in {BUMP_ORDER}"
+            )
+        entries.append(Entry(entry_id, title, priority, effort, bump))
     return entries
 
 
@@ -139,12 +154,12 @@ def _sort_key(e: Entry) -> tuple:
 
 def render_table(entries: list[Entry]) -> str:
     rows = [
-        f"| `{e.id}` | {e.title} | {e.priority} | {e.effort} |"
+        f"| `{e.id}` | {e.title} | {e.priority} | {e.effort} | {e.bump} |"
         for e in sorted(entries, key=_sort_key)
     ]
     body = "\n".join([
-        "| ID | Item | Priority | Effort |",
-        "|----|------|----------|--------|",
+        "| ID | Item | Priority | Effort | Bump |",
+        "|----|------|----------|--------|------|",
         *rows,
     ])
     return f"{body}\n"

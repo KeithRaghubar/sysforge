@@ -58,6 +58,34 @@ https://keepachangelog.com/en/1.1.0/
   exception takes an inline `disable=` with a justifying comment rather than a
   laxer global threshold.
 
+- SemVer impact is now declared rather than inferred (2.6.1-STD2), as standards
+  row 24 plus an extension of row 3. `primitives/deprecations.py` is a registry
+  of every surface sysforge still honours only for backwards compatibility —
+  six of them, each carrying the version it was deprecated in, the version it is
+  removed in, and its replacement. Five are compat read paths whose old spelling
+  still works (`[git] pull_timeout`, `packages.toml`'s `pkgbuild_patch` key and
+  its `repo_mode = "profiled"` token, `build_state.toml`'s
+  `build_mode = "profiled"` token, and the legacy `~/.config/sysforge/{cache,state}`
+  dirs); two of those have been deprecated since **1.0.0**, carried silently
+  across two major boundaries. The sixth is the `doctor` flat-flag hint table,
+  which already exits 2 and is therefore removable in a minor. Using a
+  deprecated surface now warns once per run, naming the removal version and the
+  replacement, with the text built from the registry record so it cannot drift.
+
+  Nothing is removed in this release. What changes is that a removal can no
+  longer be forgotten or mis-scheduled: `make check-standards` fails a registry
+  record with no read path (and a read path with no record), rejects a compat
+  removal declared for anything but an `X.0.0`, and errors when the release
+  target is at or past a declared removal with the surface still present.
+  `tools/release.sh` derives the required bump from this file's Keep a Changelog
+  sections — a `## Removed` section or a `**Breaking:**` bullet forces major —
+  and refuses a `--bump` weaker than that, printing the evidence for the
+  derivation so a miscategorised entry is visible. `make next-bump` prints the
+  derived value. Every `ROADMAP.md` entry now declares its expected impact with
+  a `Bump:` tag, and the standards table is split into externally-sourced and
+  sysforge-exclusive sections (row numbers unchanged — they are cited from code,
+  tests, and published release notes).
+
 ## Changed
 
 - **Breaking:** `sysforge doctor` is now two subcommands (2.6.1-F1).

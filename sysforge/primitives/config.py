@@ -23,6 +23,7 @@ from sysforge import log
 _log = log.get_logger("CONFIG")
 from pathlib import Path
 
+from sysforge.primitives import deprecations
 from sysforge.primitives.paths import (
     CONFIG_PATHS,
     SYSFORGE_TOML_PATH,
@@ -108,6 +109,7 @@ def resolve_repo_mode(build_cfg: dict | None) -> str:
     """
     raw = (build_cfg or {}).get("repo_mode", REPO_MODE_PACMAN)
     if raw == _LEGACY_REPO_MODE_SOURCE:
+        deprecations.warn_used("packages.repo_mode=profiled")
         raw = REPO_MODE_SOURCE
     return resolve_enum(raw, _REPO_MODE_VALUES, REPO_MODE_PACMAN, key="[build] repo_mode")
 
@@ -162,6 +164,7 @@ def normalize_package_entry(entry: dict) -> dict:
     if both are present). Mutates and returns the same dict for convenience.
     """
     if _LEGACY_PKG_KEY_BUILD_FROM_SOURCE in entry:
+        deprecations.warn_used("packages.pkgbuild_patch")
         legacy = entry.pop(_LEGACY_PKG_KEY_BUILD_FROM_SOURCE)
         entry.setdefault(PKG_KEY_BUILD_FROM_SOURCE, legacy)
     return entry

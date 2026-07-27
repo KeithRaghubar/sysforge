@@ -626,4 +626,84 @@ def test_distro_portability_clean_on_the_real_tree():
     """The shipped tree conforms to all three sub-invariants."""
     from pathlib import Path
     mod = _load_check_standards()
-    assert mod.check_distro_portability(Path(".")) == []
+    assert mod.check_distro_portability(Path()) == []
+
+
+def test_deprecations_group_passes_on_this_repo():
+    """Row 24 — the committed registry is internally consistent."""
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(repo / "tools"))
+    try:
+        import check_standards as cs
+    finally:
+        sys.path.pop(0)
+    findings = cs.check_deprecations(repo)
+    errors = [f for f in findings if f.severity == "error"]
+    assert not errors, "\n".join(f"{f.location}: {f.message}" for f in errors)
+
+
+def test_deprecations_registry_parse_finds_every_record():
+    """A check that cannot fail is worse than no check: the AST parse must find
+    the same number of records the module exposes at runtime."""
+    import sys
+    from pathlib import Path
+    from sysforge.primitives import deprecations as dep
+    repo = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(repo / "tools"))
+    try:
+        import check_standards as cs
+    finally:
+        sys.path.pop(0)
+    assert len(cs._parse_registry(repo)) == len(dep.all_deprecations())
+
+
+def test_deprecations_group_flags_unregistered_warn_used(tmp_path):
+    """An unregistered warn_used literal is an R1 error."""
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(repo / "tools"))
+    try:
+        import check_standards as cs
+    finally:
+        sys.path.pop(0)
+    # Synthetic tree: an empty registry plus one warn_used call.
+    (tmp_path / "sysforge" / "primitives").mkdir(parents=True)
+    (tmp_path / "sysforge" / "primitives" / "deprecations.py").write_text(
+        "_REGISTRY = ()\n", encoding="utf-8")
+    (tmp_path / "sysforge" / "caller.py").write_text(
+        'deprecations.warn_used("ghost.surface")\n', encoding="utf-8")
+    msgs = [f.message for f in cs.check_deprecations(tmp_path)]
+    assert any("ghost.surface" in m for m in msgs)
+
+
+def test_deprecations_flags_overdue_removal_at_target_version():
+    """R3 — at 3.0.0 the five compat surfaces are overdue and must error."""
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(repo / "tools"))
+    try:
+        import check_standards as cs
+    finally:
+        sys.path.pop(0)
+    findings = cs.check_deprecations(repo, target_version="3.0.0")
+    overdue = [f for f in findings if "still" in f.message and "present" in f.message]
+    assert len(overdue) == 5, \
+        f"expected the 5 compat surfaces overdue at 3.0.0, got {len(overdue)}"
+    # The 3.1.0 shim is NOT overdue at 3.0.0.
+    assert not any("doctor.flat_flags" in f.message for f in overdue)
+
+
+def test_target_version_rejects_malformed_value():
+    import subprocess
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    r = subprocess.run(
+        [sys.executable, "tools/check_standards.py",
+         "--check=deprecations", "--target-version=not-a-version"],
+        cwd=repo, capture_output=True, text=True)
+    assert r.returncode == 2, r.stdout + r.stderr

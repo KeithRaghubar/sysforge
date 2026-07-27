@@ -47,6 +47,9 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sysforge.primitives import deprecations
+
+
 # Reserved top-level key in build_state.toml for the failures namespace. Held
 # apart from the per-package install records so it never leaks into
 # all_packages()/sync_with_installed(). A package literally named "failures"
@@ -156,6 +159,7 @@ class BuildState:
         for entry in raw.values():
             if isinstance(entry, dict) and \
                     entry.get("build_mode") == _LEGACY_BUILD_MODE_SOURCE:
+                deprecations.warn_used("build_state.build_mode=profiled")
                 entry["build_mode"] = BUILD_MODE_SOURCE
         self._data = raw
 

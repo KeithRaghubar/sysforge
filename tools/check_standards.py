@@ -48,6 +48,19 @@ Groups:
     privilege_seam  Escalation discipline: root-escalating argv routes through
                     primitives/privilege.py; raw ["sudo", ...] outside it is an
                     error (probe/drop-priv forms allowlisted).
+    deprecations    Deprecation registry discipline (STD row 24): every record in
+                    primitives/deprecations.py has a presence proof (a
+                    warn_used call site for compat, a resolvable anchor for a
+                    shim) and every warn_used literal resolves to a record; a
+                    compat surface's removed_in is a major; and nothing declared
+                    removed at or before the release target is still present
+                    (--target-version). A registry that parses to zero records
+                    is an error.
+    semver_bump     Declared bump selection (STD row 3): a surface declared
+                    removed in the release target must be named by a `## Removed`
+                    entry in docs/release-notes/unreleased.md. The bump
+                    comparison itself is --require-bump / --derive-bump, used by
+                    tools/release.sh preflight, not a group.
 
 Drift detection cases (verify these still fire after editing this script):
     - Add `Path.home() / ".cache/sysforge"` to a module other than paths.py.
@@ -62,18 +75,29 @@ Drift detection cases (verify these still fire after editing this script):
     - Add `subprocess.run("echo hi")` (string form) to a sysforge/*.py file.
     - Add `shell=True` without `# noqa: S602` to a sysforge/*.py file.
     - Add `subprocess.run(["sudo", ...])` (raw escalation) outside privilege.py.
+    - Delete a warn_used("…") call site but leave its registry record.
+    - Add warn_used("not-registered") to a sysforge/*.py file.
+    - Change a compat record's removed_in to a minor (e.g. 3.1.0).
+    - Rename the symbol a shim record's anchor cites.
+    - Replace the _REGISTRY literal with a comprehension (parse finds 0 records).
+    - Run with --target-version=3.0.0 while a 3.0.0 removal is still present.
+    - Break deprecations.py syntactically and run --check=semver_bump alone
+      (a registry parse failure must error there too, not silently pass).
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import inspect
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from _semver_vocab import BUMP_ORDER
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -831,6 +855,314 @@ def check_distro_portability(repo: Path) -> list[Finding]:
 
 
 # ===========================================================================
+# Group: deprecations  (STD row 24 — the deprecation registry)
+# ===========================================================================
+
+_DEPRECATIONS_SRC = "sysforge/primitives/deprecations.py"
+
+
+def _pyproject_version(repo: Path) -> str | None:
+    """The current project version, or None if unreadable."""
+    pyp = repo / "pyproject.toml"
+    if not pyp.exists():
+        return None
+    m = re.search(r'^version\s*=\s*"([^"]+)"', pyp.read_text(encoding="utf-8"),
+                  re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def _ver(s: str) -> tuple[int, int, int]:
+    """SemVer X.Y.Z -> comparable tuple. Malformed sorts lowest."""
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", (s or "").strip())
+    return (int(m[1]), int(m[2]), int(m[3])) if m else (0, 0, 0)
+
+
+_REGISTRY_EMPTY_MSG = (
+    "registry parse found no records — the module exists but no "
+    "Deprecation(...) literals were readable (built dynamically, "
+    "_REGISTRY renamed, or the file has a syntax error?)"
+)
+
+
+def _parse_registry(repo: Path) -> list[dict]:
+    """Statically read the Deprecation(...) records from deprecations.py.
+
+    AST rather than import: this tool honours --repo=PATH, and importing would
+    validate the *installed* package while claiming to validate that tree.
+    Module-level `NAME = "literal"` assignments are resolved so `kind=CONFIG_KEY`
+    yields "config_key".
+    """
+    src = repo / _DEPRECATIONS_SRC
+    if not src.exists():
+        return []
+    try:
+        tree = ast.parse(src.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return []
+    consts: dict[str, str] = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            consts[node.targets[0].id] = node.value.value
+    records: list[dict] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "Deprecation"):
+            continue
+        rec: dict = {}
+        for kw in node.keywords:
+            if isinstance(kw.value, ast.Constant):
+                rec[kw.arg] = kw.value.value
+            elif isinstance(kw.value, ast.Name):
+                rec[kw.arg] = consts.get(kw.value.id)
+        records.append(rec)
+    return records
+
+
+def _warn_used_surfaces(repo: Path) -> dict[str, list[str]]:
+    """Map surface -> call-site paths for every `warn_used("…")` in sysforge/."""
+    out: dict[str, list[str]] = {}
+    for py in sorted((repo / "sysforge").rglob("*.py")):
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        rel = py.relative_to(repo).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = (fn.attr if isinstance(fn, ast.Attribute)
+                    else fn.id if isinstance(fn, ast.Name) else None)
+            if name != "warn_used" or not node.args:
+                continue
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                out.setdefault(arg.value, []).append(rel)
+    return out
+
+
+def _anchor_error(repo: Path, anchor: str) -> str | None:
+    """Presence probe for a SHIM record's anchor: `<repo-relative>.py::<symbol>`.
+
+    Deliberately NOT _check_citation: that helper fail-safes to None whenever
+    _resolve_module_file cannot uniquely resolve a name, which for a presence
+    probe inverts the result — an unresolvable anchor would silently pass. Here
+    an unresolvable anchor is an error.
+    """
+    file_part, sep, sym = anchor.partition("::")
+    if not sep or not sym.isidentifier() or not file_part.endswith(".py"):
+        return f"anchor {anchor!r} is not `<repo-relative path>.py::<symbol>`"
+    p = repo / file_part
+    if not p.exists():
+        return f"anchor {anchor!r}: {file_part} does not exist"
+    if not re.search(rf"\b{re.escape(sym)}\b", p.read_text(encoding="utf-8")):
+        return f"anchor {anchor!r}: {file_part} has no `{sym}`"
+    return None
+
+
+def check_deprecations(repo: Path,
+                       target_version: str | None = None) -> list[Finding]:
+    """STD row 24 — registry integrity and declared-removal enforcement.
+
+    R1  bijection: every record has >=1 presence proof, and every warn_used
+        literal resolves to a record.
+    R2  a COMPAT record's removed_in must be a major (X.0.0).
+    R3  target_version >= removed_in while the surface is still present.
+
+    target_version defaults to the current pyproject version, which catches
+    "we already shipped past a declared removal".
+    """
+    findings: list[Finding] = []
+    src_rel = _DEPRECATIONS_SRC
+
+    if not (repo / _DEPRECATIONS_SRC).exists():
+        return [Finding("deprecations", "error", src_rel, "registry module missing")]
+
+    records = _parse_registry(repo)
+    # A check that cannot fail is worse than no check. Don't early-return here:
+    # an empty registry alongside a live warn_used() call site is still an R1a
+    # bijection failure and must be reported too.
+    if not records:
+        findings.append(Finding("deprecations", "error", src_rel,
+                        _REGISTRY_EMPTY_MSG))
+
+    call_sites = _warn_used_surfaces(repo)
+    registered = {r.get("surface") for r in records}
+
+    # R1a: no unregistered warn_used literal.
+    for surface, sites in sorted(call_sites.items()):
+        if surface not in registered:
+            findings.append(Finding(
+                "deprecations", "error", sites[0],
+                f"warn_used({surface!r}) is not in the registry "
+                f"({src_rel}) — add a record or fix the literal"))
+
+    for rec in records:
+        surface = rec.get("surface") or "<unnamed>"
+        function = rec.get("function")
+        removed_in = rec.get("removed_in") or ""
+
+        # R1b: every record needs a presence proof.
+        if function == "shim":
+            anchor = rec.get("anchor")
+            if not anchor:
+                findings.append(Finding("deprecations", "error", src_rel,
+                                        f"{surface}: shim record has no anchor"))
+            else:
+                msg = _anchor_error(repo, anchor)
+                if msg:
+                    findings.append(Finding("deprecations", "error", src_rel,
+                                            f"{surface}: {msg}"))
+        else:
+            if rec.get("anchor"):
+                findings.append(Finding(
+                    "deprecations", "error", src_rel,
+                    f"{surface}: compat record carries an anchor; presence is "
+                    f"proven by its warn_used call sites"))
+            if surface not in call_sites:
+                findings.append(Finding(
+                    "deprecations", "error", src_rel,
+                    f"{surface}: no warn_used({surface!r}) call site — the "
+                    f"record is vestigial; delete it, or add the call at the "
+                    f"read path"))
+
+        # R2: compat removals ride a major.
+        if function == "compat" and not re.fullmatch(r"\d+\.0\.0", removed_in):
+            findings.append(Finding(
+                "deprecations", "error", src_rel,
+                f"{surface}: compat removed_in={removed_in!r} is not a major "
+                f"(X.0.0) — removing a working read path is breaking"))
+        if function == "shim" and not re.fullmatch(r"\d+\.\d+\.0", removed_in):
+            findings.append(Finding(
+                "deprecations", "error", src_rel,
+                f"{surface}: shim removed_in={removed_in!r} is not X.Y.0"))
+
+        # R3: overdue removal.
+        target = target_version or _pyproject_version(repo)
+        if target and _ver(target) >= _ver(removed_in) > (0, 0, 0):
+            still_present = (surface in call_sites) or bool(rec.get("anchor"))
+            if still_present:
+                findings.append(Finding(
+                    "deprecations", "error", src_rel,
+                    f"{surface}: declared removed_in={removed_in} and the "
+                    f"release target is {target} — the surface is still "
+                    f"present. Delete it (and this record) before releasing."))
+    return findings
+
+
+# ===========================================================================
+# Group: semver_bump  (STD row 3 — declared bump selection)
+# ===========================================================================
+
+# Keep a Changelog section -> the bump it implies (row 13 supplies the
+# vocabulary; SemVer §§6-8 supply the mapping).
+_SECTION_BUMP = {
+    "Added": "minor",
+    "Changed": "patch",      # a breaking Changed must say **Breaking:**
+    "Deprecated": "minor",
+    "Removed": "major",
+    "Fixed": "patch",
+    "Security": "patch",
+}
+
+_ACCUMULATOR = "docs/release-notes/unreleased.md"
+
+
+def derive_bump(text: str) -> tuple[str | None, str]:
+    """Required bump for an accumulator body, plus the evidence for it.
+
+    Returns (bump, evidence); bump is None when the accumulator has no authored
+    entries (tools/release.sh already hard-fails that case, so this does not
+    duplicate the error). The strongest signal present wins. A `**Breaking:**`
+    bullet forces major regardless of the section it sits in — which is the
+    documented residual risk of deriving from sections: a breaking `Changed`
+    entry that omits the marker reads as patch. release.sh prints this evidence
+    so the inference is auditable.
+    """
+    body = _HTML_COMMENT_RE.sub("", text)
+    best: str | None = None
+    evidence = "no authored entries"
+    section: str | None = None
+    for lineno, line in enumerate(body.splitlines(), start=1):
+        m = re.match(r"^##\s+(\w+)\s*$", line)
+        if m:
+            section = m.group(1)
+            continue
+        if not line.lstrip().startswith("- "):
+            continue
+        if "**Breaking:**" in line:
+            candidate, why = "major", f"**Breaking:** marker, line {lineno}"
+        elif section in _SECTION_BUMP:
+            candidate = _SECTION_BUMP[section]
+            why = f"## {section}, line {lineno}"
+        else:
+            continue
+        if best is None or BUMP_ORDER.index(candidate) > BUMP_ORDER.index(best):
+            best, evidence = candidate, why
+    return best, evidence
+
+
+def check_semver_bump(repo: Path,
+                      target_version: str | None = None) -> list[Finding]:
+    """STD row 3 — declared bump selection.
+
+    R4  a registry record whose removed_in equals the release target must be
+        named by a `## Removed` entry in the accumulator, so a removal cannot
+        ship undocumented (ties row 3 to row 13).
+
+    The bump comparison itself is a release-time concern and lives behind
+    --require-bump / --derive-bump, not in this group: `make pre-release` runs
+    before the bump is chosen.
+    """
+    findings: list[Finding] = []
+    acc = repo / _ACCUMULATOR
+    if not acc.exists():
+        return [Finding("semver_bump", "error", _ACCUMULATOR, "missing")]
+    text = acc.read_text(encoding="utf-8")
+
+    target = target_version or _pyproject_version(repo)
+    if not target:
+        return findings
+
+    body = _HTML_COMMENT_RE.sub("", text)
+    # The `## Removed` section body, for surface-name matching.
+    removed_block = ""
+    section = None
+    for line in body.splitlines():
+        m = re.match(r"^##\s+(\w+)\s*$", line)
+        if m:
+            section = m.group(1)
+            continue
+        if section == "Removed":
+            removed_block += line + "\n"
+
+    records = _parse_registry(repo)
+    # Same distinction as check_deprecations: "registry unreadable" (error) is
+    # not the same as "registry read, nothing due" (empty findings is a clean
+    # pass). Don't let an unreadable registry fall through as the latter.
+    if not records:
+        findings.append(Finding("semver_bump", "error", _DEPRECATIONS_SRC,
+                        _REGISTRY_EMPTY_MSG))
+        return findings
+
+    for rec in records:
+        surface = rec.get("surface") or ""
+        removed_in = rec.get("removed_in") or ""
+        if not surface or _ver(removed_in) != _ver(target):
+            continue
+        if surface not in removed_block:
+            findings.append(Finding(
+                "semver_bump", "error", _ACCUMULATOR,
+                f"{surface} is declared removed_in={removed_in} (the release "
+                f"target) but no `## Removed` entry names it — a removal must "
+                f"not ship undocumented"))
+    return findings
+
+
+# ===========================================================================
 # Driver
 # ===========================================================================
 
@@ -844,6 +1176,8 @@ GROUPS = {
     "run_seam":       check_run_seam,
     "privilege_seam": check_privilege_seam,
     "distro_portability": check_distro_portability,
+    "deprecations":   check_deprecations,
+    "semver_bump":    check_semver_bump,
 }
 
 
@@ -858,11 +1192,29 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--list", action="store_true", help="list groups and exit")
     p.add_argument("--repo", type=Path, default=REPO,
                    help="repo root to validate (default: this script's repo)")
+    p.add_argument("--target-version", metavar="X.Y.Z",
+                   help="version this release will ship as; version-relative "
+                        "rules (overdue removals, release-note removal parity) "
+                        "evaluate against it instead of the current "
+                        "pyproject.toml version")
     p.add_argument("--next-id", metavar="TYPE",
                    help="print the next free roadmap ID and exit; a bare TYPE "
                         "(e.g. F) derives the current cycle from pyproject.toml, "
                         "or pass VERSION-TYPE (e.g. 2.2.0-F) for another cycle")
+    p.add_argument("--derive-bump", action="store_true",
+                   help="print the bump the accumulated release notes require "
+                        "(major|minor|patch) and exit")
+    p.add_argument("--require-bump", metavar="KIND",
+                   help="exit non-zero if KIND (major|minor|patch) is weaker "
+                        "than the accumulated release notes require; always "
+                        "prints the derived value and its evidence")
     args = p.parse_args(argv)
+
+    if args.target_version is not None and not re.fullmatch(r"\d+\.\d+\.\d+",
+                                                args.target_version):
+        print(f"ERROR: --target-version={args.target_version!r} is not strict "
+              f"SemVer X.Y.Z", file=sys.stderr)
+        return 2
 
     if args.next_id:
         try:
@@ -870,6 +1222,31 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as e:
             print(str(e), file=sys.stderr)
             return 2
+        return 0
+
+    if args.derive_bump or args.require_bump is not None:
+        if args.require_bump is not None and args.require_bump not in BUMP_ORDER:
+            print(f"ERROR: --require-bump={args.require_bump!r} is not one of "
+                  f"{BUMP_ORDER}", file=sys.stderr)
+            return 2
+        repo = args.repo.resolve()
+        acc = repo / _ACCUMULATOR
+        if not acc.exists():
+            print(f"ERROR: {_ACCUMULATOR} is missing", file=sys.stderr)
+            return 2
+        bump, evidence = derive_bump(acc.read_text(encoding="utf-8"))
+        if bump is None:
+            print(f"ERROR: {_ACCUMULATOR} has no authored entries",
+                  file=sys.stderr)
+            return 1
+        if args.derive_bump:
+            print(bump)
+            return 0
+        print(f"required = {bump} (from: {evidence})")
+        if BUMP_ORDER.index(args.require_bump) < BUMP_ORDER.index(bump):
+            print(f"ERROR: --bump={args.require_bump} is weaker than the "
+                  f"accumulated release notes require ({bump})", file=sys.stderr)
+            return 1
         return 0
 
     if args.list:
@@ -887,7 +1264,12 @@ def main(argv: list[str] | None = None) -> int:
     all_findings: list[Finding] = []
     for name in selected:
         try:
-            all_findings.extend(GROUPS[name](repo))
+            fn = GROUPS[name]
+            # Version-relative groups opt in by accepting target_version.
+            if "target_version" in inspect.signature(fn).parameters:
+                all_findings.extend(fn(repo, target_version=args.target_version))
+            else:
+                all_findings.extend(fn(repo))
         except Exception as e:
             all_findings.append(Finding(name, "error", "checker",
                                         f"check group crashed: {e!r}"))

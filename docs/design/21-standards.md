@@ -14,11 +14,15 @@ adhered to, partially or fully guarded · **target** = adopted, gap being closed
 
 ### Committed standards
 
+#### Externally-sourced
+
+Standards defined outside sysforge, which the project conforms to.
+
 | # | Standard | Scope | Status | How it is enforced |
 |---|----------|-------|--------|--------------------|
 | 1 | [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/) | User dirs (`~/.config`, `~/.cache`, `~/.local/state`, `~/.local/share`) | enforced | `primitives/paths.py` (`_xdg_base`); `check_standards` `paths` group; `tests/test_paths.py` |
 | 2 | Filesystem Hierarchy Standard + systemd `file-hierarchy(7)` | System roots (`/etc`, `/var/lib`, `/var/cache`, `/run`) | enforced | `paths.py` (`CONFIG_BASE`), `pipeline/state.py`, `makepkg_pgo.py`; `check_standards` `paths` group |
-| 3 | [Semantic Versioning 2.0.0](https://semver.org/) | Project version scheme | enforced | `tools/check_shipped.py` `versions` group (format + cross-file parity) |
+| 3 | [Semantic Versioning 2.0.0](https://semver.org/) | Project version scheme **and declared bump selection** | enforced | Two facets. **Format + cross-file parity**: `tools/check_shipped.py` `versions` group. **Bump selection** (§§6–8: patch for a compatible fix, minor for a compatible addition, major for an incompatible change): the required bump is derived from the release-notes accumulator's Keep a Changelog sections (row 13) — a `## Removed` section or a `**Breaking:**` bullet forces major, `## Added` minor, the rest patch — and `tools/release.sh` preflight refuses a `--bump` weaker than the derived value, printing the derived value with the evidence line that produced it so the inference is auditable. Planning-time counterpart: every `ROADMAP.md` Planned entry carries a `Bump:` tag (`tools/gen_roadmap_table.py`, sole parser). `make next-bump` prints the derived value; `check_standards` `semver_bump` group + `tests/test_check_standards_bump.py` |
 | 4 | POSIX Utility Conventions + GNU long-options | CLI argument grammar (`-h/--help`, `-V/--version`, `--`) | followed | argparse in `cli.py`; `tests/test_standards_compliance.py` |
 | 5 | [NO_COLOR](https://no-color.org/) + `FORCE_COLOR` | Terminal colour control | enforced | `log.use_color()` (single authority); `tests/test_standards_compliance.py` |
 | 6 | stdout/stderr separation + exit-code contract | CLI behaviour (data→stdout, diagnostics→stderr; 0/1/2) | followed | `log._out()`, `verbs/runner.py`; `tests/test_standards_compliance.py` |
@@ -32,13 +36,25 @@ adhered to, partially or fully guarded · **target** = adopted, gap being closed
 | 14 | [REUSE](https://reuse.software/) / SPDX (license: **MIT**) | Per-file licensing | enforced | SPDX headers + `LICENSES/MIT.txt` + `REUSE.toml`; `check_standards` `spdx` group (`reuse lint`) |
 | 15 | Reproducible builds | Builds SysForge produces | followed | does not strip reproducibility OPTIONS / honours `SOURCE_DATE_EPOCH`; `tests/test_standards_compliance.py` |
 | 16 | OpenPGP signing (RFC 4880) + makepkg `validpgpkeys` | Release provenance (signed commits, tags, tarball) | followed | `tools/release.sh` (signing preflight + `git tag -s` + tarball `.asc`); `check_shipped` `pkgbuild` group (`validpgpkeys` + signature-aware `SKIP`); verified downstream by `makepkg` |
-| 17 | Subprocess-seam discipline (argv-list execution) | External-command execution (all `subprocess` sites) | enforced | argv-**list** form only, `shell=True` needs justified `# noqa: S602`; `primitives/run.py` (`run_or_raise`) sanctioned seam, direct callers a documented carve-out for streaming/returncode/stdout-parsing; ruff `S602` + `check_standards` `run_seam` group |
-| 18 | Privilege-escalation seam | Root-escalating subprocess invocations | enforced | `primitives/privilege.py` (`privileged_argv`/`run_privileged`) is the sole home for `sudo`-prefixed escalation; raw `["sudo", …]` argv outside it is forbidden except the allowlisted auth-probe (`sudo -v`, `sudo -n true`) and drop-privilege (`sudo -u <user>`) forms; `check_standards` `privilege_seam` group + `tests/test_standards_compliance.py` |
 | 19 | [`systemd.resource-control(5)`](https://www.freedesktop.org/software/systemd/man/systemd.resource-control.html) (cgroup-v2 `CPUQuota`/`MemoryMax` via `systemd-run(1)`) | Build resource enforcement (CPU/memory ceilings on the makepkg fork tree) | enforced | a configured `cpu_quota`/`mem_limit` is enforced by a kernel-level cgroup `systemd-run --scope` (hierarchical over all build descendants), not solely an escapable `RLIMIT_AS` preexec, whenever `systemd-run` is available; `primitives/build_throttle.py` (`wrapper_argv`/`_scope_owns_mem_cap`/`resolve_child_mem_cap`); `tests/test_standards_compliance.py` |
 | 20 | [`systemd.journal-fields(7)`](https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html) + native journal socket protocol (`sd_journal_send(3)` wire format) | System-mutating operations mirrored to the journal | enforced | every sentinel-gated verb emits one structured record (`SYSFORGE_VERB`/`SYSFORGE_TARGET`/`SYSFORGE_EXIT` + `MESSAGE`/`PRIORITY`/`SYSLOG_IDENTIFIER`), additively alongside the unified run-log, no-op when journald absent; `SYSFORGE_TARGET` is supplied by every mutating verb via `Verb.journal_target` and namespaced `pkg:<names>` / `mode:<subcommand>` (one-home formatters `journal.pkg_target`/`journal.mode_target`); `primitives/journal.py` (`journal_send`/`record_verb`), `verbs/runner.py`; `tests/test_standards_compliance.py` + `tests/test_journal.py` |
 | 21 | `systemctl(1)` unit lifecycle (`daemon-reload`, `is-enabled`, `disable --now`) | Deploying/removing a user-authored systemd unit through the artifact inventory | enforced | `primitives/artifacts.py` (`post_deploy` runs `daemon-reload` after a unit write via `run_privileged`; `unit_is_enabled` queries `systemctl is-enabled --quiet` unprivileged; `pre_remove` runs `systemctl disable --now` before unlinking an enabled unit); `tests/test_artifacts.py` |
 | 22 | `pacman -Qk`/`-Qkk` package-file verification against libalpm's stored `mtree` | Verifying package-owned files still match what the package declared (existence, size, mode, hash, type) | followed | read-only `doctor --integrity` axis consumes `pacman -Qkk` with pacman's own backup-vs-altered classification (backup-array edits → `info`, non-backup drift → `warn`, missing → `error`, mtime-only → `info`); run unprivileged, access-error reasons (`failed to calculate SHA256 checksum`, `Permission denied`) are stripped before classification — a path with only access-error reasons is access-limited, not drift, and rolls into one counted `integrity_partial_coverage` `info` advisory rather than a per-path finding, while a path with genuine signal alongside an access error keeps its real drift severity; `primitives/pkgfiles_probe.py` (`collect_integrity_findings`); `tests/test_pkgfiles_probe.py` + `tests/test_standards_compliance.py` |
 | 23 | [`os-release(5)`](https://www.freedesktop.org/software/systemd/man/os-release.html) | Arch-derivative portability: repo, toolchain-default, and distro-identity assumptions on an Arch-derived host | enforced | Three sub-invariants. **(a) No hardcoded sync-repo names** — a derivative carries its own sync DBs, often ordered ahead of `core`/`extra`; the `["core", "extra"]` literal in `primitives/pacman.py` is the sole allowlisted occurrence and only as an I/O fallback when `/etc/pacman.conf` is unreadable. Repo membership is *asked* of pacman (`aur.repo_packages` → `pacman -Si`), never inferred — this is the `build_core.prepare_deps` repo-vs-AUR makedep split, the failure class behind the exit-8 regression at `build_core.py:268`. **(b) The system `makepkg.conf` is the merge baseline, never replaced** — `config.SYSTEM_MAKEPKG_CONF` / `config.parse_system_makepkg_conf` is the only reader of that path (values returned verbatim, unnormalized), and `primitives/makepkg_conf.py::emit_makepkg_conf` both loads the system assignments and emits them, substituting profile keys inline, so a derivative's own `-march`/LTO defaults survive profile-key override intact. **(c) Distro identity is read from `os-release(5)` through one primitive** — `primitives/os_release.py`: `/etc/os-release` then `/usr/lib/os-release`, shell-style `KEY=value` with quote stripping, `ID` defaulting to `linux`, `ID_LIKE` as the space-separated parent list; never inferred from `pacman.conf` section names, `/etc/arch-release`, `/etc/lsb-release`, or a hostname. Surfaced by the `doctor --distro` axis, which reports the support tier (Arch = primary; `ID_LIKE=arch` = derivative, packaging invariants validated; otherwise `warn`) and never contributes an error, so a support tier cannot change doctor's exit code. Scope note: the row forbids *assumptions*; it does not introduce per-distro code paths — sysforge has no distro-conditional behaviour. `check_standards` `distro_portability` group (all three, statically) + `tests/test_standards_compliance.py` + `tests/test_distro_portability.py` (behavioural, synthetic derivative input) + `tests/test_os_release.py`; validated against a real derivative each minor by the container tier (`make container-smoke-cachyos`, release preflight section 9) |
+
+#### SysForge-exclusive
+
+House policies with no external specification. They are enforced exactly like
+the rows above and share one global counter with them — the next row is 25
+regardless of which subsection it joins, because the number is the row's
+identity (it is cited from code, tests, and published release notes) while the
+subsection is only presentation.
+
+| # | Standard | Scope | Status | How it is enforced |
+|---|----------|-------|--------|--------------------|
+| 17 | Subprocess-seam discipline (argv-list execution) | External-command execution (all `subprocess` sites) | enforced | argv-**list** form only, `shell=True` needs justified `# noqa: S602`; `primitives/run.py` (`run_or_raise`) sanctioned seam, direct callers a documented carve-out for streaming/returncode/stdout-parsing; ruff `S602` + `check_standards` `run_seam` group |
+| 18 | Privilege-escalation seam | Root-escalating subprocess invocations | enforced | `primitives/privilege.py` (`privileged_argv`/`run_privileged`) is the sole home for `sudo`-prefixed escalation; raw `["sudo", …]` argv outside it is forbidden except the allowlisted auth-probe (`sudo -v`, `sudo -n true`) and drop-privilege (`sudo -u <user>`) forms; `check_standards` `privilege_seam` group + `tests/test_standards_compliance.py` |
+| 24 | Deprecation registry (declared removal version + warn-on-use) | Every config key, state token, CLI flag, or path sysforge still honours only for backwards compatibility | enforced | `primitives/deprecations.py` is the single home: each record carries `surface`/`kind`/`function`/`deprecated_in`/`removed_in`/`replacement`, and each compat read path calls `warn_used(surface)` so the warning text is built from the record and cannot drift from the version the gate enforces. Two `function` values, because removal is not uniformly breaking — a `compat` surface still works (removing it is breaking, so `removed_in` must be `X.0.0`, and presence is proven by its `warn_used` call sites), while a `shim` already fails and is kept only to name its replacement (removal is not breaking, `removed_in` may be `X.Y.0`, presence proven by an exact repo-relative `anchor`). `check_standards` `deprecations` group: registry↔call-site bijection both ways, major-only removal for `compat`, and an error when the release target is at or past a declared `removed_in` with the surface still present (`--target-version`); a registry that parses to zero records is itself an error, because a check that cannot fail is worse than no check. The release-note removal parity check matches the registry's literal surface string against the `## Removed` section body, so a removal note must spell the canonical identifier (e.g. `build_state.build_mode=profiled`), not just prose describing it. `tests/test_deprecations.py` (behavioural, incl. once-per-run dedup and per-surface resolution) + `tests/test_standards_compliance.py` |
 
 ### Notes on selected standards
 
@@ -55,11 +71,20 @@ non-root fallback; the regenerable PGO profdata cache lives at
 `X.Y.Z.rN.gHASH` VCS suffix. `make release-{major,minor,patch}` is the only
 bump path and keeps `pyproject.toml`, `PKGBUILD`, `PKGBUILD-git`, and the
 `<!--version-->` doc markers in lockstep.
+Which of the three bumps is correct is not a judgement call: it is derived from
+the accumulated release notes and enforced in preflight (see row 3's enforcement
+column). A ROADMAP entry declares its expected impact via its `Bump:` tag, but
+that tag is gone by release time — the landing commit removes the entry — so the
+accumulator is the authoritative record. Removing a deprecated surface is the
+common cause of a forced major; see row 24.
 
 **Keep a Changelog (13).** `docs/release-notes/vX.Y.Z.md` *is* the changelog
 (there is no separate top-level `CHANGELOG.md` to drift). Entries use the Keep a
 Changelog category headings: `Added`, `Changed`, `Deprecated`, `Removed`,
-`Fixed`, `Security`. Notes are authored **incrementally**: each landing commit
+`Fixed`, `Security`. Those
+headings are also load-bearing for versioning: the required SemVer bump is
+derived from which of them the accumulator carries (row 3).
+Notes are authored **incrementally**: each landing commit
 that completes a ROADMAP item appends its entry to the running accumulator
 `docs/release-notes/unreleased.md` in that same commit. At release,
 `tools/release.sh` Phase 1 renames the accumulator to `vX.Y.Z.md`, stamps its
@@ -161,6 +186,15 @@ the enforcement in that commit; a row must never lag the behaviour it records.
 Conversely, do not add a row for a spec the code does not yet conform to — those
 live in `ROADMAP.md` as `Q`/`F`/`STD` items until the adopting change lands (each
 such roadmap entry names its target row here).
+
+The same discipline applies to the **SysForge-exclusive** subsection, whose rows
+have no external spec to adopt: add or extend the row in the commit that
+establishes or changes the policy, and wire its enforcement there. Choose the
+subsection by whether an external specification defines the behaviour, not by
+whether the row happens to carry a URL — rows 6 and 15 are externally grounded
+without linking a document. New rows take the next number in the single global
+sequence shared by both subsections; never renumber an existing row, because row
+numbers are cited from code, tests, and published release notes.
 
 ---
 

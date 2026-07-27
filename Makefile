@@ -1,7 +1,7 @@
 .PHONY: all dev venv build install dev-install dev-uninstall clean distclean test test-x lint coverage coverage-ratchet coverage-ratchet-update man \
         dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-list \
         lint-py lint-sh \
-        check-shipped check-personal check-standards next-id design check-design pre-release audit \
+        check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release audit \
         roadmap-table check-roadmap-table \
         sync-config \
         release-major release-minor release-patch release-resume \
@@ -240,6 +240,29 @@ check-standards:
 #   make next-id TYPE=F   ->  e.g. 2.4.0-F1
 next-id:
 	@uv run --no-sync python tools/check_standards.py --next-id $(TYPE)
+
+# Print the bump the accumulated release notes require (standards row 3).
+# Derived from docs/release-notes/unreleased.md: a `## Removed` section or a
+# `**Breaking:**` bullet forces major, `## Added` minor, everything else patch.
+# tools/release.sh enforces it; this target is for looking before you leap.
+next-bump:
+	@uv run --no-sync python tools/check_standards.py --derive-bump
+
+# SemVer impact gate (standards row 3): fail if BUMP is weaker than what the
+# accumulated release notes require. Caller: tools/release.sh preflight,
+# routed through Make (not invoked directly) so test scaffolds that stub
+# check-standards et al. as no-ops also cover this gate.
+check-bump:
+	@uv run --no-sync python tools/check_standards.py --require-bump=$(BUMP)
+
+# Version-relative standards groups (deprecations still present / undocumented
+# removals — rows 3 and 24), evaluated against VERSION, the release actually
+# being cut. Caller: tools/release.sh preflight, after `make check-standards`
+# (which cannot know the target version). Routed through Make for the same
+# test-scaffold-stubbing reason as check-bump above.
+check-standards-at:
+	@uv run --no-sync python tools/check_standards.py --target-version=$(VERSION) \
+	    --check=deprecations --check=semver_bump
 
 # Merge new shipped defaults (etc/sysforge/) into the live config dir
 # ($SYSFORGE_CONFIG_DIR itself, else /etc/sysforge). Add-only: injects new

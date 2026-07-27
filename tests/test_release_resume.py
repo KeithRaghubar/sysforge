@@ -49,8 +49,9 @@ def scaffold(tmp_path):
     )
     (repo / "Makefile").write_text(
         ".PHONY: check-shipped check-personal check-design check-roadmap-table "
-        "check-standards man\n"
-        "check-shipped check-personal check-design check-roadmap-table check-standards man:\n"
+        "check-standards check-bump check-standards-at man\n"
+        "check-shipped check-personal check-design check-roadmap-table check-standards "
+        "check-bump check-standards-at man:\n"
         "\t@true\n"
     )
     _git(repo, "init", "-q", "-b", "main")

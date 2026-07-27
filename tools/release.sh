@@ -300,6 +300,17 @@ preflight_fresh() {
         echo "       to reconcile/lint the accumulator before releasing." >&2
         exit 1
     fi
+    # SemVer impact gate (standards row 3): the accumulator declares what this
+    # release must be, and --bump must not be weaker. Always prints the derived
+    # value and the evidence for it, so the inference is auditable — a breaking
+    # `Changed` entry that forgot its **Breaking:** marker reads as a weaker
+    # bump, and printing the evidence is how a human catches that.
+    echo "==> SemVer impact:"
+    if ! make --no-print-directory check-bump BUMP="$BUMP"; then
+        echo "ERROR: the SemVer impact check failed — see the output above." >&2
+        echo "       Either bump harder, or fix the accumulator if an entry is miscategorised." >&2
+        exit 1
+    fi
     # Shipped-file consistency gate. Validates every shipped TOML schema,
     # PKGBUILD install graph, hook->helper parity, completions<->CLI parity,
     # version markers (subsumes the prior README/DESIGN grep checks), and
@@ -334,6 +345,15 @@ preflight_fresh() {
     # UTF-8 encoding) documented in docs/design/21-standards.md.
     if ! make --no-print-directory check-standards >&2; then
         echo "ERROR: standards checks failed — fix the findings above and re-run." >&2
+        exit 1
+    fi
+    # Version-relative rules need the version being released, which `make
+    # check-standards` cannot know (it runs before the bump). Re-run the two
+    # version-aware groups against $NEW: R3 (a declared removal still present)
+    # and R4 (a removal with no `## Removed` entry).
+    if ! make --no-print-directory check-standards-at VERSION="$NEW" >&2; then
+        echo "ERROR: the version-aware standards check failed — see the output above." >&2
+        echo "       See docs/design/21-standards.md rows 3 and 24." >&2
         exit 1
     fi
 }

@@ -80,12 +80,14 @@ def migrate_legacy_user_dirs() -> None:
     ($XDG_CACHE_HOME/sysforge and $XDG_STATE_HOME/sysforge, default
     ~/.cache/sysforge and ~/.local/state/sysforge). Idempotent; never raises."""
     from sysforge import log
+    from sysforge.primitives import deprecations
     _log = log.get_logger("PATHS")
 
     for old, new in _LEGACY_USER_DIRS:
         try:
             if not old.exists() or old == new or old.resolve() == new.resolve():
                 continue
+            deprecations.warn_used("paths.legacy_user_dirs")
             if new.exists() and any(new.iterdir()):
                 # Don't clobber: legacy dir is informational only at this point.
                 continue

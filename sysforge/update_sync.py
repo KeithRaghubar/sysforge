@@ -25,10 +25,26 @@ from sysforge.primitives.source_sync import (
     SyncRequest, SyncResult, STATUS_DIVERGED, get_scheduler,
 )
 from sysforge.primitives.config import load_sysforge_toml, resolve_repo_track
+from sysforge.primitives import deprecations
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.update_common import _SYNC_BLOCKING_STATUSES, _is_vcs
 
 _log = log.get_logger("UPDATE")
+
+
+def _resolve_fetch_timeout(git_cfg: dict) -> int:
+    """Single read chokepoint for `[git] fetch_timeout`.
+
+    Honours the deprecated `pull_timeout` alias (registry surface
+    `git.pull_timeout`, removed in 3.0.0). Two modules need this value; routing
+    both through this one helper is what keeps the alias to one live path.
+    """
+    if "fetch_timeout" in git_cfg:
+        return git_cfg["fetch_timeout"]
+    if "pull_timeout" in git_cfg:
+        deprecations.warn_used("git.pull_timeout")
+        return git_cfg["pull_timeout"]
+    return 30
 
 
 def _sync_sources(
@@ -55,8 +71,7 @@ def _sync_sources(
     sysforge_toml = load_sysforge_toml()
     git_cfg = sysforge_toml.get("git", {})
     aur_cfg = sysforge_toml.get("aur", {})
-    # Accept legacy pull_timeout as an alias for fetch_timeout.
-    fetch_timeout = git_cfg.get("fetch_timeout", git_cfg.get("pull_timeout", 30))
+    fetch_timeout = _resolve_fetch_timeout(git_cfg)
     clone_timeout = git_cfg.get("clone_timeout", 60)
 
     scheduler = get_scheduler(

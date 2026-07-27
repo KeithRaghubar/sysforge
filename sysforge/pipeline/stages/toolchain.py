@@ -189,10 +189,11 @@ def _sync_pkgbuild_dirs(
     surfaced as a warning so users can opt to keep their local edits.
     """
     from sysforge.primitives.aur import repo_packages
+    from sysforge.update_sync import _resolve_fetch_timeout
 
     git_cfg = (load_sysforge_toml().get("git", {}) or {})
     aur_cfg = (load_sysforge_toml().get("aur", {}) or {})
-    fetch_timeout = git_cfg.get("fetch_timeout", git_cfg.get("pull_timeout", 30))
+    fetch_timeout = _resolve_fetch_timeout(git_cfg)
     clone_timeout = git_cfg.get("clone_timeout", 60)
 
     scheduler = get_scheduler(

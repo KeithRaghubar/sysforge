@@ -27,12 +27,13 @@ SCRIPT = REPO / "tools/gen_roadmap_table.py"
 _BEGIN = "<!-- BEGIN roadmap-table"
 _END = "<!-- END roadmap-table -->"
 
-# (id, title, priority, effort) — spans both priority and effort vocabularies so
-# the sort test has something to order. Titles are deliberately generic.
+# (id, title, priority, effort, bump) — spans both priority and effort
+# vocabularies so the sort test has something to order. Titles are deliberately
+# generic.
 _SYNTHETIC_ENTRIES = [
-    ("2.0.0-B1", "Renderer bypasses the logger", "low", "small"),
-    ("2.0.0-B2", "Guard couples to the local renderer version", "low", "medium"),
-    ("2.0.0-F1", "Replace sentinel tags with an ordered pipeline", "med", "large"),
+    ("2.0.0-B1", "Renderer bypasses the logger", "low", "small", "patch"),
+    ("2.0.0-B2", "Guard couples to the local renderer version", "low", "medium", "minor"),
+    ("2.0.0-F1", "Replace sentinel tags with an ordered pipeline", "med", "large", "major"),
 ]
 
 
@@ -52,8 +53,8 @@ def _roadmap_doc(entries=_SYNTHETIC_ENTRIES) -> str:
     """
     body = "\n\n".join(
         f"- **`{eid}` — {title}.** Synthetic entry body.\n"
-        f"  *Priority: {pri} · Effort: {eff}* — synthetic rationale."
-        for eid, title, pri, eff in entries
+        f"  *Priority: {pri} · Effort: {eff} · Bump: {bump}* — synthetic rationale."
+        for eid, title, pri, eff, bump in entries
     )
     return (
         "# Synthetic Roadmap (test fixture)\n"
@@ -120,7 +121,7 @@ def test_real_repo_table_is_current():
 def test_check_fails_when_priority_changed(tmp_path):
     repo = _make_repo(tmp_path)
     # Flip a tag without regenerating -> the committed table is now stale.
-    _retag(repo, "2.0.0-B1", "*Priority: high · Effort: small*")
+    _retag(repo, "2.0.0-B1", "*Priority: high · Effort: small · Bump: patch*")
     r = run(["--check"], repo=repo)
     assert r.returncode == 1
     assert "stale" in (r.stdout + r.stderr)
@@ -128,7 +129,7 @@ def test_check_fails_when_priority_changed(tmp_path):
 
 def test_regenerate_makes_check_pass(tmp_path):
     repo = _make_repo(tmp_path)
-    _retag(repo, "2.0.0-B1", "*Priority: high · Effort: small*")
+    _retag(repo, "2.0.0-B1", "*Priority: high · Effort: small · Bump: patch*")
     assert run([], repo=repo).returncode == 0
     assert run(["--check"], repo=repo).returncode == 0
     # A high-priority entry sorts to the top of the regenerated table.
@@ -138,8 +139,8 @@ def test_regenerate_makes_check_pass(tmp_path):
 
 def test_missing_tag_is_a_hard_error(tmp_path):
     repo = _make_repo(tmp_path)
-    # Strip a Planned entry's tag -> no `*Priority: … · Effort: …*` tag, so no
-    # valid table can be emitted.
+    # Strip a Planned entry's tag -> no `*Priority: … · Effort: … · Bump: …*`
+    # tag, so no valid table can be emitted.
     _retag(repo, "2.0.0-B1", "")
     for args in ([], ["--check"]):
         r = run(args, repo=repo)
@@ -149,10 +150,36 @@ def test_missing_tag_is_a_hard_error(tmp_path):
 
 def test_invalid_vocabulary_is_a_hard_error(tmp_path):
     repo = _make_repo(tmp_path)
-    _retag(repo, "2.0.0-B1", "*Priority: urgent · Effort: small*")
+    _retag(repo, "2.0.0-B1", "*Priority: urgent · Effort: small · Bump: patch*")
     r = run(["--check"], repo=repo)
     assert r.returncode == 1
     assert "priority 'urgent'" in r.stderr
+
+
+def test_missing_bump_tag_is_an_error(tmp_path):
+    repo = _make_repo(tmp_path)
+    _retag(repo, "2.0.0-B1", "*Priority: low · Effort: small*")
+    r = run(["--check"], repo=repo)
+    assert r.returncode == 1
+    assert "no `*Priority" in r.stderr
+
+
+def test_invalid_bump_value_is_an_error(tmp_path):
+    repo = _make_repo(tmp_path)
+    _retag(repo, "2.0.0-B1", "*Priority: low · Effort: small · Bump: enormous*")
+    r = run(["--check"], repo=repo)
+    assert r.returncode == 1
+    assert "bump 'enormous'" in r.stderr
+
+
+def test_rendered_table_has_a_bump_column(tmp_path):
+    repo = _make_repo(tmp_path)
+    text = (repo / "ROADMAP.md").read_text(encoding="utf-8")
+    assert "| ID | Item | Priority | Effort | Bump |" in text
+    rows = _rows(repo)
+    assert any("| patch |" in r for r in rows)
+    assert any("| minor |" in r for r in rows)
+    assert any("| major |" in r for r in rows)
 
 
 def test_sort_is_priority_then_effort(tmp_path):
