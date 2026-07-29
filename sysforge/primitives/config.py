@@ -23,7 +23,6 @@ from sysforge import log
 _log = log.get_logger("CONFIG")
 from pathlib import Path
 
-from sysforge.primitives import deprecations
 from sysforge.primitives.paths import (
     CONFIG_PATHS,
     SYSFORGE_TOML_PATH,
@@ -39,27 +38,30 @@ _DRIFT_DETECT_VALUES = {DRIFT_DETECT_FINGERPRINT, DRIFT_DETECT_CONTENT_HASH}
 
 # packages.toml [build] repo_mode values. "build_from_source" replaced the
 # legacy "profiled" token (which collided with build_state's build_mode and
-# PGO). Legacy files still parse: resolve_repo_mode() maps the old value, and
-# the file self-migrates the next time reconfigure rewrites it.
+# PGO). The legacy token was removed in 3.0.0.
 REPO_MODE_PACMAN = "pacman"
 REPO_MODE_SOURCE = "build_from_source"
-_LEGACY_REPO_MODE_SOURCE = "profiled"
+
+# The removed 3.0.0 alias. Not honoured, not a compat read path (no registry
+# record, no warn_used) — resolve_repo_mode refuses it outright rather than
+# mapping it, so every caller gets the same hard failure regardless of
+# whether it also happens to route through _load_packages's whitelist.
+_REMOVED_REPO_MODE_PROFILED = "profiled"
 
 # The raw `repo_mode` tokens the packages loader accepts at its authoritative
-# load point (current vocabulary + legacy alias). `_load_packages` validates the
-# *raw* value against this and hard-fails on anything else, because at that
-# boundary a typo should abort loudly rather than silently fall back to
-# "pacman" (which would disable the source builds the user configured).
-# resolve_repo_mode itself stays lenient (warn + fall back) for the many
-# defensive readers that only compare the resolved value. See 2.3.0-F8.
-REPO_MODE_ACCEPTED_INPUTS = frozenset(
-    {REPO_MODE_PACMAN, REPO_MODE_SOURCE, _LEGACY_REPO_MODE_SOURCE}
-)
+# load point. `_load_packages` validates the *raw* value against this and
+# hard-fails on anything else, because at that boundary a typo should abort
+# loudly rather than silently fall back to "pacman" (which would disable the
+# source builds the user configured). resolve_repo_mode itself stays lenient
+# (warn + fall back) for the many defensive readers that only compare the
+# resolved value. See 2.3.0-F8.
+REPO_MODE_ACCEPTED_INPUTS = frozenset({REPO_MODE_PACMAN, REPO_MODE_SOURCE})
 
 # Per-package opt-in key. "enable_build_from_source" replaced the misleading
 # "pkgbuild_patch" (which never patched anything — it forced the source-build
-# path for a repo package). Stays boolean. Legacy entries are normalized to the
-# new key in expand_package_groups so every manifest consumer sees one name.
+# path for a repo package). Stays boolean. The legacy key is write-side only as
+# of 3.0.0: `packages_cmd` rewrites it to the current key on every file write,
+# but nothing reads it anymore (see normalize_package_entry).
 PKG_KEY_BUILD_FROM_SOURCE = "enable_build_from_source"
 _LEGACY_PKG_KEY_BUILD_FROM_SOURCE = "pkgbuild_patch"
 
@@ -99,18 +101,31 @@ def resolve_enum(raw, known, default, *, key: str):
 def resolve_repo_mode(build_cfg: dict | None) -> str:
     """Resolve packages.toml ``[build] repo_mode`` to a current-vocabulary value.
 
-    Returns ``"pacman"`` (default) or ``"build_from_source"``. The legacy
-    ``"profiled"`` token is mapped to ``"build_from_source"`` so existing
-    untracked user configs keep working. This is the single read chokepoint for
-    ``repo_mode``; every consumer routes through it instead of reading the raw
-    key, so the legacy alias is honored in exactly one place. Unrecognized
-    values warn and fall back to ``"pacman"`` via :func:`resolve_enum` — the
-    legacy mapping runs first, so ``"profiled"`` is not flagged.
+    Returns ``"pacman"`` (default) or ``"build_from_source"``. This is the single
+    read chokepoint for ``repo_mode``; every consumer routes through it instead
+    of reading the raw key. Unrecognized values warn and fall back to
+    ``"pacman"`` via :func:`resolve_enum` — that leniency is deliberate, for the
+    many defensive readers that only compare the resolved value.
+
+    The legacy ``"profiled"`` token is a narrow exception: it was removed in
+    3.0.0, and silently falling back to ``"pacman"`` for it (as an ordinary
+    unknown value would) would disable the user's configured source builds
+    with no error at all. ``_load_packages`` validates it out at its own
+    authoritative load point via ``REPO_MODE_ACCEPTED_INPUTS``, but the other
+    ``resolve_repo_mode`` callers read ``packages.toml`` directly and never
+    pass through that gate — so this function raises for that one token
+    specifically, rather than relying on ``_load_packages`` to have already
+    caught it. Every other unrecognized value still takes the lenient path.
+
+    Raises:
+        ValueError: if ``raw == "profiled"``.
     """
     raw = (build_cfg or {}).get("repo_mode", REPO_MODE_PACMAN)
-    if raw == _LEGACY_REPO_MODE_SOURCE:
-        deprecations.warn_used("packages.repo_mode=profiled")
-        raw = REPO_MODE_SOURCE
+    if raw == _REMOVED_REPO_MODE_PROFILED:
+        raise ValueError(
+            f"[build] repo_mode = {raw!r} was removed in 3.0.0. "
+            f"Change it to repo_mode = {REPO_MODE_SOURCE!r}."
+        )
     return resolve_enum(raw, _REPO_MODE_VALUES, REPO_MODE_PACMAN, key="[build] repo_mode")
 
 
@@ -158,15 +173,15 @@ def pgo_warns_for(pkgbase: str | None, sysforge_cfg: dict | None) -> bool:
 
 
 def normalize_package_entry(entry: dict) -> dict:
-    """Return ``entry`` with the legacy per-package key renamed in place.
+    """Return ``entry`` unchanged.
 
-    Renames ``pkgbuild_patch`` → ``enable_build_from_source`` (the new key wins
-    if both are present). Mutates and returns the same dict for convenience.
+    Kept as the manifest-entry normalization seam. The legacy
+    ``pkgbuild_patch`` → ``enable_build_from_source`` rename it used to perform
+    on read was removed in 3.0.0; `packages_cmd` still rewrites the key on every
+    file write, so stale files self-clean. Retained rather than inlined so the
+    next per-entry normalization has a home and `expand_package_groups` keeps a
+    single call site.
     """
-    if _LEGACY_PKG_KEY_BUILD_FROM_SOURCE in entry:
-        deprecations.warn_used("packages.pkgbuild_patch")
-        legacy = entry.pop(_LEGACY_PKG_KEY_BUILD_FROM_SOURCE)
-        entry.setdefault(PKG_KEY_BUILD_FROM_SOURCE, legacy)
     return entry
 
 
@@ -313,11 +328,6 @@ def expand_package_groups(data: dict) -> list[dict]:
     synthetic entry per member carrying ``group = "<name>"`` to mark its origin;
     an explicit ``[[package]]`` entry for the same name wins outright (no field
     merge), and the first group to claim a name wins over later groups.
-
-    This is also the single normalization point for the legacy per-package key
-    ``pkgbuild_patch`` → ``enable_build_from_source`` (via
-    ``normalize_package_entry``), so every manifest consumer sees the current
-    name regardless of file vintage.
 
     This is the single expansion point for every manifest consumer (pipeline
     packages stage, update overrides, completions, packages list, reconfigure

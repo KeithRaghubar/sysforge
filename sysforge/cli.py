@@ -695,7 +695,12 @@ def _add_artifact_parser(sub):
     """artifact namespace: list, review, adopt, edit, deploy, remove."""
     p = sub.add_parser("artifact",
         help="inventory user-authored scripts, units, and pacman hooks")
-    asub = p.add_subparsers(dest="artifact_cmd", required=True)
+    asub = p.add_subparsers(dest="artifact_cmd")
+    # set_defaults() must come after add_subparsers(): argparse's subparsers
+    # action carries its own default=None that otherwise wins over an
+    # earlier set_defaults() call for the same dest (it updates the action's
+    # default in place only if the action already exists).
+    p.set_defaults(verb_cls=ArtifactListVerb, artifact_cmd="list")
 
     a_list = asub.add_parser("list", help="list managed artifacts")
     a_list.add_argument(
@@ -807,7 +812,9 @@ def _add_state_parser(sub):
     p = sub.add_parser("state",
         help="Inspect or repair build_state.toml (live install-state mirror).")
     state_sub = p.add_subparsers(dest="state_cmd")
-    state_sub.required = True
+    # set_defaults() must come after add_subparsers(): see the artifact
+    # parser above for why the ordering matters.
+    p.set_defaults(verb_cls=StateListVerb, state_cmd="list")
 
     p_list = state_sub.add_parser("list", help="Tabulate build_state.toml entries.")
     p_list.add_argument("--state-dir", metavar="DIR", dest="state_dir",
@@ -817,8 +824,9 @@ def _add_state_parser(sub):
     p_list.set_defaults(verb_cls=StateListVerb)
 
     p_repair = state_sub.add_parser("repair",
-        help="Re-parse PKGBUILDs to rewrite build_state.toml entries that contain "
-             "unexpanded shell variables (e.g. '$_pkgname-git').")
+        help="Repair build_state.toml: re-parse PKGBUILDs to rewrite entries with "
+             "unexpanded shell variables (e.g. '$_pkgname-git'), and normalize "
+             "known legacy build_mode tokens ('profiled' -> 'source_built').")
     p_repair.add_argument("--state-dir", metavar="DIR", dest="state_dir",
         help="Override state directory.")
     p_repair.add_argument("--dry-run", action="store_true", dest="dry_run",
@@ -1449,10 +1457,8 @@ def main():
 
 def _main():
     _strip_venv_from_path()
-    from sysforge.primitives.paths import migrate_legacy_user_dirs
     from sysforge.primitives.resource_guard import install as _install_resource_guard
     _install_resource_guard()
-    migrate_legacy_user_dirs()
     sys.argv[1:] = _patch_makepkg_argv(
         _extract_implicit_makepkg_flags(
             _hoist_global_flags(_hoist_verbosity_flags(sys.argv[1:]))

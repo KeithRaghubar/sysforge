@@ -55,7 +55,7 @@ def test_drift_detect_unknown_value_falls_back_to_fingerprint(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# resolve_repo_mode (back-compat: legacy "profiled" → "build_from_source")
+# resolve_repo_mode
 # ---------------------------------------------------------------------------
 
 class TestResolveRepoMode:
@@ -66,8 +66,27 @@ class TestResolveRepoMode:
     def test_explicit_build_from_source(self):
         assert resolve_repo_mode({"repo_mode": "build_from_source"}) == "build_from_source"
 
-    def test_legacy_profiled_maps_to_build_from_source(self):
-        assert resolve_repo_mode({"repo_mode": "profiled"}) == "build_from_source"
+    def test_profiled_is_rejected_not_silently_downgraded(self):
+        """3.0.0 removed the alias. It must fail loudly, never resolve to pacman.
+
+        Regression guard for the whitelist hazard: if "profiled" is still in
+        REPO_MODE_ACCEPTED_INPUTS but no longer mapped, _load_packages accepts
+        it and resolve_enum silently yields "pacman" — turning off the user's
+        source builds with no error at all.
+        """
+        from sysforge.primitives.config import REPO_MODE_ACCEPTED_INPUTS
+
+        assert "profiled" not in REPO_MODE_ACCEPTED_INPUTS
+
+    def test_profiled_raises_from_resolve_repo_mode_directly(self):
+        """The reject must live in resolve_repo_mode itself, not only at the
+        _load_packages whitelist gate — five of six callers (build_cmd,
+        reconfigure x2, update_assemble, toolchain, llvm_state) read
+        packages.toml directly and call resolve_repo_mode without ever passing
+        through that gate. If only the gate rejected "profiled", those callers
+        would still silently downgrade to "pacman"."""
+        with pytest.raises(ValueError, match="build_from_source"):
+            resolve_repo_mode({"repo_mode": "profiled"})
 
     def test_unknown_value_warns_and_falls_back_to_pacman(self, monkeypatch):
         # 2.3.0-F8: unknowns no longer pass through unvalidated. resolve_enum
@@ -80,15 +99,16 @@ class TestResolveRepoMode:
         assert resolve_repo_mode({"repo_mode": "hybrid"}) == "pacman"
         assert any("hybrid" in m and "repo_mode" in m for m in rec.messages)
 
-    def test_legacy_alias_maps_before_enum_check_no_warn(self, monkeypatch):
-        # The legacy→current mapping must run *before* the enum validation, so
-        # "profiled" resolves cleanly to a known value without a spurious warning.
+    def test_typo_value_still_warns_and_falls_back_not_strict(self, monkeypatch):
+        """Pin that the reject is narrow: an ordinary typo (not the removed
+        "profiled" token) still takes the lenient warn-and-default path,
+        proving resolve_repo_mode was not made strict in general."""
         import sysforge.primitives.config as cfg
 
         rec = _WarnRecorder()
         monkeypatch.setattr(cfg, "_log", rec)
-        assert resolve_repo_mode({"repo_mode": "profiled"}) == "build_from_source"
-        assert rec.messages == []
+        assert resolve_repo_mode({"repo_mode": "pacmn"}) == "pacman"
+        assert any("pacmn" in m and "repo_mode" in m for m in rec.messages)
 
 
 # ---------------------------------------------------------------------------
@@ -121,18 +141,13 @@ class TestPgoAllowlist:
 
 
 class TestNormalizePackageEntry:
-    def test_legacy_key_renamed(self):
+    def test_legacy_key_is_no_longer_renamed_on_read(self):
+        """3.0.0 removed the read-side rename; the stale key passes through."""
         assert normalize_package_entry({"name": "x", "pkgbuild_patch": True}) == {
-            "name": "x", "enable_build_from_source": True,
+            "name": "x", "pkgbuild_patch": True,
         }
 
-    def test_new_key_wins_when_both_present(self):
-        entry = normalize_package_entry(
-            {"name": "x", "pkgbuild_patch": True, "enable_build_from_source": False}
-        )
-        assert entry == {"name": "x", "enable_build_from_source": False}
-
-    def test_no_legacy_key_unchanged(self):
+    def test_current_key_passes_through(self):
         assert normalize_package_entry({"name": "x", "cache": False}) == {
             "name": "x", "cache": False,
         }

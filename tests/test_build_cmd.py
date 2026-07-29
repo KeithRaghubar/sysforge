@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import types
 
+import pytest
+
 import sysforge.build_cmd as build_cmd
 import sysforge.build_core as build_core
 import sysforge.pipeline.state as pipeline_state
@@ -147,6 +149,20 @@ def test_gate_global_repo_mode_opts_in(monkeypatch, tmp_path):
     assert [t.pkgbase for t in targets] == ["mesa"]
 
 
+def test_gate_global_repo_mode_profiled_raises(monkeypatch, tmp_path):
+    """End-to-end regression for the 2.6.1-F5 whitelist hazard: build_cmd reads
+    packages.toml directly and calls resolve_repo_mode without ever passing
+    through _load_packages's REPO_MODE_ACCEPTED_INPUTS gate. Before the fix,
+    the removed "profiled" token would silently resolve to "pacman" here and
+    the repo package would build unopted-in. It must now raise instead."""
+    pkg_path = tmp_path / "packages.toml"
+    pkg_path.write_text('[build]\nrepo_mode = "profiled"\n')
+    cfg = {"packages_file": str(pkg_path)}
+    with pytest.raises(ValueError, match="build_from_source"):
+        _run_build(monkeypatch, tmp_path, "mesa", is_repo=True,
+                   force=False, interactive=False, config=cfg)
+
+
 def test_gate_does_not_apply_to_non_repo_package(monkeypatch, tmp_path):
     """An AUR/git target is never gated — built unconditionally, no prompt."""
     cfg = {"packages_file": str(tmp_path / "packages.toml")}
@@ -155,8 +171,10 @@ def test_gate_does_not_apply_to_non_repo_package(monkeypatch, tmp_path):
     assert [t.pkgbase for t in targets] == ["neovim-git"]
 
 
-def test_gate_legacy_pkgbuild_patch_counts_as_opted_in(monkeypatch, tmp_path):
-    """A pre-rename pkgbuild_patch=true entry still counts as opted in."""
+def test_gate_legacy_pkgbuild_patch_no_longer_counts_as_opted_in(monkeypatch, tmp_path):
+    """3.0.0 removed the read-side rename: a pre-rename ``pkgbuild_patch=true``
+    entry no longer counts as opted in — it's gated same as an absent entry.
+    (A rewrite via `packages add`/`remove` still migrates the key.)"""
     pkg_path = tmp_path / "packages.toml"
     pkg_path.write_text(
         '[build]\npkgbuild_src_dir = "~/src"\n\n'
@@ -165,7 +183,7 @@ def test_gate_legacy_pkgbuild_patch_counts_as_opted_in(monkeypatch, tmp_path):
     cfg = {"packages_file": str(pkg_path)}
     targets, _ = _run_build(monkeypatch, tmp_path, "mesa", is_repo=True,
                             force=False, interactive=False, config=cfg)
-    assert [t.pkgbase for t in targets] == ["mesa"]
+    assert targets == []
 
 
 # ---------------------------------------------------------------------------

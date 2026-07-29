@@ -52,14 +52,16 @@ share one value space: `source_built` means "a plain from-source build" in both 
 the profile layer extracts the PKGBUILD's embedded profile, build_state stamps it
 as the rebuild-on-update marker.
 
-Two legacy tokens are normalized **on read only** (never written into new data),
-collapsing the historically-overloaded vocabulary: build_state maps
-`profiled → source_built` (`BuildState.__init__`); the profile layer maps
-`patched_pkgbuild → source_built` (`profile.normalize_build_mode`, applied at the
-`get_build_mode` read chokepoint). The "does this mode extract the embedded
-PKGBUILD profile?" gate has one home — `profile.build_mode_uses_extracted_profile`
-(`source_built`/`kernel`, legacy token accepted) — consumed by `flag_drift` and
-`makepkg_wrapper`; don't re-spell the membership inline.
+The profile layer normalizes its own legacy token **on read only** (never written
+into new data): `patched_pkgbuild → source_built` (`profile.normalize_build_mode`,
+applied at the `get_build_mode` read chokepoint). The build_state layer's
+equivalent read alias, `profiled → source_built` (formerly `BuildState.__init__`),
+was removed in 3.0.0 — a pre-rename `build_state.toml` entry now reads `profiled`
+verbatim until `sysforge state repair` rewrites it. The "does this mode extract
+the embedded PKGBUILD profile?" gate has one home —
+`profile.build_mode_uses_extracted_profile` (`source_built`/`kernel`, legacy
+profile-layer token accepted) — consumed by `flag_drift` and `makepkg_wrapper`;
+don't re-spell the membership inline.
 
 ### Toolchain field
 

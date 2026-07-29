@@ -119,10 +119,14 @@ def test_inert_predicate():
     assert not entry_is_inert({"name": "foo", "reason": "x"})
 
 
-def test_inert_predicate_honors_legacy_key():
-    """A legacy ``pkgbuild_patch`` entry must count as non-inert so the
-    auto-prune on write-back never silently deletes a pre-rename config."""
-    assert not entry_is_inert({"name": "foo", "pkgbuild_patch": True})
+def test_inert_predicate_is_legacy_agnostic():
+    """`entry_is_inert` no longer knows about the legacy `pkgbuild_patch` key —
+    a raw legacy-only entry parses as inert here. The data-loss guard against
+    silently pruning a pre-rename config lives one level up: `_rewrite_packages_toml`
+    migrates the key over the raw lines *before* parsing entries and judging
+    inertness (see test_legacy_only_entry_is_migrated_not_pruned), so this
+    predicate never actually sees a raw legacy key in that flow."""
+    assert entry_is_inert({"name": "foo", "pkgbuild_patch": True})
 
 
 def test_add_prunes_existing_inert_entries(tmp_path):
@@ -167,7 +171,9 @@ def test_rewrite_preserves_header_comment(tmp_path):
         '# Second comment line.\n\n'
         '[build]\npkgbuild_src_dir = "~/src"\n',
     )
-    _rewrite_packages_toml(path, append='\n[[package]]\nname = "x"\nenable_build_from_source = true\n')
+    _rewrite_packages_toml(
+        path, append='\n[[package]]\nname = "x"\nenable_build_from_source = true\n'
+    )
     text = path.read_text()
     assert text.startswith("# packages.toml — managed by sysforge packages\n")
     assert "# Second comment line." in text
@@ -225,3 +231,51 @@ def test_add_group_creates_missing_file(tmp_path):
     path = tmp_path / "packages.toml"
     cmd_packages_add_group(_group_args("kde", path))
     assert "kde" in tomllib.loads(path.read_text()).get("group", {})
+
+
+def test_write_side_rewrite_still_migrates_legacy_key(tmp_path):
+    """The read path is gone in 3.0.0, but any rewrite still cleans the key.
+
+    This is why the read-path removal is low-risk: a packages.toml touched by
+    `packages add`/`remove` since the rename has already self-migrated.
+    """
+    from sysforge.packages_cmd import _rewrite_packages_toml
+
+    path = tmp_path / "packages.toml"
+    path.write_text(
+        '[[package]]\n'
+        'name = "foo"\n'
+        'source = "aur"\n'
+        'pkgbuild_patch = true\n',
+        encoding="utf-8")
+
+    _rewrite_packages_toml(path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "enable_build_from_source = true" in text
+    assert "pkgbuild_patch" not in text
+
+
+def test_legacy_only_entry_is_migrated_not_pruned(tmp_path):
+    """Pins the fix ordering: the legacy-key migration in
+    `_rewrite_packages_toml` must run *before* the inertness/prune decision.
+
+    An entry whose ONLY override field is the legacy `pkgbuild_patch` key
+    must survive a rewrite (migrated in place) rather than being silently
+    deleted by the auto-prune as if it had no override at all.
+    """
+    from sysforge.packages_cmd import _rewrite_packages_toml
+
+    path = tmp_path / "packages.toml"
+    path.write_text(
+        '[[package]]\n'
+        'name = "only-legacy"\n'
+        'pkgbuild_patch = true\n',
+        encoding="utf-8")
+
+    _rewrite_packages_toml(path)
+
+    text = path.read_text(encoding="utf-8")
+    assert 'name = "only-legacy"' in text
+    assert "enable_build_from_source = true" in text
+    assert "pkgbuild_patch" not in text

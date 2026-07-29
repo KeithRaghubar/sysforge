@@ -44,18 +44,20 @@ def test_group_defaults_inherit_to_members():
     assert entry["group"] == "patched"
 
 
-def test_legacy_key_normalized_on_expand():
-    """A pre-rename ``pkgbuild_patch`` is normalized to the new key name, for
-    both explicit entries and group defaults."""
+def test_legacy_key_no_longer_normalized_on_expand():
+    """3.0.0 removed the read-side rename; a pre-rename ``pkgbuild_patch``
+    entry passes through unchanged for both explicit entries and group
+    defaults (the write-side rewrite in ``packages_cmd`` still migrates it
+    on the next file write)."""
     data = {
         "package": [{"name": "htop", "pkgbuild_patch": True}],
         "group": {"patched": {"packages": ["mesa-git"], "pkgbuild_patch": True}},
     }
     entries = {e["name"]: e for e in expand_package_groups(data)}
-    assert entries["htop"]["enable_build_from_source"] is True
-    assert "pkgbuild_patch" not in entries["htop"]
-    assert entries["mesa-git"]["enable_build_from_source"] is True
-    assert "pkgbuild_patch" not in entries["mesa-git"]
+    assert "enable_build_from_source" not in entries["htop"]
+    assert entries["htop"]["pkgbuild_patch"] is True
+    assert "enable_build_from_source" not in entries["mesa-git"]
+    assert entries["mesa-git"]["pkgbuild_patch"] is True
 
 
 def test_explicit_entry_wins_over_group():

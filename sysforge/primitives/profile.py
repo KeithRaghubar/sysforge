@@ -743,8 +743,9 @@ def get_build_mode(matched_rules, config) -> str | None:
 #                        | build_state  | layer extracts the PKGBUILD's embedded
 #                        |              | profile, build_state stamps it as the
 #                        |              | "rebuild me on update" marker. Legacy
-#                        |              | profile token: "patched_pkgbuild";
-#                        |              | legacy build_state token: "profiled".
+#                        |              | profile token: "patched_pkgbuild".
+#                        |              | (The legacy build_state token,
+#                        |              | "profiled", was removed in 3.0.0.)
 #   "kernel"             | profile +    | kernel build; extracts embedded profile,
 #                        | build_state  | coexist-renamed when optimized.
 #   "pacman"             | build_state  | installed from a binary repo (deferred
@@ -756,10 +757,12 @@ def get_build_mode(matched_rules, config) -> str | None:
 #   "propeller_kernel" / |              | _OPTIMIZED_BUILD_MODES → -sysforge.
 #   "bolt_llvm"          |              |
 #
-# The two legacy tokens are normalized on read (never on write of new data):
-# build_state normalizes "profiled"→"source_built" (BuildState.__init__);
-# this module normalizes the profile token "patched_pkgbuild"→"source_built"
-# (normalize_build_mode, applied at the get_build_mode read chokepoint).
+# This module normalizes the legacy profile token "patched_pkgbuild"→
+# "source_built" on read, never on write of new data (normalize_build_mode,
+# applied at the get_build_mode read chokepoint). The build_state layer's
+# equivalent read alias ("profiled"→"source_built") was removed in 3.0.0; a
+# pre-rename build_state.toml token now survives verbatim until
+# `sysforge state repair` rewrites it.
 
 # Profile-layer build_mode values whose build wants the PKGBUILD's *embedded*
 # profile extracted (a plain from-source build and a kernel build). The shared
@@ -768,9 +771,9 @@ def get_build_mode(matched_rules, config) -> str | None:
 # makepkg_wrapper) route through it so the legacy alias is honoured in one place.
 _EXTRACTED_PROFILE_BUILD_MODES = frozenset({"source_built", "kernel"})
 
-# Legacy profile-layer build_mode token → canonical token. Mirrors the
-# build_state ``"profiled"`` → ``"source_built"`` read-alias; both collapse the
-# overloaded historical vocabulary onto one value space.
+# Legacy profile-layer build_mode token → canonical token. (The build_state
+# layer's equivalent "profiled"→"source_built" read alias was removed in
+# 3.0.0; this profile-layer alias is a separate surface, not in scope there.)
 _LEGACY_BUILD_MODE_ALIASES = {"patched_pkgbuild": "source_built"}
 
 

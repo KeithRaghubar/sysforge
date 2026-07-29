@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-07\-26"
+.TH "sysforge" "1" "2026\-07\-28"
 .PP
 .PP
 .SH NAME
@@ -753,7 +753,7 @@ Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
 .PP
 \fBsysforge state repair\fR [\fIOPTIONS\fR]
 .PP
-Re\-parse PKGBUILDs to rewrite build_state.\&toml entries that contain unexpanded shell variables (e.\&g.\& '\&$_pkgname\-git'\&).\&
+Repair build_state.\&toml: re\-parse PKGBUILDs to rewrite entries with unexpanded shell variables (e.\&g.\& '\&$_pkgname\-git'\&), and normalize known legacy build_mode tokens ('\&profiled'\& \-> '\&source_built'\&).\&
 .PP
 \fB\-\-state\-dir\fR \fIDIR\fR
 .RS 4

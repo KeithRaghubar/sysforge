@@ -67,48 +67,8 @@ class Deprecation:
 
 # The registry. `deprecated_in` values are recovered from git history (the commit
 # that introduced the replacement, resolved to its first containing tag), not
-# guessed. Records 1 and 5 have been deprecated since 1.0.0.
+# guessed.
 _REGISTRY: tuple[Deprecation, ...] = (
-    Deprecation(
-        surface="git.pull_timeout",
-        kind=CONFIG_KEY,
-        function=COMPAT,
-        deprecated_in="1.0.0",
-        removed_in="3.0.0",
-        replacement="git.fetch_timeout",
-    ),
-    Deprecation(
-        surface="packages.pkgbuild_patch",
-        kind=CONFIG_KEY,
-        function=COMPAT,
-        deprecated_in="2.0.0",
-        removed_in="3.0.0",
-        replacement="enable_build_from_source",
-    ),
-    Deprecation(
-        surface="packages.repo_mode=profiled",
-        kind=CONFIG_KEY,
-        function=COMPAT,
-        deprecated_in="2.0.0",
-        removed_in="3.0.0",
-        replacement="build_from_source",
-    ),
-    Deprecation(
-        surface="build_state.build_mode=profiled",
-        kind=STATE_TOKEN,
-        function=COMPAT,
-        deprecated_in="2.0.0",
-        removed_in="3.0.0",
-        replacement="source_built",
-    ),
-    Deprecation(
-        surface="paths.legacy_user_dirs",
-        kind=PATH_DIR,
-        function=COMPAT,
-        deprecated_in="1.0.0",
-        removed_in="3.0.0",
-        replacement="the XDG cache/state dirs",
-    ),
     Deprecation(
         surface="doctor.flat_flags",
         kind=CLI_FLAG,
@@ -122,8 +82,8 @@ _REGISTRY: tuple[Deprecation, ...] = (
 
 _BY_SURFACE = {d.surface: d for d in _REGISTRY}
 
-# Once-per-run dedup. Load-bearing, not cosmetic: git.pull_timeout is read from
-# two modules and config reads repeat within a run.
+# Once-per-run dedup. Load-bearing, not cosmetic: config and state reads repeat
+# within a run, so without dedup a single surface would warn on every read.
 _warned: set[str] = set()
 
 

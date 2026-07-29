@@ -25,26 +25,34 @@ from sysforge.primitives.source_sync import (
     SyncRequest, SyncResult, STATUS_DIVERGED, get_scheduler,
 )
 from sysforge.primitives.config import load_sysforge_toml, resolve_repo_track
-from sysforge.primitives import deprecations
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.update_common import _SYNC_BLOCKING_STATUSES, _is_vcs
 
 _log = log.get_logger("UPDATE")
 
+# Seconds before a `git fetch` gives up when `[git] fetch_timeout` is unset.
+_FETCH_TIMEOUT_DEFAULT = 30
+
 
 def _resolve_fetch_timeout(git_cfg: dict) -> int:
     """Single read chokepoint for `[git] fetch_timeout`.
 
-    Honours the deprecated `pull_timeout` alias (registry surface
-    `git.pull_timeout`, removed in 3.0.0). Two modules need this value; routing
-    both through this one helper is what keeps the alias to one live path.
+    Two modules need this value (`update_sync`, `pipeline/stages/toolchain`);
+    routing both through one helper keeps the default in one place.
+
+    The `pull_timeout` alias was removed in 3.0.0. A stale key is not honoured,
+    but it is called out rather than ignored: it is the one removed surface
+    whose silent fallback is *plausible* — a 600s timeout quietly becoming 30s
+    reads as a flaky network, not as a config change. Warning is not a compat
+    read path (the value is never used) so it carries no registry record.
     """
     if "fetch_timeout" in git_cfg:
         return git_cfg["fetch_timeout"]
     if "pull_timeout" in git_cfg:
-        deprecations.warn_used("git.pull_timeout")
-        return git_cfg["pull_timeout"]
-    return 30
+        _log.warn("`[git] pull_timeout` was removed in 3.0.0 and is ignored — "
+                  "rename it to `fetch_timeout` to keep your value "
+                  f"(using the default {_FETCH_TIMEOUT_DEFAULT}s)")
+    return _FETCH_TIMEOUT_DEFAULT
 
 
 def _sync_sources(

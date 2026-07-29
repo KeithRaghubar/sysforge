@@ -28,7 +28,7 @@ color = "auto"
 # Timeout in seconds for the per-source git fetch sysforge runs to refresh a
 # PKGBUILD checkout during `sysforge update` (a full-history fetch + compare via
 # the source-sync scheduler, never `git pull --rebase`). Set to 0 to disable the
-# timeout (wait indefinitely). The legacy key `pull_timeout` is still honoured.
+# timeout (wait indefinitely).
 fetch_timeout = 30
 
 # Timeout in seconds for git clone / pkgctl repo clone operations.

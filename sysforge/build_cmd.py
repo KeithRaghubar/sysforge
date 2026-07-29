@@ -139,7 +139,8 @@ def _load_repo_optin(config) -> tuple[dict, set[str]]:
 
     ``opted_in_names`` is the set of per-package names whose
     ``enable_build_from_source`` is true. Reads through
-    ``expand_package_groups`` so the legacy ``pkgbuild_patch`` key is honored.
+    ``expand_package_groups``. The legacy ``pkgbuild_patch`` key is no longer
+    honored on read as of 3.0.0 — only the current key counts.
     A missing/unreadable file yields ``({}, set())``.
     """
     import tomllib

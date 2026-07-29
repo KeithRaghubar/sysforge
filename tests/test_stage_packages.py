@@ -388,7 +388,7 @@ source = "repo"
 """
 
 
-def test_repo_mode_profiled_builds_repo_pkg_from_source(tmp_path):
+def test_repo_mode_build_from_source_builds_repo_pkg_from_source(tmp_path):
     """repo_mode=build_from_source: repo packages are built via makepkg, not pacman."""
     builds_dir = tmp_path / "builds"
     make_pkgbuild(builds_dir, "htop")
@@ -434,6 +434,17 @@ def test_repo_mode_invalid_raises(tmp_path):
     """Invalid repo_mode value raises a clear error at load time."""
     pkg_file = tmp_path / "packages.toml"
     pkg_file.write_text('[build]\nrepo_mode = "hybrid"\n\n[[package]]\nname = "htop"\nsource = "repo"\n')
+    with pytest.raises(ValueError, match="Invalid.*repo_mode"):
+        _load_packages({"packages_file": str(pkg_file)})
+
+
+def test_repo_mode_profiled_hard_fails(tmp_path):
+    """3.0.0 removed the "profiled" alias — it must hard-fail at load time, not
+    silently resolve to pacman (the whitelist hazard: see 2.6.1-F5)."""
+    pkg_file = tmp_path / "packages.toml"
+    pkg_file.write_text(
+        '[build]\nrepo_mode = "profiled"\n\n[[package]]\nname = "htop"\nsource = "repo"\n'
+    )
     with pytest.raises(ValueError, match="Invalid.*repo_mode"):
         _load_packages({"packages_file": str(pkg_file)})
 

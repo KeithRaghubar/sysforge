@@ -25,8 +25,18 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives import journal
+from sysforge.primitives.build_state import BUILD_MODE_SOURCE
 from sysforge.primitives.pager import maybe_pager as _maybe_pager
 from sysforge.primitives.prompt import prompt_choice
+
+# Pre-3.0.0 build_mode tokens that a repair can safely rewrite to their
+# current equivalent. Deliberately a closed, known mapping — NOT "anything
+# unrecognized" — coercing arbitrary garbage to BUILD_MODE_SOURCE would
+# invent build history that was never true. "profiled" was the sole legacy
+# build_state token (see former build_state.build_mode=profiled compat
+# record, removed in 3.0.0); this is the only entry the repair command
+# understands.
+_LEGACY_BUILD_MODE_TOKENS = {"profiled": BUILD_MODE_SOURCE}
 
 
 def cmd_state_list(args):
@@ -109,19 +119,32 @@ def _print_untracked_foreign(tracked: set[str]) -> None:
 
 
 def cmd_state_repair(args):
-    """Re-parse PKGBUILDs for build_state entries containing unexpanded shell vars
-    and rewrite them with correctly expanded pkgname/pkgbase/pkgver/pkgrel/epoch.
+    """Repair build_state.toml entries, via two independent passes.
 
-    An entry is considered broken if its key or any of pkgbase/pkgver/pkgrel/epoch
-    contains a literal ``$``.  Broken entries are grouped by pkgbuild_dir; the
-    PKGBUILD for each dir is re-parsed through the current (variable-expanding)
-    parser, and all entries under that dir are replaced with the expected set.
-    build_mode, flags_string, and built_at are carried over from the first old
-    entry in the group so true build history is preserved.
+    1. Shell-var repair: re-parse PKGBUILDs for entries containing unexpanded
+       shell variables and rewrite them with correctly expanded
+       pkgname/pkgbase/pkgver/pkgrel/epoch. An entry is considered broken if
+       its key or any of pkgbase/pkgver/pkgrel/epoch contains a literal ``$``.
+       Broken entries are grouped by pkgbuild_dir; the PKGBUILD for each dir
+       is re-parsed through the current (variable-expanding) parser, and all
+       entries under that dir are replaced with the expected set. flags_string
+       and built_at are carried over from the first old entry in the group so
+       true build history is preserved; build_mode is carried over too, but
+       through the same legacy-token normalization as pass 2 below, so a
+       group repair can't reintroduce a stale token.
 
-    Skips a group when the PKGBUILD is missing or when re-parse still yields
-    ``$`` in any relevant field (e.g. shell parameter expansion the parser
-    cannot statically resolve).
+       Skips a group when the PKGBUILD is missing or when re-parse still
+       yields ``$`` in any relevant field (e.g. shell parameter expansion the
+       parser cannot statically resolve).
+
+    2. Legacy build_mode repair: independent of the above — needs no
+       PKGBUILD and no re-parse, just an in-place rewrite of a known-stale
+       token (``_LEGACY_BUILD_MODE_TOKENS``) to its current equivalent. Runs
+       over every entry not already handled by pass 1, so a valid entry
+       whose only defect is a pre-3.0.0 build_mode is fixed even when its
+       PKGBUILD is missing. An unrecognized-but-not-legacy build_mode (e.g.
+       a typo) is left alone rather than coerced — only the closed set of
+       known legacy tokens is rewritten.
     """
     from sysforge.primitives.build_state import BuildState
     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
@@ -201,6 +224,7 @@ def cmd_state_repair(args):
 
         template = group[0][1]
         build_mode = template.get("build_mode")
+        build_mode = _LEGACY_BUILD_MODE_TOKENS.get(build_mode, build_mode)
         flags_string = template.get("flags_string")
         built_at = template.get("built_at")
 
@@ -224,7 +248,20 @@ def cmd_state_repair(args):
 
         plans.append((pdir, delete_keys, create_records))
 
-    if not plans and not skipped_missing and not skipped_unresolvable:
+    # Pass 2: legacy build_mode repair. Independent of pass 1's grouping —
+    # skip only entries pass 1 is already rewriting (their build_mode
+    # normalization happens above, as part of the group's create_records).
+    handled_by_plans = {n for _, dels, _ in plans for n in dels}
+    stale_mode_fixes: list[tuple[str, str, str]] = []
+    for name, rec in entries.items():
+        if name in handled_by_plans:
+            continue
+        old_mode = rec.get("build_mode")
+        new_mode = _LEGACY_BUILD_MODE_TOKENS.get(old_mode)
+        if new_mode is not None:
+            stale_mode_fixes.append((name, old_mode, new_mode))
+
+    if not plans and not stale_mode_fixes and not skipped_missing and not skipped_unresolvable:
         print("No broken entries found in build_state.toml.")
         return
 
@@ -244,6 +281,13 @@ def cmd_state_repair(args):
                 print(f"    + create  {name!r:<40}  pkgbase={rec['pkgbase']!r}  version={ver}")
             print()
 
+    if stale_mode_fixes:
+        label = "Would rewrite" if dry_run else "Rewriting"
+        print(f"{label} {len(stale_mode_fixes)} legacy build_mode value(s):")
+        for name, old_mode, new_mode in stale_mode_fixes:
+            print(f"  {name!r}: build_mode {old_mode!r} -> {new_mode!r}")
+        print()
+
     if skipped_missing:
         print(f"Skipped {len(skipped_missing)} group(s) — PKGBUILD not found:")
         for pdir, names in skipped_missing:
@@ -257,7 +301,7 @@ def cmd_state_repair(args):
             print(f"    reason: {reason}")
         print()
 
-    if not plans:
+    if not plans and not stale_mode_fixes:
         return
     if dry_run:
         print("Dry run — no changes written.  Re-run without --dry-run to apply.")
@@ -280,8 +324,19 @@ def cmd_state_repair(args):
                 built_at=rec.get("built_at"),
             )
             total_created += 1
+
+    total_fixed = 0
+    for name, _, new_mode in stale_mode_fixes:
+        bs._data[name]["build_mode"] = new_mode
+        total_fixed += 1
+
     bs.save()
-    print(f"Repaired {total_created} entry(ies) in {bs.path}")
+    summary = []
+    if total_created:
+        summary.append(f"{total_created} entry(ies) rebuilt from PKGBUILD")
+    if total_fixed:
+        summary.append(f"{total_fixed} legacy build_mode value(s) normalized")
+    print(f"Repaired {' and '.join(summary)} in {bs.path}")
 
 
 def cmd_state_orphans(args):

@@ -740,3 +740,74 @@ def test_help_hides_internal_completions_verb():
     # `completions` should not appear as a listed COMMAND entry.
     assert "\n    completions" not in text
     assert "completions:" not in text
+
+
+# ---------------------------------------------------------------------------
+# Parent-verb subcommand default (2.6.1-F6)
+# ---------------------------------------------------------------------------
+#
+# `artifact` and `state` gain a default subverb (their single obvious
+# read-only "show me" view), matching the `doctor`/`packages` pattern.
+# `config`/`run` deliberately keep requiring a subcommand — their subverbs
+# mutate or diverge with no natural landing point.
+
+def test_bare_artifact_defaults_to_artifact_list():
+    from sysforge.cli import ArtifactListVerb, _build_parser
+
+    ns = _build_parser().parse_args(["artifact"])
+    assert ns.verb_cls is ArtifactListVerb
+    assert ns.artifact_cmd == "list"
+
+
+def test_bare_state_defaults_to_state_list():
+    from sysforge.cli import StateListVerb, _build_parser
+
+    ns = _build_parser().parse_args(["state"])
+    assert ns.verb_cls is StateListVerb
+    assert ns.state_cmd == "list"
+
+
+def test_mutating_namespaces_still_require_a_subcommand():
+    """The two-tier rule: no default where subverbs mutate or diverge."""
+    import pytest
+    from sysforge.cli import _build_parser
+
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["config"])
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["run"])
+
+
+def test_bare_artifact_verb_actually_runs(monkeypatch, capsys):
+    """Parsing a default is not enough — the verb must also execute cleanly
+    off the parent namespace, i.e. it must not reach for an attribute only
+    its own subparser defines (the failure mode the `doctor` system/pkg
+    split hit with `packages=[]`)."""
+    from sysforge.primitives import artifacts
+    from sysforge.cli import _build_parser
+
+    monkeypatch.setattr(artifacts, "unified_rows", lambda registry: [])
+    monkeypatch.setattr(artifacts, "script_root_on_path", lambda: True)
+
+    ns = _build_parser().parse_args(["artifact"])
+    result = ns.verb_cls().execute(ns, ns.verb_cls().pre_check(ns))
+    assert result.exit_code == 0
+    assert "No managed artifacts." in capsys.readouterr().err
+
+
+def test_bare_state_verb_actually_runs(monkeypatch, tmp_path, capsys):
+    """Same runtime guarantee for `sysforge state` -> StateListVerb."""
+    from sysforge.primitives.build_state import BuildState
+    from sysforge.cli import _build_parser
+
+    monkeypatch.setattr(BuildState, "all_packages", lambda self: {})
+    monkeypatch.setattr(
+        "sysforge.pipeline.state.resolve_state_dir",
+        lambda override: (tmp_path, None),
+    )
+    monkeypatch.setattr("sysforge.state_cmd._print_untracked_foreign", lambda s: None)
+
+    ns = _build_parser().parse_args(["state"])
+    result = ns.verb_cls().execute(ns, ns.verb_cls().pre_check(ns))
+    assert result.exit_code == 0
+    assert "No build state recorded" in capsys.readouterr().out

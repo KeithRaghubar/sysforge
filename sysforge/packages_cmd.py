@@ -33,7 +33,6 @@ from sysforge import log
 _log = log.get_logger("PACKAGES")
 from sysforge.primitives.config import (
     load_config,
-    normalize_package_entry,
     PKG_KEY_BUILD_FROM_SOURCE,
     _LEGACY_PKG_KEY_BUILD_FROM_SOURCE,
 )
@@ -84,12 +83,16 @@ def entry_toml_block(entry: dict) -> str:
 def entry_is_inert(entry: dict) -> bool:
     """An entry is inert if it has no behavior-changing override field set.
 
-    Normalizes the legacy per-package key first so an entry carrying only
-    ``pkgbuild_patch`` (pre-rename configs) counts as non-inert — otherwise
-    ``_rewrite_packages_toml``'s auto-prune would silently delete it (data loss).
+    Deliberately legacy-agnostic. ``_rewrite_packages_toml`` runs the legacy-key
+    migration over the raw lines *before* parsing entries and judging inertness,
+    so on the write path a pre-rename ``pkgbuild_patch`` entry already carries
+    ``enable_build_from_source`` by the time it reaches here. The other callers
+    (``update.py``, ``update_assemble.py``) pass raw ``expand_package_groups``
+    output, where a stale ``pkgbuild_patch`` is simply *not* an override — which
+    is correct as of 3.0.0, since the read-side alias was removed (2.6.1-F5).
+    Either way this predicate needs no legacy-key knowledge.
     """
-    normalized = normalize_package_entry(dict(entry))
-    return not any(k in normalized for k in OVERRIDE_FIELDS)
+    return not any(k in entry for k in OVERRIDE_FIELDS)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +143,21 @@ def _rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | Non
         if not lines[-1].endswith("\n"):
             lines[-1] = lines[-1] + "\n"
 
+    # Migrate the legacy per-package key in place on every rewrite, *before*
+    # block-parsing and the prune decision below — so a pre-rename entry is
+    # already carrying the current key name when `entry_is_inert` judges it,
+    # and is migrated rather than pruned as inert. Anchored at the start of
+    # the line (after indentation) so it never touches the key name embedded
+    # in a reason string or comment. Substitution never changes line count,
+    # so it's safe to apply ahead of the index-based blank-line peeling below.
+    _legacy_key_re = re.compile(
+        rf"^(\s*){re.escape(_LEGACY_PKG_KEY_BUILD_FROM_SOURCE)}(\s*=)"
+    )
+    lines = [
+        _legacy_key_re.sub(rf"\1{PKG_KEY_BUILD_FROM_SOURCE}\2", line)
+        for line in lines
+    ]
+
     keep_lines: list[str] = []
     drop_ranges: list[tuple[int, int]] = []
 
@@ -161,17 +179,6 @@ def _rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | Non
         for i in range(peel_start, end):
             drop_set.add(i)
     keep_lines = [line for i, line in enumerate(lines) if i not in drop_set]
-
-    # Migrate the legacy per-package key in place on every rewrite. Anchored at
-    # the start of the line (after indentation) so it never touches the key name
-    # embedded in a reason string or comment.
-    _legacy_key_re = re.compile(
-        rf"^(\s*){re.escape(_LEGACY_PKG_KEY_BUILD_FROM_SOURCE)}(\s*=)"
-    )
-    keep_lines = [
-        _legacy_key_re.sub(rf"\1{PKG_KEY_BUILD_FROM_SOURCE}\2", line)
-        for line in keep_lines
-    ]
 
     # Drop trailing blank-line runs to avoid growth across rewrites.
     while keep_lines and keep_lines[-1].strip() == "":
@@ -218,7 +225,7 @@ def cmd_packages_list(args):
             name = e.get("name", "")
             source = e.get("source", "")
             flags = []
-            if e.get(PKG_KEY_BUILD_FROM_SOURCE) or e.get(_LEGACY_PKG_KEY_BUILD_FROM_SOURCE):
+            if e.get(PKG_KEY_BUILD_FROM_SOURCE):
                 flags.append(PKG_KEY_BUILD_FROM_SOURCE)
             if e.get("cache") is False:
                 flags.append("cache=false")

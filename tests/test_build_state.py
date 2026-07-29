@@ -160,30 +160,16 @@ def test_build_mode_in_serialized_toml(tmp_path):
 # Legacy "profiled" build_mode normalization (back-compat)
 # ---------------------------------------------------------------------------
 
-def test_legacy_profiled_build_mode_normalized_on_load(tmp_path):
-    """A pre-rename file with build_mode = "profiled" is read as "source_built"."""
-    (tmp_path / "build_state.toml").write_text(
-        '["mesa"]\n'
-        'pkgver = "1.0"\npkgrel = "1"\nepoch = "0"\npkgbase = "mesa"\n'
-        'build_mode = "profiled"\n'
-    )
-    bs = BuildState(tmp_path)
-    assert bs.get("mesa")["build_mode"] == "source_built"
+def test_legacy_profiled_build_mode_is_no_longer_normalized(tmp_path):
+    """3.0.0 removed the read alias; a pre-rename token survives verbatim.
 
-
-def test_legacy_profiled_build_mode_self_migrates_on_save(tmp_path):
-    """The legacy token is rewritten to the new value on the next save()."""
+    It no longer compares equal to BUILD_MODE_SOURCE, which is the user-visible
+    cost: such an entry reads as an unknown build mode until `state repair`.
+    """
     (tmp_path / "build_state.toml").write_text(
-        '["mesa"]\n'
-        'pkgver = "1.0"\npkgrel = "1"\nepoch = "0"\npkgbase = "mesa"\n'
-        'build_mode = "profiled"\n'
-    )
-    bs = BuildState(tmp_path)
-    bs.save()
-    with open(bs.path, "rb") as f:
-        data = tomllib.load(f)
-    assert data["mesa"]["build_mode"] == "source_built"
-    assert "profiled" not in (tmp_path / "build_state.toml").read_text()
+        '[foo]\npkgver = "1"\nbuild_mode = "profiled"\n', encoding="utf-8")
+    st = BuildState(tmp_path)
+    assert st._data["foo"]["build_mode"] == "profiled"
 
 
 # ---------------------------------------------------------------------------
@@ -642,7 +628,7 @@ def test_sync_adds_pacman_mode_entries_for_new_installs(tmp_path):
     assert "flags_string" not in entry
 
 
-def test_sync_preserves_profiled_entries(tmp_path):
+def test_sync_preserves_source_built_entries(tmp_path):
     bs = BuildState(tmp_path)
     _record(bs, pkgname="htop", pkgver="3.4.1", build_mode="source_built")
     # Pre-record carries pkgbuild_dir; sync must not overwrite it.

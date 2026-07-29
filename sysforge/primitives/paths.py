@@ -21,7 +21,6 @@ data under $XDG_DATA_HOME (default ~/.local/share) — four separate roots,
 each honouring its env var when set.
 """
 import os
-import shutil
 from pathlib import Path
 
 # The config dir holds the TOML files directly (env override) or falls back to
@@ -66,35 +65,3 @@ def resolve_packages_path(config: dict) -> Path:
     if raw:
         return Path(raw).expanduser()
     return PACKAGES_PATH
-
-
-_LEGACY_USER_DIRS = (
-    (Path.home() / ".config/sysforge/cache", USER_CACHE_DIR),
-    (Path.home() / ".config/sysforge/state", USER_STATE_DIR),
-)
-
-
-def migrate_legacy_user_dirs() -> None:
-    """Best-effort one-shot move of the legacy consolidated dirs
-    ~/.config/sysforge/{cache,state} into their XDG-correct homes
-    ($XDG_CACHE_HOME/sysforge and $XDG_STATE_HOME/sysforge, default
-    ~/.cache/sysforge and ~/.local/state/sysforge). Idempotent; never raises."""
-    from sysforge import log
-    from sysforge.primitives import deprecations
-    _log = log.get_logger("PATHS")
-
-    for old, new in _LEGACY_USER_DIRS:
-        try:
-            if not old.exists() or old == new or old.resolve() == new.resolve():
-                continue
-            deprecations.warn_used("paths.legacy_user_dirs")
-            if new.exists() and any(new.iterdir()):
-                # Don't clobber: legacy dir is informational only at this point.
-                continue
-            new.parent.mkdir(parents=True, exist_ok=True)
-            if new.exists():
-                new.rmdir()
-            shutil.move(str(old), str(new))
-            _log.info(f"migrated {old} → {new}")
-        except (OSError, shutil.Error) as e:
-            _log.warn(f"could not migrate {old} → {new}: {e}")

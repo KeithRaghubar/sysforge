@@ -2,6 +2,16 @@
 
 Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`, `setup`, `log`, `completions`, `packages …`, `state …`, `config …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `completions_cmd.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(_dispatch(args.verb_cls, args))` — a thin wrapper around `run_verb` that adds the optional cProfile harness (see *Global profiling flags* below).
 
+**Parent-verb subcommand default (invariant).** A verb namespace declares a
+default subverb via `set_defaults(verb_cls=…, <dest>=…)` on the *parent* parser
+**iff** it has a single obvious read-only "show me" view; otherwise its
+subparsers set `required = True`. Today: `doctor` → `system`, `packages` →
+`list`, `artifact` → `list`, `state` → `list` carry defaults; `config` and `run`
+require a subcommand, because their subverbs mutate or diverge with no natural
+landing point. A new namespace picks a side by this test, not by precedent from
+whichever namespace was copied. Set the subparser `dest` alongside `verb_cls` so
+downstream code sees a consistent subcommand name either way.
+
 **Three-phase contract.** Each verb implements:
 
 - `pre_check(args) -> PreCheckResult` — validate args, load config, run preflights (LLVM safety, dirty-state guards, sudo checks). No state mutation. Returns one of three terminal shapes:

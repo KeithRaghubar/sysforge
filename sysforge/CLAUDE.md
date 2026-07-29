@@ -63,9 +63,14 @@ Mechanism lives in the cited §DESIGN section.
   conflict+coexist. Demotion reuses `cmd_state_forget` + `reconcile_external_installs`. §CLI Verb.
 - **`build` repo-pkg opt-in gate**: `build_cmd` prompts on TTY (writes via `packages_cmd`) or aborts
   non-interactive; `--force` builds this run only, never writes. One packages.toml writer. §CLI Verb.
-- **Vocabulary** (renamed, legacy aliased on read): build_mode `source_built` (legacy `profiled`);
-  repo_mode `build_from_source` (via `config.resolve_repo_mode`); per-pkg `enable_build_from_source`
-  (legacy `pkgbuild_patch`). One read chokepoint per surface — no scattered `or "profiled"`.
+- **Vocabulary** (renamed): build_mode `source_built` (legacy `profiled` build_state token removed
+  in 3.0.0 — a pre-rename file now reads `profiled` verbatim until `sysforge state repair`, which
+  also normalizes it via `state_cmd._LEGACY_BUILD_MODE_TOKENS`; the profile-layer alias
+  `patched_pkgbuild`→`source_built` is a separate, still-aliased surface);
+  repo_mode `build_from_source` (via `config.resolve_repo_mode`; legacy `profiled` token removed in
+  3.0.0 — rejected by `REPO_MODE_ACCEPTED_INPUTS`, not aliased);
+  per-pkg `enable_build_from_source` (legacy `pkgbuild_patch` — write-side only as of 3.0.0;
+  `normalize_package_entry` no longer reads it). One read chokepoint per surface.
 - **Hardcoded `-fuse-ld=` reconcile** (linker only; compiler stays `has_hardcoded_gcc`): detect
   `pkgbuild_meta.hardcoded_build_linker`, effective `makepkg_flags.resolve_effective_linker`, patch
   `pkgbuild_patcher.patch_build_linker`. §`pkgbuild_patcher.py`.

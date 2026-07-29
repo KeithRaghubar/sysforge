@@ -208,3 +208,87 @@ def test_repair_noop_when_state_is_clean(tmp_path, capsys, monkeypatch):
     cmd_state_repair(_args(state_dir))
     out = capsys.readouterr().out
     assert "No broken entries" in out
+
+
+def test_repair_makes_the_state_repair_migration_promise_true(tmp_path, capsys, monkeypatch):
+    """This is the test that makes Task 7's release note honest: a
+    build_state.toml whose only defect is the pre-3.0.0 build_mode =
+    "profiled" token (name/pkgbase/pkgver/pkgrel/epoch all fine, no PKGBUILD
+    needed) is rewritten to "source_built" by `sysforge state repair`, with
+    no dependency on the pkgbuild_dir existing.
+    """
+    monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path / "state"))
+    state_dir = tmp_path / "state"
+    _write_broken_state(state_dir, {
+        "mesa": {
+            "pkgver": "24.0.0", "pkgrel": "1", "epoch": "0",
+            "pkgbase": "mesa",
+            "pkgbuild_dir": str(tmp_path / "does-not-exist"),
+            "build_mode": "profiled",
+        }
+    })
+
+    cmd_state_repair(_args(state_dir))
+    out = capsys.readouterr().out
+    assert "legacy build_mode" in out
+
+    bs = BuildState(state_dir)
+    entry = bs.get("mesa")
+    assert entry is not None
+    assert entry["build_mode"] == "source_built"
+
+
+def test_repair_leaves_unrecognized_build_mode_alone(tmp_path, capsys, monkeypatch):
+    """An unrecognized-but-not-legacy build_mode (e.g. a typo) must not be
+    coerced — only the closed set of known legacy tokens is rewritten.
+    """
+    monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path / "state"))
+    state_dir = tmp_path / "state"
+    _write_broken_state(state_dir, {
+        "htop": {
+            "pkgver": "3.4.1", "pkgrel": "1", "epoch": "0",
+            "pkgbase": "htop",
+            "pkgbuild_dir": str(tmp_path / "htop"),
+            "build_mode": "wat",
+        }
+    })
+
+    cmd_state_repair(_args(state_dir))
+    out = capsys.readouterr().out
+    assert "No broken entries" in out
+
+    bs = BuildState(state_dir)
+    assert bs.get("htop")["build_mode"] == "wat"
+
+
+def test_repair_still_preserves_valid_build_mode_in_shell_var_repair(tmp_path, monkeypatch):
+    """The existing unexpanded-var repair path still carries a valid
+    build_mode over verbatim (no legacy token involved).
+    """
+    monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path / "state"))
+    pkgbuild_dir = tmp_path / "weston-git"
+    pkgbuild_dir.mkdir()
+    (pkgbuild_dir / "PKGBUILD").write_text(
+        "_basename=weston\n"
+        'pkgname="$_basename-git"\n'
+        "pkgver=14.0.0.r754.gb44cf1b\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+    )
+
+    state_dir = tmp_path / "state"
+    _write_broken_state(state_dir, {
+        "$_basename-git": {
+            "pkgver": "14.0.0.r754.gb44cf1b",
+            "pkgrel": "1",
+            "epoch": "0",
+            "pkgbase": "$_basename-git",
+            "pkgbuild_dir": str(pkgbuild_dir),
+            "build_mode": "source_built",
+        }
+    })
+
+    cmd_state_repair(_args(state_dir))
+
+    bs = BuildState(state_dir)
+    assert bs.get("weston-git")["build_mode"] == "source_built"

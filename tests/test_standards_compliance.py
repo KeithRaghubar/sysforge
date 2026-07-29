@@ -91,8 +91,8 @@ def test_no_color_outranks_force_color(monkeypatch):
 #
 # Driven as a subprocess so we exercise the real console entry point exactly as
 # a user does, without mutating this process's argv / colour mode / rlimits.
-# HOME is sandboxed to a temp dir because main() runs migrate_legacy_user_dirs()
-# before argparse — the sandbox keeps that side effect off the real home dir.
+# HOME is sandboxed to a temp dir so the CLI's real XDG-derived user paths
+# (cache/state/config/data) never touch the actual home dir during this test.
 # ---------------------------------------------------------------------------
 
 def _run_cli(*cli_args, tmp_home):
@@ -679,8 +679,91 @@ def test_deprecations_group_flags_unregistered_warn_used(tmp_path):
     assert any("ghost.surface" in m for m in msgs)
 
 
-def test_deprecations_flags_overdue_removal_at_target_version():
-    """R3 — at 3.0.0 the five compat surfaces are overdue and must error."""
+def test_deprecations_flags_overdue_removal_at_target_version(tmp_path):
+    """R3 — a compat surface still present at its removal version is an error.
+
+    Built against a SYNTHETIC registry in tmp_path, not the live one. The live
+    registry's compat half is empty as of the 2.6.1-F5 sweep, so asserting
+    against it would assert `0 == 0` — the gate that blocks a mis-scheduled
+    major release would have no coverage at all, and would keep passing if R3
+    stopped firing entirely. This mirrors the synthetic-tree pattern
+    `test_deprecations_group_flags_unregistered_warn_used` already uses, and it
+    cannot go vacuous again as the real registry changes.
+    """
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(repo / "tools"))
+    try:
+        import check_standards as cs
+    finally:
+        sys.path.pop(0)
+
+    (tmp_path / "sysforge" / "primitives").mkdir(parents=True)
+    (tmp_path / "sysforge" / "primitives" / "deprecations.py").write_text(
+        "COMPAT = 'compat'\n"
+        "SHIM = 'shim'\n"
+        "_REGISTRY = (\n"
+        "    Deprecation(surface='cfg.old_key', kind='config_key', function=COMPAT,\n"
+        "                deprecated_in='1.0.0', removed_in='3.0.0',\n"
+        "                replacement='cfg.new_key'),\n"
+        "    Deprecation(surface='cfg.not_yet', kind='config_key', function=COMPAT,\n"
+        "                deprecated_in='2.0.0', removed_in='4.0.0',\n"
+        "                replacement='cfg.newer_key'),\n"
+        ")\n", encoding="utf-8")
+    # Both surfaces are still "present": each has a live warn_used call site.
+    (tmp_path / "sysforge" / "caller.py").write_text(
+        "deprecations.warn_used('cfg.old_key')\n"
+        "deprecations.warn_used('cfg.not_yet')\n", encoding="utf-8")
+
+    findings = cs.check_deprecations(tmp_path, target_version="3.0.0")
+    overdue = [f for f in findings if "still" in f.message and "present" in f.message]
+
+    # Exactly the surface whose removed_in has arrived, and only that one.
+    assert len(overdue) == 1, f"expected 1 overdue at 3.0.0, got {overdue}"
+    assert any("cfg.old_key" in f.message for f in overdue)
+    # A removal still in the future must NOT be reported.
+    assert not any("cfg.not_yet" in f.message for f in overdue)
+
+
+def test_deprecations_r3_silent_before_the_removal_version(tmp_path):
+    """The same synthetic registry produces no overdue finding at 2.9.0.
+
+    Pins that R3 is gated on the target version rather than firing for every
+    compat record it sees — without this, a check that always errored would
+    satisfy the test above.
+    """
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(repo / "tools"))
+    try:
+        import check_standards as cs
+    finally:
+        sys.path.pop(0)
+
+    (tmp_path / "sysforge" / "primitives").mkdir(parents=True)
+    (tmp_path / "sysforge" / "primitives" / "deprecations.py").write_text(
+        "COMPAT = 'compat'\n"
+        "_REGISTRY = (\n"
+        "    Deprecation(surface='cfg.old_key', kind='config_key', function=COMPAT,\n"
+        "                deprecated_in='1.0.0', removed_in='3.0.0',\n"
+        "                replacement='cfg.new_key'),\n"
+        ")\n", encoding="utf-8")
+    (tmp_path / "sysforge" / "caller.py").write_text(
+        "deprecations.warn_used('cfg.old_key')\n", encoding="utf-8")
+
+    findings = cs.check_deprecations(tmp_path, target_version="2.9.0")
+    overdue = [f for f in findings if "still" in f.message and "present" in f.message]
+    assert overdue == [], f"R3 fired before the removal version: {overdue}"
+
+
+def test_live_registry_has_no_overdue_compat_surface_at_3_0_0():
+    """The shipped tree is clean against the gate that blocks the 3.0.0 release.
+
+    Complements the synthetic tests above: they prove R3 *can* fire, this proves
+    it does not fire on what we are about to ship.
+    """
     import sys
     from pathlib import Path
     repo = Path(__file__).resolve().parent.parent
@@ -690,11 +773,7 @@ def test_deprecations_flags_overdue_removal_at_target_version():
     finally:
         sys.path.pop(0)
     findings = cs.check_deprecations(repo, target_version="3.0.0")
-    overdue = [f for f in findings if "still" in f.message and "present" in f.message]
-    assert len(overdue) == 5, \
-        f"expected the 5 compat surfaces overdue at 3.0.0, got {len(overdue)}"
-    # The 3.1.0 shim is NOT overdue at 3.0.0.
-    assert not any("doctor.flat_flags" in f.message for f in overdue)
+    assert [f.message for f in findings] == []
 
 
 def test_target_version_rejects_malformed_value():

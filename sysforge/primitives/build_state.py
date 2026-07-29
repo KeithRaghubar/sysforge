@@ -47,9 +47,6 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sysforge.primitives import deprecations
-
-
 # Reserved top-level key in build_state.toml for the failures namespace. Held
 # apart from the per-package install records so it never leaks into
 # all_packages()/sync_with_installed(). A package literally named "failures"
@@ -57,12 +54,12 @@ from sysforge.primitives import deprecations
 _FAILURES_KEY = "failures"
 
 # build_mode values. "source_built" replaced the legacy "profiled" token (which
-# was confusingly overloaded with PGO and repo_mode "profiled"). Legacy files
-# are normalized to the new value on load; readers compare against the new
-# constant. The "!= pacman" predicate (update's rebuild scope) is unaffected.
+# was confusingly overloaded with PGO and repo_mode "profiled"). The legacy
+# read alias was removed in 3.0.0 — a pre-rename file now reads "profiled"
+# verbatim until `sysforge state repair` rewrites it. The "!= pacman"
+# predicate (update's rebuild scope) is unaffected.
 BUILD_MODE_SOURCE = "source_built"
 BUILD_MODE_PACMAN = "pacman"
-_LEGACY_BUILD_MODE_SOURCE = "profiled"
 
 # Bounds for the stored failure ``error`` blob — keep the tail (the real
 # compiler/makepkg error is at the bottom), capped so build_state.toml stays
@@ -152,15 +149,6 @@ class BuildState:
         # Split the reserved failures namespace out of the install mirror.
         failures = raw.pop(_FAILURES_KEY, {})
         self._failures = failures if isinstance(failures, dict) else {}
-        # Normalize the legacy "profiled" build_mode token to "source_built" at
-        # this single load chokepoint, so every downstream comparison (and
-        # read-only command) sees the new value regardless of file vintage. The
-        # file self-migrates to the new token the next time save() runs.
-        for entry in raw.values():
-            if isinstance(entry, dict) and \
-                    entry.get("build_mode") == _LEGACY_BUILD_MODE_SOURCE:
-                deprecations.warn_used("build_state.build_mode=profiled")
-                entry["build_mode"] = BUILD_MODE_SOURCE
         self._data = raw
 
     def _load(self):

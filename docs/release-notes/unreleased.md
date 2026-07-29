@@ -15,6 +15,15 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Added
 
+- `sysforge artifact` and `sysforge state` now run their `list` subcommand
+  instead of erroring (2.6.1-F6), settling an inconsistency the `doctor`
+  system/pkg split introduced: `doctor` and `packages` named a default subverb
+  while four other namespaces refused a bare parent. The rule is now an
+  invariant in the CLI Verb Framework design — a namespace names a default iff
+  it has a single obvious read-only view. `config` and `run` deliberately keep
+  requiring a subcommand, because their subverbs mutate or diverge with no
+  natural landing point. Additive: no existing invocation changes meaning.
+
 - `doctor --distro` reports the running distribution and its support tier, read
   from `os-release(5)` (2.6.1-F2). Arch is the primary base and the bare sweep
   stays silent on it; an Arch derivative (`ID_LIKE=arch`) gets an `info` naming
@@ -172,6 +181,35 @@ https://keepachangelog.com/en/1.1.0/
   selectors `--all` and `--repo`, and the bare `PKG` positional no longer parse
   at the top level. Each prints its
   replacement and exits 2. The hint table is deleted in 3.1.0.
+
+- **Breaking:** the compat-alias sweep (2.6.1-F5) deletes the five back-compat
+  read paths the 2.6.1-STD2 registry catalogued. Every one of these old
+  spellings now goes unread: `[git] pull_timeout` as a fallback for
+  `fetch_timeout`; `packages.toml`'s legacy `pkgbuild_patch` per-package key
+  (`enable_build_from_source` is the only spelling honoured now, including in
+  `sysforge packages list`); the `repo_mode = "profiled"` token in
+  `packages.toml` (rejected outright by `REPO_MODE_ACCEPTED_INPUTS`, not
+  aliased); the `build_mode = "profiled"` token in `build_state.toml`; and the
+  one-shot migration of `~/.config/sysforge/{cache,state}` into their XDG
+  homes, which ran on every CLI invocation. **Migration:** a `[git]
+  pull_timeout` still set in `sysforge.toml` is now ignored silently and the
+  fetch timeout falls back to the `30`-second default — rename the key to
+  `fetch_timeout` to keep your value. A `build_state.toml`
+  still carrying `build_mode = "profiled"` from before this release stops
+  resolving — run `sysforge state repair` once to normalize it. A
+  `packages.toml` still using `pkgbuild_patch` or `repo_mode = "profiled"`
+  needs those keys renamed by hand to `enable_build_from_source` /
+  `build_from_source`. A `~/.config/sysforge/cache` or `.../state` directory
+  left over from before the migration ran at least once needs moving to
+  `$XDG_CACHE_HOME/sysforge` / `$XDG_STATE_HOME/sysforge` by hand. The
+  deprecation registry (`primitives/deprecations.py`) now holds exactly one
+  record, `doctor.flat_flags`, removable in 3.1.0. The two previously-untested
+  warn sites (`paths.legacy_user_dirs`, `packages.pkgbuild_patch`) gained
+  characterization tests ahead of the sweep (2.6.1-F7) to guard against a
+  silent regression during removal; those tests were deliberately throwaway
+  and were deleted along with the surfaces they covered, so nothing from
+  2.6.1-F7 remains in the tree — its contribution was making this removal
+  safe to land.
 
 ## Fixed
 

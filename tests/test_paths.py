@@ -5,9 +5,6 @@ Covers the user-side path resolution in ``primitives/paths.py``:
   * XDG-correct defaults when no env vars are set
   * honouring $XDG_CONFIG_HOME / $XDG_CACHE_HOME / $XDG_STATE_HOME
   * BOOTSTRAP_PATH following $SYSFORGE_CONFIG_DIR (FHS nit)
-  * migrate_legacy_user_dirs() moving the legacy consolidated dirs into their
-    XDG homes (reversal of the old consolidation), with the no-clobber /
-    source-absent / never-raise guarantees.
 
 The module computes its constants at import time, so each test reloads the
 module under a controlled environment via the ``reload_paths`` fixture, which
@@ -103,60 +100,3 @@ def test_config_dir_default_is_fhs_etc(reload_paths):
     p = reload_paths({})
     assert p.Path("/etc/sysforge") == p.CONFIG_DIR
     assert p.Path("/etc/sysforge/bootstrap.toml") == p.BOOTSTRAP_PATH
-
-
-# ---------------------------------------------------------------------------
-# migrate_legacy_user_dirs — reversal of the old consolidation
-# ---------------------------------------------------------------------------
-
-def test_migrate_moves_consolidated_dirs_to_xdg(reload_paths, tmp_path):
-    p = reload_paths({"HOME": tmp_path})
-    legacy_cache = tmp_path / ".config/sysforge/cache"
-    legacy_state = tmp_path / ".config/sysforge/state"
-    legacy_cache.mkdir(parents=True)
-    legacy_state.mkdir(parents=True)
-    (legacy_cache / "aur-packages.txt").write_text("pkg\n", encoding="utf-8")
-    (legacy_state / "build_state.toml").write_text("x = 1\n", encoding="utf-8")
-
-    p.migrate_legacy_user_dirs()
-
-    assert (p.USER_CACHE_DIR / "aur-packages.txt").read_text(encoding="utf-8") == "pkg\n"
-    assert (p.USER_STATE_DIR / "build_state.toml").read_text(encoding="utf-8") == "x = 1\n"
-    assert not legacy_cache.exists()
-    assert not legacy_state.exists()
-
-
-def test_migrate_does_not_clobber_existing_target(reload_paths, tmp_path):
-    p = reload_paths({"HOME": tmp_path})
-    legacy_cache = tmp_path / ".config/sysforge/cache"
-    legacy_cache.mkdir(parents=True)
-    (legacy_cache / "aur-packages.txt").write_text("OLD\n", encoding="utf-8")
-    # Target already populated (e.g. user already on an XDG-correct version).
-    p.USER_CACHE_DIR.mkdir(parents=True)
-    (p.USER_CACHE_DIR / "aur-packages.txt").write_text("NEW\n", encoding="utf-8")
-
-    p.migrate_legacy_user_dirs()
-
-    # Target wins; the legacy dir is left untouched (informational only).
-    assert (p.USER_CACHE_DIR / "aur-packages.txt").read_text(encoding="utf-8") == "NEW\n"
-    assert legacy_cache.exists()
-
-
-def test_migrate_source_absent_is_noop(reload_paths, tmp_path):
-    p = reload_paths({"HOME": tmp_path})
-    # No legacy dirs at all → nothing created, no error.
-    p.migrate_legacy_user_dirs()
-    assert not p.USER_CACHE_DIR.exists()
-    assert not p.USER_STATE_DIR.exists()
-
-
-def test_migrate_never_raises_on_oserror(reload_paths, tmp_path, monkeypatch):
-    p = reload_paths({"HOME": tmp_path})
-    (tmp_path / ".config/sysforge/cache").mkdir(parents=True)
-
-    def _boom(*_a, **_k):
-        raise OSError("disk on fire")
-
-    monkeypatch.setattr(p.shutil, "move", _boom)
-    # Must swallow the error and not propagate.
-    p.migrate_legacy_user_dirs()

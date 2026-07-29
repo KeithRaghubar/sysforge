@@ -88,7 +88,6 @@ def _load_packages(config):
     # hard-fail on a typo, because silently falling back to "pacman" here would
     # drop the source builds the user configured. (resolve_repo_mode itself is
     # lenient — warn + fall back — for the defensive downstream readers; 2.3.0-F8.)
-    # The legacy "profiled" alias is accepted and mapped by resolve_repo_mode.
     raw_repo_mode = (build_cfg or {}).get("repo_mode")
     if raw_repo_mode is not None and raw_repo_mode not in REPO_MODE_ACCEPTED_INPUTS:
         raise ValueError(
