@@ -72,6 +72,7 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | ID | Item | Priority | Effort | Bump |
 |----|------|----------|--------|------|
 | `2.6.1-F10` | Route the pre-flight report blocks through log.ui instead of bare print() | med | small | patch |
+| `2.6.1-F11` | Liveness guard on the stage sentinel: a live owner's sentinel can't be cleared | med | small | minor |
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large | patch |
 | `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small | minor |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
@@ -147,6 +148,30 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   *Priority: med · Effort: small · Bump: patch* — observability gap in a diagnostic surface; no
   behaviour change beyond where the text lands. **Standards home on adoption:** none new — §Logging's
   existing "unified run-log" one-home rule already covers it.
+
+- **`2.6.1-F11` — Liveness guard on the stage sentinel: a live owner's sentinel can't be cleared.**
+  `check_and_recover_stale_sentinel` detects an interrupted stage by the *presence* of
+  `stage_in_progress.toml`, which cannot distinguish "previous run died mid-mutation" from "a run is
+  alive right now" — `get_active`'s own docstring names the ambiguity. So a second invocation during
+  a live `update` is told its sentinel is stale and offered `Clear the sentinel and proceed? [y/N]`,
+  a question it has no information to answer. Answering `y` unlinks the live run's sentinel; the
+  second run's `mark_started` then overwrites the record wholesale, and whichever run finishes first
+  `clear()`s the other's — silently, since `clear()` suppresses `FileNotFoundError`. The user ends up
+  two concurrent install-bearing runs deep with no interruption record for either. Fix by having
+  `sentinel_scope` hold an `flock` (`stage_in_progress.lock`) for the stage's lifetime, reusing
+  `primitives/build_lock.py` per its "don't roll a second flock path" rule; liveness is then "is the
+  lock takeable?", which the kernel answers correctly even after `SIGKILL` or power loss (a stored
+  PID cannot — recycling would report a dead owner as alive forever). Two layers: the entry probe
+  returns `False` without prompting (already wired at `cli.py:1506`), and `sentinel_scope`'s real
+  acquisition catches the probe/acquire race plus any verb outside `_gate_sentinel_check`'s
+  allowlist. No override — a live owner is unambiguous, so a prompt would only invite the mistake.
+  Contention is strict; `OSError`/`PermissionError` stay lenient (warn + proceed) so a read-only
+  state dir can't lock the user out of every mutating verb. `build_lock` needs its contention noun
+  parameterised (it hardcodes "build") and gains `O_CLOEXEC` as hardening. Design:
+  `docs/superpowers/specs/2026-07-30-sentinel-liveness-guard-design.md`.
+  *Priority: med · Effort: small · Bump: minor* — refuses operations previously permitted.
+  **Standards home on adoption:** none new — §Toolchain stage's existing "Install sentinel:
+  `sentinel_scope()`" one-home rule extends to cover the lock.
 
 ### Standards
 
