@@ -301,6 +301,22 @@ https://keepachangelog.com/en/1.1.0/
   should traceback, and blurring that would make real defects look like tidy
   user errors. A regression test pins both halves.
 
+- Naming a **split-package member** no longer fails with `PKGBUILD not found`
+  (2.6.1-B4). AUR git repositories are named by `pkgbase`, so
+  `wayland-docs-git` lives in `wayland-git.git`; `find_pkgbuild` cloned by
+  `pkgname` instead, and AUR answers an unknown repository name with an *empty*
+  repository rather than an error — `git clone` exited 0, left a `.git`-only
+  tree in `pkgbuild_src_dir`, and resolution died one step later on the missing
+  PKGBUILD, with the junk directory still there to shadow the next attempt.
+  `find_pkgbuild` now remaps to the RPC record's `PackageBase` before touching
+  disk (the same remap `update_assemble.py` already did), so an existing
+  `wayland-git` checkout resolves with no clone at all. `aur_clone` treats a
+  PKGBUILD-less clone as a failure and purges the directory, so the empty-repo
+  case can no longer be mistaken for success anywhere else either. Relatedly,
+  `build` now dedups targets by `pkgbase`: `build wayland-git wayland-docs-git`
+  names two members of one base, which makepkg builds in a single run, so the
+  base is no longer built twice.
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would

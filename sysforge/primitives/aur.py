@@ -266,6 +266,19 @@ def aur_clone(
             ) from None
 
         if result.returncode == 0:
+            # AUR's git backend answers an unknown repository name with an
+            # *empty* repo instead of an error, so a typo'd or pkgname-instead-
+            # of-pkgbase clone succeeds and leaves a .git-only tree behind.
+            # Fail here rather than let the caller trip over the missing
+            # PKGBUILD later, and don't leave the junk directory shadowing a
+            # future correct clone.
+            if not (dest / "PKGBUILD").exists():
+                shutil.rmtree(dest, ignore_errors=True)
+                raise RuntimeError(
+                    f"AUR clone for {name!r} produced no PKGBUILD — AUR has no "
+                    f"repository under that name (split packages live under "
+                    f"their pkgbase)."
+                )
             return
 
         stderr = result.stderr.strip()

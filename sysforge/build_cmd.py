@@ -339,6 +339,17 @@ class BuildVerb(Verb):
                     )
                     continue
 
+            # Two arguments can resolve to the same pkgbase — split-package
+            # members (`build wayland-git wayland-docs-git`) share one
+            # PKGBUILD, and makepkg builds every member of a base in one run.
+            # Dedup so the base isn't built twice.
+            if any(t.pkgbase == target.pkgbase for t in targets):
+                _log.info(
+                    f"{pkg}: already covered by the {target.pkgbase} build "
+                    "(same pkgbase) — skipping duplicate."
+                )
+                continue
+
             targets.append(target)
 
         if not targets:

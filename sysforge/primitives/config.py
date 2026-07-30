@@ -312,16 +312,30 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
                 pkgctl_checkout(pkg, clone_dest, timeout=clone_timeout)
                 if dir_candidate.exists():
                     return dir_candidate.resolve()
-            elif aur_info([pkg]):
+            elif (info := aur_info([pkg])):
+                # Split packages: AUR git repos are named by *pkgbase*, so
+                # wayland-docs-git lives in wayland-git.git. Cloning by pkgname
+                # doesn't 404 — AUR answers an unknown name with an empty
+                # repository — so git exits 0 and leaves a .git-only tree,
+                # and resolution fails one step later with a confusing
+                # "PKGBUILD not found". Remap to the RPC record's PackageBase
+                # (same remap update_assemble.py does) before touching disk.
+                pkgbase = info.get(pkg, {}).get("PackageBase") or pkg
+                if pkgbase != pkg:
+                    clone_dest = pkgbuild_src_dir / pkgbase
+                    dir_candidate = clone_dest / "PKGBUILD"
+                    searched.append(dir_candidate)
+                    if dir_candidate.exists():
+                        return dir_candidate.resolve()
                 # Route through the scheduler so repeated find_pkgbuild calls
                 # for the same pkg (fetch.py → update.py → makepkg_wrapper.py)
                 # dedup to a single clone.
                 sync_result = get_scheduler().request(SyncRequest(
-                    pkgbase=pkg, pkgbuild_dir=clone_dest, source="aur",
+                    pkgbase=pkgbase, pkgbuild_dir=clone_dest, source="aur",
                 ))
                 if sync_result.error and not dir_candidate.exists():
                     raise RuntimeError(
-                        f"AUR clone failed for {pkg!r}: {sync_result.error}"
+                        f"AUR clone failed for {pkgbase!r}: {sync_result.error}"
                     )
                 if dir_candidate.exists():
                     return dir_candidate.resolve()

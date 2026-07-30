@@ -524,6 +524,62 @@ class TestFindPkgbuild:
         assert observed_parent_exists.get("before") is True
         assert result == (src_dir / "htop" / "PKGBUILD").resolve()
 
+    def test_split_package_resolves_via_pkgbase_locally(self, tmp_path, monkeypatch):
+        """A split-package pkgname (wayland-docs-git) lives in its pkgbase's
+        tree (wayland-git). If that tree is already checked out, resolve to it
+        instead of trying to clone a repo AUR doesn't have under that name."""
+        from unittest.mock import patch
+
+        from sysforge.primitives.config import find_pkgbuild
+        monkeypatch.chdir(tmp_path)
+
+        src_dir = tmp_path / "src"
+        base_dir = src_dir / "wayland-git"
+        base_dir.mkdir(parents=True)
+        pkgbuild = base_dir / "PKGBUILD"
+        pkgbuild.write_text("pkgbase=wayland-git\n")
+
+        info = {"wayland-docs-git": {"Name": "wayland-docs-git",
+                                     "PackageBase": "wayland-git"}}
+        with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
+             patch("sysforge.primitives.aur.aur_info", return_value=info):
+            config = {"paths": {"pkgbuild_src_dir": str(src_dir)}}
+            result = find_pkgbuild("wayland-docs-git", config=config)
+
+        assert result == pkgbuild.resolve()
+
+    def test_split_package_clones_under_pkgbase(self, tmp_path, monkeypatch):
+        """With no local tree, the clone must be requested for the *pkgbase* —
+        AUR git repos are named by pkgbase, and cloning by pkgname yields an
+        empty repo rather than an error."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sysforge.primitives.config import find_pkgbuild
+        monkeypatch.chdir(tmp_path)
+
+        src_dir = tmp_path / "src"
+        requests = []
+
+        class FakeScheduler:
+            def request(self, req):
+                requests.append(req)
+                req.pkgbuild_dir.mkdir(parents=True, exist_ok=True)
+                (req.pkgbuild_dir / "PKGBUILD").write_text("pkgbase=wayland-git\n")
+                return SimpleNamespace(error=None)
+
+        info = {"wayland-docs-git": {"Name": "wayland-docs-git",
+                                     "PackageBase": "wayland-git"}}
+        with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
+             patch("sysforge.primitives.aur.aur_info", return_value=info), \
+             patch("sysforge.primitives.source_sync.get_scheduler",
+                   return_value=FakeScheduler()):
+            config = {"paths": {"pkgbuild_src_dir": str(src_dir)}}
+            result = find_pkgbuild("wayland-docs-git", config=config)
+
+        assert [r.pkgbase for r in requests] == ["wayland-git"]
+        assert result == (src_dir / "wayland-git" / "PKGBUILD").resolve()
+
 
 # ---------------------------------------------------------------------------
 # resolve_pkgbuild_src_dir — dual-key resolution + mismatch warning

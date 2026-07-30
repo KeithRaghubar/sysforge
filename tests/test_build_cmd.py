@@ -67,6 +67,45 @@ def _drive_build(monkeypatch, tmp_path, pkgname, *, is_repo):
     return targets[0]
 
 
+def test_split_package_members_dedup_to_one_target(monkeypatch, tmp_path):
+    """`build wayland-git wayland-docs-git` names two members of one pkgbase,
+    which resolve to the same PKGBUILD. makepkg builds every member of a base
+    in one run, so only one target may reach build_and_install."""
+    captured: dict = {"targets": []}
+    pkgbuild = tmp_path / "wayland-git" / "PKGBUILD"
+
+    monkeypatch.setattr(build_cmd, "find_pkgbuild", lambda pkg, cfg: pkgbuild)
+    monkeypatch.setattr(build_cmd, "is_repo_package", lambda name: False)
+    monkeypatch.setattr(
+        build_core, "target_from_pkgbuild",
+        lambda p: BuildTarget(pkgbase="wayland-git",
+                              pkgnames=["wayland-git", "wayland-docs-git"],
+                              pkgbuild_path=Path(p)),
+    )
+    monkeypatch.setattr(build_cmd, "is_interactive", lambda: False)
+
+    def _fake_build_and_install(targets, **kwargs):
+        captured["targets"] = targets
+        return BuildOutcome()
+    monkeypatch.setattr(build_core, "build_and_install", _fake_build_and_install)
+    monkeypatch.setattr(pipeline_state, "resolve_state_dir", lambda d: (tmp_path, None))
+    monkeypatch.setattr(pipeline_state, "get_toolchain_variant", lambda st: "system")
+    monkeypatch.setattr(pipeline_state, "get_toolchain_fingerprint", lambda st: None)
+    monkeypatch.setattr(pipeline_state, "PipelineState", lambda d: None)
+
+    args = types.SimpleNamespace(
+        makepkg=None, pkgbuilds=["wayland-git", "wayland-docs-git"],
+        cleansrc=False, cleansrc_force=False,
+        no_update=True, interactive=False, profile_conf=None, cc=None, cxx=None,
+        ld=None, state_dir=None, no_pkg_log=True, persist_log=False, log_dir=None,
+        cache_report=False, abi_check=False, no_review=True, timings=False,
+        force=True,
+    )
+    BuildVerb().execute(args, PreCheckResult(ctx={"config": {}}))
+
+    assert [t.pkgbase for t in captured["targets"]] == ["wayland-git"]
+
+
 def test_build_records_repo_source_for_repo_package(monkeypatch, tmp_path):
     """`sysforge build <repo-pkg>` stamps source="repo" so build_state is
     self-describing and `update` classifies it repo_class="source"."""

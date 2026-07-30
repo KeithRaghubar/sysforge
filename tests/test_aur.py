@@ -144,19 +144,39 @@ def test_aur_clone_success(tmp_path):
     assert (dest / "PKGBUILD").exists()
 
 
-def test_aur_clone_command_uses_aur_url():
+def test_aur_clone_command_uses_aur_url(tmp_path):
     captured = []
+    dest = tmp_path / "mesa-git"
 
     def fake_run(cmd, **kwargs):
         captured.append(cmd)
+        dest.mkdir()
+        (dest / "PKGBUILD").write_text("pkgname=mesa-git\n")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     with patch("subprocess.run", side_effect=fake_run):
-        aur_clone("mesa-git", Path("/tmp/mesa-git"))
+        aur_clone("mesa-git", dest)
 
     assert captured[0][0] == "git"
     assert "aur.archlinux.org" in captured[0][2]
     assert "mesa-git" in captured[0][2]
+
+
+def test_aur_clone_empty_repo_raises_and_cleans_up(tmp_path):
+    """AUR answers an unknown repo name with an *empty* repository rather than
+    a 404, so `git clone` exits 0 and leaves a bare `.git`-only tree. Treat a
+    PKGBUILD-less clone as a failure and purge the junk directory."""
+    dest = tmp_path / "wayland-docs-git"
+
+    def fake_run(cmd, **kwargs):
+        (dest / ".git").mkdir(parents=True)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run), \
+         pytest.raises(RuntimeError, match="no PKGBUILD"):
+        aur_clone("wayland-docs-git", dest)
+
+    assert not dest.exists()
 
 
 def test_aur_clone_failure_raises():
@@ -268,16 +288,19 @@ def test_aur_clone_non_transient_error_does_not_retry(tmp_path):
     assert attempts == 1, "non-transient errors must not retry"
 
 
-def test_aur_clone_timeout_zero_disables():
+def test_aur_clone_timeout_zero_disables(tmp_path):
     """timeout=0 should pass None to subprocess (no timeout)."""
     captured = []
+    dest = tmp_path / "pkg"
 
     def fake_run(cmd, **kwargs):
         captured.append(kwargs)
+        dest.mkdir()
+        (dest / "PKGBUILD").write_text("pkgname=pkg\n")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     with patch("subprocess.run", side_effect=fake_run):
-        aur_clone("pkg", Path("/tmp/pkg"), timeout=0)
+        aur_clone("pkg", dest, timeout=0)
 
     assert captured[0].get("timeout") is None
 
