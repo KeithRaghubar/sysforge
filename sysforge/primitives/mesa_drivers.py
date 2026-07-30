@@ -30,8 +30,8 @@ Resolution order, per axis (gallium / vulkan), once the switch is on:
   4. Nothing resolved → ``None`` (no filtering).
 
 Invariant (any non-None result): the mandatory software baseline
-(``hardware._MESA_MANDATORY_GALLIUM`` — llvmpipe/softpipe/zink — and
-``_MESA_MANDATORY_VULKAN`` — swrast/lavapipe) is always present, the *inverse*
+(``hardware_tables.MESA_MANDATORY_GALLIUM`` — llvmpipe/softpipe/zink — and
+``MESA_MANDATORY_VULKAN`` — swrast/lavapipe) is always present, the *inverse*
 of the LLVM AMDGPU invariant. ``derive_mesa_drivers`` bakes it into freshly
 derived lists; ``_ensure_mesa_software_baseline`` re-applies it here so a cached
 or hand-edited ``hardware_profile.toml`` — or an explicit ``[mesa]`` override
@@ -49,6 +49,10 @@ import tomllib
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.hardware_tables import (
+    MESA_MANDATORY_GALLIUM,
+    MESA_MANDATORY_VULKAN,
+)
 
 _log = log.get_logger("MESA")
 
@@ -118,11 +122,6 @@ def _ensure_mesa_software_baseline(
     detection. Logs at INFO when it augments a list that omitted a driver, so a
     too-aggressive override is discoverable. Idempotent.
     """
-    from sysforge.pipeline.stages.hardware import (
-        _MESA_MANDATORY_GALLIUM,
-        _MESA_MANDATORY_VULKAN,
-    )
-
     def _augment(resolved: list[str], mandatory, axis: str) -> list[str]:
         result = list(resolved)
         added = [d for d in mandatory if d not in result]
@@ -137,8 +136,8 @@ def _ensure_mesa_software_baseline(
         return result
 
     return {
-        "gallium": _augment(gallium, _MESA_MANDATORY_GALLIUM, "gallium"),
-        "vulkan": _augment(vulkan, _MESA_MANDATORY_VULKAN, "vulkan"),
+        "gallium": _augment(gallium, MESA_MANDATORY_GALLIUM, "gallium"),
+        "vulkan": _augment(vulkan, MESA_MANDATORY_VULKAN, "vulkan"),
     }
 
 

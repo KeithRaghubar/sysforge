@@ -48,6 +48,11 @@ from sysforge import log
 _log = log.get_logger("HARDWARE")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.state import resolve_state_dir
+from sysforge.primitives.hardware_tables import (
+    MESA_MANDATORY_GALLIUM,
+    MESA_MANDATORY_VULKAN,
+    SYSTEM_LIBLLVM_CONSUMER_TARGETS,
+)
 import contextlib
 
 
@@ -202,23 +207,17 @@ _HOST_ARCH_TO_LLVM = {
 # GPU vendor (as emitted by parse_gpu_vendors) → the LLVM backend that GPU's
 # OWN compute path wants. Intel Mesa drivers (iris/anv) don't use an LLVM
 # backend, so intel GPUs contribute no entry here. This map is NOT the whole
-# story: every host also gets _SYSTEM_LIBLLVM_CONSUMER_TARGETS below, so an
+# story: every host also gets SYSTEM_LIBLLVM_CONSUMER_TARGETS below, so an
 # intel/nvidia-only host still ends up with AMDGPU in its target set.
 _GPU_VENDOR_TO_LLVM = {
     "amd":    "AMDGPU",
     "nvidia": "NVPTX",
 }
 
-# Targets the *system* libLLVM must always carry because installed system
-# packages link them regardless of this host's GPU. Arch's mesa references the
-# AMDGPU (radeonsi) and host-CPU (llvmpipe) target-init symbols from libgallium
-# UNCONDITIONALLY — they are compiled in whatever GPU you own. If the toolchain
-# stage rebuilds system llvm-libs with a reduced LLVM_TARGETS_TO_BUILD that drops
-# AMDGPU, mesa — and therefore every EGL/GL consumer, i.e. the whole desktop —
-# fails to load with `undefined symbol: LLVMInitializeAMDGPU...`. So AMDGPU is
-# mandatory in any non-empty autodetected set, even on nvidia/intel-only hosts.
-# (The host CPU backend is already supplied from _HOST_ARCH_TO_LLVM.)
-_SYSTEM_LIBLLVM_CONSUMER_TARGETS = ("AMDGPU",)
+# The mandatory-baseline tables (SYSTEM_LIBLLVM_CONSUMER_TARGETS,
+# MESA_MANDATORY_*) live in primitives/hardware_tables.py — the resolvers that
+# re-apply them at build time are primitives, and they must not import upward
+# into this stage to reach them (2.6.1-F8). Imported at module top.
 
 
 def detect_host_arch() -> str:
@@ -231,7 +230,7 @@ def derive_llvm_targets(host_arch: str, gpu_vendors: list[str]) -> list[str]:
 
     Order: CPU backend first, then GPU backends in vendor-detection order, then
     the mandatory system-libLLVM-consumer baseline (AMDGPU — see
-    ``_SYSTEM_LIBLLVM_CONSUMER_TARGETS``). Returns an empty list when the host
+    ``SYSTEM_LIBLLVM_CONSUMER_TARGETS``). Returns an empty list when the host
     arch is unrecognised — callers treat empty as "no filtering" (i.e. preserve
     upstream defaults), which also keeps mesa safe because all targets get built.
     """
@@ -251,8 +250,8 @@ def derive_llvm_targets(host_arch: str, gpu_vendors: list[str]) -> list[str]:
             targets.append(backend)
     # Always carry the backends system consumers (mesa's libgallium) link, even
     # when this host's GPU wouldn't otherwise pull them in — otherwise a reduced
-    # system libLLVM bricks the desktop. See _SYSTEM_LIBLLVM_CONSUMER_TARGETS.
-    for backend in _SYSTEM_LIBLLVM_CONSUMER_TARGETS:
+    # system libLLVM bricks the desktop. See SYSTEM_LIBLLVM_CONSUMER_TARGETS.
+    for backend in SYSTEM_LIBLLVM_CONSUMER_TARGETS:
         if backend not in targets:
             targets.append(backend)
     return targets
@@ -275,24 +274,12 @@ _GPU_VENDOR_TO_MESA_VULKAN = {
     "nvidia": ["nouveau"],
 }
 
-# Mesa drivers that must always be built regardless of detected GPU — the
-# *inverse* of the LLVM AMDGPU invariant. Where _SYSTEM_LIBLLVM_CONSUMER_TARGETS
-# guards against reducing too LITTLE, this guards against reducing too MUCH:
-# dropping the software rasterizers (gallium llvmpipe/softpipe, vulkan
-# swrast=lavapipe) would break headless sessions, VMs, GPU-reset recovery and
-# the llvmpipe/software-Vulkan fallback. zink (GL-on-Vulkan) rides along as the
-# portability path some stacks fall back to. Always present in any non-empty
-# autodetected set, even when no GPU is detected at all.
-_MESA_MANDATORY_GALLIUM = ("llvmpipe", "softpipe", "zink")
-_MESA_MANDATORY_VULKAN = ("swrast",)
-
-
 def derive_mesa_drivers(gpu_vendors: list[str]) -> dict[str, list[str]]:
     """Build the autodetected mesa gallium/vulkan driver lists for this host.
 
     Returns ``{"gallium": [...], "vulkan": [...]}``: vendor drivers (in
     detection order) first, then the mandatory software baseline
-    (``_MESA_MANDATORY_*``) appended and de-duplicated. Unlike
+    (``MESA_MANDATORY_*``) appended and de-duplicated. Unlike
     ``derive_llvm_targets`` there is no arch gate — GPU drivers are vendor- not
     arch-determined, and the software baseline is valid on every arch. An empty
     ``gpu_vendors`` yields baseline-only (software rendering), the correct
@@ -307,10 +294,10 @@ def derive_mesa_drivers(gpu_vendors: list[str]) -> dict[str, list[str]]:
         for drv in _GPU_VENDOR_TO_MESA_VULKAN.get(vendor, []):
             if drv not in vulkan:
                 vulkan.append(drv)
-    for drv in _MESA_MANDATORY_GALLIUM:
+    for drv in MESA_MANDATORY_GALLIUM:
         if drv not in gallium:
             gallium.append(drv)
-    for drv in _MESA_MANDATORY_VULKAN:
+    for drv in MESA_MANDATORY_VULKAN:
         if drv not in vulkan:
             vulkan.append(drv)
     return {"gallium": gallium, "vulkan": vulkan}

@@ -8,6 +8,11 @@ check-standards` (group `claude_md`) verifies they still resolve.
 
 - **`tests/test_pipeline.py`** imports from both `primitives.config` and `…profile` — moving
   symbols across them breaks it; update the test in the same change.
+- **`primitives/` must not import from `pipeline.stages`** — it is the leaf layer. A function-level
+  import to dodge the cycle is not a fix: `pipeline/stages/__init__.py` instantiates every stage at
+  import, so one constant drags all eleven stage modules in. Shared tables go in
+  `primitives/hardware_tables.py` (imports nothing from sysforge). `tests/test_module_layering.py`
+  enforces this via a **shrinking** allowlist — never add a name to it.
 - **`match_rules` matches against `pkgbase`** too (split packages) — don't regress.
 - **Source sync goes through the scheduler** (`source_sync.get_scheduler().request(...)`), never
   `git pull --rebase`. Fetch is full-history (`git_fetch_and_compare`), never `--depth=1`.

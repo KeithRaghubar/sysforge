@@ -51,6 +51,7 @@ import tomllib
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.hardware_tables import SYSTEM_LIBLLVM_CONSUMER_TARGETS
 
 _log = log.get_logger("LLVM")
 
@@ -115,11 +116,9 @@ def _ensure_system_consumer_targets(targets: list[str]) -> list[str]:
     INFO when it augments a list that omitted a backend, so the situation is
     discoverable. Idempotent — safe to apply to an already-compliant list.
     """
-    from sysforge.pipeline.stages.hardware import _SYSTEM_LIBLLVM_CONSUMER_TARGETS
-
     result = list(targets)
     added = [
-        b for b in _SYSTEM_LIBLLVM_CONSUMER_TARGETS if b not in result
+        b for b in SYSTEM_LIBLLVM_CONSUMER_TARGETS if b not in result
     ]
     if added:
         result.extend(added)

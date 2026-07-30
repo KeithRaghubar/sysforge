@@ -22,6 +22,10 @@ from sysforge import log
 _log = log.get_logger("PATCH")
 import tomllib
 from pathlib import Path
+from sysforge.primitives.hardware_tables import (
+    MESA_MANDATORY_GALLIUM,
+    MESA_MANDATORY_VULKAN,
+)
 from sysforge.primitives.profile import CONF_KEY_MAP
 
 
@@ -2550,14 +2554,10 @@ def validate_patched_meson_pkgbuild(
 
       * still exists and is not the upstream ``all`` sentinel, and
       * carries the mandatory software baseline
-        (``_MESA_MANDATORY_*`` — the inverse-AMDGPU invariant: a mesa with no
+        (``MESA_MANDATORY_*`` — the inverse-AMDGPU invariant: a mesa with no
         software renderer bricks headless/VM/recovery).
     """
     validate_patched_pkgbuild(original_path, patched_path)
-    from sysforge.pipeline.stages.hardware import (
-        _MESA_MANDATORY_GALLIUM,
-        _MESA_MANDATORY_VULKAN,
-    )
     text = Path(patched_path).read_text(encoding="utf-8")
 
     def _check(axis, regex, requested, mandatory):
@@ -2584,8 +2584,8 @@ def validate_patched_meson_pkgbuild(
             _log.error(msg)
             raise PkgbuildPatchError(msg)
 
-    _check("gallium-drivers", _MESA_GALLIUM_RE, gallium, _MESA_MANDATORY_GALLIUM)
-    _check("vulkan-drivers", _MESA_VULKAN_RE, vulkan, _MESA_MANDATORY_VULKAN)
+    _check("gallium-drivers", _MESA_GALLIUM_RE, gallium, MESA_MANDATORY_GALLIUM)
+    _check("vulkan-drivers", _MESA_VULKAN_RE, vulkan, MESA_MANDATORY_VULKAN)
 
 
 # ---------------------------------------------------------------------------

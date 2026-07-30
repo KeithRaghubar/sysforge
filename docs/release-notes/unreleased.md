@@ -141,6 +141,22 @@ https://keepachangelog.com/en/1.1.0/
   absent optional infrastructure from a real failure for callers that warn
   rather than fail.
 
+- `primitives/` no longer imports from `pipeline.stages` for the mandatory
+  hardware-baseline tables (2.6.1-F8). `SYSTEM_LIBLLVM_CONSUMER_TARGETS` and
+  `MESA_MANDATORY_GALLIUM` / `MESA_MANDATORY_VULKAN` moved to a new leaf module,
+  `primitives/hardware_tables.py`, and the stage now imports *down* into it —
+  reversing an edge that had `llvm_targets`, `mesa_drivers` and
+  `pkgbuild_patcher` reaching *up* into `stages/hardware.py`. All five imports
+  were function-level, written to dodge an import cycle rather than for
+  laziness. Because `pipeline/stages/__init__.py` instantiates every stage at
+  import, reaching up for one driver tuple loaded **11 stage modules**; it now
+  loads none, so an import error in one stage can no longer surface as a
+  traceback inside an unrelated resolver (which is exactly how this was found).
+  No behaviour change — the tables and their enforcement points are unchanged.
+  A new structural test, `tests/test_module_layering.py`, pins the edge with a
+  shrinking allowlist covering the four live-detection helpers that still cross
+  it, so the set cannot silently grow.
+
 - **Standards row 23 is now the full Arch-derivative portability standard**
   (2.6.1-STD1), extended from the identity-only invariant that shipped with
   2.6.1-F2 to all three sub-invariants: **(a)** no hardcoded sync-repo names —
