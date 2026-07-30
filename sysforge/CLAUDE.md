@@ -101,6 +101,11 @@ Mechanism lives in the cited §DESIGN section.
   `build_diag.py` (`_MATCHERS`, on `strip_ansi`-cleaned lines). §`build_diag`.
 - **First-install notice**: `init_notice.maybe_emit_init_notice` (reads/deletes only; marker created
   solely by the PKGBUILD `post_install` scriptlet). §`init_notice.py`.
+- **Report-block presentation**: `primitives/render.py` (`arrow`, `version_pair`, `tag_header`) —
+  the one home for the `[TAG]` gutter and `old → new` / `ver (=)` vocabulary shared by
+  `update_summary` and both `render_preflight`s. **Never hardcode `→` or re-inline the gutter
+  literal**: pre-flight blocks are emitted with bare `print()`, which bypasses `log.ui`'s
+  `downgrade_glyphs` chokepoint, so glyphs must be resolved at format time.
 - **LLVM source-state**: `llvm_state.collect_llvm_state` — don't call `git_is_dirty`+URL-parse.
 - **Editor/merge-tool launch**: `primitives/editor.py` (`resolve_editor`, `resolve_merge_tool`,
   `run_tty_argv`); `.sfnew` adoption in `config_cmd.ConfigMergeVerb`. §Config Layer.

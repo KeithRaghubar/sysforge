@@ -42,6 +42,7 @@ from sysforge.primitives.aur import (
     head_reachable_from_remote,
 )
 from sysforge.primitives.pkgbuild_patcher import is_llvm_pkgbase
+from sysforge.primitives.render import arrow, tag_header, version_pair
 
 _log = log.get_logger("LLVM")
 
@@ -664,11 +665,14 @@ _TAG = "LLVM"
 
 
 def _format_version_pair(installed: str | None, pkgbuild: str | None) -> str:
-    inst = installed or "—"
-    pkg = pkgbuild or "—"
-    if installed and pkgbuild and installed == pkgbuild:
-        return f"{inst} (=)"
-    return f"{inst} → {pkg}"
+    """Thin alias over the shared renderer (2.6.1-F9).
+
+    Previously inlined here with a hardcoded ``→``; because every pre-flight
+    block is emitted with a bare ``print()`` rather than ``log.ui``, that arrow
+    never reached ``downgrade_glyphs`` and survived intact on ``TERM=linux``.
+    :func:`render.version_pair` resolves the glyph at format time instead.
+    """
+    return version_pair(installed, pkgbuild)
 
 
 def is_actionable_state(s: LlvmPackageState) -> bool:
@@ -711,7 +715,7 @@ def render_preflight(report: LlvmPreflightReport, *, verbose: bool = False) -> s
     if not shown:
         return ""
 
-    header = f"  [{_TAG}]" + " " * max(1, 17 - len(_TAG) - 2)
+    header = tag_header(_TAG)
     lines: list[str] = []
     lines.append(
         f"{header}LLVM source pre-flight ({len(shown)} package"
@@ -734,7 +738,7 @@ def render_preflight(report: LlvmPreflightReport, *, verbose: bool = False) -> s
         clean = "clean" if not s.is_dirty else f"DIRTY ({s.dirty_reason})"
         sync = s.divergence
         if s.head_short and s.upstream_short and sync != "up_to_date":
-            sync = f"{sync} ({s.head_short}→{s.upstream_short})"
+            sync = f"{sync} ({s.head_short}{arrow()}{s.upstream_short})"
         elif s.head_short and verbose:
             sync = f"{sync} ({s.head_short})"
 

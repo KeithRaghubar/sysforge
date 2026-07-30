@@ -15,6 +15,7 @@ surface.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from sysforge.primitives import render
 from sysforge.update_result import _UpdateResult
 
 # (tag, count_label, line_template) per action. line_template is formatted
@@ -92,7 +93,7 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
             pkgbuild_ver=r.pkgbuild_ver,
             star=star,
         )
-        print(f"  [{tag}]{' ' * max(1, 17 - len(tag) - 2)}{line}")
+        print(f"{render.tag_header(tag)}{line}")
 
     if not verbose and any(r.action not in _ALWAYS_VERBOSE_ACTIONS for r in results):
         print("  (run with -v to list each skipped/up-to-date package)")
@@ -108,13 +109,13 @@ def _stage_verb(owner_stage: str) -> str:
 
 
 def _arrow() -> str:
-    """`→` normally, `->` where the Unicode gate degrades glyphs.
+    """Back-compat alias for :func:`sysforge.primitives.render.arrow` (2.6.1-F9).
 
-    Reuses the same TERM=linux downgrade the rest of the UI honors so the two
-    summaries render consistently.
+    The glyph gate now lives in the shared renderer alongside the version-pair
+    and gutter helpers; this name is kept because it is part of this module's
+    established test surface.
     """
-    from sysforge.log import use_unicode
-    return "→" if use_unicode() else "->"
+    return render.arrow()
 
 
 @dataclass
@@ -144,7 +145,9 @@ def _fmt_pkg(summary: ResultSummary, pkgbase: str) -> str:
     installed_ver, pkgbuild_ver = pair
     if installed_ver is None or pkgbuild_ver is None:
         return pkgbase
-    return f"{pkgbase}: {installed_ver} {_arrow()} {pkgbuild_ver}"
+    # equal_marker=False: a built package reports what it was rebuilt to, so an
+    # unchanged version still reads as a transition rather than "(=)".
+    return f"{pkgbase}: {render.version_pair(installed_ver, pkgbuild_ver, equal_marker=False)}"
 
 
 def _print_result_summary(
@@ -211,7 +214,9 @@ def _print_result_summary(
         emit("  Stage-owned updates available:")
         for pkgbase, installed_ver, upstream_ver, owner_stage in summary.stage_owned_updates:
             if installed_ver and upstream_ver:
-                ver = f"{installed_ver} {_arrow()} {upstream_ver}"
+                ver = render.version_pair(
+                    installed_ver, upstream_ver, equal_marker=False,
+                )
             else:
                 ver = upstream_ver or ""
             emit(f"    {pkgbase}   {ver}   {_stage_verb(owner_stage)}")

@@ -56,6 +56,8 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.prompt import is_interactive, prompt_choice
+from sysforge.primitives.render import tag_header, version_pair
+from sysforge.primitives.version import vercmp
 
 _log = log.get_logger("PREFLIGHT")
 
@@ -74,6 +76,12 @@ class ToolchainCheck:
     detail: str
     fix_cmd: str | None
     auto_remediable: bool
+    # Optional ``(label, installed_ver, target_ver)`` rows describing a version
+    # change the check wants to report (2.6.1-F9). Kept structured rather than
+    # baked into ``detail`` so the renderer formats them the same way the
+    # post-update summary formats its version table. Empty for checks with
+    # nothing version-shaped to say.
+    versions: tuple[tuple[str, str | None, str | None], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -328,12 +336,38 @@ def _pkgver_no_rel(ver: str | None) -> str | None:
     return ver.rsplit("-", 1)[0]
 
 
-def _llvm_suite_skew() -> tuple[str, list[str]] | None:
+def _newest_pkgver(vers) -> str:
+    """The greatest pkgver in ``vers`` by pacman's own ordering.
+
+    Falls back to a plain lexical max when :func:`vercmp` is unavailable (it
+    shells out to the pacman binary). A pre-flight display helper must never be the
+    thing that aborts a batch, so the fallback is deliberate rather than a
+    raised error — a mis-ordered *label* is cosmetic; the skew itself is still
+    reported either way.
+    """
+    ordered = sorted(vers)
+    newest = ordered[0]
+    for v in ordered[1:]:
+        try:
+            if vercmp(v, newest) > 0:
+                newest = v
+        except (RuntimeError, OSError):
+            return ordered[-1]
+    return newest
+
+
+def _llvm_suite_skew() -> tuple[str, list[str], tuple] | None:
     """Detect a pkgver skew across the *installed* members of the LLVM suite.
 
-    Returns ``(detail, resync_pkgs)`` when installed members disagree on pkgver
-    (``resync_pkgs`` is every installed member, so ``pacman -Syu`` converges them
-    all), or ``None`` when they agree / fewer than two are installed.
+    Returns ``(detail, resync_pkgs, version_rows)`` when installed members
+    disagree on pkgver, or ``None`` when they agree / fewer than two are
+    installed.
+
+    ``resync_pkgs`` is every installed member, so ``pacman -Syu`` converges them
+    all. ``version_rows`` is the same finding in the ``(label, installed,
+    target)`` shape the renderer turns into a version table — every group is
+    shown against the newest installed pkgver, so the lagging groups read as
+    ``old → new`` and the already-current group as ``ver (=)`` (2.6.1-F9).
     """
     installed = {
         p: v for p in LLVM_LOCKSTEP_SUITE
@@ -348,7 +382,11 @@ def _llvm_suite_skew() -> tuple[str, list[str]] | None:
         f"{'/'.join(pkgs)} {ver}" for ver, pkgs in sorted(by_ver.items())
     )
     detail = f"LLVM suite version skew ({groups}) — toolchain is half-installed"
-    return detail, sorted(installed)
+    target = _newest_pkgver(by_ver)
+    rows = tuple(
+        ("/".join(pkgs), ver, target) for ver, pkgs in sorted(by_ver.items())
+    )
+    return detail, sorted(installed), rows
 
 
 def _probe_cc(compiler: str) -> ToolchainCheck:
@@ -387,10 +425,11 @@ def _probe_cc(compiler: str) -> ToolchainCheck:
     if is_clang:
         skew = _llvm_suite_skew()
         if skew is not None:
-            detail, resync = skew
+            detail, resync, rows = skew
             return ToolchainCheck(
                 name=name, ok=False, detail=detail,
                 fix_cmd=_reinstall_hint(resync), auto_remediable=False,
+                versions=rows,
             )
     first = (r.stdout or r.stderr).strip().splitlines()
     return ToolchainCheck(
@@ -432,13 +471,19 @@ def run_preflight(required: frozenset[str]) -> ToolchainPreflightReport:
 def render_preflight(report: ToolchainPreflightReport) -> str:
     """Render a human-readable pre-flight table.
 
-    Output style mirrors :func:`sysforge.primitives.llvm_state.render_preflight`
-    so the two preflight blocks line up visually in update output.
+    Shares its gutter and version-pair vocabulary with
+    :func:`sysforge.primitives.llvm_state.render_preflight` and the post-update
+    summary via :mod:`sysforge.primitives.render`, so all three blocks line up
+    visually in update output (2.6.1-F9).
+
+    A check carrying ``versions`` rows gets an indented ``label: old → new``
+    table under its detail line — the same shape the update summary uses for
+    rebuilt packages — instead of the version facts being buried in prose.
     """
     if not report.checks:
         return ""
 
-    header = f"  [{_TAG}]" + " " * max(1, 17 - len(_TAG) - 2)
+    header = tag_header(_TAG)
     lines: list[str] = []
     lines.append(
         f"{header}Toolchain pre-flight ({len(report.checks)} check"
@@ -448,6 +493,10 @@ def render_preflight(report: ToolchainPreflightReport) -> str:
     for c in report.checks:
         status = "ok " if c.ok else "FAIL"
         lines.append(f"    {status}  {c.name:<40}  {c.detail}")
+        for label, old, new in c.versions:
+            # Indented past the status/name columns so the version table reads
+            # as detail belonging to the row above it.
+            lines.append(f"{' ' * 12}{label}: {version_pair(old, new)}")
 
     failed = report.failed
     if failed:

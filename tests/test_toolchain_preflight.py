@@ -234,6 +234,89 @@ def test_render_failed_lists_fix_cmd():
 
 
 # ---------------------------------------------------------------------------
+# Version-change rows (2.6.1-F9) — mirror the post-update summary table
+# ---------------------------------------------------------------------------
+
+def test_render_emits_version_pair_rows(monkeypatch):
+    """A check carrying version rows renders them as `label: old → new`."""
+    monkeypatch.setenv("TERM", "xterm")
+    rep = ToolchainPreflightReport(checks=(
+        ToolchainCheck(
+            "cc:clang", False, "LLVM suite version skew", "pacman -Syu", False,
+            versions=(("clang/lld", "22.1.5", "22.1.6"),
+                      ("llvm/llvm-libs", "22.1.6", "22.1.6")),
+        ),
+    ))
+    out = render_preflight(rep)
+    assert "clang/lld: 22.1.5 → 22.1.6" in out
+    # The already-current group collapses to the equal marker, as in the
+    # LLVM source pre-flight.
+    assert "llvm/llvm-libs: 22.1.6 (=)" in out
+
+
+def test_render_version_rows_degrade_under_term_linux(monkeypatch):
+    monkeypatch.setenv("TERM", "linux")
+    rep = ToolchainPreflightReport(checks=(
+        ToolchainCheck(
+            "cc:clang", False, "skew", None, False,
+            versions=(("clang", "22.1.5", "22.1.6"),),
+        ),
+    ))
+    out = render_preflight(rep)
+    assert "clang: 22.1.5 -> 22.1.6" in out
+    assert "→" not in out
+
+
+def test_render_without_version_rows_is_unchanged():
+    """Checks that carry no version data keep the plain detail line."""
+    rep = ToolchainPreflightReport(checks=(
+        ToolchainCheck("cmake", True, "cmake version 3.31.0", None, False),
+    ))
+    out = render_preflight(rep)
+    assert "cmake version 3.31.0" in out
+    assert ":" not in out.split("cmake version")[1]
+
+
+def test_skew_check_carries_structured_version_rows(monkeypatch):
+    """_probe_cc populates `versions` so the renderer, not the probe, formats.
+
+    clang/lld lag behind llvm/llvm-libs; every lagging group targets the newest
+    installed pkgver.
+    """
+    monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["clang", "--version"]:
+            return _FakeResult(0, "clang version 22.1.5\n", "")
+        if cmd[:2] == ["pacman", "-Q"]:
+            ver = "22.1.5-1" if cmd[2] in ("clang", "lld") else "22.1.6-1"
+            return _FakeResult(0, f"{cmd[2]} {ver}\n", "")
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    c = run_preflight(frozenset({"cc:clang"})).failed[0]
+    rows = dict((label, (old, new)) for label, old, new in c.versions)
+    assert rows["clang/lld"] == ("22.1.5", "22.1.6")
+    # The newest group is its own target.
+    assert rows["compiler-rt/llvm/llvm-libs/openmp/polly"] == ("22.1.6", "22.1.6")
+
+
+def test_ok_check_carries_no_version_rows(monkeypatch):
+    """A healthy suite reports one detail line, not seven version rows."""
+    monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:2] == ["clang", "--version"]:
+            return _FakeResult(0, "clang version 22.1.6\n", "")
+        if cmd[:2] == ["pacman", "-Q"]:
+            return _FakeResult(0, f"{cmd[2]} 22.1.6-1\n", "")
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert run_preflight(frozenset({"cc:clang"})).checks[0].versions == ()
+
+
+# ---------------------------------------------------------------------------
 # auto_remediate
 # ---------------------------------------------------------------------------
 

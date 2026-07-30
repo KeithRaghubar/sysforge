@@ -157,6 +157,29 @@ https://keepachangelog.com/en/1.1.0/
   shrinking allowlist covering the four live-detection helpers that still cross
   it, so the set cannot silently grow.
 
+- The toolchain pre-flight now reports version skew as a table rather than a
+  sentence (2.6.1-F9). A half-installed LLVM suite previously rendered as
+  `LLVM suite version skew (clang/lld 22.1.5 vs llvm/llvm-libs 22.1.6)`; it now
+  additionally lists each group as `clang/lld: 22.1.5 → 22.1.6`, with the
+  already-current group collapsing to `llvm/llvm-libs: 22.1.6 (=)` — the same
+  `old → new` vocabulary the post-update summary uses for rebuilt packages, so
+  the target version is stated rather than left to be inferred from a `vs`
+  clause. The finding is carried structurally on `ToolchainCheck.versions`, so
+  the probe reports facts and the renderer owns formatting.
+
+  The three blocks that documented themselves as "mirroring" each other —
+  `update_summary`, `llvm_state.render_preflight`, and
+  `toolchain_preflight.render_preflight` — now share one home,
+  `primitives/render.py` (`arrow`, `version_pair`, `tag_header`). Only the
+  `[TAG]` gutter had genuinely been shared; each had its own copy of the rest.
+
+  This fixes a glyph bug in passing: `llvm_state` hardcoded `→` in its version
+  pairs and its `HEAD→upstream` divergence note. `→` *is* in
+  `log._GLYPH_FALLBACKS`, but the downgrade only runs inside `log.ui`, and every
+  pre-flight block is emitted with a bare `print()` — so those arrows survived
+  intact on `TERM=linux`. The shared helpers resolve glyphs at format time,
+  which makes the output correct regardless of how the caller emits it.
+
 - **Standards row 23 is now the full Arch-derivative portability standard**
   (2.6.1-STD1), extended from the identity-only invariant that shipped with
   2.6.1-F2 to all three sub-invariants: **(a)** no hardcoded sync-repo names —
