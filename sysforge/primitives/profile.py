@@ -29,6 +29,7 @@ import fnmatch
 import pprint
 import re
 from sysforge import log
+from sysforge.primitives import deprecations
 from sysforge.primitives.makepkg_flags import (
     _detect_linker_from_ldflags,
     _inject_linker,
@@ -783,10 +784,19 @@ def normalize_build_mode(build_mode: str | None) -> str | None:
     ``"patched_pkgbuild"`` → ``"source_built"``; every other token (and
     ``None``) is returned unchanged. The single read-alias chokepoint so a
     live/edited profiles.toml of any vintage presents one vocabulary downstream.
+
+    The alias branch warns via the deprecation registry (2.6.1-STD3, standards
+    row 24) — it is a ``compat`` surface, removed in 4.0.0. Only that branch
+    warns: this function is called on every profile read, so warning on the
+    canonical token would be noise, and ``warn_used`` dedups per run anyway.
     """
     if build_mode is None:
         return None
-    return _LEGACY_BUILD_MODE_ALIASES.get(build_mode, build_mode)
+    canonical = _LEGACY_BUILD_MODE_ALIASES.get(build_mode)
+    if canonical is not None:
+        deprecations.warn_used("profiles.build_mode=patched_pkgbuild")
+        return canonical
+    return build_mode
 
 
 def build_mode_uses_extracted_profile(build_mode: str | None) -> bool:

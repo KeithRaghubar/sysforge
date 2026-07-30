@@ -5,6 +5,7 @@ load_consumes_inference, _parse_one_makepkg_conf, and find_pkgbuild.
 import pytest
 
 from sysforge.primitives.config import (
+    ConfigError,
     _parse_one_makepkg_conf,
     load_config,
     load_conflict_groups,
@@ -85,8 +86,20 @@ class TestResolveRepoMode:
         packages.toml directly and call resolve_repo_mode without ever passing
         through that gate. If only the gate rejected "profiled", those callers
         would still silently downgrade to "pacman"."""
-        with pytest.raises(ValueError, match="build_from_source"):
+        with pytest.raises(ConfigError, match="build_from_source"):
             resolve_repo_mode({"repo_mode": "profiled"})
+
+    def test_profiled_error_is_a_runtime_error_so_the_cli_stays_clean(self):
+        """2.6.1-B3: the reject must reach the user as an error line, not a
+        traceback. ``verbs/runner.py`` converts only ``RuntimeError`` into a
+        clean ``_log.error`` + exit 1; every other exception propagates
+        verbatim by design (a verb raising ``KeyError`` *is* a bug). A stale
+        ``repo_mode`` is a config-validation failure, not a crash, so
+        ConfigError subclasses RuntimeError to land on the handled path
+        without widening what the runner catches."""
+        with pytest.raises(ConfigError) as excinfo:
+            resolve_repo_mode({"repo_mode": "profiled"})
+        assert isinstance(excinfo.value, RuntimeError)
 
     def test_unknown_value_warns_and_falls_back_to_pacman(self, monkeypatch):
         # 2.3.0-F8: unknowns no longer pass through unvalidated. resolve_enum

@@ -173,6 +173,25 @@ https://keepachangelog.com/en/1.1.0/
   Arch derivatives expected but unvalidated. `sysforge doctor --distro` reports
   which tier the running system is in.
 
+## Deprecated
+
+- `profiles.toml`'s `build_mode = "patched_pkgbuild"` is now a registered
+  deprecation, removed in **4.0.0** (2.6.1-STD3). The token still resolves to
+  `source_built` exactly as before; what changes is that reading it warns once
+  per run, naming the removal version and the replacement. It has been an alias
+  since 2.0.0 and was the one compat surface the 2.6.1-STD2 sweep missed —
+  registering it now is what makes it removable at the *next* major rather than
+  the one after, since a `compat` removal may only land on an `X.0.0` and 3.0.0
+  ships with the surface live. Migration: change `build_mode =
+  "patched_pkgbuild"` to `build_mode = "source_built"` in `profiles.toml`.
+
+  Standards row 24 records why the gate could not have found this itself: the
+  `deprecations` bijection walks registry→call-site, never code→registry, so an
+  *unregistered* compat surface is invisible to it by construction. The row now
+  states that plainly — a catalogued-empty `compat` half is not proof that none
+  exist, and finding the next one is a review obligation rather than something
+  the tooling guarantees.
+
 ## Removed
 
 - The flat `doctor` flags (2.6.1-F1): the axis flags `--graphics --gfxperf
@@ -229,6 +248,19 @@ https://keepachangelog.com/en/1.1.0/
   other boot modes are unaffected. Combined with `SYSFORGE_VM_DIR`, a VM tree for a
   second Arch-derived distro now needs no code change. Only the Arch install stays
   automated — see `tools/vm/README.md`.
+
+- A stale `packages.toml` no longer greets an upgrading user with a stack trace
+  (2.6.1-B3). 2.6.1-F5 made `[build] repo_mode = "profiled"` fail loudly rather
+  than silently resolve to `pacman` — but it raised `ValueError`, and
+  `verbs/runner.py` converts only `RuntimeError` into a clean error line, so
+  `build`, `update` and `reconfigure` printed a traceback with the remediation
+  buried inside it. Both `repo_mode` rejects (`config.resolve_repo_mode` and the
+  packages stage's raw-value gate, which had the same defect) now raise a new
+  `config.ConfigError`, a `RuntimeError` subclass, so the message lands as an
+  error line and exit 1. The runner was deliberately *not* widened to catch
+  `ValueError`: its error model treats anything but `RuntimeError` as a bug that
+  should traceback, and blurring that would make real defects look like tidy
+  user errors. A regression test pins both halves.
 
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing

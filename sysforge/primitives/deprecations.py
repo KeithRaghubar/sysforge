@@ -78,6 +78,14 @@ _REGISTRY: tuple[Deprecation, ...] = (
         replacement="`sysforge doctor system` / `sysforge doctor pkg`",
         anchor="sysforge/doctor.py::doctor_migration_hint",
     ),
+    Deprecation(
+        surface="profiles.build_mode=patched_pkgbuild",
+        kind=CONFIG_KEY,
+        function=COMPAT,
+        deprecated_in="2.0.0",
+        removed_in="4.0.0",
+        replacement='build_mode = "source_built"',
+    ),
 )
 
 _BY_SURFACE = {d.surface: d for d in _REGISTRY}

@@ -43,6 +43,7 @@ from pathlib import Path
 
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives.config import (
+    ConfigError,
     expand_package_groups,
     find_pkgbuild,
     resolve_pkgbuild_src_dir,
@@ -90,7 +91,11 @@ def _load_packages(config):
     # lenient — warn + fall back — for the defensive downstream readers; 2.3.0-F8.)
     raw_repo_mode = (build_cfg or {}).get("repo_mode")
     if raw_repo_mode is not None and raw_repo_mode not in REPO_MODE_ACCEPTED_INPUTS:
-        raise ValueError(
+        # ConfigError (a RuntimeError) not ValueError, so the runner reports a
+        # typo'd packages.toml as an error line rather than a traceback — this
+        # gate and resolve_repo_mode are the same failure to the same user
+        # about the same key, and must look alike (2.6.1-B3).
+        raise ConfigError(
             f"[PACKAGES] Invalid [build] repo_mode={raw_repo_mode!r} "
             f"in {path}. Must be {REPO_MODE_PACMAN!r} or {REPO_MODE_SOURCE!r}."
         )

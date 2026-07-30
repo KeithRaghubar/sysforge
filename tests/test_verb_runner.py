@@ -11,6 +11,7 @@ import argparse
 
 import pytest
 
+from sysforge.primitives.config import ConfigError
 from sysforge.primitives.stage_sentinel import StageSentinel
 from sysforge.verbs import ExecResult, PreCheckResult, Verb, run_verb
 
@@ -27,28 +28,30 @@ class _CountingVerb(Verb):
     name = "test"
     requires_sentinel = False
 
-    def __init__(self, *, pre_result=None, exec_rc=0, raise_in=None):
+    def __init__(self, *, pre_result=None, exec_rc=0, raise_in=None,
+                 exc_cls: type[Exception] = RuntimeError):
         self._pre_result = pre_result or PreCheckResult()
         self._exec_rc = exec_rc
         self._raise_in = raise_in
+        self._exc_cls = exc_cls
         self.calls = []
 
     def pre_check(self, args) -> PreCheckResult:
         self.calls.append("pre_check")
         if self._raise_in == "pre_check":
-            raise RuntimeError("pre_check exploded")
+            raise self._exc_cls("pre_check exploded")
         return self._pre_result
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         self.calls.append("execute")
         if self._raise_in == "execute":
-            raise RuntimeError("execute exploded")
+            raise self._exc_cls("execute exploded")
         return ExecResult(exit_code=self._exec_rc)
 
     def post_validate(self, args, pre, result) -> None:
         self.calls.append("post_validate")
         if self._raise_in == "post_validate":
-            raise RuntimeError("post_validate exploded")
+            raise self._exc_cls("post_validate exploded")
 
 
 def test_proceed_runs_all_three_phases():
@@ -99,6 +102,28 @@ def test_runtime_error_in_phase_returns_one(phase):
     v = _CountingVerb(raise_in=phase)
     rc = run_verb(v, _args(state_dir=None))
     assert rc == 1
+
+
+@pytest.mark.parametrize("phase", ["pre_check", "execute", "post_validate"])
+def test_config_error_in_phase_returns_one_not_a_traceback(phase):
+    """2.6.1-B3: a config-validation failure is an expected outcome, not a bug.
+
+    ``ConfigError`` subclasses ``RuntimeError`` precisely so it lands on the
+    runner's handled path — the user upgrading with a stale ``packages.toml``
+    gets an error line and exit 1, not a stack trace. This is the guard
+    against someone "simplifying" ConfigError back to a bare ValueError.
+    """
+    v = _CountingVerb(raise_in=phase, exc_cls=ConfigError)
+    rc = run_verb(v, _args(state_dir=None))
+    assert rc == 1
+
+
+def test_non_runtime_error_still_propagates():
+    """The counterpart guard: widening the runner to catch ValueError would
+    make genuine bugs look like tidy user errors. They must still traceback."""
+    v = _CountingVerb(raise_in="execute", exc_cls=ValueError)
+    with pytest.raises(ValueError):
+        run_verb(v, _args(state_dir=None))
 
 
 # ---------------------------------------------------------------------------

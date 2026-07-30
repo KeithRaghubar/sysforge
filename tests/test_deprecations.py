@@ -115,6 +115,44 @@ def test_reset_warned_restores_state(monkeypatch):
     assert len(seen) == 2
 
 
+def test_profiles_patched_pkgbuild_is_registered():
+    """2.6.1-STD3: the profile-layer build_mode alias was the one compat
+    surface 2.6.1-STD2 missed — the bijection check walks registry→call-site,
+    never code→registry, so an unregistered alias is invisible to it. It is a
+    COMPAT surface (the old spelling still works), so its removal must land on
+    a major; 3.0.0 is already shipping with it present, hence 4.0.0."""
+    d = dep.get("profiles.build_mode=patched_pkgbuild")
+    assert d is not None, "the alias must carry a registry record"
+    assert d.function == dep.COMPAT
+    assert d.kind == dep.CONFIG_KEY
+    assert d.removed_in == "4.0.0"
+    assert d.anchor is None
+
+
+def test_normalize_build_mode_warns_on_legacy_token(monkeypatch):
+    """The alias branch of the read chokepoint must route through warn_used,
+    so the removal version in the notice is built from the record."""
+    from sysforge.primitives import profile
+    seen = []
+    monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append(msg))
+    assert profile.normalize_build_mode("patched_pkgbuild") == "source_built"
+    assert len(seen) == 1
+    assert "patched_pkgbuild" in seen[0]
+    assert "4.0.0" in seen[0]
+
+
+def test_normalize_build_mode_current_token_does_not_warn(monkeypatch):
+    """Only the alias branch warns — the canonical token and None are silent,
+    and normalize_build_mode is called on every profile read."""
+    from sysforge.primitives import profile
+    seen = []
+    monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append(msg))
+    assert profile.normalize_build_mode("source_built") == "source_built"
+    assert profile.normalize_build_mode("kernel") == "kernel"
+    assert profile.normalize_build_mode(None) is None
+    assert seen == []
+
+
 def test_repo_mode_profiled_is_rejected(monkeypatch):
     """3.0.0 removed the alias. It must not resolve or warn as a known token."""
     from sysforge.primitives import config as cfg

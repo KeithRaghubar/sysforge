@@ -158,7 +158,9 @@ def test_gate_global_repo_mode_profiled_raises(monkeypatch, tmp_path):
     pkg_path = tmp_path / "packages.toml"
     pkg_path.write_text('[build]\nrepo_mode = "profiled"\n')
     cfg = {"packages_file": str(pkg_path)}
-    with pytest.raises(ValueError, match="build_from_source"):
+    from sysforge.primitives.config import ConfigError
+
+    with pytest.raises(ConfigError, match="build_from_source"):
         _run_build(monkeypatch, tmp_path, "mesa", is_repo=True,
                    force=False, interactive=False, config=cfg)
 

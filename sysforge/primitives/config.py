@@ -78,6 +78,19 @@ _REPO_MODE_VALUES = {REPO_MODE_PACMAN, REPO_MODE_SOURCE}
 _REPO_TRACK_VALUES = {REPO_TRACK_STABLE, REPO_TRACK_MAIN}
 
 
+class ConfigError(RuntimeError):
+    """A user-facing config-validation failure (2.6.1-B3).
+
+    Subclasses ``RuntimeError`` deliberately: ``verbs.runner.run_verb``'s error
+    model treats ``RuntimeError`` as an *expected* outcome (log the message,
+    exit 1) and lets everything else propagate as a traceback, on the grounds
+    that a verb raising e.g. ``KeyError`` is a bug. A stale config value is the
+    former — the user needs the message, not a stack trace — so raising this
+    puts config rejects on the handled path **without** widening what the
+    runner catches, which would have made genuine bugs look like tidy errors.
+    """
+
+
 def resolve_enum(raw, known, default, *, key: str):
     """Resolve a string-valued config option against a known vocabulary (2.3.0-F8).
 
@@ -118,11 +131,14 @@ def resolve_repo_mode(build_cfg: dict | None) -> str:
     caught it. Every other unrecognized value still takes the lenient path.
 
     Raises:
-        ValueError: if ``raw == "profiled"``.
+        ConfigError: if ``raw == "profiled"``. A ``RuntimeError`` subclass, so
+            the CLI reports it as an error line rather than a traceback
+            (2.6.1-B3) — this is the first thing a user upgrading with a stale
+            ``packages.toml`` sees.
     """
     raw = (build_cfg or {}).get("repo_mode", REPO_MODE_PACMAN)
     if raw == _REMOVED_REPO_MODE_PROFILED:
-        raise ValueError(
+        raise ConfigError(
             f"[build] repo_mode = {raw!r} was removed in 3.0.0. "
             f"Change it to repo_mode = {REPO_MODE_SOURCE!r}."
         )

@@ -15,6 +15,7 @@ from sysforge.pipeline.stages.packages import (
     _load_packages,
     _resolve_pkgbuild,
 )
+from sysforge.primitives.config import ConfigError
 from sysforge.pipeline.state import PipelineState
 from sysforge.pipeline.stages.base import RunOptions
 
@@ -431,10 +432,16 @@ def test_enable_build_from_source_overrides_pacman_repo_mode(tmp_path):
 
 
 def test_repo_mode_invalid_raises(tmp_path):
-    """Invalid repo_mode value raises a clear error at load time."""
+    """Invalid repo_mode value raises a clear error at load time.
+
+    ConfigError (a RuntimeError subclass) rather than a bare ValueError, so the
+    verb runner reports it as an error line instead of a traceback — 2.6.1-B3
+    fixed this gate alongside resolve_repo_mode's, since they are the same
+    failure about the same key reaching the same user.
+    """
     pkg_file = tmp_path / "packages.toml"
     pkg_file.write_text('[build]\nrepo_mode = "hybrid"\n\n[[package]]\nname = "htop"\nsource = "repo"\n')
-    with pytest.raises(ValueError, match="Invalid.*repo_mode"):
+    with pytest.raises(ConfigError, match="Invalid.*repo_mode"):
         _load_packages({"packages_file": str(pkg_file)})
 
 
@@ -445,7 +452,7 @@ def test_repo_mode_profiled_hard_fails(tmp_path):
     pkg_file.write_text(
         '[build]\nrepo_mode = "profiled"\n\n[[package]]\nname = "htop"\nsource = "repo"\n'
     )
-    with pytest.raises(ValueError, match="Invalid.*repo_mode"):
+    with pytest.raises(ConfigError, match="Invalid.*repo_mode"):
         _load_packages({"packages_file": str(pkg_file)})
 
 

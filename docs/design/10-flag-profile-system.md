@@ -31,7 +31,7 @@ build_mode = "pgo_llvm_toolchain"
 
 [profiles.patched]
 extends = "optimized"
-build_mode = "source_built"   # legacy token "patched_pkgbuild" still accepted on read
+build_mode = "source_built"   # legacy "patched_pkgbuild" read-accepted, warns, gone in 4.0.0
 
 [profiles.kernel]
 extends = "bare"
@@ -54,7 +54,10 @@ as the rebuild-on-update marker.
 
 The profile layer normalizes its own legacy token **on read only** (never written
 into new data): `patched_pkgbuild → source_built` (`profile.normalize_build_mode`,
-applied at the `get_build_mode` read chokepoint). The build_state layer's
+applied at the `get_build_mode` read chokepoint). That alias is a registered
+`compat` deprecation as of 2.6.1-STD3 — reading it warns once per run and it is
+**removed in 4.0.0** (standards row 24; a `compat` removal may only land on an
+`X.0.0`, and 3.0.0 ships with the surface live). The build_state layer's
 equivalent read alias, `profiled → source_built` (formerly `BuildState.__init__`),
 was removed in 3.0.0 — a pre-rename `build_state.toml` entry now reads `profiled`
 verbatim until `sysforge state repair` rewrites it. The "does this mode extract
