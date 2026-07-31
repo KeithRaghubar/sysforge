@@ -80,6 +80,29 @@ https://keepachangelog.com/en/1.1.0/
   exception takes an inline `disable=` with a justifying comment rather than a
   laxer global threshold.
 
+- `make roadmap-view` prints the Planned summary table sorted by any column
+  (2.6.1-F13) — `make roadmap-view SORT=effort` for cheapest-first,
+  `SORT=bump REVERSE=1` for major-first; `SORT` ∈ `triage`/`id`/`item`/
+  `priority`/`effort`/`bump`, defaulting to the canonical triage order. The
+  three tag columns rank by their vocabulary, not alphabetically, so `effort`
+  reads small → medium → large rather than large → medium → small. It is a
+  read-only view: `--sort`/`--print`/`--reverse` never rewrite `ROADMAP.md`, so
+  the committed table keeps its triage order and `make check-roadmap-table`
+  stays deterministic. Developer tooling only — no runtime surface changes.
+
+- `make help` lists every target, grouped, with a one-line description
+  (2.6.1-F14). The repo had no target discovery at all: the ~70 targets were
+  documented only by comments in the Makefile, so the interface was
+  read-the-source or nothing. The list is generated from the file at run time —
+  a target appears iff its own line carries a `## description`, under the
+  `##@ Group` banner above it — so the help cannot advertise a target that does
+  not exist, and `tests/test_makefile_help.py` fails if a `.PHONY` target ships
+  without a description. Deliberately uncoloured: standards row 5 makes
+  `log.use_color()` the single colour authority, and a recipe emitting its own
+  ANSI would be a second one that never sees `NO_COLOR`. `make` with no
+  argument still runs the suite — the default goal is unchanged. Also adds
+  `typecheck` and `vm-console` to `.PHONY`, where both were missing.
+
 - SemVer impact is now declared rather than inferred (2.6.1-STD2), as standards
   row 24 plus an extension of row 3. `primitives/deprecations.py` is a registry
   of every surface sysforge still honours only for backwards compatibility —

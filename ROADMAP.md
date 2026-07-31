@@ -64,6 +64,13 @@ Abandoned entries carry no tag. The summary table below is **generated** from th
 tags — run `make roadmap-table` after any add/remove/retag; `make check-roadmap-table`
 (wired into `pre-release`) fails if the committed table has drifted.
 
+The committed table is always in triage order (priority, then effort, then ID).
+To read the backlog along another axis without touching the file, use `make
+roadmap-view SORT=<triage|id|item|priority|effort|bump>` (add `REVERSE=1` to
+flip it) — e.g. `SORT=effort` for cheapest-to-land first. That view is
+read-only by construction, so it can never be committed in place of the
+canonical ordering.
+
 ---
 
 ## Planned

@@ -190,3 +190,65 @@ def test_sort_is_priority_then_effort(tmp_path):
     erank = {"small": 0, "medium": 1, "large": 2}
     keys = [(rank[r.split("|")[3].strip()], erank[r.split("|")[4].strip()]) for r in rows]
     assert keys == sorted(keys)
+
+
+def _printed_rows(repo: Path, args) -> list[str]:
+    r = run(args, repo=repo)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return [ln for ln in r.stdout.splitlines() if ln.startswith("| `")]
+
+
+def _col(row: str, n: int) -> str:
+    return row.split("|")[n].strip()
+
+
+def test_print_does_not_write_the_file(tmp_path):
+    repo = _make_repo(tmp_path)
+    _retag(repo, "2.0.0-B1", "*Priority: high · Effort: small · Bump: patch*")
+    before = (repo / "ROADMAP.md").read_text(encoding="utf-8")
+    # A sorted view is read-only: it must not regenerate the committed table,
+    # so the staleness the retag introduced is still there afterwards.
+    assert _printed_rows(repo, ["--print", "--sort", "effort"])
+    assert (repo / "ROADMAP.md").read_text(encoding="utf-8") == before
+    assert run(["--check"], repo=repo).returncode == 1
+
+
+def test_sort_by_id(tmp_path):
+    repo = _make_repo(tmp_path)
+    ids = [_col(r, 1).strip("`") for r in _printed_rows(repo, ["--sort", "id"])]
+    assert ids == ["2.0.0-B1", "2.0.0-B2", "2.0.0-F1"]
+
+
+def test_sort_by_effort_is_ordinal_not_alphabetical(tmp_path):
+    repo = _make_repo(tmp_path)
+    efforts = [_col(r, 4) for r in _printed_rows(repo, ["--sort", "effort"])]
+    # Alphabetical would be large < medium < small; ordinal is small first.
+    assert efforts == ["small", "medium", "large"]
+
+
+def test_sort_by_bump_is_ordinal(tmp_path):
+    repo = _make_repo(tmp_path)
+    bumps = [_col(r, 5) for r in _printed_rows(repo, ["--sort", "bump"])]
+    assert bumps == ["patch", "minor", "major"]
+
+
+def test_reverse_flips_the_order(tmp_path):
+    repo = _make_repo(tmp_path)
+    fwd = _printed_rows(repo, ["--sort", "id"])
+    rev = _printed_rows(repo, ["--sort", "id", "--reverse"])
+    assert rev == list(reversed(fwd))
+
+
+def test_unknown_sort_column_is_rejected(tmp_path):
+    repo = _make_repo(tmp_path)
+    r = run(["--sort", "nonesuch"], repo=repo)
+    assert r.returncode == 2
+    assert "nonesuch" in r.stderr
+
+
+def test_print_reports_a_malformed_tag(tmp_path):
+    repo = _make_repo(tmp_path)
+    _retag(repo, "2.0.0-B1", "*Priority: urgent · Effort: small · Bump: patch*")
+    r = run(["--print"], repo=repo)
+    assert r.returncode == 1
+    assert "priority 'urgent'" in r.stderr

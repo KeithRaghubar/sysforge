@@ -20,9 +20,16 @@ bump outside the allowed vocabulary, is a hard error in both modes (there is no
 valid table to emit from a malformed entry). It shares the Bump *vocabulary*
 (not the parsing) with `check_standards.py` via `tools/_semver_vocab.py`.
 
+`--print` renders the same table to stdout without touching the file, and
+`--sort COLUMN` reorders it on any column (ordinal columns sort by their
+vocabulary rank, not alphabetically). The in-file table is *always* written in
+the canonical triage order regardless of `--sort`, so `--check` stays
+deterministic and a sorted view can never be committed by accident.
+
 Usage:
     python tools/gen_roadmap_table.py            # rewrite the table in place
     python tools/gen_roadmap_table.py --check     # exit 1 if the table is stale
+    python tools/gen_roadmap_table.py --print --sort effort   # view, don't write
     python tools/gen_roadmap_table.py --repo DIR  # operate on another tree (tests)
 """
 from __future__ import annotations
@@ -30,6 +37,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -142,20 +150,39 @@ def parse_entries(text: str) -> list[Entry]:
     return entries
 
 
-def _sort_key(e: Entry) -> tuple:
+def _id_key(e: Entry) -> tuple:
     m = _ID_RE.match(e.id)
     ver = (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
     typ = m.group(4) if m else ""
     num = int(m.group(5)) if m else 0
+    return (typ, ver, num)
+
+
+def _sort_key(e: Entry) -> tuple:
     # Triage order: highest priority first, then cheapest effort, then ID.
     return (_PRIORITY_ORDER.index(e.priority), _EFFORT_ORDER.index(e.effort),
-            typ, ver, num)
+            *_id_key(e))
 
 
-def render_table(entries: list[Entry]) -> str:
+# Per-column sort keys for `--sort`. The three tag columns are *ordinal*, so
+# they rank by vocabulary index (high < med < low), never alphabetically; each
+# falls back to the canonical triage key so ties stay stable and meaningful.
+SORT_COLUMNS: dict[str, Callable[[Entry], tuple]] = {
+    "triage": _sort_key,
+    "id": _id_key,
+    "item": lambda e: (e.title.lower(), *_id_key(e)),
+    "priority": lambda e: (_PRIORITY_ORDER.index(e.priority), _sort_key(e)),
+    "effort": lambda e: (_EFFORT_ORDER.index(e.effort), _sort_key(e)),
+    "bump": lambda e: (BUMP_ORDER.index(e.bump), _sort_key(e)),
+}
+
+
+def render_table(entries: list[Entry], sort: str = "triage",
+                 reverse: bool = False) -> str:
+    ordered = sorted(entries, key=SORT_COLUMNS[sort], reverse=reverse)
     rows = [
         f"| `{e.id}` | {e.title} | {e.priority} | {e.effort} | {e.bump} |"
-        for e in sorted(entries, key=_sort_key)
+        for e in ordered
     ]
     body = "\n".join([
         "| ID | Item | Priority | Effort | Bump |",
@@ -183,12 +210,31 @@ def main() -> int:
     )
     ap.add_argument("--check", action="store_true",
                     help="exit 1 if the committed table is stale")
+    ap.add_argument("--print", dest="print_only", action="store_true",
+                    help="render the table to stdout without writing ROADMAP.md")
+    ap.add_argument("--sort", choices=sorted(SORT_COLUMNS), default="triage",
+                    help="column to sort the printed table by (implies --print; "
+                         "default: triage = priority, then effort, then ID)")
+    ap.add_argument("--reverse", action="store_true",
+                    help="reverse the --sort order")
     ap.add_argument("--repo", type=Path, default=REPO,
                     help="repo root to operate on (default: this script's repo)")
     args = ap.parse_args()
 
     roadmap = args.repo.resolve() / "ROADMAP.md"
     text = roadmap.read_text(encoding="utf-8")
+
+    # A sorted view never reaches the file: --sort/--print are read-only, so the
+    # committed table keeps its canonical triage order and --check stays stable.
+    if args.print_only or args.sort != "triage" or args.reverse:
+        try:
+            entries = parse_entries(text)
+        except RoadmapError as e:
+            print(f"ROADMAP.md: {e}", file=sys.stderr)
+            return 1
+        print(render_table(entries, sort=args.sort, reverse=args.reverse), end="")
+        return 0
+
     try:
         regenerated = build(text)
     except RoadmapError as e:

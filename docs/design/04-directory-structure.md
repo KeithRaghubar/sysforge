@@ -134,7 +134,7 @@ sysforge/
 │       └── bootstrap.toml             # VM-specific bootstrap.toml for testing
 ├── PKGBUILD
 ├── pyproject.toml
-├── Makefile
+├── Makefile                           # dev interface; `make help` lists every target
 └── DESIGN.md
 ```
 
