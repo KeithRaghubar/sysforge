@@ -462,6 +462,17 @@ https://keepachangelog.com/en/1.1.0/
   Arch arm (11/11). The `doctor --distro` spelling was also corrected in
   `README.md`, `docs/design/verbs/doctor.md` and the two harness READMEs.
 
+- The container tier now runs pacman's install-time hooks instead of silently
+  skipping every one of them (2.6.1-B8). `pacman >= 7.1` isolates each scriptlet
+  and hook in its own network namespace; a rootless container has no
+  `CAP_SYS_ADMIN` in its user namespace, so that `unshare()` fails with `EPERM`
+  and pacman refuses to run the hook — while still exiting `0`, so the install
+  read as clean with no hooks having fired. The `tmpfiles.d` check was the only
+  one asserting an *effect* rather than a file's presence, so it was the only
+  one that caught it. The Containerfile now sets `DisableSandboxNetwork` in
+  `[options]`, which drops only the network half of the sandbox and leaves the
+  filesystem half in force. Both arms are green (11/11 on Arch and CachyOS).
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would

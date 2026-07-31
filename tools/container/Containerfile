@@ -12,6 +12,16 @@
 ARG BASE_IMAGE=docker.io/library/archlinux:base-devel
 FROM ${BASE_IMAGE}
 
+# pacman >= 7.1 runs every scriptlet and hook inside its own network namespace.
+# A rootless container has no CAP_SYS_ADMIN in its user namespace, so that
+# unshare() fails with EPERM and pacman refuses to run the hook — while still
+# exiting 0, which makes the install look clean with no hooks having fired.
+# Narrow the sandbox rather than disabling it: the filesystem (landlock) half
+# still applies, so hooks run as close to a real install as the tier can get.
+# Must go inside [options]; appended at EOF it lands in the last repo stanza and
+# is ignored.
+RUN sed -i '/^\[options\]/a DisableSandboxNetwork' /etc/pacman.conf
+
 # Refresh the sync DBs and install what an installed sysforge needs to run
 # (python + pyalpm) plus what the checks call (pacman's own vercmp is in
 # pacman-contrib-free core pacman; awk/sed/paste come from base). Kept minimal:
