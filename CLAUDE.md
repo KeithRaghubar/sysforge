@@ -66,6 +66,9 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   `set_defaults(verb_cls=…)`, not `func=`. §CLI Verb Framework.
 - **Dual-toolchain test parity**: logic branching on resolved compiler (gcc vs llvm) ships both a
   gcc-path and an llvm-path test in the same change.
+- **Cutting a release follows `docs/RELEASE-CHECKLIST.md`** — the standalone runbook (stages, exact
+  commands, tick boxes). Note `make pre-release` and the `tools/release.sh` preflight overlap but
+  neither is a superset, and coverage/audit/VM/container tiers sit in neither.
 - **Releases are GPG-signed**: `tools/release.sh` signs commit+tag+tarball, gated by a signing
   preflight + sentinel-fingerprint publish gate. Stable PKGBUILD verifies via `validpgpkeys` + a
   `.asc` source (`SKIP`); `-git` exempt. §Release Process / §Standards row 16.

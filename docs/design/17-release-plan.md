@@ -3,6 +3,31 @@
 - **GitHub:** public from day one; source of truth for all code.
 - **Per-release change history** lives in `docs/release-notes/vX.Y.Z.md` (see *Release notes* below). This section documents the *process* that cuts a release, not the history of past ones.
 
+### Pre-release checklist
+
+**The operational runbook is `docs/RELEASE-CHECKLIST.md`** — the paste-able, stage-by-stage command
+sequence with tick boxes, kept standalone so it is readable at release time without wading through
+design prose. It is the single home for the checklist; do not duplicate its steps here. This
+section documents only *why* the gates are split the way they are.
+
+Two gate runners exist and **neither is a superset of the other**. `make pre-release` holds the
+slow, version-*independent* checks (lint, typecheck, full suite, and the five shared `check-*`
+gates) so they can run on any branch at any time. `tools/release.sh` preflight holds the
+version-*dependent* ones (`check-bump`, `check-standards-at`) — they need the target version, which
+does not exist until a bump level is chosen — plus the repo and signing preconditions (on `main`,
+clean tree, chroot present, GPG key usable). The five gates both runners share are re-run by the
+script deliberately: it cannot assume `pre-release` was run recently, and a stale `DESIGN.md`
+discovered *after* the tag is created costs a `make release-resume` cycle.
+
+Three things sit in **neither** runner and are therefore the ones most easily skipped: coverage
+(`make coverage-ratchet`), the CVE audit (`make audit`), and the runtime tiers — the container tier
+(`make container-smoke`, `container-smoke-cachyos`) and the VM tier (`make vm-test`, plus the `git`
+flavor and the stable↔git `conflicts=()` swap). Both runtime tiers install a genuinely built
+package and so depend on `make vm-pkg-stable` / `vm-pkg-all` first. They are deliberately outside
+the gates — they need a booted VM or a working podman and network, neither of which can be a hard
+prerequisite of a lint run — but a minor or major release that skips them is untested against a
+real install. See `tools/vm/README.md` and `tools/container/README.md`.
+
 ### AUR publishing process
 
 Releases are driven by three Makefile targets — `make release-major`, `make release-minor`, `make release-patch` — each of which calls `tools/release.sh --bump=<level>`. The script handles the full flow end-to-end with a single up-front summary + approval prompt and one mid-run pause for the manual tag push. Phases:
