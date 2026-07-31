@@ -435,6 +435,22 @@ https://keepachangelog.com/en/1.1.0/
   unexpected collision, not a substitution, and still stops the transaction for
   review. The superseded names are now logged when they are auto-confirmed.
 
+- `make vm-pkg-stable` no longer fails every run with `sysforge-<ver>.tar.gz
+  ... FAILED` during source validation (2.6.1-B6). `tools/vm/build-pkg.sh` tars
+  the working tree and rewrites the PKGBUILD's `sha256sums` to match, but did
+  so with `sed -E "s/^sha256sums=\(.*\)/.../"` — under `-E` (ERE) the `\(` and
+  `\)` are *literal* parentheses, so the pattern required the closing paren on
+  the same line. That held while `sha256sums` was a one-element array; adding
+  the release `.asc` source for GPG signing made it two lines, the pattern
+  stopped matching, and `sed` reports no error on a no-match. The rewrite
+  silently became a no-op and the chroot validated a freshly-tarred working
+  tree against the **published** release checksum. The two arrays are now
+  rewritten by a parser that spans lines and hard-fails if a substitution does
+  not apply, so a future PKGBUILD reshuffle breaks loudly instead of silently.
+  The local build also drops the `.asc` source and `validpgpkeys` outright: no
+  signature exists for an unpublished working-tree tarball, and the fetch was
+  quietly storing GitHub's 404 page.
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would

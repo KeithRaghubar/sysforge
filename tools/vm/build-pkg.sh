@@ -94,7 +94,39 @@ case "$FLAVOR" in
         cp "$REPO_ROOT/PKGBUILD" "$SCRATCH/PKGBUILD"
         # install= scriptlet is read from the build dir, not fetched as a source.
         cp "$REPO_ROOT/sysforge.install" "$SCRATCH/sysforge.install"
-        sed -i -E "s/^sha256sums=\(.*\)/sha256sums=('$SHA')/" "$SCRATCH/PKGBUILD"
+
+        # Point the PKGBUILD at the working-tree tarball we just staged in
+        # SRCDEST. The shipped source=() also lists the release .asc, which
+        # only exists for a published tag -- drop it (and validpgpkeys, which
+        # then has nothing to verify) rather than fetching a 404 page.
+        # Both arrays span multiple lines, so rewrite them with a real parser
+        # instead of a line-oriented sed, and hard-fail if a rewrite misses.
+        SHA="$SHA" python3 - "$SCRATCH/PKGBUILD" <<'PY'
+import os, re, sys
+
+path = sys.argv[1]
+text = open(path).read()
+
+def sub_array(text, key, value):
+    new, n = re.subn(rf"^{key}=\([^)]*\)", value, text, count=1, flags=re.M)
+    if n != 1:
+        sys.exit(f"ERROR: could not rewrite {key}=() in {path}")
+    return new
+
+# Keep the tarball entry verbatim -- its `name::url` form is what makes
+# makepkg resolve it out of SRCDEST instead of hitting the network.
+m = re.search(r"^source=\(([^)]*)\)", text, flags=re.M)
+if not m:
+    sys.exit(f"ERROR: could not find source=() in {path}")
+first = m.group(1).strip().splitlines()[0].strip()
+if ".tar.gz" not in first or ".asc" in first:
+    sys.exit(f"ERROR: unexpected first source entry: {first}")
+
+text = sub_array(text, "source", f"source=({first})")
+text = sub_array(text, "sha256sums", f"sha256sums=('{os.environ['SHA']}')")
+text = sub_array(text, "validpgpkeys", "validpgpkeys=()")
+open(path, "w").write(text)
+PY
         export SRCDEST="$SCRATCH"
         ;;
 
