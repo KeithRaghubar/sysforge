@@ -2000,7 +2000,7 @@ class KernelStage(Stage):
         _lock = (
             contextlib.nullcontext()
             if options.dry_run
-            else build_lock(state_dir / "kernel-build.lock", label="kernel")
+            else build_lock(state_dir / "kernel-build.lock", label="kernel", noun="build")
         )
         with _lock:
             # Build WITHOUT installing, then audit the resolved .config, then

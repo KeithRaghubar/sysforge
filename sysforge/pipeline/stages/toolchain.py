@@ -2156,7 +2156,7 @@ def _pgo_lock(lock_path: Path):
     primitive (the kernel stage uses the same one) — don't roll a second
     flock path.
     """
-    return build_lock(lock_path, label="PGO")
+    return build_lock(lock_path, label="PGO", noun="build")
 
 
 # ---------------------------------------------------------------------------

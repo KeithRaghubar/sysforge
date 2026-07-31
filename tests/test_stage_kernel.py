@@ -2517,7 +2517,7 @@ def test_kernel_stage_refuses_when_lock_held(tmp_path):
     state_dir.mkdir(parents=True, exist_ok=True)
 
     # Hold the lock the stage will try to acquire.
-    with build_lock(state_dir / "kernel-build.lock", label="kernel"), \
+    with build_lock(state_dir / "kernel-build.lock", label="kernel", noun="build"), \
          pytest.raises(RuntimeError, match="Another sysforge kernel build"):
         _run_kernel_with_state(
                 tmp_path, (state, p),

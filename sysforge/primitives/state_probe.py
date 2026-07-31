@@ -14,7 +14,10 @@ Read-only inspection of sysforge's *own* persisted state:
 This is the read-only counterpart to the recovery machinery: it never calls
 ``BuildState.save()`` and never calls the *recovering*
 ``stage_sentinel.check_and_recover_stale_sentinel`` — it only reports via
-``StageSentinel.get_active()``. Returns ``diagnostics.Finding`` objects directly
+``StageSentinel.get_active()``. It deliberately does *not* probe the sentinel's
+liveness lock to report "live vs. stale": probing acquires the lock, which
+creates the file and writes a PID into it — a mutation, and this axis is
+read-only. Returns ``diagnostics.Finding`` objects directly
 (``diagnostics`` lives in the primitives layer, so no adapter is needed).
 
 The last source-sync ``STATUS_*`` is intentionally *not* surfaced here: the

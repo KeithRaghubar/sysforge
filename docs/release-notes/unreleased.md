@@ -247,6 +247,41 @@ https://keepachangelog.com/en/1.1.0/
   future bare-`print()` emit fails a test rather than silently losing the
   block.
 
+- A live run's stage sentinel can no longer be cleared by a second run
+  (2.6.1-F11). The sentinel detected an interrupted install-bearing stage by the
+  *presence* of `stage_in_progress.toml`, which cannot distinguish "a previous
+  run died mid-mutation" from "a run is alive right now" — so a second
+  invocation during a live `update` was told the sentinel was stale and offered
+  `Clear the sentinel and proceed? [y/N]`, a question it had no information to
+  answer. Answering `y` unlinked the live run's sentinel; the second run's
+  `mark_started` then overwrote the record wholesale, and whichever run finished
+  first cleared the other's — silently, since `clear()` suppresses
+  `FileNotFoundError`. The user ended up two concurrent install-bearing runs
+  deep with no interruption record for either: precisely the state the sentinel
+  exists to make impossible.
+
+  `sentinel_scope` now holds an `flock` on `stage_in_progress.lock` for the
+  stage's lifetime, so liveness is "is the lock takeable?" — which the kernel
+  answers correctly even after `SIGKILL` or power loss. A PID recorded in the
+  sentinel could not: recycling would report a dead owner as alive forever, with
+  no way out. Two layers use it — the CLI entry probe refuses **without
+  prompting** when an owner is alive, naming the holder PID and its stage, and
+  the scope's own acquisition catches the probe/acquire race plus any mutating
+  verb reached outside the entry gate's allowlist. **There is no override:** a
+  live owner is unambiguous, so a prompt would only invite the mistake the guard
+  prevents; escaping means killing the owning process, which is honest about
+  what is being done. A genuinely stale sentinel keeps today's behaviour
+  unchanged, including after a `SIGKILL`ed owner.
+
+  Contention is strict, but `OSError`/`PermissionError` stay lenient (warn and
+  proceed) so a read-only state dir cannot lock the user out of every mutating
+  verb — the systems least able to recover are the ones a hard failure would
+  strand. The lock lives in the state dir, so an isolated `SYSFORGE_STATE_DIR`
+  never contends. It reuses the existing `primitives/build_lock.py` rather than
+  rolling a second flock path; that primitive's contention noun is now
+  caller-supplied (the build stages pass `noun="build"` and their messages are
+  unchanged) and its fd gained `O_CLOEXEC` as hardening.
+
 - **Standards row 23 is now the full Arch-derivative portability standard**
   (2.6.1-STD1), extended from the identity-only invariant that shipped with
   2.6.1-F2 to all three sub-invariants: **(a)** no hardcoded sync-repo names —

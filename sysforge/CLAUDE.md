@@ -116,7 +116,10 @@ Mechanism lives in the cited §DESIGN section.
 - **libalpm-hook refresh**: `primitives/pacman_hooks.py` (consumers: `setup_cmd`,
   `doctor._collect_hook_findings`); a new hook updates `HOOK_NAMES` + shipped `.hook` +
   `pyproject.toml` force-include in lockstep. §`pacman_hooks.py`.
-- **Install sentinel**: `stage_sentinel.sentinel_scope()`. §Toolchain stage.
+- **Install sentinel**: `stage_sentinel.sentinel_scope()` — record *and* its liveness lock
+  (`stage_in_progress.lock`, via `build_lock`; never roll a second flock path or a PID field).
+  Scopes are sequential, never nested. Contention is strict (refuse, no override, no prompt);
+  `OSError` stays lenient. §Toolchain stage.
 - **`doctor` axes**: each a producer → `list[diagnostics.Finding]`, read-only (no `pacman -Sy` /
   `BuildState.save()`; never import `pipeline`). Register in `doctor.py` + `cli.py` + both
   completions + manpage + each axis's `clean_msg` in the same change. §doctor.

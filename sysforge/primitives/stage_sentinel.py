@@ -33,20 +33,52 @@ Schema (TOML):
 
 The file is removed in its entirety on ``clear()``. Atomic write-then-rename matches the rest
 of the state dir.
+
+Liveness
+--------
+
+Presence of the sentinel alone cannot distinguish "a previous run died
+mid-mutation" from "a run is alive right now" — and treating a live run as
+stale is destructive (clearing its sentinel, then overwriting the record,
+leaves two concurrent install-bearing runs with no interruption record for
+either). So ``sentinel_scope`` also holds an exclusive ``flock`` on
+``<state_dir>/stage_in_progress.lock`` for the stage's lifetime, via the
+shared :mod:`sysforge.primitives.build_lock` primitive. Liveness is then
+"is the lock takeable?", which the kernel answers correctly even after
+``SIGKILL`` or power loss — a PID recorded in the sentinel could not, since
+recycling would report a dead owner as alive forever.
+
+Two layers use it: :func:`check_and_recover_stale_sentinel` probes the lock
+at CLI entry and refuses *without prompting* when an owner is alive, and
+``sentinel_scope`` acquires it for real, catching the probe/acquire race
+plus any mutating verb outside ``cli._gate_sentinel_check``'s allowlist.
+There is deliberately no override: a live owner is unambiguous, so a prompt
+would only invite the mistake the guard exists to prevent.
+
+Contention is strict (hard refusal), but ``OSError``/``PermissionError``
+stay lenient — matching the sentinel write itself — so a read-only state
+dir cannot lock the user out of every mutating verb.
 """
 import os
 import subprocess
 import tomllib
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.interrupt import CleanExitRequested, InterruptScope
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 
 _log = log.get_logger("SENTINEL")
+
+LOCK_FILENAME = "stage_in_progress.lock"
+# Woven into build_lock's contention message: "Another sysforge install
+# stage is running (pid N)".
+_LOCK_LABEL = "install"
+_LOCK_NOUN = "stage"
 
 
 def _resolve_state_dir(state_dir: Path | str | None) -> Path:
@@ -56,6 +88,20 @@ def _resolve_state_dir(state_dir: Path | str | None) -> Path:
     if env:
         return Path(env)
     return Path("/var/lib/sysforge")
+
+
+def lock_path(state_dir: Path | str | None = None) -> Path:
+    """Path of the stage liveness lock for ``state_dir``.
+
+    Living in the state dir makes per-state-dir scoping automatic: a run
+    under an isolated ``SYSFORGE_STATE_DIR`` (test fixtures, VM) never
+    contends with a live run against the real one.
+    """
+    return _resolve_state_dir(state_dir) / LOCK_FILENAME
+
+
+def _stage_lock(state_dir: Path | str | None):
+    return build_lock(lock_path(state_dir), label=_LOCK_LABEL, noun=_LOCK_NOUN)
 
 
 def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> bool:
@@ -74,6 +120,36 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
     cron) block on a stale sentinel rather than silently auto-recovering.
     """
     sentinel = StageSentinel(state_dir)
+
+    # Liveness first: presence of the sentinel says nothing about whether its
+    # owner is still running, and the questions below ("clear and proceed?",
+    # "restore now?") are unanswerable — and destructive — against a live run.
+    # Probing acquires and releases immediately; the stage that follows takes
+    # the lock for real.
+    try:
+        with _stage_lock(state_dir):
+            pass
+    except RuntimeError as e:
+        live = sentinel.get_active() or {}
+        detail = ""
+        if live:
+            detail = (
+                f" It is running stage '{live.get('stage', '?')}', begun at "
+                f"{live.get('started_at', '?')}."
+            )
+        _log.error(
+            f"{e}{detail} Wait for it to finish, or kill it — this run cannot "
+            "proceed and must not clear a live run's sentinel."
+        )
+        return False
+    except (OSError, PermissionError) as e:
+        # Lenient by design: a read-only or missing state dir must not lock the
+        # user out of every mutating verb (see module docstring).
+        _log.warn(
+            f"Cannot probe the stage lock ({e}); concurrency detection is "
+            "unavailable for this run"
+        )
+
     record = sentinel.get_active()
     if record is None:
         return True
@@ -300,6 +376,14 @@ def sentinel_scope(
     there is one implementation of "install sentinel → interrupt-safe body
     → clear sentinel on success" rather than two divergent copies.
 
+    **Scopes must not nest** against the same state dir. They already don't:
+    stages run sequentially and the ``run`` verbs set
+    ``requires_sentinel = False`` precisely so the verb-level scope cannot
+    wrap a stage's own (see ``run_cmd`` module docstring). Since the liveness
+    lock is per open file description, a nested scope would contend with its
+    own parent and raise — which is the correct report of a real bug, but
+    reach for a sequential scope, not a re-entrant lock.
+
     Args:
         state_dir: same resolution as the rest of the state dir
             (explicit > env var > ``/var/lib/sysforge``).
@@ -314,6 +398,10 @@ def sentinel_scope(
             ``compiler="llvm"``, ``pgo=True``).
 
     Raises:
+        RuntimeError: when another sysforge run already holds the stage lock
+            — raised on entry, before ``mark_started``, so a live owner's
+            sentinel is never overwritten. ``verbs.runner.run_verb`` catches
+            it and exits 1.
         RuntimeError: when a ``CleanExitRequested`` propagates out of the
             body. The message includes ``retry_cmd`` and ``recovery_cmd``
             when supplied so the operator has both copy-pasteable hints.
@@ -323,31 +411,44 @@ def sentinel_scope(
     # Only forward recovery_cmd when set — otherwise it would land in the
     # sentinel record as a key with no useful value (see _serialize).
     extra = {"recovery_cmd": recovery_cmd} if recovery_cmd is not None else {}
-    try:
-        sentinel.mark_started(stage_name, **extra, **metadata)
-    except (OSError, PermissionError) as e:
-        _log.warn(
-            f"Cannot write stage sentinel ({e}); interrupted-run "
-            "detection will be unavailable for this run"
-        )
+    with ExitStack() as stack:
+        # Held for the whole stage so a concurrent run's entry probe (and the
+        # acquisition below, on the probe/acquire race) sees a live owner.
+        # Contention raises RuntimeError out of the CM's __enter__; OSError
+        # stays lenient.
+        try:
+            stack.enter_context(_stage_lock(state_dir))
+        except (OSError, PermissionError) as e:
+            _log.warn(
+                f"Cannot acquire the stage lock ({e}); concurrent-run "
+                "detection will be unavailable for this run"
+            )
 
-    try:
-        with InterruptScope():
-            yield sentinel
-    except CleanExitRequested:
-        _log.warn(
-            f"{stage_name} interrupted at a safe boundary. Stage sentinel "
-            "left in place; the next sysforge invocation will detect the "
-            "interruption and offer recovery."
-        )
-        parts = [f"[{stage_name.upper()}] interrupted by user (Ctrl-C)."]
-        if retry_cmd:
-            parts.append(f"Re-run with `{retry_cmd}` to resume.")
-        if recovery_cmd:
-            parts.append(f"To restore consistency manually: {recovery_cmd}")
-        raise RuntimeError(" ".join(parts)) from None
+        try:
+            sentinel.mark_started(stage_name, **extra, **metadata)
+        except (OSError, PermissionError) as e:
+            _log.warn(
+                f"Cannot write stage sentinel ({e}); interrupted-run "
+                "detection will be unavailable for this run"
+            )
 
-    try:
-        sentinel.clear()
-    except OSError as e:
-        _log.warn(f"Cannot clear stage sentinel ({e})")
+        try:
+            with InterruptScope():
+                yield sentinel
+        except CleanExitRequested:
+            _log.warn(
+                f"{stage_name} interrupted at a safe boundary. Stage sentinel "
+                "left in place; the next sysforge invocation will detect the "
+                "interruption and offer recovery."
+            )
+            parts = [f"[{stage_name.upper()}] interrupted by user (Ctrl-C)."]
+            if retry_cmd:
+                parts.append(f"Re-run with `{retry_cmd}` to resume.")
+            if recovery_cmd:
+                parts.append(f"To restore consistency manually: {recovery_cmd}")
+            raise RuntimeError(" ".join(parts)) from None
+
+        try:
+            sentinel.clear()
+        except OSError as e:
+            _log.warn(f"Cannot clear stage sentinel ({e})")
