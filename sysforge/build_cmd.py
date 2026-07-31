@@ -73,7 +73,7 @@ def _render_llvm_preflight(names: list[str], config: dict) -> None:
     from sysforge.primitives.llvm_state import collect_llvm_state, render_preflight
     report = collect_llvm_state(names, config)
     if report.states:
-        print(render_preflight(report))
+        _log.ui(render_preflight(report))
 
 
 def _report_timings(outcome, args) -> None:

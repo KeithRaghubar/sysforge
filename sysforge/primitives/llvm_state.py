@@ -700,8 +700,9 @@ def render_preflight(report: LlvmPreflightReport, *, verbose: bool = False) -> s
 
     Output style matches the action-tag block from
     :func:`sysforge.update._print_summary` (``  [TAG] ...`` with a 17-col
-    gutter). Returns the rendered text rather than printing it so callers
-    can route through ``log.ui`` / ``print`` themselves.
+    gutter). Returns the rendered text rather than printing it; callers route
+    it through ``log.ui`` (never bare ``print``) so the block reaches the
+    unified run-log (2.6.1-F10).
 
     Non-actionable rows (see :func:`is_actionable_state`) are filtered out
     unless ``verbose`` is set, so repo-origin packages with nothing to report

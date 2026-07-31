@@ -42,7 +42,7 @@ def cmd_fetch(args) -> int:
     if not getattr(args, "no_llvm_preflight", False):
         report = collect_llvm_state(args.pkgs, config)
         if report.states:
-            print(render_preflight(report))
+            _log.ui(render_preflight(report))
 
     from sysforge.ui import progress as _ui_progress
     failed = 0

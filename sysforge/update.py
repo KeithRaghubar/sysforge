@@ -243,12 +243,12 @@ def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
             getattr(args, "noconfirm", False)
         report = auto_remediate_toolchain(report, non_interactive=non_interactive)
     if report.failed:
-        print(render_toolchain_preflight(report), file=sys.stderr)
+        _log.ui(render_toolchain_preflight(report))
         return False
 
     rendered = render_toolchain_preflight(report)
     if rendered:
-        print(rendered)
+        _log.ui(rendered)
     return True
 
 
@@ -693,7 +693,7 @@ def _cmd_update_body(args) -> None:
     if not getattr(args, "no_llvm_preflight", False):
         llvm_report = collect_llvm_state(list(pkgbase_map.keys()), config)
         if llvm_report.states:
-            print(render_llvm_preflight(llvm_report))
+            _log.ui(render_llvm_preflight(llvm_report))
 
     # Authoritative pkgbuild versions for packages whose PKGBUILDs use bash
     # parameter expansion the static parser can't evaluate. The scheduler's

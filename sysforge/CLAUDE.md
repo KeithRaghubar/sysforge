@@ -104,8 +104,9 @@ Mechanism lives in the cited §DESIGN section.
 - **Report-block presentation**: `primitives/render.py` (`arrow`, `version_pair`, `tag_header`) —
   the one home for the `[TAG]` gutter and `old → new` / `ver (=)` vocabulary shared by
   `update_summary` and both `render_preflight`s. **Never hardcode `→` or re-inline the gutter
-  literal**: pre-flight blocks are emitted with bare `print()`, which bypasses `log.ui`'s
-  `downgrade_glyphs` chokepoint, so glyphs must be resolved at format time.
+  literal**; glyphs resolve at format time (idempotent with `log.ui`'s `downgrade_glyphs`).
+  **Every pre-flight block emits via `log.ui`, never bare `print()`** — that is what mirrors it
+  into the unified run-log; enforced by `tests/test_preflight_logging.py`.
 - **LLVM source-state**: `llvm_state.collect_llvm_state` — don't call `git_is_dirty`+URL-parse.
 - **Editor/merge-tool launch**: `primitives/editor.py` (`resolve_editor`, `resolve_merge_tool`,
   `run_tty_argv`); `.sfnew` adoption in `config_cmd.ConfigMergeVerb`. §Config Layer.

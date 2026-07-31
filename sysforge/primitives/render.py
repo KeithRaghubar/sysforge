@@ -17,11 +17,14 @@ They were documented as mirroring each other but had drifted — only the
 ``  [TAG]`` gutter was genuinely shared, and the arrow glyph was hardcoded in
 ``llvm_state`` while ``update_summary`` pre-resolved it.
 
-**Glyphs are pre-resolved here**, not left to the emit path. ``log.ui`` applies
-:func:`sysforge.log.downgrade_glyphs`, but every pre-flight block is written
-with a bare ``print()`` (``update.py``, ``build_cmd.py``, ``fetch.py``,
-``pipeline/stages/toolchain.py``), which bypasses that chokepoint. Resolving at
-format time makes the output correct regardless of how the caller emits it.
+**Glyphs are pre-resolved here**, not left to the emit path. Every block now
+reaches the terminal through ``log.ui``, which applies
+:func:`sysforge.log.downgrade_glyphs` itself (2.6.1-F10 closed the bare-``print``
+sites that originally motivated this) — so the resolution here is no longer the
+only thing standing between a non-Unicode terminal and a mojibake arrow. It is
+kept deliberately: ``downgrade_glyphs`` is idempotent, so the double pass costs
+nothing, and it keeps a renderer's return value correct on its own terms for
+any caller that formats without emitting (tests, future non-``log.ui`` paths).
 
 Leaf module: imports only :mod:`sysforge.log`, so every layer may use it.
 

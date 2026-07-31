@@ -1614,7 +1614,7 @@ The one home for the presentation vocabulary shared by every tag-gutter report b
 
 `version_pair` renders a transition as `old → new`, collapsing to `ver (=)` when both sides are known and identical (`equal_marker=False` keeps the arrow form unconditionally — the built-package and stage-owned-update rows read as a report of what was done, so an unchanged version is still a transition there). An unknown side renders as `—`. `tag_header` returns the `  [TAG]` prefix padded to the shared 17-column gutter.
 
-**Glyphs are resolved at format time**, not left to the emit path. `log.ui` applies `log.downgrade_glyphs`, but every pre-flight block is written with a bare `print()` (`update.py`, `build_cmd.py`, `fetch.py`, `pipeline/stages/toolchain.py`), which bypasses that chokepoint — so a hardcoded `→` survives intact under `TERM=linux`. Resolving early makes the output correct regardless of how the caller emits it, and covers the `—` placeholder in the same pass. Leaf module: imports only `sysforge.log`, so any layer may use it.
+**Glyphs are resolved at format time**, not left to the emit path. Every pre-flight block now emits through `log.ui` (`update.py`, `build_cmd.py`, `fetch.py`, `pipeline/stages/toolchain.py`), which applies `log.downgrade_glyphs` and mirrors the block into the unified run-log — the bare `print()` sites that let a hardcoded `→` survive under `TERM=linux` are gone. Resolving early is kept regardless: `downgrade_glyphs` is idempotent, so it costs nothing, and it keeps a renderer's return value correct for any caller that formats without emitting. It covers the `—` placeholder in the same pass. Leaf module: imports only `sysforge.log`, so any layer may use it.
 
 ### `llvm_state.py`
 

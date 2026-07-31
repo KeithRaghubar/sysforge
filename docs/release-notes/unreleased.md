@@ -176,9 +176,26 @@ https://keepachangelog.com/en/1.1.0/
   This fixes a glyph bug in passing: `llvm_state` hardcoded `→` in its version
   pairs and its `HEAD→upstream` divergence note. `→` *is* in
   `log._GLYPH_FALLBACKS`, but the downgrade only runs inside `log.ui`, and every
-  pre-flight block is emitted with a bare `print()` — so those arrows survived
-  intact on `TERM=linux`. The shared helpers resolve glyphs at format time,
-  which makes the output correct regardless of how the caller emits it.
+  pre-flight block was at the time emitted with a bare `print()` — so those
+  arrows survived intact on `TERM=linux`. The shared helpers resolve glyphs at
+  format time, which makes the output correct regardless of how the caller
+  emits it; 2.6.1-F10 below closes the bare-`print()` sites themselves.
+
+- Pre-flight report blocks now reach the unified run-log (2.6.1-F10). Both
+  pre-flights — LLVM source state and toolchain availability — were emitted
+  with a bare `print(render_preflight(...))` at four sites (`update.py` ×3,
+  `build_cmd.py`, `fetch.py`). `log.ui` is what mirrors UI output into the run
+  log, so a `sysforge update` log was missing exactly the findings that explain
+  why the run behaved as it did — which is what someone re-reads a log for. All
+  four now route through `log.ui`; `pipeline/stages/toolchain.py` already did.
+  Side effect worth noting: `log`'s output stream is **stderr** (stdout only in
+  dry-run mode), so the three blocks that went to stdout now go to stderr with
+  the rest of sysforge's human-facing output, leaving stdout clean. The failed
+  toolchain pre-flight already wrote to stderr explicitly and is unchanged in
+  where it lands. A new `tests/test_preflight_logging.py` asserts the blocks
+  appear in an open unified log, and pins the invariant structurally so a
+  future bare-`print()` emit fails a test rather than silently losing the
+  block.
 
 - **Standards row 23 is now the full Arch-derivative portability standard**
   (2.6.1-STD1), extended from the identity-only invariant that shipped with
