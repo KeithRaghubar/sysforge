@@ -26,6 +26,11 @@ vocabulary rank, not alphabetically). The in-file table is *always* written in
 the canonical triage order regardless of `--sort`, so `--check` stays
 deterministic and a sorted view can never be committed by accident.
 
+The printed view is formatted for a terminal rather than for the file: cells are
+padded to their column width and the Item column is truncated to whatever the
+line has left, so every row occupies exactly one line at `--width` (default: the
+terminal, or 80 when piped). The in-file table is neither padded nor truncated.
+
 Usage:
     python tools/gen_roadmap_table.py            # rewrite the table in place
     python tools/gen_roadmap_table.py --check     # exit 1 if the table is stale
@@ -36,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -177,18 +183,81 @@ SORT_COLUMNS: dict[str, Callable[[Entry], tuple]] = {
 }
 
 
+def _truncate(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    return text[: max(0, width - len(_ELLIPSIS))] + _ELLIPSIS
+
+
+_HEADER = ("ID", "Item", "Priority", "Effort", "Bump")
+_RULE = ("----", "------", "----------", "--------", "------")
+
+
+# Narrowest the Item column may be squeezed to before we stop shrinking it and
+# let the row overflow instead — below this a title is all ellipsis and the
+# view is useless anyway.
+_MIN_ITEM = 24
+_ELLIPSIS = "..."
+
+
+def _terminal_width(width: int | None) -> int:
+    if width is not None:
+        return width
+    # Honours COLUMNS, then the tty, then falls back to 80 when piped.
+    return shutil.get_terminal_size(fallback=(80, 24)).columns
+
+
 def render_table(entries: list[Entry], sort: str = "triage",
-                 reverse: bool = False) -> str:
+                 reverse: bool = False, pad: bool = False,
+                 width: int | None = None) -> str:
+    """Render the Planned summary table.
+
+    `pad` widens every cell to its column's widest value and truncates the
+    Item column so each row fits on one terminal line. It is for the
+    read-only `--print` view only: the committed table stays unpadded and
+    untruncated so `--check` compares against a stable form and diffs don't
+    churn whenever the longest title changes.
+    """
     ordered = sorted(entries, key=SORT_COLUMNS[sort], reverse=reverse)
-    rows = [
-        f"| `{e.id}` | {e.title} | {e.priority} | {e.effort} | {e.bump} |"
+    cells = [
+        (f"`{e.id}`", e.title, e.priority, e.effort, e.bump)
         for e in ordered
     ]
-    body = "\n".join([
-        "| ID | Item | Priority | Effort | Bump |",
-        "|----|------|----------|--------|------|",
-        *rows,
-    ])
+    if pad:
+        # `_RULE` is excluded: in padded mode the separator is regenerated from
+        # these widths, so letting its placeholder dashes vote would inflate the
+        # bounded columns (a 3-char `med` stretched to `----------`'s 10).
+        widths = [
+            max(len(row[i]) for row in (_HEADER, *cells))
+            for i in range(len(_HEADER))
+        ]
+        # Item is the one unbounded column; the other four come from fixed
+        # vocabularies, so give them their natural width and hand what's left
+        # of the line to Item. Overhead is "| " + " | "*4 + " |" = 16 columns.
+        overhead = 3 * len(widths) + 1
+        budget = _terminal_width(width) - overhead - sum(widths) + widths[1]
+        item_w = max(_MIN_ITEM, min(widths[1], budget))
+        if item_w < widths[1]:
+            widths[1] = item_w
+            cells = [
+                (c[0], _truncate(c[1], item_w), *c[2:]) for c in cells
+            ]
+        rule = tuple("-" * w for w in widths)
+
+        def line(row: tuple[str, ...], fill: str = " ") -> str:
+            padded = (c.ljust(w, fill) for c, w in zip(row, widths))
+            return f"|{fill}" + f"{fill}|{fill}".join(padded) + f"{fill}|"
+
+        body = "\n".join([line(_HEADER), line(rule, "-"), *(line(c) for c in cells)])
+    else:
+        def plain(row: tuple[str, ...]) -> str:
+            return "| " + " | ".join(row) + " |"
+
+        body = "\n".join([
+            plain(_HEADER),
+            "|" + "|".join(_RULE) + "|",
+            *(plain(c) for c in cells),
+        ])
     return f"{body}\n"
 
 
@@ -217,6 +286,9 @@ def main() -> int:
                          "default: triage = priority, then effort, then ID)")
     ap.add_argument("--reverse", action="store_true",
                     help="reverse the --sort order")
+    ap.add_argument("--width", type=int, default=None,
+                    help="line width to fit the printed table to "
+                         "(default: terminal width, or 80 when piped)")
     ap.add_argument("--repo", type=Path, default=REPO,
                     help="repo root to operate on (default: this script's repo)")
     args = ap.parse_args()
@@ -226,13 +298,14 @@ def main() -> int:
 
     # A sorted view never reaches the file: --sort/--print are read-only, so the
     # committed table keeps its canonical triage order and --check stays stable.
-    if args.print_only or args.sort != "triage" or args.reverse:
+    if args.print_only or args.sort != "triage" or args.reverse or args.width:
         try:
             entries = parse_entries(text)
         except RoadmapError as e:
             print(f"ROADMAP.md: {e}", file=sys.stderr)
             return 1
-        print(render_table(entries, sort=args.sort, reverse=args.reverse), end="")
+        print(render_table(entries, sort=args.sort, reverse=args.reverse,
+                           pad=True, width=args.width), end="")
         return 0
 
     try:

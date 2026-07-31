@@ -103,6 +103,20 @@ https://keepachangelog.com/en/1.1.0/
   argument still runs the suite — the default goal is unchanged. Also adds
   `typecheck` and `vm-console` to `.PHONY`, where both were missing.
 
+- `make roadmap-view` now prints an aligned, one-row-per-line table (2.6.1-F15).
+  It previously emitted the raw markdown source, whose cells are unpadded,
+  leaving the Priority/Effort/Bump columns ragged; and the widest rows overflowed
+  the terminal and soft-wrapped, so a single entry occupied two lines and the
+  columns stopped lining up entirely — exactly what the view exists to make
+  scannable. Cells are now padded to their column's width, and `Item` — the one
+  unbounded column, the other four being fixed vocabularies — absorbs whatever
+  the line has left and is truncated with `...` if that isn't enough, so a row is
+  always exactly one line. Width comes from the terminal (80 when piped) and
+  `make roadmap-view WIDTH=200` overrides it. All of this is confined to the
+  read-only view: the committed table in `ROADMAP.md` stays unpadded and
+  untruncated, so its diffs don't churn every time the longest title changes and
+  `make check-roadmap-table` keeps comparing against one stable form.
+
 - SemVer impact is now declared rather than inferred (2.6.1-STD2), as standards
   row 24 plus an extension of row 3. `primitives/deprecations.py` is a registry
   of every surface sysforge still honours only for backwards compatibility —

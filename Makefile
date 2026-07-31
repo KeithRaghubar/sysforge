@@ -77,7 +77,7 @@ help: ## List every target, grouped (this list)
 	     /^[a-zA-Z][a-zA-Z0-9_-]*:.*?## / {printf "  %-24s %s\n", $$1, $$2}' \
 	     $(MAKEFILE_LIST)
 	@echo
-	@echo "Variables: ARGS= (test/audit)  SORT=/REVERSE= (roadmap-view)"
+	@echo "Variables: ARGS= (test/audit)  SORT=/REVERSE=/WIDTH= (roadmap-view)"
 	@echo "           TYPE= (next-id)  BUMP= (check-bump)  VERSION= (check-standards-at)"
 
 # ---------------------------------------------------------------------------
@@ -252,12 +252,14 @@ roadmap-table: ## Regenerate the Planned summary table in ROADMAP.md
 #   make roadmap-view                      # triage order (priority, effort, ID)
 #   make roadmap-view SORT=effort          # cheapest first
 #   make roadmap-view SORT=bump REVERSE=1  # major first
+#   make roadmap-view WIDTH=200            # override the detected line width
 # SORT ∈ triage|id|item|priority|effort|bump. Ordinal columns rank by
-# vocabulary (high < med < low), not alphabetically.
+# vocabulary (high < med < low), not alphabetically. Columns are padded and the
+# Item column is truncated so every row fits one terminal line (80 when piped).
 SORT ?= triage
-roadmap-view: ## Print the Planned table sorted by SORT=<col> [REVERSE=1]
+roadmap-view: ## Print the Planned table sorted by SORT=<col> [REVERSE=1] [WIDTH=n]
 	@uv run --no-sync python tools/gen_roadmap_table.py --print --sort $(SORT) \
-	    $(if $(REVERSE),--reverse,)
+	    $(if $(REVERSE),--reverse,) $(if $(WIDTH),--width $(WIDTH),)
 
 # ROADMAP.md summary-table drift gate (mirrors check-design). Also validates that
 # every Planned entry carries a well-formed Priority/Effort tag. Wired into preflight.

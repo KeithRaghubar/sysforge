@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "tools/gen_roadmap_table.py"
@@ -34,6 +36,16 @@ _SYNTHETIC_ENTRIES = [
     ("2.0.0-B1", "Renderer bypasses the logger", "low", "small", "patch"),
     ("2.0.0-B2", "Guard couples to the local renderer version", "low", "medium", "minor"),
     ("2.0.0-F1", "Replace sentinel tags with an ordered pipeline", "med", "large", "major"),
+]
+
+
+# Same shape, but with a title far wider than any terminal, so the truncation
+# tests have something the Item column cannot possibly fit.
+_LONG_ENTRIES = [
+    *_SYNTHETIC_ENTRIES,
+    ("2.0.0-F2", "Replace the sentinel-tag coordination between the patcher stages "
+                 "with an explicitly ordered pipeline that resolves conflicts up front",
+     "med", "large", "minor"),
 ]
 
 
@@ -211,6 +223,49 @@ def test_print_does_not_write_the_file(tmp_path):
     assert _printed_rows(repo, ["--print", "--sort", "effort"])
     assert (repo / "ROADMAP.md").read_text(encoding="utf-8") == before
     assert run(["--check"], repo=repo).returncode == 1
+
+
+def test_printed_view_is_column_aligned(tmp_path):
+    repo = _make_repo(tmp_path)
+    r = run(["--print"], repo=repo)
+    assert r.returncode == 0, r.stdout + r.stderr
+    lines = [ln for ln in r.stdout.splitlines() if ln.startswith("|")]
+    assert len(lines) > 2
+    assert len({len(ln) for ln in lines}) == 1, lines
+
+
+@pytest.mark.parametrize("width", [120, 100, 80, 72])
+def test_printed_view_fits_the_given_width(tmp_path, width):
+    repo = _make_repo(tmp_path, _LONG_ENTRIES)
+    r = run(["--print", "--width", str(width)], repo=repo)
+    assert r.returncode == 0, r.stdout + r.stderr
+    lines = [ln for ln in r.stdout.splitlines() if ln.startswith("|")]
+    assert lines
+    assert max(len(ln) for ln in lines) <= width, lines
+
+
+def test_narrow_width_truncates_with_an_ellipsis(tmp_path):
+    repo = _make_repo(tmp_path, _LONG_ENTRIES)
+    rows = _printed_rows(repo, ["--print", "--width", "72"])
+    assert any(_col(r, 2).endswith("...") for r in rows), rows
+
+
+def test_wide_width_leaves_titles_intact(tmp_path):
+    # Nothing is truncated when the line has room for the longest title.
+    repo = _make_repo(tmp_path, _LONG_ENTRIES)
+    rows = _printed_rows(repo, ["--print", "--width", "400"])
+    assert not any("..." in _col(r, 2) for r in rows), rows
+
+
+def test_committed_table_stays_unpadded(tmp_path):
+    # Padding is a --print affordance only: widening the file's cells would
+    # churn the diff every time the longest title changes.
+    repo = _make_repo(tmp_path)
+    run([], repo=repo)
+    rows = [ln for ln in (repo / "ROADMAP.md").read_text(encoding="utf-8").splitlines()
+            if ln.startswith("| `")]
+    assert rows
+    assert not any("  |" in ln for ln in rows), rows
 
 
 def test_sort_by_id(tmp_path):
