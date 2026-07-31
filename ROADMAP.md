@@ -74,7 +74,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
 | `2.6.1-F11` | Liveness guard on the stage sentinel: a live owner's sentinel can't be cleared | med | small | minor |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large | patch |
-| `2.5.0-F2` | help verb (aliases --help) + advertise -h/--help in completions | low | small | minor |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-Q1` | should tests/test_standards_compliance.py be runnable in isolation? | low | small | patch |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium | patch |
@@ -92,16 +91,6 @@ tags — run `make roadmap-table` after any add/remove/retag; `make check-roadma
   comments, and a misordered registration fails a structural test instead of corrupting `prepare()`.
   *Priority: med · Effort: large · Bump: patch* — refactor, no behavior change; the 2.5.1-B5/B8 fix cycle showed
   this seam is where kernel-stage bugs concentrate.
-
-- **`2.5.0-F2` — `help` verb (aliases `--help`) + advertise `-h/--help` in completions.** Two related
-  gaps in help discoverability: (1) there is no `sysforge help [COMMAND]` verb — users must know the
-  `--help` flag; (2) `-h/--help` is auto-added by argparse and *does* appear in `sysforge --help` and
-  works at every level (`sysforge build -h`), but the hand-written zsh/bash completions never offer it
-  (verified — this resolves the "is `--help` missing?" note: not a help-text bug, only a completions
-  omission). Add a `help` subparser that prints top-level help, or delegates to `<COMMAND> --help` when
-  given an argument, wired through the Verb framework (read-only, no sentinel — mirror `env`/`resolve`).
-  Add `-h/--help` to both completion files in the same change. *Priority: low · Effort: small · Bump: minor* —
-  convenience + completion completeness. **Standards home on adoption:** none new.
 
 - **`2.5.1-F3` — `state failed --clear-all` emits no `SYSFORGE_TARGET`.** Follow-up to `2.4.0-F1`,
   which gave every sentinel-gated verb a `journal_target` override. `StateFailedVerb.journal_target`

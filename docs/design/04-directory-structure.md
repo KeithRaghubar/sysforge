@@ -18,6 +18,7 @@ sysforge/
 │   ├── build_cmd.py                   # sysforge build subcommand (BuildVerb; routes through build_core)
 │   ├── run_cmd.py                     # sysforge run namespace verbs (pipeline/hardware/reconfigure/toolchain/packages/kernel)
 │   ├── env_cmd.py                     # sysforge env subcommand (read-only env-chain inspector)
+│   ├── help_cmd.py                    # sysforge help subcommand (read-only alias for --help)
 │   ├── completions_cmd.py             # sysforge completions data sink (consumed by _sysforge)
 │   ├── doctor.py                      # sysforge doctor subcommand (ABI/linkage health check)
 │   ├── fetch.py                       # sysforge fetch subcommand (download PKGBUILDs, no build)

@@ -26,7 +26,7 @@ _sysforge() {
 
     # Ordered by usage tier to mirror `sysforge --help` (2.5.0-F1):
     # Everyday, then Inspect, then Maintain.
-    local commands="build update fetch search doctor resolve env log state artifact setup config packages run revert-to-stock uninstall"
+    local commands="build update fetch search help doctor resolve env log state artifact setup config packages run revert-to-stock uninstall"
 
     # Locate the top-level verb (first non-flag arg after `sysforge`) and an
     # optional subverb (first non-flag arg after the verb).
@@ -53,7 +53,7 @@ _sysforge() {
 
     if [[ -z $verb ]]; then
         if [[ $cur == -* ]]; then
-            COMPREPLY=( $(compgen -W "-v --verbose --quiet --py-profile --py-profile-out --timings --color --no-throttle --turbo" -- "$cur") )
+            COMPREPLY=( $(compgen -W "-h --help -v --verbose --quiet --py-profile --py-profile-out --timings --color --no-throttle --turbo" -- "$cur") )
         else
             COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
         fi
@@ -75,9 +75,17 @@ _sysforge() {
         setup)       _sysforge_setup       ;;
         uninstall)   _sysforge_uninstall   ;;
         env)         _sysforge_env         ;;
+        help)        _sysforge_help        ;;
         config)      _sysforge_config      ;;
         completions) _sysforge_completions ;;
     esac
+
+    # argparse auto-adds -h/--help to every parser, so the flag is valid at
+    # every level. Appended once here (2.5.0-F2) rather than in each verb's
+    # flag list; no verb defines its own -h, so this can't duplicate.
+    if [[ $cur == -* ]]; then
+        COMPREPLY+=( $(compgen -W "-h --help" -- "$cur") )
+    fi
 }
 
 # Match a flag-with-value pair (e.g. `--profile-conf <TAB>`) on $prev and
@@ -415,6 +423,25 @@ _sysforge_setup() {
 
 _sysforge_env() {
     :
+}
+
+# `sysforge help [COMMAND [SUBCOMMAND]]` — first word is any verb, second is
+# that verb's subcommand when it has one (2.5.0-F2).
+_sysforge_help() {
+    if [[ -z $subverb ]]; then
+        COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+        return
+    fi
+    local subs=""
+    case "$subverb" in
+        artifact) subs="list review adopt edit deploy remove" ;;
+        config)   subs="merge" ;;
+        doctor)   subs="system pkg" ;;
+        packages) subs="list add add-group remove" ;;
+        run)      subs="pipeline hardware reconfigure toolchain packages kernel" ;;
+        state)    subs="list repair orphans failed forget" ;;
+    esac
+    COMPREPLY=( $(compgen -W "$subs" -- "$cur") )
 }
 
 _sysforge_config() {

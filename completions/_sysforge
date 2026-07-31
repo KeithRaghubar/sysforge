@@ -6,6 +6,7 @@ _sysforge() {
 
   _arguments -C \
     '(-V --version)'{-V,--version}'[print sysforge version and exit]' \
+    '(-h --help)'{-h,--help}'[show this help message and exit]' \
     '(-v --verbose)'{-v,--verbose}'[increase verbosity (repeat for more: -vv, -vvv)]' \
     '--quiet[suppress all non-error output (verbosity 0), overriding -v and config]' \
     '--py-profile[run the verb under cProfile, print top functions at exit]' \
@@ -34,12 +35,26 @@ _sysforge() {
         setup)    _sysforge_setup    ;;
         uninstall) _sysforge_uninstall ;;
         env)      _sysforge_env      ;;
+        help)     _sysforge_help     ;;
         log)      _sysforge_log      ;;
         config)   _sysforge_config   ;;
         completions) _sysforge_completions ;;
       esac
+      # argparse auto-adds -h/--help to every parser, so the flag is valid at
+      # every level. Offered here once (2.5.0-F2) instead of in each verb's
+      # `_arguments` spec; `-o` keeps it out of the way of real matches.
+      _sysforge_help_flag
       ;;
   esac
+}
+
+_sysforge_help_flag() {
+  [[ ${PREFIX} == -* ]] || return
+  local -a hf=(
+    '-h:show this help message and exit'
+    '--help:show this help message and exit'
+  )
+  _describe -o 'option' hf
 }
 
 _sysforge_commands() {
@@ -50,6 +65,7 @@ _sysforge_commands() {
     'update:check for and rebuild outdated sysforge-managed packages'
     'fetch:download PKGBUILD(s) into pkgbuild_src_dir without building'
     'search:search installed, repo, and AUR packages for a term'
+    'help:print help for sysforge or for a COMMAND (alias for --help)'
     'doctor:health-check installed package depends + linkage'
     'resolve:show which profile would apply to a package'
     'env:print the inherited env chain (shell vars, parent processes, shell init files)'
@@ -618,6 +634,24 @@ _sysforge_setup() {
 
 _sysforge_env() {
   _arguments
+}
+
+_sysforge_help() {
+  # `sysforge help [COMMAND [SUBCOMMAND]]` — first word is any verb, second is
+  # that verb's subcommand when it has one (2.5.0-F2).
+  case $CURRENT in
+    2) _sysforge_commands ;;
+    3)
+      case $words[2] in
+        artifact) _sysforge_artifact_subcommands ;;
+        config)   _sysforge_config_subcommands   ;;
+        doctor)   _sysforge_doctor_subcommands   ;;
+        packages) _sysforge_packages_subcommands ;;
+        run)      _sysforge_run_stages           ;;
+        state)    _sysforge_state_subcommands    ;;
+      esac
+      ;;
+  esac
 }
 
 _sysforge_log() {

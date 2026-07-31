@@ -15,6 +15,19 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Added
 
+- `sysforge help [COMMAND [SUBCOMMAND]]` prints help without knowing the flag
+  spelling (2.5.0-F2) — `sysforge help`, `sysforge help build`, `sysforge help
+  state failed`. It is an alias, not a second help system: the verb walks the
+  argparse subparser chain and prints that parser's own help, so it is
+  byte-identical to `<COMMAND> --help`. An unknown topic exits 2 naming the
+  offending word and the valid topics at that level. Read-only, no sentinel.
+
+  Both completion files now advertise `-h/--help` as well. The flag always
+  worked at every level — argparse adds it to every parser — but the
+  hand-written zsh/bash completions never offered it, so it read as missing.
+  It is appended from a single dispatch point in each file rather than repeated
+  across every verb's spec.
+
 - `sysforge artifact` and `sysforge state` now run their `list` subcommand
   instead of erroring (2.6.1-F6), settling an inconsistency the `doctor`
   system/pkg split introduced: `doctor` and `packages` named a default subverb

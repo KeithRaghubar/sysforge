@@ -74,6 +74,7 @@ sysforge doctor mesa-git            # health-check one package's deps + linkage
 sysforge log [PKG]                  # page sysforge logs
 sysforge config merge               # adopt shipped config-default drift (.sfnew)
 sysforge search cosmic              # search installed, repo, and AUR for a term
+sysforge help [COMMAND]             # help for sysforge or one command (same as --help)
 sysforge uninstall mesa             # remove a package (demotes it out of build state)
 ```
 

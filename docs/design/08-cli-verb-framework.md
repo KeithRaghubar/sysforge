@@ -1,6 +1,6 @@
 ## CLI Verb Framework
 
-Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`, `setup`, `log`, `completions`, `packages …`, `state …`, `config …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `completions_cmd.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(_dispatch(args.verb_cls, args))` — a thin wrapper around `run_verb` that adds the optional cProfile harness (see *Global profiling flags* below).
+Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`, `help`, `setup`, `log`, `completions`, `packages …`, `state …`, `config …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `help_cmd.py`, `completions_cmd.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(_dispatch(args.verb_cls, args))` — a thin wrapper around `run_verb` that adds the optional cProfile harness (see *Global profiling flags* below).
 
 **Parent-verb subcommand default (invariant).** A verb namespace declares a
 default subverb via `set_defaults(verb_cls=…, <dest>=…)` on the *parent* parser
@@ -25,7 +25,7 @@ downstream code sees a consistent subcommand name either way.
 
 **Sentinel handling.** Verbs whose `execute` mutates the live system set `requires_sentinel = True`. The runner wraps `execute + post_validate` in `sentinel_scope(state_dir, verb.name, recovery_cmd=…, retry_cmd=…, **metadata)` from `primitives/stage_sentinel.py`. On entry, the sentinel writes `stage_in_progress.toml`; on normal completion (both phases pass), it clears. On `RuntimeError` or `CleanExitRequested`, the sentinel is left in place so the next sysforge invocation blocks at the CLI-entry recovery prompt. `sentinel_scope` also installs an `InterruptScope`, so verbs participate in the same first-Ctrl-C-defers-to-safe-boundary behaviour as the toolchain stage. The toolchain pipeline stage uses the same primitive — there is one implementation, shared.
 
-**Read-only verbs** (`env`, `resolve`, `log`, `state list`, `state orphans` without `--prune`, `state failed` without `--clear`/`--clear-all`, `packages list`, `doctor` without `--apply`) implement `execute` (the work is printing) and return `ExecResult()`; `post_validate` defaults to no-op and `requires_sentinel = False`. They use the same dispatch path as mutating verbs — no second code path.
+**Read-only verbs** (`env`, `help`, `resolve`, `log`, `state list`, `state orphans` without `--prune`, `state failed` without `--clear`/`--clear-all`, `packages list`, `doctor` without `--apply`) implement `execute` (the work is printing) and return `ExecResult()`; `post_validate` defaults to no-op and `requires_sentinel = False`. They use the same dispatch path as mutating verbs — no second code path.
 
 **Error model.**
 - `RuntimeError` raised from any phase → `_log.error(msg)`, return 1. Sentinel preserved if active.
@@ -42,6 +42,7 @@ downstream code sees a consistent subcommand name either way.
 | `doctor` | load config + target expansion | depends/soname/ABI scan | invoke `BuildVerb` flow when `--apply` | delegated |
 | `resolve` | load config | match rules + print | null | no |
 | `env` | null | collect + format + print env chain | null | no |
+| `help` | null | walk the subparser chain for `[COMMAND …]`; `print_help()` | null | no |
 | `setup` | read pacman.conf | check + patch IgnoreGroup | re-read confirms write | no |
 | `log` | null | resolve unified/per-pkg log path; page through `$PAGER` | null | no |
 | `packages {list,add,remove}` | load packages.toml + validate override fields | rewrite TOML | null | no |
@@ -168,7 +169,25 @@ and discarding the content are different decisions.
 
 ### Top-level help tiers
 
-`sysforge --help` groups the top-level `COMMAND` list into three usage tiers — **Everyday** (`build`, `update`, `fetch`, `search`), **Inspect** (`doctor`, `resolve`, `env`, `log`, `state`, `artifact`), and **Maintain** (`setup`, `config`, `packages`, `run`, `revert-to-stock`, `uninstall`) — instead of one flat, registration-ordered block, so a new user can tell routine drivers from ad-hoc introspection. The grouping is presentation-only (no behavioural change, no config flag). argparse folds every subparser into a single `_SubParsersAction` pseudo-group with no per-command category hook, so the tiering lives in `cli._TieredHelpFormatter`, which intercepts that one action and re-emits its choices under the tier headers; every other action (options, the `COMMAND` metavar line, per-verb and sub-verb `--help`) formats via the base `HelpFormatter` untouched. The tier map `cli._COMMAND_TIERS` is the single source of truth: `cli.tiered_command_order()` flattens it, and `tools/gen_options.py` orders the man-page COMMANDS sections by that list so the page stays in lockstep with the help (both completions mirror the order too). A `check_completions`-style parity test asserts the map partitions the user-facing verbs exactly (none missing, none duplicated); the internal `completions` verb is registered without help text and stays out of both the map and the listing.
+`sysforge --help` groups the top-level `COMMAND` list into three usage tiers — **Everyday** (`build`, `update`, `fetch`, `search`, `help`), **Inspect** (`doctor`, `resolve`, `env`, `log`, `state`, `artifact`), and **Maintain** (`setup`, `config`, `packages`, `run`, `revert-to-stock`, `uninstall`) — instead of one flat, registration-ordered block, so a new user can tell routine drivers from ad-hoc introspection. The grouping is presentation-only (no behavioural change, no config flag). argparse folds every subparser into a single `_SubParsersAction` pseudo-group with no per-command category hook, so the tiering lives in `cli._TieredHelpFormatter`, which intercepts that one action and re-emits its choices under the tier headers; every other action (options, the `COMMAND` metavar line, per-verb and sub-verb `--help`) formats via the base `HelpFormatter` untouched. The tier map `cli._COMMAND_TIERS` is the single source of truth: `cli.tiered_command_order()` flattens it, and `tools/gen_options.py` orders the man-page COMMANDS sections by that list so the page stays in lockstep with the help (both completions mirror the order too). A `check_completions`-style parity test asserts the map partitions the user-facing verbs exactly (none missing, none duplicated); the internal `completions` verb is registered without help text and stays out of both the map and the listing.
+
+### The `help` verb
+
+`sysforge help [COMMAND [SUBCOMMAND]]` is a read-only alias for `--help`, for users who reach for a
+help *verb* before a help *flag*. `HelpVerb` (`help_cmd.py`, `requires_sentinel = False`) re-enters
+`cli._build_parser()` — a function-local import, since `cli` imports `HelpVerb` at module scope —
+walks the `_SubParsersAction` chain word by word, and calls `print_help()` on the parser it lands on.
+It is an alias rather than a re-implementation: the output is the same parser object's help, so
+`sysforge help state failed` and `sysforge state failed --help` are byte-identical. An unrecognised
+topic is a usage error (exit 2) naming the offending word and listing the valid topics at that level,
+not a traceback. Help text goes to stdout via `print_help()` rather than `log.ui`, so it stays
+identical to the flag and never accumulates in the log files.
+
+`-h/--help` itself is argparse-supplied at every level and always worked; what was missing was
+discoverability in the hand-written completions. Both files now advertise it from a **single**
+dispatch point — zsh appends it with `_describe -o` after the per-verb handler runs
+(`_sysforge_help_flag`), bash with `COMPREPLY+=(…)` after its `case` — rather than repeating the flag
+in all 42 `_arguments` specs and every bash flag list.
 
 ### Global profiling flags
 

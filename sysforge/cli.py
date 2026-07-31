@@ -36,6 +36,7 @@ from sysforge.config_cmd import ConfigMergeVerb
 from sysforge.doctor import DoctorPkgVerb, DoctorSystemVerb
 from sysforge.env_cmd import EnvVerb
 from sysforge.fetch import FetchVerb
+from sysforge.help_cmd import HelpVerb
 from sysforge.log_cmd import LogVerb
 from sysforge.packages_cmd import (
     PackagesAddGroupVerb,
@@ -921,6 +922,15 @@ def _add_env_parser(sub):
     p.set_defaults(verb_cls=EnvVerb)
 
 
+def _add_help_parser(sub):
+    p = sub.add_parser("help",
+        help="Print help for sysforge or for a COMMAND (alias for --help).")
+    p.add_argument("topic", nargs="*", metavar="COMMAND",
+        help="Command (and optional subcommand) to describe, e.g. "
+             "`sysforge help state failed`. Omit for top-level help.")
+    p.set_defaults(verb_cls=HelpVerb)
+
+
 def _add_log_parser(sub):
     p = sub.add_parser("log",
         help="Page the unified or per-package sysforge log through $PAGER.")
@@ -1231,7 +1241,7 @@ def _add_run_parser(sub):
 # `completions` verb is deliberately absent (it carries no help text and never
 # appears in the listing).
 _COMMAND_TIERS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Everyday", ("build", "update", "fetch", "search")),
+    ("Everyday", ("build", "update", "fetch", "search", "help")),
     ("Inspect", ("doctor", "resolve", "env", "log", "state", "artifact")),
     ("Maintain",
      ("setup", "config", "packages", "run", "revert-to-stock", "uninstall")),
@@ -1380,6 +1390,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_setup_parser(sub)
     _add_uninstall_parser(sub)
     _add_env_parser(sub)
+    _add_help_parser(sub)
     _add_log_parser(sub)
     _add_config_parser(sub)
 
