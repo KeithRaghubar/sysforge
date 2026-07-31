@@ -55,7 +55,11 @@ VM_BUILD_DIR = $(VM_DIR)/build
 VM_CHROOT ?= /var/lib/archbuild/extra-x86_64
 
 ##@ Build & test
-all: test ## Default goal: run the full test suite
+# Bare `make` prints the target list rather than running anything: the suite is
+# a several-minute operation and shouldn't be the reward for a stray keystroke.
+.DEFAULT_GOAL := help
+
+all: test ## Run the full test suite (bare `make` prints help instead)
 
 # Self-documenting target list, generated from this file at run time: a target
 # is listed iff its own line carries a `## <description>` comment, grouped by
