@@ -22,6 +22,7 @@ from sysforge.primitives.pacman import (
     get_pacman_cache_dirs,
     get_pacman_sync_version,
     get_pkgbase,
+    pkg_supersedes_installed,
     read_pkg_replaces_from_file,
     read_pkgname_from_file,
     snapshot_pkg_dir,
@@ -361,6 +362,55 @@ class TestReadPkgReplacesFromFile:
 
 
 # ---------------------------------------------------------------------------
+# pkg_supersedes_installed
+# ---------------------------------------------------------------------------
+
+class TestPkgSupersedesInstalled:
+    """The one home for "this built package deliberately displaces an installed
+    one". Two idioms mean the same thing: an explicit ``replaces``, and the AUR
+    ``-git`` drop-in pair (``conflict`` + ``provides`` naming the same package).
+    Note .PKGINFO spells conflicts singular (``conflict = x``) but replaces
+    plural — see makepkg's write_kv_pair calls."""
+
+    def _pkginfo(self, text):
+        return patch("sysforge.primitives.pacman.subprocess.run",
+                     return_value=MagicMock(stdout=text, returncode=0))
+
+    def test_explicit_replaces(self):
+        with self._pkginfo("pkgname = mesa-sysforge\nreplaces = mesa\n"):
+            assert pkg_supersedes_installed("/tmp/p.pkg.tar", {"mesa"}) == {"mesa"}
+
+    def test_dropin_conflict_plus_provides(self):
+        """wayland-git: `conflict = wayland` + `provides = wayland=<ver>` and no
+        `replaces` at all — the canonical AUR -git drop-in declaration."""
+        info = ("pkgname = wayland-git\n"
+                "conflict = wayland\n"
+                "provides = wayland=1.26.0.r3.g5a81983\n"
+                "provides = libwayland-client.so=0-64\n")
+        with self._pkginfo(info):
+            assert pkg_supersedes_installed("/tmp/p.pkg.tar", {"wayland"}) == {"wayland"}
+
+    def test_conflict_without_provides_is_not_a_dropin(self):
+        """A bare conflict is an *unexpected* collision, not a drop-in — it must
+        not be auto-confirmed, so the transaction still aborts for review."""
+        with self._pkginfo("pkgname = foo\nconflict = bar\n"):
+            assert pkg_supersedes_installed("/tmp/p.pkg.tar", {"bar"}) == set()
+
+    def test_provides_without_conflict_is_not_a_dropin(self):
+        with self._pkginfo("pkgname = foo\nprovides = bar=1\n"):
+            assert pkg_supersedes_installed("/tmp/p.pkg.tar", {"bar"}) == set()
+
+    def test_ignores_names_that_are_not_installed(self):
+        info = "pkgname = wayland-git\nconflict = wayland\nprovides = wayland=1\n"
+        with self._pkginfo(info):
+            assert pkg_supersedes_installed("/tmp/p.pkg.tar", {"mesa"}) == set()
+
+    @patch("sysforge.primitives.pacman.subprocess.run", side_effect=FileNotFoundError)
+    def test_unreadable_is_empty(self, _mock_run):
+        assert pkg_supersedes_installed("/tmp/p.pkg.tar", {"wayland"}) == set()
+
+
+# ---------------------------------------------------------------------------
 # filter_pkgs_to_installed
 # ---------------------------------------------------------------------------
 
@@ -434,7 +484,7 @@ class TestBatchInstallPkgsInteractive:
         # subprocess; the pacman -U call is the first invocation.
         return mock_run.call_args_list[0]
 
-    @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file",
+    @patch("sysforge.primitives.pacman.pkg_supersedes_installed",
            return_value=set())
     @patch("sysforge.primitives.pacman.get_all_installed_packages",
            return_value={})
@@ -465,13 +515,15 @@ class TestBatchInstallPkgsInteractive:
 
 
 class TestBatchInstallPkgsConflictRename:
-    """A conflict-mode ``-sysforge`` rename is a deliberate drop-in replacement
-    (built pkg declares ``replaces = <stock>`` for an installed pkg). pacman
-    only auto-processes ``replaces`` on a sync upgrade, so on a ``-U
-    --noconfirm`` install the conflict prompt is declined (default N) and the
-    transaction aborts. When a built pkg replaces something installed, pass
-    ``--ask=4`` (ALPM_QUESTION_CONFLICT_PKG) to auto-confirm that intended
-    removal; otherwise leave the prompt at its safe default."""
+    """A deliberate drop-in replacement — a conflict-mode ``-sysforge`` rename,
+    or an AUR ``-git`` package conflicting with and providing the stock name —
+    is not auto-processed by pacman on a local ``-U``, so under ``--noconfirm``
+    the conflict prompt is declined (default N) and the transaction aborts.
+    When a built pkg supersedes something installed, pass ``--ask=4``
+    (ALPM_QUESTION_CONFLICT_PKG) to auto-confirm that intended removal;
+    otherwise leave the prompt at its safe default. Which packages qualify is
+    ``pkg_supersedes_installed``'s call (tested separately); these tests cover
+    the wiring."""
 
     def _make_pkg(self, tmp_path, name="mesa-sysforge"):
         p = tmp_path / f"{name}-1-1-x86_64.pkg.tar.zst"
@@ -480,7 +532,7 @@ class TestBatchInstallPkgsConflictRename:
 
     @patch("sysforge.primitives.pacman.get_all_installed_packages",
            return_value={"mesa": "1:26.1.3-2"})
-    @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file",
+    @patch("sysforge.primitives.pacman.pkg_supersedes_installed",
            return_value={"mesa"})
     @patch("sysforge.primitives.pacman.read_pkgname_from_file",
            return_value="mesa-sysforge")
@@ -497,7 +549,7 @@ class TestBatchInstallPkgsConflictRename:
 
     @patch("sysforge.primitives.pacman.get_all_installed_packages",
            return_value={"some-other-pkg": "1-1"})
-    @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file",
+    @patch("sysforge.primitives.pacman.pkg_supersedes_installed",
            return_value=set())
     @patch("sysforge.primitives.pacman.read_pkgname_from_file",
            return_value="foo")
@@ -512,7 +564,7 @@ class TestBatchInstallPkgsConflictRename:
         assert not any(str(a).startswith("--ask") for a in argv)
 
     @patch("sysforge.primitives.pacman.get_all_installed_packages")
-    @patch("sysforge.primitives.pacman.read_pkg_replaces_from_file",
+    @patch("sysforge.primitives.pacman.pkg_supersedes_installed",
            return_value={"mesa"})
     @patch("sysforge.primitives.pacman.read_pkgname_from_file",
            return_value="mesa-sysforge")

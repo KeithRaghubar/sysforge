@@ -21,6 +21,8 @@ Public API:
     cached_pkg_files_for(names)     → dict[str, Path | None]
     batch_install_pkgs(pkg_paths)   → bool
     read_pkgname_from_file(path)    → str | None
+    read_pkg_replaces_from_file(path) → set
+    pkg_supersedes_installed(path, installed) → set
     filter_pkgs_to_installed(paths, installed) → (keep, dropped)
     collect_makedeps(pkgbuild_paths) → list
     collect_builddeps(pkgbuild_paths) → list
@@ -377,34 +379,69 @@ def read_pkgname_from_file(path) -> str | None:
     return None
 
 
-def read_pkg_replaces_from_file(path) -> set:
-    """Return the set of names a built package ``replaces`` (from its .PKGINFO).
+def _read_pkginfo_names(path, keys: tuple) -> dict:
+    """Return {key: set of bare names} for the given .PKGINFO keys.
 
-    Each ``replaces`` is a separate ``replaces = NAME`` line in .PKGINFO (version
-    constraints, if any, ride on the same line — stripped here to the bare name).
-    Used by :func:`filter_pkgs_to_installed` to keep a conflict-mode renamed
-    artifact (``mesa-sysforge`` from a ``--pgo=use`` build) whose own pkgname is
-    on neither the installed nor the requested list but which replaces a stock
-    package that is. Empty set on any read failure.
+    One bsdtar per package, not one per field. Beware the key spellings:
+    makepkg's ``write_kv_pair`` emits ``replaces`` and ``provides`` plural but
+    ``conflict`` and ``depend`` **singular** — the .PKGINFO names are not the
+    PKGBUILD array names. Version constraints (``foo<1.0``, ``wayland=1.26``)
+    are stripped to the bare name. Empty sets on any read failure.
     """
+    out: dict = {k: set() for k in keys}
     try:
         result = subprocess.run(
             ["bsdtar", "-xOqf", str(path), ".PKGINFO"],
             capture_output=True, text=True, timeout=10,
         )
     except (subprocess.SubprocessError, FileNotFoundError):
-        return set()
+        return out
     if result.returncode != 0:
-        return set()
-    out: set = set()
+        return out
     for line in result.stdout.splitlines():
-        if line.startswith("replaces = "):
-            val = line[len("replaces = "):].strip()
-            # Strip any version constraint (``replaces = foo<1.0``) to the name.
-            name = re.split(r"[<>=]", val, maxsplit=1)[0].strip()
-            if name:
-                out.add(name)
+        for key in keys:
+            prefix = f"{key} = "
+            if line.startswith(prefix):
+                val = line[len(prefix):].strip()
+                name = re.split(r"[<>=]", val, maxsplit=1)[0].strip()
+                if name:
+                    out[key].add(name)
+                break
     return out
+
+
+def read_pkg_replaces_from_file(path) -> set:
+    """Return the set of names a built package ``replaces`` (from its .PKGINFO).
+
+    Used by :func:`filter_pkgs_to_installed` to keep a conflict-mode renamed
+    artifact (``mesa-sysforge`` from a ``--pgo=use`` build) whose own pkgname is
+    on neither the installed nor the requested list but which replaces a stock
+    package that is. Empty set on any read failure.
+    """
+    return _read_pkginfo_names(path, ("replaces",))["replaces"]
+
+
+def pkg_supersedes_installed(path, installed: set) -> set:
+    """Return the installed names this built package deliberately displaces.
+
+    The one home for "this is an intended drop-in replacement", which packages
+    declare two different ways:
+
+    * an explicit ``replaces`` naming the installed package — what a
+      conflict-mode ``-sysforge`` rename emits; and
+    * the AUR ``-git`` idiom: ``conflicts`` **and** ``provides`` naming the same
+      installed package (``wayland-git`` declares ``conflict = wayland`` plus
+      ``provides = wayland=<ver>`` and no ``replaces`` at all).
+
+    Requiring *both* halves of the second form is what keeps this narrow: a
+    package that conflicts with something it does not provide is an unexpected
+    collision, not a substitution, and must still stop the transaction for
+    review. Empty set on any read failure — unreadable metadata never widens
+    what gets auto-confirmed.
+    """
+    fields = _read_pkginfo_names(path, ("replaces", "conflict", "provides"))
+    dropin = fields["conflict"] & fields["provides"]
+    return (fields["replaces"] | dropin) & installed
 
 
 def filter_pkgs_to_installed(
@@ -444,15 +481,17 @@ def batch_install_pkgs(pkg_paths: list, *, interactive: bool = False) -> bool:
     ``--noconfirm`` and aborting the transaction (B6).
 
     Non-interactive runs (the default, and every ``sysforge update``) still
-    auto-answer that prompt ``N`` — fatal for a conflict-mode ``-sysforge``
-    rename, which is a deliberate drop-in replacement: the built package
-    declares ``replaces = <stock name>`` for a package the user has installed.
-    pacman only auto-processes ``replaces`` during a sync upgrade, so on a
-    local ``-U`` it raises the conflict prompt regardless. When (and only when)
-    a built package replaces something currently installed, pass ``--ask=4``
+    auto-answer that prompt ``N`` — fatal for a deliberate drop-in replacement,
+    of which there are two flavours: a conflict-mode ``-sysforge`` rename
+    (``replaces = <stock name>``), and an AUR ``-git`` package that conflicts
+    with and provides the stock name (``wayland-git`` over ``wayland``). pacman
+    auto-processes neither on a local ``-U`` — ``replaces`` is honoured only
+    during a sync upgrade — so it raises the conflict prompt regardless.
+    When (and only when) a built package supersedes something currently
+    installed per :func:`pkg_supersedes_installed`, pass ``--ask=4``
     (``ALPM_QUESTION_CONFLICT_PKG``) so that intended removal is auto-confirmed;
-    absent a real replaces relationship the prompt keeps its safe default so an
-    unexpected conflict still aborts the transaction.
+    absent that relationship the prompt keeps its safe default so an unexpected
+    conflict still aborts the transaction.
     """
     missing = [p for p in pkg_paths if not Path(p).exists()]
     if missing:
@@ -466,10 +505,18 @@ def batch_install_pkgs(pkg_paths: list, *, interactive: bool = False) -> bool:
     argv = privileged_argv(["pacman", "-U"])
     if not interactive:
         argv.append("--noconfirm")
-        # Auto-confirm only the intended drop-in replacement (a built pkg whose
-        # `replaces` names a currently-installed pkg); see the docstring.
+        # Auto-confirm only the intended drop-in replacement; see the docstring
+        # and `pkg_supersedes_installed` for what qualifies.
         installed = set(get_all_installed_packages().keys())
-        if any(read_pkg_replaces_from_file(p) & installed for p in pkg_paths):
+        superseded: set = set()
+        for p in pkg_paths:
+            superseded |= pkg_supersedes_installed(p, installed)
+        if superseded:
+            _log.info(
+                "Auto-confirming the replacement of "
+                f"{', '.join(sorted(superseded))} (declared by the built "
+                "package as a drop-in)"
+            )
             argv.append("--ask=4")
     argv += [str(p) for p in pkg_paths]
     # Interactive: inherit pacman's streams so the conflict prompt is visible

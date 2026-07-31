@@ -317,6 +317,22 @@ https://keepachangelog.com/en/1.1.0/
   names two members of one base, which makepkg builds in a single run, so the
   base is no longer built twice.
 
+- Installing an AUR `-git` package over its stock counterpart no longer aborts
+  with `unresolvable package conflicts detected` (2.6.1-B5). The batch install
+  already auto-confirmed pacman's `X and Y are in conflict. Remove Y?` question
+  for a deliberate drop-in replacement, but recognised only one way of
+  declaring one: an explicit `replaces`. The AUR `-git` idiom uses the other —
+  `wayland-git` declares `conflicts=('wayland')` plus `provides=("wayland=$pkgver")`
+  and no `replaces` at all — so the heuristic never fired, `--noconfirm`
+  auto-answered `N`, and the transaction aborted after a successful build. The
+  test that pinned the behaviour used an explicit `replaces`, so it passed.
+  Both forms now route through one predicate, `pacman.pkg_supersedes_installed`,
+  which reads `replaces` **or** the `conflicts`∩`provides` pair from the built
+  package's `.PKGINFO`. Requiring both halves of the second form keeps it
+  narrow: a package conflicting with something it does not provide is an
+  unexpected collision, not a substitution, and still stops the transaction for
+  review. The superseded names are now logged when they are auto-confirmed.
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would
