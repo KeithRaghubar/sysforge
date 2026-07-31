@@ -231,7 +231,7 @@ make vm-ssh
 # Inside the VM:
 sysforge --version
 pacman -Qi sysforge                                 # description, deps, optdeps
-ls /usr/share/libalpm/hooks/sysforge-*.hook         # 3 pacman hooks installed
+ls /usr/share/libalpm/hooks/sysforge-*.hook         # 4 pacman hooks installed
 ls /usr/share/bash-completion/completions/sysforge  # bash completion installed
 ls /usr/share/zsh/site-functions/_sysforge          # zsh completion installed
 ls -ld /var/lib/sysforge/sentinels                  # tmpfiles.d created the dir

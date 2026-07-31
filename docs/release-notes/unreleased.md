@@ -451,6 +451,17 @@ https://keepachangelog.com/en/1.1.0/
   signature exists for an unpublished working-tree tarball, and the fetch was
   quietly storing GitHub's 404 page.
 
+- `make container-smoke` no longer fails on two stale assertions in
+  `tools/smoke.sh` (2.6.1-B7). Both were surfaces the smoke script asserts but
+  does not own, so neither moved when the surface did: the hook count was pinned
+  at `3` while the PKGBUILD has installed a fourth hook since the artifact-drift
+  hook (2.3.0-F4) shipped, and the distro-identity probe still invoked
+  `sysforge doctor --distro`, which the compat-alias sweep removed in favour of
+  `sysforge doctor system --distro` — the probe was measuring the exit code of
+  the removal error, not of the axis. The container tier is green again on the
+  Arch arm (11/11). The `doctor --distro` spelling was also corrected in
+  `README.md`, `docs/design/verbs/doctor.md` and the two harness READMEs.
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would

@@ -149,7 +149,7 @@ REMOTE_SCRIPT='
     # through the doctor axis over primitives/os_release.py.
     printf "OS_ID=%s\n" "$(. /etc/os-release 2>/dev/null; printf "%s" "${ID:-}")"
     printf "OS_ID_LIKE=%s\n" "$(. /etc/os-release 2>/dev/null; printf "%s" "${ID_LIKE:-}")"
-    sysforge doctor --distro --quiet >/dev/null 2>&1; printf "DISTRO_AXIS_RC=%s\n" "$?"
+    sysforge doctor system --distro --quiet >/dev/null 2>&1; printf "DISTRO_AXIS_RC=%s\n" "$?"
 
     # Sync repos: every [section] in pacman.conf must reach the alpm handle. A
     # derivative carries extra repos ahead of core/extra, and a hardcoded repo
@@ -240,8 +240,8 @@ check "sysforge --version runs (${VERSION_OUT:-<empty>})" "$v"
 [[ $QI_RC == 0 ]] && v=ok || v=no
 check "pacman -Qi sysforge (package registered)" "$v"
 
-[[ $HOOK_COUNT == 3 ]] && v=ok || v=no
-check "3 pacman hooks installed (found ${HOOK_COUNT:-0})" "$v"
+[[ $HOOK_COUNT == 4 ]] && v=ok || v=no
+check "4 pacman hooks installed (found ${HOOK_COUNT:-0})" "$v"
 
 [[ $BASH_COMP == 1 ]] && v=ok || v=no
 check "bash completion installed" "$v"
@@ -265,7 +265,7 @@ else
 fi
 
 [[ $DISTRO_AXIS_RC == 0 ]] && v=ok || v=no
-check "doctor --distro runs clean (identity is readable)" "$v"
+check "doctor system --distro runs clean (identity is readable)" "$v"
 
 [[ -n $CONF_REPOS && $SF_REPOS == "$CONF_REPOS" ]] && v=ok || v=no
 check "sync repos match pacman.conf (conf=${CONF_REPOS:-<none>} sysforge=${SF_REPOS:-<none>})" "$v"

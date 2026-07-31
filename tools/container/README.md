@@ -15,7 +15,7 @@ host, so the transport (`ssh` → `podman exec`) is substitutable without touchi
 a check.
 
 **Packaging integrity** (identical on both arms): `sysforge --version` liveness,
-`pacman -Qi sysforge` registration, 3 pacman hooks, both completions, the
+`pacman -Qi sysforge` registration, 4 pacman hooks, both completions, the
 `tmpfiles.d` sentinel dir.
 
 **Portability** — each one a *differential*: the ground truth read out of `/etc`
@@ -25,7 +25,7 @@ every arm without hardcoding an expected value.
 | Check | Risk it covers |
 |-------|----------------|
 | os-release ID matches the expected distro | a mis-tagged base image silently re-testing Arch, making the arm vacuous |
-| `doctor --distro` runs clean | the identity primitive is reachable and readable on this host |
+| `doctor system --distro` runs clean | the identity primitive is reachable and readable on this host |
 | registered sync repos == every `[section]` in `pacman.conf` | repo/AUR shadowing — a derivative carries extra sync DBs ahead of `core`/`extra`, and a hardcoded repo list breaks the repo-vs-AUR makedep split |
 | system `makepkg.conf` CFLAGS parsed verbatim | the merge baseline — a derivative's `-march=x86-64-v3`/LTO defaults must survive, never be replaced by a vendored default |
 | version compare on a live `pkgver` | already-built fingerprints against bumped `pkgrel`s on core packages |
