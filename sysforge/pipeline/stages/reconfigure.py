@@ -564,6 +564,44 @@ def _confirm_unknown_editor(cmd: str) -> bool:
     ) == "y"
 
 
+def _adopt_editor(new_editor: str) -> None:
+    """
+    Make ``new_editor`` visible to the rest of the process.
+
+    The stage threads its editor choice through ``_run_selected_steps`` as a
+    plain local, but every downstream consumer (``makepkg_invoke``'s PKGBUILD
+    retry menu, the artifact verb) calls ``resolve_editor()`` fresh. Without
+    this export, a pick the user declined to persist would be invisible the
+    moment reconfigure returns, and the build stages would resolve
+    ``("", "none")`` again. ``SYSFORGE_EDITOR`` is the highest-precedence
+    input to :func:`sysforge.primitives.editor.resolve_editor`, so setting it
+    covers this process and any child it spawns — no second resolution path.
+    """
+    if new_editor:
+        os.environ["SYSFORGE_EDITOR"] = new_editor
+
+
+def _offer_save_editor(new_editor: str) -> None:
+    """Adopt ``new_editor`` for this run, then offer to persist it.
+
+    Adoption is unconditional; persistence is the user's call. Declining the
+    save no longer means the pick evaporates — it only means the next
+    ``sysforge`` invocation starts from the same resolution order.
+    """
+    _adopt_editor(new_editor)
+    save = _prompt_choice(
+        "  Save as sysforge default? [y/N]: ",
+        choices=("y", "n"),
+        default="n",
+    )
+    if save == "y":
+        try:
+            _save_sysforge_toml_ui("editor", new_editor)
+            _log.ui(f"  Saved to {SYSFORGE_TOML_PATH}")
+        except OSError as e:
+            _log.warn(f"  Could not save preference: {e}")
+
+
 def _require_usable_editor(prev_editor: str, options, *, needed_for: str) -> str:
     """
     Guarantee a usable editor before continuing with an editor-needing step.
@@ -586,17 +624,7 @@ def _require_usable_editor(prev_editor: str, options, *, needed_for: str) -> str
     while True:
         new_editor = _select_new_editor(prev_editor, have_prev, options)
         if new_editor and _editor_usable(new_editor):
-            save = _prompt_choice(
-                "  Save as sysforge default? [y/N]: ",
-                choices=("y", "n"),
-                default="n",
-            )
-            if save == "y":
-                try:
-                    _save_sysforge_toml_ui("editor", new_editor)
-                    _log.ui(f"  Saved to {SYSFORGE_TOML_PATH}")
-                except OSError as e:
-                    _log.warn(f"  Could not save preference: {e}")
+            _offer_save_editor(new_editor)
             return new_editor
 
         # User cancelled / kept an unusable previous editor. No path forward
@@ -635,18 +663,7 @@ def _step_editor(config, state, options, editor: str) -> str:
     if new_editor is None:
         return editor  # caller falls back to the previous editor (may be "")
 
-    save = _prompt_choice(
-        "  Save as sysforge default? [y/N]: ",
-        choices=("y", "n"),
-        default="n",
-    )
-    if save == "y":
-        try:
-            _save_sysforge_toml_ui("editor", new_editor)
-            _log.ui(f"  Saved to {SYSFORGE_TOML_PATH}")
-        except OSError as e:
-            _log.warn(f"  Could not save preference: {e}")
-
+    _offer_save_editor(new_editor)
     return new_editor
 
 
@@ -1435,6 +1452,34 @@ _STEP_FNS = {
 _EDITOR_NEEDING_STEPS = frozenset({"config", "makepkg"})
 
 
+def _gate_editor_for_pipeline(options) -> None:
+    """
+    Require a usable editor before handing control to the build stages.
+
+    ``_EDITOR_NEEDING_STEPS`` only covers the two steps that open files *in
+    this stage*. A step subset that skips both (or an ``editor`` step the user
+    skipped) left the whole build pipeline with no editor at all — the failure
+    surfaces much later as ``No usable $EDITOR`` in the PKGBUILD retry menu,
+    with a half-built package and no way to fix the recipe.
+
+    Skipped when ``--standalone`` (nothing runs after reconfigure) or when
+    there's no TTY (the picker can't prompt; warn instead of hard-failing a
+    non-interactive run).
+    """
+    editor, _ = _resolve_editor()
+    if _editor_usable(editor):
+        return
+    if options.standalone:
+        return
+    if not _interactive() or options.dry_run:
+        _log.warn(
+            "  No usable editor resolved — build-failure recovery will not be "
+            "able to open a PKGBUILD. Set SYSFORGE_EDITOR or [ui].editor."
+        )
+        return
+    _require_usable_editor(editor, options, needed_for="the build stages")
+
+
 def _run_selected_steps(step_keys: list[str], config, state, options) -> None:
     """
     Run selected steps in order. Editor is resolved upfront and threaded
@@ -1543,6 +1588,11 @@ class ReconfigureStage(Stage):
         # Final pre-flight: catch TOML/schema errors before the user confirms,
         # so downstream stages can't fail 10+ minutes in on broken config.
         _validate_all_configs(config)
+
+        # Everything past this point hands off to toolchain → packages →
+        # kernel, whose failure-recovery menus need an editor. Gate here, not
+        # only on the two editor-opening steps above.
+        _gate_editor_for_pipeline(options)
 
         if _interactive() and not options.dry_run and not options.standalone:
             _log.ui("─────────────────────────────────────────────────────")

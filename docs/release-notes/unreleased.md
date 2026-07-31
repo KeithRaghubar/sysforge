@@ -473,6 +473,22 @@ https://keepachangelog.com/en/1.1.0/
   `[options]`, which drops only the network half of the sandbox and leaves the
   filesystem half in force. Both arms are green (11/11 on Arch and CachyOS).
 
+- The `reconfigure` stage no longer hands the build pipeline an editor it does
+  not have (2.6.1-B9). Two gaps, both ending in `No usable $EDITOR` much later,
+  inside the PKGBUILD failure-recovery menu with a half-built package. First,
+  the editor picked in the stage lived only in a local threaded through the
+  step loop; every downstream consumer calls `resolve_editor()` fresh, so
+  declining the `Save as sysforge default? [y/N]` prompt (which defaults to
+  **N**) discarded the pick the moment the stage returned. The pick is now
+  adopted into `SYSFORGE_EDITOR` unconditionally — visible for the rest of the
+  run and to any child process — and persisting it to `sysforge.toml` stays the
+  user's separate choice. Second, the existing gate only covered the two steps
+  that open files *within* the stage (`config`, `makepkg`); a step subset
+  skipping both, or a skipped `editor` step, reached the "Ready to proceed to
+  toolchain → packages → kernel?" prompt with no editor at all. That handoff is
+  now gated too, skipped under `--standalone` (nothing runs after it) and
+  downgraded to a warning with no TTY.
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would

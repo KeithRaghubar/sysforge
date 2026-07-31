@@ -20,6 +20,16 @@ The **install** stage replaces the earlier hand-rolled `partition` + `base_insta
 
 **Pre-build snapshot.** `[build] pre_build_snapshot` (ships commented-out, off by default) opts into a pre-build btrfs snapshot taken by `primitives/snapshot.py`'s `ensure_pre_build_snapshot(config, *, dry_run, interactive)`. It fires at the three build-orchestrator seams — `build_core.build_and_install` (the `build`/`update` engine), the packages stage, and the kernel stage — each call site guarded by the same module-level once-guard so a single process (even one that runs several of these seams, e.g. a full pipeline run) takes **at most one** snapshot. Resolution: delegate to snapper when a config already covers `/` (snapper owns retention for that subvolume); otherwise take a raw read-only `btrfs subvolume snapshot`. Either way **sysforge takes but does not reap snapshots** — cleanup is the operator's job, mirroring the boundary the toolchain/kernel rollback snapshots already establish. The primitive is a no-op on a non-btrfs root and under `--dry-run`, and is deliberately non-fatal: a snapshot failure never blocks a build.
 
+### Reconfigure editor gate (stage 4)
+
+The reconfigure stage opens config files in `$EDITOR`, and so do the build stages that follow it — `makepkg_invoke`'s build-failure recovery menu is the point where an operator fixes a broken recipe, and it has nowhere to go without one. The stage therefore treats a usable editor as a **precondition it must establish**, not a nicety.
+
+Resolution is `primitives/editor.py`'s single home (`resolve_editor` → `SYSFORGE_EDITOR` > `sysforge.toml [ui].editor` > `$EDITOR` > `$VISUAL` > detected `vim`/`nano`/`vi`; `editor_usable` requires it on PATH). Three enforcement points sit on top of it:
+
+- **Per-step gate.** `_EDITOR_NEEDING_STEPS` (`config`, `makepkg`) — the steps that open files *inside* the stage. `_run_selected_steps` calls `_require_usable_editor` before each, which runs the picker (with pacman-backed install of the chosen binary) and raises `RuntimeError` to abort the stage if the user cancels, rather than letting every subsequent edit prompt silently no-op.
+- **Pipeline-handoff gate.** `_gate_editor_for_pipeline`, immediately before the "Ready to proceed to toolchain → packages → kernel?" confirm. The per-step gate covers only two steps, so a step subset skipping both (or a skipped `editor` step) would otherwise hand the build stages no editor at all. Skipped under `--standalone` (nothing runs after reconfigure); with no TTY or under `--dry-run` it warns instead of blocking on a prompt nobody can answer.
+- **Adoption.** `_adopt_editor` exports the accepted editor as `SYSFORGE_EDITOR`. Downstream consumers call `resolve_editor()` fresh rather than receiving the stage's threaded local, so without this the pick would evaporate at the stage boundary. Adoption is unconditional; the `Save as sysforge default? [y/N]` prompt (`_offer_save_editor`) is a *separate* choice about persisting to `sysforge.toml` for future invocations, and declining it no longer costs the current run its editor.
+
 ### Bootstrap workflow (stages 1–3)
 
 Stages 1–3 run from a live Arch install environment (booted from the install ISO). The state dir must be set to the target system so pipeline state persists across the reboot:

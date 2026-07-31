@@ -4,6 +4,7 @@ test_reconfigure.py — unit tests for sysforge.pipeline.stages.reconfigure
 Covers _set_repo_mode, _step_build_mode, _step_preview, _parse_step_selection,
 and the new build_mode step registration. No real filesystem I/O beyond tmp_path.
 """
+import os
 import tomllib
 from pathlib import Path
 from unittest.mock import patch
@@ -17,10 +18,12 @@ from sysforge.pipeline.stages.reconfigure import (
     _KNOWN_EDITORS,
     _STEP_FNS,
     _STEP_KEYS,
+    _adopt_editor,
     _choose_install_package,
     _confirm_unknown_editor,
     _edit_needs_sudo,
     _editor_usable,
+    _gate_editor_for_pipeline,
     _open_in_editor,
     _packages_providing,
     _parse_step_selection,
@@ -30,6 +33,7 @@ from sysforge.pipeline.stages.reconfigure import (
     _set_repo_mode,
     _step_build_mode,
     _step_desktop,
+    _step_editor,
     _step_preview,
     _try_install_editor,
 )
@@ -288,7 +292,7 @@ def test_set_repo_mode_no_build_section_appends(tmp_path):
 def test_set_repo_mode_roundtrip_valid_toml(tmp_path):
     p = make_packages_toml(tmp_path, _BASIC_TOML)
     _set_repo_mode(p, "build_from_source")
-    with open(p, "rb") as f:
+    with p.open("rb") as f:
         data = tomllib.load(f)
     assert data["build"]["repo_mode"] == "build_from_source"
 
@@ -296,7 +300,7 @@ def test_set_repo_mode_roundtrip_valid_toml(tmp_path):
 def test_set_repo_mode_preserves_other_content(tmp_path):
     p = make_packages_toml(tmp_path, _BASIC_TOML)
     _set_repo_mode(p, "build_from_source")
-    with open(p, "rb") as f:
+    with p.open("rb") as f:
         data = tomllib.load(f)
     assert data["build"]["pkgbuild_src_dir"] == "~/src"
     assert any(pkg["name"] == "htop" for pkg in data["package"])
@@ -317,7 +321,10 @@ def test_step_build_mode_shows_current_mode(tmp_path, capsys):
 
 
 def test_step_build_mode_dry_run_does_not_write(tmp_path):
-    p = make_packages_toml(tmp_path, '[build]\nrepo_mode = "pacman"\n\n[[package]]\nname = "htop"\nsource = "repo"\n')
+    p = make_packages_toml(
+        tmp_path,
+        '[build]\nrepo_mode = "pacman"\n\n[[package]]\nname = "htop"\nsource = "repo"\n',
+    )
     original = p.read_text()
     config = {"packages_file": str(p)}
 
@@ -336,20 +343,26 @@ def test_step_build_mode_missing_file_skips(tmp_path):
 
 
 def test_step_build_mode_interactive_sets_build_from_source(tmp_path):
-    p = make_packages_toml(tmp_path, '[build]\nrepo_mode = "pacman"\n\n[[package]]\nname = "htop"\nsource = "repo"\n')
+    p = make_packages_toml(
+        tmp_path,
+        '[build]\nrepo_mode = "pacman"\n\n[[package]]\nname = "htop"\nsource = "repo"\n',
+    )
     config = {"packages_file": str(p)}
 
     with patch("sysforge.pipeline.stages.reconfigure._interactive", return_value=True), \
          patch("sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="s"):
         _step_build_mode(config, None, make_options(), "vi")
 
-    with open(p, "rb") as f:
+    with p.open("rb") as f:
         data = tomllib.load(f)
     assert data["build"]["repo_mode"] == "build_from_source"
 
 
 def test_step_build_mode_interactive_no_change_on_enter(tmp_path):
-    p = make_packages_toml(tmp_path, '[build]\nrepo_mode = "pacman"\n\n[[package]]\nname = "htop"\nsource = "repo"\n')
+    p = make_packages_toml(
+        tmp_path,
+        '[build]\nrepo_mode = "pacman"\n\n[[package]]\nname = "htop"\nsource = "repo"\n',
+    )
     original = p.read_text()
     config = {"packages_file": str(p)}
 
@@ -436,7 +449,10 @@ def test_step_preview_shows_build_estimate(tmp_path):
     with patch("sysforge.log.ui", side_effect=lambda tag, msg: logged.append(msg)), \
          patch.object(
              build_estimate, "format_estimate",
-             lambda *a, **k: "Estimated build time: ~1h 00m (1 of 1 packages have history; 0 unknown)",
+             lambda *a, **k: (
+                 "Estimated build time: ~1h 00m "
+                 "(1 of 1 packages have history; 0 unknown)"
+             ),
          ):
         _step_preview(config, None, make_options(), "vi")
 
@@ -600,9 +616,8 @@ def test_require_usable_editor_raises_when_picker_cancels():
     ), patch(
         "sysforge.pipeline.stages.reconfigure._select_new_editor",
         return_value=None,
-    ):
-        with pytest.raises(RuntimeError, match="Aborted"):
-            _require_usable_editor("", make_options(), needed_for="config")
+    ), pytest.raises(RuntimeError, match="Aborted"):
+        _require_usable_editor("", make_options(), needed_for="config")
 
 
 def test_run_selected_steps_gates_config_when_editor_unusable():
@@ -659,13 +674,13 @@ def test_run_selected_steps_aborts_when_gate_cancelled():
     ), patch(
         "sysforge.pipeline.stages.reconfigure._STEP_FNS",
         fake_step_fns,
-    ):
-        with pytest.raises(RuntimeError, match="Aborted"):
-            _run_selected_steps(["editor", "config"], {}, None, make_options())
+    ), pytest.raises(RuntimeError, match="Aborted"):
+        _run_selected_steps(["editor", "config"], {}, None, make_options())
 
 
 def test_run_selected_steps_skips_gate_for_non_editor_steps():
-    """Queue [build_mode] with no editor: gate must NOT fire (build_mode is not in _EDITOR_NEEDING_STEPS)."""
+    """Queue [build_mode] with no editor: gate must NOT fire
+    (build_mode is not in _EDITOR_NEEDING_STEPS)."""
     seen: list[str] = []
 
     def fake_build_mode_step(config, state, options, editor):
@@ -690,6 +705,139 @@ def test_run_selected_steps_skips_gate_for_non_editor_steps():
 
     assert seen == [""]
     picker.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Editor adoption: the pick must survive the stage (2.6.1-B9)
+#
+# Downstream stages (makepkg_invoke, artifact verb) call resolve_editor()
+# fresh, so an in-memory pick that is not exported/persisted is invisible
+# to them.
+# ---------------------------------------------------------------------------
+
+
+def test_adopt_editor_exports_sysforge_editor(monkeypatch):
+    monkeypatch.delenv("SYSFORGE_EDITOR", raising=False)
+    _adopt_editor("micro")
+    assert os.environ["SYSFORGE_EDITOR"] == "micro"
+
+
+def test_adopt_editor_ignores_empty(monkeypatch):
+    monkeypatch.setenv("SYSFORGE_EDITOR", "nano")
+    _adopt_editor("")
+    assert os.environ["SYSFORGE_EDITOR"] == "nano"
+
+
+def test_require_usable_editor_exports_even_when_save_declined(monkeypatch):
+    """Declining the save prompt must still make the pick visible downstream."""
+    monkeypatch.delenv("SYSFORGE_EDITOR", raising=False)
+
+    def fake_usable(editor):
+        return editor == "micro"
+
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable",
+        side_effect=fake_usable,
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._select_new_editor",
+        return_value="micro",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="n",
+    ):
+        assert _require_usable_editor("", make_options(), needed_for="config") == "micro"
+
+    assert os.environ["SYSFORGE_EDITOR"] == "micro"
+
+
+def test_step_editor_exports_even_when_save_declined(monkeypatch):
+    monkeypatch.delenv("SYSFORGE_EDITOR", raising=False)
+
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._interactive", return_value=True
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._resolve_editor",
+        return_value=("", "none"),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable",
+        side_effect=lambda e: e == "micro",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._select_new_editor",
+        return_value="micro",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice",
+        return_value="n",
+    ):
+        assert _step_editor({}, None, make_options(), "") == "micro"
+
+    assert os.environ["SYSFORGE_EDITOR"] == "micro"
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-continuation gate (2.6.1-B9)
+#
+# The per-step gate only covers config/makepkg. A step subset that skips both
+# used to hand control to the build stages with no editor at all.
+# ---------------------------------------------------------------------------
+
+
+def test_continuation_gate_fires_for_subset_without_editor_steps():
+    """[build_mode] only + no editor → gate runs before the proceed prompt."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._interactive", return_value=True
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable", return_value=False
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._require_usable_editor",
+        return_value="nano",
+    ) as gate:
+        _gate_editor_for_pipeline(make_options())
+
+    gate.assert_called_once()
+
+
+def test_continuation_gate_skipped_when_editor_usable():
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._interactive", return_value=True
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._resolve_editor",
+        return_value=("nano", "detected"),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable", return_value=True
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._require_usable_editor"
+    ) as gate:
+        _gate_editor_for_pipeline(make_options())
+
+    gate.assert_not_called()
+
+
+def test_continuation_gate_skipped_when_standalone():
+    """--standalone stops after reconfigure; no build stages to protect."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._interactive", return_value=True
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable", return_value=False
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._require_usable_editor"
+    ) as gate:
+        _gate_editor_for_pipeline(make_options(standalone=True))
+
+    gate.assert_not_called()
+
+
+def test_continuation_gate_skipped_when_non_interactive():
+    """No TTY: warn rather than block on a prompt nobody can answer."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._interactive", return_value=False
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._editor_usable", return_value=False
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._require_usable_editor"
+    ) as gate:
+        _gate_editor_for_pipeline(make_options())
+
+    gate.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
