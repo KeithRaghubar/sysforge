@@ -257,6 +257,8 @@ def cmd_state_repair(args):
         if name in handled_by_plans:
             continue
         old_mode = rec.get("build_mode")
+        if not isinstance(old_mode, str):
+            continue
         new_mode = _LEGACY_BUILD_MODE_TOKENS.get(old_mode)
         if new_mode is not None:
             stale_mode_fixes.append((name, old_mode, new_mode))
