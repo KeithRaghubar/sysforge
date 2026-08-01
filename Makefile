@@ -5,7 +5,7 @@
         roadmap-table check-roadmap-table roadmap-view \
         sync-config \
         preflight release-major release-minor release-patch release-resume \
-        vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-console vm-savevm vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
+        vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-console vm-savevm vm-snapshots vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-smoke vm-test \
         container-build container-smoke container-smoke-cachyos container-shell container-clean
 
@@ -461,7 +461,14 @@ vm-savevm: ## Save a named VM snapshot
 	@if [ -z "$(NAME)" ]; then echo "Usage: make vm-savevm NAME=<snapshot-name>  (or: make vm-savevm <snapshot-name>)"; exit 2; fi
 	@test -S "$(VM_DIR)/qemu-monitor.sock" || { echo "VM not running (no monitor socket at $(VM_DIR)/qemu-monitor.sock). Start it with 'make vm-boot'."; exit 1; }
 	@printf 'savevm $(NAME)\n' | socat - UNIX-CONNECT:$(VM_DIR)/qemu-monitor.sock
-	@echo "Saved snapshot '$(NAME)'. Verify with: make vm-monitor → info snapshots"
+	@echo "Saved snapshot '$(NAME)'. Verify with: make vm-snapshots"
+
+# List the internal qcow2 snapshots savevm wrote into the disk image.
+# Read straight off the image with qemu-img, so unlike `info snapshots` over the
+# monitor this works whether or not the VM is running.
+vm-snapshots: ## List saved VM snapshots
+	@test -f "$(VM_DISK)" || { echo "No disk image found at $(VM_DISK). Create one with 'make vm-image'."; exit 1; }
+	@qemu-img snapshot -l "$(VM_DISK)"
 
 # Stop the VM and only clear state once the process is *confirmed* gone.
 # Resolution mirrors boot.sh: pidfile first, then an `ss` port probe so an

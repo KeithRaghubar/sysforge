@@ -143,6 +143,14 @@ make vm-loadvm NAME=clean GUI=1    # with a VNC display
 make vm-loadvm clean               # name may also be given positionally
 ```
 
+To see what has been saved, use `vm-snapshots`. It reads the internal snapshot
+table straight off the disk image with `qemu-img`, so it works whether or not
+the VM is currently running:
+
+```bash
+make vm-snapshots
+```
+
 ### 4a. Enable the serial console (existing VM only)
 
 New installs get `console=ttyS0` baked into the bootloader entries by step 3's

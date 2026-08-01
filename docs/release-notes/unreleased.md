@@ -117,6 +117,15 @@ https://keepachangelog.com/en/1.1.0/
   untruncated, so its diffs don't churn every time the longest title changes and
   `make check-roadmap-table` keeps comparing against one stable form.
 
+- `make vm-snapshots` lists the snapshots saved into the test VM's disk image
+  (2.6.1-F17). `vm-savevm` writes internal qcow2 snapshots but nothing enumerated
+  them, so the only way to see what had been saved was `make vm-monitor` followed
+  by a hand-typed `info snapshots` — which additionally requires the VM to be
+  running, exactly the state you are trying to choose a restore point from. The
+  target reads the snapshot table straight off the image with `qemu-img`, so it
+  works booted or not and never touches the monitor socket. `vm-savevm` now
+  points at it instead of the two-step monitor recipe.
+
 - SemVer impact is now declared rather than inferred (2.6.1-STD2), as standards
   row 24 plus an extension of row 3. `primitives/deprecations.py` is a registry
   of every surface sysforge still honours only for backwards compatibility —
