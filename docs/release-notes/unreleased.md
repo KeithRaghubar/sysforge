@@ -529,6 +529,23 @@ https://keepachangelog.com/en/1.1.0/
   mismatched lockstep suite from an aborted run, which a blind `-S clang`
   would not repair. `--dry-run` previews the install without performing it.
 
+- `tests/test_standards_compliance.py` now passes when run on its own
+  (2.6.1-B14). Its `_load_check_standards()` helper exec'd
+  `tools/check_standards.py` from a spec without putting `tools/` on
+  `sys.path`, so that module's sibling `from _semver_vocab import BUMP_ORDER`
+  raised — and because the spec must be registered in `sys.modules` *before*
+  `exec_module` (so `Finding`'s deferred annotations resolve), the half-built
+  module stayed cached and turned that one `ImportError` into an
+  `AttributeError` from all 29 later callers. The full suite passed only
+  because another test module happened to be collected first and did the
+  `sys.path.insert` — collection order, not correctness — so the 30 failures
+  appeared exclusively in the targeted single-file runs implementers use while
+  iterating on a standards change. The helper now anchors its path at the repo
+  root instead of the cwd-relative `"tools/check_standards.py"`, adds `tools/`
+  to `sys.path`, and unregisters the module if exec fails. A new subprocess
+  test runs the file alone and asserts exit 0, so the guarantee cannot decay
+  the next time a sibling import is added.
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would

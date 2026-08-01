@@ -86,7 +86,6 @@ canonical ordering.
 | `2.6.1-B13` | describe_editor_chain hardcodes the detected rung's index | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F20` | complete the editor chain display: source values, $VISUAL origins, one snapshot | low | small | patch |
-| `2.6.1-Q1` | should tests/test_standards_compliance.py be runnable in isolation? | low | small | patch |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium | patch |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
 <!-- END roadmap-table -->
@@ -245,20 +244,6 @@ canonical ordering.
   is a wrong editor, not merely a wrong label. Derive both from the list (`index=len(raw) + 1`,
   `winner = len(raw)`). Two lines; do it the next time that file is touched.
   *Priority: low · Effort: small · Bump: patch* — latent; no current misbehaviour.
-
-### Standards
-
-- **`2.6.1-Q1` — should `tests/test_standards_compliance.py` be runnable in isolation?** The file
-  loads `tools/check_standards.py` through an `importlib` spec without putting `tools/` on
-  `sys.path`, so that module's `from _semver_vocab import BUMP_ORDER` fails and leaves a
-  partially-initialized module cached in `sys.modules`; later tests using the other import style
-  then fail with `AttributeError`. Running the file alone yields 28 failures; the full suite passes
-  because other tests do the `sys.path.insert` first. Pre-existing (reproduces before `2.6.1-F5`)
-  and invisible in CI, but it makes the file untrustworthy for the targeted runs implementers
-  actually use, and it cost real time across the F5 sweep — every task had to stash-and-rerun to
-  prove it was not their regression. Decide whether to fix the helper (add `tools/` to `sys.path`
-  in `_load_check_standards`) or to document the file as full-suite-only.
-  *Priority: low · Effort: small · Bump: patch* — decide before it wastes another sweep.
 
 ---
 

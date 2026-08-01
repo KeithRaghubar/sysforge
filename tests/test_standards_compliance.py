@@ -237,21 +237,52 @@ def test_mem_limit_enforced_via_cgroup_scope_when_systemd_available(monkeypatch)
     assert bt.resolve_child_mem_cap(throttle) is None
 
 
+_REPO = Path(__file__).resolve().parent.parent
+
+
 def _load_check_standards():
     """Load tools/check_standards.py as a module, registered in sys.modules.
 
     Registration is required so dataclasses (e.g. Finding) can resolve their
     deferred `from __future__ import annotations` string annotations against
-    the module's own namespace.
+    the module's own namespace. That same early registration is why a failed
+    exec must be unregistered: a half-built husk left in sys.modules turns one
+    ImportError into an AttributeError from every later caller (2.6.1-B14).
+
+    tools/ goes on sys.path because check_standards.py imports its sibling
+    _semver_vocab; without it this file only passes when some *other* test
+    module happens to be collected first.
     """
     import importlib.util
     import sys
+    tools = str(_REPO / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
     spec = importlib.util.spec_from_file_location(
-        "check_standards", "tools/check_standards.py")
+        "check_standards", _REPO / "tools" / "check_standards.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
     return mod
+
+
+def test_this_file_runs_in_isolation():
+    """This file passes on its own, not just when the full suite orders it right.
+
+    Guards 2.6.1-B14: _load_check_standards() must be self-sufficient. The
+    subprocess deselects this very test so the nested run cannot recurse.
+    """
+    selfid = f"tests/{Path(__file__).name}::{test_this_file_runs_in_isolation.__name__}"
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", f"tests/{Path(__file__).name}",
+         "--deselect", selfid, "-q", "-p", "no:cacheprovider"],
+        cwd=_REPO, capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
 
 
 def test_run_seam_flags_string_command(tmp_path):
