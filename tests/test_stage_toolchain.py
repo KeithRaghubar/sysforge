@@ -4225,6 +4225,104 @@ def test_gate1_dry_run_downgrades_brick_to_warning(tmp_path, monkeypatch):
         ToolchainStage().run(config, state, options)  # must not raise
 
 
+def _bootstrap_missing(*check_ids):
+    """Build a smoke_test_compilers stub returning bricks for ``check_ids``."""
+    from sysforge.primitives import toolchain_safety as _ts
+
+    msgs = {
+        "smoke:clang_missing": "/usr/bin/clang not found",
+        "smoke:lld_missing": "lld not found on PATH",
+        "smoke:clang_broken": "/usr/bin/clang is not functional",
+    }
+    return [
+        _ts.ToolchainFinding("error", cid, msgs[cid], "install it", is_brick=True)
+        for cid in check_ids
+    ]
+
+
+def test_gate1_auto_installs_missing_bootstrap_clang(tmp_path, monkeypatch):
+    """A clean machine with no clang/lld gets the bootstrap suite installed
+    by Gate 1 rather than being bricked — the Pass-1 compiler is a build
+    prerequisite the pipeline can satisfy itself."""
+    from sysforge.primitives import toolchain_safety as _ts
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+
+    calls = iter([_bootstrap_missing("smoke:clang_missing", "smoke:lld_missing"), []])
+    monkeypatch.setattr(_ts, "smoke_test_compilers", lambda: next(calls))
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock, \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
+         patch("sys.stdin.isatty", return_value=False):
+        ToolchainStage().run(config, state, options)  # must not raise
+
+    install_mock.assert_called_once_with(["clang", "lld"])
+    assert state.get_stage_result("toolchain")["variant"] == "stock_llvm"
+
+
+def test_gate1_bricks_when_bootstrap_install_does_not_help(tmp_path, monkeypatch):
+    """If the re-probe still fails after the install, the brick stands."""
+    from sysforge.primitives import toolchain_safety as _ts
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+
+    calls = iter([
+        _bootstrap_missing("smoke:clang_missing"),
+        _bootstrap_missing("smoke:clang_missing"),
+    ])
+    monkeypatch.setattr(_ts, "smoke_test_compilers", lambda: next(calls))
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs"), \
+         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock, \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError, match="Gate 1 .smoke:clang_missing."):
+            ToolchainStage().run(config, state, options)
+
+    makepkg_mock.assert_not_called()
+
+
+def test_gate1_broken_clang_is_not_auto_installed(tmp_path, monkeypatch):
+    """A *broken* clang is a mismatched-package problem, not a missing one —
+    reinstalling it blindly is not the remediation, so it bricks directly."""
+    from sysforge.primitives import toolchain_safety as _ts
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+
+    monkeypatch.setattr(
+        _ts, "smoke_test_compilers", lambda: _bootstrap_missing("smoke:clang_broken")
+    )
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock, \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError, match="Gate 1 .smoke:clang_broken."):
+            ToolchainStage().run(config, state, options)
+
+    install_mock.assert_not_called()
+
+
+def test_gate1_dry_run_previews_bootstrap_install(tmp_path, monkeypatch):
+    """Dry-run never mutates: the bootstrap install is previewed, not run."""
+    from sysforge.primitives import toolchain_safety as _ts
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+    options.dry_run = True
+
+    monkeypatch.setattr(
+        _ts, "smoke_test_compilers", lambda: _bootstrap_missing("smoke:clang_missing")
+    )
+
+    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock, \
+         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"):
+        ToolchainStage().run(config, state, options)  # must not raise
+
+    install_mock.assert_not_called()
+
+
 def test_single_pass_builds_without_install_then_batches(tmp_path, monkeypatch):
     """The non-PGO path builds with install=False, audits (Gate 2), then
     installs via _pgo_install inside the sentinel — no per-package install."""

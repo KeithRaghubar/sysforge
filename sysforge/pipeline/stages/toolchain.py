@@ -2902,6 +2902,62 @@ def _build_llvm_pgo_inner(
 _SNAPSHOT_SUITE: tuple[str, ...] = LLVM_LOCKSTEP_SUITE
 
 
+# Gate-1 smoke findings that a plain repo install can actually fix, mapped to
+# the package providing the binary. Deliberately excludes ``smoke:clang_broken``
+# — that is a *mismatched* lockstep suite from an aborted run, whose remediation
+# is reinstalling the whole suite under the user's eye, not a blind `-S clang`.
+_BOOTSTRAP_PKG_FOR: dict[str, str] = {
+    "smoke:clang_missing": "clang",
+    "smoke:lld_missing": "lld",
+}
+
+
+def _install_bootstrap_compilers(findings, options, tcfg):
+    """Install any missing Pass-1 bootstrap compiler, then re-probe.
+
+    The LLVM path is a 4-pass PGO bootstrap: Pass 1 must be compiled by an
+    already-installed clang, and lld links every pass. Both are needed *before*
+    ``build_core.batch_install_makedeps`` runs, and neither appears in the llvm
+    PKGBUILD's makedepends (upstream builds with gcc) — so on a clean machine
+    nothing in the pipeline would ever install them and the stage bricked with
+    a manual `pacman -S clang` hint.
+
+    Returns the findings the caller should still act on: ``[]`` (or whatever a
+    re-probe surfaces) after a successful install, the originals untouched when
+    nothing is installable or in dry-run.
+    """
+    pkgs = sorted({
+        _BOOTSTRAP_PKG_FOR[f.check_id]
+        for f in findings if f.check_id in _BOOTSTRAP_PKG_FOR
+    })
+    if not pkgs:
+        return findings
+
+    if options.dry_run:
+        _log.ui(f"[dry-run] would install bootstrap compiler(s): {' '.join(pkgs)}")
+        return findings
+
+    _log.ui(
+        f"Gate 1: installing {len(pkgs)} missing bootstrap compiler "
+        f"package(s) from repo: {' '.join(pkgs)}",
+    )
+    # Install is a mutation window — sentinel it so an interrupted install
+    # blocks the next run with a recovery command (parity with the repo-mode
+    # install path below). Sequential with, never nested in, the build sentinel.
+    with sentinel_scope(
+        options.state_dir,
+        "toolchain",
+        recovery_cmd="sudo pacman -S " + " ".join(pkgs),
+        retry_cmd="sysforge run toolchain",
+        compiler=tcfg.get("compiler", "llvm"),
+    ):
+        install_repo_pkgs(pkgs)
+
+    # Re-probe: the install may still leave a brick (e.g. the freshly installed
+    # clang is itself broken), and that one must still abort the run.
+    return toolchain_safety.smoke_test_compilers()
+
+
 def _gate1_preflight(
     lib32_pkgs, staging1, staging, pgo_store,
     pkgbuild_map, options, tcfg, *, snapshot,
@@ -2946,7 +3002,14 @@ def _gate1_preflight(
         _log.warn("--allow-version-skew: skipping the PKGBUILD pkgver lockstep check")
 
     # Brick: clang must compile + lld must be present (both paths now).
-    for finding in toolchain_safety.smoke_test_compilers():
+    # A *missing* bootstrap compiler is self-healing: unlike every other build
+    # prerequisite it is needed before build_core's makedep installer runs, and
+    # upstream's llvm PKGBUILD doesn't list it (upstream builds with gcc), so
+    # nothing else would ever install it. Install it here, then re-probe.
+    findings = _install_bootstrap_compilers(
+        toolchain_safety.smoke_test_compilers(), options, tcfg,
+    )
+    for finding in findings:
         _abort_or_warn(finding)
 
     # Brick: build filesystems must have headroom.

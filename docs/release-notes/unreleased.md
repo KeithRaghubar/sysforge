@@ -509,6 +509,21 @@ https://keepachangelog.com/en/1.1.0/
   now gated too, skipped under `--standalone` (nothing runs after it) and
   downgraded to a warning with no TTY.
 
+- Enabling the LLVM toolchain on a clean machine no longer dead-ends at
+  `Gate 1 (smoke:clang_missing): /usr/bin/clang not found` (2.6.1-B10). The
+  LLVM path is a 4-pass bootstrap whose Pass 1 must be compiled by an
+  already-installed clang, with `lld` linking every pass — both needed
+  *earlier* than any other build prerequisite, before the makedep installer
+  runs, and neither listed in the llvm PKGBUILD's `makedepends` (upstream
+  builds with gcc). So nothing in the pipeline ever installed them, and a
+  stock `base-devel` system (gcc, no clang) could not reach the toolchain
+  stage at all without an out-of-band `pacman -S clang`. Gate 1 now installs
+  the missing bootstrap packages itself, inside a sentinel scope, and
+  re-probes — a freshly-installed-but-broken clang still aborts. A *broken*
+  clang (`smoke:clang_broken`) is deliberately left alone: that is a
+  mismatched lockstep suite from an aborted run, which a blind `-S clang`
+  would not repair. `--dry-run` previews the install without performing it.
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would
