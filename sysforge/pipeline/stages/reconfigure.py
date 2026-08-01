@@ -59,9 +59,17 @@ from sysforge.primitives.paths import (
     resolve_packages_path,
 )
 from sysforge.primitives.editor import (
+    describe_editor_chain,
     editor_usable as _editor_usable,
     resolve_editor as _resolve_editor,
     run_tty_argv as _run_editor_argv,
+)
+from sysforge.primitives.env_chain import sources_defining
+from sysforge.primitives.env_persist import (
+    apply_write,
+    plan_write,
+    system_target,
+    user_target,
 )
 from sysforge.primitives.pkg_catalog import (
     DESKTOP_CATALOG,
@@ -581,25 +589,115 @@ def _adopt_editor(new_editor: str) -> None:
         os.environ["SYSFORGE_EDITOR"] = new_editor
 
 
-def _offer_save_editor(new_editor: str) -> None:
+def _parse_target_selection(raw: str, keys: list[str]) -> tuple[list[str], list[str]]:
+    """Parse a persistence-target selection into ``(selected, invalid)``.
+
+    Accepts numbers (``1``), names (``system``), or a mix (``1 user``), in the
+    same input style as :func:`_parse_step_selection`. Empty input selects
+    nothing — persistence is opt-in.
+    """
+    selected: list[str] = []
+    invalid: list[str] = []
+    for token in raw.split():
+        if token.isdigit():
+            i = int(token)
+            if 1 <= i <= len(keys):
+                if keys[i - 1] not in selected:
+                    selected.append(keys[i - 1])
+            else:
+                invalid.append(token)
+        elif token in keys:
+            if token not in selected:
+                selected.append(token)
+        else:
+            invalid.append(token)
+    return selected, invalid
+
+
+def _persist_to_file_target(target, new_editor: str) -> None:
+    """Plan, confirm and apply one file target. Both variables or neither."""
+    try:
+        existing = target.path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = None
+    except (OSError, UnicodeDecodeError) as e:
+        # Absence and failure are not the same thing: plan_write treats
+        # existing=None as "file does not exist" and happily emits a
+        # create-style plan. If the file actually exists with other content
+        # but the read failed for some other reason, falling through here
+        # would silently truncate it down to just EDITOR/VISUAL. Refuse and
+        # move on instead — this target is skipped, not the whole stage.
+        _log.warn(f"  Could not read {target.path}: {e}")
+        return
+
+    plan = plan_write(target, {"EDITOR": new_editor, "VISUAL": new_editor}, existing)
+    _log.ui(f"  {target.path}:")
+    if plan.action == "nochange":
+        _log.ui("    already set — no change")
+        return
+
+    for change in plan.changes:
+        current = change.current if change.current is not None else "unset"
+        _log.ui(f"    {change.name:<8} currently {current:<10} → {change.new}")
+    if _prompt_choice("  Apply both? [y/N]: ", choices=("y", "n"), default="n") != "y":
+        _log.ui("  Skipped.")
+        return
+
+    try:
+        apply_write(plan)
+    except OSError as e:
+        _log.warn(f"  Could not write {target.path}: {e}")
+        return
+    _log.ui(f"  Wrote {target.path} — takes effect: {target.scope_note}.")
+
+
+def _offer_persist_editor(new_editor: str) -> None:
     """Adopt ``new_editor`` for this run, then offer to persist it.
 
     Adoption is unconditional; persistence is the user's call. Declining the
     save no longer means the pick evaporates — it only means the next
     ``sysforge`` invocation starts from the same resolution order.
+
+    Each target is confirmed and applied independently, but the two variables
+    within a target move together: a mismatched ``EDITOR``/``VISUAL`` pair is
+    worse than either value alone, so a declined confirm leaves the file
+    untouched rather than half-written.
     """
     _adopt_editor(new_editor)
-    save = _prompt_choice(
-        "  Save as sysforge default? [y/N]: ",
-        choices=("y", "n"),
-        default="n",
-    )
-    if save == "y":
-        try:
-            _save_sysforge_toml_ui("editor", new_editor)
-            _log.ui(f"  Saved to {SYSFORGE_TOML_PATH}")
-        except OSError as e:
-            _log.warn(f"  Could not save preference: {e}")
+
+    targets = [system_target(), user_target()]
+    keys = ["sysforge"] + [t.key for t in targets]
+
+    _log.ui(f"  Persist {new_editor} as EDITOR and VISUAL:")
+    _log.ui(f"    [1] sysforge only   {SYSFORGE_TOML_PATH}")
+    for i, t in enumerate(targets, start=2):
+        root = ", root" if t.needs_root else ""
+        _log.ui(f"    [{i}] {t.label:<14} {t.path}    [{t.scope_note}{root}]")
+
+    raw = _prompt("  Select (e.g. 1, or '1 2'; Enter to skip): ")
+    selected, invalid = _parse_target_selection(raw, keys)
+    if invalid:
+        _log.warn(f"  Ignoring unrecognized selection: {' '.join(invalid)}")
+    if not selected:
+        _log.ui("  Not persisted — the pick applies to this run only.")
+        return
+
+    for key in selected:
+        if key == "sysforge":
+            if _prompt_choice(
+                f"  Write [ui] editor = {new_editor} to {SYSFORGE_TOML_PATH}? [y/N]: ",
+                choices=("y", "n"), default="n",
+            ) != "y":
+                _log.ui("  Skipped.")
+                continue
+            try:
+                _save_sysforge_toml_ui("editor", new_editor)
+                _log.ui(f"  Saved to {SYSFORGE_TOML_PATH}")
+            except OSError as e:
+                _log.warn(f"  Could not save preference: {e}")
+            continue
+        target = next(t for t in targets if t.key == key)
+        _persist_to_file_target(target, new_editor)
 
 
 def _require_usable_editor(prev_editor: str, options, *, needed_for: str) -> str:
@@ -624,7 +722,7 @@ def _require_usable_editor(prev_editor: str, options, *, needed_for: str) -> str
     while True:
         new_editor = _select_new_editor(prev_editor, have_prev, options)
         if new_editor and _editor_usable(new_editor):
-            _offer_save_editor(new_editor)
+            _offer_persist_editor(new_editor)
             return new_editor
 
         # User cancelled / kept an unusable previous editor. No path forward
@@ -637,6 +735,41 @@ def _require_usable_editor(prev_editor: str, options, *, needed_for: str) -> str
         )
 
 
+def _format_editor_chain() -> list[str]:
+    """Render the EDITOR resolution order for display.
+
+    Precedence is not recomputed here — ``describe_editor_chain`` owns it, so
+    the display cannot disagree with the editor that actually launches. Rungs
+    holding a value that lost are marked ``(shadowed by N)``: without it, two
+    rungs showing different editors is ambiguous about which one runs, which
+    is precisely the confusion this step exists to resolve.
+    """
+    rungs, winner = describe_editor_chain()
+    lines = [
+        "  Resolution chain for EDITOR  "
+        "(1 = highest priority if set; first match wins):"
+    ]
+    for i, rung in enumerate(rungs):
+        shown = rung.value or "(unset)"
+        if i == winner:
+            note = "← in use"
+        elif rung.value and not rung.usable:
+            note = f"({rung.detail})"
+        elif rung.source == "detected":
+            note = "(last resort)"
+        elif rung.value and winner >= 0 and i > winner:
+            note = f"(shadowed by {winner + 1})"
+        else:
+            note = ""
+        lines.append(f"    {rung.index}  {rung.label:<22} {shown:<12} {note}".rstrip())
+        if rung.source == "$EDITOR":
+            for j, row in enumerate(sources_defining("EDITOR")):
+                prefix = "from" if j == 0 else "also"
+                reason = f"   (not offered: {row.reason})" if not row.offered else ""
+                lines.append(f"         {prefix}  {row.path or row.source}{reason}")
+    return lines
+
+
 def _step_editor(config, state, options, editor: str) -> str:
     """Show current editor, offer to change. Returns editor to use."""
     editor, source = _resolve_editor()
@@ -644,6 +777,9 @@ def _step_editor(config, state, options, editor: str) -> str:
 
     if not _interactive() or options.dry_run:
         return editor
+
+    for line in _format_editor_chain():
+        _log.ui(line)
 
     have_editor = _editor_usable(editor)
 
@@ -663,7 +799,7 @@ def _step_editor(config, state, options, editor: str) -> str:
     if new_editor is None:
         return editor  # caller falls back to the previous editor (may be "")
 
-    _offer_save_editor(new_editor)
+    _offer_persist_editor(new_editor)
     return new_editor
 
 

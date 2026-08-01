@@ -213,6 +213,7 @@ sysforge/
 │       ├── rate_limit.py              # shared RPC + git fetch rate limiter (RateLimiter, RateLimited)
 │       ├── source_meta.py             # per-package AUR RPC + git HEAD cache (source_meta.toml)
 │       ├── source_sync.py             # process-wide SourceSyncScheduler (RPC-first, sequential)
+│       ├── env_persist.py             # write EDITOR/VISUAL to /etc/environment or ~/.zshenv
 │       ├── build_state.py             # per-package build metadata persistence (build_state.toml)
 │       └── version.py                 # vercmp wrapper + version string formatting
 │   └── pipeline/
@@ -500,7 +501,7 @@ Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to su
 
 | Section | Key | Default | Description |
 |---------|-----|---------|-------------|
-| `[ui]` | `editor` | — | Editor for reconfigure stage (overridden by `SYSFORGE_EDITOR` env) |
+| `[ui]` | `editor` | — | Editor for reconfigure stage (overridden by `SYSFORGE_EDITOR` env; one of three persistence targets offered by the reconfigure editor step — see §Pipeline Layer) |
 | `[ui]` | `merge` | — | Diff/merge tool for `sysforge config merge` (`.sfnew` adoption). Resolved `SYSFORGE_MERGE` env > this > `$DIFFPROG` > `vimdiff`; accepts args (`"nvim -d"`, `"meld"`). Shares one home with the editor chain in `primitives/editor.py` (`resolve_merge_tool`/`resolve_editor`/`run_tty_argv`) |
 | `[git]` | `fetch_timeout` | `30` | Seconds before a `git fetch` times out during source sync (0 = no limit). The `pull_timeout` alias was removed in 3.0.0; a stale key warns once and is ignored |
 | `[git]` | `clone_timeout` | `60` | Seconds before `git clone` / `pkgctl repo clone` times out (0 = no limit) |
@@ -559,6 +560,30 @@ The **install** stage replaces the earlier hand-rolled `partition` + `base_insta
 ### Reconfigure editor gate (stage 4)
 
 The reconfigure stage opens config files in `$EDITOR`, and so do the build stages that follow it — `makepkg_invoke`'s build-failure recovery menu is the point where an operator fixes a broken recipe, and it has nowhere to go without one. The stage therefore treats a usable editor as a **precondition it must establish**, not a nicety.
+
+**Persisting the pick.** A usable editor being a precondition of the *system*, not only of
+sysforge, the step's save prompt offers three targets rather than one: `sysforge.toml [ui] editor`,
+`/etc/environment` (bare `KEY=value`, read by PAM at login — reaches graphical apps and every
+shell), and `~/.zshenv` (`export KEY=value`, sourced by every zsh invocation). Selection is
+multi-select in the same input style as the step menu. `EDITOR` and `VISUAL` are written together
+and confirmed once per target: a declined confirm leaves the file untouched, so a mismatched pair
+is unrepresentable rather than merely avoided. Targets are independent — a write failure on one
+warns and continues to the next, never aborting the stage.
+
+Before prompting, the step renders the whole resolution order via `editor.describe_editor_chain()`
+(the single home for editor precedence — `resolve_editor` is a thin reader over it, so the display
+cannot disagree with the editor that actually launches), annotated with the winning rung, any rung
+that holds a value but lost (`shadowed by N`), and any rung set to a command not on PATH.
+`env_chain.sources_defining()` supplies the files each value came from, including sources sysforge
+will not write (PAM, login-shell-only inits) with the reason shown inline.
+
+Writes go through `primitives/env_persist.py`, which splits pure planning (`plan_write` — returns
+the per-variable before/after and one of `create`/`append`/`replace`/`nochange`) from application
+(`apply_write` — a direct in-place `write_text` on the happy path; on `PermissionError` it stages
+the content to a chmod'd temp file and copies it into place through the §22 privilege seam for
+`/etc/environment`. Neither path is a rename-based atomic replace). The
+syntax difference between targets is load-bearing: `env_persist` must write what
+`env_chain._parse_shell_init_file` accepts for that file, guarded by a round-trip test.
 
 Resolution is `primitives/editor.py`'s single home (`resolve_editor` → `SYSFORGE_EDITOR` > `sysforge.toml [ui].editor` > `$EDITOR` > `$VISUAL` > detected `vim`/`nano`/`vi`; `editor_usable` requires it on PATH). Three enforcement points sit on top of it:
 

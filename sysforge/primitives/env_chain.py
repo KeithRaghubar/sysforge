@@ -70,6 +70,7 @@ Public API:
     format_env_chain(snap, *, verbosity=0) → str
     validate_env_chain(snap)  → list[str]
     log_env_chain(level="debug") → EnvChainSnapshot
+    sources_defining(var, snap=None) → list[SourceRow]
 """
 from __future__ import annotations
 
@@ -703,3 +704,75 @@ def log_env_chain(level: str = "debug") -> EnvChainSnapshot:
     emit = getattr(logger, level.lower(), logger.debug)
     emit(rendered)
     return snap
+
+
+# Sources sysforge is willing to write into, and why every other source is
+# read-only. The reasons are surfaced verbatim in the reconfigure editor
+# picker, so "why can't I pick that one" is answered in the output.
+_OFFERED_SOURCES = ("etc_environment", "user_zshenv")
+
+_NOT_OFFERED_REASONS = {
+    "runtime": "already-inherited process env",
+    "pam_env_default": "PAM syntax (pam_env.conf)",
+    "pam_env_override": "PAM syntax (pam_env.conf)",
+    "systemd_user": "systemd user manager, not a file",
+    "sysforge_config": "profiles.toml build env, not a login var",
+    "system_zshenv": "system zsh init — use /etc/environment instead",
+    "system_zprofile": "login shells only",
+    "system_zshrc": "interactive shells only",
+    "system_zlogin": "login shells only",
+    "etc_profile": "login shells only",
+    "user_zprofile": "login shells only",
+    "user_profile": "login shells only",
+    "user_zshrc": "interactive shells only",
+    "user_zlogin": "login shells only",
+}
+
+
+@dataclass(frozen=True)
+class SourceRow:
+    """One source that assigns a variable, and whether sysforge will write it."""
+    source: str
+    path: str | None
+    value: str
+    offered: bool
+    reason: str
+
+
+def _source_path(source: str) -> str | None:
+    if source == "etc_environment":
+        return "/etc/environment"
+    if source.startswith("pam_env"):
+        return "/etc/security/pam_env.conf"
+    for name, path, _ in _user_init_files():
+        if name == source:
+            return path
+    return None
+
+
+def sources_defining(
+    var: str, snap: EnvChainSnapshot | None = None,
+) -> list[SourceRow]:
+    """Every parsed source that assigns ``var``, in source order.
+
+    Collects a snapshot when none is supplied. Rows sysforge will not write
+    carry a ``reason``; callers display it rather than silently omitting the
+    source, so the picker explains its own limits.
+    """
+    if snap is None:
+        snap = collect_env_chain()
+    rows: list[SourceRow] = []
+    for source, kv in snap.sources.items():
+        if var not in kv:
+            continue
+        offered = source in _OFFERED_SOURCES
+        rows.append(
+            SourceRow(
+                source=source,
+                path=_source_path(source),
+                value=kv[var],
+                offered=offered,
+                reason="" if offered else _NOT_OFFERED_REASONS.get(source, "read-only"),
+            )
+        )
+    return rows

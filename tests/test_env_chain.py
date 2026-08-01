@@ -7,6 +7,7 @@ import pytest
 from sysforge.primitives.env_chain import (
     EnvChainSnapshot,
     ProcessLink,
+    SourceRow,
     _parse_shell_init_file,
     _read_pam_env,
     _read_process_chain,
@@ -15,6 +16,7 @@ from sysforge.primitives.env_chain import (
     collect_env_chain,
     compute_divergences,
     format_env_chain,
+    sources_defining,
     validate_env_chain,
 )
 
@@ -369,3 +371,87 @@ def test_format_inline_annotation_at_verbosity_2():
     # Mismatches block always present:
     assert "mismatches:" in v0
     assert "mismatches:" in v2
+
+
+def _snap_with(sources: dict[str, dict[str, str]]) -> EnvChainSnapshot:
+    return EnvChainSnapshot(sources=sources)
+
+
+def test_sources_defining_returns_only_sources_setting_the_var():
+    snap = _snap_with({
+        "etc_environment": {"EDITOR": "nano"},
+        "user_zshrc": {"PATH": "/usr/bin"},
+    })
+    rows = sources_defining("EDITOR", snap)
+    assert [r.source for r in rows] == ["etc_environment"]
+    assert rows[0].value == "nano"
+
+
+def test_sources_defining_marks_writable_targets_offered():
+    snap = _snap_with({
+        "etc_environment": {"EDITOR": "nano"},
+        "user_zshenv": {"EDITOR": "vim"},
+    })
+    rows = sources_defining("EDITOR", snap)
+    assert all(r.offered for r in rows)
+    assert all(r.reason == "" for r in rows)
+
+
+def test_sources_defining_explains_why_a_source_is_not_offered():
+    snap = _snap_with({"pam_env_default": {"EDITOR": "ed"}})
+    rows = sources_defining("EDITOR", snap)
+    assert rows[0].offered is False
+    assert rows[0].reason
+    assert "PAM" in rows[0].reason
+
+
+def test_sources_defining_carries_the_file_path_when_known():
+    snap = _snap_with({"etc_environment": {"EDITOR": "nano"}})
+    assert sources_defining("EDITOR", snap)[0].path == "/etc/environment"
+
+
+def test_sources_defining_runtime_row_has_no_path():
+    snap = _snap_with({"runtime": {"EDITOR": "nano"}})
+    row = sources_defining("EDITOR", snap)[0]
+    assert row.path is None
+    assert row.offered is False
+
+
+def test_sources_defining_empty_when_unset():
+    assert sources_defining("EDITOR", _snap_with({"user_zshrc": {}})) == []
+
+
+def test_sources_defining_collects_its_own_snapshot_when_none_given():
+    rows = sources_defining("PATH")
+    assert all(isinstance(r, SourceRow) for r in rows)
+
+
+def test_offered_sources_matches_env_persist_targets(monkeypatch):
+    """Guard against drift between _OFFERED_SOURCES and env_persist's write targets.
+
+    If a new write target is added to env_persist.system_target() or
+    env_persist.user_target(), or if their paths change, this test will fail
+    immediately — preventing silent misreporting of "which sources can sysforge
+    write to" in the editor picker output.
+    """
+    from sysforge.primitives.env_persist import system_target, user_target
+    from sysforge.primitives.env_chain import _source_path, _OFFERED_SOURCES
+
+    # Set HOME so user_target() path matches what _user_init_files() computes.
+    home = "/tmp/test-home"
+    monkeypatch.setenv("HOME", home)
+
+    # Derive target paths from env_persist write targets.
+    target_paths = {
+        str(system_target().path),
+        str(user_target().path),
+    }
+
+    # Derive paths from _OFFERED_SOURCES via _source_path.
+    offered_paths = {
+        _source_path(source) for source in _OFFERED_SOURCES
+    }
+
+    # They must match exactly — if they don't, sysforge is silently mislabeling
+    # a source as read-only when it's actually writable, or vice versa.
+    assert offered_paths == target_paths

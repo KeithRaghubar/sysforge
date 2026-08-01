@@ -52,7 +52,7 @@ Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to su
 
 | Section | Key | Default | Description |
 |---------|-----|---------|-------------|
-| `[ui]` | `editor` | — | Editor for reconfigure stage (overridden by `SYSFORGE_EDITOR` env) |
+| `[ui]` | `editor` | — | Editor for reconfigure stage (overridden by `SYSFORGE_EDITOR` env; one of three persistence targets offered by the reconfigure editor step — see §Pipeline Layer) |
 | `[ui]` | `merge` | — | Diff/merge tool for `sysforge config merge` (`.sfnew` adoption). Resolved `SYSFORGE_MERGE` env > this > `$DIFFPROG` > `vimdiff`; accepts args (`"nvim -d"`, `"meld"`). Shares one home with the editor chain in `primitives/editor.py` (`resolve_merge_tool`/`resolve_editor`/`run_tty_argv`) |
 | `[git]` | `fetch_timeout` | `30` | Seconds before a `git fetch` times out during source sync (0 = no limit). The `pull_timeout` alias was removed in 3.0.0; a stale key warns once and is ignored |
 | `[git]` | `clone_timeout` | `60` | Seconds before `git clone` / `pkgctl repo clone` times out (0 = no limit) |

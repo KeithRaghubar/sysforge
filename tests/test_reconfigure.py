@@ -23,10 +23,13 @@ from sysforge.pipeline.stages.reconfigure import (
     _confirm_unknown_editor,
     _edit_needs_sudo,
     _editor_usable,
+    _format_editor_chain,
     _gate_editor_for_pipeline,
+    _offer_persist_editor,
     _open_in_editor,
     _packages_providing,
     _parse_step_selection,
+    _parse_target_selection,
     _require_usable_editor,
     _run_selected_steps,
     _select_new_editor,
@@ -596,6 +599,9 @@ def test_require_usable_editor_saves_when_user_accepts():
     ), patch(
         "sysforge.pipeline.stages.reconfigure._select_new_editor",
         return_value="nano",
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt",
+        return_value="1",
     ), patch(
         "sysforge.pipeline.stages.reconfigure._prompt_choice",
         return_value="y",
@@ -1332,3 +1338,258 @@ def test_save_sysforge_toml_ui_sudo_cp_failure_raises(tmp_path, monkeypatch):
             rc._save_sysforge_toml_ui("editor", "vim")
     finally:
         rodir.chmod(0o755)
+
+
+def test_chain_display_states_precedence_direction():
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.describe_editor_chain",
+        return_value=([], -1),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sources_defining", return_value=[]
+    ):
+        lines = _format_editor_chain()
+    header = lines[0]
+    assert "1 = highest priority if set" in header
+    assert "first match wins" in header
+
+
+def test_chain_display_marks_winner_and_shadowed_rungs():
+    from sysforge.primitives.editor import ChainRung
+
+    rungs = [
+        ChainRung(1, "SYSFORGE_EDITOR", "SYSFORGE_EDITOR", "", False, ""),
+        ChainRung(2, "sysforge.toml [ui]", "sysforge.toml", "nvim", True, ""),
+        ChainRung(3, "$EDITOR", "$EDITOR", "vim", True, ""),
+        ChainRung(4, "$VISUAL", "$VISUAL", "", False, ""),
+        ChainRung(5, "detected on PATH", "detected", "nano", True, "nano, vi"),
+    ]
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.describe_editor_chain",
+        return_value=(rungs, 1),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sources_defining", return_value=[]
+    ):
+        text = "\n".join(_format_editor_chain())
+    assert "nvim" in text and "← in use" in text
+    assert "(shadowed by 2)" in text
+    assert "(unset)" in text
+    assert "(last resort)" in text
+
+
+def test_chain_display_shows_unusable_rung_reason():
+    from sysforge.primitives.editor import ChainRung
+
+    rungs = [
+        ChainRung(1, "SYSFORGE_EDITOR", "SYSFORGE_EDITOR", "", False, ""),
+        ChainRung(2, "sysforge.toml [ui]", "sysforge.toml", "", False, ""),
+        ChainRung(3, "$EDITOR", "$EDITOR", "ghost", False, "not on PATH"),
+        ChainRung(4, "$VISUAL", "$VISUAL", "nano", True, ""),
+        ChainRung(5, "detected on PATH", "detected", "nano", True, "nano"),
+    ]
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.describe_editor_chain",
+        return_value=(rungs, 3),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sources_defining", return_value=[]
+    ):
+        text = "\n".join(_format_editor_chain())
+    assert "not on PATH" in text
+
+
+def test_chain_display_lists_origin_and_not_offered_sources():
+    from sysforge.primitives.editor import ChainRung
+    from sysforge.primitives.env_chain import SourceRow
+
+    rungs = [
+        ChainRung(1, "SYSFORGE_EDITOR", "SYSFORGE_EDITOR", "", False, ""),
+        ChainRung(2, "sysforge.toml [ui]", "sysforge.toml", "", False, ""),
+        ChainRung(3, "$EDITOR", "$EDITOR", "vim", True, ""),
+        ChainRung(4, "$VISUAL", "$VISUAL", "", False, ""),
+        ChainRung(5, "detected on PATH", "detected", "vi", True, "vi"),
+    ]
+    rows = [
+        SourceRow("user_zshenv", "/home/u/.zshenv", "vim", True, ""),
+        SourceRow(
+            "pam_env_default", "/etc/security/pam_env.conf", "ed", False,
+            "PAM syntax (pam_env.conf)",
+        ),
+    ]
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.describe_editor_chain",
+        return_value=(rungs, 2),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sources_defining", return_value=rows
+    ):
+        text = "\n".join(_format_editor_chain())
+    assert "from  /home/u/.zshenv" in text
+    assert "also  /etc/security/pam_env.conf" in text
+    assert "not offered: PAM syntax (pam_env.conf)" in text
+
+
+def test_parse_target_selection_accepts_numbers_and_names():
+    assert _parse_target_selection("1 3", ["sysforge", "system", "user"]) == (
+        ["sysforge", "user"], [],
+    )
+    assert _parse_target_selection("system", ["sysforge", "system", "user"]) == (
+        ["system"], [],
+    )
+
+
+def test_parse_target_selection_reports_invalid_tokens():
+    selected, invalid = _parse_target_selection("1 9 zzz", ["sysforge", "system", "user"])
+    assert selected == ["sysforge"]
+    assert invalid == ["9", "zzz"]
+
+
+def test_parse_target_selection_empty_selects_nothing():
+    assert _parse_target_selection("", ["sysforge", "system", "user"]) == ([], [])
+
+
+def test_persist_adopts_editor_even_when_nothing_selected(monkeypatch):
+    """Adoption is unconditional — the pick must survive for the build
+    stages regardless of what is persisted (the 2.6.1-B9 lesson)."""
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value=""
+    ):
+        _offer_persist_editor("nvim")
+    assert os.environ["SYSFORGE_EDITOR"] == "nvim"
+
+
+def test_persist_writes_both_variables_to_selected_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value="3"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="y"
+    ):
+        _offer_persist_editor("nvim")
+    text = (tmp_path / ".zshenv").read_text()
+    assert "export EDITOR=nvim" in text
+    assert "export VISUAL=nvim" in text
+
+
+def test_persist_declining_leaves_file_byte_identical(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    zshenv = tmp_path / ".zshenv"
+    zshenv.write_text("export EDITOR=vim\n")
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value="3"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="n"
+    ):
+        _offer_persist_editor("nvim")
+    assert zshenv.read_text() == "export EDITOR=vim\n"
+
+
+def test_persist_nochange_target_skips_the_confirm(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    (tmp_path / ".zshenv").write_text("export EDITOR=nvim\nexport VISUAL=nvim\n")
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value="3"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice"
+    ) as confirm:
+        _offer_persist_editor("nvim")
+    confirm.assert_not_called()
+
+
+def test_persist_failure_on_one_target_does_not_skip_the_next(tmp_path, monkeypatch):
+    """Never read the real /etc/environment here — whether this machine
+    already sets EDITOR there would decide the plan action and make the
+    test host-dependent. Redirect the system target at a temp file."""
+    from sysforge.primitives.env_persist import EnvTarget
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    fake_system = EnvTarget(
+        key="system", label="system-wide", path=tmp_path / "environment",
+        syntax="bare", scope_note="all users, next login", needs_root=True,
+    )
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.system_target", return_value=fake_system
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value="2 3"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="y"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.apply_write",
+        side_effect=[OSError("boom"), None],
+    ) as applied:
+        _offer_persist_editor("nvim")
+    assert applied.call_count == 2
+
+
+def test_persist_read_failure_does_not_truncate_existing_file(tmp_path, monkeypatch):
+    """A non-FileNotFoundError read failure must not be treated as "file
+    absent" — plan_write's existing_text=None means "create", so silently
+    falling through would overwrite real content with just EDITOR/VISUAL."""
+    from pathlib import Path
+
+    from sysforge.primitives.env_persist import EnvTarget
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    system_path = tmp_path / "environment"
+    original_bytes = b"SOME_OTHER_VAR=keep-me\n"
+    system_path.write_bytes(original_bytes)
+    fake_system = EnvTarget(
+        key="system", label="system-wide", path=system_path,
+        syntax="bare", scope_note="all users, next login", needs_root=True,
+    )
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.system_target", return_value=fake_system
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value="2"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice"
+    ) as confirm, patch(
+        "sysforge.pipeline.stages.reconfigure.apply_write"
+    ) as applied, patch.object(
+        Path, "read_text", side_effect=PermissionError("denied"),
+    ):
+        _offer_persist_editor("nvim")
+    applied.assert_not_called()
+    confirm.assert_not_called()
+    assert system_path.read_bytes() == original_bytes
+
+
+def test_persist_absent_file_still_produces_a_create_plan(tmp_path, monkeypatch):
+    """A genuinely absent file (FileNotFoundError) is the one case that
+    should still fall through to existing=None and produce a create plan."""
+    from sysforge.primitives.env_persist import EnvTarget
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    system_path = tmp_path / "does-not-exist" / "environment"
+    fake_system = EnvTarget(
+        key="system", label="system-wide", path=system_path,
+        syntax="bare", scope_note="all users, next login", needs_root=True,
+    )
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.system_target", return_value=fake_system
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value="2"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="y"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.apply_write"
+    ) as applied:
+        _offer_persist_editor("nvim")
+    applied.assert_called_once()
+
+
+def test_persist_sysforge_target_uses_the_existing_toml_writer(monkeypatch):
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    with patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value="1"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="y"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._save_sysforge_toml_ui"
+    ) as save:
+        _offer_persist_editor("nvim")
+    save.assert_called_once_with("editor", "nvim")

@@ -68,6 +68,7 @@ sysforge/
 │       ├── rate_limit.py              # shared RPC + git fetch rate limiter (RateLimiter, RateLimited)
 │       ├── source_meta.py             # per-package AUR RPC + git HEAD cache (source_meta.toml)
 │       ├── source_sync.py             # process-wide SourceSyncScheduler (RPC-first, sequential)
+│       ├── env_persist.py             # write EDITOR/VISUAL to /etc/environment or ~/.zshenv
 │       ├── build_state.py             # per-package build metadata persistence (build_state.toml)
 │       └── version.py                 # vercmp wrapper + version string formatting
 │   └── pipeline/

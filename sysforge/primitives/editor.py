@@ -13,6 +13,7 @@ output redirection) and the resolution order are consistent and tested once.
 Public API:
     run_tty_argv(argv)      -> int            TTY-safe subprocess launch
     resolve_editor()        -> (str, str)     single-file editor + source
+    describe_editor_chain() -> (list[ChainRung], int)  ordered rungs + winner
     editor_usable(editor)   -> bool
     resolve_merge_tool()    -> (list[str], str)  diff/merge argv prefix + source
 """
@@ -22,6 +23,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from dataclasses import dataclass
 
 from sysforge.primitives.config import load_sysforge_toml
 
@@ -55,6 +57,71 @@ def run_tty_argv(argv: list[str]) -> int:
             os.close(tty_fd)
 
 
+_DETECT_FALLBACKS = ("vim", "nano", "vi")
+
+
+@dataclass(frozen=True)
+class ChainRung:
+    """One rung of the editor resolution order, for display.
+
+    ``usable`` is False when the rung holds a value that does not resolve on
+    PATH — resolution skips it, and the display says so rather than leaving
+    the user to wonder why a set variable lost.
+    """
+    index: int          # 1-based, as displayed
+    label: str
+    source: str         # matches resolve_editor()'s second return value
+    value: str
+    usable: bool
+    detail: str
+
+
+def describe_editor_chain() -> tuple[list[ChainRung], int]:
+    """Return the editor resolution order plus the winning rung's index.
+
+    The single home for editor precedence: :func:`resolve_editor` is a thin
+    reader over this, so the rendered chain cannot disagree with the editor
+    that actually launches. Returns ``(rungs, winner)`` where ``winner`` is a
+    0-based index into ``rungs``, or ``-1`` when nothing resolves.
+    """
+    cfg = load_sysforge_toml()
+    raw = [
+        ("SYSFORGE_EDITOR", "SYSFORGE_EDITOR", os.environ.get("SYSFORGE_EDITOR")),
+        ("sysforge.toml [ui]", "sysforge.toml", cfg.get("ui", {}).get("editor")),
+        ("$EDITOR", "$EDITOR", os.environ.get("EDITOR")),
+        ("$VISUAL", "$VISUAL", os.environ.get("VISUAL")),
+    ]
+
+    rungs: list[ChainRung] = []
+    winner = -1
+    for i, (label, source, value) in enumerate(raw):
+        usable = bool(value) and shutil.which(value) is not None
+        detail = "" if not value or usable else "not on PATH"
+        rungs.append(
+            ChainRung(
+                index=i + 1, label=label, source=source,
+                value=value or "", usable=usable, detail=detail,
+            )
+        )
+        if usable and winner < 0:
+            winner = i
+
+    found = [c for c in _DETECT_FALLBACKS if shutil.which(c)]
+    rungs.append(
+        ChainRung(
+            index=5,
+            label="detected on PATH",
+            source="detected",
+            value=found[0] if found else "",
+            usable=bool(found),
+            detail=", ".join(found) if found else "none found",
+        )
+    )
+    if winner < 0 and found:
+        winner = 4
+    return rungs, winner
+
+
 def resolve_editor() -> tuple[str, str]:
     """Resolve a single-file editor and the source it came from.
 
@@ -64,21 +131,13 @@ def resolve_editor() -> tuple[str, str]:
     as the "editor" and every subsequent edit prompt would silently fail to
     open anything. Returns ``("", "none")`` when nothing resolves so callers
     can force the user to pick one rather than lie about a non-existent ``vi``.
+
+    Precedence lives in :func:`describe_editor_chain`; this is the reader.
     """
-    cfg = load_sysforge_toml()
-    candidates = [
-        (os.environ.get("SYSFORGE_EDITOR"), "SYSFORGE_EDITOR"),
-        (cfg.get("ui", {}).get("editor"), "sysforge.toml"),
-        (os.environ.get("EDITOR"), "$EDITOR"),
-        (os.environ.get("VISUAL"), "$VISUAL"),
-    ]
-    for value, source in candidates:
-        if value and shutil.which(value):
-            return value, source
-    for fallback in ("vim", "nano", "vi"):
-        if shutil.which(fallback):
-            return fallback, "detected"
-    return "", "none"
+    rungs, winner = describe_editor_chain()
+    if winner < 0:
+        return "", "none"
+    return rungs[winner].value, rungs[winner].source
 
 
 def editor_usable(editor: str) -> bool:

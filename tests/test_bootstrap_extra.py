@@ -963,8 +963,14 @@ class TestStepEditorRejectsUnresolvable(_EditorOptsMixin):
             result = _step_editor(None, None, self._opts(), "vi")
         assert result == "vi"
         save.assert_not_called()
-        # Only the precheck ran — no `sudo pacman -S` attempt.
-        assert calls == [["pacman", "-Si", "neoooovim"]]
+        # Only the precheck ran — no `sudo pacman -S` attempt. Filtered to
+        # pacman calls: the resolution-chain display (_format_editor_chain)
+        # also shells out (systemctl, to collect the env chain) on every
+        # invocation, which is real but out of scope for what this test
+        # protects — don't let that unrelated call creep back into an
+        # unfiltered assertion here.
+        pacman_calls = [c for c in calls if c[:1] == ["pacman"]]
+        assert pacman_calls == [["pacman", "-Si", "neoooovim"]]
 
     def test_does_not_save_unresolvable_editor_after_cancel(self):
         # User types nvim and presses ↵ at the install/retry/cancel prompt.
@@ -1009,6 +1015,7 @@ class TestStepEditorNoEditorOnPath(_EditorOptsMixin):
         # when there's no editor — we go straight to the editor-name prompt.
         prompts = iter([
             "vim",      # picks vim
+            "",         # persist-target selection: skip (not under test here)
         ])
         choices_called = []
 
@@ -1070,6 +1077,7 @@ class TestStepEditorRetryFlow(_EditorOptsMixin):
         prompts = iter([
             "vimm",     # typo
             "vim",      # corrected
+            "",         # persist-target selection: skip (not under test here)
         ])
         from sysforge.pipeline.stages import reconfigure as _r
         with patch("sysforge.pipeline.stages.reconfigure._interactive",
@@ -1098,6 +1106,7 @@ class TestStepEditorRetryFlow(_EditorOptsMixin):
         ])
         prompts = iter([
             "nvim",     # new editor (not on PATH initially)
+            "",         # persist-target selection: skip (not under test here)
         ])
         installed = {"nvim": False}
 

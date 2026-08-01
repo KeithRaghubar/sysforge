@@ -154,6 +154,11 @@ https://keepachangelog.com/en/1.1.0/
   sysforge-exclusive sections (row numbers unchanged — they are cited from code,
   tests, and published release notes).
 
+- The reconfigure editor step now offers to persist your editor as `EDITOR` and `VISUAL` to
+  `/etc/environment` and/or `~/.zshenv`, not only to sysforge's own config, and shows the full
+  resolution chain — which rung is in use, which are shadowed, and which sources it will not
+  write — before asking. Both variables are written together per target, or neither. (`2.6.1-F18`)
+
 ## Changed
 
 - **Breaking:** `sysforge doctor` is now two subcommands (2.6.1-F1).
