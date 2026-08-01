@@ -282,6 +282,17 @@ https://keepachangelog.com/en/1.1.0/
   caller-supplied (the build stages pass `noun="build"` and their messages are
   unchanged) and its fd gained `O_CLOEXEC` as hardening.
 
+- The release pre-flight is now `make preflight`, and the release checklist is
+  its single prose home (2.6.1-F16). The script moved from a repo skill's
+  `scripts/` directory to `tools/preflight.sh` alongside `release.sh` and
+  `smoke.sh`; the skill that wrapped it is gone. Every one of its nine sections
+  was already covered by `docs/RELEASE-CHECKLIST.md` or by one of the two gate
+  runners — the skill's only unique content was the two **version-sensitive**
+  rules a uniform-policy script cannot enforce, and both now live in the
+  checklist: stage 4a's minor/major-needs-green cadence rule for the derivative
+  arm, and stage 4b's staleness rule (`smoke.sh`'s version gate is
+  liveness-only, so a pass against an older build is not a pass for a release).
+
 - **Standards row 23 is now the full Arch-derivative portability standard**
   (2.6.1-STD1), extended from the identity-only invariant that shipped with
   2.6.1-F2 to all three sub-invariants: **(a)** no hardcoded sync-repo names —
@@ -303,9 +314,9 @@ https://keepachangelog.com/en/1.1.0/
   real derivative rather than synthetic input. Same policy as section 8: warn
   when the harness is unavailable (no podman, no network, unpullable image),
   fail on a real break. Because a warn cannot enforce a cadence, the
-  release-prep skill now states the rule a script can't: a **minor or major**
-  bump needs section 9 *green*, and a yellow section 9 is acceptable for a
-  patch release only. Skip with `RUN_DISTRO_SMOKE=0`.
+  release checklist states the rule a script can't: a **minor or major** bump
+  needs section 9 *green*, and a yellow section 9 is acceptable for a patch
+  release only. Skip with `RUN_DISTRO_SMOKE=0`.
 
 - Documented distribution support tiers (2.6.1-STD1) across `README.md`,
   `docs/design/20-scope.md`, and a new `DISTRIBUTIONS` section in the manpage:

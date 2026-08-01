@@ -37,6 +37,22 @@ stale generated files discovered *after* the tag cost a `release-resume` cycle.
 Neither runner covers coverage, CVE audit, or the VM/container tiers. Those are stages 3 and 4
 below, and they are the ones that get skipped precisely because no gate enforces them.
 
+## The fast pre-check
+
+```bash
+make preflight          # read-only; ~stages 1-4 in one pass, PASS/WARN/FAIL per section
+```
+
+`tools/preflight.sh` mutates nothing and can be run at any point. It re-checks a subset of what the
+two runners cover (branch/tree, version markers, lint, completions) and adds the three things no
+gate touches: the coverage ratchet, the VM smoke, and the derivative container arm. Skip the slow
+sections with `RUN_COVERAGE=0`, `RUN_VM_SMOKE=0`, `RUN_DISTRO_SMOKE=0`.
+
+It is a convenience, not an authority. Its policy is deliberately uniform — missing optional
+infrastructure always warns, never fails — so the two **version-sensitive** rules in stage 4 below
+are the checklist's to enforce, not the script's. A green `make preflight` does not on its own mean
+stage 4 is satisfied.
+
 ---
 
 ## Stage 1 — Repo hygiene
@@ -70,6 +86,13 @@ make coverage-ratchet   # coverage floor — not in any gate
 make audit              # dependency CVEs — not in any gate
 ```
 
+A coverage drop below the floor in `tests/COVERAGE_BASELINE.md` is advisory, never a hard gate. If
+the drop is intended — or coverage improved — re-stamp the floor and commit it before releasing:
+
+```bash
+make coverage-ratchet-update TESTS=$(make test 2>/dev/null | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+')
+```
+
 ## Stage 4 — Runtime tiers (VM + container)
 
 Neither runner touches these. Both tiers install a *real built package*, so both start from
@@ -92,6 +115,17 @@ make container-smoke-cachyos    # derivative — the portability arm
 Exit code `3` means the harness is unavailable (no podman, no network, base image unpullable) — that
 is an infrastructure gap, not a pass. Resolve it or record the tier as unrun; do not read `3` as
 green. Only `0` is a pass and `1` is a real break.
+
+**Cadence rule — bump-sensitive, and the reason a script cannot own this.** The support tiers
+promise CachyOS is "validated each minor," but `preflight.sh` section 9 only *warns* when the
+harness is absent, and a warn can never enforce a cadence. So:
+
+> For a **minor or major** bump, the derivative arm must be **green** — an unavailable harness is
+> not good enough. A yellow/unrun derivative arm is acceptable for a **patch** release only.
+
+If the bump is minor or major and `container-smoke-cachyos` did not exit `0`, the fix is to install
+podman (`make dev-deps-container`) or get online and re-run — not to proceed. `RUN_DISTRO_SMOKE=0`
+is likewise appropriate for a patch release only.
 
 Not covered by the container tier: bootstrap, kernel staging, graphics/DKMS, restart detection.
 Those need stage 4b.
@@ -121,6 +155,15 @@ make vm-stop
 - [ ] `vm-smoke` passes on the `stable` flavor
 - [ ] `vm-smoke` passes on the `git` flavor
 - [ ] the stable↔git conflict pair swapped cleanly (the install step would have failed otherwise)
+
+**Staleness rule.** `tools/smoke.sh`'s version gate is liveness-only — it accepts *any* version, so a
+VM still holding a build of an older release passes every assertion. A pass therefore only counts
+when the installed version matches `pyproject.toml`; `preflight.sh` section 8 reports this as a
+`[WARN] … not vX.Y.Z`, which for a release is a **fail**. `make vm-test` is the full round trip that
+refreshes it (`vm-pkg-stable` → `vm-install-stable` → `vm-smoke`); `make vm-smoke` alone only checks
+whatever is already installed.
+
+- [ ] the smoked VM reports the current `pyproject.toml` version, not an older build
 
 Note the flavor semantics: `stable` tarballs the **live working tree** (uncommitted edits included),
 `git` builds from a local bare clone and sees **committed state only** — it warns on a dirty tree. A

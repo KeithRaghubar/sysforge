@@ -4,7 +4,7 @@
         check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release audit \
         roadmap-table check-roadmap-table roadmap-view \
         sync-config \
-        release-major release-minor release-patch release-resume \
+        preflight release-major release-minor release-patch release-resume \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-console vm-savevm vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-smoke vm-test \
         container-build container-smoke container-smoke-cachyos container-shell container-clean
@@ -200,8 +200,8 @@ coverage: ## Run the suite with a coverage report
 
 # Soft coverage ratchet (F5). Runs the instrumented suite, then compares the
 # TOTAL against the floor in tests/COVERAGE_BASELINE.md. Advisory: reports
-# HOLD / IMPROVE / DROP and exits non-zero only on a DROP so the release-prep
-# preflight can surface it as a [WARN], never a hard gate.
+# HOLD / IMPROVE / DROP and exits non-zero only on a DROP so `make preflight`
+# can surface it as a [WARN], never a hard gate.
 coverage-ratchet: coverage ## Compare coverage against the recorded floor
 	uv run --no-sync python tools/coverage_ratchet.py --check
 
@@ -320,6 +320,11 @@ sync-config: ## Merge new shipped defaults into the live config dir
 # `make release-{major,minor,patch}`.
 ##@ Release
 pre-release: lint typecheck test check-shipped check-personal check-design check-roadmap-table check-standards ## Composite gate: lint, types, tests, all checks
+
+# Read-only fast pre-check over stages 1-4 of docs/RELEASE-CHECKLIST.md. Skips:
+# RUN_COVERAGE=0, RUN_VM_SMOKE=0, RUN_DISTRO_SMOKE=0.
+preflight: ## Read-only release pre-check (stages 1-4 in one pass)
+	bash tools/preflight.sh
 
 release-major: ## Cut a signed major release
 	bash tools/release.sh --bump=major

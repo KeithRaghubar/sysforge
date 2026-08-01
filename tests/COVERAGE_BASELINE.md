@@ -5,7 +5,7 @@ Re-seeded 2026-07-25 from `make coverage`.
 The **soft ratchet floor** for the suite. `make coverage-ratchet` runs the
 instrumented suite and compares the current TOTAL against the **TOTAL** row
 below, reporting HOLD / IMPROVE / DROP; a DROP surfaces as a `[WARN]` in the
-`release-prep` preflight (`RUN_COVERAGE=1`), never a hard gate — the
+release preflight (`make preflight`, `RUN_COVERAGE=1`), never a hard gate — the
 instrumented suite is slow and a drop is advisory. Re-stamp when cutting a
 release with `make coverage-ratchet-update TESTS=<n>` so the floor tracks the
 shipped suite; commit the result.

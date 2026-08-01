@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# release-prep pre-flight: validate sysforge release readiness.
+# Release pre-flight: validate sysforge release readiness.
 #
-# Run from the skill via:  bash .claude/skills/release-prep/scripts/preflight.sh
+# Run via `make preflight`, or directly: bash tools/preflight.sh
+#
+# This is a fast, read-only pre-check covering stages 1-4 of
+# docs/RELEASE-CHECKLIST.md in one pass. The checklist remains authoritative —
+# in particular for the two version-sensitive rules this script cannot enforce
+# (sections 8 and 9 below).
 #
 # Exits 0 when there are no [FAIL]s (warnings allowed), non-zero otherwise.
 
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # `|| exit`: with set -u but no -e, a failed cd would silently run every check
 # against the caller's directory and report a green preflight for the wrong tree.
 cd "$REPO_ROOT" || exit 1
@@ -231,12 +236,12 @@ echo
 # install must produce (hooks, completions, tmpfiles.d sentinel dir, -Qi
 # registration). Nothing else in this preflight covers them: check-shipped
 # validates the *sources* in the repo, not that an installed package lays them
-# down. It is surfaced here as a checklist line rather than skill prose because
-# the skill reports this script's output verbatim — prose gets skimmed.
+# down.
 #
 # Never a [FAIL] on absence: the VM is optional infrastructure and a missing VM
 # must not block a release. A *failing* smoke run is a real packaging break and
-# does fail.
+# does fail. The staleness WARN below is advisory here; RELEASE-CHECKLIST.md
+# stage 4b states the rule — a stale pass does not count for a release.
 # ---------------------------------------------------------------------------
 echo "VM packaging smoke"
 if [[ "${RUN_VM_SMOKE:-1}" != "1" ]]; then
@@ -275,10 +280,9 @@ echo
 # here; any other non-zero exit is a genuine portability failure.
 #
 # The per-minor cadence is NOT enforced here — a WARN cannot enforce it. For a
-# minor or major bump this section must be *green*, which SKILL.md's checklist
-# states; a yellow section 9 is acceptable for a patch release only. Keeping the
-# version-sensitivity in the skill leaves this script's policy uniform across
-# every section.
+# minor or major bump this section must be *green*; a yellow section 9 is
+# acceptable for a patch release only. That rule lives in RELEASE-CHECKLIST.md
+# stage 4a, which leaves this script's policy uniform across every section.
 # ---------------------------------------------------------------------------
 echo "Derivative portability (container tier)"
 if [[ "${RUN_DISTRO_SMOKE:-1}" != "1" ]]; then
@@ -310,5 +314,5 @@ if [[ $FAIL -gt 0 ]]; then
     exit 1
 fi
 echo "Release is ready (modulo any warnings above)."
-echo "Reminder: run 'make test' separately if you haven't already; this skill does not run the suite."
+echo "Reminder: run 'make test' separately if you haven't already; this script does not run the suite."
 exit 0
