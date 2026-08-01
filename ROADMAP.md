@@ -88,7 +88,7 @@ canonical ordering.
 | `2.6.1-F20` | complete the editor chain display: source values, $VISUAL origins, one snapshot | low | small | patch |
 | `2.6.1-Q1` | should tests/test_standards_compliance.py be runnable in isolation? | low | small | patch |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium | patch |
-| `2.6.1-Q2` | should sysforge's config-file writes be genuinely atomic? | low | medium | patch |
+| `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
 <!-- END roadmap-table -->
 
 ### Features
@@ -183,6 +183,31 @@ canonical ordering.
   *Priority: low · Effort: small · Bump: patch* — display only; no resolution or write behaviour
   changes. **Standards home on adoption:** none new.
 
+- **`2.6.1-F21` — one home for replacing an existing config file.** Six sites hand-roll the same
+  stage-to-temp-then-install shape with three different spellings and two different privilege
+  idioms: `env_persist.apply_write`, `reconfigure._save_sysforge_toml_ui`, the `makepkg.conf` writer
+  in the same module (line ~1181), `makepkg_conf.py`, `pacman_hooks.py`, and `artifacts.write_live`
+  — the last of which alone uses the §22 seam correctly (`run_privileged` + `install -Dm`) while the
+  first three call `subprocess.run(privileged_argv(["cp", …]))` raw. None of them is atomic: every
+  one truncates-then-writes, so a kill or power loss mid-write leaves a truncated file. Add
+  `primitives/atomic_write.py` as the sole seam for *replacing a file that already exists*: resolve
+  symlinks first (`write_text` writes through a symlink, `os.replace` would clobber a dotfile-manager
+  link with a regular file), stat the destination for mode/owner, stage the temp **in the
+  destination's directory** so `rename(2)` stays same-filesystem, then `os.replace` on the direct
+  path and `run_privileged(["install", "-m/-o/-g", …])` + rename on the escalated one. Convert the
+  first four writers together — fixing one and not the others leaves the weaker guarantee in place
+  while implying otherwise — and fold their raw `privileged_argv` calls into `run_privileged`.
+  Deliberately **out of scope: `artifacts.write_live`**, which creates new files with a class-defined
+  mode rather than replacing user-owned config, so it has no destination mode to preserve and no
+  symlink to honour; folding it in would force the helper to grow a second mode. Add the
+  symlink-preservation and mode/owner-preservation regression tests none of these writers has today.
+  Severity note for whoever implements: the file carrying irreplaceable content here is the **user's
+  shell rc**, not `/etc/environment` — pam_env parses the latter line-oriented and skips malformed
+  lines with a warning, so a truncated `/etc/environment` silently loses env vars rather than
+  blocking login. *Priority: low · Effort: large · Bump: patch* — six call sites plus coverage that
+  does not exist yet; behaviour-preserving on every success path. **Standards home on adoption:**
+  none new — §22's privilege seam row already covers the `run_privileged` conversion.
+
 ### Bugs
 
 - **`2.6.1-B11` — `format_assignment` can emit env-file syntax `env_chain` cannot read back.**
@@ -234,20 +259,6 @@ canonical ordering.
   prove it was not their regression. Decide whether to fix the helper (add `tools/` to `sys.path`
   in `_load_check_standards`) or to document the file as full-suite-only.
   *Priority: low · Effort: small · Bump: patch* — decide before it wastes another sweep.
-
-- **`2.6.1-Q2` — should sysforge's config-file writes be genuinely atomic?** Neither writer that
-  owns a file sysforge mutates is atomic today. `env_persist.apply_write` (added by `2.6.1-F18`)
-  does a plain `write_text` on the direct path and a `cp` from a staged temp on the escalated one;
-  `reconfigure._save_sysforge_toml_ui` has the identical shape. Both truncate-then-write, so a kill
-  or power loss mid-write leaves a truncated file — and for `/etc/environment` that file is parsed
-  by PAM at login for every user. The docs were corrected to stop claiming atomicity rather than
-  the code being changed, deliberately: consistency with the existing `_save_sysforge_toml_ui` seam
-  is defensible, and a rename-based replace has its own hazards (it breaks hardlinks, and on the
-  escalated path `install`/`mv` must preserve the destination's owner and mode, which the current
-  `cp`-onto-an-existing-inode approach gets for free). Decide whether the exposure justifies the
-  change; if yes, promote to a `B`/`F` covering *both* writers together — fixing one and not the
-  other would leave the weaker guarantee in place while implying otherwise.
-  *Priority: low · Effort: medium · Bump: patch* — decide before either writer grows a third caller.
 
 ---
 
