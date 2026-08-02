@@ -1038,6 +1038,74 @@ def test_subpackages_docs_on_keeps_mixed_make_line(tmp_path):
     assert pb.read_text() == _BUILD_MIXED_DOCS
 
 
+# 2.6.1-B15: stock Arch `linux` runs the doc build *backgrounded*
+# (`make htmldocs SPHINXOPTS=-QT &`) and waits on the captured pid. The trailing
+# `&` pushed the line out of the exclusive-doc comment pass and into the mixed
+# pass, where `&` was mistaken for a surviving make goal — so only `htmldocs` was
+# stripped, leaving a bare `make &` that runs make's DEFAULT goal (`all`)
+# concurrently with the real `make all`. Two builds raced in one tree and
+# makepkg died with E_USER_FUNCTION_FAILED (4).
+_BUILD_BACKGROUND_HTMLDOCS = (
+    "pkgbase=linux\n"
+    'pkgname=("$pkgbase" "$pkgbase-headers" "$pkgbase-docs")\n'
+    "build() {\n"
+    "  cd $_srcname\n"
+    "  make htmldocs SPHINXOPTS=-QT &\n"
+    "  local pid_docs=$!\n"
+    "  make all\n"
+    "  wait $pid_docs\n"
+    "}\n"
+)
+
+
+def test_subpackages_docs_off_neutralizes_backgrounded_htmldocs(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BUILD_BACKGROUND_HTMLDOCS)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    lines = [ln.strip() for ln in pb.read_text().splitlines()]
+    # No `make` survives on the doc line at all — in particular not a goalless
+    # one, which make would resolve to `all`.
+    assert not any(
+        ln.startswith("make") and "SPHINXOPTS" in ln for ln in lines
+    ), "goalless `make` left on the backgrounded doc line — would rebuild `all`"
+    assert not any(ln.startswith("make") and ln.endswith("&") for ln in lines)
+    # The pid capture / wait pair still has a real background job to observe, so
+    # `wait $pid_docs` cannot abort build() under makepkg's errexit.
+    assert "true &  # sysforge(docs off): make htmldocs SPHINXOPTS=-QT &" in lines
+    assert "local pid_docs=$!" in lines
+    assert "wait $pid_docs" in lines
+    # The real kernel build is untouched.
+    assert "make all" in lines
+
+
+def test_subpackages_docs_off_backgrounded_is_idempotent(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BUILD_BACKGROUND_HTMLDOCS)
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    once = pb.read_text()
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    assert pb.read_text() == once
+
+
+def test_subpackages_docs_on_keeps_backgrounded_htmldocs(tmp_path):
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BUILD_BACKGROUND_HTMLDOCS)
+    patch_kernel_subpackages(pb, headers=True, docs=True)
+    assert pb.read_text() == _BUILD_BACKGROUND_HTMLDOCS
+
+
+def test_subpackages_docs_off_keeps_real_goal_on_backgrounded_mixed_line(tmp_path):
+    # A *mixed* backgrounded line keeps its real goal — the `&` must not be
+    # counted as a goal, but it must not be dropped either.
+    pb = tmp_path / "PKGBUILD.sysforge"
+    pb.write_text(_BUILD_BACKGROUND_HTMLDOCS.replace(
+        "make htmldocs SPHINXOPTS=-QT &", "make all htmldocs &"))
+    patch_kernel_subpackages(pb, headers=True, docs=False)
+    lines = [ln.strip() for ln in pb.read_text().splitlines()]
+    assert "make all &" in lines
+    assert not any("htmldocs" in ln for ln in lines)
+
+
 # B8: -docs drop survives the -sysforge coexist rename, and the doc build is
 # neutralized — the exact linux-custom production scenario.
 _LINUX_CUSTOM_DOCS = (

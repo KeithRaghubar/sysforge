@@ -246,6 +246,43 @@ class TestInstallRendersInSlotOrder:
         assert "make ARCH=x86_64 olddefconfig\n" in out
         assert "make ARCH=x86_64 menuconfig  # trim" in out
 
+    def test_configured_ui_tail_gets_the_review_pause(self, tmp_path):
+        # 2.6.1-F22: the pause used to ship only with the *injected* nconfig, on
+        # the theory that a target the operator named in kernel.toml needs no
+        # confirmation. But the pause exists to give the operator a checkpoint
+        # after the merges assemble the final .config — that is equally true
+        # whichever way the review target got there, so a configured UI tail now
+        # carries it too. Must fail under the old (injected-only) behaviour.
+        p = _write(tmp_path, MINIMIZE_THEN_MENU)
+        plan = kp.KconfigPlan()
+        plan.contribute(kp.generate_step(["localmodconfig"]))
+        plan.contribute(kp.ui_target_step("menuconfig"))
+        plan.install(p, noninteractive=False)
+        out = p.read_text()
+        assert "if [ -t 0 ]; then" in out
+        # The pause names the target the operator is about to be dropped into,
+        # not a hardcoded nconfig.
+        assert "menuconfig" in out[out.index("_sf_kconfig_ack") - 200:
+                                   out.index("_sf_kconfig_ack")]
+        assert out.index("_sf_kconfig_ack") < out.index("make ARCH=x86_64 menuconfig")
+
+    def test_configured_ui_tail_pause_follows_every_merge(self, tmp_path):
+        # Same ordering invariant the injected review has: the pause promises
+        # "merged kernel .config assembled", so both merges must precede it.
+        p = _write(tmp_path, STOCK)
+        plan = kp.KconfigPlan()
+        plan.contribute(kp.base_seed_step())
+        plan.contribute(kp.fragment_merge_step())
+        plan.contribute(kp.hotplug_merge_step())
+        plan.contribute(kp.generate_step(["localmodconfig"]))
+        plan.contribute(kp.ui_target_step("menuconfig"))
+        plan.install(p, noninteractive=False)
+        out = p.read_text()
+        assert (out.index(kp.DEFAULT_FRAGMENT)
+                < out.index(kp.HOTPLUG_FRAGMENT)
+                < out.index("_sf_kconfig_ack")
+                < out.index("make menuconfig"))
+
 
 class TestNoGenerateSlot:
     """With no configured targets the packager's kconfig steps survive, and
@@ -382,6 +419,17 @@ class TestNonInteractive:
         assert "make nconfig" not in out
         assert "_sf_kconfig_ack" not in out
 
+    def test_configured_ui_tail_pause_is_dropped_with_it(self, tmp_path):
+        # 2.6.1-F22: the configured UI tail now carries the same TTY-guarded
+        # pause as the injected review — but an unattended run rewrites the tail
+        # to olddefconfig, so the pause must not survive into it.
+        p = _write(tmp_path, STOCK)
+        plan = kp.KconfigPlan()
+        plan.contribute(kp.generate_step(["localmodconfig"]))
+        plan.contribute(kp.ui_target_step("menuconfig"))
+        plan.install(p, noninteractive=True)
+        assert "_sf_kconfig_ack" not in p.read_text()
+
     def test_rewrites_configured_ui_tail_to_olddefconfig(self, tmp_path):
         # A *configured* review target (unlike the injected review_step) must
         # still resolve the config non-interactively — rewritten to
@@ -467,8 +515,12 @@ class TestConfiguredUiTailOwnsGeneration:
         plan.contribute(kp.ui_target_step("menuconfig"))
         plan.install(p, noninteractive=False)
         out = p.read_text()
-        assert out.count("menuconfig") == 1
-        assert "make ARCH=x86_64 menuconfig  # trim" in out
+        # Exactly one `make menuconfig` survives. Counted over make lines, not
+        # raw occurrences: the review pause (2.6.1-F22) names the target in its
+        # prompt text, so the bare word appears more than once by design.
+        assert [ln for ln in out.splitlines()
+                if ln.strip().startswith("make") and "menuconfig" in ln] == [
+            "  make ARCH=x86_64 menuconfig  # trim"]
 
     def test_configured_tail_rewritten_not_dropped_noninteractive(self, tmp_path):
         # Same PKGBUILD/plan as above but noninteractive=True: the configured

@@ -195,7 +195,8 @@ contiguous block (the common case).
 behaviour flags: `skip_if_present` (a substring already in the PKGBUILD that makes the step
 redundant — the idempotency guard), `noninteractive_rewrite` (lines substituted for `lines` on an
 unattended run instead of dropping the step outright — used by `ui_target_step` so a *configured*
-UI review target still resolves the config non-interactively rather than vanishing), and
+UI review target still resolves the config non-interactively rather than vanishing — the shared
+TTY pause it renders alongside the target therefore vanishes with it on an unattended run), and
 `owns_generation` (set by both `generate_step` and `ui_target_step`, since a UI-only configured
 sequence lands entirely in `REVIEW` yet still means sysforge owns kconfig generation — it gates the
 removal pass below).

@@ -318,6 +318,21 @@ https://keepachangelog.com/en/1.1.0/
   arm, and stage 4b's staleness rule (`smoke.sh`'s version gate is
   liveness-only, so a pass against an older build is not a pass for a release).
 
+- The pre-`nconfig` review pause now also fires for a **configured** kconfig
+  review target, not only sysforge's injected one (2.6.1-F22). With
+  `kernel.toml kconfig_targets = ["olddefconfig", "nconfig"]` the run dropped
+  straight into the menu with no pause, because the pause shipped only with
+  `review_step()` — the reasoning being that a target the operator named
+  themselves needs no confirmation. That misread what the pause is for: it is
+  not a confirmation of the *target*, it is the operator's checkpoint on the
+  `.config` the seed/fragment/hotplug merges just assembled, which is equally
+  wanted however the review target got there. `ui_target_step` now renders the
+  same TTY-guarded `read`, with the prompt naming the configured target rather
+  than a hardcoded `nconfig`. Unattended runs are unaffected — the pause is
+  part of the step's lines, so the existing `noninteractive_rewrite` to
+  `olddefconfig` drops it along with the target. A PKGBUILD supplying its own
+  interactive target still gets no pause: no plan step renders that line.
+
 - **Standards row 23 is now the full Arch-derivative portability standard**
   (2.6.1-STD1), extended from the identity-only invariant that shipped with
   2.6.1-F2 to all three sub-invariants: **(a)** no hardcoded sync-repo names —
@@ -556,6 +571,26 @@ https://keepachangelog.com/en/1.1.0/
   to `sys.path`, and unregisters the module if exec fails. A new subprocess
   test runs the file alone and asserts exit 0, so the guarantee cannot decay
   the next time a sibling import is added.
+
+- Building a kernel with docs disabled no longer dies in `build()` with
+  makepkg exit 4 (2.6.1-B15). Stock Arch `linux` *backgrounds* its doc build —
+  `make htmldocs SPHINXOPTS=-QT &` — and the trailing `&` fell through both
+  halves of the docs-off neutralizer: the exclusive-doc pass, which comments
+  such a line out whole, is anchored at end-of-line and never matched it; the
+  mixed-line pass, which strips only the `*docs` goals from something like
+  `make all htmldocs`, then classified the `&` itself as a surviving real goal
+  and rewrote the line to `make SPHINXOPTS=-QT &`. A `make` with no goal runs
+  make's **default** goal, which for the kernel is `all` — so a second full
+  kernel build ran concurrently with the real `make all` in the same tree, the
+  two clobbered each other, and `build()` failed within the minute.
+  Shell control operators and redirections (`&`, `;`, `|`, `&&`, `>…`) are now
+  never counted as make goals, so the line reads as exclusive-docs again. It is
+  rewritten to `true &` rather than merely commented, because the next line is
+  `local pid_docs=$!` and the function later `wait`s on that pid: with no
+  background job the capture reads an unset or stale `$!`, and a `wait` on a
+  non-child exits non-zero — fatal under makepkg's errexit. A trivial
+  background job keeps `$!` valid and `wait` at 0, with the original command
+  preserved in the trailing `# sysforge(docs off):` comment.
 
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing

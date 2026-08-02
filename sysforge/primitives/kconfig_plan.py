@@ -561,10 +561,10 @@ def hotplug_merge_step(fragment: str = HOTPLUG_FRAGMENT) -> Step:
     )
 
 
-def review_step() -> Step:
-    """A TTY-guarded pause followed by ``make nconfig`` (B6).
+def _pause_lines(target: str) -> tuple[str, ...]:
+    """The TTY-guarded pause that precedes an interactive kconfig review (B6).
 
-    The pause sits *here* — after every merge has assembled the final
+    The pause sits in ``prepare()`` — after every merge has assembled the final
     ``.config``, immediately before the menu opens — because that is the only
     point that is genuinely "after all merges, before the editor". A
     stage-level pause before ``makepkg`` necessarily fires before these
@@ -574,13 +574,20 @@ def review_step() -> Step:
     errexit-safe under makepkg's ``set -e``: ``read`` returns non-zero on EOF,
     swallowed by ``|| true``, and the ``if`` yields 0.
     """
+    return (
+        "{indent}if [ -t 0 ]; then",
+        "{indent}  read -rp 'sysforge: merged kernel .config assembled — press "
+        f"Enter to review it in {target} (Ctrl-C aborts)… ' _sf_kconfig_ack || true",
+        "{indent}fi",
+    )
+
+
+def review_step() -> Step:
+    """A TTY-guarded pause followed by the injected ``make nconfig`` (B6)."""
     return Step(
         slot=REVIEW,
         lines=(
-            "{indent}if [ -t 0 ]; then",
-            "{indent}  read -rp 'sysforge: merged kernel .config assembled — press "
-            "Enter to review it in nconfig (Ctrl-C aborts)… ' _sf_kconfig_ack || true",
-            "{indent}fi",
+            *_pause_lines("nconfig"),
             "{indent}make nconfig  # sysforge: interactive kconfig review",
         ),
     )
@@ -589,9 +596,13 @@ def review_step() -> Step:
 def ui_target_step(target: str) -> Step:
     """A configured UI tail split off :func:`generate_step` into REVIEW.
 
-    No pause: the operator chose this target in ``kernel.toml`` rather than
-    sysforge injecting it, matching today's behaviour where the pause ships
-    only with the injected ``nconfig``.
+    Carries the same TTY-guarded :func:`_pause_lines` as the injected
+    :func:`review_step` (2.6.1-F22). The pause originally shipped only with the
+    injected ``nconfig``, on the reasoning that a target the operator named in
+    ``kernel.toml`` needs no confirmation — but the pause is not a confirmation
+    of the *target*, it is the operator's checkpoint on the assembled
+    ``.config``, which is equally wanted however the review target got there.
+    The message names the configured target rather than a hardcoded ``nconfig``.
 
     Carries a ``noninteractive_rewrite`` to :data:`OLDDEFCONFIG` — unlike the
     injected :func:`review_step`, a *configured* review target still has to
@@ -608,7 +619,7 @@ def ui_target_step(target: str) -> Step:
     """
     return Step(
         slot=REVIEW,
-        lines=("{indent}{make}" + target + "{trailer}",),
+        lines=(*_pause_lines(target), "{indent}{make}" + target + "{trailer}"),
         noninteractive_rewrite=(f"{{indent}}{{make}}{OLDDEFCONFIG}{{trailer}}",),
         owns_generation=True,
     )

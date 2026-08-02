@@ -744,9 +744,16 @@ def patch_kernel_btf_guard(patched_path):
 # the make goals are *exclusively* doc targets (optional VAR=val/flag tokens
 # allowed), never a mixed line like `make all htmldocs` where commenting out the
 # whole line would also drop the real build.
+#
+# 2.6.1-B15: the optional trailing `&` matters — stock Arch `linux` backgrounds
+# the doc build (`make htmldocs SPHINXOPTS=-QT &`). Without it here the line fell
+# through to the mixed pass, which stripped only the doc goal and left a goalless
+# `make &` — i.e. make's DEFAULT goal (`all`), a second kernel build racing the
+# real one. `&&` cannot match: the second `&` leaves the `$` anchor unsatisfied.
 _KERNEL_DOC_MAKE_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?P<cmd>make(?:[ \t]+[A-Za-z_][\w]*=\S+|[ \t]+-\S+)*"
-    r"(?:[ \t]+\w*docs\b)+(?:[ \t]+[A-Za-z_][\w]*=\S+|[ \t]+-\S+)*[ \t]*)$",
+    r"(?:[ \t]+\w*docs\b)+(?:[ \t]+[A-Za-z_][\w]*=\S+|[ \t]+-\S+)*)"
+    r"[ \t]*(?P<bg>&)?[ \t]*$",
     re.MULTILINE,
 )
 
@@ -763,6 +770,13 @@ _KERNEL_DOC_MIXED_RE = re.compile(
 )
 _DOCS_GOAL_RE = re.compile(r"^\w*docs$")
 
+# Shell control operators and redirections are not make goals (2.6.1-B15).
+# Counting `&` as one made a backgrounded exclusive-doc line look mixed, so the
+# "a real goal survives, keep the line" branch fired on a line that had no real
+# goal at all. Any token here is punctuation the shell owns, not something make
+# would ever build.
+_SHELL_OP_RE = re.compile(r"^(?:[&;|]{1,2}|\d*[<>]{1,2}&?\S*)$")
+
 
 def _neutralize_kernel_doc_build(patched_path) -> None:
     """Comment out standalone kernel doc-build make lines (``make htmldocs`` …).
@@ -774,12 +788,23 @@ def _neutralize_kernel_doc_build(patched_path) -> None:
     Sphinx build never runs. Mixed lines (``make all htmldocs``) are deliberately
     not matched. Naturally idempotent: a commented line no longer starts with
     ``make``, so a re-run finds nothing to neutralize.
+
+    A *backgrounded* exclusive-doc line (``make htmldocs … &``, stock Arch
+    ``linux``) becomes ``true &`` rather than a bare comment: the next line is
+    invariably ``local pid_docs=$!`` and the function later ``wait``s on it.
+    Commenting the line out would leave that capture reading an unset or stale
+    ``$!``, and a ``wait`` on a non-child exits non-zero — fatal under makepkg's
+    errexit. A trivial background job keeps ``$!`` valid and ``wait`` at 0
+    (2.6.1-B15).
     """
     patched_path = Path(patched_path)
     text = patched_path.read_text(encoding="utf-8")
 
     def _comment(m: "re.Match") -> str:
-        return f"{m.group('indent')}{_DOC_DISABLED_PREFIX}{m.group('cmd').rstrip()}"
+        indent, cmd = m.group("indent"), m.group("cmd").rstrip()
+        if m.group("bg"):
+            return f"{indent}true &  {_DOC_DISABLED_PREFIX}{cmd} &"
+        return f"{indent}{_DOC_DISABLED_PREFIX}{cmd}"
 
     def _strip_docs_goals(m: "re.Match") -> str:
         """Drop only the ``*docs`` goals from a mixed make line, keeping the real
@@ -791,6 +816,7 @@ def _neutralize_kernel_doc_build(patched_path) -> None:
         other_goals = [
             t for t in args
             if not _DOCS_GOAL_RE.match(t) and "=" not in t and not t.startswith("-")
+            and not _SHELL_OP_RE.match(t)
         ]
         if not other_goals:
             return m.group(0)  # exclusive-docs — handled by _KERNEL_DOC_MAKE_RE
