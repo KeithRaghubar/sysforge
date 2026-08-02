@@ -96,6 +96,7 @@ from sysforge.primitives.pkgbuild_meta import (
     is_musl_static_build,
     parse_pkgbuild,
 )
+from sysforge.primitives import kconfig_plan
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.pkgbuild_patcher import (
     apply_patch_pkgbuild,
@@ -103,16 +104,12 @@ from sysforge.primitives.pkgbuild_patcher import (
     extract_pkgbuild_profile,
     is_llvm_pkgbase,
     patch_build_linker,
-    patch_hotplug_fragment_merge,
-    patch_kconfig_targets,
     patch_kernel_btf_guard,
     patch_kernel_config_install,
-    patch_kernel_kconfig_apply,
     patch_kernel_subpackages,
     patch_llvm_dir,
     patch_llvm_targets,
     patch_mesa_drivers,
-    patch_noninteractive_kconfig,
     patch_package_suffix,
     patch_pkgbase_rename,
     patch_pkgbuild_groups,
@@ -245,6 +242,12 @@ def _find_artifacts(pkgbuild_dir) -> list:
 # prefix-globbing a shared PKGDEST — pkgname ``linux`` otherwise sweeps in
 # ``linux-custom``, stale ``linux-sysforge-<oldver>``, etc.
 _BUILT_MANIFEST_NAME = ".sysforge-built.list"
+
+# Configured kconfig targets that constitute an operator review — the tail
+# resolve_kconfig_targets may place last. Mirrors kconfig_plan._REVIEW_KCONFIG_RE's
+# alternation (that one matches PKGBUILD text; this one matches a config value).
+_REVIEW_TARGETS = frozenset(
+    {"nconfig", "menuconfig", "xconfig", "gconfig", "config"})
 
 
 def _read_built_manifest(pkgbuild_dir) -> set[str]:
@@ -592,17 +595,31 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     )
 
     if kernel_build:
-        # Always inject the sysforge.config fragment merge so a stock PKGBUILD
-        # actually applies the hardware/device kconfig (it adds `make nconfig`
-        # itself only when interactive). The non-interactive patch then rewrites
-        # any *existing* interactive kconfig target to olddefconfig. When a
-        # configured kconfig_targets sequence is set it is the sole authority
-        # for kconfig generation *and* UI review (resolve_kconfig_targets put
-        # any UI target last), so the interactive nconfig-review injection is
-        # suppressed — the seed/merge blocks are still injected, sentinel-
-        # tagged so patch_kconfig_targets leaves their resolve lines intact.
-        patch_kernel_kconfig_apply(
-            pkgbuild_path, interactive=interactive and not kconfig_targets)
+        # The kconfig region of prepare() is rendered once from an ordered
+        # plan: contributors fill slots by key, kconfig_plan.SLOT_ORDER decides
+        # where each lands. No step reads another's output, so the order of
+        # these calls is not load-bearing — SLOT_ORDER is.
+        plan = kconfig_plan.KconfigPlan()
+        plan.contribute(kconfig_plan.base_seed_step())
+        plan.contribute(kconfig_plan.fragment_merge_step())
+        plan.contribute(kconfig_plan.hotplug_merge_step())
+        if kconfig_targets:
+            # A configured sequence is the sole authority for kconfig
+            # generation *and* UI review — resolve_kconfig_targets puts any UI
+            # target last, so split that tail into REVIEW (same slot as an
+            # injected review, so they can't both exist); a non-UI-tailed
+            # sequence gets no REVIEW at all, matching the old
+            # patch_kernel_kconfig_apply(interactive=interactive and not
+            # kconfig_targets) suppression.
+            targets = list(kconfig_targets)
+            if _REVIEW_TARGETS.intersection([targets[-1]]):
+                plan.contribute(kconfig_plan.ui_target_step(targets.pop()))
+            if targets:
+                plan.contribute(kconfig_plan.generate_step(targets))
+        elif not plan.has(kconfig_plan.REVIEW):
+            plan.contribute(kconfig_plan.review_step())
+        plan.install(pkgbuild_path, noninteractive=not interactive)
+
         # Ship the resolved .config to /boot (pacman-tracked) when the PKGBUILD
         # doesn't already — the main image subpackage is named for the pkgbase.
         patch_kernel_config_install(pkgbuild_path, pkgname=_pkgname_from_meta(pkgmeta))
@@ -616,26 +633,6 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         patch_kernel_subpackages(
             pkgbuild_path, headers=kernel_build_headers, docs=kernel_build_docs
         )
-        # Configured kconfig_targets sequence (kernel.toml, already resolved/
-        # validated by the kernel stage) replaces the PKGBUILD's own kconfig
-        # generation step. Applied after the other kernel patchers so it sees
-        # their output — it skips the sentinel-tagged resolve lines the
-        # fragment-merge injection added and lands the configured block after
-        # the seed/merge guard blocks — and before patch_noninteractive_kconfig
-        # so a UI tail left in the configured sequence still gets stripped when
-        # the run is non-interactive (kernel.toml can't opt a UI target out of
-        # that).
-        if kconfig_targets:
-            patch_kconfig_targets(pkgbuild_path, kconfig_targets)
-        # F2: re-enable hotplug driver classes as modules AFTER the minimizer.
-        # Injected after patch_kconfig_targets (so it can anchor before the UI
-        # tail) and before patch_noninteractive_kconfig (which then strips any UI
-        # tail on a non-interactive run — the hotplug merge stays put). Always
-        # called: the block is file-guarded, and the stage decides whether
-        # sysforge.hotplug.config exists.
-        patch_hotplug_fragment_merge(pkgbuild_path)
-        if not interactive:
-            patch_noninteractive_kconfig(pkgbuild_path)
 
     # Reset toolchain env vars in subshell functions so sub-builds (musl
     # bootstrap, embedded grub, etc.) use the system default compiler/linker

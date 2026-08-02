@@ -161,6 +161,17 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Changed
 
+- Kernel kconfig patching is now an ordered plan (`primitives/kconfig_plan.py`) rather
+  than four patchers coordinating through a `# sysforge: kconfig-resolve` comment. Slot
+  order is data, so a misordered contribution fails a structural test instead of
+  corrupting `prepare()`. No change to the generated build steps, except three
+  rendered-text details: the `# sysforge: kconfig-resolve` marker comment is no longer
+  emitted, the hotplug re-enable block now indents to match its anchor line instead of
+  sitting at column 0, and when both a configured generation sequence and an interactive
+  review are present, the hotplug merge now runs before the review pause rather than
+  after it — so the "merged .config assembled" prompt is accurate when it appears.
+  (2.5.1-F1)
+
 - **Breaking:** `sysforge doctor` is now two subcommands (2.6.1-F1).
   `doctor system [AXIS…]` runs the system-state axes; `doctor pkg [TARGETS]
   [AXIS…]` runs the package-scoped ones (`--abi`, `--rust`, `--integrity`).

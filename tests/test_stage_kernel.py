@@ -2811,9 +2811,10 @@ def test_write_base_config_pkgbuild_default_writes_nothing(tmp_path):
 
 # ---------------------------------------------------------------------------
 # B6: the pre-nconfig pause now lives inside the patched PKGBUILD's prepare()
-# (pkgbuild_patcher.patch_kernel_kconfig_apply), after the merges and right
-# before `make nconfig` — see tests/test_patcher.py. The stage no longer emits
-# a pre-makepkg pause, which fired before the in-prepare() merges.
+# (kconfig_plan.review_step, installed via KconfigPlan.install), after the
+# merges and right before `make nconfig` — see tests/test_kconfig_plan.py. The
+# stage no longer emits a pre-makepkg pause, which fired before the
+# in-prepare() merges.
 # ---------------------------------------------------------------------------
 
 

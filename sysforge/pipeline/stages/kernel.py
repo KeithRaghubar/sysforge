@@ -1015,7 +1015,7 @@ def _write_hotplug_fragment(kernel_cfg, options, dry_run):
     When ``keep_hotplug_drivers`` resolves true, writes ``sysforge.hotplug.config``
     next to the PKGBUILD with the curated ``_HOTPLUG_KCONFIG`` set as ``=m`` and
     returns its path. This fragment is merged AFTER the minimization sequence
-    (see pkgbuild_patcher.patch_hotplug_fragment_merge) so ``localmodconfig`` can't
+    (see kconfig_plan.hotplug_merge_step) so ``localmodconfig`` can't
     strip the modules back out.
 
     When disabled (or dry-run), removes any stale fragment from a prior run so
@@ -1769,7 +1769,7 @@ class KernelStage(Stage):
         # Interactive kconfig is the kernel-stage default — flipped off by
         # --non-interactive (or `interactive = false` in kernel.toml). When
         # interactive=True is passed into BuildOptions, makepkg_wrapper skips
-        # patch_noninteractive_kconfig so the user's PKGBUILD kconfig target
+        # the plan's non-interactive rewrite so the user's PKGBUILD kconfig target
         # (typically `make nconfig`) runs as written, and the makepkg
         # subprocess inherits the parent's stdout/stderr so ncurses-driven
         # kconfig UIs render on the controlling TTY.
@@ -2016,7 +2016,7 @@ class KernelStage(Stage):
                 _log.ui(f"[dry-run] would build {pkgname} (no install) from {pkgbuild}")
             else:
                 # B6: the pre-nconfig pause now lives *inside* the patched
-                # PKGBUILD's prepare() (pkgbuild_patcher.patch_kernel_kconfig_apply),
+                # PKGBUILD's prepare() (kconfig_plan),
                 # right after the base seed + fragment merge assemble the final
                 # .config and immediately before `make nconfig`. A stage-level
                 # pause here would fire before makepkg runs those in-prepare()

@@ -167,9 +167,66 @@ All PKGBUILD mutation. Active when `build_mode` is `"source_built"` (legacy toke
 
 Inline `make VAR=val` and `cmake -DKEY=val` lines are only removed when the key is in `_EXTRACTABLE_KEYS` — keys that sysforge manages. This prevents accidental removal of kernel build commands like `make LOCALVERSION=...` or `make INSTALL_MOD_PATH=...` which are real build invocations, not flag assignments.
 
-**Noninteractive kconfig patching** (`patch_noninteractive_kconfig`) replaces interactive kconfig targets (`oldconfig`, `nconfig`, `menuconfig`, `xconfig`, `gconfig`, bare `config`) with `make olddefconfig` in an already-patched PKGBUILD file. Called by the kernel stage after normal patching; modifies `PKGBUILD.sysforge` in place. Preserves `VAR=val` arguments before the target and trailing comments.
+### `kconfig_plan.py`
 
-**Configured kconfig target sequence** (`patch_kconfig_targets(patched_path, targets)`) replaces a kernel PKGBUILD's kconfig-generation invocation(s) with the `kernel.toml kconfig_targets` sequence already validated/ordered by `resolve_kconfig_targets` (see §Pipeline Layer → Kernel stage). Every PKGBUILD-owned `make <kconfig-target>` line is removed — the configured list is the sole authority, so a PKGBUILD that itself runs `oldconfig` then `menuconfig` doesn't end up with both the stock steps and the configured ones. Lines carrying a `# sysforge:` comment are exempt: `patch_kernel_kconfig_apply` tags the `make olddefconfig` resolve lines inside its base-seed / `merge_config.sh` guard blocks with the `# sysforge: kconfig-resolve` sentinel, so the two patchers compose — the fragment-merge blocks (and their resolve lines) survive intact, and the configured block is inserted *after* the guard block carrying the last sentinel (else at the first removed line's position), so the configured sequence — any UI review target last — operates on the fully seeded+merged `.config`. The block reuses the first removed line's indentation and `VAR=val` arguments (`ARCH=`, `LLVM=`, …); removals are spliced last-to-first so earlier offsets stay valid. Raises `RuntimeError` when no PKGBUILD-owned kconfig invocation exists (an exotic PKGBUILD) — fails closed rather than building with a half-patched config step. Called from `makepkg_wrapper._run_build` after `patch_kernel_kconfig_apply` (whose interactive nconfig-review injection is suppressed when a configured sequence is set — the list is the sole UI authority) and `patch_kernel_subpackages`, and before `patch_noninteractive_kconfig`; edits `PKGBUILD.sysforge` in place like its sibling kernel patchers.
+Sole home for the kernel PKGBUILD's kconfig region (2.5.1-F1). Five ordered slots —
+`BASE_SEED`, `FRAGMENT_MERGE`, `GENERATE`, `HOTPLUG_MERGE`, `REVIEW` — cover everything a kernel
+`prepare()` needs done to its config: seed a base `.config`, overlay the sysforge fragment, run
+the configured generation targets, re-enable hotplug drivers a minimizer stripped, then let the
+operator review the result. `SLOT_ORDER` is the **sole ordering authority**: contributors fill a
+`KconfigPlan` by slot key via `contribute(Step)`, so the order calls run in cannot affect the
+rendered result — refilling an already-filled slot raises. No step reads another step's output;
+the `# sysforge: kconfig-resolve` sentinel that the pre-refactor patchers used to tell their own
+text apart from the packager's is gone, along with the four independent patchers it coordinated.
+
+Each slot renders into one of two splice regions, `PRE` or `POST` (`SLOT_REGION`). Two regions are
+needed, not one, because `BASE_SEED`/`FRAGMENT_MERGE` and `HOTPLUG_MERGE`/`GENERATE`/`REVIEW`
+attach to different lines: the seed/overlay follows the kconfig-*setup* line (`_KCONFIG_SETUP_RE`,
+else the `.config`-creation line via `_CONFIG_WRITE_RE`), while the hotplug re-enable must follow
+the *last* surviving kconfig line and still precede a packager-owned review target — the same
+three-way anchor problem the old `patch_hotplug_fragment_merge` solved ad hoc. Both anchors insert
+*after* the line they match (`_find_kconfig_anchor` returns the offset past the matched line's
+newline), and a packager-owned minimizer target is itself one of `_KCONFIG_SETUP_RE`'s
+alternatives, so a minimizer is always followed by the seed/overlay, never preceded by it. When a
+configured `GENERATE` sequence is present both regions resolve to the same offset and render as one
+contiguous block (the common case).
+
+`Step` is a frozen dataclass holding a slot's indent-free rendered lines plus three optional
+behaviour flags: `skip_if_present` (a substring already in the PKGBUILD that makes the step
+redundant — the idempotency guard), `noninteractive_rewrite` (lines substituted for `lines` on an
+unattended run instead of dropping the step outright — used by `ui_target_step` so a *configured*
+UI review target still resolves the config non-interactively rather than vanishing), and
+`owns_generation` (set by both `generate_step` and `ui_target_step`, since a UI-only configured
+sequence lands entirely in `REVIEW` yet still means sysforge owns kconfig generation — it gates the
+removal pass below).
+
+`KconfigPlan.install(path)` renders every filled slot into the PKGBUILD's kconfig region exactly
+once — deliberately render-once, not idempotent, since `PKGBUILD.sysforge` is regenerated per
+build. Four passes:
+
+1. **Drop rules.** A cooperating PKGBUILD (already calling `merge_config.sh`) drops the PRE slots.
+   A slot whose `skip_if_present` marker is already in the text drops itself. A non-interactive run
+   drops `REVIEW` (or rewrites it via `noninteractive_rewrite` when set). A PKGBUILD with its own
+   review target drops an *injected* `REVIEW` but not a *configured* one (`owns_generation`), since
+   pass 2 is about to remove that packager review line as part of the configured sequence.
+2. **Removal**, whenever any filled step has `owns_generation` set (`generate_step` or
+   `ui_target_step`, alone or together — a UI-only configured sequence still owns generation even
+   though `GENERATE` itself ends up unfilled): every packager-owned kconfig line is removed
+   (spliced last-to-first so earlier offsets stay valid), since the configured sequence is the sole
+   authority for kconfig generation. Raises `RuntimeError` when none exist — fails closed rather
+   than building with a half-patched config step.
+3. **Rewrite** of any surviving packager-owned UI target to `olddefconfig` on an unattended run —
+   a no-op after pass 2 removed every kconfig line, which is why pass 2's anchor offset can be
+   recorded up front and reused.
+4. **Splice** the two regions into the text, high offset first so the lower offset stays valid.
+
+Three rendered-text divergences from the pre-refactor patchers are deliberate and owner-approved,
+each pinned by its own test: the `# sysforge: kconfig-resolve` sentinel is no longer emitted (it
+existed only for one patcher to recognise another's output); the hotplug block now indents to
+match its anchor line rather than column 0 (the old code took the indent of the line *after* the
+insertion point — for a stock PKGBUILD, the closing `}`); and with both `GENERATE` and `REVIEW`
+filled, the hotplug merge renders *before* the TTY review pause rather than after it (the pause
+announces the merged `.config` is assembled, which is only true once the hotplug merge has run).
 
 **Subshell toolchain env reset** (`patch_subshell_env_reset`) injects `unset CC CXX LD` at the top of every subshell function body (`funcname() (...)`) in `PKGBUILD.sysforge`. Subshell functions are isolated helper builds (musl bootstrap, embedded grub, wimboot, etc.) that should use the system-default compiler and linker, not the sysforge profile toolchain or inherited shell overrides. Without this, `CC=clang` from the profile and `LD=ld.lld` from the shell env leak into sub-builds that expect gcc/ld.bfd and produce broken toolchain wrappers or linker script failures. Considers two sources: profile toolchain keys (CC, CXX) and inherited shell env (CC, CXX, LD). Only injects when at least one key differs from the system default (gcc/g++/ld). Called from `_run_build` after PKGBUILD.sysforge is created, on all build paths (both patched and group-only).
 

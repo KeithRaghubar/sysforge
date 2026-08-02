@@ -81,7 +81,6 @@ canonical ordering.
 | `2.6.1-B11` | format_assignment can emit env-file syntax env_chain cannot read back | med | small | patch |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
-| `2.5.1-F1` | Kernel kconfig patcher composition: replace sentinel-tag coordination with an ordered pipeline | med | large | patch |
 | `2.6.1-B12` | plan_write misses the KEY=value; export KEY assignment form | low | small | patch |
 | `2.6.1-B13` | describe_editor_chain hardcodes the detected rung's index | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
@@ -91,17 +90,6 @@ canonical ordering.
 <!-- END roadmap-table -->
 
 ### Features
-
-- **`2.5.1-F1` — Kernel kconfig patcher composition: replace sentinel-tag coordination with an
-  ordered pipeline.** Four patchers mutate the same kernel `prepare()` (`patch_kernel_kconfig_apply`,
-  `patch_kconfig_targets`, `patch_hotplug_fragment_merge`, `patch_noninteractive_kconfig`),
-  coordinating via `_KCONFIG_RESOLVE_SENTINEL` string tags and load-bearing call ordering documented
-  only in prose (`makepkg_wrapper.py` kernel_build block). Pairwise composition is tested, but every
-  new patcher multiplies the interaction matrix. Restructure as an explicit ordered pipeline (a
-  declared patcher list with per-step contracts on what each may touch), so ordering is data, not
-  comments, and a misordered registration fails a structural test instead of corrupting `prepare()`.
-  *Priority: med · Effort: large · Bump: patch* — refactor, no behavior change; the 2.5.1-B5/B8 fix cycle showed
-  this seam is where kernel-stage bugs concentrate.
 
 - **`2.5.1-F3` — `state failed --clear-all` emits no `SYSFORGE_TARGET`.** Follow-up to `2.4.0-F1`,
   which gave every sentinel-gated verb a `journal_target` override. `StateFailedVerb.journal_target`

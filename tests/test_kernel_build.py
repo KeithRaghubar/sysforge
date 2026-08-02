@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from sysforge.primitives import kconfig_plan as kp
 from sysforge.primitives.makepkg_wrapper import _find_built_packages, _invoke_with_retry, _run_build
 
 
@@ -58,7 +59,6 @@ def _mock_build_context(tmp_path, profile=None, extra_env_out=None,
               return_value=patched),
         patch("sysforge.primitives.makepkg_wrapper.patch_pkgbuild_groups",
               return_value=patched),
-        patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig"),
         patch("sysforge.primitives.makepkg_wrapper.emit_makepkg_conf",
               side_effect=fake_emit),
         patch("sysforge.primitives.makepkg_wrapper.resolve_env_vars",
@@ -186,42 +186,6 @@ def test_already_built_skips_manifest_when_no_rename(tmp_path):
 # kconfig patching toggle
 # ---------------------------------------------------------------------------
 
-def test_kernel_non_interactive_patches_kconfig(tmp_path):
-    """kernel_build=True, interactive=False → patch_noninteractive_kconfig called."""
-    with (
-        _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig") as mock_patch,
-    ):
-        _run_build(pkgbuild, _minimal_profile(), {}, [],
-                   extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
-                   interactive=False, kernel_build=True)
-    mock_patch.assert_called_once()
-
-
-def test_kernel_interactive_skips_kconfig_patch(tmp_path):
-    """kernel_build=True, interactive=True → patch_noninteractive_kconfig NOT called."""
-    with (
-        _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig") as mock_patch,
-    ):
-        _run_build(pkgbuild, _minimal_profile(), {}, [],
-                   extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
-                   interactive=True, kernel_build=True)
-    mock_patch.assert_not_called()
-
-
-def test_non_kernel_build_never_patches_kconfig(tmp_path):
-    """kernel_build=False → patch_noninteractive_kconfig never called."""
-    with (
-        _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig") as mock_patch,
-    ):
-        _run_build(pkgbuild, _minimal_profile(), {}, [],
-                   extracted_profile=None, pkgmeta=_minimal_pkgmeta(),
-                   kernel_build=False)
-    mock_patch.assert_not_called()
-
-
 def test_kernel_build_applies_btf_guard(tmp_path):
     """kernel_build=True → patch_kernel_btf_guard called (gates vmlinux.h on BTF)."""
     with (
@@ -246,110 +210,95 @@ def test_non_kernel_build_never_applies_btf_guard(tmp_path):
     mock_btf.assert_not_called()
 
 
-def test_kernel_build_always_applies_fragment_merge(tmp_path):
-    """kernel_build=True always injects the sysforge.config fragment merge,
-    threading the resolved interactive flag (both branches)."""
-    for interactive in (True, False):
-        with (
-            _mock_build_context(tmp_path) as (pkgbuild, _),
-            patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig"),
-            patch("sysforge.primitives.makepkg_wrapper.patch_kernel_kconfig_apply") as mock_apply,
-        ):
-            _run_build(pkgbuild, _minimal_profile(), {}, [],
-                       extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
-                       interactive=interactive, kernel_build=True)
-        mock_apply.assert_called_once()
-        assert mock_apply.call_args.kwargs["interactive"] is interactive
+def _installed_plan(monkeypatch):
+    """Capture the plan makepkg_wrapper installs, without touching a file."""
+    seen = {}
+
+    def _fake_install(self, patched_path, *, noninteractive=False):
+        seen["slots"] = self.filled()
+        seen["noninteractive"] = noninteractive
+
+    monkeypatch.setattr(
+        "sysforge.primitives.kconfig_plan.KconfigPlan.install", _fake_install)
+    return seen
 
 
-def test_kernel_build_applies_kconfig_targets_patch(tmp_path):
-    """kconfig_targets set → patch_kconfig_targets called with (path, targets)."""
-    with (
-        _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig"),
-        patch("sysforge.primitives.makepkg_wrapper.patch_kconfig_targets") as mock_kt,
-    ):
+def _run_build_for_kernel(tmp_path, *, interactive, kconfig_targets):
+    with _mock_build_context(tmp_path) as (pkgbuild, _):
         _run_build(pkgbuild, _minimal_profile(), {}, [],
                    extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
-                   interactive=False, kernel_build=True,
-                   kconfig_targets=["olddefconfig"])
-    mock_kt.assert_called_once()
-    args = mock_kt.call_args.args
-    assert args[1] == ["olddefconfig"]
+                   interactive=interactive, kernel_build=True,
+                   kconfig_targets=kconfig_targets)
 
 
-def test_kernel_build_kconfig_targets_unset_skips_patch(tmp_path):
-    """kconfig_targets=None (default) → patch_kconfig_targets never called."""
-    with (
-        _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig"),
-        patch("sysforge.primitives.makepkg_wrapper.patch_kconfig_targets") as mock_kt,
-    ):
+def _run_build_for_nonkernel(tmp_path):
+    with _mock_build_context(tmp_path) as (pkgbuild, _):
         _run_build(pkgbuild, _minimal_profile(), {}, [],
                    extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
-                   interactive=False, kernel_build=True)
-    mock_kt.assert_not_called()
+                   interactive=False, kernel_build=False)
 
 
-def test_non_kernel_build_never_applies_kconfig_targets_patch(tmp_path):
-    """kernel_build=False → patch_kconfig_targets never called even if set."""
-    with (
-        _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_kconfig_targets") as mock_kt,
-    ):
-        _run_build(pkgbuild, _minimal_profile(), {}, [],
-                   extracted_profile=None, pkgmeta=_minimal_pkgmeta(),
-                   kernel_build=False, kconfig_targets=["olddefconfig"])
-    mock_kt.assert_not_called()
+def test_kernel_build_fills_seed_merge_and_hotplug(tmp_path, monkeypatch):
+    seen = _installed_plan(monkeypatch)
+    _run_build_for_kernel(tmp_path, interactive=False, kconfig_targets=None)
+    assert kp.BASE_SEED in seen["slots"]
+    assert kp.FRAGMENT_MERGE in seen["slots"]
+    assert kp.HOTPLUG_MERGE in seen["slots"]
 
 
-def test_kconfig_targets_suppress_injected_nconfig_review(tmp_path):
-    """When a configured kconfig_targets sequence is set it is the sole
-    authority for kconfig generation *and* UI review — the fragment merge is
-    still injected, but with the interactive nconfig-review add suppressed."""
-    with (
-        _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_kernel_kconfig_apply") as mock_apply,
-        patch("sysforge.primitives.makepkg_wrapper.patch_kconfig_targets"),
-    ):
-        _run_build(pkgbuild, _minimal_profile(), {}, [],
-                   extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
-                   interactive=True, kernel_build=True,
-                   kconfig_targets=["nconfig"])
-    mock_apply.assert_called_once()
-    assert mock_apply.call_args.kwargs["interactive"] is False
+def test_non_interactive_run_passes_noninteractive(tmp_path, monkeypatch):
+    seen = _installed_plan(monkeypatch)
+    _run_build_for_kernel(tmp_path, interactive=False, kconfig_targets=None)
+    assert seen["noninteractive"] is True
 
 
-def test_kconfig_targets_patch_applied_before_noninteractive_strip(tmp_path):
-    """Ordering: patch_kconfig_targets runs after the other kernel patchers
-    (patch_kernel_subpackages) but before patch_noninteractive_kconfig — a
-    configured UI tail must still be stripped for a non-interactive run."""
-    order = []
-    with (
-        _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_kernel_subpackages",
-              side_effect=lambda *a, **k: order.append("subpackages")),
-        patch("sysforge.primitives.makepkg_wrapper.patch_kconfig_targets",
-              side_effect=lambda *a, **k: order.append("kconfig_targets")),
-        patch("sysforge.primitives.makepkg_wrapper.patch_noninteractive_kconfig",
-              side_effect=lambda *a, **k: order.append("noninteractive")),
-    ):
-        _run_build(pkgbuild, _minimal_profile(), {}, [],
-                   extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
-                   interactive=False, kernel_build=True,
-                   kconfig_targets=["olddefconfig"])
-    assert order == ["subpackages", "kconfig_targets", "noninteractive"]
+def test_interactive_run_fills_review(tmp_path, monkeypatch):
+    seen = _installed_plan(monkeypatch)
+    _run_build_for_kernel(tmp_path, interactive=True, kconfig_targets=None)
+    assert kp.REVIEW in seen["slots"]
+    assert seen["noninteractive"] is False
 
 
-def test_non_kernel_build_never_applies_fragment_merge(tmp_path):
-    with (
-        _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_kernel_kconfig_apply") as mock_apply,
-    ):
-        _run_build(pkgbuild, _minimal_profile(), {}, [],
-                   extracted_profile=None, pkgmeta=_minimal_pkgmeta(),
-                   kernel_build=False)
-    mock_apply.assert_not_called()
+def test_configured_targets_fill_generate(tmp_path, monkeypatch):
+    seen = _installed_plan(monkeypatch)
+    _run_build_for_kernel(
+        tmp_path, interactive=False, kconfig_targets=["olddefconfig", "localmodconfig"])
+    assert kp.GENERATE in seen["slots"]
+
+
+def test_configured_ui_tail_becomes_the_review_slot(tmp_path, monkeypatch):
+    # The tail is a *configured* review, so it occupies REVIEW — which is
+    # exactly why an injected nconfig can no longer coexist with it.
+    seen = _installed_plan(monkeypatch)
+    _run_build_for_kernel(
+        tmp_path, interactive=True, kconfig_targets=["localmodconfig", "menuconfig"])
+    assert kp.GENERATE in seen["slots"]
+    assert kp.REVIEW in seen["slots"]
+
+
+def test_kconfig_targets_suppress_injected_nconfig_review(tmp_path, monkeypatch):
+    """A configured kconfig_targets sequence with no UI tail is the sole
+    authority for kconfig generation *and* UI review — even on an interactive
+    run, no REVIEW slot gets filled (old behaviour: patch_kernel_kconfig_apply
+    was called with interactive=interactive and not kconfig_targets, so any
+    non-empty kconfig_targets suppressed the injected nconfig review)."""
+    seen = _installed_plan(monkeypatch)
+    _run_build_for_kernel(
+        tmp_path, interactive=True, kconfig_targets=["olddefconfig", "localmodconfig"])
+    assert kp.GENERATE in seen["slots"]
+    assert kp.REVIEW not in seen["slots"]
+
+
+def test_no_configured_targets_leaves_generate_empty(tmp_path, monkeypatch):
+    seen = _installed_plan(monkeypatch)
+    _run_build_for_kernel(tmp_path, interactive=False, kconfig_targets=None)
+    assert kp.GENERATE not in seen["slots"]
+
+
+def test_non_kernel_build_installs_no_plan(tmp_path, monkeypatch):
+    seen = _installed_plan(monkeypatch)
+    _run_build_for_nonkernel(tmp_path)
+    assert seen == {}
 
 
 # ---------------------------------------------------------------------------
