@@ -607,6 +607,19 @@ https://keepachangelog.com/en/1.1.0/
   check-shipped` validates structure, not comment prose, so this class of drift
   passes every existing gate — closing that hole is tracked on the roadmap.
 
+- `keep_hotplug_drivers` no longer silently loses three of its symbols
+  (2.6.1-B17). The curated set was written to `sysforge.hotplug.config` with a
+  hardcoded `=m`, but `CONFIG_HOTPLUG_PCI`, `CONFIG_HOTPLUG_PCI_PCIE` and
+  `CONFIG_CARDBUS` are `bool`, not `tristate`, in the kernel tree. kconfig
+  rejects `m` for a bool and discards the *whole* assignment — `run kernel`
+  printed `.config:NNNN:warning: symbol value 'm' invalid for HOTPLUG_PCI` three
+  times mid-build and each symbol fell back to whatever the tree defaulted it
+  to, so the re-enable the feature exists to guarantee did not happen. They now
+  ship as `=y`. A dead `CONFIG_THUNDERBOLT` entry is also gone: the symbol was
+  renamed `CONFIG_USB4` in 5.6 and the line had been a no-op ever since
+  (`CONFIG_USB4` was already in the set). Tests pin the value of every symbol
+  against its kconfig type.
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would

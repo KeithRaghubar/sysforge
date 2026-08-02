@@ -859,7 +859,10 @@ _KCONFIG_SILENT_EQUIVALENT = {
 # via a dedicated post-minimization fragment (sysforge.hotplug.config) so the
 # minimizer can't strip them back out. Curated — NOT hardware-derived: F2 only
 # *adds* modules; boot safety (kernel_safety.py) remains the authority for what
-# must be present. All values are "m" (build as loadable modules).
+# must be present. Tristate symbols are "m" (loadable modules); the handful of
+# `bool` symbols must be "y" — kconfig rejects "m" for a bool and discards the
+# whole assignment with `symbol value 'm' invalid for X`, silently losing the
+# intent (2.6.1-B17). Check the symbol's type in the kernel tree before adding.
 _HOTPLUG_KCONFIG = {
     # USB host + gadget
     "CONFIG_USB": "m",
@@ -870,19 +873,18 @@ _HOTPLUG_KCONFIG = {
     "CONFIG_USB_UAS": "m",
     "CONFIG_USB_ACM": "m",
     "CONFIG_USB_SERIAL": "m",
-    # USB4 / Thunderbolt
+    # USB4 / Thunderbolt (CONFIG_THUNDERBOLT was renamed CONFIG_USB4 in 5.6)
     "CONFIG_USB4": "m",
-    "CONFIG_THUNDERBOLT": "m",
     # MMC / SD
     "CONFIG_MMC": "m",
     "CONFIG_MMC_BLOCK": "m",
     "CONFIG_MMC_SDHCI": "m",
     "CONFIG_MMC_SDHCI_PCI": "m",
-    # Hot-plug PCI + CardBus / PCMCIA
-    "CONFIG_HOTPLUG_PCI": "m",
-    "CONFIG_HOTPLUG_PCI_PCIE": "m",
+    # Hot-plug PCI + CardBus / PCMCIA (HOTPLUG_PCI*, CARDBUS are bool → "y")
+    "CONFIG_HOTPLUG_PCI": "y",
+    "CONFIG_HOTPLUG_PCI_PCIE": "y",
     "CONFIG_PCCARD": "m",
-    "CONFIG_CARDBUS": "m",
+    "CONFIG_CARDBUS": "y",
     # Hot-plug HID / input
     "CONFIG_HID_GENERIC": "m",
     "CONFIG_USB_HID": "m",
@@ -1013,7 +1015,8 @@ def _write_hotplug_fragment(kernel_cfg, options, dry_run):
     """Write (or remove) the post-minimization hotplug fragment (F2).
 
     When ``keep_hotplug_drivers`` resolves true, writes ``sysforge.hotplug.config``
-    next to the PKGBUILD with the curated ``_HOTPLUG_KCONFIG`` set as ``=m`` and
+    next to the PKGBUILD with the curated ``_HOTPLUG_KCONFIG`` set at each
+    symbol's kconfig-legal value (``=m`` for tristate, ``=y`` for bool) and
     returns its path. This fragment is merged AFTER the minimization sequence
     (see kconfig_plan.hotplug_merge_step) so ``localmodconfig`` can't
     strip the modules back out.

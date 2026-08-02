@@ -81,6 +81,7 @@ canonical ordering.
 | `2.6.1-B11` | format_assignment can emit env-file syntax env_chain cannot read back | med | small | patch |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
+| `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
 | `2.6.1-STD4` | shipped-config comments drift from the value grammar they document | med | medium | patch |
 | `2.6.1-B12` | plan_write misses the KEY=value; export KEY assignment form | low | small | patch |
 | `2.6.1-B13` | describe_editor_chain hardcodes the detected rung's index | low | small | patch |
@@ -218,6 +219,27 @@ canonical ordering.
   catches is user-facing (a comment that documents a knob wrongly is worse than no comment).
   **Standards home on adoption:** extend the existing shipped-file row rather than adding one — this
   is enforcement depth on a documented convention, not conformance to a new external spec.
+
+- **`2.6.1-F23` — Verify requested kconfig symbols survive into the merged `.config`.** SysForge
+  writes kconfig fragments (`sysforge.config`, `sysforge.hotplug.config`) as plain text and never
+  checks that the symbols it asked for actually landed. A fragment line can be voided outright with
+  no failure signal: a value illegal for the symbol's type (`=m` on a `bool` — kconfig discards the
+  whole assignment and warns mid-build), or a symbol upstream has since renamed or removed (dropped
+  in silence). `2.6.1-B17` was both at once — three bool symbols and a `CONFIG_THUNDERBOLT` entry
+  dead since 5.6 — and each survived because the only evidence was a warning line scrolling past
+  during a 20-minute build, erased from `.config` by the next `make olddefconfig`. The fix that
+  shipped pins the curated table's values in tests, which catches the known symbols but not the next
+  one. `merge_config.sh` already models the check: after merging it re-reads the result and reports
+  `Value requested for CONFIG_X not in final .config`. Do the equivalent for sysforge's own
+  fragments — after the merge slot runs, diff requested symbol/value pairs against the resolved
+  `.config` and surface any that did not take. Design decisions: **where** (a shell post-step
+  contributed via `kconfig_plan`, which runs inside `prepare()` where the merged `.config` exists,
+  versus a Python check that would need the file back out of the build tree) and **severity** — a
+  dropped symbol is a silent loss of intent, but hard-failing a kernel build over one stale entry in
+  a curated table is worse than warning loudly, so this likely warns per-symbol and leaves boot
+  safety (`kernel_safety.py`) as the only hard gate. *Priority: med · Effort: medium · Bump: patch* —
+  no behaviour change on the happy path; it converts a silent, self-erasing failure into a visible
+  one, and the whole `keep_hotplug_drivers` feature is only as good as this check.
 
 ### Bugs
 

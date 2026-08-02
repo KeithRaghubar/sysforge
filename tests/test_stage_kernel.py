@@ -2947,12 +2947,44 @@ def test_write_hotplug_fragment_writes_when_on(tmp_path, monkeypatch):
     )
     assert path == pb.parent / "sysforge.hotplug.config"
     body = path.read_text()
-    # Every curated symbol lands as =m.
+    # Tristate symbols land as =m.
     assert "CONFIG_USB=m" in body
     assert "CONFIG_MMC=m" in body
-    assert "CONFIG_HOTPLUG_PCI=m" in body
+    assert "CONFIG_PCCARD=m" in body
+    # Bool symbols land as =y — kconfig rejects 'm' for them (2.6.1-B17).
+    assert "CONFIG_HOTPLUG_PCI=y" in body
     # No `is not set` lines — this fragment only ever enables.
     assert "is not set" not in body
+
+
+# Kconfig symbols in _HOTPLUG_KCONFIG that are declared `bool`, not `tristate`,
+# in the kernel tree. Writing "m" for these makes kconfig discard the whole
+# assignment with `symbol value 'm' invalid for X`, silently losing the F2
+# intent (2.6.1-B17). Extend when adding a bool symbol to the curated set.
+_BOOL_HOTPLUG_SYMBOLS = frozenset(
+    {"CONFIG_HOTPLUG_PCI", "CONFIG_HOTPLUG_PCI_PCIE", "CONFIG_CARDBUS"}
+)
+
+
+def test_hotplug_kconfig_bool_symbols_are_not_modules():
+    for symbol in _BOOL_HOTPLUG_SYMBOLS:
+        assert symbol in _km._HOTPLUG_KCONFIG, f"{symbol} dropped from curated set"
+        assert _km._HOTPLUG_KCONFIG[symbol] == "y", (
+            f"{symbol} is a bool kconfig symbol; 'm' is rejected by kconfig"
+        )
+
+
+def test_hotplug_kconfig_values_are_legal():
+    for symbol, value in _km._HOTPLUG_KCONFIG.items():
+        expected = "y" if symbol in _BOOL_HOTPLUG_SYMBOLS else "m"
+        assert value == expected, f"{symbol}={value} (expected {expected})"
+
+
+def test_hotplug_kconfig_has_no_removed_symbols():
+    # CONFIG_THUNDERBOLT was renamed to CONFIG_USB4 in 5.6; a fragment line for
+    # a symbol the tree no longer declares is silently dropped (2.6.1-B17).
+    assert "CONFIG_THUNDERBOLT" not in _km._HOTPLUG_KCONFIG
+    assert "CONFIG_USB4" in _km._HOTPLUG_KCONFIG
 
 
 def test_write_hotplug_fragment_removes_stale_when_off(tmp_path, monkeypatch):
