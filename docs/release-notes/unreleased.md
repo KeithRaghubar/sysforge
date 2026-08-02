@@ -592,6 +592,21 @@ https://keepachangelog.com/en/1.1.0/
   background job keeps `$!` valid and `wait` at 0, with the original command
   preserved in the trailing `# sysforge(docs off):` comment.
 
+- Corrected four stale inline comments in the shipped `etc/sysforge/*.toml`
+  defaults (2.6.1-B16). `[build] cpu_quota` documented only the absolute `"N%"`
+  form in both `sysforge.toml` and `profiles.toml`, omitting the fractional
+  form (`0.75` = that share of the host's cores) it has accepted since
+  2.1.0-F6, and the throttle block still said "all four are unset by default"
+  after `mem_limit` made it five — which `profiles.toml` also never listed as a
+  per-profile override despite `resolve_throttle` treating it exactly like the
+  other four. Separately, `kernel.toml` and `packages.toml` referred to
+  `flag_profiles.toml`, renamed to `profiles.toml`, and `packages.toml` pointed
+  at a `[cache]` section that has never existed (ccache/sccache are configured
+  through a profile's `BUILDENV` token and `RUSTC_WRAPPER`/`CCACHE_DIR`/
+  `SCCACHE_DIR` env keys). Comments only — no behaviour change. `make
+  check-shipped` validates structure, not comment prose, so this class of drift
+  passes every existing gate — closing that hole is tracked on the roadmap.
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would

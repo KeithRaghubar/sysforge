@@ -7,8 +7,8 @@
 # install a custom kernel.
 #
 # The kernel PKGBUILD must already be cloned under [paths] pkgbuild_src_dir in
-# flag_profiles.toml. A [[rules]] entry with profile = "kernel" is also
-# expected (provided in the default flag_profiles.toml).
+# profiles.toml. A [[rules]] entry with profile = "kernel" is also
+# expected (provided in the default profiles.toml).
 # =============================================================================
 
 enabled = false

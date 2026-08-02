@@ -29,7 +29,7 @@
 # `sysforge update` warns once and treats the entry as inert (the package is
 # still maintained if sysforge built it — that comes from build_state).
 #
-# AUR packages are resolved via the PKGBUILD directory set in flag_profiles.toml
+# AUR packages are resolved via the PKGBUILD directory set in profiles.toml
 # ([paths] pkgbuild_src_dir) or [build] pkgbuild_src_dir below; missing clones
 # are auto-fetched. Repo packages are installed via pacman -S --needed (no
 # build step) unless repo_mode = "build_from_source" is set or
@@ -37,7 +37,7 @@
 # =============================================================================
 
 # [build]
-# pkgbuild_src_dir = "~/src"   # override the path from flag_profiles.toml for this manifest
+# pkgbuild_src_dir = "~/src"   # override the path from profiles.toml for this manifest
 # repo_mode    = "pacman"  # "pacman" (default) | "build_from_source" — bootstrap mode for repo
 #                          # packages, and a steady-state bulk-drift switch:
 #                          # "pacman"           → bootstrap installs repo packages via pacman -S
@@ -104,9 +104,11 @@
 # =============================================================================
 # SysForge recommended dependencies
 #
-# ccache/sccache are used automatically when configured in flag_profiles.toml
-# [cache] section (auto-detect by default). reflector is used by the configure
-# stage to set up /etc/pacman.d/mirrorlist.
+# ccache/sccache are used automatically when a profile enables them in
+# profiles.toml — the "ccache" token in BUILDENV, plus RUSTC_WRAPPER /
+# CCACHE_DIR / SCCACHE_DIR in the profile's env keys. Set `cache = false` on a
+# [[package]] entry above to opt a single package out (required for PGO).
+# reflector is used by the configure stage to set up /etc/pacman.d/mirrorlist.
 # =============================================================================
 
 # [[package]]

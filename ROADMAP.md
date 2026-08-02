@@ -81,6 +81,7 @@ canonical ordering.
 | `2.6.1-B11` | format_assignment can emit env-file syntax env_chain cannot read back | med | small | patch |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
+| `2.6.1-STD4` | shipped-config comments drift from the value grammar they document | med | medium | patch |
 | `2.6.1-B12` | plan_write misses the KEY=value; export KEY assignment form | low | small | patch |
 | `2.6.1-B13` | describe_editor_chain hardcodes the detected rung's index | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
@@ -194,6 +195,29 @@ canonical ordering.
   blocking login. *Priority: low · Effort: large · Bump: patch* — six call sites plus coverage that
   does not exist yet; behaviour-preserving on every success path. **Standards home on adoption:**
   none new — §22's privilege seam row already covers the `run_privileged` conversion.
+
+- **`2.6.1-STD4` — shipped-config comments drift from the value grammar they document.**
+  `make check-shipped` validates the *structure* of `etc/sysforge/*.toml` (sections and top-level
+  keys, via `_KNOWN_SECTIONS`/`_KNOWN_TOP_KEYS`, plus fixture parity) but nothing checks that a key's
+  inline comment still describes what its validator accepts. Every feature that **widens an existing
+  key's grammar** rather than adding a key therefore passes every gate while the user-facing comment
+  rots. Two confirmed instances, both fixed by hand: `2.1.0-F6` taught `_coerce_cpu_quota` a
+  fractional form (`0.75` → a share of `os.cpu_count()`) that neither `sysforge.toml` nor
+  `profiles.toml` mentioned; `2.2.0-F4` added `mem_limit` as a fifth throttle knob that
+  `profiles.toml` never listed as a per-profile override even though `resolve_throttle`'s `pick()`
+  handles it identically to the other four. A same-sweep audit of the other four shipped configs
+  found key *coverage* complete (every `BootstrapConfig` field, every kernel/toolchain key documented)
+  but two more stale references of the same class: a renamed `flag_profiles.toml` (5 occurrences) and
+  a `[cache]` section documented in `packages.toml` that has never existed. Add a `check_shipped`
+  group that ties each `_coerce_*`-backed key to its shipped comment — the tractable version is a
+  declarative table mapping key → required substrings/examples (e.g. `cpu_quota` must show both an
+  `N%` and a fractional example), so the check fails when a validator gains a form the comment omits.
+  Cheaper adjacent win worth doing regardless: assert no shipped comment names a config file or
+  section that does not exist, which catches the `flag_profiles.toml`/`[cache]` class outright.
+  *Priority: med · Effort: medium · Bump: patch* — pure tooling, no runtime behaviour; the drift it
+  catches is user-facing (a comment that documents a knob wrongly is worse than no comment).
+  **Standards home on adoption:** extend the existing shipped-file row rather than adding one — this
+  is enforcement depth on a documented convention, not conformance to a new external spec.
 
 ### Bugs
 

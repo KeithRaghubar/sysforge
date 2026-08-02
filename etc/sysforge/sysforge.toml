@@ -72,7 +72,7 @@ clone_timeout = 60
 
 # --- Build CPU/IO throttling ------------------------------------------------
 # Keep compilation from saturating the machine so interactive apps stay
-# responsive. All four are unset by default (builds run unthrottled, makepkg's
+# responsive. All five are unset by default (builds run unthrottled, makepkg's
 # own MAKEFLAGS applies). Each can also be set per flag-profile in profiles.toml
 # (a profile value overrides the global default below for that key).
 #
@@ -87,12 +87,19 @@ clone_timeout = 60
 #   disk IO either.
 # ionice = "idle"
 #
-# cpu_quota — hard CPU ceiling as a percentage, where 100% = one core's worth
-#   (e.g. "600%" caps the build at six cores on an 8-core box, leaving two
-#   free even when the rest of the machine is idle). Enforced via a transient
-#   systemd-run --scope cgroup; if the user slice lacks CPU-controller
-#   delegation or systemd-run is missing, sysforge warns and falls back to
-#   nice/ionice. Unlike nice, this is a firm cap rather than a soft yield.
+# cpu_quota — hard CPU ceiling, in either of two forms:
+#     "600%"  absolute, where 100% = one core's worth (caps the build at six
+#             cores on an 8-core box, leaving two free even when the rest of
+#             the machine is idle);
+#     0.75    a decimal fraction of *this host's* total cores, resolved against
+#             the detected core count at build time (0.75 on a 16-core box →
+#             "1200%"). Portable across machines, so the same config throttles
+#             proportionally on a laptop and a workstation. Must carry a decimal
+#             point — a bare integer without "%" is rejected as ambiguous.
+#   A quota above the host's core count is kept but warned about (systemd clamps
+#   it). Enforced via a transient systemd-run --scope cgroup; if the user slice
+#   lacks CPU-controller delegation or systemd-run is missing, sysforge warns and
+#   falls back to nice/ionice. Unlike nice, this is a firm cap, not a soft yield.
 # cpu_quota = "600%"
 #
 # jobs — parallel build jobs; rewrites the -j token in the emitted MAKEFLAGS

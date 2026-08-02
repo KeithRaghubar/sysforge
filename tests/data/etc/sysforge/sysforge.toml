@@ -46,7 +46,8 @@ clone_timeout = 60
 # See etc/sysforge/sysforge.toml for full docs.
 # nice = 19          # scheduling niceness 0..19 (soft yield)
 # ionice = "idle"    # IO class: "idle" | "best-effort"
-# cpu_quota = "600%" # hard CPU ceiling via systemd-run scope (100% = one core)
+# cpu_quota = "600%" # hard CPU ceiling via systemd-run scope: "N%" (100% = one
+#                    # core) or a decimal fraction of this host's cores (0.75)
 # jobs = 6           # parallel jobs; rewrites -j in MAKEFLAGS
 # mem_limit = "24G"  # per-build memory ceiling (RLIMIT_AS / cgroup MemoryMax)
 

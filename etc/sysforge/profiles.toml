@@ -121,12 +121,18 @@
 #   consumes       = ["makepkg", "rust", "cmake", "meson", "env"]
 #                  # override auto-inferred consumes; omit to infer from makedepends
 #
-#   # CPU/IO throttling — per-profile override of [build] in sysforge.toml.
+#   # CPU/IO/memory throttling — per-profile override of [build] in sysforge.toml.
 #   # Set on a heavy profile (e.g. an LLVM/PGO build) to throttle just those.
+#   # A key present here wins over the global default; an absent key falls back
+#   # to it. See sysforge.toml's [build] block for the full semantics.
 #   nice       = 19                     # scheduling niceness 0..19 (soft yield)
 #   ionice     = "idle"                 # IO class: "idle" | "best-effort"
-#   cpu_quota  = "600%"                 # hard CPU ceiling via systemd scope (100% = one core)
+#   cpu_quota  = "600%"                 # hard CPU ceiling via systemd scope: "N%"
+#                                       # (100% = one core) or a decimal fraction
+#                                       # of this host's cores (0.75 → 12 of 16)
 #   jobs       = 6                      # parallel jobs; rewrites -j in MAKEFLAGS
+#   mem_limit  = "24G"                  # per-build memory ceiling (cgroup MemoryMax,
+#                                       # or RLIMIT_AS without systemd-run)
 #
 # ── [profiles.NAME.append] ───────────────────────────────────────────────────
 #

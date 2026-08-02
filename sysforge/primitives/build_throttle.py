@@ -231,6 +231,7 @@ def resolve_throttle(
     overridden per-key by the resolved profile.
 
     ``resolved_profile`` may carry ``nice`` / ``ionice`` / ``cpu_quota`` / ``jobs``
+    / ``mem_limit``
     (sysforge-internal profile keys; see ``profile.SYSFORGE_KEYS``). A key present
     on the profile wins over the global default; an absent key falls back to it.
 
