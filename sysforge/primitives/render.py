@@ -30,6 +30,8 @@ Leaf module: imports only :mod:`sysforge.log`, so every layer may use it.
 
 Public API:
     arrow()                                   -> str
+    em_dash()                                 -> str
+    fmt_bytes(n)                              -> str
     version_pair(old, new, *, equal_marker=)  -> str
     tag_header(tag)                           -> str
 """
@@ -47,6 +49,29 @@ _MISSING = "—"
 def arrow() -> str:
     """``→``, or ``->`` where the Unicode gate degrades glyphs."""
     return log.downgrade_glyphs("→")
+
+
+def em_dash() -> str:
+    """``—``, or ``-`` where the Unicode gate degrades glyphs.
+
+    Same rationale as :func:`arrow`: any renderer that wants a standalone
+    em-dash (not the ``old — new`` shape ``version_pair`` already handles)
+    must go through here rather than hardcoding the glyph.
+    """
+    return log.downgrade_glyphs("—")
+
+
+def fmt_bytes(n: int | float) -> str:
+    """Format a byte count as a human-readable binary-prefix string.
+
+    Promoted from ``cache_probe._fmt_bytes`` so the cache report and the
+    post-build change summary size column format identically.
+    """
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PiB"
 
 
 def version_pair(

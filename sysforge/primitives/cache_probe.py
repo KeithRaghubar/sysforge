@@ -35,6 +35,8 @@ from datetime import datetime
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.render import fmt_bytes as _fmt_bytes
+
 _log = log.get_logger("CACHE")
 
 _SESSION_RECORDS: list[dict] = []
@@ -53,15 +55,6 @@ def _run_command(cmd: list[str]) -> str | None:
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
     return None
-
-
-def _fmt_bytes(n: int | float) -> str:
-    """Format a byte count as a human-readable string."""
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} PiB"
 
 
 # ---------------------------------------------------------------------------

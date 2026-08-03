@@ -9,7 +9,9 @@ import pytest
 
 from sysforge.pipeline.runner import run_pipeline
 from sysforge.pipeline.state import PipelineState
-from sysforge.pipeline.stages.base import Stage, RunOptions
+from sysforge.pipeline.stages.base import BootstrapRebootRequired, RunOptions, Stage
+from sysforge.primitives import change_report
+from sysforge.primitives.change_report import ExtraBlock, PkgFacts
 
 
 # ---------------------------------------------------------------------------
@@ -304,3 +306,216 @@ def test_standalone_stage_skips_log_on_dry_run(tmp_path, monkeypatch):
     _runner.run_stage_standalone(
         stage, {}, make_options(state_dir=tmp_path, log_dir=tmp_path, dry_run=True))
     assert not (tmp_path / "sysforge-run-kernel.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# Post-build change summary (2.6.1-F24)
+# ---------------------------------------------------------------------------
+
+class ReportingStage(Stage):
+    """Fake stage that opts into change reporting."""
+    def __init__(self, name="packages", raises=False):
+        self.name = name
+        self.description = "Mock reporting stage"
+        self.depends_on = []
+        self.stateless = True
+        self.reports_changes = True
+        self._raises = raises
+
+    def run(self, config, state, options):
+        if self._raises:
+            raise RuntimeError(f"[{self.name}] simulated failure")
+
+
+def _standalone(stage, tmp_path, monkeypatch, **opt_kwargs):
+    """Run a stage standalone with probes stubbed, as the log tests above do."""
+    from sysforge.pipeline import runner as _runner
+    monkeypatch.setattr(_runner, "emit_system_probes", lambda: None)
+    monkeypatch.setattr(_runner, "reset_session", lambda: None)
+    _runner.run_stage_standalone(
+        stage, {}, make_options(state_dir=tmp_path, log_dir=tmp_path, **opt_kwargs))
+
+
+def _snapshots(monkeypatch, sequence):
+    """Feed snapshot() a fixed sequence of return values; record the roots asked for."""
+    calls = []
+
+    def fake(root=None):
+        calls.append(root)
+        return sequence[len(calls) - 1]
+
+    monkeypatch.setattr(change_report, "snapshot", fake)
+    return calls
+
+
+def test_non_reporting_stage_takes_no_snapshots(tmp_path, monkeypatch):
+    calls = _snapshots(monkeypatch, [])
+    stage = OkStage("configure")
+    stage.stateless = True
+    _standalone(stage, tmp_path, monkeypatch)
+    assert calls == []
+
+
+def test_reporting_stage_snapshots_both_sides_and_renders(tmp_path, monkeypatch, capsys):
+    calls = _snapshots(monkeypatch, [
+        {"p": PkgFacts("1-1")},
+        {"p": PkgFacts("1-2")},
+    ])
+    _standalone(ReportingStage(), tmp_path, monkeypatch)
+    assert len(calls) == 2
+    out = capsys.readouterr().err
+    assert "1-1" in out and "1-2" in out
+
+
+def test_failed_stage_still_reports_partial(tmp_path, monkeypatch, capsys):
+    _snapshots(monkeypatch, [
+        {"p": PkgFacts("1-1")},
+        {"p": PkgFacts("1-2")},
+    ])
+    # run_stage_standalone's existing RuntimeError handler still calls
+    # _log.fatal -> sys.exit(1) after our helper renders the summary — that
+    # exit-code authority is unchanged by this task.
+    with pytest.raises(SystemExit):
+        _standalone(ReportingStage(raises=True), tmp_path, monkeypatch)
+    out = capsys.readouterr().err
+    assert "FAILED after applying changes" in out
+
+
+def test_failed_stage_with_no_changes_reports_none_applied(tmp_path, monkeypatch, capsys):
+    snap = {"p": PkgFacts("1-1")}
+    _snapshots(monkeypatch, [dict(snap), dict(snap)])
+    with pytest.raises(SystemExit):
+        _standalone(ReportingStage(raises=True), tmp_path, monkeypatch)
+    assert "system unchanged" in capsys.readouterr().err.lower()
+
+
+def test_snapshot_failure_yields_unknown_and_does_not_fail_the_stage(
+    tmp_path, monkeypatch, capsys
+):
+    def boom(root=None):
+        raise change_report.SnapshotError("pacman unavailable")
+
+    monkeypatch.setattr(change_report, "snapshot", boom)
+    # Must not raise, and must not change the stage's own success determination.
+    _standalone(ReportingStage(), tmp_path, monkeypatch)
+    out = capsys.readouterr().err
+    assert "unavailable" in out.lower()
+    assert "pacman unavailable" in out
+
+
+def test_render_exception_never_propagates(tmp_path, monkeypatch):
+    """The explicit guardrail: reporting can never fail a build."""
+    _snapshots(monkeypatch, [{"p": PkgFacts("1-1")}, {"p": PkgFacts("1-2")}])
+
+    def boom(*args, **kwargs):
+        raise ValueError("render bug")
+
+    monkeypatch.setattr(change_report, "render", boom)
+    _standalone(ReportingStage(), tmp_path, monkeypatch)  # must not raise
+
+
+def test_dry_run_takes_no_snapshots(tmp_path, monkeypatch):
+    calls = _snapshots(monkeypatch, [])
+    _standalone(ReportingStage(), tmp_path, monkeypatch, dry_run=True)
+    assert calls == []
+
+
+def test_change_extras_blocks_are_rendered(tmp_path, monkeypatch, capsys):
+    class ExtrasStage(ReportingStage):
+        def change_extras(self, config, state, options):
+            return [ExtraBlock(label="Extra:", lines=["hello"])]
+
+    _snapshots(monkeypatch, [{"p": PkgFacts("1-1")}, {"p": PkgFacts("1-2")}])
+    _standalone(ExtrasStage(), tmp_path, monkeypatch)
+    out = capsys.readouterr().err
+    assert "Extra:" in out and "hello" in out
+
+
+def test_change_extras_failure_degrades_to_warning(tmp_path, monkeypatch, capsys):
+    class BadExtrasStage(ReportingStage):
+        def change_extras(self, config, state, options):
+            raise ValueError("extras bug")
+
+    _snapshots(monkeypatch, [{"p": PkgFacts("1-1")}, {"p": PkgFacts("1-2")}])
+    _standalone(BadExtrasStage(), tmp_path, monkeypatch)  # must not raise
+    out = capsys.readouterr().err
+    assert "1-2" in out  # version rows still render without the extras
+
+
+def test_run_pipeline_reporting_stage_renders_before_complete_line(tmp_path, monkeypatch, capsys):
+    """The pipeline path (not just standalone) wires the reporting stage,
+    and the summary lands before the stage's own completion line so the
+    completion line stays last on screen."""
+    _snapshots(monkeypatch, [{"p": PkgFacts("1-1")}, {"p": PkgFacts("1-2")}])
+    stage = ReportingStage("packages")
+    run_pipeline({}, make_options(state_dir=tmp_path), stages=[stage])
+    out = capsys.readouterr().err
+    assert "1-1" in out and "1-2" in out
+    summary_idx = out.index("[SYSFORGE] Packages stage changes")
+    complete_idx = out.index("packages complete")
+    assert summary_idx < complete_idx
+
+
+def test_run_pipeline_bootstrap_reboot_still_exits_zero_with_reporting_stage(
+    tmp_path, monkeypatch, capsys
+):
+    """BootstrapRebootRequired must still be a clean sys.exit(0), even for a
+    stage that opted into change reporting — the helper must not swallow or
+    reclassify this control-flow exception."""
+    calls = _snapshots(monkeypatch, [{"p": PkgFacts("1-1")}, {"p": PkgFacts("1-2")}])
+
+    class RebootStage(ReportingStage):
+        def run(self, config, state, options):
+            raise BootstrapRebootRequired("reboot now")
+
+    with pytest.raises(SystemExit) as exc:
+        run_pipeline({}, make_options(state_dir=tmp_path), stages=[RebootStage("install")])
+    assert exc.value.code == 0
+    assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Exception identity through _run_stage_with_change_report (2.6.1-F24 review)
+# ---------------------------------------------------------------------------
+
+def test_same_exception_object_propagates(tmp_path, monkeypatch):
+    """The helper must re-raise the exact exception instance the stage
+    raised, not a copy or a re-wrap, so the runner's except-clauses (which
+    match by type and read the caught instance) keep working unchanged."""
+    from sysforge.pipeline import runner as _runner
+
+    _snapshots(monkeypatch, [{"p": PkgFacts("1-1")}, {"p": PkgFacts("1-2")}])
+    sentinel = RuntimeError("sentinel failure")
+
+    class SentinelStage(ReportingStage):
+        def run(self, config, state, options):
+            raise sentinel
+
+    state = PipelineState(tmp_path)
+    with pytest.raises(RuntimeError) as exc:
+        _runner._run_stage_with_change_report(SentinelStage(), {}, state, make_options())
+    assert exc.value is sentinel
+
+
+def test_render_exception_does_not_mask_a_failed_stage(tmp_path, monkeypatch):
+    """If the stage itself failed AND rendering also blows up, the stage's
+    own exception must still win — a reporting bug must never swallow a real
+    build failure."""
+    from sysforge.pipeline import runner as _runner
+
+    _snapshots(monkeypatch, [{"p": PkgFacts("1-1")}, {"p": PkgFacts("1-2")}])
+
+    def boom(*args, **kwargs):
+        raise ValueError("render bug")
+
+    monkeypatch.setattr(change_report, "render", boom)
+    sentinel = RuntimeError("real build failure")
+
+    class SentinelStage(ReportingStage):
+        def run(self, config, state, options):
+            raise sentinel
+
+    state = PipelineState(tmp_path)
+    with pytest.raises(RuntimeError) as exc:
+        _runner._run_stage_with_change_report(SentinelStage(), {}, state, make_options())
+    assert exc.value is sentinel

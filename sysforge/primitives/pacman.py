@@ -751,6 +751,79 @@ def get_all_installed_packages() -> dict[str, str]:
     return packages
 
 
+def get_installed_facts(root=None) -> dict[str, tuple[str, int | None]]:
+    """Return ``{pkgname: (version, installed_size)}`` for all installed packages.
+
+    One pass over the local DB. Installed size rides along free from the same
+    pyalpm record (``pkg.isize``), so the change summary's size column costs no
+    extra query. Falls back to ``pacman -Qi`` when pyalpm is unavailable.
+
+    ``root`` is accepted for the target-root case (2.6.1-F27) but only the live
+    root is supported today; a non-None value raises so a caller can never
+    silently receive live-root data for a target root.
+    """
+    if root is not None:
+        raise NotImplementedError("get_installed_facts(root=...) is not implemented yet")
+
+    if _use_pyalpm():
+        try:
+            localdb = _get_alpm_handle().get_localdb()
+            return {pkg.name: (pkg.version, pkg.isize) for pkg in localdb.pkgcache}
+        except _alpm().error:
+            pass
+
+    result = subprocess.run(["pacman", "-Qi"], capture_output=True, text=True)
+    if result.returncode != 0:
+        # Unlike get_all_installed_packages()'s {} fallback, this is a diff
+        # input: an installed Arch system with zero packages does not exist,
+        # so an empty result here is unambiguously a read failure, not a
+        # defensible "assume nothing". Raise so every caller — not just
+        # change_report.snapshot() — gets an honest failure signal instead of
+        # a silently empty dict that reads as "nothing installed".
+        raise RuntimeError(
+            f"pacman -Qi failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or 'no output'}"
+        )
+    return _parse_qi_facts(result.stdout)
+
+
+def _parse_qi_facts(text: str) -> dict[str, tuple[str, int | None]]:
+    """Parse ``pacman -Qi`` output into ``{name: (version, isize_bytes)}``.
+
+    ``Installed Size`` is locale-formatted (e.g. ``142.30 MiB``); an
+    unparseable value yields ``None`` rather than a guess, and the renderer
+    then drops the size column entirely.
+    """
+    units = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4}
+    facts: dict[str, tuple[str, int | None]] = {}
+    name = version = None
+    isize: int | None = None
+    for line in text.splitlines():
+        if not line.strip():
+            if name and version:
+                facts[name] = (version, isize)
+            name = version = None
+            isize = None
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if key == "Name":
+            name = value
+        elif key == "Version":
+            version = value
+        elif key == "Installed Size":
+            parts = value.split()
+            if len(parts) == 2 and parts[1] in units:
+                try:
+                    isize = int(float(parts[0].replace(",", "")) * units[parts[1]])
+                except ValueError:
+                    isize = None
+    if name and version:
+        facts[name] = (version, isize)
+    return facts
+
+
 def get_foreign_packages() -> dict[str, str]:
     """
     Run `pacman -Qm` and return {pkgname: installed_version} for all

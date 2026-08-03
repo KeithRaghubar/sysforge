@@ -671,6 +671,22 @@ The hardware stage (stage 2) needs no config — it auto-detects and writes `har
 
 Guard against accidental state clobber: if a state file exists and neither `--resume` nor `--start-from` is passed, the runner exits with instructions rather than overwriting. Both flags are supported on `sysforge run pipeline`.
 
+**Post-build change summary.** A `Stage` carries `reports_changes: bool` (default `False`) and
+`change_root: str | None` alongside the existing `makepkg_bearing`, for the same reason:
+whether a stage's work changes installed packages is a property of the stage, not of the pipeline
+verb, so standalone `sysforge run <stage>` gets the same treatment as a full pipeline run.
+`_run_stage_with_change_report()` wraps both call sites that invoke `stage.run()`
+(`run_stage_standalone` and `run_pipeline`) — when `reports_changes` is set it takes a
+`primitives/change_report.snapshot()` before and after the stage, diffs them, classifies the
+outcome, and renders the summary via `log.ui`. A stage may contribute its own extra blocks below
+the version rows by overriding `Stage.change_extras(config, state, options)`, which returns
+`list[change_report.ExtraBlock]`; the default implementation returns an empty list, so the runner
+never needs stage-specific knowledge and no stage is required to override it. Every part of the
+reporting path is guarded independently — a snapshot, classify,
+extras, or render failure degrades to a warning; the stage's own exception, if any, is re-raised
+unchanged so reporting can never turn a successful build into a failure or mask a real one.
+`packages`, `kernel`, and `toolchain` opt in; `install` does not.
+
 **User-facing output.** The runner emits a welcome banner (sysforge version + ordered stage chain) and a status snapshot (`✓ done`, `▸ running`, `· pending`, `↳ skipped_to`) before the loop, a stage banner before each stage (`[N/M] name` between two `═` rules), a `✓ name complete` line after each stage, and a closing rule on success. All of this routes through `log.ui` so it reaches both stderr and the unified log regardless of `-v` level. Visual primitives live in `sysforge/ui/headers.py` and share the `═` rule + bold-cyan style with `tools/iso-install.sh` (parallel `_double_rule` / `_step` / `_field` helpers in shell). Step counters are 1-based against the full stage list, so `--start-from configure` shows `[3/7]`, not `[1/…]`.
 
 ### Checkpoint state
@@ -1600,12 +1616,48 @@ All pacman and batch-install shared operations. Public API:
 - `get_all_installed_packages()` — `pacman -Q`; returns `{name: version}`
 - `get_foreign_packages()` — `pacman -Qm`; returns names not from any sync DB
 - `get_pacman_sync_version(name)` — `pacman -Si <name>`; returns version from sync DB or `None`
+- `get_installed_facts(root=None)` — `{name: (version, installed_size)}` for every installed package in one local-DB pass (pyalpm's `pkg.isize` rides along free; falls back to a parsed `pacman -Qi` when pyalpm is unavailable). Feeds `change_report.snapshot()`. `root` is accepted for the target-root case but a non-`None` value raises `NotImplementedError` today — implementing it for a target root is future work; the guard exists so a caller can never silently receive live-root data for a target root it asked to snapshot. A failed `-Qi` fallback (`returncode != 0`) raises `RuntimeError` rather than returning `{}` — unlike `get_all_installed_packages()`, this is a diff input: an installed Arch system with zero packages does not exist, so an empty result is unambiguously a read failure, and a silent `{}` here would make `change_report.diff()`/`classify()` misreport a failed read as a genuine no-op.
 
 The five read-only queries above (`get_installed_version`, `get_all_installed_packages`, `get_foreign_packages`, `get_pacman_sync_version`, `filter_missing_deps`) check for an importable `pyalpm` and route through libalpm bindings when available — direct local-DB and sync-DB access is faster than spawning a `pacman` subprocess per call. The fallback path is the original subprocess shell-out, so installs without `pyalpm` are unaffected. `pyalpm` is shipped as `[project.optional-dependencies] extra` (`uv sync --extra extra`) or installed via the system package. `SYSFORGE_PACMAN_NO_PYALPM=1` forces the subprocess path even when pyalpm is present (used by `tests/conftest.py` so existing subprocess-mocking tests keep driving the query). Mutating paths (`pacman -U`, `pacman -S --needed`) and the `pacman -Fq` files-DB lookup in `provides_lookup.py` remain subprocess-based.
 
 Constants: `BATCH_STRIP_FLAGS` (flags removed from per-build makepkg calls during batch install — composed as `SYNC_FLAGS | INSTALL_FLAGS`, the two flag families defined in `makepkg_flags.py`), `BATCH_EXTRA_FLAGS`. `SYNC_FLAGS` (`{--syncdeps, -s}`) is the single source of truth for the dep-sync strip — reused by the toolchain stage's staged-deps passes (§`run toolchain` Dep resolution) so the two sites that suppress makepkg's `pacman -S` share one name. Both `INSTALL_FLAGS` and `SYNC_FLAGS` live in `makepkg_flags.py` (their natural home — flag-family constants); `pacman`/`toolchain` import them from there, and `makepkg_wrapper` re-exports `INSTALL_FLAGS` for back-compat.
 
 **Pacman PostTransaction hooks.** Three libalpm hooks under `/usr/share/libalpm/hooks/sysforge-{kernel,toolchain,buildstate}.hook` invoke `/usr/lib/sysforge/pacman-hook-helper.sh` to drop a sentinel into `/var/lib/sysforge/sentinels/`. Targets: kernel hook fires on `linux*` (inclusive of `linux-firmware` and `linux-headers`); toolchain hook fires on `llvm*`, `clang`, `lld`, `compiler-rt`, `gcc`, `gcc-libs` and the lib32 variants; buildstate hook fires on `*`. The helper is failsafe — every error path exits 0 so it cannot break a pacman transaction. `cmd_update` calls `_consume_pacman_hook_sentinels()` at entry: kernel/toolchain sentinels become `_log.warn` reminders, then unlink; buildstate is unlinked silently because the existing `BuildState.sync_with_installed()` already runs. The sentinel directory is created via tmpfiles.d and pre-created during the bootstrap configure stage; the consumer skips silently when the directory is absent so older installs that predate the hooks still work.
+
+### `change_report.py`
+
+Post-build change summary for pipeline stages. A leaf primitive: imports `pacman` and `render`
+only, never reaches up into `pipeline` — the runner calls it, not the other way around.
+
+**Why snapshot diffing, not stage-side bookkeeping.** `sysforge update` already reports package
+transitions because it builds through `BuildOutcome`, which carries version pairs. The pipeline
+stages (`packages`, `kernel`, `toolchain`) build through `makepkg_run` directly and never construct
+one, so there was nothing to read a summary from. Diffing two snapshots of the pacman local DB
+taken around the stage sidesteps that gap and is authoritative in a way per-stage instrumentation
+isn't: it catches split package members and dependencies pulled in mid-build with no extra
+bookkeeping in the stage itself.
+
+**Public API:**
+- `snapshot(root=None) -> dict[str, PkgFacts]` — wraps `pacman.get_installed_facts()`; raises
+  `SnapshotError` if the local DB can't be read, so the caller classifies the run as unknown rather
+  than mistaking a read failure for "no changes".
+- `diff(before, after) -> list[ChangeRow]` — changed rows (version and/or installed-size delta),
+  then added, then removed, name-sorted within each group. A package whose version is unchanged but
+  whose installed size moved (a same-pkgrel rebuild that shrinks the package) still counts as a
+  change.
+- `classify(rows, *, stage_failed, unavailable=None) -> ChangeOutcome` — `unavailable` wins over
+  everything; otherwise a failed stage yields `PARTIAL` (rows non-empty) or `NONE_APPLIED` (rows
+  empty), and a clean run yields `COMPLETE` or `NO_CHANGES`. `ChangeOutcome` is reporting-only and
+  never influences exit codes — `stage.run()` raising remains the sole authority over build
+  success, so a misclassification here can mislead but never breaks a build.
+- `render(rows, *, stage, outcome, extras=(), reason=None, emit=print) -> None` — renders the
+  summary line-by-line through `emit`. Defaults to `print` so tests capture stdout, mirroring
+  `update_summary`; the runner passes a `log.ui` binding so the summary also lands in the unified
+  log. `ExtraBlock(label, lines)` lets a stage append its own pre-formatted lines below the
+  version rows without `render` needing to know what they mean.
+
+`PkgFacts(version, isize)` is what one installed package contributes; `ChangeRow(name, old, new)`
+is one package's transition (`old` `None` = added, `new` `None` = removed).
 
 ### `profile.py`
 
@@ -1726,9 +1778,9 @@ announces the merged `.config` is assembled, which is only true once the hotplug
 
 ### `render.py`
 
-The one home for the presentation vocabulary shared by every tag-gutter report block: `sysforge update`'s summary (`update_summary`) and both pre-flights (`llvm_state.render_preflight`, `toolchain_preflight.render_preflight`). Public API: `arrow()`, `version_pair(old, new, *, equal_marker=True)`, `tag_header(tag)`.
+The one home for the presentation vocabulary shared by every tag-gutter report block: `sysforge update`'s summary (`update_summary`), both pre-flights (`llvm_state.render_preflight`, `toolchain_preflight.render_preflight`), and the pipeline's post-build change summary (`change_report.py`). Public API: `arrow()`, `em_dash()`, `version_pair(old, new, *, equal_marker=True)`, `tag_header(tag)`, `fmt_bytes(n)`.
 
-`version_pair` renders a transition as `old → new`, collapsing to `ver (=)` when both sides are known and identical (`equal_marker=False` keeps the arrow form unconditionally — the built-package and stage-owned-update rows read as a report of what was done, so an unchanged version is still a transition there). An unknown side renders as `—`. `tag_header` returns the `  [TAG]` prefix padded to the shared 17-column gutter.
+`version_pair` renders a transition as `old → new`, collapsing to `ver (=)` when both sides are known and identical (`equal_marker=False` keeps the arrow form unconditionally — the built-package and stage-owned-update rows read as a report of what was done, so an unchanged version is still a transition there). An unknown side renders as `—`. `tag_header` returns the `  [TAG]` prefix padded to the shared 17-column gutter. `em_dash()` is `arrow()`'s counterpart for a standalone `—` (e.g. a failure message's clause separator) — any renderer wanting one goes through here rather than hardcoding the glyph. `fmt_bytes(n)` formats a byte count as a human-readable binary-prefix string (`142.3 MiB`); promoted from `cache_probe._fmt_bytes` so the cache report and the change summary's size column format identically. All four glyph-bearing helpers route through `log.downgrade_glyphs` so they degrade together under the Unicode gate.
 
 **Glyphs are resolved at format time**, not left to the emit path. Every pre-flight block now emits through `log.ui` (`update.py`, `build_cmd.py`, `fetch.py`, `pipeline/stages/toolchain.py`), which applies `log.downgrade_glyphs` and mirrors the block into the unified run-log — the bare `print()` sites that let a hardcoded `→` survive under `TERM=linux` are gone. Resolving early is kept regardless: `downgrade_glyphs` is idempotent, so it costs nothing, and it keeps a renderer's return value correct for any caller that formats without emitting. It covers the `—` placeholder in the same pass. Leaf module: imports only `sysforge.log`, so any layer may use it.
 

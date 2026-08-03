@@ -114,6 +114,20 @@ class Stage:
     # reboot boundary before any makepkg-bearing stage runs (1.2.0-B11,
     # 2.1.0-B4).
     makepkg_bearing: bool = False
+    # True for stages whose work changes installed packages, so the runner
+    # brackets stage.run() with local-DB snapshots and renders a change
+    # summary. This lives on the stage — not the pipeline verb — for the same
+    # reason makepkg_bearing does: it is a property of the work, and standalone
+    # `sysforge run <stage>` must get the same treatment as a full pipeline
+    # (2.6.1-F24).
+    reports_changes: bool = False
+    # Root the snapshots are taken against. None = the live root; the install
+    # stage resolves a target root (2.6.1-F27). Target-root support is not
+    # implemented yet — a stage that sets this today gets
+    # pacman.get_installed_facts(root=...) raising NotImplementedError, which
+    # surfaces as a permanently-UNKNOWN change summary ("change summary
+    # unavailable (...)") until 2.6.1-F27 lands.
+    change_root: str | None = None
 
     def run(self, config, state, options):
         """
@@ -129,6 +143,18 @@ class Stage:
         intra-stage checkpointing (packages stage only).
         """
         raise NotImplementedError(f"Stage {self.name!r} has not been implemented")
+
+    def change_extras(self, config, state, options):
+        """Return stage-specific ExtraBlocks appended below the version rows.
+
+        Called by the runner after run() when reports_changes is set. The
+        default is empty so the runner stays generic — it never needs to know
+        what (say) a kconfig is. Overrides must not raise; the runner guards
+        anyway, but a raising override loses its own block.
+
+        Returns: list[change_report.ExtraBlock]
+        """
+        return []
 
     def __repr__(self):
         return f"<Stage {self.name!r}>"

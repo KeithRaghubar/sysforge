@@ -305,6 +305,7 @@ class PackagesStage(Stage):
     description = "Build and install packages from packages.toml"
     depends_on = ["toolchain"]
     makepkg_bearing = True
+    reports_changes = True
 
     def run(self, config, state, options):
         toolchain = _toolchain_overrides(state)

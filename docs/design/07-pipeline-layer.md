@@ -134,6 +134,22 @@ The hardware stage (stage 2) needs no config — it auto-detects and writes `har
 
 Guard against accidental state clobber: if a state file exists and neither `--resume` nor `--start-from` is passed, the runner exits with instructions rather than overwriting. Both flags are supported on `sysforge run pipeline`.
 
+**Post-build change summary.** A `Stage` carries `reports_changes: bool` (default `False`) and
+`change_root: str | None` alongside the existing `makepkg_bearing`, for the same reason:
+whether a stage's work changes installed packages is a property of the stage, not of the pipeline
+verb, so standalone `sysforge run <stage>` gets the same treatment as a full pipeline run.
+`_run_stage_with_change_report()` wraps both call sites that invoke `stage.run()`
+(`run_stage_standalone` and `run_pipeline`) — when `reports_changes` is set it takes a
+`primitives/change_report.snapshot()` before and after the stage, diffs them, classifies the
+outcome, and renders the summary via `log.ui`. A stage may contribute its own extra blocks below
+the version rows by overriding `Stage.change_extras(config, state, options)`, which returns
+`list[change_report.ExtraBlock]`; the default implementation returns an empty list, so the runner
+never needs stage-specific knowledge and no stage is required to override it. Every part of the
+reporting path is guarded independently — a snapshot, classify,
+extras, or render failure degrades to a warning; the stage's own exception, if any, is re-raised
+unchanged so reporting can never turn a successful build into a failure or mask a real one.
+`packages`, `kernel`, and `toolchain` opt in; `install` does not.
+
 **User-facing output.** The runner emits a welcome banner (sysforge version + ordered stage chain) and a status snapshot (`✓ done`, `▸ running`, `· pending`, `↳ skipped_to`) before the loop, a stage banner before each stage (`[N/M] name` between two `═` rules), a `✓ name complete` line after each stage, and a closing rule on success. All of this routes through `log.ui` so it reaches both stderr and the unified log regardless of `-v` level. Visual primitives live in `sysforge/ui/headers.py` and share the `═` rule + bold-cyan style with `tools/iso-install.sh` (parallel `_double_rule` / `_step` / `_field` helpers in shell). Step counters are 1-based against the full stage list, so `--start-from configure` shows `[3/7]`, not `[1/…]`.
 
 ### Checkpoint state

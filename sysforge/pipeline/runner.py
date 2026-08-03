@@ -33,6 +33,7 @@ _INVOCATION = " ".join(sys.argv)
 from sysforge.pipeline.state import PipelineState, resolve_state_dir
 from sysforge.pipeline.stages import STAGES
 from sysforge.pipeline.stages.base import BootstrapRebootRequired
+from sysforge.primitives import change_report
 from sysforge.primitives.cache_probe import (
     emit_session_report,
     emit_system_probes,
@@ -52,6 +53,79 @@ def _emit(lines):
     """Emit each line of a multi-line banner via _log.ui."""
     for line in lines:
         _log.ui(line)
+
+
+def _run_stage_with_change_report(stage, config, state, options):
+    """Run a stage, bracketing it with local-DB snapshots when it opts in.
+
+    Re-raises whatever stage.run() raised, unchanged and after rendering, so
+    the caller's existing except-clauses keep sole authority over success and
+    exit codes. Every part of the reporting path is guarded: a snapshot,
+    classify, extras or render failure degrades to a warning and never
+    reaches the caller (2.6.1-F24).
+
+    Note: stage.run() is wrapped in ``except BaseException``, so a
+    KeyboardInterrupt during a build now also triggers the after-snapshot,
+    diff, and summary render before propagating — Ctrl-C takes measurably
+    longer to take effect than it used to. This is intended: it lets the
+    operator see what landed before the abort, and is deferred for narrowing
+    to 2.6.1-F25.
+    """
+    if not getattr(stage, "reports_changes", False):
+        stage.run(config, state, options)
+        return
+
+    change_root = getattr(stage, "change_root", None)
+    root = Path(change_root) if change_root else None
+    unavailable: str | None = None
+    before: dict = {}
+    try:
+        before = change_report.snapshot(root)
+    except change_report.SnapshotError as e:
+        unavailable = str(e)
+
+    stage_error: BaseException | None = None
+    try:
+        stage.run(config, state, options)
+    except BaseException as e:  # noqa: BLE001 — re-raised below untouched
+        stage_error = e
+
+    try:
+        rows = []
+        if unavailable is None:
+            try:
+                after = change_report.snapshot(root)
+                rows = change_report.diff(before, after)
+            except change_report.SnapshotError as e:
+                unavailable = str(e)
+
+        extras = []
+        if stage_error is None:
+            try:
+                extras = stage.change_extras(config, state, options)
+            # The literal em-dashes below are intentional, not an oversight:
+            # every _log.* call is routed through log.downgrade_glyphs()
+            # automatically (see log.py), so only strings built for
+            # non-log emitters need render.em_dash()/arrow() explicitly.
+            except Exception as e:  # noqa: BLE001 — advisory blocks never block
+                _log.warn(f"{stage.name}: change summary extras unavailable — {e}")
+
+        outcome = change_report.classify(
+            rows, stage_failed=stage_error is not None, unavailable=unavailable
+        )
+        change_report.render(
+            rows,
+            stage=stage.name,
+            outcome=outcome,
+            extras=extras,
+            reason=unavailable,
+            emit=_log.ui,
+        )
+    except Exception as e:  # noqa: BLE001 — reporting can never fail a build
+        _log.warn(f"{stage.name}: change summary failed to render — {e}")
+
+    if stage_error is not None:
+        raise stage_error
 
 
 def _validate_stages(stages):
@@ -114,7 +188,7 @@ def run_stage_standalone(stage, config, options):
         else:
             _log.info(f"── Stage: {stage.name} ── {stage.description}")
             progress.phase(stage.name)
-            stage.run(config, state, options)
+            _run_stage_with_change_report(stage, config, state, options)
             if not stage.stateless:
                 try:
                     state.save()
@@ -260,7 +334,7 @@ def run_pipeline(config, options, stages=None):
 
             progress.phase(stage.name)
             try:
-                stage.run(config, state, options)
+                _run_stage_with_change_report(stage, config, state, options)
                 state.mark_done(stage.name)
                 state.save()
                 _log.ui(stage_complete_line(stage.name))

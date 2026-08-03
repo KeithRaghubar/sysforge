@@ -79,3 +79,25 @@ def test_tag_header_pads_to_shared_gutter():
 def test_tag_header_always_leaves_one_space_for_long_tags():
     out = tag_header("A_VERY_LONG_TAG_NAME")
     assert out.endswith("] ")
+
+
+# ---------------------------------------------------------------------------
+# fmt_bytes
+# ---------------------------------------------------------------------------
+
+def test_fmt_bytes_scales_through_units():
+    from sysforge.primitives.render import fmt_bytes
+    assert fmt_bytes(0) == "0.0 B"
+    assert fmt_bytes(512) == "512.0 B"
+    assert fmt_bytes(1536) == "1.5 KiB"
+    assert fmt_bytes(1024 * 1024 * 3) == "3.0 MiB"
+    assert fmt_bytes(1024 ** 4) == "1.0 TiB"
+    assert fmt_bytes(1024 ** 5) == "1.0 PiB"
+
+
+def test_cache_probe_formats_identically_after_promotion():
+    """Regression: cache_probe's report must not change shape from the move."""
+    from sysforge.primitives import cache_probe
+    from sysforge.primitives.render import fmt_bytes
+    for n in (0, 999, 1024, 1024 ** 3 + 12345):
+        assert cache_probe._fmt_bytes(n) == fmt_bytes(n)

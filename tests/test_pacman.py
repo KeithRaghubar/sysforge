@@ -922,3 +922,89 @@ class TestOwnersOf:
         out = pacman.owners_of([Path("/etc/a.hook"), Path("/etc/mystery.hook")])
         assert out == {Path("/etc/a.hook"): "pkg-a"}
         assert Path("/etc/mystery.hook") not in out
+
+
+# ---------------------------------------------------------------------------
+# get_installed_facts / _parse_qi_facts (2.6.1-F24)
+# ---------------------------------------------------------------------------
+
+class TestGetInstalledFacts:
+
+    def test_non_none_root_raises_not_implemented(self):
+        """2.6.1-F27 will implement target-root support; until then a caller
+        must never silently receive live-root data for a target root."""
+        with pytest.raises(NotImplementedError):
+            pacman.get_installed_facts(root=Path("/mnt/target"))
+
+    def test_qi_fallback_nonzero_exit_raises_not_empty_dict(self, monkeypatch):
+        """A failed `pacman -Qi` fallback must raise, not return {}.
+
+        {} is indistinguishable from "zero packages installed" to a caller
+        diffing two snapshots (change_report.snapshot()/diff()/classify()),
+        which would misreport a failed read as ChangeOutcome.NO_CHANGES —
+        exactly the false claim UNKNOWN exists to prevent. Contrast with
+        get_all_installed_packages(), whose {} fallback is intentionally kept
+        as-is for its own (non-diffing) callers.
+        """
+        monkeypatch.setattr(pacman, "_use_pyalpm", lambda: False)
+
+        def fake_run(argv, **kw):
+            return SimpleNamespace(returncode=1, stdout="", stderr="error: could not lock db")
+
+        monkeypatch.setattr(pacman.subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError):
+            pacman.get_installed_facts()
+
+
+class TestParseQiFacts:
+
+    def test_parses_two_records_separated_by_blank_line(self):
+        text = (
+            "Name            : htop\n"
+            "Version         : 3.3.0-1\n"
+            "Installed Size  : 142.30 MiB\n"
+            "\n"
+            "Name            : neovim\n"
+            "Version         : 0.10.0-1\n"
+            "Installed Size  : 24.00 KiB\n"
+        )
+        facts = pacman._parse_qi_facts(text)
+        assert facts == {
+            "htop": ("3.3.0-1", int(142.30 * 1024**2)),
+            "neovim": ("0.10.0-1", int(24.00 * 1024)),
+        }
+
+    def test_final_record_with_no_trailing_blank_line_is_captured(self):
+        text = (
+            "Name            : htop\n"
+            "Version         : 3.3.0-1\n"
+            "Installed Size  : 1.00 MiB\n"
+        )
+        facts = pacman._parse_qi_facts(text)
+        assert facts == {"htop": ("3.3.0-1", 1024**2)}
+
+    def test_record_with_no_installed_size_field_yields_none_isize(self):
+        text = (
+            "Name            : htop\n"
+            "Version         : 3.3.0-1\n"
+        )
+        facts = pacman._parse_qi_facts(text)
+        assert facts == {"htop": ("3.3.0-1", None)}
+
+    def test_malformed_size_number_yields_none_isize(self):
+        text = (
+            "Name            : htop\n"
+            "Version         : 3.3.0-1\n"
+            "Installed Size  : notanumber MiB\n"
+        )
+        facts = pacman._parse_qi_facts(text)
+        assert facts == {"htop": ("3.3.0-1", None)}
+
+    def test_unrecognized_unit_yields_none_isize(self):
+        text = (
+            "Name            : htop\n"
+            "Version         : 3.3.0-1\n"
+            "Installed Size  : 142.30 XiB\n"
+        )
+        facts = pacman._parse_qi_facts(text)
+        assert facts == {"htop": ("3.3.0-1", None)}

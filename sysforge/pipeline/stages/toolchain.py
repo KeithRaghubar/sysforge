@@ -3722,6 +3722,7 @@ class ToolchainStage(Stage):
     description = "LLVM/GCC toolchain build"
     depends_on = ["reconfigure"]
     makepkg_bearing = True
+    reports_changes = True
 
     def run(self, config, state, options):
         tcfg = _load_toolchain_config()

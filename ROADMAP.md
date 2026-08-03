@@ -82,7 +82,6 @@ canonical ordering.
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
 | `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
-| `2.6.1-F24` | Post-build change summary for pipeline stages | med | medium | minor |
 | `2.6.1-F25` | Kernel stage size and kconfig diff blocks | med | medium | patch |
 | `2.6.1-STD4` | shipped-config comments drift from the value grammar they document | med | medium | patch |
 | `2.6.1-B12` | plan_write misses the KEY=value; export KEY assignment form | low | small | patch |
@@ -244,32 +243,6 @@ canonical ordering.
   safety (`kernel_safety.py`) as the only hard gate. *Priority: med · Effort: medium · Bump: patch* —
   no behaviour change on the happy path; it converts a silent, self-erasing failure into a visible
   one, and the whole `keep_hotplug_drivers` feature is only as good as this check.
-
-- **`2.6.1-F24` — Post-build change summary for pipeline stages.** `sysforge update` reports what
-  its builds changed (`_print_result_summary`, `update_summary.py:153`, called post-build from
-  `update.py:1177`); the pipeline stages do not. `PackagesStage` ends with a bare
-  `Total / Built / Failed / Skipped` line (`packages.py:502`) and the kernel stage's
-  `_log_resolution_summary` (`kernel.py:1608`) is deliberately *pre*-build, so after a
-  `sysforge run` nothing states which package versions actually changed. The structural cause is
-  that `packages.py:_build_aur` calls `makepkg_run` directly rather than through
-  `build_core.build_and_install`, so stages never construct a `BuildOutcome` and hold no version
-  pairs; kernel and toolchain build the same direct way. Add `primitives/change_report.py` — a
-  `snapshot()/diff()/classify()/render()` module over `dict[str, PkgFacts]` local-DB snapshots (one
-  pyalpm pass, `pkg.isize` carried along so the size column is free) — and have `pipeline/runner.py`
-  wrap its single `stage.run()` call site (`runner.py:116`) with before/after snapshots. Stages opt
-  in with a `reports_changes` class attr beside the existing `makepkg_bearing` and contribute their
-  own blocks via a `change_extras()` hook, so the runner stays generic. Snapshot diffing is
-  authoritative where stage-side bookkeeping is not: it catches split members and deps pulled in
-  during the build with no instrumentation. Renderer stays separate from `update`'s (whose
-  `ResultSummary` carries update-only fields, and whose reuse would invert the layering) but shares
-  its visual grammar via `render.version_pair`; `cache_probe._fmt_bytes` is promoted to
-  `render.fmt_bytes()`. Includes the `ChangeOutcome` classification —
-  `COMPLETE`/`NO_CHANGES`/`PARTIAL`/`NONE_APPLIED`/`UNKNOWN` — so a mixed state after a mid-stage
-  failure, a genuine no-op, and an unavailable summary are never confusable; reporting-only, it
-  never influences exit codes. Spec:
-  `docs/superpowers/specs/2026-08-02-post-build-change-summary-design.md`.
-  *Priority: med · Effort: medium · Bump: minor* — new observability surface across four stages;
-  additive, and the base the F25–F27 blocks hang off.
 
 - **`2.6.1-F25` — Kernel stage size and kconfig diff blocks.** Builds on `2.6.1-F24`'s
   `change_extras()` hook. Three advisory blocks, none of which can raise or block install. Size

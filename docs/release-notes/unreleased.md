@@ -159,6 +159,30 @@ https://keepachangelog.com/en/1.1.0/
   resolution chain — which rung is in use, which are shadowed, and which sources it will not
   write — before asking. Both variables are written together per target, or neither. (`2.6.1-F18`)
 
+- Every build-bearing pipeline stage now ends with a summary of which
+  installed package versions actually changed (2.6.1-F24). `sysforge update`
+  has reported this for a while; `sysforge run` did not, because the stages
+  build through `makepkg_run` directly and so never construct a
+  `BuildOutcome` to read version pairs from. The new
+  `primitives/change_report.py` sidesteps that by diffing two snapshots of the
+  pacman local DB taken around the stage — which is authoritative in a way
+  stage-side bookkeeping is not, since it catches split members and
+  dependencies pulled in mid-build with no per-stage instrumentation.
+  Installed size rides along free from the same query, so rows carry a size
+  delta.
+
+  Stages opt in with a `reports_changes` class attribute (beside the existing
+  `makepkg_bearing`) and can contribute their own blocks through a
+  `change_extras()` hook, so the runner stays generic. `packages`, `kernel`
+  and `toolchain` are wired up; the install stage is not yet.
+
+  The summary states an explicit outcome rather than leaving silence to be
+  interpreted: a genuine no-op, a mixed state after a mid-stage failure, a
+  clean failure that applied nothing, and an unavailable summary are four
+  distinguishable messages. It is reporting-only — it never influences exit
+  codes, and any failure in the reporting path degrades to a warning rather
+  than touching the build's success.
+
 ## Changed
 
 - Kernel kconfig patching is now an ordered plan (`primitives/kconfig_plan.py`) rather
