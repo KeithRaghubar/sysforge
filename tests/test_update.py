@@ -9,10 +9,13 @@ packages selected by overrides). packages.toml entries are overrides only;
 override entries with no installed counterpart are inert and silently
 skipped (no NOT_INSTALLED action).
 """
+import itertools
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent / ".."))
 
@@ -156,6 +159,147 @@ def test_check_epoch_dominates(tmp_path):
 def test_check_downgrade_flagged(tmp_path):
     r = _decide(tmp_path, "htop", "3.4.1-1", "pkgname=htop\npkgver=3.3.0\npkgrel=1\n")
     assert r.action == "DOWNGRADE"
+
+
+# ---------------------------------------------------------------------------
+# Split pkgbase whose installed members disagree on version. The pkgnames list
+# reaches _check_one_pkgbase in set-iteration (hash) order, so picking "the"
+# installed version must not depend on which member comes first, and members
+# the current build no longer produces (orphans left installed from an older
+# build with a different subpackage toggle) must not drive the verdict.
+# ---------------------------------------------------------------------------
+
+_SPLIT_PKGBUILD = (
+    "pkgbase=linux-sysforge\n"
+    'pkgname=("$pkgbase" "$pkgbase-headers" "$pkgbase-docs")\n'
+    "pkgver=7.1.5.arch1\npkgrel=2\n"
+)
+
+# What the last build actually produced: docs dropped by the subpackage toggle.
+_SPLIT_PATCHED = (
+    "pkgbase=linux-sysforge\n"
+    'pkgname=("$pkgbase" "$pkgbase-headers")\n'
+    "pkgver=7.1.5.arch1\npkgrel=2\n"
+)
+
+_SPLIT_MEMBERS = [
+    "linux-sysforge",
+    "linux-sysforge-headers",
+    "linux-sysforge-docs",
+]
+
+
+def _decide_split(tmp_path, *, pkgnames, all_installed, patched=None):
+    pkg_dir = tmp_path / "linux-sysforge"
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    (pkg_dir / "PKGBUILD").write_text(_SPLIT_PKGBUILD)
+    if patched is not None:
+        (pkg_dir / "PKGBUILD.sysforge").write_text(patched)
+    return _check_one_pkgbase(
+        pkgbase="linux-sysforge",
+        pkgnames=list(pkgnames),
+        entry={"pkgbuild_dir": str(pkg_dir), "source": "repo"},
+        sync_failures={},
+        all_installed=dict(all_installed),
+        unrecorded_names=set(),
+        skip_sync_check=True,
+        rpc_version_by_base={},
+    )
+
+
+@pytest.mark.parametrize("order", list(itertools.permutations(_SPLIT_MEMBERS)))
+def test_split_pkgbase_verdict_is_pkgname_order_independent(tmp_path, order):
+    """Every pkgnames ordering yields the same verdict.
+
+    Regression: installed_ver was "first pkgname of the pkgbase that happens to
+    be installed", and pkgnames arrives in set-iteration order, so the same
+    system produced NEEDS_REBUILD or UP_TO_DATE at random across runs.
+    """
+    r = _decide_split(
+        tmp_path,
+        pkgnames=order,
+        all_installed={
+            "linux-sysforge": "7.1.5.arch1-2",
+            "linux-sysforge-headers": "7.1.5.arch1-2",
+            "linux-sysforge-docs": "7.1.4.arch1-1",
+        },
+        patched=_SPLIT_PATCHED,
+    )
+    assert r.installed_ver == "7.1.5.arch1-2"
+    assert r.action == "UP_TO_DATE"
+
+
+def test_split_pkgbase_ignores_member_the_build_no_longer_produces(tmp_path):
+    """A stale member absent from PKGBUILD.sysforge does not force a rebuild.
+
+    linux-sysforge-docs is left installed from a build made when the docs
+    subpackage was enabled. The current build drops it, so nothing will ever
+    refresh it — counting it would pin a permanent phantom advisory.
+    """
+    r = _decide_split(
+        tmp_path,
+        pkgnames=_SPLIT_MEMBERS,
+        all_installed={
+            "linux-sysforge": "7.1.5.arch1-2",
+            "linux-sysforge-headers": "7.1.5.arch1-2",
+            "linux-sysforge-docs": "7.1.4.arch1-1",
+        },
+        patched=_SPLIT_PATCHED,
+    )
+    assert r.action == "UP_TO_DATE"
+    assert r.installed_ver == "7.1.5.arch1-2"
+
+
+def test_split_pkgbase_counts_stale_member_the_build_still_produces(tmp_path):
+    """A produced member that is genuinely behind still drives NEEDS_REBUILD.
+
+    Same drift as above, but the patched PKGBUILD still lists -docs, so the
+    rebuild will actually refresh it. The oldest produced member wins.
+    """
+    r = _decide_split(
+        tmp_path,
+        pkgnames=_SPLIT_MEMBERS,
+        all_installed={
+            "linux-sysforge": "7.1.5.arch1-2",
+            "linux-sysforge-headers": "7.1.5.arch1-2",
+            "linux-sysforge-docs": "7.1.4.arch1-1",
+        },
+        patched=_SPLIT_PKGBUILD,
+    )
+    assert r.action == "NEEDS_REBUILD"
+    assert r.installed_ver == "7.1.4.arch1-1"
+
+
+def test_split_pkgbase_without_patched_pkgbuild_uses_oldest_member(tmp_path):
+    """No PKGBUILD.sysforge on disk (never built by sysforge) — stay
+    conservative and treat every installed member as produced."""
+    r = _decide_split(
+        tmp_path,
+        pkgnames=_SPLIT_MEMBERS,
+        all_installed={
+            "linux-sysforge": "7.1.5.arch1-2",
+            "linux-sysforge-headers": "7.1.5.arch1-2",
+            "linux-sysforge-docs": "7.1.4.arch1-1",
+        },
+    )
+    assert r.action == "NEEDS_REBUILD"
+    assert r.installed_ver == "7.1.4.arch1-1"
+
+
+def test_split_pkgbase_all_members_orphaned_falls_back_to_all(tmp_path):
+    """Patched PKGBUILD lists no installed member — don't produce an empty
+    set; fall back to every installed member so the assert can't trip."""
+    r = _decide_split(
+        tmp_path,
+        pkgnames=_SPLIT_MEMBERS,
+        all_installed={"linux-sysforge-docs": "7.1.4.arch1-1"},
+        patched=(
+            "pkgbase=linux-sysforge\npkgname=(unrelated-name)\n"
+            "pkgver=7.1.5.arch1\npkgrel=2\n"
+        ),
+    )
+    assert r.installed_ver == "7.1.4.arch1-1"
+    assert r.action == "NEEDS_REBUILD"
 
 
 # ---------------------------------------------------------------------------

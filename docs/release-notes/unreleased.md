@@ -677,6 +677,22 @@ https://keepachangelog.com/en/1.1.0/
   (`CONFIG_USB4` was already in the set). Tests pin the value of every symbol
   against its kconfig type.
 
+- `update` no longer reports a phantom available update for a split package
+  whose installed members have drifted apart (2.6.1-B18). The version check
+  took "the installed version of a pkgbase" to be the first member it found
+  installed, but that list reaches it in set-iteration order — so with a
+  kernel at `linux-sysforge` / `-headers` `7.1.5.arch1-2` and a leftover
+  `-docs` at `7.1.4.arch1-1`, the same command reported `7.1.4.arch1-1 →
+  7.1.5.arch1-2   run kernel` or nothing at all depending on the process hash
+  seed. The comparison now runs against the **oldest** member, and only over
+  members the next build will actually produce — read from the persisted
+  `PKGBUILD.sysforge` the last build ran from, so a subpackage the toggles
+  have since dropped (`build_docs = false` leaves `-docs` installed and
+  frozen forever) can no longer pin a permanently stuck advisory. A member
+  that *is* still built and genuinely behind still drives `NEEDS_REBUILD`.
+  The same order-independence now applies to the pacman and `--devel`
+  fast-paths.
+
 - The container harness now exits `3` ("unavailable") rather than `1` when no
   built package is present (2.6.1-STD1). An unbuilt package is a missing
   prerequisite, not a portability break; at `1` the new preflight section would

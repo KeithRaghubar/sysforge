@@ -31,6 +31,64 @@ _log = log.get_logger("UPDATE")
 _UNRESOLVED_EXPANSION = re.compile(r"[${}]")
 
 
+def _oldest_installed_ver(
+    pkgnames: list[str], all_installed: dict[str, str],
+) -> str | None:
+    """Lowest installed version across ``pkgnames``, or None if none installed.
+
+    Split-package members are normally lock-stepped, but they can drift (a
+    subpackage toggled off keeps its last-built version installed forever).
+    Taking the oldest is both deterministic and conservative: a rebuild is
+    what brings the laggard forward, so the laggard is what decides. A
+    ``vercmp`` failure degrades to sorted-first rather than to hash order.
+    """
+    present = sorted(pn for pn in pkgnames if pn in all_installed)
+    if not present:
+        return None
+    oldest = all_installed[present[0]]
+    for pn in present[1:]:
+        ver = all_installed[pn]
+        try:
+            if vercmp(ver, oldest) < 0:
+                oldest = ver
+        except RuntimeError:
+            continue
+    return oldest
+
+
+def _produced_pkgnames(pkgbuild_path: Path, pkgnames: list[str]) -> list[str]:
+    """Restrict ``pkgnames`` to members the next build will actually produce.
+
+    ``PKGBUILD.sysforge`` is the patched copy the last build ran from, and it
+    persists in the pkgbuild_dir — so its ``pkgname=()`` array is an exact,
+    stage-agnostic record of which subpackages are being built (the kernel
+    stage drops ``-headers``/``-docs`` there via
+    ``pkgbuild_patcher.patch_kernel_subpackages``). A member missing from it is
+    an orphan left installed by an older build with a different toggle: no
+    rebuild will ever refresh it, so letting it drive the verdict would pin a
+    permanent phantom "update available".
+
+    Falls back to the full list whenever the patched copy is absent,
+    unparseable, or names no member of this pkgbase — a filter that returns
+    nothing is a filter that misread the PKGBUILD, not proof of zero members.
+    """
+    patched = pkgbuild_path.parent / "PKGBUILD.sysforge"
+    if not patched.exists():
+        return pkgnames
+    try:
+        patched_meta = parse_pkgbuild(patched)
+    except Exception as e:  # noqa: BLE001 — advisory filter; never fail the check
+        _log.debug(f"failed to parse {patched}: {e} — counting all members")
+        return pkgnames
+    declared = patched_meta.get("globals", {}).get("pkgname")
+    if isinstance(declared, str):
+        declared = [declared]
+    if not declared:
+        return pkgnames
+    produced = [pn for pn in pkgnames if pn in set(declared)]
+    return produced or pkgnames
+
+
 def _check_one_pkgbase(
     pkgbase: str,
     pkgnames: list[str],
@@ -58,12 +116,9 @@ def _check_one_pkgbase(
     # pending. The pkgbuild_dir doesn't need to exist (we never source-build
     # this class), so this branch precedes the directory existence check.
     if entry.get("repo_class") == "pacman":
-        installed_ver: str | None = None
-        for pn in pkgnames:
-            ver = all_installed.get(pn)
-            if ver is not None:
-                installed_ver = ver
-                break
+        # No source build here, so there is no patched PKGBUILD to consult —
+        # just take the oldest member so the verdict can't ride hash order.
+        installed_ver: str | None = _oldest_installed_ver(pkgnames, all_installed)
         if installed_ver is None:
             return None
         if pacman_updates_map is None:
@@ -103,9 +158,7 @@ def _check_one_pkgbase(
     # ``_sync_sources`` — both edges of the build pipeline ignore VCS dirs
     # entirely when ``--devel`` is absent.
     if _is_vcs(pkgbase) and not force_devel:
-        devel_installed_ver = next(
-            (all_installed[pn] for pn in pkgnames if pn in all_installed), None,
-        )
+        devel_installed_ver = _oldest_installed_ver(pkgnames, all_installed)
         if devel_installed_ver is None:
             return None
         return _UpdateResult(
@@ -171,12 +224,19 @@ def _check_one_pkgbase(
 
     # Live-install-set iteration guarantees every pkgbase reaching here has
     # at least one installed sub-package; pick that version for vercmp.
-    installed_ver: str | None = None
-    for pn in pkgnames:
-        ver = all_installed.get(pn)
-        if ver is not None:
-            installed_ver = ver
-            break
+    #
+    # Members can disagree (a subpackage toggled off keeps its last-built
+    # version installed forever), and pkgnames arrives in set-iteration order,
+    # so "first installed member wins" made the verdict depend on the hash
+    # seed. Compare against the oldest member the next build will actually
+    # produce: deterministic, and it ignores orphans no rebuild can refresh.
+    # The full-list parse is skipped whenever the members already agree.
+    installed_vers = {all_installed[pn] for pn in pkgnames if pn in all_installed}
+    if len(installed_vers) > 1:
+        candidates = _produced_pkgnames(pkgbuild_path, pkgnames)
+    else:
+        candidates = pkgnames
+    installed_ver = _oldest_installed_ver(candidates, all_installed)
     assert installed_ver is not None, f"{pkgbase}: no installed pkgname in {pkgnames}"  # noqa: S101 — internal invariant (live-install-set guarantees a hit), not input validation
 
     # VCS packages under --devel: static pkgver is just the seed; the real
