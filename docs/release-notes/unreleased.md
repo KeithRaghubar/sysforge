@@ -422,6 +422,21 @@ https://keepachangelog.com/en/1.1.0/
   Arch derivatives expected but unvalidated. `sysforge doctor --distro` reports
   which tier the running system is in.
 
+- Shipped-config audit pass over `etc/sysforge/` (2.6.1-B19). Defaults:
+  `bootstrap.toml` `esp_size_mib` 512 → 1024 MiB (room for a custom kernel
+  plus a stock fallback and future unified kernel images; the code-side
+  `BootstrapConfig` default moves in lockstep), and the shipped `[artifacts]`
+  scan root `~/scripts` → `~/.local/bin` (the XDG-conventional user-script
+  directory; `DEFAULT_ROOTS` in `primitives/artifacts.py` matches). The
+  redundant live `[pgo] allow = ["mesa"]` is now commented out — mesa is
+  always seeded by `resolve_pgo_allowlist`, so the live value was inert and
+  broke the "live values are operative defaults" convention. Clarity:
+  `bootstrap.toml` now states it is inert outside `run pipeline`, the
+  `[mirror]` `protocol`/`age` keys document their reflector semantics (age is
+  in hours), and the `kernel.toml` pkgname NOTE says explicitly that the
+  shipped `linux-sysforge` default collapses with the optimized-build suffix
+  and should be renamed before adopting AutoFDO/Propeller `use` builds.
+
 ## Deprecated
 
 - `profiles.toml`'s `build_mode = "patched_pkgbuild"` is now a registered

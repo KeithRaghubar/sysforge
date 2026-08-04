@@ -91,7 +91,7 @@ class TestLoadBootstrap:
         assert cfg.locale == "en_US.UTF-8"
         assert cfg.timezone == "UTC"
         assert cfg.keymap == "us"            # default
-        assert cfg.esp_size_mib == 512       # default
+        assert cfg.esp_size_mib == 1024      # default
         assert cfg.root_fs == "ext4"         # default
         assert cfg.parallel_downloads == 5   # default
         assert cfg.mirror_protocol == "https"

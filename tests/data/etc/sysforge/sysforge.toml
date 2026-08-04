@@ -81,8 +81,9 @@ llvm_preflight        = true
 
 [pgo]
 # Packages for which `--pgo` is recommended (suppresses the "not recommended"
-# warning). mesa is always allowed. See etc/sysforge/sysforge.toml for full docs.
-allow = ["mesa"]
+# warning). mesa is always allowed, so the default list is empty. See
+# etc/sysforge/sysforge.toml for full docs.
+# allow = ["mesa"]
 
 [update]
 # Standing defaults for `sysforge update` drift auto-rebuild. The matching
@@ -103,7 +104,7 @@ disk_low_gb           = 10.0   # storage axis: warn when build-dir free space is
 # artifacts. See etc/sysforge/sysforge.toml for full docs.
 [artifacts]
 roots = [
-    { path = "~/scripts",           class = "script" },
+    { path = "~/.local/bin",        class = "script" },
     { path = "/etc/systemd/system", class = "systemd-unit" },
     { path = "/etc/pacman.d/hooks", class = "pacman-hook" },
 ]

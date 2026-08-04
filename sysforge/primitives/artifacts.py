@@ -309,7 +309,7 @@ class IgnoreList:
 # Default scan roots as (path, class) pairs. Overridable via the [artifacts]
 # table in sysforge.toml — adding a root is configuration, not code.
 DEFAULT_ROOTS = (
-    ("~/scripts", CLASS_SCRIPT),
+    ("~/.local/bin", CLASS_SCRIPT),
     ("/etc/systemd/system", CLASS_UNIT),
     ("/etc/pacman.d/hooks", CLASS_HOOK),
 )

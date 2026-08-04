@@ -32,7 +32,7 @@ class BootstrapConfig:
     hostname: str
     locale: str
     timezone: str
-    esp_size_mib: int = 512
+    esp_size_mib: int = 1024
     root_fs: str = "ext4"
     keymap: str = "us"
     parallel_downloads: int = 5
@@ -91,7 +91,7 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     timezone = _require(system, "timezone", "system")
 
     # Optional with defaults
-    esp_size_mib = partition.get("esp_size_mib", 512)
+    esp_size_mib = partition.get("esp_size_mib", 1024)
     root_fs = partition.get("root_fs", "ext4")
     keymap = system.get("keymap", "us")
     parallel_downloads = system.get("parallel_downloads", 5)

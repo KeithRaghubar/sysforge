@@ -186,8 +186,8 @@ llvm_preflight        = true
 # library, so `--pgo` on an un-listed package prints a "not recommended" warning.
 # List the pkgbases you've decided are worth it here to silence that warning.
 # mesa is always treated as allowed (the original, fully-wired case) whether or
-# not it appears below.
-allow = ["mesa"]
+# not it appears below, so the default list is empty.
+# allow = ["mesa"]
 
 [update]
 # Standing defaults for `sysforge update` drift auto-rebuild. The matching
@@ -210,7 +210,7 @@ disk_low_gb           = 10.0   # storage axis: warn when build-dir free space is
 # Adding a root here is configuration, not code.
 [artifacts]
 roots = [
-    { path = "~/scripts",           class = "script" },
+    { path = "~/.local/bin",        class = "script" },
     { path = "/etc/systemd/system", class = "systemd-unit" },
     { path = "/etc/pacman.d/hooks", class = "pacman-hook" },
 ]

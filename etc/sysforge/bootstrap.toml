@@ -3,7 +3,8 @@
 #
 # Used by the bootstrap pipeline stages (partition, base_install, hardware,
 # configure). Edit this file before running sysforge run pipeline from a live
-# Arch install environment.
+# Arch install environment. Inert outside `sysforge run pipeline` — on an
+# already-installed system this file is never read.
 #
 # Run with a custom state dir so pipeline state persists into the installed
 # system:
@@ -25,8 +26,10 @@ target = "/mnt"
 # Block device to partition. CAUTION: all data will be destroyed.
 # device = "/dev/sda"
 
-# EFI System Partition size in MiB. 512 MiB is sufficient for multiple kernels.
-esp_size_mib = 512
+# EFI System Partition size in MiB. 1024 MiB leaves room for a custom kernel
+# plus a stock fallback (each with initramfs images) and future unified kernel
+# images; shrink only if the disk is genuinely tight.
+esp_size_mib = 1024
 
 # Root filesystem type: "ext4" (default) | "btrfs"
 root_fs = "ext4"
@@ -67,8 +70,8 @@ root_fs = "ext4"
 # mirrors. Must be names — archinstall's mirror region selection keys on the
 # full name and rejects a bare code like "CA". Good: ["Canada"], not ["CA"].
 # countries = ["Canada"]
-protocol = "https"
-age      = 12
+protocol = "https"   # only mirrors reachable over this protocol (reflector --protocol)
+age      = 12        # only mirrors synchronized within the last N HOURS (reflector --age)
 
 
 # =============================================================================

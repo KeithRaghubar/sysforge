@@ -28,10 +28,14 @@ pkgname = "linux-sysforge"      # LOCAL package name to build/install as. For a
                                 # collapses with the optimized-build suffix — an
                                 # AutoFDO/Propeller `use` build then REPLACES the
                                 # prior build under the same name instead of
-                                # coexisting. To keep an optimized and a stock
-                                # build installed side-by-side (bootloader
-                                # fallback), pick a pkgname that does not end in
-                                # "-sysforge" (e.g. "linux-mine").
+                                # coexisting. The shipped default above has
+                                # exactly this property: it is fine for plain
+                                # custom builds, but before adopting AutoFDO/
+                                # Propeller `use` builds, rename to keep an
+                                # optimized and a stock build installed
+                                # side-by-side (bootloader fallback) — pick a
+                                # pkgname that does not end in "-sysforge"
+                                # (e.g. "linux-mine").
 # upstream_pkgname = "linux-zen"  # upstream package to pull/track. When set, the
                                 # stage clones/fetches it into
                                 # <pkgbuild_src_dir>/<upstream_pkgname> and (if
