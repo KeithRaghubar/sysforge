@@ -3222,3 +3222,172 @@ def test_kernel_stage_non_interactive_flag_no_tty_warn(tmp_path):
         KernelStage().run({}, state, opts)
     warned = " ".join(str(c.args[1]) for c in logs.warn.call_args_list)
     assert "no TTY" not in warned
+
+
+# ---------------------------------------------------------------------------
+# 2.6.1-F25 — kconfig change-summary blocks
+# ---------------------------------------------------------------------------
+
+
+def _change(option, old, new, kind):
+    from sysforge.primitives.kernel_safety import KconfigChange
+
+    return KconfigChange(option=option, old=old, new=new, kind=kind)
+
+
+def test_kconfig_diff_lines_render_each_kind():
+    from sysforge.pipeline.stages.kernel import _kconfig_diff_lines
+
+    lines = _kconfig_diff_lines("6.14.0", [
+        _change("CONFIG_NEW", "", "y", "added"),
+        _change("CONFIG_GONE", "m", "", "removed"),
+        _change("CONFIG_NUMA", "y", "n", "changed"),
+    ])
+    assert lines[0] == "3 symbol(s) changed since 6.14.0:"
+    assert "  +CONFIG_NEW=y" in lines
+    assert "  -CONFIG_GONE (was m)" in lines
+    assert "  CONFIG_NUMA: y → n" in lines
+
+
+def test_kconfig_diff_lines_say_so_when_nothing_moved():
+    """An identical config is a real, reportable answer — not silence."""
+    from sysforge.pipeline.stages.kernel import _kconfig_diff_lines
+
+    assert _kconfig_diff_lines("6.14.0", []) == ["no kconfig changes since 6.14.0"]
+
+
+def test_kconfig_diff_lines_cap_at_40_symbols():
+    """A major bump changes thousands; the inline block must not bury the rows."""
+    from sysforge.pipeline.stages.kernel import _KCONFIG_DIFF_CAP, _kconfig_diff_lines
+
+    changes = [_change(f"CONFIG_S{n}", "n", "y", "changed") for n in range(100)]
+    lines = _kconfig_diff_lines("6.14.0", changes)
+    # header + cap + the "and N more" pointer
+    assert len(lines) == 1 + _KCONFIG_DIFF_CAP + 1
+    assert lines[-1].endswith("and 60 more (full list in the run log)")
+
+
+def test_kconfig_diff_lines_glyphs_degrade_under_the_ascii_gate(monkeypatch):
+    from sysforge import log
+    from sysforge.pipeline.stages.kernel import _kconfig_diff_lines
+
+    monkeypatch.setattr(log, "use_unicode", lambda: False)
+    changes = [_change(f"CONFIG_S{n}", "n", "y", "changed") for n in range(50)]
+    lines = _kconfig_diff_lines("6.14.0", changes)
+    assert "  CONFIG_S0: n -> y" in lines
+    assert lines[-1].startswith("  ... and 10 more")
+
+
+def test_kconfig_drift_lines_report_a_check_that_never_ran():
+    """B6: on the AlreadyBuilt path this must say so, not render silence."""
+    from sysforge.pipeline.stages.kernel import _kconfig_drift_lines
+
+    lines = _kconfig_drift_lines(None)
+    assert len(lines) == 1
+    assert "did NOT run" in lines[0]
+
+
+def test_kconfig_drift_lines_distinguish_no_drift_from_no_check():
+    from sysforge.pipeline.stages.kernel import _kconfig_drift_lines
+
+    assert _kconfig_drift_lines([]) == [
+        "all merged options survived into the resolved .config"
+    ]
+
+
+def test_kconfig_drift_lines_render_each_drift():
+    from sysforge.pipeline.stages.kernel import _kconfig_drift_lines
+    from sysforge.primitives.kernel_safety import KconfigDrift
+
+    lines = _kconfig_drift_lines([
+        KconfigDrift(option="CONFIG_X", requested="y", resolved="n", kind="disabled"),
+    ])
+    assert lines == ["  CONFIG_X: y → n (disabled)"]
+
+
+def test_change_extras_is_empty_before_the_merge_check_is_reached():
+    """A stage that no-opped early must not claim the drift check was skipped."""
+    from sysforge.pipeline.stages.kernel import KernelStage
+
+    stage = KernelStage()
+    stage._kconfig_diff = None
+    stage._kconfig_drift = None
+    stage._reported_kconfig_merge = False
+    assert stage.change_extras({}, MagicMock(), MagicMock()) == []
+
+
+def test_change_extras_emits_both_blocks():
+    from sysforge.pipeline.stages.kernel import KernelStage
+
+    stage = KernelStage()
+    stage._kconfig_diff = ("6.14.0", [_change("CONFIG_NUMA", "y", "n", "changed")])
+    stage._kconfig_drift = []
+    stage._reported_kconfig_merge = True
+
+    blocks = stage.change_extras({}, MagicMock(), MagicMock())
+    assert [b.label for b in blocks] == [
+        "Kconfig vs previous build:", "Kconfig merge drift:",
+    ]
+
+
+def test_change_extras_sends_the_overflow_to_the_log(monkeypatch):
+    """Capped inline, complete in the run log — the cap must not lose data."""
+    from sysforge.pipeline.stages import kernel as kernel_mod
+
+    # The Logger's methods are read-only, so swap the whole module-level logger
+    # for a recorder rather than patching a bound method.
+    logged = []
+    monkeypatch.setattr(
+        kernel_mod, "_log", SimpleNamespace(info=logged.append, warn=lambda m: None)
+    )
+
+    stage = kernel_mod.KernelStage()
+    changes = [_change(f"CONFIG_S{n}", "n", "y", "changed") for n in range(45)]
+    stage._kconfig_diff = ("6.14.0", changes)
+    stage._reported_kconfig_merge = False
+    stage.change_extras({}, MagicMock(), MagicMock())
+
+    assert len(logged) == 5
+    assert "CONFIG_S44" in logged[-1]
+
+
+def test_record_and_diff_kconfig_returns_none_without_a_build_tree(tmp_path, monkeypatch):
+    """The AlreadyBuilt path has no resolved .config — nothing to diff."""
+    from sysforge.pipeline.stages import kernel as kernel_mod
+
+    monkeypatch.setattr(kernel_mod, "_resolve_built_config", lambda d: None)
+    assert kernel_mod._record_and_diff_kconfig(tmp_path, "linux-custom", tmp_path) is None
+
+
+def test_record_and_diff_kconfig_archives_then_diffs(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages import kernel as kernel_mod
+    from sysforge.primitives import kconfig_history
+
+    state = tmp_path / "state"
+    old = tmp_path / "old.config"
+    old.write_text("CONFIG_SMP=y\nCONFIG_NUMA=y\n", encoding="utf-8")
+    kconfig_history.archive(state, "linux-custom", "6.14.0", old)
+
+    new = tmp_path / "new.config"
+    new.write_text("CONFIG_SMP=y\nCONFIG_NUMA=n\n", encoding="utf-8")
+    monkeypatch.setattr(kernel_mod, "_resolve_built_config", lambda d: new)
+    monkeypatch.setattr(kernel_mod, "_built_kernel_release", lambda p: "6.15.0")
+
+    result = kernel_mod._record_and_diff_kconfig(state, "linux-custom", tmp_path)
+    assert result is not None
+    prev_release, changes = result
+    assert prev_release == "6.14.0"
+    assert [c.option for c in changes] == ["CONFIG_NUMA"]
+    # and this build is now archived for the next run to compare against
+    assert kconfig_history.archive_path(state, "linux-custom", "6.15.0").exists()
+
+
+def test_record_and_diff_kconfig_never_raises(tmp_path, monkeypatch):
+    """Advisory reporting must not be able to break a kernel build."""
+    from sysforge.pipeline.stages import kernel as kernel_mod
+
+    def boom(_):
+        raise RuntimeError("build tree vanished")
+
+    monkeypatch.setattr(kernel_mod, "_resolve_built_config", boom)
+    assert kernel_mod._record_and_diff_kconfig(tmp_path, "linux-custom", tmp_path) is None

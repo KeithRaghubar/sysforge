@@ -183,6 +183,39 @@ https://keepachangelog.com/en/1.1.0/
   codes, and any failure in the reporting path degrades to a warning rather
   than touching the build's success.
 
+- The kernel stage's change summary now carries two kconfig blocks (2.6.1-F25),
+  answering "what did I actually change about this kernel" — which the
+  subpackage and hotplug-driver toggles otherwise make invisible. The first
+  diffs the resolved `.config` against the one the last build produced; sysforge
+  now archives each successful build's config, gzipped, to
+  `<state_dir>/kconfig-history/`, newest five per kernel. A major version bump
+  changes thousands of symbols, so the block caps at 40 with a `… and N more`
+  pointer and sends the full list to the run log. The second relocates the
+  existing merge-drift check's result into the summary; its mid-run warnings are
+  unchanged. Both say out loud when they could not run — on the already-built
+  path there is no build tree to inspect, which is exactly where a stale build
+  makes them most relevant.
+
+  Size needed no block of its own: the version rows have carried a size delta
+  since 2.6.1-F24, which is what makes the cost of flipping a subpackage toggle
+  visible on the run that flips it.
+
+- The toolchain stage's change summary now carries a `Toolchain:` block
+  answering "what will my next builds be built with" (2.6.1-F26): the
+  `cc`/`cxx` version lines, the linker, the active toolchain variant and
+  fingerprint, and the compiler flags recorded for every toolchain-owned
+  package. Anything that moved over the stage renders as `old → new`;
+  anything that held renders once. It is entirely reads of state the stage
+  already computes — no new probes, and deliberately no timing figure, since
+  an uncontrolled build-time number printed as a summary row reads as signal
+  when it is noise.
+
+- A `Ctrl-C` landing inside a stage's change-summary window no longer replaces
+  the stage's own error (2.6.1-F25). The reporting path guards `Exception`
+  while the stage call is caught with `BaseException`, so an interrupt in that
+  narrow window could previously mask a real build failure and leave the
+  pipeline state at `running` instead of `failed`.
+
 ## Changed
 
 - Kernel kconfig patching is now an ordered plan (`primitives/kconfig_plan.py`) rather

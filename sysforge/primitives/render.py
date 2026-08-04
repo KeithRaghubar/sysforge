@@ -61,6 +61,15 @@ def em_dash() -> str:
     return log.downgrade_glyphs("—")
 
 
+def ellipsis_glyph() -> str:
+    """``…``, or ``...`` where the Unicode gate degrades glyphs.
+
+    Named with the ``_glyph`` suffix because bare ``ellipsis`` is the name of a
+    Python builtin type. Used by truncated report blocks (``… and N more``).
+    """
+    return log.downgrade_glyphs("…")
+
+
 def fmt_bytes(n: int | float) -> str:
     """Format a byte count as a human-readable binary-prefix string.
 

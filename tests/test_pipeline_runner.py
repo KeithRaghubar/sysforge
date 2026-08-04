@@ -519,3 +519,49 @@ def test_render_exception_does_not_mask_a_failed_stage(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError) as exc:
         _runner._run_stage_with_change_report(SentinelStage(), {}, state, make_options())
     assert exc.value is sentinel
+
+
+def test_keyboardinterrupt_in_the_reporting_window_loses_to_the_stage_error(
+    tmp_path, monkeypatch
+):
+    """2.6.1-F25: the reporting path guards Exception, but stage.run() is
+    caught with BaseException. A Ctrl-C landing in the snapshot/render window
+    must not replace the stage's own error — otherwise the caller's
+    state.mark_failed() never runs and the pipeline stays 'running'."""
+    from sysforge.pipeline import runner as _runner
+
+    _snapshots(monkeypatch, [{"p": PkgFacts("1-1")}, {"p": PkgFacts("1-2")}])
+    sentinel = RuntimeError("the real build failure")
+
+    class SentinelStage(ReportingStage):
+        def run(self, config, state, options):
+            raise sentinel
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_runner.change_report, "render", interrupt)
+
+    state = PipelineState(tmp_path)
+    with pytest.raises(RuntimeError) as exc:
+        _runner._run_stage_with_change_report(SentinelStage(), {}, state, make_options())
+    assert exc.value is sentinel
+
+
+def test_keyboardinterrupt_in_reporting_still_propagates_when_the_stage_succeeded(
+    tmp_path, monkeypatch
+):
+    """With no stage error to defer to, the interrupt is the only exception in
+    flight and must reach the caller — the finally must not swallow it."""
+    from sysforge.pipeline import runner as _runner
+
+    _snapshots(monkeypatch, [{"p": PkgFacts("1-1")}, {"p": PkgFacts("1-2")}])
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_runner.change_report, "render", interrupt)
+
+    state = PipelineState(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        _runner._run_stage_with_change_report(ReportingStage(), {}, state, make_options())

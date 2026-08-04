@@ -150,6 +150,54 @@ extras, or render failure degrades to a warning; the stage's own exception, if a
 unchanged so reporting can never turn a successful build into a failure or mask a real one.
 `packages`, `kernel`, and `toolchain` opt in; `install` does not.
 
+**Kernel kconfig blocks.** The kernel stage's `change_extras()` override contributes two blocks
+answering "what did I actually change about this kernel", which the subpackage and hotplug toggles
+otherwise make invisible. The version rows already carry the size delta those toggles move, so no
+separate size block is needed.
+
+*Kconfig vs previous build* diffs the resolved `.config` against the one the last build produced.
+`primitives/kconfig_history.py` owns that history — nothing else in sysforge keeps a resolved
+`.config` after the build tree is cleaned — archiving each successful build's config (located by
+the existing `_resolve_built_config`, tagged with `_built_kernel_release`) gzipped to
+`<state_dir>/kconfig-history/<pkgname>-<release>.config.gz`, newest `KEEP` (5) per pkgname, pruned
+on write and bounded at a few hundred KiB. The comparison runs through the new
+`kernel_safety.diff_kconfig(old, new)`, a symmetric sibling to `diff_requested_kconfig` (which is
+hardcoded to the requested-vs-resolved axis and iterates only sysforge's own intent); both parse via
+the shared `parse_kconfig()`. `diff_kconfig` deliberately does *not* normalise an absent option to
+`n` the way `diff_requested_kconfig` does — on the build-to-build axis, "the symbol did not exist in
+that kernel" and "the symbol existed and was off" are different facts, and collapsing them would
+fabricate churn on every major bump. Output caps at `_KCONFIG_DIFF_CAP` (40) symbols with a
+`… and N more` pointer; the full list goes to the unified log, so a major bump cannot bury the
+version rows.
+
+*Kconfig merge drift* relocates `_gate2_kconfig_drift`'s existing result into the summary by having
+it *return* its drift list; the mid-run warnings are unchanged. `None` (as distinct from `[]`)
+means the check never ran, which the block states explicitly, reusing the "did NOT run" wording
+established by 2.6.1-B6 — the AlreadyBuilt path is exactly where a stale build makes the check most
+relevant, so silence there would be the wrong answer.
+
+Both capture points are best-effort and cannot raise into a build. The runner's re-raise of
+`stage_error` moved into a `finally` in the same change: the reporting path guards `Exception`
+while `stage.run()` is caught with `BaseException`, so a `KeyboardInterrupt` landing in the
+snapshot/render window would otherwise replace the stage's own error and skip the caller's
+`state.mark_failed()`. Raising from `finally` gives the precedence wanted — a stage failure always
+beats a reporting failure.
+
+**Toolchain identity block.** The toolchain stage's `change_extras()` override contributes one
+`Toolchain:` block answering "what will my next builds be built with". `probe_toolchain_identity(state, options)`
+snapshots a `ToolchainIdentity` — the `cc`/`cxx` `--version` first lines (via the existing
+`build_fingerprint.compiler_version_line()`), the linker name, the `toolchain_variant` and
+`toolchain_fingerprint` from the pipeline state, and the `flags_string` recorded in
+`build_state.toml` for every entry stamped `owner_stage = "toolchain"`. `run()` takes the "before"
+snapshot as its first act; `change_extras()` takes the "after" one and hands both to the pure
+`toolchain_identity_lines(before, after)`, which renders a field that moved as `old → new` and one
+that did not as a bare value, omitting fields empty on both sides. Flag deltas route through
+`flag_drift.diff_flags()` for the shared `+added` / `-removed` vocabulary. Every field degrades
+independently to its empty default, and an entirely empty identity yields no block rather than a
+bare header. The block is deliberately **not** a benchmark: an uncontrolled timing figure printed
+as a summary row would read as signal when it is noise, which is exactly why `kernel-bench.sh`
+clears ccache/sccache and drops caches before measuring anything.
+
 **User-facing output.** The runner emits a welcome banner (sysforge version + ordered stage chain) and a status snapshot (`✓ done`, `▸ running`, `· pending`, `↳ skipped_to`) before the loop, a stage banner before each stage (`[N/M] name` between two `═` rules), a `✓ name complete` line after each stage, and a closing rule on success. All of this routes through `log.ui` so it reaches both stderr and the unified log regardless of `-v` level. Visual primitives live in `sysforge/ui/headers.py` and share the `═` rule + bold-cyan style with `tools/iso-install.sh` (parallel `_double_rule` / `_step` / `_field` helpers in shell). Step counters are 1-based against the full stage list, so `--start-from configure` shows `[3/7]`, not `[1/…]`.
 
 ### Checkpoint state

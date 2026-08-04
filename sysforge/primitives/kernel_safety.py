@@ -172,6 +172,46 @@ def diff_requested_kconfig(
     return drifts
 
 
+@dataclass(frozen=True)
+class KconfigChange:
+    """One option that differs between two resolved ``.config`` files."""
+
+    option: str
+    old: str
+    new: str
+    kind: str          # "added" | "removed" | "changed"
+
+
+def diff_kconfig(old: dict[str, str], new: dict[str, str]) -> list[KconfigChange]:
+    """Diff two *resolved* kernel configs (2.6.1-F25).
+
+    The build-to-build sibling of :func:`diff_requested_kconfig`, which is
+    hardcoded to the requested-vs-resolved axis and deliberately iterates only
+    sysforge's own intent. This one is symmetric: it walks the union of both
+    key sets, so a symbol the base config gained or lost between kernel
+    versions shows up too.
+
+    An option present in one side and absent from the other is ``added`` /
+    ``removed`` rather than being normalised to "n" — on this axis "the symbol
+    did not exist in that kernel" and "the symbol existed and was off" are
+    genuinely different facts, and collapsing them would invent churn on every
+    major bump. Returned sorted by option name.
+    """
+    changes: list[KconfigChange] = []
+    for option in sorted(set(old) | set(new)):
+        before = old.get(option)
+        after = new.get(option)
+        if before == after:
+            continue
+        if before is None:
+            changes.append(KconfigChange(option=option, old="", new=after or "", kind="added"))
+        elif after is None:
+            changes.append(KconfigChange(option=option, old=before, new="", kind="removed"))
+        else:
+            changes.append(KconfigChange(option=option, old=before, new=after, kind="changed"))
+    return changes
+
+
 # ---------------------------------------------------------------------------
 # Curated boot-critical kconfig tables
 #

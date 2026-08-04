@@ -68,8 +68,9 @@ def _run_stage_with_change_report(stage, config, state, options):
     KeyboardInterrupt during a build now also triggers the after-snapshot,
     diff, and summary render before propagating — Ctrl-C takes measurably
     longer to take effect than it used to. This is intended: it lets the
-    operator see what landed before the abort, and is deferred for narrowing
-    to 2.6.1-F25.
+    operator see what landed before the abort. A Ctrl-C landing inside the
+    reporting window itself is subordinate to the stage's own error: the
+    ``finally`` below re-raises ``stage_error`` over it (2.6.1-F25).
     """
     if not getattr(stage, "reports_changes", False):
         stage.run(config, state, options)
@@ -123,9 +124,15 @@ def _run_stage_with_change_report(stage, config, state, options):
         )
     except Exception as e:  # noqa: BLE001 — reporting can never fail a build
         _log.warn(f"{stage.name}: change summary failed to render — {e}")
-
-    if stage_error is not None:
-        raise stage_error
+    finally:
+        # The reporting block above guards Exception, but stage.run() is caught
+        # with BaseException — so a KeyboardInterrupt landing in the snapshot/
+        # render window would otherwise replace the stage's own error and skip
+        # the caller's state.mark_failed(). Raising from `finally` replaces the
+        # in-flight exception, which is exactly the precedence wanted: a stage
+        # failure always beats a reporting failure.
+        if stage_error is not None:
+            raise stage_error
 
 
 def _validate_stages(stages):

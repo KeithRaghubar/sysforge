@@ -440,3 +440,45 @@ def test_boot_low_space_is_brick(tmp_path, monkeypatch):
                         ks.check_boot_mount_space)  # keep real fn
     f = ks.check_boot_mount_space(min_mb=10**12)  # absurd requirement
     assert f is not None and f.check_id == "boot_low_space" and f.is_brick
+
+
+# ---------------------------------------------------------------------------
+# 2.6.1-F25 — build-to-build kconfig diff
+# ---------------------------------------------------------------------------
+
+
+def test_diff_kconfig_classifies_added_removed_and_changed():
+    from sysforge.primitives.kernel_safety import diff_kconfig
+
+    old = {"CONFIG_SMP": "y", "CONFIG_NUMA": "y", "CONFIG_OLD": "m"}
+    new = {"CONFIG_SMP": "y", "CONFIG_NUMA": "n", "CONFIG_NEW": "y"}
+    changes = {c.option: c for c in diff_kconfig(old, new)}
+
+    assert "CONFIG_SMP" not in changes          # unchanged
+    assert changes["CONFIG_NUMA"].kind == "changed"
+    assert (changes["CONFIG_NUMA"].old, changes["CONFIG_NUMA"].new) == ("y", "n")
+    assert changes["CONFIG_NEW"].kind == "added"
+    assert changes["CONFIG_OLD"].kind == "removed"
+
+
+def test_diff_kconfig_does_not_normalize_absent_to_n():
+    """Absent and explicitly-off are different facts on the build-to-build axis.
+
+    diff_requested_kconfig normalizes a missing option to "n" because that is
+    correct kernel semantics for sysforge's own intent. Doing it here would
+    fabricate thousands of n → n non-changes on a major version bump.
+    """
+    from sysforge.primitives.kernel_safety import diff_kconfig
+
+    changes = diff_kconfig({"CONFIG_GONE": "n"}, {})
+    assert len(changes) == 1
+    assert changes[0].kind == "removed"
+    assert changes[0].new == ""
+
+
+def test_diff_kconfig_is_sorted_and_empty_when_identical():
+    from sysforge.primitives.kernel_safety import diff_kconfig
+
+    assert diff_kconfig({"CONFIG_A": "y"}, {"CONFIG_A": "y"}) == []
+    changes = diff_kconfig({}, {"CONFIG_Z": "y", "CONFIG_A": "y"})
+    assert [c.option for c in changes] == ["CONFIG_A", "CONFIG_Z"]

@@ -687,6 +687,54 @@ extras, or render failure degrades to a warning; the stage's own exception, if a
 unchanged so reporting can never turn a successful build into a failure or mask a real one.
 `packages`, `kernel`, and `toolchain` opt in; `install` does not.
 
+**Kernel kconfig blocks.** The kernel stage's `change_extras()` override contributes two blocks
+answering "what did I actually change about this kernel", which the subpackage and hotplug toggles
+otherwise make invisible. The version rows already carry the size delta those toggles move, so no
+separate size block is needed.
+
+*Kconfig vs previous build* diffs the resolved `.config` against the one the last build produced.
+`primitives/kconfig_history.py` owns that history — nothing else in sysforge keeps a resolved
+`.config` after the build tree is cleaned — archiving each successful build's config (located by
+the existing `_resolve_built_config`, tagged with `_built_kernel_release`) gzipped to
+`<state_dir>/kconfig-history/<pkgname>-<release>.config.gz`, newest `KEEP` (5) per pkgname, pruned
+on write and bounded at a few hundred KiB. The comparison runs through the new
+`kernel_safety.diff_kconfig(old, new)`, a symmetric sibling to `diff_requested_kconfig` (which is
+hardcoded to the requested-vs-resolved axis and iterates only sysforge's own intent); both parse via
+the shared `parse_kconfig()`. `diff_kconfig` deliberately does *not* normalise an absent option to
+`n` the way `diff_requested_kconfig` does — on the build-to-build axis, "the symbol did not exist in
+that kernel" and "the symbol existed and was off" are different facts, and collapsing them would
+fabricate churn on every major bump. Output caps at `_KCONFIG_DIFF_CAP` (40) symbols with a
+`… and N more` pointer; the full list goes to the unified log, so a major bump cannot bury the
+version rows.
+
+*Kconfig merge drift* relocates `_gate2_kconfig_drift`'s existing result into the summary by having
+it *return* its drift list; the mid-run warnings are unchanged. `None` (as distinct from `[]`)
+means the check never ran, which the block states explicitly, reusing the "did NOT run" wording
+established by 2.6.1-B6 — the AlreadyBuilt path is exactly where a stale build makes the check most
+relevant, so silence there would be the wrong answer.
+
+Both capture points are best-effort and cannot raise into a build. The runner's re-raise of
+`stage_error` moved into a `finally` in the same change: the reporting path guards `Exception`
+while `stage.run()` is caught with `BaseException`, so a `KeyboardInterrupt` landing in the
+snapshot/render window would otherwise replace the stage's own error and skip the caller's
+`state.mark_failed()`. Raising from `finally` gives the precedence wanted — a stage failure always
+beats a reporting failure.
+
+**Toolchain identity block.** The toolchain stage's `change_extras()` override contributes one
+`Toolchain:` block answering "what will my next builds be built with". `probe_toolchain_identity(state, options)`
+snapshots a `ToolchainIdentity` — the `cc`/`cxx` `--version` first lines (via the existing
+`build_fingerprint.compiler_version_line()`), the linker name, the `toolchain_variant` and
+`toolchain_fingerprint` from the pipeline state, and the `flags_string` recorded in
+`build_state.toml` for every entry stamped `owner_stage = "toolchain"`. `run()` takes the "before"
+snapshot as its first act; `change_extras()` takes the "after" one and hands both to the pure
+`toolchain_identity_lines(before, after)`, which renders a field that moved as `old → new` and one
+that did not as a bare value, omitting fields empty on both sides. Flag deltas route through
+`flag_drift.diff_flags()` for the shared `+added` / `-removed` vocabulary. Every field degrades
+independently to its empty default, and an entirely empty identity yields no block rather than a
+bare header. The block is deliberately **not** a benchmark: an uncontrolled timing figure printed
+as a summary row would read as signal when it is noise, which is exactly why `kernel-bench.sh`
+clears ccache/sccache and drops caches before measuring anything.
+
 **User-facing output.** The runner emits a welcome banner (sysforge version + ordered stage chain) and a status snapshot (`✓ done`, `▸ running`, `· pending`, `↳ skipped_to`) before the loop, a stage banner before each stage (`[N/M] name` between two `═` rules), a `✓ name complete` line after each stage, and a closing rule on success. All of this routes through `log.ui` so it reaches both stderr and the unified log regardless of `-v` level. Visual primitives live in `sysforge/ui/headers.py` and share the `═` rule + bold-cyan style with `tools/iso-install.sh` (parallel `_double_rule` / `_step` / `_field` helpers in shell). Step counters are 1-based against the full stage list, so `--start-from configure` shows `[3/7]`, not `[1/…]`.
 
 ### Checkpoint state
@@ -1778,9 +1826,9 @@ announces the merged `.config` is assembled, which is only true once the hotplug
 
 ### `render.py`
 
-The one home for the presentation vocabulary shared by every tag-gutter report block: `sysforge update`'s summary (`update_summary`), both pre-flights (`llvm_state.render_preflight`, `toolchain_preflight.render_preflight`), and the pipeline's post-build change summary (`change_report.py`). Public API: `arrow()`, `em_dash()`, `version_pair(old, new, *, equal_marker=True)`, `tag_header(tag)`, `fmt_bytes(n)`.
+The one home for the presentation vocabulary shared by every tag-gutter report block: `sysforge update`'s summary (`update_summary`), both pre-flights (`llvm_state.render_preflight`, `toolchain_preflight.render_preflight`), and the pipeline's post-build change summary (`change_report.py`). Public API: `arrow()`, `em_dash()`, `ellipsis_glyph()`, `version_pair(old, new, *, equal_marker=True)`, `tag_header(tag)`, `fmt_bytes(n)`.
 
-`version_pair` renders a transition as `old → new`, collapsing to `ver (=)` when both sides are known and identical (`equal_marker=False` keeps the arrow form unconditionally — the built-package and stage-owned-update rows read as a report of what was done, so an unchanged version is still a transition there). An unknown side renders as `—`. `tag_header` returns the `  [TAG]` prefix padded to the shared 17-column gutter. `em_dash()` is `arrow()`'s counterpart for a standalone `—` (e.g. a failure message's clause separator) — any renderer wanting one goes through here rather than hardcoding the glyph. `fmt_bytes(n)` formats a byte count as a human-readable binary-prefix string (`142.3 MiB`); promoted from `cache_probe._fmt_bytes` so the cache report and the change summary's size column format identically. All four glyph-bearing helpers route through `log.downgrade_glyphs` so they degrade together under the Unicode gate.
+`version_pair` renders a transition as `old → new`, collapsing to `ver (=)` when both sides are known and identical (`equal_marker=False` keeps the arrow form unconditionally — the built-package and stage-owned-update rows read as a report of what was done, so an unchanged version is still a transition there). An unknown side renders as `—`. `tag_header` returns the `  [TAG]` prefix padded to the shared 17-column gutter. `em_dash()` is `arrow()`'s counterpart for a standalone `—` (e.g. a failure message's clause separator) — any renderer wanting one goes through here rather than hardcoding the glyph. `fmt_bytes(n)` formats a byte count as a human-readable binary-prefix string (`142.3 MiB`); promoted from `cache_probe._fmt_bytes` so the cache report and the change summary's size column format identically. `ellipsis_glyph()` is the same for a `…` (used by truncated report blocks — `… and N more`); it carries the `_glyph` suffix because bare `ellipsis` names a Python builtin type. All glyph-bearing helpers route through `log.downgrade_glyphs` so they degrade together under the Unicode gate.
 
 **Glyphs are resolved at format time**, not left to the emit path. Every pre-flight block now emits through `log.ui` (`update.py`, `build_cmd.py`, `fetch.py`, `pipeline/stages/toolchain.py`), which applies `log.downgrade_glyphs` and mirrors the block into the unified run-log — the bare `print()` sites that let a hardcoded `→` survive under `TERM=linux` are gone. Resolving early is kept regardless: `downgrade_glyphs` is idempotent, so it costs nothing, and it keeps a renderer's return value correct for any caller that formats without emitting. It covers the `—` placeholder in the same pass. Leaf module: imports only `sysforge.log`, so any layer may use it.
 
@@ -2351,7 +2399,29 @@ Public API:
 - `audit_resolved_config(config, topology=None, devices=None) -> list[KernelFinding]` — the one validator: boot-critical symbols (root FS, root storage controller, core boot infra, systemd prereqs, console) keyed off topology, plus device-driver coverage from `device_probe` Devices. Accepts a `.config` path or a pre-parsed dict.
 - `find_fallback_kernels(exclude_pkg=None)` / `verify_boot_artifacts(pkgname, bootloader)` / `check_dkms_for_kernel(kver)` (a module counts as present when `dkms status` reports it `installed`, **or** merely `built` while its `.ko` is actually in `<kver>`'s `updates/dkms` tree — newer dkms can leave a loaded, working module at `built`, so trusting the status word alone false-flags it) / `list_dkms_modules()` / `check_mkinitcpio_hooks(topology)` / `check_boot_mount_space(min_mb=200)` — the Gate 1/Gate 3 fact-gatherers (fallback presence, post-install vmlinuz+initramfs+boot-entry, DKMS rebuild coverage, mkinitcpio HOOKS vs topology, `/boot` headroom).
 
+- `diff_requested_kconfig(requested, resolved)` / `diff_kconfig(old, new)` — the two kconfig comparison axes. The first is requested-vs-resolved and iterates only sysforge's own intent, normalising an absent option to `n` (correct kernel semantics for "did my merge survive"). The second is build-to-build, walks the union of both key sets, and classifies `added`/`removed`/`changed` *without* that normalisation — on this axis "the symbol did not exist in that kernel" and "the symbol existed and was off" are different facts. Kept as siblings rather than one parameterised function because the normalisation difference is a semantic split, not a flag.
+
 The primitive must not import the pipeline layer; the kernel stage owns the abort/warn decisions.
+
+### `kconfig_history.py`
+
+The archive of recent resolved kernel `.config` files behind the kernel stage's build-to-build
+kconfig diff (§Pipeline layer, Kernel kconfig blocks). Nothing else in sysforge retains a resolved
+`.config` once the build tree is cleaned, so this module is its only home.
+
+Layout: `<state_dir>/kconfig-history/<pkgname>-<release>.config.gz`, newest `KEEP` (5) per pkgname,
+pruned on every write — after the write, so a failed write never costs an archive it would have
+replaced. A resolved config gzips to a few tens of KiB, keeping the whole archive in the low
+hundreds of KiB; small enough that there is deliberately no enable switch. Both `pkgname` and
+`release` reach the filesystem here, so both are constrained to a path-safe charset rather than
+trusted.
+
+Public API: `history_dir(state_dir)`, `archive_path(state_dir, pkgname, release)`,
+`archive(state_dir, pkgname, release, config_path, keep=KEEP) -> Path | None`,
+`previous(state_dir, pkgname, *, exclude_release=None) -> tuple[str, dict] | None`. Every function
+is best-effort — a full disk, an unwritable state dir, or a corrupt archive yields `None` or is
+stepped over, never raised. `previous` returning `None` on a first build is a real answer, not an
+error: there is nothing to compare against, and the summary says so.
 
 ---
 

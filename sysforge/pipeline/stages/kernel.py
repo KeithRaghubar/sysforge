@@ -82,6 +82,7 @@ from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.config import load_sysforge_toml, resolve_repo_track
 from sysforge.primitives.paths import KERNEL_PATH
 from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives.render import arrow, ellipsis_glyph
 from sysforge.primitives.makepkg_wrapper import (
     AlreadyBuilt,
     install_built_packages,
@@ -1537,9 +1538,15 @@ def _gate2_kconfig_drift(pkgbuild_dir, fragment_path):
     resolution by ``make olddefconfig``, and sysforge can't tell the two apart
     without a full dep solve. ``fragment_path is None`` (merge disabled or no
     entries) makes this a no-op, so the check is on exactly when the merge is.
+
+    Returns the drift list so the change summary can relocate the same result
+    into its own block (2.6.1-F25) without re-running the comparison; the
+    mid-run warnings stay exactly as they were. ``None`` — as distinct from
+    ``[]`` — means the check did not run at all, which the summary renders as
+    an explicit "did NOT run" rather than as silence.
     """
     if fragment_path is None:
-        return
+        return None
 
     config_path = _resolve_built_config(pkgbuild_dir)
     if config_path is None:
@@ -1551,7 +1558,7 @@ def _gate2_kconfig_drift(pkgbuild_dir, fragment_path):
             "build tree (no fresh build this run, e.g. package already built): "
             "merged kconfig options were NOT verified against the built kernel"
         )
-        return
+        return None
 
     requested = kernel_safety.parse_kconfig_text(
         Path(fragment_path).read_text(encoding="utf-8")
@@ -1564,7 +1571,7 @@ def _gate2_kconfig_drift(pkgbuild_dir, fragment_path):
             f"kconfig drift check: all {len(requested)} merged option(s) "
             "survived into the resolved .config"
         )
-        return
+        return drifts
 
     _log.warn(
         f"kconfig drift: {len(drifts)} option(s) sysforge merged differ in the "
@@ -1573,6 +1580,91 @@ def _gate2_kconfig_drift(pkgbuild_dir, fragment_path):
     )
     for d in drifts:
         _log.warn(f"  {d.option}: {d.requested} → {d.resolved} ({d.kind})")
+    return drifts
+
+
+# ---------------------------------------------------------------------------
+# kconfig history + change-summary blocks (2.6.1-F25)
+# ---------------------------------------------------------------------------
+
+# Symbols rendered inline before the summary truncates. A major kernel bump
+# changes thousands; printing them all would bury the version rows the summary
+# exists to show. The full list always goes to the unified log.
+_KCONFIG_DIFF_CAP = 40
+
+
+def _record_and_diff_kconfig(state_dir, pkgname, pkgbuild_dir):
+    """Archive this build's resolved .config and diff it against the previous.
+
+    Returns ``(previous_release, changes)`` or ``None`` when there is nothing
+    to compare — no build tree this run (the AlreadyBuilt path) or no earlier
+    archive (a first build). Best-effort throughout: this is advisory output
+    and must never affect the build.
+    """
+    from sysforge.primitives import kconfig_history
+
+    try:
+        config_path = _resolve_built_config(pkgbuild_dir)
+        if config_path is None:
+            return None
+        release = _built_kernel_release(config_path) or "unknown"
+        new = kernel_safety.parse_kconfig(config_path)
+        if new is None:
+            return None
+
+        prior = kconfig_history.previous(
+            state_dir, pkgname, exclude_release=release
+        )
+        # Archive after reading the prior entry, so a rebuild at the same
+        # release does not shadow the config it should be compared against.
+        kconfig_history.archive(state_dir, pkgname, release, config_path)
+        if prior is None:
+            return None
+        prev_release, old = prior
+        return prev_release, kernel_safety.diff_kconfig(old, new)
+    except Exception as exc:  # noqa: BLE001 — advisory only
+        _log.debug(f"kconfig history unavailable: {exc}")
+        return None
+
+
+def _kconfig_diff_lines(prev_release: str, changes) -> list[str]:
+    """Render the build-to-build kconfig diff, capped, with a full-list pointer."""
+    if not changes:
+        return [f"no kconfig changes since {prev_release}"]
+
+    lines = [f"{len(changes)} symbol(s) changed since {prev_release}:"]
+    for change in changes[:_KCONFIG_DIFF_CAP]:
+        if change.kind == "added":
+            lines.append(f"  +{change.option}={change.new}")
+        elif change.kind == "removed":
+            lines.append(f"  -{change.option} (was {change.old})")
+        else:
+            lines.append(f"  {change.option}: {change.old} {arrow()} {change.new}")
+
+    remaining = len(changes) - _KCONFIG_DIFF_CAP
+    if remaining > 0:
+        lines.append(f"  {ellipsis_glyph()} and {remaining} more (full list in the run log)")
+    return lines
+
+
+def _kconfig_drift_lines(drifts) -> list[str]:
+    """Render the requested-vs-resolved drift block.
+
+    ``drifts is None`` means the check never ran (no build tree). B6 established
+    that this must be said out loud rather than rendered as silence: it is
+    exactly where a stale build makes the check most relevant.
+    """
+    if drifts is None:
+        return [
+            "check did NOT run — no resolved .config in the build tree "
+            "(no fresh build this run); merged options were not verified"
+        ]
+    if not drifts:
+        return ["all merged options survived into the resolved .config"]
+    return [
+        f"  {d.option}: {d.requested} {arrow()} {d.resolved} ({d.kind})"
+        for d in drifts
+    ]
 
 
 def _gate3_verify(pkgbuild_dir, pkgname, bootloader):
@@ -1666,9 +1758,51 @@ class KernelStage(Stage):
     makepkg_bearing = True
     reports_changes = True
 
+    # Captured during run() for the F25 change-summary blocks. Class attributes,
+    # not constructor fields: stages/__init__.py instantiates every stage once
+    # at import, so this instance is effectively a module-level singleton, and
+    # each run() must reset them rather than inherit a prior run's result.
+    _kconfig_drift = None    # list[KconfigDrift] | None; None = check did not run
+    _kconfig_diff = None     # (prev_release, list[KconfigChange]) | None
+
+    def change_extras(self, config, state, options):
+        """Kconfig diff + drift blocks (2.6.1-F25). Advisory; never raises."""
+        from sysforge.primitives.change_report import ExtraBlock
+
+        blocks = []
+        if self._kconfig_diff is not None:
+            prev_release, changes = self._kconfig_diff
+            blocks.append(ExtraBlock(
+                label="Kconfig vs previous build:",
+                lines=_kconfig_diff_lines(prev_release, changes),
+            ))
+            # The inline block is capped; the log gets everything.
+            for change in changes[_KCONFIG_DIFF_CAP:]:
+                _log.info(
+                    f"kconfig diff (full): {change.option}: "
+                    f"{change.old or '(absent)'} → {change.new or '(absent)'} "
+                    f"({change.kind})"
+                )
+        if self._reported_kconfig_merge:
+            blocks.append(ExtraBlock(
+                label="Kconfig merge drift:",
+                lines=_kconfig_drift_lines(self._kconfig_drift),
+            ))
+        return blocks
+
+    # True once a run has reached the point where the merge-drift check either
+    # ran or was skipped. Without it, a stage that no-opped early (kernel.toml
+    # disabled) would render a "did NOT run" block about a check that was never
+    # applicable.
+    _reported_kconfig_merge = False
+
     def run(self, config, state, options):
         from sysforge.pipeline.state import get_toolchain_variant, resolve_state_dir
         from sysforge.primitives.build_state import BuildState
+
+        self._kconfig_drift = None
+        self._kconfig_diff = None
+        self._reported_kconfig_merge = False
 
         kernel_cfg = _load_kernel_config()
         if kernel_cfg is None or not kernel_cfg.get("enabled", False):
@@ -2097,7 +2231,17 @@ class KernelStage(Stage):
                 # Advisory: warn if any option sysforge merged didn't survive
                 # the build's kconfig resolution (nconfig toggle or olddefconfig
                 # dep drop). Never raises; no-op when no fragment was written.
-                _gate2_kconfig_drift(pkgbuild.parent, fragment_path)
+                self._kconfig_drift = _gate2_kconfig_drift(
+                    pkgbuild.parent, fragment_path
+                )
+                self._reported_kconfig_merge = fragment_path is not None
+
+                # Archive this build's resolved .config so the *next* run can
+                # diff against it, and capture the previous one for this run's
+                # summary. Best-effort: never raises, never blocks the install.
+                self._kconfig_diff = _record_and_diff_kconfig(
+                    state_dir, pkgname, pkgbuild.parent
+                )
 
             # Install + boot wiring are the mutation window — wrap them in the
             # sentinel so an interrupted install / mkinitcpio / bootloader regen

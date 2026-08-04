@@ -195,3 +195,25 @@ def test_parse_error_is_reported_not_raised(tmp_path, monkeypatch):
     r = resolve_flag_drift(entry, _MINIMAL_CONFIG, {})
     assert r.status == STATUS_PARSE_ERROR
     assert "malformed" in (r.error or "")
+
+
+def test_diff_flags_arrow_degrades_under_the_ascii_gate(monkeypatch):
+    """The changed-key arrow routes through render.arrow(), not a literal glyph.
+
+    diff_flags feeds the toolchain stage's change-summary block (2.6.1-F26),
+    which renders through a non-log emitter — a hardcoded glyph would survive
+    the ASCII downgrade there.
+    """
+    from sysforge import log
+    from sysforge.primitives.flag_drift import diff_flags
+
+    monkeypatch.setattr(log, "use_unicode", lambda: False)
+    assert diff_flags("CFLAGS=-O2", "CFLAGS=-O3") == ["  CFLAGS: '-O2' -> '-O3'"]
+
+
+def test_diff_flags_arrow_is_unicode_by_default(monkeypatch):
+    from sysforge import log
+    from sysforge.primitives.flag_drift import diff_flags
+
+    monkeypatch.setattr(log, "use_unicode", lambda: True)
+    assert diff_flags("CFLAGS=-O2", "CFLAGS=-O3") == ["  CFLAGS: '-O2' → '-O3'"]

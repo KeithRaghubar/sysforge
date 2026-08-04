@@ -36,6 +36,7 @@ from sysforge.primitives.profile import (
     resolve_profile,
     serialize_flags,
 )
+from sysforge.primitives.render import arrow
 
 # Outcome statuses for a single recorded package.
 STATUS_DRIFTED = "DRIFTED"            # stored flags differ from a fresh resolution
@@ -68,7 +69,8 @@ def diff_flags(stored: str, current: str) -> list[str]:
     """Return human-readable per-key diff lines between two flags strings.
 
     Format per changed key: ``  KEY: <old> → <new>`` or ``  +KEY: <new>`` /
-    ``  -KEY: <old>``.
+    ``  -KEY: <old>``. The arrow resolves through :func:`render.arrow` so the
+    lines stay safe for non-log emitters under the ASCII glyph gate.
     """
     def _parse(s: str) -> dict[str, str]:
         result: dict[str, str] = {}
@@ -87,7 +89,7 @@ def diff_flags(stored: str, current: str) -> list[str]:
         elif key not in new:
             diffs.append(f"  -{key}: {old[key]!r}")
         elif old[key] != new[key]:
-            diffs.append(f"  {key}: {old[key]!r} → {new[key]!r}")
+            diffs.append(f"  {key}: {old[key]!r} {arrow()} {new[key]!r}")
     return diffs
 
 

@@ -82,13 +82,11 @@ canonical ordering.
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
 | `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
-| `2.6.1-F25` | Kernel stage size and kconfig diff blocks | med | medium | patch |
 | `2.6.1-STD4` | shipped-config comments drift from the value grammar they document | med | medium | patch |
 | `2.6.1-B12` | plan_write misses the KEY=value; export KEY assignment form | low | small | patch |
 | `2.6.1-B13` | describe_editor_chain hardcodes the detected rung's index | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F20` | complete the editor chain display: source values, $VISUAL origins, one snapshot | low | small | patch |
-| `2.6.1-F26` | Toolchain stage identity and flag-delta block | low | small | patch |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
@@ -243,38 +241,6 @@ canonical ordering.
   safety (`kernel_safety.py`) as the only hard gate. *Priority: med · Effort: medium · Bump: patch* —
   no behaviour change on the happy path; it converts a silent, self-erasing failure into a visible
   one, and the whole `keep_hotplug_drivers` feature is only as good as this check.
-
-- **`2.6.1-F25` — Kernel stage size and kconfig diff blocks.** Builds on `2.6.1-F24`'s
-  `change_extras()` hook. Three advisory blocks, none of which can raise or block install. Size
-  comes free from the snapshot and makes the cost of the `_resolve_subpackages` headers/docs toggles
-  and `_resolve_keep_hotplug_drivers` visible on the run that flips them. Kconfig block A diffs
-  against the previous build: archive each successful build's resolved `.config` (via the existing
-  `_resolve_built_config`, `kernel.py:1413`, tagged with `_built_kernel_release()`, `:1444`) to
-  `<state_dir>/kconfig-history/<pkgname>-<release>.config.gz`, newest 5 per pkgname, pruned on write
-  — bounded at a few hundred KiB. Needs a new `kernel_safety.diff_kconfig(old, new)` sibling to
-  `diff_requested_kconfig` (`:141`), which is hardcoded to the requested-vs-resolved axis; both sides
-  parse via the existing `parse_kconfig()`. Output caps at 40 symbols with `… and N more`, full list
-  to the unified log — a major bump changes thousands and must not bury the version rows. Kconfig
-  block B relocates `_gate2_kconfig_drift`'s (`kernel.py:1531`) existing result into the summary by
-  having it *return* its drift list; the mid-run warnings stay. Block B composes with `2.6.1-F23`
-  rather than duplicating it: F23 moves the requested-vs-resolved check earlier (to merge time,
-  where `merge_config.sh` models it), and if it lands later block B renders a better-sourced list
-  with no rework. Both blocks degrade honestly on the AlreadyBuilt path, reusing the existing
-  explicit "did NOT run" wording (`kernel.py:1550`, 2.6.1-B6) rather than rendering silence.
-  *Priority: med · Effort: medium · Bump: patch* — advisory only; answers "what did I actually
-  change about this kernel", which the toggles currently make invisible.
-
-- **`2.6.1-F26` — Toolchain stage identity and flag-delta block.** Builds on `2.6.1-F24`. One
-  `change_extras()` block, entirely reads of state the stage already computes: `cc`/`cxx`/`ld`
-  version lines via the existing `build_fingerprint.compiler_version_line()`
-  (`build_fingerprint.py:106`) probed before and after, the `toolchain_variant` already threaded
-  through `_build_pkg` (`toolchain.py:807`) plus the Pass-4 fingerprint, and
-  `flag_drift.diff_flags(stored, current)` against what `build_state` recorded, rendered as
-  `+added`/`-removed`. Answers "what will my next builds be built with". Deliberately *not* a
-  benchmark: `scripts/kernel-bench.sh` clears ccache/sccache, drops VM caches and wipes `~/builds`
-  precisely because an uncontrolled timing figure is noise, and printing one as a summary row would
-  read as signal. Ships both a gcc-path and an llvm-path test per the dual-toolchain parity
-  convention. *Priority: low · Effort: small · Bump: patch* — cheap, deterministic, no new probes.
 
 - **`2.6.1-F27` — Install stage target-root change summary.** Builds on `2.6.1-F24`; **built last,
   and deferrable.** The install stage pacstraps into a target root via `archinstall --silent`, so

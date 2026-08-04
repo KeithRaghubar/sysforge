@@ -273,9 +273,9 @@ announces the merged `.config` is assembled, which is only true once the hotplug
 
 ### `render.py`
 
-The one home for the presentation vocabulary shared by every tag-gutter report block: `sysforge update`'s summary (`update_summary`), both pre-flights (`llvm_state.render_preflight`, `toolchain_preflight.render_preflight`), and the pipeline's post-build change summary (`change_report.py`). Public API: `arrow()`, `em_dash()`, `version_pair(old, new, *, equal_marker=True)`, `tag_header(tag)`, `fmt_bytes(n)`.
+The one home for the presentation vocabulary shared by every tag-gutter report block: `sysforge update`'s summary (`update_summary`), both pre-flights (`llvm_state.render_preflight`, `toolchain_preflight.render_preflight`), and the pipeline's post-build change summary (`change_report.py`). Public API: `arrow()`, `em_dash()`, `ellipsis_glyph()`, `version_pair(old, new, *, equal_marker=True)`, `tag_header(tag)`, `fmt_bytes(n)`.
 
-`version_pair` renders a transition as `old → new`, collapsing to `ver (=)` when both sides are known and identical (`equal_marker=False` keeps the arrow form unconditionally — the built-package and stage-owned-update rows read as a report of what was done, so an unchanged version is still a transition there). An unknown side renders as `—`. `tag_header` returns the `  [TAG]` prefix padded to the shared 17-column gutter. `em_dash()` is `arrow()`'s counterpart for a standalone `—` (e.g. a failure message's clause separator) — any renderer wanting one goes through here rather than hardcoding the glyph. `fmt_bytes(n)` formats a byte count as a human-readable binary-prefix string (`142.3 MiB`); promoted from `cache_probe._fmt_bytes` so the cache report and the change summary's size column format identically. All four glyph-bearing helpers route through `log.downgrade_glyphs` so they degrade together under the Unicode gate.
+`version_pair` renders a transition as `old → new`, collapsing to `ver (=)` when both sides are known and identical (`equal_marker=False` keeps the arrow form unconditionally — the built-package and stage-owned-update rows read as a report of what was done, so an unchanged version is still a transition there). An unknown side renders as `—`. `tag_header` returns the `  [TAG]` prefix padded to the shared 17-column gutter. `em_dash()` is `arrow()`'s counterpart for a standalone `—` (e.g. a failure message's clause separator) — any renderer wanting one goes through here rather than hardcoding the glyph. `fmt_bytes(n)` formats a byte count as a human-readable binary-prefix string (`142.3 MiB`); promoted from `cache_probe._fmt_bytes` so the cache report and the change summary's size column format identically. `ellipsis_glyph()` is the same for a `…` (used by truncated report blocks — `… and N more`); it carries the `_glyph` suffix because bare `ellipsis` names a Python builtin type. All glyph-bearing helpers route through `log.downgrade_glyphs` so they degrade together under the Unicode gate.
 
 **Glyphs are resolved at format time**, not left to the emit path. Every pre-flight block now emits through `log.ui` (`update.py`, `build_cmd.py`, `fetch.py`, `pipeline/stages/toolchain.py`), which applies `log.downgrade_glyphs` and mirrors the block into the unified run-log — the bare `print()` sites that let a hardcoded `→` survive under `TERM=linux` are gone. Resolving early is kept regardless: `downgrade_glyphs` is idempotent, so it costs nothing, and it keeps a renderer's return value correct for any caller that formats without emitting. It covers the `—` placeholder in the same pass. Leaf module: imports only `sysforge.log`, so any layer may use it.
 
@@ -846,7 +846,29 @@ Public API:
 - `audit_resolved_config(config, topology=None, devices=None) -> list[KernelFinding]` — the one validator: boot-critical symbols (root FS, root storage controller, core boot infra, systemd prereqs, console) keyed off topology, plus device-driver coverage from `device_probe` Devices. Accepts a `.config` path or a pre-parsed dict.
 - `find_fallback_kernels(exclude_pkg=None)` / `verify_boot_artifacts(pkgname, bootloader)` / `check_dkms_for_kernel(kver)` (a module counts as present when `dkms status` reports it `installed`, **or** merely `built` while its `.ko` is actually in `<kver>`'s `updates/dkms` tree — newer dkms can leave a loaded, working module at `built`, so trusting the status word alone false-flags it) / `list_dkms_modules()` / `check_mkinitcpio_hooks(topology)` / `check_boot_mount_space(min_mb=200)` — the Gate 1/Gate 3 fact-gatherers (fallback presence, post-install vmlinuz+initramfs+boot-entry, DKMS rebuild coverage, mkinitcpio HOOKS vs topology, `/boot` headroom).
 
+- `diff_requested_kconfig(requested, resolved)` / `diff_kconfig(old, new)` — the two kconfig comparison axes. The first is requested-vs-resolved and iterates only sysforge's own intent, normalising an absent option to `n` (correct kernel semantics for "did my merge survive"). The second is build-to-build, walks the union of both key sets, and classifies `added`/`removed`/`changed` *without* that normalisation — on this axis "the symbol did not exist in that kernel" and "the symbol existed and was off" are different facts. Kept as siblings rather than one parameterised function because the normalisation difference is a semantic split, not a flag.
+
 The primitive must not import the pipeline layer; the kernel stage owns the abort/warn decisions.
+
+### `kconfig_history.py`
+
+The archive of recent resolved kernel `.config` files behind the kernel stage's build-to-build
+kconfig diff (§Pipeline layer, Kernel kconfig blocks). Nothing else in sysforge retains a resolved
+`.config` once the build tree is cleaned, so this module is its only home.
+
+Layout: `<state_dir>/kconfig-history/<pkgname>-<release>.config.gz`, newest `KEEP` (5) per pkgname,
+pruned on every write — after the write, so a failed write never costs an archive it would have
+replaced. A resolved config gzips to a few tens of KiB, keeping the whole archive in the low
+hundreds of KiB; small enough that there is deliberately no enable switch. Both `pkgname` and
+`release` reach the filesystem here, so both are constrained to a path-safe charset rather than
+trusted.
+
+Public API: `history_dir(state_dir)`, `archive_path(state_dir, pkgname, release)`,
+`archive(state_dir, pkgname, release, config_path, keep=KEEP) -> Path | None`,
+`previous(state_dir, pkgname, *, exclude_release=None) -> tuple[str, dict] | None`. Every function
+is best-effort — a full disk, an unwritable state dir, or a corrupt archive yields `None` or is
+stepped over, never raised. `previous` returning `None` on a first build is a real answer, not an
+error: there is nothing to compare against, and the summary says so.
 
 ---
 
