@@ -81,6 +81,7 @@ canonical ordering.
 | `2.6.1-B11` | format_assignment can emit env-file syntax env_chain cannot read back | med | small | patch |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
+| `2.6.1-STD5` | the log-level rubric has no standards row and thins as new stages land | med | small | patch |
 | `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
 | `2.6.1-STD4` | shipped-config comments drift from the value grammar they document | med | medium | patch |
 | `2.6.1-B12` | plan_write misses the KEY=value; export KEY assignment form | low | small | patch |
@@ -88,6 +89,7 @@ canonical ordering.
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F20` | complete the editor chain display: source values, $VISUAL origins, one snapshot | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
+| `2.6.1-F29` | colour-code the update version-check verdicts | low | small | patch |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
@@ -283,6 +285,61 @@ canonical ordering.
   the manpage move in the same change. *Priority: low · Effort: small · Bump: patch* — additive
   flag on an existing verb, no new seam and no change to the per-file adopt contract.
   **Standards home on adoption:** none new.
+
+- **`2.6.1-F29` — colour-code the `update` version-check verdicts.** A `sysforge update --devel`
+  run over a large `-git` set produces one summary line per package, and nothing distinguishes the
+  handful that are actually eligible to rebuild from the wall that are not — the reader parses
+  `NEEDS_REBUILD`/`UP_TO_DATE`/`DOWNGRADE` as text. Colour the action tag in
+  `update_summary._print_summary`: green for `NEEDS_REBUILD`/`NEEDS_PACMAN_UPGRADE`, yellow for
+  `UP_TO_DATE`/`DEVEL`, red for `DOWNGRADE` and the failure actions (`DEVEL_EVAL_FAILED`,
+  `PULL_FAILED`, `RATE_LIMITED`, `PURGE_REFUSED`, `SKIPPED_NO_CHECKUPDATES`). The colour map is a
+  second dict keyed by the same action strings as `_ACTION_FORMATS`, applied through
+  `render.tag_header` (an optional `color=` argument) so the `[TAG]` gutter keeps its one home and
+  no site hand-writes an escape — §Logging/Colour's `log.use_color()` gate then applies for free.
+  **The gutter is the only correct surface, and the reason is load-bearing.** The obvious target —
+  the `[VERSION]` INFO line at `primitives/version.py:26` — cannot take colour: `log.info` builds
+  its file-log text as `plain = f"[SYSFORGE][INFO]{tag} {message}"` from the caller's own message,
+  and only `_format_line` (level + tag decoration) consults `use_color()`. Colour embedded in a log
+  *message* is therefore ungated and lands verbatim in `sysforge-update.log`, which is why every
+  existing `log.green`/`red`/`dim` call site sits on a `ui()`/`print()` path and none on
+  `info()`/`warn()`. `_print_summary` uses bare `print()` and never reaches a file, so it is
+  colour-safe by construction. Two adjacent fixes belong in the same change: (1) that same
+  `version.py` INFO line logs the two operands *before* comparing and names no package, so it is
+  near-useless in a log — give it its result (`vercmp 'a' 'b' -> 1`); (2) the invariant this item
+  discovered is unwritten — `docs/design/12-logging.md`'s Colour section says `log.py` is the single
+  colour authority but not that **message bodies passed to `error`/`warn`/`info`/`debug` must stay
+  uncoloured, because the file-log path bypasses the gate**. State it there. Tests: a colour-forced
+  summary asserting the per-action SGR, and `NO_COLOR` yielding the current plain output byte for
+  byte. *Priority: low · Effort: small · Bump: patch* — presentation only, one dict and one
+  optional argument; no change to the action taxonomy or to what `update` decides.
+  **Standards home on adoption:** none new — row 5 (`NO_COLOR`/`FORCE_COLOR`) already governs the
+  gate this rides on.
+
+- **`2.6.1-STD5` — the log-level rubric has no standards row and thins as new stages land.**
+  The rubric itself is written and is genuinely the audit authority:
+  `docs/design/12-logging.md` carries the five-level table (UI/ERROR/WARN/INFO/DEBUG with fn, gate
+  and reserved-for), the decision test that resolves most call sites (*is this the answer, or
+  narration about producing the answer?*), and the explicit anti-pattern that `ui()` is not a
+  "make this always show up" escape hatch. The gap is reach, in two places. **(1) No standards
+  row.** `docs/design/21-standards.md` covers the logging system's neighbours — row 5 `NO_COLOR`,
+  row 6 stdout/stderr separation, row 20 journald — but the level rubric appears in none of them,
+  so it sits outside the one surface that catalogues conventions and their enforcement state. Add a
+  row citing 12-logging.md, with its enforcement recorded honestly (see below). **(2) Not in the
+  always-loaded context.** The rubric lives in a generated design doc, while the conventions that
+  actually hold at implementation time — dual-toolchain test parity, completions lockstep, the Verb
+  framework — are one-liners in the root `CLAUDE.md`. Add a pointer sentence there in the same
+  shape. On enforcement, the row must not overclaim: the only mechanical guard is the
+  golden-output regression assertion that a default-verbosity (`verbosity=0`) dry run emits no
+  `[INFO]`/`[WARN]` lines, and it is anchored on exactly two stages (`packages` via `_load_packages`
+  and `configure`'s dry-run). That catches the one failure mode that matters — narration leaking
+  into always-visible output — but nothing checks WARN-vs-INFO or INFO-vs-DEBUG classification, and
+  coverage thins with every stage added without its own anchor. So the row's status is `followed`
+  with the two-stage anchor named as its partial mechanism, and the cheap extension worth scoping
+  with it is making that assertion a shared helper each stage test opts into, so a new stage
+  acquires the guard by default rather than by remembering. *Priority: med · Effort: small · Bump:
+  patch* — docs plus one test helper; no runtime behaviour changes and no existing call site is
+  re-levelled by this item (the relevel sweep already ran).
+  **Standards home on adoption:** a new row is the deliverable — this item *is* the row.
 
 ### Bugs
 
