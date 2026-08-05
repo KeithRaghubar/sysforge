@@ -171,7 +171,7 @@ def test_debug_empty_string(capsys):
     log.set_verbosity(3)
     log.debug("[X]", "")
     out = capsys.readouterr().err
-    assert "[SYSFORGE][DEBUG][X] \n" == out
+    assert out == "[SYSFORGE][DEBUG][X] \n"
 
 
 # ---------------------------------------------------------------------------
@@ -771,3 +771,38 @@ def test_file_logs_keep_unicode_even_when_terminal_is_ascii(tmp_path, monkeypatc
     log.close_unified_log(success=False, persist=True)
     content = path.read_text()
     assert "phase → done ✓" in content
+
+
+# ---------------------------------------------------------------------------
+# quiet_at_default fixture (standards row 25 shared guard)
+# ---------------------------------------------------------------------------
+
+def test_quiet_at_default_returns_both_captures(quiet_at_default):
+    """The shared STD-row-25 guard runs the callable at v0 and v2 and hands
+    back both stderr captures."""
+    def emit():
+        log.info("[TEST]", "narration")   # signature is (tag, message)
+        log.ui("[TEST]", "the answer")
+
+    err_v0, err_v2 = quiet_at_default(emit)
+    # The point of the guard: narration is gated, the answer is not.
+    assert "[INFO]" not in err_v0
+    assert "the answer" in err_v0
+    assert "[SYSFORGE][INFO][TEST] narration" in err_v2
+
+
+def test_quiet_at_default_fails_when_narration_leaks(quiet_at_default):
+    """A stage that emits INFO at the shipped default trips the guard."""
+    def leaky():
+        log.set_verbosity(2)   # simulates a stage that forces its own level
+        log.info("[TEST]", "leaked")
+
+    with pytest.raises(AssertionError, match=r"\[INFO\]"):
+        quiet_at_default(leaky)
+
+
+def test_quiet_at_default_restores_verbosity(quiet_at_default):
+    """Verbosity is process-global; the fixture must not leak it."""
+    saved = log.get_verbosity()
+    quiet_at_default(lambda: None)
+    assert log.get_verbosity() == saved

@@ -81,9 +81,7 @@ canonical ordering.
 | `2.6.1-B11` | format_assignment can emit env-file syntax env_chain cannot read back | med | small | patch |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
-| `2.6.1-STD5` | the log-level rubric has no standards row and thins as new stages land | med | small | patch |
 | `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
-| `2.6.1-STD4` | shipped-config comments drift from the value grammar they document | med | medium | patch |
 | `2.6.1-B12` | plan_write misses the KEY=value; export KEY assignment form | low | small | patch |
 | `2.6.1-B13` | describe_editor_chain hardcodes the detected rung's index | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
@@ -201,29 +199,6 @@ canonical ordering.
   does not exist yet; behaviour-preserving on every success path. **Standards home on adoption:**
   none new — §22's privilege seam row already covers the `run_privileged` conversion.
 
-- **`2.6.1-STD4` — shipped-config comments drift from the value grammar they document.**
-  `make check-shipped` validates the *structure* of `etc/sysforge/*.toml` (sections and top-level
-  keys, via `_KNOWN_SECTIONS`/`_KNOWN_TOP_KEYS`, plus fixture parity) but nothing checks that a key's
-  inline comment still describes what its validator accepts. Every feature that **widens an existing
-  key's grammar** rather than adding a key therefore passes every gate while the user-facing comment
-  rots. Two confirmed instances, both fixed by hand: `2.1.0-F6` taught `_coerce_cpu_quota` a
-  fractional form (`0.75` → a share of `os.cpu_count()`) that neither `sysforge.toml` nor
-  `profiles.toml` mentioned; `2.2.0-F4` added `mem_limit` as a fifth throttle knob that
-  `profiles.toml` never listed as a per-profile override even though `resolve_throttle`'s `pick()`
-  handles it identically to the other four. A same-sweep audit of the other four shipped configs
-  found key *coverage* complete (every `BootstrapConfig` field, every kernel/toolchain key documented)
-  but two more stale references of the same class: a renamed `flag_profiles.toml` (5 occurrences) and
-  a `[cache]` section documented in `packages.toml` that has never existed. Add a `check_shipped`
-  group that ties each `_coerce_*`-backed key to its shipped comment — the tractable version is a
-  declarative table mapping key → required substrings/examples (e.g. `cpu_quota` must show both an
-  `N%` and a fractional example), so the check fails when a validator gains a form the comment omits.
-  Cheaper adjacent win worth doing regardless: assert no shipped comment names a config file or
-  section that does not exist, which catches the `flag_profiles.toml`/`[cache]` class outright.
-  *Priority: med · Effort: medium · Bump: patch* — pure tooling, no runtime behaviour; the drift it
-  catches is user-facing (a comment that documents a knob wrongly is worse than no comment).
-  **Standards home on adoption:** extend the existing shipped-file row rather than adding one — this
-  is enforcement depth on a documented convention, not conformance to a new external spec.
-
 - **`2.6.1-F23` — Verify requested kconfig symbols survive into the merged `.config`.** SysForge
   writes kconfig fragments (`sysforge.config`, `sysforge.hotplug.config`) as plain text and never
   checks that the symbols it asked for actually landed. A fragment line can be voided outright with
@@ -314,32 +289,6 @@ canonical ordering.
   optional argument; no change to the action taxonomy or to what `update` decides.
   **Standards home on adoption:** none new — row 5 (`NO_COLOR`/`FORCE_COLOR`) already governs the
   gate this rides on.
-
-- **`2.6.1-STD5` — the log-level rubric has no standards row and thins as new stages land.**
-  The rubric itself is written and is genuinely the audit authority:
-  `docs/design/12-logging.md` carries the five-level table (UI/ERROR/WARN/INFO/DEBUG with fn, gate
-  and reserved-for), the decision test that resolves most call sites (*is this the answer, or
-  narration about producing the answer?*), and the explicit anti-pattern that `ui()` is not a
-  "make this always show up" escape hatch. The gap is reach, in two places. **(1) No standards
-  row.** `docs/design/21-standards.md` covers the logging system's neighbours — row 5 `NO_COLOR`,
-  row 6 stdout/stderr separation, row 20 journald — but the level rubric appears in none of them,
-  so it sits outside the one surface that catalogues conventions and their enforcement state. Add a
-  row citing 12-logging.md, with its enforcement recorded honestly (see below). **(2) Not in the
-  always-loaded context.** The rubric lives in a generated design doc, while the conventions that
-  actually hold at implementation time — dual-toolchain test parity, completions lockstep, the Verb
-  framework — are one-liners in the root `CLAUDE.md`. Add a pointer sentence there in the same
-  shape. On enforcement, the row must not overclaim: the only mechanical guard is the
-  golden-output regression assertion that a default-verbosity (`verbosity=0`) dry run emits no
-  `[INFO]`/`[WARN]` lines, and it is anchored on exactly two stages (`packages` via `_load_packages`
-  and `configure`'s dry-run). That catches the one failure mode that matters — narration leaking
-  into always-visible output — but nothing checks WARN-vs-INFO or INFO-vs-DEBUG classification, and
-  coverage thins with every stage added without its own anchor. So the row's status is `followed`
-  with the two-stage anchor named as its partial mechanism, and the cheap extension worth scoping
-  with it is making that assertion a shared helper each stage test opts into, so a new stage
-  acquires the guard by default rather than by remembering. *Priority: med · Effort: small · Bump:
-  patch* — docs plus one test helper; no runtime behaviour changes and no existing call site is
-  re-levelled by this item (the relevel sweep already ran).
-  **Standards home on adoption:** a new row is the deliverable — this item *is* the row.
 
 ### Bugs
 

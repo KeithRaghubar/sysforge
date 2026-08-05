@@ -70,8 +70,12 @@ root_fs = "ext4"
 # mirrors. Must be names — archinstall's mirror region selection keys on the
 # full name and rejects a bare code like "CA". Good: ["Canada"], not ["CA"].
 # countries = ["Canada"]
-protocol = "https"   # only mirrors reachable over this protocol (reflector --protocol)
-age      = 12        # only mirrors synchronized within the last N HOURS (reflector --age)
+
+# protocol — only mirrors reachable over this protocol (reflector --protocol)
+protocol = "https"
+
+# age — only mirrors synchronized within the last N HOURS (reflector --age)
+age      = 12
 
 
 # =============================================================================

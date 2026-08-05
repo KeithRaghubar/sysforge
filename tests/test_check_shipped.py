@@ -652,3 +652,219 @@ class TestManpageScdocSkewEndToEnd:
             return
         assert res.returncode == 1
         assert "stale" in res.stdout
+
+
+# ---------------------------------------------------------------------------
+# Group: config_comments
+# ---------------------------------------------------------------------------
+#
+# Regression guard for STD4: a shipped comment naming a config file or
+# section that does not exist. The two historical instances that motivated
+# this (a renamed flag_profiles.toml, a never-existent [cache] section) were
+# already fixed by hand, so this ships green against the real repo - every
+# failing case below is built in a tmp_path fixture, not against etc/sysforge/.
+
+check_shipped = _load_check_shipped()
+
+
+def _write_config_dir(root: Path, files: dict[str, str]) -> Path:
+    """Build a synthetic repo with etc/sysforge/<name>.toml files."""
+    cfg = root / "etc" / "sysforge"
+    cfg.mkdir(parents=True)
+    for name, body in files.items():
+        (cfg / name).write_text(body, encoding="utf-8")
+    return root
+
+
+def test_config_comments_flags_nonexistent_toml_reference(tmp_path):
+    """A comment naming a config file that does not ship is drift."""
+    repo = _write_config_dir(tmp_path, {
+        "sysforge.toml": "# see flag_profiles.toml for the profile list\n[build]\n",
+    })
+    findings = check_shipped.check_config_comments(repo)
+    assert any("flag_profiles.toml" in f.message for f in findings)
+    assert all(f.group == "config_comments" for f in findings)
+
+
+def test_config_comments_allows_existing_toml_reference(tmp_path):
+    """A comment naming a config file that does ship is fine."""
+    repo = _write_config_dir(tmp_path, {
+        "sysforge.toml": "# see profiles.toml for the profile list\n[build]\n",
+        "profiles.toml": "[defaults]\n",
+    })
+    assert check_shipped.check_config_comments(repo) == []
+
+
+def test_config_comments_ignores_non_toml_filenames(tmp_path):
+    """Comments legitimately mention non-sysforge files."""
+    repo = _write_config_dir(tmp_path, {
+        "sysforge.toml": "# merged over the system /etc/makepkg.conf baseline\n[build]\n",
+    })
+    assert check_shipped.check_config_comments(repo) == []
+
+
+def test_config_comments_flags_nonexistent_section_reference(tmp_path):
+    """A comment documenting a section the schema has never had is drift."""
+    repo = _write_config_dir(tmp_path, {
+        "packages.toml": "# the [cache] block tunes the download cache\n[build]\n",
+    })
+    findings = check_shipped.check_config_comments(repo)
+    assert any("[cache]" in f.message for f in findings)
+
+
+def test_config_comments_allows_cross_file_section_reference(tmp_path):
+    """`sysforge.toml's [build] block` resolves against sysforge.toml."""
+    repo = _write_config_dir(tmp_path, {
+        "profiles.toml": "# See sysforge.toml's [build] block for full semantics.\n[defaults]\n",
+        "sysforge.toml": "[build]\n",
+    })
+    assert check_shipped.check_config_comments(repo) == []
+
+
+def test_config_comments_clean_against_real_repo():
+    """Regression guard: the shipped configs currently have no dangling refs."""
+    assert check_shipped.check_config_comments(check_shipped.REPO) == []
+
+
+# ---------------------------------------------------------------------------
+# Hatch-scoping regressions (review round 1): every escape hatch above must
+# be scoped to the clause/bracket it licenses, not the whole comment block -
+# a licensing phrase anywhere in a comment paragraph must not disable the
+# section sub-check for an unrelated bracket in the same paragraph.
+# ---------------------------------------------------------------------------
+
+
+def test_config_comments_external_file_hatch_does_not_blanket_block(tmp_path):
+    """An /etc/*.conf mention in one clause must not hide a real [cache] typo
+    in a different clause of the same comment."""
+    repo = _write_config_dir(tmp_path, {
+        "packages.toml": (
+            "# merged over the system /etc/makepkg.conf baseline, "
+            "the [cache] block tunes downloads\n[build]\n"
+        ),
+    })
+    findings = check_shipped.check_config_comments(repo)
+    assert any("[cache]" in f.message for f in findings)
+
+
+def test_config_comments_non_shipped_stem_hatch_does_not_blanket_block(tmp_path):
+    """A hardware_profile.toml mention in one clause must not hide a bogus
+    section in a different clause of the same comment."""
+    repo = _write_config_dir(tmp_path, {
+        "packages.toml": (
+            "# hardware stage writes hardware_profile.toml, and also uses "
+            "the bogus [totally_fake] section\n[build]\n"
+        ),
+    })
+    findings = check_shipped.check_config_comments(repo)
+    assert any("[totally_fake]" in f.message for f in findings)
+
+
+def test_config_comments_owner_binding_is_per_mention_not_per_block(tmp_path):
+    """Naming sysforge.toml elsewhere in the paragraph must not lend its
+    allowlist to a [mesa] bracket that is actually attached to packages.toml."""
+    repo = _write_config_dir(tmp_path, {
+        "packages.toml": (
+            "# see sysforge.toml for global logging config.\n"
+            "# packages.toml has no [mesa] section, that lives elsewhere -- this is WRONG,\n"
+            "# mesa belongs to sysforge.toml not packages.toml\n[build]\n"
+        ),
+        "sysforge.toml": "[mesa]\n",
+    })
+    findings = check_shipped.check_config_comments(repo)
+    assert any("[mesa]" in f.message for f in findings)
+
+
+def test_grammar_docs_flags_comment_missing_a_form(tmp_path):
+    """cpu_quota's comment must show both the N% and the fractional form."""
+    repo = _write_config_dir(tmp_path, {
+        # documents only the absolute form - the 2.1.0-F6 fraction is missing
+        "sysforge.toml": (
+            '# cpu_quota — hard CPU ceiling: "600%" (100% = one core)\n'
+            '# cpu_quota = "600%"\n'
+            '[build]\n'
+        ),
+    })
+    findings = check_shipped.check_config_comments(repo)
+    assert any("cpu_quota" in f.message and "fraction" in f.message.lower()
+               for f in findings)
+
+
+def test_grammar_docs_passes_when_all_forms_documented(tmp_path):
+    repo = _write_config_dir(tmp_path, {
+        "sysforge.toml": (
+            '# cpu_quota — hard CPU ceiling, in either of two forms:\n'
+            '#   "600%"  absolute, where 100% = one core\n'
+            '#   0.75    a decimal fraction of this host\'s total cores\n'
+            '# cpu_quota = "600%"\n'
+            '[build]\n'
+        ),
+    })
+    grammar = [f for f in check_shipped.check_config_comments(repo)
+               if "cpu_quota" in f.message]
+    assert grammar == []
+
+
+def test_key_comment_block_is_key_scoped_not_paragraph_scoped(tmp_path):
+    """_key_comment_block must stop at the PREVIOUS key's own anchor line, not
+    walk through a bare '#' spacer into that key's whole paragraph.
+
+    Regression for the found bug: nice's paragraph happens to contain the word
+    "idle" ("...otherwise idle..."), and shipped configs separate key
+    paragraphs with bare '#' spacer lines rather than blank lines - so an
+    upward walk that only stops at a non-comment line runs straight past the
+    spacer into nice's prose. ionice's own lines here deliberately do NOT
+    contain "idle" (scrubbed, mirroring the real repro against
+    etc/sysforge/sysforge.toml) so a correct, key-scoped block sees no "idle"
+    token and must flag it as under-documented.
+    """
+    repo = _write_config_dir(tmp_path, {
+        "sysforge.toml": (
+            "# nice - scheduling niceness. Lets the build yield CPU the "
+            "instant you need it, with no throughput loss when the machine "
+            "is otherwise idle.\n"
+            "# nice = 19\n"
+            "#\n"
+            "# ionice - IO scheduling class: best-effort or the other one.\n"
+            "# ionice = \"x\"\n"
+            "[build]\n"
+        ),
+    })
+    findings = check_shipped.check_config_comments(repo)
+    ionice_findings = [f for f in findings if "ionice" in f.message]
+    # Correct (key-scoped) behaviour: ionice's own paragraph never says
+    # "idle", so it must be reported missing - even though "idle" appears
+    # nearby in nice's paragraph. Pre-fix, the paragraph-wide walk absorbs
+    # nice's "idle" into ionice's block and this assertion fails (the bug:
+    # ionice's enum goes wholly undocumented and the guard stays silent).
+    assert any("idle" in f.message for f in ionice_findings), \
+        [f.message for f in findings]
+
+
+def test_grammar_docs_table_keys_exist_in_shipped_configs():
+    """A _GRAMMAR_DOCS entry for a key no shipped config documents is itself
+    drift - the table must not rot in the other direction."""
+    for (fname, key) in check_shipped._GRAMMAR_DOCS:
+        path = check_shipped.REPO / "etc" / "sysforge" / fname
+        assert path.exists(), f"{fname} in _GRAMMAR_DOCS does not ship"
+        # A plain substring match is not enough: prose can mention a key's
+        # name without an actual assignment anchor (active or commented-out
+        # example) for _key_comment_block to walk up from - and the runtime
+        # checker's per-key `continue` (see check_config_comments) silently
+        # skips exactly that case. Require the real anchor here instead.
+        assert check_shipped._key_comment_block(path.read_text(encoding="utf-8"), key), \
+            f"{key!r} in _GRAMMAR_DOCS has no assignment anchor in {fname}"
+
+
+def test_grammar_docs_all_forms_present_in_real_repo():
+    """Every _GRAMMAR_DOCS entry's own (key-scoped) block shows every required
+    token, checked directly against the table rather than via the combined
+    check_config_comments() run - test_config_comments_clean_against_real_repo
+    already asserts that end-to-end, so this asserts the grammar-coverage
+    claim independently instead of re-running the same call under a different
+    docstring."""
+    for (fname, key), required in check_shipped._GRAMMAR_DOCS.items():
+        path = check_shipped.REPO / "etc" / "sysforge" / fname
+        block = check_shipped._key_comment_block(path.read_text(encoding="utf-8"), key)
+        missing = [tok for tok in required if tok not in block]
+        assert not missing, f"{fname}:{key} missing forms {missing} in block:\n{block}"

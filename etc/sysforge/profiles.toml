@@ -14,40 +14,47 @@
 #
 # ── [paths] ──────────────────────────────────────────────────────────────────
 #
-#   pkgbuild_src_dir = "~/src"    # directory searched for PKGBUILDs by bare package name
-#                             # sysforge build/resolve <name> looks here first
+#   pkgbuild_src_dir — directory searched for PKGBUILDs by bare package name;
+#     sysforge build/resolve <name> looks here first
+#   pkgbuild_src_dir = "~/src"
 #
 # ── [defaults] profile keys (also valid in any [profiles.NAME]) ──────────────
 #
-#   BUILDDIR = "$HOME/builds" # overrides system makepkg.conf BUILDDIR (where src/pkg go)
-#                             # set in [profiles.bare] so all profiles inherit it
+#   BUILDDIR — overrides system makepkg.conf BUILDDIR (where src/pkg go); set
+#     in [profiles.bare] so all profiles inherit it
+#   BUILDDIR = "$HOME/builds"
 #
 # ── [defaults] ───────────────────────────────────────────────────────────────
 #
-#   profile = "standard"          # (required) fallback when no rule matches
-#   append_groups = ["sf-build"]  # (optional) groups added to every package
-#   toolchain = "gcc"             # (optional) global package-compiler default:
-#                                 # "gcc" | "llvm". Expands to the compiler bundle
-#                                 # below for any profile that doesn't set its own
-#                                 # `toolchain` (or explicit CC/CXX). When the
-#                                 # toolchain stage runs (toolchain.toml enabled),
-#                                 # it rewrites THIS key to match toolchain.toml's
-#                                 # `compiler`, so the package default tracks the
-#                                 # registered system compiler.
+#   profile — (required) fallback when no rule matches
+#   profile = "standard"
+#
+#   append_groups — (optional) groups added to every package
+#   append_groups = ["sf-build"]
+#
+#   toolchain — (optional) global package-compiler default: "gcc" | "llvm".
+#     Expands to the compiler bundle below for any profile that doesn't set
+#     its own `toolchain` (or explicit CC/CXX). When the toolchain stage runs
+#     (toolchain.toml enabled), it rewrites THIS key to match toolchain.toml's
+#     `compiler`, so the package default tracks the registered system
+#     compiler.
+#   toolchain = "gcc"
 #
 # ── [profiles.NAME] ──────────────────────────────────────────────────────────
 #
-#   extends = "bare"              # (optional) parent profile; child keys override
-#                                 # [profiles.NAME.append] does token-level merge
+#   extends — (optional) parent profile; child keys override
+#     [profiles.NAME.append] does token-level merge
+#   extends = "bare"
 #
 #   # Compiler / linker
-#   toolchain = "gcc"        # "gcc" | "llvm" — selects the compiler bundle. One
-#                            # field instead of hand-setting the keys below;
-#                            # explicit keys always override the bundle.
-#                            #   gcc  → CC=gcc,   CXX=g++,    system binutils
-#                            #   llvm → CC=clang, CXX=clang++, AR/NM/RANLIB/STRIP
-#                            #          =llvm-*, and -fuse-ld=lld added to LDFLAGS
-#                            #          when no -fuse-ld= is already declared.
+#   toolchain — "gcc" | "llvm" — selects the compiler bundle. One field
+#     instead of hand-setting the keys below; explicit keys always override
+#     the bundle.
+#       gcc  → CC=gcc,   CXX=g++,    system binutils
+#       llvm → CC=clang, CXX=clang++, AR/NM/RANLIB/STRIP=llvm-*, and
+#              -fuse-ld=lld added to LDFLAGS when no -fuse-ld= is already
+#              declared.
+#   toolchain = "gcc"
 #   # Individual overrides (written to temp makepkg.conf; each wins over the
 #   # bundle above):
 #   # CC     = "clang"
@@ -59,13 +66,14 @@
 #   CFLAGS   = "-march=native -O3 -pipe -fno-plt"
 #   CXXFLAGS = "$CFLAGS"
 #   CPPFLAGS = "-D_FORTIFY_SOURCE=2"
+#
+#   LDFLAGS — use -fuse-ld=lld to select lld. Flag guards in
+#     emit_makepkg_conf handle incompatibilities automatically: lld-only
+#     flags (--icf=*) stripped when lld is not the linker; RUSTFLAGS linker
+#     reconciled to match LDFLAGS; -flto=thin rewritten to -flto for GCC;
+#     LTO disabled entirely when CC=gcc + linker=lld (GCC LTO bitcode is
+#     incompatible with lld).
 #   LDFLAGS  = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
-#             # Use -fuse-ld=lld to select lld. Flag guards in emit_makepkg_conf
-#             # handle incompatibilities automatically: lld-only flags (--icf=*)
-#             # stripped when lld is not the linker; RUSTFLAGS linker reconciled
-#             # to match LDFLAGS; -flto=thin rewritten to -flto for GCC; LTO
-#             # disabled entirely when CC=gcc + linker=lld (GCC LTO bitcode is
-#             # incompatible with lld).
 #   DEBUG_CFLAGS   = "-g"
 #   DEBUG_CXXFLAGS = "-g"
 #   DEBUG_LDFLAGS  = ""
@@ -100,26 +108,32 @@
 #   CCACHE_DIR                   = "/var/cache/ccache"
 #   SCCACHE_DIR                  = "/var/cache/sccache"
 #   CARGO_HOME                   = "/var/cache/cargo"
-#   CARGO_NET_GIT_FETCH_WITH_CLI = "true"  # avoids SSH auth failures in build envs
+#
+#   CARGO_NET_GIT_FETCH_WITH_CLI — avoids SSH auth failures in build envs
+#   CARGO_NET_GIT_FETCH_WITH_CLI = "true"
 #   PKG_CONFIG_PATH              = "/usr/local/lib/pkgconfig"
 #
 #   # makepkg invocation flags
+#   makepkg_flags — common: --noconfirm --syncdeps --rmdeps --install
+#     --noprogressbar --log --cleanbuild --force
 #   makepkg_flags = ["--noconfirm", "--syncdeps"]
-#                 # common: --noconfirm --syncdeps --rmdeps --install
-#                 #         --noprogressbar --log --cleanbuild --force
 #
 #   # SysForge behaviour keys  (not written to conf or env)
-#   build_mode    = "source_built"      # "source_built" | "pgo_llvm_toolchain" | "kernel"
-#                                       # omit for standard builds. "source_built"
-#                                       # extracts the PKGBUILD's embedded profile
-#                                       # (legacy token "patched_pkgbuild" still
-#                                       # accepted on read). Optimization modes
-#                                       # (pgo_mesa/pgo/autofdo_kernel/…) are
-#                                       # stamped at build time, not set here.
-#   clean_builddir = true               # wipe src/ before build (default: false)
-#   batch          = true               # abort on failure without prompting (default: false)
+#   build_mode — "source_built" | "pgo_llvm_toolchain" | "kernel"; omit for
+#     standard builds. "source_built" extracts the PKGBUILD's embedded
+#     profile (legacy token "patched_pkgbuild" still accepted on read).
+#     Optimization modes (pgo_mesa/pgo/autofdo_kernel/…) are stamped at
+#     build time, not set here.
+#   build_mode    = "source_built"
+#
+#   clean_builddir — wipe src/ before build (default: false)
+#   clean_builddir = true
+#
+#   batch — abort on failure without prompting (default: false)
+#   batch          = true
+#
+#   consumes — override auto-inferred consumes; omit to infer from makedepends
 #   consumes       = ["makepkg", "rust", "cmake", "meson", "env"]
-#                  # override auto-inferred consumes; omit to infer from makedepends
 #
 #   # CPU/IO/memory throttling — per-profile override of [build] in sysforge.toml.
 #   # Set on a heavy profile (e.g. an LLVM/PGO build) to throttle just those.
@@ -127,12 +141,17 @@
 #   # to it. See sysforge.toml's [build] block for the full semantics.
 #   nice       = 19                     # scheduling niceness 0..19 (soft yield)
 #   ionice     = "idle"                 # IO class: "idle" | "best-effort"
-#   cpu_quota  = "600%"                 # hard CPU ceiling via systemd scope: "N%"
-#                                       # (100% = one core) or a decimal fraction
-#                                       # of this host's cores (0.75 → 12 of 16)
+#
+#   cpu_quota — hard CPU ceiling via systemd scope: "N%" (100% = one core) or
+#     a decimal fraction of this host's cores (0.75 → 12 of 16)
+#   cpu_quota  = "600%"
+#
 #   jobs       = 6                      # parallel jobs; rewrites -j in MAKEFLAGS
-#   mem_limit  = "24G"                  # per-build memory ceiling (cgroup MemoryMax,
-#                                       # or RLIMIT_AS without systemd-run)
+#
+#   mem_limit — per-build memory ceiling (cgroup MemoryMax, or RLIMIT_AS
+#     without systemd-run): a bare byte count or a binary size suffix
+#     (e.g. "24G", "512M")
+#   mem_limit  = "24G"
 #
 # ── [profiles.NAME.append] ───────────────────────────────────────────────────
 #
@@ -140,13 +159,18 @@
 #   Conflict groups ([append_conflict_groups] below) are resolved during merge.
 #
 #   [profiles.optimized_lto.append]
-#   CFLAGS  = "-flto=thin"   # replaces -flto* in parent via conflict group
-#   LDFLAGS = "--icf=all"    # appended (no conflict group)
+#   CFLAGS — replaces -flto* in parent via conflict group
+#   CFLAGS  = "-flto=thin"
+#   LDFLAGS — appended (no conflict group)
+#   LDFLAGS = "--icf=all"
 #
 # ── [[rules]] ────────────────────────────────────────────────────────────────
 #
-#   profile  = "optimized"   # (required) profile to apply when this rule matches
-#   priority = 0             # (required) 0–99; higher priority wins on conflict
+#   profile — (required) profile to apply when this rule matches
+#   profile  = "optimized"
+#
+#   priority — (required) 0–99; higher priority wins on conflict
+#   priority = 0
 #
 #   # Match fields — all optional; omitting passes unconditionally
 #   pkgnames        = ["htop", "htop-*"]       # ANY match; fnmatch globs

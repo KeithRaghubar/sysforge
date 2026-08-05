@@ -17,108 +17,97 @@ enabled = false
 # Required fields
 # ---------------------------------------------------------------------------
 
-pkgname = "linux-sysforge"      # LOCAL package name to build/install as. For a
-                                # pure-local tree it must match the PKGBUILD
-                                # pkgbase; when upstream_pkgname is set, sysforge
-                                # patches the cloned PKGBUILD's pkgbase to this
-                                # name (coexist rename) so the build installs
-                                # alongside the official package. Defaults to
-                                # upstream_pkgname when omitted.
-                                # NOTE: a pkgname already ending in "-sysforge"
-                                # collapses with the optimized-build suffix — an
-                                # AutoFDO/Propeller `use` build then REPLACES the
-                                # prior build under the same name instead of
-                                # coexisting. The shipped default above has
-                                # exactly this property: it is fine for plain
-                                # custom builds, but before adopting AutoFDO/
-                                # Propeller `use` builds, rename to keep an
-                                # optimized and a stock build installed
-                                # side-by-side (bootloader fallback) — pick a
-                                # pkgname that does not end in "-sysforge"
-                                # (e.g. "linux-mine").
-# upstream_pkgname = "linux-zen"  # upstream package to pull/track. When set, the
-                                # stage clones/fetches it into
-                                # <pkgbuild_src_dir>/<upstream_pkgname> and (if
-                                # pkgname differs) renames the build to pkgname.
-                                # Unset = pure-local mode: build the tree named
-                                # by pkgname, no rename.
-# srcdir  = "linux"             # subdirectory inside pkgbuild_src_dir containing
-                                # the PKGBUILD. Default: upstream_pkgname when
-                                # set, else pkgname.
+# pkgname — LOCAL package name to build/install as. For a pure-local tree it
+#   must match the PKGBUILD pkgbase; when upstream_pkgname is set, sysforge
+#   patches the cloned PKGBUILD's pkgbase to this name (coexist rename) so the
+#   build installs alongside the official package. Defaults to
+#   upstream_pkgname when omitted.
+#   NOTE: a pkgname already ending in "-sysforge" collapses with the
+#   optimized-build suffix — an AutoFDO/Propeller `use` build then REPLACES
+#   the prior build under the same name instead of coexisting. The shipped
+#   default below has exactly this property: it is fine for plain custom
+#   builds, but before adopting AutoFDO/Propeller `use` builds, rename to
+#   keep an optimized and a stock build installed side-by-side (bootloader
+#   fallback) — pick a pkgname that does not end in "-sysforge"
+#   (e.g. "linux-mine").
+pkgname = "linux-sysforge"
+
+# upstream_pkgname — upstream package to pull/track. When set, the stage
+#   clones/fetches it into <pkgbuild_src_dir>/<upstream_pkgname> and (if
+#   pkgname differs) renames the build to pkgname. Unset = pure-local mode:
+#   build the tree named by pkgname, no rename.
+# upstream_pkgname = "linux-zen"
+
+# srcdir — subdirectory inside pkgbuild_src_dir containing the PKGBUILD.
+#   Default: upstream_pkgname when set, else pkgname.
+# srcdir  = "linux"
 
 # ---------------------------------------------------------------------------
 # Optional fields
 # ---------------------------------------------------------------------------
 
-# bootloader = "systemd-boot"   # "systemd-boot" | "grub" | "none"
-#                               # controls post-install bootloader update step:
-#                               #   systemd-boot → `sudo bootctl update`
-#                               #   grub         → `sudo grub-mkconfig -o /boot/grub/grub.cfg`
-#                               #   none         → skip
-#                               # default: "systemd-boot"
-#                               # CLI override: `sysforge run kernel --bootloader grub`
+# bootloader — "systemd-boot" | "grub" | "none" — controls post-install
+#   bootloader update step:
+#     systemd-boot → `sudo bootctl update`
+#     grub         → `sudo grub-mkconfig -o /boot/grub/grub.cfg`
+#     none         → skip
+#   default: "systemd-boot"
+#   CLI override: `sysforge run kernel --bootloader grub`
+# bootloader = "systemd-boot"
 
-# interactive = true            # default: true — the PKGBUILD's `make nconfig`
-#                               # / `menuconfig` runs as written so the user can
-#                               # review/edit the resolved kconfig. Requires a
-#                               # real TTY: piped/captured runs downgrade to
-#                               # unattended with a warning. Set to false (or
-#                               # pass `--non-interactive`) to patch interactive
-#                               # targets to `make olddefconfig` for unattended runs.
+# interactive — default: true — the PKGBUILD's `make nconfig` / `menuconfig`
+#   runs as written so the user can review/edit the resolved kconfig. Requires
+#   a real TTY: piped/captured runs downgrade to unattended with a warning.
+#   Set to false (or pass `--non-interactive`) to patch interactive targets to
+#   `make olddefconfig` for unattended runs.
+# interactive = true
 
-# compiler = "gcc"              # "gcc" | "llvm" — kernel-stage compiler override.
-#                               # Independent of the global toolchain stage, so a
-#                               # system that keeps gcc as its default can still
-#                               # build the kernel with LLVM (or vice versa).
-#                               # Resolution order: --compiler CLI flag > this
-#                               # field > toolchain-stage pipeline state. When
-#                               # unset, the kernel inherits whatever the
-#                               # toolchain stage registered (or profile defaults
-#                               # when toolchain is disabled).
-#                               # NOTE: compiler = "llvm" builds the kernel WITH
-#                               # clang; it does NOT apply PGO profile data. The
-#                               # profdata trains the clang binary itself, not the
-#                               # linux kernel target — there is no kernel PGO here.
+# compiler — "gcc" | "llvm" — kernel-stage compiler override. Independent of
+#   the global toolchain stage, so a system that keeps gcc as its default can
+#   still build the kernel with LLVM (or vice versa). Resolution order:
+#   --compiler CLI flag > this field > toolchain-stage pipeline state. When
+#   unset, the kernel inherits whatever the toolchain stage registered (or
+#   profile defaults when toolchain is disabled).
+#   NOTE: compiler = "llvm" builds the kernel WITH clang; it does NOT apply
+#   PGO profile data. The profdata trains the clang binary itself, not the
+#   linux kernel target — there is no kernel PGO here.
+# compiler = "gcc"
 
-# pkgbuild_src_dir = "~/src"    # optional per-kernel override of the global
-#                               # [paths] pkgbuild_src_dir (profiles.toml). When
-#                               # unset, the kernel stage falls back to that
-#                               # global value; only both being unset is an error.
+# pkgbuild_src_dir — optional per-kernel override of the global [paths]
+#   pkgbuild_src_dir (profiles.toml). When unset, the kernel stage falls back
+#   to that global value; only both being unset is an error.
+# pkgbuild_src_dir = "~/src"
 
-# build_headers = true          # default: true — build & install the kernel
-#                               # -headers subpackage. Required by DKMS and any
-#                               # out-of-tree module build (nvidia-open-dkms,
-#                               # virtualbox, …); disabling it (build_headers = false
-#                               # or --no-headers) means those modules cannot rebuild
-#                               # and will not load on reboot. CLI: --headers/--no-headers
+# build_headers — default: true — build & install the kernel -headers
+#   subpackage. Required by DKMS and any out-of-tree module build
+#   (nvidia-open-dkms, virtualbox, …); disabling it (build_headers = false or
+#   --no-headers) means those modules cannot rebuild and will not load on
+#   reboot. CLI: --headers/--no-headers
+# build_headers = true
 
-# build_docs = false            # default: false — the kernel -docs subpackage is
-#                               # dropped from the build (it's rarely needed and slow
-#                               # to package). Set true (or pass --docs) to build the
-#                               # kernel HTML/man documentation. CLI: --docs/--no-docs
+# build_docs — default: false — the kernel -docs subpackage is dropped from
+#   the build (it's rarely needed and slow to package). Set true (or pass
+#   --docs) to build the kernel HTML/man documentation. CLI: --docs/--no-docs
+# build_docs = false
 
-# keep_hotplug_drivers = false  # default: false — re-enable hotplug driver
-#                               # classes (USB host/gadget, USB4/Thunderbolt,
-#                               # MMC/SD, hot-plug PCI + CardBus/PCMCIA, hot-plug
-#                               # HID) as loadable modules AFTER config
-#                               # minimization. localmodconfig strips drivers for
-#                               # hardware not currently plugged in; this merges a
-#                               # dedicated post-minimization fragment so those
-#                               # classes stay available for devices attached
-#                               # later. Only meaningful with a minimizing
-#                               # kconfig_targets sequence. CLI:
-#                               # --keep-hotplug-drivers/--no-keep-hotplug-drivers
+# keep_hotplug_drivers — default: false — re-enable hotplug driver classes
+#   (USB host/gadget, USB4/Thunderbolt, MMC/SD, hot-plug PCI + CardBus/PCMCIA,
+#   hot-plug HID) as loadable modules AFTER config minimization.
+#   localmodconfig strips drivers for hardware not currently plugged in; this
+#   merges a dedicated post-minimization fragment so those classes stay
+#   available for devices attached later. Only meaningful with a minimizing
+#   kconfig_targets sequence. CLI:
+#   --keep-hotplug-drivers/--no-keep-hotplug-drivers
+# keep_hotplug_drivers = false
 
-# source = "local"              # "local" | "repo" | "aur" — how the kernel
-#                               # PKGBUILD is sourced. "local" uses the tree under
-#                               # pkgbuild_src_dir as-is (no sync); "repo"/"aur"
-#                               # route clone/fetch through the source-sync
-#                               # scheduler before building. When omitted, auto-
-#                               # resolves local → repo → aur: an existing non-git
-#                               # tree is local, an existing clone is fetched via
-#                               # its own origin, and a missing tree is cloned
-#                               # from the official repos when the tracked name is
-#                               # in a sync DB, else from the AUR.
+# source — "local" | "repo" | "aur" — how the kernel PKGBUILD is sourced.
+#   "local" uses the tree under pkgbuild_src_dir as-is (no sync); "repo"/"aur"
+#   route clone/fetch through the source-sync scheduler before building. When
+#   omitted, auto-resolves local → repo → aur: an existing non-git tree is
+#   local, an existing clone is fetched via its own origin, and a missing
+#   tree is cloned from the official repos when the tracked name is in a
+#   sync DB, else from the AUR.
+# source = "local"
 
 # ---------------------------------------------------------------------------
 # Boot safety — the kernel stage must never leave the system unbootable.
@@ -132,40 +121,39 @@ pkgname = "linux-sysforge"      # LOCAL package name to build/install as. For a
 # See DESIGN.md §Kernel stage boot-safety.
 # ---------------------------------------------------------------------------
 
-# require_fallback_kernel = true  # default: true — refuse to install a custom
-#                                 # kernel unless a stock linux/linux-lts (with a
-#                                 # boot image) exists, so a broken build still
-#                                 # has a recovery path. CLI: --allow-no-fallback
+# require_fallback_kernel — default: true — refuse to install a custom
+#   kernel unless a stock linux/linux-lts (with a boot image) exists, so a
+#   broken build still has a recovery path. CLI: --allow-no-fallback
+# require_fallback_kernel = true
 
-# boot_audit = true               # default: true — run the /boot space check and
-#                                 # the pre-install resolved-.config audit (Gate 2).
-#                                 # CLI override for the audit: --skip-boot-audit
+# boot_audit — default: true — run the /boot space check and the pre-install
+#   resolved-.config audit (Gate 2). CLI override for the audit:
+#   --skip-boot-audit
+# boot_audit = true
 
-# min_boot_free_mb = 200          # default: 200 — minimum free MiB on /boot before
-#                                 # building, so a kernel + initramfs install isn't
-#                                 # truncated.
+# min_boot_free_mb — default: 200 — minimum free MiB on /boot before
+#   building, so a kernel + initramfs install isn't truncated.
+# min_boot_free_mb = 200
 
-# capture_lsmod_snapshot = true   # default: true — capture lsmod for the PKGBUILD's
-#                                 # `make localmodconfig`. Set false if you don't want
-#                                 # drivers for currently-inactive hardware stripped.
+# capture_lsmod_snapshot — default: true — capture lsmod for the PKGBUILD's
+#   `make localmodconfig`. Set false if you don't want drivers for
+#   currently-inactive hardware stripped.
+# capture_lsmod_snapshot = true
 
-# base_config = "pkgbuild"        # default: "pkgbuild" — where the build's
-#                                 # *starting* .config comes from, before the
-#                                 # sysforge.config fragment is overlaid:
-#                                 #   "pkgbuild" → the PKGBUILD's own base config
-#                                 #               (no seeding; current behaviour)
-#                                 #   "running"  → the running kernel's config
-#                                 #               (/proc/config.gz, then
-#                                 #                /boot/config-$(uname -r))
-#                                 #   "<path>"   → read the base from that file
-#                                 # For "running"/<path>, sysforge writes the
-#                                 # chosen config to <pkgbuild_dir>/sysforge.base.config
-#                                 # and injects a `cp sysforge.base.config .config`
-#                                 # (+ `make olddefconfig`) into the PKGBUILD's
-#                                 # prepare() BEFORE the sysforge.config merge — so a
-#                                 # stock PKGBUILD honours the base without cooperating.
-#                                 # The default "pkgbuild" writes no base file, so the
-#                                 # injected seed is a runtime no-op.
+# base_config — default: "pkgbuild" — where the build's *starting* .config
+#   comes from, before the sysforge.config fragment is overlaid:
+#     "pkgbuild" → the PKGBUILD's own base config (no seeding; current
+#                  behaviour)
+#     "running"  → the running kernel's config (/proc/config.gz, then
+#                  /boot/config-$(uname -r))
+#     "<path>"   → read the base from that file
+#   For "running"/<path>, sysforge writes the chosen config to
+#   <pkgbuild_dir>/sysforge.base.config and injects a `cp
+#   sysforge.base.config .config` (+ `make olddefconfig`) into the PKGBUILD's
+#   prepare() BEFORE the sysforge.config merge — so a stock PKGBUILD honours
+#   the base without cooperating. The default "pkgbuild" writes no base file,
+#   so the injected seed is a runtime no-op.
+# base_config = "pkgbuild"
 
 # ---------------------------------------------------------------------------
 # kconfig — kernel config fragment
@@ -181,43 +169,33 @@ pkgname = "linux-sysforge"      # LOCAL package name to build/install as. For a
 # CONFIG_PREEMPT = "y"
 # ---------------------------------------------------------------------------
 
-# kconfig_merge = true           # default: true — write the sysforge.config
-#                                # fragment (device + hardware + manual entries)
-#                                # for the PKGBUILD to merge. Set false to skip
-#                                # the fragment entirely; this also disables the
-#                                # post-build drift check (which warns when a
-#                                # merged option didn't survive into the resolved
-#                                # .config), since there's nothing to compare.
+# kconfig_merge — default: true — write the sysforge.config fragment
+#   (device + hardware + manual entries) for the PKGBUILD to merge. Set false
+#   to skip the fragment entirely; this also disables the post-build drift
+#   check (which warns when a merged option didn't survive into the resolved
+#   .config), since there's nothing to compare.
+# kconfig_merge = true
 
-# kconfig_targets = ["olddefconfig"]  # default: unset (feature off) — names an
-#                                 # explicit `make <target>` kconfig-generation
-#                                 # sequence, replacing the PKGBUILD's own
-#                                 # kconfig steps; the sysforge.config fragment
-#                                 # merge above still applies first, so the
-#                                 # sequence shapes the merged config. Silent
-#                                 # targets (olddefconfig, defconfig,
-#                                 # allmodconfig, alldefconfig, savedefconfig,
-#                                 # listnewconfig) run in listed order.
-#                                 # Prompting targets (oldconfig, localmodconfig,
-#                                 # localyesconfig, mod2yesconfig) require an
-#                                 # interactive stage run — non-interactive runs
-#                                 # reject them (oldconfig names its silent
-#                                 # equivalent olddefconfig; the local*/mod2yes
-#                                 # targets say to run interactively). At most
-#                                 # one UI target (config, nconfig, menuconfig,
-#                                 # xconfig, gconfig) is allowed and it always
-#                                 # runs last. randconfig is never allowed — a
-#                                 # randomized config is a boot-safety hazard.
-#                                 # localmodconfig/localyesconfig over-minimize
-#                                 # to modules currently loaded (high risk, low
-#                                 # reward) and accumulate a snapshot at
-#                                 # <state_dir>/lsmod.snapshot; delete it to reset.
+# kconfig_targets — default: unset (feature off) — names an explicit
+#   `make <target>` kconfig-generation sequence, replacing the PKGBUILD's own
+#   kconfig steps; the sysforge.config fragment merge above still applies
+#   first, so the sequence shapes the merged config. Silent targets
+#   (olddefconfig, defconfig, allmodconfig, alldefconfig, savedefconfig,
+#   listnewconfig) run in listed order. Prompting targets (oldconfig,
+#   localmodconfig, localyesconfig, mod2yesconfig) require an interactive
+#   stage run — non-interactive runs reject them (oldconfig names its silent
+#   equivalent olddefconfig; the local*/mod2yes targets say to run
+#   interactively). At most one UI target (config, nconfig, menuconfig,
+#   xconfig, gconfig) is allowed and it always runs last. randconfig is never
+#   allowed — a randomized config is a boot-safety hazard.
+#   localmodconfig/localyesconfig over-minimize to modules currently loaded
+#   (high risk, low reward) and accumulate a snapshot at
+#   <state_dir>/lsmod.snapshot; delete it to reset.
+# kconfig_targets = ["olddefconfig"]
 
-# device_kconfig = true          # default: true — merge the hardware stage's
-#                                # device-driven [kconfig_devices] entries
-#                                # (modular drivers, "=m", for devices present
-#                                # on this machine) into the fragment. Coverage
-#                                # widens automatically after the first kernel
-#                                # build (Gate 2 caches the source tree's
-#                                # module→kconfig map). Set false to build the
-#                                # fragment from [kconfig] + manual entries only.
+# device_kconfig — default: true — merge the hardware stage's device-driven
+#   [kconfig_devices] entries (modular drivers, "=m", for devices present on
+#   this machine) into the fragment. Coverage widens automatically after the
+#   first kernel build (Gate 2 caches the source tree's module→kconfig map).
+#   Set false to build the fragment from [kconfig] + manual entries only.
+# device_kconfig = true

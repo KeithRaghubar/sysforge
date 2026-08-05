@@ -799,30 +799,19 @@ class TestConfigureStageDryRun:
         # No files should have been written
         assert not (tmp_path / "etc/hostname").exists()
 
-    def test_narration_suppressed_at_default_verbosity(self, tmp_path, capsys):
+    def test_narration_suppressed_at_default_verbosity(self, tmp_path, quiet_at_default):
         # 2.4.0-F43 golden guard (extends the F36 packages guard to a bootstrap
         # stage): at the shipped default verbosity the configure stage emits no
         # progress narration on stderr — "Configuring target: …" is INFO (-vv),
         # not always-printed UI — while the dry-run plan (the answer) stays UI.
-        from sysforge import log
-
         stage = ConfigureStage()
         options = make_options(dry_run=True)
-        saved = log.get_verbosity()
-        try:
-            with patch("sysforge.pipeline.stages.configure.load_bootstrap",
-                       return_value=make_cfg(target=str(tmp_path))):
-                log.set_verbosity(0)  # the shipped default
-                stage.run({}, MagicMock(), options)
-                err_v0 = capsys.readouterr().err
-                log.set_verbosity(2)  # -vv opts into progress narration
-                stage.run({}, MagicMock(), options)
-                err_v2 = capsys.readouterr().err
-        finally:
-            log.set_verbosity(saved)
+        with patch("sysforge.pipeline.stages.configure.load_bootstrap",
+                   return_value=make_cfg(target=str(tmp_path))):
+            err_v0, err_v2 = quiet_at_default(
+                lambda: stage.run({}, MagicMock(), options))
 
         assert "Configuring target" not in err_v0
-        assert "[INFO]" not in err_v0 and "[WARN]" not in err_v0
         assert "[dry-run] would copy /etc/sysforge/ to target" in err_v0
         assert "[SYSFORGE][INFO][CONFIGURE] Configuring target" in err_v2
 

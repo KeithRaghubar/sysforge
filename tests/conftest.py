@@ -368,6 +368,51 @@ def cli_capture():
 
 
 @pytest.fixture
+def quiet_at_default(capsys):
+    """Assert a stage emits no level-tagged narration at the shipped default.
+
+    Standards row 25 (log-level rubric, docs/design/12-logging.md): `ui()` is
+    the answer the user ran the command to see; `info()`/`warn()` are narration
+    about producing it and are gated behind -vv/-v. The one failure mode that
+    matters is narration leaking into always-visible output, so this runs the
+    callable twice — once at the shipped default (verbosity 0) and once at -vv —
+    and fails if the default run carried an [INFO] or [WARN] line.
+
+    Returns (err_v0, err_v2) so the caller can additionally assert that the
+    narration it expects *does* appear at -vv, and that its ui() output appears
+    in both. Restores the ambient verbosity unconditionally: it is global
+    process state and a leak breaks unrelated tests non-deterministically.
+
+    A new pipeline stage acquires the guard by requesting this fixture. Do not
+    re-hand-roll the set_verbosity dance in a stage test.
+    """
+    def _run(fn):
+        from sysforge import log
+        saved = log.get_verbosity()
+        try:
+            log.set_verbosity(0)
+            fn()
+            err_v0 = capsys.readouterr().err
+            log.set_verbosity(2)
+            fn()
+            err_v2 = capsys.readouterr().err
+        finally:
+            log.set_verbosity(saved)
+
+        assert "[INFO]" not in err_v0, (
+            "narration leaked into default-verbosity output (standards row 25):\n"
+            f"{err_v0}"
+        )
+        assert "[WARN]" not in err_v0, (
+            "narration leaked into default-verbosity output (standards row 25):\n"
+            f"{err_v0}"
+        )
+        return err_v0, err_v2
+
+    return _run
+
+
+@pytest.fixture
 def run_cli():
     """Parse real argv, dispatch the real verb, return a captured CliResult.
 

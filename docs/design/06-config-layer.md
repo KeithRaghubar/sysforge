@@ -21,6 +21,30 @@ The non-`profiles.toml` configs (`packages.toml`, `toolchain.toml`, `kernel.toml
 
 `tests/data/etc/sysforge/` is the **git-tracked test fixture set** wired in `tests/conftest.py` (which *forces* `SYSFORGE_CONFIG_DIR` to that dir directly, so a developer shell exporting its own value cannot leak into the suite). It is kept in shipped↔fixture parity by `make check-shipped`. A developer's **personal live config** is a separate, untracked dir (e.g. `~/sf-config`, holding the TOML files directly) that the shell's `SYSFORGE_CONFIG_DIR` points at and that `make sync-config` services — keeping personal config out of the tracked tree while leaving the fixtures deterministic.
 
+#### Shipped-config comment style
+
+Every key in `etc/sysforge/*.toml` is documented by the contiguous run of `#`
+lines **immediately above** the line that assigns it — an active assignment or a
+commented-out example, both anchored by the same `key =` shape:
+
+    # key — one-line summary, then wrapped prose naming every accepted value
+    #   form with an example for each.
+    # key = "example"
+
+A multi-line prose block is never placed *after* a key's line. `tools/sync_config.py`
+is **key-anchored** — it can only carry a comment block that *leads* an active key it
+injects — so trailing prose would be invisible to config adoption. The leading block
+also gives `check_shipped`'s `config_comments` group an unambiguous, machine-readable
+boundary: it walks upward from the key's own line (which it always includes) and stops
+at the first non-comment line or at the previous key's own anchor line, whichever comes
+first — so one key's block can never absorb a neighbour's paragraph.
+
+Carve-outs: section-divider banners (`# ==== … ====`, `# ── [paths] ──`) lead a section
+rather than a key, and a short unit/enum hint *may* trail a value on that same anchor
+line, counting as part of that key's documentation because the anchor line is always
+included (`nice = 19  # 0..19`, `ionice = "idle"  # IO class: "idle" | "best-effort"`).
+Anything needing more than one line still gets a leading block.
+
 ### Directory layout
 
 SysForge uses FHS-correct system roots and XDG Base Directory-correct user roots. The user side honours `$XDG_CONFIG_HOME`, `$XDG_CACHE_HOME`, and `$XDG_STATE_HOME` when set, falling back to their spec defaults.

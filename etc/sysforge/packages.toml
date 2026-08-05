@@ -37,41 +37,53 @@
 # =============================================================================
 
 # [build]
-# pkgbuild_src_dir = "~/src"   # override the path from profiles.toml for this manifest
-# repo_mode    = "pacman"  # "pacman" (default) | "build_from_source" — bootstrap mode for repo
-#                          # packages, and a steady-state bulk-drift switch:
-#                          # "pacman"           → bootstrap installs repo packages via pacman -S
-#                          #              --needed (no build step). At steady-state `sysforge update`
-#                          #              only walks repo packages it has already source-built
-#                          #              (build_state) or that carry a behavior-changing override.
-#                          # "build_from_source"→ bootstrap builds repo packages from source with
-#                          #              your flag profile, AND `sysforge update` walks EVERY
-#                          #              installed repo package to surface drift. Of those, the
-#                          #              overridden / already-source-built subset is rebuilt from
-#                          #              source; the rest take a fast path — one batched
-#                          #              `checkupdates` call detects pending upgrades, then one
-#                          #              terminal `sudo pacman -Syu` after the source builds. Source
-#                          #              artifacts install first so the `IgnoreGroup = sf-build`
-#                          #              line from `sysforge setup` protects them.
-#                          # NOTE: you do NOT need "build_from_source" to keep a specific repo
-#                          #       package source-built — just `sysforge build <pkg>` once;
-#                          #       build_state then keeps it maintained. "build_from_source" is
-#                          #       for tracking ALL of them.
-#                          # per-package enable_build_from_source = true overrides regardless
-# # Requires `pacman-contrib` for the checkupdates fast path; without it,
-# # pacman-class packages are reported as SKIPPED_NO_CHECKUPDATES.
-# review = true            # PKGBUILD review gate: before building a package whose
-#                          # source changed since the last accepted build, show the
-#                          # full source-tree diff and prompt (view/accept/skip/abort).
-#                          # false disables the gate; --no-review disables per run.
-#                          # Non-interactive runs auto-accept with a warning.
+#
+# pkgbuild_src_dir — override the path from profiles.toml for this manifest
+# pkgbuild_src_dir = "~/src"
+#
+# repo_mode — "pacman" (default) | "build_from_source" — bootstrap mode for
+#   repo packages, and a steady-state bulk-drift switch:
+#     "pacman"           → bootstrap installs repo packages via pacman -S
+#                --needed (no build step). At steady-state `sysforge update`
+#                only walks repo packages it has already source-built
+#                (build_state) or that carry a behavior-changing override.
+#     "build_from_source"→ bootstrap builds repo packages from source with
+#                your flag profile, AND `sysforge update` walks EVERY
+#                installed repo package to surface drift. Of those, the
+#                overridden / already-source-built subset is rebuilt from
+#                source; the rest take a fast path — one batched
+#                `checkupdates` call detects pending upgrades, then one
+#                terminal `sudo pacman -Syu` after the source builds. Source
+#                artifacts install first so the `IgnoreGroup = sf-build`
+#                line from `sysforge setup` protects them.
+#   NOTE: you do NOT need "build_from_source" to keep a specific repo
+#         package source-built — just `sysforge build <pkg>` once;
+#         build_state then keeps it maintained. "build_from_source" is
+#         for tracking ALL of them.
+#   per-package enable_build_from_source = true overrides regardless
+#   Requires `pacman-contrib` for the checkupdates fast path; without it,
+#   pacman-class packages are reported as SKIPPED_NO_CHECKUPDATES.
+# repo_mode    = "pacman"
+#
+# review — PKGBUILD review gate: before building a package whose source
+#   changed since the last accepted build, show the full source-tree diff
+#   and prompt (view/accept/skip/abort). false disables the gate;
+#   --no-review disables per run. Non-interactive runs auto-accept with a
+#   warning.
+# review = true
 #
 # Standing defaults for build-run flags. The matching CLI flags
 # (--abi-check / --cache-report / --persist-log) still win when passed.
 # Note: --force ignores these (explicit this-run-only override).
-# abi_check = false      # run post-build ABI check (build verb)
-# cache_report = false   # print ccache/sccache summary after each build
-# persist_log = false    # keep the per-package log after a successful build
+#
+# abi_check — run post-build ABI check (build verb)
+# abi_check = false
+#
+# cache_report — print ccache/sccache summary after each build
+# cache_report = false
+#
+# persist_log — keep the per-package log after a successful build
+# persist_log = false
 
 
 # =============================================================================
@@ -79,7 +91,9 @@
 # time, so a desktop stack can be tracked without enumerating every member.
 #
 #   [group.<name>]
-#   packages = ["pkg-a", "pkg-b"]   # required: member package names
+#
+#   packages — required: member package names
+#   packages = ["pkg-a", "pkg-b"]
 #   # Optional defaults inherited by every member (an explicit [[package]]
 #   # entry for the same name wins outright):
 #   # source = "aur"

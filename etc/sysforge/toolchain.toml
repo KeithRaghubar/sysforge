@@ -40,27 +40,37 @@ enabled = false
 #                  hashes a ~100 MB+ shared object on every drift check.
 drift_detect = "fingerprint"
 
-# compiler = "gcc"     # "gcc" (default when unset) or "llvm". LLVM enables
-#                      # the 4-pass PGO bootstrap, but is fragile across LLVM
-#                      # major bumps — leave on "gcc" unless you specifically
-#                      # want PGO LLVM.
-# pgo     = true       # LLVM only: enable 4-pass PGO bootstrap (ignored for gcc)
-# skip_build = false   # default false. true registers the existing system
-#                      # compiler into pipeline state without building anything
-#                      # (useful to re-propagate CC/CXX to later stages).
+# compiler — "gcc" (default when unset) or "llvm". LLVM enables the 4-pass
+#   PGO bootstrap, but is fragile across LLVM major bumps — leave on "gcc"
+#   unless you specifically want PGO LLVM.
+# compiler = "gcc"
+
+# pgo — LLVM only: enable 4-pass PGO bootstrap (ignored for gcc)
+# pgo     = true
+
+# skip_build — default false. true registers the existing system compiler
+#   into pipeline state without building anything (useful to re-propagate
+#   CC/CXX to later stages).
+# skip_build = false
 
 # Staging dirs where each pass's binaries are extracted for use as CC/CXX by
 # the next pass (kept off the live /usr). Each must be on the same filesystem
 # as /usr with ~2 GB free. Defaults shown; override only to relocate them.
-# pgo_staging1 = "/var/tmp/sysforge-llvm-stage1"   # pass-1 (bootstrap) staging
-# pgo_staging  = "/var/tmp/sysforge-llvm-stage2"   # pass-3 (instrumented) staging
-# pgo_staging3 = "/var/tmp/sysforge-llvm-stage3"   # pass-4 (optimized) staging
+#
+# pgo_staging1 — pass-1 (bootstrap) staging
+# pgo_staging1 = "/var/tmp/sysforge-llvm-stage1"
+#
+# pgo_staging — pass-3 (instrumented) staging
+# pgo_staging  = "/var/tmp/sysforge-llvm-stage2"
+#
+# pgo_staging3 — pass-4 (optimized) staging
+# pgo_staging3 = "/var/tmp/sysforge-llvm-stage3"
 
-# Path where profraw files are written during pass 3 and merged to profdata.
-# Profraw files are deleted after merging; profdata is preserved for reuse.
-# On subsequent runs, compatible profdata (same LLVM major) skips passes 1-3.
-# Use --rebuild-profdata to force a full 4-pass build.
-# Needs ~500 MB free during pass 3.
+# pgo_store — path where profraw files are written during pass 3 and merged
+#   to profdata. Profraw files are deleted after merging; profdata is
+#   preserved for reuse. On subsequent runs, compatible profdata (same LLVM
+#   major) skips passes 1-3. Use --rebuild-profdata to force a full 4-pass
+#   build. Needs ~500 MB free during pass 3.
 # pgo_store = "/var/cache/sysforge/llvm-pgo"
 
 # ---------------------------------------------------------------------------
@@ -70,41 +80,46 @@ drift_detect = "fingerprint"
 # live toolchain. See DESIGN.md §Toolchain stage boot-safety.
 # ---------------------------------------------------------------------------
 
-# Minimum free space (GiB) required on each filesystem hosting the staging
-# dirs / pgo_store / build output. A full 4-pass LLVM build needs substantial
-# scratch space; falling short mid-build leaves a half-built tree. Override a
-# trip with --skip-build-space-check.
+# min_build_free_gb — minimum free space (GiB) required on each filesystem
+#   hosting the staging dirs / pgo_store / build output. A full 4-pass LLVM
+#   build needs substantial scratch space; falling short mid-build leaves a
+#   half-built tree. Override a trip with --skip-build-space-check.
 # min_build_free_gb = 40
 
-# Require the [multilib] repo to be enabled in /etc/pacman.conf when any
-# lib32-* package is in the build scope (lib32 builds need lib32-glibc etc.
-# from multilib). Set false to skip this check (e.g. a pure-64-bit config that
-# lists no lib32 packages — the check is already a no-op then).
+# require_multilib — require the [multilib] repo to be enabled in
+#   /etc/pacman.conf when any lib32-* package is in the build scope (lib32
+#   builds need lib32-glibc etc. from multilib). Set false to skip this check
+#   (e.g. a pure-64-bit config that lists no lib32 packages — the check is
+#   already a no-op then).
 # require_multilib = true
 
-# What to do when the built libLLVM changes its soname (an LLVM version bump,
-# e.g. libLLVM.so.22.1 → libLLVM.so.23.0) and would break installed consumers
-# that link the old soname (mesa's radeonsi/radv/llvmpipe drivers, and others).
-# A same-version PGO rebuild never changes the soname, so this only fires on a
-# version bump. Modes (CLI --rebuild-soname-consumers overrides this key):
-#   "prompt" (default) — pre-build, warn + list consumers + ask before building;
-#                        approving rebuilds them after install, declining aborts.
-#                        Non-interactive runs abort (no silent breakage).
-#   "auto"             — approve without prompting and rebuild consumers after
-#                        the toolchain install (use for unattended runs).
-#   "off"              — build the new toolchain but leave consumers for you to
-#                        rebuild manually (`sysforge build <pkgs>`).
+# rebuild_soname_consumers — what to do when the built libLLVM changes its
+#   soname (an LLVM version bump, e.g. libLLVM.so.22.1 → libLLVM.so.23.0) and
+#   would break installed consumers that link the old soname (mesa's
+#   radeonsi/radv/llvmpipe drivers, and others). A same-version PGO rebuild
+#   never changes the soname, so this only fires on a version bump. Modes
+#   (CLI --rebuild-soname-consumers overrides this key):
+#     "prompt" (default) — pre-build, warn + list consumers + ask before
+#                          building; approving rebuilds them after install,
+#                          declining aborts. Non-interactive runs abort (no
+#                          silent breakage).
+#     "auto"             — approve without prompting and rebuild consumers
+#                          after the toolchain install (use for unattended
+#                          runs).
+#     "off"              — build the new toolchain but leave consumers for
+#                          you to rebuild manually (`sysforge build <pkgs>`).
 # rebuild_soname_consumers = "prompt"
 
-# Opt-in input-fingerprint reuse for the multi-package PGO build (Pass 4 only).
-# When true (or with --reuse-built), a Pass-4 package whose inputs are unchanged
-# — PKGBUILD content, source commit, profdata, resolved flags, compiler identity,
-# and installed build-dep versions — and whose built artifact is still on disk is
-# NOT rebuilt; the cached artifact is reused. This lets a rerun after a late
-# package failure (e.g. spirv-llvm-translator) skip re-optimizing the identical
-# llvm/llvm-libs. Any input change, config edit, or missing artifact forces a
-# rebuild — it never reuses a stale build. Off by default (a fresh 4-pass build
-# always rebuilds everything; --rebuild-profdata also bypasses the cache).
+# reuse_unchanged — opt-in input-fingerprint reuse for the multi-package PGO
+#   build (Pass 4 only). When true (or with --reuse-built), a Pass-4 package
+#   whose inputs are unchanged — PKGBUILD content, source commit, profdata,
+#   resolved flags, compiler identity, and installed build-dep versions — and
+#   whose built artifact is still on disk is NOT rebuilt; the cached artifact
+#   is reused. This lets a rerun after a late package failure (e.g.
+#   spirv-llvm-translator) skip re-optimizing the identical llvm/llvm-libs.
+#   Any input change, config edit, or missing artifact forces a rebuild — it
+#   never reuses a stale build. Off by default (a fresh 4-pass build always
+#   rebuilds everything; --rebuild-profdata also bypasses the cache).
 # reuse_unchanged = false
 
 # ---------------------------------------------------------------------------
@@ -137,13 +152,18 @@ drift_detect = "fingerprint"
 # `enabled` is the BOLT-inclusion gate and is LIVE below at its default (off);
 # uncomment the optional sub-keys to tune. Only takes effect on the LLVM PGO path.
 [bolt]
-enabled = false            # opt-in; build llvm-bolt + BOLT-optimize clang
-# libllvm = false          # also BOLT libLLVM.so (shared lib; more fragile than
-#                          # the clang executable — leave off unless you know you
-#                          # want it). The clang executable is BOLTed regardless.
-# training_workload = ""   # path to a .cpp the freshly-built clang compiles under
-#                          # perf to collect the profile; empty = a generated
-#                          # header-heavy C++ TU (front-end + optimizer + codegen).
+# enabled — opt-in; build llvm-bolt + BOLT-optimize clang
+enabled = false
+
+# libllvm — also BOLT libLLVM.so (shared lib; more fragile than the clang
+#   executable — leave off unless you know you want it). The clang
+#   executable is BOLTed regardless.
+# libllvm = false
+
+# training_workload — path to a .cpp the freshly-built clang compiles under
+#   perf to collect the profile; empty = a generated header-heavy C++ TU
+#   (front-end + optimizer + codegen).
+# training_workload = ""
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -153,18 +173,19 @@ enabled = false            # opt-in; build llvm-bolt + BOLT-optimize clang
 # pgo     = ["llvm", "llvm-libs"]
 # non_pgo = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
 # lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
-#
+
+# training_corpus — extra packages compiled by the instrumented stage1 clang
+#   during Pass 3 to enrich clang.profdata. "llvm" is the implicit base (the
+#   self-build always trains on LLVM); adding "mesa" broadens the corpus
+#   toward graphics/C-heavy codegen the LLVM self-compilation under-exercises,
+#   so the resulting clang is faster at compiling that style of code. Corpus
+#   members are NEVER installed and never become -fprofile-use targets — the
+#   profile stays clang-keyed. Built with --nodeps, so each extra's
+#   makedepends must already be installed; a corpus build failure is
+#   non-fatal (the run continues with LLVM-only data). Default ["llvm"]
+#   (self-build only). LLVM/PGO path only.
 # training_corpus = ["llvm", "mesa"]
-#   Extra packages compiled by the instrumented stage1 clang during Pass 3 to
-#   enrich clang.profdata. "llvm" is the implicit base (the self-build always
-#   trains on LLVM); adding "mesa" broadens the corpus toward graphics/C-heavy
-#   codegen the LLVM self-compilation under-exercises, so the resulting clang is
-#   faster at compiling that style of code. Corpus members are NEVER installed
-#   and never become -fprofile-use targets — the profile stays clang-keyed.
-#   Built with --nodeps, so each extra's makedepends must already be installed;
-#   a corpus build failure is non-fatal (the run continues with LLVM-only
-#   data). Default ["llvm"] (self-build only). LLVM/PGO path only.
-#
+
 # The [packages] section only applies to compiler = "llvm" (the GCC path is
 # register-only — no build, no package list).
 # ---------------------------------------------------------------------------

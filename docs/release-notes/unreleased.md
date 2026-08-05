@@ -216,6 +216,47 @@ https://keepachangelog.com/en/1.1.0/
   narrow window could previously mask a real build failure and leave the
   pipeline state at `running` instead of `failed`.
 
+- `make check-shipped` gained a `config_comments` group that validates the shipped
+  configs' prose, not just their structure (2.6.1-STD4). The existing `configs` group
+  checks sections and top-level keys, so a feature that **widens an existing key's
+  grammar** rather than adding a key passed every gate while the user-facing comment
+  rotted — `2.1.0-F6` taught `cpu_quota` a fractional form that neither `sysforge.toml`
+  nor `profiles.toml` mentioned.
+
+  Two sub-checks. No comment may name a `*.toml` file or a `[section]` that does not
+  exist — this catches the class behind a renamed `flag_profiles.toml` (5 stale
+  references) and a `[cache]` section documented in `packages.toml` that never existed.
+  And a key whose validator accepts multiple surface forms must show every form, driven
+  by `_GRAMMAR_DOCS`, a hand-maintained table covering four of the five `_coerce_*`-backed
+  throttle keys (`cpu_quota`, `mem_limit`, `ionice`, `nice`; `jobs` is single-form and
+  deliberately excluded). The `cpu_quota`/`[cache]`/`flag_profiles.toml` instances were
+  already fixed by hand, but the new `mem_limit` sub-check found one more live gap: this
+  key's comment in `profiles.toml` described what the ceiling does but never said which
+  value forms it accepts, unlike its `sysforge.toml` counterpart — fixed in the same
+  commit as the check that caught it. Widening a `_coerce_*` grammar now updates the
+  table in the same commit.
+
+  The shipped configs were restyled to make this checkable: all six now document a key
+  in the comment block **immediately above** its assignment, rather than in a trailing
+  hanging column (`kernel.toml` used the column style for 19 of 20 keys). Prose and
+  values are unchanged. Beyond enabling the check, this fixes a quieter problem — the
+  `make sync-config` merge is key-anchored and can only carry a comment block that
+  *leads* a key, so trailing-column documentation was invisible to config adoption. The
+  convention is now written down in the design's Config Layer section.
+
+- The log-level rubric is now standards row 25 (2.6.1-STD5). `docs/design/12-logging.md`
+  already carried the five-level table and the decision test that resolves most call sites
+  (*is this the answer, or narration about producing the answer?*), but it sat outside the
+  standards catalogue and outside the always-loaded context, so the convention held only by
+  memory. It is now a row with its enforcement recorded honestly — status `followed`, not
+  `enforced` — plus a pointer in the root `CLAUDE.md`.
+
+  The guard behind it is now reusable: the default-verbosity regression assertion (a run at
+  `verbosity=0` must emit no `[INFO]`/`[WARN]` line) was open-coded in two stage tests and is
+  now the `quiet_at_default` fixture, which a new stage acquires by requesting it. Nothing
+  checks WARN-vs-INFO or INFO-vs-DEBUG classification; that remains a review obligation and
+  the row says so.
+
 ## Changed
 
 - Kernel kconfig patching is now an ordered plan (`primitives/kconfig_plan.py`) rather

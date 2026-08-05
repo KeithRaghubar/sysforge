@@ -66,6 +66,10 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   `set_defaults(verb_cls=…)`, not `func=`. §CLI Verb Framework.
 - **Dual-toolchain test parity**: logic branching on resolved compiler (gcc vs llvm) ships both a
   gcc-path and an llvm-path test in the same change.
+- **Log levels follow the rubric in `docs/design/12-logging.md`** (§Logging; standards row 25): `ui()`
+  is the answer the user asked for, `warn()`/`info()`/`debug()` are narration gated behind `-v`/`-vv`/`-vvv`
+  — `ui()` is not a "always show this" escape hatch. A new pipeline stage requests the
+  `quiet_at_default` fixture (`tests/conftest.py`) in its test, which is the only mechanical guard.
 - **Cutting a release follows `docs/RELEASE-CHECKLIST.md`** — the standalone runbook (stages, exact
   commands, tick boxes). Note `make pre-release` and the `tools/release.sh` preflight overlap but
   neither is a superset, and coverage/audit/VM/container tiers sit in neither.

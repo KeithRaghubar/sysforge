@@ -130,24 +130,12 @@ def test_load_packages_missing_raises(tmp_path):
 # against a future change re-leaking narration back into log.ui().
 # ---------------------------------------------------------------------------
 
-def test_load_packages_narration_suppressed_at_default_verbosity(tmp_path, capsys):
-    from sysforge import log
-
+def test_load_packages_narration_suppressed_at_default_verbosity(tmp_path, quiet_at_default):
     p = make_packages_toml(tmp_path, tmp_path / "builds")
-    saved = log.get_verbosity()
-    try:
-        log.set_verbosity(0)  # the shipped default
-        _load_packages({"packages_file": str(p)})
-        err_v0 = capsys.readouterr().err
-        log.set_verbosity(2)  # -vv opts into progress narration
-        _load_packages({"packages_file": str(p)})
-        err_v2 = capsys.readouterr().err
-    finally:
-        log.set_verbosity(saved)
+    err_v0, err_v2 = quiet_at_default(lambda: _load_packages({"packages_file": str(p)}))
 
     # Default output carries no narration; -vv surfaces it as an INFO line.
     assert "Loaded" not in err_v0
-    assert "[INFO]" not in err_v0 and "[WARN]" not in err_v0
     assert "[SYSFORGE][INFO][PACKAGES] Loaded 3 package(s)" in err_v2
 
 

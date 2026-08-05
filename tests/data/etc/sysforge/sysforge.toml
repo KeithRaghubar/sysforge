@@ -40,16 +40,28 @@ clone_timeout = 60
 # pyenv/asdf/conda shim on PATH. unset/"system" → /usr/bin/python (default);
 # "3.12" → /usr/bin/python3.12; or an absolute path. See etc/sysforge/sysforge.toml.
 # python = "system"
-# repo_track = "stable"        # "stable" | "main" — which line source=repo
-                               # checkouts follow. See etc/sysforge/sysforge.toml.
+# repo_track — "stable" | "main" — which line source=repo checkouts follow.
+#   See etc/sysforge/sysforge.toml.
+# repo_track = "stable"
+
 # Build CPU/IO throttling (global default; per-profile override in profiles.toml).
 # See etc/sysforge/sysforge.toml for full docs.
-# nice = 19          # scheduling niceness 0..19 (soft yield)
-# ionice = "idle"    # IO class: "idle" | "best-effort"
-# cpu_quota = "600%" # hard CPU ceiling via systemd-run scope: "N%" (100% = one
-#                    # core) or a decimal fraction of this host's cores (0.75)
-# jobs = 6           # parallel jobs; rewrites -j in MAKEFLAGS
-# mem_limit = "24G"  # per-build memory ceiling (RLIMIT_AS / cgroup MemoryMax)
+#
+# nice — scheduling niceness 0..19 (soft yield)
+# nice = 19
+#
+# ionice — IO class: "idle" | "best-effort"
+# ionice = "idle"
+#
+# cpu_quota — hard CPU ceiling via systemd-run scope: "N%" (100% = one core)
+#   or a decimal fraction of this host's cores (0.75)
+# cpu_quota = "600%"
+#
+# jobs — parallel jobs; rewrites -j in MAKEFLAGS
+# jobs = 6
+#
+# mem_limit — per-build memory ceiling (RLIMIT_AS / cgroup MemoryMax)
+# mem_limit = "24G"
 
 # pre_build_snapshot — take an optional btrfs snapshot before builds run.
 # Off by default. When on and the root is btrfs: delegates to snapper if a
@@ -89,16 +101,28 @@ llvm_preflight        = true
 # Standing defaults for `sysforge update` drift auto-rebuild. The matching
 # CLI flags (--rebuild-on-drift / --rebuild-on-toolchain-drift /
 # --rebuild-on-flag-drift) still win when passed.
-rebuild_on_drift = false            # umbrella: opts into both axes below
-rebuild_on_toolchain_drift = false  # rebuild on toolchain-variant drift only
-rebuild_on_flag_drift = false       # rebuild on resolved-flag drift only
+# rebuild_on_drift — umbrella: opts into both axes below
+rebuild_on_drift = false
+
+# rebuild_on_toolchain_drift — rebuild on toolchain-variant drift only
+rebuild_on_toolchain_drift = false
+
+# rebuild_on_flag_drift — rebuild on resolved-flag drift only
+rebuild_on_flag_drift = false
 
 [doctor]
 # Thresholds for the read-only `sysforge doctor` health axes. Each check reads
 # its threshold here, falling back to the documented default when unset.
-pkg_cache_warn_gb     = 5.0    # pacman axis: warn when the package cache exceeds this (GB)
-mirrorlist_stale_days = 14     # pacman axis: warn when /etc/pacman.d/mirrorlist is older than this
-disk_low_gb           = 10.0   # storage axis: warn when build-dir free space is under this (GB)
+#
+# pkg_cache_warn_gb — pacman axis: warn when the package cache exceeds this (GB)
+pkg_cache_warn_gb     = 5.0
+
+# mirrorlist_stale_days — pacman axis: warn when /etc/pacman.d/mirrorlist is
+#   older than this
+mirrorlist_stale_days = 14
+
+# disk_low_gb — storage axis: warn when build-dir free space is under this (GB)
+disk_low_gb           = 10.0
 
 # Roots scanned by `sysforge artifact list --unmanaged` for user-authored
 # artifacts. See etc/sysforge/sysforge.toml for full docs.
