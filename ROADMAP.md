@@ -87,6 +87,7 @@ canonical ordering.
 | `2.6.1-B13` | describe_editor_chain hardcodes the detected rung's index | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F20` | complete the editor chain display: source values, $VISUAL origins, one snapshot | low | small | patch |
+| `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
@@ -256,6 +257,32 @@ canonical ordering.
   fabricated count. If the mount lifetime proves hostile, drop this item; F24–F26 stand alone.
   *Priority: low · Effort: medium · Bump: patch* — the one piece carrying implementation
   uncertainty, isolated here so it cannot hold up the rest.
+
+- **`2.6.1-F28` — `artifact review --all`: bulk-adopt every offerable candidate.** Adoption is
+  one-file-at-a-time: `artifacts.adopt` takes a single `src`, and `ArtifactReviewVerb.execute`
+  reaches it only through a per-candidate `prompt_choice` loop. Pointing sysforge at a directory
+  that is already a curated set — `~/.local/bin` on a workstation that has accumulated dozens of
+  hand-written scripts — therefore costs one keystroke per file, with no way to say "all of these,
+  I wrote them". Add `--all` to `artifact review`: iterate the same `iter_offerable(registry,
+  ignore)` result and call `adopt` on each, printing the adopted name/class per line and a final
+  count. Reusing that one composition point is the whole point — the exclusion rules (package-owned,
+  sysforge-owned, already-managed, declined-and-unchanged) stay in a single home and cannot drift
+  between the interactive and bulk paths. Three specifics the implementation must honour: (1)
+  `--all` **skips `OWNER_UNKNOWN` candidates** unless `--include-unknown` is also passed —
+  `owner == unknown` means `pacman.owners_of` returned no verdict for that path, so the file may in
+  fact be package-owned and a blind bulk adopt is exactly where that mislabel does damage; the
+  interactive path can surface `[ownership unknown]` and let a human decide, the bulk path cannot.
+  (2) It **respects the `IgnoreList`**, same as the interactive loop — a recorded decline is a
+  decision, and `--all` is a convenience over the offer set, not an override of it. (3) It runs
+  off-TTY, replacing today's list-and-hint branch when the flag is given, since it needs no prompt.
+  Per-candidate `ArtifactError` logs and continues, mirroring the existing loop. Low risk by
+  construction: adoption is copy-only (`requires_sentinel = False`), touches no live file, and is
+  undone by `artifact remove --purge`. Tests: bulk adopt across mixed classes/roots; unknown-owner
+  skipped by default and adopted with `--include-unknown`; ignored candidate not adopted; off-TTY
+  bulk path; a mid-run adopt failure not aborting the rest. Completions (`_sysforge` + bash) and
+  the manpage move in the same change. *Priority: low · Effort: small · Bump: patch* — additive
+  flag on an existing verb, no new seam and no change to the per-file adopt contract.
+  **Standards home on adoption:** none new.
 
 ### Bugs
 
