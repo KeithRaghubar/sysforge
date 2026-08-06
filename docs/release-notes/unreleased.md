@@ -28,15 +28,6 @@ https://keepachangelog.com/en/1.1.0/
   It is appended from a single dispatch point in each file rather than repeated
   across every verb's spec.
 
-- `sysforge artifact` and `sysforge state` now run their `list` subcommand
-  instead of erroring (2.6.1-F6), settling an inconsistency the `doctor`
-  system/pkg split introduced: `doctor` and `packages` named a default subverb
-  while four other namespaces refused a bare parent. The rule is now an
-  invariant in the CLI Verb Framework design — a namespace names a default iff
-  it has a single obvious read-only view. `config` and `run` deliberately keep
-  requiring a subcommand, because their subverbs mutate or diverge with no
-  natural landing point. Additive: no existing invocation changes meaning.
-
 - `doctor --distro` reports the running distribution and its support tier, read
   from `os-release(5)` (2.6.1-F2). Arch is the primary base and the bare sweep
   stays silent on it; an Arch derivative (`ID_LIKE=arch`) gets an `info` naming
@@ -79,6 +70,15 @@ https://keepachangelog.com/en/1.1.0/
   Run at shellcheck's default severity (info and style included), so a genuine
   exception takes an inline `disable=` with a justifying comment rather than a
   laxer global threshold.
+
+- `sysforge artifact` and `sysforge state` now run their `list` subcommand
+  instead of erroring (2.6.1-F6), settling an inconsistency the `doctor`
+  system/pkg split introduced: `doctor` and `packages` named a default subverb
+  while four other namespaces refused a bare parent. The rule is now an
+  invariant in the CLI Verb Framework design — a namespace names a default iff
+  it has a single obvious read-only view. `config` and `run` deliberately keep
+  requiring a subcommand, because their subverbs mutate or diverge with no
+  natural landing point. Additive: no existing invocation changes meaning.
 
 - `make roadmap-view` prints the Planned summary table sorted by any column
   (2.6.1-F13) — `make roadmap-view SORT=effort` for cheapest-first,
@@ -126,34 +126,6 @@ https://keepachangelog.com/en/1.1.0/
   works booted or not and never touches the monitor socket. `vm-savevm` now
   points at it instead of the two-step monitor recipe.
 
-- SemVer impact is now declared rather than inferred (2.6.1-STD2), as standards
-  row 24 plus an extension of row 3. `primitives/deprecations.py` is a registry
-  of every surface sysforge still honours only for backwards compatibility —
-  six of them, each carrying the version it was deprecated in, the version it is
-  removed in, and its replacement. Five are compat read paths whose old spelling
-  still works (`[git] pull_timeout`, `packages.toml`'s `pkgbuild_patch` key and
-  its `repo_mode = "profiled"` token, `build_state.toml`'s
-  `build_mode = "profiled"` token, and the legacy `~/.config/sysforge/{cache,state}`
-  dirs); two of those have been deprecated since **1.0.0**, carried silently
-  across two major boundaries. The sixth is the `doctor` flat-flag hint table,
-  which already exits 2 and is therefore removable in a minor. Using a
-  deprecated surface now warns once per run, naming the removal version and the
-  replacement, with the text built from the registry record so it cannot drift.
-
-  Nothing is removed in this release. What changes is that a removal can no
-  longer be forgotten or mis-scheduled: `make check-standards` fails a registry
-  record with no read path (and a read path with no record), rejects a compat
-  removal declared for anything but an `X.0.0`, and errors when the release
-  target is at or past a declared removal with the surface still present.
-  `tools/release.sh` derives the required bump from this file's Keep a Changelog
-  sections — a `## Removed` section or a `**Breaking:**` bullet forces major —
-  and refuses a `--bump` weaker than that, printing the evidence for the
-  derivation so a miscategorised entry is visible. `make next-bump` prints the
-  derived value. Every `ROADMAP.md` entry now declares its expected impact with
-  a `Bump:` tag, and the standards table is split into externally-sourced and
-  sysforge-exclusive sections (row numbers unchanged — they are cited from code,
-  tests, and published release notes).
-
 - The reconfigure editor step now offers to persist your editor as `EDITOR` and `VISUAL` to
   `/etc/environment` and/or `~/.zshenv`, not only to sysforge's own config, and shows the full
   resolution chain — which rung is in use, which are shadowed, and which sources it will not
@@ -200,6 +172,12 @@ https://keepachangelog.com/en/1.1.0/
   since 2.6.1-F24, which is what makes the cost of flipping a subpackage toggle
   visible on the run that flips it.
 
+- A `Ctrl-C` landing inside a stage's change-summary window no longer replaces
+  the stage's own error (2.6.1-F25). The reporting path guards `Exception`
+  while the stage call is caught with `BaseException`, so an interrupt in that
+  narrow window could previously mask a real build failure and leave the
+  pipeline state at `running` instead of `failed`.
+
 - The toolchain stage's change summary now carries a `Toolchain:` block
   answering "what will my next builds be built with" (2.6.1-F26): the
   `cc`/`cxx` version lines, the linker, the active toolchain variant and
@@ -210,11 +188,33 @@ https://keepachangelog.com/en/1.1.0/
   an uncontrolled build-time number printed as a summary row reads as signal
   when it is noise.
 
-- A `Ctrl-C` landing inside a stage's change-summary window no longer replaces
-  the stage's own error (2.6.1-F25). The reporting path guards `Exception`
-  while the stage call is caught with `BaseException`, so an interrupt in that
-  narrow window could previously mask a real build failure and leave the
-  pipeline state at `running` instead of `failed`.
+- SemVer impact is now declared rather than inferred (2.6.1-STD2), as standards
+  row 24 plus an extension of row 3. `primitives/deprecations.py` is a registry
+  of every surface sysforge still honours only for backwards compatibility —
+  six of them, each carrying the version it was deprecated in, the version it is
+  removed in, and its replacement. Five are compat read paths whose old spelling
+  still works (`[git] pull_timeout`, `packages.toml`'s `pkgbuild_patch` key and
+  its `repo_mode = "profiled"` token, `build_state.toml`'s
+  `build_mode = "profiled"` token, and the legacy `~/.config/sysforge/{cache,state}`
+  dirs); two of those have been deprecated since **1.0.0**, carried silently
+  across two major boundaries. The sixth is the `doctor` flat-flag hint table,
+  which already exits 2 and is therefore removable in a minor. Using a
+  deprecated surface now warns once per run, naming the removal version and the
+  replacement, with the text built from the registry record so it cannot drift.
+
+  Nothing is removed in this release. What changes is that a removal can no
+  longer be forgotten or mis-scheduled: `make check-standards` fails a registry
+  record with no read path (and a read path with no record), rejects a compat
+  removal declared for anything but an `X.0.0`, and errors when the release
+  target is at or past a declared removal with the surface still present.
+  `tools/release.sh` derives the required bump from this file's Keep a Changelog
+  sections — a `## Removed` section or a `**Breaking:**` bullet forces major —
+  and refuses a `--bump` weaker than that, printing the evidence for the
+  derivation so a miscategorised entry is visible. `make next-bump` prints the
+  derived value. Every `ROADMAP.md` entry now declares its expected impact with
+  a `Bump:` tag, and the standards table is split into externally-sourced and
+  sysforge-exclusive sections (row numbers unchanged — they are cited from code,
+  tests, and published release notes).
 
 - `make check-shipped` gained a `config_comments` group that validates the shipped
   configs' prose, not just their structure (2.6.1-STD4). The existing `configs` group
@@ -269,6 +269,21 @@ https://keepachangelog.com/en/1.1.0/
   review are present, the hotplug merge now runs before the review pause rather than
   after it — so the "merged .config assembled" prompt is accurate when it appears.
   (2.5.1-F1)
+
+- Shipped-config audit pass over `etc/sysforge/` (2.6.1-B19). Defaults:
+  `bootstrap.toml` `esp_size_mib` 512 → 1024 MiB (room for a custom kernel
+  plus a stock fallback and future unified kernel images; the code-side
+  `BootstrapConfig` default moves in lockstep), and the shipped `[artifacts]`
+  scan root `~/scripts` → `~/.local/bin` (the XDG-conventional user-script
+  directory; `DEFAULT_ROOTS` in `primitives/artifacts.py` matches). The
+  redundant live `[pgo] allow = ["mesa"]` is now commented out — mesa is
+  always seeded by `resolve_pgo_allowlist`, so the live value was inert and
+  broke the "live values are operative defaults" convention. Clarity:
+  `bootstrap.toml` now states it is inert outside `run pipeline`, the
+  `[mirror]` `protocol`/`age` keys document their reflector semantics (age is
+  in hours), and the `kernel.toml` pkgname NOTE says explicitly that the
+  shipped `linux-sysforge` default collapses with the optimized-build suffix
+  and should be renamed before adopting AutoFDO/Propeller `use` builds.
 
 - **Breaking:** `sysforge doctor` is now two subcommands (2.6.1-F1).
   `doctor system [AXIS…]` runs the system-state axes; `doctor pkg [TARGETS]
@@ -462,21 +477,6 @@ https://keepachangelog.com/en/1.1.0/
   validated each minor via the container tier (packaging invariants only), other
   Arch derivatives expected but unvalidated. `sysforge doctor --distro` reports
   which tier the running system is in.
-
-- Shipped-config audit pass over `etc/sysforge/` (2.6.1-B19). Defaults:
-  `bootstrap.toml` `esp_size_mib` 512 → 1024 MiB (room for a custom kernel
-  plus a stock fallback and future unified kernel images; the code-side
-  `BootstrapConfig` default moves in lockstep), and the shipped `[artifacts]`
-  scan root `~/scripts` → `~/.local/bin` (the XDG-conventional user-script
-  directory; `DEFAULT_ROOTS` in `primitives/artifacts.py` matches). The
-  redundant live `[pgo] allow = ["mesa"]` is now commented out — mesa is
-  always seeded by `resolve_pgo_allowlist`, so the live value was inert and
-  broke the "live values are operative defaults" convention. Clarity:
-  `bootstrap.toml` now states it is inert outside `run pipeline`, the
-  `[mirror]` `protocol`/`age` keys document their reflector semantics (age is
-  in hours), and the `kernel.toml` pkgname NOTE says explicitly that the
-  shipped `linux-sysforge` default collapses with the optimized-build suffix
-  and should be renamed before adopting AutoFDO/Propeller `use` builds.
 
 ## Deprecated
 
@@ -749,10 +749,24 @@ https://keepachangelog.com/en/1.1.0/
   The same order-independence now applies to the pacman and `--devel`
   fast-paths.
 
-- The container harness now exits `3` ("unavailable") rather than `1` when no
-  built package is present (2.6.1-STD1). An unbuilt package is a missing
-  prerequisite, not a portability break; at `1` the new preflight section would
-  have blocked a release over it. Found by running the harness for real.
+- Release-note entries are now kept in the ascending roadmap-ID order the
+  process has always required (2.6.1-B20). `CLAUDE.md` asked for a re-sort on
+  every add/remove, but the `check_standards` `changelog` group only validated
+  the Keep a Changelog vocabulary and heading levels — so entries accreted in
+  landing order instead, and the accumulator had drifted to where `2.6.1-STD2`
+  sat between `F17` and `F18` and `F25` appeared in two places. A rule nothing
+  enforces is a rule that drifts.
+
+  The group now also checks, in the accumulator only, that every entry cites a
+  roadmap ID and that entries ascend within each section. Ordering is (version,
+  type, number) — `B` before `F` before `Q` before `STD` inside a cycle, and
+  versions compared numerically so `2.10.0` follows `2.9.0` rather than
+  preceding it lexically. An entry's *first* ID is its filing ID, since later
+  ones are cross-references, and a `promoted from <ID>` lineage citation is
+  stripped rather than sorted on. Released `v*.md` files are exempt on the same
+  reasoning the `roadmap_ids` Q-promotion check already uses: they are
+  immutable history. The 53 existing entries were re-sorted in the same commit,
+  verbatim — only their order changed.
 
 - `sysforge doctor --rust PKG` no longer appears to ignore its argument
   (2.6.1-F1). It never did — it skipped silently, in two places: a package that
@@ -773,3 +787,8 @@ https://keepachangelog.com/en/1.1.0/
   reported a green preflight for the wrong tree; `tools/vm/boot.sh` carried a
   dead `SCRIPT_DIR` assignment; and `tools/vm/build-pkg.sh`'s `ls` summary now
   documents why it is not the `find` the linter suggests.
+- The container harness now exits `3` ("unavailable") rather than `1` when no
+  built package is present (2.6.1-STD1). An unbuilt package is a missing
+  prerequisite, not a portability break; at `1` the new preflight section would
+  have blocked a release over it. Found by running the harness for real.
+

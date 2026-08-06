@@ -51,9 +51,13 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   `notes.txt` into ROADMAP. Implementing an
   item **removes it from ROADMAP in the same commit** (git history is the record — drop the whole
   entry, no "done" marker) and **appends its release-note entry to `docs/release-notes/unreleased.md`**
-  (Keep a Changelog section, inline roadmap ID). Keep entries in ascending ID order — re-sort on
-  every add/remove. `tools/release.sh` Phase 1 renames the accumulator to `vX.Y.Z.md` + reseeds;
-  the `release-notes` skill only reconciles before a release. `make check-standards` lints it.
+  (Keep a Changelog section, inline roadmap ID). Keep entries in ascending ID order **within each
+  section** — re-sort on every add/remove; order is (version, type, number), so `B` < `F` < `Q` <
+  `STD` inside a cycle, and the *first* ID in an entry is its filing ID (later ones are
+  cross-references). `tools/release.sh` Phase 1 renames the accumulator to `vX.Y.Z.md` + reseeds;
+  the `release-notes` skill only reconciles before a release. `make check-standards` lints all of
+  it — vocabulary, heading level, and (accumulator only) ID presence + ordering; released `v*.md`
+  are immutable history and exempt.
 - **Every Planned ROADMAP entry ends with a `*Priority: <low|med|high> · Effort: <small|medium|large> ·
   Bump: <patch|minor|major>*` tag** (§ROADMAP.md "Priority, effort & bump tags"). The `## Planned` summary table is **generated** from
   those tags — run `make roadmap-table` after any add/remove/retag; `make check-roadmap-table`

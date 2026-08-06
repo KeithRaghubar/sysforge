@@ -29,7 +29,9 @@ Groups:
                 the full-tree `reuse lint` is run instead.
     changelog   Every docs/release-notes/v*.md — and the running accumulator
                 unreleased.md — has a `#` title and uses only Keep a Changelog
-                `##` category headings.
+                `##` category headings. In the accumulator only, entries within
+                each section must also cite a roadmap ID and ascend by it
+                (released notes are immutable history, so they are exempt).
     encoding    UTF-8 discipline: ruff's PLW1514 (preview) reports no text-mode
                 open/read_text/write_text without an explicit encoding. Skipped
                 with a warning if ruff is not available.
@@ -230,6 +232,85 @@ def check_changelog(repo: Path) -> list[Finding]:
                     f"`## {heading}` is not a Keep a Changelog category "
                     f"({', '.join(sorted(_KAC_HEADINGS))})",
                 ))
+    if unreleased.is_file():
+        findings.extend(_check_accumulator_id_order(repo, unreleased))
+    return findings
+
+
+def _entry_sort_key(block: str) -> tuple[int, int, int, str, int] | None:
+    """Ascending-order key for one accumulator entry: its first roadmap ID.
+
+    The *first* ID is the entry's filing ID — later ones are cross-references
+    (a related item, the item a fix regressed). `promoted from <ID>` names the
+    old pre-promotion ID and is stripped for the same reason
+    :func:`shipped_ids_from_text` strips it.
+    """
+    body = _HTML_COMMENT_RE.sub("", block)
+    body = re.sub(r"promoted from\s+`?" + _ID_RE.pattern, "", body)
+    m = _ID_RE.search(body)
+    if not m:
+        return None
+    ver, typ, num = _parse_id(m.group(0))  # type: ignore[misc]
+    major, minor, patch = (int(p) for p in ver.split("."))
+    return (major, minor, patch, typ, num)
+
+
+def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
+    """Entries within each `## ` section must ascend by roadmap ID.
+
+    Scoped to the accumulator only, on the same reasoning as the `roadmap_ids`
+    Q-promotion check: released `v*.md` files are immutable history and are
+    grandfathered. The accumulator is the only file still being appended to,
+    and it is the one the ordering rule exists for — CLAUDE.md requires a
+    re-sort on every add/remove precisely so concurrent entries land
+    deterministically instead of accreting in landing order.
+
+    Ordering is (version, type, number), so within a cycle `B` precedes `F`
+    precedes `Q` precedes `STD`. An entry with no ID is reported rather than
+    silently sorted last: every entry is required to cite its roadmap ID.
+    """
+    findings: list[Finding] = []
+    rel = unreleased.relative_to(repo).as_posix()
+    heading: str | None = None
+    blocks: list[tuple[int, list[str]]] = []
+
+    def flush() -> None:
+        if heading is None:
+            return
+        prev_key = None
+        prev_id = None
+        for lineno, block in blocks:
+            text = "".join(block)
+            key = _entry_sort_key(text)
+            if key is None:
+                findings.append(Finding(
+                    "changelog", "error", f"{rel}:{lineno}",
+                    f"entry under `## {heading}` cites no roadmap ID "
+                    f"(every entry records the item it shipped)",
+                ))
+                continue
+            cur_id = f"{key[0]}.{key[1]}.{key[2]}-{key[3]}{key[4]}"
+            if prev_key is not None and key < prev_key:
+                findings.append(Finding(
+                    "changelog", "error", f"{rel}:{lineno}",
+                    f"`## {heading}` entries must ascend by roadmap ID: "
+                    f"{cur_id} follows {prev_id} — re-sort the section "
+                    f"(CLAUDE.md: re-sort on every add/remove)",
+                ))
+            prev_key, prev_id = key, cur_id
+
+    for lineno, ln in enumerate(unreleased.read_text(encoding="utf-8").splitlines(),
+                                1):
+        if ln.startswith("## "):
+            flush()
+            heading, blocks = ln[3:].strip(), []
+        elif heading is None:
+            continue
+        elif ln.startswith("- "):
+            blocks.append((lineno, [ln]))
+        elif blocks:
+            blocks[-1][1].append(ln)
+    flush()
     return findings
 
 
